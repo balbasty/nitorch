@@ -1,7 +1,7 @@
 """Convolution kernels."""
 
 # TODO:
-# . ImplementGaussian kernel
+# . Implement Sinc kernel
 # . Implement differential energies
 
 import torch
