@@ -87,13 +87,13 @@ def pad(inp, padsize, mode='constant', value=0):
 
     """
     # Check mode
-    if mode not in bounds.keys():
+    if mode not in tuple(bounds.keys()) + ('constant',):
         raise ValueError('Padding mode should be one of {}. Got {}.'
-                         .format((k for k in bounds.keys()), mode))
+                         .format(tuple(bounds.keys()) + ('constant',), mode))
     # Compute output dimensions
     inp = torch.as_tensor(inp)
     idim = torch.tensor(inp.shape)
-    padsize = torch.as_tensor(padsize).flatten()
+    padsize = torch.as_tensor(padsize, dtype=torch.int64).flatten()
     padpre = padsize[slice(0, padsize.numel(), 2)]
     padpost = padsize[slice(1, padsize.numel(), 2)]
     ndim = max(idim.numel(), padpre.numel(), padpost.numel())
@@ -117,7 +117,7 @@ def pad_constant(inp, padpre, padpost, value):
     start = (-padpre).clamp(min=0)
     length = idim - start - (-padpost).clamp(min=0)
     for d in range(ndim):
-        inp = inp.narrow(d, start[d], length[d])
+        inp = inp.narrow(d, start[d].item(), length[d].item())
     # Second: pad with constant tensors
     padpre = padpre.clamp(min=0)
     padpost = padpost.clamp(min=0)
