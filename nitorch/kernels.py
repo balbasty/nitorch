@@ -507,18 +507,21 @@ def imgrad(dim, vs=1, which='central', dtype=None, device=None):
 
     """
     vs = torch.as_tensor(vs).flatten()
+    if not vs.is_floating_point():
+        vs = vs.to(torch.float)
     vs = torch.cat((vs, vs[-1].repeat(max(0, dim-vs.numel()))))
     if not isinstance(which, tuple):
         which = (which,)
-    coord = ((0, 2) if w == 'central' else
-             (1, 2) if w == 'forward' else
-             (0, 1) for w in which)
+    coord = tuple((0, 2) if w == 'central' else
+                  (1, 2) if w == 'forward' else
+                  (0, 1) for w in which)
     ker = torch.zeros((dim, len(which), 1) + (3,) * dim,
                       dtype=dtype, device=device)
     for d in range(dim):
         for i in range(len(which)):
             sub = tuple(coord[i][0] if dd == d else 1 for dd in range(dim))
-            ker[(d, i) + sub] = -1./(vs[d]*(coord[1]-coord[0]))
+            ker[(d, i, 0) + sub] = -1./(vs[d]*(coord[i][1]-coord[i][0]))
             sub = tuple(coord[i][1] if dd == d else 1 for dd in range(dim))
-            ker[(d, i) + sub] = 1./(vs[d]*(coord[1]-coord[0]))
+            ker[(d, i, 0) + sub] = 1./(vs[d]*(coord[i][1]-coord[i][0]))
+    ker = ker.reshape((dim*len(which), 1) + (3,)*dim)
     return ker
