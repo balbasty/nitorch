@@ -6,23 +6,28 @@
 
 # TODO:
 # . Implement Sinc kernel
+# . Use inplace operations if gradients not required
+
+# WARNING:
+# . Currently, fwhm and voxel sizes are ordered as [depth wifth height]
+#   I am not sure yet what convention is best
 
 import torch
 from nitorch import utils
 
 __all__ = ['smooth', 'energy', 'energy1d', 'energy2d', 'energy3d',
-           'make_separable']
+           'make_separable', 'imgrad']
 
 
 def make_separable(ker, channels):
     """Transform a single-channel kernel into a multi-channel separable kernel.
 
     Args:
-        ker (torch.tensor): Single-channel kernel.
+        ker (torch.tensor): Single-channel kernel (1, 1, D, H, W).
         channels (int): Number of input/output channels.
 
     Returns:
-        ker (torch.tensor): Multi-channel group kernel.
+        ker (torch.tensor): Multi-channel group kernel (1, 1, D, H, W).
 
     """
     ndim = torch.as_tensor(ker.shape).numel()
@@ -41,6 +46,7 @@ def integrate_poly(l, h, *args):
     """
     # NOTE: operations are not performed inplace (+=, *=) so that autograd
     # can backpropagate.
+    # TODO: (maybe) use inplace if gradients not required
     zero = torch.zeros(tuple(), dtype=torch.bool)
     k = torch.zeros(l.shape, dtype=l.dtype, device=l.device)
     hh = h
@@ -347,9 +353,9 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=1,
     # Accumulate energies
     ker = torch.zeros((1, 1) + (kdim,)*dim, dtype=dtype, device=device)
     if absolute != 0:
-        kpad = (kdim-1)/2
-        kpad = (kpad,)*(2*dim)
-        ker1 = utils.pad(energy_absolute(dim, vs, dtype, device), kpad)
+        kpad = ((kdim-1)/2,)*dim
+        ker1 = energy_absolute(dim, vs, dtype, device)
+        ker1 = utils.pad(ker1, kpad, side='both')
         if displacement:
             ker2 = ker1
             ker1 = torch.zeros((dim, dim) + (kdim,)*dim,
@@ -357,10 +363,11 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=1,
             for d in range(dim):
                 ker1[d, d, ...] = ker2/vs[d]
         ker = ker + absolute*ker1
+
     if membrane != 0:
-        kpad = (kdim-3)/2
-        kpad = (kpad,)*(2*dim)
-        ker1 = utils.pad(energy_membrane(dim, vs, dtype, device), kpad)
+        kpad = ((kdim-3)/2,)*dim
+        ker1 = energy_membrane(dim, vs, dtype, device)
+        ker1 = utils.pad(ker1, kpad, side='both')
         if displacement:
             ker2 = ker1
             ker1 = torch.zeros((dim, dim) + (kdim,)*dim,
@@ -368,6 +375,7 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=1,
             for d in range(dim):
                 ker1[d, d, ...] = ker2/vs[d]
         ker = ker + membrane*ker1
+
     if bending != 0:
         ker1 = energy_bending(dim, vs, dtype, device)
         if displacement:
@@ -377,15 +385,17 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=1,
             for d in range(dim):
                 ker1[d, d, ...] = ker2/vs[d]
         ker = ker + bending*ker1
+
     if lame[0] != 0:
-        kpad = (kdim-3)/2
-        kpad = (0, 0, 0, 0) + (kpad,)*(2*dim)
-        ker1 = utils.pad(energy_linearelastic(dim, vs, 1, dtype, device), kpad)
+        kpad = ((kdim-3)/2,)*dim
+        ker1 = energy_linearelastic(dim, vs, 1, dtype, device)
+        ker1 = utils.pad(ker1, kpad, side='both')
         ker = ker + lame[0]*ker1
+
     if lame[1] != 0:
-        kpad = (kdim-3)/2
-        kpad = (0, 0, 0, 0) + (kpad,)*(2*dim)
-        ker1 = utils.pad(energy_linearelastic(dim, vs, 2, dtype, device), kpad)
+        kpad = ((kdim-3)/2,)*dim
+        ker1 = energy_linearelastic(dim, vs, 2, dtype, device)
+        ker1 = utils.pad(ker1, kpad, side='both')
         ker = ker + lame[1]*ker1
 
     return ker
@@ -475,4 +485,40 @@ def energy_linearelastic(dim, vs, lame, dtype=torch.float, device='cpu'):
             ker[(d, dd) + tuple(2 if i == d else 0 if i == dd else 1
                                 for i in range(dim))] = 0.25
             ker[dd, d, ...] = ker[d, dd, ...]
+    return ker
+
+
+def imgrad(dim, vs=1, which='central', dtype=None, device=None):
+    """Kernel that computes the first order gradients of a tensor.
+
+    Args:
+        dim (int): Dimension.
+        vs (float, optional): Voxel size. Defaults to 1.
+        which (tuple, string, optional): Gradient types (one or more):
+            . 'forward': forward gradients (next - centre)
+            . 'backward': backward gradients (centre - previous)
+            . 'central': central gradients ((next - previous)/2)
+            Defaults to 'central'.
+        dtype (torch.dtype, optional): Data type. Defaults to None.
+        device (torch.device, optional): Device. Defaults to None.
+
+    Returns:
+        ker (TYPE): DESCRIPTION.
+
+    """
+    vs = torch.as_tensor(vs).flatten()
+    vs = torch.cat((vs, vs[-1].repeat(max(0, dim-vs.numel()))))
+    if not isinstance(which, tuple):
+        which = (which,)
+    coord = ((0, 2) if w == 'central' else
+             (1, 2) if w == 'forward' else
+             (0, 1) for w in which)
+    ker = torch.zeros((dim, len(which), 1) + (3,) * dim,
+                      dtype=dtype, device=device)
+    for d in range(dim):
+        for i in range(len(which)):
+            sub = tuple(coord[i][0] if dd == d else 1 for dd in range(dim))
+            ker[(d, i) + sub] = -1./(vs[d]*(coord[1]-coord[0]))
+            sub = tuple(coord[i][1] if dd == d else 1 for dd in range(dim))
+            ker[(d, i) + sub] = 1./(vs[d]*(coord[1]-coord[0]))
     return ker
