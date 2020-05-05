@@ -1,10 +1,12 @@
 name: nitorch
 channels:
   - conda-forge
-dependencies:
-  - python=3.6
-  - numpy
   - pytorch
+dependencies:
+  - python=3.7
+  - pytorch=1.5
+  - cudatoolkit=10.1
+  - numpy
   - nibabel
   - pip
   - matplotlib
