@@ -9,7 +9,7 @@
 # . Use inplace operations if gradients not required
 
 # WARNING:
-# . Currently, fwhm and voxel sizes are ordered as [depth wifth height]
+# . Currently, fwhm and voxel sizes are ordered as [depth width height]
 #   I am not sure yet what convention is best
 
 import torch
@@ -36,10 +36,10 @@ def make_separable(ker, channels):
     return ker
 
 
-def integrate_poly(l, h, *args):
+def _integrate_poly(l, h, *args):
     """Integrate a polynomial on an interval.
 
-    k = integrate_poly(l, h, a, b, c, ...)
+    k = _integrate_poly(l, h, a, b, c, ...)
     integrates the polynomial a+b*x+c*x^2+... on [l,h]
 
     All inputs should be `torch.Tensor`
@@ -56,31 +56,31 @@ def integrate_poly(l, h, *args):
             k = k + (args[i]/(i+1))*(hh-ll)
         hh = hh * h
         ll = ll * l
-    return(k)
+    return k
 
 
-def gauss1d(fwhm, basis, x):
+def _gauss1d(fwhm, basis, x):
     if basis:
-        return(gauss1d1(fwhm, x))
+        return _gauss1d1(fwhm, x)
     else:
-        return(gauss1d0(fwhm, x))
+        return _gauss1d0(fwhm, x)
 
 
-def rect1d(fwhm, basis, x):
+def _rect1d(fwhm, basis, x):
     if basis:
-        return(rect1d1(fwhm, x))
+        return _rect1d1(fwhm, x)
     else:
-        return(rect1d0(fwhm, x))
+        return _rect1d0(fwhm, x)
 
 
-def triangle1d(fwhm, basis, x):
+def _triangle1d(fwhm, basis, x):
     if basis:
-        return(triangle1d1(fwhm, x))
+        return _triangle1d1(fwhm, x)
     else:
-        return(triangle1d0(fwhm, x))
+        return _triangle1d0(fwhm, x)
 
 
-def gauss1d0(w, x):
+def _gauss1d0(w, x):
     logtwo = torch.tensor(2., dtype=w.dtype, device=w.device).log()
     sqrttwo = torch.tensor(2., dtype=w.dtype, device=w.device).sqrt()
     s = w/(8.*logtwo).sqrt() + 1E-7  # standard deviation
@@ -93,7 +93,7 @@ def gauss1d0(w, x):
     return ker, x
 
 
-def gauss1d1(w, x):
+def _gauss1d1(w, x):
     import math
     logtwo = torch.tensor(2., dtype=w.dtype, device=w.device).log()
     sqrttwo = torch.tensor(2., dtype=w.dtype, device=w.device).sqrt()
@@ -115,7 +115,7 @@ def gauss1d1(w, x):
     return ker, x
 
 
-def rect1d0(w, x):
+def _rect1d0(w, x):
     if x is None:
         lim = torch.floor((w+1)/2).type(torch.int)
         x = torch.tensor(range(-lim, lim+1), dtype=w.dtype, device=w.device)
@@ -125,7 +125,7 @@ def rect1d0(w, x):
     return ker, x
 
 
-def rect1d1(w, x):
+def _rect1d1(w, x):
     if x is None:
         lim = torch.floor((w+2)/2).type(torch.int)
         x = torch.tensor(range(-lim, lim+1), dtype=torch.float)
@@ -135,13 +135,13 @@ def rect1d1(w, x):
     neg_upp = torch.max(torch.min(x+w/2,  zero), -one)
     pos_low = torch.min(torch.max(x-w/2,  zero),  one)
     pos_upp = torch.max(torch.min(x+w/2,  one),   zero)
-    ker = integrate_poly(neg_low, neg_upp, one,  one) \
-        + integrate_poly(pos_low, pos_upp, one, -one)
+    ker = _integrate_poly(neg_low, neg_upp, one,  one) \
+        + _integrate_poly(pos_low, pos_upp, one, -one)
     ker = ker/w
     return ker, x
 
 
-def triangle1d0(w, x):
+def _triangle1d0(w, x):
     if x is None:
         lim = torch.floor((2*w+1)/2).type(torch.int)
         x = torch.tensor(range(-lim, lim+1), dtype=torch.float)
@@ -151,13 +151,13 @@ def triangle1d0(w, x):
     neg_upp = torch.max(torch.min(x+0.5,  zero), -w)
     pos_low = torch.min(torch.max(x-0.5,  zero),  w)
     pos_upp = torch.max(torch.min(x+0.5,  w),     zero)
-    ker = integrate_poly(neg_low, neg_upp, one,  1/w) \
-        + integrate_poly(pos_low, pos_upp, one, -1/w)
+    ker = _integrate_poly(neg_low, neg_upp, one,  1/w) \
+        + _integrate_poly(pos_low, pos_upp, one, -1/w)
     ker = ker/w
     return ker, x
 
 
-def triangle1d1(w, x):
+def _triangle1d1(w, x):
     if x is None:
         lim = torch.floor((2*w+2)/2).type(torch.int)
         x = torch.tensor(range(-lim, lim+1), dtype=torch.float)
@@ -171,24 +171,24 @@ def triangle1d1(w, x):
     pos_neg_upp = torch.max(torch.min(x,    zero), -one)
     pos_pos_low = torch.min(torch.max(x-w,  zero),  one)
     pos_pos_upp = torch.max(torch.min(x,    one),   zero)
-    ker = integrate_poly(neg_neg_low, neg_neg_upp, 1+x/w,  1+x/w-1/w, -1/w) \
-        + integrate_poly(neg_pos_low, neg_pos_upp, 1+x/w, -1-x/w-1/w,  1/w) \
-        + integrate_poly(pos_neg_low, pos_neg_upp, 1-x/w,  1-x/w+1/w,  1/w) \
-        + integrate_poly(pos_pos_low, pos_pos_upp, 1-x/w, -1+x/w+1/w, -1/w)
+    ker = _integrate_poly(neg_neg_low, neg_neg_upp, 1+x/w,  1+x/w-1/w, -1/w) \
+        + _integrate_poly(neg_pos_low, neg_pos_upp, 1+x/w, -1-x/w-1/w,  1/w) \
+        + _integrate_poly(pos_neg_low, pos_neg_upp, 1-x/w,  1-x/w+1/w,  1/w) \
+        + _integrate_poly(pos_pos_low, pos_pos_upp, 1-x/w, -1+x/w+1/w, -1/w)
     ker = ker/w
     return ker, x
 
 
-smooth_switcher = {
-    'gauss': gauss1d,
-    'rect': rect1d,
-    'triangle': triangle1d,
-    0: rect1d,
-    1: triangle1d,
+_smooth_switcher = {
+    'gauss': _gauss1d,
+    'rect': _rect1d,
+    'triangle': _triangle1d,
+    0: _rect1d,
+    1: _triangle1d,
     }
 
 
-def smooth(type, fwhm=1, basis=0, x=None, sep=True):
+def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     """Create a smoothing kernel.
 
     Creates a (separable) smoothing kernel with fixed (i.e., not learned)
@@ -200,24 +200,29 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True):
     its elements are ensured to sum to one.
     The returned kernel is a `torch.Tensor`.
 
+    The returned kernel is intended for volumes ordered as (B, C, D, H, W).
+    However, the fwhm elements should be ordered as (W, H, D).
+    For more information about ordering conventions in nitorch, see
+    `nitorch.spatial?`.
+
     Args:
-        type (str,int): Smoothing function (integrates to one).
+        type (str or int): Smoothing function (integrates to one).
             . 0, 'rect': Rectangular function (0th order B-spline)
             . 1, 'tri': Triangular function (1st order B-spline)
             . 'gauss': Gaussian
-            . 'sinc': Sinc
-        fwhm (array_like,float,optional): Full-width at half-maximum of the
+        fwhm (vector_like,optional): Full-width at half-maximum of the
             smoothing function (in voxels), in each dimension.
-            Default: 1.
-        basis (array_like,int,optional): Image encoding basis (B-spline order)
-            Default: 0
-        x (tuple,array_like,optional): Coordinates at which to evaluate the
-            kernel. If None, evaluate at all integer coordinates from its
-            support (truncated support for 'gauss' and 'sinc' kernels).
-            Default: None
-        sep(boolean): Return separable 1D kernels. If False, the 1D kernels
-            are combined to form an N-D kernel.
-            Default: True
+            Defaults to 1.
+        basis (int,optional): Image encoding basis (B-spline order)
+            Defaults to 0.
+        x (tuple or vector_like,optional): Coordinates at which to
+            evaluate the kernel. If None, evaluate at all integer coordinates
+            from its support (truncated support for 'gauss').
+            Defaults to None.
+        sep(bool,optional): Return separable 1D kernels. If False, the 1D
+            kernels are combined to form an N-D kernel. Defaults to True.
+        dtype (torch.dtype,optional): Data type. Defaults to None.
+        device (torch.device): Device. Defaults to None.
 
     Returns:
         If `sep is False` or all input parameters are scalar: a `torch.Tensor`
@@ -226,33 +231,30 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True):
 
     """
     # Convert to tensors
-    fwhm = torch.as_tensor(fwhm)
+    fwhm = torch.as_tensor(fwhm, dtype=dtype, device=device).flatten()
     if not fwhm.is_floating_point():
         fwhm = fwhm.type(torch.float)
-    basis = torch.as_tensor(basis)
+    dtype = fwhm.dtype
+    device = fwhm.device
     return_tuple = True
     if not isinstance(x, tuple):
-        return_tuple = not (fwhm.shape == torch.Size([]) and
-                            basis.shape == torch.Size([]))
+        return_tuple = not (fwhm.shape == torch.Size([]))
         x = (x,)
-    x = tuple(torch.as_tensor(x1).flatten() if x1 is not None else None
-              for x1 in x)
+    x = tuple(torch.as_tensor(x1, dtype=dtype, device=device).flatten()
+              if x1 is not None else None for x1 in x)
 
     # Ensure all sizes are consistant
-    fwhm = fwhm.flatten()
-    basis = basis.flatten()
-    nker = max(fwhm.numel(), basis.numel(), len(x))
+    nker = max(fwhm.numel(), len(x))
     fwhm = torch.cat((fwhm, fwhm[-1].repeat(max(0, nker-fwhm.numel()))))
-    basis = torch.cat((basis, basis[-1].repeat(max(0, nker-basis.numel()))))
     x = x + (x[-1],)*max(0, nker-len(x))
 
     # Loop over dimensions
     ker = tuple()
     x = list(x)
     for d in range(nker):
-        ker1, x[d] = smooth_switcher[type](fwhm[d], basis[d], x[d])
+        ker1, x[d] = _smooth_switcher[type](fwhm[d], basis, x[d])
         shape = [1, ] * nker
-        shape[d] = ker1.numel()
+        shape[-1-d] = ker1.numel()
         ker1 = ker1.reshape(shape)
         ker1 = ker1.unsqueeze(0).unsqueeze(0)  # Cout = 1, Cin = 1
         ker += (ker1, )
@@ -269,13 +271,15 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True):
     return ker
 
 
-def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=1,
+def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=None,
            displacement=False, dtype=None, device=None):
     """Generate a convolution kernel for a mixture of differential energies.
 
     This function builds a convolution kernel that embeds a mixture of
     differential energies. In practice, this energy can be computed as
-    E = <f,k*f>, where <.,.> is the Eucldean dot product.
+    E = <f,k*f>, where f is the image, k is the kernel and <.,.> is the
+    Eucldean dot product.
+
     Possible energies are:
         . absolute = sum of squared absolute values
         . membrane = sum of squared first derivatives
@@ -283,27 +287,36 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=1,
         . lame     = linear elastic energy
             [0] sum of divergences  (Lame's 1st parameter, lambda)
             [1] sum of shears       (Lame's 2nd parameter, mu)
-
     Note: The lame parameters should be entered in the opposite order from SPM
           SPM: (mu, lambda) / nitorch: (lambda, mu)
+
+    The returned kernel is intended for volumes ordered as (B, C, D, H, W).
+    However, if the convolved volume is a displacement field, components in
+    the channel dimension should be ordered as (W, H, D). Similarly, the voxel
+    size should be ordered as (W, H, D).
+    For more information about ordering conventions in nitorch, see
+    `nitorch.spatial?`.
+
+    The returned kernel is ordered as (C, C, D, H, W).
+    If displacement is False, C == 1. Use `make_separable` to transform it
+    into a multi-channel kernel.
+    If displacement is True, C == dim and components (i.e., channels)
+    are ordered as (W, H, D).
 
     Args:
         dim (int): Dimension of the problem (1, 2, or 3)
         absolute (float, optional): Defaults to 0.
         membrane (float, optional): Defaults to 0.
         bending (float, optional): Defaults to 0.
-        lame (float, optional): Defaults to (0, 0).
-        vs (float, optional): Defaults to 1.
+        lame (tuple[float], optional): Defaults to (0, 0).
+        vs (tuple[float], optional): Defaults to ones.
         displacement (bool, optional): True if input field is a displacement
             field. Defaults to True if `linearelastic != (0, 0)`, else False.
         dtype (torch.dtype, optional)
         device (torch.device, optional)
 
-    Raises:
-        ValueError: DESCRIPTION.
-
     Returns:
-        ker (TYPE): DESCRIPTION.
+        ker (torch.Tensor): Kernel weights.
 
     """
     # Check arguments
@@ -346,55 +359,59 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=1,
         kdim = 0
 
     # Compute 1/vs^2
-    vs = torch.as_tensor(vs).flatten()
-    vs = torch.cat((vs, vs[-1].repeat(max(0, dim-vs.numel()))))
-    vs = 1./(vs*vs)
+    if vs is None:
+        vs = (1,) * dim
+    else:
+        if len(vs) != dim:
+            raise ValueError('There must be as many voxel sizes as dimensions')
+    vs = tuple(1./(v*v) for v in vs)
+    vs = vs[::-1]  # (D, H, W)
 
     # Accumulate energies
     ker = torch.zeros((1, 1) + (kdim,)*dim, dtype=dtype, device=device)
     if absolute != 0:
-        kpad = ((kdim-1)/2,)*dim
-        ker1 = energy_absolute(dim, vs, dtype, device)
+        kpad = ((kdim-1)//2,)*dim
+        ker1 = _energy_absolute(dim, vs, dtype, device)
         ker1 = utils.pad(ker1, kpad, side='both')
         if displacement:
             ker2 = ker1
             ker1 = torch.zeros((dim, dim) + (kdim,)*dim,
                                dtype=dtype, device=device)
             for d in range(dim):
-                ker1[d, d, ...] = ker2/vs[d]
+                ker1[d, d, ...] = ker2/vs[-1-d]
         ker = ker + absolute*ker1
 
     if membrane != 0:
-        kpad = ((kdim-3)/2,)*dim
-        ker1 = energy_membrane(dim, vs, dtype, device)
+        kpad = ((kdim-3)//2,)*dim
+        ker1 = _energy_membrane(dim, vs, dtype, device)
         ker1 = utils.pad(ker1, kpad, side='both')
         if displacement:
             ker2 = ker1
             ker1 = torch.zeros((dim, dim) + (kdim,)*dim,
                                dtype=dtype, device=device)
             for d in range(dim):
-                ker1[d, d, ...] = ker2/vs[d]
+                ker1[d, d, ...] = ker2/vs[-1-d]
         ker = ker + membrane*ker1
 
     if bending != 0:
-        ker1 = energy_bending(dim, vs, dtype, device)
+        ker1 = _energy_bending(dim, vs, dtype, device)
         if displacement:
             ker2 = ker1
             ker1 = torch.zeros((dim, dim) + (kdim,)*dim,
                                dtype=dtype, device=device)
             for d in range(dim):
-                ker1[d, d, ...] = ker2/vs[d]
+                ker1[d, d, ...] = ker2/vs[-1-d]
         ker = ker + bending*ker1
 
     if lame[0] != 0:
-        kpad = ((kdim-3)/2,)*dim
-        ker1 = energy_linearelastic(dim, vs, 1, dtype, device)
+        kpad = ((kdim-3)//2,)*dim
+        ker1 = _energy_linearelastic(dim, vs, 1, dtype, device)
         ker1 = utils.pad(ker1, kpad, side='both')
         ker = ker + lame[0]*ker1
 
     if lame[1] != 0:
-        kpad = ((kdim-3)/2,)*dim
-        ker1 = energy_linearelastic(dim, vs, 2, dtype, device)
+        kpad = ((kdim-3)//2,)*dim
+        ker1 = _energy_linearelastic(dim, vs, 2, dtype, device)
         ker1 = utils.pad(ker1, kpad, side='both')
         ker = ker + lame[1]*ker1
 
@@ -416,34 +433,33 @@ def energy3d(*args, **kwargs):
     return(energy(3, *args, **kwargs))
 
 
-def energy_absolute(dim, vs, dtype=torch.float, device='cpu'):
+def _energy_absolute(dim, vs, dtype=torch.float, device='cpu'):
     ker = torch.ones(1, dtype=dtype, device=device)
     ker = ker.reshape((1,)*dim)
-    ker = ker.unsqueeze(0).unsqueeze(0)
+    ker = ker[None, None, ...]
     return ker
 
 
-def energy_membrane(dim, vs, dtype=torch.float, device='cpu'):
+def _energy_membrane(dim, vs, dtype=torch.float, device='cpu'):
     ker = torch.zeros((3,)*dim, dtype=dtype, device=device)
-    ker[(1,)*dim] = 2.*vs.sum()
+    ker[(1,)*dim] = 2.*sum(vs)
     for d in range(dim):
         ker[tuple(0 if i == d else 1 for i in range(dim))] = -vs[d]
         ker[tuple(2 if i == d else 1 for i in range(dim))] = -vs[d]
-    ker = ker.unsqueeze(0).unsqueeze(0)
+    ker = ker[None, None, ...]
     return ker
 
 
-def energy_bending(dim, vs, dtype=torch.float, device='cpu'):
-    centre = 6.*vs.pow(2).sum()
+def _energy_bending(dim, vs, dtype=torch.float, device='cpu'):
+    centre = 6.*sum(v*v for v in vs)
     for d in range(dim):
         for dd in range(d+1, dim):
             centre = centre + 8.*vs[d]*vs[dd]
-    vs = vs.reshape(vs.numel(), 1)
     ker = torch.zeros((5,)*dim, dtype=dtype, device=device)
     ker[(2,)*dim] = centre
     for d in range(dim):
-        ker[tuple(1 if i == d else 2 for i in range(dim))] = -4.*vs[d]*vs.sum()
-        ker[tuple(3 if i == d else 2 for i in range(dim))] = -4.*vs[d]*vs.sum()
+        ker[tuple(1 if i == d else 2 for i in range(dim))] = -4.*vs[d]*sum(vs)
+        ker[tuple(3 if i == d else 2 for i in range(dim))] = -4.*vs[d]*sum(vs)
         ker[tuple(0 if i == d else 2 for i in range(dim))] = vs[d]*vs[d]
         ker[tuple(4 if i == d else 2 for i in range(dim))] = vs[d]*vs[d]
         for dd in range(d+1, dim):
@@ -455,16 +471,16 @@ def energy_bending(dim, vs, dtype=torch.float, device='cpu'):
                       for i in range(dim))] = 2*vs[d]*vs[dd]
             ker[tuple(3 if i == d else 1 if i == dd else 2
                       for i in range(dim))] = 2*vs[d]*vs[dd]
-    ker = ker.unsqueeze(0).unsqueeze(0)
+    ker = ker[None, None, ...]
     return ker
 
 
-def energy_linearelastic(dim, vs, lame, dtype=torch.float, device='cpu'):
+def _energy_linearelastic(dim, vs, lame, dtype=torch.float, device='cpu'):
     ker = torch.zeros((dim, dim) + (3,)*dim, dtype=dtype, device=device)
     for d in range(dim):
         ker[(d, d) + (1,)*dim] = 2.
         if lame == 2:
-            ker[(d, d) + (1,)*dim] += 2.*vs.sum()/vs[d]
+            ker[(d, d) + (1,)*dim] += 2.*sum(vs)/vs[d]
             for dd in range(dim):
                 ker[(d, d) + tuple(0 if i == dd else 1 for i in range(dim))] \
                     = -vs[dd]/vs[d] if d != dd else -2.
@@ -488,13 +504,21 @@ def energy_linearelastic(dim, vs, lame, dtype=torch.float, device='cpu'):
     return ker
 
 
-def imgrad(dim, vs=1, which='central', dtype=None, device=None):
+def imgrad(dim, vs=None, which='central', dtype=None, device=None):
     """Kernel that computes the first order gradients of a tensor.
+
+    The returned kernel is intended for volumes ordered as (B, C, D, H, W).
+    However, the voxel size should be ordered as (W, H, D).
+    For more information about ordering conventions in nitorch, see
+    `nitorch.spatial?`.
+
+    The returned kernel is ordered as (C, 1, D, H, W), and the output
+    components (i.e., channels) are ordered as (W, H, D).
 
     Args:
         dim (int): Dimension.
-        vs (float, optional): Voxel size. Defaults to 1.
-        which (tuple, string, optional): Gradient types (one or more):
+        vs (tuple[float], optional): Voxel size. Defaults to 1.
+        which (str, optional): Gradient types (one or more):
             . 'forward': forward gradients (next - centre)
             . 'backward': backward gradients (centre - previous)
             . 'central': central gradients ((next - previous)/2)
@@ -503,25 +527,129 @@ def imgrad(dim, vs=1, which='central', dtype=None, device=None):
         device (torch.device, optional): Device. Defaults to None.
 
     Returns:
-        ker (TYPE): DESCRIPTION.
+        ker (torch.tensor): Kernel that can be used to extract image gradients
+            (dim*len(which), 1, D, H, W)
 
     """
-    vs = torch.as_tensor(vs).flatten()
-    if not vs.is_floating_point():
-        vs = vs.to(torch.float)
-    vs = torch.cat((vs, vs[-1].repeat(max(0, dim-vs.numel()))))
-    if not isinstance(which, tuple):
-        which = (which,)
-    coord = tuple((0, 2) if w == 'central' else
-                  (1, 2) if w == 'forward' else
-                  (0, 1) for w in which)
-    ker = torch.zeros((dim, len(which), 1) + (3,) * dim,
-                      dtype=dtype, device=device)
+    if vs is None:
+        vs = (1,) * dim
+    elif len(vs) != dim:
+        raise ValueError('There must be as many voxel sizes as dimensions')
+    coord = (0, 2) if which == 'central' else \
+            (1, 2) if which == 'forward' else \
+            (0, 1)
+    ker = torch.zeros((dim, 1) + (3,) * dim, dtype=dtype, device=device)
     for d in range(dim):
-        for i in range(len(which)):
-            sub = tuple(coord[i][0] if dd == d else 1 for dd in range(dim))
-            ker[(d, i, 0) + sub] = -1./(vs[d]*(coord[i][1]-coord[i][0]))
-            sub = tuple(coord[i][1] if dd == d else 1 for dd in range(dim))
-            ker[(d, i, 0) + sub] = 1./(vs[d]*(coord[i][1]-coord[i][0]))
-    ker = ker.reshape((dim*len(which), 1) + (3,)*dim)
+        sub = tuple(coord[0] if dd == d else 1 for dd in range(0, dim, -1))
+        ker[(d, 0) + sub] = -1./(vs[d]*(coord[1]-coord[0]))
+        sub = tuple(coord[1] if dd == d else 1 for dd in range(0, dim, -1))
+        ker[(d, 0) + sub] = 1./(vs[d]*(coord[1]-coord[0]))
+    ker = ker.reshape((dim, 1) + (3,)*dim)
+    return ker
+
+
+def greens(ker, shape, bound='circular'):
+    """Compute the Greens function of a real and symmetric convolution.
+
+    The convolution kernel is inverted in Frequency domain.
+
+
+    Args:
+        ker (array_like): Input kernel (Cout, Cin, Kd, Kh, Kw).
+        shape (vector_like): Shape of the convolved image [D, H,, W].
+        bound (string, optional): Boundary conditions. Defaults to 'circular'.
+
+    Returns:
+        greens (array_like): Fourier (or other frequency) transform of the
+            Greens function (Cout, Cin, D, H, W).
+
+    (Adapted from John Ashburner's `spm_shoot_greens`)
+
+    """
+    if bound not in ('circular', 'fft'):
+        raise ValueError('Only circular boundary condition is implemented.')
+    ker = torch.as_tensor(ker)
+    kdim = torch.as_tensor(ker.size()[2:])
+    shape = torch.as_tensor(shape).flatten()
+    ndim = max(kdim.numel(), shape.numel())
+    kdim = utils.pad(kdim, ndim-kdim.numel(), side='post', value=1)
+    shape = utils.pad(shape, ndim-shape.numel(), side='post', value=1)
+
+    # TODO: I should do a bit more shape checking
+
+    # Frequency transform
+    pad = (shape-kdim)/2.
+    pad = tuple(p for pair in zip(pad.floor(), pad.ceil()) for p in pair)
+    ker = utils.pad(ker, pad)
+    # TODO: fftshift
+    ker = ker.rfft(ndim)
+
+    # Note: PyTorch does not handle complex numbers (yet).
+    # The real and imaginary part are therefore two dimensions of the
+    # output tensor.
+    # Since our kernels are symmetric, we know that the Fourier coefficients
+    # are purely real. However, I am not sure that removing a dimensions
+    # and then adding it is very efficient.
+    # To make sure that the imaginary component is zero (while keeping
+    # everything differentiable), I multiply it with zeros.
+    mask = torch.tensor([1., 0.], device=ker.device)
+    mask = utils.shiftdim(mask, 1-ker.dim())
+    ker = ker * mask
+
+    if ker.size()[0] == 1:
+        # Pointwise inverse
+        ker = ker + (1-mask)
+        ker = 1./ker
+        ker = ker * mask
+    elif ndim == 2:
+        # 2x2 block inverse
+        det = ker[0, 0, ...]*ker[1, 1, ...] - ker[0, 1, ...]*ker[1, 0, ...]
+        det = det[None, None, ...]
+        det = det + (1-mask)
+        ker = torch.cat((
+                torch.cat((ker[None, None, 1, 1, ...],
+                           -ker[None, None, 0, 1, ...]), dim=1),
+                torch.cat((-ker[None, None, 1, 0, ...],
+                           ker[None, None, 0, 0, ...]), dim=1),
+            ), dim=0)
+        ker = ker / det
+    else:
+        # 3x3 block inverse
+        det = ker[0, 0, ...]*(ker[1, 1, ...]*ker[2, 2, ...] -
+                              ker[1, 2, ...]*ker[2, 1, ...]) \
+            + ker[0, 1, ...]*(ker[1, 2, ...]*ker[2, 0, ...] -
+                              ker[1, 0, ...]*ker[2, 2, ...]) \
+            + ker[0, 2, ...]*(ker[1, 0, ...]*ker[2, 1, ...] -
+                              ker[1, 1, ...]*ker[2, 0, ...])
+        det = det[None, None, ...]
+        det = det + (1-mask)
+
+        ker = torch.cat((
+                torch.cat((
+                    ker[None, None, 1, 1, ...]*ker[None, None, 2, 2, ...] -
+                    ker[None, None, 1, 2, ...]*ker[None, None, 2, 1, ...],
+                    ker[None, None, 1, 2, ...]*ker[None, None, 2, 0, ...] -
+                    ker[None, None, 1, 0, ...]*ker[None, None, 2, 2, ...],
+                    ker[None, None, 1, 0, ...]*ker[None, None, 2, 1, ...] -
+                    ker[None, None, 1, 1, ...]*ker[None, None, 2, 0, ...]
+                ), dim=0),
+                torch.cat((
+                    ker[None, None, 0, 2, ...]*ker[None, None, 2, 1, ...] -
+                    ker[None, None, 0, 1, ...]*ker[None, None, 2, 2, ...],
+                    ker[None, None, 0, 0, ...]*ker[None, None, 2, 2, ...] -
+                    ker[None, None, 0, 2, ...]*ker[None, None, 2, 0, ...],
+                    ker[None, None, 0, 1, ...]*ker[None, None, 2, 0, ...] -
+                    ker[None, None, 0, 0, ...]*ker[None, None, 2, 1, ...]
+                ), dim=0),
+                torch.cat((
+                    ker[None, None, 0, 1, ...]*ker[None, None, 1, 2, ...] -
+                    ker[None, None, 0, 2, ...]*ker[None, None, 1, 1, ...],
+                    ker[None, None, 0, 2, ...]*ker[None, None, 1, 0, ...] -
+                    ker[None, None, 0, 0, ...]*ker[None, None, 1, 2, ...],
+                    ker[None, None, 0, 0, ...]*ker[None, None, 1, 1, ...] -
+                    ker[None, None, 0, 1, ...]*ker[None, None, 1, 0, ...]
+                ), dim=0)
+            ), dim=1)
+        ker = ker / det
+
     return ker
