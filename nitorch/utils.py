@@ -13,23 +13,63 @@ Created on Fri Apr 24 14:45:24 2020
 
 import torch
 
-__all__ = ['pad', 'same_storage']
+__all__ = ['pad', 'same_storage', 'shiftdim']
 
 
 def same_storage(x, y):
+    # type: (torch.Tensor, torch.Tensor) -> bool
     """Return true if `x` and `y` share the same underlying storage."""
     return x.storage().data_ptr() == y.storage().data_ptr()
 
 
-def bound_circular(i, n):
+def shiftdim(x, n=None):
+    # type: (torch.Tensor, int) -> torch.Tensor
+    """Shift the dimensions of x by n.
+
+    When N is positive, `shiftdim` shifts the dimensions to the left and wraps
+    the N leading dimensions to the end.  When N is negative, `shiftdim`
+    shifts the dimensions to the right and pads with singletons.
+
+    When N is None, `shiftdim` removes all leading singleton
+    dimensions. The number of removed dimensions is returned as well.
+
+
+    Args:
+        x (torch.Tensor): Input tensor.
+        n (int): Shift. Defaults to None.
+
+    Returns:
+        x (torch.Tensor): Output tensor.
+        n (int, if n is None): Number of removed dimensions
+
+    """
+    if n is None:
+        shape = torch.as_tensor(x.size())
+        n = (shape != 1).nonzero()
+        if n.numel() == 0:
+            n = x.dim()
+            x = x.reshape([])
+        else:
+            n = n[0]
+            x = x.reshape(shape[n:].tolist())
+        return x, n
+    elif n < 0:
+        x = x.reshape((1,)*(-n) + x.size())
+    elif n > 0:
+        n = n % x.dim()
+        x = x.permute(tuple(range(n, x.dim())) + tuple(range(n)))
+    return x
+
+
+def _bound_circular(i, n):
     return i % n
 
 
-def bound_replicate(i, n):
+def _bound_replicate(i, n):
     return i.clamp(min=0, max=n-1)
 
 
-def bound_symmetric(i, n):
+def _bound_reflect2(i, n):
     n2 = n*2
     pre = (i < 0)
     i[pre] = n2 - 1 - ((-i[pre]-1) % n2)
@@ -39,7 +79,7 @@ def bound_symmetric(i, n):
     return i
 
 
-def bound_reflect(i, n):
+def _bound_reflect1(i, n):
     if n == 1:
         return torch.zeros(i.size(), dtype=i.dtype, device=i.device)
     else:
@@ -52,54 +92,60 @@ def bound_reflect(i, n):
         return i
 
 
-bounds = {
-    'circular': bound_circular,
-    'replicate': bound_replicate,
-    'symmetric': bound_symmetric,
-    'reflect': bound_reflect,
+_bounds = {
+    'circular': _bound_circular,
+    'replicate': _bound_replicate,
+    'reflect': _bound_reflect1,
+    'reflect1': _bound_reflect1,
+    'reflect2': _bound_reflect2,
     }
 
 
-modifiers = {
+_modifiers = {
     'circular': lambda x, i, n: x,
     'replicate': lambda x, i, n: x,
-    'symmetric': lambda x, i, n: x,
     'reflect': lambda x, i, n: x,
+    'reflect1': lambda x, i, n: x,
+    'reflect2': lambda x, i, n: x,
     }
 
 
-def padvec(x, n, value=0):
-    """Pad value at the end of a vector so that it reaches length n."""
-    x = torch.as_tensor(x).flatten()
-    padsize = max(0, n-x.numel())
-    padvec = torch.full((padsize,), value, dtype=x.dtype, device=x.device)
-    x = torch.cat((x, padvec))
-    return x
-
-
-def pad(inp, padsize, mode='constant', value=0, side=None, nn=True):
+def pad(inp, padsize, mode='constant', value=0, side=None):
+    # type: (torch.Pad, tuple[int], str, any, str) -> torch.Tensor
     """Pad a tensor.
 
     This function is a bit more generic than torch's native pad, but probably
     a bit slower:
-        . works in any dimensions
-        . with any input type
-        . with arbitrarily large padding size
+        . works with any input type
+        . works with arbitrarily large padding size
         . crops the tensor for negative padding values
-        . augments the dimension of the input tensor if needed
-    When used with defaults parameters (side=None, nn=True), it behaves
+        . implements additional padding modes
+    When used with defaults parameters (side=None), it behaves
     exactly like `torch.nn.functional.pad`
 
-    Note that:
-        . 'circular'  corresponds to the boundary condition of an FFT
-        . 'reflect'   corresponds to the boundary condition of a DCT-I
-        . 'symmetric' corresponds to the boundary condition of a DCT-II
+    Boundary modes are:
+        . 'circular'
+            -> corresponds to the boundary condition of an FFT
+        . 'reflect' or 'reflect1'
+            -> corresponds to the boundary condition of a DCT-I
+        . 'reflect2'
+            -> corresponds to the boundary condition of a DCT-II
+        . 'replicate'
+            -> replicates border values
+        . 'constant'
+            -> pads with a constant value (defaults to 0)
+
+    Side modes are 'pre', 'post', 'both' or None. If side is not None,
+    inp.dim() values (or less) should be provided. If side is None,
+    twice as many values should be provided, indicating different padding sizes
+    for the 'pre' and 'post' sides. If the number of padding values is less
+    than the dimension of the input tensor, zeros are prepended.
 
     Args:
         inp (tensor): Input tensor.
         padsize (tuple): Amount of padding in each dimension.
-        mode (string,optional): 'constant', 'replicate', 'reflect',
-            'symmetric', 'circular'.
+        mode (string,optional): 'constant', 'replicate', 'reflect1',
+            'reflect2', 'circular'.
             Defaults to 'constant'.
         value (optional): Value to pad with in mode 'constant'.
             Defaults to 0.
@@ -107,56 +153,47 @@ def pad(inp, padsize, mode='constant', value=0, side=None, nn=True):
             both sides ('both'). If None, the padding side for the left and
             right sides should be provided in alternate order.
             Defaults to None.
-        nn (bool,optional): Neural network mode - assumes that the first two
-            dimensions are channels and should not be padded.
-            Defaults to True.
 
     Returns:
         Padded tensor.
 
     """
-    # Check mode
-    if mode not in tuple(bounds.keys()) + ('constant',):
+    # Argument checking
+    if mode not in tuple(_bounds.keys()) + ('constant',):
         raise ValueError('Padding mode should be one of {}. Got {}.'
-                         .format(tuple(bounds.keys()) + ('constant',), mode))
-    # Compute output dimensions
-    inp = torch.as_tensor(inp)
-    idim = torch.as_tensor(inp.size())
-    padsize = torch.as_tensor(padsize, dtype=torch.int64).flatten()
+                         .format(tuple(_bounds.keys()) + ('constant',), mode))
     if side == 'both':
         padpre = padsize
         padpost = padsize
     elif side == 'pre':
         padpre = padsize
-        padpost = torch.zeros(padpre.size(), dtype=padpre.dtype,
-                              device=padpre.device)
+        padpost = (0,) * len(padpre)
     elif side == 'post':
         padpost = padsize
-        padpre = torch.zeros(padpost.size(), dtype=padpost.dtype,
-                             device=padpost.device)
+        padpre = (0,) * len(padpost)
     else:
+        if len(padsize) % 2:
+            raise ValueError('Padding length must be divisible by 2')
         padpre = padsize[::2]
         padpost = padsize[1::2]
-    if nn:
-        padpre = torch.cat((torch.zeros(2, dtype=padpre.dtype,
-                                        device=padpre.device), padpre))
-        padpost = torch.cat((torch.zeros(2, dtype=padpost.dtype,
-                                         device=padpost.device), padpost))
-    ndim = max(idim.numel(), padpre.numel(), padpost.numel())
-    idim = padvec(idim, ndim, 1)
-    padpre = padvec(padpre, ndim, 0)
-    padpost = padvec(padpost, ndim, 0)
-    inp = inp.reshape(idim.tolist())
+    padpre = (0,) * max(0, inp.dim()-len(padpre)) + padpre
+    padpost = (0,) * max(0, inp.dim()-len(padpost)) + padpost
+    if inp.dim() != len(padpre) or inp.dim() != len(padpost):
+        raise ValueError('Padding length too large')
 
+    padpre = torch.as_tensor(padpre)
+    padpost = torch.as_tensor(padpost)
+
+    # Pad
     if mode == 'constant':
-        return pad_constant(inp, padpre, padpost, value)
+        return _pad_constant(inp, padpre, padpost, value)
     else:
-        bound = bounds[mode]
-        modifier = modifiers[mode]
-        return pad_bound(inp, padpre, padpost, bound, modifier)
+        bound = _bounds[mode]
+        modifier = _modifiers[mode]
+        return _pad_bound(inp, padpre, padpost, bound, modifier)
 
 
-def pad_constant(inp, padpre, padpost, value):
+def _pad_constant(inp, padpre, padpost, value):
     idim = torch.as_tensor(inp.shape)
     ndim = idim.numel()
     # First: crop input if needed
@@ -183,13 +220,13 @@ def pad_constant(inp, padpre, padpost, value):
     return inp
 
 
-def pad_bound(inp, padpre, padpost, bound, modifier):
-    idim = torch.as_tensor(inp.shape)
+def _pad_bound(inp, padpre, padpost, bound, modifier):
     begin = -padpre
-    end = idim + padpost
+    end = tuple(d+p for d, p in zip(inp.size(), padpost))
     idx = tuple(range(b, e) for (b, e) in zip(begin, end))
-    idx = tuple(bound(torch.as_tensor(i, device=inp.device), n)
-                for (i, n) in zip(idx, idim))
-    for d in range(idim.numel()):
+    idx = tuple(bound(torch.as_tensor(i, device=inp.device),
+                      torch.as_tensor(n, device=inp.device))
+                for (i, n) in zip(idx, inp.shape))
+    for d in range(inp.dim()):
         inp = inp.index_select(d, idx[d])
     return inp
