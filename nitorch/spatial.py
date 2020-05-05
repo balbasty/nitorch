@@ -1,22 +1,194 @@
 # -*- coding: utf-8 -*-
-"""Tools related to spatial sampling (displacement, warps, etc.)."""
+"""Tools related to spatial sampling (displacement, warps, etc.).
 
-# I need to decide a convention for storing warps, affine matrices and fields:
-# . always have a batch dimension first?
-# . coordinates dimension -> channel (between batch and x), or after z?
-# . batch dimension for matrices?
-# . compact or square affine matrices?
-# . rewrite my own wrapper about sample_grid / affine_grid, so that the input
-#   follow my conventions?
-#
-# At least, it seems that I can swap between conventions without triggering a
-# copy of the underlying data (see `utils.same_storage(a, a.permute(1,0))`)
+Spatial ordering conventions in nitorch
+---------------------------------------
 
-# Use .size() and .dim() instead of .shape and .shape.numel()
+NiTorch uses consistent ordering conventions throughout its API:
+. We use abbreviations (B[atch], C[hannel], D[ephth], H[eight], W[idth])
+  to name dimensions.
+. Tensors that represent series (resp. images or volumes) should always be
+  ordered as (B, C, W) (resp. (B, C, H, W) or (B, C, D, H, W)).
+. We use x, y, z to denote axis/coordinates along the (W, H, D)
+  dimensions.
+. Conversely, displacement or deformation fields are ordered as
+  (B, H, D, W, C). There, the Channel dimension contains displacements or
+  deformations along the x, y, z axes (i.e., W, H, D dimensions).
+. Similarly, Jacobian fields are stored as (B, H, D, W, C, C). The second
+  to last dimension corresponds to x, y, z components and the last
+  dimension corresponds to derivatives along the x, y, z axes.
+  I.e., jac[..., i, j] = d{u_i}/d{x_j}
+. This means that we usually do not store deformations per *imaging*
+  channel (they are assumed to lie in the same space).
+. Arguments that relate to spatial dimensions are ordered as
+  (x, y, z) or (W, H, D). This means: lattice dimensions, voxel sizes,
+  affine transformation matrices, etc. It can be a little bit
+  counterintuitive at first, as this order is opposite to the data
+  storage order. However, it is consistant with the ordering of spatial
+  components.
+
+These conventions are mostly consistent with those used in PyTorch
+(conv, grid_sampler, etc.). However, some care must be taken when, e.g.,
+convolving deformation fields or allocating tensors based on grid
+dimensions.
+
+TODO:
+    . What about time series?
+    . Should we always have a batch dimension for affine matrices?
+    . Should the default storage be compact or square for affine matrices?
+
+"""
 
 import torch
 import torch.nn.functional as F
 from nitorch import kernels, utils
+from nitorch.C import spatial as Cspatial
+
+_interpolation = {'bilinear': 0, 'nearest': 1}
+_padding = {'zeros': 0, 'border': 1, 'reflection': 2}
+
+
+class _Pull(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input, grid, mode='bilinear', padding_mode='zeros',
+                align_corners=None):
+        mode = _interpolation[mode]
+        padding_mode = _padding[padding_mode]
+        if align_corners is None:
+            align_corners = False
+        opt = (mode, padding_mode, align_corners)
+
+        if input.dim() == 4:
+            if input.device == 'cpu':
+                output = Cspatial.pull2d_cpu(input, grid, *opt)
+            else:
+                output = Cspatial.pull2d_cuda(input, grid, *opt)
+        elif input.dim() == 5:
+            if input.device == 'cpu':
+                output = Cspatial.pull3d_cpu(input, grid, *opt)
+            else:
+                output = Cspatial.pull3d_cuda(input, grid, *opt)
+        ctx.save_for_backward(input, grid)
+        ctx.opt = opt
+        return output
+
+    @staticmethod
+    def backward(ctx, grad):
+        var = ctx.saved_variables
+        opt = ctx.opt
+
+        if grad.dim() == 4:
+            if grad.device == 'cpu':
+                grad_input, grad_grid = Cspatial.push2d_cpu(grad, *var, *opt)
+            else:
+                grad_input, grad_grid = Cspatial.push2d_cuda(grad, *var, *opt)
+        elif grad.dim() == 5:
+            if grad.device == 'cpu':
+                grad_input, grad_grid = Cspatial.push3d_cpu(grad, *var, *opt)
+            else:
+                grad_input, grad_grid = Cspatial.push3d_cuda(grad, *var, *opt)
+        return grad_input, grad_grid, None, None, None
+
+
+def pull(input, grid, mode='bilinear', padding_mode='zeros',
+         align_corners=None):
+    """Sample an image with respect to a deformation field.
+
+    Args:
+        input (torch.Tensor): Input image. (B, C, Di, Hi, W)i
+        grid (torch.Tensor): Deformation field. (B, Do, Ho, Wo, 2|3)
+        mode (str, optional): 'bilinear' or 'nearest'. Defaults to 'bilinear'.
+        padding_mode (str, optional): 'zeros' or 'borders' or 'reflection'.
+            Defaults to 'zeros'.
+        align_corners (bool optional): Defaults to False.
+
+    Returns:
+        output (torch.Tensor): Deformed image.
+
+    """
+    return _Pull.apply(input, grid, mode, padding_mode, align_corners)
+
+
+class _Push(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input, grid, shape=None, mode='bilinear',
+                padding_mode='zeros', align_corners=None):
+        # Convert parameters
+        mode = _interpolation[mode]
+        padding_mode = _padding[padding_mode]
+        if align_corners is None:
+            align_corners = False
+        opt = (mode, padding_mode, align_corners)
+        if shape is None:
+            shape = input.shape
+
+        # Forward pass
+        empty = torch.zeros(*shape, dtype=input.dtype, device=input.device)
+        if input.dim() == 4:
+            if input.device == 'cpu':
+                output, _ = Cspatial.push2d_cpu(input, empty, grid, *opt)
+            else:
+                output, _ = Cspatial.push2d_cuda(input, empty, grid, *opt)
+        elif input.dim() == 5:
+            if input.device == 'cpu':
+                output, _ = Cspatial.push3d_cpu(input, empty, grid, *opt)
+            else:
+                output, _ = Cspatial.push3d_cuda(input, empty, grid, *opt)
+
+        # Context
+        ctx.opt = opt
+        ctx.info = {}
+        ctx.info['requires_grad'] = [input.requires_grad, grid.requires_grad]
+        var = []
+        if grid.requires_grad:
+            var += [input]
+        if input.requires_grad:
+            var += [grid]
+        ctx.save_for_backward(*var)
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad):
+        if ctx.info['requires_grad'][1]:
+            raise NotImplementedError('Push does not implement gradients '
+                                      'with respect to the input grid.')
+        grid = ctx.saved_variables[0]
+        opt = ctx.opt
+
+        if grad.dim() == 4:
+            if grad.device == 'cpu':
+                grad_input = Cspatial.pull2d_cpu(grad, grid, *opt)
+            else:
+                grad_input = Cspatial.pull2d_cuda(grad, grid, *opt)
+        elif grad.dim() == 5:
+            if grad.device == 'cpu':
+                grad_input = Cspatial.pull3d_cpu(grad, grid, *opt)
+            else:
+                grad_input = Cspatial.pull3d_cuda(grad, grid, *opt)
+        return grad_input, None, None, None, None, None
+
+
+def push(input, grid, shape=None, mode='bilinear', padding_mode='zeros',
+         align_corners=None):
+    """Splat an image with respect to a deformation field (pull adjoint).
+
+    Args:
+        input (torch.Tensor): Input image. (B, C, Di, Hi, W)i
+        grid (torch.Tensor): Deformation field. (B, Di, Hi, Wi, 2|3)
+        shape (tuple[int]): Ouput shape (Do, Ho, Wo)
+        mode (str, optional): 'bilinear' or 'nearest'. Defaults to 'bilinear'.
+        padding_mode (str, optional): 'zeros' or 'borders' or 'reflection'.
+            Defaults to 'zeros'.
+        align_corners (bool optional): Defaults to False.
+
+    Returns:
+        output (torch.Tensor): Deformed image.
+
+    """
+    return _Push.apply(input, grid, shape, mode, padding_mode, align_corners)
 
 
 def vox2fov(shape, align_corners=True):
@@ -26,7 +198,7 @@ def vox2fov(shape, align_corners=True):
     (in [0, len-1]) into pytorch volume coordinates (in [-1, 1]).
 
     Args:
-        shape (array_like): Shape of the volume grid (vector of length D).
+        shape (tuple[int]): Shape of the volume grid (W, H, D).
         align_corners (bool, optional): Torch coordinate type.
             Defaults to True.
 
@@ -34,7 +206,7 @@ def vox2fov(shape, align_corners=True):
         mat (matrix): Affine conversion matrix (:math:`D+1 \times D+1`)
 
     """
-    shape = torch.as_tensor(shape).flip(0)
+    shape = torch.as_tensor(shape)
     dim = shape.numel()
     if align_corners:
         offset = -1.
@@ -129,13 +301,13 @@ def jacobian(warp, bound='circular'):
     expressed in voxels and so will the Jacobian.
 
     Args:
-        warp (array_like): flow field (N, D, H, W, 3).
-        bound (string, optional): Boundary conditions. Defaults to 'circular'.
+        warp (torch.Tensor): flow field (N, D, H, W, 3).
+        bound (str, optional): Boundary conditions. Defaults to 'circular'.
 
     Returns:
         jac (torch.tensor): Field of Jacobian matrices (N, D, H, W, 3, 3).
-            jac[:,:,:,:,i,j] contains the derivative of the j-th component of
-            the deformation field with respect to the i-th axis.
+            jac[:,:,:,:,i,j] contains the derivative of the i-th component of
+            the deformation field with respect to the j-th axis.
 
     """
     warp = torch.as_tensor(warp)
@@ -147,11 +319,11 @@ def jacobian(warp, bound='circular'):
     if bound in ('circular', 'fft'):
         warp = utils.pad(warp, (1,)*dim, mode='circular', side='both')
         pad = 0
-    elif bound in ('reflect', 'dct1'):
-        warp = utils.pad(warp, (1,)*dim, mode='reflect', side='both')
+    elif bound in ('reflect1', 'dct1'):
+        warp = utils.pad(warp, (1,)*dim, mode='reflect1', side='both')
         pad = 0
-    elif bound in ('symmetric', 'dct2'):
-        warp = utils.pad(warp, (1,)*dim, mode='symmetric', side='both')
+    elif bound in ('reflect2', 'dct2'):
+        warp = utils.pad(warp, (1,)*dim, mode='reflect2', side='both')
         pad = 0
     elif bound in ('constant', 'zero', 'zeros'):
         pad = 1
@@ -167,9 +339,6 @@ def jacobian(warp, bound='circular'):
         raise ValueError('Warps must be of dimension 1, 2 or 3. Got {}.'
                          .format(dim))
     jac = conv(warp, ker, padding=pad, groups=dim)
-    print(jac.shape)
-    jac = jac.reshape((shape[0], dim, dim) + tuple(d for d in shape[1:-1]))
-    jac = jac.permute((0,) + tuple(range(3, 3+dim)) + (2, 1))
+    jac = jac.reshape((shape[0], dim, dim) + shape[1:])
+    jac = jac.permute((0,) + tuple(range(3, 3+dim)) + (1, 2))
     return jac
-
-
