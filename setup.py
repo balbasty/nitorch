@@ -13,6 +13,18 @@ from torch.utils.cpp_extension import CppExtension, BuildExtension
 os.environ['CC'] = 'g++'
 os.environ['CXX'] = 'g++'
 
+SpatialCppExtension = CppExtension(
+  name = 'C.cpu.spatial', 
+  sources = ['nitorch/C/cpu/spatial.cpp', 'nitorch/C/pushpull.cpp'],
+  define_macros = [('AT_PARALLEL_OPENMP', '1')],
+  extra_compile_args = ['-fopenmp'],
+)
+
+# SpatialCUDAExtension = CUDAExtension(
+#   name = 'C.cpu.spatial', 
+#   sources = ['nitorch/C/cuda/spatial.cpp', 'nitorch/C/pushpull.cpp'],
+# )
+
 setup(name='nitorch',
       version='0.1a.dev',
       packages=find_packages(),
@@ -20,6 +32,5 @@ setup(name='nitorch',
       python_requires='>=3.0',
       setup_requires=['torch>=1.5'],
       ext_package='nitorch',
-      ext_modules=[CppExtension('C.spatial', ['nitorch/C/spatial.cpp']),
-                  ],
+      ext_modules=[SpatialCppExtension],
       cmdclass={'build_ext': BuildExtension})

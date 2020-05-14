@@ -42,7 +42,7 @@ TODO:
 import torch
 import torch.nn.functional as F
 from nitorch import kernels, utils
-from nitorch.C import spatial as Cspatial
+from nitorch.C.cpu import spatial as Cspatial
 
 _interpolation = {'bilinear': 0, 'nearest': 1}
 _padding = {'zeros': 0, 'border': 1, 'reflection': 2}
@@ -53,12 +53,14 @@ class _Pull(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, grid, mode='bilinear', padding_mode='zeros',
                 align_corners=None):
+        # Convert parameters
         mode = _interpolation[mode]
         padding_mode = _padding[padding_mode]
         if align_corners is None:
             align_corners = False
         opt = (mode, padding_mode, align_corners)
 
+        # Pull
         if input.dim() == 4:
             if input.device == 'cpu':
                 output = Cspatial.pull2d_cpu(input, grid, *opt)
@@ -69,8 +71,14 @@ class _Pull(torch.autograd.Function):
                 output = Cspatial.pull3d_cpu(input, grid, *opt)
             else:
                 output = Cspatial.pull3d_cuda(input, grid, *opt)
-        ctx.save_for_backward(input, grid)
+
+        # Context
         ctx.opt = opt
+        ctx.info['requires_grad'] = [input.requires_grad, grid.requires_grad]
+        var = ([grid, input] if input.requires_grad or grid.requires_grad
+               else [])
+        ctx.save_for_backward(*var)
+
         return output
 
     @staticmethod
@@ -78,17 +86,21 @@ class _Pull(torch.autograd.Function):
         var = ctx.saved_variables
         opt = ctx.opt
 
-        if grad.dim() == 4:
-            if grad.device == 'cpu':
-                grad_input, grad_grid = Cspatial.push2d_cpu(grad, *var, *opt)
-            else:
-                grad_input, grad_grid = Cspatial.push2d_cuda(grad, *var, *opt)
-        elif grad.dim() == 5:
-            if grad.device == 'cpu':
-                grad_input, grad_grid = Cspatial.push3d_cpu(grad, *var, *opt)
-            else:
-                grad_input, grad_grid = Cspatial.push3d_cuda(grad, *var, *opt)
-        return grad_input, grad_grid, None, None, None
+        if ctx.info['requires_grad'][0] or ctx.info['requires_grad'][1]:
+            if grad.dim() == 4:
+                if grad.device == 'cpu':
+                    g_input, g_grid = Cspatial.push2d_cpu(grad, *var, *opt)
+                else:
+                    g_input, g_grid = Cspatial.push2d_cuda(grad, *var, *opt)
+            elif grad.dim() == 5:
+                if grad.device == 'cpu':
+                    g_input, g_grid = Cspatial.push3d_cpu(grad, *var, *opt)
+                else:
+                    g_input, g_grid = Cspatial.push3d_cuda(grad, *var, *opt)
+        else:
+            g_input = None
+            g_grid = None
+        return g_input, g_grid, None, None, None
 
 
 def pull(input, grid, mode='bilinear', padding_mode='zeros',
@@ -96,15 +108,15 @@ def pull(input, grid, mode='bilinear', padding_mode='zeros',
     """Sample an image with respect to a deformation field.
 
     Args:
-        input (torch.Tensor): Input image. (B, C, Di, Hi, W)i
-        grid (torch.Tensor): Deformation field. (B, Do, Ho, Wo, 2|3)
+        input (torch.Tensor): Input image. (B, C, Di, Hi, Wi).
+        grid (torch.Tensor): Deformation field. (B, Do, Ho, Wo, 2|3).
         mode (str, optional): 'bilinear' or 'nearest'. Defaults to 'bilinear'.
         padding_mode (str, optional): 'zeros' or 'borders' or 'reflection'.
             Defaults to 'zeros'.
         align_corners (bool optional): Defaults to False.
 
     Returns:
-        output (torch.Tensor): Deformed image.
+        output (torch.Tensor): Deformed image (B, C, Do, Ho, Wo).
 
     """
     return _Pull.apply(input, grid, mode, padding_mode, align_corners)
@@ -123,6 +135,8 @@ class _Push(torch.autograd.Function):
         opt = (mode, padding_mode, align_corners)
         if shape is None:
             shape = input.shape
+        else:
+            shape = input.shape[0:2] + shape[::-1]
 
         # Forward pass
         empty = torch.zeros(*shape, dtype=input.dtype, device=input.device)
@@ -141,34 +155,55 @@ class _Push(torch.autograd.Function):
         ctx.opt = opt
         ctx.info = {}
         ctx.info['requires_grad'] = [input.requires_grad, grid.requires_grad]
-        var = []
-        if grid.requires_grad:
-            var += [input]
-        if input.requires_grad:
-            var += [grid]
+        var = ([grid, input] if grid.requires_grad
+               else [grid] if input.requires_grad else [])
         ctx.save_for_backward(*var)
 
         return output
 
     @staticmethod
     def backward(ctx, grad):
-        if ctx.info['requires_grad'][1]:
-            raise NotImplementedError('Push does not implement gradients '
-                                      'with respect to the input grid.')
-        grid = ctx.saved_variables[0]
         opt = ctx.opt
 
-        if grad.dim() == 4:
-            if grad.device == 'cpu':
-                grad_input = Cspatial.pull2d_cpu(grad, grid, *opt)
-            else:
-                grad_input = Cspatial.pull2d_cuda(grad, grid, *opt)
-        elif grad.dim() == 5:
-            if grad.device == 'cpu':
-                grad_input = Cspatial.pull3d_cpu(grad, grid, *opt)
-            else:
-                grad_input = Cspatial.pull3d_cuda(grad, grid, *opt)
-        return grad_input, None, None, None, None, None
+        if ctx.info['requires_grad'][0]:
+            # Gradient with respect to the pushed image.
+            # That's just pull again, but applied to the output gradient.
+            grid = ctx.saved_variables[0]
+            if grad.dim() == 4:
+                if grad.device == 'cpu':
+                    g_input = Cspatial.pull2d_cpu(grad, grid, *opt)
+                else:
+                    g_input = Cspatial.pull2d_cuda(grad, grid, *opt)
+            elif grad.dim() == 5:
+                if grad.device == 'cpu':
+                    g_input = Cspatial.pull3d_cpu(grad, grid, *opt)
+                else:
+                    g_input = Cspatial.pull3d_cuda(grad, grid, *opt)
+        else:
+            g_input = None
+
+        if ctx.info['requires_grad'][1]:
+            # The derivative of push with respect to the deformation field is
+            # similar to the derivative of pull, except that the roles of grad
+            # and input and inverted:
+            #   Jac(pull(inp,grid)) x ograd = grad(inp)(grid) * ograd
+            #   Jac(push(inp,grid)) x ograd = grad(ograd)(grid) * inp
+            grid = ctx.saved_variables[0]
+            input = ctx.saved_variables[1]
+            if grad.dim() == 4:
+                if grad.device == 'cpu':
+                    _, g_grid = Cspatial.push2d_cpu(input, grad, grid, *opt)
+                else:
+                    _, g_grid = Cspatial.push2d_cuda(input, grad, grid, *opt)
+            elif grad.dim() == 5:
+                if grad.device == 'cpu':
+                    _, g_grid = Cspatial.push3d_cpu(input, grad, grid, *opt)
+                else:
+                    _, g_grid = Cspatial.push3d_cuda(input, grad, grid, *opt)
+        else:
+            g_grid = None
+
+        return g_input, g_grid, None, None, None, None
 
 
 def push(input, grid, shape=None, mode='bilinear', padding_mode='zeros',
@@ -176,16 +211,16 @@ def push(input, grid, shape=None, mode='bilinear', padding_mode='zeros',
     """Splat an image with respect to a deformation field (pull adjoint).
 
     Args:
-        input (torch.Tensor): Input image. (B, C, Di, Hi, W)i
-        grid (torch.Tensor): Deformation field. (B, Di, Hi, Wi, 2|3)
-        shape (tuple[int]): Ouput shape (Do, Ho, Wo)
+        input (torch.Tensor): Input image (B, C, Di, Hi, Wi).
+        grid (torch.Tensor): Deformation field (B, Di, Hi, Wi, 2|3).
+        shape (tuple[int]): Ouput shape (Wo, Ho, Do).
         mode (str, optional): 'bilinear' or 'nearest'. Defaults to 'bilinear'.
         padding_mode (str, optional): 'zeros' or 'borders' or 'reflection'.
             Defaults to 'zeros'.
         align_corners (bool optional): Defaults to False.
 
     Returns:
-        output (torch.Tensor): Deformed image.
+        output (torch.Tensor): Splatted image (B, C, Do, Ho, Wo).
 
     """
     return _Push.apply(input, grid, shape, mode, padding_mode, align_corners)
@@ -206,22 +241,22 @@ def vox2fov(shape, align_corners=True):
         mat (matrix): Affine conversion matrix (:math:`D+1 \times D+1`)
 
     """
-    shape = torch.as_tensor(shape)
+    shape = torch.as_tensor(shape).to(torch.float)
     dim = shape.numel()
     if align_corners:
         offset = -1.
         scale = 2./(shape - 1.)
     else:
-        offset = -1 + shape
-        scale = (2. - shape/2.)/(shape - 1.)
-    mat = torch.diag(torch.cat(scale, torch.ones(1)))
-    mat[1:dim, -1] = offset
+        offset = 1./shape-1.
+        scale = 2./shape
+    mat = torch.diag(torch.cat((scale, torch.ones(1))))
+    mat[:dim, -1] = offset
     return mat
 
 
 def fov2vox(shape, align_corners=True):
     """Torch to Nifti coordinates."""
-    return vox2fov(shape, align_corners).inv()
+    return vox2fov(shape, align_corners).inverse()
 
 
 def make_square(mat):
