@@ -436,7 +436,6 @@ void PushPullImpl<scalar_t,offset_t>::loop() const
       // I do not have access to atomic operations so I cannot 
       // parallelize across voxels.  
       at::parallel_for(0, N, 0, [&](offset_t start, offset_t end) {
-      std::cout << at::get_thread_num() << std::endl;
         for (offset_t n = start; n < end; ++n) {
           if (dim == 2) {
             for (offset_t h=0; h<trgt_H; ++h)
@@ -460,7 +459,6 @@ void PushPullImpl<scalar_t,offset_t>::loop() const
   offset_t trgt_HW   = trgt_W * trgt_H;
   at::parallel_for(0, trgt_NDHW, GRAIN_SIZE, 
                    [&](offset_t start, offset_t end) {
-    std::cout << at::get_thread_num() << std::endl;
     offset_t n, d, h, w;
     for (offset_t i = start; i < end; ++i) {
       // Convert index: linear to sub
