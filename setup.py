@@ -304,10 +304,10 @@ SpatialExtension = Extension(
     name='_C.spatial',
     sources=['nitorch/_C/spatial.cpp'],
     libraries=torch_libraries(use_cuda),
-    library_dirs=torch_library_dirs(use_cuda, use_cudnn) + [os.path.join('nitorch', 'lib')],
+    library_dirs=torch_library_dirs(use_cuda, use_cudnn) + [nitorch_lib_path],
     include_dirs=torch_include_dirs(use_cuda, use_cudnn),
     extra_compile_args=common_flags() + torch_extension_flags('spatial'),
-    runtime_library_dirs=[nitorch_lib_path]
+    runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]
 )
 build_extensions += [SpatialExtension]
 

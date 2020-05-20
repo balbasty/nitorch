@@ -107,6 +107,15 @@ def cudnn_version():
     return version
 
 
+def link_relative(path):
+    if is_windows():
+        return None
+    elif is_darwin():
+        return os.path.join('@loader_path', path)
+    else:
+        return os.path.join('$ORIGIN', path)
+
+
 class build_shared_clib(build_clib_base.build_clib):
     """Extends native lib builder to handle compiler flags."""
 
