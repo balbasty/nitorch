@@ -8,12 +8,32 @@
 // . ni::bound::index -> wrap out-of-bound indices
 // . ni::bound::sign  -> optional out-of-bound sign change (sine transforms)
 // . ni::BoundType    -> enumerated boundary type
+//
+// Everything in this file should have internal linkage (static) except
+// the BoundType/BoundVectorRef types.
 
 #include "include_first.h"
 #include <ATen/ATen.h>
 #include <iostream>
 
 namespace ni {
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//                                TYPES
+//
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+enum class BoundType : int64_t
+  {Replicate, DCT1, DCT2, DST1, DST2, DFT, Sliding, Zero};
+
+using BoundVectorRef = c10::ArrayRef<BoundType>;
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//                             FUNCTIONS
+//
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                             INDEXING
@@ -139,13 +159,8 @@ static NI_INLINE NI_DEVICE int8_t periodic2(size_t coord, size_t size) {
 //                                BOUND
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-
-enum class BoundType : int64_t
-  {Replicate, DCT1, DCT2, DST1, DST2, DFT, Sliding, Zero};
-
-using BoundVectorRef = c10::ArrayRef<BoundType>;
-
-static NI_INLINE std::ostream& operator<<(std::ostream& os, const BoundType & bound) {
+static NI_INLINE NI_HOST 
+std::ostream& operator<<(std::ostream& os, const BoundType & bound) {
   switch (bound) {
     case BoundType::Replicate:  return os << "Replicate";
     case BoundType::DCT1:       return os << "DCT1";
@@ -186,8 +201,8 @@ template <typename scalar_t, typename offset_t>
 static NI_INLINE NI_DEVICE void 
 add(scalar_t *ptr, offset_t offset, scalar_t val, 
     int8_t sign = static_cast<int8_t>(1)) {
-  if (sign == -1)  NI_ATOMIC_ADD(ptr+offset, -val);
-  else if (sign)   NI_ATOMIC_ADD(ptr+offset,  val);
+  if (sign == -1)  NI_ATOMIC_ADD(ptr, offset, -val);
+  else if (sign)   NI_ATOMIC_ADD(ptr, offset,  val);
 }
 
 template <typename size_t>
@@ -200,7 +215,7 @@ static NI_INLINE NI_DEVICE int64_t index(BoundType bound_type, size_t coord, siz
     case BoundType::DST2:       return _index::reflect2(coord, size);
     case BoundType::DFT:        return _index::circular(coord, size);
     case BoundType::Zero:       return _index::inbounds(coord, size);
-    default:                    throw "should not happen";
+    default:                    return _index::inbounds(coord, size);
   }
 }
 
@@ -214,10 +229,9 @@ static NI_INLINE NI_DEVICE int8_t sign(BoundType bound_type, size_t coord, size_
     case BoundType::DST2:       return _sign::periodic2(coord, size);
     case BoundType::DFT:        return _sign::constant(coord, size);
     case BoundType::Zero:       return _sign::inbounds(coord, size);
-    default:                    throw "should not happen";
+    default:                    return _sign::inbounds(coord, size);
   }
 }
 
 } // namespace bound
-
-}  // namespace ni
+} // namespace ni

@@ -13,6 +13,7 @@
 #include <ATen/ATen.h>
 #include <ATen/Parallel.h>
 #include <tuple>
+#include <cstdio>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // CPU/GPU -specific parameters
@@ -20,26 +21,18 @@
 #  include <ATen/cuda/CUDAContext.h>
 #  include <ATen/cuda/detail/KernelUtils.h>
 #  include <c10/macros/Macros.h>
-#  define PUSHPULL_DISPATCH     AT_DISPATCH_FLOATING_TYPES_AND_HALF
-#  define PUSHPULL_OFFSET_TYPE  int32_t
-// TODO: maybe better to use `canUse32BitIndexMath` from IndexUtils.cuh
   using namespace at::cuda::detail;
-#else
-#  define PUSHPULL_DISPATCH     AT_DISPATCH_FLOATING_TYPES
-#  define PUSHPULL_OFFSET_TYPE  int64_t
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-
-namespace ni {
-#ifdef __CUDACC__
-  namespace cuda {
-#endif
 
 using at::Tensor;
 using at::TensorOptions;
 using c10::IntArrayRef;
 
+namespace ni {
+NI_NAMESPACE_DEVICE { // cpu / cuda / ...
+
+// anonymous namespace > everything inside has internal linkage
 namespace {
 
 // This parameter allows for a little bit of tolerance when considering 
@@ -155,6 +148,19 @@ public:
 
   std::deque<Tensor> output;
 
+  // NI_HOST NI_DEVICE void printInfo() const {
+  //   printf("src:  [%d %d %d]\n", src_W, src_H, src_D);
+  //   printf("trgt: [%d %d %d]\n", trgt_W, trgt_H, trgt_D);
+  //   printf("N: %d\n", N);
+  //   printf("C: %d\n", C);
+  //   printf("src  -> %d\n", src_ptr);
+  //   printf("trgt -> %d\n", trgt_ptr);
+  //   printf("grid -> %d\n", grid_ptr);
+  //   printf("push -> %d\n", push_ptr);
+  //   printf("pull -> %d\n", pull_ptr);
+  //   printf("grad -> %d\n", grad_ptr);
+  // }
+
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   NI_HOST void ioset // Pull
   (const Tensor& source, const Tensor& grid)
@@ -182,22 +188,25 @@ public:
     init_output();
   }
 
-  NI_DEVICE void loop_cuda(int threadIdx, int blockIdx, 
-                           int blockDim, int gridDim) const;
-  NI_HOST   void loop() const;
+#if __CUDACC__
+  NI_DEVICE void loop(int threadIdx, int blockIdx, 
+                      int blockDim, int gridDim) const;
+#else
+  void loop() const;
+#endif
 
-  NI_DEVICE int64_t voxcount() const { 
+  NI_HOST NI_DEVICE int64_t voxcount() const { 
     return N * trgt_D * trgt_H * trgt_W;
   }
 
 private:
 
   // ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  NI_DEVICE void init_source(const Tensor& source);
-  NI_DEVICE void init_source(IntArrayRef source_size);
-  NI_DEVICE void init_grid(const Tensor& source); 
-  NI_DEVICE void init_target(const Tensor& source); 
-  NI_DEVICE void init_output();
+  NI_HOST void init_source(const Tensor& source);
+  NI_HOST void init_source(IntArrayRef source_size);
+  NI_HOST void init_grid(const Tensor& source); 
+  NI_HOST void init_target(const Tensor& source); 
+  NI_HOST void init_output();
   NI_DEVICE void check2d(offset_t w, offset_t h, offset_t n) const;
   NI_DEVICE void check3d(offset_t w, offset_t h, offset_t d, offset_t n) const;
   NI_DEVICE void interpolate2d(
@@ -305,7 +314,7 @@ private:
 //                          INITIALISATION
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::init_source(const Tensor& source)
 {
  N       = source.size(0);
@@ -322,7 +331,7 @@ void PushPullImpl<scalar_t,offset_t>::init_source(const Tensor& source)
  src_opt = source.options();
 }
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::init_source(IntArrayRef source_size)
 {
  src_W = source_size[0];
@@ -330,7 +339,7 @@ void PushPullImpl<scalar_t,offset_t>::init_source(IntArrayRef source_size)
  src_D = dim == 2 ? 1 : source_size[2];
 }
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::init_grid(const Tensor& grid)
 {
   N        = grid.size(0);
@@ -346,7 +355,7 @@ void PushPullImpl<scalar_t,offset_t>::init_grid(const Tensor& grid)
   grid_opt = grid.options();
 }
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::init_target(const Tensor& target)
 {
  N        = target.size(0);
@@ -363,7 +372,7 @@ void PushPullImpl<scalar_t,offset_t>::init_target(const Tensor& target)
  trgt_opt = target.options();
 }
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::init_output()
 {
   output.clear();
@@ -419,6 +428,33 @@ void PushPullImpl<scalar_t,offset_t>::init_output()
 //                             LOOP
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+#if __CUDACC__
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void PushPullImpl<scalar_t,offset_t>::loop(
+  int threadIdx, int blockIdx, int blockDim, int gridDim) const {
+
+  int64_t index = blockIdx * blockDim + threadIdx;
+  int64_t nthreads = voxcount();
+  offset_t trgt_DHW  = trgt_W * trgt_H * trgt_D;
+  offset_t trgt_HW   = trgt_W * trgt_H;
+  offset_t n, d, h, w;
+  for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index) {
+      // Convert index: linear to sub
+      n  = (i/trgt_DHW);
+      d  = (i/trgt_HW) % trgt_D;
+      h  = (i/trgt_W)  % trgt_H;
+      w  = i % trgt_W;
+
+      if (dim == 2)
+        check2d(w, h, n);
+      else
+        check3d(w, h, d, n);
+  }
+}
+
+#else
+
 // This bit loops over all target voxels. We therefore need to
 // convert linear indices to multivariate indices. The way I do it
 // might not be optimal.
@@ -427,7 +463,7 @@ void PushPullImpl<scalar_t,offset_t>::init_output()
 //
 // TODO: check that the default grain size is optimal. We do quite a lot 
 // of compute per voxel, so a smaller value might be better suited.
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::loop() const
 {
 # if !(AT_PARALLEL_OPENMP)
@@ -475,30 +511,7 @@ void PushPullImpl<scalar_t,offset_t>::loop() const
   }); 
 }
 
-template <typename scalar_t, typename offset_t>
-void PushPullImpl<scalar_t,offset_t>::loop_cuda(
-  int threadIdx, int blockIdx, int blockDim, int gridDim) const {
-
-  int64_t index = blockIdx * blockDim + threadIdx;
-  int64_t nthreads = voxcount();
-  offset_t trgt_NDHW = trgt_W * trgt_H * trgt_D * N;
-  offset_t trgt_DHW  = trgt_W * trgt_H * trgt_D;
-  offset_t trgt_HW   = trgt_W * trgt_H;
-  offset_t n, d, h, w;
-  for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index) {
-      // Convert index: linear to sub
-      n  = (i/trgt_DHW);
-      d  = (i/trgt_HW) % trgt_D;
-      h  = (i/trgt_W)  % trgt_H;
-      w  = i % trgt_W;
-
-      if (dim == 2)
-        check2d(w, h, n);
-      else
-        check3d(w, h, d, n);
-  }
-
-}
+#endif
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                        CHECK OUT-OF-BOUND
@@ -508,7 +521,7 @@ void PushPullImpl<scalar_t,offset_t>::loop_cuda(
 // 1) read the [x,y,z] source coordinate for the current target voxel
 // 3) check if the source coordinate is in bounds 
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>
 ::check2d(offset_t w, offset_t h, offset_t n) const
 {
@@ -556,7 +569,7 @@ void PushPullImpl<scalar_t,offset_t>
  
 }
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>
 ::check3d(offset_t w, offset_t h, offset_t d, offset_t n) const
 {
@@ -607,7 +620,7 @@ void PushPullImpl<scalar_t,offset_t>
 //                     LINEAR INTERPOLATION 3D
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
   scalar_t x, scalar_t y, scalar_t z,
   offset_t w, offset_t h, offset_t d, offset_t n) const
@@ -661,6 +674,7 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
 
   // Offsets into source volume
   offset_t o000, o100, o010, o001, o110, o011, o101, o111;
+
   if (do_pull || do_grad) {
     o000 = ix0*src_sW + iy0*src_sH + iz0*src_sD;
     o100 = ix1*src_sW + iy0*src_sH + iz0*src_sD;
@@ -671,7 +685,6 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
     o101 = ix1*src_sW + iy0*src_sH + iz1*src_sD;
     o111 = ix1*src_sW + iy1*src_sH + iz1*src_sD;
   }
-
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (do_pull) {
@@ -758,7 +771,7 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
                                         + h * trgt_sH + w * trgt_sW;
     scalar_t *push_ptr_NC = push_ptr + n * push_sN;
     for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC,
-                                    push_ptr_NC    += push_sC) {
+                                     push_ptr_NC    += push_sC) {
       scalar_t trgt = *trgt_ptr_NCDHW;
       bound::add(push_ptr_NC, o000, w000 * trgt, s000);
       bound::add(push_ptr_NC, o100, w100 * trgt, s100);
@@ -776,7 +789,7 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
 //                     LINEAR INTERPOLATION 2D
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>::interpolate2d_bilinear(
   scalar_t x, scalar_t y,
   offset_t w, offset_t h, offset_t n) const
@@ -894,7 +907,7 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d_bilinear(
 //                  NEAREST NEIGHBOR INTERPOLATION 3D
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>::interpolate3d_nearest(
   scalar_t x, scalar_t y, scalar_t z,
   offset_t w, offset_t h, offset_t d, offset_t n) const
@@ -939,7 +952,7 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_nearest(
 //                  NEAREST NEIGHBOR INTERPOLATION 2D
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-template <typename scalar_t, typename offset_t>
+template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>::interpolate2d_nearest(
   scalar_t x, scalar_t y,
   offset_t w, offset_t h, offset_t n) const
@@ -1452,22 +1465,98 @@ void PushPullImpl<2, Bound::Sliding, 1, coord_mode, scalar_t>
 
 #endif // Sliding
 
+#ifdef __CUDACC__
+// CUDA Kernel
+template <typename scalar_t, typename offset_t>
+C10_LAUNCH_BOUNDS_1(1024)
+__global__ void pushpull_kernel(PushPullImpl<scalar_t,offset_t> f) {
+  f.loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
+}
+#endif
+
+} // namespace
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                    FUNCTIONAL FORM WITH DISPATCH
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#define PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, SourceType0) \
+  template std::deque<Tensor> pushpull( \
+    const SourceType0 &, const Tensor&, const Tensor&, \
+    BoundType0, InterpolationType0, bool, bool, bool, bool)
+#define PUSHPULL_INSTANTIATE2(BoundType0, InterpolationType0) \
+  PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, IntArrayRef); \
+  PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, Tensor); \
+  template std::deque<Tensor> pushpull( \
+    const Tensor&, const Tensor&, \
+    BoundType0, InterpolationType0, bool, bool, bool, bool)
+#define PUSHPULL_INSTANTIATE1(BoundType0) \
+  PUSHPULL_INSTANTIATE2(BoundType0, InterpolationType); \
+  PUSHPULL_INSTANTIATE2(BoundType0, InterpolationVectorRef)
+#define PUSHPULL_INSTANTIATE \
+  PUSHPULL_INSTANTIATE1(BoundType); \
+  PUSHPULL_INSTANTIATE1(BoundVectorRef)
+
+#ifdef __CUDACC__
+
+// ~~~ CUDA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+// Two arguments (source, grid)
+// > `bound` and `interpolation` can be single arguments or vectors.
+template <typename BoundType, typename InterpolationType> 
+NI_HOST
+std::deque<Tensor> pushpull(
+  const Tensor& source, const Tensor& grid, 
+  BoundType bound, InterpolationType interpolation, bool extrapolate, 
+  bool do_pull, bool do_push, bool do_grad)
+{
+  return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
+    PushPullImpl<scalar_t,int64_t> 
+    f(grid.dim()-2, bound, interpolation, extrapolate, 
+      do_pull, do_push, do_grad);
+    f.ioset(source, grid);
+    pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0, 
+                      at::cuda::getCurrentCUDAStream()>>>(f);
+    return f.output;
+  });
+}
+
+// Three arguments (source, grid, target)
+// > `bound` and `interpolation` can be single arguments or vectors.
+// > `source` can be a tensor or a vector of dimensions.
+template <typename BoundType, typename InterpolationType, typename SourceType> 
+NI_HOST
+std::deque<Tensor> pushpull(
+  const SourceType & source, const Tensor& grid, const Tensor& target, 
+  BoundType bound, InterpolationType interpolation, bool extrapolate, 
+  bool do_pull, bool do_push, bool do_grad)
+{
+  return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
+    PushPullImpl<scalar_t,int64_t> 
+    f(grid.dim()-2, bound, interpolation, extrapolate,
+      do_pull, do_push, do_grad);
+    f.ioset(source, grid, target);
+    pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0, 
+                      at::cuda::getCurrentCUDAStream()>>>(f);
+    return f.output;
+  });
+}
+
+#else
 
 // ~~~ CPU ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 // Two arguments (source, grid)
 // > `bound` and `interpolation` can be single arguments or vectors.
 template <typename BoundType, typename InterpolationType>
-std::deque<Tensor> pushpull_cpu_impl(
+NI_HOST
+std::deque<Tensor> pushpull(
   const Tensor& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_grad)
 {
-  return PUSHPULL_DISPATCH(grid.scalar_type(), "pushpull_cpu", [&] {
-    PushPullImpl<scalar_t,PUSHPULL_OFFSET_TYPE> 
+  return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
+    PushPullImpl<scalar_t,int32_t> 
     f(grid.dim()-2, bound, interpolation, extrapolate, 
       do_pull, do_push, do_grad);
     f.ioset(source, grid);
@@ -1481,13 +1570,14 @@ std::deque<Tensor> pushpull_cpu_impl(
 // > `bound` and `interpolation` can be single arguments or vectors.
 // > `source` can be a tensor or a vector of dimensions.
 template <typename BoundType, typename InterpolationType, typename SourceType>
-std::deque<Tensor> pushpull_cpu_impl(
-  SourceType source, const Tensor& grid, const Tensor& target, 
+NI_HOST
+std::deque<Tensor> pushpull(
+  const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_grad)
 {
-  return PUSHPULL_DISPATCH(grid.scalar_type(), "pushpull_cpu", [&] {
-    PushPullImpl<scalar_t,PUSHPULL_OFFSET_TYPE> 
+  return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
+    PushPullImpl<scalar_t,int32_t> 
     f(grid.dim()-2, bound, interpolation, extrapolate,
       do_pull, do_push, do_grad);
     f.ioset(source, grid, target);
@@ -1496,215 +1586,38 @@ std::deque<Tensor> pushpull_cpu_impl(
   });
 }
 
-// ~~~ CUDA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#ifdef __CUDACC__
+#endif // __CUDACC__
 
-template <typename scalar_t, typename offset_t>
-C10_LAUNCH_BOUNDS_1(1024)
-__global__ void pushpull_kernel(const PushPullImpl<scalar_t,offset_t>) {
-  f.loop_cuda(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
-}
+PUSHPULL_INSTANTIATE;
 
-// Two arguments (source, grid)
-// > `bound` and `interpolation` can be single arguments or vectors.
+} // namespace <device>
+
+// ~~~ NOT IMPLEMENTED ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+namespace notimplemented {
+
 template <typename BoundType, typename InterpolationType>
-std::deque<Tensor> pushpull_cpu_impl(
+NI_HOST
+std::deque<Tensor> pushpull(
   const Tensor& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_grad)
 {
-  return PUSHPULL_DISPATCH(grid.scalar_type(), "pushpull_cpu", [&] {
-    PushPullImpl<scalar_t,PUSHPULL_OFFSET_TYPE> 
-    f(grid.dim()-2, bound, interpolation, extrapolate, 
-      do_pull, do_push, do_grad);
-    f.ioset(source, grid);
-    pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0, 
-                      at::cuda::getCurrentCUDAStream()>>>(f);
-    return f.output;
-  });
+  throw std::logic_error("Function not implemented for this device.");
 }
 
-// Three arguments (source, grid, target)
-// > `bound` and `interpolation` can be single arguments or vectors.
-// > `source` can be a tensor or a vector of dimensions.
 template <typename BoundType, typename InterpolationType, typename SourceType>
-std::deque<Tensor> pushpull_cpu_impl(
-  SourceType source, const Tensor& grid, const Tensor& target, 
+NI_HOST
+std::deque<Tensor> pushpull(
+  const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_grad)
 {
-  return PUSHPULL_DISPATCH(grid.scalar_type(), "pushpull_cpu", [&] {
-    PushPullImpl<scalar_t,PUSHPULL_OFFSET_TYPE> 
-    f(grid.dim()-2, bound, interpolation, extrapolate,
-      do_pull, do_push, do_grad);
-    f.ioset(source, grid, target);
-    pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0, 
-                      at::cuda::getCurrentCUDAStream()>>>(f);
-    return f.output;
-  });
+  throw std::logic_error("Function not implemented for this device.");
 }
 
-#endif // __CUDACC__
+PUSHPULL_INSTANTIATE;
 
-} // namespace
+} // namespace notimplemented
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//                     WRAPER / SHAPE+TYPE CHECKS
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~ REUSABLE CHECKS ~~~~~~~~~~~~~~~~~~~~~~~~~~
-#define PUSHPULL_CHECK_DEFINED(value) \
-  TORCH_CHECK( \
-    value.defined(), \
-    "(): expected " #value " not be undefined, " \
-    "but it is ", value);
-#define PUSHPULL_CHECK_OPT_STRIDED(value) \
-  TORCH_CHECK( \
-    value.layout() == at::kStrided, \
-    "(): expected " #value "to have torch.strided layout, " \
-    "but it has ", value.layout());
-#define PUSHPULL_CHECK_2D_OR_3D(value) \
-  TORCH_CHECK( \
-    (value.dim() == 4 || value.dim() == 5), \
-    "(): expected 4D or 5D " #value " but got input with sizes ",  \
-    value.sizes());
-#define PUSHPULL_CHECK_GRID_COMPONENT(value, dim) \
-  TORCH_CHECK( \
-    value.size(-1) == dim - 2, \
-    "(): expected " #value " to have size ", dim - 2, " in last " \
-    "dimension, but got " #value " with sizes ", value.sizes());
-#define PUSHPULL_CHECK_OPT_SAME_DEVICE(value1, value2) \
-    TORCH_CHECK( \
-    value1.device() == value2.device(), \
-    "(): expected " #value2 " and " #value2 " to be on same device, " \
-    "but " #value2 " is on ", value1.device(), " and " #value2 " is on ", \
-    value2.device());
-#define PUSHPULL_CHECK_OPT_SAME_DTYPE(value1, value2) \
-    TORCH_CHECK( \
-    value1.dtype() == value2.dtype(), \
-    "(): expected " #value2 " and " #value2 " to have the same dtype, " \
-    "but " #value2 " has ", value1.dtype(), " and " #value2 " has ", \
-    value2.dtype());
-#define PUSHPULL_CHECK_NOT_EMPTY(value) \
-  for (int64_t i = 2; i < value.dim(); i++) { \
-    TORCH_CHECK(value.size(i) > 0, \
-      "(): expected " #value " to have non-empty spatial dimensions, " \
-      "but input has sizes ", value.sizes(), " with dimension ", i, " being " \
-      "empty"); }
-#define PUSHPULL_CHECK_GRID_TARGET_COMPAT(value1, value2) \
-    TORCH_CHECK( \
-    value2.size(0) == value1.size(0) && \
-    value2.size(2) == value1.size(1) && \
-    value2.size(3) == value1.size(2) && \
-    (value2.dim() == 4 || value2.size(4) == value1.size(3)), \
-    "(): expected " #value2 " and " #value1 " to have same batch, width, " \
-    "height and (optionally) depth sizes, but got " \
-    #value2 " with sizes ", value2.sizes(), " and " #value1 " with sizes ", \
-    value1.sizes());
-#define PUSHPULL_CHECK_LENGTH(value, dim) \
-  TORCH_CHECK( \
-    ((int64_t)(value.size()) == dim - 2), \
-    "(): expected ", dim, #value " elements but got ", value.size());
-#define PUSHPULL_CHECK_VEC_NOT_EMPTY(value) \
-  TORCH_CHECK(!value.empty(), "(): expected non empty parameter " #value );
-
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ PULL ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Tensor grid_pull_cpu(const Tensor& input, const Tensor& grid,
-                     const std::vector<BoundType> & bound_mode, 
-                     const std::vector<InterpolationType> & interpolation_mode, 
-                     bool extrapolate)  {
-
-  PUSHPULL_CHECK_DEFINED(input)
-  PUSHPULL_CHECK_DEFINED(grid)
-  auto input_opt = input.options();
-  auto grid_opt  = grid.options();
-  PUSHPULL_CHECK_OPT_STRIDED(input_opt)
-  PUSHPULL_CHECK_OPT_STRIDED(grid_opt)
-  PUSHPULL_CHECK_OPT_SAME_DEVICE(input_opt, grid_opt)
-  PUSHPULL_CHECK_OPT_SAME_DTYPE(input_opt, grid_opt)
-  PUSHPULL_CHECK_2D_OR_3D(input)
-  PUSHPULL_CHECK_2D_OR_3D(grid)
-  PUSHPULL_CHECK_GRID_COMPONENT(grid, grid.dim())
-  PUSHPULL_CHECK_NOT_EMPTY(input)
-  PUSHPULL_CHECK_NOT_EMPTY(grid)
-  PUSHPULL_CHECK_VEC_NOT_EMPTY(bound_mode);
-  PUSHPULL_CHECK_VEC_NOT_EMPTY(interpolation_mode);
-
-  return pushpull_cpu_impl(
-    input, grid, 
-    BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), extrapolate,
-    true, false, false).front();
-}
-
-std::tuple<Tensor,Tensor>
-grid_pull_backward_cpu(const Tensor& grad, const Tensor& input, 
-                       const Tensor& grid,
-                       const std::vector<BoundType> & bound_mode, 
-                       const std::vector<InterpolationType> & interpolation_mode, 
-                       bool extrapolate)
-{
-  auto output = pushpull_cpu_impl(input, grid, grad,
-    BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), extrapolate,
-    false, true, true);
-  return std::make_tuple(output.front(), output.back());
-}
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ PUSH ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Tensor grid_push_cpu(const Tensor& input, const Tensor& grid,
-                     IntArrayRef source_size,
-                     const std::vector<BoundType> & bound_mode, 
-                     const std::vector<InterpolationType> & interpolation_mode, 
-                     bool extrapolate) {
-
-  PUSHPULL_CHECK_DEFINED(input)
-  PUSHPULL_CHECK_DEFINED(grid)
-  auto input_opt = input.options();
-  auto grid_opt  = grid.options();
-  PUSHPULL_CHECK_OPT_STRIDED(input_opt)
-  PUSHPULL_CHECK_OPT_STRIDED(grid_opt)
-  PUSHPULL_CHECK_OPT_SAME_DEVICE(input_opt, grid_opt)
-  PUSHPULL_CHECK_OPT_SAME_DTYPE(input_opt, grid_opt)
-  PUSHPULL_CHECK_2D_OR_3D(input)
-  PUSHPULL_CHECK_2D_OR_3D(grid)
-  PUSHPULL_CHECK_GRID_COMPONENT(grid, grid.dim())
-  PUSHPULL_CHECK_NOT_EMPTY(input)
-  PUSHPULL_CHECK_NOT_EMPTY(grid)
-  PUSHPULL_CHECK_GRID_TARGET_COMPAT(grid, input)
-  PUSHPULL_CHECK_VEC_NOT_EMPTY(bound_mode);
-  PUSHPULL_CHECK_VEC_NOT_EMPTY(interpolation_mode);
-
-  if (source_size.empty())
-  {
-    auto size   = {input.size(2), input.size(3), 
-                   input.dim() == 5 ? input.size(4) : 1};
-    return pushpull_cpu_impl(size, grid, input,
-      BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), extrapolate,
-      false, true, false).front();
-  } 
-  else 
-  {
-    PUSHPULL_CHECK_LENGTH(source_size, grid.dim())
-    return pushpull_cpu_impl(source_size, grid, input,
-      BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), extrapolate,
-      false, true, false).front();
-  }
-}
-
-std::tuple<Tensor,Tensor>
-grid_push_backward_cpu(const Tensor& grad, const Tensor& input, 
-                       const Tensor& grid,
-                       const std::vector<BoundType> & bound_mode, 
-                       const std::vector<InterpolationType> & interpolation_mode, 
-                       bool extrapolate)
-{
-  auto output = pushpull_cpu_impl(grad, grid, input,
-    BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), extrapolate,
-    true, false, true);
-  return std::make_tuple(output.front(), output.back());
-}
-
-#ifdef __CUDACC__
-  } // namespace cuda
-#endif
 } // namespace ni

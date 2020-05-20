@@ -28,22 +28,29 @@
 #  define NI_INLINE __forceinline__
 #  define NI_DEVICE __device__
 #  define NI_HOST   __host__
-#  define NI_ATOMIC_ADD gpuAtomicAdd
+#  define NI_ATOMIC_ADD ni::gpuAtomicAdd
+#  define NI_NAMESPACE_DEVICE namespace cuda
+namespace ni {
+  template <typename scalar_t, typename offset_t>
+  static __forceinline__ __device__ 
+  void gpuAtomicAdd(scalar_t * ptr, offset_t offset, scalar_t value) {
+    ::gpuAtomicAdd(ptr+offset, value);
+  }
+}
 #else
 #  define NI_INLINE inline
 #  define NI_DEVICE
 #  define NI_HOST
 #  define NI_ATOMIC_ADD ni::cpuAtomicAdd
-
+#  define NI_NAMESPACE_DEVICE namespace cpu
 namespace ni {
-  template <typename scalar_t>
-  static inline void cpuAtomicAdd(scalar_t * ptr, scalar_t value) {
+  template <typename scalar_t, typename offset_t>
+  static inline void cpuAtomicAdd(scalar_t * ptr, offset_t offset, scalar_t value) {
 #   if AT_PARALLEL_OPENMP
 #     pragma omp atomic
 #   endif
-    *ptr += value;
+    ptr[offset] += value;
   }
 }
-
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

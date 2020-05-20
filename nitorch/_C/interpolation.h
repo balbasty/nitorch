@@ -7,6 +7,10 @@
 // . ni::interpolation::weight -> node weight based on distance
 // . ni::interpolation::grad   -> weight derivative // oriented distance
 // . ni::InterpolationType     -> enumerated type
+//
+// Everything in this file should have internal linkage (static) except
+// the BoundType/BoundVectorRef types.
+
 
 #include "include_first.h"
 #include <cstdint>
@@ -14,13 +18,25 @@
 
 namespace ni {
 
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//                                TYPES
+//
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 enum class InterpolationType : int64_t
     {Nearest, Linear, Quadratic, Cubic, 
      FourthOrder, FifthOrder, SixthOrder, SeventhOrder};
-
 using InterpolationVectorRef = c10::ArrayRef<InterpolationType>;
 
-static NI_INLINE std::ostream& operator<<(std::ostream& os, const InterpolationType & itp) {
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//
+//                             FUNCTIONS
+//
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+static NI_INLINE NI_HOST 
+std::ostream& operator<<(std::ostream& os, const InterpolationType & itp) {
   switch (itp) {
     case InterpolationType::Nearest:      return os << "Nearest";
     case InterpolationType::Linear:       return os << "Linear";
