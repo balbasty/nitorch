@@ -11,43 +11,12 @@
 // Everything in this file should have internal linkage (static) except
 // the BoundType/BoundVectorRef types.
 
-
-#include "include_first.h"
-#include <cstdint>
-#include <iostream>
-
+#include <ATen/ATen.h>
 namespace ni {
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-//                                TYPES
-//
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 enum class InterpolationType : int64_t
     {Nearest, Linear, Quadratic, Cubic, 
      FourthOrder, FifthOrder, SixthOrder, SeventhOrder};
 using InterpolationVectorRef = c10::ArrayRef<InterpolationType>;
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//
-//                             FUNCTIONS
-//
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-static NI_INLINE NI_HOST 
-std::ostream& operator<<(std::ostream& os, const InterpolationType & itp) {
-  switch (itp) {
-    case InterpolationType::Nearest:      return os << "Nearest";
-    case InterpolationType::Linear:       return os << "Linear";
-    case InterpolationType::Quadratic:    return os << "Quadratic";
-    case InterpolationType::Cubic:        return os << "Cubic";
-    case InterpolationType::FourthOrder:  return os << "FourthOrder";
-    case InterpolationType::FifthOrder:   return os << "FifthOrder";
-    case InterpolationType::SixthOrder:   return os << "SixthOrder";
-    case InterpolationType::SeventhOrder: return os << "SeventhOrder";
-  }
-   return os << "Unknown interpolation order";
-}
 
 } // namespace ni

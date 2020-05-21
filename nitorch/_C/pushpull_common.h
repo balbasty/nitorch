@@ -1,8 +1,8 @@
 #pragma once
 
+#include <ATen/ATen.h>
 #include "bounds.h"
 #include "interpolation.h"
-#include <ATen/ATen.h>
 #include <deque>
 
 #define NI_PUSHPULL_DECLARE(space) \

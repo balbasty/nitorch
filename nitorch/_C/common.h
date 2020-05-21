@@ -9,12 +9,10 @@
 // -fopenmp, omp pragmas will be ignored. In that case, the code will
 // be effectively sequential, and we don't have to worry about 
 // operations being atomic.
-#ifndef __CUDACC__
-#  if !(AT_PARALLEL_OPENMP)
-#    if !(AT_PARALLEL_NATIVE)
-#      if !(AT_PARALLEL_NATIVE_TBB)
-#        define AT_PARALLEL_OPENMP 1
-#      endif
+#if !(AT_PARALLEL_OPENMP)
+#  if !(AT_PARALLEL_NATIVE)
+#    if !(AT_PARALLEL_NATIVE_TBB)
+#      error No parallel backend specified
 #    endif
 #  endif
 #endif
@@ -31,10 +29,15 @@
 #  define NI_ATOMIC_ADD ni::gpuAtomicAdd
 #  define NI_NAMESPACE_DEVICE namespace cuda
 namespace ni {
+  // atomicAdd API changed between pytorch 1.4 and 1.5. 
   template <typename scalar_t, typename offset_t>
   static __forceinline__ __device__ 
   void gpuAtomicAdd(scalar_t * ptr, offset_t offset, scalar_t value) {
+#if NI_TORCH_VERSION >= 10500
     ::gpuAtomicAdd(ptr+offset, value);
+#else
+    ::atomicAdd(ptr+offset, value);
+#endif
   }
 }
 #else

@@ -7,21 +7,27 @@
 // implementations. Sliding boundary conditions are also implemented 
 // separately.
 
-#include "include_first.h"
-#include "bounds.h"
-#include "interpolation.h"
+#include "common.h"
+#include "bounds_common.h"
+#include "interpolation_common.h"
 #include <ATen/ATen.h>
-#include <ATen/Parallel.h>
 #include <tuple>
-#include <cstdio>
+//#include <cstdio>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // CPU/GPU -specific parameters
 #ifdef __CUDACC__
-#  include <ATen/cuda/CUDAContext.h>
-#  include <ATen/cuda/detail/KernelUtils.h>
-#  include <c10/macros/Macros.h>
+# include <ATen/cuda/CUDAContext.h>
+# include <ATen/cuda/detail/KernelUtils.h>
+# include <c10/macros/Macros.h>
   using namespace at::cuda::detail;
+#else
+# include <ATen/Parallel.h>
+  namespace {
+    // This parameter specifies the minimum number of voxels that should be 
+    // processed on a single processor in the parallel for loop .
+    int64_t GRAIN_SIZE = static_cast<int64_t>(at::internal::GRAIN_SIZE);
+  }
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -38,11 +44,6 @@ namespace {
 // This parameter allows for a little bit of tolerance when considering 
 // a coordinate as "out-of-bound" (if !extrapolate)
 #define TINY 5e-2
-
-// This parameter specifies the minimum number of voxels that should be 
-// processed on a single processor in the parallel for loop .
-int64_t GRAIN_SIZE = static_cast<int64_t>(at::internal::GRAIN_SIZE);
-
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                        GENERIC PUSHPULL CLASS

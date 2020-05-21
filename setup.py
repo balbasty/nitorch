@@ -44,7 +44,7 @@ MINIMUM_MSVC_VERSION = (19, 0, 24215)
 # are specific to the version of pytorch that we compile against.
 
 def torch_version():
-    return packaging.version.parse(torch.__version__).release()
+    return packaging.version.parse(torch.__version__).release
 
 
 def torch_cuda_version():
@@ -247,6 +247,19 @@ def common_flags():
         return gcc_clang_flags()
 
 
+def torch_flags(cuda=False):
+    version = torch_version()
+    version = version[0]*10000+version[1]*100+version[2]
+    flags = ['-DNI_TORCh_VERSION=' + str(version)]
+    backend = torch_parallel_backend();
+    flags += [
+        '-D' + torch_parallel_backend() + '=1',
+        '-D_GLIBCXX_USE_CXX11_ABI=' + torch_abi()]
+    if not cuda and backend == 'AT_PARALLEL_OPENMP':
+        flags += omp_flags()
+    return flags
+
+
 def cuda_flags():
     flags = nvcc_flags() + cuda_arch_flags()
     if is_windows():
@@ -257,10 +270,11 @@ def cuda_flags():
             flags += ['--compiler-options', flag]
     return flags
 
+
 # ~~~ checks
 use_cuda = cuda_home() and cuda_check()
-use_cudnn = cudnn_home() and cudnn_check()
-use_omp = os.environ.get('USE_OPENMP', True)
+use_cudnn = False  # cudnn_home() and cudnn_check()
+
 
 # ~~~ setup libraries
 build_libraries = []
@@ -268,9 +282,7 @@ build_libraries = []
 libnitorch_cpu = ('nitorch_cpu', {
   'sources': libnitorch_cpu_sources,
   'include_dirs': torch_include_dirs(),
-  'define': {torch_parallel_backend(): '1',
-             '_GLIBCXX_USE_CXX11_ABI': torch_abi()},
-  'extra_compile_args': common_flags() + (omp_flags() if use_omp else []),
+  'extra_compile_args': common_flags() + torch_flags(),
   'language': 'c++',
 })
 build_libraries += [libnitorch_cpu]
@@ -279,9 +291,7 @@ if use_cuda or use_cudnn:
     libnitorch_cuda = ('nitorch_cuda', {
       'sources': libnitorch_cuda_sources,
       'include_dirs': torch_include_dirs(use_cuda, use_cudnn),
-      'define': {torch_parallel_backend(): '1',
-                 '_GLIBCXX_USE_CXX11_ABI': torch_abi()},
-      'extra_compile_args': cuda_flags(),
+      'extra_compile_args': cuda_flags() + torch_flags(cuda=True),
       'language': 'cuda',
     })
     build_libraries += [libnitorch_cuda]
@@ -289,9 +299,7 @@ if use_cuda or use_cudnn:
 libnitorch = ('nitorch', {
   'sources': libnitorch_sources,
   'include_dirs': torch_include_dirs(),
-  'define': {torch_parallel_backend(): '1',
-             '_GLIBCXX_USE_CXX11_ABI': torch_abi()},
-  'extra_compile_args': common_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
+  'extra_compile_args': common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
   'language': 'c++',
 })
 build_libraries += [libnitorch]
