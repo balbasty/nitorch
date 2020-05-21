@@ -47,7 +47,7 @@ def torch_version(astuple=True):
     version = packaging.version.parse(torch.__version__).release
     if not astuple:
         version = version[0]*10000 + version[1]*100 + version[0]
-
+    return version
 
 def torch_cuda_version(astuple=True):
     version = torch._C._cuda_getCompiledVersion()
