@@ -43,13 +43,17 @@ MINIMUM_MSVC_VERSION = (19, 0, 24215)
 # Most of the helpers are in build tools. The remainign helpers defined here
 # are specific to the version of pytorch that we compile against.
 
-def torch_version():
-    return packaging.version.parse(torch.__version__).release
+def torch_version(astuple=True):
+    version = packaging.version.parse(torch.__version__).release
+    if not astuple:
+        version = version[0]*10000 + version[1]*100 + version[0]
 
 
-def torch_cuda_version():
+def torch_cuda_version(astuple=True):
     version = torch._C._cuda_getCompiledVersion()
     version = (version//1000, version//10 % 1000, version % 10)
+    if not astuple:
+        version = version[0]*10000 + version[1]*100 + version[0]
     return version
 
 
@@ -78,9 +82,15 @@ def torch_abi():
 
 
 def torch_libraries(use_cuda=False):
-    libraries = ['c10', 'torch_cpu', 'torch_python']
-    if use_cuda:
-        libraries += ['cudart', 'c10_cuda', 'torch_cuda']
+    version = torch_version(astuple=False)
+    if version < 10500:
+        libraries = ['c10', 'torch', 'torch_python']
+        if use_cuda:
+            libraries += ['cudart', 'c10_cuda']
+    else:
+        libraries = ['c10', 'torch_cpu', 'torch_python']
+        if use_cuda:
+            libraries += ['cudart', 'c10_cuda', 'torch_cuda']
     return libraries
 
 
