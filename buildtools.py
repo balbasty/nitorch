@@ -96,7 +96,7 @@ def cudnn_version():
     header = os.path.join(cudnn_home(), 'include', 'cudnn.h')
     with open(header, 'r') as file:
         lines = file.readlines()
-    version = (None, None, None)
+    version = [None, None, None]
     for line in lines:
         if version[0] is None:
             version[0] = search_define('CUDNN_MAJOR', line, version[0])
@@ -104,7 +104,7 @@ def cudnn_version():
             version[1] = search_define('CUDNN_MINOR', line, version[1])
         if version[2] is None:
             version[2] = search_define('CUDNN_PATCHLEVEL', line, version[2])
-    return version
+    return tuple(version)
 
 
 def link_relative(path):
