@@ -7,6 +7,19 @@
 // implementations. Sliding boundary conditions are also implemented 
 // separately.
 
+// TODO:
+// . generic 3d
+// . generic 2d
+// . sliding nearest 3d
+// . sliding nearest 2d
+// . sliding linear 3d
+// . sliding linear 2d
+// . slinding generic 3d
+// . sliding generic 2d
+// . spatial gradient mode (without mutliplication with output gradient)
+// . second order gradients (backward pass for spatial gradients)
+// . performance tests
+
 #include "common.h"
 #include "bounds_common.h"
 #include "interpolation_common.h"
@@ -31,6 +44,14 @@
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// maximum number of channels
+// > not used in mode isotropic nearest/linear
+#define NI_MAX_NUM_CHANNELS 1024
+
+// This parameter allows for a little bit of tolerance when considering 
+// a coordinate as "out-of-bound" (if !extrapolate)
+#define TINY 5e-2
+
 using at::Tensor;
 using at::TensorOptions;
 using c10::IntArrayRef;
@@ -38,12 +59,7 @@ using c10::IntArrayRef;
 namespace ni {
 NI_NAMESPACE_DEVICE { // cpu / cuda / ...
 
-// anonymous namespace > everything inside has internal linkage
-namespace {
-
-// This parameter allows for a little bit of tolerance when considering 
-// a coordinate as "out-of-bound" (if !extrapolate)
-#define TINY 5e-2
+namespace { // anonymous namespace > everything inside has internal linkage
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                        GENERIC PUSHPULL CLASS
@@ -230,7 +246,7 @@ private:
     offset_t w, offset_t h, offset_t n) const {/*TODO*/}
   NI_DEVICE void interpolate3d(
     scalar_t x, scalar_t y, scalar_t z, 
-    offset_t w, offset_t h, offset_t d, offset_t n) const {/*TODO*/}
+    offset_t w, offset_t h, offset_t d, offset_t n) const;
   NI_DEVICE void interpolate3d_nearest(
     scalar_t x, scalar_t y, scalar_t z, 
     offset_t w, offset_t h, offset_t d, offset_t n) const;
@@ -614,6 +630,119 @@ void PushPullImpl<scalar_t,offset_t>
       case 1: return interpolate3d_trilinear(x, y, z, w, h, d, n);
     } 
     return interpolate3d(x, y, z, w, h, d, n);
+  }
+}
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                     GENERIC INTERPOLATION 3D
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void PushPullImpl<scalar_t,offset_t>::interpolate3d(
+  scalar_t x, scalar_t y, scalar_t z,
+  offset_t w, offset_t h, offset_t d, offset_t n) const
+{
+  // Get corner pixel values from (x, y, z)
+  offset_t ix0, ix1, iy0, iy1, iz0, iz1;
+  interpolation::bounds(interpolation0, x, ix0, ix1);
+  interpolation::bounds(interpolation1, y, iy0, iy1);
+  interpolation::bounds(interpolation2, z, iz0, iz1);
+
+  scalar_t pulled_value[NI_MAX_NUM_CHANNELS];
+  scalar_t target[NI_MAX_NUM_CHANNELS];
+
+  // Initialize values
+  if (do_pull || do_grad)
+    for (offset_t c = 0; c < C; ++c)
+      pulled_value[c] = static_cast<scalar_t>(0);
+  scalar_t ogx = static_cast<scalar_t>(0);
+  scalar_t ogy = static_cast<scalar_t>(0);
+  scalar_t ogz = static_cast<scalar_t>(0); 
+
+  // Pre-compute offets
+  scalar_t *src_ptr_NC0    = src_ptr  + n * src_sN;
+  scalar_t *push_ptr_NC0   = push_ptr + n * push_sN;
+  scalar_t *trgt_ptr_NCDHW = trgt_ptr + n * trgt_sN + d * trgt_sD 
+                                      + h * trgt_sH + w * trgt_sW;
+  if (do_push || do_grad)
+    for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC)
+      target[c] = *trgt_ptr_NCDHW;
+
+  // Loop among nodes in support
+  for (offset_t iz = iz0; iz <= iz1; ++iz) {
+    scalar_t dz  = z - iz;                                        // Signed distance
+    scalar_t wz  = interpolation::fastweight(interpolation2, dz); // Spline weight
+    scalar_t gz  = do_push
+                 ? interpolation::fastgrad(interpolation2, dz)    // Spline derivative
+                 : static_cast<scalar_t>(0);
+    int8_t   sz  = bound::sign(bound2, iz, src_D);                // Multiplication
+    offset_t iwz = bound::index(bound2, iz, src_D);               // Warped index
+    offset_t osz = iwz * src_sD;                                  // Offset into source volume
+    offset_t opz = iwz * push_sD;                                 // Offset into pushed volume
+    for (offset_t iy = iy0; iy <= iy1; ++iy) {
+      scalar_t dy  = y - iy;
+      scalar_t wy  = interpolation::fastweight(interpolation1, dy);
+      scalar_t gy  = do_push 
+                   ? interpolation::fastgrad(interpolation1, dy) 
+                   : static_cast<scalar_t>(0);
+      int8_t   syz = sz * bound::sign(bound1, iy, src_H);
+      offset_t iwy = bound::index(bound1, iy, src_H);
+      offset_t osyz = osz + iwy * src_sH;
+      offset_t opyz = opz + iwy * push_sH;
+      for (offset_t ix = ix0; ix <= ix1; ++ix) {
+        scalar_t dx    = x - ix;
+        scalar_t wx    = interpolation::fastweight(interpolation0, dx);
+        scalar_t gx    = do_push 
+                       ? interpolation::fastgrad(interpolation0, dx) 
+                       : static_cast<scalar_t>(0);
+        int8_t   sxyz  = syz * bound::sign(bound0, ix, src_W);
+        offset_t iwx   = bound::index(bound0, ix, src_W);
+        offset_t osxyz = osyz + iwx * src_sW;
+        offset_t opxyz = opyz + iwx * push_sW;
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if (do_pull) {
+          scalar_t * src_ptr_NC = src_ptr_NC0;
+          for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC)
+            pulled_value[c] += bound::get(src_ptr_NC, osxyz, sxyz) * (wx*wy*wz);
+        }
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Grad ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if (do_grad) {
+          scalar_t * src_ptr_NC = src_ptr_NC0;
+          for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC) {
+            scalar_t src = bound::get(src_ptr_NC, osxyz, sxyz) * target[c];
+            ogx += gx * wy * wz * src;
+            ogy += wx * gy * wz * src;
+            ogz += wx * wy * gz * src;
+          }
+        }
+        
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        if (do_push) {
+          scalar_t * push_ptr_NC = push_ptr_NC0;
+          for (offset_t c = 0; c < C; ++c, push_ptr_NC += push_sC)
+            bound::add(push_ptr_NC, opxyz, (wx*wy*wz) * target[c], sxyz);
+        }
+
+      } // x
+    } // y 
+  } // z
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  if (do_pull) {
+    scalar_t *pull_ptr_NCDHW = pull_ptr + n * pull_sN + d * pull_sD 
+                                        + h * pull_sH + w * pull_sW;
+    for (offset_t c = 0; c < C; ++c, pull_ptr_NCDHW += pull_sC)
+      *pull_ptr_NCDHW = pulled_value[c];
+  }
+
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Grad ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  if (do_grad) {
+    scalar_t * grad_ptr_NDHW = grad_ptr + n * grad_sN + d * grad_sD 
+                                        + h * grad_sH + w * grad_sW;
+    (*grad_ptr_NDHW)         = ogx;
+    grad_ptr_NDHW[grad_sC]   = ogy;
+    grad_ptr_NDHW[grad_sC*2] = ogz;
   }
 }
 
