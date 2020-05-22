@@ -257,7 +257,17 @@ def vox2fov(shape, align_corners=True):
 
 def fov2vox(shape, align_corners=True):
     """Torch to Nifti coordinates."""
-    return vox2fov(shape, align_corners).inverse()
+    shape = torch.as_tensor(shape).to(torch.float)
+    dim = shape.numel()
+    if align_corners:
+        offset = (shape-1.)/2.
+        scale = (shape - 1.)/2.
+    else:
+        offset = (shape-1.)/2.
+        scale = shape/2.
+    mat = torch.diag(torch.cat((scale, torch.ones(1))))
+    mat[:dim, -1] = offset
+    return mat
 
 
 def make_square(mat):
