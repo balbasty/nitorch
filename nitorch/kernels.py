@@ -128,7 +128,7 @@ def _rect1d0(w, x):
 def _rect1d1(w, x):
     if x is None:
         lim = torch.floor((w+2)/2).type(torch.int)
-        x = torch.tensor(range(-lim, lim+1), dtype=torch.float)
+        x = torch.tensor(range(-lim, lim+1), dtype=w.dtype, device=w.device)
     zero = torch.zeros(tuple(), dtype=w.dtype, device=w.device)
     one = torch.ones(tuple(), dtype=w.dtype, device=w.device)
     neg_low = torch.min(torch.max(x-w/2, -one),   zero)
