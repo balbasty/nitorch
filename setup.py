@@ -49,6 +49,7 @@ def torch_version(astuple=True):
         version = version[0]*10000 + version[1]*100 + version[0]
     return version
 
+
 def torch_cuda_version(astuple=True):
     version = torch._C._cuda_getCompiledVersion()
     version = (version//1000, version//10 % 1000, version % 10)
@@ -260,7 +261,7 @@ def common_flags():
 def torch_flags(cuda=False):
     version = torch_version()
     version = version[0]*10000+version[1]*100+version[2]
-    flags = ['-DNI_TORCh_VERSION=' + str(version)]
+    flags = ['-DNI_TORCH_VERSION=' + str(version)]
     backend = torch_parallel_backend();
     flags += [
         '-D' + torch_parallel_backend() + '=1',
