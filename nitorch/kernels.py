@@ -185,6 +185,7 @@ _smooth_switcher = {
     'triangle': _triangle1d,
     0: _rect1d,
     1: _triangle1d,
+    2: _gauss1d,
     }
 
 
@@ -209,7 +210,7 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
         type (str or int): Smoothing function (integrates to one).
             . 0, 'rect': Rectangular function (0th order B-spline)
             . 1, 'tri': Triangular function (1st order B-spline)
-            . 'gauss': Gaussian
+            . 2, 'gauss': Gaussian
         fwhm (vector_like,optional): Full-width at half-maximum of the
             smoothing function (in voxels), in each dimension.
             Defaults to 1.
