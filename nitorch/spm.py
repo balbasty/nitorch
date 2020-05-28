@@ -618,7 +618,7 @@ def affine(dm, mat, dtype=torch.float32, device='cpu'):
         device (string, optional): Defaults to 'cpu'.
 
     Returns:
-        y (torch.Tensor): Affine warp (dm[0], dm[1], dm[2], 3).
+        y (torch.Tensor): Affine warp (1, dm[0], dm[1], dm[2], 3).
 
     """
     mat = mat.type(dtype)
@@ -697,16 +697,6 @@ def affine_basis(basis='SE', dim=3):
     return B
 
 
-def identity_1(dim, dtype=None, device=None):
-    F = torch.nn.functional
-    mat = torch.tensor([[[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.]]],
-                       dtype=dtype, device=device)
-    fov2vox = spatial.fov2vox(dim, False).to(device)
-    g = F.affine_grid(mat, (1, 1) + tuple(dim[::-1])).to(device)
-    g = g.matmul(fov2vox[:3, :3].transpose(0, 1)) \
-      + fov2vox[:3, 3].reshape((1, 1, 1, 1, 3))
-    return g
-
 def identity(dm, dtype=torch.float32, device='cpu'):
     """ Generate the identity warp on a lattice defined by dm.
 
@@ -721,9 +711,9 @@ def identity(dm, dtype=torch.float32, device='cpu'):
     """
     id_grid = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
     id_grid[:, :, :, 2], id_grid[:, :, :, 1], id_grid[:, :, :, 0] = \
-        torch.meshgrid([torch.arange(0, dm[0]),
-                        torch.arange(0, dm[1]),
-                        torch.arange(0, dm[2])])
+        torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
+                        torch.arange(0, dm[1], dtype=dtype, device=device),
+                        torch.arange(0, dm[2], dtype=dtype, device=device)])
     return id_grid
 
 
