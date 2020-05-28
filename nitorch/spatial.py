@@ -228,7 +228,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
 
 
 def vox2fov(shape, align_corners=True):
-    r"""Nifti to Torch coordinates.
+    """Nifti to Torch coordinates.
 
     Returns an affine matrix that transforms nifti volume coordinates
     (in [0, len-1]) into pytorch volume coordinates (in [-1, 1]).
