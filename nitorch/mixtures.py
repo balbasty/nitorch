@@ -275,6 +275,7 @@ class Mixture:
         num_col = math.ceil(num_plt/num_row)
         plt.figure(fig_num).clear()  # Clear figure
         fig, ax = plt.subplots(num_row, num_col, num=fig_num)  # Make figure and axes
+        fig.show()
 
         # For each channel, plot the data and the marginal density
         c = 0  # channel counter
@@ -302,7 +303,6 @@ class Mixture:
                 ax_rc.axes.get_yaxis().set_visible(False)
                 ax_rc.set_title('Marginal density, C={}'.format(c + 1))
                 c += 1
-            plt.show()
 
         # Bar plot the mixing proportions
         ax_rc = ax[c] if (num_row == 1 or num_col == 1) else ax[num_row - 1, num_col - 1]
@@ -313,8 +313,9 @@ class Mixture:
         ax_rc.set_title('Mixing proportions')
 
         plt.suptitle(suptitle)
-        # plt.tight_layout()
-        plt.show()
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        plt.pause(0.01)
 
     def suffstats(self, X, Z):
         """ Compute sufficient statistics.
