@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 import torch
 from torch.distributions import MultivariateNormal as mvn
 
+torch.backends.cudnn.benchmark = True
+
 
 class Mixture:
     """ A mixture model.
