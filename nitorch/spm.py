@@ -19,7 +19,6 @@ from numpy.linalg import cholesky as chol
 from numpy.linalg import det
 from scipy.linalg import logm, expm
 from scipy.linalg import inv
-import sys
 import torch
 
 from nitorch.mixtures import GMM
