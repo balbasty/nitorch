@@ -128,7 +128,7 @@ def _rect1d0(w, x):
 def _rect1d1(w, x):
     if x is None:
         lim = torch.floor((w+2)/2).type(torch.int)
-        x = torch.tensor(range(-lim, lim+1), dtype=torch.float)
+        x = torch.tensor(range(-lim, lim+1), dtype=w.dtype, device=w.device)
     zero = torch.zeros(tuple(), dtype=w.dtype, device=w.device)
     one = torch.ones(tuple(), dtype=w.dtype, device=w.device)
     neg_low = torch.min(torch.max(x-w/2, -one),   zero)
@@ -185,6 +185,7 @@ _smooth_switcher = {
     'triangle': _triangle1d,
     0: _rect1d,
     1: _triangle1d,
+    2: _gauss1d,
     }
 
 
@@ -209,7 +210,7 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
         type (str or int): Smoothing function (integrates to one).
             . 0, 'rect': Rectangular function (0th order B-spline)
             . 1, 'tri': Triangular function (1st order B-spline)
-            . 'gauss': Gaussian
+            . 2, 'gauss': Gaussian
         fwhm (vector_like,optional): Full-width at half-maximum of the
             smoothing function (in voxels), in each dimension.
             Defaults to 1.
@@ -252,7 +253,7 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     ker = tuple()
     x = list(x)
     for d in range(nker):
-        ker1, x[d] = _smooth_switcher[type](fwhm[d], basis, x[d])
+        ker1, x[d] = _smooth_switcher[type[d]](fwhm[d], basis, x[d])
         shape = [1, ] * nker
         shape[-1-d] = ker1.numel()
         ker1 = ker1.reshape(shape)
