@@ -8,8 +8,8 @@
 // separately.
 
 // TODO:
-// . generic 3d
-// . generic 2d
+// . [DONE] generic 3d
+// . [DONE] generic 2d
 // . sliding nearest 3d
 // . sliding nearest 2d
 // . sliding linear 3d
@@ -75,7 +75,8 @@ public:
 
   NI_HOST
   PushPullImpl(int dim, BoundVectorRef bound, InterpolationVectorRef interpolation, 
-               bool extrapolate, bool do_pull, bool do_push, bool do_grad):
+               bool extrapolate, bool do_pull, bool do_push, 
+               bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound.size() > 0 ? bound[0] : BoundType::Replicate),
     bound1(bound.size() > 1 ? bound[1] : 
@@ -92,7 +93,9 @@ public:
     extrapolate(extrapolate),
     do_pull(do_pull),
     do_push(do_push),
-    do_grad(do_grad)
+    do_count(do_count),
+    do_grad(do_grad),
+    do_sgrad(do_sgrad)
   {
     iso = interpolation0 == interpolation1 && 
           interpolation0 == interpolation2;
@@ -100,7 +103,8 @@ public:
 
   NI_HOST
   PushPullImpl(int dim, BoundType bound, InterpolationVectorRef interpolation, 
-               bool extrapolate, bool do_pull, bool do_push, bool do_grad):
+               bool extrapolate, bool do_pull, bool do_push, 
+               bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound),
     bound1(bound),
@@ -114,7 +118,9 @@ public:
     extrapolate(extrapolate),
     do_pull(do_pull),
     do_push(do_push),
-    do_grad(do_grad)
+    do_count(do_count),
+    do_grad(do_grad),
+    do_sgrad(do_sgrad)
   {
     iso = interpolation0 == interpolation1 && 
           interpolation0 == interpolation2;
@@ -122,7 +128,8 @@ public:
 
   NI_HOST
   PushPullImpl(int dim, BoundVectorRef bound, InterpolationType interpolation, 
-               bool extrapolate, bool do_pull, bool do_push, bool do_grad):
+               bool extrapolate, bool do_pull, bool do_push,
+               bool do_count, bool do_grad, bool do_sgrad):
      dim(dim),
      bound0(bound.size() > 0 ? bound[0] : BoundType::Replicate),
      bound1(bound.size() > 1 ? bound[1] : 
@@ -136,7 +143,9 @@ public:
     extrapolate(extrapolate),
     do_pull(do_pull),
     do_push(do_push),
-    do_grad(do_grad)
+    do_count(do_count),
+    do_grad(do_grad),
+    do_sgrad(do_sgrad)
   {
     iso = interpolation0 == interpolation1 && 
           interpolation0 == interpolation2;
@@ -144,7 +153,8 @@ public:
 
   NI_HOST
   PushPullImpl(int dim, BoundType bound, InterpolationType interpolation, 
-               bool extrapolate, bool do_pull, bool do_push, bool do_grad):
+               bool extrapolate, bool do_pull, bool do_push, 
+               bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound),
     bound1(bound),
@@ -155,41 +165,53 @@ public:
     extrapolate(extrapolate),
     do_pull(do_pull),
     do_push(do_push),
-    do_grad(do_grad)
-    {
-      iso = interpolation0 == interpolation1 && 
-            interpolation0 == interpolation2;
-    }
+    do_count(do_count),
+    do_grad(do_grad),
+    do_sgrad(do_sgrad)
+  {
+    iso = interpolation0 == interpolation1 && 
+          interpolation0 == interpolation2;
+  }
 
   // ~~~ PUBLIC VALUE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   std::deque<Tensor> output;
 
-  // NI_HOST NI_DEVICE void printInfo() const {
-  //   printf("src:  [%d %d %d]\n", src_W, src_H, src_D);
-  //   printf("trgt: [%d %d %d]\n", trgt_W, trgt_H, trgt_D);
-  //   printf("N: %d\n", N);
-  //   printf("C: %d\n", C);
-  //   printf("src  -> %d\n", src_ptr);
-  //   printf("trgt -> %d\n", trgt_ptr);
-  //   printf("grid -> %d\n", grid_ptr);
-  //   printf("push -> %d\n", push_ptr);
-  //   printf("pull -> %d\n", pull_ptr);
-  //   printf("grad -> %d\n", grad_ptr);
-  // }
+  NI_HOST NI_DEVICE void printInfo() const {
+    printf("do_pull:  %d\n", do_pull);
+    printf("do_push:  %d\n", do_push);
+    printf("do_count: %d\n", do_count);
+    printf("do_sgrad: %d\n", do_sgrad);
+    printf("do_grad:  %d\n", do_grad);
+    printf("bound:         [%d %d %d]\n", static_cast<int>(bound0), 
+      static_cast<int>(bound1), static_cast<int>(bound2));
+    printf("interpolation: [%d %d %d]\n", static_cast<int>(interpolation0), 
+      static_cast<int>(interpolation1), static_cast<int>(interpolation2));
+    printf("src:  [%d %d %d]\n", src_W, src_H, src_D);
+    printf("trgt: [%d %d %d (%d)]\n", trgt_W, trgt_H, trgt_D, trgt_K);
+    printf("N: %d\n", N);
+    printf("C: %d\n", C);
+    printf("src  -> %lu\n", reinterpret_cast<std::uintptr_t>(src_ptr));
+    printf("trgt -> %lu\n", reinterpret_cast<std::uintptr_t>(trgt_ptr));
+    printf("grid -> %lu\n", reinterpret_cast<std::uintptr_t>(grid_ptr));
+    printf("out  -> %lu\n", reinterpret_cast<std::uintptr_t>(out_ptr));
+    printf("grad -> %lu\n", reinterpret_cast<std::uintptr_t>(grad_ptr));
+  }
 
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   NI_HOST void ioset // Pull
   (const Tensor& source, const Tensor& grid)
   {
+    init_all();
     init_source(source);
     init_grid(grid);
     init_output();
   }
 
-  NI_HOST void ioset // Pull+Push+Grad
+  NI_HOST void ioset
   (const Tensor& source, const Tensor& grid, const Tensor& target)
   {
+    init_all();
     init_source(source);
     init_grid(grid);
     init_target(target);
@@ -199,9 +221,19 @@ public:
   NI_HOST void ioset // Push
   (IntArrayRef source_size, const Tensor& grid, const Tensor& target)
   {
+    init_all();
     init_source(source_size);
     init_grid(grid);
     init_target(target);
+    init_output();
+  }
+
+  NI_HOST void ioset // Count
+  (IntArrayRef source_size, const Tensor& grid)
+  {
+    init_all();
+    init_source(source_size);
+    init_grid(grid);
     init_output();
   }
 
@@ -219,6 +251,7 @@ public:
 private:
 
   // ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  NI_HOST void init_all();
   NI_HOST void init_source(const Tensor& source);
   NI_HOST void init_source(IntArrayRef source_size);
   NI_HOST void init_grid(const Tensor& source); 
@@ -264,18 +297,20 @@ private:
     offset_t w, offset_t h, offset_t d, offset_t n) const {/*TODO*/}
 
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  int               dim;
-  BoundType         bound0;
-  BoundType         bound1;
-  BoundType         bound2;
-  InterpolationType interpolation0;
-  InterpolationType interpolation1;
-  InterpolationType interpolation2;
-  bool              iso;
-  bool              extrapolate;
-  bool              do_pull;
-  bool              do_push;
-  bool              do_grad;
+  int               dim;            // dimensionality (2 or 3)
+  BoundType         bound0;         // boundary condition  // x|W
+  BoundType         bound1;         // boundary condition  // y|H
+  BoundType         bound2;         // boundary condition  // z|D
+  InterpolationType interpolation0; // interpolation order // x|W
+  InterpolationType interpolation1; // interpolation order // y|H
+  InterpolationType interpolation2; // interpolation order // z|D
+  bool              iso;            // isotropic interpolation?
+  bool              extrapolate;    // compute out-of-bound values
+  bool              do_pull;        // sample a volume
+  bool              do_push;        // splat a volume
+  bool              do_count;       // splatting weights (= jacobian determinant)
+  bool              do_grad;        // backprop: gradient of grid // pull
+  bool              do_sgrad;       // sample spatial gradients
 
   // ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   TensorOptions src_opt;
@@ -289,6 +324,7 @@ private:
   offset_t trgt_D;
   offset_t trgt_H;
   offset_t trgt_W;
+  offset_t trgt_K;
   offset_t src_sN;
   offset_t src_sC;
   offset_t src_sD;
@@ -300,6 +336,7 @@ private:
   offset_t trgt_sD;
   offset_t trgt_sH;
   offset_t trgt_sW;
+  offset_t trgt_sK;
   scalar_t *trgt_ptr;
   offset_t grid_sN;
   offset_t grid_sC;
@@ -307,18 +344,13 @@ private:
   offset_t grid_sH;
   offset_t grid_sW;
   scalar_t *grid_ptr;
-  offset_t pull_sN;
-  offset_t pull_sC;
-  offset_t pull_sD;
-  offset_t pull_sH;
-  offset_t pull_sW;
-  scalar_t *pull_ptr;
-  offset_t push_sN;
-  offset_t push_sC;
-  offset_t push_sD;
-  offset_t push_sH;
-  offset_t push_sW;
-  scalar_t *push_ptr;
+  offset_t out_sN;
+  offset_t out_sC;
+  offset_t out_sD;
+  offset_t out_sH;
+  offset_t out_sW;
+  offset_t out_sK; // gradient dimension
+  scalar_t *out_ptr;
   offset_t grad_sN;
   offset_t grad_sC;
   offset_t grad_sD;
@@ -330,6 +362,21 @@ private:
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                          INITIALISATION
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+template <typename scalar_t, typename offset_t>
+void PushPullImpl<scalar_t,offset_t>::init_all()
+{
+  src_opt = grid_opt = trgt_opt = TensorOptions();
+  N = C   = static_cast<offset_t>(1);
+  src_D   = src_H   = src_W  = static_cast<offset_t>(1);
+  trgt_D  = trgt_H  = trgt_W  = trgt_K  = static_cast<offset_t>(1);
+  src_sN  = src_sC  = src_sD  = src_sH  = src_sW  = static_cast<offset_t>(0);
+  grid_sN = grid_sC = grid_sD = grid_sH = grid_sW = static_cast<offset_t>(0);
+  grad_sN = grad_sC = grad_sD = grad_sH = grad_sW = static_cast<offset_t>(0);
+  trgt_sN = trgt_sC = trgt_sD = trgt_sH = trgt_sW = trgt_sK = static_cast<offset_t>(0);
+  out_sN  = out_sC  = out_sD  = out_sH  = out_sW  = out_sK  = static_cast<offset_t>(0);
+  src_ptr = trgt_ptr = grid_ptr = out_ptr = grad_ptr = static_cast<scalar_t*>(0);
+}
 
 template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::init_source(const Tensor& source)
@@ -376,15 +423,17 @@ template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::init_target(const Tensor& target)
 {
  N        = target.size(0);
- C        = target.size(1);
+ C        = target.size(1); // What if target is a 'count'?
  trgt_D   = dim == 2 ? 1 : target.size(2);
  trgt_H   = target.size(dim == 2 ? 2 : 3);
  trgt_W   = target.size(dim == 2 ? 3 : 4);
+ trgt_K   = target.dim() == dim + 3 ? target.size(dim == 2 ? 4 : 5) : 1;
  trgt_sN  = target.stride(0);
  trgt_sC  = target.stride(1);
  trgt_sD  = dim == 2 ? 0 : target.stride(2);
  trgt_sH  = target.stride(dim == 2 ? 2 : 3);
  trgt_sW  = target.stride(dim == 2 ? 3 : 4);
+ trgt_sK  = target.dim() == dim + 3 ? target.stride(dim == 2 ? 4 : 5) : 0;
  trgt_ptr = target.data_ptr<scalar_t>();
  trgt_opt = target.options();
 }
@@ -399,27 +448,58 @@ void PushPullImpl<scalar_t,offset_t>::init_output()
     else
       output.push_back(at::empty({N, C, trgt_D, trgt_H, trgt_W}, src_opt));
     auto pull = output.back();
-    pull_sN   = pull.stride(0);
-    pull_sC   = pull.stride(1);
-    pull_sD   = dim == 2 ? 0 : pull.stride(2);
-    pull_sH   = pull.stride(dim == 2 ? 2 : 3);
-    pull_sW   = pull.stride(dim == 2 ? 3 : 4);
-    pull_ptr  = pull.data_ptr<scalar_t>();
+    out_sN   = pull.stride(0);
+    out_sC   = pull.stride(1);
+    out_sD   = dim == 2 ? 0 : pull.stride(2);
+    out_sH   = pull.stride(dim == 2 ? 2 : 3);
+    out_sW   = pull.stride(dim == 2 ? 3 : 4);
+    out_sK   = 0;
+    out_ptr  = pull.data_ptr<scalar_t>();
   }
-  if (do_push) {
+  else if (do_sgrad) {
+    if (dim == 2)
+      output.push_back(at::empty({N, C, trgt_H, trgt_W, 2}, src_opt));
+    else
+      output.push_back(at::empty({N, C, trgt_D, trgt_H, trgt_W, 3}, src_opt));
+    auto sgrad = output.back();
+    out_sN   = sgrad.stride(0);
+    out_sC   = sgrad.stride(1);
+    out_sD   = dim == 2 ? 0 : sgrad.stride(2);
+    out_sH   = sgrad.stride(dim == 2 ? 2 : 3);
+    out_sW   = sgrad.stride(dim == 2 ? 3 : 4);
+    out_sK   = sgrad.stride(dim == 2 ? 4 : 5);
+    out_ptr  = sgrad.data_ptr<scalar_t>();
+
+    if (iso && interpolation0 == InterpolationType::Nearest)
+      sgrad.zero_();
+  }
+  else if (do_push) {
     if (dim == 2)
       output.push_back(at::zeros({N, C, src_H, src_W}, trgt_opt));
     else
       output.push_back(at::zeros({N, C, src_D, src_H, src_W}, trgt_opt));
     auto push = output.back();
-    push_sN   = push.stride(0);
-    push_sC   = push.stride(1);
-    push_sD   = dim == 2 ? 0 : push.stride(2);
-    push_sH   = push.stride(dim == 2 ? 2 : 3);
-    push_sW   = push.stride(dim == 2 ? 3 : 4);
-    push_ptr  = push.data_ptr<scalar_t>();
+    out_sN   = push.stride(0);
+    out_sC   = push.stride(1);
+    out_sD   = dim == 2 ? 0 : push.stride(2);
+    out_sH   = push.stride(dim == 2 ? 2 : 3);
+    out_sW   = push.stride(dim == 2 ? 3 : 4);
+    out_sK   = 0;
+    out_ptr  = push.data_ptr<scalar_t>();
   }
-
+  else if (do_count) {
+    if (dim == 2)
+      output.push_back(at::zeros({N, 1, src_H, src_W}, grid_opt));
+    else
+      output.push_back(at::zeros({N, 1, src_D, src_H, src_W}, grid_opt));
+    auto count = output.back();
+    out_sN   = count.stride(0);
+    out_sD   = dim == 2 ? 0 : count.stride(2);
+    out_sH   = count.stride(dim == 2 ? 2 : 3);
+    out_sW   = count.stride(dim == 2 ? 3 : 4);
+    out_sK   = 0;
+    out_ptr  = count.data_ptr<scalar_t>();
+  }
   if (do_grad) {
     if (dim == 2)
       output.push_back(at::zeros({N, src_H, src_W, 2}, grid_opt));
@@ -433,11 +513,8 @@ void PushPullImpl<scalar_t,offset_t>::init_output()
     grad_sC   = grad.stride(dim == 2 ? 3 : 4);
     grad_ptr  = grad.data_ptr<scalar_t>();
 
-    // TODO
-    // If interpolation mode is Nearest, then grad_grid is not filled in the
-    // loop below.
-    // if ( == 0)
-    //   grad.zero_();
+    if (iso && interpolation0 == InterpolationType::Nearest)
+      grad.zero_();
   }
 }
 
@@ -553,11 +630,11 @@ void PushPullImpl<scalar_t,offset_t>
   if (!(extrapolate || inbounds(x, src_W, static_cast<scalar_t>(TINY))
                     || inbounds(y, src_H, static_cast<scalar_t>(TINY)))) {
     if (do_pull) {
-      scalar_t *pull_ptr_NCHW = pull_ptr + n * pull_sN
-                                         + h * pull_sH 
-                                         + w * pull_sW;
-      for (offset_t c = 0; c < C; ++c, pull_ptr_NCHW += pull_sC)
-        *pull_ptr_NCHW = static_cast<scalar_t>(0);
+      scalar_t *out_ptr_NCHW = out_ptr + n * out_sN
+                                         + h * out_sH 
+                                         + w * out_sW;
+      for (offset_t c = 0; c < C; ++c, out_ptr_NCHW += out_sC)
+        *out_ptr_NCHW = static_cast<scalar_t>(0);
     }
     if (do_grad) {
       scalar_t * grad_ptr_NHW = grad_ptr + n * grad_sN
@@ -577,10 +654,10 @@ void PushPullImpl<scalar_t,offset_t>
     }
     return interpolate2d_sliding(x, y, w, h, n);
   } else {
-    if (iso) switch (static_cast<int>(interpolation0)) {
-      case 0: return interpolate2d_nearest(x, y, w, h, n);
-      case 1: return interpolate2d_bilinear(x, y, w, h, n);
-    } 
+    // if (iso) switch (static_cast<int>(interpolation0)) {
+    //   case 0: return interpolate2d_nearest(x, y, w, h, n);
+    //   case 1: return interpolate2d_bilinear(x, y, w, h, n);
+    // } 
     return interpolate2d(x, y, w, h, n);
   }
  
@@ -602,10 +679,10 @@ void PushPullImpl<scalar_t,offset_t>
                     || inbounds(y, src_H, static_cast<scalar_t>(TINY))
                     || inbounds(z, src_D, static_cast<scalar_t>(TINY)))) {
     if (do_pull) {
-      scalar_t *pull_ptr_NCDHW = pull_ptr + n * pull_sN + d * pull_sD 
-                                          + h * pull_sH + w * pull_sW;
-      for (offset_t c = 0; c < C; ++c, pull_ptr_NCDHW += pull_sC)
-        *pull_ptr_NCDHW = static_cast<scalar_t>(0);
+      scalar_t *out_ptr_NCDHW = out_ptr + n * out_sN + d * out_sD 
+                                          + h * out_sH + w * out_sW;
+      for (offset_t c = 0; c < C; ++c, out_ptr_NCDHW += out_sC)
+        *out_ptr_NCDHW = static_cast<scalar_t>(0);
     }
     if (do_grad) {
       scalar_t * grad_ptr_NDHW = grad_ptr + n * grad_sN + d * grad_sD 
@@ -643,99 +720,210 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
   offset_t w, offset_t h, offset_t d, offset_t n) const
 {
   // Get corner pixel values from (x, y, z)
-  offset_t ix0, ix1, iy0, iy1, iz0, iz1;
-  interpolation::bounds(interpolation0, x, ix0, ix1);
-  interpolation::bounds(interpolation1, y, iy0, iy1);
-  interpolation::bounds(interpolation2, z, iz0, iz1);
+  offset_t bx0, bx1, by0, by1, bz0, bz1;
+  interpolation::bounds(interpolation0, x, bx0, bx1);
+  interpolation::bounds(interpolation1, y, by0, by1);
+  interpolation::bounds(interpolation2, z, bz0, bz1);
 
-  scalar_t pulled_value[NI_MAX_NUM_CHANNELS];
-  scalar_t target[NI_MAX_NUM_CHANNELS];
-
-  // Initialize values
-  if (do_pull || do_grad)
-    for (offset_t c = 0; c < C; ++c)
-      pulled_value[c] = static_cast<scalar_t>(0);
-  scalar_t ogx = static_cast<scalar_t>(0);
-  scalar_t ogy = static_cast<scalar_t>(0);
-  scalar_t ogz = static_cast<scalar_t>(0); 
-
-  // Pre-compute offets
+  // Pre-compute offsets and target value
   scalar_t *src_ptr_NC0    = src_ptr  + n * src_sN;
-  scalar_t *push_ptr_NC0   = push_ptr + n * push_sN;
+  scalar_t *out_ptr_NC0    = out_ptr  + n * out_sN;
+  scalar_t *out_ptr_NCDHW0 = out_ptr  + n * out_sN  + d * out_sD 
+                                      + h * out_sH  + w * out_sW;
   scalar_t *trgt_ptr_NCDHW = trgt_ptr + n * trgt_sN + d * trgt_sD 
                                       + h * trgt_sH + w * trgt_sW;
-  if (do_push || do_grad)
-    for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC)
-      target[c] = *trgt_ptr_NCDHW;
+  scalar_t target[3*NI_MAX_NUM_CHANNELS]; 
+  if (trgt_ptr && (do_push || do_grad))
+    for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC) {
+      target[c]     = *trgt_ptr_NCDHW;
+      if (trgt_K > 1 ) {
+        target[c+C]   = trgt_ptr_NCDHW[trgt_sK];
+        target[c+C*2] = trgt_ptr_NCDHW[trgt_sK*2];
+      }
+    }
 
-  // Loop among nodes in support
-  for (offset_t iz = iz0; iz <= iz1; ++iz) {
-    scalar_t dz  = z - iz;                                        // Signed distance
-    scalar_t wz  = interpolation::fastweight(interpolation2, dz); // Spline weight
-    scalar_t gz  = do_push
-                 ? interpolation::fastgrad(interpolation2, dz)    // Spline derivative
-                 : static_cast<scalar_t>(0);
-    int8_t   sz  = bound::sign(bound2, iz, src_D);                // Multiplication
-    offset_t iwz = bound::index(bound2, iz, src_D);               // Warped index
-    offset_t osz = iwz * src_sD;                                  // Offset into source volume
-    offset_t opz = iwz * push_sD;                                 // Offset into pushed volume
-    for (offset_t iy = iy0; iy <= iy1; ++iy) {
-      scalar_t dy  = y - iy;
-      scalar_t wy  = interpolation::fastweight(interpolation1, dy);
-      scalar_t gy  = do_push 
-                   ? interpolation::fastgrad(interpolation1, dy) 
-                   : static_cast<scalar_t>(0);
-      int8_t   syz = sz * bound::sign(bound1, iy, src_H);
-      offset_t iwy = bound::index(bound1, iy, src_H);
-      offset_t osyz = osz + iwy * src_sH;
-      offset_t opyz = opz + iwy * push_sH;
-      for (offset_t ix = ix0; ix <= ix1; ++ix) {
-        scalar_t dx    = x - ix;
-        scalar_t wx    = interpolation::fastweight(interpolation0, dx);
-        scalar_t gx    = do_push 
-                       ? interpolation::fastgrad(interpolation0, dx) 
-                       : static_cast<scalar_t>(0);
-        int8_t   sxyz  = syz * bound::sign(bound0, ix, src_W);
-        offset_t iwx   = bound::index(bound0, ix, src_W);
-        offset_t osxyz = osyz + iwx * src_sW;
-        offset_t opxyz = opyz + iwx * push_sW;
+  // Initialize output
+  scalar_t * out_ptr_NCDHW = out_ptr_NCDHW0;
+  if (do_pull || do_sgrad) {
+    for (offset_t c = 0; c < C; ++c, out_ptr_NCDHW += out_sC) {
+      *out_ptr_NCDHW = static_cast<scalar_t>(0);
+      if (do_sgrad) {
+        out_ptr_NCDHW[out_sK]   = static_cast<scalar_t>(0);
+        out_ptr_NCDHW[out_sK*2] = static_cast<scalar_t>(0);
+      }
+    }
+  }
+
+  // Pre-compute indices/weights/grad
+  scalar_t  wx[8],  wy[8],  wz[8]; // B-spline weights
+  scalar_t  gx[8],  gy[8],  gz[8]; // B-spline derivatives
+  scalar_t  hx[8],  hy[8],  hz[8]; // B-spline 2nd derivatives
+  offset_t  ix[8],  iy[8],  iz[8]; // Warped indices
+  uint8_t   sx[8],  sy[8],  sz[8]; // Warped indices
+
+  {
+    scalar_t *owz = static_cast<scalar_t*>(wz), 
+             *ogz = static_cast<scalar_t*>(gz),
+             *ohz = static_cast<scalar_t*>(hz);
+    offset_t *oiz = static_cast<offset_t*>(iz);
+    uint8_t  *osz = static_cast<uint8_t *>(sz);
+    for (offset_t bz = bz0; bz <= bz1; ++bz) {
+      scalar_t dz = z - bz;
+      *(owz++)  = interpolation::fastweight(interpolation2, dz);
+      if (do_grad || do_sgrad)  *(ogz++) = interpolation::fastgrad(interpolation2, dz);
+      if (do_grad && trgt_sK>1) *(ohz++) = interpolation::fasthess(interpolation2, dz);
+      *(osz++)  = bound::sign(bound2, bz, src_D);
+      *(oiz++)  = bound::index(bound2, bz, src_D);
+    }
+  }
+  {
+    scalar_t *owy = static_cast<scalar_t*>(wy), 
+             *ogy = static_cast<scalar_t*>(gy),
+             *ohy = static_cast<scalar_t*>(hy);
+    offset_t *oiy = static_cast<offset_t*>(iy);
+    uint8_t  *osy = static_cast<uint8_t *>(sy);
+    for (offset_t by = by0; by <= by1; ++by) {
+      scalar_t dy = y - by;
+      *(owy++) = interpolation::fastweight(interpolation1, dy);
+      if (do_grad || do_sgrad)  *(ogy++) = interpolation::fastgrad(interpolation1, dy);
+      if (do_grad && trgt_sK>1) *(ohy++) = interpolation::fasthess(interpolation1, dy);
+      *(osy++)  = bound::sign(bound1, by, src_H);
+      *(oiy++)  = bound::index(bound1, by, src_H);
+    }
+  }
+  {
+    scalar_t *owx = static_cast<scalar_t*>(wx), 
+             *ogx = static_cast<scalar_t*>(gx),
+             *ohx = static_cast<scalar_t*>(hx);
+    offset_t *oix = static_cast<offset_t*>(ix);
+    uint8_t  *osx = static_cast<uint8_t *>(sx);
+    for (offset_t bx = bx0; bx <= bx1; ++bx) {
+      scalar_t dx = x - bx;
+      *(owx++)  = interpolation::fastweight(interpolation0, dx);
+      if (do_grad || do_sgrad)  *(ogx++) = interpolation::fastgrad(interpolation0, dx);
+      if (do_grad && trgt_sK>1) *(ohx++) = interpolation::fasthess(interpolation0, dx);
+      *(osx++)  = bound::sign(bound0, bx, src_W);
+      *(oix++)  = bound::index(bound0, bx, src_W);
+    }
+  }
+
+  // Convolve coefficients with basis functions
+  scalar_t ogx, ogy, ogz;
+  ogx = ogy = ogz = static_cast<scalar_t>(0);
+  for (offset_t k = 0; k <= bz1-bz0; ++k) {
+    offset_t ooz = iz[k] * out_sD;
+    offset_t osz = iz[k] * src_sD;
+    uint8_t  szz = sz[k];
+    scalar_t wzz = wz[k];
+    scalar_t gzz = gz[k];
+    scalar_t hzz = hz[k];
+    for (offset_t j = 0; j <= by1-by0; ++j) {
+      offset_t ooyz = ooz + iy[j] * out_sH;
+      offset_t osyz = osz + iy[j] * src_sH;
+      uint8_t  syz  = szz * sy[j];
+      scalar_t wyy  = wy[j];
+      scalar_t gyy  = gy[j];
+      scalar_t hyy  = hy[j];
+      for (offset_t i = 0; i <= bx1-bx0; ++i) {
+        offset_t ooxyz = ooyz + ix[i] * out_sW;
+        offset_t osxyz = osyz + ix[i] * src_sW;
+        uint8_t  sxyz  = syz  * sx[i];
+        scalar_t wxx   = wx[i];
+        scalar_t gxx   = gx[i];
+        scalar_t hxx   = hx[i];
 
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if (do_pull) {
-          scalar_t * src_ptr_NC = src_ptr_NC0;
-          for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC)
-            pulled_value[c] += bound::get(src_ptr_NC, osxyz, sxyz) * (wx*wy*wz);
+          scalar_t * src_ptr_NC    = src_ptr_NC0;
+          scalar_t * out_ptr_NCDHW = out_ptr_NCDHW0;
+          for (offset_t c = 0; c < C; ++c, out_ptr_NCDHW += out_sC,
+                                           src_ptr_NC    += src_sC)
+            *out_ptr_NCDHW += bound::get(src_ptr_NC, osxyz, sxyz) * (wxx*wyy*wzz);
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ SGrad ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        else if (do_sgrad) {
+          scalar_t * src_ptr_NC    = src_ptr_NC0;
+          scalar_t * out_ptr_NCDHW = out_ptr_NCDHW0;
+          for (offset_t c = 0; c < C; ++c, out_ptr_NCDHW += out_sC,
+                                           src_ptr_NC    += src_sC) {
+            scalar_t src = bound::get(src_ptr_NC, osxyz, sxyz);
+            *out_ptr_NCDHW          += src * (gxx*wyy*wzz);
+            out_ptr_NCDHW[out_sK]   += src * (wxx*gyy*wzz);
+            out_ptr_NCDHW[2*out_sK] += src * (wxx*wyy*gzz);
+          }
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        else if (do_push) {
+          if (trgt_K == 1)
+          { 
+            // Diff w.r.t. push/pull
+            scalar_t * out_ptr_NC = out_ptr_NC0;
+            for (offset_t c = 0; c < C; ++c, out_ptr_NC += out_sC)
+              bound::add(out_ptr_NC, ooxyz, (wxx*wyy*wzz) * target[c], sxyz);
+         }
+         else 
+          {
+            // Diff w.r.t. sgrad
+            scalar_t * out_ptr_NC = out_ptr_NC0;
+            for (offset_t c = 0; c < C; ++c, out_ptr_NC += out_sC) {
+              scalar_t val = (gxx*wyy*wzz) * target[c]
+                           + (wxx*gyy*wzz) * target[c+C]
+                           + (wxx*wyy*gzz) * target[c+C*2];
+              bound::add(out_ptr_NC, ooxyz, val, sxyz);
+            }
+         }
+        }
+
+        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Count ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        else if (do_count) {
+          bound::add(out_ptr_NC0, ooxyz, (wxx*wyy*wzz), sxyz);
         }
         
         // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Grad ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
         if (do_grad) {
-          scalar_t * src_ptr_NC = src_ptr_NC0;
-          for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC) {
-            scalar_t src = bound::get(src_ptr_NC, osxyz, sxyz) * target[c];
-            ogx += gx * wy * wz * src;
-            ogy += wx * gy * wz * src;
-            ogz += wx * wy * gz * src;
+          if (trgt_K == 1)
+          { 
+            // Diff w.r.t. pull/push
+            scalar_t * src_ptr_NC = src_ptr_NC0;
+            scalar_t dot = static_cast<scalar_t>(0);
+            for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC) {
+              scalar_t src = bound::get(src_ptr_NC, osxyz, sxyz);
+              dot += (trgt_ptr ? src * target[c] : src);
+              // trgt_ptr == 0 in the backward pass of 'count'
+            }
+            ogx += (gxx * wyy * wzz) * dot;
+            ogy += (wxx * gyy * wzz) * dot;
+            ogz += (wxx * wyy * gzz) * dot;
+          }
+          else
+          { 
+            // Diff w.r.t. sgrad
+            scalar_t * src_ptr_NC = src_ptr_NC0;
+            scalar_t dot0, dot1, dot2;
+            dot0 = dot1 = dot2 = static_cast<scalar_t>(0);
+            for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC) {
+              scalar_t src = bound::get(src_ptr_NC, osxyz, sxyz);
+              dot0 += src * target[c];
+              dot1 += src * target[c + trgt_sK];
+              dot2 += src * target[c + trgt_sK*2];
+            }
+            ogx += (hxx * wyy * wzz) * dot0
+                +  (gxx * gyy * wzz) * dot1
+                +  (gxx * wyy * gzz) * dot2;
+            ogy += (gxx * gyy * wzz) * dot0
+                +  (wxx * hyy * wzz) * dot1
+                +  (wxx * gyy * gzz) * dot2;
+            ogz += (gxx * wyy * gzz) * dot0
+                +  (wxx * gyy * gzz) * dot1
+                +  (wxx * wyy * hzz) * dot2;
           }
         }
         
-        // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        if (do_push) {
-          scalar_t * push_ptr_NC = push_ptr_NC0;
-          for (offset_t c = 0; c < C; ++c, push_ptr_NC += push_sC)
-            bound::add(push_ptr_NC, opxyz, (wx*wy*wz) * target[c], sxyz);
-        }
-
       } // x
-    } // y 
+    } // y
   } // z
-
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if (do_pull) {
-    scalar_t *pull_ptr_NCDHW = pull_ptr + n * pull_sN + d * pull_sD 
-                                        + h * pull_sH + w * pull_sW;
-    for (offset_t c = 0; c < C; ++c, pull_ptr_NCDHW += pull_sC)
-      *pull_ptr_NCDHW = pulled_value[c];
-  }
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Grad ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (do_grad) {
@@ -747,107 +935,199 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
   }
 }
 
+
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                     GENERIC INTERPOLATION 2D
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>::interpolate2d(
-  scalar_t x, scalar_t y, 
-  offset_t w, offset_t h,  offset_t n) const
+  scalar_t x, scalar_t y,
+  offset_t w, offset_t h, offset_t n) const
 {
   // Get corner pixel values from (x, y)
-  offset_t ix0, ix1, iy0, iy1;
-  interpolation::bounds(interpolation0, x, ix0, ix1);
-  interpolation::bounds(interpolation1, y, iy0, iy1);
+  offset_t bx0, bx1, by0, by1;
+  interpolation::bounds(interpolation0, x, bx0, bx1);
+  interpolation::bounds(interpolation1, y, by0, by1);
 
-  scalar_t pulled_value[NI_MAX_NUM_CHANNELS];
-  scalar_t target[NI_MAX_NUM_CHANNELS];
+  // Pre-compute offsets and target value
+  scalar_t *src_ptr_NC0   = src_ptr  + n * src_sN;
+  scalar_t *out_ptr_NC0   = out_ptr  + n * out_sN;
+  scalar_t *out_ptr_NCHW0 = out_ptr  + n * out_sN 
+                                     + h * out_sH  
+                                     + w * out_sW;
+  scalar_t *trgt_ptr_NCHW = trgt_ptr + n * trgt_sN 
+                                     + h * trgt_sH 
+                                     + w * trgt_sW;
+  scalar_t target[2*NI_MAX_NUM_CHANNELS]; 
+  if (trgt_ptr && (do_push || do_grad))
+    for (offset_t c = 0; c < C; ++c, trgt_ptr_NCHW += trgt_sC) {
+      target[c]     = *trgt_ptr_NCHW;
+      if (trgt_K > 1 ) {
+        target[c+C]   = trgt_ptr_NCHW[trgt_sK];
+      }
+    }
 
-  // Initialize values
-  if (do_pull || do_grad)
-    for (offset_t c = 0; c < C; ++c)
-      pulled_value[c] = static_cast<scalar_t>(0);
-  scalar_t ogx = static_cast<scalar_t>(0);
-  scalar_t ogy = static_cast<scalar_t>(0);
+  // Initialize output
+  scalar_t * out_ptr_NCHW = out_ptr_NCHW0;
+  if (do_pull || do_sgrad) {
+    for (offset_t c = 0; c < C; ++c, out_ptr_NCHW += out_sC) {
+      *out_ptr_NCHW = static_cast<scalar_t>(0);
+      if (do_sgrad) {
+        out_ptr_NCHW[out_sK]   = static_cast<scalar_t>(0);
+      }
+    }
+  }
 
-  // Pre-compute offets
-  scalar_t *src_ptr_NC0    = src_ptr  + n * src_sN;
-  scalar_t *push_ptr_NC0   = push_ptr + n * push_sN;
-  scalar_t *trgt_ptr_NCHW  = trgt_ptr + n * trgt_sN
-                                      + h * trgt_sH 
-                                      + w * trgt_sW;
-  if (do_push || do_grad)
-    for (offset_t c = 0; c < C; ++c, trgt_ptr_NCHW += trgt_sC)
-      target[c] = *trgt_ptr_NCHW;
+  // Pre-compute indices/weights/grad
+  scalar_t  wx[8],  wy[8]; // B-spline weights
+  scalar_t  gx[8],  gy[8]; // B-spline derivatives
+  scalar_t  hx[8],  hy[8]; // B-spline 2nd derivatives
+  offset_t  ix[8],  iy[8]; // Warped indices
+  uint8_t   sx[8],  sy[8]; // Warped indices
 
-  // Loop among nodes in support
-  for (offset_t iy = iy0; iy <= iy1; ++iy) {
-    scalar_t dy  = y - iy;
-    scalar_t wy  = interpolation::fastweight(interpolation1, dy);
-    scalar_t gy  = do_push 
-                 ? interpolation::fastgrad(interpolation1, dy) 
-                 : static_cast<scalar_t>(0);
-    int8_t   sy  = bound::sign(bound1, iy, src_H);
-    offset_t iwy = bound::index(bound1, iy, src_H);
-    offset_t osy = iwy * src_sH;
-    offset_t opy = iwy * push_sH;
-    for (offset_t ix = ix0; ix <= ix1; ++ix) {
-      scalar_t dx   = x - ix;
-      scalar_t wx   = interpolation::fastweight(interpolation0, dx);
-      scalar_t gx   = do_push 
-                    ? interpolation::fastgrad(interpolation0, dx) 
-                    : static_cast<scalar_t>(0);
-      int8_t   sxy  = sy * bound::sign(bound0, ix, src_W);
-      offset_t iwx  = bound::index(bound0, ix, src_W);
-      offset_t osxy = osy + iwx * src_sW;
-      offset_t opxy = opy + iwx * push_sW;
+  {
+    scalar_t *owy = static_cast<scalar_t*>(wy), 
+             *ogy = static_cast<scalar_t*>(gy),
+             *ohy = static_cast<scalar_t*>(hy);
+    offset_t *oiy = static_cast<offset_t*>(iy);
+    uint8_t  *osy = static_cast<uint8_t *>(sy);
+    for (offset_t by = by0; by <= by1; ++by) {
+      scalar_t dy = y - by;
+      *(owy++) = interpolation::fastweight(interpolation1, dy);
+      if (do_grad || do_sgrad)  *(ogy++) = interpolation::fastgrad(interpolation1, dy);
+      if (do_grad && trgt_sK>1) *(ohy++) = interpolation::fasthess(interpolation1, dy);
+      *(osy++)  = bound::sign(bound1, by, src_H);
+      *(oiy++)  = bound::index(bound1, by, src_H);
+    }
+  }
+  {
+    scalar_t *owx = static_cast<scalar_t*>(wx), 
+             *ogx = static_cast<scalar_t*>(gx),
+             *ohx = static_cast<scalar_t*>(hx);
+    offset_t *oix = static_cast<offset_t*>(ix);
+    uint8_t  *osx = static_cast<uint8_t *>(sx);
+    for (offset_t bx = bx0; bx <= bx1; ++bx) {
+      scalar_t dx = x - bx;
+      *(owx++)  = interpolation::fastweight(interpolation0, dx);
+      if (do_grad || do_sgrad)  *(ogx++) = interpolation::fastgrad(interpolation0, dx);
+      if (do_grad && trgt_sK>1) *(ohx++) = interpolation::fasthess(interpolation0, dx);
+      *(osx++)  = bound::sign(bound0, bx, src_W);
+      *(oix++)  = bound::index(bound0, bx, src_W);
+    }
+  }
 
-      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  // Convolve coefficients with basis functions
+  scalar_t ogx, ogy;
+  ogx = ogy = static_cast<scalar_t>(0);
+  for (offset_t j = 0; j <= by1-by0; ++j) {
+    offset_t ooy  = iy[j] * out_sH;
+    offset_t osy  = iy[j] * src_sH;
+    uint8_t  syy  = sy[j];
+    scalar_t wyy  = wy[j];
+    scalar_t gyy  = gy[j];
+    scalar_t hyy  = hy[j];
+    for (offset_t i = 0; i <= bx1-bx0; ++i) {
+      offset_t ooxy = ooy + ix[i] * out_sW;
+      offset_t osxy = osy + ix[i] * src_sW;
+      uint8_t  sxy  = syy * sx[i];
+      scalar_t wxx  = wx[i];
+      scalar_t gxx  = gx[i];
+      scalar_t hxx  = hx[i];
+
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
       if (do_pull) {
-        scalar_t * src_ptr_NC = src_ptr_NC0;
-        for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC)
-          pulled_value[c] += bound::get(src_ptr_NC, osxy, sxy) * (wx*wy);
+        scalar_t * src_ptr_NC    = src_ptr_NC0;
+        scalar_t * out_ptr_NCHW = out_ptr_NCHW0;
+        for (offset_t c = 0; c < C; ++c, out_ptr_NCHW += out_sC,
+                                         src_ptr_NC   += src_sC)
+          *out_ptr_NCHW += bound::get(src_ptr_NC, osxy, sxy) * (wxx*wyy);
+      }
+
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ SGrad ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      else if (do_sgrad) {
+        scalar_t * src_ptr_NC   = src_ptr_NC0;
+        scalar_t * out_ptr_NCHW = out_ptr_NCHW0;
+        for (offset_t c = 0; c < C; ++c, out_ptr_NCHW += out_sC,
+                                         src_ptr_NC   += src_sC) {
+          scalar_t src = bound::get(src_ptr_NC, osxy, sxy);
+          *out_ptr_NCHW          += src * (gxx*wyy);
+          out_ptr_NCHW[out_sK]   += src * (wxx*gyy);
+        }
+      }
+
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      else if (do_push) {
+        if (trgt_K == 1)
+        { 
+          // Diff w.r.t. push/pull
+          scalar_t * out_ptr_NC = out_ptr_NC0;
+          for (offset_t c = 0; c < C; ++c, out_ptr_NC += out_sC)
+            bound::add(out_ptr_NC, ooxy, (wxx*wyy) * target[c], sxy);
+       }
+       else 
+        {
+          // Diff w.r.t. sgrad
+          scalar_t * out_ptr_NC = out_ptr_NC0;
+          for (offset_t c = 0; c < C; ++c, out_ptr_NC += out_sC) {
+            scalar_t val = (gxx*wyy) * target[c]
+                         + (wxx*gyy) * target[c+C];
+            bound::add(out_ptr_NC, ooxy, val, sxy);
+          }
+       }
+      }
+
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Count ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      else if (do_count) {
+        bound::add(out_ptr_NC0, ooxy, (wxx*wyy), sxy);
       }
       
-      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Grad ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Grad ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
       if (do_grad) {
-        scalar_t * src_ptr_NC = src_ptr_NC0;
-        for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC) {
-          scalar_t src = bound::get(src_ptr_NC, osxy, sxy) * target[c];
-          ogx += gx * wy * src;
-          ogy += wx * gy * src;
+        if (trgt_K == 1)
+        { 
+          // Diff w.r.t. pull/push
+          scalar_t * src_ptr_NC = src_ptr_NC0;
+          scalar_t dot = static_cast<scalar_t>(0);
+          for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC) {
+            scalar_t src = bound::get(src_ptr_NC, osxy, sxy);
+            dot += (trgt_ptr ? src * target[c] : src);
+            // trgt_ptr == 0 in the backward pass of 'count'
+          }
+          ogx += (gxx * wyy) * dot;
+          ogy += (wxx * gyy) * dot;
+        }
+        else
+        { 
+          // Diff w.r.t. sgrad
+          scalar_t * src_ptr_NC = src_ptr_NC0;
+          scalar_t dot0, dot1;
+          dot0 = dot1 = static_cast<scalar_t>(0);
+          for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC) {
+            scalar_t src = bound::get(src_ptr_NC, osxy, sxy);
+            dot0 += src * target[c];
+            dot1 += src * target[c + trgt_sK];
+          }
+          ogx += (hxx * wyy) * dot0
+              +  (gxx * gyy) * dot1;
+          ogy += (gxx * gyy) * dot0
+              +  (wxx * hyy) * dot1;
         }
       }
       
-      // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-      if (do_push) {
-        scalar_t * push_ptr_NC = push_ptr_NC0;
-        for (offset_t c = 0; c < C; ++c, push_ptr_NC += push_sC)
-          bound::add(push_ptr_NC, opxy, (wx*wy) * target[c], sxy);
-      }
-
     } // x
-  } // y 
-
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if (do_pull) {
-    scalar_t *pull_ptr_NCHW = pull_ptr + n * pull_sN
-                                       + h * pull_sH 
-                                       + w * pull_sW;
-    for (offset_t c = 0; c < C; ++c, pull_ptr_NCHW += pull_sC)
-      *pull_ptr_NCHW = pulled_value[c];
-  }
+  } // y
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Grad ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (do_grad) {
-    scalar_t * grad_ptr_NHW = grad_ptr + n * grad_sN
+    scalar_t * grad_ptr_NHW = grad_ptr + n * grad_sN  
                                        + h * grad_sH 
                                        + w * grad_sW;
     (*grad_ptr_NHW)         = ogx;
     grad_ptr_NHW[grad_sC]   = ogy;
   }
 }
+
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                     LINEAR INTERPOLATION 3D
@@ -908,7 +1188,7 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
   // Offsets into source volume
   offset_t o000, o100, o010, o001, o110, o011, o101, o111;
 
-  if (do_pull || do_grad) {
+  if (do_pull || do_grad || do_sgrad) {
     o000 = ix0*src_sW + iy0*src_sH + iz0*src_sD;
     o100 = ix1*src_sW + iy0*src_sH + iz0*src_sD;
     o010 = ix0*src_sW + iy1*src_sH + iz0*src_sD;
@@ -919,23 +1199,6 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
     o111 = ix1*src_sW + iy1*src_sH + iz1*src_sD;
   }
 
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if (do_pull) {
-    scalar_t *pull_ptr_NCDHW = pull_ptr + n * pull_sN + d * pull_sD 
-                                        + h * pull_sH + w * pull_sW;
-    scalar_t *src_ptr_NC = src_ptr + n * src_sN;
-    for (offset_t c = 0; c < C; ++c, pull_ptr_NCDHW += pull_sC, 
-                                    src_ptr_NC     += src_sC) {
-      *pull_ptr_NCDHW = bound::get(src_ptr_NC, o000, s000) * w000
-                      + bound::get(src_ptr_NC, o100, s100) * w100
-                      + bound::get(src_ptr_NC, o010, s010) * w010
-                      + bound::get(src_ptr_NC, o110, s110) * w110
-                      + bound::get(src_ptr_NC, o001, s001) * w001
-                      + bound::get(src_ptr_NC, o101, s101) * w101
-                      + bound::get(src_ptr_NC, o011, s011) * w011
-                      + bound::get(src_ptr_NC, o111, s111) * w111;
-    }
-  }
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~ Grid gradient ~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (do_grad) {
     scalar_t gx = static_cast<scalar_t>(0);
@@ -944,42 +1207,99 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
     scalar_t *trgt_ptr_NCDHW = trgt_ptr + n * trgt_sN + d * trgt_sD 
                                         + h * trgt_sH + w * trgt_sW;
     scalar_t *src_ptr_NC = src_ptr + n * src_sN;
-    for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC, 
-                                    src_ptr_NC     += src_sC) {
-      scalar_t src;
-      scalar_t trgt = *trgt_ptr_NCDHW;
-      src = bound::get(src_ptr_NC, o000, s000) * trgt;
-      gx -=       dy0 * dz0 * src;
-      gy -= dx0       * dz0 * src;
-      gz -= dx0 * dy0       * src;
-      src = bound::get(src_ptr_NC, o100, s100) * trgt;
-      gx +=       dy0 * dz0 * src;
-      gy -= dx1       * dz0 * src;
-      gz -= dx1 * dy0       * src;
-      src = bound::get(src_ptr_NC, o010, s010) * trgt;
-      gx -=       dy1 * dz0 * src;
-      gy += dx0       * dz0 * src;
-      gz -= dx0 * dy1       * src;
-      src = bound::get(src_ptr_NC, o110, s110) * trgt;
-      gx +=       dy1 * dz0 * src;
-      gy += dx1       * dz0 * src;
-      gz -= dx1 * dy1       * src;
-      src = bound::get(src_ptr_NC, o001, s001) * trgt;
-      gx -=       dy0 * dz1 * src;
-      gy -= dx0       * dz1 * src;
-      gz += dx0 * dy0       * src;
-      src = bound::get(src_ptr_NC, o101, s101) * trgt;
-      gx +=       dy0 * dz1 * src;
-      gy -= dx1       * dz1 * src;
-      gz += dx1 * dy0       * src;
-      src = bound::get(src_ptr_NC, o011, s011) * trgt;
-      gx -=       dy1 * dz1 * src;
-      gy += dx0       * dz1 * src;
-      gz += dx0 * dy1       * src;
-      src = bound::get(src_ptr_NC, o111, s111) * trgt;
-      gx +=       dy1 * dz1 * src;
-      gy += dx1       * dz1 * src;
-      gz += dx1 * dy1       * src;
+
+    if (trgt_K == 1) 
+    {
+      // backward w.r.t. push/pull
+      for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC, 
+                                       src_ptr_NC     += src_sC) {
+        scalar_t src;
+        scalar_t trgt = trgt_ptr ? *trgt_ptr_NCDHW : static_cast<scalar_t>(1);
+        // ^ trgt_ptr == 0 during the backward pass of count
+        src = bound::get(src_ptr_NC, o000, s000);
+        if (trgt_ptr) src *= trgt;
+        gx -=       dy0 * dz0 * src;
+        gy -= dx0       * dz0 * src;
+        gz -= dx0 * dy0       * src;
+        src = bound::get(src_ptr_NC, o100, s100);
+        if (trgt_ptr) src *= trgt;
+        gx +=       dy0 * dz0 * src;
+        gy -= dx1       * dz0 * src;
+        gz -= dx1 * dy0       * src;
+        src = bound::get(src_ptr_NC, o010, s010);
+        if (trgt_ptr) src *= trgt;
+        gx -=       dy1 * dz0 * src;
+        gy += dx0       * dz0 * src;
+        gz -= dx0 * dy1       * src;
+        src = bound::get(src_ptr_NC, o110, s110);
+        if (trgt_ptr) src *= trgt;
+        gx +=       dy1 * dz0 * src;
+        gy += dx1       * dz0 * src;
+        gz -= dx1 * dy1       * src;
+        src = bound::get(src_ptr_NC, o001, s001);
+        if (trgt_ptr) src *= trgt;
+        gx -=       dy0 * dz1 * src;
+        gy -= dx0       * dz1 * src;
+        gz += dx0 * dy0       * src;
+        src = bound::get(src_ptr_NC, o101, s101);
+        if (trgt_ptr) src *= trgt;
+        gx +=       dy0 * dz1 * src;
+        gy -= dx1       * dz1 * src;
+        gz += dx1 * dy0       * src;
+        src = bound::get(src_ptr_NC, o011, s011);
+        if (trgt_ptr) src *= trgt;
+        gx -=       dy1 * dz1 * src;
+        gy += dx0       * dz1 * src;
+        gz += dx0 * dy1       * src;
+        src = bound::get(src_ptr_NC, o111, s111);
+        if (trgt_ptr) src *= trgt;
+        gx +=       dy1 * dz1 * src;
+        gy += dx1       * dz1 * src;
+        gz += dx1 * dy1       * src;
+      }
+    }
+    else
+    {
+      // backward w.r.t. sgrad
+      for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC, 
+                                       src_ptr_NC     += src_sC) {
+        scalar_t src;
+        scalar_t trgt0 = *trgt_ptr_NCDHW,
+                 trgt1 = trgt_ptr_NCDHW[trgt_sK],
+                 trgt2 = trgt_ptr_NCDHW[trgt_sK*2];
+        src = bound::get(src_ptr_NC, o000, s000);
+        gx += ( dz0 * trgt1 + dy0 * trgt2) * src;
+        gy += ( dz0 * trgt0 + dx0 * trgt2) * src;
+        gz += ( dy0 * trgt0 + dx0 * trgt1) * src;
+        src = bound::get(src_ptr_NC, o100, s100);
+        gx += (-dz0 * trgt1 - dy0 * trgt2) * src;
+        gy += (-dz0 * trgt0 + dx1 * trgt2) * src;
+        gz += (-dy0 * trgt0 + dx1 * trgt1) * src;
+        src = bound::get(src_ptr_NC, o010, s010);
+        gx += (-dz0 * trgt1 + dy1 * trgt2) * src;
+        gy += (-dz0 * trgt0 - dx0 * trgt2) * src;
+        gz += ( dy1 * trgt0 - dx0 * trgt1) * src;
+        src = bound::get(src_ptr_NC, o110, s110);
+        gx += ( dz0 * trgt1 - dy1 * trgt2) * src;
+        gy += ( dz0 * trgt0 - dx1 * trgt2) * src;
+        gz += (-dy1 * trgt0 - dx1 * trgt1) * src;
+        src = bound::get(src_ptr_NC, o001, s001);
+        gx += ( dz1 * trgt1 - dy0 * trgt2) * src;
+        gy += ( dz1 * trgt0 - dx0 * trgt2) * src;
+        gz += (-dy0 * trgt0 - dx0 * trgt1) * src;
+        src = bound::get(src_ptr_NC, o101, s101);
+        gx += (-dz1 * trgt1 + dy0 * trgt2) * src;
+        gy += (-dz1 * trgt0 - dx1 * trgt2) * src;
+        gz += ( dy0 * trgt0 - dx1 * trgt1) * src;
+        src = bound::get(src_ptr_NC, o011, s011);
+        gx += (-dz1 * trgt1 - dy1 * trgt2) * src;
+        gy += (-dz1 * trgt0 + dx0 * trgt2) * src;
+        gz += (-dy1 * trgt0 + dx0 * trgt1) * src;
+        src = bound::get(src_ptr_NC, o111, s111);
+        gx += ( dz1 * trgt1 + dy1 * trgt2) * src;
+        gy += ( dz1 * trgt0 + dx1 * trgt2) * src;
+        gz += ( dy1 * trgt0 + dx1 * trgt1) * src;
+      }
     }
 
     scalar_t * grad_ptr_NDHW = grad_ptr + n * grad_sN + d * grad_sD 
@@ -988,33 +1308,144 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
     grad_ptr_NDHW[grad_sC]   = gy;
     grad_ptr_NDHW[grad_sC*2] = gz;
   }
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if (do_push) {
-    // Offsets into 'push' volume
-    o000 = ix0*push_sW + iy0*push_sH + iz0*push_sD;
-    o100 = ix1*push_sW + iy0*push_sH + iz0*push_sD;
-    o010 = ix0*push_sW + iy1*push_sH + iz0*push_sD;
-    o001 = ix0*push_sW + iy0*push_sH + iz1*push_sD;
-    o110 = ix1*push_sW + iy1*push_sH + iz0*push_sD;
-    o011 = ix0*push_sW + iy1*push_sH + iz1*push_sD;
-    o101 = ix1*push_sW + iy0*push_sH + iz1*push_sD;
-    o111 = ix1*push_sW + iy1*push_sH + iz1*push_sD;
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  if (do_pull) {
+    scalar_t *out_ptr_NCDHW = out_ptr + n * out_sN + d * out_sD 
+                                      + h * out_sH + w * out_sW;
+    scalar_t *src_ptr_NC    = src_ptr + n * src_sN;
+    for (offset_t c = 0; c < C; ++c, out_ptr_NCDHW += out_sC, 
+                                     src_ptr_NC    += src_sC) {
+      *out_ptr_NCDHW = bound::get(src_ptr_NC, o000, s000) * w000
+                     + bound::get(src_ptr_NC, o100, s100) * w100
+                     + bound::get(src_ptr_NC, o010, s010) * w010
+                     + bound::get(src_ptr_NC, o110, s110) * w110
+                     + bound::get(src_ptr_NC, o001, s001) * w001
+                     + bound::get(src_ptr_NC, o101, s101) * w101
+                     + bound::get(src_ptr_NC, o011, s011) * w011
+                     + bound::get(src_ptr_NC, o111, s111) * w111;
+    }
+  }
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ SGrad ~~~~~~~~~~~~~~~~~~~~~ ~~~~~~~~~
+  else if (do_sgrad) {
+    scalar_t *out_ptr_NCDHW = out_ptr + n * out_sN + d * out_sD 
+                                      + h * out_sH + w * out_sW;
+    scalar_t *src_ptr_NC    = src_ptr + n * src_sN;
 
+    for (offset_t c = 0; c < C; ++c, out_ptr_NCDHW += out_sC, 
+                                     src_ptr_NC    += src_sC) {
+      scalar_t src000 = bound::get(src_ptr_NC, o000, s000);
+      scalar_t src100 = bound::get(src_ptr_NC, o100, s100);
+      scalar_t src010 = bound::get(src_ptr_NC, o010, s010);
+      scalar_t src110 = bound::get(src_ptr_NC, o110, s110);
+      scalar_t src001 = bound::get(src_ptr_NC, o001, s001);
+      scalar_t src101 = bound::get(src_ptr_NC, o101, s101);
+      scalar_t src011 = bound::get(src_ptr_NC, o011, s011);
+      scalar_t src111 = bound::get(src_ptr_NC, o111, s111);
+      *out_ptr_NCDHW =           - dy0 * dz0 * src000
+                                 + dy0 * dz0 * src100
+                                 - dy1 * dz0 * src010
+                                 + dy1 * dz0 * src110
+                                 - dy0 * dz1 * src001
+                                 + dy0 * dz1 * src101
+                                 - dy1 * dz1 * src011
+                                 + dy1 * dz1 * src111;
+      out_ptr_NCDHW[out_sK] =    - dx0 * dz0 * src000
+                                 - dx1 * dz0 * src100
+                                 + dx0 * dz0 * src010
+                                 + dx1 * dz0 * src110
+                                 - dx0 * dz1 * src001
+                                 - dx1 * dz1 * src101
+                                 + dx0 * dz1 * src011
+                                 + dx1 * dz1 * src111;
+      out_ptr_NCDHW[out_sK*2] =  - dx0 * dy0 * src000
+                                 - dx1 * dy0 * src100
+                                 - dx0 * dy1 * src010
+                                 - dx1 * dy1 * src110
+                                 + dx0 * dy0 * src001
+                                 + dx1 * dy0 * src101
+                                 + dx0 * dy1 * src011
+                                 + dx1 * dy1 * src111;
+    }
+  }
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  else if (do_push) {
+    // Offsets into 'push' volume
+    o000 = ix0*out_sW + iy0*out_sH + iz0*out_sD;
+    o100 = ix1*out_sW + iy0*out_sH + iz0*out_sD;
+    o010 = ix0*out_sW + iy1*out_sH + iz0*out_sD;
+    o001 = ix0*out_sW + iy0*out_sH + iz1*out_sD;
+    o110 = ix1*out_sW + iy1*out_sH + iz0*out_sD;
+    o011 = ix0*out_sW + iy1*out_sH + iz1*out_sD;
+    o101 = ix1*out_sW + iy0*out_sH + iz1*out_sD;
+    o111 = ix1*out_sW + iy1*out_sH + iz1*out_sD;
     scalar_t *trgt_ptr_NCDHW = trgt_ptr + n * trgt_sN + d * trgt_sD 
                                         + h * trgt_sH + w * trgt_sW;
-    scalar_t *push_ptr_NC = push_ptr + n * push_sN;
-    for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC,
-                                     push_ptr_NC    += push_sC) {
-      scalar_t trgt = *trgt_ptr_NCDHW;
-      bound::add(push_ptr_NC, o000, w000 * trgt, s000);
-      bound::add(push_ptr_NC, o100, w100 * trgt, s100);
-      bound::add(push_ptr_NC, o010, w010 * trgt, s010);
-      bound::add(push_ptr_NC, o110, w110 * trgt, s110);
-      bound::add(push_ptr_NC, o001, w001 * trgt, s001);
-      bound::add(push_ptr_NC, o101, w101 * trgt, s101);
-      bound::add(push_ptr_NC, o011, w011 * trgt, s011);
-      bound::add(push_ptr_NC, o111, w111 * trgt, s111);
-    }
+    scalar_t *out_ptr_NC = out_ptr + n * out_sN;
+    if (trgt_K == 1)
+    {
+      // Diff w.r.t. push/pull
+      for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC,
+                                       out_ptr_NC    += out_sC) {
+        scalar_t trgt = *trgt_ptr_NCDHW;
+        bound::add(out_ptr_NC, o000, w000 * trgt, s000);
+        bound::add(out_ptr_NC, o100, w100 * trgt, s100);
+        bound::add(out_ptr_NC, o010, w010 * trgt, s010);
+        bound::add(out_ptr_NC, o110, w110 * trgt, s110);
+        bound::add(out_ptr_NC, o001, w001 * trgt, s001);
+        bound::add(out_ptr_NC, o101, w101 * trgt, s101);
+        bound::add(out_ptr_NC, o011, w011 * trgt, s011);
+        bound::add(out_ptr_NC, o111, w111 * trgt, s111);
+      }
+     }
+     else 
+      {
+        // Diff w.r.t. sgrad
+        scalar_t val;
+        for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC,
+                                         out_ptr_NC     += out_sC) {
+          scalar_t trgt0 = *trgt_ptr_NCDHW,
+                   trgt1 = trgt_ptr_NCDHW[trgt_sK],
+                   trgt2 = trgt_ptr_NCDHW[trgt_sK*2];
+          val = - dy0 * dz0 * trgt0 - dx0 * dz0 * trgt1 - dx0 * dy0 * trgt2;
+          bound::add(out_ptr_NC, o000, val, s000);
+          val =   dy0 * dz0 * trgt0 - dx1 * dz0 * trgt1 - dx1 * dy0 * trgt2;
+          bound::add(out_ptr_NC, o100, val, s100);
+          val = - dy1 * dz0 * trgt0 + dx0 * dz0 * trgt1 - dx0 * dy1 * trgt2;
+          bound::add(out_ptr_NC, o010, val, s010);
+          val =   dy1 * dz0 * trgt0 + dx1 * dz0 * trgt1 - dx1 * dy1 * trgt2;
+          bound::add(out_ptr_NC, o110, val, s110);
+          val = - dy0 * dz1 * trgt0 - dx0 * dz1 * trgt1 + dx0 * dy0 * trgt2;
+          bound::add(out_ptr_NC, o001, val, s001);
+          val =   dy0 * dz1 * trgt0 - dx1 * dz1 * trgt1 + dx1 * dy0 * trgt2;
+          bound::add(out_ptr_NC, o101, val, s101);
+          val = - dy1 * dz1 * trgt0 + dx0 * dz1 * trgt1 + dx0 * dy1 * trgt2;
+          bound::add(out_ptr_NC, o011, val, s011);
+          val =   dy1 * dz1 * trgt0 + dx1 * dz1 * trgt1 + dx1 * dy1 * trgt2;
+          bound::add(out_ptr_NC, o111, val, s111);
+        }
+     }
+  }
+  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  else if (do_count) {
+    // Offsets into 'push' volume
+    o000 = ix0*out_sW + iy0*out_sH + iz0*out_sD;
+    o100 = ix1*out_sW + iy0*out_sH + iz0*out_sD;
+    o010 = ix0*out_sW + iy1*out_sH + iz0*out_sD;
+    o001 = ix0*out_sW + iy0*out_sH + iz1*out_sD;
+    o110 = ix1*out_sW + iy1*out_sH + iz0*out_sD;
+    o011 = ix0*out_sW + iy1*out_sH + iz1*out_sD;
+    o101 = ix1*out_sW + iy0*out_sH + iz1*out_sD;
+    o111 = ix1*out_sW + iy1*out_sH + iz1*out_sD;
+
+    scalar_t *out_ptr_N = out_ptr + n * out_sN;
+    bound::add(out_ptr_N, o000, w000, s000);
+    bound::add(out_ptr_N, o100, w100, s100);
+    bound::add(out_ptr_N, o010, w010, s010);
+    bound::add(out_ptr_N, o110, w110, s110);
+    bound::add(out_ptr_N, o001, w001, s001);
+    bound::add(out_ptr_N, o101, w101, s101);
+    bound::add(out_ptr_N, o011, w011, s011);
+    bound::add(out_ptr_N, o111, w111, s111);
   }
 }
 
@@ -1069,13 +1500,13 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d_bilinear(
 
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (do_pull) {
-    scalar_t *pull_ptr_NCHW = pull_ptr + n * pull_sN
-                                       + h * pull_sH 
-                                       + w * pull_sW;
+    scalar_t *out_ptr_NCHW = out_ptr + n * out_sN
+                                       + h * out_sH 
+                                       + w * out_sW;
     scalar_t *src_ptr_NC = src_ptr + n * src_sN;
-    for (offset_t c = 0; c < C; ++c, pull_ptr_NCHW += pull_sC, 
+    for (offset_t c = 0; c < C; ++c, out_ptr_NCHW += out_sC, 
                                     src_ptr_NC    += src_sC) {
-      *pull_ptr_NCHW = bound::get(src_ptr_NC, o00, s00) * w00
+      *out_ptr_NCHW = bound::get(src_ptr_NC, o00, s00) * w00
                      + bound::get(src_ptr_NC, o10, s10) * w10
                      + bound::get(src_ptr_NC, o01, s01) * w01
                      + bound::get(src_ptr_NC, o11, s11) * w11;
@@ -1116,22 +1547,43 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d_bilinear(
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   if (do_push) {
     // Offsets into 'push' volume
-    o00 = ix0*push_sW + iy0*push_sH;
-    o10 = ix1*push_sW + iy0*push_sH;
-    o01 = ix0*push_sW + iy1*push_sH;
-    o11 = ix1*push_sW + iy1*push_sH;
+    o00 = ix0*out_sW + iy0*out_sH;
+    o10 = ix1*out_sW + iy0*out_sH;
+    o01 = ix0*out_sW + iy1*out_sH;
+    o11 = ix1*out_sW + iy1*out_sH;
 
     scalar_t *trgt_ptr_NCHW = trgt_ptr + n * trgt_sN 
                                        + h * trgt_sH 
                                        + w * trgt_sW;
-    scalar_t *push_ptr_NC = push_ptr + n * push_sN;
-    for (offset_t c = 0; c < C; ++c, trgt_ptr_NCHW += trgt_sC,
-                                    push_ptr_NC   += push_sC) {
-      scalar_t trgt = *trgt_ptr_NCHW;
-      bound::add(push_ptr_NC, o00, w00 * trgt, s00);
-      bound::add(push_ptr_NC, o10, w10 * trgt, s10);
-      bound::add(push_ptr_NC, o01, w01 * trgt, s01);
-      bound::add(push_ptr_NC, o11, w11 * trgt, s11);
+    scalar_t *out_ptr_NC = out_ptr + n * out_sN;
+    if (trgt_K == 1)
+    {
+      for (offset_t c = 0; c < C; ++c, trgt_ptr_NCHW += trgt_sC,
+                                      out_ptr_NC   += out_sC) {
+        scalar_t trgt = *trgt_ptr_NCHW;
+        bound::add(out_ptr_NC, o00, w00 * trgt, s00);
+        bound::add(out_ptr_NC, o10, w10 * trgt, s10);
+        bound::add(out_ptr_NC, o01, w01 * trgt, s01);
+        bound::add(out_ptr_NC, o11, w11 * trgt, s11);
+      }
+    }
+    else 
+    {
+      // Diff w.r.t. sgrad
+      scalar_t val;
+      for (offset_t c = 0; c < C; ++c, trgt_ptr_NCHW += trgt_sC,
+                                       out_ptr_NC    += out_sC) {
+        scalar_t trgt0 = *trgt_ptr_NCHW,
+                 trgt1 = trgt_ptr_NCHW[trgt_sK];
+        val = - dy0 * trgt0 - dx0 * trgt1;
+        bound::add(out_ptr_NC, o00, val, s00);
+        val =   dy0 * trgt0 - dx1 * trgt1;
+        bound::add(out_ptr_NC, o10, val, s10);
+        val = - dy1 * trgt0 + dx0 * trgt1;
+        bound::add(out_ptr_NC, o01, val, s01);
+        val =   dy1 * trgt0 + dx1 * trgt1;
+        bound::add(out_ptr_NC, o11, val, s11);
+      }
     }
   }
 }
@@ -1162,22 +1614,27 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_nearest(
 
   if (do_pull) {
     offset_t  o = iz*src_sD + iy*src_sH + ix*src_sW;
-    scalar_t *pull_ptr_NCDHW = pull_ptr + n * pull_sN + d * pull_sD 
-                                        + h * pull_sH + w * pull_sW;
+    scalar_t *out_ptr_NCDHW = out_ptr + n * out_sN + d * out_sD 
+                                        + h * out_sH + w * out_sW;
     scalar_t *src_ptr_NC = src_ptr + n * src_sN;
-    for (offset_t c = 0; c < C; ++c, pull_ptr_NCDHW += pull_sC, 
+    for (offset_t c = 0; c < C; ++c, out_ptr_NCDHW += out_sC, 
                                     src_ptr_NC     += src_sC)
-      *pull_ptr_NCDHW = bound::get(src_ptr_NC, o, s);
+      *out_ptr_NCDHW = bound::get(src_ptr_NC, o, s);
   }
-  if (do_push) {
-    offset_t  o = iz*push_sD + iy*push_sH + ix*push_sW;
+  else if (do_push && trgt_K  == 1) {
+    offset_t  o = iz*out_sD + iy*out_sH + ix*out_sW;
     scalar_t *trgt_ptr_NCDHW = trgt_ptr + n * trgt_sN + d * trgt_sD 
                                         + h * trgt_sH + w * trgt_sW;
-    scalar_t *push_ptr_NC    = push_ptr + n * push_sN;
+    scalar_t *out_ptr_NC    = out_ptr + n * out_sN;
     for (offset_t c = 0; c < C; ++c, trgt_ptr_NCDHW += trgt_sC, 
-                                    push_ptr_NC    += push_sC)
-      bound::add(push_ptr_NC, o, *trgt_ptr_NCDHW, s);
-
+                                    out_ptr_NC    += out_sC)
+      bound::add(out_ptr_NC, o, *trgt_ptr_NCDHW, s);
+  }
+  else if (do_count) {
+    offset_t  o = iz*out_sD + iy*out_sH + ix*out_sW;
+    scalar_t *out_ptr_NC    = out_ptr + n * out_sN;
+    for (offset_t c = 0; c < C; ++c, out_ptr_NC    += out_sC)
+      bound::add(out_ptr_NC, o, static_cast<scalar_t>(1), s);
   }
 }
 
@@ -1204,499 +1661,40 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d_nearest(
 
   if (do_pull) {
     offset_t  o = iy*src_sH + ix*src_sW;
-    scalar_t *pull_ptr_NCHW = pull_ptr + n * pull_sN 
-                                       + h * pull_sH 
-                                       + w * pull_sW;
+    scalar_t *out_ptr_NCHW = out_ptr + n * out_sN 
+                                       + h * out_sH 
+                                       + w * out_sW;
     scalar_t *src_ptr_NC = src_ptr + n * src_sN;
-    for (offset_t c = 0; c < C; ++c, pull_ptr_NCHW += pull_sC, 
+    for (offset_t c = 0; c < C; ++c, out_ptr_NCHW += out_sC, 
                                     src_ptr_NC    += src_sC)
-      *pull_ptr_NCHW = bound::get(src_ptr_NC, o, s);
+      *out_ptr_NCHW = bound::get(src_ptr_NC, o, s);
   }
-  if (do_push) {
-    offset_t  o = iy*push_sH + ix*push_sW;
+  else if (do_push && trgt_K  == 1) {
+    offset_t  o = iy*out_sH + ix*out_sW;
     scalar_t *trgt_ptr_NCHW = trgt_ptr + n * trgt_sN 
                                        + h * trgt_sH 
                                        + w * trgt_sW;
-    scalar_t *push_ptr_NC    = push_ptr + n * push_sN;
+    scalar_t *out_ptr_NC    = out_ptr + n * out_sN;
     for (offset_t c = 0; c < C; ++c, trgt_ptr_NCHW += trgt_sC, 
-                                    push_ptr_NC   += push_sC)
-      bound::add(push_ptr_NC, o, *trgt_ptr_NCHW, s);
-
+                                    out_ptr_NC   += out_sC)
+      bound::add(out_ptr_NC, o, *trgt_ptr_NCHW, s);
+  }
+  else if (do_push) {
+    offset_t  o = iy*out_sH + ix*out_sW;
+    scalar_t *out_ptr_NC    = out_ptr + n * out_sN;
+    for (offset_t c = 0; c < C; ++c, out_ptr_NC   += out_sC)
+      bound::add(out_ptr_NC, o, static_cast<scalar_t>(1), s);
   }
 }
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //            LINEAR INTERPOLATION 3D + SLIDING BOUNDARY
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-#if 0
+// TODO
 
-// Sliding boundary conditions only make sense if the source volume 
-// is a displacement field itself. These boundary conditions are 
-// different for each component of the displacement field:
-// - x component: dirichlet/DST2 along W || neumann/DCT2 along H/D
-// - y component: dirichlet/DST2 along H || neumann/DCT2 along W/D
-// - z component: dirichlet/DST2 along D || neumann/DCT2 along W/H
-// The effect is that these displacement fields are allowed to slide 
-// along the edges of the field of view. This penalises translation but 
-// not rotation. In contrast, circular boundary conditions penalise
-// rotations but not translations.
-
-PUSHPULL_PREFIX_DIM_BND_INT(void,3,BoundSliding,BiLinearInterpolation)
-::_interpolate(offset_t x, offset_t y, offset_t z,
-               offset_t w, offset_t h, offset_t d, offset_t n)
-{
-  // Get corner pixel values from (x, y, z)
-  offset_t ix0 = static_cast<offset_t>(std::floor(x));
-  offset_t iy0 = static_cast<offset_t>(std::floor(y));
-  offset_t iz0 = static_cast<offset_t>(std::floor(z));
-
-  // Interpolation weights (inversely proportional to distance)
-  scalar_t dx1 = x - ix0;
-  scalar_t dy1 = y - iy0;
-  scalar_t dz1 = z - iz0;
-  scalar_t dx0 = 1. - dx1;
-  scalar_t dy0 = 1. - dy1;
-  scalar_t dz0 = 1. - dz1;
-  scalar_t w000 = dx0 * dy0 * dz0;
-  scalar_t w100 = dx1 * dy0 * dz0;
-  scalar_t w010 = dx0 * dy1 * dz0;
-  scalar_t w001 = dx0 * dy0 * dz1;
-  scalar_t w110 = dx1 * dy1 * dz0;
-  scalar_t w011 = dx0 * dy1 * dz1;
-  scalar_t w101 = dx1 * dy0 * dz1;
-  scalar_t w111 = dx1 * dy1 * dz1;
-
-  // Sign (DST condition) (/!\ compute sign before warping indices)
-  int8_t  sx1c = bound::BoundDCT2::sign(ix0+1,src_W);
-  int8_t  sy1c = bound::BoundDCT2::sign(iy0+1,src_H);
-  int8_t  sz1c = bound::BoundDCT2::sign(iz0+1,src_D);
-  int8_t  sx0c = bound::BoundDCT2::sign(ix0,  src_W);
-  int8_t  sy0c = bound::BoundDCT2::sign(iy0,  src_H);
-  int8_t  sz0c = bound::BoundDCT2::sign(iz0,  src_D);
-  int8_t  sx1s = bound::BoundDST2::sign(ix0+1,src_W);
-  int8_t  sy1s = bound::BoundDST2::sign(iy0+1,src_H);
-  int8_t  sz1s = bound::BoundDST2::sign(iz0+1,src_D);
-  int8_t  sx0s = bound::BoundDST2::sign(ix0,  src_W);
-  int8_t  sy0s = bound::BoundDST2::sign(iy0,  src_H);
-  int8_t  sz0s = bound::BoundDST2::sign(iz0,  src_D);
-  int8_t  sx000 = sx0s * sy0c * sz0c;
-  int8_t  sx100 = sx1s * sy0c * sz0c;
-  int8_t  sx010 = sx0s * sy1c * sz0c;
-  int8_t  sx001 = sx0s * sy0c * sz1c;
-  int8_t  sx110 = sx1s * sy1c * sz0c;
-  int8_t  sx011 = sx0s * sy1c * sz1c;
-  int8_t  sx101 = sx1s * sy0c * sz1c;
-  int8_t  sx111 = sx1s * sy1c * sz1c;
-  int8_t  sy000 = sx0c * sy0s * sz0c;
-  int8_t  sy100 = sx1c * sy0s * sz0c;
-  int8_t  sy010 = sx0c * sy1s * sz0c;
-  int8_t  sy001 = sx0c * sy0s * sz1c;
-  int8_t  sy110 = sx1c * sy1s * sz0c;
-  int8_t  sy011 = sx0c * sy1s * sz1c;
-  int8_t  sy101 = sx1c * sy0s * sz1c;
-  int8_t  sy111 = sx1c * sy1s * sz1c;
-  int8_t  sz000 = sx0c * sy0c * sz0s;
-  int8_t  sz100 = sx1c * sy0c * sz0s;
-  int8_t  sz010 = sx0c * sy1c * sz0s;
-  int8_t  sz001 = sx0c * sy0c * sz1s;
-  int8_t  sz110 = sx1c * sy1c * sz0s;
-  int8_t  sz011 = sx0c * sy1c * sz1s;
-  int8_t  sz101 = sx1c * sy0c * sz1s;
-  int8_t  sz111 = sx1c * sy1c * sz1s;
-
-  // Warp indices
-  offset_t ix1c, iy1c, iz1c, ix1s, iy1s, iz1s;
-  ix1c = bound::BoundDCT2::index(ix0+1,src_W);
-  iy1c = bound::BoundDCT2::index(iy0+1,src_H);
-  iz1c = bound::BoundDCT2::index(iz0+1,src_D);
-  ix0c = bound::BoundDCT2::index(ix0,  src_W);
-  iy0c = bound::BoundDCT2::index(iy0,  src_H);
-  iz0c = bound::BoundDCT2::index(iz0,  src_D);
-  ix1s = bound::BoundDTS2::index(ix0+1,src_W);
-  iy1s = bound::BoundDST2::index(iy0+1,src_H);
-  iz1s = bound::BoundDST2::index(iz0+1,src_D);
-  ix0s = bound::BoundDST2::index(ix0,  src_W);
-  iy0s = bound::BoundDST2::index(iy0,  src_H);
-  iz0s = bound::BoundDST2::index(iz0,  src_D);
-
-  // Offsets into source volume
-  offset_t ox000 = ix0c*_src_sW + iy0s*_src_sH + iz0s*_src_sD;
-  offset_t ox100 = ix1c*_src_sW + iy0s*_src_sH + iz0s*_src_sD;
-  offset_t ox010 = ix0c*_src_sW + iy1s*_src_sH + iz0s*_src_sD;
-  offset_t ox001 = ix0c*_src_sW + iy0s*_src_sH + iz1s*_src_sD;
-  offset_t ox110 = ix1c*_src_sW + iy1s*_src_sH + iz0s*_src_sD;
-  offset_t ox011 = ix0c*_src_sW + iy1s*_src_sH + iz1s*_src_sD;
-  offset_t ox101 = ix1c*_src_sW + iy0s*_src_sH + iz1s*_src_sD;
-  offset_t ox111 = ix1c*_src_sW + iy1s*_src_sH + iz1s*_src_sD;
-  offset_t oy000 = ix0s*_src_sW + iy0c*_src_sH + iz0s*_src_sD;
-  offset_t oy100 = ix1s*_src_sW + iy0c*_src_sH + iz0s*_src_sD;
-  offset_t oy010 = ix0s*_src_sW + iy1c*_src_sH + iz0s*_src_sD;
-  offset_t oy001 = ix0s*_src_sW + iy0c*_src_sH + iz1s*_src_sD;
-  offset_t oy110 = ix1s*_src_sW + iy1c*_src_sH + iz0s*_src_sD;
-  offset_t oy011 = ix0s*_src_sW + iy1c*_src_sH + iz1s*_src_sD;
-  offset_t oy101 = ix1s*_src_sW + iy0c*_src_sH + iz1s*_src_sD;
-  offset_t oy111 = ix1s*_src_sW + iy1c*_src_sH + iz1s*_src_sD;
-  offset_t oz000 = ix0s*_src_sW + iy0s*_src_sH + iz0c*_src_sD;
-  offset_t oz100 = ix1s*_src_sW + iy0s*_src_sH + iz0c*_src_sD;
-  offset_t oz010 = ix0s*_src_sW + iy1s*_src_sH + iz0c*_src_sD;
-  offset_t oz001 = ix0s*_src_sW + iy0s*_src_sH + iz1c*_src_sD;
-  offset_t oz110 = ix1s*_src_sW + iy1s*_src_sH + iz0c*_src_sD;
-  offset_t oz011 = ix0s*_src_sW + iy1s*_src_sH + iz1c*_src_sD;
-  offset_t oz101 = ix1s*_src_sW + iy0s*_src_sH + iz1c*_src_sD;
-  offset_t oz111 = ix1s*_src_sW + iy1s*_src_sH + iz1c*_src_sD;
-
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if (do_pull) {
-    scalar_t *pull_ptr_NCDHW =pull_ptr + n *pull_sN + d *pull_sD 
-                                         + h *pull_sH + w *pull_sW;
-    scalar_t *src_ptr_NC =src_ptr + n *src_sN;
-
-    *pull_ptr_NCDHW = get(src_ptr_NC, ox000, sx000) * w000
-                    + get(src_ptr_NC, ox100, sx100) * w100
-                    + get(src_ptr_NC, ox010, sx010) * w010
-                    + get(src_ptr_NC, ox110, sx110) * w110
-                    + get(src_ptr_NC, ox001, sx001) * w001
-                    + get(src_ptr_NC, ox101, sx101) * w101
-                    + get(src_ptr_NC, ox011, sx011) * w011
-                    + get(src_ptr_NC, ox111, sx111) * w111;
-    pull_ptr_NCDHW +=pull_sC;
-    src_ptr_NC     +=src_sC;
-    *pull_ptr_NCDHW = get(src_ptr_NC, oy000, sy000) * w000
-                    + get(src_ptr_NC, oy100, sy100) * w100
-                    + get(src_ptr_NC, oy010, sy010) * w010
-                    + get(src_ptr_NC, oy110, sy110) * w110
-                    + get(src_ptr_NC, oy001, sy001) * w001
-                    + get(src_ptr_NC, oy101, sy101) * w101
-                    + get(src_ptr_NC, oy011, sy011) * w011
-                    + get(src_ptr_NC, oy111, sy111) * w111;
-    pull_ptr_NCDHW +=pull_sC;
-    src_ptr_NC     +=src_sC;
-    *pull_ptr_NCDHW = get(src_ptr_NC, oz000, sz000) * w000
-                    + get(src_ptr_NC, oz100, sz100) * w100
-                    + get(src_ptr_NC, oz010, sz010) * w010
-                    + get(src_ptr_NC, oz110, sz110) * w110
-                    + get(src_ptr_NC, oz001, sz001) * w001
-                    + get(src_ptr_NC, oz101, sz101) * w101
-                    + get(src_ptr_NC, oz011, sz011) * w011
-                    + get(src_ptr_NC, oz111, sz111) * w111;
-  }
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if (do_push) {
-    scalar_t *trgt_ptr_NCDHW =trgt_ptr + n *trgt_sN + d *trgt_sD 
-                                         + h *trgt_sH + w *trgt_sW;
-    scalar_t *push_ptr_NC =push_ptr + n *push_sN;
-    scalar_t trgt = *trgt_ptr_NCDHW;
-    add(push_ptr_NC, ox000, sx000, w000 * trgt);
-    add(push_ptr_NC, ox100, sx100, w100 * trgt);
-    add(push_ptr_NC, ox010, sx010, w010 * trgt);
-    add(push_ptr_NC, ox110, sx110, w110 * trgt);
-    add(push_ptr_NC, ox001, sx001, w001 * trgt);
-    add(push_ptr_NC, ox101, sx101, w101 * trgt);
-    add(push_ptr_NC, ox011, sx011, w011 * trgt);
-    add(push_ptr_NC, ox111, sx111, w111 * trgt);
-    push_ptr_NC    +=push_sC;
-    trgt_ptr_NCDHW +=trgt_sC;
-    trgt            = *trgt_ptr_NCDHW;
-    add(push_ptr_NC, oy000, sy000, w000 * trgt);
-    add(push_ptr_NC, oy100, sy100, w100 * trgt);
-    add(push_ptr_NC, oy010, sy010, w010 * trgt);
-    add(push_ptr_NC, oy110, sy110, w110 * trgt);
-    add(push_ptr_NC, oy001, sy001, w001 * trgt);
-    add(push_ptr_NC, oy101, sy101, w101 * trgt);
-    add(push_ptr_NC, oy011, sy011, w011 * trgt);
-    add(push_ptr_NC, oy111, sy111, w111 * trgt);
-    push_ptr_NC    +=push_sC;
-    trgt_ptr_NCDHW +=trgt_sC;
-    trgt            = *trgt_ptr_NCDHW;
-    add(push_ptr_NC, oz000, sz000, w000 * trgt);
-    add(push_ptr_NC, oz100, sz100, w100 * trgt);
-    add(push_ptr_NC, oz010, sz010, w010 * trgt);
-    add(push_ptr_NC, oz110, sz110, w110 * trgt);
-    add(push_ptr_NC, oz001, sz001, w001 * trgt);
-    add(push_ptr_NC, oz101, sz101, w101 * trgt);
-    add(push_ptr_NC, oz011, sz011, w011 * trgt);
-    add(push_ptr_NC, oz111, sz111, w111 * trgt);
-  }
-  // ~~~~~~~~~~~~~~~~~~~~~~~ Grid gradient ~~~~~~~~~~~~~~~~~~~~~~~
-  if do_grad) {
-    scalar_t gx = static_cast<scalar_t>(0);
-    scalar_t gy = static_cast<scalar_t>(0);
-    scalar_t gz = static_cast<scalar_t>(0);
-    scalar_t *trgt_ptr_NCDHW =trgt_ptr + n *trgt_sN + d *trgt_sD 
-                                         + h *trgt_sH + w *trgt_sW;
-    scalar_t *src_ptr_NC = src_ptr + n * src_sN;
-    scalar_t src;
-    scalar_t trgt = *trgt_ptr_NCDHW;
-    src = get(src_ptr_NC, ox000, sx000) * trgt;
-    gx +=       dy0 * dz0 * src * gix0s;
-    gy += dx0       * dz0 * src * giy0c;
-    gz += dx0 * dy0       * src * giz0c;
-    src = get(src_ptr_NC, ox100, sx100) * trgt;
-    gx +=       dy0 * dz0 * src * gix1s;
-    gy += dx1       * dz0 * src * giy0c;
-    gz += dx1 * dy0       * src * giz0c;
-    src = get(src_ptr_NC, ox010, sx010) * trgt;
-    gx +=       dy1 * dz0 * src * gix0s;
-    gy += dx0       * dz0 * src * giy1c;
-    gz += dx0 * dy1       * src * giz0c;
-    src = get(src_ptr_NC, ox110, sx110) * trgt;
-    gx +=       dy1 * dz0 * src * gix1s;
-    gy += dx1       * dz0 * src * giy1c;
-    gz += dx1 * dy1       * src * giz0c;
-    src = get(src_ptr_NC, ox001, sx001) * trgt;
-    gx +=       dy0 * dz1 * src * gix0s;
-    gy += dx0       * dz1 * src * giy0c;
-    gz += dx0 * dy0       * src * giz1c;
-    src = get(src_ptr_NC, ox101, sx101) * trgt;
-    gx +=       dy0 * dz1 * src * gix1s;
-    gy += dx1       * dz1 * src * giy0c;
-    gz += dx1 * dy0       * src * giz1c;
-    src = get(src_ptr_NC, ox011, sx011) * trgt;
-    gx +=       dy1 * dz1 * src * gix0s;
-    gy += dx0       * dz1 * src * giy1c;
-    gz += dx0 * dy1       * src * giz1c;
-    src = get(src_ptr_NC, ox111, sx111) * trgt;
-    gx +=       dy1 * dz1 * src * gix1s;
-    gy += dx1       * dz1 * src * giy1c;
-    gz += dx1 * dy1       * src * giz1c;
-    src_ptr_NC     +=src_sC;
-    trgt_ptr_NCDHW +=trgt_sC;
-    trgt            = *trgt_ptr_NCDHW;
-    src = get(src_ptr_NC, oy000, sy000) * trgt;
-    gx +=       dy0 * dz0 * src * gix0c;
-    gy += dx0       * dz0 * src * giy0s;
-    gz += dx0 * dy0       * src * giz0c;
-    src = get(src_ptr_NC, oy100, sy100) * trgt;
-    gx +=       dy0 * dz0 * src * gix1c;
-    gy += dx1       * dz0 * src * giy0s;
-    gz += dx1 * dy0       * src * giz0c;
-    src = get(src_ptr_NC, oy010, sy010) * trgt;
-    gx +=       dy1 * dz0 * src * gix0c;
-    gy += dx0       * dz0 * src * giy1s;
-    gz += dx0 * dy1       * src * giz0c;
-    src = get(src_ptr_NC, oy110, sy110) * trgt;
-    gx +=       dy1 * dz0 * src * gix1c;
-    gy += dx1       * dz0 * src * giy1s;
-    gz += dx1 * dy1       * src * giz0c;
-    src = get(src_ptr_NC, oy001, sy001) * trgt;
-    gx +=       dy0 * dz1 * src * gix0c;
-    gy += dx0       * dz1 * src * giy0s;
-    gz += dx0 * dy0       * src * giz1c;
-    src = get(src_ptr_NC, oy101, sy101) * trgt;
-    gx +=       dy0 * dz1 * src * gix1c;
-    gy += dx1       * dz1 * src * giy0s;
-    gz += dx1 * dy0       * src * giz1c;
-    src = get(src_ptr_NC, oy011, sy011) * trgt;
-    gx +=       dy1 * dz1 * src * gix0c;
-    gy += dx0       * dz1 * src * giy1s;
-    gz += dx0 * dy1       * src * giz1c;
-    src = get(src_ptr_NC, oy111, sy111) * trgt;
-    gx +=       dy1 * dz1 * src * gix1c;
-    gy += dx1       * dz1 * src * giy1s;
-    gz += dx1 * dy1       * src * giz1c;
-    src_ptr_NC     +=src_sC;
-    trgt_ptr_NCDHW +=trgt_sC;
-    trgt            = *trgt_ptr_NCDHW;
-    src = get(src_ptr_NC, oz000, sz000) * trgt;
-    gx +=       dy0 * dz0 * src * gix0c;
-    gy += dx0       * dz0 * src * giy0c;
-    gz += dx0 * dy0       * src * giz0s;
-    src = get(src_ptr_NC, oz100, sz100) * trgt;
-    gx +=       dy0 * dz0 * src * gix1c;
-    gy += dx1       * dz0 * src * giy0c;
-    gz += dx1 * dy0       * src * giz0s;
-    src = get(src_ptr_NC, oz010, sz010) * trgt;
-    gx +=       dy1 * dz0 * src * gix0c;
-    gy += dx0       * dz0 * src * giy1c;
-    gz += dx0 * dy1       * src * giz0s;
-    src = get(src_ptr_NC, oz110, sz110) * trgt;
-    gx +=       dy1 * dz0 * src * gix1c;
-    gy += dx1       * dz0 * src * giy1c;
-    gz += dx1 * dy1       * src * giz0s;
-    src = get(src_ptr_NC, oz001, sz001) * trgt;
-    gx +=       dy0 * dz1 * src * gix0c;
-    gy += dx0       * dz1 * src * giy0c;
-    gz += dx0 * dy0       * src * giz1s;
-    src = get(src_ptr_NC, oz101, sz101) * trgt;
-    gx +=       dy0 * dz1 * src * gix1c;
-    gy += dx1       * dz1 * src * giy0c;
-    gz += dx1 * dy0       * src * giz1s;
-    src = get(src_ptr_NC, oz011, sz011) * trgt;
-    gx +=       dy1 * dz1 * src * gix0c;
-    gy += dx0       * dz1 * src * giy1c;
-    gz += dx0 * dy1       * src * giz1s;
-    src = get(src_ptr_NC, oz111, sz111) * trgt;
-    gx +=       dy1 * dz1 * src * gix1c;
-    gy += dx1       * dz1 * src * giy1c;
-    gz += dx1 * dy1       * src * giz1s;
-
-    scalar_t * grad_ptr_NDHW =grad_ptr + n *grad_sN + d *grad_sD 
-                                         + h *grad_sH + w *grad_sW;
-    grad_ptr_NDHW[0] = gx;
-    grad_ptr_NDHW[1] = gy;
-    grad_ptr_NDHW[2] = gz;
-  }
-}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//            LINEAR INTERPOLATION 2D + SLIDING BOUNDARY
+//                  CUDA KERNEL (MUST BE OUT OF CLASS)
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-template <Coord coord_mode, typename scalar_t>
-void PushPullImpl<2, Bound::Sliding, 1, coord_mode, scalar_t>
-::_interpolate(offset_t x, offset_t y, offset_t z,
-               offset_t w, offset_t h, offset_t d, offset_t n)
-{
-  // Get corner pixel values from (x, y, z)
-  offset_t ix0 = static_cast<offset_t>(std::floor(x));
-  offset_t iy0 = static_cast<offset_t>(std::floor(y));
-
-  // Interpolation weights (inversely proportional to distance)
-  scalar_t dx1 = x - ix0;
-  scalar_t dy1 = y - iy0;
-  scalar_t dx0 = 1. - dx1;
-  scalar_t dy0 = 1. - dy1;
-  scalar_t w00 = dx0 * dy0;
-  scalar_t w10 = dx1 * dy0;
-  scalar_t w01 = dx0 * dy1;
-  scalar_t w11 = dx1 * dy1;
-
-  // Sign (DST condition) (/!\ compute sign before warping indices)
-  int8_t  sx1c = bound::sign<Bound::DCT2>(ix0+1,src_W);
-  int8_t  sy1c = bound::sign<Bound::DCT2>(iy0+1,src_H);
-  int8_t  sx0c = bound::sign<Bound::DCT2>(ix0,  src_W);
-  int8_t  sy0c = bound::sign<Bound::DCT2>(iy0,  src_H);
-  int8_t  sx1s = bound::sign<Bound::DST2>(ix0+1,src_W);
-  int8_t  sy1s = bound::sign<Bound::DST2>(iy0+1,src_H);
-  int8_t  sx0s = bound::sign<Bound::DST2>(ix0,  src_W);
-  int8_t  sy0s = bound::sign<Bound::DST2>(iy0,  src_H);
-  int8_t  sx00 = sx0s * sy0c;
-  int8_t  sx10 = sx1s * sy0c;
-  int8_t  sx01 = sx0s * sy1c;
-  int8_t  sx11 = sx1s * sy1c;
-  int8_t  sy00 = sx0c * sy0s;
-  int8_t  sy10 = sx1c * sy0s;
-  int8_t  sy01 = sx0c * sy1s;
-  int8_t  sy11 = sx1c * sy1s;
-
-  // Derivative of warping function
-  offset_t gix0c, gix1c, giy0c, giy1c,
-          gix0s, gix1s, giy0s, giy1s;
-  if do_grad) {
-    gix1c = bound::grad<Bound::DCT2>(ix0+1,src_W);
-    giy1c = bound::grad<Bound::DCT2>(iy0+1,src_H);
-    gix0c = bound::grad<Bound::DCT2>(ix0,  src_W);
-    giy0c = bound::grad<Bound::DCT2>(iy0,  src_H);
-    gix1s = bound::grad<Bound::DST2>(ix0+1,src_W);
-    giy1s = bound::grad<Bound::DST2>(iy0+1,src_H);
-    gix0s = bound::grad<Bound::DST2>(ix0,  src_W);
-    giy0s = bound::grad<Bound::DST2>(iy0,  src_H);
-  }
-
-  // Warp indices
-  offset_t ix1c, iy1c, ix1s, iy1s;
-  ix1c = bound::index<Bound::DCT2>(ix0+1,src_W);
-  iy1c = bound::index<Bound::DCT2>(iy0+1,src_H);
-  ix0c = bound::index<Bound::DCT2>(ix0,  src_W);
-  iy0c = bound::index<Bound::DCT2>(iy0,  src_H);
-  ix1s = bound::index<Bound::DST2>(ix0+1,src_W);
-  iy1s = bound::index<Bound::DST2>(iy0+1,src_H);
-  ix0s = bound::index<Bound::DST2>(ix0,  src_W);
-  iy0s = bound::index<Bound::DST2>(iy0,  src_H);
-
-  // Offsets into source volume
-  offset_t ox00 = ix0c*_src_sW + iy0s*_src_sH;
-  offset_t ox10 = ix1c*_src_sW + iy0s*_src_sH;
-  offset_t ox01 = ix0c*_src_sW + iy1s*_src_sH;
-  offset_t ox11 = ix1c*_src_sW + iy1s*_src_sH;
-  offset_t oy00 = ix0s*_src_sW + iy0c*_src_sH;
-  offset_t oy10 = ix1s*_src_sW + iy0c*_src_sH;
-  offset_t oy01 = ix0s*_src_sW + iy1c*_src_sH;
-  offset_t oy11 = ix1s*_src_sW + iy1c*_src_sH;
-
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Pull ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if do_pull) {
-    scalar_t *pull_ptr_NCHW =pull_ptr + n *pull_sN
-                                        + h *pull_sH 
-                                        + w *pull_sW;
-    scalar_t *src_ptr_NC =src_ptr + n *src_sN;
-
-    *pull_ptr_NCHW = get(src_ptr_NC, ox00, sx00) * w00
-                   + get(src_ptr_NC, ox10, sx10) * w10
-                   + get(src_ptr_NC, ox01, sx01) * w01
-                   + get(src_ptr_NC, ox11, sx11) * w11;
-    pull_ptr_NCHW +=pull_sC;
-    src_ptr_NC    +=src_sC;
-    *pull_ptr_NCHW = get(src_ptr_NC, oy00, sy00) * w00
-                   + get(src_ptr_NC, oy10, sy10) * w10
-                   + get(src_ptr_NC, oy01, sy01) * w01
-                   + get(src_ptr_NC, oy11, sy11) * w11;
-  }
-  // ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  if do_push) {
-    scalar_t *trgt_ptr_NCHW =trgt_ptr + n *trgt_sN
-                                        + h *trgt_sH 
-                                        + w *trgt_sW;
-    scalar_t *push_ptr_NC =push_ptr + n *push_sN;
-    scalar_t trgt = *trgt_ptr_NCHW;
-    add(push_ptr_NC, ox00, sx00, w00 * trgt);
-    add(push_ptr_NC, ox10, sx10, w10 * trgt);
-    add(push_ptr_NC, ox01, sx01, w01 * trgt);
-    add(push_ptr_NC, ox11, sx11, w11 * trgt);
-    push_ptr_NC    +=push_sC;
-    trgt_ptr_NCHW +=trgt_sC;
-    trgt            = *trgt_ptr_NCHW;
-    add(push_ptr_NC, oy00, sy00, w00 * trgt);
-    add(push_ptr_NC, oy10, sy10, w10 * trgt);
-    add(push_ptr_NC, oy01, sy01, w01 * trgt);
-    add(push_ptr_NC, oy11, sy11, w11 * trgt);
-  }
-  // ~~~~~~~~~~~~~~~~~~~~~~~ Grid gradient ~~~~~~~~~~~~~~~~~~~~~~~
-  if do_grad) {
-    scalar_t gx = static_cast<scalar_t>(0);
-    scalar_t gy = static_cast<scalar_t>(0);
-    scalar_t *trgt_ptr_NCHW =trgt_ptr + n *trgt_sN
-                                        + h *trgt_sH 
-                                        + w *trgt_sW;
-    scalar_t *src_ptr_NC  src_ptr + n * src_sN;
-    scalar_t src;
-    scalar_t trgt = *trgt_ptr_NCHW;
-    src = get(src_ptr_NC, ox00, sx00) * trgt;
-    gx +=       dy0 * src * gix0s;
-    gy += dx0       * src * giy0c;
-    src = get(src_ptr_NC, ox10, sx10) * trgt;
-    gx +=       dy0 * src * gix1s;
-    gy += dx1       * src * giy0c;
-    src = get(src_ptr_NC, ox01, sx01) * trgt;
-    gx +=       dy1 * src * gix0s;
-    gy += dx0       * src * giy1c;
-    src = get(src_ptr_NC, ox11, sx11) * trgt;
-    gx +=       dy1 * src * gix1s;
-    gy += dx1       * src * giy1c;
-    src_ptr_NC     +=src_sC;
-    trgt_ptr_NCHW +=trgt_sC;
-    trgt            = *trgt_ptr_NCHW;
-    src = get(src_ptr_NC, oy00, sy00) * trgt;
-    gx +=       dy0 * src * gix0c;
-    gy += dx0       * src * giy0s;
-    src = get(src_ptr_NC, oy10, sy10) * trgt;
-    gx +=       dy0 * src * gix1c;
-    gy += dx1       * src * giy0s;
-    src = get(src_ptr_NC, oy01, sy01) * trgt;
-    gx +=       dy1 * src * gix0c;
-    gy += dx0       * src * giy1s;
-    src = get(src_ptr_NC, oy11, sy11) * trgt;
-    gx +=       dy1 * src * gix1c;
-    gy += dx1       * src * giy1s;
-
-    scalar_t * grad_ptr_NDHW =grad_ptr + n *grad_sN
-                                         + h *grad_sH 
-                                         + w *grad_sW;
-    grad_ptr_NDHW[0] = gx;
-    grad_ptr_NDHW[1] = gy;
-  }
-}
-
-#endif // Sliding
 
 #ifdef __CUDACC__
 // CUDA Kernel
@@ -1716,13 +1714,13 @@ __global__ void pushpull_kernel(PushPullImpl<scalar_t,offset_t> f) {
 #define PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, SourceType0) \
   template std::deque<Tensor> pushpull( \
     const SourceType0 &, const Tensor&, const Tensor&, \
-    BoundType0, InterpolationType0, bool, bool, bool, bool)
+    BoundType0, InterpolationType0, bool, bool, bool, bool, bool, bool); \
+  template std::deque<Tensor> pushpull( \
+    const SourceType0&, const Tensor&, \
+    BoundType0, InterpolationType0, bool, bool, bool, bool, bool, bool)
 #define PUSHPULL_INSTANTIATE2(BoundType0, InterpolationType0) \
   PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, IntArrayRef); \
-  PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, Tensor); \
-  template std::deque<Tensor> pushpull( \
-    const Tensor&, const Tensor&, \
-    BoundType0, InterpolationType0, bool, bool, bool, bool)
+  PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, Tensor)
 #define PUSHPULL_INSTANTIATE1(BoundType0) \
   PUSHPULL_INSTANTIATE2(BoundType0, InterpolationType); \
   PUSHPULL_INSTANTIATE2(BoundType0, InterpolationVectorRef)
@@ -1736,17 +1734,17 @@ __global__ void pushpull_kernel(PushPullImpl<scalar_t,offset_t> f) {
 
 // Two arguments (source, grid)
 // > `bound` and `interpolation` can be single arguments or vectors.
-template <typename BoundType, typename InterpolationType> 
+template <typename BoundType, typename InterpolationType, typename SourceType> 
 NI_HOST
 std::deque<Tensor> pushpull(
-  const Tensor& source, const Tensor& grid, 
+  const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
-  bool do_pull, bool do_push, bool do_grad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
     PushPullImpl<scalar_t,int64_t> 
     f(grid.dim()-2, bound, interpolation, extrapolate, 
-      do_pull, do_push, do_grad);
+      do_pull, do_push, do_count, do_grad, do_sgrad);
     f.ioset(source, grid);
     pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0, 
                       at::cuda::getCurrentCUDAStream()>>>(f);
@@ -1762,12 +1760,12 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
-  bool do_pull, bool do_push, bool do_grad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
     PushPullImpl<scalar_t,int64_t> 
     f(grid.dim()-2, bound, interpolation, extrapolate,
-      do_pull, do_push, do_grad);
+      do_pull, do_push, do_count, do_grad, do_sgrad);
     f.ioset(source, grid, target);
     pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0, 
                       at::cuda::getCurrentCUDAStream()>>>(f);
@@ -1781,17 +1779,17 @@ std::deque<Tensor> pushpull(
 
 // Two arguments (source, grid)
 // > `bound` and `interpolation` can be single arguments or vectors.
-template <typename BoundType, typename InterpolationType>
+template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
 std::deque<Tensor> pushpull(
-  const Tensor& source, const Tensor& grid, 
+  const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
-  bool do_pull, bool do_push, bool do_grad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
     PushPullImpl<scalar_t,int32_t> 
     f(grid.dim()-2, bound, interpolation, extrapolate, 
-      do_pull, do_push, do_grad);
+      do_pull, do_push, do_count, do_grad, do_sgrad);
     f.ioset(source, grid);
     f.loop();
     auto output = f.output;
@@ -1807,12 +1805,12 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
-  bool do_pull, bool do_push, bool do_grad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
     PushPullImpl<scalar_t,int32_t> 
     f(grid.dim()-2, bound, interpolation, extrapolate,
-      do_pull, do_push, do_grad);
+      do_pull, do_push, do_count, do_grad, do_sgrad);
     f.ioset(source, grid, target);
     f.loop();
     return f.output;
@@ -1829,12 +1827,12 @@ PUSHPULL_INSTANTIATE;
 
 namespace notimplemented {
 
-template <typename BoundType, typename InterpolationType>
+template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
 std::deque<Tensor> pushpull(
-  const Tensor& source, const Tensor& grid, 
+  const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
-  bool do_pull, bool do_push, bool do_grad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   throw std::logic_error("Function not implemented for this device.");
 }
@@ -1844,7 +1842,7 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
-  bool do_pull, bool do_push, bool do_grad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   throw std::logic_error("Function not implemented for this device.");
 }

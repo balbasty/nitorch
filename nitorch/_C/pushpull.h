@@ -3,7 +3,7 @@
 #include "interpolation.h"
 #include <tuple>
 #include <vector>
-// #include <deque>
+#include <deque>
 
 namespace ni {
 
@@ -13,7 +13,7 @@ at::Tensor grid_pull(
   const std::vector<InterpolationType> & interpolation,  
   bool extrapolate);
 
-std::tuple<at::Tensor,at::Tensor> grid_pull_backward(
+std::deque<at::Tensor> grid_pull_backward(
   const at::Tensor& grad, const at::Tensor& input, const at::Tensor& grid,
   const std::vector<BoundType> & bound, 
   const std::vector<InterpolationType> & interpolation, 
@@ -25,10 +25,36 @@ at::Tensor grid_push(
   const std::vector<InterpolationType> & interpolation, 
   bool extrapolate);
 
-std::tuple<at::Tensor,at::Tensor> grid_push_backward(
+std::deque<at::Tensor> grid_push_backward(
   const at::Tensor& grad, const at::Tensor& input,  const at::Tensor& grid,
   const std::vector<BoundType> & bound, 
   const std::vector<InterpolationType> & interpolation, 
   bool extrapolate);
+
+at::Tensor grid_count(
+  const at::Tensor& grid, c10::IntArrayRef source_size,
+  const std::vector<BoundType> & bound,
+  const std::vector<InterpolationType> & interpolation, 
+  bool extrapolate);
+
+at::Tensor grid_count_backward(
+  const at::Tensor& grad, const at::Tensor& grid,
+  const std::vector<BoundType> & bound, 
+  const std::vector<InterpolationType> & interpolation, 
+  bool extrapolate);
+
+at::Tensor grid_grad(
+  const at::Tensor& input, const at::Tensor& grid,
+  const std::vector<BoundType> & bound, 
+  const std::vector<InterpolationType> & interpolation,  
+  bool extrapolate);
+
+std::deque<at::Tensor> grid_grad_backward(
+  const at::Tensor& grad, const at::Tensor& input, const at::Tensor& grid,
+  const std::vector<BoundType> & bound, 
+  const std::vector<InterpolationType> & interpolation, 
+  bool extrapolate);
+
+
 
 } // namespace ni

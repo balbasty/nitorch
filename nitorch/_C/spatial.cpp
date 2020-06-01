@@ -28,8 +28,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     .value("seventh",   InterpolationType::SeventhOrder)
     .export_values();
 
-  m.def("grid_pull",          &ni::grid_pull,          "GridPull");
-  m.def("grid_pull_backward", &ni::grid_pull_backward, "GridPull backward");
-  m.def("grid_push",          &ni::grid_push,          "GridPush");
-  m.def("grid_push_backward", &ni::grid_push_backward, "GridPush backward");
+  m.def("grid_pull",           &ni::grid_pull,           "GridPull");
+  m.def("grid_pull_backward",  &ni::grid_pull_backward,  "GridPull backward");
+  m.def("grid_push",           &ni::grid_push,           "GridPush");
+  m.def("grid_push_backward",  &ni::grid_push_backward,  "GridPush backward");
+  m.def("grid_count",          &ni::grid_count,          "GridCount");
+  m.def("grid_count_backward", &ni::grid_count_backward, "GridCount backward");
+  m.def("grid_grad",           &ni::grid_grad,           "GridGrad");
+  m.def("grid_grad_backward",  &ni::grid_grad_backward,  "GridGrad backward");
 }
