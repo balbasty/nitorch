@@ -3,7 +3,8 @@
 
 TODO:
     . Plot joint density.
-    . Do log of pdf.
+    . Do log of pdf with softmax at end.
+    . Implement own MVN pdf.
     . Look at using: http://deepmind.github.io/torch-distributions/.
 """
 
