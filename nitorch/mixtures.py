@@ -639,7 +639,7 @@ class RMM(Mixture):
 
         # RMM specific
         self.nu = (torch.arange(K, dtype=self.dt, device=self.dev)*mx)/(K + 1)
-        self.sig = torch.ones(K, dtype=self.dt, device=self.dev)*((mx - mn)/(10*K))
+        self.sig = torch.ones(K, dtype=self.dt, device=self.dev)*((mx - mn)/(K))
 
     def pdf(self, X, k=0, c=-1):
         """
