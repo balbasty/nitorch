@@ -12,8 +12,19 @@
 // . ni::interpolation::fasthess   -> same, assuming x lies in support
 // . ni::interpolation::bounds     -> min/max nodes
 
+// NOTE:
+// 1st derivatives used to be implemented with a recursive call, e.g.:
+// scalar_t grad2(scalar_t x) {
+//   if (x < 0) return -grad2(-x);
+//   ...
+// }
+// However, this prevents nvcc to staticallly determine the stack size 
+// and leads to memory errors (because the allocated stack is too small).
+// I now use a slighlty less compact implementation that gets rid of 
+// recursive calls.
+
 // TODO: 
-// . second order derivatives
+// . second order derivatives [5/6/7]
 
 #include "common.h"
 #include "interpolation.h"
@@ -157,34 +168,37 @@ namespace _interpolation {
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t grad2(scalar_t x) {
-    if ( x < 0 )
-      return -grad2(-x);
+    bool neg = x < 0;
     if ( x < 0.5 ) 
     {
-      return -2. * x;
+      x = -2. * x;
     } 
     else if ( x < 1.5 ) 
     {
-      return x - 1.5;
+      x = x - 1.5;
     } 
     else 
     {
       return static_cast<scalar_t>(0);
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t fastgrad2(scalar_t x) {
-    if ( x < 0 )
-      return -fastgrad2(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 0.5 ) 
     {
-      return -2. * x;
+      x = -2. * x;
     } 
     else 
     {
-      return x - 1.5;
+      x = x - 1.5;
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
@@ -259,36 +273,40 @@ namespace _interpolation {
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t grad3(scalar_t x) {
-    if ( x < 0 )
-      return -grad3(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 1. ) 
     {
-      return x * ( x * 1.5 - 2. );
+      x = x * ( x * 1.5 - 2. );
     } 
     else if ( x < 2. ) 
     {
       x = 2. - x;
-      return - ( x * x ) * 0.5;
+      x = - ( x * x ) * 0.5;
     } 
     else 
     {
       return static_cast<scalar_t>(0);
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t fastgrad3(scalar_t x) {
-    if ( x < 0 )
-      return -fastgrad3(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 1. ) 
     {
-      return x * ( x * 1.5 - 2. );
+      x = x * ( x * 1.5 - 2. );
     } 
     else 
     {
       x = 2. - x;
-      return - ( x * x ) * 0.5;
+      x = - ( x * x ) * 0.5;
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
@@ -376,44 +394,48 @@ namespace _interpolation {
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t grad4(scalar_t x) {
-    if ( x < 0 )
-      return -grad4(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 0.5 ) 
     {
-      return x * ( x * x - 1.25 );
+      x = x * ( x * x - 1.25 );
     } 
     else if ( x < 1.5 ) 
     {
-      return x * ( x * ( x * ( -2. / 3. ) + 2.5 ) - 2.5 ) + 5. / 24.;
+      x = x * ( x * ( x * ( -2. / 3. ) + 2.5 ) - 2.5 ) + 5. / 24.;
     } 
     else if ( x < 2.5 ) 
     {
       x = x * 2. - 5.;
-      return ( x * x * x ) / 48.;
+      x = ( x * x * x ) / 48.;
     } 
     else 
     {
       return static_cast<scalar_t>(0);
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t fastgrad4(scalar_t x) {
-    if ( x < 0 )
-      return -fastgrad4(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 0.5 ) 
     {
-      return x * ( x * x - 1.25 );
+      x = x * ( x * x - 1.25 );
     } 
     else if ( x < 1.5 ) 
     {
-      return x * ( x * ( x * ( -2. / 3. ) + 2.5 ) - 2.5 ) + 5. / 24.;
+      x = x * ( x * ( x * ( -2. / 3. ) + 2.5 ) - 2.5 ) + 5. / 24.;
     } 
     else 
     {
       x = x * 2. - 5.;
-      return ( x * x * x ) / 48.;
+      x = ( x * x * x ) / 48.;
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
@@ -510,46 +532,50 @@ namespace _interpolation {
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t grad5(scalar_t x) {
-    if ( x < 0 )
-      return -grad5(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 1. ) 
     {
-      return x * ( x * ( x * ( x * ( -5. / 12. ) + 1. ) ) - 1. );
+      x = x * ( x * ( x * ( x * ( -5. / 12. ) + 1. ) ) - 1. );
     } 
     else if ( x < 2. ) 
     {
-      return x * ( x * ( x * ( x * ( 5. / 24. ) - 1.5 ) + 3.75 ) - 3.5 ) + 0.625;
+      x = x * ( x * ( x * ( x * ( 5. / 24. ) - 1.5 ) + 3.75 ) - 3.5 ) + 0.625;
     } 
     else if ( x < 3. ) 
     {
       x -= 3.;
       x *= x;
-      return - ( x * x ) / 24.;
+      x = - ( x * x ) / 24.;
     } 
     else 
     {
       return static_cast<scalar_t>(0);
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t fastgrad5(scalar_t x) {
-    if ( x < 0 )
-      return -fastgrad5(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 1. ) 
     {
-      return x * ( x * ( x * ( x * ( -5. / 12. ) + 1. ) ) - 1. );
+      x = x * ( x * ( x * ( x * ( -5. / 12. ) + 1. ) ) - 1. );
     } 
     else if ( x < 2. ) 
     {
-      return x * ( x * ( x * ( x * ( 5. / 24. ) - 1.5 ) + 3.75 ) - 3.5 ) + 0.625;
+      x = x * ( x * ( x * ( x * ( 5. / 24. ) - 1.5 ) + 3.75 ) - 3.5 ) + 0.625;
     } 
     else 
     {
       x -= 3.;
       x *= x;
-      return - ( x * x ) / 24.;
+      x = - ( x * x ) / 24.;
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t, typename offset_t>
@@ -622,21 +648,21 @@ namespace _interpolation {
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t grad6(scalar_t x) {
-    if ( x < 0 )
-      return -grad6(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < .5 ) 
     {
       scalar_t x2 = x * x;
-      return x * ( x2 * ( 7. / 12. ) - ( x2 * x2 ) / 6.- 77./96. );
+      x = x * ( x2 * ( 7. / 12. ) - ( x2 * x2 ) / 6.- 77./96. );
     } 
     else if ( x < 1.5 ) 
     {
-      return x * ( x * ( x * ( x * ( x * 0.125 - 35./48. ) + 1.3125 ) 
+      x = x * ( x * ( x * ( x * ( x * 0.125 - 35./48. ) + 1.3125 ) 
              - 35./96. ) - 0.7109375 ) - 7.0/768.0;
     } 
     else if ( x < 2.5 ) 
     {
-      return x * ( x * ( x * ( x * ( x * (-1./20.) + 7./12. ) 
+      x = x * ( x * ( x * ( x * ( x * (-1./20.) + 7./12. ) 
              - 2.625 ) + 133./24. ) - 5.140625 ) + 1267./960.;
     } 
     else if ( x < 3.5 ) 
@@ -644,31 +670,33 @@ namespace _interpolation {
       x *= 2.;
       x -= 7.;
       scalar_t x2 = x*x;
-      return (x2 * x2 * x ) / 3840.;
+      x = (x2 * x2 * x ) / 3840.;
     }
     else 
     {
       return static_cast<scalar_t>(0);
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t fastgrad6(scalar_t x) {
-    if ( x < 0 )
-      return -fastgrad6(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < .5 ) 
     {
       scalar_t x2 = x * x;
-      return x * ( x2 * ( 7. / 12. ) - ( x2 * x2 ) / 6.- 77./96. );
+      x = x * ( x2 * ( 7. / 12. ) - ( x2 * x2 ) / 6.- 77./96. );
     } 
     else if ( x < 1.5 ) 
     {
-      return x * ( x * ( x * ( x * ( x * 0.125 - 35./48. ) + 1.3125 ) 
+      x = x * ( x * ( x * ( x * ( x * 0.125 - 35./48. ) + 1.3125 ) 
              - 35./96. ) - 0.7109375 ) - 7.0/768.0;
     } 
     else if ( x < 2.5 ) 
     {
-      return x * ( x * ( x * ( x * ( x * (-1./20.) + 7./12. ) 
+      x = x * ( x * ( x * ( x * ( x * (-1./20.) + 7./12. ) 
              - 2.625 ) + 133./24. ) - 5.140625 ) + 1267./960.;
     } 
     else
@@ -676,8 +704,10 @@ namespace _interpolation {
       x *= 2.;
       x -= 7.;
       scalar_t x2 = x*x;
-      return (x2 * x2 * x ) / 3840.;
+      x = (x2 * x2 * x ) / 3840.;
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t, typename offset_t>
@@ -750,22 +780,22 @@ namespace _interpolation {
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t grad7(scalar_t x) {
-    if ( x < 0 )
-      return -grad7(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 1. ) 
     {
       scalar_t x2 = x * x;
-      return x * ( x2 *( x2 * ( x * ( 7. / 144. ) 
+      x = x * ( x2 *( x2 * ( x * ( 7. / 144. ) 
              - 1. / 6. ) + 4. / 9. ) - 2. / 3. );
     } 
     else if ( x < 2. ) 
     {
-      return x * ( x * ( x * ( x * ( x * ( x * ( -7. / 240. ) + 3. / 10. ) 
+      x = x * ( x * ( x * ( x * ( x * ( x * ( -7. / 240. ) + 3. / 10. ) 
              - 7. / 6. ) + 2. ) - 7. / 6. ) - 1. / 5. ) - 7. / 90.;
     } 
     else if ( x < 3. ) 
     {
-      return x * ( x * (x * ( x * ( x * ( x * ( 7. / 720. ) - 1. / 6. )
+      x = x * ( x * (x * ( x * ( x * ( x * ( 7. / 720. ) - 1. / 6. )
              + 7. / 6. ) - 38. / 9. ) + 49. / 6. ) - 23. / 3. ) + 217. / 90.;
     } 
     else if ( x < 4. ) 
@@ -773,32 +803,34 @@ namespace _interpolation {
       x -= 4;
       x *= x*x;
       x *= x;
-      return - x / 720.;
+      x = - x / 720.;
     }
     else 
     {
       return static_cast<scalar_t>(0);
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t>
   static NI_INLINE NI_DEVICE scalar_t fastgrad7(scalar_t x) {
-    if ( x < 0 )
-      return -fastgrad7(-x);
+    bool neg = x < 0;
+    if (neg) x = -x;
     if ( x < 1. ) 
     {
       scalar_t x2 = x * x;
-      return x * ( x2 *( x2 * ( x * ( 7. / 144. ) 
+      x = x * ( x2 *( x2 * ( x * ( 7. / 144. ) 
              - 1. / 6. ) + 4. / 9. ) - 2. / 3. );
     } 
     else if ( x < 2. ) 
     {
-      return x * ( x * ( x * ( x * ( x * ( x * ( -7. / 240. ) + 3. / 10. ) 
+      x = x * ( x * ( x * ( x * ( x * ( x * ( -7. / 240. ) + 3. / 10. ) 
              - 7. /6. ) + 2. ) - 7. / 6. ) - 1. / 5. ) - 7. / 90.;
     } 
     else if ( x < 3. ) 
     {
-      return x * ( x * (x * ( x * ( x * ( x * ( 7. / 720. ) - 1. / 6. )
+      x = x * ( x * (x * ( x * ( x * ( x * ( 7. / 720. ) - 1. / 6. )
              + 7. / 6. ) - 38. / 9. ) + 49. / 6. ) - 23. / 3. ) + 217. / 90.;
     } 
     else
@@ -806,8 +838,10 @@ namespace _interpolation {
       x -= 4;
       x *= x*x;
       x *= x;
-      return - x / 720.;
+      x = - x / 720.;
     }
+    if (neg) x = -x;
+    return x;
   }
 
   template <typename scalar_t, typename offset_t>

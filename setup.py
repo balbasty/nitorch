@@ -35,6 +35,8 @@ libnitorch_sources = ['nitorch/_C/pushpull.cpp']
 #   things clean and work on multiple platforms.
 # . I have to add abi checks and other smart tricks as in
 #   torch.utils.cpp_extension
+# . I should maybe use build_ext rather then build_clib to compile
+#   libnitorch.
 
 MINIMUM_GCC_VERSION = (5, 0, 0)
 MINIMUM_MSVC_VERSION = (19, 0, 24215)
