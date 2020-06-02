@@ -535,7 +535,7 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     mn = np.floor(mn)
     # Either pad or crop mean space
     off = mod_prct*(mx - mn)
-    if Dim[2, 0] == 1: off = 0
+    if Dim[2, 0] == 1: off = np.array([0, 0, 0])
     dim = (mx - mn + (2*off + 1))
     mat = np.matmul(mat,
         np.array([[1, 0, 0, mn[0] - (off[0] + 1)],
