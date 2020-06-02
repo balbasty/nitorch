@@ -2,6 +2,7 @@
 #include <ATen/ATen.h>
 #include <vector>
 #include <deque>
+#include <iostream>
 
 #ifdef NI_WITH_CUDA
 #  define cudapushpull cuda::pushpull
@@ -96,30 +97,31 @@ Tensor grid_pull(const Tensor& input, const Tensor& grid,
   if (input.is_cuda())
     return cudapushpull(input, grid, 
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-      extrapolate, true, false, false).front();
+      extrapolate, true, false, false, false, false).front();
   else
     return cpu::pushpull(input, grid, 
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-      extrapolate, true, false, false).front();
+      extrapolate, true, false, false, false, false).front();
 }
 
-std::tuple<Tensor,Tensor>
-grid_pull_backward(const Tensor& grad, const Tensor& input, 
-                   const Tensor& grid,
+std::deque<Tensor>
+grid_pull_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
                    const std::vector<BoundType> & bound_mode, 
                    const std::vector<InterpolationType> & interpolation_mode, 
                    bool extrapolate)
 {
   if (input.is_cuda()) {
-    auto output = cudapushpull(input, grid, grad,
+    return cudapushpull(input, grid, grad,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-      extrapolate, false, true, true);
-    return std::make_tuple(output.front(), output.back());
+      extrapolate, false, 
+      input.requires_grad(), false,
+      grid.requires_grad(), false);
   } else {
-    auto output = cpu::pushpull(input, grid, grad,
+    return cpu::pushpull(input, grid, grad,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-      extrapolate, false, true, true);
-    return std::make_tuple(output.front(), output.back());
+      extrapolate, false, 
+      input.requires_grad(), false, 
+      grid.requires_grad(), false);
   }
 }
 
@@ -154,11 +156,11 @@ Tensor grid_push(const Tensor& input, const Tensor& grid,
     if (input.is_cuda())
       return cudapushpull(size, grid, input,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-        extrapolate, false, true, false).front();
+        extrapolate, false, true, false, false, false).front();
     else
       return cpu::pushpull(size, grid, input,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-        extrapolate, false, true, false).front();
+        extrapolate, false, true, false, false, false).front();
   } 
   else 
   {
@@ -166,31 +168,144 @@ Tensor grid_push(const Tensor& input, const Tensor& grid,
     if (input.is_cuda())
       return cudapushpull(source_size, grid, input,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-        extrapolate, false, true, false).front();
+        extrapolate, false, true, false, false, false).front();
     else
       return cpu::pushpull(source_size, grid, input,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-        extrapolate, false, true, false).front();
+        extrapolate, false, true, false, false, false).front();
 
   }
 }
 
-std::tuple<Tensor,Tensor>
+std::deque<Tensor>
 grid_push_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
                    const std::vector<BoundType> & bound_mode, 
                    const std::vector<InterpolationType> & interpolation_mode, 
                    bool extrapolate)
 {
   if (input.is_cuda()) {
-    auto output = cudapushpull(grad, grid, input,
+    return cudapushpull(grad, grid, input,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-      extrapolate, true, false, true);
-    return std::make_tuple(output.front(), output.back());
+      extrapolate, input.requires_grad(), false, false, 
+      grid.requires_grad(), false);
   } else {
-    auto output = cpu::pushpull(grad, grid, input,
+    return cpu::pushpull(grad, grid, input,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
-      extrapolate, true, false, true);
-    return std::make_tuple(output.front(), output.back());
+      extrapolate, input.requires_grad(), false, false, 
+      grid.requires_grad(), false);
+  }
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ COUNT ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Tensor grid_count(const Tensor& grid,
+                 IntArrayRef source_size,
+                 const std::vector<BoundType> & bound_mode, 
+                 const std::vector<InterpolationType> & interpolation_mode, 
+                 bool extrapolate) {
+
+  PUSHPULL_CHECK_DEFINED(grid)
+  auto grid_opt  = grid.options();
+  PUSHPULL_CHECK_OPT_STRIDED(grid_opt)
+  PUSHPULL_CHECK_2D_OR_3D(grid)
+  PUSHPULL_CHECK_GRID_COMPONENT(grid, grid.dim())
+  PUSHPULL_CHECK_NOT_EMPTY(grid)
+  PUSHPULL_CHECK_VEC_NOT_EMPTY(bound_mode);
+  PUSHPULL_CHECK_VEC_NOT_EMPTY(interpolation_mode);
+
+  if (source_size.empty())
+  {
+    auto size   = IntArrayRef({grid.size(1), grid.size(2), 
+                   grid.dim() == 5 ? grid.size(3) : 1});
+    if (grid.is_cuda())
+      return cudapushpull(size, grid,
+        BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+        extrapolate, false, false, true, false, false).front();
+    else
+      return cpu::pushpull(size, grid,
+        BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+        extrapolate, false, false, true, false, false).front();
+  } 
+  else 
+  {
+    PUSHPULL_CHECK_LENGTH(source_size, grid.dim())
+    if (grid.is_cuda())
+      return cudapushpull(source_size, grid,
+        BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+        extrapolate, false, false, true, false, false).front();
+    else
+      return cpu::pushpull(source_size, grid,
+        BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+        extrapolate, false, false, true, false, false).front();
+
+  }
+}
+
+Tensor
+grid_count_backward(const Tensor& grad, const Tensor& grid,
+                    const std::vector<BoundType> & bound_mode, 
+                    const std::vector<InterpolationType> & interpolation_mode, 
+                    bool extrapolate)
+{
+  if (grid.is_cuda()) {
+    return cudapushpull(grad, grid,
+      BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+      extrapolate, false, false, false, grid.requires_grad(), false).front();
+  } else {
+    return cpu::pushpull(grad, grid,
+      BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+      extrapolate, false, false, false, grid.requires_grad(), false).front();
+  }
+}
+
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~ PULL GRADIENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Tensor grid_grad(const Tensor& input, const Tensor& grid,
+                 const std::vector<BoundType> & bound_mode, 
+                 const std::vector<InterpolationType> & interpolation_mode, 
+                 bool extrapolate)  {
+
+  PUSHPULL_CHECK_DEFINED(input)
+  PUSHPULL_CHECK_DEFINED(grid)
+  auto input_opt = input.options();
+  auto grid_opt  = grid.options();
+  PUSHPULL_CHECK_OPT_STRIDED(input_opt)
+  PUSHPULL_CHECK_OPT_STRIDED(grid_opt)
+  PUSHPULL_CHECK_OPT_SAME_DEVICE(input_opt, grid_opt)
+  PUSHPULL_CHECK_OPT_SAME_DTYPE(input_opt, grid_opt)
+  PUSHPULL_CHECK_2D_OR_3D(input)
+  PUSHPULL_CHECK_2D_OR_3D(grid)
+  PUSHPULL_CHECK_GRID_COMPONENT(grid, grid.dim())
+  PUSHPULL_CHECK_NOT_EMPTY(input)
+  PUSHPULL_CHECK_NOT_EMPTY(grid)
+  PUSHPULL_CHECK_VEC_NOT_EMPTY(bound_mode);
+  PUSHPULL_CHECK_VEC_NOT_EMPTY(interpolation_mode);
+
+  if (input.is_cuda())
+    return cudapushpull(input, grid, 
+      BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+      extrapolate, false, false, false, false, true).front();
+  else
+    return cpu::pushpull(input, grid, 
+      BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+      extrapolate, false, false, false, false, true).front();
+}
+
+std::deque<Tensor>
+grid_grad_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
+                   const std::vector<BoundType> & bound_mode, 
+                   const std::vector<InterpolationType> & interpolation_mode, 
+                   bool extrapolate)
+{
+  if (input.is_cuda()) {
+    return cudapushpull(input, grid, grad,
+      BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+      extrapolate, false,  input.requires_grad(), false,
+      grid.requires_grad(), false);
+  } else {
+    return cpu::pushpull(input, grid, grad,
+      BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
+      extrapolate, false, input.requires_grad(), false, 
+      grid.requires_grad(), false);
   }
 }
 
