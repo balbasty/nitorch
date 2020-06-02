@@ -535,7 +535,7 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     mn = np.floor(mn)
     # Either pad or crop mean space
     off = mod_prct*(mx - mn)
-    if Dim[2, 0] == 1: off = 0
+    if Dim[2, 0] == 1: off = np.array([0, 0, 0])
     dim = (mx - mn + (2*off + 1))
     mat = np.matmul(mat,
         np.array([[1, 0, 0, mn[0] - (off[0] + 1)],
@@ -546,7 +546,7 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     return dim, mat, vx
 
 
-def noise_estimate(pth_nii, show_fit=False, fig_num=1):
+def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2, mu_noise=None, num_iter=10000):
     """ Estimate noise from a nifti image by fitting either a GMM or an RMM to the
         image's intensity histogram.
 
@@ -554,9 +554,18 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1):
         pth_nii (string): Path to nifti file.
         show_fit (bool, optional): Defaults to False.
         fig_num (bool, optional): Defaults to 1.
+        num_class (int, optional): Number of mixture classes (only for GMM).
+            Defaults to 2.
+        mu_noise (float, optional): Mean of noise class, defaults to None,
+            in which case the class with the smallest sd is assumed the noise
+            class.
+        num_iter (int, optional) Maxmimum number of algorithm iterations.
+                Defaults to 10000.
 
     Returns:
         sd_noise (torch.Tensor): Standard deviation of background class.
+        sd_not_noise (torch.Tensor): Standard deviation of foreground class.
+        mu_noise (torch.Tensor): Mean of background class.
         mu_not_noise (torch.Tensor): Mean of foreground class.
 
     """
@@ -566,6 +575,8 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1):
         nii = nib.load(pth_nii)
         X = torch.tensor(nii.get_fdata())
         X = X.flatten()
+    device = X.device
+    X = X.double()
 
     # Mask
     X = X[(X != 0) & (X != torch.max(X)) & (X != torch.min(X)) & (torch.isfinite(X))]
@@ -574,33 +585,50 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1):
     mn = torch.min(X).int()
     mx = torch.max(X).int()
     bins = mx - mn
-    W = torch.histc(X, bins=bins + 1, min=mn, max=mx).double()
-    X = torch.arange(mn, mx + 1).to(X.device).double()
+    W = torch.histc(X, bins=bins + 1, min=mn, max=mx)
+    X = torch.arange(mn, mx + 1, device=device).double()
 
     if mn < 0:  # Make GMM model
-        model = GMM(num_class=2)
+        model = GMM(num_class=num_class)
     else:  # Make RMM model
         model = RMM(num_class=2)
 
     # Fit GMM using Numpy
-    model.fit(X, W=W, verbose=0)
+    model.fit(X, W=W, verbose=0, num_iter=num_iter)
 
     if show_fit:  # Plot fit
         model.plot_fit(X, fig_num=fig_num, W=W, suptitle='Histogram fit')
 
-    # Get standard deviations of noise (background class)
-    if mn < 0:  # GMM
-        sd_noise = torch.min(model.Cov[0, 0, :])
-        _, ix = torch.max(model.Cov[0, 0, :], dim=0)
-    else:  # RMM
-        sd_noise = torch.min(model.sig)
-        _, ix = torch.max(model.sig, dim=0)
-
-    # Get mean of not noise class
+    # Get means and mixing proportions
     mu, _ = model.get_means_variances()
-    mu_not_noise = mu[0, ix]
+    mu = mu.squeeze()
+    mp = model.mp
+    if mn < 0:  # GMM
+        sd = torch.sqrt(model.Cov).squeeze()
+    else:  # RMM
+        sd = model.sig
 
-    return sd_noise, mu_not_noise
+    # Get std and mean of noise class
+    if mu_noise:
+        # Closest to mu_bg
+        _, ix_noise = torch.min(torch.abs(mu - mu_noise), dim=0)
+        mu_noise = mu[ix_noise]
+        sd_noise = sd[ix_noise]
+    else:
+        # With smallest sd
+        sd_noise, ix_noise = torch.min(sd, dim=0)
+        mu_noise = mu[ix_noise]
+    # Get std and mean of other classes (means and sds weighted by mps)
+    rng = torch.arange(0, num_class, device=device)
+    rng = torch.cat([rng[0:ix_noise], rng[ix_noise + 1:]])
+    mu1 = mu[rng]
+    sd1 = sd[rng]
+    w = mp[rng]
+    w = w / torch.sum(w)
+    mu_not_noise = sum(w * mu1)
+    sd_not_noise = sum(w * sd1)
+
+    return sd_noise, sd_not_noise, mu_noise, mu_not_noise
 
 
 """ Utility functions
