@@ -86,7 +86,7 @@ class Mixture:
             Z = Z / Z_sum
 
             # Compute log-likelihood
-            ll.append(torch.sum(torch.log(Z_sum) * W))
+            ll.append(torch.sum(torch.log(Z_sum) * W, dtype=torch.float64))
 
             if verbose >= 3:
                 print('iter: {}, ll: {}, diff: {}'
@@ -105,7 +105,7 @@ class Mixture:
 
             # Update mixing proportions
             if len(W.shape) > 0:
-                self.mp = ss0 / torch.sum(W, dim=0)
+                self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
             else:
                 self.mp = ss0 / N
 
