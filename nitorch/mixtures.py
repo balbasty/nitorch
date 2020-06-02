@@ -535,12 +535,14 @@ class GMM(Mixture):
         # covariance
         self.Cov = torch.zeros((C, C, K), dtype=self.dt, device=self.dev)
         for c in range(C):
-            self.mu[c, :] = \
-                torch.reshape((torch.arange(K, dtype=self.dt, device=self.dev)
-                               * mx[c])/(K + 1), (1, K))
+            rng = torch.linspace(start=mn[c], end=mx[c], steps=K, dtype=self.dt, device=self.dev)
+            num_neg = sum(rng < 0)
+            num_pos = sum(rng > 0)
+            rng = torch.arange(-num_neg, num_pos, dtype=self.dt, device=self.dev)
+            self.mu[c, :] = torch.reshape((rng * mx[c])/(K + 1), (1, K))
             self.Cov[c, c, :] = \
                 torch.reshape(torch.ones(K, dtype=self.dt, device=self.dev)
-                              * ((mx[c] - mn[c])/K)**2, (1, 1, K))
+                              * ((mx[c] - mn[c])/(K))**2, (1, 1, K))
 
     def pdf(self, X, k=0, c=-1):
         """ Probability density function (pdf) of the standard normal
