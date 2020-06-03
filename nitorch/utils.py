@@ -16,6 +16,31 @@ import torch
 __all__ = ['pad', 'same_storage', 'shiftdim']
 
 
+def softmax(Z, dim=-1, get_ll=False, W=1):
+    """ SoftMax (safe).
+
+    Args:
+        Z (torch.tensor): Tensor with values.
+        dim (int, optional): Dimension to take softmax, defaults to last dimensions (-1).
+        get_ll (bool, optional): Compute log-likelihood, defaults to False.
+        W (torch.tensor, optional): Observation weights, defaults to 1 (no weights).
+
+    Returns:
+        Z (torch.tensor): Soft-maxed tensor with values.
+
+    """
+    Z_max, _ = torch.max(Z, dim=dim)
+    Z = torch.exp(Z - Z_max[:, None])
+    Z_sum = torch.sum(Z, dim=dim)
+    if get_ll:
+        # Compute log-likelihood
+        ll = torch.sum((torch.log(Z_sum) + Z_max)*W, dtype=torch.float64)
+    else:
+        ll = None
+    Z = Z / Z_sum[:, None]
+    return Z, ll
+
+
 def same_storage(x, y):
     # type: (torch.Tensor, torch.Tensor) -> bool
     """Return true if `x` and `y` share the same underlying storage."""
