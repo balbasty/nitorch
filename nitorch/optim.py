@@ -74,5 +74,31 @@ def cg(A, b, precond=lambda x: x, x=0, iter=10):
     return x
 
 
+
+def gain(obj, iter, monotonicity='increasing'):
+    """ Compute gain of some objective function.
+
+    Args:
+        obj (torch.tensor()): Vector of values (e.g., log-likelihoods computations).
+        iter (int): Iteration number.
+        direction (string, optional): Monotonicity of values ('increasing'/'decreasing'),
+            defaults to 'increasing'.
+
+    Returns:
+        gain (torch.tensor()): Computed gain.
+
+    """
+    if iter == 0:
+        return torch.tensor(float('inf'), dtype=obj.dtype, device=obj.device)
+    if monotonicity == 'increasing':
+        gain = (obj[iter] - obj[iter - 1])
+    elif monotonicity == 'decreasing':
+        gain = (obj[iter - 1] - obj[iter])
+    else:
+        raise ValueError('Undefined monotonicity')
+    gain = gain / (torch.max(obj[1:iter + 1]) - torch.min(obj[1:iter + 1]))
+    return gain
+
+
 def relax(A, b, iE=lambda x: x, x0=0, iter=10):
     pass

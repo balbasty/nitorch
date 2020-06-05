@@ -19,6 +19,7 @@
 // . [DONE] spatial gradient mode (without mutliplication with output gradient)
 // . [DONE] second order gradients (backward pass for spatial gradients)
 // . performance tests
+// . input bound/inter are always vectors -> clean unused constructors
 
 #include "common.h"
 #include "bounds_common.h"
@@ -257,8 +258,8 @@ private:
   NI_HOST void init_all();
   NI_HOST void init_source(const Tensor& source);
   NI_HOST void init_source(IntArrayRef source_size);
-  NI_HOST void init_grid(const Tensor& source); 
-  NI_HOST void init_target(const Tensor& source); 
+  NI_HOST void init_grid(const Tensor& grid); 
+  NI_HOST void init_target(const Tensor& target); 
   NI_HOST void init_output();
   NI_DEVICE void check2d(offset_t w, offset_t h, offset_t n) const;
   NI_DEVICE void check3d(offset_t w, offset_t h, offset_t d, offset_t n) const;
@@ -735,6 +736,9 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
   interpolation::bounds(interpolation0, x, bx0, bx1);
   interpolation::bounds(interpolation1, y, by0, by1);
   interpolation::bounds(interpolation2, z, bz0, bz1);
+  offset_t dbx = bx1-bx0;
+  offset_t dby = by1-by0;
+  offset_t dbz = bz1-bz0;
 
   // Pre-compute offsets and target value
   scalar_t *src_ptr_NC0    = src_ptr  + n * src_sN;
@@ -821,21 +825,21 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
   // Convolve coefficients with basis functions
   scalar_t ogx, ogy, ogz;
   ogx = ogy = ogz = static_cast<scalar_t>(0);
-  for (offset_t k = 0; k <= bz1-bz0; ++k) {
+  for (offset_t k = 0; k <= dbz; ++k) {
     offset_t ooz = iz[k] * out_sD;
     offset_t osz = iz[k] * src_sD;
     uint8_t  szz = sz[k];
     scalar_t wzz = wz[k];
     scalar_t gzz = gz[k];
     scalar_t hzz = hz[k];
-    for (offset_t j = 0; j <= by1-by0; ++j) {
+    for (offset_t j = 0; j <= dby; ++j) {
       offset_t ooyz = ooz + iy[j] * out_sH;
       offset_t osyz = osz + iy[j] * src_sH;
       uint8_t  syz  = szz * sy[j];
       scalar_t wyy  = wy[j];
       scalar_t gyy  = gy[j];
       scalar_t hyy  = hy[j];
-      for (offset_t i = 0; i <= bx1-bx0; ++i) {
+      for (offset_t i = 0; i <= dbx; ++i) {
         offset_t ooxyz = ooyz + ix[i] * out_sW;
         offset_t osxyz = osyz + ix[i] * src_sW;
         uint8_t  sxyz  = syz  * sx[i];
@@ -960,6 +964,8 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d(
   offset_t bx0, bx1, by0, by1;
   interpolation::bounds(interpolation0, x, bx0, bx1);
   interpolation::bounds(interpolation1, y, by0, by1);
+  offset_t dbx = bx1-bx0;
+  offset_t dby = by1-by0;
 
   // Pre-compute offsets and target value
   scalar_t *src_ptr_NC0   = src_ptr  + n * src_sN;
@@ -1031,14 +1037,14 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d(
   // Convolve coefficients with basis functions
   scalar_t ogx, ogy;
   ogx = ogy = static_cast<scalar_t>(0);
-  for (offset_t j = 0; j <= by1-by0; ++j) {
+  for (offset_t j = 0; j <= dby; ++j) {
     offset_t ooy  = iy[j] * out_sH;
     offset_t osy  = iy[j] * src_sH;
     uint8_t  syy  = sy[j];
     scalar_t wyy  = wy[j];
     scalar_t gyy  = gy[j];
     scalar_t hyy  = hy[j];
-    for (offset_t i = 0; i <= bx1-bx0; ++i) {
+    for (offset_t i = 0; i <= dbx; ++i) {
       offset_t ooxy = ooy + ix[i] * out_sW;
       offset_t osxy = osy + ix[i] * src_sW;
       uint8_t  sxy  = syy  * sx[i];

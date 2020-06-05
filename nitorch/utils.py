@@ -16,6 +16,127 @@ import torch
 __all__ = ['pad', 'same_storage', 'shiftdim']
 
 
+def divergence_3d(dat, vx=None, which='forward', bound='constant'):
+    """ Computes the divergence of volumetric data.
+
+    Args:
+        dat (torch.tensor()): A 4D tensor (3, D, H, W).
+        vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
+            Note, the voxel size should be ordered as (W, H, D).
+        which (string, optional): Gradient type:
+            . 'forward': Forward difference (next - centre)
+            . 'backward': Backward difference (centre - previous)
+            . 'central': Central difference ((next - previous)/2)
+            Defaults to 'forward'.
+        bound (string, optional): Boundary conditions, defaults to 'constant' (zero).
+
+    Returns:
+        div (torch.tensor()): Divergence (D, H, W).
+
+    """
+    if vx is None:
+        vx = (1,) * 3
+
+    if which == 'forward':
+        # Pad + reflected forward difference
+        d = pad(dat[0, ...], (1, 0, 0, 0, 0, 0,), mode=bound)
+        d = d[:-1, :, :] - d[1:, :, :]
+        h = pad(dat[1, ...], (0, 0, 1, 0, 0, 0,), mode=bound)
+        h = h[:, :-1, :] - h[:, 1:, :]
+        w = pad(dat[2, ...], (0, 0, 0, 0, 1, 0,), mode=bound)
+        w = w[:, :, :-1] - w[:, :, 1:]
+    elif which == 'backward':
+        # Pad + reflected backward difference
+        d = pad(dat[0, ...], (0, 1, 0, 0, 0, 0,), mode=bound)
+        d = d[:-1, :, :] - d[1:, :, :]
+        h = pad(dat[1, ...], (0, 0, 0, 1, 0, 0,), mode=bound)
+        h = h[:, :-1, :] - h[:, 1:, :]
+        w = pad(dat[2, ...], (0, 0, 0, 0, 0, 1,), mode=bound)
+        w = w[:, :, :-1] - w[:, :, 1:]
+    elif which == 'central':
+        # Pad + reflected central difference
+        d = pad(dat[0, ...], (1, 1, 0, 0, 0, 0,), mode=bound)
+        d = 0.5 * (d[:-2, :, :] - d[2:, :, :])
+        h = pad(dat[1, ...], (0, 0, 1, 1, 0, 0,), mode=bound)
+        h = 0.5 * (h[:, :-2, :] - h[:, 2:, :])
+        w = pad(dat[2, ...], (0, 0, 0, 0, 1, 1,), mode=bound)
+        w = 0.5 * (w[:, :, :-2] - w[:, :, 2:])
+    else:
+        raise ValueError('Undefined divergence')
+
+    return d / vx[2] + h / vx[1] + w / vx[0]
+
+
+def gradient_3d(dat, vx=None, which='forward', bound='reflect2'):
+    """ Computes the gradient of volumetric data.
+
+    Args:
+        dat (torch.tensor()): A tensor (D, H, W).
+        vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
+            Note, the voxel size should be ordered as (W, H, D).
+        which (string, optional): Gradient type:
+            . 'forward': Forward difference (next - centre)
+            . 'backward': Backward difference (centre - previous)
+            . 'central': Central difference ((next - previous)/2)
+            Defaults to 'forward'.
+        bound (string, optional): Boundary conditions, defaults to 'reflect2'.
+
+    Returns:
+          grad (torch.tensor()): Gradient (3, D, H, W).
+
+    """
+    if vx is None:
+        vx = (1,) * 3
+
+    if which == 'forward':
+        # Pad + forward difference
+        dat = pad(dat, (0, 1, 0, 1, 0, 1,), mode=bound)
+        gd = -dat[:-1, :-1, :-1] + dat[1:, :-1, :-1]
+        gh = -dat[:-1, :-1, :-1] + dat[:-1, 1:, :-1]
+        gw = -dat[:-1, :-1, :-1] + dat[:-1, :-1, 1:]
+    elif which == 'backward':
+        # Pad + backward difference
+        dat = pad(dat, (1, 0, 1, 0, 1, 0,), mode=bound)
+        gd = -dat[:-1, 1:, 1:] + dat[1:, 1:, 1:]
+        gh = -dat[1:, :-1, 1:] + dat[1:, 1:, 1:]
+        gw = -dat[1:, 1:, :-1] + dat[1:, 1:, 1:]
+    elif which == 'central':
+        # Pad + central difference
+        dat = pad(dat, (1, 1, 1, 1, 1, 1,), mode=bound)
+        gd = 0.5 * (-dat[:-2, 1:-1, 1:-1] + dat[2:, 1:-1, 1:-1])
+        gh = 0.5 * (-dat[1:-1, :-2, 1:-1] + dat[1:-1, 2:, 1:-1])
+        gw = 0.5 * (-dat[1:-1, 1:-1, :-2] + dat[1:-1, 1:-1, 2:])
+    else:
+        raise ValueError('Undefined gradient')
+
+    return torch.stack((gd / vx[2], gh / vx[1], gw / vx[0]), dim=0)
+
+
+def softmax(Z, dim=-1, get_ll=False, W=1):
+    """ SoftMax (safe).
+
+    Args:
+        Z (torch.tensor): Tensor with values.
+        dim (int, optional): Dimension to take softmax, defaults to last dimensions (-1).
+        get_ll (bool, optional): Compute log-likelihood, defaults to False.
+        W (torch.tensor, optional): Observation weights, defaults to 1 (no weights).
+
+    Returns:
+        Z (torch.tensor): Soft-maxed tensor with values.
+
+    """
+    Z_max, _ = torch.max(Z, dim=dim)
+    Z = torch.exp(Z - Z_max[:, None])
+    Z_sum = torch.sum(Z, dim=dim)
+    if get_ll:
+        # Compute log-likelihood
+        ll = torch.sum((torch.log(Z_sum) + Z_max)*W, dtype=torch.float64)
+    else:
+        ll = None
+    Z = Z / Z_sum[:, None]
+    return Z, ll
+
+
 def same_storage(x, y):
     # type: (torch.Tensor, torch.Tensor) -> bool
     """Return true if `x` and `y` share the same underlying storage."""

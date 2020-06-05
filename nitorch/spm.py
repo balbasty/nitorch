@@ -546,7 +546,8 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     return dim, mat, vx
 
 
-def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2, mu_noise=None, num_iter=10000):
+def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
+                   mu_noise=None, max_iter=10000, verbose=0):
     """ Estimate noise from a nifti image by fitting either a GMM or an RMM to the
         image's intensity histogram.
 
@@ -559,8 +560,13 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2, mu_noise=Non
         mu_noise (float, optional): Mean of noise class, defaults to None,
             in which case the class with the smallest sd is assumed the noise
             class.
-        num_iter (int, optional) Maxmimum number of algorithm iterations.
+        max_iter (int, optional) Maxmimum number of algorithm iterations.
                 Defaults to 10000.
+        verbose (int, optional) Display progress. Defaults to 0.
+            0: None.
+            1: Print summary when finished.
+            2: 1 + Log-likelihood plot.
+            3: 1 + 2 + print convergence.
 
     Returns:
         sd_noise (torch.Tensor): Standard deviation of background class.
@@ -579,7 +585,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2, mu_noise=Non
     X = X.double()
 
     # Mask
-    X = X[(X != 0) & (X != torch.max(X)) & (X != torch.min(X)) & (torch.isfinite(X))]
+    X = X[(X != 0) & (torch.isfinite(X))]
 
     # Bin and make x grid
     mn = torch.min(X).int()
@@ -594,7 +600,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2, mu_noise=Non
         model = RMM(num_class=2)
 
     # Fit GMM using Numpy
-    model.fit(X, W=W, verbose=0, num_iter=num_iter)
+    model.fit(X, W=W, verbose=verbose, max_iter=max_iter)
 
     if show_fit:  # Plot fit
         model.plot_fit(X, fig_num=fig_num, W=W, suptitle='Histogram fit')
