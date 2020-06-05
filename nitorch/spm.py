@@ -585,7 +585,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
     X = X.double()
 
     # Mask
-    X = X[(X != 0) & (X != torch.max(X)) & (X != torch.min(X)) & (torch.isfinite(X))]
+    X = X[(X != 0) & (torch.isfinite(X))]
 
     # Bin and make x grid
     mn = torch.min(X).int()
