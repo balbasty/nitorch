@@ -67,11 +67,11 @@ def divergence_3d(dat, vx=None, which='forward', bound='constant'):
     return d / vx[2] + h / vx[1] + w / vx[0]
 
 
-def gradient_3d(dat, vx=None, which='forward', bound='reflect2'):
+def gradient_3d(dat, vx=None, which='forward', bound='constant'):
     """ Computes the gradient of volumetric data.
 
     Args:
-        dat (torch.tensor()): A tensor (D, H, W).
+        dat (torch.tensor()): A 3D tensor (D, H, W).
         vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
             Note, the voxel size should be ordered as (W, H, D).
         which (string, optional): Gradient type:
@@ -79,7 +79,7 @@ def gradient_3d(dat, vx=None, which='forward', bound='reflect2'):
             . 'backward': Backward difference (centre - previous)
             . 'central': Central difference ((next - previous)/2)
             Defaults to 'forward'.
-        bound (string, optional): Boundary conditions, defaults to 'reflect2'.
+        bound (string, optional): Boundary conditions, defaults to 'constant'.
 
     Returns:
           grad (torch.tensor()): Gradient (3, D, H, W).
