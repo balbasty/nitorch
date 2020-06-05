@@ -20,7 +20,7 @@ def divergence_3d(dat, vx=None, which='forward', bound='constant'):
     """ Computes the divergence of volumetric data.
 
     Args:
-        dat (torch.tensor()): A 3D tensor (3, D, H, W).
+        dat (torch.tensor()): A 4D tensor (3, D, H, W).
         vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
             Note, the voxel size should be ordered as (W, H, D).
         which (string, optional): Gradient type:
