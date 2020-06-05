@@ -97,6 +97,76 @@ static NI_INLINE NI_DEVICE size_t replicate(size_t coord, size_t size) {
 
 } // namespace index
 
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                           INVERSE INDEXING
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// Indexing functions are (usually) not invertible. However, they 
+// are always based on some periodicity. These 'inverse'  functions 
+// therefore return the period of the forward indexing functions.
+// NOTE: 0 means infinite periodicity
+
+namespace _indexinv {
+ 
+template <typename size_t>
+static NI_INLINE NI_DEVICE size_t inbounds(size_t coord, size_t size) {
+  return static_cast<size_t>(0);
+}
+
+// Boundary condition of a DCT-I (periodicity: (n-1)*2)
+// Indices are reflected about the centre of the border elements:
+//    -1 --> 1
+//     n --> n-2 
+template <typename size_t>
+static NI_INLINE NI_DEVICE size_t reflect1c(size_t coord, size_t size) {
+  return (size-1)*2;
+}
+
+// Boundary condition of a DST-I (periodicity: (n+1)*2)
+// Indices are reflected about the centre of the first out-of-bound 
+// element:
+//    -1 --> undefined [0]
+//    -2 --> 0
+//     n --> undefined [n-1]
+//   n+1 --> n-1
+template <typename size_t>
+static NI_INLINE NI_DEVICE size_t reflect1s(size_t coord, size_t size) {
+  return (size+1)*2;
+}
+
+// Boundary condition of a DCT/DST-II (periodicity: n*2)
+// Indices are reflected about the edge of the border elements:
+//    -1 --> 0
+//     n --> n-1
+template <typename size_t>
+static NI_INLINE NI_DEVICE size_t reflect2(size_t coord, size_t size) {
+  return size*2;
+}
+
+// Boundary condition of a DFT (periodicity: n)
+// Indices wrap about the edges:
+//    -1 --> n-1
+//     n --> 0
+template <typename size_t>
+static NI_INLINE NI_DEVICE size_t circular(size_t coord, size_t size) {
+  return size;
+}
+
+// Replicate edge values:
+//    -1 --> 0
+//    -2 --> 0
+//     n --> n-1
+//   n+1 --> n-1
+template <typename size_t>
+static NI_INLINE NI_DEVICE size_t replicate(size_t coord, size_t size) {
+  if (coord > 0 || coord < size - 1)
+    return static_cast<size_t>(0);
+  else if (coord == 0)
+    return static_cast<size_t>(-1);
+  else
+    return static_cast<size_t>(1);
+}
+
+} // namespace indexinv
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                          SIGN MODIFICATION
@@ -192,13 +262,14 @@ add(scalar_t *ptr, offset_t offset, scalar_t val,
 template <typename size_t>
 static NI_INLINE NI_DEVICE int64_t index(BoundType bound_type, size_t coord, size_t size) {
   switch (bound_type) {
-    case BoundType::Replicate:  return _index::replicate(coord, size);
-    case BoundType::DCT1:       return _index::reflect1c(coord, size);
-    case BoundType::DCT2:       return _index::reflect2(coord, size);
-    case BoundType::DST1:       return _index::reflect1s(coord, size);
-    case BoundType::DST2:       return _index::reflect2(coord, size);
-    case BoundType::DFT:        return _index::circular(coord, size);
+    case BoundType::NoCheck:    return _index::inbounds(coord, size);
     case BoundType::Zero:       return _index::inbounds(coord, size);
+    case BoundType::Replicate:  return _index::replicate(coord, size);
+    case BoundType::DFT:        return _index::circular(coord, size);
+    case BoundType::DCT2:       return _index::reflect2(coord, size);
+    case BoundType::DST2:       return _index::reflect2(coord, size);
+    case BoundType::DCT1:       return _index::reflect1c(coord, size);
+    case BoundType::DST1:       return _index::reflect1s(coord, size);
     default:                    return _index::inbounds(coord, size);
   }
 }
@@ -206,13 +277,14 @@ static NI_INLINE NI_DEVICE int64_t index(BoundType bound_type, size_t coord, siz
 template <typename size_t>
 static NI_INLINE NI_DEVICE int8_t sign(BoundType bound_type, size_t coord, size_t size) {
   switch (bound_type) {
-    case BoundType::Replicate:  return _sign::constant(coord, size);
-    case BoundType::DCT1:       return _sign::constant(coord, size);
-    case BoundType::DCT2:       return _sign::constant(coord, size);
-    case BoundType::DST1:       return _sign::periodic1(coord, size);
-    case BoundType::DST2:       return _sign::periodic2(coord, size);
-    case BoundType::DFT:        return _sign::constant(coord, size);
+    case BoundType::NoCheck:    return _sign::constant(coord, size);
     case BoundType::Zero:       return _sign::inbounds(coord, size);
+    case BoundType::Replicate:  return _sign::constant(coord, size);
+    case BoundType::DFT:        return _sign::constant(coord, size);
+    case BoundType::DCT2:       return _sign::constant(coord, size);
+    case BoundType::DST2:       return _sign::periodic2(coord, size);
+    case BoundType::DCT1:       return _sign::constant(coord, size);
+    case BoundType::DST1:       return _sign::periodic1(coord, size);
     default:                    return _sign::inbounds(coord, size);
   }
 }
