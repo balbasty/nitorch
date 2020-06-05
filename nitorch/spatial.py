@@ -40,7 +40,7 @@ TODO:
 """
 
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as _F
 from nitorch import kernels, utils
 from nitorch._C import spatial as _Cspatial
 from nitorch._C.spatial import BoundType, InterpolationType
@@ -533,26 +533,40 @@ def ismatrix(x):
     return shape.numel() == 2
 
 
-# def identity(shape):
-#     shape = torch.as_tensor(shape, dtype=torch.int64)
-#     dim = shape.numel()
-#     shape = torch.Size([1, 1] + shape.tolist())
-#     mat = make_compact(torch.eye(dim+1))
-#     grid = F.affine_grid(mat, shape, align_corners=True)
-#     return grid
-
-
 def identity(dim, dtype=None, device=None):
-    F = torch.nn.functional
+    """Returns an identity deformation field.
+
+    Args:
+        dim (tuple): Spatial dimension of the field, ordered as (W, H, [D]).
+        dtype (torch.dtype, optional): Data type. Defaults to None.
+        device (torch.device, optional): Device. Defaults to None.
+
+    Returns:
+        g (torch.Tensor): Deformation field with shape (1, 1, [D], H, W, 2|3).
+
+    """
     mat = torch.tensor([[[1., 0., 0., 0.],
                          [0., 1., 0., 0.],
                          [0., 0., 1., 0.]]],
                        dtype=dtype, device=device)
     f2v = fov2vox(dim, False).to(device)
-    g = F.affine_grid(mat, (1, 1) + dim[::-1], align_corners=False).to(device)
+    g = _F.affine_grid(mat, (1, 1) + dim[::-1], align_corners=False).to(device)
     g = g.matmul(f2v[:3, :3].transpose(0, 1)) \
         + f2v[:3, 3].reshape((1, 1, 1, 1, 3))
     return g
+
+
+# def affine_field(mat, dim, dtype=None, device=None):
+#     if dtype is None:
+#         dtype = mat.dtype
+#     if device is None:
+#         device = mat.device
+#     mat = mat.to(dtype=dtype, device=device)
+#     g = identity(dim, dtype, device)
+
+#     arg.matmul(
+#                     last_affine[:dim, :dim].transpose(0, 1)) \
+#                   + last_affine[:dim, dim].reshape((1, 1, 1, 1, dim))
 
 
 def compose(*args, interpolation='linear', bound='dft'):
@@ -563,7 +577,6 @@ def compose(*args, interpolation='linear', bound='dft'):
     #   at the end of the chain.
     # . possibility to provide fields that have an orientation matrix?
     #   (or keep it the responsibility of the user?)
-    # . Remove idenitity before interpolating field
     # . For higher order (> 1) interpolation: convert to spline coeficients.
 
     # Pre-pass: check dimensionality
@@ -597,7 +610,7 @@ def compose(*args, interpolation='linear', bound='dft'):
             else:
                 last_affine = last_affine.matmul(make_square(arg))
         else:
-            if last_affine is None:
+            if last_affine is not None:
                 args1.append(last_affine)
                 last_affine = None
             args1.append(arg)
@@ -624,8 +637,54 @@ def compose(*args, interpolation='linear', bound='dft'):
 
     # Third pass: compose all flow fields
     field = args2[-1]
-    for arg in args2[-2::-1]:
-        field = grid_pull(arg, field, interpolation, bound)
+    for arg in args2[-2::-1]:  # args2[-2:0:-1]
+        arg = arg - identity(arg.shape[-2:0:-1], arg.dtype, arg.device)
+        arg = grid2channel(arg)
+        field = field + channel2grid(grid_pull(arg, field, interpolation, bound))
+
+    # /!\ (TODO) The very first field (the first one being interpolated)
+    # potentially contains a multiplication with an affine matrix (i.e.,
+    # it might not be expressed in voxels). This affine transformation should
+    # be removed prior to subtracting the identity, and added back at the end.
+    # However, I don't know how to 'guess' this matrix.
+    #
+    # After further though, I think we can find the matrix that minimizes in
+    # the least-square sense (F*M-I), where F is NbVox*D and contains the
+    # deformation field, I is NbVox*D and contains the identity field
+    # (expressed in voxels) and M is the inverse of the unknown matrix.
+    # This problem has a closed form solution: (F'*F)\(F'*I).
+    # For better stability, We could encode M in gl(D), the Lie
+    # algebra of invertible matrices, and use gauss-newton to optimise
+    # the problem.
+    #
+    # Below is a tentative implementatin of the linear version
+    # > Needs F'F to be invertible and well-conditioned
+
+    # # For the last field, we factor out a possible affine transformation
+    # arg = args2[0]
+    # shape = arg.shape
+    # N = shape[0]                                     # Batch size
+    # D = shape[-1]                                    # Dimension
+    # V = torch.as_tensor(shape[1:-1]).prod()          # Nb of voxels
+    # Id = identity(arg.shape[-2:0:-1], arg.dtype, arg.device).reshape(V, D)
+    # arg = arg.reshape(N, V, D)                       # Field as a matrix
+    # one = torch.ones((N, V, 1), dtype=arg.dtype, device=arg.device)
+    # arg = cat((arg, one), 2)
+    # Id  = cat((Id, one))
+    # AA = arg.transpose(1, 2).bmm(arg)                # LHS of linear system
+    # AI = arg.transpose(1, 2).bmm(arg)                # RHS of linear system
+    # M, _ = torch.solve(AI, AA)                       # Solution
+    # arg = arg.bmm(M) - Id                            # Closest displacement
+    # arg = arg[..., :-1].reshape(shape)
+    # arg = grid2channel(arg)
+    # field = grid_pull(arg, field, interpolation, bound)     # Interpolate
+    # field = field + channel2grid(grid_pull(arg, field, interpolation, bound))
+    # shape = field.shape
+    # V = torch.as_tensor(shape[1:-1]).prod()
+    # field = field.reshape(N, V, D)
+    # one = torch.ones((N, V, 1), dtype=field.dtype, device=field.device)
+    # field, _ = torch.solve(field.transpose(1, 2), M.transpose(1, 2))
+    # field = field.transpose(1, 2)[..., :-1].reshape(shape)
 
     return field
 
@@ -674,11 +733,11 @@ def jacobian(warp, bound='circular'):
     else:
         raise ValueError('Unknown bound {}.'.format(bound))
     if dim == 1:
-        conv = F.conv1d
+        conv = _F.conv1d
     elif dim == 2:
-        conv = F.conv2d
+        conv = _F.conv2d
     elif dim == 3:
-        conv = F.conv3d
+        conv = _F.conv3d
     else:
         raise ValueError('Warps must be of dimension 1, 2 or 3. Got {}.'
                          .format(dim))
