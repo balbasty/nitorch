@@ -59,6 +59,12 @@ def _integrate_poly(l, h, *args):
     return k
 
 
+def _dirac1d(fwhm, basis, x):
+    if x is None:
+        x = torch.ones(1, dtype=fwhm.dtype, device=fwhm.device)
+    return (x == 1).to(x.dtype), x
+
+
 def _gauss1d(fwhm, basis, x):
     if basis:
         return _gauss1d1(fwhm, x)
@@ -180,6 +186,7 @@ def _triangle1d1(w, x):
 
 
 _smooth_switcher = {
+    'dirac': _dirac1d,
     'gauss': _gauss1d,
     'rect': _rect1d,
     'triangle': _triangle1d,
@@ -189,7 +196,7 @@ _smooth_switcher = {
     }
 
 
-def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
+def smooth(types, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     """Create a smoothing kernel.
 
     Creates a (separable) smoothing kernel with fixed (i.e., not learned)
@@ -207,7 +214,8 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     `nitorch.spatial?`.
 
     Args:
-        type (str or int): Smoothing function (integrates to one).
+        types (str or int or list[str or int]):
+            Smoothing function (integrates to one).
             . 0, 'rect': Rectangular function (0th order B-spline)
             . 1, 'tri': Triangular function (1st order B-spline)
             . 2, 'gauss': Gaussian
@@ -243,17 +251,21 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
         x = (x,)
     x = tuple(torch.as_tensor(x1, dtype=dtype, device=device).flatten()
               if x1 is not None else None for x1 in x)
+    if type(types) not in (list, tuple):
+        types = [types]
+    types = list(types)
 
     # Ensure all sizes are consistant
-    nker = max(fwhm.numel(), len(x))
+    nker = max(fwhm.numel(), len(x), len(types))
     fwhm = torch.cat((fwhm, fwhm[-1].repeat(max(0, nker-fwhm.numel()))))
     x = x + (x[-1],)*max(0, nker-len(x))
+    types += (types[-1],)*max(0, nker-len(types))
 
     # Loop over dimensions
     ker = tuple()
     x = list(x)
     for d in range(nker):
-        ker1, x[d] = _smooth_switcher[type[d]](fwhm[d], basis, x[d])
+        ker1, x[d] = _smooth_switcher[types[d]](fwhm[d], basis, x[d])
         shape = [1, ] * nker
         shape[-1-d] = ker1.numel()
         ker1 = ker1.reshape(shape)
