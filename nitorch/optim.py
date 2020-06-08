@@ -12,67 +12,93 @@ import torch
 #   of the residuals) is tracked
 
 
-def cg(A, b, precond=lambda x: x, x=0, iter=10):
-    """Conjugate-Gradient solver.
+def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
+        tolerance=1e-5, verbose=False, sum_dtype=torch.float64):
+    """ Solve A*x = b by the conjugate gradient method.
 
-    The method of conjugate gradients solves linear systems of the form
-    A*x = b, where A is positive-definite.
-
+        The method of conjugate gradients solves linear systems of
+        the form A*x = b, where A is positive-definite.
 
     Args:
-        A (array_like,function)
-        b (array_like,function)
-        precond (array_like,function, optional): Preconditioner.
-            Defaults to lambda x: x.
-        x (array_like, optional): Initial guess. Defaults to 0.
-        iter (int, optional): Nunber of iterations. Defaults to 10.
+        A (torch.tensor()): Linear operator (M, N), as a function handle.
+        b (torch.tensor()): Vector of right hand side arguments (N, 1).
+        x (torch.tensor(), optional): The initial guess, defaults to all zero vector (M, 1).
+        precond (torch.tensor(), optional): Preconditioner, defaults to lambda x: x.
+        maxiter (int, optional): Defaults to len(b)*10.
+        tolerance (float, optional): Defaults to 1e-5.
+        verbose (bool, optional): Defaults to False.
+        sum_dtype (torch.dtype): Defaults to torch.float64.
 
     Returns:
-        x (torch.tensor): Solution of the linear system.
+        x (torch.tensor()): Solution of the linear system (M, 1).
+
+    Example:
+        # Let's solve Ax = b using both regular inversion and CG
+        from numpy.linalg import svd
+        # Simulate A and b
+        N = 100
+        A = np.random.randn(N, N)
+        b = np.random.randn(N, 1)
+        # Make A symmetric and pos. def.
+        U, S, _ = svd(A)
+        A = np.matmul(U, np.matmul(np.diag(S + np.max(S, axis=0)), U.transpose()))
+        # numpy to torch
+        A = torch.from_numpy(A).float()
+        b = torch.from_numpy(b).float()
+        # Solve by inversion
+        t0 = timer()
+        x1 = torch.matmul(torch.inverse(A), b)
+        print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
+        # Solve by CG
+        t0 = timer()
+        x2 = sr.cgs(lambda x: A.matmul(x), b, verbose=True, sum_dtype=torch.float32)
+        print('cgs(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
+        # Inspect errors
+        e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
+        print(e1)
+        e2 = torch.sqrt(torch.sum((b - A.matmul(x2)) ** 2))
+        print(e2)
 
     """
-
     # Format arguments
-    x = torch.as_tensor(x)
-    if not callable(A):
-        A = torch.as_tensor(A)
-        def A(x): return A.matmul(x)
-    if not callable(precond):
-        precond = torch.as_tensor(precond)
-        def precond(x): precond.matmul(x)
+    device = b.device
+    dtype = b.dtype
+    if maxiter is None:
+        maxiter = len(b) * 10
+    if x is None:
+        x = torch.zeros(b.shape, dtype=dtype, device=device)
 
     # Initialisation
-    r = b - A(x)                              # Residual: b - A*x
-    z = precond(r)                            # Preconditioned residual
-
-    rz = r.flatten().matmul(z.flatten())      # Inner product of r and z
-    p = z                                     # Initial conjugate directions p
-    beta = 0.                                 # Initial step size
+    r = b - A(x)  # Residual: b - A*x
+    z = precond(r)  # Preconditioned residual
+    rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
+    p = z  # Initial conjugate directions p
+    beta = torch.tensor(0, dtype=dtype, device=device)  # Initial step size
 
     # Run algorithm
-    for j in range(iter):
+    for iter in range(maxiter):
         # Calculate conjugate directions P (descent direction)
-        p = z + beta*p
-
+        p = z + beta * p
         # Find the step size of the conj. gradient descent
         Ap = A(p)
-        alpha = rz / p.flatten().matmul(Ap.flatten())
-
+        alpha = rz / torch.sum(p * Ap, dtype=sum_dtype)
         # Perform conj. gradient descent, obtaining updated X and R, using the
         # calculated P and alpha
         x = x + alpha * p
         r = r - alpha * Ap
-
         # Update preconditioned residual
         z = precond(r)
-
         # Finds the step size for updating P
         rz0 = rz
-        rz = r.flatten().matmul(z.flatten())
+        rz = torch.sum(r * z, dtype=sum_dtype)
+        if verbose:
+            s = '{:' + str(len(str(maxiter))) + '} - sqrt(rtr)={:0.6f}'
+            print(s.format(iter + 1, torch.sqrt(rz)))
+        if torch.sqrt(rz) < tolerance:
+            break
         beta = rz / rz0
 
     return x
-
 
 
 def gain(obj, iter, monotonicity='increasing'):
