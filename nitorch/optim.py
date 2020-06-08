@@ -33,31 +33,30 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
         x (torch.tensor()): Solution of the linear system (M, 1).
 
     Example:
-        # Let's solve Ax = b using both regular inversion and CG
-        from numpy.linalg import svd
-        # Simulate A and b
-        N = 100
-        A = np.random.randn(N, N)
-        b = np.random.randn(N, 1)
-        # Make A symmetric and pos. def.
-        U, S, _ = svd(A)
-        A = np.matmul(U, np.matmul(np.diag(S + np.max(S, axis=0)), U.transpose()))
-        # numpy to torch
-        A = torch.from_numpy(A).float()
-        b = torch.from_numpy(b).float()
-        # Solve by inversion
-        t0 = timer()
-        x1 = torch.matmul(torch.inverse(A), b)
-        print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
-        # Solve by CG
-        t0 = timer()
-        x2 = sr.cgs(lambda x: A.matmul(x), b, verbose=True, sum_dtype=torch.float32)
-        print('cgs(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
-        # Inspect errors
-        e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
-        print(e1)
-        e2 = torch.sqrt(torch.sum((b - A.matmul(x2)) ** 2))
-        print(e2)
+        >>> # Let's solve Ax = b using both regular inversion and CG
+        >>> import torch
+        >>> from nitorch.optim import cg
+        >>> from timeit import default_timer as timer
+        >>> # Simulate A and b
+        >>> N = 100
+        >>> A = torch.randn(N, N)
+        >>> b = torch.randn(N, 1)
+        >>> # Make A symmetric and pos. def.
+        >>> U, S, _ = torch.svd(A)
+        >>> A = U.matmul((S + S.max()).diag().matmul(U.t()))
+        >>> # Solve by inversion
+        >>> t0 = timer()
+        >>> x1 = torch.solve(b, A)[0]
+        >>> print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
+        >>> # Solve by CG
+        >>> t0 = timer()
+        >>> x2 = cg(lambda x: A.matmul(x), b, verbose=True, sum_dtype=torch.float32)
+        >>> print('cg(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
+        >>> # Inspect errors
+        >>> e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
+        >>> print(e1)
+        >>> e2 = torch.sqrt(torch.sum((b - A.matmul(x2)) ** 2))
+        >>> print(e2)
 
     """
     # Format arguments
