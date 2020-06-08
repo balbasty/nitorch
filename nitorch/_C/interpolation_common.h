@@ -25,6 +25,7 @@
 
 // TODO: 
 // . second order derivatives [5/6/7]
+// ? other types of basis functions (gauss, sinc)
 
 #include "common.h"
 #include "interpolation.h"

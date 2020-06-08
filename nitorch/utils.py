@@ -16,6 +16,38 @@ import torch
 __all__ = ['pad', 'same_storage', 'shiftdim']
 
 
+def check_adjoint(which='central', vx=None, dtype=torch.float32,
+                  dim=64, device='cpu', bound='constant'):
+    """ Check adjointness of gradient and divergence operators.
+        For any variables u and v, of suitable size, then with gradu = grad(u),
+        divv = div(v) the following should hold: sum(gradu(:).*v(:)) - sum(u(:).*divv(:)) = 0
+        (to numerical precision).
+
+    See also:
+          https://regularize.wordpress.com/2013/06/19/
+          how-fast-can-you-calculate-the-gradient-of-an-image-in-matlab/
+
+    """
+    if vx is None:
+        vx = (1,) * 3
+    if type(vx) is not torch.Tensor:
+        vx = torch.tensor(vx, dtype=dtype, device=device)
+    if type(dim) is int:
+        dim = (dim,) * 3
+
+    torch.manual_seed(0)
+    # Check adjointness of..
+    if which == 'forward' or which == 'backward' or which == 'central':
+        # ..various gradient operators
+        u = torch.rand(dim[0], dim[1], dim[2], dtype=dtype, device=device)
+        v = torch.rand(3, dim[0], dim[1], dim[2], dtype=dtype, device=device)
+        gradu = gradient_3d(u, vx=vx, which=which, bound=bound)
+        divv = divergence_3d(v, vx=vx, which=which, bound=bound)
+        val = torch.sum(gradu*v, dtype=torch.float64) - torch.sum(divv*u, dtype=torch.float64)
+    # Print okay? (close to zero)
+    print('val={}'.format(val))
+
+
 def divergence_3d(dat, vx=None, which='forward', bound='constant'):
     """ Computes the divergence of volumetric data.
 
@@ -36,6 +68,9 @@ def divergence_3d(dat, vx=None, which='forward', bound='constant'):
     """
     if vx is None:
         vx = (1,) * 3
+    if type(vx) is not torch.Tensor:
+        vx = torch.tensor(vx, dtype=dat.dtype, device=dat.device)
+    half = torch.tensor(0.5, dtype=dat.dtype, device=dat.device)
 
     if which == 'forward':
         # Pad + reflected forward difference
@@ -56,22 +91,22 @@ def divergence_3d(dat, vx=None, which='forward', bound='constant'):
     elif which == 'central':
         # Pad + reflected central difference
         d = pad(dat[0, ...], (1, 1, 0, 0, 0, 0,), mode=bound)
-        d = 0.5 * (d[:-2, :, :] - d[2:, :, :])
+        d = half * (d[:-2, :, :] - d[2:, :, :])
         h = pad(dat[1, ...], (0, 0, 1, 1, 0, 0,), mode=bound)
-        h = 0.5 * (h[:, :-2, :] - h[:, 2:, :])
+        h = half * (h[:, :-2, :] - h[:, 2:, :])
         w = pad(dat[2, ...], (0, 0, 0, 0, 1, 1,), mode=bound)
-        w = 0.5 * (w[:, :, :-2] - w[:, :, 2:])
+        w = half * (w[:, :, :-2] - w[:, :, 2:])
     else:
         raise ValueError('Undefined divergence')
 
     return d / vx[2] + h / vx[1] + w / vx[0]
 
 
-def gradient_3d(dat, vx=None, which='forward', bound='reflect2'):
+def gradient_3d(dat, vx=None, which='forward', bound='constant'):
     """ Computes the gradient of volumetric data.
 
     Args:
-        dat (torch.tensor()): A tensor (D, H, W).
+        dat (torch.tensor()): A 3D tensor (D, H, W).
         vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
             Note, the voxel size should be ordered as (W, H, D).
         which (string, optional): Gradient type:
@@ -79,7 +114,7 @@ def gradient_3d(dat, vx=None, which='forward', bound='reflect2'):
             . 'backward': Backward difference (centre - previous)
             . 'central': Central difference ((next - previous)/2)
             Defaults to 'forward'.
-        bound (string, optional): Boundary conditions, defaults to 'reflect2'.
+        bound (string, optional): Boundary conditions, defaults to 'constant'.
 
     Returns:
           grad (torch.tensor()): Gradient (3, D, H, W).
@@ -87,6 +122,9 @@ def gradient_3d(dat, vx=None, which='forward', bound='reflect2'):
     """
     if vx is None:
         vx = (1,) * 3
+    if type(vx) is not torch.Tensor:
+        vx = torch.tensor(vx, dtype=dat.dtype, device=dat.device)
+    half = torch.tensor(0.5, dtype=dat.dtype, device=dat.device)
 
     if which == 'forward':
         # Pad + forward difference
@@ -103,9 +141,9 @@ def gradient_3d(dat, vx=None, which='forward', bound='reflect2'):
     elif which == 'central':
         # Pad + central difference
         dat = pad(dat, (1, 1, 1, 1, 1, 1,), mode=bound)
-        gd = 0.5 * (-dat[:-2, 1:-1, 1:-1] + dat[2:, 1:-1, 1:-1])
-        gh = 0.5 * (-dat[1:-1, :-2, 1:-1] + dat[1:-1, 2:, 1:-1])
-        gw = 0.5 * (-dat[1:-1, 1:-1, :-2] + dat[1:-1, 1:-1, 2:])
+        gd = half * (-dat[:-2, 1:-1, 1:-1] + dat[2:, 1:-1, 1:-1])
+        gh = half * (-dat[1:-1, :-2, 1:-1] + dat[1:-1, 2:, 1:-1])
+        gw = half * (-dat[1:-1, 1:-1, :-2] + dat[1:-1, 1:-1, 2:])
     else:
         raise ValueError('Undefined gradient')
 
