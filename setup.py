@@ -273,6 +273,14 @@ def torch_flags(cuda=False):
     return flags
 
 
+def torch_link_flags(cuda=False):
+    backend = torch_parallel_backend();
+    flags = []
+    if not cuda and backend == 'AT_PARALLEL_OPENMP':
+        flags += omp_flags()
+    return flags
+
+
 def cuda_flags():
     flags = nvcc_flags() + cuda_arch_flags()
     if is_windows():
@@ -289,42 +297,52 @@ use_cuda = cuda_home() and cuda_check()
 use_cudnn = False  # cudnn_home() and cudnn_check()
 
 
-# ~~~ setup libraries
-build_libraries = []
-
-libnitorch_cpu = ('nitorch_cpu', {
-  'sources': libnitorch_cpu_sources,
-  'include_dirs': torch_include_dirs(),
-  'extra_compile_args': common_flags() + torch_flags(),
-  'language': 'c++',
-})
-build_libraries += [libnitorch_cpu]
-
-if use_cuda or use_cudnn:
-    libnitorch_cuda = ('nitorch_cuda', {
-      'sources': libnitorch_cuda_sources,
-      'include_dirs': torch_include_dirs(use_cuda, use_cudnn),
-      'extra_compile_args': cuda_flags() + torch_flags(cuda=True),
-      'language': 'cuda',
-    })
-    build_libraries += [libnitorch_cuda]
-
-libnitorch = ('nitorch', {
-  'sources': libnitorch_sources,
-  'include_dirs': torch_include_dirs(),
-  'extra_compile_args': common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
-  'language': 'c++',
-})
-build_libraries += [libnitorch]
-
-
-# ~~~ setup extensions
-nitorch_lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nitorch', 'lib')
 build_extensions = []
+nitorch_lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nitorch', 'lib')
+nitorch_lib = []
+# ~~~ setup libraries
+NiTorchCPULibrary = SharedLibrary(
+    name='lib.nitorch_cpu',
+    sources=libnitorch_cpu_sources,
+    libraries=torch_libraries(),
+    library_dirs=torch_library_dirs(),
+    include_dirs=torch_include_dirs(),
+    extra_compile_args=common_flags() + torch_flags(),
+    extra_link_args=torch_link_flags(),
+    language='c++',
+)
+build_extensions += [NiTorchCPULibrary]
+nitorch_lib += ['nitorch_cpu']
+if use_cuda:
+    NiTorchCUDALibrary = SharedLibrary(
+        name='lib.nitorch_cuda',
+        sources=libnitorch_cpu_sources,
+        libraries=torch_libraries(use_cuda),
+        library_dirs=torch_library_dirs(use_cuda, use_cudnn),
+        include_dirs=torch_include_dirs(use_cuda, use_cudnn),
+        extra_compile_args=cuda_flags() + torch_flags(cuda=True),
+        extra_link_args=torch_link_flags(cuda=True),
+        language='cuda',
+    )
+    build_extensions += [NiTorchCUDALibrary]
+    nitorch_lib += ['nitorch_cuda']
+NiTorchLibrary = SharedLibrary(
+    name='lib.nitorch',
+    sources=libnitorch_sources,
+    libraries=torch_libraries() + nitorch_lib,
+    library_dirs=torch_library_dirs() + [nitorch_lib_path],
+    include_dirs=torch_include_dirs(),
+    extra_compile_args=common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
+    runtime_library_dirs=[link_relative('.')],
+    language='c++',
+)
+build_extensions += [NiTorchLibrary]
+nitorch_lib = ['nitorch']
+# ~~~ setup extensions
 SpatialExtension = Extension(
     name='_C.spatial',
     sources=['nitorch/_C/spatial.cpp'],
-    libraries=torch_libraries(use_cuda),
+    libraries=torch_libraries(use_cuda) + nitorch_lib,
     library_dirs=torch_library_dirs(use_cuda, use_cudnn) + [nitorch_lib_path],
     include_dirs=torch_include_dirs(use_cuda, use_cudnn),
     extra_compile_args=common_flags() + torch_extension_flags('spatial'),
@@ -341,7 +359,6 @@ setup(
     python_requires='>=3.0',
     setup_requires=['torch>=1.5'],
     ext_package='nitorch',
-    libraries=build_libraries,
     ext_modules=build_extensions,
-    cmdclass={'build_clib': build_shared_clib}
+    cmdclass={'build_ext': build_ext}
 )

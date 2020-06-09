@@ -154,6 +154,7 @@ std::ostream& operator<<(std::ostream& os, const BoundType & bound) {
     case BoundType::DFT:        return os << "DFT";
     case BoundType::Zero:       return os << "Zero";
     case BoundType::Sliding:    return os << "Sliding";
+    case BoundType::NoCheck:    return os << "NoCheck";
   }
    return os << "Unknown bound";
 }
