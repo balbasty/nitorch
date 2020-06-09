@@ -517,8 +517,8 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     vx = vxsize(mat)
     vx_out[~np.isfinite(vx_out)] = vx[~np.isfinite(vx_out)]
     # ensure isotropic
-    vx_out = np.mean(vx_out).repeat(3)
-    vx_out = np.round(vx_out, 2)
+    # vx_out = np.mean(vx_out).repeat(3)
+    # vx_out = np.round(vx_out, 2)
     mat = np.matmul(mat, np.diag([vx_out[0]/vx[0], vx_out[1]/vx[1], vx_out[2]/vx[2], 1]))
     vx = vxsize(mat)
     # Ensure that the FoV covers all images, with a few voxels to spare

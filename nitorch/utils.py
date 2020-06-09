@@ -65,6 +65,10 @@ def divergence_3d(dat, vx=None, which='forward', bound='constant'):
     Returns:
         div (torch.tensor()): Divergence (D, H, W).
 
+    Example:
+        check_adjoint(which='forward', dtype=torch.float64, bound='constant',
+                      vx=(3.5986, 2.5564, 1.5169), dim=(32, 64, 20))
+
     """
     if vx is None:
         vx = (1,) * 3
