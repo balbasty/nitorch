@@ -163,8 +163,7 @@ class build_ext(build_ext_base.build_ext):
     def build_extension(self, ext):
         # Set proper compiler
         compiler0 = self.compiler
-        self.compiler = make_compiler(compiler=self.compiler,
-                                      language=ext.language,
+        self.compiler = make_compiler(language=ext.language,
                                       dry_run=self.dry_run,
                                       force=self.force)
         distutils.sysconfig.customize_compiler(self.compiler)

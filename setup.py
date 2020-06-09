@@ -320,7 +320,7 @@ if use_cuda:
         libraries=torch_libraries(use_cuda),
         library_dirs=torch_library_dirs(use_cuda, use_cudnn),
         include_dirs=torch_include_dirs(use_cuda, use_cudnn),
-        extra_compile_args=common_flags() + torch_flags(cuda=True),
+        extra_compile_args=cuda_flags() + torch_flags(cuda=True),
         extra_link_args=torch_link_flags(cuda=True),
         language='cuda',
     )
