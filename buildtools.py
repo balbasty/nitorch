@@ -4,12 +4,15 @@ import os
 import os.path
 import sys
 import distutils
+import setuptools
 import subprocess
 import glob
 import re
+import shlex
 from packaging import version as pversion
 from distutils import ccompiler, unixccompiler
-from distutils.command import build_clib as build_clib_base
+from distutils.command import build_ext as build_ext_base
+from distutils.sysconfig import customize_compiler
 
 _all__ = [
     'is_windows',
@@ -18,7 +21,7 @@ _all__ = [
     'cuda_version',
     'cudnn_home',
     'cudnn_version',
-    'build_clib',
+    'build_ext',
 ]
 
 def is_windows():
@@ -115,124 +118,92 @@ def link_relative(path):
     else:
         return os.path.join('$ORIGIN', path)
 
+class SharedLibrary(setuptools.Extension):
+    pass
 
-class build_shared_clib(build_clib_base.build_clib):
-    """Extends native lib builder to handle compiler flags."""
+def customize_compiler_for_dylib(self):
+    def _link_dylib(objects, output_libname, *args, **kwargs):
+        libname = self.library_filename(output_libname, lib_type='dylib')
 
-    def initialize_options(self):
-        super().initialize_options()
-        self.extra_compile_args = None
-        self.extra_link_args = None
-        self.extra_objects = None
-        self.export_symbols = None
-        self.runtime_library_dirs = None
-        self.depends = None
-        self.language = None
-        self.package = None
+        def add_install_name(extra_args, libname):
+            has_install_name = any([a.startswith('-install_name')
+                                    for a in extra_args])
+            if not has_install_name:
+                extra_args += ['-install_name',
+                               os.path.join('@rpath', os.path.basename(libname))]
+            return extra_args
 
-    def run(self):
-        if not self.libraries:
-            return
+        if len(args) > 4:
+            args[3] = add_install_name(args[3], libname)
+        else:
+            kwargs['extra_postargs'] = add_install_name(kwargs.get('extra_postargs', []), libname)
 
-        if self.package is None:
-            self.package = self.distribution.ext_package
-
-
-        self.build_libraries(self.libraries)
+        return self.link(ccompiler.CCompiler.SHARED_LIBRARY, objects,
+                         libname, *args, **kwargs)
+    self.link_shared_object = _link_dylib
 
 
-    def build_libraries(self, libraries):
+def fix_compiler_rpath(self):
+    if isinstance(self, unixccompiler.UnixCCompiler):
+        func_original = self.runtime_library_dir_option
+
+        def func_fixed(dir):
+            if sys.platform[:6] == "darwin":
+                return "-Wl,-rpath," + dir
+                # return "-Xlinker -rpath -Xlinker " + dir
+            else:
+                return func_original(dir)
+
+        self.runtime_library_dir_option = func_fixed
+
+
+class build_ext(build_ext_base.build_ext):
+    """Extends native extension builder to handle compiler flags."""
+
+    def build_extension(self, ext):
+        # Set proper compiler
         compiler0 = self.compiler
-        for (lib_name, build_info) in libraries:
-            sources = build_info.get('sources')
-            if sources is None or not isinstance(sources, (list, tuple)):
-                from distutils.errors import DistutilsSetupError
-                raise DistutilsSetupError(
-                   "in 'libraries' option (library '%s'), "
-                   "'sources' must be present and must be "
-                   "a list of source filenames" % lib_name)
-                sources = list(sources)
+        self.compiler = make_compiler(language=ext.language,
+                                      dry_run=self.dry_run,
+                                      force=self.force)
+        distutils.sysconfig.customize_compiler(self.compiler)
+        fix_compiler_rpath(self.compiler)
+        if self.include_dirs is not None:
+            self.compiler.set_include_dirs(self.include_dirs)
+        if self.define is not None:
+            # 'define' option is a list of (name,value) tuples
+            for (name, value) in self.define:
+                self.compiler.define_macro(name, value)
+        if self.undef is not None:
+            for macro in self.undef:
+                self.compiler.undefine_macro(macro)
 
-            distutils.log.info("building '%s' library", lib_name)
+        # Set proper linker
+        if isinstance(ext, SharedLibrary):
+            if sys.platform[:6] == "darwin":
+                customize_compiler_for_dylib(self.compiler)
+            else:
+                self.compiler.link_shared_object = self.compiler.link_shared_lib
 
-            compiler = build_info.get('compiler') or compiler0
-            language = build_info.get('language') or self.language
-            self.compiler = make_compiler(compiler=compiler,
-                                          language=language,
-                                          dry_run=self.dry_run,
-                                          force=self.force)
+        # Set proper filename generator
+        get_ext_filename0 = self.get_ext_filename
+        if isinstance(ext, SharedLibrary):
+            self.get_ext_filename = lambda x: x
 
-            distutils.sysconfig.customize_compiler(self.compiler)
+        # OSX: change -bundle to -dynamiclib
+        linker_so = []
+        for arg in self.compiler.linker_so:
+            linker_so += shlex.split(arg)
+        linker_so = ['-dynamiclib' if arg == '-bundle' else arg
+                     for arg in linker_so]
+        self.compiler.set_executables(linker_so=linker_so)
 
-            if self.include_dirs is not None:
-                self.compiler.set_include_dirs(self.include_dirs)
-            if self.define is not None:
-                # 'define' option is a list of (name,value) tuples
-                for (name, value) in self.define:
-                    self.compiler.define_macro(name, value)
-            if self.undef is not None:
-                for macro in self.undef:
-                    self.compiler.undefine_macro(macro)
+        # Build extension
+        super().build_extension(ext)
 
-            # (YB: copied from build_ext)
-            # Two possible sources for extra compiler arguments:
-            #   - 'extra_compile_args' in Extension object
-            #   - CFLAGS environment variable (not particularly
-            #     elegant, but people seem to expect it and I
-            #     guess it's useful)
-            # The environment variable should take precedence, and
-            # any sensible compiler will give precedence to later
-            # command line args.  Hence we combine them in order:
-            extra_args = build_info.get('extra_compile_args') or []
-
-            # First, compile the source code to object files in the library
-            # directory.  (This should probably change to putting object
-            # files in a temporary build directory.)
-            macros = build_info.get('macros')
-            include_dirs = build_info.get('include_dirs')
-            depends = build_info.get('depends')
-            objects = self.compiler.compile(sources,
-                                            output_dir=self.build_temp,
-                                            macros=macros,
-                                            include_dirs=include_dirs,
-                                            debug=self.debug,
-                                            extra_postargs=extra_args,
-                                            depends=depends)
-
-            # Now link the object files together into a "shared object" --
-            # of course, first we have to figure out all the other things
-            # that go into the mix.
-            if build_info.get('depends'):
-                objects.extend(build_info.get('depends'))
-            extra_args = build_info.get('extra_linking_args') or []
-
-            # Detect target language, if not provided
-            language = build_info.get('language') \
-                or self.compiler.detect_language(sources)
-
-            runtime_library_dirs = build_info.get('runtime_library_dirs')
-            library_dirs = build_info.get('library_dirs')
-            export_symbols = build_info.get('export_symbols')
-            libraries = build_info.get('libraries')
-
-            lib_fullpath = self.compiler.library_filename(
-                lib_name, output_dir=os.path.join(self.package, 'lib'),
-                lib_type='shared')
-
-            self.compiler.link_shared_object(
-                objects, lib_fullpath,
-                libraries=libraries,
-                library_dirs=library_dirs,
-                runtime_library_dirs=runtime_library_dirs,
-                extra_postargs=extra_args,
-                export_symbols=export_symbols,
-                debug=self.debug,
-                build_temp=self.build_temp,
-                target_lang=language)
-
-        # Restore original compiler
+        # Reset
         self.compiler = compiler0
-
+        self.get_ext_filename = get_ext_filename0
 
 class NVCCompiler(unixccompiler.UnixCCompiler):
     compiler_type = 'nvcc'
