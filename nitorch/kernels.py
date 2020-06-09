@@ -190,6 +190,7 @@ _smooth_switcher = {
     'gauss': _gauss1d,
     'rect': _rect1d,
     'triangle': _triangle1d,
+    -1: _dirac1d,
     0: _rect1d,
     1: _triangle1d,
     2: _gauss1d,
@@ -216,9 +217,10 @@ def smooth(types, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     Args:
         types (str or int or list[str or int]):
             Smoothing function (integrates to one).
-            . 0, 'rect': Rectangular function (0th order B-spline)
-            . 1, 'tri': Triangular function (1st order B-spline)
-            . 2, 'gauss': Gaussian
+            . -1, 'dirac': Dirac function
+            . 0,  'rect': Rectangular function (0th order B-spline)
+            . 1,  'tri': Triangular function (1st order B-spline)
+            . 2,  'gauss': Gaussian
         fwhm (vector_like,optional): Full-width at half-maximum of the
             smoothing function (in voxels), in each dimension.
             Defaults to 1.
