@@ -500,9 +500,10 @@ void PushPullImpl<scalar_t,offset_t>::init_output()
       output.push_back(at::zeros({N, 1, src_X, src_Y, src_Z}, grid_opt));
     auto count = output.back();
     out_sN   = count.stride(0);
-    out_sX   = count.stride(1);
-    out_sY   = count.stride(2);
-    out_sZ   = dim == 2 ? static_cast<offset_t>(0) : count.stride(3);
+    out_sC   = count.stride(1);
+    out_sX   = count.stride(2);
+    out_sY   = count.stride(3);
+    out_sZ   = dim == 2 ? static_cast<offset_t>(0) : count.stride(4);
     out_sK   = static_cast<offset_t>(0);
     out_ptr  = count.data_ptr<scalar_t>();
   }
@@ -1777,16 +1778,16 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d_nearest(
   offset_t iy = static_cast<offset_t>(std::round(y));
 
   // Boundary condition (/!\ compute sign before warping indices)
-  int8_t    sx = bound::sign(bound0, ix, src_X);
-  int8_t    sy = bound::sign(bound1, iy, src_Y);
-            ix = bound::index(bound0, ix,src_X);
-            iy = bound::index(bound1, iy,src_Y);
+  int8_t    sx = bound::sign(bound0, ix,  src_X);
+  int8_t    sy = bound::sign(bound1, iy,  src_Y);
+            ix = bound::index(bound0, ix, src_X);
+            iy = bound::index(bound1, iy, src_Y);
 
   // Sign
   int8_t s = sy * sx;
 
   if (do_pull) {
-    offset_t  o = iy*src_sY + ix*src_sZ;
+    offset_t  o = iy*src_sY + ix*src_sX;
     scalar_t *out_ptr_NCXY = out_ptr + n * out_sN 
                                      + w * out_sX
                                      + h * out_sY;
