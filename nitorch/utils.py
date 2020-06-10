@@ -7,11 +7,14 @@ Created on Fri Apr 24 14:45:24 2020
 """
 
 # TODO:
-#   . Directly use pytorch's pad when possible
+#   . Directly use pytorch's pad when possible (done for constant)
 #   . check time/memory footprint
 #   . Implement modifiers for Dirichlet/Sliding boundaries
 
+
 import torch
+from torch.nn import functional as F
+
 
 __all__ = ['divergence_3d', 'gradient_3d', 'pad', 'same_storage',
            'shiftdim', 'softmax']
@@ -358,29 +361,15 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
 
 def _pad_constant(inp, padpre, padpost, value):
-    idim = torch.as_tensor(inp.shape)
-    ndim = idim.numel()
-    # First: crop input if needed
-    start = (-padpre).clamp(min=0)
-    length = idim - start - (-padpost).clamp(min=0)
-    for d in range(ndim):
-        inp = inp.narrow(d, start[d].item(), length[d].item())
-    # Second: pad with constant tensors
-    padpre = padpre.clamp(min=0)
-    padpost = padpost.clamp(min=0)
-    for d in range(ndim):
-        idim = torch.as_tensor(inp.shape)
-        padpredim = idim
-        padpredim[d] = padpre[d]
-        padpredim = [x.item() for x in padpredim]
-        pre = torch.full(padpredim, value,
-                         dtype=inp.dtype, device=inp.device)
-        padpostdim = idim
-        padpostdim[d] = padpost[d]
-        padpostdim = [x.item() for x in padpostdim]
-        post = torch.full(padpostdim, value,
-                          dtype=inp.dtype, device=inp.device)
-        inp = torch.cat((pre, inp, post), dim=d)
+    # Uses torch.nn.functional.pad
+    # Convert pre and post to a single list
+    padpre = padpre.tolist()
+    padpost = padpost.tolist()
+    padding = padpre * 2
+    padding[1::2] = padpost[::-1]
+    padding[::2] = padpre[::-1]
+    # Apply padding
+    inp = F.pad(inp, padding, mode='constant', value=value)
     return inp
 
 
