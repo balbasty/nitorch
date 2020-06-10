@@ -13,39 +13,8 @@ Created on Fri Apr 24 14:45:24 2020
 
 import torch
 
-__all__ = ['pad', 'same_storage', 'shiftdim']
-
-
-def check_adjoint(which='central', vx=None, dtype=torch.float32,
-                  dim=64, device='cpu', bound='constant'):
-    """ Check adjointness of gradient and divergence operators.
-        For any variables u and v, of suitable size, then with gradu = grad(u),
-        divv = div(v) the following should hold: sum(gradu(:).*v(:)) - sum(u(:).*divv(:)) = 0
-        (to numerical precision).
-
-    See also:
-          https://regularize.wordpress.com/2013/06/19/
-          how-fast-can-you-calculate-the-gradient-of-an-image-in-matlab/
-
-    """
-    if vx is None:
-        vx = (1,) * 3
-    if type(vx) is not torch.Tensor:
-        vx = torch.tensor(vx, dtype=dtype, device=device)
-    if type(dim) is int:
-        dim = (dim,) * 3
-
-    torch.manual_seed(0)
-    # Check adjointness of..
-    if which == 'forward' or which == 'backward' or which == 'central':
-        # ..various gradient operators
-        u = torch.rand(dim[0], dim[1], dim[2], dtype=dtype, device=device)
-        v = torch.rand(3, dim[0], dim[1], dim[2], dtype=dtype, device=device)
-        gradu = gradient_3d(u, vx=vx, which=which, bound=bound)
-        divv = divergence_3d(v, vx=vx, which=which, bound=bound)
-        val = torch.sum(gradu*v, dtype=torch.float64) - torch.sum(divv*u, dtype=torch.float64)
-    # Print okay? (close to zero)
-    print('val={}'.format(val))
+__all__ = ['divergence_3d', 'gradient_3d', 'pad', 'same_storage',
+           'shiftdim', 'softmax']
 
 
 def divergence_3d(dat, vx=None, which='forward', bound='constant'):
@@ -271,6 +240,38 @@ _modifiers = {
     'reflect1': lambda x, i, n: x,
     'reflect2': lambda x, i, n: x,
     }
+
+
+def _check_adjoint(which='central', vx=None, dtype=torch.float32,
+                  dim=64, device='cpu', bound='constant'):
+    """ Check adjointness of gradient and divergence operators.
+        For any variables u and v, of suitable size, then with gradu = grad(u),
+        divv = div(v) the following should hold: sum(gradu(:).*v(:)) - sum(u(:).*divv(:)) = 0
+        (to numerical precision).
+
+    See also:
+          https://regularize.wordpress.com/2013/06/19/
+          how-fast-can-you-calculate-the-gradient-of-an-image-in-matlab/
+
+    """
+    if vx is None:
+        vx = (1,) * 3
+    if type(vx) is not torch.Tensor:
+        vx = torch.tensor(vx, dtype=dtype, device=device)
+    if type(dim) is int:
+        dim = (dim,) * 3
+
+    torch.manual_seed(0)
+    # Check adjointness of..
+    if which == 'forward' or which == 'backward' or which == 'central':
+        # ..various gradient operators
+        u = torch.rand(dim[0], dim[1], dim[2], dtype=dtype, device=device)
+        v = torch.rand(3, dim[0], dim[1], dim[2], dtype=dtype, device=device)
+        gradu = gradient_3d(u, vx=vx, which=which, bound=bound)
+        divv = divergence_3d(v, vx=vx, which=which, bound=bound)
+        val = torch.sum(gradu*v, dtype=torch.float64) - torch.sum(divv*u, dtype=torch.float64)
+    # Print okay? (close to zero)
+    print('val={}'.format(val))
 
 
 def pad(inp, padsize, mode='constant', value=0, side=None):
