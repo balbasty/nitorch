@@ -99,9 +99,9 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             - 2 or 'dct2'       or BoundType.dct2
             - 3 or 'dst1'       or BoundType.dst1
             - 4 or 'dst2'       or BoundType.dst2
-            - 4 or 'dft'        or BoundType.dft
-            - 4 or 'sliding'    or BoundType.sliding
-            - 4 or 'zero'       or BoundType.zero
+            - 5 or 'dft'        or BoundType.dft
+            - 6 or 'sliding'    or BoundType.sliding [not implemented]
+            - 7 or 'zero'       or BoundType.zero
         A list of values can be provided, in the order [W, H, D],
         to specify dimension-specific boundary conditions.
         `sliding` is a specific condition than only applies to flow fields
@@ -196,9 +196,9 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
             - 2 or 'dct2'       or BoundType.dct2
             - 3 or 'dst1'       or BoundType.dst1
             - 4 or 'dst2'       or BoundType.dst2
-            - 4 or 'dft'        or BoundType.dft
-            - 4 or 'sliding'    or BoundType.sliding
-            - 4 or 'zero'       or BoundType.zero
+            - 5 or 'dft'        or BoundType.dft
+            - 6 or 'sliding'    or BoundType.sliding [not implemented]
+            - 7 or 'zero'       or BoundType.zero
         A list of values can be provided, in the order [W, H, D],
         to specify dimension-specific boundary conditions.
         `sliding` is a specific condition than only applies to flow fields
@@ -294,9 +294,9 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
             - 2 or 'dct2'       or BoundType.dct2
             - 3 or 'dst1'       or BoundType.dst1
             - 4 or 'dst2'       or BoundType.dst2
-            - 4 or 'dft'        or BoundType.dft
-            - 4 or 'sliding'    or BoundType.sliding
-            - 4 or 'zero'       or BoundType.zero
+            - 5 or 'dft'        or BoundType.dft
+            - 6 or 'sliding'    or BoundType.sliding [not implemented]
+            - 7 or 'zero'       or BoundType.zero
         A list of values can be provided, in the order [W, H, D],
         to specify dimension-specific boundary conditions.
         `sliding` is a specific condition than only applies to flow fields
@@ -394,9 +394,9 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             - 2 or 'dct2'       or BoundType.dct2
             - 3 or 'dst1'       or BoundType.dst1
             - 4 or 'dst2'       or BoundType.dst2
-            - 4 or 'dft'        or BoundType.dft
-            - 4 or 'sliding'    or BoundType.sliding
-            - 4 or 'zero'       or BoundType.zero
+            - 5 or 'dft'        or BoundType.dft
+            - 6 or 'sliding'    or BoundType.sliding [not implemented]
+            - 7 or 'zero'       or BoundType.zero
         A list of values can be provided, in the order [W, H, D],
         to specify dimension-specific boundary conditions.
         `sliding` is a specific condition than only applies to flow fields
