@@ -748,13 +748,29 @@ def jacobian(warp, bound='circular'):
 
 
 def voxsize(mat):
-    """ Compute voxel size from affine matrix.
+    """ Compute voxel sizes from affine matrices.
 
     Args:
-        mat (torch.tensor()): Affine matrix (4, 4).
+        mat (torch.tensor()): Affine matrix (N, (2|3|4), (3|4)) | ((2|3|4), (3|4)).
 
     Returns:
-        vx (torch.tensor()): Voxel size (3,).
+        vx (torch.tensor()): Voxel size (N, 3) | (3, ).
 
     """
-    return (mat[:3, :3] ** 2).sum(0).sqrt()
+    if len(mat.shape) == 2:
+        # N = 1, expand
+        mat = mat[None, ...]
+    N = mat.shape[0]
+    if mat.shape[2] == 4:  # 3D
+        dim = 3
+    elif mat.shape[2] == 3:  # 2D
+        dim = 2
+    vx = torch.zeros((N, dim), dtype=mat.dtype, device=mat.device)
+    for n in range(N):
+        if mat.shape[2] == 4:  # 3D
+            vx[n, ...] = (mat[n, :3, :3] ** 2).sum(0).sqrt()
+        elif mat.shape[2] == 3:  # 2D
+            vx[n, ...] = (mat[n, :2, :2] ** 2).sum(0).sqrt()
+    if N == 1:
+        vx = vx[0, ...]
+    return vx
