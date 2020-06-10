@@ -745,3 +745,17 @@ def jacobian(warp, bound='circular'):
     jac = jac.reshape((shape[0], dim, dim) + shape[1:])
     jac = jac.permute((0,) + tuple(range(3, 3+dim)) + (1, 2))
     return jac
+
+
+
+def voxsize(mat):
+    """ Compute voxel size from affine matrix.
+
+    Args:
+        mat (torch.tensor()): Affine matrix (4, 4).
+
+    Returns:
+        vx (torch.tensor()): Voxel size (3,).
+
+    """
+    return (mat[:3, :3] ** 2).sum(0).sqrt()
