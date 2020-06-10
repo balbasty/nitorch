@@ -9,8 +9,8 @@ TODO:
 import math
 from timeit import default_timer as timer
 import matplotlib.pyplot as plt
-from nitorch import optim
-from nitorch import utils
+from nitorch.optim import get_gain
+from nitorch.utils import softmax
 import torch
 from torch.distributions import MultivariateNormal as mvn
 
@@ -72,12 +72,12 @@ class Mixture:
                 Z[:, k] = torch.log(self.mp[k]) + self.log_likelihood(X, k)
 
             # Get responsibilities
-            Z, dlb = utils.softmax(Z, W=W[:, 0], get_ll=True)
+            Z, dlb = softmax(Z, W=W[:, 0], get_ll=True)
 
             """ Objective function and convergence related
             """
             lb[iter] = dlb
-            gain = optim.gain(lb, iter)
+            gain = get_gain(lb, iter)
             if verbose >= 3:
                 print('iter: {}, lb: {}, gain: {}'
                       .format(iter + 1, lb[iter], gain))

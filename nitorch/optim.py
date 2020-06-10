@@ -100,7 +100,7 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
     return x
 
 
-def gain(obj, iter, monotonicity='increasing'):
+def get_gain(obj, iter, monotonicity='increasing'):
     """ Compute gain of some objective function.
 
     Args:
