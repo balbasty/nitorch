@@ -747,7 +747,6 @@ def jacobian(warp, bound='circular'):
     return jac
 
 
-
 def voxsize(mat):
     """ Compute voxel size from affine matrix.
 
