@@ -135,7 +135,7 @@ def plot_convergence(vals=None, fig_ax=None, fig_num=1, fig_title='Model converg
 
     Subsequent calls are then performed as:
 
-    _ = plot_convergence(cals=vals, fig_ax=fig_ax)
+    _ = plot_convergence(vals=vals, fig_ax=fig_ax)
 
     Args:
         vals (torch.tensor, optional): Vector of values to be plotted.
