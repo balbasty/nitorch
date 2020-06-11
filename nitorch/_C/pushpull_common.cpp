@@ -1868,7 +1868,7 @@ std::deque<Tensor> pushpull(
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
-  return AT_DISPATCH_FLOATING_TYPES_AND_YALF(grid.scalar_type(), "pushpull", [&] {
+  return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
     PushPullImpl<scalar_t,int64_t> 
     f(grid.dim()-2, bound, interpolation, extrapolate, 
       do_pull, do_push, do_count, do_grad, do_sgrad);
@@ -1889,7 +1889,7 @@ std::deque<Tensor> pushpull(
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
-  return AT_DISPATCH_FLOATING_TYPES_AND_YALF(grid.scalar_type(), "pushpull", [&] {
+  return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
     PushPullImpl<scalar_t,int64_t> 
     f(grid.dim()-2, bound, interpolation, extrapolate,
       do_pull, do_push, do_count, do_grad, do_sgrad);
