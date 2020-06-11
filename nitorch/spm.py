@@ -390,7 +390,7 @@ def identity(dm, dtype=torch.float32, device='cpu'):
 
     """
     id_grid = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
-    id_grid[:, :, :, 2], id_grid[:, :, :, 1], id_grid[:, :, :, 0] = \
+    id_grid[:, :, :, 0], id_grid[:, :, :, 1], id_grid[:, :, :, 2] = \
         torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
                         torch.arange(0, dm[1], dtype=dtype, device=device),
                         torch.arange(0, dm[2], dtype=dtype, device=device)])

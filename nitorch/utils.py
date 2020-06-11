@@ -24,9 +24,8 @@ def divergence_3d(dat, vx=None, which='forward', bound='constant'):
     """ Computes the divergence of volumetric data.
 
     Args:
-        dat (torch.tensor()): A 4D tensor (3, D, H, W).
+        dat (torch.tensor()): A 4D tensor (3, W, H, D).
         vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
-            Note, the voxel size should be ordered as (W, H, D).
         which (string, optional): Gradient type:
             . 'forward': Forward difference (next - centre)
             . 'backward': Backward difference (centre - previous)
@@ -35,11 +34,7 @@ def divergence_3d(dat, vx=None, which='forward', bound='constant'):
         bound (string, optional): Boundary conditions, defaults to 'constant' (zero).
 
     Returns:
-        div (torch.tensor()): Divergence (D, H, W).
-
-    Example:
-        check_adjoint(which='forward', dtype=torch.float64, bound='constant',
-                      vx=(3.5986, 2.5564, 1.5169), dim=(32, 64, 20))
+        div (torch.tensor()): Divergence (W, H, D).
 
     """
     if vx is None:
@@ -50,41 +45,40 @@ def divergence_3d(dat, vx=None, which='forward', bound='constant'):
 
     if which == 'forward':
         # Pad + reflected forward difference
-        d = pad(dat[0, ...], (1, 0, 0, 0, 0, 0,), mode=bound)
-        d = d[:-1, :, :] - d[1:, :, :]
+        w = pad(dat[0, ...], (1, 0, 0, 0, 0, 0,), mode=bound)
+        w = w[:-1, :, :] - w[1:, :, :]
         h = pad(dat[1, ...], (0, 0, 1, 0, 0, 0,), mode=bound)
         h = h[:, :-1, :] - h[:, 1:, :]
-        w = pad(dat[2, ...], (0, 0, 0, 0, 1, 0,), mode=bound)
-        w = w[:, :, :-1] - w[:, :, 1:]
+        d = pad(dat[2, ...], (0, 0, 0, 0, 1, 0,), mode=bound)
+        d = d[:, :, :-1] - d[:, :, 1:]
     elif which == 'backward':
         # Pad + reflected backward difference
-        d = pad(dat[0, ...], (0, 1, 0, 0, 0, 0,), mode=bound)
-        d = d[:-1, :, :] - d[1:, :, :]
+        w = pad(dat[0, ...], (0, 1, 0, 0, 0, 0,), mode=bound)
+        w = w[:-1, :, :] - w[1:, :, :]
         h = pad(dat[1, ...], (0, 0, 0, 1, 0, 0,), mode=bound)
         h = h[:, :-1, :] - h[:, 1:, :]
-        w = pad(dat[2, ...], (0, 0, 0, 0, 0, 1,), mode=bound)
-        w = w[:, :, :-1] - w[:, :, 1:]
+        d = pad(dat[2, ...], (0, 0, 0, 0, 0, 1,), mode=bound)
+        d = d[:, :, :-1] - d[:, :, 1:]
     elif which == 'central':
         # Pad + reflected central difference
-        d = pad(dat[0, ...], (1, 1, 0, 0, 0, 0,), mode=bound)
-        d = half * (d[:-2, :, :] - d[2:, :, :])
+        w = pad(dat[0, ...], (1, 1, 0, 0, 0, 0,), mode=bound)
+        w = half * (w[:-2, :, :] - w[2:, :, :])
         h = pad(dat[1, ...], (0, 0, 1, 1, 0, 0,), mode=bound)
         h = half * (h[:, :-2, :] - h[:, 2:, :])
-        w = pad(dat[2, ...], (0, 0, 0, 0, 1, 1,), mode=bound)
-        w = half * (w[:, :, :-2] - w[:, :, 2:])
+        d = pad(dat[2, ...], (0, 0, 0, 0, 1, 1,), mode=bound)
+        d = half * (d[:, :, :-2] - d[:, :, 2:])
     else:
         raise ValueError('Undefined divergence')
 
-    return d / vx[2] + h / vx[1] + w / vx[0]
+    return w / vx[0] + h / vx[1] + d / vx[2]
 
 
 def gradient_3d(dat, vx=None, which='forward', bound='constant'):
     """ Computes the gradient of volumetric data.
 
     Args:
-        dat (torch.tensor()): A 3D tensor (D, H, W).
+        dat (torch.tensor()): A 3D tensor (W, H, D).
         vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
-            Note, the voxel size should be ordered as (W, H, D).
         which (string, optional): Gradient type:
             . 'forward': Forward difference (next - centre)
             . 'backward': Backward difference (centre - previous)
@@ -93,7 +87,7 @@ def gradient_3d(dat, vx=None, which='forward', bound='constant'):
         bound (string, optional): Boundary conditions, defaults to 'constant'.
 
     Returns:
-          grad (torch.tensor()): Gradient (3, D, H, W).
+          grad (torch.tensor()): Gradient (3, W, H, D).
 
     """
     if vx is None:
@@ -105,25 +99,25 @@ def gradient_3d(dat, vx=None, which='forward', bound='constant'):
     if which == 'forward':
         # Pad + forward difference
         dat = pad(dat, (0, 1, 0, 1, 0, 1,), mode=bound)
-        gd = -dat[:-1, :-1, :-1] + dat[1:, :-1, :-1]
+        gw = -dat[:-1, :-1, :-1] + dat[1:, :-1, :-1]
         gh = -dat[:-1, :-1, :-1] + dat[:-1, 1:, :-1]
-        gw = -dat[:-1, :-1, :-1] + dat[:-1, :-1, 1:]
+        gd = -dat[:-1, :-1, :-1] + dat[:-1, :-1, 1:]
     elif which == 'backward':
         # Pad + backward difference
         dat = pad(dat, (1, 0, 1, 0, 1, 0,), mode=bound)
-        gd = -dat[:-1, 1:, 1:] + dat[1:, 1:, 1:]
+        gw = -dat[:-1, 1:, 1:] + dat[1:, 1:, 1:]
         gh = -dat[1:, :-1, 1:] + dat[1:, 1:, 1:]
-        gw = -dat[1:, 1:, :-1] + dat[1:, 1:, 1:]
+        gd = -dat[1:, 1:, :-1] + dat[1:, 1:, 1:]
     elif which == 'central':
         # Pad + central difference
         dat = pad(dat, (1, 1, 1, 1, 1, 1,), mode=bound)
-        gd = half * (-dat[:-2, 1:-1, 1:-1] + dat[2:, 1:-1, 1:-1])
+        gw = half * (-dat[:-2, 1:-1, 1:-1] + dat[2:, 1:-1, 1:-1])
         gh = half * (-dat[1:-1, :-2, 1:-1] + dat[1:-1, 2:, 1:-1])
-        gw = half * (-dat[1:-1, 1:-1, :-2] + dat[1:-1, 1:-1, 2:])
+        gd = half * (-dat[1:-1, 1:-1, :-2] + dat[1:-1, 1:-1, 2:])
     else:
         raise ValueError('Undefined gradient')
 
-    return torch.stack((gd / vx[2], gh / vx[1], gw / vx[0]), dim=0)
+    return torch.stack((gw / vx[0], gh / vx[1], gd / vx[2]), dim=0)
 
 
 def softmax(Z, dim=-1, get_ll=False, W=1):
@@ -255,6 +249,10 @@ def _check_adjoint(which='central', vx=None, dtype=torch.float32,
     See also:
           https://regularize.wordpress.com/2013/06/19/
           how-fast-can-you-calculate-the-gradient-of-an-image-in-matlab/
+
+    Example:
+        _check_adjoint(which='forward', dtype=torch.float64, bound='constant',
+                       vx=(3.5986, 2.5564, 1.5169), dim=(32, 64, 20))
 
     """
     if vx is None:
