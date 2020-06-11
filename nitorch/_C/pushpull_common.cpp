@@ -540,12 +540,12 @@ void PushPullImpl<scalar_t,offset_t>::loop(
   offset_t trgt_XYZ  = trgt_Z * trgt_Y * trgt_X;
   offset_t trgt_YZ   = trgt_Z * trgt_Y;
   offset_t n, w, h, d;
-  for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index) 
+  for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
   {
       // Convert index: linear to sub
-      n  = (ind/trgt_XYZ);
-      w  = (ind/trgt_YZ) % trgt_X;
-      h  = (ind/trgt_Z)  % trgt_Y;
+      n  = (i/trgt_XYZ);
+      w  = (i/trgt_YZ) % trgt_X;
+      h  = (i/trgt_Z)  % trgt_Y;
       d  = i % trgt_Z;
 
       if (dim == 2)
