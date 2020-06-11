@@ -125,5 +125,57 @@ def get_gain(obj, iter, monotonicity='increasing'):
     return gain
 
 
+def plot_convergence(vals=None, fig_ax=None, fig_num=1, fig_title='Model convergence'):
+    """ Plots an algorithm's convergence (e.g. negative log-likelihood, lower bound).
+
+    This allows for real-time plotting of an algorithm's convergence. It is initialised by
+    called with no argument:
+
+    fig_ax = plot_convergence()
+
+    Subsequent calls are then performed as:
+
+    _ = plot_convergence(cals=vals, fig_ax=fig_ax)
+
+    Args:
+        vals (torch.tensor, optional): Vector of values to be plotted.
+        fig_ax ([matplotlib.figure, matplotlib.axes])
+        fig_num (int, optional): Figure number to plot to, defaults to 1.
+        fig_title (str, optional): Figure title, defaults to 'Model convergence'.
+
+    Returns:
+        fig_ax ([matplotlib.figure, matplotlib.axes])
+
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.ticker import MaxNLocator
+
+    if fig_ax is None:
+        fig, ax = plt.subplots(1, 2, num=fig_num)
+        fig_ax = [fig ,ax]
+        plt.ion()
+        fig.show()
+    elif vals is not None:
+        vals = vals.cpu()  # To CPU
+
+        fig_ax[1][0].clear()
+        x = torch.arange(0, len(vals)) + 1
+        fig_ax[1][0].plot(x, vals)
+        fig_ax[1][0].xaxis.set_major_locator(MaxNLocator(integer=True))
+        fig_ax[1][0].grid()
+
+        fig_ax[1][1].clear()
+        x = torch.arange(0, len(vals)) + 1
+        fig_ax[1][1].plot(x[-3:], vals[-3:], 'r')
+        fig_ax[1][1].xaxis.set_major_locator(MaxNLocator(integer=True))
+        fig_ax[1][1].grid()
+
+        fig_ax[0].suptitle(fig_title)
+        fig_ax[0].canvas.draw()
+        fig_ax[0].canvas.flush_events()
+
+    return fig_ax
+
+
 def relax(A, b, iE=lambda x: x, x0=0, iter=10):
     pass
