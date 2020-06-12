@@ -11,7 +11,7 @@ conda activate nitorch
 
 2. Compile C++/CUDA library
 ```{bash}
-./setup.py develop
+./setup.py [install|develop]
 ```
 
 3. Use nitorch
