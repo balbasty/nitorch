@@ -26,17 +26,26 @@ import torch
 # code. This trick allows to minimize code duplication.
 # Finally, libnitorch links to both these sub-libraries and dispatches
 # according to the Tensor's device type.
-libnitorch_cpu_sources = ['nitorch/_C/pushpull_common.cpp']
-libnitorch_cuda_sources = ['nitorch/_C/pushpull_common.cpp']
-libnitorch_sources = ['nitorch/_C/pushpull.cpp']
+libnitorch_cpu_sources = ['pushpull_common.cpp']
+libnitorch_cuda_sources = ['pushpull_common.cpp']
+libnitorch_sources = ['pushpull.cpp']
+ext_spatial_sources = ['spatial.cpp']
+
+# That's a bit ugly. TODO: use config files?
+libnitorch_cpu_headers = ['common.h',
+                          'interpolation.h', 'interpolation_common.h',
+                          'bounds.h', 'bounds_common.h']
+libnitorch_cuda_headers = ['common.h',
+                           'interpolation.h', 'interpolation_common.h',
+                           'bounds.h', 'bounds_common.h']
+libnitorch_headers = ['pushpull_common.h', 'interpolation.h', 'bounds.h']
+ext_spatial_headers = ['pushpull.h', 'interpolation.h', 'bounds.h']
 
 # TODO
 # . There is still quite a lot to do in setup and buildtools in order to make
 #   things clean and work on multiple platforms.
 # . I have to add abi checks and other smart tricks as in
 #   torch.utils.cpp_extension
-# . I should maybe use build_ext rather then build_clib to compile
-#   libnitorch.
 
 MINIMUM_GCC_VERSION = (5, 0, 0)
 MINIMUM_MSVC_VERSION = (19, 0, 24215)
@@ -292,18 +301,24 @@ def cuda_flags():
     return flags
 
 
+def abspathC(files):
+    scriptdir = os.path.abspath(os.path.dirname(__file__))
+    sourcedir = os.path.join(scriptdir, 'nitorch', '_C')
+    return [os.path.join(sourcedir, f) for f in files]
+
 # ~~~ checks
 use_cuda = cuda_home() and cuda_check()
 use_cudnn = False  # cudnn_home() and cudnn_check()
 
 
 build_extensions = []
-nitorch_lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nitorch', 'lib')
 nitorch_lib = []
+nitorch_libext = []
 # ~~~ setup libraries
 NiTorchCPULibrary = SharedLibrary(
     name='lib.nitorch_cpu',
-    sources=libnitorch_cpu_sources,
+    sources=abspathC(libnitorch_cpu_sources),
+    depends=abspathC(libnitorch_cpu_headers),
     libraries=torch_libraries(),
     library_dirs=torch_library_dirs(),
     include_dirs=torch_include_dirs(),
@@ -312,11 +327,13 @@ NiTorchCPULibrary = SharedLibrary(
     language='c++',
 )
 build_extensions += [NiTorchCPULibrary]
+nitorch_libext += [NiTorchCPULibrary]
 nitorch_lib += ['nitorch_cpu']
 if use_cuda:
     NiTorchCUDALibrary = SharedLibrary(
         name='lib.nitorch_cuda',
-        sources=libnitorch_cpu_sources,
+        sources=abspathC(libnitorch_cuda_sources),
+        depends=abspathC(libnitorch_cuda_headers),
         libraries=torch_libraries(use_cuda),
         library_dirs=torch_library_dirs(use_cuda, use_cudnn),
         include_dirs=torch_include_dirs(use_cuda, use_cudnn),
@@ -325,25 +342,29 @@ if use_cuda:
         language='cuda',
     )
     build_extensions += [NiTorchCUDALibrary]
+    nitorch_libext += [NiTorchCUDALibrary]
     nitorch_lib += ['nitorch_cuda']
 NiTorchLibrary = SharedLibrary(
     name='lib.nitorch',
-    sources=libnitorch_sources,
+    sources=abspathC(libnitorch_sources),
+    depends=nitorch_libext + abspathC(libnitorch_headers),
     libraries=torch_libraries() + nitorch_lib,
-    library_dirs=torch_library_dirs() + [nitorch_lib_path],
+    library_dirs=torch_library_dirs(),
     include_dirs=torch_include_dirs(),
     extra_compile_args=common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
     runtime_library_dirs=[link_relative('.')],
     language='c++',
 )
 build_extensions += [NiTorchLibrary]
+nitorch_libext = [NiTorchLibrary]
 nitorch_lib = ['nitorch']
 # ~~~ setup extensions
 SpatialExtension = Extension(
     name='_C.spatial',
-    sources=['nitorch/_C/spatial.cpp'],
+    sources=abspathC(ext_spatial_sources),
+    depends=nitorch_libext + abspathC(ext_spatial_headers),
     libraries=torch_libraries(use_cuda) + nitorch_lib,
-    library_dirs=torch_library_dirs(use_cuda, use_cudnn) + [nitorch_lib_path],
+    library_dirs=torch_library_dirs(use_cuda, use_cudnn),
     include_dirs=torch_include_dirs(use_cuda, use_cudnn),
     extra_compile_args=common_flags() + torch_extension_flags('spatial'),
     runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]

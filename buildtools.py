@@ -13,6 +13,8 @@ from packaging import version as pversion
 from distutils import ccompiler, unixccompiler
 from distutils.command import build_ext as build_ext_base
 from distutils.sysconfig import customize_compiler
+from distutils.extension import Extension as duExtension
+from setuptools import Extension as stExtension
 
 _all__ = [
     'is_windows',
@@ -118,29 +120,39 @@ def link_relative(path):
     else:
         return os.path.join('$ORIGIN', path)
 
-class SharedLibrary(setuptools.Extension):
+
+class SharedLibrary(stExtension):
+    """Special extension for dynamic shared libraries.
+
+    This special type of Extension is not a Python extension but
+    a dynamic shared library against which other Python extensions
+    (or other shared libraries) can link. The output type of these
+    libraries is .so on Linux, .dylib on MacOS and ??? on Windows.
+    """
+    # We don't actually implement anything specific.
+    # We just want build_ext to switch based on the extension type.
     pass
 
-def customize_compiler_for_dylib(self):
-    def _link_dylib(objects, output_libname, *args, **kwargs):
-        libname = self.library_filename(output_libname, lib_type='dylib')
 
-        def add_install_name(extra_args, libname):
+def customize_compiler_for_shared_lib(self):
+    def _link(objects, libpath, *args, **kwargs):
+        def add_install_name(extra_args, libpath):
             has_install_name = any([a.startswith('-install_name')
                                     for a in extra_args])
             if not has_install_name:
                 extra_args += ['-install_name',
-                               os.path.join('@rpath', os.path.basename(libname))]
+                               os.path.join('@rpath', os.path.basename(libpath))]
             return extra_args
 
+        args = list(args)
         if len(args) > 4:
-            args[3] = add_install_name(args[3], libname)
+            args[3] = add_install_name(args[3], libpath)
         else:
-            kwargs['extra_postargs'] = add_install_name(kwargs.get('extra_postargs', []), libname)
+            kwargs['extra_postargs'] = add_install_name(kwargs.get('extra_postargs', []), libpath)
 
         return self.link(ccompiler.CCompiler.SHARED_LIBRARY, objects,
-                         libname, *args, **kwargs)
-    self.link_shared_object = _link_dylib
+                         libpath, *args, **kwargs)
+    self.link_shared_object = _link
 
 
 def fix_compiler_rpath(self):
@@ -158,10 +170,105 @@ def fix_compiler_rpath(self):
 
 
 class build_ext(build_ext_base.build_ext):
-    """Extends native extension builder to handle compiler flags."""
+    """Extends native extension builder.
+    This class handles:
+        . shared libraries (see the SharedLibrary class)
+        . cuda extensions
+        . dependencies between extensions
+    """
+
+    def _build_dependency_graph(self, extensions):
+        # Build layers of stuff that can be compiled in parallel
+        from copy import copy
+        compiled = []  # Stuff that already found its layer
+        uncompiled = copy(extensions)  # Stuff that is not in a layer yet
+        layers = []  # Actual layers
+        while len(uncompiled) > 0:
+            nbuncompiled = len(uncompiled)  # Used to detect deadlocks
+            layer = []
+            uncompiled0 = []
+            for ext in uncompiled:
+                depends = [dep for dep in ext.depends
+                           if isinstance(dep, duExtension)]
+                if all([dep in compiled for dep in depends]):
+                    layer.append(ext)
+                else:
+                    uncompiled0.append(ext)
+            layers.append(layer)
+            compiled += layer
+            uncompiled = uncompiled0
+            if len(uncompiled) == nbuncompiled:
+                raise RuntimeError('Deadlock detected')
+        return layers
+
+    def _build_extensions_parallel(self):
+        # We reimplement this one to take dependencies into account.
+        workers = self.parallel
+        if self.parallel is True:
+            workers = os.cpu_count()  # may return None
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+        except ImportError:
+            workers = None
+
+        if workers is None:
+            self._build_extensions_serial()
+            return
+
+        layers = self._build_dependency_graph(self.extensions)
+        for layer in layers:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(self.build_extension, ext)
+                           for ext in layer]
+                for ext, fut in zip(layer, futures):
+                    with self._filter_build_errors(ext):
+                        fut.result()
+
+    def get_ext_filename_shared_lib(self, ext_name):
+        r"""Convert the name of a SharedLibrary extension (eg. "foo.bar")
+        into the name of the file from which it will be loaded (eg.
+        "foo/libbar.so", or "foo/libbar.dylib").
+        """
+        if sys.platform[:6] == "darwin":
+            lib_type = 'dylib'
+        else:
+            lib_type = 'shared'
+        return self.compiler.library_filename(ext_name, lib_type=lib_type)
+
+    def _get_ext_fullpath(self, ext):
+        get_ext_filename0 = self.get_ext_filename
+        if isinstance(ext, SharedLibrary):
+            self.get_ext_filename = self.get_ext_filename_shared_lib
+        output_path = self.get_ext_fullpath(ext.name)
+        self.get_ext_filename = get_ext_filename0
+        return output_path
+
+    def _get_ext_dir(self, ext):
+        return os.path.dirname(self.get_ext_fullpath(ext.name))
+
+    def get_libraries(self, ext):
+        """SharedLibrary extensions do not link against python."""
+        if isinstance(ext, SharedLibrary):
+            return ext.libraries
+        else:
+            return super().get_libraries(ext)
 
     def build_extension(self, ext):
-        # Set proper compiler
+        """Select appropriate compiler and linker.
+
+        . CUDA          -> NVCCompiler
+        . SharedLibrary -> link_shared_lib + don't append python version
+        . MacOS         -> dylib + -dynamiclib + rpath
+        . Depends       -> add appropriate -L
+        """
+        # Make temporary build directory extension dependent
+        # (we compile the same sources with different compilers/flags
+        #  to generate libnitorch_cpu and libnitorch_cuda)
+        build_temp0 = self.build_temp
+        self.build_temp = os.path.join(
+            build_temp0, os.path.join(*ext.name.split('.')))
+
+        # Select appropriate compiler for the extensions's language
         compiler0 = self.compiler
         self.compiler = make_compiler(language=ext.language,
                                       dry_run=self.dry_run,
@@ -180,15 +287,23 @@ class build_ext(build_ext_base.build_ext):
 
         # Set proper linker
         if isinstance(ext, SharedLibrary):
-            if sys.platform[:6] == "darwin":
-                customize_compiler_for_dylib(self.compiler)
-            else:
-                self.compiler.link_shared_object = self.compiler.link_shared_lib
+            customize_compiler_for_shared_lib(self.compiler)
+
+        # Add library dirs for dependencies
+        for dep in ext.depends:
+            if isinstance(dep, duExtension):
+                self.compiler.add_library_dir(self._get_ext_dir(dep))
+
+        # Use output filepath instead of Extension (for newer_group)
+        depends = ext.depends
+        ext.depends = [dep if not isinstance(dep, duExtension)
+                       else self._get_ext_fullpath(dep)
+                       for dep in depends]
 
         # Set proper filename generator
         get_ext_filename0 = self.get_ext_filename
         if isinstance(ext, SharedLibrary):
-            self.get_ext_filename = lambda x: x
+            self.get_ext_filename = self.get_ext_filename_shared_lib
 
         # OSX: change -bundle to -dynamiclib
         linker_so = []
@@ -198,12 +313,16 @@ class build_ext(build_ext_base.build_ext):
                      for arg in linker_so]
         self.compiler.set_executables(linker_so=linker_so)
 
-        # Build extension
-        super().build_extension(ext)
+        try:
+            # Build extension
+            super().build_extension(ext)
+        finally:
+            # Reset
+            self.compiler = compiler0
+            self.get_ext_filename = get_ext_filename0
+            self.build_temp = build_temp0
+            ext.depends = depends
 
-        # Reset
-        self.compiler = compiler0
-        self.get_ext_filename = get_ext_filename0
 
 class NVCCompiler(unixccompiler.UnixCCompiler):
     compiler_type = 'nvcc'
