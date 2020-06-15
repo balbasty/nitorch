@@ -430,7 +430,7 @@ class Mixture:
         """ Reshape image to tensor with dimensions suitable as input to Mixture class.
 
         Args:
-            img (torch.tensor): Input image. (dm[0], dm[1], dm[2], C)
+            img (torch.tensor): Input image. (X, Y, Z, C)
 
         Returns:
             X (torch.tensor): Observed data (N0, C).
