@@ -534,20 +534,21 @@ def identity(shape, dtype=None, device=None):
     """Returns an identity deformation field.
 
     Args:
-        shape (tuple): Spatial dimension of the field, ordered as (W, H, [D]).
+        shape (tuple): Spatial dimension of the field, ordered as (X, Y, [Z]).
         dtype (torch.dtype, optional): Data type. Defaults to None.
         device (torch.device, optional): Device. Defaults to None.
 
     Returns:
-        g (torch.Tensor): Deformation field with shape (1, 1, [D], H, W, 2|3).
+        g (torch.Tensor): Deformation field with shape (1, X, Y, [Z], 2|3).
 
     """
     dim = len(shape)
     mat = torch.cat((torch.eye(dim, dtype=dtype, device=device),
                      torch.zeros(dim,1, dtype=dtype, device=device)), dim=1)
-    f2v = fov2vox(shape, False).to(dtype, device)
+    mat = mat[None, ...]
+    f2v = fov2vox(shape, False).to(device, dtype)
     g = _F.affine_grid(mat, (1, 1) + shape[::-1], align_corners=False)
-    g = g.permute([0] + list(range(1, dim+1))[-1] + [dim+1])
+    g = g.permute([0] + list(range(1, dim+1))[::-1] + [dim+1])
     g = g.matmul(f2v[:-1, :-1].transpose(0, 1)) \
         + f2v[:-1, -1].reshape((1,)*(dim+1) + (dim,))
     return g
@@ -635,7 +636,7 @@ def compose(*args, interpolation='linear', bound='dft'):
     # Third pass: compose all flow fields
     field = args2[-1]
     for arg in args2[-2::-1]:  # args2[-2:0:-1]
-        arg = arg - identity(arg.shape, arg.dtype, arg.device)
+        arg = arg - identity(arg.shape[1:-1], arg.dtype, arg.device)
         arg = grid2channel(arg)
         field = field + channel2grid(grid_pull(arg, field, interpolation, bound))
 
@@ -756,3 +757,65 @@ def voxsize(mat):
     """
     dim = mat.shape[-1] - 1
     return (mat[..., :dim, :dim] ** 2).sum(-2).sqrt()
+
+
+def exp(vel, inverse=False, steps=None, interpolation='linear', bound='dft',
+        displacement=False, energy=None, vs=None, greens=None, inplace=None):
+    # Deal with inplace computation
+    if inplace is None:
+        inplace = not vel.requires_grad
+    if not inplace and not vel.requires_grad:
+        vel = vel.clone()
+    elif inplace and vel.requires_grad:
+        Warning('Inplace computation may break the computational graph.')
+
+    if energy is None and greens is None:
+        # If energy or greens function provided: use shoot
+        return _exp_ss(vel, inverse, steps, interpolation, bound,
+                       displacement)
+    else:
+        # Else: use scaling and squaring
+        raise NotImplementedError
+
+
+def _exp_ss(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
+            displacement=False):
+    # /!\ This function may process inplace without warning
+
+    if steps is None or steps == float('Inf'):
+        steps = 8
+
+    # Precompute identity + aliases
+    dtype = vel.dtype
+    device = vel.device
+    id = identity(vel.shape[1:-1], dtype=dtype, device=device)
+    c2g = channel2grid
+    g2c = grid2channel
+    opt = (interpolation, bound)
+
+    def _ss_outplace(v):
+        v = v / (2**steps)
+        for i in range(steps):
+            v = v + c2g(grid_pull(g2c(v), id+v, *opt))
+        if not displacement:
+            v = id + v
+        return v
+
+    def _ss_inplace(v):
+        v /= (2**steps)
+        for i in range(steps):
+            v += c2g(grid_pull(g2c(v), id+v, *opt))
+        if not displacement:
+            v += id
+        return v
+
+    if vel.requires_grad:
+        _ss = _ss_outplace
+        if inverse:
+            vel = -vel
+    else:
+        _ss = _ss_inplace
+        if inverse:
+            torch.neg(vel, out=vel)
+
+    return _ss(vel)
