@@ -381,3 +381,108 @@ def _pad_bound(inp, padpre, padpost, bound, modifier):
     for d in range(inp.dim()):
         inp = inp.index_select(d, idx[d])
     return inp
+
+
+def padlist(x, n):
+    """Repeat the last element of a list-like object to match a target length.
+
+    If the input length is grater than ``n``, the list is cropped.
+
+    Args:
+        x (scalar or list or tuple): Input argument
+        n (int): Target length
+
+    Returns:
+        x (list or tuple): Padded argument of length n.
+            If the input argument is not a list or tuple, the output
+            type is ``tuple``.
+
+    """
+    if not isinstance(x, list) and not isinstance(x, tuple):
+        x = (x,)
+    if len(x) == 0:
+        raise TypeError('Input argument cannot be empty')
+    return_type = type(x)
+    x = list(x)
+    x = x[:min(len(x), n)]
+    x += [x[-1]] * (n-len(x))
+    return return_type(x)
+
+
+def replist(x, n, interleaved=False):
+    """Replicate a list-like object.
+
+    Args:
+        x (scalar or list or tuple): Input argument
+        n (int): Number of replicates
+        interleaved (bool, optional): Interleaved replication.
+            Default: False
+
+    Returns:
+        x (list or tuple): Replicated list
+            If the input argument is not a list or tuple, the output
+            type is ``tuple``.
+
+    """
+    if not isinstance(x, list) and not isinstance(x, tuple):
+        x = (x,)
+    if len(x) == 0:
+        raise TypeError('Input argument cannot be empty')
+    return_type = type(x)
+    x = list(x)
+    if interleaved:
+        x = [elem for sub in zip(*([x]*n)) for elem in sub]
+    else:
+        x = x * n
+    return return_type(x)
+
+
+def getargs(kpd, args=[], kwargs={}, consume=False):
+    """Read and remove argument from args/kwargs input.
+
+    Args:
+        kpd (list of tuple): List of (key, position, default) tuples with:
+            key (str): argument name
+            position (int): argument position
+            default (optional): default value
+        args (optional): list of positional arguments
+        kwargs (optional): list of keyword arguments
+        consume (bool, optional): consume arguments from args/kwargs
+
+    Returns:
+        values (list): List of values
+
+    """
+
+    def raise_error(key):
+        import inspect
+        caller = inspect.stack()[1].function
+        raise TypeError("{}() got multiple values for \
+                        argument '{}}'".format(caller, key))
+
+    # Sort argument by reverse position
+    kpd = [(i,) + e for i, e in enumerate(kpd)]
+    kpd = sorted(kpd, key=lambda x: x[2], reverse=True)
+
+    values = []
+    for elem in kpd:
+        i = elem[0]
+        key = elem[1]
+        position = elem[2]
+        default = elem[3] if len(elem) > 3 else None
+
+        value = default
+        if len(args) >= position:
+            value = args[-1]
+            if consume:
+                del args[-1]
+            if key in kwargs.keys():
+                raise_error(key)
+        elif key in kwargs.keys():
+            value = kwargs[key]
+            if consume:
+                del kwargs[key]
+        values.append((i, value))
+
+    values = [v for _, v in sorted(values)]
+    return values
