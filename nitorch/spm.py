@@ -32,24 +32,24 @@ def affine(dm, mat, dtype=torch.float32, device='cpu'):
     """ Generate an affine warp on a lattice defined by dm and mat.
 
     Args:
-        dm (torch.Size): Image dimensions (dm[0], dm[1], dm[2]).
+        dm (torch.Size): Image dimensions (X, Y, Z).
         mat (torch.Tensor): Affine transform.
         dtype (torch.dtype, optional): Defaults to torch.float32.
         device (string, optional): Defaults to 'cpu'.
 
     Returns:
-        y (torch.Tensor): Affine warp (1, dm[0], dm[1], dm[2], 3).
+        a (torch.Tensor): Affine warp (1, X, Y, Z, 3).
 
     """
     mat = mat.type(dtype)
-    y = identity(dm, dtype=dtype, device=device)
-    y = torch.reshape(y, (dm[0]*dm[1]*dm[2], 3))
-    y = torch.matmul(y, torch.t(mat[0:3, 0:3])) + torch.t(mat[0:3, 3])
-    y = torch.reshape(y, (dm[0], dm[1], dm[2], 3))
+    a = identity(dm, dtype=dtype, device=device)
+    a = torch.reshape(a, (dm[0]*dm[1]*dm[2], 3))
+    a = torch.matmul(a, torch.t(mat[0:3, 0:3])) + torch.t(mat[0:3, 3])
+    a = torch.reshape(a, (dm[0], dm[1], dm[2], 3))
     if dm[0] == 1:
-        y[:, :, :, 0] = 0
-    y = y[None, ...]
-    return y
+        a[:, :, :, 0] = 0
+    a = a[None, ...]
+    return a
 
 
 def affine_basis(basis='SE', dim=3):
@@ -123,8 +123,8 @@ def def2sparse(phi, dm_in, nn=False):
         (i.e., Dirichlet with zero at the boundary).
 
     Args:
-        phi (torch.Tensor): Deformation (dm_out[0], dm_out[1], dm_out[2], 3).
-        dm_in (torch.Size): Size of input FOV (dm_in[0], dm_in[1], dm_in[2]).
+        phi (torch.Tensor): Deformation (X1, Y1, Z1, 3).
+        dm_in (torch.Size): Size of input FOV (X0, Y0, Z0).
         nn (bool, optional): Encode nearest neighbour interpolation, else trilinear.
             Defaults to True.
 
@@ -381,20 +381,20 @@ def identity(dm, dtype=torch.float32, device='cpu'):
     """ Generate the identity warp on a lattice defined by dm.
 
     Args:
-        dm (torch.Size): Defines the size of the output lattice (dm[0], dm[1], dm[2]).
+        dm (torch.Size): Defines the size of the output lattice (X, Y, Z).
         dtype (torch.dtype, optional): Defaults to torch.float32.
         device (string, optional): Defaults to 'cpu'.
 
     Returns:
-        id_grid (torch.Tensor): Identity warp (dm[0], dm[1], dm[2], 3).
+        i (torch.Tensor): Identity warp (X, Y, Z, 3).
 
     """
-    id_grid = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
-    id_grid[:, :, :, 0], id_grid[:, :, :, 1], id_grid[:, :, :, 2] = \
+    i = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
+    i[:, :, :, 0], i[:, :, :, 1], i[:, :, :, 2] = \
         torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
                         torch.arange(0, dm[1], dtype=dtype, device=device),
                         torch.arange(0, dm[2], dtype=dtype, device=device)])
-    return id_grid
+    return i
 
 
 def imatrix(M):
