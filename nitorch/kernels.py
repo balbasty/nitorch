@@ -8,10 +8,6 @@
 # . Implement Sinc kernel
 # . Use inplace operations if gradients not required
 
-# WARNING:
-# . Currently, fwhm and voxel sizes are ordered as [depth width height]
-#   I am not sure yet what convention is best
-
 import torch
 from nitorch import utils
 
