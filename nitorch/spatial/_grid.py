@@ -1,46 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Tools related to spatial sampling (displacement, warps, etc.).
-
-Spatial ordering conventions in nitorch
----------------------------------------
-
-NiTorch uses consistent ordering conventions throughout its API:
-. We use abbreviations (B[atch], C[hannel], W[idth], H[eight], D[ephth])
-  to name dimensions.
-. Tensors that represent series (resp. images or volumes) should always be
-  ordered as (B, C, W) (resp. (B, C, W, H) or (B, C, W, H, D)).
-. We use x, y, z to denote axis/coordinates along the (W, H, D)
-  dimensions.
-. Displacement or deformation fields are ordered as (B, W, H, D, K).
-  There, the 'Channel' dimension (K) contains displacements or
-  deformations along the x, y, z axes (i.e., W, H, D dimensions).
-. Similarly, Jacobian fields are stored as (B, H, D, W, K, K). The second
-  to last dimension corresponds to x, y, z components and the last
-  dimension corresponds to derivatives along the x, y, z axes.
-  I.e., jac[..., i, j] = d{u_i}/d{x_j}
-. This means that we usually do not store deformations per *imaging*
-  channel (they are assumed to lie in the same space).
-. Arguments that relate to spatial dimensions are ordered as
-  (x, y, z) or (W, H, D).
-
-These conventions are *not* consistent with those used in PyTorch
-(conv, grid_sampler, etc.), but we find them more intuitive.
-Furthermore, they are consistent with nibabel, where columns of the
-orientation matrices have the same order as dimensions in the
-corresponding ND-array.
-
-TODO:
-    . What about time series?
-    . Should we always have a batch dimension for affine matrices?
-    . Should the default storage be compact or square for affine matrices?
-
-"""
+"""Spatial deformations (i.e., grids)."""
 
 import torch
 import torch.nn.functional as _F
 from nitorch import kernels, utils
 from nitorch._C import spatial as _Cspatial
 from nitorch._C.spatial import BoundType, InterpolationType
+
+__all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
+           'identity', 'compose', 'jacobian', 'voxsize',
+           'channel2grid', 'grid2channel', 'BoundType', 'InterpolationType']
 
 
 class _GridPull(torch.autograd.Function):
@@ -434,7 +403,7 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
     return _GridGrad.apply(input, grid, interpolation, bound, extrapolate)
 
 
-def vox2fov(shape, align_corners=True):
+def _vox2fov(shape, align_corners=True):
     """Nifti to Torch coordinates.
 
     Returns an affine matrix that transforms nifti volume coordinates
@@ -462,7 +431,7 @@ def vox2fov(shape, align_corners=True):
     return mat
 
 
-def fov2vox(shape, align_corners=True):
+def _fov2vox(shape, align_corners=True):
     """Torch to Nifti coordinates."""
     shape = torch.as_tensor(shape).to(torch.float)
     dim = shape.numel()
@@ -504,8 +473,8 @@ def make_compact(mat):
 def channel2grid(warp):
     """Warps: Channel to Grid dimension order.
 
-    . Channel ordering is: Batch x Direction x Depth x Height x Width
-    . Grid ordering is: Batch x Depth x Height x Width x Direction
+    . Channel ordering is: (Batch, Direction, X, Y, Z)
+    . Grid ordering is: (Batch, X, Y, Z, Direction))
     """
     warp = torch.as_tensor(warp)
     warp = warp.permute((0,) + tuple(range(2, warp.dim())) + (1,))
@@ -515,19 +484,12 @@ def channel2grid(warp):
 def grid2channel(warp):
     """Warps: Grid to Channel dimension order.
 
-    . Channel ordering is: Batch x Direction x Depth x Height x Width
-    . Grid ordering is: Batch x Depth x Height x Width x Direction
+    . Channel ordering is: (Batch, Direction, X, Y, Z)
+    . Grid ordering is: (Batch, X, Y, Z, Direction))
     """
     warp = torch.as_tensor(warp)
     warp = warp.permute((0, - 1) + tuple(range(1, warp.dim()-1)))
     return warp
-
-
-def ismatrix(x):
-    """Check that a tensor is a matrix (ndim == 2)."""
-    x = torch.as_tensor(x)
-    shape = torch.as_tensor(x.shape)
-    return shape.numel() == 2
 
 
 def identity(shape, dtype=None, device=None):
@@ -546,25 +508,12 @@ def identity(shape, dtype=None, device=None):
     mat = torch.cat((torch.eye(dim, dtype=dtype, device=device),
                      torch.zeros(dim,1, dtype=dtype, device=device)), dim=1)
     mat = mat[None, ...]
-    f2v = fov2vox(shape, False).to(device, dtype)
+    f2v = _fov2vox(shape, False).to(device, dtype)
     g = _F.affine_grid(mat, (1, 1) + shape[::-1], align_corners=False)
     g = g.permute([0] + list(range(1, dim+1))[::-1] + [dim+1])
     g = g.matmul(f2v[:-1, :-1].transpose(0, 1)) \
         + f2v[:-1, -1].reshape((1,)*(dim+1) + (dim,))
     return g
-
-
-# def affine_field(mat, dim, dtype=None, device=None):
-#     if dtype is None:
-#         dtype = mat.dtype
-#     if device is None:
-#         device = mat.device
-#     mat = mat.to(dtype=dtype, device=device)
-#     g = identity(dim, dtype, device)
-
-#     arg.matmul(
-#                     last_affine[:dim, :dim].transpose(0, 1)) \
-#                   + last_affine[:dim, dim].reshape((1, 1, 1, 1, dim))
 
 
 def compose(*args, interpolation='linear', bound='dft'):
@@ -576,6 +525,12 @@ def compose(*args, interpolation='linear', bound='dft'):
     # . possibility to provide fields that have an orientation matrix?
     #   (or keep it the responsibility of the user?)
     # . For higher order (> 1) interpolation: convert to spline coeficients.
+
+    def ismatrix(x):
+        """Check that a tensor is a matrix (ndim == 2)."""
+        x = torch.as_tensor(x)
+        shape = torch.as_tensor(x.shape)
+        return shape.numel() == 2
 
     # Pre-pass: check dimensionality
     dim = None
@@ -758,245 +713,3 @@ def voxsize(mat):
     dim = mat.shape[-1] - 1
     return (mat[..., :dim, :dim] ** 2).sum(-2).sqrt()
 
-
-def exp(vel, inverse=False, steps=None, interpolation='linear', bound='dft',
-        displacement=False, energy=None, vs=None, greens=None, inplace=None):
-    # Deal with inplace computation
-    if inplace is None:
-        inplace = not vel.requires_grad
-    if not inplace and not vel.requires_grad:
-        vel = vel.clone()
-    elif inplace and vel.requires_grad:
-        Warning('Inplace computation may break the computational graph.')
-
-    if energy is None and greens is None:
-        # If no energy or greens function: use scaling and squaring
-        return _exp_ss(vel, inverse, steps, interpolation, bound,
-                       displacement)
-    else:
-        # If energy or greens function provided: use shoot
-        raise NotImplementedError
-
-
-def _exp_ss(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
-            displacement=False):
-    # /!\ This function may process inplace without warning
-
-    if steps is None or steps == float('Inf'):
-        steps = 8
-
-    # Precompute identity + aliases
-    dtype = vel.dtype
-    device = vel.device
-    id = identity(vel.shape[1:-1], dtype=dtype, device=device)
-    c2g = channel2grid
-    g2c = grid2channel
-    opt = (interpolation, bound)
-
-    def _ss_outplace(v):
-        v = v / (2**steps)
-        for i in range(steps):
-            v = v + c2g(grid_pull(g2c(v), id+v, *opt))
-        if not displacement:
-            v = id + v
-        return v
-
-    def _ss_inplace(v):
-        v /= (2**steps)
-        for i in range(steps):
-            v += c2g(grid_pull(g2c(v), id+v, *opt))
-        if not displacement:
-            v += id
-        return v
-
-    if vel.requires_grad:
-        _ss = _ss_outplace
-        if inverse:
-            vel = -vel
-    else:
-        _ss = _ss_inplace
-        if inverse:
-            torch.neg(vel, out=vel)
-
-    return _ss(vel)
-
-
-def im_divergence(dat, vx=None, which='forward', bound='constant'):
-    """ Computes the divergence of 2D or 3D data.
-
-    Args:
-        dat (torch.tensor()): A 3D|4D tensor (2, X, Y) | (3, X, Y, Z).
-        vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
-        which (string, optional): Gradient type:
-            . 'forward': Forward difference (next - centre)
-            . 'backward': Backward difference (centre - previous)
-            . 'central': Central difference ((next - previous)/2)
-            Defaults to 'forward'.
-        bound (string, optional): Boundary conditions, defaults to 'constant'
-            (zero padding).
-
-    Returns:
-        div (torch.tensor()): Divergence (X, Y) | (X, Y, Z).
-
-    """
-    if vx is None:
-        vx = (1,) * 3
-    if type(vx) is not torch.Tensor:
-        vx = torch.tensor(vx, dtype=dat.dtype, device=dat.device)
-    half = torch.tensor(0.5, dtype=dat.dtype, device=dat.device)
-    ndim = len(dat.shape) - 1
-
-    if which == 'forward':
-        # Pad + reflected forward difference
-        if ndim == 2:  # 2D data
-            x = utils.pad(dat[0, ...], (1, 0, 0, 0), mode=bound)
-            x = x[:-1, :] - x[1:, :]
-            y = utils.pad(dat[1, ...], (0, 0, 1, 0), mode=bound)
-            y = y[:, :-1] - y[:, 1:]
-        else:  # 3D data
-            x = utils.pad(dat[0, ...], (1, 0, 0, 0, 0, 0), mode=bound)
-            x = x[:-1, :, :] - x[1:, :, :]
-            y = utils.pad(dat[1, ...], (0, 0, 1, 0, 0, 0), mode=bound)
-            y = y[:, :-1, :] - y[:, 1:, :]
-            z = utils.pad(dat[2, ...], (0, 0, 0, 0, 1, 0), mode=bound)
-            z = z[:, :, :-1] - z[:, :, 1:]
-    elif which == 'backward':
-        # Pad + reflected backward difference
-        if ndim == 2:  # 2D data
-            x = utils.pad(dat[0, ...], (0, 1, 0, 0), mode=bound)
-            x = x[:-1, :] - x[1:, :]
-            y = utils.pad(dat[1, ...], (0, 0, 0, 1), mode=bound)
-            y = y[:, :-1] - y[:, 1:]
-        else:  # 3D data
-            x = utils.pad(dat[0, ...], (0, 1, 0, 0, 0, 0), mode=bound)
-            x = x[:-1, :, :] - x[1:, :, :]
-            y = utils.pad(dat[1, ...], (0, 0, 0, 1, 0, 0), mode=bound)
-            y = y[:, :-1, :] - y[:, 1:, :]
-            z = utils.pad(dat[2, ...], (0, 0, 0, 0, 0, 1), mode=bound)
-            z = z[:, :, :-1] - z[:, :, 1:]
-    elif which == 'central':
-        # Pad + reflected central difference
-        if ndim == 2:  # 2D data
-            x = utils.pad(dat[0, ...], (1, 1, 0, 0), mode=bound)
-            x = half * (x[:-2, :] - x[2:, :])
-            y = utils.pad(dat[1, ...], (0, 0, 1, 1), mode=bound)
-            y = half * (y[:, :-2] - y[:, 2:])
-        else:  # 3D data
-            x = utils.pad(dat[0, ...], (1, 1, 0, 0, 0, 0), mode=bound)
-            x = half * (x[:-2, :, :] - x[2:, :, :])
-            y = utils.pad(dat[1, ...], (0, 0, 1, 1, 0, 0), mode=bound)
-            y = half * (y[:, :-2, :] - y[:, 2:, :])
-            z = utils.pad(dat[2, ...], (0, 0, 0, 0, 1, 1), mode=bound)
-            z = half * (z[:, :, :-2] - z[:, :, 2:])
-    else:
-        raise ValueError('Undefined divergence')
-    if ndim == 2:  # 2D data
-        return x / vx[0] + y / vx[1]
-    else:  # 3D data
-        return x / vx[0] + y / vx[1] + z / vx[2]
-
-
-def im_gradient(dat, vx=None, which='forward', bound='constant'):
-    """ Computes the gradient of 2D or 3D data.
-
-    Args:
-        dat (torch.tensor()): A 2D|3D tensor (X, Y) | (X, Y, Z).
-        vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
-        which (string, optional): Gradient type:
-            . 'forward': Forward difference (next - centre)
-            . 'backward': Backward difference (centre - previous)
-            . 'central': Central difference ((next - previous)/2)
-            Defaults to 'forward'.
-        bound (string, optional): Boundary conditions, defaults to 'constant'
-            (zero padding).
-
-    Returns:
-          grad (torch.tensor()): Gradient (2, X, Y) | (3, X, Y, Z).
-
-    """
-    if vx is None:
-        vx = (1,) * 3
-    if type(vx) is not torch.Tensor:
-        vx = torch.tensor(vx, dtype=dat.dtype, device=dat.device)
-    half = torch.tensor(0.5, dtype=dat.dtype, device=dat.device)
-    ndim = len(dat.shape)
-
-    if which == 'forward':
-        # Pad + forward difference
-        if ndim == 2:  # 2D data
-            dat = utils.pad(dat, (0, 1, 0, 1), mode=bound)
-            gx = -dat[:-1, :-1] + dat[1:, :-1]
-            gy = -dat[:-1, :-1] + dat[:-1, 1:]
-        else:  # 3D data
-            dat = utils.pad(dat, (0, 1, 0, 1, 0, 1), mode=bound)
-            gx = -dat[:-1, :-1, :-1] + dat[1:, :-1, :-1]
-            gy = -dat[:-1, :-1, :-1] + dat[:-1, 1:, :-1]
-            gz = -dat[:-1, :-1, :-1] + dat[:-1, :-1, 1:]
-    elif which == 'backward':
-        # Pad + backward difference
-        if ndim == 2:  # 2D data
-            dat = utils.pad(dat, (1, 0, 1, 0), mode=bound)
-            gx = -dat[:-1, 1:] + dat[1:, 1:]
-            gy = -dat[1:, :-1] + dat[1:, 1:]
-        else:  # 3D data
-            dat = utils.pad(dat, (1, 0, 1, 0, 1, 0), mode=bound)
-            gx = -dat[:-1, 1:, 1:] + dat[1:, 1:, 1:]
-            gy = -dat[1:, :-1, 1:] + dat[1:, 1:, 1:]
-            gz = -dat[1:, 1:, :-1] + dat[1:, 1:, 1:]
-    elif which == 'central':
-        # Pad + central difference
-        if ndim == 2:  # 2D data
-            dat = utils.pad(dat, (1, 1, 1, 1), mode=bound)
-            gx = half * (-dat[:-2, 1:-1] + dat[2:, 1:-1])
-            gy = half * (-dat[1:-1, :-2] + dat[1:-1, 2:])
-        else:  # 3D data
-            dat = utils.pad(dat, (1, 1, 1, 1, 1, 1), mode=bound)
-            gx = half * (-dat[:-2, 1:-1, 1:-1] + dat[2:, 1:-1, 1:-1])
-            gy = half * (-dat[1:-1, :-2, 1:-1] + dat[1:-1, 2:, 1:-1])
-            gz = half * (-dat[1:-1, 1:-1, :-2] + dat[1:-1, 1:-1, 2:])
-    else:
-        raise ValueError('Undefined gradient')
-    if ndim == 2:  # 2D data
-        return torch.stack((gx / vx[0], gy / vx[1]), dim=0)
-    else:  # 3D data
-        return torch.stack((gx / vx[0], gy / vx[1], gz / vx[2]), dim=0)
-
-
-def check_adjoint_grad_div(which='central', vx=None, dtype=torch.float64,
-                           ndim=3, dim=64, device='cpu', bound='constant'):
-    """ Check adjointness of gradient and divergence operators.
-        For any variables u and v, of suitable size, then with gradu = grad(u),
-        divv = div(v) the following should hold: sum(gradu(:).*v(:)) - sum(u(:).*divv(:)) = 0
-        (to numerical precision).
-
-    See also:
-          https://regularize.wordpress.com/2013/06/19/
-          how-fast-can-you-calculate-the-gradient-of-an-image-in-matlab/
-
-    Example:
-        _check_adjoint(which='forward', dtype=torch.float64, bound='constant',
-                       vx=(3.5986, 2.5564, 1.5169), dim=(32, 64, 20))
-
-    """
-    if vx is None:
-        vx = (1,) * 3
-    if type(vx) is not torch.Tensor:
-        vx = torch.tensor(vx, dtype=dtype, device=device)
-    if type(dim) is int:
-        dim = (dim,) * 3
-
-    torch.manual_seed(0)
-    # Check adjointness of..
-    if which == 'forward' or which == 'backward' or which == 'central':
-        # ..various gradient operators
-        if ndim == 2:
-            u = torch.rand(dim[0], dim[1], dtype=dtype, device=device)
-            v = torch.rand(2, dim[0], dim[1], dtype=dtype, device=device)
-        else:
-            u = torch.rand(dim[0], dim[1], dim[2], dtype=dtype, device=device)
-            v = torch.rand(3, dim[0], dim[1], dim[2], dtype=dtype, device=device)
-        gradu = im_gradient(u, vx=vx, which=which, bound=bound)
-        divv = im_divergence(v, vx=vx, which=which, bound=bound)
-        val = torch.sum(gradu*v, dtype=torch.float64) - torch.sum(divv*u, dtype=torch.float64)
-    # Print okay? (close to zero)
-    print('val={}'.format(val))
