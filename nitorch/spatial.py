@@ -770,11 +770,11 @@ def exp(vel, inverse=False, steps=None, interpolation='linear', bound='dft',
         Warning('Inplace computation may break the computational graph.')
 
     if energy is None and greens is None:
-        # If energy or greens function provided: use shoot
+        # If no energy or greens function: use scaling and squaring
         return _exp_ss(vel, inverse, steps, interpolation, bound,
                        displacement)
     else:
-        # Else: use scaling and squaring
+        # If energy or greens function provided: use shoot
         raise NotImplementedError
 
 
