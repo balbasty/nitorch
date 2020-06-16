@@ -246,100 +246,106 @@ def _pad_bound(inp, padpre, padpost, bound, modifier):
     return inp
 
 
-def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
-                fig_num=1, colorbar=False):
-    """ Display a multi-channel 2D or 3D image.
+def padlist(x, n):
+    """Repeat the last element of a list-like object to match a target length.
 
-    Allows for real-time plotting if giving returned fig_ax objects as input.
+    If the input length is grater than ``n``, the list is cropped.
 
     Args:
-        img (torch.Tensor): Input image (X, Y, C) | (X, Y, Z, C).
-        fig_ax ([matplotlib.figure, matplotlib.axes])
-        title (string, optional): Figure title, defaults to ''.
-        cmap (str, optional): Name of matplotlib color map, defaults to 'gray'.
-        flip (bool, optional): Flip channels and anatomical axis, defaults to False.
-        fig_num (int, optional): matplotlib figure number, defaults to 1.
-        colorbar (bool, optional): Show colorbar, defaults to False.
+        x (scalar or list or tuple): Input argument
+        n (int): Target length
 
     Returns:
-        fig_ax ([matplotlib.figure, matplotlib.axes])
+        x (list or tuple): Padded argument of length n.
+            If the input argument is not a list or tuple, the output
+            type is ``tuple``.
 
     """
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    if not isinstance(x, list) and not isinstance(x, tuple):
+        x = (x,)
+    if len(x) == 0:
+        raise TypeError('Input argument cannot be empty')
+    return_type = type(x)
+    x = list(x)
+    x = x[:min(len(x), n)]
+    x += [x[-1]] * (n-len(x))
+    return return_type(x)
 
-    # Work out dimensions/channels
-    img = img[..., None, None]
-    dm = torch.tensor(img.shape)
-    num_chan = dm[3]  # Number of channels
-    is_3d = dm[2] > 1
-    ix = torch.floor(0.5 * dm).int().tolist()
 
-    if fig_ax is None:
-        # Make figure object
-        if is_3d:  # 3D
-            if flip:
-                fig, ax = plt.subplots(num_chan, 3, num=fig_num)
-            else:
-                fig, ax = plt.subplots(3, num_chan, num=fig_num)
-        else:  # 2D
-            if flip:
-                fig, ax = plt.subplots(num_chan, 1, num=fig_num)
-            else:
-                fig, ax = plt.subplots(1, num_chan, num=fig_num)
-        fig_ax = [fig, ax]
-        plt.ion()
-        fig.show()
+def replist(x, n, interleaved=False):
+    """Replicate a list-like object.
 
-    # Get figure and axis objects
-    fig = fig_ax[0]
-    ax = fig_ax[1]
+    Args:
+        x (scalar or list or tuple): Input argument
+        n (int): Number of replicates
+        interleaved (bool, optional): Interleaved replication.
+            Default: False
 
-    # Show images
-    img_list = []
-    for c in range(num_chan):  # loop over image channels
-        im_c = torch.squeeze(img[:, :, ix[2], c]).cpu()
-        if is_3d:
-            ax_c = ax[0] if num_chan == 1 else ax[0, c] if not flip else ax[c, 0]
-            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
-            img_list.append(im_c)
-            ax_c = ax[1] if num_chan == 1 else ax[1, c] if not flip else ax[c, 1]
-            im_c = torch.squeeze(img[:, ix[1], :, c]).cpu()
-            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
-            img_list.append(im_c)
-            ax_c = ax[2] if num_chan == 1 else ax[2, c] if not flip else ax[c, 2]
-            im_c = torch.squeeze(img[ix[0], :, :, c]).cpu()
-            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
-            img_list.append(im_c)
-        else:
-            ax_c = ax if num_chan == 1 else ax[c]
-            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
-            img_list.append(im_c)
+    Returns:
+        x (list or tuple): Replicated list
+            If the input argument is not a list or tuple, the output
+            type is ``tuple``.
 
-    # Modify axes
-    cnt = 0
-    for c in range(num_chan):  # loop over image channels
-        if is_3d:
-            for r in range(3):
-                ax_c = ax[r] if num_chan == 1 else ax[r, c] if not flip else ax[c, r]
-                ax_c.axis('off')
-                # ax_c.clear()
-                if colorbar:
-                    divider = make_axes_locatable(ax_c)
-                    cax = divider.append_axes('right', size='5%', pad=0.05)
-                    fig.colorbar(img_list[cnt], cax=cax, orientation='vertical')
-                cnt += 1
-        else:
-            ax_c = ax if num_chan == 1 else ax[c]
-            ax_c.axis('off')
-            if colorbar:
-                divider = make_axes_locatable(ax_c)
-                cax = divider.append_axes('right', size='5%', pad=0.05)
-                fig.colorbar(img_list[cnt], cax=cax, orientation='vertical')
-            cnt += 1
+    """
+    if not isinstance(x, list) and not isinstance(x, tuple):
+        x = (x,)
+    if len(x) == 0:
+        raise TypeError('Input argument cannot be empty')
+    return_type = type(x)
+    x = list(x)
+    if interleaved:
+        x = [elem for sub in zip(*([x]*n)) for elem in sub]
+    else:
+        x = x * n
+    return return_type(x)
 
-    fig.suptitle(title)
-    fig.canvas.draw()
-    fig.canvas.flush_events()
 
-    return fig_ax
+def getargs(kpd, args=[], kwargs={}, consume=False):
+    """Read and remove argument from args/kwargs input.
+
+    Args:
+        kpd (list of tuple): List of (key, position, default) tuples with:
+            key (str): argument name
+            position (int): argument position
+            default (optional): default value
+        args (optional): list of positional arguments
+        kwargs (optional): list of keyword arguments
+        consume (bool, optional): consume arguments from args/kwargs
+
+    Returns:
+        values (list): List of values
+
+    """
+
+    def raise_error(key):
+        import inspect
+        caller = inspect.stack()[1].function
+        raise TypeError("{}() got multiple values for \
+                        argument '{}}'".format(caller, key))
+
+    # Sort argument by reverse position
+    kpd = [(i,) + e for i, e in enumerate(kpd)]
+    kpd = sorted(kpd, key=lambda x: x[2], reverse=True)
+
+    values = []
+    for elem in kpd:
+        i = elem[0]
+        key = elem[1]
+        position = elem[2]
+        default = elem[3] if len(elem) > 3 else None
+
+        value = default
+        if len(args) >= position:
+            value = args[-1]
+            if consume:
+                del args[-1]
+            if key in kwargs.keys():
+                raise_error(key)
+        elif key in kwargs.keys():
+            value = kwargs[key]
+            if consume:
+                del kwargs[key]
+        values.append((i, value))
+
+    values = [v for _, v in sorted(values)]
+    return values
