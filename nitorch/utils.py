@@ -350,6 +350,7 @@ def getargs(kpd, args=[], kwargs={}, consume=False):
     values = [v for _, v in sorted(values)]
     return values
 
+
 def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 fig_num=1, colorbar=False):
     """ Display a multi-channel 2D or 3D image.
