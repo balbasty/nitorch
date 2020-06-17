@@ -20,17 +20,29 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
         the form A*x = b, where A is positive-definite.
 
     Args:
-        A (torch.tensor()): Linear operator (M, N), as a function handle.
-        b (torch.tensor()): Vector of right hand side arguments (N, 1).
-        x (torch.tensor(), optional): The initial guess, defaults to all zero vector (M, 1).
-        precond (torch.tensor(), optional): Preconditioner, defaults to lambda x: x.
-        maxiter (int, optional): Defaults to len(b)*10.
-        tolerance (float, optional): Defaults to 1e-5.
+        A (torch.tensor or function): Linear operator (M, N).
+            If a function: should take an (N, 1) vector and return
+            an (M, 1) vector.
+        b (torch.tensor): Right hand side vector (N, 1).
+        x (torch.tensor, optional): Initial guess.
+            Defaults to zeros(M, 1).
+        precond (function, optional): Preconditioner (M, M).
+            Defaults to lambda x: x (i.e., identity)
+        maxiter (int, optional): Maximum number of iteration.
+            Defaults to len(b)*10.
+        tolerance (float, optional): Tolerance for early-stopping,
+            based on the L2 norm of residuals. Defaults to  1e-5.
         verbose (bool, optional): Defaults to False.
-        sum_dtype (torch.dtype): Defaults to torch.float64.
+        sum_dtype (torch.dtype): Accumulator type.
+            Choose torch.float32 for speed ortorch. float64 for precision.
+            Defaults to torch.float64.
 
     Returns:
-        x (torch.tensor()): Solution of the linear system (M, 1).
+        x (torch.tensor): Solution of the linear system (M, 1).
+
+    Note:
+        In practice, if A is provided as a function, b and x do not need
+        to be vector-shaped.
 
     Example:
         >>> # Let's solve Ax = b using both regular inversion and CG
@@ -50,7 +62,7 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
         >>> print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
         >>> # Solve by CG
         >>> t0 = timer()
-        >>> x2 = cg(lambda x: A.matmul(x), b, verbose=True, sum_dtype=torch.float32)
+        >>> x2 = cg(A, b, verbose=True, sum_dtype=torch.float32)
         >>> print('cg(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
         >>> # Inspect errors
         >>> e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
@@ -65,7 +77,14 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
     if maxiter is None:
         maxiter = len(b) * 10
     if x is None:
-        x = torch.zeros(b.shape, dtype=dtype, device=device)
+        x = torch.zeros_like(b)
+
+    # Create functor if A is a tensor
+    if isinstance(A, torch.Tensor):
+        A_tensor = A
+        def A_function(x):
+            return A_tensor.mm(x)
+        A = A_function
 
     # Initialisation
     r = b - A(x)  # Residual: b - A*x
@@ -75,7 +94,7 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
     beta = torch.tensor(0, dtype=dtype, device=device)  # Initial step size
 
     # Run algorithm
-    for iter in range(maxiter):
+    for it in range(maxiter):
         # Calculate conjugate directions P (descent direction)
         p = z + beta * p
         # Find the step size of the conj. gradient descent
@@ -92,7 +111,7 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
         rz = torch.sum(r * z, dtype=sum_dtype)
         if verbose:
             s = '{:' + str(len(str(maxiter))) + '} - sqrt(rtr)={:0.6f}'
-            print(s.format(iter + 1, torch.sqrt(rz)))
+            print(s.format(it + 1, torch.sqrt(rz)))
         if torch.sqrt(rz) < tolerance:
             break
         beta = rz / rz0
@@ -104,13 +123,13 @@ def get_gain(obj, iter, monotonicity='increasing'):
     """ Compute gain of some objective function.
 
     Args:
-        obj (torch.tensor()): Vector of values (e.g., log-likelihoods computations).
+        obj (torch.tensor): Vector of values (e.g., loss).
         iter (int): Iteration number.
         direction (string, optional): Monotonicity of values ('increasing'/'decreasing'),
             defaults to 'increasing'.
 
     Returns:
-        gain (torch.tensor()): Computed gain.
+        gain (torch.tensor): Computed gain.
 
     """
     if iter == 0:
