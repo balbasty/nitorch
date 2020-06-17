@@ -19,14 +19,14 @@ from torch.nn import functional as F
 __all__ = ['pad', 'same_storage', 'shiftdim', 'softmax']
 
 
-def softmax(Z, dim=-1, get_ll=False, W=1):
+def softmax(Z, dim=-1, get_ll=False, W=None):
     """ SoftMax (safe).
 
     Args:
         Z (torch.tensor): Tensor with values.
         dim (int, optional): Dimension to take softmax, defaults to last dimensions (-1).
         get_ll (bool, optional): Compute log-likelihood, defaults to False.
-        W (torch.tensor, optional): Observation weights, defaults to 1 (no weights).
+        W (torch.tensor, optional): Observation weights, defaults to no weights.
 
     Returns:
         Z (torch.tensor): Soft-maxed tensor with values.
@@ -37,7 +37,10 @@ def softmax(Z, dim=-1, get_ll=False, W=1):
     Z_sum = torch.sum(Z, dim=dim)
     if get_ll:
         # Compute log-likelihood
-        ll = torch.sum((torch.log(Z_sum) + Z_max)*W, dtype=torch.float64)
+        if W is None:
+            ll = torch.sum(torch.log(Z_sum) + Z_max, dtype=torch.float64)
+        else:
+            ll = torch.sum((torch.log(Z_sum) + Z_max)*W.squeeze(), dtype=torch.float64)
     else:
         ll = None
     Z = Z / Z_sum[:, None]
