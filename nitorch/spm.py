@@ -718,7 +718,11 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
     model.fit(X, W=W, verbose=verbose, max_iter=max_iter)
 
     if show_fit:  # Plot fit
-        model.plot_fit(X, fig_num=fig_num, W=W, suptitle='Histogram fit')
+        mp = model.mp
+        mu, var = model.get_means_variances()
+        log_pdf = lambda x, k, c: model.log_likelihood(x, k, c)
+        model.plot_fit(X, log_pdf, mu, var, mp, fig_num=fig_num, W=W,
+                       title='Histogram fit')
 
     # Get means and mixing proportions
     mu, _ = model.get_means_variances()
