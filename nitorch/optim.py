@@ -125,7 +125,8 @@ def get_gain(obj, iter, monotonicity='increasing'):
     return gain
 
 
-def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'):
+def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence',
+                     xlab='', ylab=''):
     """ Plots an algorithm's convergence (e.g. negative log-likelihood, lower bound).
 
     Allows for real-time plotting if giving returned fig_ax objects as input.
@@ -135,6 +136,8 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
         fig_ax ([matplotlib.figure, matplotlib.axes])
         fig_num (int, optional): Figure number to plot to, defaults to 1.
         fig_title (str, optional): Figure title, defaults to 'Model convergence'.
+        xlab (str, optional): x-label, defaults to ''.
+        ylab (str, optional): y-label, defaults to ''.
 
     Returns:
         fig_ax ([matplotlib.figure, matplotlib.axes])
@@ -158,12 +161,16 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
     ax[0].clear()
     x = torch.arange(0, len(vals)) + 1
     ax[0].plot(x, vals)
+    ax[0].set_xlabel(xlab)
+    ax[0].set_ylabel(ylab)
     ax[0].xaxis.set_major_locator(MaxNLocator(integer=True))
     ax[0].grid()
 
     ax[1].clear()
     x = torch.arange(0, len(vals)) + 1
     ax[1].plot(x[-3:], vals[-3:], 'r')
+    ax[1].set_xlabel(xlab)
+    ax[1].set_ylabel(ylab)
     ax[1].xaxis.set_major_locator(MaxNLocator(integer=True))
     ax[1].grid()
 
