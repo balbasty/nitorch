@@ -114,7 +114,8 @@ class Decoder(tnn.ModuleList):
             oshape = layer.shape(x, stride=2, output_padding=0)[2:]
             yshape = y.shape[2:]
             pad = [i-o for o, i in zip(oshape, yshape)]
-            x = torch.cat((layer(x, stride=2, output_padding=pad), y), dim=1)
+            x = layer(x, stride=2, output_padding=pad)
+            x = torch.cat((x, y), dim=1)
 
         # Post-processing (convolutions without upsampling)
         for layer in postproc:
