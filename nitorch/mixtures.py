@@ -35,7 +35,8 @@ class Mixture:
 
     """ Functions
     """
-    def fit(self, X, verbose=1, max_iter=10000, tol=1e-6, fig_num=1, W=None):
+    def fit(self, X, verbose=1, max_iter=10000, tol=1e-6, fig_num=1, W=None,
+            show_fit=False):
         """ Fit mixture model.
 
         Args:
@@ -52,6 +53,7 @@ class Mixture:
             tol (int, optional): Convergence threshold. Defaults to 1e-6.
             fig_num (int, optional): Defaults to 1.
             W (torch.tensor, optional): Observation weights (N, 1). Defaults to no weights.
+            show_fit (bool, optional): Plot mixture fit, defaults to False.
 
         Returns:
             Z (torch.tensor): Responsibilities (N, K).
@@ -101,6 +103,9 @@ class Mixture:
         if verbose >= 2:
             _ = plot_convergence(lb, xlab='Iteration number',
                                  fig_title='Model lower bound', fig_num=fig_num)
+        # Plot mixture fit
+        if show_fit:
+            self._plot_fit(X, W, fig_num=fig_num + 1)
 
         return Z
     
@@ -138,7 +143,7 @@ class Mixture:
             """
             for k in range(K):
                 # Product Rule
-                Z[:, k] = torch.log(self.mp[k]) + self.log_likelihood(X, k)
+                Z[:, k] = torch.log(self.mp[k]) + self._log_likelihood(X, k)
 
             # Get responsibilities
             Z, dlb = softmax(Z, W=W, get_ll=True)
@@ -223,11 +228,20 @@ class Mixture:
 
         return ss0, ss1, ss2
 
+    def _plot_fit(self, X, W, fig_num):
+        """ Plot mixture fit.
+
+        """
+        mp = self.mp
+        mu, var = self.get_means_variances()
+        log_pdf = lambda x, k, c: self._log_likelihood(x, k, c)
+        self.plot_fit(X, log_pdf, mu, var, mp, fig_num, W)
+    
     """ Implement in child classes
     """
     def get_means_variances(self): pass
 
-    def log_likelihood(self): pass
+    def _log_likelihood(self): pass
 
     def _init_par(self):
         pass
@@ -489,7 +503,7 @@ class GMM(Mixture):
         """
         return self.mu, self.Cov
 
-    def log_likelihood(self, X, k=0, c=None):
+    def _log_likelihood(self, X, k=0, c=None):
         """ Log-probability density function (pdf) of the standard normal
             distribution, evaluated at the values in X.
 
@@ -624,7 +638,7 @@ class RMM(Mixture):
 
         return mean, var
 
-    def log_likelihood(self, X, k=0, c=-1):
+    def _log_likelihood(self, X, k=0, c=-1):
         """
         Log-probability density function (pdf) of the Rician
         distribution, evaluated at the values in X.
