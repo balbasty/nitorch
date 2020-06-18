@@ -11,8 +11,8 @@ from timeit import default_timer as timer
 import matplotlib.pyplot as plt
 from nitorch.optim import get_gain, plot_convergence
 from nitorch.utils import softmax
+from nitorch.mathfun import besseli
 import torch
-from torch.distributions import MultivariateNormal as mvn
 
 torch.backends.cudnn.benchmark = True
 
@@ -274,46 +274,6 @@ class Mixture:
             X_msk[:, c] = X[msk, c]
 
         return X_msk, msk
-
-    @staticmethod
-    def besseli(X, order=0):
-        """ Approximates the modified Bessel function of the first kind,
-            of either order zero or one.
-
-        Args:
-            X (torch.tensor): Input (N, 1).
-            order (int, optional): 0 or 1, defaults to 0.
-
-        Returns:
-            I (torch.tensor): Modified Bessel function of the first kind (N, 1).
-
-        See also:
-            https://mathworld.wolfram.com/ModifiedBesselFunctionoftheFirstKind.html
-
-        """
-        if len(X.shape) == 1:
-            X = X[:, None]
-            N = X.shape[0]
-        else:
-            N = 1
-
-        device = X.device
-        dtype = X.dtype
-
-        Nk = 10  # higher number, better approximation (10 seems to do just fine)
-        X = X.repeat(1, Nk)
-        K = torch.arange(0, Nk, dtype=dtype, device=device)
-        K = K.repeat(N, 1).float()
-        K_factorial = (K + 1).lgamma().exp()
-
-        if order == 0:  # 0th order
-            i = torch.sum((0.25 * X ** 2) ** K / (K_factorial ** 2), dim=1)
-        else:  # First order
-            i = torch.sum(
-                0.5 * X * ((0.25 * X ** 2) ** K /
-                           (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1)
-
-        return i
 
     @staticmethod
     def reshape_input(img):
@@ -619,7 +579,7 @@ class RMM(Mixture):
 
         # Laguerre polymonial for n=1/2
         Laguerre = lambda x: torch.exp(x/2) * \
-            ((1 - x) * RMM.besseli(-x/2, order=0) - x * RMM.besseli(-x/2, order=1))
+            ((1 - x) * besseli(-x/2, order=0) - x * besseli(-x/2, order=1))
 
         # Compute means and variances
         mean = torch.zeros((1, K), dtype=dtype, device=self.dev)
@@ -672,7 +632,7 @@ class RMM(Mixture):
         # Identify where Rice probability can be computed
         msk = (tmp > -95) & ((X * (nu / sig2)) < 85)
         # Use Rician distribution
-        log_pdf[msk] = (X[msk]/sig2) * torch.exp(tmp[msk]) * RMM.besseli(X[msk] * (nu / sig2), order=0)
+        log_pdf[msk] = (X[msk]/sig2) * torch.exp(tmp[msk]) * besseli(X[msk] * (nu / sig2), order=0)
         # Use normal distribution
         log_pdf[~msk] = (1. / torch.sqrt(2 * pi * sig2)) \
                   * torch.exp((-0.5 / sig2) * (X[~msk] - nu)**2)
@@ -733,8 +693,8 @@ class RMM(Mixture):
             if r > theta:
                 for i in range(256):
                     xi = 2 + theta**2 \
-                        - pi/8*torch.exp(-theta**2/2)*((2 + theta**2) * RMM.besseli(theta**2/4, order=0) \
-                        + theta**2*RMM.besseli(theta**2/4, order=1))**2
+                        - pi/8*torch.exp(-theta**2/2)*((2 + theta**2) * besseli(theta**2/4, order=0) \
+                        + theta**2*besseli(theta**2/4, order=1))**2
                     g = torch.sqrt(xi*(1 + r**2) - 2)
                     if torch.abs(theta - g) < 1e-6:
                         break
