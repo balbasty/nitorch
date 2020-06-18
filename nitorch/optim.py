@@ -13,7 +13,8 @@ import torch
 
 
 def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
-        tolerance=1e-5, verbose=False, sum_dtype=torch.float64):
+       tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
+       inplace=True):
     """ Solve A*x = b by the conjugate gradient method.
 
         The method of conjugate gradients solves linear systems of
@@ -33,9 +34,12 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
         tolerance (float, optional): Tolerance for early-stopping,
             based on the L2 norm of residuals. Defaults to  1e-5.
         verbose (bool, optional): Defaults to False.
-        sum_dtype (torch.dtype): Accumulator type.
+        sum_dtype (torch.dtype, optional): Accumulator type.
             Choose torch.float32 for speed ortorch. float64 for precision.
             Defaults to torch.float64.
+        inplace (bool, optional): Perform computations inplace
+            (saves performance but overrides x and may break the
+            computational graph). Defaults to True.
 
     Returns:
         x (torch.tensor): Solution of the linear system (M, 1).
@@ -78,6 +82,8 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
         maxiter = len(b) * 10
     if x is None:
         x = torch.zeros_like(b)
+    elif not inplace:
+        x = x.clone()
 
     # Create functor if A is a tensor
     if isinstance(A, torch.Tensor):
@@ -90,20 +96,21 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
     r = b - A(x)  # Residual: b - A*x
     z = precond(r)  # Preconditioned residual
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
-    p = z  # Initial conjugate directions p
+    p = z.clone()  # Initial conjugate directions p
     beta = torch.tensor(0, dtype=dtype, device=device)  # Initial step size
 
     # Run algorithm
     for it in range(maxiter):
         # Calculate conjugate directions P (descent direction)
-        p = z + beta * p
+        p *= beta
+        p += z
         # Find the step size of the conj. gradient descent
         Ap = A(p)
         alpha = rz / torch.sum(p * Ap, dtype=sum_dtype)
         # Perform conj. gradient descent, obtaining updated X and R, using the
         # calculated P and alpha
-        x = x + alpha * p
-        r = r - alpha * Ap
+        x += alpha * p
+        r -= alpha * Ap
         # Update preconditioned residual
         z = precond(r)
         # Finds the step size for updating P
