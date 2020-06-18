@@ -138,7 +138,7 @@ class Mixture:
         """
         Z = torch.zeros((N, K), dtype=dtype, device=device)  # responsibility
         lb = torch.zeros(max_iter, dtype=torch.float64, device=device)
-        for iter in range(max_iter):  # EM loop
+        for n_iter in range(max_iter):  # EM loop
             """ E-step
             """
             for k in range(K):
@@ -150,11 +150,11 @@ class Mixture:
 
             """ Objective function and convergence related
             """
-            lb[iter] = dlb
-            gain = get_gain(lb, iter)
+            lb[n_iter] = dlb
+            gain = get_gain(lb, n_iter)
             if verbose >= 3:
-                print('iter: {}, lb: {}, gain: {}'
-                      .format(iter + 1, lb[iter], gain))
+                print('n_iter: {}, lb: {}, gain: {}'
+                      .format(n_iter + 1, lb[n_iter], gain))
             if gain < tol:
                 break  # Finished
 
@@ -175,7 +175,7 @@ class Mixture:
             # Update model specific parameters
             self._update(ss0, ss1, ss2)
 
-        return Z, lb[:iter + 1]
+        return Z, lb[:n_iter + 1]
     
     def _init_mp(self, dtype=torch.float64):
         """ Initialise mixing proportions: mp
