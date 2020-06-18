@@ -8,10 +8,6 @@
 # . Implement Sinc kernel
 # . Use inplace operations if gradients not required
 
-# WARNING:
-# . Currently, fwhm and voxel sizes are ordered as [depth width height]
-#   I am not sure yet what convention is best
-
 import torch
 from nitorch import utils
 
@@ -57,6 +53,12 @@ def _integrate_poly(l, h, *args):
         hh = hh * h
         ll = ll * l
     return k
+
+
+def _dirac1d(fwhm, basis, x):
+    if x is None:
+        x = torch.ones(1, dtype=fwhm.dtype, device=fwhm.device)
+    return (x == 1).to(x.dtype), x
 
 
 def _gauss1d(fwhm, basis, x):
@@ -180,16 +182,18 @@ def _triangle1d1(w, x):
 
 
 _smooth_switcher = {
+    'dirac': _dirac1d,
     'gauss': _gauss1d,
     'rect': _rect1d,
     'triangle': _triangle1d,
+    -1: _dirac1d,
     0: _rect1d,
     1: _triangle1d,
     2: _gauss1d,
     }
 
 
-def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
+def smooth(types, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     """Create a smoothing kernel.
 
     Creates a (separable) smoothing kernel with fixed (i.e., not learned)
@@ -207,10 +211,12 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     `nitorch.spatial?`.
 
     Args:
-        type (str or int): Smoothing function (integrates to one).
-            . 0, 'rect': Rectangular function (0th order B-spline)
-            . 1, 'tri': Triangular function (1st order B-spline)
-            . 2, 'gauss': Gaussian
+        types (str or int or list[str or int]):
+            Smoothing function (integrates to one).
+            . -1, 'dirac': Dirac function
+            . 0,  'rect': Rectangular function (0th order B-spline)
+            . 1,  'tri': Triangular function (1st order B-spline)
+            . 2,  'gauss': Gaussian
         fwhm (vector_like,optional): Full-width at half-maximum of the
             smoothing function (in voxels), in each dimension.
             Defaults to 1.
@@ -239,25 +245,29 @@ def smooth(type, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     device = fwhm.device
     return_tuple = True
     if not isinstance(x, tuple):
-        return_tuple = not (fwhm.shape == torch.Size([]))
+        return_tuple = (len(fwhm.shape) > 0)
         x = (x,)
     x = tuple(torch.as_tensor(x1, dtype=dtype, device=device).flatten()
               if x1 is not None else None for x1 in x)
+    if type(types) not in (list, tuple):
+        types = [types]
+    types = list(types)
 
     # Ensure all sizes are consistant
-    nker = max(fwhm.numel(), len(x))
+    nker = max(fwhm.numel(), len(x), len(types))
     fwhm = torch.cat((fwhm, fwhm[-1].repeat(max(0, nker-fwhm.numel()))))
     x = x + (x[-1],)*max(0, nker-len(x))
+    types += (types[-1],)*max(0, nker-len(types))
 
     # Loop over dimensions
     ker = tuple()
     x = list(x)
     for d in range(nker):
-        ker1, x[d] = _smooth_switcher[type[d]](fwhm[d], basis, x[d])
+        ker1, x[d] = _smooth_switcher[types[d]](fwhm[d], basis, x[d])
         shape = [1, ] * nker
-        shape[-1-d] = ker1.numel()
+        shape[d] = ker1.numel()
         ker1 = ker1.reshape(shape)
-        ker1 = ker1.unsqueeze(0).unsqueeze(0)  # Cout = 1, Cin = 1
+        ker1 = ker1[None, None, ...]  # Cout = 1, Cin = 1
         ker += (ker1, )
 
     # Make N-D kernel
@@ -291,14 +301,11 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=None,
     Note: The lame parameters should be entered in the opposite order from SPM
           SPM: (mu, lambda) / nitorch: (lambda, mu)
 
-    The returned kernel is intended for volumes ordered as (B, C, D, H, W).
-    However, if the convolved volume is a displacement field, components in
-    the channel dimension should be ordered as (W, H, D). Similarly, the voxel
-    size should be ordered as (W, H, D).
+    The returned kernel is intended for volumes ordered as (B, C, W, H, D).
     For more information about ordering conventions in nitorch, see
     `nitorch.spatial?`.
 
-    The returned kernel is ordered as (C, C, D, H, W).
+    The returned kernel is ordered as (C, C, W, H, D).
     If displacement is False, C == 1. Use `make_separable` to transform it
     into a multi-channel kernel.
     If displacement is True, C == dim and components (i.e., channels)
@@ -366,7 +373,6 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=None,
         if len(vs) != dim:
             raise ValueError('There must be as many voxel sizes as dimensions')
     vs = tuple(1./(v*v) for v in vs)
-    vs = vs[::-1]  # (D, H, W)
 
     # Accumulate energies
     ker = torch.zeros((1, 1) + (kdim,)*dim, dtype=dtype, device=device)
@@ -379,7 +385,7 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=None,
             ker1 = torch.zeros((dim, dim) + (kdim,)*dim,
                                dtype=dtype, device=device)
             for d in range(dim):
-                ker1[d, d, ...] = ker2/vs[-1-d]
+                ker1[d, d, ...] = ker2/vs[d]
         ker = ker + absolute*ker1
 
     if membrane != 0:
@@ -391,7 +397,7 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=None,
             ker1 = torch.zeros((dim, dim) + (kdim,)*dim,
                                dtype=dtype, device=device)
             for d in range(dim):
-                ker1[d, d, ...] = ker2/vs[-1-d]
+                ker1[d, d, ...] = ker2/vs[d]
         ker = ker + membrane*ker1
 
     if bending != 0:
@@ -401,7 +407,7 @@ def energy(dim, absolute=0, membrane=0, bending=0, lame=(0, 0), vs=None,
             ker1 = torch.zeros((dim, dim) + (kdim,)*dim,
                                dtype=dtype, device=device)
             for d in range(dim):
-                ker1[d, d, ...] = ker2/vs[-1-d]
+                ker1[d, d, ...] = ker2/vs[d]
         ker = ker + bending*ker1
 
     if lame[0] != 0:
@@ -508,12 +514,11 @@ def _energy_linearelastic(dim, vs, lame, dtype=torch.float, device='cpu'):
 def imgrad(dim, vs=None, which='central', dtype=None, device=None):
     """Kernel that computes the first order gradients of a tensor.
 
-    The returned kernel is intended for volumes ordered as (B, C, D, H, W).
-    However, the voxel size should be ordered as (W, H, D).
+    The returned kernel is intended for volumes ordered as (B, C, W, H, D).
     For more information about ordering conventions in nitorch, see
     `nitorch.spatial?`.
 
-    The returned kernel is ordered as (C, 1, D, H, W), and the output
+    The returned kernel is ordered as (C, 1, W, H, D), and the output
     components (i.e., channels) are ordered as (W, H, D).
 
     Args:
@@ -529,7 +534,7 @@ def imgrad(dim, vs=None, which='central', dtype=None, device=None):
 
     Returns:
         ker (torch.tensor): Kernel that can be used to extract image gradients
-            (dim*len(which), 1, D, H, W)
+            (dim*len(which), 1, W, H, D)
 
     """
     if vs is None:
@@ -556,13 +561,13 @@ def greens(ker, shape, bound='circular'):
 
 
     Args:
-        ker (array_like): Input kernel (Cout, Cin, Kd, Kh, Kw).
-        shape (vector_like): Shape of the convolved image [D, H,, W].
+        ker (array_like): Input kernel (Cout, Cin, Kw, Kh, Kd).
+        shape (vector_like): Shape of the convolved image [W, H, D].
         bound (string, optional): Boundary conditions. Defaults to 'circular'.
 
     Returns:
         greens (array_like): Fourier (or other frequency) transform of the
-            Greens function (Cout, Cin, D, H, W).
+            Greens function (Cout, Cin, W, H, D).
 
     (Adapted from John Ashburner's `spm_shoot_greens`)
 

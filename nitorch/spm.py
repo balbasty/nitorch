@@ -14,6 +14,8 @@
 
 
 import nibabel as nib
+from nitorch.mixtures import GMM
+from nitorch.mixtures import RMM
 import numpy as np
 from numpy.linalg import cholesky as chol
 from numpy.linalg import det
@@ -21,8 +23,98 @@ from scipy.linalg import logm, expm
 from scipy.linalg import inv
 import torch
 
-from nitorch.mixtures import GMM
-from nitorch.mixtures import RMM
+
+__all__ = ['affine', 'def2sparse', 'dexpm', 'imatrix', 'matrix',
+           'mean_matrix', 'mean_space', 'noise_estimate']
+
+
+def affine(dm, mat, dtype=torch.float32, device='cpu'):
+    """ Generate an affine warp on a lattice defined by dm and mat.
+
+    Args:
+        dm (torch.Size): Image dimensions (X, Y, Z).
+        mat (torch.Tensor): Affine transform.
+        dtype (torch.dtype, optional): Defaults to torch.float32.
+        device (string, optional): Defaults to 'cpu'.
+
+    Returns:
+        a (torch.Tensor): Affine warp (1, X, Y, Z, 3).
+
+    """
+    mat = mat.type(dtype)
+    a = identity(dm, dtype=dtype, device=device)
+    a = torch.reshape(a, (dm[0]*dm[1]*dm[2], 3))
+    a = torch.matmul(a, torch.t(mat[0:3, 0:3])) + torch.t(mat[0:3, 3])
+    a = torch.reshape(a, (dm[0], dm[1], dm[2], 3))
+    if dm[0] == 1:
+        a[:, :, :, 0] = 0
+    a = a[None, ...]
+    return a
+
+
+def affine_basis(basis='SE', dim=3):
+    """ Generate a basis for the Lie algebra of affine matrices.
+
+    Args:
+        basis (string, optional): Name of the group that must be encoded:
+            . 'T': Translation
+            . 'SO': Special orthogonal (= translation + rotation)
+            . 'SE': Special Euclidean (= translation + rotation + scale)
+            Defaults to 'SE'.
+        dim (int, optional): Basis dimensions: 0, 2, 3. Defaults to 3.
+
+    Returns:
+        B (np.array(double)): Affine basis (4, 4, N)
+
+    """
+    if dim == 0:
+        B = np.zeros((4, 4, 0))
+    elif dim == 2:
+        if basis == 'T':
+            B = np.zeros((4, 4, 2))
+            B[0, 3, 0] = 1
+            B[1, 3, 1] = 1
+        elif basis == 'SO':
+            B = np.zeros((4, 4, 1))
+            B[0, 1, 0] = 1
+            B[1, 0, 0] = -1
+        elif basis == 'SE':
+            B = np.zeros((4, 4, 3))
+            B[0, 3, 0] = 1
+            B[1, 3, 1] = 1
+            B[0, 1, 2] = 1
+            B[1, 0, 2] = -1
+        else:
+            raise ValueError('Unknown group!')
+    else:
+        if basis == 'T':
+            B = np.zeros((4, 4, 3))
+            B[0, 3, 0] = 1
+            B[1, 3, 1] = 1
+            B[2, 3, 2] = 1
+        elif basis == 'SO':
+            B = np.zeros((4, 4, 3))
+            B[0, 1, 0] = 1
+            B[1, 0, 0] = -1
+            B[0, 2, 1] = 1
+            B[2, 0, 1] = -1
+            B[1, 2, 2] = 1
+            B[2, 1, 2] = -1
+        elif basis == 'SE':
+            B = np.zeros((4, 4, 6))
+            B[0, 3, 0] = 1
+            B[1, 3, 1] = 1
+            B[2, 3, 2] = 1
+            B[0, 1, 3] = 1
+            B[1, 0, 3] = -1
+            B[0, 2, 4] = 1
+            B[2, 0, 4] = -1
+            B[1, 2, 5] = 1
+            B[2, 1, 5] = -1
+        else:
+            raise ValueError('Unknown group!')
+
+    return B
 
 
 def def2sparse(phi, dm_in, nn=False):
@@ -31,8 +123,8 @@ def def2sparse(phi, dm_in, nn=False):
         (i.e., Dirichlet with zero at the boundary).
 
     Args:
-        phi (torch.Tensor): Deformation (dm_out[0], dm_out[1], dm_out[2], 3).
-        dm_in (torch.Size): Size of input FOV (dm_in[0], dm_in[1], dm_in[2]).
+        phi (torch.Tensor): Deformation (X1, Y1, Z1, 3).
+        dm_in (torch.Size): Size of input FOV (X0, Y0, Z0).
         nn (bool, optional): Encode nearest neighbour interpolation, else trilinear.
             Defaults to True.
 
@@ -285,6 +377,26 @@ def dexpm(A, dA=None):
     return E, dE
 
 
+def identity(dm, dtype=torch.float32, device='cpu'):
+    """ Generate the identity warp on a lattice defined by dm.
+
+    Args:
+        dm (torch.Size): Defines the size of the output lattice (X, Y, Z).
+        dtype (torch.dtype, optional): Defaults to torch.float32.
+        device (string, optional): Defaults to 'cpu'.
+
+    Returns:
+        i (torch.Tensor): Identity warp (X, Y, Z, 3).
+
+    """
+    i = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
+    i[:, :, :, 0], i[:, :, :, 1], i[:, :, :, 2] = \
+        torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
+                        torch.arange(0, dm[1], dtype=dtype, device=device),
+                        torch.arange(0, dm[2], dtype=dtype, device=device)])
+    return i
+
+
 def imatrix(M):
     """ Return the parameters for creating an affine transformation matrix.
 
@@ -454,7 +566,7 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     is_flipped = det(Mat[:3, :3, 0]) < 0  # For retaining flips
 
     for n in range(N):  # Loop over subjects
-        vx1 = vxsize(Mat[..., n])
+        vx1 = _voxsize(Mat[..., n])
         R = np.matmul(Mat[..., n], inv(np.diag([vx1[0], vx1[1], vx1[2], 1])))[:-1, :-1]
         minss = np.inf
         minR = np.eye(3)
@@ -513,11 +625,14 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
         mat = np.copy(M)
 
     # Set required voxel size
-    vx0 = np.copy(vx)
-    vx = vxsize(mat)
-    vx0[~np.isfinite(vx0)] = vx[~np.isfinite(vx0)]
-    mat = np.matmul(mat, np.diag([vx0[0]/vx[0], vx0[1]/vx[1], vx0[2]/vx[2], 1]))
-    vx = vxsize(mat)
+    vx_out = np.copy(vx)
+    vx = _voxsize(mat)
+    vx_out[~np.isfinite(vx_out)] = vx[~np.isfinite(vx_out)]
+    # ensure isotropic
+    # vx_out = np.mean(vx_out).repeat(3)
+    # vx_out = np.round(vx_out, 2)
+    mat = np.matmul(mat, np.diag([vx_out[0]/vx[0], vx_out[1]/vx[1], vx_out[2]/vx[2], 1]))
+    vx = _voxsize(mat)
     # Ensure that the FoV covers all images, with a few voxels to spare
     mn =  np.array([np.inf, np.inf, np.inf])
     mx = -np.array([np.inf, np.inf, np.inf])
@@ -603,7 +718,11 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
     model.fit(X, W=W, verbose=verbose, max_iter=max_iter)
 
     if show_fit:  # Plot fit
-        model.plot_fit(X, fig_num=fig_num, W=W, suptitle='Histogram fit')
+        mp = model.mp
+        mu, var = model.get_means_variances()
+        log_pdf = lambda x, k, c: model.log_likelihood(x, k, c)
+        model.plot_fit(X, log_pdf, mu, var, mp, fig_num=fig_num, W=W,
+                       title='Histogram fit')
 
     # Get means and mixing proportions
     mu, _ = model.get_means_variances()
@@ -637,120 +756,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
     return sd_noise, sd_not_noise, mu_noise, mu_not_noise
 
 
-""" Utility functions
-"""
-
-
-def affine(dm, mat, dtype=torch.float32, device='cpu'):
-    """ Generate an affine warp on a lattice defined by dm and mat.
-
-    Args:
-        dm (torch.Size): Image dimensions (dm[0], dm[1], dm[2]).
-        mat (torch.Tensor): Affine transform.
-        dtype (torch.dtype, optional): Defaults to torch.float32.
-        device (string, optional): Defaults to 'cpu'.
-
-    Returns:
-        y (torch.Tensor): Affine warp (1, dm[0], dm[1], dm[2], 3).
-
-    """
-    mat = mat.type(dtype)
-    y = identity(dm, dtype=dtype, device=device)
-    y = torch.reshape(y, (dm[0]*dm[1]*dm[2], 3))
-    y = torch.matmul(y, torch.t(mat[0:3, 0:3])) + torch.t(mat[0:3, 3])
-    y = torch.reshape(y, (dm[0], dm[1], dm[2], 3))
-    if dm[0] == 1:
-        y[:, :, :, 0] = 0
-    y = y[None, ...]
-    return y
-
-
-def affine_basis(basis='SE', dim=3):
-    """ Generate a basis for the Lie algebra of affine matrices.
-
-    Args:
-        basis (string, optional): Name of the group that must be encoded:
-            . 'T': Translation
-            . 'SO': Special orthogonal (= translation + rotation)
-            . 'SE': Special Euclidean (= translation + rotation + scale)
-            Defaults to 'SE'.
-        dim (int, optional): Basis dimensions: 0, 2, 3. Defaults to 3.
-
-    Returns:
-        B (np.array(double)): Affine basis (4, 4, N)
-
-    """
-    if dim == 0:
-        B = np.zeros((4, 4, 0))
-    elif dim == 2:
-        if basis == 'T':
-            B = np.zeros((4, 4, 2))
-            B[0, 3, 0] = 1
-            B[1, 3, 1] = 1
-        elif basis == 'SO':
-            B = np.zeros((4, 4, 1))
-            B[0, 1, 0] = 1
-            B[1, 0, 0] = -1
-        elif basis == 'SE':
-            B = np.zeros((4, 4, 3))
-            B[0, 3, 0] = 1
-            B[1, 3, 1] = 1
-            B[0, 1, 2] = 1
-            B[1, 0, 2] = -1
-        else:
-            raise ValueError('Unknown group!')
-    else:
-        if basis == 'T':
-            B = np.zeros((4, 4, 3))
-            B[0, 3, 0] = 1
-            B[1, 3, 1] = 1
-            B[2, 3, 2] = 1
-        elif basis == 'SO':
-            B = np.zeros((4, 4, 3))
-            B[0, 1, 0] = 1
-            B[1, 0, 0] = -1
-            B[0, 2, 1] = 1
-            B[2, 0, 1] = -1
-            B[1, 2, 2] = 1
-            B[2, 1, 2] = -1
-        elif basis == 'SE':
-            B = np.zeros((4, 4, 6))
-            B[0, 3, 0] = 1
-            B[1, 3, 1] = 1
-            B[2, 3, 2] = 1
-            B[0, 1, 3] = 1
-            B[1, 0, 3] = -1
-            B[0, 2, 4] = 1
-            B[2, 0, 4] = -1
-            B[1, 2, 5] = 1
-            B[2, 1, 5] = -1
-        else:
-            raise ValueError('Unknown group!')
-
-    return B
-
-
-def identity(dm, dtype=torch.float32, device='cpu'):
-    """ Generate the identity warp on a lattice defined by dm.
-
-    Args:
-        dm (torch.Size): Defines the size of the output lattice (dm[0], dm[1], dm[2]).
-        dtype (torch.dtype, optional): Defaults to torch.float32.
-        device (string, optional): Defaults to 'cpu'.
-
-    Returns:
-        id_grid (torch.Tensor): Identity warp (dm[0], dm[1], dm[2], 3).
-
-    """
-    id_grid = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
-    id_grid[:, :, :, 2], id_grid[:, :, :, 1], id_grid[:, :, :, 0] = \
-        torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
-                        torch.arange(0, dm[1], dtype=dtype, device=device),
-                        torch.arange(0, dm[2], dtype=dtype, device=device)])
-    return id_grid
-
-
-def vxsize(mat):
+def _voxsize(mat):
     """ Compute voxel size from affine matrix.
 
     Args:

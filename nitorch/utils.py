@@ -7,119 +7,26 @@ Created on Fri Apr 24 14:45:24 2020
 """
 
 # TODO:
-#   . Directly use pytorch's pad when possible
+#   . Directly use pytorch's pad when possible (done for constant)
 #   . check time/memory footprint
 #   . Implement modifiers for Dirichlet/Sliding boundaries
 
+
 import torch
-
-__all__ = ['pad', 'same_storage', 'shiftdim']
-
-
-def divergence_3d(dat, vx=None, which='forward', bound='constant'):
-    """ Computes the divergence of volumetric data.
-
-    Args:
-        dat (torch.tensor()): A 4D tensor (3, D, H, W).
-        vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
-            Note, the voxel size should be ordered as (W, H, D).
-        which (string, optional): Gradient type:
-            . 'forward': Forward difference (next - centre)
-            . 'backward': Backward difference (centre - previous)
-            . 'central': Central difference ((next - previous)/2)
-            Defaults to 'forward'.
-        bound (string, optional): Boundary conditions, defaults to 'constant' (zero).
-
-    Returns:
-        div (torch.tensor()): Divergence (D, H, W).
-
-    """
-    if vx is None:
-        vx = (1,) * 3
-
-    if which == 'forward':
-        # Pad + reflected forward difference
-        d = pad(dat[0, ...], (1, 0, 0, 0, 0, 0,), mode=bound)
-        d = d[:-1, :, :] - d[1:, :, :]
-        h = pad(dat[1, ...], (0, 0, 1, 0, 0, 0,), mode=bound)
-        h = h[:, :-1, :] - h[:, 1:, :]
-        w = pad(dat[2, ...], (0, 0, 0, 0, 1, 0,), mode=bound)
-        w = w[:, :, :-1] - w[:, :, 1:]
-    elif which == 'backward':
-        # Pad + reflected backward difference
-        d = pad(dat[0, ...], (0, 1, 0, 0, 0, 0,), mode=bound)
-        d = d[:-1, :, :] - d[1:, :, :]
-        h = pad(dat[1, ...], (0, 0, 0, 1, 0, 0,), mode=bound)
-        h = h[:, :-1, :] - h[:, 1:, :]
-        w = pad(dat[2, ...], (0, 0, 0, 0, 0, 1,), mode=bound)
-        w = w[:, :, :-1] - w[:, :, 1:]
-    elif which == 'central':
-        # Pad + reflected central difference
-        d = pad(dat[0, ...], (1, 1, 0, 0, 0, 0,), mode=bound)
-        d = 0.5 * (d[:-2, :, :] - d[2:, :, :])
-        h = pad(dat[1, ...], (0, 0, 1, 1, 0, 0,), mode=bound)
-        h = 0.5 * (h[:, :-2, :] - h[:, 2:, :])
-        w = pad(dat[2, ...], (0, 0, 0, 0, 1, 1,), mode=bound)
-        w = 0.5 * (w[:, :, :-2] - w[:, :, 2:])
-    else:
-        raise ValueError('Undefined divergence')
-
-    return d / vx[2] + h / vx[1] + w / vx[0]
+from torch.nn import functional as F
 
 
-def gradient_3d(dat, vx=None, which='forward', bound='reflect2'):
-    """ Computes the gradient of volumetric data.
-
-    Args:
-        dat (torch.tensor()): A tensor (D, H, W).
-        vx (tuple(float), optional): Voxel size. Defaults to (1, 1, 1).
-            Note, the voxel size should be ordered as (W, H, D).
-        which (string, optional): Gradient type:
-            . 'forward': Forward difference (next - centre)
-            . 'backward': Backward difference (centre - previous)
-            . 'central': Central difference ((next - previous)/2)
-            Defaults to 'forward'.
-        bound (string, optional): Boundary conditions, defaults to 'reflect2'.
-
-    Returns:
-          grad (torch.tensor()): Gradient (3, D, H, W).
-
-    """
-    if vx is None:
-        vx = (1,) * 3
-
-    if which == 'forward':
-        # Pad + forward difference
-        dat = pad(dat, (0, 1, 0, 1, 0, 1,), mode=bound)
-        gd = -dat[:-1, :-1, :-1] + dat[1:, :-1, :-1]
-        gh = -dat[:-1, :-1, :-1] + dat[:-1, 1:, :-1]
-        gw = -dat[:-1, :-1, :-1] + dat[:-1, :-1, 1:]
-    elif which == 'backward':
-        # Pad + backward difference
-        dat = pad(dat, (1, 0, 1, 0, 1, 0,), mode=bound)
-        gd = -dat[:-1, 1:, 1:] + dat[1:, 1:, 1:]
-        gh = -dat[1:, :-1, 1:] + dat[1:, 1:, 1:]
-        gw = -dat[1:, 1:, :-1] + dat[1:, 1:, 1:]
-    elif which == 'central':
-        # Pad + central difference
-        dat = pad(dat, (1, 1, 1, 1, 1, 1,), mode=bound)
-        gd = 0.5 * (-dat[:-2, 1:-1, 1:-1] + dat[2:, 1:-1, 1:-1])
-        gh = 0.5 * (-dat[1:-1, :-2, 1:-1] + dat[1:-1, 2:, 1:-1])
-        gw = 0.5 * (-dat[1:-1, 1:-1, :-2] + dat[1:-1, 1:-1, 2:])
-    else:
-        raise ValueError('Undefined gradient')
-
-    return torch.stack((gd / vx[2], gh / vx[1], gw / vx[0]), dim=0)
+__all__ = ['pad', 'same_storage', 'shiftdim', 'softmax']
 
 
-def softmax(Z, dim=-1, get_ll=False, W=1):
+def softmax(Z, dim=-1, get_ll=False, W=None):
     """ SoftMax (safe).
 
     Args:
         Z (torch.tensor): Tensor with values.
         dim (int, optional): Dimension to take softmax, defaults to last dimensions (-1).
         get_ll (bool, optional): Compute log-likelihood, defaults to False.
-        W (torch.tensor, optional): Observation weights, defaults to 1 (no weights).
+        W (torch.tensor, optional): Observation weights, defaults to no weights.
 
     Returns:
         Z (torch.tensor): Soft-maxed tensor with values.
@@ -130,7 +37,10 @@ def softmax(Z, dim=-1, get_ll=False, W=1):
     Z_sum = torch.sum(Z, dim=dim)
     if get_ll:
         # Compute log-likelihood
-        ll = torch.sum((torch.log(Z_sum) + Z_max)*W, dtype=torch.float64)
+        if W is None:
+            ll = torch.sum(torch.log(Z_sum) + Z_max, dtype=torch.float64)
+        else:
+            ll = torch.sum((torch.log(Z_sum) + Z_max)*W.squeeze(), dtype=torch.float64)
     else:
         ll = None
     Z = Z / Z_sum[:, None]
@@ -315,29 +225,15 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
 
 def _pad_constant(inp, padpre, padpost, value):
-    idim = torch.as_tensor(inp.shape)
-    ndim = idim.numel()
-    # First: crop input if needed
-    start = (-padpre).clamp(min=0)
-    length = idim - start - (-padpost).clamp(min=0)
-    for d in range(ndim):
-        inp = inp.narrow(d, start[d].item(), length[d].item())
-    # Second: pad with constant tensors
-    padpre = padpre.clamp(min=0)
-    padpost = padpost.clamp(min=0)
-    for d in range(ndim):
-        idim = torch.as_tensor(inp.shape)
-        padpredim = idim
-        padpredim[d] = padpre[d]
-        padpredim = [x.item() for x in padpredim]
-        pre = torch.full(padpredim, value,
-                         dtype=inp.dtype, device=inp.device)
-        padpostdim = idim
-        padpostdim[d] = padpost[d]
-        padpostdim = [x.item() for x in padpostdim]
-        post = torch.full(padpostdim, value,
-                          dtype=inp.dtype, device=inp.device)
-        inp = torch.cat((pre, inp, post), dim=d)
+    # Uses torch.nn.functional.pad
+    # Convert pre and post to a single list
+    padpre = padpre.tolist()
+    padpost = padpost.tolist()
+    padding = padpre * 2
+    padding[1::2] = padpost[::-1]
+    padding[::2] = padpre[::-1]
+    # Apply padding
+    inp = F.pad(inp, padding, mode='constant', value=value)
     return inp
 
 
@@ -351,3 +247,207 @@ def _pad_bound(inp, padpre, padpost, bound, modifier):
     for d in range(inp.dim()):
         inp = inp.index_select(d, idx[d])
     return inp
+
+
+def padlist(x, n):
+    """Repeat the last element of a list-like object to match a target length.
+
+    If the input length is grater than ``n``, the list is cropped.
+
+    Args:
+        x (scalar or list or tuple): Input argument
+        n (int): Target length
+
+    Returns:
+        x (list or tuple): Padded argument of length n.
+            If the input argument is not a list or tuple, the output
+            type is ``tuple``.
+
+    """
+    if not isinstance(x, list) and not isinstance(x, tuple):
+        x = (x,)
+    if len(x) == 0:
+        raise TypeError('Input argument cannot be empty')
+    return_type = type(x)
+    x = list(x)
+    x = x[:min(len(x), n)]
+    x += [x[-1]] * (n-len(x))
+    return return_type(x)
+
+
+def replist(x, n, interleaved=False):
+    """Replicate a list-like object.
+
+    Args:
+        x (scalar or list or tuple): Input argument
+        n (int): Number of replicates
+        interleaved (bool, optional): Interleaved replication.
+            Default: False
+
+    Returns:
+        x (list or tuple): Replicated list
+            If the input argument is not a list or tuple, the output
+            type is ``tuple``.
+
+    """
+    if not isinstance(x, list) and not isinstance(x, tuple):
+        x = (x,)
+    if len(x) == 0:
+        raise TypeError('Input argument cannot be empty')
+    return_type = type(x)
+    x = list(x)
+    if interleaved:
+        x = [elem for sub in zip(*([x]*n)) for elem in sub]
+    else:
+        x = x * n
+    return return_type(x)
+
+
+def getargs(kpd, args=[], kwargs={}, consume=False):
+    """Read and remove argument from args/kwargs input.
+
+    Args:
+        kpd (list of tuple): List of (key, position, default) tuples with:
+            key (str): argument name
+            position (int): argument position
+            default (optional): default value
+        args (optional): list of positional arguments
+        kwargs (optional): list of keyword arguments
+        consume (bool, optional): consume arguments from args/kwargs
+
+    Returns:
+        values (list): List of values
+
+    """
+
+    def raise_error(key):
+        import inspect
+        caller = inspect.stack()[1].function
+        raise TypeError("{}() got multiple values for \
+                        argument '{}}'".format(caller, key))
+
+    # Sort argument by reverse position
+    kpd = [(i,) + e for i, e in enumerate(kpd)]
+    kpd = sorted(kpd, key=lambda x: x[2], reverse=True)
+
+    values = []
+    for elem in kpd:
+        i = elem[0]
+        key = elem[1]
+        position = elem[2]
+        default = elem[3] if len(elem) > 3 else None
+
+        value = default
+        if len(args) >= position:
+            value = args[-1]
+            if consume:
+                del args[-1]
+            if key in kwargs.keys():
+                raise_error(key)
+        elif key in kwargs.keys():
+            value = kwargs[key]
+            if consume:
+                del kwargs[key]
+        values.append((i, value))
+
+    values = [v for _, v in sorted(values)]
+    return values
+
+
+def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
+                fig_num=1, colorbar=False):
+    """ Display a multi-channel 2D or 3D image.
+
+    Allows for real-time plotting if giving returned fig_ax objects as input.
+
+    Args:
+        img (torch.Tensor): Input image (X, Y, C) | (X, Y, Z, C).
+        fig_ax ([matplotlib.figure, matplotlib.axes])
+        title (string, optional): Figure title, defaults to ''.
+        cmap (str, optional): Name of matplotlib color map, defaults to 'gray'.
+        flip (bool, optional): Flip channels and anatomical axis, defaults to False.
+        fig_num (int, optional): matplotlib figure number, defaults to 1.
+        colorbar (bool, optional): Show colorbar, defaults to False.
+
+    Returns:
+        fig_ax ([matplotlib.figure, matplotlib.axes])
+
+    """
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+    # Work out dimensions/channels
+    img = img[..., None, None]
+    dm = torch.tensor(img.shape)
+    num_chan = dm[3]  # Number of channels
+    is_3d = dm[2] > 1
+    ix = torch.floor(0.5 * dm).int().tolist()
+
+    if fig_ax is None:
+        # Make figure object
+        if is_3d:  # 3D
+            if flip:
+                fig, ax = plt.subplots(num_chan, 3, num=fig_num)
+            else:
+                fig, ax = plt.subplots(3, num_chan, num=fig_num)
+        else:  # 2D
+            if flip:
+                fig, ax = plt.subplots(num_chan, 1, num=fig_num)
+            else:
+                fig, ax = plt.subplots(1, num_chan, num=fig_num)
+        fig_ax = [fig, ax]
+        plt.ion()
+        fig.show()
+
+    # Get figure and axis objects
+    fig = fig_ax[0]
+    ax = fig_ax[1]
+
+    # Show images
+    img_list = []
+    for c in range(num_chan):  # loop over image channels
+        im_c = torch.squeeze(img[:, :, ix[2], c]).cpu()
+        if is_3d:
+            ax_c = ax[0] if num_chan == 1 else ax[0, c] if not flip else ax[c, 0]
+            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
+            img_list.append(im_c)
+            ax_c = ax[1] if num_chan == 1 else ax[1, c] if not flip else ax[c, 1]
+            im_c = torch.squeeze(img[:, ix[1], :, c]).cpu()
+            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
+            img_list.append(im_c)
+            ax_c = ax[2] if num_chan == 1 else ax[2, c] if not flip else ax[c, 2]
+            im_c = torch.squeeze(img[ix[0], :, :, c]).cpu()
+            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
+            img_list.append(im_c)
+        else:
+            ax_c = ax if num_chan == 1 else ax[c]
+            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
+            img_list.append(im_c)
+
+    # Modify axes
+    cnt = 0
+    for c in range(num_chan):  # loop over image channels
+        if is_3d:
+            for r in range(3):
+                ax_c = ax[r] if num_chan == 1 else ax[r, c] if not flip else ax[c, r]
+                ax_c.axis('off')
+                # ax_c.clear()
+                if colorbar:
+                    divider = make_axes_locatable(ax_c)
+                    cax = divider.append_axes('right', size='5%', pad=0.05)
+                    fig.colorbar(img_list[cnt], cax=cax, orientation='vertical')
+                cnt += 1
+        else:
+            ax_c = ax if num_chan == 1 else ax[c]
+            ax_c.axis('off')
+            if colorbar:
+                divider = make_axes_locatable(ax_c)
+                cax = divider.append_axes('right', size='5%', pad=0.05)
+                fig.colorbar(img_list[cnt], cax=cax, orientation='vertical')
+            cnt += 1
+
+    fig.suptitle(title)
+    fig.canvas.draw()
+    fig.canvas.flush_events()
+
+    return fig_ax

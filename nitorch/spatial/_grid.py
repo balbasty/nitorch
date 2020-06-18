@@ -1,49 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Tools related to spatial sampling (displacement, warps, etc.).
-
-Spatial ordering conventions in nitorch
----------------------------------------
-
-NiTorch uses consistent ordering conventions throughout its API:
-. We use abbreviations (B[atch], C[hannel], D[ephth], H[eight], W[idth])
-  to name dimensions.
-. Tensors that represent series (resp. images or volumes) should always be
-  ordered as (B, C, W) (resp. (B, C, H, W) or (B, C, D, H, W)).
-. We use x, y, z to denote axis/coordinates along the (W, H, D)
-  dimensions.
-. Conversely, displacement or deformation fields are ordered as
-  (B, H, D, W, C). There, the Channel dimension contains displacements or
-  deformations along the x, y, z axes (i.e., W, H, D dimensions).
-. Similarly, Jacobian fields are stored as (B, H, D, W, C, C). The second
-  to last dimension corresponds to x, y, z components and the last
-  dimension corresponds to derivatives along the x, y, z axes.
-  I.e., jac[..., i, j] = d{u_i}/d{x_j}
-. This means that we usually do not store deformations per *imaging*
-  channel (they are assumed to lie in the same space).
-. Arguments that relate to spatial dimensions are ordered as
-  (x, y, z) or (W, H, D). This means: lattice dimensions, voxel sizes,
-  affine transformation matrices, etc. It can be a little bit
-  counterintuitive at first, as this order is opposite to the data
-  storage order. However, it is consistant with the ordering of spatial
-  components.
-
-These conventions are mostly consistent with those used in PyTorch
-(conv, grid_sampler, etc.). However, some care must be taken when, e.g.,
-convolving deformation fields or allocating tensors based on grid
-dimensions.
-
-TODO:
-    . What about time series?
-    . Should we always have a batch dimension for affine matrices?
-    . Should the default storage be compact or square for affine matrices?
-
-"""
+"""Spatial deformations (i.e., grids)."""
 
 import torch
 import torch.nn.functional as _F
 from nitorch import kernels, utils
 from nitorch._C import spatial as _Cspatial
 from nitorch._C.spatial import BoundType, InterpolationType
+
+__all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
+           'identity', 'compose', 'jacobian', 'voxsize',
+           'channel2grid', 'grid2channel', 'BoundType', 'InterpolationType']
 
 
 class _GridPull(torch.autograd.Function):
@@ -99,9 +65,9 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             - 2 or 'dct2'       or BoundType.dct2
             - 3 or 'dst1'       or BoundType.dst1
             - 4 or 'dst2'       or BoundType.dst2
-            - 4 or 'dft'        or BoundType.dft
-            - 4 or 'sliding'    or BoundType.sliding
-            - 4 or 'zero'       or BoundType.zero
+            - 5 or 'dft'        or BoundType.dft
+            - 6 or 'sliding'    or BoundType.sliding [not implemented]
+            - 7 or 'zero'       or BoundType.zero
         A list of values can be provided, in the order [W, H, D],
         to specify dimension-specific boundary conditions.
         `sliding` is a specific condition than only applies to flow fields
@@ -114,8 +80,8 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             https://en.wikipedia.org/wiki/Discrete_sine_transform
 
     Args:
-        input (torch.Tensor): Input image. (B, C, Di, Hi, Wi).
-        grid (torch.Tensor): Deformation field. (B, Do, Ho, Wo, 2|3).
+        input (torch.Tensor): Input image. (B, C, Wi, Hi, Di).
+        grid (torch.Tensor): Deformation field. (B, Wo, Ho, Do, 2|3).
         interpolation (int or list[int] , optional): Interpolation order.
             Defaults to 1.
         bound (BoundType, or list[BoundType], optional): Boundary conditions.
@@ -124,7 +90,7 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             Defaults to True.
 
     Returns:
-        output (torch.Tensor): Deformed image (B, C, Do, Ho, Wo).
+        output (torch.Tensor): Deformed image (B, C, Wo, Ho, Do).
 
     """
     # Convert parameters
@@ -196,9 +162,9 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
             - 2 or 'dct2'       or BoundType.dct2
             - 3 or 'dst1'       or BoundType.dst1
             - 4 or 'dst2'       or BoundType.dst2
-            - 4 or 'dft'        or BoundType.dft
-            - 4 or 'sliding'    or BoundType.sliding
-            - 4 or 'zero'       or BoundType.zero
+            - 5 or 'dft'        or BoundType.dft
+            - 6 or 'sliding'    or BoundType.sliding [not implemented]
+            - 7 or 'zero'       or BoundType.zero
         A list of values can be provided, in the order [W, H, D],
         to specify dimension-specific boundary conditions.
         `sliding` is a specific condition than only applies to flow fields
@@ -211,8 +177,8 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
             https://en.wikipedia.org/wiki/Discrete_sine_transform
 
     Args:
-        input (torch.Tensor): Input image (B, C, Di, Hi, Wi).
-        grid (torch.Tensor): Deformation field (B, Di, Hi, Wi, 2|3).
+        input (torch.Tensor): Input image (B, C, Wi, Hi, Di).
+        grid (torch.Tensor): Deformation field (B, Wi, Hi, Di, 2|3).
         interpolation (int or list[int] , optional): Interpolation order.
             Defaults to 1.
         bound (BoundType, or list[BoundType], optional): Boundary conditions.
@@ -221,7 +187,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
             Defaults to True.
 
     Returns:
-        output (torch.Tensor): Splatted image (B, C, Do, Ho, Wo).
+        output (torch.Tensor): Splatted image (B, C, Wo, Ho, Do).
 
     """
     # Convert parameters
@@ -238,7 +204,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
                      else InterpolationType(i) for i in interpolation]
 
     if shape is None:
-        shape = tuple(input.shape[-1:-(input.dim()-1):-1])
+        shape = tuple(input.shape[2:])
 
     return _GridPush.apply(input, grid, shape, interpolation, bound, extrapolate)
 
@@ -294,9 +260,9 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
             - 2 or 'dct2'       or BoundType.dct2
             - 3 or 'dst1'       or BoundType.dst1
             - 4 or 'dst2'       or BoundType.dst2
-            - 4 or 'dft'        or BoundType.dft
-            - 4 or 'sliding'    or BoundType.sliding
-            - 4 or 'zero'       or BoundType.zero
+            - 5 or 'dft'        or BoundType.dft
+            - 6 or 'sliding'    or BoundType.sliding [not implemented]
+            - 7 or 'zero'       or BoundType.zero
         A list of values can be provided, in the order [W, H, D],
         to specify dimension-specific boundary conditions.
         `sliding` is a specific condition than only applies to flow fields
@@ -309,7 +275,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
             https://en.wikipedia.org/wiki/Discrete_sine_transform
 
     Args:
-        grid (torch.Tensor): Deformation field (B, Di, Hi, Wi, 2|3).
+        grid (torch.Tensor): Deformation field (B, Wi, Hi, Di, 2|3).
         interpolation (int or list[int] , optional): Interpolation order.
             Defaults to 1.
         bound (BoundType, or list[BoundType], optional): Boundary conditions.
@@ -318,7 +284,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
             Defaults to True.
 
     Returns:
-        output (torch.Tensor): Splat weights (B, C, Do, Ho, Wo).
+        output (torch.Tensor): Splat weights (B, 1, Wo, Ho, Do).
 
     """
     # Convert parameters
@@ -335,7 +301,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
                      else InterpolationType(i) for i in interpolation]
 
     if shape is None:
-        shape = tuple(grid.shape[-2:-(input.dim()-1):-1])
+        shape = tuple(grid.shape[2:])
 
     return _GridCount.apply(grid, shape, interpolation, bound, extrapolate)
 
@@ -394,9 +360,9 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             - 2 or 'dct2'       or BoundType.dct2
             - 3 or 'dst1'       or BoundType.dst1
             - 4 or 'dst2'       or BoundType.dst2
-            - 4 or 'dft'        or BoundType.dft
-            - 4 or 'sliding'    or BoundType.sliding
-            - 4 or 'zero'       or BoundType.zero
+            - 5 or 'dft'        or BoundType.dft
+            - 6 or 'sliding'    or BoundType.sliding [not implemented]
+            - 7 or 'zero'       or BoundType.zero
         A list of values can be provided, in the order [W, H, D],
         to specify dimension-specific boundary conditions.
         `sliding` is a specific condition than only applies to flow fields
@@ -409,8 +375,8 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             https://en.wikipedia.org/wiki/Discrete_sine_transform
 
     Args:
-        input (torch.Tensor): Input image. (B, C, Di, Hi, Wi).
-        grid (torch.Tensor): Deformation field. (B, Do, Ho, Wo, 2|3).
+        input (torch.Tensor): Input image. (B, C, Wi, Hi, Di).
+        grid (torch.Tensor): Deformation field. (B, Wo, Ho, Do, 2|3).
         interpolation (int or list[int] , optional): Interpolation order.
             Defaults to 1.
         bound (BoundType, or list[BoundType], optional): Boundary conditions.
@@ -419,7 +385,7 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             Defaults to True.
 
     Returns:
-        output (torch.Tensor): Sampled gradients (B, C, Do, Ho, Wo, 2|3).
+        output (torch.Tensor): Sampled gradients (B, C, Wo, Ho, Do, 2|3).
 
     """
     # Convert parameters
@@ -437,7 +403,7 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
     return _GridGrad.apply(input, grid, interpolation, bound, extrapolate)
 
 
-def vox2fov(shape, align_corners=True):
+def _vox2fov(shape, align_corners=True):
     """Nifti to Torch coordinates.
 
     Returns an affine matrix that transforms nifti volume coordinates
@@ -465,7 +431,7 @@ def vox2fov(shape, align_corners=True):
     return mat
 
 
-def fov2vox(shape, align_corners=True):
+def _fov2vox(shape, align_corners=True):
     """Torch to Nifti coordinates."""
     shape = torch.as_tensor(shape).to(torch.float)
     dim = shape.numel()
@@ -507,8 +473,8 @@ def make_compact(mat):
 def channel2grid(warp):
     """Warps: Channel to Grid dimension order.
 
-    . Channel ordering is: Batch x Direction x Depth x Height x Width
-    . Grid ordering is: Batch x Depth x Height x Width x Direction
+    . Channel ordering is: (Batch, Direction, X, Y, Z)
+    . Grid ordering is: (Batch, X, Y, Z, Direction))
     """
     warp = torch.as_tensor(warp)
     warp = warp.permute((0,) + tuple(range(2, warp.dim())) + (1,))
@@ -518,55 +484,36 @@ def channel2grid(warp):
 def grid2channel(warp):
     """Warps: Grid to Channel dimension order.
 
-    . Channel ordering is: Batch x Direction x Depth x Height x Width
-    . Grid ordering is: Batch x Depth x Height x Width x Direction
+    . Channel ordering is: (Batch, Direction, X, Y, Z)
+    . Grid ordering is: (Batch, X, Y, Z, Direction))
     """
     warp = torch.as_tensor(warp)
     warp = warp.permute((0, - 1) + tuple(range(1, warp.dim()-1)))
     return warp
 
 
-def ismatrix(x):
-    """Check that a tensor is a matrix (ndim == 2)."""
-    x = torch.as_tensor(x)
-    shape = torch.as_tensor(x.shape)
-    return shape.numel() == 2
-
-
-def identity(dim, dtype=None, device=None):
+def identity(shape, dtype=None, device=None):
     """Returns an identity deformation field.
 
     Args:
-        dim (tuple): Spatial dimension of the field, ordered as (W, H, [D]).
+        shape (tuple): Spatial dimension of the field, ordered as (X, Y, [Z]).
         dtype (torch.dtype, optional): Data type. Defaults to None.
         device (torch.device, optional): Device. Defaults to None.
 
     Returns:
-        g (torch.Tensor): Deformation field with shape (1, 1, [D], H, W, 2|3).
+        g (torch.Tensor): Deformation field with shape (1, X, Y, [Z], 2|3).
 
     """
-    mat = torch.tensor([[[1., 0., 0., 0.],
-                         [0., 1., 0., 0.],
-                         [0., 0., 1., 0.]]],
-                       dtype=dtype, device=device)
-    f2v = fov2vox(dim, False).to(device)
-    g = _F.affine_grid(mat, (1, 1) + dim[::-1], align_corners=False).to(device)
-    g = g.matmul(f2v[:3, :3].transpose(0, 1)) \
-        + f2v[:3, 3].reshape((1, 1, 1, 1, 3))
+    dim = len(shape)
+    mat = torch.cat((torch.eye(dim, dtype=dtype, device=device),
+                     torch.zeros(dim,1, dtype=dtype, device=device)), dim=1)
+    mat = mat[None, ...]
+    f2v = _fov2vox(shape, False).to(device, dtype)
+    g = _F.affine_grid(mat, (1, 1) + shape[::-1], align_corners=False)
+    g = g.permute([0] + list(range(1, dim+1))[::-1] + [dim+1])
+    g = g.matmul(f2v[:-1, :-1].transpose(0, 1)) \
+        + f2v[:-1, -1].reshape((1,)*(dim+1) + (dim,))
     return g
-
-
-# def affine_field(mat, dim, dtype=None, device=None):
-#     if dtype is None:
-#         dtype = mat.dtype
-#     if device is None:
-#         device = mat.device
-#     mat = mat.to(dtype=dtype, device=device)
-#     g = identity(dim, dtype, device)
-
-#     arg.matmul(
-#                     last_affine[:dim, :dim].transpose(0, 1)) \
-#                   + last_affine[:dim, dim].reshape((1, 1, 1, 1, dim))
 
 
 def compose(*args, interpolation='linear', bound='dft'):
@@ -578,6 +525,12 @@ def compose(*args, interpolation='linear', bound='dft'):
     # . possibility to provide fields that have an orientation matrix?
     #   (or keep it the responsibility of the user?)
     # . For higher order (> 1) interpolation: convert to spline coeficients.
+
+    def ismatrix(x):
+        """Check that a tensor is a matrix (ndim == 2)."""
+        x = torch.as_tensor(x)
+        shape = torch.as_tensor(x.shape)
+        return shape.numel() == 2
 
     # Pre-pass: check dimensionality
     dim = None
@@ -628,7 +581,7 @@ def compose(*args, interpolation='linear', bound='dft'):
             if last_affine is not None:
                 new_field = arg.matmul(
                     last_affine[:dim, :dim].transpose(0, 1)) \
-                  + last_affine[:dim, dim].reshape((1, 1, 1, 1, dim))
+                  + last_affine[:dim, dim].reshape((1,)*(dim+1) + (dim,))
                 args2.append(new_field)
             else:
                 args2.append(arg)
@@ -638,7 +591,7 @@ def compose(*args, interpolation='linear', bound='dft'):
     # Third pass: compose all flow fields
     field = args2[-1]
     for arg in args2[-2::-1]:  # args2[-2:0:-1]
-        arg = arg - identity(arg.shape[-2:0:-1], arg.dtype, arg.device)
+        arg = arg - identity(arg.shape[1:-1], arg.dtype, arg.device)
         arg = grid2channel(arg)
         field = field + channel2grid(grid_pull(arg, field, interpolation, bound))
 
@@ -704,11 +657,11 @@ def jacobian(warp, bound='circular'):
     expressed in voxels and so will the Jacobian.
 
     Args:
-        warp (torch.Tensor): flow field (N, D, H, W, 3).
+        warp (torch.Tensor): flow field (N, W, H, D, 3).
         bound (str, optional): Boundary conditions. Defaults to 'circular'.
 
     Returns:
-        jac (torch.tensor): Field of Jacobian matrices (N, D, H, W, 3, 3).
+        jac (torch.Tensor): Field of Jacobian matrices (N, W, H, D, 3, 3).
             jac[:,:,:,:,i,j] contains the derivative of the i-th component of
             the deformation field with respect to the j-th axis.
 
@@ -745,3 +698,18 @@ def jacobian(warp, bound='circular'):
     jac = jac.reshape((shape[0], dim, dim) + shape[1:])
     jac = jac.permute((0,) + tuple(range(3, 3+dim)) + (1, 2))
     return jac
+
+
+def voxsize(mat):
+    """ Compute voxel sizes from affine matrices.
+
+    Args:
+        mat (torch.Tensor): Affine matrix (..., K, K) or (..., K-1, K).
+
+    Returns:
+        vx (torch.Tensor): Voxel size (..., K) .
+
+    """
+    dim = mat.shape[-1] - 1
+    return (mat[..., :dim, :dim] ** 2).sum(-2).sqrt()
+

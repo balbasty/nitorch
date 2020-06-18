@@ -9,8 +9,8 @@ TODO:
 import math
 from timeit import default_timer as timer
 import matplotlib.pyplot as plt
-from nitorch import optim
-from nitorch import utils
+from nitorch.optim import get_gain, plot_convergence
+from nitorch.utils import softmax
 import torch
 from torch.distributions import MultivariateNormal as mvn
 
@@ -35,7 +35,76 @@ class Mixture:
 
     """ Functions
     """
-    def em(self, X, max_iter, tol, verbose, W):
+    def fit(self, X, verbose=1, max_iter=10000, tol=1e-6, fig_num=1, W=None):
+        """ Fit mixture model.
+
+        Args:
+            X (torch.tensor): Observed data (N, C).
+                N = num observations per channel
+                C = num channels
+            verbose (int, optional) Display progress. Defaults to 1.
+                0: None.
+                1: Print summary when finished.
+                2: 1 + Log-likelihood plot.
+                3: 1 + 2 + print convergence.
+            max_iter (int, optional) Maxmimum number of algorithm iterations.
+                Defaults to 10000.
+            tol (int, optional): Convergence threshold. Defaults to 1e-6.
+            fig_num (int, optional): Defaults to 1.
+            W (torch.tensor, optional): Observation weights (N, 1). Defaults to no weights.
+
+        Returns:
+            Z (torch.tensor): Responsibilities (N, K).
+
+        """
+        if verbose:
+            t0 = timer()  # Start timer
+
+        # Set random seed
+        torch.manual_seed(1)
+
+        self.dev = X.device
+        self.dt = X.dtype
+
+        if len(X.shape) == 1:
+            X = X[:, None]
+
+        N = X.shape[0]  # Number of observations
+        C = X.shape[1]  # Number of channels
+        K = self.K  # Number of components
+
+        if W is not None:  # Observation weights given
+            W = torch.reshape(W, (N, 1))
+
+        """ Initialise model parameters
+        """
+        self._init_par(X)
+
+        # Compute a regularisation value
+        self.lam = torch.zeros(C, dtype=self.dt, device=self.dev)
+        for c in range(C):
+            if W is not None:
+                self.lam[c] = (torch.sum(X[:, c] * W.flatten()) / (torch.sum(W) * K)) ** 2
+            else:
+                self.lam[c] = (torch.sum(X[:, c]) / K) ** 2
+
+        """ EM loop
+        """
+        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W)
+
+        # Print algorithm info
+        if verbose >= 1:
+            print('Algorithm finished in {} iterations, '
+                  'log-likelihood = {}, '
+                  'runtime: {:0.1f} s, '
+                  'device: {}'.format(len(lb), lb[-1], timer() - t0, self.dev))
+        if verbose >= 2:
+            _ = plot_convergence(lb, xlab='Iteration number',
+                                 fig_title='Model lower bound', fig_num=fig_num)
+
+        return Z
+    
+    def _em(self, X, max_iter, tol, verbose, W):
         """ EM loop for fitting GMM.
 
         Args:
@@ -72,241 +141,45 @@ class Mixture:
                 Z[:, k] = torch.log(self.mp[k]) + self.log_likelihood(X, k)
 
             # Get responsibilities
-            Z, dlb = utils.softmax(Z, W=W[:, 0], get_ll=True)
+            Z, dlb = softmax(Z, W=W, get_ll=True)
 
             """ Objective function and convergence related
             """
             lb[iter] = dlb
-            gain = optim.gain(lb, iter)
+            gain = get_gain(lb, iter)
             if verbose >= 3:
                 print('iter: {}, lb: {}, gain: {}'
                       .format(iter + 1, lb[iter], gain))
             if gain < tol:
                 break  # Finished
 
-            # Weight responsibilities
-            Z = Z * W
+            if W is not None:  # Weight responsibilities
+                Z = Z * W
 
             """ M-step
             """
             # Compute sufficient statistics
-            ss0, ss1, ss2 = self.suffstats(X, Z)
+            ss0, ss1, ss2 = self._suffstats(X, Z)
 
             # Update mixing proportions
-            if len(W.shape) > 0:
+            if W is not None:
                 self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
             else:
                 self.mp = ss0 / N
 
             # Update model specific parameters
-            self.update(ss0, ss1, ss2)
+            self._update(ss0, ss1, ss2)
 
         return Z, lb[:iter + 1]
-
-    def fit(self, X, verbose=1, max_iter=10000, tol=1e-6, fig_num=1, W=1):
-        """ Fit mixture model.
-
-        Args:
-            X (torch.tensor): Observed data (N, C).
-                N = num observations per channel
-                C = num channels
-            verbose (int, optional) Display progress. Defaults to 1.
-                0: None.
-                1: Print summary when finished.
-                2: 1 + Log-likelihood plot.
-                3: 1 + 2 + print convergence.
-            max_iter (int, optional) Maxmimum number of algorithm iterations.
-                Defaults to 10000.
-            tol (int, optional): Convergence threshold. Defaults to 1e-6.
-            fig_num (int, optional): Defaults to 1.
-            W (torch.tensor, optional): Observation weights (N, 1). Defaults to 1 (no weights).
-
-        Returns:
-            Z (torch.tensor): Responsibilities (N, K).
-
-        """
-        if verbose:
-            t0 = timer()  # Start timer
-
-        # Set random seed
-        torch.manual_seed(1)
-
-        self.dev = X.device
-        self.dt = X.dtype
-
-        if len(X.shape) == 1:
-            X = X[:, None]
-
-        N = X.shape[0]  # Number of observations
-        C = X.shape[1]  # Number of channels
-        K = self.K  # Number of components
-
-        if type(W) is int:  # No observation weights
-            W = torch.tensor(W, dtype=self.dt, device=self.dev)
-        if len(W.shape) > 0:  # Observation weights given
-            W = torch.reshape(W, (N, 1))
-
-        """ Initialise model parameters
-        """
-        self.init_par(X)
-
-        # Compute a regularisation value
-        self.lam = torch.zeros(C, dtype=self.dt, device=self.dev)
-        for c in range(C):
-            self.lam[c] = (torch.sum(X[:, c] * W.flatten()) / (torch.sum(W) * K)) ** 2
-
-        """ EM loop
-        """
-        Z, lb = self.em(X, max_iter, tol, verbose, W)
-
-        # Print algorithm info
-        if verbose >= 1:
-            print('Algorithm finished in {} iterations, '
-                  'log-likelihood = {}, '
-                  'runtime: {:0.1f} s, '
-                  'device: {}'.format(len(lb), lb[-1], timer() - t0, self.dev))
-        if verbose >= 2:
-            self.plot_convergence(lb.cpu(), xlab='Iteration number',
-                                  title='Model lower bound', fig_num=fig_num)
-
-        return Z
-
-    def init_mp(self, dtype=torch.float64):
+    
+    def _init_mp(self, dtype=torch.float64):
         """ Initialise mixing proportions: mp
 
         """
         # Mixing proportions
         self.mp = torch.ones(self.K, dtype=dtype, device=self.dev)/self.K
 
-    def plot_convergence(self, vals, fig_num, xlab, title):
-        """ Plot algorithm convergence.
-
-        Args:
-            vals (list): Values to plot.
-            fig_num (int)
-            xlab (string)
-            title (string)
-
-        """
-        plt.figure(num=fig_num).clear()
-        fig = plt.figure(num=fig_num)
-        ax = fig.add_subplot(111)
-
-        ax.plot(torch.arange(0, len(vals)), vals)
-        ax.set_xlabel(xlab)
-        ax.set_title(title)
-        plt.grid()
-        plt.show()
-
-    def plot_fit(self, X, fig_num=1, W=1, suptitle=''):
-        """ Plot mixture fit.
-
-        Args:
-            X (torch.tensor): (N, C).
-            fig_num (int, optional): Defaults to 1.
-            W (torch.tensor, optional): Defaults to 1 (no weights).
-            suptitle (string, optional): Defaults to ''.
-
-        """
-        if type(W) is int:  # No observation weights
-            W = torch.tensor(W)
-        X = X.cpu()
-        W = W.cpu()
-
-        # Get mixing proportions
-        mp = self.mp.cpu()
-        K = len(mp)
-
-        # Get means and variances
-        mu, var = self.get_means_variances()
-        mu = mu.cpu()
-        var = var.cpu()
-
-        if len(X.shape) == 1:
-            X = X[:, None]
-        C = X.shape[1]
-        N = X.shape[0]
-
-        num_sd = torch.tensor(5)
-        steps = 100
-        nN = 128
-        inf = torch.tensor(float('inf'))
-
-        mn_x = torch.min(X, dim=0)[0]
-        mx_x = torch.max(X, dim=0)[0]
-
-        if len(W.shape) > 0:
-            # Weights and observation range given
-            W = torch.reshape(W, (N, 1))
-            W = W / torch.sum(W)
-            H = [1]
-        else:
-            # Make weights and observation range from data
-            nX = torch.zeros(nN, C)
-            W = torch.zeros(nN, C)
-            H = torch.zeros(C)
-            for c in range(C):
-                # Bar height
-                W[:, c] = torch.histc(X[:, c], bins=nN)
-                # Bar start edge
-                nX[:, c] = torch.linspace(start=mn_x[c], end=mx_x[c], steps=nN + 1)[:-1]
-                # Bar width
-                H[c] = nX[1, c] - nX[0, c]
-                # Normalise height
-                W[:, c] = W[:, c] / (torch.sum(W[:, c]) * H[c])
-            X = nX
-
-        mx_y = torch.max(W, dim=0)[0]
-
-        num_plt = C + 1
-        num_row = math.floor(math.sqrt(num_plt))
-        num_col = math.ceil(num_plt/num_row)
-        plt.figure(fig_num).clear()  # Clear figure
-        fig, ax = plt.subplots(num_row, num_col, num=fig_num)  # Make figure and axes
-        fig.show()
-
-        # For each channel, plot the data and the marginal density
-        c = 0  # channel counter
-        for row in range(num_row):  # Loop over subplot rows
-            for col in range(num_col):  # Loop over subplot rows
-                if c == C:
-                    continue
-                # Get axis
-                ax_rc = ax[c] if (num_row == 1 or num_col == 1) else ax[row, col]
-                # Data in bar plot
-                ax_rc.bar(x=X[:, c], height=W[:, c], width=H[c], alpha=0.25)
-                # Marginal density
-                plot_list = []  # Store plot handles (used to set colors in bar plot for mix prop)
-                for k in range(K):  # Loop over mixture components
-                    x0 = mu[c, k] - num_sd * torch.sqrt(var[c, c, k])
-                    x1 = mu[c, k] + num_sd * torch.sqrt(var[c, c, k])
-                    x = torch.linspace(x0, x1, steps=steps)
-                    y = mp[k] \
-                        * torch.exp(self.log_likelihood(x.reshape(steps, 1), k, c))
-                    plot = ax_rc.plot(x, y)
-                    plot_list.append(plot)
-
-                ax_rc.set_xlim([mn_x[c], mx_x[c]])
-                ax_rc.set_ylim([0, 0.5 * mx_y[c]])
-
-                ax_rc.axes.get_yaxis().set_visible(False)
-                ax_rc.set_title('Marginal density, C={}'.format(c + 1))
-                c += 1
-
-        # Bar plot the mixing proportions
-        ax_rc = ax[c] if (num_row == 1 or num_col == 1) else ax[num_row - 1, num_col - 1]
-        bp = ax_rc.bar([str(n) for n in range(1, K + 1)] , mp)
-        for k in range(K):
-            bp[k].set_color(plot_list[k][0].get_color())
-        ax_rc.axes.get_yaxis().set_visible(False)
-        ax_rc.set_title('Mixing proportions')
-
-        plt.suptitle(suptitle)
-        fig.canvas.draw()
-        fig.canvas.flush_events()
-        plt.pause(0.01)
-
-    def suffstats(self, X, Z):
+    def _suffstats(self, X, Z):
         """ Compute sufficient statistics.
 
         Args:
@@ -356,7 +229,10 @@ class Mixture:
 
     def log_likelihood(self): pass
 
-    def update(self): pass
+    def _init_par(self):
+        pass
+
+    def _update(self): pass
 
     """ Static methods
     """
@@ -430,7 +306,7 @@ class Mixture:
         """ Reshape image to tensor with dimensions suitable as input to Mixture class.
 
         Args:
-            img (torch.tensor): Input image. (dm[0], dm[1], dm[2], C)
+            img (torch.tensor): Input image. (X, Y, Z, C)
 
         Returns:
             X (torch.tensor): Observed data (N0, C).
@@ -483,6 +359,111 @@ class Mixture:
         """
         return torch.argmax(Z, dim=3)
 
+    @staticmethod
+    def plot_fit(X, log_pdf, mu, var, mp, fig_num=1, W=None, title=''):
+        """ Plot mixture fit.
+
+        Args:
+            X (torch.tensor): (N, C).
+            fig_num (int, optional): Defaults to 1.
+            W (torch.tensor, optional): Defaults to no weights.
+            title (string, optional): Defaults to ''.
+
+        """
+        # Number of classes
+        K = len(mp)
+        # To CPU
+        X = X.cpu()
+        mu = mu.cpu()
+        var = var.cpu()
+        mp = mp.cpu()
+        # Parameters
+        num_sd = torch.tensor(5)
+        steps = 100
+        nN = 128
+        inf = torch.tensor(float('inf'))
+        if len(X.shape) == 1:
+            X = X[:, None]
+        C = X.shape[1]
+        N = X.shape[0]
+        # Max X
+        mn_x = torch.min(X, dim=0)[0]
+        mx_x = torch.max(X, dim=0)[0]
+
+        if W is not None:
+            # To CPU
+            W = W.cpu()
+            # Weights and observation range given
+            W = torch.reshape(W, (N, 1))
+            W = W / torch.sum(W)
+            H = [1]
+        else:
+            # Make weights and observation range from data
+            nX = torch.zeros(nN, C)
+            W = torch.zeros(nN, C)
+            H = torch.zeros(C)
+            for c in range(C):
+                # Bar height
+                W[:, c] = torch.histc(X[:, c], bins=nN)
+                # Bar start edge
+                nX[:, c] = torch.linspace(start=mn_x[c], end=mx_x[c], steps=nN + 1)[:-1]
+                # Bar width
+                H[c] = nX[1, c] - nX[0, c]
+                # Normalise height
+                W[:, c] = W[:, c] / (torch.sum(W[:, c]) * H[c])
+            X = nX
+        # Max x and y
+        mn_x = torch.min(X, dim=0)[0]
+        mx_x = torch.max(X, dim=0)[0]
+        mx_y = torch.max(W, dim=0)[0]
+        # Plotting
+        num_plt = C + 1
+        num_row = math.floor(math.sqrt(num_plt))
+        num_col = math.ceil(num_plt / num_row)
+        plt.figure(fig_num).clear()  # Clear figure
+        fig, ax = plt.subplots(num_row, num_col, num=fig_num)  # Make figure and axes
+        fig.show()
+        # For each channel, plot the data and the marginal density
+        c = 0  # channel counter
+        for row in range(num_row):  # Loop over subplot rows
+            for col in range(num_col):  # Loop over subplot rows
+                if c == C:
+                    continue
+                # Get axis
+                ax_rc = ax[c] if (num_row == 1 or num_col == 1) else ax[row, col]
+                # Data in bar plot
+                ax_rc.bar(x=X[:, c], height=W[:, c], width=H[c], alpha=0.25)
+                # Marginal density
+                plot_list = []  # Store plot handles (used to set colors in bar plot for mix prop)
+                for k in range(K):  # Loop over mixture components
+                    width = num_sd * torch.sqrt(var[c, c, k])
+                    x0 = mu[c, k] - width
+                    x1 = mu[c, k] + width
+                    x = torch.linspace(x0, x1, steps=steps)
+                    y = mp[k]*torch.exp(log_pdf(x.reshape(steps, 1), k, c))
+                    plot = ax_rc.plot(x, y)
+                    plot_list.append(plot)
+
+                ax_rc.set_xlim([mn_x[c], mx_x[c]])
+                ax_rc.set_ylim([0, 0.5 * mx_y[c]])
+
+                ax_rc.axes.get_yaxis().set_visible(False)
+                ax_rc.set_title('Marginal density, C={}'.format(c + 1))
+                c += 1
+
+        # Bar plot the mixing proportions
+        ax_rc = ax[c] if (num_row == 1 or num_col == 1) else ax[num_row - 1, num_col - 1]
+        bp = ax_rc.bar([str(n) for n in range(1, K + 1)], mp)
+        for k in range(K):
+            bp[k].set_color(plot_list[k][0].get_color())
+        ax_rc.axes.get_yaxis().set_visible(False)
+        ax_rc.set_title('Mixing proportions')
+
+        plt.suptitle(title)
+        fig.canvas.draw()
+        fig.canvas.flush_events()
+        plt.pause(0.01)
+
 
 class GMM(Mixture):
     """ Multivariate Gaussian Mixture Model (GMM).
@@ -507,34 +488,6 @@ class GMM(Mixture):
 
         """
         return self.mu, self.Cov
-
-    def init_par(self, X):
-        """ Initialise GMM specific parameters: mu, Cov
-
-        """
-        dtype = torch.float64
-        K = self.K
-        C = X.shape[1]
-        mn = torch.min(X, dim=0)[0]
-        mx = torch.max(X, dim=0)[0]
-
-        # Init mixing prop
-        self.init_mp(dtype)
-
-        # means
-        self.mu = torch.zeros((C, K), dtype=dtype, device=self.dev)
-        # covariance
-        self.Cov = torch.zeros((C, C, K), dtype=dtype, device=self.dev)
-        for c in range(C):
-            # rng = torch.linspace(start=mn[c], end=mx[c], steps=K, dtype=dtype, device=self.dev)
-            # num_neg = sum(rng < 0)
-            # num_pos = sum(rng > 0)
-            # rng = torch.arange(-num_neg, num_pos, dtype=dtype, device=self.dev)
-            # self.mu[c, :] = torch.reshape((rng * (mx[c] - mn[c]))/(K + 1), (1, K))
-            self.mu[c, :] = torch.reshape(torch.linspace(mn[c], mx[c], K, dtype=dtype, device=self.dev), (1, K))
-            self.Cov[c, c, :] = \
-                torch.reshape(torch.ones(K, dtype=dtype, device=self.dev)
-                              * ((mx[c] - mn[c])/(K))**2, (1, 1, K))
 
     def log_likelihood(self, X, k=0, c=None):
         """ Log-probability density function (pdf) of the standard normal
@@ -575,7 +528,35 @@ class GMM(Mixture):
         log_pdf = - (C / 2) * torch.log(2 * pi) - log_det_Cov - 0.5 * torch.sum(diff**2, dim=1)
         return log_pdf
 
-    def update(self, ss0, ss1, ss2):
+    def _init_par(self, X):
+        """ Initialise GMM specific parameters: mu, Cov
+
+        """
+        dtype = torch.float64
+        K = self.K
+        C = X.shape[1]
+        mn = torch.min(X, dim=0)[0]
+        mx = torch.max(X, dim=0)[0]
+
+        # Init mixing prop
+        self._init_mp(dtype)
+
+        # means
+        self.mu = torch.zeros((C, K), dtype=dtype, device=self.dev)
+        # covariance
+        self.Cov = torch.zeros((C, C, K), dtype=dtype, device=self.dev)
+        for c in range(C):
+            # rng = torch.linspace(start=mn[c], end=mx[c], steps=K, dtype=dtype, device=self.dev)
+            # num_neg = sum(rng < 0)
+            # num_pos = sum(rng > 0)
+            # rng = torch.arange(-num_neg, num_pos, dtype=dtype, device=self.dev)
+            # self.mu[c, :] = torch.reshape((rng * (mx[c] - mn[c]))/(K + 1), (1, K))
+            self.mu[c, :] = torch.reshape(torch.linspace(mn[c], mx[c], K, dtype=dtype, device=self.dev), (1, K))
+            self.Cov[c, c, :] = \
+                torch.reshape(torch.ones(K, dtype=dtype, device=self.dev)
+                              * ((mx[c] - mn[c])/(K))**2, (1, 1, K))
+
+    def _update(self, ss0, ss1, ss2):
         """ Update GMM means and variances
 
         Args:
@@ -643,22 +624,6 @@ class RMM(Mixture):
 
         return mean, var
 
-    def init_par(self, X):
-        """  Initialise RMM specific parameters: nu, sig
-
-        """
-        K = self.K
-        mn = torch.min(X, dim=0)[0]
-        mx = torch.max(X, dim=0)[0]
-        dtype = torch.float64
-
-        # Init mixing prop
-        self.init_mp(dtype)
-
-        # RMM specific
-        self.nu = (torch.arange(K, dtype=dtype, device=self.dev)*mx)/(K + 1)
-        self.sig = torch.ones(K, dtype=dtype, device=self.dev)*((mx - mn)/(K))
-
     def log_likelihood(self, X, k=0, c=-1):
         """
         Log-probability density function (pdf) of the Rician
@@ -700,7 +665,23 @@ class RMM(Mixture):
 
         return torch.log(log_pdf.flatten() + tiny)
 
-    def update(self, ss0, ss1, ss2):
+    def _init_par(self, X):
+        """  Initialise RMM specific parameters: nu, sig
+
+        """
+        K = self.K
+        mn = torch.min(X, dim=0)[0]
+        mx = torch.max(X, dim=0)[0]
+        dtype = torch.float64
+
+        # Init mixing prop
+        self._init_mp(dtype)
+
+        # RMM specific
+        self.nu = (torch.arange(K, dtype=dtype, device=self.dev)*mx)/(K + 1)
+        self.sig = torch.ones(K, dtype=dtype, device=self.dev)*((mx - mn)/(K))
+
+    def _update(self, ss0, ss1, ss2):
         """ Update RMM parameters.
 
         Args:
