@@ -26,7 +26,7 @@ def im_divergence(dat, vx=None, which='forward', bound='constant'):
     """
     if vx is None:
         vx = (1,) * 3
-    if type(vx) is not torch.Tensor:
+    if not isinstance(vx, torch.Tensor):
         vx = torch.tensor(vx, dtype=dat.dtype, device=dat.device)
     half = torch.tensor(0.5, dtype=dat.dtype, device=dat.device)
     ndim = len(dat.shape) - 1
@@ -101,7 +101,7 @@ def im_gradient(dat, vx=None, which='forward', bound='constant'):
     """
     if vx is None:
         vx = (1,) * 3
-    if type(vx) is not torch.Tensor:
+    if not isinstance(vx, torch.Tensor):
         vx = torch.tensor(vx, dtype=dat.dtype, device=dat.device)
     half = torch.tensor(0.5, dtype=dat.dtype, device=dat.device)
     ndim = len(dat.shape)
@@ -165,9 +165,9 @@ def _check_adjoint_grad_div(which='central', vx=None, dtype=torch.float64,
     """
     if vx is None:
         vx = (1,) * 3
-    if type(vx) is not torch.Tensor:
+    if not isinstance(vx, torch.Tensor):
         vx = torch.tensor(vx, dtype=dtype, device=device)
-    if type(dim) is int:
+    if isinstance(dim, int):
         dim = (dim,) * 3
 
     torch.manual_seed(0)

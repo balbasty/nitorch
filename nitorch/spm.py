@@ -543,9 +543,9 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     """
     if vx is None:
         vx = np.array([np.inf, np.inf, np.inf])
-    if type(vx) is float or type(vx) is int:
+    if isinstance(vx, float) or isinstance(vx, int):
         vx = (vx,)*3
-    if type(vx) is tuple and len(vx) == 3:
+    if isinstance(vx, tuple) and len(vx) == 3:
         vx = np.array([vx[0], vx[1], vx[2]])
 
     N = Mat.shape[2]  # Number of subjects
@@ -690,7 +690,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
         mu_not_noise (torch.Tensor): Mean of foreground class.
 
     """
-    if type(pth_nii) is torch.Tensor:
+    if isinstance(pth_nii, torch.Tensor):
         X = pth_nii
     else:  # Load data from nifti
         nii = nib.load(pth_nii)
