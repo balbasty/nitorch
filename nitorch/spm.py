@@ -13,13 +13,13 @@
 """
 
 
-import nibabel as nib
-from nitorch.mathfun import expm, logm
-from nitorch.mixtures import GMM
-from nitorch.mixtures import RMM
-from nitorch.spatial import voxsize
 import math
+import nibabel as nib
 import torch
+from .mathfun import expm, logm
+from .mixtures import GMM
+from .mixtures import RMM
+from .spatial import voxsize
 
 
 __all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'identity',
