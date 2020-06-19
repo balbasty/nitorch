@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 #include "pushpull.h"
+#include "conv.h"
 
 using namespace ni;
 namespace pya = pybind11;
@@ -36,4 +37,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("grid_count_backward", &ni::grid_count_backward, "GridCount backward");
   m.def("grid_grad",           &ni::grid_grad,           "GridGrad");
   m.def("grid_grad_backward",  &ni::grid_grad_backward,  "GridGrad backward");
+
+  m.def("conv",                &ni::conv,                "Conv");
 }

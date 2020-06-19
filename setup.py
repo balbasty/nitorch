@@ -26,20 +26,50 @@ import torch
 # code. This trick allows to minimize code duplication.
 # Finally, libnitorch links to both these sub-libraries and dispatches
 # according to the Tensor's device type.
-libnitorch_cpu_sources = ['pushpull_common.cpp']
-libnitorch_cuda_sources = ['pushpull_common.cpp']
-libnitorch_sources = ['pushpull.cpp']
-ext_spatial_sources = ['spatial.cpp']
+libnitorch_cpu_sources = [
+    'pushpull_common.cpp',
+    'conv_common.cpp',
+]
+libnitorch_cuda_sources = [
+    'pushpull_common.cpp',
+    'conv_common.cpp',
+]
+libnitorch_sources = [
+    'pushpull.cpp',
+    'conv.cpp',
+]
+ext_spatial_sources = [
+    'spatial.cpp',
+    'conv.cpp',
+]
 
 # That's a bit ugly. TODO: use config files?
-libnitorch_cpu_headers = ['common.h',
-                          'interpolation.h', 'interpolation_common.h',
-                          'bounds.h', 'bounds_common.h']
-libnitorch_cuda_headers = ['common.h',
-                           'interpolation.h', 'interpolation_common.h',
-                           'bounds.h', 'bounds_common.h']
-libnitorch_headers = ['pushpull_common.h', 'interpolation.h', 'bounds.h']
-ext_spatial_headers = ['pushpull.h', 'interpolation.h', 'bounds.h']
+libnitorch_cpu_headers = [
+    'common.h',
+    'interpolation.h',
+    'interpolation_common.h',
+    'bounds.h',
+    'bounds_common.h',
+]
+libnitorch_cuda_headers = [
+    'common.h',
+    'interpolation.h',
+    'interpolation_common.h',
+    'bounds.h',
+    'bounds_common.h',
+]
+libnitorch_headers = [
+    'pushpull_common.h',
+    'conv_common.h',
+    'interpolation.h',
+    'bounds.h',
+]
+ext_spatial_headers = [
+    'pushpull.h',
+    'conv.h',
+    'interpolation.h',
+    'bounds.h',
+]
 
 # TODO
 # . There is still quite a lot to do in setup and buildtools in order to make

@@ -14,7 +14,7 @@
 // . sliding nearest 2d
 // . sliding linear 3d
 // . sliding linear 2d
-// . slinding generic 3d
+// . sliding generic 3d
 // . sliding generic 2d
 // . [DONE] spatial gradient mode (without mutliplication with output gradient)
 // . [DONE] second order gradients (backward pass for spatial gradients)
