@@ -360,7 +360,7 @@ def dexpm(A, dA=None, max_iter=10000):
         dA = torch.zeros(num_basis, num_basis, device=device, dtype=dtype)
         dA = dA[..., None]
     else:
-        p = _flatten_C(A)
+        p = A.flatten()
         A = torch.zeros(4, 4, device=device, dtype=dtype)
         for m in range(dA.shape[2]):
             A += p[m]*dA[..., m]
@@ -643,7 +643,7 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
             d = M.flatten() - mat.flatten()
             gr = dM.t().mm(d[..., None])
             Hes = dM.t().mm(dM)
-            p = p - gr.solve(Hes)[0]
+            p = p - gr.solve(Hes)[0][:, 0]
             if torch.sum(gr**2) < 1e-8:
                 break
         mat = M.clone()
@@ -771,20 +771,3 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
     sd_not_noise = sum(w * sd1)
 
     return sd_noise, sd_not_noise, mu_noise, mu_not_noise
-
-
-def _flatten_C(t):
-    """ Simple function for flattening a 1D/2D tensor in column-major order.
-
-    """
-    if len(t.shape) == 1:
-        return t.flatten()
-    M = t.shape[0]
-    N = t.shape[1]
-    nt = torch.zeros(t.numel(), device=t.device, dtype=t.dtype)
-    cnt = 0
-    for n in range(N):
-        for m in range(M):
-            nt[cnt] = t[m, n]
-            cnt += 1
-    return nt
