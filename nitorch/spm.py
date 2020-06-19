@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
-""" Various SPM functions:
+""" Various SPM functions (and bit of extras). SPM functions in this file include:
     . def2sparse (spm_def2sparse, 'Longitudinal' toolbox)
     . dexpm (spm_dexpm, 'Longitudinal' toolbox)
     . imatrix (spm_imatrix)
     . matrix (spm_matrix)
     . mean_matrix (spm_meanm, 'Longitudinal' toolbox)
-    . mean_space (Ashburner bonus)
-    . noise_estimate (spm_noise_estimate, 'Longitudinal' toolbox)
+    . noise_estimate (modified version of spm_noise_estimate, 'Longitudinal' toolbox)
 
     Mostly authored by John Ashburner as part of the SPM software:
-    . (fil.ion.ucl.ac.uk/spm/software/spm12)
+        fil.ion.ucl.ac.uk/spm/software/spm12
+    SPM is copyright, distributed under the GNU General Public Licence, hence this code is too.
 """
 
 
