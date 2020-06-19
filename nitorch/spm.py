@@ -153,9 +153,7 @@ def def2sparse(phi, dm_in, nn=False):
     size = torch.Size([ni, nj], device=device)  # The (implicit) size of the sparse matrix
 
     if nn:
-        """
-        Encode nearest neighbour interpolation
-        """
+        # Encode nearest neighbour interpolation
 
         # Round values in deformation (now integers)
         phi = torch.floor(phi + 0.5)
@@ -179,9 +177,7 @@ def def2sparse(phi, dm_in, nn=False):
         # Construct the sparse matrix
         Phi = torch.sparse.FloatTensor(torch.stack((i, j), 0), w, size)
     else:
-        """
-        Encode trilinear interpolation
-        """
+        # Encode trilinear interpolation
 
         # Flatten phi
         phi0 = phi[:, :, :, 0].flatten()
@@ -197,10 +193,7 @@ def def2sparse(phi, dm_in, nn=False):
         fphi1 = phi[:, :, :, 1].flatten()
         fphi2 = phi[:, :, :, 2].flatten()
 
-        """
-        Corner 1 - C000
-        """
-
+        # Corner 1 - C000
         # Get valid indices in output image
         i = torch.where((fphi0 >= 0) & (fphi0 < dm_in[0]) &
                         (fphi1 >= 0) & (fphi1 < dm_in[1]) &
@@ -214,10 +207,7 @@ def def2sparse(phi, dm_in, nn=False):
         # Initialise the sparse matrix
         Phi = torch.sparse.FloatTensor(torch.stack((i, j), 0), w, size)
 
-        """
-        Corner 2 - C100
-        """
-
+        # Corner 2 - C100
         # Get valid indices in output image
         i = torch.where((fphi0 >= -1) & (fphi0 < (dm_in[0] - 1)) &
                         (fphi1 >= 0) & (fphi1 < dm_in[1]) &
@@ -231,10 +221,7 @@ def def2sparse(phi, dm_in, nn=False):
         # Add to the sparse matrix
         Phi = Phi + torch.sparse.FloatTensor(torch.stack((i, j), 0), w, size)
 
-        """
-        Corner 3 -  C010
-        """
-
+        # Corner 3 -  C010
         # Get valid indices in output image
         i = torch.where((fphi0 >= 0) & (fphi0 < dm_in[0]) &
                         (fphi1 >= -1) & (fphi1 < (dm_in[1] - 1)) &
@@ -248,10 +235,7 @@ def def2sparse(phi, dm_in, nn=False):
         # Add to the sparse matrix
         Phi = Phi + torch.sparse.FloatTensor(torch.stack((i, j), 0), w, size)
 
-        """
-        Corner 4 -  C110
-        """
-
+        # Corner 4 -  C110
         # Get valid indices in output image
         i = torch.where((fphi0 >= -1) & (fphi0 < (dm_in[0] - 1)) &
                         (fphi1 >= -1) & (fphi1 < (dm_in[1] - 1)) &
@@ -265,10 +249,7 @@ def def2sparse(phi, dm_in, nn=False):
         # Add to the sparse matrix
         Phi = Phi + torch.sparse.FloatTensor(torch.stack((i, j), 0), w, size)
 
-        """
-        Corner 5 -  C001
-        """
-
+        # Corner 5 -  C001
         # Get valid indices in output image
         i = torch.where((fphi0 >= 0) & (fphi0 < dm_in[0]) &
                         (fphi1 >= 0) & (fphi1 < dm_in[1]) &
@@ -282,10 +263,7 @@ def def2sparse(phi, dm_in, nn=False):
         # Add to the sparse matrix
         Phi = Phi + torch.sparse.FloatTensor(torch.stack((i, j), 0), w, size)
 
-        """
-        Corner 6 -  C101
-        """
-
+        # Corner 6 -  C101
         # Get valid indices in output image
         i = torch.where((fphi0 >= -1) & (fphi0 < (dm_in[0] - 1)) &
                         (fphi1 >= 0) & (fphi1 < dm_in[1]) &
@@ -299,10 +277,7 @@ def def2sparse(phi, dm_in, nn=False):
         # Add to the sparse matrix
         Phi = Phi + torch.sparse.FloatTensor(torch.stack((i, j), 0), w, size)
 
-        """
-        Corner 7 -  C011
-        """
-
+        # Corner 7 -  C011
         # Get valid indices in output image
         i = torch.where((fphi0 >= 0) & (fphi0 < dm_in[0]) &
                         (fphi1 >= -1) & (fphi1 < (dm_in[1] - 1)) &
@@ -316,10 +291,7 @@ def def2sparse(phi, dm_in, nn=False):
         # Add to the sparse matrix
         Phi = Phi + torch.sparse.FloatTensor(torch.stack((i, j), 0), w, size)
 
-        """
-        Corner 8 -  C111
-        """
-
+        # Corner 8 -  C111
         # Get valid indices in output image
         i = torch.where((fphi0 >= -1) & (fphi0 < (dm_in[0] - 1)) &
                         (fphi1 >= -1) & (fphi1 < (dm_in[1] - 1)) &
@@ -576,9 +548,9 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     basis = 'SE'
     dim = 3 if Dim[2, 0] > 1 else 2
     B = affine_basis(basis, dim, device=device, dtype=dtype)
-    """ Find combination of 90 degree rotations and flips that brings all
-        the matrices closest to axial
-    """
+
+    # Find combination of 90 degree rotations and flips that brings all
+    # the matrices closest to axial
     Mat0 = Mat.clone()
     pmatrix = torch.tensor([[0, 1, 2],
                             [1, 0, 2],
@@ -613,12 +585,12 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
         minR = torch.cat((R2, R22), dim=1)
         minR = torch.cat((minR, torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)[None, ...]), dim=0)
         Mat[..., n] = Mat[..., n].mm(minR)
-    """ Average of the matrices in Mat
-    """
+
+    # Average of the matrices in Mat
     mat = mean_matrix(Mat)
-    """ If average involves shears, then find the closest matrix that does not
-        require them.
-    """
+
+    # If average involves shears, then find the closest matrix that does not
+    # require them.
     C_ix = torch.tensor([0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15],
                         device=device)  # column-major ordering from (4, 4) tensor
     p = imatrix(mat)
@@ -670,6 +642,7 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
         mn = torch.min(mn, torch.min(vx1, dim=1)[0])
     mx = torch.ceil(mx)
     mn = torch.floor(mn)
+
     # Either pad or crop mean space
     off = mod_prct*(mx - mn)
     if Dim[2, 0] == 1: off = torch.tensor([0, 0, 0], device=device, dtype=dtype)
@@ -678,6 +651,7 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
                                [0, 1, 0, mn[1] - (off[1] + 1)],
                                [0, 0, 1, mn[2] - (off[2] + 1)],
                                [0, 0, 0, 1]], device=device, dtype=dtype))
+
     # To input data type
     Mat = Mat.type(dtype0)
     Dim = Dim.type(dtype0)
