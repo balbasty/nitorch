@@ -144,11 +144,13 @@ def customize_compiler_for_shared_lib(self):
                                os.path.join('@rpath', os.path.basename(libpath))]
             return extra_args
 
-        args = list(args)
-        if len(args) > 4:
-            args[3] = add_install_name(args[3], libpath)
-        else:
-            kwargs['extra_postargs'] = add_install_name(kwargs.get('extra_postargs', []), libpath)
+        # On MacOS: we need to manually specify a name stored inside the dylib
+        if is_darwin():
+            args = list(args)
+            if len(args) > 4:
+                args[3] = add_install_name(args[3], libpath)
+            else:
+                kwargs['extra_postargs'] = add_install_name(kwargs.get('extra_postargs', []), libpath)
 
         return self.link(ccompiler.CCompiler.SHARED_LIBRARY, objects,
                          libpath, *args, **kwargs)
