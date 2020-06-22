@@ -11,8 +11,8 @@ from timeit import default_timer as timer
 import matplotlib.pyplot as plt
 from nitorch.optim import get_gain, plot_convergence
 from nitorch.utils import softmax
+from nitorch.mathfun import besseli
 import torch
-from torch.distributions import MultivariateNormal as mvn
 
 torch.backends.cudnn.benchmark = True
 
@@ -35,7 +35,8 @@ class Mixture:
 
     """ Functions
     """
-    def fit(self, X, verbose=1, max_iter=10000, tol=1e-6, fig_num=1, W=None):
+    def fit(self, X, verbose=1, max_iter=10000, tol=1e-6, fig_num=1, W=None,
+            show_fit=False):
         """ Fit mixture model.
 
         Args:
@@ -52,6 +53,7 @@ class Mixture:
             tol (int, optional): Convergence threshold. Defaults to 1e-6.
             fig_num (int, optional): Defaults to 1.
             W (torch.tensor, optional): Observation weights (N, 1). Defaults to no weights.
+            show_fit (bool, optional): Plot mixture fit, defaults to False.
 
         Returns:
             Z (torch.tensor): Responsibilities (N, K).
@@ -101,6 +103,9 @@ class Mixture:
         if verbose >= 2:
             _ = plot_convergence(lb, xlab='Iteration number',
                                  fig_title='Model lower bound', fig_num=fig_num)
+        # Plot mixture fit
+        if show_fit:
+            self._plot_fit(X, W, fig_num=fig_num + 1)
 
         return Z
     
@@ -133,23 +138,23 @@ class Mixture:
         """
         Z = torch.zeros((N, K), dtype=dtype, device=device)  # responsibility
         lb = torch.zeros(max_iter, dtype=torch.float64, device=device)
-        for iter in range(max_iter):  # EM loop
+        for n_iter in range(max_iter):  # EM loop
             """ E-step
             """
             for k in range(K):
                 # Product Rule
-                Z[:, k] = torch.log(self.mp[k]) + self.log_likelihood(X, k)
+                Z[:, k] = torch.log(self.mp[k]) + self._log_likelihood(X, k)
 
             # Get responsibilities
             Z, dlb = softmax(Z, W=W, get_ll=True)
 
             """ Objective function and convergence related
             """
-            lb[iter] = dlb
-            gain = get_gain(lb, iter)
+            lb[n_iter] = dlb
+            gain = get_gain(lb, n_iter)
             if verbose >= 3:
-                print('iter: {}, lb: {}, gain: {}'
-                      .format(iter + 1, lb[iter], gain))
+                print('n_iter: {}, lb: {}, gain: {}'
+                      .format(n_iter + 1, lb[n_iter], gain))
             if gain < tol:
                 break  # Finished
 
@@ -170,7 +175,7 @@ class Mixture:
             # Update model specific parameters
             self._update(ss0, ss1, ss2)
 
-        return Z, lb[:iter + 1]
+        return Z, lb[:n_iter + 1]
     
     def _init_mp(self, dtype=torch.float64):
         """ Initialise mixing proportions: mp
@@ -223,11 +228,20 @@ class Mixture:
 
         return ss0, ss1, ss2
 
+    def _plot_fit(self, X, W, fig_num):
+        """ Plot mixture fit.
+
+        """
+        mp = self.mp
+        mu, var = self.get_means_variances()
+        log_pdf = lambda x, k, c: self._log_likelihood(x, k, c)
+        self.plot_fit(X, log_pdf, mu, var, mp, fig_num, W)
+    
     """ Implement in child classes
     """
     def get_means_variances(self): pass
 
-    def log_likelihood(self): pass
+    def _log_likelihood(self): pass
 
     def _init_par(self):
         pass
@@ -260,46 +274,6 @@ class Mixture:
             X_msk[:, c] = X[msk, c]
 
         return X_msk, msk
-
-    @staticmethod
-    def besseli(X, order=0):
-        """ Approximates the modified Bessel function of the first kind,
-            of either order zero or one.
-
-        Args:
-            X (torch.tensor): Input (N, 1).
-            order (int, optional): 0 or 1, defaults to 0.
-
-        Returns:
-            I (torch.tensor): Modified Bessel function of the first kind (N, 1).
-
-        See also:
-            https://mathworld.wolfram.com/ModifiedBesselFunctionoftheFirstKind.html
-
-        """
-        if len(X.shape) == 1:
-            X = X[:, None]
-            N = X.shape[0]
-        else:
-            N = 1
-
-        device = X.device
-        dtype = X.dtype
-
-        Nk = 10  # higher number, better approximation (10 seems to do just fine)
-        X = X.repeat(1, Nk)
-        K = torch.arange(0, Nk, dtype=dtype, device=device)
-        K = K.repeat(N, 1).float()
-        K_factorial = (K + 1).lgamma().exp()
-
-        if order == 0:  # 0th order
-            i = torch.sum((0.25 * X ** 2) ** K / (K_factorial ** 2), dim=1)
-        else:  # First order
-            i = torch.sum(
-                0.5 * X * ((0.25 * X ** 2) ** K /
-                           (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1)
-
-        return i
 
     @staticmethod
     def reshape_input(img):
@@ -489,7 +463,7 @@ class GMM(Mixture):
         """
         return self.mu, self.Cov
 
-    def log_likelihood(self, X, k=0, c=None):
+    def _log_likelihood(self, X, k=0, c=None):
         """ Log-probability density function (pdf) of the standard normal
             distribution, evaluated at the values in X.
 
@@ -605,7 +579,7 @@ class RMM(Mixture):
 
         # Laguerre polymonial for n=1/2
         Laguerre = lambda x: torch.exp(x/2) * \
-            ((1 - x) * RMM.besseli(-x/2, order=0) - x * RMM.besseli(-x/2, order=1))
+            ((1 - x) * besseli(-x/2, order=0) - x * besseli(-x/2, order=1))
 
         # Compute means and variances
         mean = torch.zeros((1, K), dtype=dtype, device=self.dev)
@@ -624,7 +598,7 @@ class RMM(Mixture):
 
         return mean, var
 
-    def log_likelihood(self, X, k=0, c=-1):
+    def _log_likelihood(self, X, k=0, c=-1):
         """
         Log-probability density function (pdf) of the Rician
         distribution, evaluated at the values in X.
@@ -658,7 +632,7 @@ class RMM(Mixture):
         # Identify where Rice probability can be computed
         msk = (tmp > -95) & ((X * (nu / sig2)) < 85)
         # Use Rician distribution
-        log_pdf[msk] = (X[msk]/sig2) * torch.exp(tmp[msk]) * RMM.besseli(X[msk] * (nu / sig2), order=0)
+        log_pdf[msk] = (X[msk]/sig2) * torch.exp(tmp[msk]) * besseli(X[msk] * (nu / sig2), order=0)
         # Use normal distribution
         log_pdf[~msk] = (1. / torch.sqrt(2 * pi * sig2)) \
                   * torch.exp((-0.5 / sig2) * (X[~msk] - nu)**2)
@@ -719,8 +693,8 @@ class RMM(Mixture):
             if r > theta:
                 for i in range(256):
                     xi = 2 + theta**2 \
-                        - pi/8*torch.exp(-theta**2/2)*((2 + theta**2) * RMM.besseli(theta**2/4, order=0) \
-                        + theta**2*RMM.besseli(theta**2/4, order=1))**2
+                        - pi/8*torch.exp(-theta**2/2)*((2 + theta**2) * besseli(theta**2/4, order=0) \
+                        + theta**2*besseli(theta**2/4, order=1))**2
                     g = torch.sqrt(xi*(1 + r**2) - 2)
                     if torch.abs(theta - g) < 1e-6:
                         break

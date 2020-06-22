@@ -16,7 +16,21 @@ import torch
 from torch.nn import functional as F
 
 
-__all__ = ['pad', 'same_storage', 'shiftdim', 'softmax']
+__all__ = ['pad', 'same_storage', 'shiftdim', 'softmax', 'round']
+
+
+def round(t, decimals=0):
+    """ Round a tensor to the given number of decimals.
+
+    Args:
+        t (torch.tensor) Tensor.
+        decimals (int, optional): Round to this decimal, defaults to zero.
+
+    Returns:
+        t (torch.tensor): Rounded tensor.
+
+    """
+    return torch.round(t * 10 ** decimals) / (10 ** decimals)
 
 
 def softmax(Z, dim=-1, get_ll=False, W=None):

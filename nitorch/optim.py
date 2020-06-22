@@ -12,7 +12,7 @@ import torch
 #   of the residuals) is tracked
 
 
-def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
+def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
        tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
        inplace=True):
     """ Solve A*x = b by the conjugate gradient method.
@@ -29,7 +29,7 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
             Defaults to zeros(M, 1).
         precond (function, optional): Preconditioner (M, M).
             Defaults to lambda x: x (i.e., identity)
-        maxiter (int, optional): Maximum number of iteration.
+        max_iter (int, optional): Maximum number of iteration.
             Defaults to len(b)*10.
         tolerance (float, optional): Tolerance for early-stopping,
             based on the L2 norm of residuals. Defaults to  1e-5.
@@ -78,8 +78,8 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
     # Format arguments
     device = b.device
     dtype = b.dtype
-    if maxiter is None:
-        maxiter = len(b) * 10
+    if max_iter is None:
+        max_iter = len(b) * 10
     if x is None:
         x = torch.zeros_like(b)
     elif not inplace:
@@ -100,7 +100,7 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
     beta = torch.tensor(0, dtype=dtype, device=device)  # Initial step size
 
     # Run algorithm
-    for it in range(maxiter):
+    for n_iter in range(max_iter):
         # Calculate conjugate directions P (descent direction)
         p *= beta
         p += z
@@ -117,8 +117,8 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
         rz0 = rz
         rz = torch.sum(r * z, dtype=sum_dtype)
         if verbose:
-            s = '{:' + str(len(str(maxiter))) + '} - sqrt(rtr)={:0.6f}'
-            print(s.format(it + 1, torch.sqrt(rz)))
+            s = '{:' + str(len(str(max_iter))) + '} - sqrt(rtr)={:0.6f}'
+            print(s.format(n_iter + 1, torch.sqrt(rz)))
         if torch.sqrt(rz) < tolerance:
             break
         beta = rz / rz0
@@ -126,12 +126,12 @@ def cg(A, b, x=None, precond=lambda y: y, maxiter=None,
     return x
 
 
-def get_gain(obj, iter, monotonicity='increasing'):
+def get_gain(obj, n_iter, monotonicity='increasing'):
     """ Compute gain of some objective function.
 
     Args:
         obj (torch.tensor): Vector of values (e.g., loss).
-        iter (int): Iteration number.
+        n_iter (int): Iteration number.
         direction (string, optional): Monotonicity of values ('increasing'/'decreasing'),
             defaults to 'increasing'.
 
@@ -139,15 +139,15 @@ def get_gain(obj, iter, monotonicity='increasing'):
         gain (torch.tensor): Computed gain.
 
     """
-    if iter == 0:
+    if n_iter == 0:
         return torch.tensor(float('inf'), dtype=obj.dtype, device=obj.device)
     if monotonicity == 'increasing':
-        gain = (obj[iter] - obj[iter - 1])
+        gain = (obj[n_iter] - obj[n_iter - 1])
     elif monotonicity == 'decreasing':
-        gain = (obj[iter - 1] - obj[iter])
+        gain = (obj[n_iter - 1] - obj[n_iter])
     else:
         raise ValueError('Undefined monotonicity')
-    gain = gain / (torch.max(obj[1:iter + 1]) - torch.min(obj[1:iter + 1]))
+    gain = gain / (torch.max(obj[1:n_iter + 1]) - torch.min(obj[1:n_iter + 1]))
     return gain
 
 
@@ -207,5 +207,5 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
     return fig_ax
 
 
-def relax(A, b, iE=lambda x: x, x0=0, iter=10):
+def relax(A, b, iE=lambda x: x, x0=0, max_iter=10):
     pass
