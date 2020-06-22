@@ -308,7 +308,7 @@ def def2sparse(phi, dm_in, nn=False):
     return Phi
 
 
-def dexpm(A, dA=None, max_iter=10000):
+def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
     """ Differentiate a matrix exponential.
 
     Args:
@@ -316,6 +316,7 @@ def dexpm(A, dA=None, max_iter=10000):
         dA (torch.tensor, optional): Basis function to differentiate
             with respect to (4, 4, num_basis). Defaults to None.
         max_iter (int, optional): Max number of iterations, defaults to 10,000.
+        requires_grad (bool, optional): Compute derivatives, defaults to False.
 
     Returns:
         E (torch.tensor): expm(A) (4, 4).
@@ -342,9 +343,10 @@ def dexpm(A, dA=None, max_iter=10000):
     dAn = dA.clone()
     dE = dA.clone()
     for n_iter in range(2, max_iter):
-        for m in range(dA.shape[2]):
-            dAn[..., m] = (dAn[..., m].mm(A) + An.mm(dA[..., m]))/n_iter
-        dE += dAn
+        if requires_grad:
+            for m in range(dA.shape[2]):
+                dAn[..., m] = (dAn[..., m].mm(A) + An.mm(dA[..., m]))/n_iter
+            dE += dAn
         An = An.mm(A)/n_iter
         E += An
         if torch.sum(An**2) < A.numel()*1e-32:
@@ -602,8 +604,8 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
 
         p = torch.zeros(9, device=device, dtype=dtype)
         for n_iter in range(10000):
-            R, dR = dexpm(p[[0, 1, 2, 3, 4, 5]], B)  # Rotations + Translations
-            Z, dZ = dexpm(p[[6, 7, 8]], B2)  # Zooms
+            R, dR = dexpm(p[[0, 1, 2, 3, 4, 5]], B, requires_grad=True)  # Rotations + Translations
+            Z, dZ = dexpm(p[[6, 7, 8]], B2, requires_grad=True)  # Zooms
 
             M = R.mm(Z)
             dM = torch.zeros((4, 4, 9), device=device, dtype=dtype)
