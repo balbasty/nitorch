@@ -100,7 +100,7 @@ def torch_libraries(use_cuda=False):
         if use_cuda:
             libraries += ['cudart', 'c10_cuda']
     else:
-        libraries = ['c10', 'torch_cpu', 'torch_python']
+        libraries = ['c10', 'torch_cpu', 'torch_python', 'torch']
         if use_cuda:
             libraries += ['cudart', 'c10_cuda', 'torch_cuda']
     return libraries
@@ -366,7 +366,7 @@ SpatialExtension = Extension(
     libraries=torch_libraries(use_cuda) + nitorch_lib,
     library_dirs=torch_library_dirs(use_cuda, use_cudnn),
     include_dirs=torch_include_dirs(use_cuda, use_cudnn),
-    extra_compile_args=common_flags() + torch_extension_flags('spatial'),
+    extra_compile_args=common_flags() + torch_flags() + torch_extension_flags('spatial'),
     runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]
 )
 build_extensions += [SpatialExtension]
