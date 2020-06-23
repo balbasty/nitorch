@@ -151,7 +151,7 @@ class Mixture:
             """ Objective function and convergence related
             """
             lb[n_iter] = dlb
-            gain = get_gain(lb, n_iter)
+            gain = get_gain(lb[:n_iter + 1])
             if verbose >= 3:
                 print('n_iter: {}, lb: {}, gain: {}'
                       .format(n_iter + 1, lb[n_iter], gain))
