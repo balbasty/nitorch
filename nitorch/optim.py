@@ -93,6 +93,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         A = A_function
 
     # Initialisation
+    nb = torch.sqrt(torch.sum(b**2, dtype=sum_dtype))  # norm of b
     r = b - A(x)  # Residual: b - A*x
     z = precond(r)  # Preconditioned residual
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
@@ -119,7 +120,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         if verbose:
             s = '{:' + str(len(str(max_iter))) + '} - sqrt(rtr)={:0.6f}'
             print(s.format(n_iter + 1, torch.sqrt(rz)))
-        if torch.sqrt(rz) < tolerance:
+        if torch.sqrt(rz) < tolerance*nb:
             break
         beta = rz / rz0
 
@@ -138,7 +139,7 @@ def get_gain(obj, monotonicity='increasing'):
         gain (torch.tensor): Computed gain.
 
     """
-    if len(obj) == 1:
+    if len(obj) <= 1:
         return torch.tensor(float('inf'), dtype=obj.dtype, device=obj.device)
     if monotonicity == 'increasing':
         gain = (obj[-1] - obj[-2])

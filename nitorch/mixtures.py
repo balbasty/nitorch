@@ -673,6 +673,7 @@ class RMM(Mixture):
         K = ss1.shape[1]
         dtype = torch.float64
         pi = torch.tensor(math.pi, dtype=dtype, device=self.dev)
+        one = torch.tensor(1.0, dtype=dtype, device=self.dev)
 
         # Compute means and variances
         mu1 = torch.zeros(K, dtype=dtype, device=self.dev)
@@ -700,7 +701,7 @@ class RMM(Mixture):
                         break
                     theta = g
                 if not torch.isfinite(xi):
-                    xi = 1
+                    xi = one
                 self.sig[k] = torch.sqrt(mu2[k])/torch.sqrt(xi)
                 self.nu[k] = torch.sqrt(mu1[k]**2 + (xi - 2)*self.sig[k]**2)
             else:
