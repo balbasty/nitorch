@@ -127,12 +127,11 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
     return x
 
 
-def get_gain(obj, n_iter, monotonicity='increasing'):
+def get_gain(obj, monotonicity='increasing'):
     """ Compute gain of some objective function.
 
     Args:
         obj (torch.tensor): Vector of values (e.g., loss).
-        n_iter (int): Iteration number.
         direction (string, optional): Monotonicity of values ('increasing'/'decreasing'),
             defaults to 'increasing'.
 
@@ -140,15 +139,15 @@ def get_gain(obj, n_iter, monotonicity='increasing'):
         gain (torch.tensor): Computed gain.
 
     """
-    if n_iter == 0:
+    if len(obj) <= 1:
         return torch.tensor(float('inf'), dtype=obj.dtype, device=obj.device)
     if monotonicity == 'increasing':
-        gain = (obj[n_iter] - obj[n_iter - 1])
+        gain = (obj[-1] - obj[-2])
     elif monotonicity == 'decreasing':
-        gain = (obj[n_iter - 1] - obj[n_iter])
+        gain = (obj[-2] - obj[-1])
     else:
         raise ValueError('Undefined monotonicity')
-    gain = gain / (torch.max(obj[1:n_iter + 1]) - torch.min(obj[1:n_iter + 1]))
+    gain = gain / (torch.max(obj) - torch.min(obj))
     return gain
 
 
