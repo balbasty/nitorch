@@ -715,7 +715,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
         model = RMM(num_class=2)
 
     # Fit GMM using Numpy
-    model.fit(X, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit)
+    model.fit(X, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
 
     # Get means and mixing proportions
     mu, _ = model.get_means_variances()
