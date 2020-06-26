@@ -18,8 +18,7 @@ torch.backends.cudnn.benchmark = True
 
 
 class Mixture:
-    """ A mixture model.
-    """
+    # A mixture model.
     def __init__(self, num_class=2):
         """
         num_class (int, optional): Number of mixture components. Defaults to 2.
@@ -33,8 +32,7 @@ class Mixture:
         self.dev = ''  # PyTorch device
         self.dt = ''  # PyTorch data type
 
-    """ Functions
-    """
+    # Functions
     def fit(self, X, verbose=1, max_iter=10000, tol=1e-6, fig_num=1, W=None,
             show_fit=False):
         """ Fit mixture model.
@@ -46,8 +44,8 @@ class Mixture:
             verbose (int, optional) Display progress. Defaults to 1.
                 0: None.
                 1: Print summary when finished.
-                2: 1 + Log-likelihood plot.
-                3: 1 + 2 + print convergence.
+                2: 1 + print convergence.
+                3: 1 + 2 + Log-likelihood plot.
             max_iter (int, optional) Maxmimum number of algorithm iterations.
                 Defaults to 10000.
             tol (int, optional): Convergence threshold. Defaults to 1e-6.
@@ -78,8 +76,7 @@ class Mixture:
         if W is not None:  # Observation weights given
             W = torch.reshape(W, (N, 1))
 
-        """ Initialise model parameters
-        """
+        # Initialise model parameters
         self._init_par(X)
 
         # Compute a regularisation value
@@ -90,8 +87,7 @@ class Mixture:
             else:
                 self.lam[c] = (torch.sum(X[:, c]) / K) ** 2
 
-        """ EM loop
-        """
+        # EM loop
         Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W)
 
         # Print algorithm info
@@ -100,7 +96,7 @@ class Mixture:
                   'log-likelihood = {}, '
                   'runtime: {:0.1f} s, '
                   'device: {}'.format(len(lb), lb[-1], timer() - t0, self.dev))
-        if verbose >= 2:
+        if verbose >= 3:
             _ = plot_convergence(lb, xlab='Iteration number',
                                  fig_title='Model lower bound', fig_num=fig_num)
         # Plot mixture fit
@@ -125,8 +121,7 @@ class Mixture:
 
         """
 
-        """ Init
-        """
+        # Init
         N = X.shape[0]
         C = X.shape[1]
         K = self.K
@@ -134,25 +129,24 @@ class Mixture:
         device = self.dev
         tiny = torch.tensor(1e-32, dtype=dtype, device=device)
 
-        """ Start EM algorithm
-        """
+        # Start EM algorithm
         Z = torch.zeros((N, K), dtype=dtype, device=device)  # responsibility
         lb = torch.zeros(max_iter, dtype=torch.float64, device=device)
         for n_iter in range(max_iter):  # EM loop
-            """ E-step
-            """
+            # ==========
+            # E-step
+            # ==========
+            # Product Rule
             for k in range(K):
-                # Product Rule
                 Z[:, k] = torch.log(self.mp[k]) + self._log_likelihood(X, k)
 
             # Get responsibilities
             Z, dlb = softmax(Z, W=W, get_ll=True)
 
-            """ Objective function and convergence related
-            """
+            # Objective function and convergence related
             lb[n_iter] = dlb
             gain = get_gain(lb[:n_iter + 1])
-            if verbose >= 3:
+            if verbose >= 2:
                 print('n_iter: {}, lb: {}, gain: {}'
                       .format(n_iter + 1, lb[n_iter], gain))
             if gain < tol:
@@ -161,8 +155,9 @@ class Mixture:
             if W is not None:  # Weight responsibilities
                 Z = Z * W
 
-            """ M-step
-            """
+            # ==========
+            # M-step
+            # ==========
             # Compute sufficient statistics
             ss0, ss1, ss2 = self._suffstats(X, Z)
 
@@ -237,8 +232,7 @@ class Mixture:
         log_pdf = lambda x, k, c: self._log_likelihood(x, k, c)
         self.plot_fit(X, log_pdf, mu, var, mp, fig_num, W)
     
-    """ Implement in child classes
-    """
+    # Implement in child classes
     def get_means_variances(self): pass
 
     def _log_likelihood(self): pass
@@ -248,8 +242,7 @@ class Mixture:
 
     def _update(self): pass
 
-    """ Static methods
-    """
+    # Static methods
     @staticmethod
     def apply_mask(X):
         """ Mask tensor, removing zeros and non-finite values.
@@ -345,6 +338,7 @@ class Mixture:
 
         """
         # Number of classes
+        dtype = X.dtype
         K = len(mp)
         # To CPU
         X = X.cpu()
@@ -380,7 +374,7 @@ class Mixture:
                 # Bar height
                 W[:, c] = torch.histc(X[:, c], bins=nN)
                 # Bar start edge
-                nX[:, c] = torch.linspace(start=mn_x[c], end=mx_x[c], steps=nN + 1)[:-1]
+                nX[:, c] = torch.linspace(start=mn_x[c], end=mx_x[c], steps=nN + 1, dtype=dtype)[:-1]
                 # Bar width
                 H[c] = nX[1, c] - nX[0, c]
                 # Normalise height
@@ -413,7 +407,7 @@ class Mixture:
                     width = num_sd * torch.sqrt(var[c, c, k])
                     x0 = mu[c, k] - width
                     x1 = mu[c, k] + width
-                    x = torch.linspace(x0, x1, steps=steps)
+                    x = torch.linspace(x0, x1, steps=steps, dtype=dtype)
                     y = mp[k]*torch.exp(log_pdf(x.reshape(steps, 1), k, c))
                     plot = ax_rc.plot(x, y)
                     plot_list.append(plot)
@@ -440,8 +434,7 @@ class Mixture:
 
 
 class GMM(Mixture):
-    """ Multivariate Gaussian Mixture Model (GMM).
-    """
+    # Multivariate Gaussian Mixture Model (GMM).
     def __init__(self, num_class=2):
         """
         mu (torch.tensor): GMM means (C, K).
@@ -553,8 +546,7 @@ class GMM(Mixture):
 
 
 class RMM(Mixture):
-    """ Univariate Rician Mixture Model (RMM).
-    """
+    # Univariate Rician Mixture Model (RMM).
     def __init__(self, num_class=2):
         """
         nu (torch.tensor): "mean" parameter of each Rician (K).
@@ -606,7 +598,6 @@ class RMM(Mixture):
         Args:
             X (torch.tensor): Observed data (N, C).
             k (int, optional): Index of mixture component. Defaults to 0.
-            c (int, optional): Index of channel. Defaults to -1 (univariate).
 
         Returns:
             log_pdf (torch.tensor): (N, 1).
@@ -653,7 +644,7 @@ class RMM(Mixture):
 
         # RMM specific
         self.nu = (torch.arange(K, dtype=dtype, device=self.dev)*mx)/(K + 1)
-        self.sig = torch.ones(K, dtype=dtype, device=self.dev)*((mx - mn)/(K))
+        self.sig = torch.ones(K, dtype=dtype, device=self.dev)*((mx - mn)/(K*10))
 
     def _update(self, ss0, ss1, ss2):
         """ Update RMM parameters.
