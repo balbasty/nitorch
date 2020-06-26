@@ -700,19 +700,20 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
     X = X.double()
 
     # Mask
-    X = X[(X != 0) & (torch.isfinite(X))]
+    mn = torch.min(X).int()
+    X = X[(X != 0) & (torch.isfinite(X)) & (X != torch.max(X))]
 
     # Bin and make x grid
-    mn = torch.min(X).int()
     mx = torch.max(X).int()
     bins = mx - mn
     W = torch.histc(X, bins=bins + 1, min=mn, max=mx)
     X = torch.arange(mn, mx + 1, device=device).double()
 
+    # mn = -1
     if mn < 0:  # Make GMM model
         model = GMM(num_class=num_class)
     else:  # Make RMM model
-        model = RMM(num_class=2)
+        model = RMM(num_class=num_class)
 
     # Fit GMM using Numpy
     model.fit(X, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
