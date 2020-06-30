@@ -356,7 +356,7 @@ def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
     return E, dE
 
 
-def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf')):
+def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf'), sum_dtype=torch.float64):
     """ Estimates full width at half maximum (FWHM) and noise standard
         deviation (sd) of a 2D or 3D image.
 
@@ -375,6 +375,7 @@ def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf')):
             Defaults to 0.
         mn (float, optional): Exclude values in x below mn, defaults to -inf.
         mx (float, optional): Exclude values in x above mx, defaults to -inf.
+        sum_dtype (torch.dtype): Defaults to torch.float64.
 
     Returns:
         fwhm (torch.tensor): Estimated FWHM (2,) | (3,).
@@ -404,12 +405,12 @@ def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf')):
     g[~msk.repeat((ndim, 1, 1, 1))] = 0
     g = g.abs()
     if ndim == 3:
-        g = g.sum(dim=3)
-    g = g.sum(dim=2).sum(dim=1)
+        g = g.sum(dim=3, dtype=sum_dtype)
+    g = g.sum(dim=2, dtype=sum_dtype).sum(dim=1, dtype=sum_dtype)
     # Make x have zero mean
     x0 = x[msk] - x[msk].mean()
     # Compute FWHM
-    fwhm = torch.sqrt(4.0 * logtwo) * torch.sum(x0.abs())
+    fwhm = torch.sqrt(4.0 * logtwo) * torch.sum(x0.abs(), dtype=sum_dtype)
     fwhm = fwhm / g
     if verbose >= 1:
         print('FWHM={}'.format(fwhm))
@@ -421,7 +422,7 @@ def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf')):
         sz = smooth('gauss', fwhm[2], x=0, dtype=dtype, device=device)[0][0, 0, 0]
     sc = (sx * sy * sz) / ndim
     sc = torch.min(sc, one)
-    sd = torch.sqrt(torch.sum(x0 ** 2) / (x0.numel() * sc))
+    sd = torch.sqrt(torch.sum(x0 ** 2, dtype=sum_dtype) / (x0.numel() * sc))
     if verbose >= 1:
         print('sd={}'.format(sd))
     return fwhm, sd
