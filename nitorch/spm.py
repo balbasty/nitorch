@@ -16,13 +16,14 @@
 import math
 import nibabel as nib
 import torch
+from .kernels import smooth
 from .mathfun import expm, logm
 from .mixtures import GMM
 from .mixtures import RMM
-from .spatial import voxsize
+from .spatial import voxsize, im_gradient
 
 
-__all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'identity',
+__all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'estimate_fwhm', 'identity',
            'imatrix', 'matrix', 'mean_matrix', 'mean_space', 'noise_estimate']
 
 
@@ -353,6 +354,77 @@ def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
             break
 
     return E, dE
+
+
+def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf')):
+    """ Estimates full width at half maximum (FWHM) and noise standard
+        deviation (sd) of a 2D or 3D image.
+
+        It is assumed that the image has been generated as:
+            x = Ky + n,
+        where K is Gaussian smoothing with some FWHM and n is
+        additive Gaussian noise. FWHM and n are estimated.
+
+    Args:
+        x (torch.tensor): Image data (X, Y) | (X, Y, Z).
+        vx (float, optional): Voxel size. Defaults to (1, 1, 1).
+        verbose (int, optional): Verbosity level (0|1|2):
+            0: No verbosity
+            1: Print FWHM and sd to screen
+            2: 1 + show mask with matplotlib
+            Defaults to 0.
+        mn (float, optional): Exclude values in x below mn, defaults to -inf.
+        mx (float, optional): Exclude values in x above mx, defaults to -inf.
+
+    Returns:
+        fwhm (torch.tensor): Estimated FWHM (2,) | (3,).
+        sd (torch.tensor): Estimated noise standard deviation.
+
+    Reference:
+        Appendix A of:
+        Groves AR, Beckmann CF, Smith SM, Woolrich MW.
+        Linked independent component analysis for multimodal data fusion.
+        Neuroimage. 2011 Feb 1;54(3):2198-217.
+
+    """
+    if vx is None:
+        vx = (1.0,) * 3
+    # Parameters
+    device = x.device
+    dtype = x.dtype
+    logtwo = torch.tensor(2.0, device=device, dtype=dtype).log()
+    one = torch.tensor(1.0, device=device, dtype=dtype)
+    ndim = len(x.shape)
+    # Make mask
+    msk = (x > mn) & (x <= mx)
+    if verbose >= 2:
+        nitorch.utils.show_slices(msk)
+    # Compute image gradient
+    g = im_gradient(x, which='central', vx=vx, bound='circular')
+    g[~msk.repeat((ndim, 1, 1, 1))] = 0
+    g = g.abs()
+    if ndim == 3:
+        g = g.sum(dim=3)
+    g = g.sum(dim=2).sum(dim=1)
+    # Make x have zero mean
+    x0 = x[msk] - x[msk].mean()
+    # Compute FWHM
+    fwhm = torch.sqrt(4.0 * logtwo) * torch.sum(x0.abs())
+    fwhm = fwhm / g
+    if verbose >= 1:
+        print('FWHM={}'.format(fwhm))
+    # Compute noise standard deviation
+    sx = smooth('gauss', fwhm[0], x=0, dtype=dtype, device=device)[0][0, 0, 0]
+    sy = smooth('gauss', fwhm[1], x=0, dtype=dtype, device=device)[0][0, 0, 0]
+    sz = 1.0
+    if ndim == 3:
+        sz = smooth('gauss', fwhm[2], x=0, dtype=dtype, device=device)[0][0, 0, 0]
+    sc = (sx * sy * sz) / ndim
+    sc = torch.min(sc, one)
+    sd = torch.sqrt(torch.sum(x0 ** 2) / (x0.numel() * sc))
+    if verbose >= 1:
+        print('sd={}'.format(sd))
+    return fwhm, sd
 
 
 def identity(dm, dtype=torch.float32, device='cpu'):
