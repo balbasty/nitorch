@@ -158,7 +158,7 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
     Allows for real-time plotting if giving returned fig_ax objects as input.
 
     Args:
-        vals (torch.tensor): Vector of values to be plotted.
+        vals (torch.tensor): Values to be plotted (N,) | (N, C).
         fig_ax ([matplotlib.figure, matplotlib.axes])
         fig_num (int, optional): Figure number to plot to, defaults to 1.
         fig_title (str, optional): Figure title, defaults to 'Model convergence'.
@@ -194,7 +194,7 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
 
     ax[1].clear()
     x = torch.arange(0, len(vals)) + 1
-    ax[1].plot(x[-3:], vals[-3:], 'r')
+    ax[1].plot(x[-3:, ...], vals[-3:, ...])
     ax[1].set_xlabel(xlab)
     ax[1].set_ylabel(ylab)
     ax[1].xaxis.set_major_locator(MaxNLocator(integer=True))
