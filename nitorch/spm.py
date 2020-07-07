@@ -309,7 +309,7 @@ def def2sparse(phi, dm_in, nn=False):
     return Phi
 
 
-def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
+def dexpm(A, dA=None, max_iter=10000, diff=False):
     """ Differentiate a matrix exponential.
 
     Args:
@@ -344,7 +344,7 @@ def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
     dAn = dA.clone()
     dE = dA.clone()
     for n_iter in range(2, max_iter):
-        if requires_grad:
+        if diff:
             for m in range(dA.shape[2]):
                 dAn[..., m] = (dAn[..., m].mm(A) + An.mm(dA[..., m]))/n_iter
             dE += dAn
@@ -677,8 +677,8 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
 
         p = torch.zeros(9, device=device, dtype=dtype)
         for n_iter in range(10000):
-            R, dR = dexpm(p[[0, 1, 2, 3, 4, 5]], B, requires_grad=True)  # Rotations + Translations
-            Z, dZ = dexpm(p[[6, 7, 8]], B2, requires_grad=True)  # Zooms
+            R, dR = dexpm(p[[0, 1, 2, 3, 4, 5]], B, diff=True)  # Rotations + Translations
+            Z, dZ = dexpm(p[[6, 7, 8]], B2, diff=True)  # Zooms
 
             M = R.mm(Z)
             dM = torch.zeros((4, 4, 9), device=device, dtype=dtype)
