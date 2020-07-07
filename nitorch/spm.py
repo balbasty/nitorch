@@ -27,7 +27,7 @@ __all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'estimate_fwhm', 'id
            'imatrix', 'matrix', 'mean_matrix', 'mean_space', 'noise_estimate']
 
 
-def affine(dm, mat, dtype=torch.float32, device='cpu'):
+def affine(dm, mat, dtype=torch.float32, device='cpu', jitter=False):
     """ Generate an affine warp on a lattice defined by dm and mat.
 
     Args:
@@ -35,13 +35,14 @@ def affine(dm, mat, dtype=torch.float32, device='cpu'):
         mat (torch.Tensor): Affine transform.
         dtype (torch.dtype, optional): Defaults to torch.float32.
         device (string, optional): Defaults to 'cpu'.
+        jitter (bool, optional): Add random jittering, defaults to False.
 
     Returns:
         a (torch.Tensor): Affine warp (1, X, Y, Z, 3).
 
     """
     mat = mat.type(dtype)
-    a = identity(dm, dtype=dtype, device=device)
+    a = identity(dm, dtype=dtype, device=device, jitter=jitter)
     a = torch.reshape(a, (dm[0]*dm[1]*dm[2], 3))
     a = torch.matmul(a, torch.t(mat[0:3, 0:3])) + torch.t(mat[0:3, 3])
     a = torch.reshape(a, (dm[0], dm[1], dm[2], 3))
@@ -317,7 +318,7 @@ def dexpm(A, dA=None, max_iter=10000, diff=False):
         dA (torch.tensor, optional): Basis function to differentiate
             with respect to (4, 4, num_basis). Defaults to None.
         max_iter (int, optional): Max number of iterations, defaults to 10,000.
-        requires_grad (bool, optional): Compute derivatives, defaults to False.
+        diff (bool, optional): Compute derivatives, defaults to False.
 
     Returns:
         E (torch.tensor): expm(A) (4, 4).
@@ -428,13 +429,14 @@ def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf'), sum_
     return fwhm, sd
 
 
-def identity(dm, dtype=torch.float32, device='cpu'):
+def identity(dm, dtype=torch.float32, device='cpu', jitter=False):
     """ Generate the identity warp on a lattice defined by dm.
 
     Args:
         dm (torch.Size): Defines the size of the output lattice (X, Y, Z).
         dtype (torch.dtype, optional): Defaults to torch.float32.
         device (string, optional): Defaults to 'cpu'.
+        jitter (bool, optional): Add random jittering, defaults to False.
 
     Returns:
         i (torch.Tensor): Identity warp (X, Y, Z, 3).
@@ -445,6 +447,9 @@ def identity(dm, dtype=torch.float32, device='cpu'):
         torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
                         torch.arange(0, dm[1], dtype=dtype, device=device),
                         torch.arange(0, dm[2], dtype=dtype, device=device)])
+    if jitter:
+        torch.manual_seed(0)
+        i += torch.rand_like(i)
     return i
 
 
