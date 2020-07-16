@@ -50,15 +50,17 @@ def logm(M):
     return M
 
 
-def besseli(X, order=0, Nk=10):
+def besseli(X, order=0, Nk=50):
     """ Approximates the modified Bessel function of the first kind,
         of either order zero or one.
+
+        OBS: Inputing float32 can lead to numerical issues.
 
     Args:
         X (torch.tensor): Input (N, 1).
         order (int, optional): 0 or 1, defaults to 0.
         Nk (int, optional): Terms in summation, higher number, better approximation.
-            Defaults to 10.
+            Defaults to 50.
 
     Returns:
         I (torch.tensor): Modified Bessel function of the first kind (N, 1).
@@ -79,13 +81,12 @@ def besseli(X, order=0, Nk=10):
     K = torch.arange(0, Nk, dtype=dtype, device=device)
     K = K.repeat(N, 1)
     K_factorial = (K + 1).lgamma().exp()
-    # Compute Bessel function of..
     if order == 0:
         # ..0th order
-        i = torch.sum((0.25 * X ** 2) ** K / (K_factorial ** 2), dim=1)
+        i = torch.sum((0.25 * X ** 2) ** K / (K_factorial ** 2), dim=1, dtype=torch.float64)
     else:
         # ..1st order
         i = torch.sum(
             0.5 * X * ((0.25 * X ** 2) ** K /
-                       (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1)
+                       (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1, dtype=torch.float64)
     return i

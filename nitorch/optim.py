@@ -93,6 +93,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         A = A_function
 
     # Initialisation
+    nb = torch.sqrt(torch.sum(b**2, dtype=sum_dtype))  # norm of b
     r = b - A(x)  # Residual: b - A*x
     z = precond(r)  # Preconditioned residual
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
@@ -119,19 +120,18 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         if verbose:
             s = '{:' + str(len(str(max_iter))) + '} - sqrt(rtr)={:0.6f}'
             print(s.format(n_iter + 1, torch.sqrt(rz)))
-        if torch.sqrt(rz) < tolerance:
+        if torch.sqrt(rz) < tolerance*nb:
             break
         beta = rz / rz0
 
     return x
 
 
-def get_gain(obj, n_iter, monotonicity='increasing'):
+def get_gain(obj, monotonicity='increasing'):
     """ Compute gain of some objective function.
 
     Args:
         obj (torch.tensor): Vector of values (e.g., loss).
-        n_iter (int): Iteration number.
         direction (string, optional): Monotonicity of values ('increasing'/'decreasing'),
             defaults to 'increasing'.
 
@@ -139,15 +139,15 @@ def get_gain(obj, n_iter, monotonicity='increasing'):
         gain (torch.tensor): Computed gain.
 
     """
-    if n_iter == 0:
+    if len(obj) <= 1:
         return torch.tensor(float('inf'), dtype=obj.dtype, device=obj.device)
     if monotonicity == 'increasing':
-        gain = (obj[n_iter] - obj[n_iter - 1])
+        gain = (obj[-1] - obj[-2])
     elif monotonicity == 'decreasing':
-        gain = (obj[n_iter - 1] - obj[n_iter])
+        gain = (obj[-2] - obj[-1])
     else:
         raise ValueError('Undefined monotonicity')
-    gain = gain / (torch.max(obj[1:n_iter + 1]) - torch.min(obj[1:n_iter + 1]))
+    gain = gain / (torch.max(obj) - torch.min(obj))
     return gain
 
 
@@ -158,7 +158,7 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
     Allows for real-time plotting if giving returned fig_ax objects as input.
 
     Args:
-        vals (torch.tensor): Vector of values to be plotted.
+        vals (torch.tensor): Values to be plotted (N,) | (N, C).
         fig_ax ([matplotlib.figure, matplotlib.axes])
         fig_num (int, optional): Figure number to plot to, defaults to 1.
         fig_title (str, optional): Figure title, defaults to 'Model convergence'.
@@ -194,7 +194,7 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
 
     ax[1].clear()
     x = torch.arange(0, len(vals)) + 1
-    ax[1].plot(x[-3:], vals[-3:], 'r')
+    ax[1].plot(x[-3:, ...], vals[-3:, ...])
     ax[1].set_xlabel(xlab)
     ax[1].set_ylabel(ylab)
     ax[1].xaxis.set_major_locator(MaxNLocator(integer=True))

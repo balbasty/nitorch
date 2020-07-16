@@ -16,17 +16,18 @@
 import math
 import nibabel as nib
 import torch
+from .kernels import smooth
 from .mathfun import expm, logm
 from .mixtures import GMM
 from .mixtures import RMM
-from .spatial import voxsize
+from .spatial import voxsize, im_gradient
 
 
-__all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'identity',
+__all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'estimate_fwhm', 'identity',
            'imatrix', 'matrix', 'mean_matrix', 'mean_space', 'noise_estimate']
 
 
-def affine(dm, mat, dtype=torch.float32, device='cpu'):
+def affine(dm, mat, dtype=torch.float32, device='cpu', jitter=False):
     """ Generate an affine warp on a lattice defined by dm and mat.
 
     Args:
@@ -34,13 +35,14 @@ def affine(dm, mat, dtype=torch.float32, device='cpu'):
         mat (torch.Tensor): Affine transform.
         dtype (torch.dtype, optional): Defaults to torch.float32.
         device (string, optional): Defaults to 'cpu'.
+        jitter (bool, optional): Add random jittering, defaults to False.
 
     Returns:
         a (torch.Tensor): Affine warp (1, X, Y, Z, 3).
 
     """
     mat = mat.type(dtype)
-    a = identity(dm, dtype=dtype, device=device)
+    a = identity(dm, dtype=dtype, device=device, jitter=jitter)
     a = torch.reshape(a, (dm[0]*dm[1]*dm[2], 3))
     a = torch.matmul(a, torch.t(mat[0:3, 0:3])) + torch.t(mat[0:3, 3])
     a = torch.reshape(a, (dm[0], dm[1], dm[2], 3))
@@ -308,7 +310,7 @@ def def2sparse(phi, dm_in, nn=False):
     return Phi
 
 
-def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
+def dexpm(A, dA=None, max_iter=10000, diff=False):
     """ Differentiate a matrix exponential.
 
     Args:
@@ -316,7 +318,7 @@ def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
         dA (torch.tensor, optional): Basis function to differentiate
             with respect to (4, 4, num_basis). Defaults to None.
         max_iter (int, optional): Max number of iterations, defaults to 10,000.
-        requires_grad (bool, optional): Compute derivatives, defaults to False.
+        diff (bool, optional): Compute derivatives, defaults to False.
 
     Returns:
         E (torch.tensor): expm(A) (4, 4).
@@ -343,7 +345,7 @@ def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
     dAn = dA.clone()
     dE = dA.clone()
     for n_iter in range(2, max_iter):
-        if requires_grad:
+        if diff:
             for m in range(dA.shape[2]):
                 dAn[..., m] = (dAn[..., m].mm(A) + An.mm(dA[..., m]))/n_iter
             dE += dAn
@@ -355,13 +357,86 @@ def dexpm(A, dA=None, max_iter=10000, requires_grad=False):
     return E, dE
 
 
-def identity(dm, dtype=torch.float32, device='cpu'):
+def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf'), sum_dtype=torch.float64):
+    """ Estimates full width at half maximum (FWHM) and noise standard
+        deviation (sd) of a 2D or 3D image.
+
+        It is assumed that the image has been generated as:
+            x = Ky + n,
+        where K is Gaussian smoothing with some FWHM and n is
+        additive Gaussian noise. FWHM and n are estimated.
+
+    Args:
+        x (torch.tensor): Image data (X, Y) | (X, Y, Z).
+        vx (float, optional): Voxel size. Defaults to (1, 1, 1).
+        verbose (int, optional): Verbosity level (0|1|2):
+            0: No verbosity
+            1: Print FWHM and sd to screen
+            2: 1 + show mask with matplotlib
+            Defaults to 0.
+        mn (float, optional): Exclude values in x below mn, defaults to -inf.
+        mx (float, optional): Exclude values in x above mx, defaults to -inf.
+        sum_dtype (torch.dtype): Defaults to torch.float64.
+
+    Returns:
+        fwhm (torch.tensor): Estimated FWHM (2,) | (3,).
+        sd (torch.tensor): Estimated noise standard deviation.
+
+    Reference:
+        Appendix A of:
+        Groves AR, Beckmann CF, Smith SM, Woolrich MW.
+        Linked independent component analysis for multimodal data fusion.
+        Neuroimage. 2011 Feb 1;54(3):2198-217.
+
+    """
+    if vx is None:
+        vx = (1.0,) * 3
+    # Parameters
+    device = x.device
+    dtype = x.dtype
+    logtwo = torch.tensor(2.0, device=device, dtype=dtype).log()
+    one = torch.tensor(1.0, device=device, dtype=dtype)
+    ndim = len(x.shape)
+    # Make mask
+    msk = (x > mn) & (x <= mx)
+    if verbose >= 2:
+        nitorch.utils.show_slices(msk)
+    # Compute image gradient
+    g = im_gradient(x, which='central', vx=vx, bound='circular')
+    g[~msk.repeat((ndim, 1, 1, 1))] = 0
+    g = g.abs()
+    if ndim == 3:
+        g = g.sum(dim=3, dtype=sum_dtype)
+    g = g.sum(dim=2, dtype=sum_dtype).sum(dim=1, dtype=sum_dtype)
+    # Make x have zero mean
+    x0 = x[msk] - x[msk].mean()
+    # Compute FWHM
+    fwhm = torch.sqrt(4.0 * logtwo) * torch.sum(x0.abs(), dtype=sum_dtype)
+    fwhm = fwhm / g
+    if verbose >= 1:
+        print('FWHM={}'.format(fwhm))
+    # Compute noise standard deviation
+    sx = smooth('gauss', fwhm[0], x=0, dtype=dtype, device=device)[0][0, 0, 0]
+    sy = smooth('gauss', fwhm[1], x=0, dtype=dtype, device=device)[0][0, 0, 0]
+    sz = 1.0
+    if ndim == 3:
+        sz = smooth('gauss', fwhm[2], x=0, dtype=dtype, device=device)[0][0, 0, 0]
+    sc = (sx * sy * sz) / ndim
+    sc = torch.min(sc, one)
+    sd = torch.sqrt(torch.sum(x0 ** 2, dtype=sum_dtype) / (x0.numel() * sc))
+    if verbose >= 1:
+        print('sd={}'.format(sd))
+    return fwhm, sd
+
+
+def identity(dm, dtype=torch.float32, device='cpu', jitter=False):
     """ Generate the identity warp on a lattice defined by dm.
 
     Args:
         dm (torch.Size): Defines the size of the output lattice (X, Y, Z).
         dtype (torch.dtype, optional): Defaults to torch.float32.
         device (string, optional): Defaults to 'cpu'.
+        jitter (bool, optional): Add random jittering, defaults to False.
 
     Returns:
         i (torch.Tensor): Identity warp (X, Y, Z, 3).
@@ -372,6 +447,9 @@ def identity(dm, dtype=torch.float32, device='cpu'):
         torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
                         torch.arange(0, dm[1], dtype=dtype, device=device),
                         torch.arange(0, dm[2], dtype=dtype, device=device)])
+    if jitter:
+        torch.manual_seed(0)
+        i += torch.rand_like(i)
     return i
 
 
@@ -604,8 +682,8 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
 
         p = torch.zeros(9, device=device, dtype=dtype)
         for n_iter in range(10000):
-            R, dR = dexpm(p[[0, 1, 2, 3, 4, 5]], B, requires_grad=True)  # Rotations + Translations
-            Z, dZ = dexpm(p[[6, 7, 8]], B2, requires_grad=True)  # Zooms
+            R, dR = dexpm(p[[0, 1, 2, 3, 4, 5]], B, diff=True)  # Rotations + Translations
+            Z, dZ = dexpm(p[[6, 7, 8]], B2, diff=True)  # Zooms
 
             M = R.mm(Z)
             dM = torch.zeros((4, 4, 9), device=device, dtype=dtype)
@@ -700,22 +778,23 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
     X = X.double()
 
     # Mask
-    X = X[(X != 0) & (torch.isfinite(X))]
+    mn = torch.min(X).int()
+    X = X[(X != 0) & (torch.isfinite(X)) & (X != torch.max(X))]
 
     # Bin and make x grid
-    mn = torch.min(X).int()
     mx = torch.max(X).int()
     bins = mx - mn
     W = torch.histc(X, bins=bins + 1, min=mn, max=mx)
     X = torch.arange(mn, mx + 1, device=device).double()
 
+    # mn = -1
     if mn < 0:  # Make GMM model
         model = GMM(num_class=num_class)
     else:  # Make RMM model
-        model = RMM(num_class=2)
+        model = RMM(num_class=num_class)
 
     # Fit GMM using Numpy
-    model.fit(X, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit)
+    model.fit(X, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
 
     # Get means and mixing proportions
     mu, _ = model.get_means_variances()

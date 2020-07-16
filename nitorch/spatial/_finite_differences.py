@@ -17,8 +17,13 @@ def im_divergence(dat, vx=None, which='forward', bound='constant'):
             . 'backward': Backward difference (centre - previous)
             . 'central': Central difference ((next - previous)/2)
             Defaults to 'forward'.
-        bound (string, optional): Boundary conditions, defaults to 'constant'
-            (zero padding).
+        bound (string, optional): Boundary conditions:
+                . 'circular' -> FFT
+                . 'reflect' or 'reflect1' -> DCT-I
+                . 'reflect2' -> DCT-II
+                . 'replicate' -> replicates border values
+                . 'constant zero'
+            Defaults to 'constant zero'
 
     Returns:
         div (torch.tensor()): Divergence (X, Y) | (X, Y, Z).
@@ -92,8 +97,13 @@ def im_gradient(dat, vx=None, which='forward', bound='constant'):
             . 'backward': Backward difference (centre - previous)
             . 'central': Central difference ((next - previous)/2)
             Defaults to 'forward'.
-        bound (string, optional): Boundary conditions, defaults to 'constant'
-            (zero padding).
+        bound (string, optional): Boundary conditions:
+                . 'circular' -> FFT
+                . 'reflect' or 'reflect1' -> DCT-I
+                . 'reflect2' -> DCT-II
+                . 'replicate' -> replicates border values
+                . 'constant zero'
+            Defaults to 'constant zero'
 
     Returns:
           grad (torch.tensor()): Gradient (2, X, Y) | (3, X, Y, Z).
