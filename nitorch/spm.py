@@ -581,9 +581,9 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
                 if ss < minss:
                     minss = ss
                     minR = R2
-        rdim = torch.abs(minR.mm(Dim[..., n][..., None]))
+        rdim = torch.abs(minR.mm(Dim[..., n][..., None]-1))
         R2 = minR.inverse()
-        R22 = R2.mm(0.5*(torch.sum(R2, dim=0, keepdim=True).t() - 1)*(rdim + 1))
+        R22 = R2.mm((torch.sum(R2, dim=0, keepdim=True).t()//2 - 1)*rdim)
         minR = torch.cat((R2, R22), dim=1)
         minR = torch.cat((minR, torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)[None, ...]), dim=0)
         Mat[..., n] = Mat[..., n].mm(minR)
