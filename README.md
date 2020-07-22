@@ -1,6 +1,13 @@
 # nitorch
 Neuroimaging in PyTorch
 
+## DISCLAIMER
+
+NiTorch is currently in a very *alpha* state: its API is far from stable, 
+it has been loosely tested, and there is not warranty that it can run on any 
+OS or against any version of PyTorch. Up to now, it has only been used 
+on linux, compiled from source against PyTorch 1.4 and 1.5.
+
 ## Quick start
 
 1. Build conda environement
@@ -45,3 +52,18 @@ This will create a wheel file in a `dist/` directory:
 ```{bash}
 pip install nitorch-[*].whl
 ```
+
+## Authors
+
+NiTorch has been mostly written by Yael Balbastre and Mikael Brudfors, while post-docs 
+in John Ashburner's group at the FIL (or *Wellcome Centre for Human Neuroimaging* as it 
+is officially known). It is therefore conceptually related to SPM.
+
+All contributions are welcome 
+(though no nicely drafted guidelines exist, we'll try to get better).
+
+## License
+
+NiTorch is released under the MIT license. However, the `spm.py` module is directly 
+based on MATLAB code from the SPM software (https://www.fil.ion.ucl.ac.uk/spm/software/), 
+which is copyright and released under the GNU-GPL license (version >= 2).
