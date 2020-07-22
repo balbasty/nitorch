@@ -8,13 +8,11 @@ import torch
 #   > Since A is positive definite, inv(A)' = inv(A') = inv(A)
 #   > The gradient of (A\b).dot(x) w.r.t. b is A\x, which can be solved
 #     (again) by CG
-# . Add tolerance argument, in which case the objective function (the A-norm
-#   of the residuals) is tracked
 
 
 def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
        tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
-       inplace=True):
+       inplace=True, stop='residuals'):
     """ Solve A*x = b by the conjugate gradient method.
 
         The method of conjugate gradients solves linear systems of
@@ -40,6 +38,11 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         inplace (bool, optional): Perform computations inplace
             (saves performance but overrides x and may break the
             computational graph). Defaults to True.
+        stop (str, optional): What stopping criteria to use ('residuals'|'norm').
+            The squared residuals ('residuals') are not motonically decreasing,
+            whilst the norm induced by the 𝐴-weighted scalar product ('norm') is.
+            If monotinicity is important then select 'norm'. However, this requires
+            an additional evaluation of A. Defaults to 'residuals'.
 
     Returns:
         x (torch.tensor): Solution of the linear system (M, 1).
@@ -93,14 +96,22 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         A = A_function
 
     # Initialisation
-    nb = torch.sqrt(torch.sum(b**2, dtype=sum_dtype))  # norm of b
     r = b - A(x)  # Residual: b - A*x
     z = precond(r)  # Preconditioned residual
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
     p = z.clone()  # Initial conjugate directions p
     beta = torch.tensor(0, dtype=dtype, device=device)  # Initial step size
+    if verbose:
+        if stop == 'residuals':
+            obj = torch.sqrt(rz)
+        else:
+            obj = A(x) - b
+            obj = torch.sum(0.5 * x * obj, dtype=sum_dtype)
+        s = '{:' + str(len(str(max_iter))) + '} | {}={:0.6f}'
+        print(s.format(0, stop, obj))
 
     # Run algorithm
+    obj = torch.zeros(max_iter, dtype=sum_dtype, device=device)
     for n_iter in range(max_iter):
         # Calculate conjugate directions P (descent direction)
         p *= beta
@@ -117,10 +128,18 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         # Finds the step size for updating P
         rz0 = rz
         rz = torch.sum(r * z, dtype=sum_dtype)
+        # Check convergence
+        if stop == 'residuals':
+            obj1 = torch.sqrt(rz)
+        else:
+            obj1 = A(x) - b
+            obj1 = torch.sum(0.5 * x * obj1, dtype=sum_dtype)
+        obj[n_iter] = obj1
+        gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
         if verbose:
-            s = '{:' + str(len(str(max_iter))) + '} - sqrt(rtr)={:0.6f}'
-            print(s.format(n_iter + 1, torch.sqrt(rz)))
-        if torch.sqrt(rz) < tolerance*nb:
+            s = '{:' + str(len(str(max_iter))) + '} | {}={:0.6f}, gain={:0.6f}'
+            print(s.format(n_iter + 1, stop, obj[n_iter], gain))
+        if gain.abs() < tolerance:
             break
         beta = rz / rz0
 
