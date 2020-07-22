@@ -769,23 +769,27 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
 
     """
     if isinstance(pth_nii, torch.Tensor):
-        X = pth_nii
+        dat = pth_nii
     else:  # Load data from nifti
         nii = nib.load(pth_nii)
-        X = torch.tensor(nii.get_fdata())
-        X = X.flatten()
-    device = X.device
-    X = X.double()
+        dat = torch.tensor(nii.get_fdata())
+        dat = dat.flatten()
+    device = dat.device
+    dat = dat.double()
 
-    # Mask
-    mn = torch.min(X).int()
-    X = X[(X != 0) & (torch.isfinite(X)) & (X != torch.max(X))]
+    # Mask and get min/max
+    mn = torch.min(dat)
+    dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != torch.max(dat)) & (dat != mn)]
+    mx = torch.max(dat)
+    mn = mn.round()
+    mx = mx.round()
+    bins = (mx - mn).int()
+    if bins < 1024:
+        bins = 1024
 
-    # Bin and make x grid
-    mx = torch.max(X).int()
-    bins = mx - mn
-    W = torch.histc(X, bins=bins + 1, min=mn, max=mx)
-    X = torch.arange(mn, mx + 1, device=device).double()
+    # Histogram bin data
+    W = torch.histc(dat, bins=bins).double()
+    x = torch.linspace(mn, mx, steps=bins, device=device).double()
 
     # mn = -1
     if mn < 0:  # Make GMM model
@@ -794,7 +798,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
         model = RMM(num_class=num_class)
 
     # Fit GMM using Numpy
-    model.fit(X, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
+    model.fit(x, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
 
     # Get means and mixing proportions
     mu, _ = model.get_means_variances()
