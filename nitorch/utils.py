@@ -392,8 +392,9 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
 
     # Work out dimensions/channels
     img = img[..., None, None]
-    dm = torch.tensor(img.shape)
+    dm = img.shape
     num_chan = dm[3]  # Number of channels
+    dm = torch.tensor(dm)
     is_3d = dm[2] > 1
     ix = torch.floor(0.5 * dm).int().tolist()
 
