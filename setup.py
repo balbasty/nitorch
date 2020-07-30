@@ -55,22 +55,31 @@ MINIMUM_MSVC_VERSION = (19, 0, 24215)
 # are specific to the version of pytorch that we compile against.
 
 def torch_version(astuple=True):
-    version = packaging.version.parse(torch.__version__).release
+    version = torch.__version__.split('.')
+    version = tuple(int(v) for v in version)
+    if len(version) == 2:
+        version = version + (0,)
     if not astuple:
         version = version[0]*10000 + version[1]*100 + version[0]
     return version
 
 
 def torch_cuda_version(astuple=True):
-    version = torch._C._cuda_getCompiledVersion()
-    version = (version//1000, version//10 % 1000, version % 10)
+    version = torch.version.cuda.split('.')
+    version = tuple(int(v) for v in version)
+    if len(version) == 2:
+        version = version + (0,)
     if not astuple:
         version = version[0]*10000 + version[1]*100 + version[0]
     return version
 
 
-def torch_cudnn_version():
-    return torch._C._cudnn.getCompileVersion()
+def torch_cudnn_version(astuple=True):
+    version = torch.backends.cudnn.version()
+    version = (version//1000, version//100 % 10, version % 100)
+    if not astuple:
+        version = version[0]*10000 + version[1]*100 + version[0]
+    return version
 
 
 def torch_parallel_backend():

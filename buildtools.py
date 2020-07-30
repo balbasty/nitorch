@@ -81,7 +81,7 @@ def cudnn_home():
     home = os.environ.get('CUDNN_HOME') or os.environ.get('CUDNN_PATH')
     if home is None:
         home = cuda_home()
-    if not os.path.exists(os.path.join(home, 'include', 'cudnn.h')):
+    if home and not os.path.exists(os.path.join(home, 'include', 'cudnn.h')):
         home = None
     if not home:
         print('-- CUDNN not found.')
@@ -98,7 +98,10 @@ def cudnn_version():
         else:
             return default
 
-    header = os.path.join(cudnn_home(), 'include', 'cudnn.h')
+    home = cudnn_home()
+    if not home:
+        return None
+    header = os.path.join(home, 'include', 'cudnn.h')
     with open(header, 'r') as file:
         lines = file.readlines()
     version = [None, None, None]
