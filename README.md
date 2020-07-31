@@ -26,6 +26,10 @@ conda activate nitorch
 import nitorch
 ```
 
+## Demo
+
+The demo folder contains an IPython notebook that does different types of resampling, showcasing some of NiTorch's funtionality. Just follow the instructions in the notebook to get started.
+
 ## Compiling your own wheel
 
 1. Build conda environement
