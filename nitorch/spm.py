@@ -43,11 +43,16 @@ def affine(dm, mat, dtype=torch.float32, device='cpu', jitter=False):
     """
     mat = mat.type(dtype)
     a = identity(dm, dtype=dtype, device=device, jitter=jitter)
-    a = torch.reshape(a, (dm[0]*dm[1]*dm[2], 3))
-    a = torch.matmul(a, torch.t(mat[0:3, 0:3])) + torch.t(mat[0:3, 3])
-    a = torch.reshape(a, (dm[0], dm[1], dm[2], 3))
-    if dm[0] == 1:
-        a[:, :, :, 0] = 0
+    if len(dm) > 2:  # 3D
+        a = torch.reshape(a, (dm[0]*dm[1]*dm[2], 3))
+        a = torch.matmul(a, torch.t(mat[:3, :3])) + torch.t(mat[:3, 3])
+        a = torch.reshape(a, (dm[0], dm[1], dm[2], 3))
+    else:  # 2D
+        a = torch.reshape(a, (dm[0] * dm[1], 2))
+        a = torch.matmul(a, torch.t(mat[:2, :2])) + torch.t(mat[:2, 2])
+        a = torch.reshape(a, (dm[0], dm[1], 2))
+    # if dm[0] == 1:
+    #     a[:, :, :, 0] = 0
     a = a[None, ...]
     return a
 
@@ -442,11 +447,17 @@ def identity(dm, dtype=torch.float32, device='cpu', jitter=False):
         i (torch.Tensor): Identity warp (X, Y, Z, 3).
 
     """
-    i = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
-    i[:, :, :, 0], i[:, :, :, 1], i[:, :, :, 2] = \
-        torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
-                        torch.arange(0, dm[1], dtype=dtype, device=device),
-                        torch.arange(0, dm[2], dtype=dtype, device=device)])
+    if len(dm) > 2:  # 3D
+        i = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
+        i[:, :, :, 0], i[:, :, :, 1], i[:, :, :, 2] = \
+            torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
+                            torch.arange(0, dm[1], dtype=dtype, device=device),
+                            torch.arange(0, dm[2], dtype=dtype, device=device)])
+    else:  # 2D
+        i = torch.zeros((dm[0], dm[1], 2), dtype=dtype, device=device)
+        i[:, :, 0], i[:, :, 1] = \
+            torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
+                            torch.arange(0, dm[1], dtype=dtype, device=device)])
     if jitter:
         torch.manual_seed(0)
         i += torch.rand_like(i)
