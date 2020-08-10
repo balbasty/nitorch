@@ -590,7 +590,7 @@ class RMM(Mixture):
 
         return mean, var
 
-    def _log_likelihood(self, X, k=0, c=-1):
+    def _log_likelihood(self, X, k=0, c=None):
         """
         Log-probability density function (pdf) of the Rician
         distribution, evaluated at the values in X.
@@ -609,7 +609,7 @@ class RMM(Mixture):
         N = X.shape[0]
         device = X.device
         dtype = X.dtype
-        pi = torch.tensor(math.pi, dtype=dtype, device=self.dev)
+        pi = torch.tensor(math.pi, dtype=dtype, device=device)
         tiny = torch.tensor(1e-32, dtype=dtype, device=device)
 
         # Get Rice parameters
@@ -617,6 +617,8 @@ class RMM(Mixture):
         sig2 = self.sig[k]**2
         nu = nu.type(dtype)
         sig2 = sig2.type(dtype)
+        nu = nu.to(device)
+        sig2 = sig2.to(device)
 
         log_pdf = torch.zeros((N, 1), dtype=dtype, device=device)
         tmp = -(X**2 + nu**2)/(2*sig2)
