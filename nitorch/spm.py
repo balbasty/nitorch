@@ -600,13 +600,14 @@ def mean_matrix(Mat):
     return mat
 
 
-def mean_space(Mat, Dim, vx=None, mod_prct=0):
+def mean_space(Mat, Dim, vx=None, bb='full', mod_prct=0):
     """ Compute a (mean) model space from individual spaces.
 
     Args:
         Mat (torch.tensor): N subjects' orientation matrices (4, 4, N).
         Dim (torch.tensor): N subjects' dimensions (3, N).
         vx (torch.tensor|tuple|float, optional): Voxel size (3,), defaults to None (estimate from input).
+        bb (str): Custom FOV of mean space ('mni'|'full'|'95'), defaults to 'full'.
         mod_prct (float, optional): Percentage to either crop or pad mean space.
             A negative value crops and a positive value pads. Should be a value
             between 0 and 1. Defaults to 0.
@@ -718,8 +719,8 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
     mat = mat.mm(torch.cat((vx_out/vx, one[..., None])).diag())
     vx = voxsize(mat)
     # Ensure that the FoV covers all images, with a few voxels to spare
-    mn =  torch.tensor([inf, inf, inf], device=device, dtype=dtype)
-    mx = -torch.tensor([inf, inf, inf], device=device, dtype=dtype)
+    mn_all = torch.zeros([3, N], device=device, dtype=dtype)
+    mx_all = torch.zeros([3, N], device=device, dtype=dtype)
     for n in range(N):
         dm = Dim[..., n]
         corners = torch.tensor([[1, dm[0], 1, dm[0], 1, dm[0], 1, dm[0]],
@@ -729,15 +730,34 @@ def mean_space(Mat, Dim, vx=None, mod_prct=0):
                                device=device, dtype=dtype)
         M = Mat0[..., n].solve(mat)[0]
         vx1 = M[:-1,:].mm(corners)
-        mx = torch.max(mx, torch.max(vx1, dim=1)[0])
-        mn = torch.min(mn, torch.min(vx1, dim=1)[0])
+        mx_all[..., n] = torch.max(vx1, dim=1)[0]
+        mn_all[..., n] = torch.min(vx1, dim=1)[0]
+    if bb == '95':
+        # Final bounding box should enclose 95% of the scans
+        N = torch.tensor(N, device=device, dtype=torch.float64);
+        ind = torch.min(torch.max(torch.round(N*0.95), one), N).int() - 1
+        mx_all = mx_all.sort(dim=1, descending=False)[0]
+        mn_all = mn_all.sort(dim=1, descending=True)[0]
+        mx = mx_all[..., ind]
+        mn = mn_all[..., ind]
+    else:
+        # Full
+        mx = mx_all.max(dim=1)[0]
+        mn = mn_all.min(dim=1)[0]
+
+    # Make int
     mx = torch.ceil(mx)
     mn = torch.floor(mn)
 
-    # Either pad or crop mean space
-    off = mod_prct*(mx - mn)
-    if Dim[2, 0] == 1: off = torch.tensor([0, 0, 0], device=device, dtype=dtype)
-    dim = (mx - mn + (2*off + 1))
+    # Make output dimensions and orientation matrix
+    dim = mx - mn + 1  # Output dimensions
+    off = torch.tensor([0, 0, 0], device=device, dtype=dtype)
+    if bb == 'mni':
+        # MNI FOV
+        dim_mni = torch.tensor([181, 217, 181], device=device, dtype=dtype)  # Size of SPM MNI
+        dim_mni = (dim_mni / vx).round()  # Modulate with mean voxel size
+        off = - (dim - dim_mni)/2
+        dim = dim + 2 * off
     mat = mat.mm(torch.tensor([[1, 0, 0, mn[0] - (off[0] + 1)],
                                [0, 1, 0, mn[1] - (off[1] + 1)],
                                [0, 0, 1, mn[2] - (off[2] + 1)],
