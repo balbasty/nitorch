@@ -289,6 +289,34 @@ def padlist(x, n):
     return return_type(x)
 
 
+def argpad(arg, n, default=None):
+    """Pad/crop list so that its length is ``n``.
+
+    Parameters
+    ----------
+    arg : scalar or iterable
+        Input argument(s)
+    n : int
+        Target length
+    default : optional
+        Default value to pad with. By fefault, replicate the last value
+
+    Returns
+    -------
+    arg : list
+        Output arguments
+
+    """
+    try:
+        arg = list(arg)[:n]
+    except TypeError:
+        arg = [arg]
+    if default is None:
+        default = arg[-1]
+    arg += [default] * max(0, n - len(arg))
+    return arg
+
+
 def replist(x, n, interleaved=False):
     """Replicate a list-like object.
 

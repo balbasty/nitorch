@@ -16,8 +16,8 @@
 import math
 import nibabel as nib
 import torch
-from .kernels import smooth
-from .mathfun import expm, logm
+from nitorch.core.kernels import smooth
+from nitorch.core.math import expm, logm
 from .mixtures import GMM
 from .mixtures import RMM
 from .spatial import voxsize, im_gradient

@@ -3,9 +3,11 @@
 
 import torch
 import torch.nn.functional as _F
-from nitorch import kernels, utils
-from nitorch._C import spatial as _Cspatial
-from nitorch._C.spatial import BoundType, InterpolationType
+from .. import utils
+from ..core import kernels
+from .._C import spatial as _Cspatial
+from .._C.spatial import BoundType, InterpolationType
+
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
            'identity', 'compose', 'jacobian', 'voxsize',
