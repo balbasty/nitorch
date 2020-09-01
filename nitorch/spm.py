@@ -434,7 +434,7 @@ def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf'), sum_
     return fwhm, sd
 
 
-def identity(dm, dtype=torch.float32, device='cpu', jitter=False):
+def identity(dm, dtype=torch.float32, device='cpu', jitter=False, step=1):
     """ Generate the identity warp on a lattice defined by dm.
 
     Args:
@@ -442,22 +442,27 @@ def identity(dm, dtype=torch.float32, device='cpu', jitter=False):
         dtype (torch.dtype, optional): Defaults to torch.float32.
         device (string, optional): Defaults to 'cpu'.
         jitter (bool, optional): Add random jittering, defaults to False.
+        step (int or tuple[int], optional): Gap between each pair of adjacent points, defaults to 1.
 
     Returns:
         i (torch.Tensor): Identity warp (X, Y, Z, 3).
 
     """
+    if not isinstance(step, tuple) and not isinstance(step, list):
+        step = (step,) * 3
     if len(dm) > 2:  # 3D
-        i = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
+        i = torch.zeros((math.ceil(dm[0]/step[0]), math.ceil(dm[1]/step[1]), math.ceil(dm[2]/step[2]), 3),
+                        dtype=dtype, device=device)
         i[:, :, :, 0], i[:, :, :, 1], i[:, :, :, 2] = \
-            torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
-                            torch.arange(0, dm[1], dtype=dtype, device=device),
-                            torch.arange(0, dm[2], dtype=dtype, device=device)])
+            torch.meshgrid([torch.arange(0, dm[0], step=step[0], dtype=dtype, device=device),
+                            torch.arange(0, dm[1], step=step[1], dtype=dtype, device=device),
+                            torch.arange(0, dm[2], step=step[2], dtype=dtype, device=device)])
     else:  # 2D
-        i = torch.zeros((dm[0], dm[1], 2), dtype=dtype, device=device)
+        i = torch.zeros((math.ceil(dm[0]/step[0]), math.ceil(dm[1]/step[1]), 2),
+                        dtype=dtype, device=device)
         i[:, :, 0], i[:, :, 1] = \
-            torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
-                            torch.arange(0, dm[1], dtype=dtype, device=device)])
+            torch.meshgrid([torch.arange(0, dm[0], step=step[0], dtype=dtype, device=device),
+                            torch.arange(0, dm[1], step=step[1], dtype=dtype, device=device)])
     if jitter:
         torch.manual_seed(0)
         i += torch.rand_like(i)
