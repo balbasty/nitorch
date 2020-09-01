@@ -6,6 +6,21 @@ from nitorch import utils
 __all__ = ['im_divergence', 'im_gradient']
 
 
+# Converts from nitorch.utils.pad boundary naming to
+# nitorch.spatial._grid mnaming
+_bound_converter = {
+    'circular': 'circular',
+    'reflect': 'reflect',
+    'reflect1': 'reflect1',
+    'reflect2': 'reflect2',
+    'replicate': 'replicate',
+    'constant': 'constant',
+    'zero': 'constant',
+    'dct1': 'reflect',
+    'dct2': 'reflect2',
+    }
+
+
 def im_divergence(dat, vx=None, which='forward', bound='constant'):
     """ Computes the divergence of 2D or 3D data.
 
@@ -35,6 +50,7 @@ def im_divergence(dat, vx=None, which='forward', bound='constant'):
         vx = torch.tensor(vx, dtype=dat.dtype, device=dat.device)
     half = torch.tensor(0.5, dtype=dat.dtype, device=dat.device)
     ndim = len(dat.shape) - 1
+    bound = _bound_converter[bound]
 
     if which == 'forward':
         # Pad + reflected forward difference
@@ -115,6 +131,7 @@ def im_gradient(dat, vx=None, which='forward', bound='constant'):
         vx = torch.tensor(vx, dtype=dat.dtype, device=dat.device)
     half = torch.tensor(0.5, dtype=dat.dtype, device=dat.device)
     ndim = len(dat.shape)
+    bound = _bound_converter[bound]
 
     if which == 'forward':
         # Pad + forward difference
