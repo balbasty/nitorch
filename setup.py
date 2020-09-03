@@ -51,8 +51,9 @@ MINIMUM_GCC_VERSION = (5, 0, 0)
 MINIMUM_MSVC_VERSION = (19, 0, 24215)
 
 # ~~~ helpers
-# Most of the helpers are in build tools. The remainign helpers defined here
-# are specific to the version of pytorch that we compile against.
+# Most of the helpers are in build tools. The remaining helpers defined
+# here are specific to the version of pytorch that we compile against.
+
 
 def torch_version(astuple=True):
     version = torch.__version__.split('.')
@@ -102,6 +103,20 @@ def torch_abi():
   return str(int(torch._C._GLIBCXX_USE_CXX11_ABI))
 
 
+def torch_omp_lib():
+    torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
+    torch_library_dir = os.path.join(torch_dir, 'lib')
+    if is_darwin():
+        libtorch = os.path.join(torch_library_dir, 'libtorch.dylib')
+        linked_libs = os.popen('otool -L "{}"'.format(libtorch))
+        if 'libiomp5' in linked_libs:
+            return 'iomp5'
+        elif 'libomp' in linked_libs:
+            return 'omp'
+        else:
+            return None
+
+
 def torch_libraries(use_cuda=False):
     version = torch_version(astuple=False)
     if version < 10500:
@@ -112,6 +127,8 @@ def torch_libraries(use_cuda=False):
         libraries = ['c10', 'torch_cpu', 'torch_python', 'torch']
         if use_cuda:
             libraries += ['cudart', 'c10_cuda', 'torch_cuda']
+    if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
+        libraries += omp_libraries()
     return libraries
 
 
@@ -133,6 +150,8 @@ def torch_library_dirs(use_cuda=False, use_cudnn=False):
             library_dirs += [os.path.join(cudnn_home(), 'lib64')]
         elif os.path.exists(os.path.join(cudnn_home(), 'lib')):
             library_dirs += [os.path.join(cudnn_home(), 'lib')]
+    if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
+        library_dirs += omp_library_dirs()
     return library_dirs
 
 
@@ -149,6 +168,8 @@ def torch_include_dirs(use_cuda=False, use_cudnn=False):
             include_dirs += [cuda_include_dir]
     if use_cudnn:
         include_dirs += [os.path.join(cudnn_home(), 'include')]
+    if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
+        include_dirs += omp_include_dirs()
     return include_dirs
 
 
@@ -261,14 +282,105 @@ def nvcc_flags():
       '--expt-relaxed-constexpr']
 
 
+def find_omp_darwin():
+    """Set the correct openmp flag on MacOS.
+
+    LLVM's clang has both GCC's and Intel's implementations of OpenMP
+    (gomp, omp5), which can be specifically used with the flag
+    '-fopenmp=libiomp5' or '-fopenmp=libgomp'. If no implementation is
+    specified, the behaviour depends on the version of LLVM
+    (it used to be gomp, now I believe it is iomp5). Note that iomp5 is
+    binary compatible with gomp (does that mean we can link with both
+    without conflicts?).
+
+    Apple's clang does not ship any OpenMP implementation, so the user
+    needs to install one herself, which we need to find and reference
+    properly.
+
+    Return (flag, lib_name, lib_dir)."""
+
+    # TODO: LLVM's clang embeds OpenMP for version >= 3.8.0
+    #       I need to add a special case for earlier versions.
+    #       There are other ABI incompatibilities as well:
+    #           https://openmp.llvm.org
+
+    # Various references that helped me in this maze:
+    #   https://iscinumpy.gitlab.io/post/omp-on-high-sierra/
+    #   https://stackoverflow.com/questions/37362414/
+    #   https://reviews.llvm.org/D2841
+
+    def find_lib(names):
+        for name in names:
+            if not name:
+                continue
+            dirs = ['.', '/usr/', '/usr/local/', '/opt/local/', '/usr/local/opt/libomp/']
+            if os.environ.get('LD_LIBRARY_PATH'):
+                dirs += os.environ.get('LD_LIBRARY_PATH').split(':')
+            for dir in dirs:
+                if os.path.exists(os.path.join(dir, 'lib', 'lib' + name + '.dylib')):
+                    return name, dir
+        return None, None
+
+    # First, check which clang we're dealing with
+    # (gcc, apple clang or external clang)
+    CC = os.environ.get('CC', 'clang')
+    CC_name = os.popen(CC + ' --version').read().split(' ')[0]
+    if CC_name == 'Apple':
+        CC_type = 'apple_clang'
+    elif CC_name == 'clang':
+        CC_type = 'other_clang'
+    else:
+        CC_type = 'other'
+
+    # If not clang: openmp should be packaged with the compiler:
+    if CC_type == 'other':
+        return ['-fopenmp'], None, None
+    elif CC_type == 'other_clang':
+        if torch_omp_lib() == 'iomp5':
+            return ['-fopenmp=libiomp5'], None, None
+        elif torch_omp_lib() == 'omp':
+            return ['-fopenmp=libgomp'], None, None
+        else:
+            return ['-fopenmp'], None, None
+
+    # First, check if omp/iomp5 has been installed (e.g., using homebrew)
+    lib_name, lib_dir = find_lib([torch_omp_lib(), 'iomp5', 'omp'])
+
+    if lib_name is None:
+        # OpenMP not found.
+        # Let's just hope that the compiler knows what it's doing.
+        return ['-fopenmp'], None, None
+    else:
+        return ['-Xpreprocessor', '-fopenmp'], lib_name, lib_dir
+
+
 def omp_flags():
     if is_windows():
         return ['/openmp']
     elif is_darwin():
-        # https://stackoverflow.com/questions/37362414/
-        return ['-fopenmp=libiomp5']
+        return find_omp_darwin()[0]
     else:
         return ['-fopenmp']
+
+def omp_libraries():
+    if is_darwin():
+        return [find_omp_darwin()[1]]
+    else:
+        return []
+
+
+def omp_library_dirs():
+    if is_darwin():
+        return [os.path.join(find_omp_darwin()[2], 'lib')]
+    else:
+        return []
+
+
+def omp_include_dirs():
+    if is_darwin():
+        return [os.path.join(find_omp_darwin()[2], 'include')]
+    else:
+        return []
 
 
 def common_flags():
@@ -292,7 +404,7 @@ def torch_flags(cuda=False):
 
 
 def torch_link_flags(cuda=False):
-    backend = torch_parallel_backend();
+    backend = torch_parallel_backend()
     flags = []
     if not cuda and backend == 'AT_PARALLEL_OPENMP':
         flags += omp_flags()
