@@ -28,7 +28,7 @@ def pad_list(input, n, default=None):
     input = input[:min(n, len(input))]
     if default is None:
         default = input[-1]
-    default += [default] * max(0, n - len(input))
+    input += [default] * max(0, n - len(input))
     return return_type(input)
 
 

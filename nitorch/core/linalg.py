@@ -1,7 +1,7 @@
 """Linear algebra."""
 import torch
 import torch.nn.functional as F
-from .utils import info, broadcast_backward, requires_grad
+from . import utils
 
 
 def meanm(mats, max_iter=1024, tol=1e-20):
@@ -46,7 +46,7 @@ def meanm(mats, max_iter=1024, tol=1e-20):
     # and was distributed as part of [SPM](https://www.fil.ion.ucl.ac.uk/spm)
     # under the GNU General Public Licence (version >= 2).
 
-    mats = torch.as_tensor(mats)
+    mats = utils.as_tensor(mats)
     dim = mats.shape[-1] - 1
     dtype = mats.dtype
     device = mats.device
@@ -55,7 +55,7 @@ def meanm(mats, max_iter=1024, tol=1e-20):
     log_mats = torch.empty_like(mats)
     for n_iter in range(max_iter):
         # Project all matrices to the tangent space about the current mean_mat
-        log_mats = logm(lmdiv(mean_mat, mats, out=log_mats), out=log_mats)
+        log_mats = logm(lmdiv(mean_mat, mats), out=log_mats)
         # Compute the new mean in the tangent space
         mean_log_mat = torch.mean(log_mats, dim=0)
         # Compute sum-of-squares in tangent space (should be zero at optimum)
@@ -72,16 +72,132 @@ def logm(*args, **kwargs):
     raise NotImplementedError
 
 
-def lmdiv(*arg, **kwargs):
-    raise NotImplementedError
+def lmdiv(a, b, method='lu', rcond=1e-15, out=None):
+    r"""Left matrix division ``inv(a) @ b``.
+
+    Parameters
+    ----------
+    a : (..., m, n) tensor_like
+        Left input ("the system")
+    b : (..., m, k) tensor_like
+        Right input ("the point")
+    method : {'lu', 'chol', 'svd', 'pinv'}, default='lu'
+        Inversion method:
+        * 'lu'   : LU decomposition. ``a`` must be invertible.
+        * 'chol' : Cholesky decomposition. ``a`` must be positive definite.
+        * 'svd'  : Singular Value decomposition.
+        * 'pinv' : Moore-Penrose pseudoinverse (by means of svd).
+    rcond : float, default=1e-15
+        Cutoff for small singular values when ``method == 'pinv'``.
+    out : tensor, optional
+        Output tensor (only used by methods 'lu' and 'chol').
+
+    .. note:: if ``m != n``, the Moore-Penrose pseudoinverse is always used.
+
+    Returns
+    -------
+    x : (..., n, k) tensor
+        Solution of the linear system.
+
+    """
+    dtype, device = utils.info(a, b)
+    a = utils.as_tensor(a, dtype, device)
+    b = utils.as_tensor(b, dtype, device)
+    if a.shape[-1] != a.shape[-2]:
+        method = 'pinv'
+    if method.lower().startswith('lu'):
+        # TODO: out keyword
+        return torch.solve(b, a)[0]
+    elif method.lower().startswith('chol'):
+        u = torch.cholesky(a, upper=False)
+        return torch.cholesky_solve(b, u, upper=False, out=out)
+    elif method.lower().startswith('svd'):
+        u, s, v = torch.svd(a)
+        s = s[..., None]
+        return v.matmul(u.transpose(-1, -2).matmul(b) / s)
+    elif method.lower().startswith('pinv'):
+        return torch.pinverse(a, rcond=rcond).matmul(b)
+    else:
+        raise ValueError('Unknown inversion method {}.'.format(method))
 
 
-def rmdiv(*arg, **kwargs):
-    raise NotImplementedError
+def rmdiv(a, b, method='lu', rcond=1e-15, out=None):
+    r"""Right matrix division ``a @ inv(b)``.
+
+    Parameters
+    ----------
+    a : (..., k, m) tensor_like
+        Left input ("the point")
+    b : (..., n, m) tensor_like
+        Right input ("the system")
+    method : {'lu', 'chol', 'svd', 'pinv'}, default='lu'
+        Inversion method:
+        * 'lu'   : LU decomposition. ``a`` must be invertible.
+        * 'chol' : Cholesky decomposition. ``a`` must be positive definite.
+        * 'svd'  : Singular Value decomposition. ``a`` must be invertible.
+        * 'pinv' : Moore-Penrose pseudoinverse
+                   (by means of svd with thresholded singular values).
+    rcond : float, default=1e-15
+        Cutoff for small singular values when ``method == 'pinv'``.
+    out : tensor, optional
+        Output tensor (only used by methods 'lu' and 'chol').
+
+    .. note:: if ``m != n``, the Moore-Penrose pseudoinverse is always used.
+
+    Returns
+    -------
+    x : (..., k, m) tensor
+        Solution of the linear system.
+
+    """
+    dtype, device = utils.info(a, b)
+    a = utils.as_tensor(a, dtype, device).transpose(-1, -2)
+    b = utils.as_tensor(b, dtype, device).transpose(-1, -2)
+    x = lmdiv(b, a, method=method, rcond=rcond).transpose(-1, -2)
+    return x
 
 
-def inv_pd(*arg, **kwargs):
-    raise NotImplementedError
+def inv(a, method='lu', rcond=1e-15, out=None):
+    r"""Matrix inversion.
+
+    Parameters
+    ----------
+    a : (..., m, n) tensor_like
+        Input matrix.
+    method : {'lu', 'chol', 'svd', 'pinv'}, default='lu'
+        Inversion method:
+        * 'lu'   : LU decomposition. ``a`` must be invertible.
+        * 'chol' : Cholesky decomposition. ``a`` must be positive definite.
+        * 'svd'  : Singular Value decomposition.
+        * 'pinv' : Moore-Penrose pseudoinverse (by means of svd).
+    rcond : float, default=1e-15
+        Cutoff for small singular values when ``method == 'pinv'``.
+    out : tensor, optional
+        Output tensor (only used by methods 'lu' and 'chol').
+
+    .. note:: if ``m != n``, the Moore-Penrose pseudoinverse is always used.
+
+    Returns
+    -------
+    x : (..., n, m) tensor
+        Inverse matrix.
+
+    """
+    a = utils.as_tensor(a)
+    if a.shape[-1] != a.shape[-2]:
+        method = 'pinv'
+    if method.lower().startswith('lu'):
+        return torch.inverse(a, out=out)
+    elif method.lower().startswith('chol'):
+        return torch.cholesky_inverse(a, upper=False, out=out)
+    elif method.lower().startswith('svd'):
+        u, s, v = torch.svd(a)
+        s = s[..., None]
+        return v.matmul(u.transpose(-1, -2) / s)
+    elif method.lower().startswith('pinv'):
+        return torch.pinverse(a, rcond=rcond)
+    else:
+        raise ValueError('Unknown inversion method {}.'.format(method))
 
 
 def _expm(X, basis=None, grad_X=False, grad_basis=False,
@@ -109,9 +225,9 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
        >>>     # dX.shape    == (*batch_XB, F, D, D)
        >>>     # dB.shape    == (*batch_XB, F, D, D, D, D)
        >>>     dX = torch.sum(dX * grad[..., None, :, :], dim=[-1, -2])
-       >>>     dX = broadcast_backward(dX, X.shape)
+       >>>     dX = utils.broadcast_backward(dX, X.shape)
        >>>     dB = torch.sum(dB * grad[..., None, None, None, :, :], dim=[-1, -2])
-       >>>     dB = broadcast_backward(dB, B.shape)
+       >>>     dB = utils.broadcast_backward(dB, B.shape)
        >>>     return dX, dB
 
     Parameters
@@ -164,13 +280,13 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
             a = a + b
         return a
 
-    dtype, device = info(X, basis)
-    X = torch.as_tensor(X, dtype=dtype, device=device)
+    dtype, device = utils.info(X, basis)
+    X = utils.as_tensor(X, dtype=dtype, device=device)
 
     if basis is not None:
         # X contains parameters in the Lie algebra -> reconstruct the matrix
         # X.shape = [.., F], basis.shape = [..., F, D, D]
-        basis = torch.as_tensor(basis, dtype=dtype, device=device)
+        basis = utils.as_tensor(basis, dtype=dtype, device=device)
         param = X
         X = torch.sum(basis * X[..., None, None], dim=-3, keepdim=True)
         dim = basis.shape[-1]
@@ -281,8 +397,8 @@ class _ExpM(torch.autograd.Function):
         basis = ctx.args['basis']
         max_order = ctx.args['max_order']
         tol = ctx.args['tol']
-        needs_grad_X = requires_grad(ctx, 'X')
-        needs_grad_basis = requires_grad(ctx, 'basis')
+        needs_grad_X = utils.requires_grad(ctx, 'X')
+        needs_grad_basis = utils.requires_grad(ctx, 'basis')
 
         # Compute derivative of output w.r.t. input
         _, *input_grad = _expm(X, basis, max_order=max_order, tol=tol,
@@ -296,13 +412,13 @@ class _ExpM(torch.autograd.Function):
             grad_X = torch.sum(grad_X * grad_for_X, dim=[-1, -2])
             if basis is None:
                 grad_X = grad_X.reshape(grad_X.shape[:-1] + (dim, dim))
-            grad_X = broadcast_backward(grad_X, X.shape)
+            grad_X = utils.broadcast_backward(grad_X, X.shape)
 
         if needs_grad_basis:
             grad_basis, *input_grad = input_grad
             grad_for_basis = output_grad[..., None, None, None, :, :]
             grad_basis = torch.sum(grad_basis * grad_for_basis, dim=[-1, -2])
-            grad_basis = broadcast_backward(grad_basis, basis.shape)
+            grad_basis = utils.broadcast_backward(grad_basis, basis.shape)
 
         return grad_X, grad_basis, None, None
 
