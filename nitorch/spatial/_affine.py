@@ -10,9 +10,11 @@ This
 
 import torch
 from ast import literal_eval
+from warnings import warn
 from ..core import utils
 from ..core import itertools
 from ..core import linalg
+from ..core import constants
 
 
 def volume_axis(*args, **kwargs):
@@ -905,3 +907,154 @@ def affine_matrix_classic(prm, dim=3, layout=None):
         mat = mat.mm(layout_matrix(layout))
 
     return mat
+
+
+def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
+                      max_line_search=6):
+    """Compute the parameters of an affine matrix in a basis of the algebra.
+
+    This function finds the matrix closest to ``mat`` (in the least squares
+    sense) that can be encoded in the specified basis.
+
+    Parameters
+    ----------
+    mat : (dim+1, dim+1) tensor_like
+        Affine matrix
+
+    basis : vector_like[basis_like]
+        Basis of the Lie algebra(s).
+
+    layout : str or (D+1, D+1) tensor_like, default='RAS'
+        "Point" at which to take the matrix exponential
+        (see affine_layout)
+
+    max_iter : int, default=10000
+        Maximum number of Gauss-Newton iterations in the least-squares fit.
+
+    tol : float, default = 1e-16
+        Tolerance criterion for convergence.
+        It is based on the squared norm of the GN step divided by the
+        squared norm of the input matrix.
+
+    max_line_search: int, default=6
+        Maximum number of line search steps.
+        If zero: no line-search is performed.
+
+    Returns
+    -------
+    prm : tensor
+        Parameters in the specified basis
+
+    """
+
+    # Authors
+    # -------
+    # .. John Ashburner <j.ashburner@ucl.ac.uk> : original GN fit in Matlab
+    # .. Yael Balbastre <yael.balbastre@gmail.com> : Python code
+
+    # Format mat
+    mat = utils.as_tensor(mat)
+    dtype = mat.dtype
+    dim = mat.shape[-1] - 1
+
+    # Format basis
+    basis, _ = _format_basis(basis, dim)
+    nb_basis = sum([len(b) for b in basis])
+
+    # Create layout matrix
+    # TODO: check that it works with new layout
+    if isinstance(layout, str):
+        layout = layout_matrix(layout)
+
+    def gauss_newton():
+        # Predefine these values in case max_iter == 0
+        n_iter = -1
+        # Gauss-Newton optimisation
+        prm = torch.zeros(nb_basis, dtype=dtype)
+        M = torch.eye(nb_basis, dtype=dtype)
+        M = torch.mm(M, layout)
+        sos = ((M - mat) ** 2).sum()
+        norm = (mat ** 2).sum()
+        crit = constants.inf
+        for n_iter in range(max_iter):
+
+            # Compute derivative of each submatrix with respect to its basis
+            # * Mi
+            # * dMi/dBi
+            Ms = []
+            dMs = []
+            n_basis = 0
+            for a_basis in basis:
+                nb_a_basis = a_basis.shape[0]
+                a_prm = prm[n_basis:(n_basis+nb_a_basis)]
+                M, dM = linalg._expm(a_prm, a_basis, grad_X=True)
+                Ms.append(M)
+                dMs.append(dM)
+                n_basis += nb_a_basis
+            M = torch.stack(Ms)
+
+            # Compute derivative of the full matrix with respect to each basis
+            # * M = mprod(M[:, ...])
+            # * dM/dBi = mprod(M[:i, ...]) @ dMi/dBi @ mprod(M[i+1:, ...])
+            for n_mat, dM in enumerate(dMs):
+                if n_mat > 0:
+                    pre = torch.chain_matmul(*M[:n_mat, ...])
+                    dM = pre.mm(dM)
+                if n_mat < M.shape[0]-1:
+                    post = torch.chain_matmul(*M[(n_mat+1):, ...])
+                    dM = dM.mm(post)
+                dMs[n_mat] = dM
+            dM = torch.cat(dMs)
+            M = torch.chain_matmul(*M)
+
+            # Multiply with layout
+            M = M.mm(layout)
+            dM = dM.mm(layout)
+
+            # Compute gradient/Hessian of the loss (squared residuals)
+            diff = M - mat
+            diff = diff.flatten()
+            dM = dM.reshape((nb_basis, -1))
+            gradient = dM.mm(diff)
+            hessian = dM.mm(dM.t())
+            delta_prm = linalg.lmdiv(hessian, gradient)
+
+            crit = (delta_prm ** 2).sum() / norm
+            if crit < tol:
+                break
+
+            if max_line_search == 0:
+                # We trust the Gauss-Newton step
+                prm -= delta_prm
+            else:
+                # Line Search
+                sos0 = sos
+                prm0 = prm
+                M0 = M
+                armijo = 1
+                success = False
+                for _ in range(max_line_search):
+                    prm = prm0 - armijo * delta_prm
+                    M = affine_matrix(prm, basis)
+                    sos = ((M - mat) ** 2).sum()
+                    if sos < sos0:
+                        success = True
+                        break
+                    else:
+                        armijo /= 2
+                if not success:
+                    prm = prm0
+                    M = M0
+                    break
+
+        if crit >= tol:
+            warn('Gauss-Newton optimisation did not converge: '
+                 'n_iter = {}, sos = {}.'.format(n_iter + 1, crit),
+                 RuntimeWarning)
+
+        return prm, M
+
+    prm, M = gauss_newton()
+
+    # TODO: should I stack parameters per basis?
+    return prm, M
