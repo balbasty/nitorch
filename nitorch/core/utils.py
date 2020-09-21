@@ -30,7 +30,10 @@ def as_tensor(input, dtype=None, device=None):
                         dtype if dtype is not None else x.dtype)
         else:
             if isinstance(x, (list, tuple)):
-                return torch.stack([_stack(e, dtype, device) for e in x])
+                dtype0, device0 = info(x)
+                dtype0 = dtype if dtype is not None else dtype0
+                device0 = device if device is not None else device0
+                return torch.stack([_stack(e, dtype0, device0) for e in x])
             else:
                 return torch.as_tensor(x, dtype=dtype, device=device)
 
@@ -115,6 +118,12 @@ def info(*args):
             return a.dtype, a.device
     a = torch.as_tensor(args[0])
     return a.dtype, a.device
+
+
+def same_storage(x, y):
+    # type: (torch.Tensor, torch.Tensor) -> bool
+    """Return true if `x` and `y` share the same underlying storage."""
+    return x.storage().data_ptr() == y.storage().data_ptr()
 
 
 def broadcast_backward(input, shape):
