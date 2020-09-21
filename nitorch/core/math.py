@@ -13,6 +13,20 @@ from scipy.linalg import logm as logm_scipy
 import torch
 
 
+def round(t, decimals=0):
+    """ Round a tensor to the given number of decimals.
+
+    Args:
+        t (torch.tensor) Tensor.
+        decimals (int, optional): Round to this decimal, defaults to zero.
+
+    Returns:
+        t (torch.tensor): Rounded tensor.
+
+    """
+    return torch.round(t * 10 ** decimals) / (10 ** decimals)
+
+
 def expm(M):
     """ Computes the matrix exponential of M.
 
