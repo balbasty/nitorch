@@ -8,7 +8,7 @@ from nitorch._C import spatial as _Cspatial
 from nitorch._C.spatial import BoundType, InterpolationType
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
-           'identity', 'compose', 'jacobian', 'voxsize',
+           'identity_grid', 'affine_grid', 'compose', 'jacobian', 'voxsize',
            'channel2grid', 'grid2channel', 'BoundType', 'InterpolationType']
 
 
@@ -492,28 +492,63 @@ def grid2channel(warp):
     return warp
 
 
-def identity(shape, dtype=None, device=None):
+def identity_grid(shape, dtype=None, device=None):
     """Returns an identity deformation field.
 
     Args:
-        shape (tuple): Spatial dimension of the field, ordered as (X, Y, [Z]).
+        shape (sequence of int): Spatial dimension of the field.
         dtype (torch.dtype, optional): Data type. Defaults to None.
         device (torch.device, optional): Device. Defaults to None.
 
     Returns:
-        g (torch.Tensor): Deformation field with shape (1, X, Y, [Z], 2|3).
+        g (torch.Tensor): Deformation field with shape (*shape, len(shape)).
 
     """
-    dim = len(shape)
-    mat = torch.cat((torch.eye(dim, dtype=dtype, device=device),
-                     torch.zeros(dim,1, dtype=dtype, device=device)), dim=1)
-    mat = mat[None, ...]
-    f2v = _fov2vox(shape, False).to(device, dtype)
-    g = _F.affine_grid(mat, (1, 1) + shape[::-1], align_corners=False)
-    g = g.permute([0] + list(range(1, dim+1))[::-1] + [dim+1])
-    g = g.matmul(f2v[:-1, :-1].transpose(0, 1)) \
-        + f2v[:-1, -1].reshape((1,)*(dim+1) + (dim,))
-    return g
+    mesh1d = [torch.arange(float(s), dtype=dtype, device=device)
+              for s in shape]
+    grid = torch.meshgrid(*mesh1d)
+    grid = torch.stack(grid, dim=-1)
+
+    # mat = torch.cat((torch.eye(dim, dtype=dtype, device=device),
+    #                  torch.zeros(dim, 1, dtype=dtype, device=device)), dim=1)
+    # mat = mat[None, ...]
+    # f2v = _fov2vox(shape, False).to(device, dtype)
+    # g = _F.affine_grid(mat, (1, 1) + shape[::-1], align_corners=False)
+    # g = g.permute([0] + list(range(1, dim+1))[::-1] + [dim+1])
+    # g = g.matmul(f2v[:-1, :-1].transpose(0, 1)) \
+    #     + f2v[:-1, -1].reshape((1,)*(dim+1) + (dim,))
+
+    return grid
+
+
+def affine_grid(mat, shape):
+    """Create a dense transformation grid from an affine matrix.
+
+    Parameters
+    ----------
+    mat (tensor) : Affine matrix (or matrices) with shape (..., D[+1], D+1).
+    shape (sequence of int) : Shape of the grid, with length D.
+
+    Returns
+    -------
+    grid (tensor) : Dense transformation grid with shape (..., *shape, D)
+
+    """
+    mat = torch.as_tensor(mat)
+    shape = list(shape)
+    nb_dim = mat.shape[-1] - 1
+    if nb_dim != len(shape):
+        raise ValueError('Dimension of the affine matrix ({}) and shape ({}) '
+                         'are not the same.'.format(nb_dim, len(shape)))
+    if mat.shape[-2] not in (nb_dim, nb_dim-1):
+        raise ValueError('First argument should be a matrix of shape ')
+    grid = identity_grid(shape, mat.dtype, mat.device)
+    # TODO: use expand_dim to pad mat's and grid's dimensions
+    # TODO: add matvec (with broacasting) to module linalg
+    lin = mat[..., :nb_dim, :]
+    off = mat[..., :nb_dim, -1]
+    grid = torch.matmul(lin, grid[..., None])[..., 0] + off
+    return grid
 
 
 def compose(*args, interpolation='linear', bound='dft'):
