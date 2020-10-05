@@ -1,20 +1,21 @@
 """distutils/setuptools extension."""
 
+# python
 import os
 import os.path
 import sys
-import distutils
-import setuptools
 import subprocess
 import glob
 import re
 import shlex
-from packaging import version as pversion
+
+# (from sklearn) import setuptools before because it monkey-patches distutils
+from setuptools import Extension as stExtension
+import distutils
 from distutils import ccompiler, unixccompiler
 from distutils.command import build_ext as build_ext_base
 from distutils.sysconfig import customize_compiler
 from distutils.extension import Extension as duExtension
-from setuptools import Extension as stExtension
 
 _all__ = [
     'is_windows',
@@ -25,6 +26,7 @@ _all__ = [
     'cudnn_version',
     'build_ext',
 ]
+
 
 def is_windows():
     return sys.platform == 'win32'
@@ -72,7 +74,8 @@ def cuda_version():
     with open(os.devnull, 'w') as devnull:
         version = subprocess.check_output([nvcc, '--version'], stderr=devnull).decode()
     match = re.search(r'V(?P<version>[0-9\.]+)$', version)
-    version = pversion.parse(match.group('version')).release
+    version = match.group('version').split('.')
+    version = tuple(int(v) for v in version)
     return version
 
 

@@ -7,15 +7,8 @@ Created on Mon May  4 17:26:01 2020
 """
 
 # ~~~ imports
-import os
-import sys
-import re
-import subprocess
-import glob
-import packaging.version
 import collections
-import distutils
-from setuptools import setup, command, find_packages, Extension
+from setuptools import setup, find_packages, Extension
 from buildtools import *
 import torch
 
