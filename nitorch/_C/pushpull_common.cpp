@@ -27,6 +27,7 @@
 #include "interpolation_common.h"
 #include <ATen/ATen.h>
 #include <tuple>
+#include <limits>
 //#include <cstdio>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -66,34 +67,47 @@ NI_NAMESPACE_DEVICE { // cpu / cuda / ...
 namespace { // anonymous namespace > everything inside has internal linkage
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//                        GENERIC PUSHPULL CLASS
+//                        INDEXING UTILS
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// This class implements the bulk of the code.
-// /!\ No type and shape checking is performed here.
 
-template <typename scalar_t, typename offset_t>
-class PushPullImpl {
+// This class reads and sets all the parameters that will later be used
+// by the algorithm in PushPullImpl. All of this is done outside of the
+// implementation class so that we do not depend on generic types. The
+// point is to pre-allocate all necessary tensors so that we can check
+// if they're all compatible with 32 bit math. If it's the case, we can
+// dispatch to a 32b cuda implementation, which might increase
+// performance. Else, we use 64 bit math to compute offsets.
+// (On CPU, we always use 64 bit offsets because it doesn't make a huge
+// difference. It would be different if we had a vectorized
+// implementation as in PyTorch).
+class PushPullAllocator {
 public:
+
+  static constexpr int64_t max_int32 = std::numeric_limits<int32_t>::max();
 
   // ~~~ CONSTRUCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
   NI_HOST
-  PushPullImpl(int dim, BoundVectorRef bound, InterpolationVectorRef interpolation, 
-               bool extrapolate, bool do_pull, bool do_push, 
-               bool do_count, bool do_grad, bool do_sgrad):
+  PushPullAllocator(int dim, BoundVectorRef bound,
+                    InterpolationVectorRef interpolation,
+                    bool extrapolate, bool do_pull, bool do_push,
+                    bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound.size() > 0 ? bound[0] : BoundType::Replicate),
-    bound1(bound.size() > 1 ? bound[1] : 
+    bound1(bound.size() > 1 ? bound[1] :
            bound.size() > 0 ? bound[0] : BoundType::Replicate),
-    bound2(bound.size() > 2 ? bound[2] : 
-           bound.size() > 1 ? bound[1] : 
+    bound2(bound.size() > 2 ? bound[2] :
+           bound.size() > 1 ? bound[1] :
            bound.size() > 0 ? bound[0] : BoundType::Replicate),
-    interpolation0(interpolation.size() > 0 ? interpolation[0] : InterpolationType::Linear),
-    interpolation1(interpolation.size() > 1 ? interpolation[1] : 
-                   interpolation.size() > 0 ? interpolation[0] : InterpolationType::Linear),
-    interpolation2(interpolation.size() > 2 ? interpolation[2] : 
-                   interpolation.size() > 1 ? interpolation[1] : 
-                   interpolation.size() > 0 ? interpolation[0] : InterpolationType::Linear),
+    interpolation0(interpolation.size() > 0 ? interpolation[0]
+                                            : InterpolationType::Linear),
+    interpolation1(interpolation.size() > 1 ? interpolation[1] :
+                   interpolation.size() > 0 ? interpolation[0]
+                                            : InterpolationType::Linear),
+    interpolation2(interpolation.size() > 2 ? interpolation[2] :
+                   interpolation.size() > 1 ? interpolation[1] :
+                   interpolation.size() > 0 ? interpolation[0]
+                                            : InterpolationType::Linear),
     extrapolate(extrapolate),
     do_pull(do_pull),
     do_push(do_push),
@@ -101,24 +115,30 @@ public:
     do_grad(do_grad),
     do_sgrad(do_sgrad)
   {
-    iso = interpolation0 == interpolation1 && 
+    iso = interpolation0 == interpolation1 &&
           interpolation0 == interpolation2;
   }
 
+  // TODO: remove constructors that take non-vector Bound/Interpolation
+  //       as they are not used anymore.
+
   NI_HOST
-  PushPullImpl(int dim, BoundType bound, InterpolationVectorRef interpolation, 
-               bool extrapolate, bool do_pull, bool do_push, 
-               bool do_count, bool do_grad, bool do_sgrad):
+  PushPullAllocator(int dim, BoundType bound, InterpolationVectorRef interpolation,
+                    bool extrapolate, bool do_pull, bool do_push,
+                    bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound),
     bound1(bound),
     bound2(bound),
-    interpolation0(interpolation.size() > 0 ? interpolation[0] : InterpolationType::Linear),
-    interpolation1(interpolation.size() > 1 ? interpolation[1] : 
-                   interpolation.size() > 0 ? interpolation[0] : InterpolationType::Linear),
-    interpolation2(interpolation.size() > 2 ? interpolation[2] : 
-                   interpolation.size() > 1 ? interpolation[1] : 
-                   interpolation.size() > 0 ? interpolation[0] : InterpolationType::Linear),
+    interpolation0(interpolation.size() > 0 ? interpolation[0]
+                                            : InterpolationType::Linear),
+    interpolation1(interpolation.size() > 1 ? interpolation[1] :
+                   interpolation.size() > 0 ? interpolation[0]
+                                            : InterpolationType::Linear),
+    interpolation2(interpolation.size() > 2 ? interpolation[2] :
+                   interpolation.size() > 1 ? interpolation[1] :
+                   interpolation.size() > 0 ? interpolation[0]
+                                            : InterpolationType::Linear),
     extrapolate(extrapolate),
     do_pull(do_pull),
     do_push(do_push),
@@ -126,20 +146,20 @@ public:
     do_grad(do_grad),
     do_sgrad(do_sgrad)
   {
-    iso = interpolation0 == interpolation1 && 
+    iso = interpolation0 == interpolation1 &&
           interpolation0 == interpolation2;
   }
 
   NI_HOST
-  PushPullImpl(int dim, BoundVectorRef bound, InterpolationType interpolation, 
-               bool extrapolate, bool do_pull, bool do_push,
-               bool do_count, bool do_grad, bool do_sgrad):
+  PushPullAllocator(int dim, BoundVectorRef bound, InterpolationType interpolation,
+                    bool extrapolate, bool do_pull, bool do_push,
+                    bool do_count, bool do_grad, bool do_sgrad):
      dim(dim),
      bound0(bound.size() > 0 ? bound[0] : BoundType::Replicate),
-     bound1(bound.size() > 1 ? bound[1] : 
+     bound1(bound.size() > 1 ? bound[1] :
             bound.size() > 0 ? bound[0] : BoundType::Replicate),
-     bound2(bound.size() > 2 ? bound[2] : 
-            bound.size() > 1 ? bound[1] : 
+     bound2(bound.size() > 2 ? bound[2] :
+            bound.size() > 1 ? bound[1] :
             bound.size() > 0 ? bound[0] : BoundType::Replicate),
     interpolation0(interpolation),
     interpolation1(interpolation),
@@ -151,14 +171,14 @@ public:
     do_grad(do_grad),
     do_sgrad(do_sgrad)
   {
-    iso = interpolation0 == interpolation1 && 
+    iso = interpolation0 == interpolation1 &&
           interpolation0 == interpolation2;
   }
 
   NI_HOST
-  PushPullImpl(int dim, BoundType bound, InterpolationType interpolation, 
-               bool extrapolate, bool do_pull, bool do_push, 
-               bool do_count, bool do_grad, bool do_sgrad):
+  PushPullAllocator(int dim, BoundType bound, InterpolationType interpolation,
+                    bool extrapolate, bool do_pull, bool do_push,
+                    bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound),
     bound1(bound),
@@ -173,37 +193,12 @@ public:
     do_grad(do_grad),
     do_sgrad(do_sgrad)
   {
-    iso = interpolation0 == interpolation1 && 
+    iso = interpolation0 == interpolation1 &&
           interpolation0 == interpolation2;
   }
 
-  // ~~~ PUBLIC VALUE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-  std::deque<Tensor> output;
-
-  // NI_HOST NI_DEVICE void printInfo() const {
-  //   printf("dim: %d\n", dim);
-  //   printf("do_pull:  %d\n", do_pull);
-  //   printf("do_push:  %d\n", do_push);
-  //   printf("do_count: %d\n", do_count);
-  //   printf("do_sgrad: %d\n", do_sgrad);
-  //   printf("do_grad:  %d\n", do_grad);
-  //   printf("bound:         [%d %d %d]\n", static_cast<int>(bound0), 
-  //     static_cast<int>(bound1), static_cast<int>(bound2));
-  //   printf("interpolation: [%d %d %d]\n", static_cast<int>(interpolation0), 
-  //     static_cast<int>(interpolation1), static_cast<int>(interpolation2));
-  //   printf("src:  [%d %d %d]\n", src_Z, src_Y, src_X);
-  //   printf("trgt: [%d %d %d (%d)]\n", trgt_Z, trgt_Y, trgt_X, trgt_K);
-  //   printf("N: %d\n", N);
-  //   printf("C: %d\n", C);
-  //   printf("src  -> %lu\n", reinterpret_cast<std::uintptr_t>(src_ptr));
-  //   printf("trgt -> %lu\n", reinterpret_cast<std::uintptr_t>(trgt_ptr));
-  //   printf("grid -> %lu\n", reinterpret_cast<std::uintptr_t>(grid_ptr));
-  //   printf("out  -> %lu\n", reinterpret_cast<std::uintptr_t>(out_ptr));
-  //   printf("grad -> %lu\n", reinterpret_cast<std::uintptr_t>(grad_ptr));
-  // }
-
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
   NI_HOST void ioset // Pull
   (const Tensor& source, const Tensor& grid)
   {
@@ -242,10 +237,420 @@ public:
     init_output();
   }
 
+  // We just check that all tensors that we own are compatible with 32b math
+  bool canUse32BitIndexMath(int64_t max_elem=max_int32) const
+  {
+    return src_32b_ok  &&
+           trgt_32b_ok &&
+           grid_32b_ok &&
+           grad_32b_ok &&
+           out_32b_ok;
+  }
+
+private:
+
+  // Copied from aten/src/ATen/native/IndexingUtils.cpp in PyTorch 1.6.
+  // It is used to decide to which pointer type we should dispatch to.
+  // Basically, we need to make sure that the "furthest" element we need
+  // to reach is less than max_elem away.
+  static bool tensorCanUse32BitIndexMath(
+    const Tensor &t, int64_t max_elem=max_int32)
+  {
+    int64_t elements = t.numel();
+    if (elements >= max_elem) {
+      return false;
+    }
+    if (elements == 0) {
+      return max_elem > 0;
+    }
+
+    int64_t offset = 0;
+    int64_t linearId = elements - 1;
+
+    // NOTE: Assumes all strides are positive, which is true for now
+    for (int i = t.dim() - 1; i >= 0; --i) {
+      int64_t curDimIndex = linearId % t.size(i);
+      int64_t curDimOffset = curDimIndex * t.stride(i);
+      offset += curDimOffset;
+      linearId /= t.size(i);
+    }
+
+    if (offset >= max_elem) {
+      return false;
+    }
+
+    return true;
+  }
+
+  // ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  NI_HOST void init_all();
+  NI_HOST void init_source(const Tensor& source);
+  NI_HOST void init_source(IntArrayRef source_size);
+  NI_HOST void init_grid(const Tensor& grid);
+  NI_HOST void init_target(const Tensor& target);
+  NI_HOST void init_output();
+
+  // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  int               dim;            // dimensionality (2 or 3)
+  BoundType         bound0;         // boundary condition  // x|W
+  BoundType         bound1;         // boundary condition  // y|H
+  BoundType         bound2;         // boundary condition  // z|D
+  InterpolationType interpolation0; // interpolation order // x|W
+  InterpolationType interpolation1; // interpolation order // y|H
+  InterpolationType interpolation2; // interpolation order // z|D
+  bool              iso;            // isotropic interpolation?
+  bool              extrapolate;    // compute out-of-bound values
+  bool              do_pull;        // sample a volume
+  bool              do_push;        // splat a volume
+  bool              do_count;       // splatting weights (= jacobian determinant)
+  bool              do_grad;        // backprop: gradient of grid // pull
+  bool              do_sgrad;       // sample spatial gradients
+
+  // ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  std::deque<Tensor> output;
+  TensorOptions src_opt;
+  TensorOptions grid_opt;
+  TensorOptions trgt_opt;
+  int64_t N;
+  int64_t C;
+  int64_t src_X;
+  int64_t src_Y;
+  int64_t src_Z;
+  int64_t trgt_X;
+  int64_t trgt_Y;
+  int64_t trgt_Z;
+  int64_t trgt_K;
+  int64_t src_sN;
+  int64_t src_sC;
+  int64_t src_sX;
+  int64_t src_sY;
+  int64_t src_sZ;
+  bool src_32b_ok;
+  void *src_ptr;
+  int64_t trgt_sN;
+  int64_t trgt_sC;
+  int64_t trgt_sX;
+  int64_t trgt_sY;
+  int64_t trgt_sZ;
+  int64_t trgt_sK;
+  bool trgt_32b_ok;
+  void *trgt_ptr;
+  int64_t grid_sN;
+  int64_t grid_sC;
+  int64_t grid_sX;
+  int64_t grid_sY;
+  int64_t grid_sZ;
+  bool grid_32b_ok;
+  void *grid_ptr;
+  int64_t out_sN;
+  int64_t out_sC;
+  int64_t out_sX;
+  int64_t out_sY;
+  int64_t out_sZ;
+  int64_t out_sK; // gradient dimension
+  bool out_32b_ok;
+  void *out_ptr;
+  int64_t grad_sN;
+  int64_t grad_sC;
+  int64_t grad_sX;
+  int64_t grad_sY;
+  int64_t grad_sZ;
+  bool grad_32b_ok;
+  void *grad_ptr;
+
+  // Allow PushPullImpl's constructor to access PushPullAllocator's
+  // private members.
+  template <typename scalar_t, typename offset_t>
+  friend class PushPullImpl;
+};
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                          INITIALISATION
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+NI_HOST
+void PushPullAllocator::init_all()
+{
+  src_opt = grid_opt = trgt_opt = TensorOptions();
+  N = C   = 1L;
+  src_X   = src_Y   = src_Z   = 1L;
+  trgt_X  = trgt_Y  = trgt_Z  = 1L;
+  trgt_K  = 0L;
+  src_sN  = src_sC   = src_sX   = src_sY  = src_sZ   = 0L;
+  grid_sN = grid_sC  = grid_sX  = grid_sY = grid_sZ  = 0L;
+  grad_sN = grad_sC  = grad_sX  = grad_sY = grad_sZ  = 0L;
+  trgt_sN = trgt_sC  = trgt_sX  = trgt_sY = trgt_sZ  = trgt_sK = 0L;
+  out_sN  = out_sC   = out_sX   = out_sY  = out_sZ   = out_sK  = 0L;
+  src_ptr = trgt_ptr = grid_ptr = out_ptr = grad_ptr = static_cast<float*>(0);
+  src_32b_ok = trgt_32b_ok = grid_32b_ok = out_32b_ok = grad_32b_ok = true;
+}
+
+NI_HOST
+void PushPullAllocator::init_source(const Tensor& source)
+{
+  N       = source.size(0);
+  C       = source.size(1);
+  src_X   = source.size(2);
+  src_Y   = dim < 2 ? 1L : source.size(3);
+  src_Z   = dim < 3 ? 1L : source.size(4);
+  src_sN  = source.stride(0);
+  src_sC  = source.stride(1);
+  src_sX  = source.stride(2);
+  src_sY  = dim < 2 ? 0L : source.stride(3);
+  src_sZ  = dim < 3 ? 0L : source.stride(4);
+  src_ptr = source.data_ptr();
+  src_opt = source.options();
+  src_32b_ok = tensorCanUse32BitIndexMath(source);
+}
+
+NI_HOST
+void PushPullAllocator::init_source(IntArrayRef source_size)
+{
+  src_X = source_size[0];
+  src_Y = dim < 2 ? 1L : source_size[1];
+  src_Z = dim < 3 ? 1L : source_size[2];
+}
+
+NI_HOST
+void PushPullAllocator::init_grid(const Tensor& grid)
+{
+  N        = grid.size(0);
+  trgt_X   = grid.size(1);
+  trgt_Y   = dim < 2 ? 1L : grid.size(2);
+  trgt_Z   = dim < 3 ? 1L : grid.size(3);
+  grid_sN  = grid.stride(0);
+  grid_sX  = grid.stride(1);
+  grid_sY  = dim < 2 ? 0L : grid.stride(2);
+  grid_sZ  = dim < 3 ? 0L : grid.stride(3);
+  grid_sC  = grid.stride(dim == 1 ? 2 : dim == 2 ? 3 : 4);
+  grid_ptr = grid.data_ptr();
+  grid_opt = grid.options();
+  grid_32b_ok = tensorCanUse32BitIndexMath(grid);
+}
+
+NI_HOST
+void PushPullAllocator::init_target(const Tensor& target)
+{
+  N        = target.size(0);
+  C        = target.size(1);
+  trgt_X   = target.size(2);
+  trgt_Y   = dim < 2 ? 1L : target.size(3);
+  trgt_Z   = dim < 3 ? 1L : target.size(4);
+  trgt_K   = target.dim() == dim + 3 ? target.size(dim == 1 ? 3 :
+                                                   dim == 2 ? 4 : 5)
+                                     : 0L;
+  trgt_sN  = target.stride(0);
+  trgt_sC  = target.stride(1);
+  trgt_sX  = target.stride(2);
+  trgt_sY  = dim < 2 ? 0L : target.stride(3);
+  trgt_sZ  = dim < 3 ? 0L : target.stride(4);
+  trgt_sK  = target.dim() == dim + 3 ? target.stride(dim == 1 ? 3 :
+                                                     dim == 2 ? 4 : 5)
+                                     : 0L;
+  trgt_ptr = target.data_ptr();
+  trgt_opt = target.options();
+  trgt_32b_ok = tensorCanUse32BitIndexMath(target);
+}
+
+NI_HOST
+void PushPullAllocator::init_output()
+{
+  output.clear();
+  if (do_pull) {
+    if (dim == 1)
+      output.push_back(at::empty({N, C, trgt_X}, src_opt));
+    else if (dim == 2)
+      output.push_back(at::empty({N, C, trgt_X, trgt_Y}, src_opt));
+    else
+      output.push_back(at::empty({N, C, trgt_X, trgt_Y, trgt_Z}, src_opt));
+    auto pull = output.back();
+    out_sN   = pull.stride(0);
+    out_sC   = pull.stride(1);
+    out_sX   = pull.stride(2);
+    out_sY   = dim < 2 ? 0L : pull.stride(3);
+    out_sZ   = dim < 3 ? 0L : pull.stride(4);
+    out_sK   = 0L;
+    out_ptr  = pull.data_ptr();
+    out_32b_ok = tensorCanUse32BitIndexMath(pull);
+  }
+  else if (do_sgrad) {
+    if (dim == 1)
+      output.push_back(at::empty({N, C, trgt_X, 1}, src_opt));
+    else if (dim == 2)
+      output.push_back(at::empty({N, C, trgt_X, trgt_Y, 2}, src_opt));
+    else
+      output.push_back(at::empty({N, C, trgt_X, trgt_Y, trgt_Z, 3}, src_opt));
+    auto sgrad = output.back();
+    out_sN   = sgrad.stride(0);
+    out_sC   = sgrad.stride(1);
+    out_sX   = sgrad.stride(2);
+    out_sY   = dim < 2 ? 0L : sgrad.stride(3);
+    out_sZ   = dim < 3 ? 0L : sgrad.stride(4);
+    out_sK   = sgrad.stride(dim == 1 ? 3 : dim == 2 ? 4 : 5);
+    out_ptr  = sgrad.data_ptr();
+    out_32b_ok = tensorCanUse32BitIndexMath(sgrad);
+
+    if (iso && interpolation0 == InterpolationType::Nearest)
+      sgrad.zero_();
+    if (iso && interpolation0 == InterpolationType::Linear && dim == 1)
+      sgrad.zero_();
+  }
+  else if (do_push) {
+    if (dim == 1)
+      output.push_back(at::zeros({N, C, src_X}, trgt_opt));
+    else if (dim == 2)
+      output.push_back(at::zeros({N, C, src_X, src_Y}, trgt_opt));
+    else
+      output.push_back(at::zeros({N, C, src_X, src_Y, src_Z}, trgt_opt));
+    auto push = output.back();
+    out_sN   = push.stride(0);
+    out_sC   = push.stride(1);
+    out_sX   = push.stride(2);
+    out_sY   = dim < 2 ? 0L : push.stride(3);
+    out_sZ   = dim < 3 ? 0L : push.stride(4);
+    out_sK   = 0L;
+    out_ptr  = push.data_ptr();
+    out_32b_ok = tensorCanUse32BitIndexMath(push);
+  }
+  else if (do_count) {
+    if (dim == 1)
+      output.push_back(at::zeros({N, 1, src_X}, grid_opt));
+    else if (dim == 2)
+      output.push_back(at::zeros({N, 1, src_X, src_Y}, grid_opt));
+    else
+      output.push_back(at::zeros({N, 1, src_X, src_Y, src_Z}, grid_opt));
+    auto count = output.back();
+    out_sN   = count.stride(0);
+    out_sC   = count.stride(1);
+    out_sX   = count.stride(2);
+    out_sY   = dim < 2 ? 0L : count.stride(3);
+    out_sZ   = dim < 3 ? 0L : count.stride(4);
+    out_sK   = 0L;
+    out_ptr  = count.data_ptr();
+    out_32b_ok = tensorCanUse32BitIndexMath(count);
+  }
+  if (do_grad) {
+    if (dim == 1)
+      output.push_back(at::zeros({N, src_X, 1}, grid_opt));
+    else if (dim == 2)
+      output.push_back(at::zeros({N, src_X, src_Y, 2}, grid_opt));
+    else
+      output.push_back(at::zeros({N, src_X, src_Y, src_Z, 3}, grid_opt));
+    auto grad = output.back();
+    grad_sN   = grad.stride(0);
+    grad_sX   = grad.stride(1);
+    grad_sY   = dim < 2 ? 0L : grad.stride(2);
+    grad_sZ   = dim < 3 ? 0L : grad.stride(3);
+    grad_sC   = grad.stride(dim == 1 ? 2 : dim == 2 ? 3 : 4);
+    grad_ptr  = grad.data_ptr();
+    out_32b_ok = tensorCanUse32BitIndexMath(grad);
+
+    if (iso && interpolation0 == InterpolationType::Nearest)
+      grad.zero_();
+  }
+}
+
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                        GENERIC PUSHPULL CLASS
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// This class implements the bulk of the code.
+// /!\ No type and shape checking is performed here.
+
+template <typename scalar_t, typename offset_t>
+class PushPullImpl {
+public:
+
+  // ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  PushPullImpl(const PushPullAllocator & info):
+    output(info.output),
+    dim(info.dim),
+    bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
+    interpolation0(info.interpolation0),
+    interpolation1(info.interpolation1),
+    interpolation2(info.interpolation1),
+    iso(info.iso), extrapolate(info.extrapolate),
+    do_pull(info.do_pull), do_push(info.do_push), do_count(info.do_count),
+    do_grad(info.do_grad), do_sgrad(info.do_sgrad),
+    N(static_cast<offset_t>(info.N)),
+    C(static_cast<offset_t>(info.C)),
+    src_X(static_cast<offset_t>(info.src_X)),
+    src_Y(static_cast<offset_t>(info.src_Y)),
+    src_Z(static_cast<offset_t>(info.src_Z)),
+    trgt_X(static_cast<offset_t>(info.trgt_X)),
+    trgt_Y(static_cast<offset_t>(info.trgt_Y)),
+    trgt_Z(static_cast<offset_t>(info.trgt_Z)),
+    trgt_K(static_cast<offset_t>(info.trgt_K)),
+    src_sN(static_cast<offset_t>(info.src_sN)),
+    src_sC(static_cast<offset_t>(info.src_sC)),
+    src_sX(static_cast<offset_t>(info.src_sX)),
+    src_sY(static_cast<offset_t>(info.src_sY)),
+    src_sZ(static_cast<offset_t>(info.src_sZ)),
+    src_ptr(static_cast<scalar_t*>(info.src_ptr)),
+    trgt_sN(static_cast<offset_t>(info.trgt_sN)),
+    trgt_sC(static_cast<offset_t>(info.trgt_sC)),
+    trgt_sX(static_cast<offset_t>(info.trgt_sX)),
+    trgt_sY(static_cast<offset_t>(info.trgt_sY)),
+    trgt_sZ(static_cast<offset_t>(info.trgt_sZ)),
+    trgt_sK(static_cast<offset_t>(info.trgt_sK)),
+    trgt_ptr(static_cast<scalar_t*>(info.trgt_ptr)),
+    grid_sN(static_cast<offset_t>(info.grid_sN)),
+    grid_sC(static_cast<offset_t>(info.grid_sC)),
+    grid_sX(static_cast<offset_t>(info.grid_sX)),
+    grid_sY(static_cast<offset_t>(info.grid_sY)),
+    grid_sZ(static_cast<offset_t>(info.grid_sZ)),
+    grid_ptr(static_cast<scalar_t*>(info.grid_ptr)),
+    out_sN(static_cast<offset_t>(info.out_sN)),
+    out_sC(static_cast<offset_t>(info.out_sC)),
+    out_sX(static_cast<offset_t>(info.out_sX)),
+    out_sY(static_cast<offset_t>(info.out_sY)),
+    out_sZ(static_cast<offset_t>(info.out_sZ)),
+    out_sK(static_cast<offset_t>(info.out_sK)),
+    out_ptr(static_cast<scalar_t*>(info.out_ptr)),
+    grad_sN(static_cast<offset_t>(info.grad_sN)),
+    grad_sC(static_cast<offset_t>(info.grad_sC)),
+    grad_sX(static_cast<offset_t>(info.grad_sX)),
+    grad_sY(static_cast<offset_t>(info.grad_sY)),
+    grad_sZ(static_cast<offset_t>(info.grad_sZ)),
+    grad_ptr(static_cast<scalar_t*>(info.grad_ptr))
+  {}
+
+
+  // ~~~ PUBLIC VALUE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+  std::deque<Tensor> output;
+
+  // NI_HOST NI_DEVICE void printInfo() const {
+  //   printf("dim: %d\n", dim);
+  //   printf("do_pull:  %d\n", do_pull);
+  //   printf("do_push:  %d\n", do_push);
+  //   printf("do_count: %d\n", do_count);
+  //   printf("do_sgrad: %d\n", do_sgrad);
+  //   printf("do_grad:  %d\n", do_grad);
+  //   printf("bound:         [%d %d %d]\n", static_cast<int>(bound0), 
+  //     static_cast<int>(bound1), static_cast<int>(bound2));
+  //   printf("interpolation: [%d %d %d]\n", static_cast<int>(interpolation0), 
+  //     static_cast<int>(interpolation1), static_cast<int>(interpolation2));
+  //   printf("src:  [%d %d %d]\n", src_Z, src_Y, src_X);
+  //   printf("trgt: [%d %d %d (%d)]\n", trgt_Z, trgt_Y, trgt_X, trgt_K);
+  //   printf("N: %d\n", N);
+  //   printf("C: %d\n", C);
+  //   printf("src  -> %lu\n", reinterpret_cast<std::uintptr_t>(src_ptr));
+  //   printf("trgt -> %lu\n", reinterpret_cast<std::uintptr_t>(trgt_ptr));
+  //   printf("grid -> %lu\n", reinterpret_cast<std::uintptr_t>(grid_ptr));
+  //   printf("out  -> %lu\n", reinterpret_cast<std::uintptr_t>(out_ptr));
+  //   printf("grad -> %lu\n", reinterpret_cast<std::uintptr_t>(grad_ptr));
+  // }
+
+  // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 #if __CUDACC__
+  // Loop over voxels that belong to one CUDA block
+  // This function is called by the CUDA kernel
   NI_DEVICE void loop(int threadIdx, int blockIdx, 
                       int blockDim, int gridDim) const;
 #else
+  // Loop over all voxels
   void loop() const;
 #endif
 
@@ -256,12 +661,6 @@ public:
 private:
 
   // ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  NI_HOST void init_all();
-  NI_HOST void init_source(const Tensor& source);
-  NI_HOST void init_source(IntArrayRef source_size);
-  NI_HOST void init_grid(const Tensor& grid); 
-  NI_HOST void init_target(const Tensor& target); 
-  NI_HOST void init_output();
   NI_DEVICE void check1d(offset_t w, offset_t n) const;
   NI_DEVICE void check2d(offset_t w, offset_t h, offset_t n) const;
   NI_DEVICE void check3d(offset_t w, offset_t h, offset_t d, offset_t n) const;
@@ -331,9 +730,6 @@ private:
   bool              do_sgrad;       // sample spatial gradients
 
   // ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  TensorOptions src_opt;
-  TensorOptions grid_opt;
-  TensorOptions trgt_opt;
   offset_t N;
   offset_t C;
   offset_t src_X;
@@ -376,183 +772,6 @@ private:
   offset_t grad_sZ;
   scalar_t *grad_ptr;
 };
-
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-//                          INITIALISATION
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-template <typename scalar_t, typename offset_t>
-void PushPullImpl<scalar_t,offset_t>::init_all()
-{
-  src_opt = grid_opt = trgt_opt = TensorOptions();
-  N = C   = static_cast<offset_t>(1);
-  src_X   = src_Y   = src_Z  = static_cast<offset_t>(1);
-  trgt_X  = trgt_Y  = trgt_Z  = static_cast<offset_t>(1);
-  trgt_K  = static_cast<offset_t>(0);
-  src_sN  = src_sC  = src_sX  = src_sY  = src_sZ  = static_cast<offset_t>(0);
-  grid_sN = grid_sC = grid_sX = grid_sY = grid_sZ = static_cast<offset_t>(0);
-  grad_sN = grad_sC = grad_sX = grad_sY = grad_sZ = static_cast<offset_t>(0);
-  trgt_sN = trgt_sC = trgt_sX = trgt_sY = trgt_sZ = trgt_sK = static_cast<offset_t>(0);
-  out_sN  = out_sC  = out_sX  = out_sY  = out_sZ  = out_sK  = static_cast<offset_t>(0);
-  src_ptr = trgt_ptr = grid_ptr = out_ptr = grad_ptr = static_cast<scalar_t*>(0);
-}
-
-template <typename scalar_t, typename offset_t> NI_HOST
-void PushPullImpl<scalar_t,offset_t>::init_source(const Tensor& source)
-{
- N       = source.size(0);
- C       = source.size(1);
- src_X   = source.size(2); 
- src_Y   = dim < 2 ? static_cast<offset_t>(1) : source.size(3);
- src_Z   = dim < 3 ? static_cast<offset_t>(1) : source.size(4);
- src_sN  = source.stride(0);
- src_sC  = source.stride(1);
- src_sX  = source.stride(2);
- src_sY  = dim < 2 ? static_cast<offset_t>(0) :source.stride(3);
- src_sZ  = dim < 3 ? static_cast<offset_t>(0) : source.stride(4);
- src_ptr = source.data_ptr<scalar_t>();
- src_opt = source.options();
-}
-
-template <typename scalar_t, typename offset_t> NI_HOST
-void PushPullImpl<scalar_t,offset_t>::init_source(IntArrayRef source_size)
-{
- src_X = source_size[0];
- src_Y = dim < 2 ? static_cast<offset_t>(1) : source_size[1];
- src_Z = dim < 3 ? static_cast<offset_t>(1) : source_size[2];
-}
-
-template <typename scalar_t, typename offset_t> NI_HOST
-void PushPullImpl<scalar_t,offset_t>::init_grid(const Tensor& grid)
-{
-  N        = grid.size(0);
-  trgt_X   = grid.size(1);
-  trgt_Y   = dim < 2 ? static_cast<offset_t>(1) : grid.size(2);
-  trgt_Z   = dim < 3 ? static_cast<offset_t>(1) : grid.size(3);
-  grid_sN  = grid.stride(0);
-  grid_sX  = grid.stride(1);
-  grid_sY  = dim < 2 ? static_cast<offset_t>(0) : grid.stride(2);
-  grid_sZ  = dim < 3 ? static_cast<offset_t>(0) : grid.stride(3);
-  grid_sC  = grid.stride(dim == 1 ? 2 : dim == 2 ? 3 : 4);
-  grid_ptr = grid.data_ptr<scalar_t>();
-  grid_opt = grid.options();
-}
-
-template <typename scalar_t, typename offset_t> NI_HOST
-void PushPullImpl<scalar_t,offset_t>::init_target(const Tensor& target)
-{
- N        = target.size(0);
- C        = target.size(1);
- trgt_X   = target.size(2);
- trgt_Y   = dim < 2 ? static_cast<offset_t>(1) : target.size(3);
- trgt_Z   = dim < 3 ? static_cast<offset_t>(1) : target.size(4);
- trgt_K   = target.dim() == dim + 3 ? target.size(dim == 1 ? 3 :
-                                                  dim == 2 ? 4 : 5)
-                                    : static_cast<offset_t>(0);
- trgt_sN  = target.stride(0);
- trgt_sC  = target.stride(1);
- trgt_sX  = target.stride(2);
- trgt_sY  = dim < 2 ? static_cast<offset_t>(0) : target.stride(3);
- trgt_sZ  = dim < 3 ? static_cast<offset_t>(0) : target.stride(4);
- trgt_sK  = target.dim() == dim + 3 ? target.stride(dim == 1 ? 3 :
-                                                    dim == 2 ? 4 : 5)
-                                    : static_cast<offset_t>(0);
- trgt_ptr = target.data_ptr<scalar_t>();
- trgt_opt = target.options();
-}
-
-template <typename scalar_t, typename offset_t> NI_HOST
-void PushPullImpl<scalar_t,offset_t>::init_output()
-{
-  output.clear();
-  if (do_pull) {
-    if (dim == 1)
-      output.push_back(at::empty({N, C, trgt_X}, src_opt));
-    else if (dim == 2)
-      output.push_back(at::empty({N, C, trgt_X, trgt_Y}, src_opt));
-    else
-      output.push_back(at::empty({N, C, trgt_X, trgt_Y, trgt_Z}, src_opt));
-    auto pull = output.back();
-    out_sN   = pull.stride(0);
-    out_sC   = pull.stride(1);
-    out_sX   = pull.stride(2);
-    out_sY   = dim < 2 ? static_cast<offset_t>(0) : pull.stride(3);
-    out_sZ   = dim < 3 ? static_cast<offset_t>(0) : pull.stride(4);
-    out_sK   = static_cast<offset_t>(0);
-    out_ptr  = pull.template data_ptr<scalar_t>();
-  }
-  else if (do_sgrad) {
-    if (dim == 1)
-      output.push_back(at::empty({N, C, trgt_X, 1}, src_opt));
-    else if (dim == 2)
-      output.push_back(at::empty({N, C, trgt_X, trgt_Y, 2}, src_opt));
-    else
-      output.push_back(at::empty({N, C, trgt_X, trgt_Y, trgt_Z, 3}, src_opt));
-    auto sgrad = output.back();
-    out_sN   = sgrad.stride(0);
-    out_sC   = sgrad.stride(1);
-    out_sX   = sgrad.stride(2);
-    out_sY   = dim < 2 ? static_cast<offset_t>(0) : sgrad.stride(3);
-    out_sZ   = dim < 3 ? static_cast<offset_t>(0) : sgrad.stride(4);
-    out_sK   = sgrad.stride(dim == 1 ? 3 : dim == 2 ? 4 : 5);
-    out_ptr  = sgrad.template data_ptr<scalar_t>();
-
-    if (iso && interpolation0 == InterpolationType::Nearest)
-      sgrad.zero_();
-    if (iso && interpolation0 == InterpolationType::Linear && dim == 1)
-      sgrad.zero_();
-  }
-  else if (do_push) {
-    if (dim == 1)
-      output.push_back(at::zeros({N, C, src_X}, trgt_opt));
-    else if (dim == 2)
-      output.push_back(at::zeros({N, C, src_X, src_Y}, trgt_opt));
-    else
-      output.push_back(at::zeros({N, C, src_X, src_Y, src_Z}, trgt_opt));
-    auto push = output.back();
-    out_sN   = push.stride(0);
-    out_sC   = push.stride(1);
-    out_sX   = push.stride(2);
-    out_sY   = dim < 2 ? static_cast<offset_t>(0) : push.stride(3);
-    out_sZ   = dim < 3 ? static_cast<offset_t>(0) : push.stride(4);
-    out_sK   = static_cast<offset_t>(0);
-    out_ptr  = push.template data_ptr<scalar_t>();
-  }
-  else if (do_count) {
-    if (dim == 1)
-      output.push_back(at::zeros({N, 1, src_X}, grid_opt));
-    else if (dim == 2)
-      output.push_back(at::zeros({N, 1, src_X, src_Y}, grid_opt));
-    else
-      output.push_back(at::zeros({N, 1, src_X, src_Y, src_Z}, grid_opt));
-    auto count = output.back();
-    out_sN   = count.stride(0);
-    out_sC   = count.stride(1);
-    out_sX   = count.stride(2);
-    out_sY   = dim < 2 ? static_cast<offset_t>(0) : count.stride(3);
-    out_sZ   = dim < 3 ? static_cast<offset_t>(0) : count.stride(4);
-    out_sK   = static_cast<offset_t>(0);
-    out_ptr  = count.template data_ptr<scalar_t>();
-  }
-  if (do_grad) {
-    if (dim == 1)
-      output.push_back(at::zeros({N, src_X, 1}, grid_opt));
-    else if (dim == 2)
-      output.push_back(at::zeros({N, src_X, src_Y, 2}, grid_opt));
-    else
-      output.push_back(at::zeros({N, src_X, src_Y, src_Z, 3}, grid_opt));
-    auto grad = output.back();
-    grad_sN   = grad.stride(0);
-    grad_sX   = grad.stride(1);
-    grad_sY   = dim < 2 ? static_cast<offset_t>(0) : grad.stride(2);
-    grad_sZ   = dim < 3 ? static_cast<offset_t>(0) : grad.stride(3);
-    grad_sC   = grad.stride(dim == 1 ? 2 : dim == 2 ? 3 : 4);
-    grad_ptr  = grad.template data_ptr<scalar_t>();
-
-    if (iso && interpolation0 == InterpolationType::Nearest)
-      grad.zero_();
-  }
-}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                             LOOP
@@ -2274,14 +2493,25 @@ std::deque<Tensor> pushpull(
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
+  PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
+                         do_pull, do_push, do_count, do_grad, do_sgrad);
+  info.ioset(source, grid);
+
   return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
-    PushPullImpl<scalar_t,int64_t> 
-    f(grid.dim()-2, bound, interpolation, extrapolate, 
-      do_pull, do_push, do_count, do_grad, do_sgrad);
-    f.ioset(source, grid);
-    pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0, 
-                      at::cuda::getCurrentCUDAStream()>>>(f);
-    return f.output;
+    if (canUse32BitIndexMath(source) && canUse32BitIndexMath(grid))
+    {
+      PushPullImpl<scalar_t, int32_t> algo(info);
+      pushpull_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
+                        at::cuda::getCurrentCUDAStream()>>>(algo);
+      return algo.output;
+    }
+    else
+    {
+      PushPullImpl<scalar_t, int64_t> algo(info);
+      pushpull_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
+                        at::cuda::getCurrentCUDAStream()>>>(algo);
+      return algo.output;
+    }
   });
 }
 
@@ -2295,14 +2525,25 @@ std::deque<Tensor> pushpull(
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
+  PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
+                         do_pull, do_push, do_count, do_grad, do_sgrad);
+  info.ioset(source, grid, target);
+
   return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
-    PushPullImpl<scalar_t,int64_t> 
-    f(grid.dim()-2, bound, interpolation, extrapolate,
-      do_pull, do_push, do_count, do_grad, do_sgrad);
-    f.ioset(source, grid, target);
-    pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0, 
-                      at::cuda::getCurrentCUDAStream()>>>(f);
-    return f.output;
+    if info.canUse32BitIndexMath()
+    {
+      PushPullImpl<scalar_t, int32_t> algo(info);
+      pushpull_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
+                        at::cuda::getCurrentCUDAStream()>>>(algo);
+      return algo.output;
+    }
+    else
+    {
+      PushPullImpl<scalar_t, int64_t> algo(info);
+      pushpull_kernel<<<GET_BLOCKS(f.voxcount()), CUDA_NUM_THREADS, 0,
+                        at::cuda::getCurrentCUDAStream()>>>(algo);
+      return algo.output;
+    }
   });
 }
 
@@ -2319,13 +2560,14 @@ std::deque<Tensor> pushpull(
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
+  PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
+                         do_pull, do_push, do_count, do_grad, do_sgrad);
+  info.ioset(source, grid);
+
   return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
-    PushPullImpl<scalar_t,int32_t> 
-    f(grid.dim()-2, bound, interpolation, extrapolate, 
-      do_pull, do_push, do_count, do_grad, do_sgrad);
-    f.ioset(source, grid);
-    f.loop();
-    return f.output;
+    PushPullImpl<scalar_t, int64_t> algo(info);
+    algo.loop();
+    return algo.output;
   });
 }
 
@@ -2339,13 +2581,14 @@ std::deque<Tensor> pushpull(
   BoundType bound, InterpolationType interpolation, bool extrapolate, 
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
+  PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
+                         do_pull, do_push, do_count, do_grad, do_sgrad);
+  info.ioset(source, grid, target);
+
   return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
-    PushPullImpl<scalar_t,int32_t> 
-    f(grid.dim()-2, bound, interpolation, extrapolate,
-      do_pull, do_push, do_count, do_grad, do_sgrad);
-    f.ioset(source, grid, target);
-    f.loop();
-    return f.output;
+    PushPullImpl<scalar_t, int64_t> algo(info);
+    algo.loop();
+    return algo.output;
   });
 }
 
