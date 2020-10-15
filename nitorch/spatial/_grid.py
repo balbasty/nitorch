@@ -40,7 +40,7 @@ class _GridPull(torch.autograd.Function):
             if ctx.needs_input_grad[1]:
                 grad_grid = grads[1]
         elif ctx.needs_input_grad[1]:
-            grad_grid = grads[1]
+            grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None
 
 
@@ -56,7 +56,7 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
             - 4 or 'fourth'     or InterpolationType.fourth
             - etc.
         A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific interpoaltion orders.
+        to specify dimension-specific interpolation orders.
 
         `bound` can be an int, a string or a BoundType.
         Possible values are:
