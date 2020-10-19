@@ -173,6 +173,41 @@ def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
     return input
 
 
+def softmax(Z, dim=-1, get_ll=False, W=None):
+    """ SoftMax (safe).
+
+    Parameters
+    ----------
+    Z : torch.tensor
+        Tensor with values.
+    dim : int, default=-1
+        Dimension to take softmax, defaults to last dimensions.
+    get_ll : bool, default=False
+        Compute log-likelihood, defaults to False.
+    W : torch.tensor, optional:
+        Observation weights.
+
+    Returns
+    -------
+    Z : torch.tensor
+        Soft-maxed tensor with values.
+
+    """
+    Z_max, _ = torch.max(Z, dim=dim)
+    Z = torch.exp(Z - Z_max[:, None])
+    Z_sum = torch.sum(Z, dim=dim)
+    if get_ll:
+        # Compute log-likelihood
+        if W is None:
+            ll = torch.sum(torch.log(Z_sum) + Z_max, dtype=torch.float64)
+        else:
+            ll = torch.sum((torch.log(Z_sum) + Z_max)*W.squeeze(), dtype=torch.float64)
+    else:
+        ll = None
+    Z = Z / Z_sum[:, None]
+    return Z, ll
+
+
 # TODO:
 #   The following functions should be replaced by tensor-compatible
 #   equivalents in linalg

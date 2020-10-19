@@ -3,7 +3,6 @@
 
 import torch
 import torch.nn.functional as _F
-from .. import utils
 from ..core import kernels
 from ..core.utils import broadcast_to
 from .._C import spatial as _Cspatial

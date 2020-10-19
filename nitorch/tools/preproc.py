@@ -18,10 +18,10 @@ import os
 import torch
 from torch.nn import functional as F
 from ..core.kernels import smooth
+from ..core.utils import pad
 from ..spatial import voxsize, grid_pull
 from .spm import identity, matrix
 from .spm import affine as apply_affine
-from ..utils import pad
 
 
 __all__ = ['load3d', 'reslice2world', 'reset_origin']
