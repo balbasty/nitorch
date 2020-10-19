@@ -2,7 +2,7 @@
 
 import torch
 from torch import nn as tnn
-from nitorch import spatial
+from ... import spatial
 from ._cnn import UNet
 from ._base import Module
 
