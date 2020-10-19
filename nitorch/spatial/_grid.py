@@ -3,9 +3,12 @@
 
 import torch
 import torch.nn.functional as _F
-from nitorch import kernels, utils
-from nitorch._C import spatial as _Cspatial
-from nitorch._C.spatial import BoundType, InterpolationType
+from .. import utils
+from ..core import kernels
+from ..core.utils import broadcast_to
+from .._C import spatial as _Cspatial
+from .._C.spatial import BoundType, InterpolationType
+
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
            'identity_grid', 'affine_grid', 'compose', 'jacobian', 'voxsize',
@@ -105,6 +108,11 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
     interpolation = [InterpolationType.__members__[i] if type(i) is str
                      else InterpolationType(i) for i in interpolation]
 
+    # Broadcast
+    batch = max(input.shape[0], grid.shape[0])
+    input = broadcast_to(input, [batch, *input.shape[1:]])
+    grid = broadcast_to(grid, [batch, *grid.shape[1:]])
+
     return _GridPull.apply(input, grid, interpolation, bound, extrapolate)
 
 
@@ -135,8 +143,8 @@ class _GridPush(torch.autograd.Function):
             grad_input = grads[0]
             if ctx.needs_input_grad[1]:
                 grad_grid = grads[1]
-        elif ctx.needs_input_grad[1]:
-            grad_grid = grads[1]
+        elif ctx.needs_input_grad[0]:
+            grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None, None
 
 
@@ -202,6 +210,17 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
              for b in bound]
     interpolation = [InterpolationType.__members__[i] if type(i) is str
                      else InterpolationType(i) for i in interpolation]
+
+
+    # Broadcast
+    batch = max(input.shape[0], grid.shape[0])
+    channel = input.shape[1]
+    ndims = grid.shape[-1]
+    input_shape = input.shape[2:]
+    grid_shape = grid.shape[1:-1]
+    spatial = [max(sinp, sgrd) for sinp, sgrd in zip(input_shape, grid_shape)]
+    input = broadcast_to(input, [batch, channel, *spatial])
+    grid = broadcast_to(grid, [batch, *spatial, ndims])
 
     if shape is None:
         shape = tuple(input.shape[2:])
@@ -301,7 +320,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
                      else InterpolationType(i) for i in interpolation]
 
     if shape is None:
-        shape = tuple(grid.shape[2:])
+        shape = tuple(grid.shape[1:-1])
 
     return _GridCount.apply(grid, shape, interpolation, bound, extrapolate)
 
@@ -334,8 +353,8 @@ class _GridGrad(torch.autograd.Function):
                 grad_input = grads[0]
                 if ctx.needs_input_grad[1]:
                     grad_grid = grads[1]
-            elif ctx.needs_input_grad[1]:
-                grad_grid = grads[1]
+            elif ctx.needs_input_grad[0]:
+                grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None
 
 
@@ -399,6 +418,11 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
              for b in bound]
     interpolation = [InterpolationType.__members__[i] if type(i) is str
                      else InterpolationType(i) for i in interpolation]
+
+    # Broadcast
+    batch = max(input.shape[0], grid.shape[0])
+    input = broadcast_to(input, [batch, *input.shape[1:]])
+    grid = broadcast_to(grid, [batch, *grid.shape[1:]])
 
     return _GridGrad.apply(input, grid, interpolation, bound, extrapolate)
 
@@ -747,4 +771,3 @@ def voxsize(mat):
     """
     dim = mat.shape[-1] - 1
     return (mat[..., :dim, :dim] ** 2).sum(-2).sqrt()
-
