@@ -44,4 +44,6 @@ def nitorchmodule(klass):
     return klass
 
 
-Module = nitorchmodule(tnn.Module)
+@nitorchmodule
+class Module(tnn.Module):
+    pass
