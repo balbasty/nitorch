@@ -59,7 +59,6 @@ class ModelTrainer:
         """Train for one epoch"""
 
         self.model.train()
-        self.model.requires_grad_(True)
         for n_batch, batch in enumerate(self.train_set):
             losses = []
             metrics = {}
