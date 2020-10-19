@@ -1,6 +1,7 @@
 """Low-level utilities used everywhere."""
 
 from . import constants    # constant values
+from . import itertools    # python's itertools in pytorch
 from . import kernels      # convolution kernels
 from . import linalg       # linear algebra
 from . import math         # generic math
