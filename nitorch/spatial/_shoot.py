@@ -1,7 +1,7 @@
 """Integrate/Shoot velocity fields."""
 
 import torch
-from ._grid import grid_pull, channel2grid, grid2channel, identity
+from ._grid import grid_pull, channel2grid, grid2channel, identity_grid
 
 __all__ = ['exp']
 
@@ -35,7 +35,7 @@ def _exp_ss(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
     # Precompute identity + aliases
     dtype = vel.dtype
     device = vel.device
-    id = identity(vel.shape[1:-1], dtype=dtype, device=device)
+    id = identity_grid(vel.shape[1:-1], dtype=dtype, device=device)[None, ...]
     c2g = channel2grid
     g2c = grid2channel
     opt = (interpolation, bound)
