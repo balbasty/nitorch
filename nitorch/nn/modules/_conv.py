@@ -1,19 +1,62 @@
-# -*- coding: utf-8 -*-
 """Convolution layers."""
 
 import torch
 from torch import nn as tnn
-from nitorch.utils import padlist, replist, getargs
+from ._base import nitorchmodule
+from ...core.pyutils import make_list, rep_list, getargs
 from copy import copy
 import math
+import inspect
 
 # NOTE:
 # My version of Conv allows parameters to be overridden at eval time.
 # This probably clashes with these parameters being declared as __constants__
 # in torch.nn._ConvND. I think this __constants__ mechanics is only used
 # In TorchScript, so it's fine for now.
+#
+# After some googling, I think it is alright as long as the *attribute*
+# is not mutated...
+# Some references:
+# .. https://pytorch.org/docs/stable/jit.html#frequently-asked-questions
+# .. https://discuss.pytorch.org/t/why-do-we-use-constants-or-final/70331/2
+#
+# Note that optional submodules can also be added to __constants__ in a
+# hacky way:
+# https://discuss.pytorch.org/t/why-do-we-use-constants-or-final/70331/4
+
+# I should probably move this somewhere else
+_activations = {
+    # linear units
+    'relu': tnn.ReLU,               # clip (, 0]
+    'relu6': tnn.ReLU6,             # clip (, 0] and [6, )
+    'leaky_relu': tnn.LeakyReLU,    # mult factor for negative slope
+    'prelu': tnn.PReLU,             # LeakyReLU with learnable factor
+    'rrelu': tnn.RReLU,             # LeakyReLU with random factor
+    # sigmoid / softmax / soft functions
+    'sigmoid': tnn.Sigmoid,
+    'logsigmoid': tnn.LogSigmoid,    # log(sigmod)
+    'hardsigmoid': tnn.Hardsigmoid,  # linear approximation of sigmoid
+    'softmax': tnn.Softmax,          # multivariate sigmoid
+    'logsoftmax': tnn.LogSoftmax,    # log(softmax)
+    # smooth approximations
+    'hardswish': tnn.Hardswish,      # 'smooth' RELU (quadratic)
+    'softplus': tnn.Softplus,        # 'smooth' ReLU (logsumexp)
+    'gelu': tnn.GELU,                # 'smooth' RELU (Gaussian cdf)
+    'elu': tnn.ELU,                  # 'smooth' ReLU (exp-1)
+    'selu': tnn.SELU,                #               (scaled ELU)
+    'celu': tnn.CELU,                #               (~= SELU)
+    'softsign': tnn.Softsign,        # 'smooth' sign function
+    # shrinkage
+    'softshrink': tnn.Softshrink,    # soft-thresholding (subtract constant)
+    'hardshrink': tnn.Hardshrink,    # clip [-lam, +lam]
+    # ranh
+    'tanh': tnn.Tanh,                # hyperbolic tangent
+    'hardtanh': tnn.Hardtanh,        # linear approximation of tanh
+    'tanhshrink': tnn.Tanhshrink,    # shrink by tanh
+}
 
 
+@nitorchmodule
 class Conv(tnn.Module):
     """Convolution layer (with activation).
 
@@ -65,25 +108,36 @@ class Conv(tnn.Module):
         # Select Conv
         if transposed:
             if dim == 1:
-                self.conv = tnn.ConvTranspose1d(*args, **kwargs)
+                self.conv = nitorchmodule(tnn.ConvTranspose1d)(*args, **kwargs)
             elif dim == 2:
-                self.conv = tnn.ConvTranspose2d(*args, **kwargs)
+                self.conv = nitorchmodule(tnn.ConvTranspose2d)(*args, **kwargs)
             elif dim == 3:
-                self.conv = tnn.ConvTranspose3d(*args, **kwargs)
+                self.conv = nitorchmodule(tnn.ConvTranspose3d)(*args, **kwargs)
             else:
                 NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
         else:
             if dim == 1:
-                self.conv = tnn.Conv1d(*args, **kwargs)
+                self.conv = nitorchmodule(tnn.Conv1d)(*args, **kwargs)
             elif dim == 2:
-                self.conv = tnn.Conv2d(*args, **kwargs)
+                self.conv = nitorchmodule(tnn.Conv2d)(*args, **kwargs)
             elif dim == 3:
-                self.conv = tnn.Conv3d(*args, **kwargs)
+                self.conv = nitorchmodule(tnn.Conv3d)(*args, **kwargs)
             else:
                 NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
 
         # Add activation
-        self.activation = activation() if activation else None
+        #   an activation can be a class (typically a Module), which is
+        #   then instantiated, or a callable (an already instantiated
+        #   class or a more simple function).
+        #   it is useful to accept both these cases as they allow to either:
+        #       * have a learnable activation specific to this module
+        #       * have a learnable activation shared with other modules
+        #       * have a non-learnable activation
+        if isinstance(activation, str):
+            activation = _activations.get(activation.lower(), None)
+        self.activation = activation() if inspect.isclass(activation) \
+                          else activation if callable(activation) \
+                          else None
 
     def forward(self, x, stride=None, padding=None, output_padding=None,
                 dilation=None, padding_mode=None, activation=None):
@@ -106,15 +160,15 @@ class Conv(tnn.Module):
         # Override constructed parameters
         conv = copy(self.conv)
         if stride is not None:
-            conv.stride = padlist(stride, self.dim)
+            conv.stride = make_list(stride, self.dim)
         if padding is not None:
-            conv.padding = padlist(padding, self.dim)
-            conv._padding_repeated_twice = replist(conv.padding, 2,
-                                                   interleaved=True)
+            conv.padding = make_list(padding, self.dim)
+            conv._padding_repeated_twice = rep_list(conv.padding, 2,
+                                                    interleaved=True)
         if output_padding is not None:
-            conv.output_padding = padlist(output_padding, self.dim)
+            conv.output_padding = make_list(output_padding, self.dim)
         if dilation is not None:
-            conv.dilation = padlist(dilation, self.dim)
+            conv.dilation = make_list(dilation, self.dim)
         if padding_mode is not None:
             conv.padding_mode = padding_mode
 
@@ -133,7 +187,6 @@ class Conv(tnn.Module):
         if activation is not None:
             x = activation(x)
         return x
-
 
     def shape(self, x, stride=None, padding=None, output_padding=None,
               dilation=None, padding_mode=None, activation=None):
@@ -156,15 +209,15 @@ class Conv(tnn.Module):
         # Override constructed parameters
         conv = copy(self.conv)
         if stride is not None:
-            conv.stride = padlist(stride, self.dim)
+            conv.stride = make_list(stride, self.dim)
         if padding is not None:
-            conv.padding = padlist(padding, self.dim)
-            conv._padding_repeated_twice = replist(conv.padding, 2,
+            conv.padding = make_list(padding, self.dim)
+            conv._padding_repeated_twice = rep_list(conv.padding, 2,
                                                    interleaved=True)
         if output_padding is not None:
-            conv.output_padding = padlist(output_padding, self.dim)
+            conv.output_padding = make_list(output_padding, self.dim)
         if dilation is not None:
-            conv.dilation = padlist(dilation, self.dim)
+            conv.dilation = make_list(dilation, self.dim)
         if padding_mode is not None:
             conv.padding_mode = padding_mode
 
@@ -191,4 +244,3 @@ class Conv(tnn.Module):
                     /stride[i] + 1
                 ))
         return tuple(shape)
-
