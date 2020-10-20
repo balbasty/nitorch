@@ -143,7 +143,8 @@ class MutualInfoLoss(Loss):
             if mask is not None:
                 # we set masked values to nan so that we can exclude them when
                 # computing min/max
-                x = torch.where(mask, torch.as_tensor(nan), x)
+                val_nan = torch.as_tensor(nan, dtype=x.dtype, device=x.device)
+                x = torch.where(mask, val_nan, x)
                 min_fn = nanmin
                 max_fn = nanmax
             else:
@@ -170,8 +171,9 @@ class MutualInfoLoss(Loss):
         # we transform our nans into inf so that they get zero-weight
         # in the histogram
         if mask is not None:
-            x = torch.where(mask, torch.as_tensor(inf), x)
-            y = torch.where(mask, torch.as_tensor(inf), y)
+            val_inf = torch.as_tensor(inf, dtype=x.dtype, device=x.device)
+            x = torch.where(mask, val_inf, x)
+            y = torch.where(mask, val_inf, y)
 
         # compute distances and collapse
         x = x[..., None]                            # -> [B, C, N, 1]
