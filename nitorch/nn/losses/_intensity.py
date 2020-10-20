@@ -137,21 +137,22 @@ class MutualInfoLoss(Loss):
             return bins, binwidth
 
         # prepare bins
-        x_bins, x_binwidth = get_bins(x, x_min, x_max, x_nbins)
-        y_bins, y_binwidth = get_bins(y, y_min, y_max, y_nbins)
+        x_bins, x_binwidth = get_bins(x.detach(), x_min, x_max, x_nbins)
+        y_bins, y_binwidth = get_bins(y.detach(), y_min, y_max, y_nbins)
 
         # compute distances and collapse
         x = x[..., None]                            # -> [B, C, N, 1]
         y = y[..., None]                            # -> [B, C, N, 1]
         x_var = ((x_fwhm * x_binwidth) ** 2) / (8 * math.log(2))
         x_var = x_var.clamp(min=eps(x.dtype))
-        x = -(x - x_bins).square() / (2 * x_var)    # -> [B, C, N, nb_bins]
-        x = x.exp().sum(dim=-2)                     # -> [B, C, nb_bins]
+        x = -(x - x_bins).square() / (2 * x_var)
+        x = x.exp()
         y_var = ((y_fwhm * y_binwidth) ** 2) / (8 * math.log(2))
         y_var = y_var.clamp(min=eps(y.dtype))
         y = -(y - y_bins).square() / (2 * y_var)
-        y = y.exp().sum(dim=-2)
-        # -> shape [B, C, nb_bins]
+        y = y.exp()
+        # -> [B, C, N, nb_bins]
+
 
         def pnorm(x, dims=-1):
             """Normalize a tensor so that it's sum across `dims` is one."""
@@ -161,11 +162,11 @@ class MutualInfoLoss(Loss):
             return x
 
         # compute probabilities
-        p_x = pnorm(x)                            # -> [B, C, nb_bins]
-        p_y = pnorm(y)                            # -> [B, C, nb_bins]
-        x = x[..., None]                          # -> [B, C, nb_bins, 1]
-        y = y[..., None, :]                       # -> [B, C, 1, nb_bins]
-        p_xy = pnorm(x*y, [-1, -2])               # -> [B, C, nb_bins, nb_bins]
+        p_x = pnorm(x.sum(dim=2))                 # -> [B, C, nb_bins]
+        p_y = pnorm(y.sum(dim=2))                 # -> [B, C, nb_bins]
+        x = x[..., None]                          # -> [B, C, N, nb_bins, 1]
+        y = y[..., None, :]                       # -> [B, C, N, 1, nb_bins]
+        p_xy = pnorm((x*y).sum(dim=2), [-1, -2])  # -> [B, C, nb_bins, nb_bins]
 
         # compute entropies
         h_x = -(p_x * p_x.log()).sum(dim=-1)            # -> [B, C]
