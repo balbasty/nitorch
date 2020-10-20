@@ -4,6 +4,7 @@
 # yael.balbastre@gmail.com
 
 import torch
+from .constants import inf, ninf
 
 
 def round(t, decimals=0):
@@ -49,7 +50,8 @@ def nansum(input, *args, inplace=False, **kwargs):
         input = input.clone()
     mask = torch.isnan(input)
     if input.requires_grad:
-        input = input * (~mask)
+        zero = torch.as_tensor(0, dtype=input.dtype, device=input.device)
+        input = torch.where(mask, zero, input)
     else:
         input[mask] = 0
     return torch.sum(input, *args, **kwargs)
@@ -84,11 +86,11 @@ def nanmean(input, *args, inplace=False, **kwargs):
         input = input.clone()
     mask = torch.isnan(input)
     if input.requires_grad:
-        mask = ~mask
-        input = input * mask
+        zero = torch.as_tensor(0, dtype=input.dtype, device=input.device)
+        input = torch.where(mask, zero, input)
     else:
         input[mask] = 0
-        mask = ~mask
+    mask = ~mask
     weights = mask.sum(*args, **kwargs).to(kwargs.get('dtype', input.dtype))
     return torch.sum(input, *args, **kwargs) / weights
 
@@ -123,11 +125,11 @@ def nanvar(input, *args, unbiased=True, inplace=False, **kwargs):
         input = input.clone()
     mask = torch.isnan(input)
     if requires_grad:
-        mask = ~mask
-        input = input * mask
+        zero = torch.as_tensor(0, dtype=input.dtype, device=input.device)
+        input = torch.where(mask, zero, input)
     else:
         input[mask] = 0
-        mask = ~mask
+    mask = ~mask
     weights = mask.sum(*args, **kwargs).to(kwargs.get('dtype', input.dtype))
     mean = torch.sum(input, *args, **kwargs) / weights
     input = input.square() if requires_grad else input.square_()
@@ -173,6 +175,89 @@ def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
     return input
 
 
+def nanmin(input, *args, inplace=False, **kwargs):
+    """Compute the minimum of a tensor, excluding nans.
+
+    Notes
+    -----
+    .. This function cannot compute the minimum of two tensors, it only
+       computes the minimum of one tensor (along a dimension).
+    .. If all values (across a dimension) are nans, the output value
+       will be inf.
+
+
+    Parameters
+    ----------
+    input : tensor
+        Input tensor.
+    dim : int or list[int], optional
+        Dimensions to reduce.
+    keepdim : bool, default=False
+        Keep reduced dimensions.
+    inplace : bool, default=False
+        Authorize working inplace.
+    out : tensor, optional
+        Output placeholder.
+
+    Returns
+    -------
+    values : tensor
+        Output tensor
+    indices : tensor[long], if `dim is not None`
+        Index location of each minimum value found
+
+    """
+    # TODO: minimum of two tensors
+    input = torch.as_tensor(input)
+    mask = torch.isnan(input)
+    if inplace and not input.requires_grad:
+        input[mask] = inf
+    else:
+        input = torch.where(mask, torch.as_tensor(inf), input)
+    return torch.min(input, *args, **kwargs)
+
+
+def nanmax(input, *args, inplace=False, **kwargs):
+    """Compute the maximum of a tensor, excluding nans.
+
+    Notes
+    -----
+    .. This function cannot compute the maximum of two tensors, it only
+       computes the maximum of one tensor (along a dimension).
+    .. If all values (across a dimension) are nans, the output value
+       will be -inf.
+
+    Parameters
+    ----------
+    input : tensor
+        Input tensor.
+    dim : int or list[int], optional
+        Dimensions to reduce.
+    keepdim : bool, default=False
+        Keep reduced dimensions.
+    inplace : bool, default=False
+        Authorize working inplace.
+    out : tensor, optional
+        Output placeholder.
+
+    Returns
+    -------
+    values : tensor
+        Output tensor
+    indices : tensor[long], if `dim is not None`
+        Index location of each maximum value found
+
+    """
+    # TODO: minimum of two tensors
+    input = torch.as_tensor(input)
+    mask = torch.isnan(input)
+    if inplace and not input.requires_grad:
+        input[mask] = ninf
+    else:
+        input = torch.where(mask, torch.as_tensor(ninf), input)
+    return torch.max(input, *args, **kwargs)
+
+
 def softmax(Z, dim=-1, get_ll=False, W=None):
     """ SoftMax (safe).
 
@@ -211,6 +296,7 @@ def softmax(Z, dim=-1, get_ll=False, W=None):
 # TODO:
 #   The following functions should be replaced by tensor-compatible
 #   equivalents in linalg
+
 
 from numpy import real
 from scipy.linalg import expm as expm_scipy
