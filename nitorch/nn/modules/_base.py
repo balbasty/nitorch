@@ -29,18 +29,18 @@ def nitorchmodule(klass):
 
     # define helper to store metrics
     @staticmethod
-    def update_metrics(metrics, new_metrics):
-        for key, val in new_metrics.items():
-            if key in metrics.keys():
+    def update_dict(old_dict, new_dict):
+        for key, val in new_dict.items():
+            if key in old_dict.keys():
                 i = 1
-                while '{}/{}'.format(key, i) in metrics.keys():
+                while '{}/{}'.format(key, i) in old_dict.keys():
                     i += 1
                 key = '{}/{}'.format(key, i)
-            metrics[key] = val
+            old_dict[key] = val
 
-    # assign new methoda
+    # assign new methods
     klass.__call__ = __call__
-    klass.update_metrics = update_metrics
+    klass.update_dict = update_dict
     return klass
 
 

@@ -378,12 +378,12 @@ class VoxelMorph(Module):
         self.pull = GridPull(interpolation=interpolation,
                              bound=image_bound)
         self.dim = dim
-        self.image_losses = []
-        self.velocity_losses = []
+        self.image_losses = {'': []}
+        self.velocity_losses = {'': []}
         self.image_metrics = {}
         self.velocity_metrics = {}
 
-    def add_image_loss(self, *loss_fn):
+    def add_image_loss(self, *loss_fn, **named_loss_fn):
         """Add one or more image loss functions.
 
         The image loss should measure similarity between the deformed
@@ -391,13 +391,14 @@ class VoxelMorph(Module):
 
         Parameters
         ----------
-        loss_fn : callable or [callable, float]
+        loss_fn, named_loss_fn : callable or [callable, float]
             Function of two arguments that returns a scalar value.
 
         """
-        self.image_losses += list(loss_fn)
+        self.image_losses[''] += list(loss_fn)
+        self.image_losses.update(dict(named_loss_fn))
 
-    def set_image_loss(self, *loss_fn):
+    def set_image_loss(self, *loss_fn, **named_loss_fn):
         """Set one or more image loss functions.
 
         The image loss should measure similarity between the deformed
@@ -407,26 +408,28 @@ class VoxelMorph(Module):
 
         Parameters
         ----------
-        loss_fn : callable or [callable, float]
+        loss_fn, named_loss_fn : callable or [callable, float]
             Function of two arguments that returns a scalar value.
 
         """
-        self.image_losses = list(loss_fn)
+        self.image_losses = dict(named_loss_fn)
+        self.image_losses[''] = list(loss_fn)
 
-    def add_velocity_loss(self, *loss_fn):
+    def add_velocity_loss(self, *loss_fn, **named_loss_fn):
         """Add one or more velocity loss functions.
 
         The velocity loss should penalize features of the velocity field.
 
         Parameters
         ----------
-        loss_fn : callable or [callable, float]
+        loss_fn, named_loss_fn : callable or [callable, float]
             Function of one argument that returns a scalar value.
 
         """
-        self.velocity_losses += list(loss_fn)
+        self.velocity_losses[''] += list(loss_fn)
+        self.velocity_losses.update(dict(named_loss_fn))
 
-    def set_velocity_loss(self, *loss_fn):
+    def set_velocity_loss(self, *loss_fn, **named_loss_fn):
         """Set one or more image loss functions.
 
         The velocity loss should penalize features of the velocity field.
@@ -435,25 +438,40 @@ class VoxelMorph(Module):
 
         Parameters
         ----------
-        loss_fn : callable or [callable, float]
+        loss_fn, named_loss_fn : callable or [callable, float]
             Function of one argument that returns a scalar value.
 
         """
-        self.velocity_losses = list(loss_fn)
+        self.velocity_losses = dict(named_loss_fn)
+        self.velocity_losses[''] = list(loss_fn)
 
-    def compute_loss(self, deformed_source, target, velocity):
+    def compute_loss(self, deformed_source, target, velocity, prepend=False):
         """Compute all losses."""
-        loss = []
-        for loss_fn in self.image_losses:
-            if isinstance(loss_fn, (list, tuple)):
-                _loss_fn, weight = loss_fn
-                loss_fn = lambda *a, **k: weight*_loss_fn(*a, **k)
-            loss.append(loss_fn(deformed_source, target))
-        for loss_fn in self.velocity_losses:
-            if isinstance(loss_fn, (list, tuple)):
-                _loss_fn, weight = loss_fn
-                loss_fn = lambda *a, **k: weight*_loss_fn(*a, **k)
-            loss.append(loss_fn(velocity))
+        loss = {}
+
+        def add_loss(type, key, fn, *args):
+            if isinstance(fn, (list, tuple)):
+                _fn, weight = fn
+                fn = lambda *a, **k: weight*_fn(*a, **k)
+            key = '{}/{}'.format(type, key)
+            if prepend:
+                key = '{}/{}'.format(self.__class__.__name__, key)
+            loss[key] = fn(*args)
+
+        for key, loss_fn in self.image_losses.items():
+            if not key:
+                for key, loss_fn in enumerate(loss_fn):
+                    add_loss('image', key, loss_fn, deformed_source, target)
+            else:
+                add_loss('image', key, loss_fn, deformed_source, target)
+
+        for key, loss_fn in self.velocity_losses.items():
+            if not key:
+                for key, loss_fn in enumerate(loss_fn):
+                    add_loss('velocity', key, loss_fn, velocity)
+            else:
+                add_loss('velocity', key, loss_fn, velocity)
+
         return loss
 
     def add_image_metric(self, **metric_fn):
@@ -514,14 +532,18 @@ class VoxelMorph(Module):
         """
         self.velocity_metrics = dict(metric_fn)
 
-    def compute_metric(self, deformed_source, target, velocity):
+    def compute_metric(self, deformed_source, target, velocity, prepend=False):
         """Compute all metrics."""
         metric = {}
         for key, metric_fn in self.image_metrics.items():
-            key = '{}/{}/{}'.format(self.__class__.__name__, 'image', key)
+            key = '{}/{}'.format('image', key)
+            if prepend:
+                key = '{}/{}'.format(self.__class__.__name__, key)
             metric[key] = metric_fn(deformed_source, target)
         for key, metric_fn in self.velocity_metrics.items():
-            key = '{}/{}/{}'.format(self.__class__.__name__, 'velocity', key)
+            key = '{}/{}'.format('velocity', key)
+            if prepend:
+                key = '{}/{}'.format(self.__class__.__name__, key)
             metric[key] = metric_fn(velocity)
         return metric
 
@@ -535,7 +557,7 @@ class VoxelMorph(Module):
         target : tensor (batch, channel, *spatial)
             Target/fixed image
 
-        _loss : list, optional
+        _loss : dict, optional
             If provided, all registered losses are computed and appended.
         _metric : dict, optional
             If provided, all registered metrics are computed and appended.
@@ -576,11 +598,12 @@ class VoxelMorph(Module):
 
         # compute loss and metrics
         if _loss is not None:
-            assert isinstance(_loss, list)
-            _loss += self.compute_loss(deformed_source, target, velocity)
+            assert isinstance(_loss, dict)
+            losses = self.compute_loss(deformed_source, target, velocity)
+            self.update_dict(_loss, losses)
         if _metric is not None:
             assert isinstance(_metric, dict)
             metrics = self.compute_metric(deformed_source, target, velocity)
-            self.update_metrics(_metric, metrics)
+            self.update_dict(_metric, metrics)
 
         return deformed_source, velocity

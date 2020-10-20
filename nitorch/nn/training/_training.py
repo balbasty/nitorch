@@ -60,24 +60,26 @@ class ModelTrainer:
 
         self.model.train()
         for n_batch, batch in enumerate(self.train_set):
-            losses = []
+            losses = {}
             metrics = {}
             # forward pass
             batch = make_tuple(batch)
             self.optimizer.zero_grad()
             self.model(*batch, _loss=losses, _metric=metrics)
-            loss = sum(losses).sum()
+            loss = self._sum_loss(losses)
             # backward pass
             loss.backward()
             self.optimizer.step()
-            # print / save
+            # print
             if n_batch % self.log_interval == 0:
                 train_print = 'Train Epoch: {} [{}/{} ({:.0f}%)]'.format(
                     epoch, n_batch, self._nb_train,
                     100. * n_batch / self._nb_train)
                 train_print += ' \tloss: {:.6f}'.format(loss.item())
+                for key, val in losses.items():
+                    train_print += ' \t{}: {:.6f}'.format(key, val)
                 for key, val in metrics.items():
-                    train_print += ' \t{}: {:.6f}'.format(key, val.item())
+                    train_print += ' \t{}: {:.6f}'.format(key, val)
                 print(train_print)
 
     def _save(self, epoch):
@@ -107,27 +109,47 @@ class ModelTrainer:
 
         self.model.eval()
         with torch.no_grad():
-            loss = 0
-            metric = {}
+            losses = {}
+            metrics = {}
             for n_batch, batch in enumerate(self.eval_set):
-                losses = []
-                metrics = {}
+                sublosses = {}
+                submetrics = {}
                 batch = make_tuple(batch)
-                self.model(*batch, _loss=losses, _metric=metrics)
-                loss = loss + sum(losses)
-                for key, val in metrics.items():
-                    if key in metric.keys():
-                        metric[key] += val
-                    else:
-                        metric[key] = val
-            loss = loss / self._nb_eval
-            for key, val in metric.items():
-                metric[key] = metric[key] / self._nb_eval
+                self.model(*batch, _loss=sublosses, _metric=submetrics)
+                self._update_dict(losses, sublosses)
+                self._update_dict(metrics, submetrics)
+            self._normalize_dict(losses, self._nb_eval)
+            self._normalize_dict(metrics, self._nb_eval)
+        loss = self._sum_loss(losses)
         # print
         eval_print = 'Eval Epoch: {} \tloss: {:.6f}'.format(epoch, loss.item())
-        for key, val in metric.items():
+        for key, val in losses.items():
+            eval_print += ' \t{}: {:.6f}'.format(key, val)
+        for key, val in metrics.items():
             eval_print += ' \t{}: {:.6f}'.format(key, val)
         print(eval_print)
+
+    @staticmethod
+    def _update_dict(old, new):
+        for key, val in new.items():
+            if key in old.keys():
+                old[key] += val
+            else:
+                old[key] = val
+        return old
+
+    @staticmethod
+    def _normalize_dict(dico, norm):
+        for key, val in dico.items():
+            dico[key] = dico[key] / norm
+        return dico
+
+    @staticmethod
+    def _sum_loss(losses):
+        loss = 0
+        for val in losses.values():
+            loss = loss + val
+        return loss
 
     def train(self):
         """Launch training"""
@@ -194,24 +216,24 @@ class SupervisedModel(Module):
 
         # compute losses
         if _loss is not None:
-            losses = []
+            losses = {}
             for i, loss in enumerate(self.losses):
                 if len(labels) > i and labels[i] is not None:
                     loss_inputs = (outputs[i], labels[i])
                 else:
                     loss_inputs = (outputs[i],)
-                losses.append(loss(*loss_inputs))
-            _loss += losses
+                losses[str(i)] = loss(*loss_inputs)
+            self.update_dict(_loss, losses)
 
         # compute metrics
         if _metric is not None:
-            metrics = []
+            metrics = {}
             for i, metric in enumerate(self.metrics):
                 if len(labels) > i and labels[i] is not None:
                     metric_inputs = (outputs[i], labels[i])
                 else:
                     metric_inputs = (outputs[i],)
-                metrics.append(metric(*metric_inputs))
-            _metric += metrics
+                metrics[str(i)] = metric(*metric_inputs)
+            self.update_dict(_metric, metrics)
 
         return outputs
