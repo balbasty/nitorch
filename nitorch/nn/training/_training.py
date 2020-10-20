@@ -66,7 +66,7 @@ class ModelTrainer:
             batch = make_tuple(batch)
             self.optimizer.zero_grad()
             self.model(*batch, _loss=losses, _metric=metrics)
-            loss = self._sum_loss(losses)
+            loss = sum(losses.values())
             # backward pass
             loss.backward()
             self.optimizer.step()
@@ -120,7 +120,7 @@ class ModelTrainer:
                 self._update_dict(metrics, submetrics)
             self._normalize_dict(losses, self._nb_eval)
             self._normalize_dict(metrics, self._nb_eval)
-        loss = self._sum_loss(losses)
+        loss = sum(losses.values())
         # print
         eval_print = 'Eval Epoch: {} \tloss: {:.6f}'.format(epoch, loss.item())
         for key, val in losses.items():
@@ -143,13 +143,6 @@ class ModelTrainer:
         for key, val in dico.items():
             dico[key] = dico[key] / norm
         return dico
-
-    @staticmethod
-    def _sum_loss(losses):
-        loss = 0
-        for val in losses.values():
-            loss = loss + val
-        return loss
 
     def train(self):
         """Launch training"""
