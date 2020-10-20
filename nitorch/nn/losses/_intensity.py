@@ -99,8 +99,8 @@ class MutualInfoLoss(Loss):
             x = x[:, 0, ...]
             y = y[:, 0, ...]
             for d, p in enumerate(patch_size):
-                x = x.unfold(dim=d + 1, size=p, step=1)
-                y = y.unfold(dim=d + 1, size=p, step=1)
+                x = x.unfold(dimension=d + 1, size=p, step=1)
+                y = y.unfold(dimension=d + 1, size=p, step=1)
             x = x.reshape((x.shape[0], -1, *patch_size))
             y = y.reshape((y.shape[0], -1, *patch_size))
             # now, the spatial dimension of x and y is `patch_size` and
