@@ -70,9 +70,11 @@ def unsqueeze(input, dim=0, ndim=1):
     ndim = make_list(ndim, len(dim))
     extra_dims = 0
     for d, nd in zip(dim, ndim):
+        # FIXME: does not work when inputs are lists
         d += extra_dims
         for _ in range(nd):
-            input = torch.unsqueeze(input, d)
+            input = torch.unsqueeze(input, min(d, input.dim()) if d > 0 else
+                                           max(d, -(input.dim()+1)))
         extra_dims += nd
     return input
 
