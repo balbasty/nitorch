@@ -164,7 +164,7 @@ class MutualInfoLoss(Loss):
         # compute probabilities
         p_x = pnorm(x.sum(dim=2))                 # -> [B, C, nb_bins]
         p_y = pnorm(y.sum(dim=2))                 # -> [B, C, nb_bins]
-        x = x.transpose([0, 1, 3, 2])             # -> [B, C, nb_bins, N]
+        x = x.transpose(-1, -2)                   # -> [B, C, nb_bins, N]
         p_xy = torch.matmul(x, y)                 # -> [B, C, nb_bins, nb_bins]
 
         # compute entropies
