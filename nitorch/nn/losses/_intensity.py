@@ -8,7 +8,8 @@ import math
 from ._base import Loss
 from ...core.pyutils import make_list
 from ...core.utils import unsqueeze
-from ...core.constants import eps
+from ...core.constants import eps, nan, inf
+from ...core.math import nanmin, nanmax, nansum
 
 
 class MutualInfoLoss(Loss):
@@ -25,7 +26,7 @@ class MutualInfoLoss(Loss):
 
     def __init__(self, min_val=None, max_val=None, nb_bins=32, fwhm=1,
                  normalize='arithmetic', patch_size=None, patch_stride=None,
-                 *args, **kwargs):
+                 mask=None, *args, **kwargs):
         """
 
         Parameters
@@ -51,6 +52,9 @@ class MutualInfoLoss(Loss):
         patch_stride : int or list[int], optional
             Stride between patches for local mutual information.
             If None, same as patch_size
+        mask : float or [float, float] or callable or [callable, callable], optional
+            * If float: exclude all values at or below this threshold
+            * if callable: take tensor as input and output an exclusion mask
         """
         super().__init__(*args, **kwargs)
         self.min_val = min_val
@@ -60,6 +64,7 @@ class MutualInfoLoss(Loss):
         self.normalize = normalize
         self.patch_size = patch_size
         self.patch_stride = patch_stride
+        self.mask = mask
 
     def forward(self, x, y, **overload):
         """
@@ -97,6 +102,7 @@ class MutualInfoLoss(Loss):
         normalize = overload.get('normalize', self.normalize)
         patch_size = overload.get('patch_size', self.patch_size)
         patch_stride = overload.get('patch_stride', self.patch_stride)
+        mask = overload.get('mask', self.mask)
 
         # reshape
         if patch_size is not None:
@@ -118,15 +124,36 @@ class MutualInfoLoss(Loss):
         x = x.reshape((*x.shape[:2], -1))
         y = y.reshape((*y.shape[:2], -1))
 
+        # exclude masked values
+        mask_x, mask_y = make_list(mask, 2)
+        mask = None
+        if callable(mask_x):
+            mask = mask_x(x)
+        elif mask_x is not None:
+            mask = x <= mask_x
+        if callable(mask_y):
+            mask = (mask & mask_y(y)) if mask is not None else mask_y(y)
+        elif mask_y is not None:
+            mask = (mask & (y <= mask_y)) if mask is not None else (y <= mask_y)
+
         def get_bins(x, min, max, nbins):
             """Compute the histogram bins."""
             # TODO: It's suboptimal to have bin centers fall at the
             #   min and max. Better to shift them slightly inside.
-            min = x.min(dim=-1).values if min is None else min
+            if mask is not None:
+                # we set masked values to nan so that we can exclude them when
+                # computing min/max
+                x = torch.where(mask, torch.as_tensor(nan), x)
+                min_fn = nanmin
+                max_fn = nanmax
+            else:
+                min_fn = torch.min
+                max_fn = torch.max
+            min = min_fn(x, dim=-1).values if min is None else min
             min = torch.as_tensor(min, dtype=dtype, device=device)
             min = unsqueeze(min, dim=2, ndim=4 - min.dim())
             # -> shape = [B, C, 1, 1]
-            max = x.max(dim=-1).values if max is None else max
+            max = max_fn(x, dim=-1).values if max is None else max
             max = torch.as_tensor(max, dtype=dtype, device=device)
             max = unsqueeze(max, dim=2, ndim=4 - max.dim())
             # -> shape = [B, C, 1, 1]
@@ -139,6 +166,12 @@ class MutualInfoLoss(Loss):
         # prepare bins
         x_bins, x_binwidth = get_bins(x.detach(), x_min, x_max, x_nbins)
         y_bins, y_binwidth = get_bins(y.detach(), y_min, y_max, y_nbins)
+
+        # we transform our nans into inf so that they get zero-weight
+        # in the histogram
+        if mask is not None:
+            x = torch.where(mask, torch.as_tensor(inf), x)
+            y = torch.where(mask, torch.as_tensor(inf), y)
 
         # compute distances and collapse
         x = x[..., None]                            # -> [B, C, N, 1]
@@ -153,12 +186,11 @@ class MutualInfoLoss(Loss):
         y = y.exp()
         # -> [B, C, N, nb_bins]
 
-
         def pnorm(x, dims=-1):
             """Normalize a tensor so that it's sum across `dims` is one."""
             dims = make_list(dims)
             x = x.clamp(min=eps(x.dtype))
-            x = x / x.sum(dim=dims, keepdim=True)
+            x = x / nansum(x, dim=dims, keepdim=True)
             return x
 
         # compute probabilities
