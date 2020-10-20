@@ -3,7 +3,7 @@
 
 import torch
 import torch.nn.functional as _F
-from ..core import kernels
+from ..core import kernels, utils
 from ..core.utils import broadcast_to
 from .._C import spatial as _Cspatial
 from .._C.spatial import BoundType, InterpolationType
@@ -649,7 +649,7 @@ def compose(*args, interpolation='linear', bound='dft'):
     # Third pass: compose all flow fields
     field = args2[-1]
     for arg in args2[-2::-1]:  # args2[-2:0:-1]
-        arg = arg - identity(arg.shape[1:-1], arg.dtype, arg.device)
+        arg = arg - identity_grid(arg.shape[1:-1], arg.dtype, arg.device)
         arg = grid2channel(arg)
         field = field + channel2grid(grid_pull(arg, field, interpolation, bound))
 
