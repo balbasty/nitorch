@@ -24,7 +24,8 @@ class MutualInfoLoss(Loss):
     """
 
     def __init__(self, min_val=None, max_val=None, nb_bins=32, fwhm=1,
-                 normalize='arithmetic', patch_size=None, *args, **kwargs):
+                 normalize='arithmetic', patch_size=None, patch_stride=None,
+                 *args, **kwargs):
         """
 
         Parameters
@@ -47,6 +48,9 @@ class MutualInfoLoss(Loss):
         patch_size : int or list[int], optional
             Patch size for local mutual information.
             If None, compute the global mutual information.
+        patch_stride : int or list[int], optional
+            Stride between patches for local mutual information.
+            If None, same as patch_size
         """
         super().__init__(*args, **kwargs)
         self.min_val = min_val
@@ -55,6 +59,7 @@ class MutualInfoLoss(Loss):
         self.fwhm = fwhm
         self.normalize = normalize
         self.patch_size = patch_size
+        self.patch_stride = patch_stride
 
     def forward(self, x, y, **overload):
         """
@@ -91,16 +96,20 @@ class MutualInfoLoss(Loss):
         x_fwhm, y_fwhm = make_list(overload.get('fwhm', self.fwhm), 2)
         normalize = overload.get('normalize', self.normalize)
         patch_size = overload.get('patch_size', self.patch_size)
+        patch_stride = overload.get('patch_stride', self.patch_stride)
 
         # reshape
         if patch_size is not None:
             # extract patches about each voxel
             patch_size = make_list(patch_size, nb_dim)
+            patch_stride = make_list(patch_stride, nb_dim)
+            patch_stride = [sz if st is None else st
+                            for sz, st in zip(patch_size, patch_stride)]
             x = x[:, 0, ...]
             y = y[:, 0, ...]
-            for d, p in enumerate(patch_size):
-                x = x.unfold(dimension=d + 1, size=p, step=1)
-                y = y.unfold(dimension=d + 1, size=p, step=1)
+            for d, sz, st in enumerate(zip(patch_size, patch_stride)):
+                x = x.unfold(dimension=d + 1, size=sz, step=st)
+                y = y.unfold(dimension=d + 1, size=sz, step=st)
             x = x.reshape((x.shape[0], -1, *patch_size))
             y = y.reshape((y.shape[0], -1, *patch_size))
             # now, the spatial dimension of x and y is `patch_size` and
