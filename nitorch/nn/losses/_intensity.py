@@ -144,9 +144,11 @@ class MutualInfoLoss(Loss):
         x = x[..., None]                            # -> [B, C, N, 1]
         y = y[..., None]                            # -> [B, C, N, 1]
         x_var = ((x_fwhm * x_binwidth) ** 2) / (8 * math.log(2))
+        x_var = x_var.clamp(min=eps(x.dtype))
         x = -(x - x_bins).square() / (2 * x_var)    # -> [B, C, N, nb_bins]
         x = x.exp().sum(dim=-2)                     # -> [B, C, nb_bins]
         y_var = ((y_fwhm * y_binwidth) ** 2) / (8 * math.log(2))
+        y_var = y_var.clamp(min=eps(y.dtype))
         y = -(y - y_bins).square() / (2 * y_var)
         y = y.exp().sum(dim=-2)
         # -> shape [B, C, nb_bins]
@@ -161,9 +163,9 @@ class MutualInfoLoss(Loss):
         # compute probabilities
         p_x = pnorm(x)                            # -> [B, C, nb_bins]
         p_y = pnorm(y)                            # -> [B, C, nb_bins]
-        x = x[..., None]                          # -> [B, C, N, nb_bins, 1]
-        y = y[..., None, :]                       # -> [B, C, N, 1, nb_bins]
-        p_xy = pnorm((x*y).sum(dim=2), [-1, -2])  # -> [B, C, nb_bins, nb_bins]
+        x = x[..., None]                          # -> [B, C, nb_bins, 1]
+        y = y[..., None, :]                       # -> [B, C, 1, nb_bins]
+        p_xy = pnorm(x*y, [-1, -2])               # -> [B, C, nb_bins, nb_bins]
 
         # compute entropies
         h_x = -(p_x * p_x.log()).sum(dim=-1)            # -> [B, C]
