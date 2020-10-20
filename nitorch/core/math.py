@@ -213,7 +213,8 @@ def nanmin(input, *args, inplace=False, **kwargs):
     if inplace and not input.requires_grad:
         input[mask] = inf
     else:
-        input = torch.where(mask, torch.as_tensor(inf), input)
+        val_inf = torch.as_tensor(inf, dtype=input.dtype, device=input.device)
+        input = torch.where(mask, val_inf, input)
     return torch.min(input, *args, **kwargs)
 
 
@@ -254,7 +255,8 @@ def nanmax(input, *args, inplace=False, **kwargs):
     if inplace and not input.requires_grad:
         input[mask] = ninf
     else:
-        input = torch.where(mask, torch.as_tensor(ninf), input)
+        val_ninf = torch.as_tensor(ninf, dtype=input.dtype, device=input.device)
+        input = torch.where(mask, val_ninf, input)
     return torch.max(input, *args, **kwargs)
 
 
