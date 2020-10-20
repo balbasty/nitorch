@@ -107,7 +107,7 @@ class MutualInfoLoss(Loss):
                             for sz, st in zip(patch_size, patch_stride)]
             x = x[:, 0, ...]
             y = y[:, 0, ...]
-            for d, sz, st in enumerate(zip(patch_size, patch_stride)):
+            for d, (sz, st) in enumerate(zip(patch_size, patch_stride)):
                 x = x.unfold(dimension=d + 1, size=sz, step=st)
                 y = y.unfold(dimension=d + 1, size=sz, step=st)
             x = x.reshape((x.shape[0], -1, *patch_size))
