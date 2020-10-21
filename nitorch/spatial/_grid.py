@@ -5,13 +5,16 @@ import torch
 import torch.nn.functional as _F
 from ..core import kernels, utils
 from ..core.utils import broadcast_to
+from ..core.pyutils import make_list
 from .._C import spatial as _Cspatial
 from .._C.spatial import BoundType, InterpolationType
+from ._affine import affine_resize
 
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
-           'identity_grid', 'affine_grid', 'compose', 'jacobian', 'voxsize',
-           'channel2grid', 'grid2channel', 'BoundType', 'InterpolationType']
+           'identity_grid', 'affine_grid', 'compose', 'jacobian',
+           'channel2grid', 'grid2channel', 'BoundType', 'InterpolationType',
+           'resize', 'resize_grid']
 
 
 class _GridPull(torch.autograd.Function):
@@ -758,15 +761,202 @@ def jacobian(warp, bound='circular'):
     return jac
 
 
-def voxsize(mat):
-    """ Compute voxel sizes from affine matrices.
+def resize(image, factor=None, shape=None, affine=None, anchor='c',
+           *args, **kwargs):
+    """Resize an image by a factor or to a specific shape.
 
-    Args:
-        mat (torch.Tensor): Affine matrix (..., K, K) or (..., K-1, K).
+    Notes
+    -----
+    .. A least one of `factor` and `shape` must be specified
+    .. If `anchor in ('centers', 'edges')`, and both `factor` and `shape`
+       are specified, `factor` is discarded.
+    .. If `anchor in ('first', 'last')`, `factor` must be provided even
+       if `shape` is specified.
+    .. Because of rounding, it is in general not assured that
+       `resize(resize(x, f), 1/f)` returns a tensor with the same shape as x.
 
-    Returns:
-        vx (torch.Tensor): Voxel size (..., K) .
+    Parameters
+    ----------
+    image : (batch, channel, ...) tensor
+        Image to resize
+    factor : float or list[float], optional
+        Resizing factor
+        * > 1 : larger image <-> smaller voxels
+        * < 1 : smaller image <-> larger voxels
+    shape : (ndim,) sequence[int], optional
+        Output shape
+    affine : (batch, ndim[+1], ndim+1), optional
+        Orientation matrix of the input image.
+        If provided, the orientation matrix of the resized image is
+        returned as well.
+    anchor : {'centers', 'edges', 'first', 'last'} or list, default='centers'
+        * In cases 'c' and 'e', the volume shape is multiplied by the
+          zoom factor (and eventually truncated), and two anchor points
+          are used to determine the voxel size.
+        * In cases 'f' and 'l', a single anchor point is used so that
+          the voxel size is exactly divided by the zoom factor.
+          This case with an integer factor corresponds to subslicing
+          the volume (e.g., `vol[::f, ::f, ::f]`).
+        * A list of anchors (one per dimension) can also be provided.
+    **kwargs : dict
+        Parameters of `grid_pull`.
+
+    Returns
+    -------
+    resized : (batch, channel, ...) tensor
+        Resized image.
+    affine : (batch, ndim[+1], ndim+1) tensor, optional
+        Orientation matrix
 
     """
-    dim = mat.shape[-1] - 1
-    return (mat[..., :dim, :dim] ** 2).sum(-2).sqrt()
+    # TODO: we could also use dft/dct/dst to resize, which correspond
+    #   to some sort of sinc interpolation.
+
+    # read parameters
+    image = torch.as_tensor(image)
+    nb_dim = image.dim() - 2
+    inshape = image.shape[2:]
+    info = {'dtype': image.dtype, 'device': image.device}
+    factor = make_list(factor, nb_dim)
+    outshape = make_list(shape, nb_dim)
+    anchor = [a[0].lower() for a in make_list(anchor, nb_dim)]
+    return_trf = kwargs.pop('_return_trf', False)  # hidden option
+
+    # compute output shape
+    outshape = [int(inshp*f) if outshp is None else outshp
+                for inshp, outshp, f in zip(inshape, outshape, factor)]
+
+    # compute transformation grid
+    # there is an affine relationship between the input and output grid:
+    #    input_grid = scale * output_grid + shift
+    lin = []
+    scales = []
+    shifts = []
+    for anch, f, inshp, outshp in zip(anchor, factor, inshape, outshape):
+        if anch == 'c':    # centers
+            lin.append(torch.linspace(0, inshp - 1, outshp, **info))
+            scales.append((inshp - 1) / (outshp - 1))
+            shifts.append(0)
+        elif anch == 'e':  # edges
+            shift = (inshp * (1 / outshp - 1) + (inshp - 1)) / 2
+            scale = inshp/outshp
+            lin.append(torch.arange(0., outshp, **info) * scale + shift)
+            scales.append(scale)
+            shifts.append(shift)
+        elif anch == 'f':  # first voxel
+            lin.append(torch.arange(0., outshp, **info) / f)
+            scales.append(1 / f)
+            shifts.append(0)
+        elif anch == 'l':  # last voxel
+            shift = (inshp - 1) - (outshp - 1) / f
+            lin.append(torch.arange(0., outshp, **info) / f + shift)
+            scales.append(1 / f)
+            shifts.append(shift)
+        else:
+            raise ValueError('Unknown anchor {}'.format(anch))
+    grid = torch.stack(torch.meshgrid(*lin), dim=-1)[None, ...]
+
+    # resize input image
+    resized = grid_pull(image, grid, *args, **kwargs)
+
+    # compute orientation matrix
+    if affine is not None:
+        affine, _ = affine_resize(affine, inshape, factor, anchor)
+        if return_trf:
+            return resized, affine, (scales, shifts)
+        else:
+            return resized, affine
+
+    if return_trf:
+        return resized, (scales, shifts)
+    else:
+        return resized
+
+
+def resize_grid(grid, factor=None, shape=None, type='grid',
+                affine=None, *args, **kwargs):
+    """Resize a displacement grid by a factor.
+
+    The displacement grid is resized *and* rescaled, so that
+    displacements are expressed in the new voxel referential.
+
+    Notes
+    -----
+    .. A least one of `factor` and `shape` must be specified.
+    .. If `anchor in ('centers', 'edges')`, and both `factor` and `shape`
+       are specified, `factor` is discarded.
+    .. If `anchor in ('first', 'last')`, `factor` must be provided even
+       if `shape` is specified.
+    .. Because of rounding, it is in general not assured that
+       `resize(resize(x, f), 1/f)` returns a tensor with the same shape as x.
+
+    Parameters
+    ----------
+    grid : (batch, ..., ndim) tensor
+        Grid to resize
+    factor : float or list[float], optional
+        Resizing factor
+        * > 1 : larger image <-> smaller voxels
+        * < 1 : smaller image <-> larger voxels
+    shape : (ndim,) sequence[int], optional
+        Output shape
+    type : {'grid', 'displacement'}, default='grid'
+        Grid type:
+        * 'grid' correspond to dense grids of coordinates.
+        * 'displacement' correspond to dense grid of relative displacements.
+        Both types are not rescaled in the same way.
+    affine : (batch, ndim[+1], ndim+1), optional
+        Orientation matrix of the input grid.
+        If provided, the orientation matrix of the resized image is
+        returned as well.
+    anchor : {'centers', 'edges', 'first', 'last'}, default='centers'
+        * In cases 'c' and 'e', the volume shape is multiplied by the
+          zoom factor (and eventually truncated), and two anchor points
+          are used to determine the voxel size.
+        * In cases 'f' and 'l', a single anchor point is used so that
+          the voxel size is exactly divided by the zoom factor.
+          This case with an integer factor corresponds to subslicing
+          the volume (e.g., `vol[::f, ::f, ::f]`).
+        * A list of anchors (one per dimension) can also be provided.
+    **kwargs : dict
+        Parameters of `grid_pull`.
+
+    Returns
+    -------
+    resized : (batch, ..., ndim) tensor
+        Resized grid.
+    affine : (batch, ndim[+1], ndim+1) tensor, optional
+        Orientation matrix
+
+    """
+    # resize grid
+    kwargs['_return_trf'] = True
+    grid = grid2channel(grid)
+    outputs = resize(grid, factor, shape, affine, *args, **kwargs)
+    if affine is not None:
+        grid, affine, (scales, shifts) = outputs
+    else:
+        grid, (scales, shifts) = outputs
+    grid = channel2grid(grid)
+
+    # rescale each component
+    # scales and shifts map resized coordinates to original coordinates:
+    #   original = scale * resized + shift
+    # here we want to transform original coordinates into resized ones:
+    #   resized = (original - shift) / scale
+    grids = []
+    for d, (scl, shft) in enumerate(zip(scales, shifts)):
+        grid1 = utils.slice_tensor(grid, d, dim=-1)
+        if type[0].lower() == 'g':
+            grid1 = grid1 - shft
+        grid1 = grid1 / scl
+        grids.append(grid1)
+    grid = torch.stack(grids, -1)
+
+    # return
+    if affine is not None:
+        return grid, affine
+    else:
+        return grid
+
+

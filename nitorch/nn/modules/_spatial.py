@@ -317,6 +317,168 @@ class GridExp(Module):
                None
 
 
+class Resize(Module):
+    __doc__ = """
+    Resize an image by a factor.
+
+    This module has no learnable parameters.
+
+    {interpolation}
+
+    {bound}
+    """.format(interpolation=_interpolation_doc, bound=_bound_doc)
+
+    def __init__(self, factor=None, shape=None, anchor='c',
+                 interpolation='linear', bound='dct2', extrapolate=True):
+        """
+
+        Parameters
+        ----------
+        factor : float or list[float], optional
+            Resizing factor
+            * > 1 : larger image <-> smaller voxels
+            * < 1 : smaller image <-> larger voxels
+        shape : (ndim,) sequence[int], optional
+            Output shape
+        anchor : {'centers', 'edges', 'first', 'last'} or list, default='centers'
+            * In cases 'c' and 'e', the volume shape is multiplied by the
+              zoom factor (and eventually truncated), and two anchor points
+              are used to determine the voxel size.
+            * In cases 'f' and 'l', a single anchor point is used so that
+              the voxel size is exactly divided by the zoom factor.
+              This case with an integer factor corresponds to subslicing
+              the volume (e.g., `vol[::f, ::f, ::f]`).
+            * A list of anchors (one per dimension) can also be provided.
+        interpolation : InterpolationType or list[InterpolationType], default=1
+            Interpolation order.
+        bound : BoundType, or list[BoundType], default='dct2'
+            Boundary condition.
+        extrapolate : bool, default=True
+            Extrapolate data outside of the field of view.
+        """
+        super().__init__()
+        self.factor = factor
+        self.shape = shape
+        self.anchor = anchor
+        self.interpolation = interpolation
+        self.bound = bound
+        self.extrapolate = extrapolate
+
+    def forward(self, image, affine=None, **overload):
+        """
+
+        Parameters
+        ----------
+        image : (batch, channel, *spatial_in) tensor
+            Input image to deform
+        affine : (batch, ndim[+1], ndim+1), optional
+            Orientation matrix of the input image.
+            If provided, the orientation matrix of the resized image is
+            returned as well.
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time.
+
+        Returns
+        -------
+        resized : (batch, channel, ...) tensor
+            Resized image.
+        affine : (batch, ndim[+1], ndim+1) tensor, optional
+            Orientation matrix
+
+        """
+        kwargs = {
+            'factor': overload.get('factor', self.factor),
+            'shape': overload.get('shape', self.shape),
+            'anchor': overload.get('anchor', self.anchor),
+            'interpolation': overload.get('interpolation', self.interpolation),
+            'bound': overload.get('bound', self.bound),
+            'extrapolate': overload.get('extrapolate', self.extrapolate),
+        }
+        return spatial.resize(image, affine=affine, **kwargs)
+
+
+class GridResize(Module):
+    __doc__ = """
+    Resize a transformation/displacement grid by a factor.
+
+    This module has no learnable parameters.
+
+    {interpolation}
+
+    {bound}
+    """.format(interpolation=_interpolation_doc, bound=_bound_doc)
+
+    def __init__(self, factor=None, shape=None, anchor='c',
+                 interpolation='linear', bound='dct2', extrapolate=True):
+        """
+
+        Parameters
+        ----------
+        factor : float or list[float], optional
+            Resizing factor
+            * > 1 : larger image <-> smaller voxels
+            * < 1 : smaller image <-> larger voxels
+        shape : (ndim,) sequence[int], optional
+            Output shape
+        anchor : {'centers', 'edges', 'first', 'last'} or list, default='centers'
+            * In cases 'c' and 'e', the volume shape is multiplied by the
+              zoom factor (and eventually truncated), and two anchor points
+              are used to determine the voxel size.
+            * In cases 'f' and 'l', a single anchor point is used so that
+              the voxel size is exactly divided by the zoom factor.
+              This case with an integer factor corresponds to subslicing
+              the volume (e.g., `vol[::f, ::f, ::f]`).
+            * A list of anchors (one per dimension) can also be provided.
+        interpolation : InterpolationType or list[InterpolationType], default=1
+            Interpolation order.
+        bound : BoundType, or list[BoundType], default='dct2'
+            Boundary condition.
+        extrapolate : bool, default=True
+            Extrapolate data outside of the field of view.
+        """
+        super().__init__()
+        self.factor = factor
+        self.shape = shape
+        self.anchor = anchor
+        self.interpolation = interpolation
+        self.bound = bound
+        self.extrapolate = extrapolate
+
+    def forward(self, grid, affine=None, **overload):
+        """
+
+        Parameters
+        ----------
+        grid : (batch, *spatial_in, ndim) tensor
+            Input grid to deform
+        affine : (batch, ndim[+1], ndim+1), optional
+            Orientation matrix of the input image.
+            If provided, the orientation matrix of the resized image is
+            returned as well.
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time.
+
+        Returns
+        -------
+        resized : (batch, *spatial_out, ndim) tensor
+            Resized image.
+        affine : (batch, ndim[+1], ndim+1) tensor, optional
+            Orientation matrix
+
+        """
+        kwargs = {
+            'factor': overload.get('factor', self.factor),
+            'shape': overload.get('shape', self.shape),
+            'anchor': overload.get('anchor', self.anchor),
+            'interpolation': overload.get('interpolation', self.interpolation),
+            'bound': overload.get('bound', self.bound),
+            'extrapolate': overload.get('extrapolate', self.extrapolate),
+        }
+        return spatial.resize_grid(grid, affine=affine, **kwargs)
+
+
 class VoxelMorph(Module):
     """VoxelMorph warps a source/moving image to a fixed/target image.
 
@@ -345,7 +507,8 @@ class VoxelMorph(Module):
     """
 
     def __init__(self, dim, encoder=None, decoder=None, kernel_size=3,
-                 interpolation='linear', grid_bound='dft', image_bound='dct2'):
+                 interpolation='linear', grid_bound='dft', image_bound='dct2',
+                 downsample_velocity=2, *, _input_channels=2):
         """
 
         Parameters
@@ -364,15 +527,20 @@ class VoxelMorph(Module):
             Boundary conditions of the velocity field.
         image_bound : bound_type, default='dct2'
             Boundary conditions of the image.
+        downsample_velocity : float, default=2
+            Downsample the velocity field by a factor when exponentiating.
         """
         super().__init__()
         self.unet = UNet(dim,
-                         input_channels=2,
+                         input_channels=_input_channels,
                          output_channels=dim,
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=tnn.LeakyReLU(0.2))
+        self.resize = GridResize(interpolation=interpolation,
+                                 bound=grid_bound,
+                                 factor=downsample_velocity)
         self.exp = GridExp(interpolation=interpolation,
                            bound=grid_bound)
         self.pull = GridPull(interpolation=interpolation,
@@ -382,6 +550,69 @@ class VoxelMorph(Module):
         self.velocity_losses = {'': []}
         self.image_metrics = {}
         self.velocity_metrics = {}
+
+    def forward(self, source, target, *, _loss=None, _metric=None):
+        """
+
+        Parameters
+        ----------
+        source : tensor (batch, channel, *spatial)
+            Source/moving image
+        target : tensor (batch, channel, *spatial)
+            Target/fixed image
+
+        _loss : dict, optional
+            If provided, all registered losses are computed and appended.
+        _metric : dict, optional
+            If provided, all registered metrics are computed and appended.
+
+        Returns
+        -------
+        deformed_source : tensor (batch, channel, *spatial)
+            Deformed source image
+        velocity : tensor (batch,, *spatial, len(spatial))
+            Velocity field
+
+        """
+        # checks
+        if len(source.shape) != self.dim+2:
+            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
+                             ' with len(spatial) == {} but found {}.'
+                             .format(self.dim, source.shape))
+        if len(target.shape) != self.dim+2:
+            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
+                             ' with len(spatial) == {} but found {}.'
+                             .format(self.dim, target.shape))
+        if not (target.shape[0] == source.shape[0] or
+                target.shape[0] == 1 or source.shape[0] == 1):
+            raise ValueError('Batch dimensions of `source` and `target` are '
+                             'not compatible: got {} and {}'
+                             .format(source.shape[0], target.shape[0]))
+        if target.shape[2:] != source.shape[2:]:
+            raise ValueError('Spatial dimensions of `source` and `target` are '
+                             'not compatible: got {} and {}'
+                             .format(source.shape[2:], target.shape[2:]))
+
+        # chain operations
+        source_and_target = torch.cat((source, target), dim=1)
+        velocity = self.unet(source_and_target, _loss=_loss, _metric=_metric)
+        velocity = spatial.channel2grid(velocity)
+        velocity_small = self.resize(velocity)
+        grid = self.exp(velocity_small, _loss=_loss, _metric=_metric)
+        grid = self.resize(grid, shape=target.shape[2:])
+        deformed_source = self.pull(source, grid, _loss=_loss, _metric=_metric)
+
+        # compute loss and metrics
+        if _loss is not None:
+            assert isinstance(_loss, dict)
+            losses = self.compute_loss(deformed_source, target, velocity)
+            self.update_dict(_loss, losses)
+        if _metric is not None:
+            assert isinstance(_metric, dict)
+            metrics = self.compute_metric(deformed_source, target, velocity)
+            self.update_dict(_metric, metrics)
+
+        return deformed_source, velocity
 
     def add_image_loss(self, *loss_fn, **named_loss_fn):
         """Add one or more image loss functions.
@@ -547,63 +778,3 @@ class VoxelMorph(Module):
             metric[key] = metric_fn(velocity)
         return metric
 
-    def forward(self, source, target, *, _loss=None, _metric=None):
-        """
-
-        Parameters
-        ----------
-        source : tensor (batch, channel, *spatial)
-            Source/moving image
-        target : tensor (batch, channel, *spatial)
-            Target/fixed image
-
-        _loss : dict, optional
-            If provided, all registered losses are computed and appended.
-        _metric : dict, optional
-            If provided, all registered metrics are computed and appended.
-
-        Returns
-        -------
-        deformed_source : tensor (batch, channel, *spatial)
-            Deformed source image
-        velocity : tensor (batch,, *spatial, len(spatial))
-            Velocity field
-
-        """
-        # checks
-        if len(source.shape) != self.dim+2:
-            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source.shape))
-        if len(target.shape) != self.dim+2:
-            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target.shape))
-        if not (target.shape[0] == source.shape[0] or
-                target.shape[0] == 1 or source.shape[0] == 1):
-            raise ValueError('Batch dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[0], target.shape[0]))
-        if target.shape[2:] != source.shape[2:]:
-            raise ValueError('Spatial dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[2:], target.shape[2:]))
-
-        # chain operations
-        source_and_target = torch.cat((source, target), dim=1)
-        velocity = self.unet(source_and_target, _loss=_loss, _metric=_metric)
-        velocity = spatial.channel2grid(velocity)
-        grid = self.exp(velocity, _loss=_loss, _metric=_metric)
-        deformed_source = self.pull(source, grid, _loss=_loss, _metric=_metric)
-
-        # compute loss and metrics
-        if _loss is not None:
-            assert isinstance(_loss, dict)
-            losses = self.compute_loss(deformed_source, target, velocity)
-            self.update_dict(_loss, losses)
-        if _metric is not None:
-            assert isinstance(_metric, dict)
-            metrics = self.compute_metric(deformed_source, target, velocity)
-            self.update_dict(_metric, metrics)
-
-        return deformed_source, velocity
