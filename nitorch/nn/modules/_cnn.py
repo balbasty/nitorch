@@ -16,20 +16,26 @@ class Encoder(tnn.ModuleList):
                  activation=tnn.ReLU):
         """
 
-        Args:
-            dim (int): Dimension (1|2|3)
-            channels (list): Number of channels in each layer
-            kernel_size (int or list[int], optional): Kernel size per
-                dimension. Default: 3
-            skip (bool, optional): Handle skip connections.
-                If yes, ``forward`` returns  all output layers in a tuple.
-            activation (type or function, optional): Constructor of an
-                activation function. Default: ``torch.nn.ReLU``
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+        channels : sequence[int]
+            Number of channels in each encoding layer.
+            There will be len(channels)-1 layers.
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+        skip : bool, default=False
+            Handle skip connections.
+            If True, ``forward`` returns  all output layers in a tuple.
+        activation : str or type or callable, default='relu'
+            Activation function.
+
         """
         self.dim = dim
         self.skip = skip
-        input_channels = channels[:-1]
-        output_channels = channels[1:]
+        input_channels = list(channels)[:-1]
+        output_channels = list(channels)[1:]
         modules = []
         for (i, o) in zip(input_channels, output_channels):
             modules.append(Conv(dim, i, o, kernel_size,
@@ -62,25 +68,28 @@ class Decoder(tnn.ModuleList):
                  activation=tnn.ReLU, encoder=None):
         """
 
-        Args:
-            dim (int): Dimension (1|2|3)
-            channels (list): Number of channels in each decoding layer
-            kernel_size (int or list[int], optional): Kernel size per
-                dimension. Default: 3
-            skip (bool, optional): Handle skip connections.
-                If yes, ``forward`` returns  all output layers in a tuple.
-            activation (type or function, optional): Constructor of an
-                activation function. Default: ``torch.nn.ReLU``
-            encoder (list, optional): If skip == True, number of
-                channels in each encoding layer. This argument is
-                necessary to determine the number of input/output
-                channels in each convolutional layer.
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+        channels : sequence[int]
+            Number of channels in each decoding layer.
+            There will be len(channels)-1 layers.
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+        activation : str or type or callable, default='relu'
+            Activation function.
+        encoder : sequence[int], optional
+            Number of channels in each encoding layer.
+            In a UNet, this argument is necessary to determine the
+            number of input/output channels in each convolutional layer.
         """
         self.dim = dim
-        self.skip = skip
-        input_channels = channels[:-1]
-        output_channels = channels[1:]
-        if skip and encoder is not None:
+        self.skip = bool(encoder)
+        input_channels = list(channels)[:-1]
+        output_channels = list(channels)[1:]
+        if self.skip:
+            encoder = list(encoder)
             for i, e in enumerate(encoder[-2::-1], 1):
                 if i >= len(input_channels):
                     break
@@ -136,14 +145,17 @@ class StackedConv(tnn.Sequential):
     def __init__(self, dim, channels, kernel_size=3, activation=tnn.ReLU):
         """
 
-        Args:
-            dim (int): Dimension (1|2|3)
-            channels (list): Number of channels in each layer.
-                There will be len(channels)-1 layers.
-            kernel_size (int or list[int], optional): Kernel size per
-                dimension. Default: 3
-            activation (type or function, optional): Constructor of an
-                activation function. Default: ``torch.nn.ReLU``
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+        channels : sequence[int]
+            Number of channels in each convolutional layer.
+            There will be len(channels)-1 layers.
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+        activation : str or type or callable, default='relu'
+            Activation function.
         """
         self.dim = dim
         input_channels = channels[:-1]
@@ -166,28 +178,41 @@ class UNet(tnn.Sequential):
                  activation=tnn.ReLU):
         """
 
-        Args:
-            dim (int): Dimension (1|2|3)
-            input_channels (int): Number of input channels
-            output_channels (int): Number of output channels
-            encoder (optional, list[int]): Number of channels in eac
-                encoding layer. Default: [16, 32, 32, 32]
-            decoder (optional, list[int]): Number of channels in each
-                decoding layer. Default: [32, 32, 32, 32, 32, 16, 16]
-            kernel_size (int or list[int], optional): Kernel size per
-                dimension. Default: 3
-            activation (type or function, optional): Constructor of an
-                activation function. Default: ``torch.nn.ReLU``
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+        input_channels : int
+            Number of input channels.
+        output_channels : int
+            Number of output channels.
+        encoder : sequence[int], default=[16, 32, 32, 32]
+            Number of channels in each encoding layer.
+        decoder : sequence[int], default=[32, 32, 32, 32, 32, 16, 16]
+            Number of channels in each decoding layer.
+            If the number of decoding layer is larger than the number of
+            encoding layers, stacked convolutions are appended to the
+            UNet.
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+        activation : str or type or callable, default='relu'
+            Activation function. An activation can be a class
+            (typically a Module), which is then instantiated, or a
+            callable (an already instantiated class or a more simple
+            function). It is useful to accept both these cases as they
+            allow to either:
+                * have a learnable activation specific to this module
+                * have a learnable activation shared with other modules
+                * have a non-learnable activation
         """
         self.dim = dim
 
-        if encoder is None:
-            encoder = [16, 32, 32, 32]
-        encoder = list(encoder)
+        encoder = list(encoder or [16, 32, 32, 32])
+        decoder = list(decoder or [32, 32, 32, 32, 32, 16, 16])
+        if len(decoder) < len(encoder):
+            # we need as many upsampling steps as downsampling steps
+            decoder = make_list(decoder, len(encoder))
         encoder = [input_channels] + encoder
-        if decoder is None:
-            decoder = [32, 32, 32, 32, 32, 16, 16]
-        decoder = list(decoder)
         decoder = encoder[-1:] + decoder + [output_channels]
         stack = decoder[len(encoder)-1:]
         decoder = decoder[:len(encoder)]

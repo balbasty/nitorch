@@ -3,7 +3,7 @@
 import torch
 from torch import nn as tnn
 from ._base import nitorchmodule
-from ...core.pyutils import make_list, rep_list, getargs
+from ...core.pyutils import make_tuple, rep_sequence, getargs
 from copy import copy
 import math
 import inspect
@@ -66,30 +66,43 @@ class Conv(tnn.Module):
     """
     def __init__(self, dim, *args, **kwargs):
         """
-        Args:
-            dim (int): Dimension of the convolving kernel (1|2|3)
-            in_channels (int): Number of channels in the input image
-            out_channels (int): Number of channels produced by the convolution
-            kernel_size (int or tuple): Size of the convolving kernel
-            stride (int or tuple, optional): Stride of the convolution.
-                Default: 1
-            padding (int or tuple, optional): Zero-padding added to all
-                three sides of the input. Default: 0
-            padding_mode (string, optional): ``'zeros'``, ``'reflect'``,
-                ``'replicate'`` or ``'circular'``. Default: ``'zeros'``
-            dilation (int or tuple, optional): Spacing between kernel
-                elements. Default: 1
-            groups (int, optional): Number of blocked connections from input
-                channels to output channels. Default: 1
-            bias (bool, optional): If ``True``, adds a learnable bias to
-                the output. Default: ``True``
-            transposed (bool, optional): Transposed convolution.
-            `Default: ``True``
-            activation (type or function, optional): Constructor of an
-                activation function. Default: ``None``
-            try_inplace (bool, optional): Apply activation inplace if
-                possible (i.e., not (is_leaf and requires_grad).
-                Default: True.
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension of the convolving kernel
+        in_channels : int
+            Number of channels in the input image
+        out_channels : int
+            Number of channels produced by the convolution
+        kernel_size : int or tuple[int]
+            Size of the convolution kernel
+        stride : int or tuple[int], default=1:
+            Stride of the convolution.
+        padding : int or tuple[int], default=0
+            Zero-padding added to all three sides of the input.
+        padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
+            Padding mode.
+        dilation : int or tuple[int], default=1
+            Spacing between kernel elements.
+        groups : int, default=1
+            Number of blocked connections from input channels to
+            output channels.
+        bias : bool, default=True
+            If ``True``, adds a learnable bias to the output.
+        transposed : bool, default=False:
+            Transposed convolution.
+        activation : str or type or callable, optional
+            Activation function. An activation can be a class
+            (typically a Module), which is then instantiated, or a
+            callable (an already instantiated class or a more simple
+            function). It is useful to accept both these cases as they
+            allow to either:
+                * have a learnable activation specific to this module
+                * have a learnable activation shared with other modules
+                * have a non-learnable activation
+        try_inplace : bool, default=True
+            Apply activation inplace if possible
+            (i.e., not (is_leaf and requires_grad).
 
         """
         super().__init__()
@@ -139,44 +152,54 @@ class Conv(tnn.Module):
                           else activation if callable(activation) \
                           else None
 
-    def forward(self, x, stride=None, padding=None, output_padding=None,
-                dilation=None, padding_mode=None, activation=None):
-        """Forward pass. Possibility to override constructed parameters.
+    def forward(self, x, **overload):
+        """Forward pass.
 
-        Args:
-            x (torch.tensor): Input tensor
-            stride (optional): Default: as constructed
-            padding (optional): Default: as constructed
-            output_padding (optional): Default: as constructed
-            dilation (optional): Default: as constructed
-            padding_mode (optional): Default: as constructed
-            activation (optional): Default: as constructed
+        Parameters
+        ----------
+        x : (batch, in_channel, *in_spatial) tensor
+            Input tensor
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time, except `dim`, `in_channels`, `out_channels`
+            and `kernel_size`.
 
-        Returns:
-            x (torch.tensor): Convolved tensor
+        Returns
+        -------
+        x : (batch, out_channel, *out_spatial) tensor
+            Convolved tensor
+
+        Notes
+        -----
+        The output shape of an input tensor can be guessed using the
+        method `shape`.
 
         """
 
-        # Override constructed parameters
         conv = copy(self.conv)
-        if stride is not None:
-            conv.stride = make_list(stride, self.dim)
-        if padding is not None:
-            conv.padding = make_list(padding, self.dim)
-            conv._padding_repeated_twice = rep_list(conv.padding, 2,
+        stride = overload.get('stride', conv.stride)
+        padding = overload.get('padding', conv.padding)
+        output_padding = overload.get('output_padding', conv.output_padding)
+        dilation = overload.get('dilation', conv.dilation)
+        padding_mode = overload.get('padding_mode', conv.padding_mode)
+
+        # Override constructed parameters
+        conv.stride = make_tuple(stride, self.dim)
+        conv.padding = make_tuple(padding, self.dim)
+        conv._padding_repeated_twice = rep_sequence(conv.padding, 2,
                                                     interleaved=True)
-        if output_padding is not None:
-            conv.output_padding = make_list(output_padding, self.dim)
-        if dilation is not None:
-            conv.dilation = make_list(dilation, self.dim)
-        if padding_mode is not None:
-            conv.padding_mode = padding_mode
+        conv.output_padding = make_tuple(output_padding, self.dim)
+        conv.dilation = make_tuple(dilation, self.dim)
+        conv.padding_mode = padding_mode
 
         # Activation
-        if activation is None:
-            activation = copy(self.activation)
-        else:
-            activation = activation()
+        activation = overload.get('activation', self.activation)
+        if isinstance(activation, str):
+            activation = _activations.get(activation.lower(), None)
+        activation = activation() if inspect.isclass(activation)    \
+                     else activation if callable(activation)        \
+                     else None
+
         if self.try_inplace \
                 and hasattr(activation, 'inplace') \
                 and not (x.is_leaf and x.requires_grad):
@@ -188,59 +211,44 @@ class Conv(tnn.Module):
             x = activation(x)
         return x
 
-    def shape(self, x, stride=None, padding=None, output_padding=None,
-              dilation=None, padding_mode=None, activation=None):
+    def shape(self, x, **overload):
         """Compute output shape of the equivalent ``forward`` call.
 
-        Args:
-            x (torch.tensor): Input tensor
-            stride (optional): Default: as constructed
-            padding (optional): Default: as constructed
-            output_padding (optional): Default: as constructed
-            dilation (optional): Default: as constructed
-            padding_mode (optional): Default: as constructed
-            activation (optional): Default: as constructed
+        Parameters
+        ----------
+        x : (batch, in_channel, *in_spatial) tensor
+            Input tensor
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time, except `dim`, `in_channels`, `out_channels`
+            and `kernel_size`.
 
-        Returns:
-            x (tuple): Outptu shape
+        Returns
+        -------
+        shape : tuple[int]
+            Output shape
 
         """
 
-        # Override constructed parameters
-        conv = copy(self.conv)
-        if stride is not None:
-            conv.stride = make_list(stride, self.dim)
-        if padding is not None:
-            conv.padding = make_list(padding, self.dim)
-            conv._padding_repeated_twice = rep_list(conv.padding, 2,
-                                                   interleaved=True)
-        if output_padding is not None:
-            conv.output_padding = make_list(output_padding, self.dim)
-        if dilation is not None:
-            conv.dilation = make_list(dilation, self.dim)
-        if padding_mode is not None:
-            conv.padding_mode = padding_mode
+        stride = overload.get('stride', self.conv.stride)
+        padding = overload.get('padding', self.conv.padding)
+        output_padding = overload.get('output_padding', self.conv.output_padding)
+        dilation = overload.get('dilation', self.conv.dilation)
+        transposed = self.conv.transposed
+        kernel_size = self.conv.kernel_size
 
-        stride = conv.stride
-        padding = conv.padding
-        dilation = conv.dilation
-        kernel_size = conv.kernel_size
-        output_padding = conv.output_padding
-        transposed = conv.transposed
+        stride = make_tuple(stride, self.dim)
+        padding = make_tuple(padding, self.dim)
+        output_padding = make_tuple(output_padding, self.dim)
+        dilation = make_tuple(dilation, self.dim)
 
         N = x.shape[0]
         C = self.conv.out_channels
         shape = [N, C]
-        for i, inp in enumerate(x.shape[2:]):
+        for L, S, Pi, D, K, Po in zip(x.shape[2:], stride, padding,
+                                      dilation, kernel_size, output_padding):
             if transposed:
-                shape.append(
-                    (inp-1)*stride[i]-2*padding[i]
-                    +dilation[i]*(kernel_size[i]-1)
-                     +output_padding[i]+1
-                )
+                shape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
             else:
-                shape.append(math.floor(
-                    (inp+2*padding[i]-dilation[i]*(kernel_size[i]-1)-1)
-                    /stride[i] + 1
-                ))
+                shape += [math.floor((L + 2 * Pi - D * (K - 1) - 1) / S + 1)]
         return tuple(shape)
