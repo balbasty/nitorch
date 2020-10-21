@@ -1,12 +1,73 @@
 """Python utilities."""
 
+import functools
+from types import GeneratorType as generator
+import warnings
 
-def make_list(input, n=None, *args, **kwargs):
+
+def make_sequence(input, n=None, *args, **kwargs):
+    """Ensure that the input is a sequence and pad/crop if necessary.
+
+    Parameters
+    ----------
+    input : scalar or sequence or generator
+        Input argument(s).
+    n : int, optional
+        Target length.
+    default : optional
+        Default value to pad with.
+        If not provided, replicate the last value.
+
+    Returns
+    -------
+    output : list or tuple or generator
+        Output arguments.
+
+    """
+    default = None
+    has_default = False
+    if len(args) > 0:
+        default = args[0]
+        has_default = True
+    elif 'default' in kwargs.keys():
+        default = kwargs['default']
+        has_default = True
+
+    if isinstance(input, generator):
+        # special case for generators
+        last = None
+        i = None
+        for i, elem in input:
+            if i == n:
+                return
+            last = elem
+            yield elem
+        if i is None:
+            raise ValueError('Empty sequence')
+        for j in range(i+1, n):
+            yield last
+    else:
+        # generic case -> inducdes a copy
+        if not isinstance(input, (list, tuple, range)):
+            input = [input]
+        return_type = type(input) if isinstance(input, (list, tuple)) else list
+        input = list(input)
+        if len(input) == 0:
+            raise ValueError('Empty sequence')
+        if n is not None:
+            input = input[:min(n, len(input))]
+            if not has_default:
+                default = input[-1]
+            input += [default] * max(0, n - len(input))
+        return return_type(input)
+
+
+def make_list(*args, **kwargs):
     """Ensure that the input is a list and pad/crop if necessary.
 
     Parameters
     ----------
-    input : scalar or sequence
+    input : scalar or sequence generator
         Input argument(s).
     n : int, optional
         Target length.
@@ -20,24 +81,7 @@ def make_list(input, n=None, *args, **kwargs):
         Output arguments.
 
     """
-    default = None
-    has_default = False
-    if len(args) > 0:
-        default = args[0]
-        has_default = True
-    elif 'default' in kwargs.keys():
-        default = kwargs['default']
-        has_default = True
-
-    if not isinstance(input, (list, tuple, range)):
-        input = [input]
-    input = list(input)
-    if n is not None:
-        input = input[:min(n, len(input))]
-        if not has_default:
-            default = input[-1]
-        input += [default] * max(0, n - len(input))
-    return input
+    return list(make_sequence(*args, **kwargs))
 
 
 def make_tuple(*args, **kwargs):
@@ -45,7 +89,7 @@ def make_tuple(*args, **kwargs):
 
     Parameters
     ----------
-    input : scalar or sequence
+    input : scalar or sequence generator
         Input argument(s).
     n : int, optional
         Target length.
@@ -59,15 +103,15 @@ def make_tuple(*args, **kwargs):
         Output arguments.
 
     """
-    return tuple(make_list(*args, **kwargs))
+    return tuple(make_sequence(*args, **kwargs))
 
 
-def rep_list(input, n, interleaved=False):
-    """Replicate a list-like object.
+def rep_sequence(input, n, interleaved=False):
+    """Replicate a sequence.
 
     Parameters
     ----------
-    input : scalar or iterable
+    input : scalar or iterable generator
         Input argument(s).
     n : int
         Number of replicates.
@@ -76,15 +120,29 @@ def rep_list(input, n, interleaved=False):
 
     Returns
     -------
-    output : list or tuple
+    output : list or tuple or generator
         Replicated list.
         If the input argument is not a list or tuple, the output
         type is `tuple`.
 
     """
-    if not isinstance(input, (list, tuple)):
-        input = (input,)
-    return_type = type(input)
+    if isinstance(input, generator):
+        # special case for generators
+        if interleaved:
+            for elem in input:
+                for _ in range(n):
+                    yield elem
+            return
+        else:
+            warnings.warn('It is not efficient to replicate a generator '
+                          'this way. We are holding *all* the data in '
+                          'memory.', RuntimeWarning)
+            input = list(input)
+
+    # generic case for sequence -> induces a copy
+    if not isinstance(input, (list, tuple, range)):
+        input = [input]
+    return_type = type(input) if isinstance(input, (list, tuple)) else list
     input = list(input)
     if interleaved:
         input = [elem for sub in zip(*([input]*n)) for elem in sub]
@@ -93,10 +151,32 @@ def rep_list(input, n, interleaved=False):
     return return_type(input)
 
 
+def rep_list(input, n, interleaved=False):
+    """Replicate a list.
+
+    Parameters
+    ----------
+    input : scalar or sequence or generator
+        Input argument(s).
+    n : int
+        Number of replicates.
+    interleaved : bool, default=False
+        Interleaved replication.
+
+    Returns
+    -------
+    output : list
+        Replicated list.
+        If the input argument is not a list or tuple, the output
+        type is `tuple`.
+
+    """
+    return list(rep_sequence(input, n, interleaved))
+
+
 # backward compatibility
-make_list = make_list
-padlist = make_list
-replist = rep_list
+padlist = functools.wraps(make_sequence)
+replist = functools.wraps(rep_sequence)
 
 
 def getargs(kpd, args=None, kwargs=None, consume=False):
