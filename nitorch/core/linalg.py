@@ -207,3 +207,34 @@ def inv(a, method='lu', rcond=1e-15, out=None):
         return torch.pinverse(a, rcond=rcond)
     else:
         raise ValueError('Unknown inversion method {}.'.format(method))
+
+
+def matvec(mat, vec, out=None):
+    """Matrix-vector product (supports broadcasting)
+
+    Parameters
+    ----------
+    mat : (..., M, N) tensor
+        Input matrix.
+    vec : (..., N) tensor
+        Input vector.
+    out : (..., M) tensor, optional
+        Placeholder for the output tensor.
+
+    Returns
+    -------
+    mv : (..., M) tensor
+        Matrix vector product of the inputs
+
+    """
+    mat = torch.as_tensor(mat)
+    vec = torch.as_tensor(vec)[..., None]
+    if out is not None:
+        out = out[..., None]
+
+    mv = torch.matmul(mat, vec, out=out)
+    mv = mv[..., 0]
+    if out is not None:
+        out = out[..., 0]
+
+    return mv
