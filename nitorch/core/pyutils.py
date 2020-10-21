@@ -35,17 +35,19 @@ def make_sequence(input, n=None, *args, **kwargs):
 
     if isinstance(input, generator):
         # special case for generators
-        last = None
-        i = None
-        for i, elem in input:
-            if i == n:
-                return
-            last = elem
-            yield elem
-        if i is None:
-            raise ValueError('Empty sequence')
-        for j in range(i+1, n):
-            yield last
+        def make_gen():
+            last = None
+            i = None
+            for i, elem in input:
+                if i == n:
+                    return
+                last = elem
+                yield elem
+            if i is None:
+                raise ValueError('Empty sequence')
+            for j in range(i+1, n):
+                yield last
+        return make_gen()
     else:
         # generic case -> inducdes a copy
         if not isinstance(input, (list, tuple, range)):
@@ -129,10 +131,11 @@ def rep_sequence(input, n, interleaved=False):
     if isinstance(input, generator):
         # special case for generators
         if interleaved:
-            for elem in input:
-                for _ in range(n):
-                    yield elem
-            return
+            def make_gen():
+                for elem in input:
+                    for _ in range(n):
+                        yield elem
+            return make_gen()
         else:
             warnings.warn('It is not efficient to replicate a generator '
                           'this way. We are holding *all* the data in '
