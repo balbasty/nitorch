@@ -775,6 +775,15 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     .. Because of rounding, it is in general not assured that
        `resize(resize(x, f), 1/f)` returns a tensor with the same shape as x.
 
+        edges          centers          first           last
+    e - + - + - e   + - + - + - +   + - + - + - +   + - + - + - +
+    | . | . | . |   | c | . | c |   | f | . | . |   | . | . | . |
+    + _ + _ + _ +   + _ + _ + _ +   + _ + _ + _ +   + _ + _ + _ +
+    | . | . | . |   | . | . | . |   | . | . | . |   | . | . | . |
+    + _ + _ + _ +   + _ + _ + _ +   + _ + _ + _ +   + _ + _ + _ +
+    | . | . | . |   | c | . | c |   | . | . | . |   | . | . | l |
+    e _ + _ + _ e   + _ + _ + _ +   + _ + _ + _ +   + _ + _ + _ +
+
     Parameters
     ----------
     image : (batch, channel, ...) tensor
