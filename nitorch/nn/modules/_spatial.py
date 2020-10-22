@@ -5,6 +5,7 @@ from torch import nn as tnn
 from ... import spatial
 from ._cnn import UNet
 from ._base import Module
+from ...core.pyutils import make_list
 
 
 _interpolation_doc = \
@@ -530,6 +531,9 @@ class VoxelMorph(Module):
         downsample_velocity : float, default=2
             Downsample the velocity field by a factor when exponentiating.
         """
+        resize_factor = make_list(downsample_velocity, dim)
+        resize_factor = [1/f for f in resize_factor]
+
         super().__init__()
         self.unet = UNet(dim,
                          input_channels=_input_channels,
@@ -540,7 +544,7 @@ class VoxelMorph(Module):
                          activation=tnn.LeakyReLU(0.2))
         self.resize = GridResize(interpolation=interpolation,
                                  bound=grid_bound,
-                                 factor=downsample_velocity)
+                                 factor=resize_factor)
         self.exp = GridExp(interpolation=interpolation,
                            bound=grid_bound)
         self.pull = GridPull(interpolation=interpolation,
