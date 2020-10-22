@@ -45,6 +45,8 @@ def make_sequence(input, n=None, *args, **kwargs):
                 yield elem
             if i is None:
                 raise ValueError('Empty sequence')
+            if has_default:
+                last = default
             for j in range(i+1, n):
                 yield last
         return make_gen()
