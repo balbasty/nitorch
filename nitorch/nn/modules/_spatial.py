@@ -3,7 +3,7 @@
 import torch
 from torch import nn as tnn
 from ... import spatial
-from ._cnn import UNet
+from ._cnn import UNet, CNN
 from ._base import Module
 from ...core.pyutils import make_list
 
@@ -318,6 +318,134 @@ class GridExp(Module):
                None
 
 
+class AffineExp(Module):
+    """Exponentiate an inifinitesimal affine transformation (Lie algebra)."""
+
+    def __init__(self, dim, basis='CSO', fwd=True, inv=False):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Spatial dimension
+        basis : basis_like or list[basis_like], default='CSO'
+            The simplest way to define an affine basis is to choose from
+            a list of Lie groups:
+            * 'T'   : Translations
+            * 'SO'  : Special Orthogonal (rotations)
+            * 'SE'  : Special Euclidean (translations + rotations)
+            * 'D'   : Dilations (translations + isotropic scalings)
+            * 'CSO' : Conformal Special Orthogonal
+                      (translations + rotations + isotropic scalings)
+            * 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
+            * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
+            * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+            More complex (hierarchical) encodings can be achieved as well.
+            See `affine_matrix`.
+        fwd : bool, default=True
+            Return the forward transformation.
+        inv : bool, default=False
+            Return the inverse transformation.
+        """
+        super().__init__()
+
+        self.dim = dim
+        self.basis, _ = spatial.build_affine_basis(basis, dim)
+        self.fwd = fwd
+        self.inv = inv
+
+    def forward(self, prm, **overload):
+        """
+
+        Parameters
+        ----------
+        prm : (batch, nb_prm) tensor or list[tensor]
+            Affine parameters on the Lie algebra.
+        overload : dict
+            All parameters of the module can be overridden at call time.
+
+        Returns
+        -------
+        forward : (batch, dim+1, dim+1) tensor, optional
+            Forward matrix
+        inverse : (batch, dim+1, dim+1) tensor, optional
+            Inverse matrix
+
+        """
+        basis = overload.get('basis', self.basis)
+        fwd = overload.get('fwd', self.forward)
+        inv = overload.get('inverse', self.inv)
+
+        output = []
+        if fwd:
+            aff = spatial.affine_matrix(prm, basis, dim=self.dim)
+            output.append(aff)
+        if inv:
+            if isinstance(prm, (list, tuple)):
+                prm = [-p for p in prm]
+            else:
+                prm = -prm
+            iaff = spatial.affine_matrix(prm, basis, dim=self.dim)
+            output.append(iaff)
+
+        return output if len(output) > 1 else \
+               output[0] if len(output) == 1 else \
+               None
+
+
+class AffineGrid(Module):
+    """Generate a dense grid from an affine transform."""
+
+    def __init__(self, shape=None, shift=False):
+        """
+
+        Parameters
+        ----------
+        shape : sequence[int], optional
+            Output shape of the dense grid.
+        shift : bool, default=False
+            Compose the affine with a shift so that the origin is in
+            the center of the output field of view.
+
+        """
+        super().__init__()
+        self.shape = shape
+        self.shift = shift
+
+    def forward(self, affine, **overload):
+        """
+
+        Parameters
+        ----------
+        affine : (batch, ndim[+1], ndim+1) tensor
+            Affine matrix
+        overload : dict
+            All parameters of the module can be overridden at call time.
+
+        Returns
+        -------
+        grid : (batch, *shape, ndim) tensor
+            Dense transformation grid
+
+        """
+
+        nb_dim = affine.shape[-1] - 1
+        info = {'dtype': affine.dtype, 'device': affine.device}
+        shape = make_list(overload.get('shape', self.shape), nb_dim)
+        shift = overload.get('shift', self.shift)
+
+        if shift:
+            affine_shift = torch.cat((
+                torch.eye(nb_dim, **info),
+                -torch.as_tensor(shape, **info)[:, None]/2),
+                dim=1)
+            affine = spatial.affine_matmul(affine, affine_shift)
+            affine = spatial.affine_lmdiv(affine_shift, affine)
+
+        grid = spatial.affine_grid(affine, shape)
+        return grid
+
+
 class Resize(Module):
     __doc__ = """
     Resize an image by a factor.
@@ -550,10 +678,9 @@ class VoxelMorph(Module):
         self.pull = GridPull(interpolation=interpolation,
                              bound=image_bound)
         self.dim = dim
-        self.image_losses = {'': []}
-        self.velocity_losses = {'': []}
-        self.image_metrics = {}
-        self.velocity_metrics = {}
+
+        # register losses/metrics
+        self.tags = ['image', 'velocity']
 
     def forward(self, source, target, *, _loss=None, _metric=None):
         """
@@ -599,186 +726,147 @@ class VoxelMorph(Module):
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
-        velocity = self.unet(source_and_target, _loss=_loss, _metric=_metric)
+        velocity = self.unet(source_and_target)
         velocity = spatial.channel2grid(velocity)
         velocity_small = self.resize(velocity)
-        grid = self.exp(velocity_small, _loss=_loss, _metric=_metric)
+        grid = self.exp(velocity_small)
         grid = self.resize(grid, shape=target.shape[2:])
-        deformed_source = self.pull(source, grid, _loss=_loss, _metric=_metric)
+        deformed_source = self.pull(source, grid)
 
         # compute loss and metrics
-        if _loss is not None:
-            assert isinstance(_loss, dict)
-            losses = self.compute_loss(deformed_source, target, velocity)
-            self.update_dict(_loss, losses)
-        if _metric is not None:
-            assert isinstance(_metric, dict)
-            metrics = self.compute_metric(deformed_source, target, velocity)
-            self.update_dict(_metric, metrics)
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     velocity=[velocity])
 
         return deformed_source, velocity
 
-    def add_image_loss(self, *loss_fn, **named_loss_fn):
-        """Add one or more image loss functions.
 
-        The image loss should measure similarity between the deformed
-        source and target images.
+class AffineMorph(Module):
+    """Affine registration network.
+
+    This network builds on VoxelMorph, but replaces the U-Net by an
+    encoding CNN, and the dense spatial transformer by an affine spatial
+    transformer. Like VoxelMorph, this network encodes deformation on
+    their tangent space: here, the Lie algebra of a variety of affine
+    Lie groups is used. Affine transformation matrices are recovered
+    from their Lie algebra representation using matrix exponentiation.
+
+    * VoxelMorph:
+        target |-(unet)-> velocity -(exp)-> grid -(pull)-> warped_source
+        source |------------------------------------^
+    * AffineMorph:
+        target |-(cnn)-> lieparam -(exp)-> affine -(pull)-> warped_source
+        source |-------------------------------------^
+    """
+
+    def __init__(self, dim, basis='CSO', encoder=None, stack=None,
+                 kernel_size=3, interpolation='linear', bound='dct2'):
+        """
 
         Parameters
         ----------
-        loss_fn, named_loss_fn : callable or [callable, float]
-            Function of two arguments that returns a scalar value.
-
+        dim : int
+            Dimensionalityy of the input (1|2|3)
+        basis : {'T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+'}, default='CSO'
+            Basis of a matrix Lie group:
+                * 'T'   : Translations
+                * 'SO'  : Special Orthogonal (rotations)
+                * 'SE'  : Special Euclidean (translations + rotations)
+                * 'D'   : Dilations (translations + isotropic scalings)
+                * 'CSO' : Conformal Special Orthogonal
+                          (translations + rotations + isotropic scalings)
+                * 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
+                * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
+                * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+        encoder : list[int], optional
+            Number of channels after each encoding layer of the CNN.
+        stack : list[int], optional
+            Number of channels after each fully-connected layer of the CNN.
+        kernel_size : int or list[int], default=3
+            Kernel size of the UNet.
+        interpolation : int, default=1
+            Interpolation order.
+        bound : bound_type, default='dct2'
+            Boundary conditions of the image.
         """
-        self.image_losses[''] += list(loss_fn)
-        self.image_losses.update(dict(named_loss_fn))
 
-    def set_image_loss(self, *loss_fn, **named_loss_fn):
-        """Set one or more image loss functions.
+        super().__init__()
+        exp = AffineExp(dim, basis=basis)
+        nb_prm = sum(b.shape[0] for b in exp.basis)
+        self.cnn = CNN(dim,
+                       input_channels=2,
+                       output_channels=nb_prm,
+                       encoder=encoder,
+                       stack=stack,
+                       kernel_size=kernel_size,
+                       activation=tnn.LeakyReLU(0.2),
+                       final_activation=None)
+        self.exp = exp
+        self.grid = AffineGrid(shift=True)
+        self.pull = GridPull(interpolation=interpolation,
+                             bound=bound,
+                             extrapolate=False)
+        self.dim = dim
 
-        The image loss should measure similarity between the deformed
-        source and target images.
+        # register losses/metrics
+        self.tags = ['image', 'affine']
 
-        This function discards all previously held image losses.
+    def forward(self, source, target, *, _loss=None, _metric=None):
+        """
 
         Parameters
         ----------
-        loss_fn, named_loss_fn : callable or [callable, float]
-            Function of two arguments that returns a scalar value.
+        source : tensor (batch, channel, *spatial)
+            Source/moving image
+        target : tensor (batch, channel, *spatial)
+            Target/fixed image
+
+        _loss : dict, optional
+            If provided, all registered losses are computed and appended.
+        _metric : dict, optional
+            If provided, all registered metrics are computed and appended.
+
+        Returns
+        -------
+        deformed_source : tensor (batch, channel, *spatial)
+            Deformed source image
+        affine_prm : tensor (batch,, *spatial, len(spatial))
+            affine Lie parameters
 
         """
-        self.image_losses = dict(named_loss_fn)
-        self.image_losses[''] = list(loss_fn)
+        # checks
+        if len(source.shape) != self.dim + 2:
+            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
+                             ' with len(spatial) == {} but found {}.'
+                             .format(self.dim, source.shape))
+        if len(target.shape) != self.dim + 2:
+            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
+                             ' with len(spatial) == {} but found {}.'
+                             .format(self.dim, target.shape))
+        if not (target.shape[0] == source.shape[0] or
+                target.shape[0] == 1 or source.shape[0] == 1):
+            raise ValueError('Batch dimensions of `source` and `target` are '
+                             'not compatible: got {} and {}'
+                             .format(source.shape[0], target.shape[0]))
+        if target.shape[2:] != source.shape[2:]:
+            raise ValueError('Spatial dimensions of `source` and `target` are '
+                             'not compatible: got {} and {}'
+                             .format(source.shape[2:], target.shape[2:]))
 
-    def add_velocity_loss(self, *loss_fn, **named_loss_fn):
-        """Add one or more velocity loss functions.
+        # chain operations
+        source_and_target = torch.cat((source, target), dim=1)
+        affine_prm = self.cnn(source_and_target)
+        affine_prm = affine_prm.reshape(affine_prm.shape[:2])
+        affine = []
+        for prm in affine_prm:
+            affine.append(self.exp(prm))
+        affine = torch.stack(affine, dim=0)
+        grid = self.grid(affine, shape=target.shape[2:])
+        deformed_source = self.pull(source, grid)
 
-        The velocity loss should penalize features of the velocity field.
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     affine=[affine_prm])
 
-        Parameters
-        ----------
-        loss_fn, named_loss_fn : callable or [callable, float]
-            Function of one argument that returns a scalar value.
-
-        """
-        self.velocity_losses[''] += list(loss_fn)
-        self.velocity_losses.update(dict(named_loss_fn))
-
-    def set_velocity_loss(self, *loss_fn, **named_loss_fn):
-        """Set one or more image loss functions.
-
-        The velocity loss should penalize features of the velocity field.
-
-        This function discards all previously held velocity losses.
-
-        Parameters
-        ----------
-        loss_fn, named_loss_fn : callable or [callable, float]
-            Function of one argument that returns a scalar value.
-
-        """
-        self.velocity_losses = dict(named_loss_fn)
-        self.velocity_losses[''] = list(loss_fn)
-
-    def compute_loss(self, deformed_source, target, velocity, prepend=False):
-        """Compute all losses."""
-        loss = {}
-
-        def add_loss(type, key, fn, *args):
-            if isinstance(fn, (list, tuple)):
-                _fn, weight = fn
-                fn = lambda *a, **k: weight*_fn(*a, **k)
-            key = '{}/{}'.format(type, key)
-            if prepend:
-                key = '{}/{}'.format(self.__class__.__name__, key)
-            loss[key] = fn(*args)
-
-        for key, loss_fn in self.image_losses.items():
-            if not key:
-                for key, loss_fn in enumerate(loss_fn):
-                    add_loss('image', key, loss_fn, deformed_source, target)
-            else:
-                add_loss('image', key, loss_fn, deformed_source, target)
-
-        for key, loss_fn in self.velocity_losses.items():
-            if not key:
-                for key, loss_fn in enumerate(loss_fn):
-                    add_loss('velocity', key, loss_fn, velocity)
-            else:
-                add_loss('velocity', key, loss_fn, velocity)
-
-        return loss
-
-    def add_image_metric(self, **metric_fn):
-        """Add one or more image metric functions.
-
-        The image metric should measure similarity between the deformed
-        source and target images.
-
-        Parameters
-        ----------
-        metric_fn : callable or [callable, float]
-            Function of two arguments that returns a scalar value.
-
-        """
-        self.image_metrics.update(dict(metric_fn))
-
-    def set_image_metric(self, **metric_fn):
-        """Set one or more image metric functions.
-
-        The image metric should measure similarity between the deformed
-        source and target images.
-
-        This function discards all previously held image metrics.
-
-        Parameters
-        ----------
-        metric_fn : callable or [callable, float]
-            Function of two arguments that returns a scalar value.
-
-        """
-        self.image_metrics = dict(metric_fn)
-
-    def add_velocity_metric(self, **metric_fn):
-        """Add one or more velocity metric functions.
-
-        The velocity metric should penalize features of the velocity field.
-
-        Parameters
-        ----------
-        metric_fn : callable or [callable, float]
-            Function of one argument that returns a scalar value.
-
-        """
-        self.velocity_metrics.update(dict(metric_fn))
-
-    def set_velocity_metric(self, **metric_fn):
-        """Set one or more image metric functions.
-
-        The velocity metric should penalize features of the velocity field.
-
-        This function discards all previously held velocity metrics.
-
-        Parameters
-        ----------
-        metric_fn : callable or [callable, float]
-            Function of one argument that returns a scalar value.
-
-        """
-        self.velocity_metrics = dict(metric_fn)
-
-    def compute_metric(self, deformed_source, target, velocity, prepend=False):
-        """Compute all metrics."""
-        metric = {}
-        for key, metric_fn in self.image_metrics.items():
-            key = '{}/{}'.format('image', key)
-            if prepend:
-                key = '{}/{}'.format(self.__class__.__name__, key)
-            metric[key] = metric_fn(deformed_source, target)
-        for key, metric_fn in self.velocity_metrics.items():
-            key = '{}/{}'.format('velocity', key)
-            if prepend:
-                key = '{}/{}'.format(self.__class__.__name__, key)
-            metric[key] = metric_fn(velocity)
-        return metric
-
+        return deformed_source, affine_prm

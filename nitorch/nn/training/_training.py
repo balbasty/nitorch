@@ -111,15 +111,17 @@ class ModelTrainer:
         with torch.no_grad():
             losses = {}
             metrics = {}
+            nb_samples = 0
             for n_batch, batch in enumerate(self.eval_set):
                 sublosses = {}
                 submetrics = {}
                 batch = make_tuple(batch)
                 self.model(*batch, _loss=sublosses, _metric=submetrics)
-                self._update_dict(losses, sublosses)
-                self._update_dict(metrics, submetrics)
-            self._normalize_dict(losses, self._nb_eval)
-            self._normalize_dict(metrics, self._nb_eval)
+                self._update_dict(losses, sublosses, batch[0].shape[0])
+                self._update_dict(metrics, submetrics, batch[0].shape[0])
+                nb_samples += batch[0].shape[0]
+            self._normalize_dict(losses, nb_samples)
+            self._normalize_dict(metrics, nb_samples)
         loss = sum(losses.values())
         # print
         eval_print = 'Eval Epoch: {} \tloss: {:.6f}'.format(epoch, loss.item())
@@ -130,12 +132,12 @@ class ModelTrainer:
         print(eval_print)
 
     @staticmethod
-    def _update_dict(old, new):
+    def _update_dict(old, new, weight=1):
         for key, val in new.items():
             if key in old.keys():
-                old[key] += val
+                old[key] += val * weight
             else:
-                old[key] = val
+                old[key] = val * weight
         return old
 
     @staticmethod

@@ -283,13 +283,9 @@ class IterativeVoxelMorph(VoxelMorph):
             deformed_source = self.pull(source, grid)
 
         # compute loss and metrics
-        if _loss is not None:
-            assert isinstance(_loss, dict)
-            losses = self.compute_loss(deformed_source, target, velocity)
-            self.update_dict(_loss, losses)
-        if _metric is not None:
-            assert isinstance(_metric, dict)
-            metrics = self.compute_metric(deformed_source, target, velocity)
-            self.update_dict(_metric, metrics)
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     velocity=[velocity])
 
         return deformed_source, velocity
+
