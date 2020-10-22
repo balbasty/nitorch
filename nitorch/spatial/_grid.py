@@ -3,7 +3,7 @@
 
 import torch
 import torch.nn.functional as _F
-from ..core import kernels, utils
+from ..core import kernels, utils, linalg
 from ..core.utils import broadcast_to
 from ..core.pyutils import make_list
 from .._C import spatial as _Cspatial
@@ -566,14 +566,15 @@ def affine_grid(mat, shape):
     if nb_dim != len(shape):
         raise ValueError('Dimension of the affine matrix ({}) and shape ({}) '
                          'are not the same.'.format(nb_dim, len(shape)))
-    if mat.shape[-2] not in (nb_dim, nb_dim-1):
+    if mat.shape[-2] not in (nb_dim, nb_dim+1):
         raise ValueError('First argument should be a matrix of shape ')
     grid = identity_grid(shape, mat.dtype, mat.device)
     # TODO: use expand_dim to pad mat's and grid's dimensions
     # TODO: add matvec (with broacasting) to module linalg
-    lin = mat[..., :nb_dim, :]
+    mat = utils.unsqueeze(mat, dim=-3, ndim=nb_dim)
+    lin = mat[..., :nb_dim, :nb_dim]
     off = mat[..., :nb_dim, -1]
-    grid = torch.matmul(lin, grid[..., None])[..., 0] + off
+    grid = linalg.matvec(lin, grid) + off
     return grid
 
 
