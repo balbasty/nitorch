@@ -611,7 +611,7 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
                           affine_subbasis('S', dim, dtype=dtype, device=device)))
 
 
-def _format_basis(basis, dim=None):
+def build_affine_basis(basis, dim=None):
     """Transform an Outter/Inner Lie basis into a list of tensors.
 
     Parameters
@@ -735,7 +735,7 @@ def affine_matrix(prm, basis, dim=None, layout=None):
     # .. Yael Balbastre <yael.balbastre@gmail.com>
 
     # Make sure basis is a vector_like of (F, D+1, D+1) tensor_like
-    basis, dim = _format_basis(basis, dim)
+    basis, dim = build_affine_basis(basis, dim)
 
     # Check length
     nb_basis = sum([len(b) for b in basis])
@@ -768,7 +768,11 @@ def affine_matrix(prm, basis, dim=None, layout=None):
         mats.append(layout)
 
     # Matrix product
-    return torch.chain_matmul(mats)
+    if len(mats) > 1:
+        affine = torch.chain_matmul(mats)
+    else:
+        affine = mats[0]
+    return affine
 
 
 def affine_matrix_classic(prm, dim=3, layout=None):
@@ -959,7 +963,7 @@ def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
     dim = mat.shape[-1] - 1
 
     # Format basis
-    basis, _ = _format_basis(basis, dim)
+    basis, _ = build_affine_basis(basis, dim)
     nb_basis = sum([len(b) for b in basis])
 
     # Create layout matrix
