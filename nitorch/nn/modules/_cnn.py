@@ -2,10 +2,12 @@
 
 import torch
 from torch import nn as tnn
+from ._base import nitorchmodule, Module
 from ._conv import Conv
-from ._base import nitorchmodule
+from ._reduction import reductions, Reduction
 from nitorch.core.pyutils import make_list
 from collections import OrderedDict
+import inspect
 
 
 @nitorchmodule
@@ -142,7 +144,8 @@ class Decoder(tnn.ModuleList):
 class StackedConv(tnn.Sequential):
     """Stacked convolutions, without up/down-sampling."""
 
-    def __init__(self, dim, channels, kernel_size=3, activation=tnn.ReLU):
+    def __init__(self, dim, channels, kernel_size=3,
+                 activation=tnn.ReLU, final_activation='same'):
         """
 
         Parameters
@@ -156,14 +159,19 @@ class StackedConv(tnn.Sequential):
             Kernel size per dimension.
         activation : str or type or callable, default='relu'
             Activation function.
+        final_activation : str or type or callable, default='same'
+            Final activation function. If 'same', same as `activation`.
         """
         self.dim = dim
         input_channels = channels[:-1]
         output_channels = channels[1:]
         modules = []
         kernel_size = make_list(kernel_size, dim)
-        for (i, o) in zip(input_channels, output_channels):
+        nb_module = len(input_channels)
+        for l, (i, o) in enumerate(zip(input_channels, output_channels)):
             pad = [(k-1)//2 for k in kernel_size]
+            if l == nb_module-1 and final_activation != 'same':
+                activation = final_activation
             modules.append(Conv(dim, i, o, kernel_size, padding=pad,
                                 stride=1, activation=activation))
         super().__init__(*modules)
@@ -175,7 +183,7 @@ class UNet(tnn.Sequential):
 
     def __init__(self, dim, input_channels, output_channels,
                  encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.ReLU):
+                 activation=tnn.ReLU, final_activation='same'):
         """
 
         Parameters
@@ -204,6 +212,8 @@ class UNet(tnn.Sequential):
                 * have a learnable activation specific to this module
                 * have a learnable activation shared with other modules
                 * have a non-learnable activation
+        final_activation : str or type or callable, default='same'
+            Final activation function. If 'same', same as `activation`.
         """
         self.dim = dim
 
@@ -224,10 +234,76 @@ class UNet(tnn.Sequential):
         dec = Decoder(dim, decoder, kernel_size=kernel_size,
                       skip=True, encoder=encoder, activation=activation)
         modules.append(('decoder', dec))
-        if len(stack) > 1:
-            stack[0] += encoder[0]
-            stk = StackedConv(dim, stack, kernel_size=kernel_size,
-                              activation=activation)
-            modules.append(('stack', stk))
+        # there should always be at least one stacked conv
+        stack[0] += encoder[0]
+        stk = StackedConv(dim, stack, kernel_size=kernel_size,
+                          activation=activation,
+                          final_activation=final_activation)
+        modules.append(('stack', stk))
         super().__init__(OrderedDict(modules))
+
+
+@nitorchmodule
+class CNN(tnn.Sequential):
+    """Encoding convolutional network (for classification or regression)."""
+
+    def __init__(self, dim, input_channels, output_channels,
+                 encoder=None, stack=None, kernel_size=3, reduction='max',
+                 activation='relu', final_activation='same'):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+        input_channels : int
+            Number of input channels.
+        output_channels : int
+            Number of output channels.
+        encoder : sequence[int], default=[16, 32, 32, 32]
+            Number of channels in each encoding layer.
+        stack : sequence[int], default=[32, 16, 16]
+            Number of channels in each fully-connected layer.
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+        reduction : str or type or callable, default='max'
+            Reduction function, that transitions between the encoding
+            layers and fully connected layers.
+        activation : str or type or callable, default='relu'
+            Activation function. An activation can be a class
+            (typically a Module), which is then instantiated, or a
+            callable (an already instantiated class or a more simple
+            function). It is useful to accept both these cases as they
+            allow to either:
+                * have a learnable activation specific to this module
+                * have a learnable activation shared with other modules
+                * have a non-learnable activation
+        final_activation : str or type or callable, default='same'
+            Final activation function. If 'same', same as `activation`.
+        """
+        self.dim = dim
+
+        encoder = list(encoder or [16, 32, 32, 32])
+        stack = list(stack or [32, 16, 16])
+        encoder = [input_channels] + encoder
+        stack = encoder[-1:] + stack + [output_channels]
+        if isinstance(reduction, str):
+            reduction = reductions.get(reduction, None)
+        reduction = reduction(keepdim=True) if inspect.isclass(reduction) \
+                    else reduction if callable(reduction) \
+                    else None
+        if not isinstance(reduction, Reduction):
+            raise TypeError('reduction must be a `Reduction` module.')
+
+        modules = []
+        enc = Encoder(dim, encoder, kernel_size=kernel_size,
+                      activation=activation)
+        modules.append(('encoder', enc))
+        modules.append(('reduction', reduction))
+        stk = StackedConv(dim, stack, kernel_size=1,
+                          activation=activation,
+                          final_activation=final_activation)
+        modules.append(('stack', stk))
+        super().__init__(OrderedDict(modules))
+
 
