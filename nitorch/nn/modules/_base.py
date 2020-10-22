@@ -56,9 +56,6 @@ class Module(tnn.Module):
     def add_loss(self, tag, *loss_fn, **named_loss_fn):
         """Add one or more loss functions.
 
-        The image loss should measure similarity between the deformed
-        source and target images.
-
         Parameters
         ----------
         tag : str
@@ -134,7 +131,7 @@ class Module(tnn.Module):
 
         return loss
 
-    def add_image_metric(self, tag, **metric_fn):
+    def add_metric(self, tag, **metric_fn):
         """Add one or more metric functions.
 
         Parameters
@@ -153,7 +150,7 @@ class Module(tnn.Module):
             self.metrics[tag][''] = []
         self.metrics.update(dict(metric_fn))
 
-    def set_image_metric(self, tag, **metric_fn):
+    def set_metric(self, tag, **metric_fn):
         """Set one or more metric functions.
 
         Parameters
@@ -207,7 +204,21 @@ class Module(tnn.Module):
         return metric
 
     def compute(self, _loss, _metric, **tag_args):
-        """Compute losses and metrics if necessary"""
+        """Compute losses and metrics if necessary
+
+        Parameters
+        ----------
+        _loss : dict
+            Mutable dictionary of losses.
+        _metric : dict
+            Mutable dictionary of metrics.
+        tag_args : dict[list]
+            (tag, args) pairs
+            Each tag (stored in self.tags) is associated with a
+            list of arguments to be passed to the corresponding
+            loss/metric function.
+
+        """
         if _loss is not None:
             assert isinstance(_loss, dict)
             losses = self.compute_loss(**tag_args)
