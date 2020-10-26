@@ -9,8 +9,8 @@ dtype = torch.double        # data type (double advised to check gradients)
 shape1 = 3                  # size along each dimension
 
 # parameters
-bounds = [bound for bound in BoundType.__members__.keys() if bound != 'sliding']
-orders = [order for order in InterpolationType.__members__.keys()]
+bounds = set(BoundType.__members__.values())
+orders = set(InterpolationType.__members__.values())
 devices = [('cpu', 1)]
 if torch.backends.openmp.is_available() or torch.backends.mkl.is_available():
     print('parallel backend available')
