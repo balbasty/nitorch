@@ -24,10 +24,10 @@ from .spm import affine as apply_affine
 from .utils import pad
 
 
-__all__ = ['load3d', 'reslice2world', 'reset_origin']
+__all__ = ['load_3d', 'reslice2world', 'reset_origin', 'write_img']
 
 
-def load3d(pth_in, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dtype=torch.float32,
+def load_3d(pth_in, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dtype=torch.float32,
            do_mask=True):
     """Load image data for subsequent image processing.
 
@@ -226,7 +226,7 @@ def reset_origin(pth_in, vx=None, prefix='o', device='cpu', interpolation='linea
                            [0, 0, vx[2], off[2]],
                            [0, 0, 0, 1]], dtype=torch.float64)
     # Write reset image
-    pth_out = _write_img(pth_in, dat, affine, prefix=prefix)
+    pth_out = write_img(pth_in, dat, affine, prefix=prefix)
 
     return pth_out
 
@@ -310,9 +310,65 @@ def reslice2world(pth_in, vx=None, prefix='r', device='cpu', write=True, interpo
     pth_out = pth_in  # Image out same as input
     if write:
         # Write resliced image
-        pth_out = _write_img(pth_in, dat, M_out, prefix=prefix)
+        pth_out = write_img(pth_in, dat, M_out, prefix=prefix)
 
     return pth_out, dat, M_out
+
+
+def write_img(pth_in, dat=None, affine=None, prefix='', pth_out=None):
+    """Write image to disk.
+
+    Parameters
+    ----------
+    pth_in : str
+        Path to nibabel compatible file.
+
+    dat : (dim), tensor_like[], default=None
+        Input image data. If None, uses input image data.
+
+    affine : (4, 4), tensor_like[torch.float64], default=None
+        Affine transformation. If None, uses input image affine.
+
+    prefix : str, default=''
+        Filename prefix of resliced image. If empty string, overwrites input file.
+
+    pth_out : str, defult=None
+        Path to output image. If None, uses input image path.
+
+    Returns
+    -------
+    pth_out : str
+        Path to output image.
+
+    """
+    # Read file
+    img = nib.load(pth_in)
+    # Write resliced image
+    header = img.header.copy()
+    # Depending on input, get image data and/or affine from input
+    if dat is None:
+        dat = img.get_fdata()
+    else:
+        dat = dat.cpu()
+    if affine is None:
+        affine = img.affine
+    # Set affine
+    header.set_qform(affine)
+    header.set_sform(affine)
+    # Create nibabel nifti1
+    img = nib.nifti1.Nifti1Image(dat, None, header=header)
+    # Overwrite or create prefixed?
+    if pth_out is None:
+        pth_out = pth_in
+    if prefix == '':
+        os.remove(pth_out)
+    else:
+        dir, fnam = os.path.split(pth_out)
+        pth_out = os.path.join(dir, prefix + fnam)
+    # Write to disk
+    nib.save(img, pth_out)
+
+    return pth_out
 
 
 def _get_corners(*args):
@@ -406,59 +462,3 @@ def _reslice_dat(dat, affine, dim_out, interpolation='linear', bound='zero'):
     dat = grid_pull(dat, grid, bound=bound, interpolation=interpolation)
 
     return dat[0, 0, ...]
-
-
-def _write_img(pth_in, dat=None, affine=None, prefix='', pth_out=None):
-    """Write image to disk.
-
-    Parameters
-    ----------
-    pth_in : str
-        Path to nibabel compatible file.
-
-    dat : (dim), tensor_like[], default=None
-        Input image data. If None, uses input image data.
-
-    affine : (4, 4), tensor_like[torch.float64], default=None
-        Affine transformation. If None, uses input image affine.
-
-    prefix : str, default=''
-        Filename prefix of resliced image. If empty string, overwrites input file.
-
-    pth_out : str, defult=None
-        Path to output image. If None, uses input image path.
-
-    Returns
-    -------
-    pth_out : str
-        Path to output image.
-
-    """
-    # Read file
-    img = nib.load(pth_in)
-    # Write resliced image
-    header = img.header.copy()
-    # Depending on input, get image data and/or affine from input
-    if dat is None:
-        dat = img.get_fdata()
-    else:
-        dat = dat.cpu()
-    if affine is None:
-        affine = img.affine
-    # Set affine
-    header.set_qform(affine)
-    header.set_sform(affine)
-    # Create nibabel nifti1
-    img = nib.nifti1.Nifti1Image(dat, None, header=header)
-    # Overwrite or create prefixed?
-    if pth_out is None:
-        pth_out = pth_in
-    if prefix == '':
-        os.remove(pth_out)
-    else:
-        dir, fnam = os.path.split(pth_out)
-        pth_out = os.path.join(dir, prefix + fnam)
-    # Write to disk
-    nib.save(img, pth_out)
-
-    return pth_out
