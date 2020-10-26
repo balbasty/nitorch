@@ -145,7 +145,7 @@ class _GridPush(torch.autograd.Function):
             grad_input = grads[0]
             if ctx.needs_input_grad[1]:
                 grad_grid = grads[1]
-        elif ctx.needs_input_grad[0]:
+        elif ctx.needs_input_grad[1]:
             grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None, None
 
@@ -355,7 +355,7 @@ class _GridGrad(torch.autograd.Function):
                 grad_input = grads[0]
                 if ctx.needs_input_grad[1]:
                     grad_grid = grads[1]
-            elif ctx.needs_input_grad[0]:
+            elif ctx.needs_input_grad[1]:
                 grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None
 
