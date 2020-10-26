@@ -5,7 +5,7 @@ from types import GeneratorType as generator
 import warnings
 
 
-def make_sequence(input, n=None, *args, **kwargs):
+def make_sequence(input, n=None, crop=True, *args, **kwargs):
     """Ensure that the input is a sequence and pad/crop if necessary.
 
     Parameters
@@ -14,6 +14,8 @@ def make_sequence(input, n=None, *args, **kwargs):
         Input argument(s).
     n : int, optional
         Target length.
+    crop : bool, default=True
+        Crop input sequence if longer than `n`.
     default : optional
         Default value to pad with.
         If not provided, replicate the last value.
@@ -39,7 +41,7 @@ def make_sequence(input, n=None, *args, **kwargs):
             last = None
             i = None
             for i, elem in input:
-                if i == n:
+                if crop and (i == n):
                     return
                 last = elem
                 yield elem
@@ -51,7 +53,7 @@ def make_sequence(input, n=None, *args, **kwargs):
                 yield last
         return make_gen()
     else:
-        # generic case -> inducdes a copy
+        # generic case -> induces a copy
         if not isinstance(input, (list, tuple, range)):
             input = [input]
         return_type = type(input) if isinstance(input, (list, tuple)) else list
@@ -59,7 +61,8 @@ def make_sequence(input, n=None, *args, **kwargs):
         if len(input) == 0:
             raise ValueError('Empty sequence')
         if n is not None:
-            input = input[:min(n, len(input))]
+            if crop:
+                input = input[:min(n, len(input))]
             if not has_default:
                 default = input[-1]
             input += [default] * max(0, n - len(input))
@@ -108,6 +111,25 @@ def make_tuple(*args, **kwargs):
 
     """
     return tuple(make_sequence(*args, **kwargs))
+
+
+def make_set(input):
+    """Ensure that the input is a set.
+
+    Parameters
+    ----------
+    input : scalar or sequence
+        Input argument(s).
+
+    Returns
+    -------
+    output : set
+        Output arguments.
+
+    """
+    if not isinstance(input, (list, tuple, set, range, generator)):
+        input = [input]
+    return set(input)
 
 
 def rep_sequence(input, n, interleaved=False):
