@@ -9,7 +9,7 @@
 # . Use inplace operations if gradients not required
 
 import torch
-from nitorch import utils
+from ..core import utils
 
 __all__ = ['smooth', 'energy', 'energy1d', 'energy2d', 'energy3d',
            'make_separable', 'imgrad']

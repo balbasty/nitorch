@@ -17,11 +17,11 @@ import nibabel as nib
 import os
 import torch
 from torch.nn import functional as F
-from .kernels import smooth
-from .spatial import voxsize, grid_pull
+from ..core.kernels import smooth
+from ..core.utils import pad
+from ..spatial import voxsize, grid_pull
 from .spm import identity, matrix
 from .spm import affine as apply_affine
-from .utils import pad
 
 
 __all__ = ['load_3d', 'reslice2world', 'reset_origin', 'write_img']
@@ -460,5 +460,4 @@ def _reslice_dat(dat, affine, dim_out, interpolation='linear', bound='zero'):
         dat = torch.from_numpy(dat)
     grid = apply_affine(dim_out, affine, device=dat.device, dtype=dat.dtype)
     dat = grid_pull(dat, grid, bound=bound, interpolation=interpolation)
-
     return dat[0, 0, ...]

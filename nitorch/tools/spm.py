@@ -16,11 +16,11 @@
 import math
 import nibabel as nib
 import torch
-from .kernels import smooth
-from .mathfun import expm, logm
-from .mixtures import GMM
-from .mixtures import RMM
-from .spatial import voxsize, im_gradient
+from ..core.kernels import smooth
+from ..core.math import expm, logm
+from ..vb.mixtures import GMM
+from ..vb.mixtures import RMM
+from ..spatial import voxsize, im_gradient
 
 
 __all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'estimate_fwhm', 'identity',

@@ -48,6 +48,7 @@ corresponding ND-array.
 #     . Should the default storage be compact or square for affine matrices?
 
 
+from ._affine import *
+from ._finite_differences import *
 from ._grid import *
 from ._shoot import *
-from ._finite_differences import *

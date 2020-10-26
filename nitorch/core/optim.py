@@ -54,7 +54,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
     Example:
         >>> # Let's solve Ax = b using both regular inversion and CG
         >>> import torch
-        >>> from nitorch.optim import cg
+        >>> from nitorch.core.optim import cg
         >>> from timeit import default_timer as timer
         >>> # Simulate A and b
         >>> N = 100

@@ -1,7 +1,7 @@
 """Finite-differences operators (gradient, divergence, ...)."""
 
 import torch
-from nitorch import utils
+from ..core import utils
 
 __all__ = ['im_divergence', 'im_gradient']
 
