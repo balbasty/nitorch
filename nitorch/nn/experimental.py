@@ -3,10 +3,12 @@
 import torch
 import torch.nn as tnn
 from .modules._base import Module
-from .modules._cnn import UNet
-from .modules._spatial import GridPull, GridPush, GridExp, VoxelMorph
+from .modules._cnn import UNet, CNN
+from .modules._spatial import GridPull, GridPush, GridExp, VoxelMorph, \
+    AffineExp, AffineGrid, GridResize
 from .. import spatial
-from ..core.utils import broadcast_to
+from ..core.linalg import matvec
+from ..core.utils import broadcast_to, unsqueeze
 from ..core.pyutils import make_list
 
 
@@ -289,3 +291,134 @@ class IterativeVoxelMorph(VoxelMorph):
 
         return deformed_source, velocity
 
+
+class AffineVoxelMorph(Module):
+    """Affine + diffeo registration network.
+    """
+
+    def __init__(self, dim, basis='CSO',
+                 encoder=None, decoder=None, stack=None, kernel_size=3,
+                 interpolation='linear', image_bound='dct2', grid_bound='dft',
+                 downsample_velocity=2, *, _input_channels=2):
+
+        super().__init__()
+
+        resize_factor = make_list(downsample_velocity, dim)
+        resize_factor = [1/f for f in resize_factor]
+
+        affexp = AffineExp(dim, basis=basis)
+        nb_prm = sum(b.shape[0] for b in affexp.basis)
+        self.cnn = CNN(dim,
+                       input_channels=2,
+                       output_channels=nb_prm,
+                       encoder=encoder,
+                       stack=stack,
+                       kernel_size=kernel_size,
+                       activation=tnn.LeakyReLU(0.2),
+                       final_activation=None)
+        self.affexp = affexp
+        self.unet = UNet(dim,
+                         input_channels=_input_channels,
+                         output_channels=dim,
+                         encoder=encoder,
+                         decoder=decoder,
+                         kernel_size=kernel_size,
+                         activation=tnn.LeakyReLU(0.2))
+        self.resize = GridResize(interpolation=interpolation,
+                                 bound=grid_bound,
+                                 factor=resize_factor)
+        self.velexp = GridExp(interpolation=interpolation,
+                              bound=grid_bound)
+        self.pull = GridPull(interpolation=interpolation,
+                             bound=image_bound,
+                             extrapolate=False)
+        self.dim = dim
+
+        # register losses/metrics
+        self.tags = ['image', 'velocity', 'affine']
+
+    def forward(self, source, target, *, _loss=None, _metric=None):
+        """
+
+        Parameters
+        ----------
+        source : tensor (batch, channel, *spatial)
+            Source/moving image
+        target : tensor (batch, channel, *spatial)
+            Target/fixed image
+
+        _loss : dict, optional
+            If provided, all registered losses are computed and appended.
+        _metric : dict, optional
+            If provided, all registered metrics are computed and appended.
+
+        Returns
+        -------
+        deformed_source : tensor (batch, channel, *spatial)
+            Deformed source image
+        affine_prm : tensor (batch,, *spatial, len(spatial))
+            affine Lie parameters
+
+        """
+        # checks
+        if len(source.shape) != self.dim + 2:
+            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
+                             ' with len(spatial) == {} but found {}.'
+                             .format(self.dim, source.shape))
+        if len(target.shape) != self.dim + 2:
+            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
+                             ' with len(spatial) == {} but found {}.'
+                             .format(self.dim, target.shape))
+        if not (target.shape[0] == source.shape[0] or
+                target.shape[0] == 1 or source.shape[0] == 1):
+            raise ValueError('Batch dimensions of `source` and `target` are '
+                             'not compatible: got {} and {}'
+                             .format(source.shape[0], target.shape[0]))
+        if target.shape[2:] != source.shape[2:]:
+            raise ValueError('Spatial dimensions of `source` and `target` are '
+                             'not compatible: got {} and {}'
+                             .format(source.shape[2:], target.shape[2:]))
+
+        shape = target.shape[2:]
+        info = {'dtype': target.dtype, 'device': target.device}
+
+        # chain operations
+        source_and_target = torch.cat((source, target), dim=1)
+
+        # generate affine
+        affine_prm = self.cnn(source_and_target)
+        affine_prm = affine_prm.reshape(affine_prm.shape[:2])
+        affine = []
+        for prm in affine_prm:
+            affine.append(self.affexp(prm))
+        affine = torch.stack(affine, dim=0)
+        affine_shift = torch.cat((
+            torch.eye(self.dim, **info),
+            -torch.as_tensor(shape, **info)[:, None]/2),
+            dim=1)
+        affine = spatial.affine_matmul(affine, affine_shift)
+        affine = spatial.affine_lmdiv(affine_shift, affine)
+
+        # generate grid
+        velocity = self.unet(source_and_target)
+        velocity = spatial.channel2grid(velocity)
+        velocity_small = self.resize(velocity)
+        grid = self.velexp(velocity_small)
+        grid = self.resize(grid, shape=shape)
+
+        # compose
+        affine = unsqueeze(affine, dim=-3, ndim=self.dim)
+        lin = affine[..., :self.dim, :self.dim]
+        off = affine[..., :self.dim, -1]
+        grid = matvec(lin, grid) + off
+
+        # deform
+        deformed_source = self.pull(source, grid)
+
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     velocity=[velocity],
+                     affine=[affine_prm])
+
+        return deformed_source, affine_prm
