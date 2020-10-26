@@ -3,7 +3,7 @@
 This implementation is based on John Ashburner's in SPM, which relies
 on a Taylor approximation for both the exponential and its derivative.
 Faster implementations that rely on scaling and squearing or Pade
-approximations (as in scipy) could be used instead. THis may be the
+approximations (as in scipy) could be used instead. This may be the
 object of future work.
 
 """
