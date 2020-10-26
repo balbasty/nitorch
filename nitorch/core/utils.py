@@ -269,9 +269,11 @@ def broadcast_to(*tensors):
     Parameters
     ----------
     *tensors : any number of tensors
-    shape : list[int]
+    shape : list[int or None]
         Target shape that must be compatible with all tensors
         according to :ref:`broadcasting-semantics`.
+        If the target shape in a dimension is None, the input
+        shape value is used.
 
     Returns
     -------
@@ -296,7 +298,7 @@ def broadcast_to(*tensors):
         # 2. zero-stride singleton dimensions
         strides = list(tensor.stride())
         for d in range(len(shape)):
-            if tensor.shape[d] != shape[d]:
+            if shape[d] not in (tensor.shape[d], None):
                 if tensor.shape[d] == 1:
                     strides[d] = 0
                 else:
