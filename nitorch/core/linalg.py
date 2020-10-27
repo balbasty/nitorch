@@ -1,6 +1,5 @@
 """Linear algebra."""
 import torch
-import torch.nn.functional as F
 from . import utils
 
 
@@ -73,6 +72,12 @@ def meanm(mats, max_iter=1024, tol=1e-20):
 
 
 def logm(*args, **kwargs):
+    # TODO:
+    #   we want a differentiable matrix logarithm.
+    #   I have started working on this, but it cannot be implemented in
+    #   pure python if we want it to work on batched matrices.
+    #   In the meantime, we should use scipy's implementation (which
+    #   does not accept batched matrices either) with a (parallel?) loop
     raise NotImplementedError
 
 
@@ -203,3 +208,33 @@ def inv(a, method='lu', rcond=1e-15, out=None):
     else:
         raise ValueError('Unknown inversion method {}.'.format(method))
 
+
+def matvec(mat, vec, out=None):
+    """Matrix-vector product (supports broadcasting)
+
+    Parameters
+    ----------
+    mat : (..., M, N) tensor
+        Input matrix.
+    vec : (..., N) tensor
+        Input vector.
+    out : (..., M) tensor, optional
+        Placeholder for the output tensor.
+
+    Returns
+    -------
+    mv : (..., M) tensor
+        Matrix vector product of the inputs
+
+    """
+    mat = torch.as_tensor(mat)
+    vec = torch.as_tensor(vec)[..., None]
+    if out is not None:
+        out = out[..., None]
+
+    mv = torch.matmul(mat, vec, out=out)
+    mv = mv[..., 0]
+    if out is not None:
+        out = out[..., 0]
+
+    return mv

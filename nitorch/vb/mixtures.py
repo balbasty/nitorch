@@ -9,9 +9,8 @@ TODO:
 import math
 from timeit import default_timer as timer
 import matplotlib.pyplot as plt
-from nitorch.core.optim import get_gain, plot_convergence
-from nitorch.utils import softmax
-from nitorch.core.math import besseli
+from ..core.optim import get_gain, plot_convergence
+from ..core.math import besseli, softmax
 import torch
 
 torch.backends.cudnn.benchmark = True

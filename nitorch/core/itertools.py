@@ -1,3 +1,5 @@
+"""Same as the itertools python package, but in pytorch."""
+
 import torch
 
 

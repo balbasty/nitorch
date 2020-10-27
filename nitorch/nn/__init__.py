@@ -1,6 +1,11 @@
-# -*- coding: utf-8 -*-
 """Modules (Networks or Layers)."""
 
-from ._conv import *
-from ._spatial import *
-from ._cnn import *
+from .activations import *
+from .modules import *
+from .losses import *
+from .training import *
+from . import activations
+from . import modules
+from . import losses
+from . import training
+from . import experimental

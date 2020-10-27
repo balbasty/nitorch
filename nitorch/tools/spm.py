@@ -16,11 +16,11 @@
 import math
 import nibabel as nib
 import torch
-from nitorch.core.kernels import smooth
-from nitorch.core.math import expm, logm
-from .mixtures import GMM
-from .mixtures import RMM
-from .spatial import voxsize, im_gradient
+from ..core.kernels import smooth
+from ..core.math import expm, logm
+from ..vb.mixtures import GMM
+from ..vb.mixtures import RMM
+from ..spatial import voxel_size, im_gradient
 
 
 __all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'estimate_fwhm', 'identity',
@@ -434,7 +434,7 @@ def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf'), sum_
     return fwhm, sd
 
 
-def identity(dm, dtype=torch.float32, device='cpu', jitter=False):
+def identity(dm, dtype=torch.float32, device='cpu', jitter=False, step=1):
     """ Generate the identity warp on a lattice defined by dm.
 
     Args:
@@ -442,22 +442,27 @@ def identity(dm, dtype=torch.float32, device='cpu', jitter=False):
         dtype (torch.dtype, optional): Defaults to torch.float32.
         device (string, optional): Defaults to 'cpu'.
         jitter (bool, optional): Add random jittering, defaults to False.
+        step (int or tuple[int], optional): Gap between each pair of adjacent points, defaults to 1.
 
     Returns:
         i (torch.Tensor): Identity warp (X, Y, Z, 3).
 
     """
+    if not isinstance(step, tuple) and not isinstance(step, list):
+        step = (step,) * 3
     if len(dm) > 2:  # 3D
-        i = torch.zeros((dm[0], dm[1], dm[2], 3), dtype=dtype, device=device)
+        i = torch.zeros((math.ceil(dm[0]/step[0]), math.ceil(dm[1]/step[1]), math.ceil(dm[2]/step[2]), 3),
+                        dtype=dtype, device=device)
         i[:, :, :, 0], i[:, :, :, 1], i[:, :, :, 2] = \
-            torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
-                            torch.arange(0, dm[1], dtype=dtype, device=device),
-                            torch.arange(0, dm[2], dtype=dtype, device=device)])
+            torch.meshgrid([torch.arange(0, dm[0], step=step[0], dtype=dtype, device=device),
+                            torch.arange(0, dm[1], step=step[1], dtype=dtype, device=device),
+                            torch.arange(0, dm[2], step=step[2], dtype=dtype, device=device)])
     else:  # 2D
-        i = torch.zeros((dm[0], dm[1], 2), dtype=dtype, device=device)
+        i = torch.zeros((math.ceil(dm[0]/step[0]), math.ceil(dm[1]/step[1]), 2),
+                        dtype=dtype, device=device)
         i[:, :, 0], i[:, :, 1] = \
-            torch.meshgrid([torch.arange(0, dm[0], dtype=dtype, device=device),
-                            torch.arange(0, dm[1], dtype=dtype, device=device)])
+            torch.meshgrid([torch.arange(0, dm[0], step=step[0], dtype=dtype, device=device),
+                            torch.arange(0, dm[1], step=step[1], dtype=dtype, device=device)])
     if jitter:
         torch.manual_seed(0)
         i += torch.rand_like(i)
@@ -652,7 +657,7 @@ def mean_space(Mat, Dim, vx=None, bb='full', mod_prct=0):
                             [1, 2, 0]], device=device)
 
     for n in range(N):  # Loop over subjects
-        vx1 = voxsize(Mat[..., n])
+        vx1 = voxel_size(Mat[..., n])
         R = Mat[..., n].mm(
             torch.diag(torch.cat((vx1, one[..., None]))).inverse())[:-1, :-1]
         minss = inf
@@ -714,10 +719,10 @@ def mean_space(Mat, Dim, vx=None, bb='full', mod_prct=0):
 
     # Set required voxel size
     vx_out = vx.clone()
-    vx = voxsize(mat)
+    vx = voxel_size(mat)
     vx_out[~torch.isfinite(vx_out)] = vx[~torch.isfinite(vx_out)]
     mat = mat.mm(torch.cat((vx_out/vx, one[..., None])).diag())
-    vx = voxsize(mat)
+    vx = voxel_size(mat)
     # Ensure that the FoV covers all images, with a few voxels to spare
     mn_all = torch.zeros([3, N], device=device, dtype=dtype)
     mx_all = torch.zeros([3, N], device=device, dtype=dtype)

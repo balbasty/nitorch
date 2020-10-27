@@ -11,10 +11,13 @@ This
 import torch
 from ast import literal_eval
 from warnings import warn
+import functools
 from ..core import utils
+from ..core import pyutils
 from ..core import itertools
 from ..core import linalg
 from ..core import constants
+import math
 
 
 def volume_axis(*args, **kwargs):
@@ -610,7 +613,7 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
                           affine_subbasis('S', dim, dtype=dtype, device=device)))
 
 
-def _format_basis(basis, dim=None):
+def build_affine_basis(basis, dim=None):
     """Transform an Outter/Inner Lie basis into a list of tensors.
 
     Parameters
@@ -734,7 +737,7 @@ def affine_matrix(prm, basis, dim=None, layout=None):
     # .. Yael Balbastre <yael.balbastre@gmail.com>
 
     # Make sure basis is a vector_like of (F, D+1, D+1) tensor_like
-    basis, dim = _format_basis(basis, dim)
+    basis, dim = build_affine_basis(basis, dim)
 
     # Check length
     nb_basis = sum([len(b) for b in basis])
@@ -767,7 +770,11 @@ def affine_matrix(prm, basis, dim=None, layout=None):
         mats.append(layout)
 
     # Matrix product
-    return torch.chain_matmul(mats)
+    if len(mats) > 1:
+        affine = torch.chain_matmul(mats)
+    else:
+        affine = mats[0]
+    return affine
 
 
 def affine_matrix_classic(prm, dim=3, layout=None):
@@ -958,7 +965,7 @@ def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
     dim = mat.shape[-1] - 1
 
     # Format basis
-    basis, _ = _format_basis(basis, dim)
+    basis, _ = build_affine_basis(basis, dim)
     nb_basis = sum([len(b) for b in basis])
 
     # Create layout matrix
@@ -1058,3 +1065,453 @@ def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
 
     # TODO: should I stack parameters per basis?
     return prm, M
+
+
+def voxel_size(mat):
+    """ Compute voxel sizes from affine matrices.
+
+    Parameters
+    ----------
+    mat :  (..., ndim[+1], ndim+1) tensor
+        Affine matrix
+
+    Returns
+    -------
+    vx :  (..., ndim) tensor
+        Voxel size
+
+    """
+    dim = mat.shape[-1] - 1
+    return mat[..., :dim, :dim].square().sum(-2).sqrt()
+
+
+def affine_matvec(affine, vector):
+    """Matrix-vector product of a rectangular affine.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+    vector : (..., ndim[+1]) tensor
+
+    Returns
+    -------
+    affine_times_vector : (..., ndim) tensor
+
+    """
+    affine = torch.as_tensor(affine)
+    vector = torch.as_tensor(vector)
+    ndims = affine.shape[-1] - 1
+    zoom = affine[..., :ndims, :ndims]
+    translation = affine[..., :ndims, ndims]
+    return linalg.matvec(zoom, vector[..., :ndims]) + translation
+
+
+def affine_matmul(a, b):
+    """Matrix-matrix product of rectangular affine matrices.
+
+    Parameters
+    ----------
+    a : (..., ndim[+1], ndim+1) tensor
+        Affine matrix
+    b : (..., ndim[+1], ndim+1) tensor
+        Affine matrix
+
+    Returns
+    -------
+    affine_times_matrix : (..., ndim, ndim+1) tensor
+
+    """
+    a = torch.as_tensor(a)
+    b = torch.as_tensor(b)
+    ndims = a.shape[-1] - 1
+    Za = a[..., :ndims, :ndims]
+    Ta = a[..., :ndims, ndims]
+    Zb = b[..., :ndims, :ndims]
+    Tb = b[..., :ndims, ndims]
+    Z = torch.matmul(Za, Zb)
+    T = linalg.matvec(Za, Tb) + Ta
+    return torch.cat((Z, T[..., None]), dim=-1)
+
+
+def affine_inv(affine):
+    """Inverse of an affine matrix.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+
+    Returns
+    -------
+    inv_affine : (..., ndim, ndim+1) tensor
+
+    """
+    affine = torch.as_tensor(affine)
+    ndims = affine.shape[-1] - 1
+    zoom = torch.inverse(affine[..., :ndims, :ndims])
+    translation = -linalg.matvec(zoom, affine[..., :ndims, ndims])
+    return torch.cat((zoom, translation[..., None]), dim=-1)
+
+
+def affine_lmdiv(a, b):
+    """inv(a) @ b"""
+    return affine_matmul(affine_inv(a), b)
+
+
+def affine_rmdiv(a, b):
+    """a @ inv(b)"""
+    return affine_matmul(a, affine_inv(b))
+
+
+def affine_make_square(affine):
+    """Transform a rectangular affine into a square affine.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+
+    Returns
+    -------
+    affine : (..., ndim+1, ndim+1) tensor
+
+    """
+    affine = torch.as_tensor(affine)
+    ndims = affine.shape[-1]-1
+    if affine.shape[-2] not in (ndims, ndims+1):
+        raise ValueError('Input affine matrix should be of shape\n'
+                         '(..., ndims+1, ndims+1) or (..., ndims, ndims+1).')
+    if affine.shape[-1] != affine.shape[-2]:
+        bottom_row = torch.cat((torch.zeros(ndims), torch.ones(1)), dim=0)
+        bottom_row = utils.unsqueeze(bottom_row, 0, ndim=affine.dim()-1)
+        affine = torch.cat((affine, bottom_row), dim=-2)
+    return affine
+
+
+def affine_make_rect(affine):
+    """Transform a square affine into a rectangular affine.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+
+    Returns
+    -------
+    affine : (..., ndim, ndim+1) tensor
+
+    """
+    affine = torch.as_tensor(affine)
+    ndims = affine.shape[-1]-1
+    return affine[..., :ndims, :]
+
+
+def affine_resize(affine, shape, factor, anchor='c'):
+    """Update an affine matrix according to a resizing of the lattice.
+
+    Notes
+    -----
+    This function is related to the `resize` function, which allows the
+    user to choose between modes:
+        * 'c' or 'centers': align centers
+        * 'e' or 'edges':   align edges
+        * 'f' or 'first':   align center of first voxel
+        * 'l' or 'last':    align center of last voxel
+    In cases 'c' and 'e', the volume shape is multiplied by the zoom
+    factor (and eventually truncated), and two anchor points are used
+    to determine the voxel size (neurite's behavior corresponds to 'c').
+    In cases 'f' and 'l', a single anchor point is used so that the voxel
+    size is exactly divided by the zoom factor. This case with an integer
+    factor corresponds to subslicing the volume (e.g., vol[::f, ::f, ::f]).
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Input affine matrix.
+    shape : (ndim,) sequence[int]
+        Input shape.
+    factor : float or sequence[float]
+        Resizing factor.
+    anchor : {'centers', 'edges', 'first', 'last'} or list, default='centers'
+        Anchor points.
+
+    Returns
+    -------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Resized affine matrix.
+    shape : (ndim,) tuple[int]
+        Resized shape.
+
+    """
+
+    # read parameters
+    affine = torch.as_tensor(affine)
+    nb_dim = affine.shape[-1] - 1
+    factor = utils.make_list(factor, nb_dim)
+    anchor = [a[0].lower() for a in utils.make_list(anchor, nb_dim)]
+    info = {'dtype': affine.dtype, 'device': affine.device}
+
+    # compute output shape
+    shape_out = [int(s * f) for s, f in zip(shape, factor)]
+
+    # compute shift and scale in each dimension
+    shifts = []
+    scales = []
+    for anch, f, inshp, outshp in zip(anchor, factor, shape, shape_out):
+        if anch == 'c':
+            shifts.append(0)
+            scales.append((inshp - 1) / (outshp - 1))
+        elif anch == 'e':
+            shifts.append((inshp * (1 / outshp - 1) + (inshp - 1)) / 2)
+            scales.append(inshp/outshp)
+        elif anch == 'f':
+            shifts.append(0)
+            scales.append(1/f)
+        elif anch == 'l':
+            shifts.append((inshp - 1) - (outshp - 1) / f)
+            scales.append(1/f)
+        else:
+            raise ValueError('Unknown anchor {}'.format(anch))
+
+    # build voxel-to-voxel transformation matrix
+    lin = torch.diag(torch.as_tensor(scales, **info))
+    trl = torch.as_tensor(shifts, **info)[..., None]
+    trf = torch.cat((lin, trl), dim=1)
+
+    # compose
+    affine = affine_matmul(affine, trf)
+    return affine, tuple(shape_out)
+
+
+def affine_sub(affine, shape, indices):
+    """Update an affine matrix according to a sub-indexing of the lattice.
+
+    Notes
+    -----
+    .. Only sub-indexing that *do not change the number of dimensions*
+       and that *keep an homogeneous voxel size* are allowed. Therefore,
+       indices must be of type `slice` or `ellipsis`.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Input affine matrix.
+    shape : (ndim,) sequence[int]
+        Input shape.
+    indices : tuple[slice or ellipsis]
+        Subscripting indices.
+
+    Returns
+    -------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Updated affine matrix.
+    shape : (ndim,) tuple[int]
+        Updated shape.
+
+    """
+    # check types
+    affine = torch.as_tensor(affine)
+    nb_dim = affine.shape[-1] - 1
+    info = {'dtype': affine.dtype, 'device': affine.device}
+    shape = list(shape)
+    if len(shape) != nb_dim:
+        raise ValueError('Expected shape of length {}. Got {}'
+                         .format(nb_dim, len(shape)))
+    if not isinstance(indices, tuple):
+        raise TypeError('Indices should be a tuple.')
+    indices = list(indices)
+
+    # compute the number of input dimension that correspond to each index
+    #   > slice index one dimension but eliipses index multiple dimension
+    #     and their number must be computed.
+    nb_dims_in = []
+    ind_ellipsis = None
+    for n_ind, ind in enumerate(indices):
+        if isinstance(ind, slice):
+            nb_dims_in.append(1)
+        elif ind is Ellipsis:
+            if ind_ellipsis is not None:
+                raise ValueError('Cannot have more than one ellipsis.')
+            ind_ellipsis = n_ind
+            nb_dims_in.append(-1)
+        else:
+            raise TypeError('Indices should be slices or ellipses. '
+                            'Got {}.'.format(type(ind)))
+    nb_known_dims = sum(nb_dims for nb_dims in nb_dims_in if nb_dims > 0)
+    if ind_ellipsis is not None:
+        nb_dims_in[ind_ellipsis] = max(0, nb_dim - nb_known_dims)
+
+    # transform each index into a slice
+    # note that we don't need to know "stop" to update the affine matrix
+    nb_ind = 0
+    indices0 = indices
+    indices = []
+    for d, ind in enumerate(indices0):
+        if isinstance(ind, slice):
+            start = ind.start
+            step = ind.step
+            step = 1 if step is None else step
+            start = 0 if (start is None and step > 0) else \
+                    shape[nb_ind] - 1 if (start is None and step < 0) else \
+                    shape[nb_ind] + start if start < 0 else \
+                    start
+            indices.append(slice(start, None, step))
+            nb_ind += 1
+        elif ind is Ellipsis:
+            for dd in range(nb_ind, nb_ind + nb_dims_in[d]):
+                start = 0
+                step = 1
+                indices.append(slice(start, None, step))
+                nb_ind += 1
+        else:
+            raise TypeError('Indices should be slices or ellipses. '
+                            'Got {}.'.format(type(ind)))
+
+    # Extract shift and scale in each dimension
+    shifts = []
+    scales = []
+    shape_out = []
+    for d, ind in enumerate(indices):
+        # translation + scale
+        shifts.append(ind.start)
+        scales.append(ind.step)
+        shape_out.append(shape[d] // abs(ind.step))
+
+    # build voxel-to-voxel transformation matrix
+    lin = torch.diag(torch.as_tensor(scales, **info))
+    trl = torch.as_tensor(shifts, **info)[..., None]
+    trf = torch.cat((lin, trl), dim=1)
+
+    # compose
+    affine = affine_matmul(affine, trf)
+    return affine, tuple(shape_out)
+
+
+def affine_permute(affine, shape, perm=None):
+    """Update an affine matrix according to a permutation of the lattice dims.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Input affine matrix.
+    shape : (ndim,) sequence[int]
+        Input shape.
+    perm : sequence[int], optional
+        Permutation of the lattice dimensions.
+        By default, reverse dimension order.
+
+    Returns
+    -------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Updated affine matrix.
+    shape : (ndim,) tuple[int]
+        Updated shape.
+    """
+    affine = torch.as_tensor(affine)
+    nb_dim = affine.shape[-1] - 1
+    if perm is None:
+        perm = list(range(nb_dim-1, -1, -1))
+    if len(perm) != nb_dim:
+        raise ValueError('Expected perm to have {} elements. Got {}.'
+                         .format(nb_dim, len(perm)))
+    affine = affine[..., perm, :]
+    shape = [shape[p] for p in perm]
+    return affine, tuple(shape)
+
+
+def affine_transpose(affine, shape, dim0, dim1):
+    """Update an affine matrix according to a transposition of the lattice.
+
+    A transposition is a permutation that only impacts two dimensions.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Input affine matrix.
+    shape : (ndim,) sequence[int]
+        Input shape.
+    dim0 : int
+        Index of the first dimension
+    dim1 : int
+        Index of the second dimension
+
+    Returns
+    -------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Updated affine matrix.
+    shape : (ndim,) tuple[int]
+        Updated shape.
+    """
+    affine = torch.as_tensor(affine)
+    nb_dim = affine.shape[-1] - 1
+    perm = list(range(nb_dim))
+    perm[dim0] = dim1
+    perm[dim1] = dim0
+    return affine_permute(affine, shape, perm)
+
+
+def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
+                output_padding=0, dilation=1, transposed=False):
+    """Update an affine matrix according to a convolution of the lattice.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Input affine matrix.
+    shape : (ndim,) sequence[int]
+        Input shape.
+    kernel_size : int or list[int]
+        Kernel size
+    stride : int or list[int], default=1
+        Strides (= step size when moving the kernel)
+    padding : int or list[int], default=0
+        Amount of padding added to (both sides of) the input
+    output_padding : int or list[int], default=0
+        Additional size added to (the bottom/right) side of each
+        dimension in the output shape. Only used if `transposed is True`.
+    dilation : int or list[int], default=1
+        Dilation (= step size between elements of the kernel)
+    transposed : bool, default=False
+        Transposed convolution.
+
+    Returns
+    -------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Updated affine matrix.
+    shape : (ndim,) tuple[int]
+        Updated shape.
+
+    """
+    affine = torch.as_tensor(affine)
+    info = {'dtype': affine.dtype, 'device': affine.device}
+    ndim = affine.shape[-1] - 1
+    if len(shape) != ndim:
+        raise ValueError('Affine and shape not consistant. Found dim '
+                         '{} and {}.'.format(ndim, len(shape)))
+    kernel_size = pyutils.make_list(kernel_size, ndim)
+    stride = pyutils.make_list(stride, ndim)
+    padding = pyutils.make_list(padding, ndim)
+    output_padding = pyutils.make_list(output_padding, ndim)
+    dilation = pyutils.make_list(dilation, ndim)
+
+    # compute new shape and scale/offset that transform the
+    # new lattice into the old lattice
+    oshape = []
+    scale = []
+    offset = []
+    for L, S, Pi, D, K, Po in zip(shape, stride, padding,
+                                  dilation, kernel_size, output_padding):
+        if transposed:
+            oshape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
+            scale += [1/S]
+            offset += [(Pi - (K-1)/2)/S]
+        else:
+            oshape += [math.floor((L + 2 * Pi - D * (K - 1) - 1) / S + 1)]
+            scale += [S]
+            offset += [(K-1)/2 - Pi]
+
+    # build voxel-to-voxel transformation matrix
+    lin = torch.diag(torch.as_tensor(scale, **info))
+    trl = torch.as_tensor(offset, **info)[..., None]
+    trf = torch.cat((lin, trl), dim=1)
+
+    # compose
+    affine = affine_matmul(affine, trf)
+    return affine, tuple(oshape)

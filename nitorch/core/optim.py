@@ -54,7 +54,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
     Example:
         >>> # Let's solve Ax = b using both regular inversion and CG
         >>> import torch
-        >>> from nitorch.optim import cg
+        >>> from nitorch.core.optim import cg
         >>> from timeit import default_timer as timer
         >>> # Simulate A and b
         >>> N = 100
@@ -171,7 +171,7 @@ def get_gain(obj, monotonicity='increasing'):
 
 
 def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence',
-                     xlab='', ylab=''):
+                     xlab='', ylab='', legend=None):
     """ Plots an algorithm's convergence (e.g. negative log-likelihood, lower bound).
 
     Allows for real-time plotting if giving returned fig_ax objects as input.
@@ -183,6 +183,7 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
         fig_title (str, optional): Figure title, defaults to 'Model convergence'.
         xlab (str, optional): x-label, defaults to ''.
         ylab (str, optional): y-label, defaults to ''.
+        legend (list(str)): Figure legend, list with C strings. Defaults to None.
 
     Returns:
         fig_ax ([matplotlib.figure, matplotlib.axes])
@@ -213,11 +214,15 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
 
     ax[1].clear()
     x = torch.arange(0, len(vals)) + 1
-    ax[1].plot(x[-3:, ...], vals[-3:, ...])
+    lines = ax[1].plot(x[-3:, ...], vals[-3:, ...])
     ax[1].set_xlabel(xlab)
     ax[1].set_ylabel(ylab)
     ax[1].xaxis.set_major_locator(MaxNLocator(integer=True))
     ax[1].grid()
+
+    if legend is not None:
+        # Add legend
+        plt.legend(lines, legend)
 
     fig.suptitle(fig_title)
     fig.canvas.draw()

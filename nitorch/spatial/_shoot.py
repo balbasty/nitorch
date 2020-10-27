@@ -1,7 +1,7 @@
 """Integrate/Shoot velocity fields."""
 
 import torch
-from ._grid import grid_pull, channel2grid, grid2channel, identity
+from ._grid import grid_pull, channel2grid, grid2channel, identity_grid
 
 __all__ = ['exp']
 
@@ -18,15 +18,15 @@ def exp(vel, inverse=False, steps=None, interpolation='linear', bound='dft',
 
     if energy is None and greens is None:
         # If no energy or greens function: use scaling and squaring
-        return _exp_ss(vel, inverse, steps, interpolation, bound,
+        return _exp_sq(vel, inverse, steps, interpolation, bound,
                        displacement)
     else:
         # If energy or greens function provided: use shoot
         raise NotImplementedError
 
 
-def _exp_ss(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
-            displacement=False):
+def _exp_sq(vel, inverse=False, steps=8,
+            interpolation='linear', bound='dft', displacement=False):
     # /!\ This function may process inplace without warning
 
     if steps is None or steps == float('Inf'):
@@ -35,34 +35,56 @@ def _exp_ss(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
     # Precompute identity + aliases
     dtype = vel.dtype
     device = vel.device
-    id = identity(vel.shape[1:-1], dtype=dtype, device=device)
-    c2g = channel2grid
-    g2c = grid2channel
-    opt = (interpolation, bound)
+    id = identity_grid(vel.shape[1:-1], dtype=dtype, device=device)
+    opt = {'interpolation': interpolation, 'bound': bound}
 
-    def _ss_outplace(v):
+    def scl_outplace(v):
         v = v / (2**steps)
         for i in range(steps):
-            v = v + c2g(grid_pull(g2c(v), id+v, *opt))
-        if not displacement:
-            v = id + v
+            g = id + v
+            v = v + _pull_vel(v, g, **opt)
         return v
 
-    def _ss_inplace(v):
+    def scl_inplace(v):
         v /= (2**steps)
         for i in range(steps):
-            v += c2g(grid_pull(g2c(v), id+v, *opt))
-        if not displacement:
-            v += id
+            v += _pull_vel(v, id+v, **opt)
         return v
 
     if vel.requires_grad:
-        _ss = _ss_outplace
+        scl = scl_outplace
+        smalldef = lambda v: id + v
         if inverse:
             vel = -vel
     else:
-        _ss = _ss_inplace
+        scl = scl_inplace
+        smalldef = lambda v: v.__iadd__(id)
         if inverse:
             torch.neg(vel, out=vel)
 
-    return _ss(vel)
+    vel = scl(vel)
+    if not displacement:
+        vel = smalldef(vel)
+    return vel
+
+
+def _pull_vel(vel, grid, *args, **kwargs):
+    """Interpolate a velocity/grid/displacement field.
+
+    Parameters
+    ----------
+    vel : (batch, ..., ndim) tensor
+        Velocity
+    grid : (batch, ..., ndim) tensor
+        Transformation field
+    opt : dict
+        Options to ``grid_pull``
+
+    Returns
+    -------
+    pulled_vel : (batch, ..., ndim) tensor
+        Velocity
+
+    """
+    return channel2grid(grid_pull(grid2channel(vel), grid, *args, **kwargs))
+
