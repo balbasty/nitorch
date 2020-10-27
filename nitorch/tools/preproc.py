@@ -3,7 +3,7 @@
 All these functions work directly with the path(s) to the image data.
 The input data is not overwritten by default, but copies are made with
 function specific prefix. However, by setting the prefix to an empty string,
-the origian input data is modified.
+the original input data is modified.
 
 TODO
 -------
