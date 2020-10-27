@@ -1083,9 +1083,6 @@ def voxel_size(mat):
     return mat[..., :dim, :dim].square().sum(-2).sqrt()
 
 
-voxsize = functools.wraps(voxel_size)  # backward compatibility
-
-
 def affine_matvec(affine, vector):
     """Matrix-vector product of a rectangular affine.
 

@@ -19,7 +19,7 @@ import torch
 from torch.nn import functional as F
 from ..core.kernels import smooth
 from ..core.utils import pad
-from ..spatial import voxsize, grid_pull
+from ..spatial import voxel_size, grid_pull
 from .spm import identity, matrix
 from .spm import affine as apply_affine
 
@@ -88,7 +88,7 @@ def load_3d(pth_in, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu',
     if len(dim) != 3:
         raise ValueError('Input image is {}D, should be 3D!'.format(len(dim)))
     dim = dim[:3]
-    vx = voxsize(affine)
+    vx = voxel_size(affine)
 
     # Get sampling grid
     samp = torch.tensor((samp,) * 3, device=device, dtype=torch.float64)
@@ -216,7 +216,7 @@ def reset_origin(pth_in, vx=None, prefix='o', device='cpu', interpolation='linea
                                  interpolation=interpolation, bound=bound)
     # Compute new, reset, affine matrix
     dim = torch.tensor(dat.shape, dtype=torch.float64)
-    vx = voxsize(M0)
+    vx = voxel_size(M0)
     if M0[:3, :3].det() < 0:
         vx[0] = - vx[0]
     orig = (dim[:3] + 1) / 2
@@ -281,7 +281,7 @@ def reslice2world(pth_in, vx=None, prefix='r', device='cpu', write=True, interpo
             vx_out = (vx,) * 3
         vx_out = torch.tensor(vx_out, dtype=torch.float64)
     else:
-        vx_out = voxsize(M_in)
+        vx_out = voxel_size(M_in)
 
     # Get corners
     c = _get_corners(dim_in)

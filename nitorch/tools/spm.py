@@ -20,7 +20,7 @@ from ..core.kernels import smooth
 from ..core.math import expm, logm
 from ..vb.mixtures import GMM
 from ..vb.mixtures import RMM
-from ..spatial import voxsize, im_gradient
+from ..spatial import voxel_size, im_gradient
 
 
 __all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'estimate_fwhm', 'identity',
@@ -657,7 +657,7 @@ def mean_space(Mat, Dim, vx=None, bb='full', mod_prct=0):
                             [1, 2, 0]], device=device)
 
     for n in range(N):  # Loop over subjects
-        vx1 = voxsize(Mat[..., n])
+        vx1 = voxel_size(Mat[..., n])
         R = Mat[..., n].mm(
             torch.diag(torch.cat((vx1, one[..., None]))).inverse())[:-1, :-1]
         minss = inf
@@ -719,10 +719,10 @@ def mean_space(Mat, Dim, vx=None, bb='full', mod_prct=0):
 
     # Set required voxel size
     vx_out = vx.clone()
-    vx = voxsize(mat)
+    vx = voxel_size(mat)
     vx_out[~torch.isfinite(vx_out)] = vx[~torch.isfinite(vx_out)]
     mat = mat.mm(torch.cat((vx_out/vx, one[..., None])).diag())
-    vx = voxsize(mat)
+    vx = voxel_size(mat)
     # Ensure that the FoV covers all images, with a few voxels to spare
     mn_all = torch.zeros([3, N], device=device, dtype=dtype)
     mx_all = torch.zeros([3, N], device=device, dtype=dtype)
