@@ -6,7 +6,7 @@ Neuroimaging in PyTorch
 NiTorch is currently in a very *alpha* state: its API is far from stable, 
 it has been loosely tested, and there is not warranty that it can run on any 
 OS or against any version of PyTorch. Up to now, it has only been used 
-on linux, compiled from source against PyTorch 1.4 and 1.5.
+on linux, compiled from source against PyTorch 1.4, 1.5 and 1.6.
 
 ## Quick start
 
