@@ -3,6 +3,7 @@
 import torch
 from torch import nn as tnn
 from ._base import nitorchmodule
+from ..activations import _map_activations
 from ...core.pyutils import make_tuple, rep_sequence, getargs
 from copy import copy
 import math
@@ -23,37 +24,6 @@ import inspect
 # Note that optional submodules can also be added to __constants__ in a
 # hacky way:
 # https://discuss.pytorch.org/t/why-do-we-use-constants-or-final/70331/4
-
-# I should probably move this somewhere else
-_activations = {
-    # linear units
-    'relu': tnn.ReLU,               # clip (, 0]
-    'relu6': tnn.ReLU6,             # clip (, 0] and [6, )
-    'leaky_relu': tnn.LeakyReLU,    # mult factor for negative slope
-    'prelu': tnn.PReLU,             # LeakyReLU with learnable factor
-    'rrelu': tnn.RReLU,             # LeakyReLU with random factor
-    # sigmoid / softmax / soft functions
-    'sigmoid': tnn.Sigmoid,
-    'logsigmoid': tnn.LogSigmoid,    # log(sigmod)
-    'hardsigmoid': tnn.Hardsigmoid,  # linear approximation of sigmoid
-    'softmax': tnn.Softmax,          # multivariate sigmoid
-    'logsoftmax': tnn.LogSoftmax,    # log(softmax)
-    # smooth approximations
-    'hardswish': tnn.Hardswish,      # 'smooth' RELU (quadratic)
-    'softplus': tnn.Softplus,        # 'smooth' ReLU (logsumexp)
-    'gelu': tnn.GELU,                # 'smooth' RELU (Gaussian cdf)
-    'elu': tnn.ELU,                  # 'smooth' ReLU (exp-1)
-    'selu': tnn.SELU,                #               (scaled ELU)
-    'celu': tnn.CELU,                #               (~= SELU)
-    'softsign': tnn.Softsign,        # 'smooth' sign function
-    # shrinkage
-    'softshrink': tnn.Softshrink,    # soft-thresholding (subtract constant)
-    'hardshrink': tnn.Hardshrink,    # clip [-lam, +lam]
-    # ranh
-    'tanh': tnn.Tanh,                # hyperbolic tangent
-    'hardtanh': tnn.Hardtanh,        # linear approximation of tanh
-    'tanhshrink': tnn.Tanhshrink,    # shrink by tanh
-}
 
 
 @nitorchmodule
@@ -80,6 +50,10 @@ class Conv(tnn.Module):
             Stride of the convolution.
         padding : int or tuple[int], default=0
             Zero-padding added to all three sides of the input.
+        output_padding : int or tuple[int], default=0
+            Additional size added to (the bottom/right) side of each
+            dimension in the output shape. Only used if `transposed is True`.
+      ``(out_padT, out_padH, out_padW)``. Default: 0
         padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
             Padding mode.
         dilation : int or tuple[int], default=1
@@ -147,7 +121,7 @@ class Conv(tnn.Module):
         #       * have a learnable activation shared with other modules
         #       * have a non-learnable activation
         if isinstance(activation, str):
-            activation = _activations.get(activation.lower(), None)
+            activation = _map_activations.get(activation.lower(), None)
         self.activation = activation() if inspect.isclass(activation) \
                           else activation if callable(activation) \
                           else None
@@ -195,7 +169,7 @@ class Conv(tnn.Module):
         # Activation
         activation = overload.get('activation', self.activation)
         if isinstance(activation, str):
-            activation = _activations.get(activation.lower(), None)
+            activation = _map_activations.get(activation.lower(), None)
         activation = activation() if inspect.isclass(activation)    \
                      else activation if callable(activation)        \
                      else None
