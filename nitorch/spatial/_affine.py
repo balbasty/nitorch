@@ -13,9 +13,11 @@ from ast import literal_eval
 from warnings import warn
 import functools
 from ..core import utils
+from ..core import pyutils
 from ..core import itertools
 from ..core import linalg
 from ..core import constants
+import math
 
 
 def volume_axis(*args, **kwargs):
@@ -1447,3 +1449,72 @@ def affine_transpose(affine, shape, dim0, dim1):
     perm[dim1] = dim0
     return affine_permute(affine, shape, perm)
 
+
+def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
+                output_padding=0, dilation=1, transposed=False):
+    """Update an affine matrix according to a convolution of the lattice.
+
+    Parameters
+    ----------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Input affine matrix.
+    shape : (ndim,) sequence[int]
+        Input shape.
+    kernel_size : int or list[int]
+        Kernel size
+    stride : int or list[int], default=1
+        Strides (= step size when moving the kernel)
+    padding : int or list[int], default=0
+        Amount of padding added to (both sides of) the input
+    output_padding : int or list[int], default=0
+        Additional size added to (the bottom/right) side of each
+        dimension in the output shape. Only used if `transposed is True`.
+    dilation : int or list[int], default=1
+        Dilation (= step size between elements of the kernel)
+    transposed : bool, default=False
+        Transposed convolution.
+
+    Returns
+    -------
+    affine : (..., ndim[+1], ndim+1) tensor
+        Updated affine matrix.
+    shape : (ndim,) tuple[int]
+        Updated shape.
+
+    """
+    affine = torch.as_tensor(affine)
+    info = {'dtype': affine.dtype, 'device': affine.device}
+    ndim = affine.shape[-1] - 1
+    if len(shape) != ndim:
+        raise ValueError('Affine and shape not consistant. Found dim '
+                         '{} and {}.'.format(ndim, len(shape)))
+    kernel_size = pyutils.make_list(kernel_size, ndim)
+    stride = pyutils.make_list(stride, ndim)
+    padding = pyutils.make_list(padding, ndim)
+    output_padding = pyutils.make_list(output_padding, ndim)
+    dilation = pyutils.make_list(dilation, ndim)
+
+    # compute new shape and scale/offset that transform the
+    # new lattice into the old lattice
+    oshape = []
+    scale = []
+    offset = []
+    for L, S, Pi, D, K, Po in zip(shape, stride, padding,
+                                  dilation, kernel_size, output_padding):
+        if transposed:
+            oshape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
+            scale += [1/S]
+            offset += [(Pi - (K-1)/2)/S]
+        else:
+            oshape += [math.floor((L + 2 * Pi - D * (K - 1) - 1) / S + 1)]
+            scale += [S]
+            offset += [(K-1)/2 - Pi]
+
+    # build voxel-to-voxel transformation matrix
+    lin = torch.diag(torch.as_tensor(scale, **info))
+    trl = torch.as_tensor(offset, **info)[..., None]
+    trf = torch.cat((lin, trl), dim=1)
+
+    # compose
+    affine = affine_matmul(affine, trf)
+    return affine, tuple(oshape)
