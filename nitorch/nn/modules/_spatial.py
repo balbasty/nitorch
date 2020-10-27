@@ -232,7 +232,7 @@ class GridExp(Module):
 
     def __init__(self, fwd=True, inv=False, steps=None,
                  interpolation='linear', bound='dft', displacement=False,
-                 energy=None, vs=None, greens=None, inplace=True):
+                 inplace=True):
         """
 
         Parameters
@@ -252,12 +252,6 @@ class GridExp(Module):
             Boundary conditions.
         displacement : bool, default=False
             Return a displacement field rather than a transformation field.
-        energy : default=None
-            If None: squaring and scaling integration.
-        vs : list[float], default=1
-            Voxel size.
-        greens : tensor_like, optional
-            Pre-computed Greens function (= inverse kernel in freq. domain)
         inplace : bool, default=True
             Perform the integration inplace if possible.
         """
@@ -269,9 +263,6 @@ class GridExp(Module):
         self.interpolation = interpolation
         self.bound = bound
         self.displacement = displacement
-        self.energy = energy
-        self.vs = vs
-        self.greens = greens
         self.inplace = inplace
 
     def forward(self, velocity, **kwargs):
@@ -294,23 +285,20 @@ class GridExp(Module):
         """
         fwd = kwargs.get('fwd', self.forward)
         inv = kwargs.get('inverse', self.inv)
-        steps = kwargs.get('steps', self.steps)
-        interpolation = kwargs.get('interpolation', self.interpolation)
-        bound = kwargs.get('bound', self.bound)
-        displacement = kwargs.get('displacement', self.displacement)
-        energy = kwargs.get('energy', self.energy)
-        vs = kwargs.get('vs', self.vs)
-        greens = kwargs.get('greens', self.greens)
-        inplace = False  # kwargs.get('inplace', self.inplace)
+        opt = {
+            'steps': kwargs.get('steps', self.steps),
+            'interpolation': kwargs.get('interpolation', self.interpolation),
+            'bound': kwargs.get('bound', self.bound),
+            'displacement': kwargs.get('displacement', self.displacement),
+            'inplace': False,  # kwargs.get('inplace', self.inplace)
+        }
 
         output = []
         if fwd:
-            y = spatial.exp(velocity, False, steps, interpolation, bound,
-                            displacement, energy, vs, greens, inplace)
+            y = spatial.exp(velocity, inverse=False, **opt)
             output.append(y)
         if inv:
-            iy = spatial.exp(velocity, True, steps, interpolation, bound,
-                             displacement, energy, vs, greens, inplace)
+            iy = spatial.exp(velocity, inverse=True, **opt)
             output.append(iy)
 
         return output if len(output) > 1 else \
