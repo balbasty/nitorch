@@ -169,7 +169,8 @@ class IterativeVoxelMorph(VoxelMorph):
     applied after the UNet, its adjoint T' is applied before)
     """
 
-    def __init__(self, dim, max_iter=None, *args, **kwargs):
+    def __init__(self, dim, max_iter=None, residual=True, feed=None,
+                 *args, **kwargs):
         """
 
         Parameters
@@ -193,7 +194,15 @@ class IterativeVoxelMorph(VoxelMorph):
         image_bound : bound_type, default='dct2'
             Boundary conditions of the image.
         """
-        super().__init__(dim, *args, **kwargs, _input_channels=dim+2)
+        if feed is None:
+            # possible feeds
+            # target, push(target), source, push(pull(source)),
+            # push(ones), push(pull(ones)), velocity
+            feed = ['push(target)', 'source', 'velocity']
+        input_channels = sum(dim if f == 'velocity' else 1 for f in feed)
+        super().__init__(dim, *args, **kwargs, _input_channels=input_channels)
+        self.feed = feed
+        self.residual = residual
         self.push = GridPush(interpolation=self.pull.interpolation,
                              bound=self.pull.bound)
         if max_iter is None:
@@ -272,16 +281,46 @@ class IterativeVoxelMorph(VoxelMorph):
 
         # chain operations
         for n_iter in range(max_iter):
-            p_target = self.push(target, grid)
-            # pp_source = self.push(self.pull(source, grid), grid)
-            # pp_ones = self.push(self.pull(ones, grid), grid)
-            # pp_ones = broadcast_to(pp_ones, [batch, 1, *shape])
+            # broadcast velocity just in case
             velocity = broadcast_to(velocity, [batch, *shape, self.dim])
-            velocity = spatial.grid2channel(velocity)
-            source_and_target = torch.cat((source, p_target, velocity), dim=1)
-            velocity = velocity + self.unet(source_and_target, **lm)
-            velocity = spatial.channel2grid(velocity)
-            grid = self.exp(velocity)
+
+            # concatenate inputs to the UNet
+            input_unet = []
+            for f in self.feed:
+                if f == 'source':
+                    input_unet += [source]
+                elif f == 'pull(source)':
+                    input_unet += [self.pull(source, grid)]
+                elif f == 'push(pull(source))':
+                    input_unet += [self.push(self.pull(source, grid), grid)]
+                elif f == 'target':
+                    input_unet += [target]
+                elif f == 'push(target)':
+                    input_unet += [self.push(target, grid)]
+                elif f == 'push(pull(ones))':
+                    c = self.push(self.pull(ones, grid), grid)
+                    c = broadcast_to(c, [batch, 1, *shape])
+                    input_unet += [c]
+                elif f == 'push(ones)':
+                    c = self.push(ones, grid)
+                    c = broadcast_to(c, [batch, 1, *shape])
+                    input_unet += [c]
+                elif f == 'velocity':
+                    input_unet += [spatial.grid2channel(velocity)]
+                else:
+                    raise ValueError('Unknown feed tensor {}'.format(f))
+            input_unet = torch.cat(input_unet, dim=1)
+
+            # increment velocity
+            increment = self.unet(input_unet, **lm)
+            increment = spatial.channel2grid(increment)
+            if self.residual:
+                velocity = velocity + increment
+            else:
+                velocity = increment
+            velocity_small = self.resize(velocity)
+            grid = self.exp(velocity_small)
+            grid = self.resize(grid, shape=target.shape[2:])
             deformed_source = self.pull(source, grid)
 
         # compute loss and metrics
