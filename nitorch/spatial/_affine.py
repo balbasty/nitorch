@@ -270,7 +270,7 @@ def iter_layouts(ndim, device=None):
     return layouts
 
 
-def layout_matrix(layout, dtype=None, device=None):
+def layout_matrix(layout, voxel_size=1., shape=0., dtype=None, device=None):
     """Compute the origin affine matrix for different voxel layouts.
 
     Resources
@@ -282,6 +282,12 @@ def layout_matrix(layout, dtype=None, device=None):
     ----------
     layout : str or (ndim, 2) tensor_like[long]
         See `affine.layout`
+
+    voxel_size : (ndim, 1) tensor_like, default=1
+        Voxel size of the lattice
+
+    shape : (ndim, 1) tensor_like, default=0
+        Shape of the lattice
 
     dtype : torch.dtype, optional
         Data type of the matrix
@@ -295,7 +301,6 @@ def layout_matrix(layout, dtype=None, device=None):
         Corresponding affine matrix.
 
     """
-    # TODO: shape argument to include the translation induced by flips.
 
     # Author
     # ------
@@ -308,15 +313,27 @@ def layout_matrix(layout, dtype=None, device=None):
     perm = utils.invert_permutation(layout[:, 0])
     flip = layout[:, 1].bool()
 
+    # ensure tensor
+    voxel_size = torch.as_tensor(voxel_size, dtype=dtype, device=device)
+    dtype = voxel_size.dtype
+    shape = torch.as_tensor(shape, dtype=dtype, device=device)
+
+    # ensure dim
+    shape = utils.ensure_shape(shape, [dim], mode='replicate')
+    voxel_size = utils.ensure_shape(voxel_size, [dim], mode='replicate')
+    zero = torch.zeros(dim, dtype=dtype, device=device)
+
     # Create matrix
-    mat = torch.eye(dim+1, dtype=dtype, device=device)
-    last = utils.as_tensor([dim], dtype=torch.long, device=device)
-    mat = mat[torch.cat((perm, last)), :]
-    mflip = torch.ones(dim+1, dtype=dtype, device=device)
-    false = utils.as_tensor([False], dtype=torch.bool, device=device)
-    mflip = torch.where(torch.cat((flip, false)), -mflip, mflip)
+    mat = torch.diag(voxel_size)
+    mat = mat[perm, :]
+    mat = torch.cat((mat, zero[:, None]), dim=1)
+    mflip = torch.ones(dim, dtype=dtype, device=device)
+    mflip = torch.where(flip, -mflip, mflip)
     mflip = torch.diag(mflip)
-    mat = torch.matmul(mflip, mat)
+    shift = torch.where(flip, shape[perm], zero)
+    mflip = torch.cat((mflip, shift[:, None]), dim=1)
+    mat = affine_matmul(mflip, mat)
+    mat = affine_make_square(mat)
 
     return mat
 
@@ -1515,3 +1532,49 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     # compose
     affine = affine_matmul(affine, trf)
     return affine, tuple(oshape)
+
+
+def affine_default(shape, voxel_size=1, layout=None, dtype=None, device=None):
+    """Generate an orientation matrix with the origin in the center of the FOV.
+
+    Parameters
+    ----------
+    shape : sequence[int]
+        Lattice shape.
+    voxel_size : sequence[float], default=1
+        Lattice voxel size
+    layout : str or layout_like, default='RAS'
+        Lattice layout (see `volume_layout`).
+    dtype : dtype, optional
+    device : device, optional
+
+    Returns
+    -------
+    affine : (ndim, ndim+1) tensor
+        Orientation matrix
+
+    """
+    shape = list(shape)
+    nb_dim = len(shape)
+    voxel_size = pyutils.make_list(voxel_size, nb_dim)
+
+    # build affine matrix
+    voxel_size = torch.as_tensor(voxel_size, dtype=dtype, device=device)
+    dtype = voxel_size.dtype
+    device = voxel_size.device
+    shape = torch.as_tensor(shape, dtype=dtype, device=device)
+
+    # build layout
+    if layout is None:
+        layout = volume_layout(index=list(range(nb_dim)))
+    else:
+        layout = volume_layout(layout)
+    layout = layout_matrix(layout, voxel_size=voxel_size, shape=shape,
+                           dtype=dtype, device=device)
+
+    # compute shift
+    lin = layout[:nb_dim, :nb_dim]
+    shift = -linalg.matvec(lin, shape/2)
+    affine = torch.cat((lin, shift[:, None]), dim=1)
+
+    return affine
