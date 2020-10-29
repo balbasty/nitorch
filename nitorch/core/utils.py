@@ -33,10 +33,10 @@ def as_tensor(input, dtype=None, device=None):
                         dtype if dtype is not None else x.dtype)
         else:
             if isinstance(x, (list, tuple)):
-                dtype0, device0 = info(x)
-                dtype0 = dtype if dtype is not None else dtype0
-                device0 = device if device is not None else device0
-                return torch.stack([_stack(e, dtype0, device0) for e in x])
+                subs = [_stack(e, dtype, device) for e in x]
+                dtype, device = info(*subs)
+                subs = [elem.to(dtype=dtype, device=device) for elem in subs]
+                return torch.stack(subs)
             else:
                 return torch.as_tensor(x, dtype=dtype, device=device)
 
@@ -351,6 +351,53 @@ def _bound_reflect1(i, n):
         return i
 
 
+def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
+    """Pad/crop a tensor so that it has a given shape
+
+    Parameters
+    ----------
+    inp : tensor
+        Input tensor
+    shape : sequence
+        Output shape
+    mode : 'constant', 'replicate', 'reflect1', 'reflect2', 'circular'
+        default='constant'
+    value : scalar, default=0
+        Value for mode 'constant'
+    side : {'pre', 'post', 'both'}, defualt='post'
+        Side to pad
+
+    Returns
+    -------
+    out : tensor
+        Padded tensor with shape `shape`
+
+    """
+    inp = torch.as_tensor(inp)
+    shape = list(shape)
+    shape = shape + [1] * max(0, inp.dim() - len(shape))
+    if inp.dim() < len(shape):
+        inp = inp.reshape(inp.shape + (1,) * max(0, len(shape) - inp.dim()))
+    inshape = inp.shape
+    shape = [inshape[d] if shape[d] is None else shape[d]
+             for d in range(len(shape))]
+    ndim = len(shape)
+
+    # crop
+    index = tuple(slice(min(shape[d], inshape[d])) for d in range(ndim))
+    inp = inp.__getitem__(index)
+
+    # pad
+    pad_size = [max(0, shape[d] - inshape[d]) for d in range(ndim)]
+    if side == 'both':
+        pad_size = [[p//2, p-p//2] for p in pad_size]
+        pad_size = [q for p in pad_size for q in p]
+        side = None
+    inp = pad(inp, tuple(pad_size), mode=mode, value=value, side=side)
+
+    return inp
+
+
 _bounds = {
     'circular': _bound_circular,
     'replicate': _bound_replicate,
@@ -402,7 +449,7 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
     Args:
         inp (tensor): Input tensor.
-        padsize (tuple): Amount of padding in each dimension.
+        padsize (sequence): Amount of padding in each dimension.
         mode (string,optional): 'constant', 'replicate', 'reflect1',
             'reflect2', 'circular'.
             Defaults to 'constant'.
