@@ -69,7 +69,7 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs):
         return return_type(input)
 
 
-def make_list(*args, **kwargs):
+def make_list(*args, **kwargs) -> list:
     """Ensure that the input is a list and pad/crop if necessary.
 
     Parameters
@@ -91,7 +91,7 @@ def make_list(*args, **kwargs):
     return list(make_sequence(*args, **kwargs))
 
 
-def make_tuple(*args, **kwargs):
+def make_tuple(*args, **kwargs) -> tuple:
     """Ensure that the input is a tuple and pad/crop if necessary.
 
     Parameters
@@ -113,7 +113,7 @@ def make_tuple(*args, **kwargs):
     return tuple(make_sequence(*args, **kwargs))
 
 
-def make_set(input):
+def make_set(input) -> set:
     """Ensure that the input is a set.
 
     Parameters
@@ -178,7 +178,7 @@ def rep_sequence(input, n, interleaved=False):
     return return_type(input)
 
 
-def rep_list(input, n, interleaved=False):
+def rep_list(input, n, interleaved=False) -> list:
     """Replicate a list.
 
     Parameters
@@ -209,14 +209,19 @@ replist = functools.wraps(rep_sequence)
 def getargs(kpd, args=None, kwargs=None, consume=False):
     """Read and remove argument from args/kwargs input.
 
-    Args:
-        kpd (list of tuple): List of (key, position, default) tuples with:
-            key (str): argument name
-            position (int): argument position
-            default (optional): default value
-        args (optional): list of positional arguments
-        kwargs (optional): list of keyword arguments
-        consume (bool, optional): consume arguments from args/kwargs
+    Parameters
+    ----------
+    kpd : list of tuple
+        List of (key, position, default) tuples with:
+            * key (str): argument name
+            * position (int): argument position
+            * default (optional): default value
+    args : sequence, optional
+        List of positional arguments
+    kwargs : dict, optional
+        List of keyword arguments
+    consume : bool, default=False
+        Consume arguments from args/kwargs
 
     Returns:
         values (list): List of values
@@ -285,3 +290,35 @@ def prod(sequence, inplace=False):
         else:
             accumulate = accumulate * elem
     return accumulate
+
+
+def pop(obj, key=0, *args, **kwargs):
+    """Pop an element from a mutable collection.
+
+    Parameters
+    ----------
+    obj : dict or list
+        Collection
+    key : str or int
+        Key or index
+    default : optional
+        Default value. Raise error if not provided.
+
+    Returns
+    -------
+    elem
+        Popped element
+
+    """
+    if isinstance(obj, dict):
+        return obj.pop(key, *args, **kwargs)
+    else:
+        try:
+            val = obj[key]
+            del obj[key]
+            return val
+        except:
+            if len(args) > 0:
+                return args[0]
+            else:
+                return kwargs.get('default')
