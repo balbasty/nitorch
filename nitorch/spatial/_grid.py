@@ -4,7 +4,7 @@
 import torch
 import torch.nn.functional as _F
 from ..core import kernels, utils, linalg
-from ..core.utils import broadcast_to
+from ..core.utils import expand
 from ..core.pyutils import make_list
 from .._C import spatial as _Cspatial
 from .._C.spatial import BoundType, InterpolationType
@@ -112,8 +112,8 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
 
     # Broadcast
     batch = max(input.shape[0], grid.shape[0])
-    input = broadcast_to(input, [batch, *input.shape[1:]])
-    grid = broadcast_to(grid, [batch, *grid.shape[1:]])
+    input = expand(input, [batch, *input.shape[1:]])
+    grid = expand(grid, [batch, *grid.shape[1:]])
 
     return _GridPull.apply(input, grid, interpolation, bound, extrapolate)
 
@@ -221,8 +221,8 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
     input_shape = input.shape[2:]
     grid_shape = grid.shape[1:-1]
     spatial = [max(sinp, sgrd) for sinp, sgrd in zip(input_shape, grid_shape)]
-    input = broadcast_to(input, [batch, channel, *spatial])
-    grid = broadcast_to(grid, [batch, *spatial, ndims])
+    input = expand(input, [batch, channel, *spatial])
+    grid = expand(grid, [batch, *spatial, ndims])
 
     if shape is None:
         shape = tuple(input.shape[2:])
@@ -423,8 +423,8 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
 
     # Broadcast
     batch = max(input.shape[0], grid.shape[0])
-    input = broadcast_to(input, [batch, *input.shape[1:]])
-    grid = broadcast_to(grid, [batch, *grid.shape[1:]])
+    input = expand(input, [batch, *input.shape[1:]])
+    grid = expand(grid, [batch, *grid.shape[1:]])
 
     return _GridGrad.apply(input, grid, interpolation, bound, extrapolate)
 
