@@ -6,7 +6,7 @@ Losses that assume an underlying spatial organization
 import torch
 import torch.nn as tnn
 from ...core.pyutils import make_list, prod
-from ...core.utils import slice_tensor, broadcast_to
+from ...core.utils import slice_tensor, expand
 from ._base import Loss
 
 
@@ -63,7 +63,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     edge_shape = list(x.shape)
     edge_shape[dim] = 1
     zero = torch.zeros(1, dtype=dtype, device=device)
-    zero = broadcast_to(zero, edge_shape)
+    zero = expand(zero, edge_shape)
 
     if order == 1:
         if side == 'f':  # forward -> diff[i] = x[i+1] - x[i]
