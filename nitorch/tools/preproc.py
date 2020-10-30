@@ -417,7 +417,7 @@ def write_img(pth, dat=None, affine=None, prefix='', dir_out=None):
         Affine transformation. If None, uses input image affine.
 
     prefix : str, default=''
-        Filename prefix of resliced image. If empty string, overwrites input file.
+        Filename prefix of output image.
 
     dir_out : str, default=None
         Full path to directory where to write image.

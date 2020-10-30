@@ -4,6 +4,8 @@ TODO (primary):
 * Comment
 * demo_affine_reg.jupy
 * Work on 2D as well
+* Re-work reslice_dat so can use image data, not only paths.
+  Maybe make run_affine_reg return image data and matrices (so to not load twice..)?
 
 TODO (secondary):
 * Use Bayesian optimisation
@@ -35,7 +37,31 @@ costs_hist = ['mi', 'ecc', 'nmi', 'ncc']
 
 
 def apply2affine(pths, q, B, prefix='a_', dir_out=None):
-    """
+    """ Apply registration result (q) to input scans header.
+
+    OBS: If prefix='' and dir_out=None, overwrites input path.
+
+    Parameters
+    ----------
+    pths : list[string]
+        List of nibabel compatible paths.
+
+    q : (C, Nq), tensor_like
+        Lie parameterisation of registration results (C=channels, Nq=Number of bases).
+
+    B : (4, 4, Nq), tensor_like
+        Lie basis.
+
+    prefix : str, default='a_'
+        Filename prefix.
+
+    dir_out : str, default=None
+        Full path to directory where to write image.
+
+    Returns
+    ----------
+    pths_out : list[string]
+        List of paths after applying registration results.
 
     Notes
     ----------
@@ -50,7 +76,7 @@ def apply2affine(pths, q, B, prefix='a_', dir_out=None):
         nii = nib.load(pths[n])
         affine = nii.affine
         M = torch.from_numpy(affine).type(q.dtype).to(q.device)
-        # Get coreg matrix
+        # Get registration transform
         R = dexpm(q[n, ...], B)[0]
         # Apply registration transform
         M = M.solve(R)[0]  # R\M
@@ -62,8 +88,29 @@ def apply2affine(pths, q, B, prefix='a_', dir_out=None):
 
 
 def get_affine_basis(basis='SE', dim=3, dtype=torch.float64, device='cpu'):
-    """
+    """Get the affine basis used to parameterise the registration transform.
 
+    Parameters
+    ----------
+    basis : str, default='SE'
+        Basis type.
+
+    dim : int, default=3
+        Basis dimensions [2|3]
+
+    dtype : torch.dtype, default=torch.float64
+        Data type of function output.
+
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+
+    Returns
+    ----------
+    B : (4, 4, Nq), tensor_like
+        Lie basis.
+
+    Nq : int
+        Number of Lie basis.
 
     """
     B = affine_basis(basis=basis, dim=dim, dtype=dtype, device=device)
@@ -72,18 +119,47 @@ def get_affine_basis(basis='SE', dim=3, dtype=torch.float64, device='cpu'):
     return B, Nq
 
 
-def get_resliced_data(pths, q, mat_fix, dim_fix, B, device='cpu'):
-    """
+def get_resliced_data(pths, q, mat_fix, dim_fix, B, dtype=torch.float32, device='cpu'):
+    """Get tensor of image data, resliced to the fixed image.
+
+    Parameters
+    ----------
+
+    pths : list[string]
+        List of nibabel compatible paths.
+
+    q : (C, Nq), tensor_like
+        Lie parameterisation of registration results (C=channels, Nq=Number of bases).
+
+    mat_fix : (4, 4), tensor_like
+        Affine matrix of fixed image.
+
+    dim_fix : (3,), tuple, list, tensor_like
+        Image dimensions of fixed image.
+
+    B : (4, 4, Nq), tensor_like
+        Lie basis.
+
+    dtype : torch.dtype, default=torch.float32
+        Data type of function output.
+
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+
+    Returns
+    ----------
+    rdat : (X, Y, Z, C), tensor_like
+        Resliced image data.
 
     """
     N = len(pths)
     mat_fix = mat_fix.type(torch.float64)
     # Reslice moving images
-    rdat = torch.zeros(dim_fix + (N,), dtype=torch.float32, device=device)
+    rdat = torch.zeros(dim_fix + (N,), dtype=dtype, device=device)
     for n in range(N):
         # Read image
         nii = nib.load(pths[n])
-        dat = torch.tensor(nii.get_fdata(), device=device, dtype=torch.float32)
+        dat = torch.tensor(nii.get_fdata(), device=device, dtype=dtype)
         if torch.all(q[n, ...] == 0):
             rdat[..., n] = dat
         else:
@@ -101,7 +177,41 @@ def get_resliced_data(pths, q, mat_fix, dim_fix, B, device='cpu'):
 
 
 def reslice2fix(pths, q, mat_fix, dim_fix, B, prefix='ra_', device='cpu', dir_out=None):
-    """
+    """Reslice the input files to the grid of the fixed image, using the registration transform (q).
+
+    OBS: If prefix='' and dir_out=None, overwrites input path.
+
+    Parameters
+    ----------
+
+    pths : list[string]
+        List of nibabel compatible paths.
+
+    q : (C, Nq), tensor_like
+        Lie parameterisation of registration results (C=channels, Nq=Number of bases).
+
+    mat_fix : (4, 4), tensor_like
+        Affine matrix of fixed image.
+
+    dim_fix : (3,), tuple, list, tensor_like
+        Image dimensions of fixed image.
+
+    B : (4, 4, Nq), tensor_like
+        Lie basis.
+
+    prefix : str, default='ra_'
+        Filename prefix.
+
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+
+    dir_out : str, default=None
+        Full path to directory where to write image.
+
+    Returns
+    ----------
+    pths_out : list[string]
+        List of paths after applying reslice.
 
     """
     # Reslice moving images
@@ -129,7 +239,15 @@ def reslice2fix(pths, q, mat_fix, dim_fix, B, prefix='ra_', device='cpu', dir_ou
 
 def run_affine_reg(imgs, optimiser='powell', cost_fun='nmi', device='cpu',
                    samp=(4, 2), fix=0, mean_space=True, verbose=False):
-    """
+    """Affinely align images.
+
+    Parameters
+    ----------
+    imgs : [str, ...] | [(X, Y, Z), tensor_like, ...] | [((X, Y, Z), tensor_like, (4 4), tensor_like), ...]
+        Can be:
+        - List of paths to nibabel compatible files
+        - List of 3D image volume ass tensors
+        - List of tuples, where each tuple has two tensors: 3D image volume and affine matrix.
 
     """
     # Set cost_fun function
