@@ -799,7 +799,7 @@ def affine_matrix_classic(prm, dim=3, layout=None):
 
     Parameters
     ----------
-    prm : (K,) tensor_like
+    prm : (..., K) tensor_like
         Affine parameters, ordered as
         `[*translations, *rotations, *zooms, *shears]`
         Rotation parameters should be expressed in radians.
@@ -810,106 +810,17 @@ def affine_matrix_classic(prm, dim=3, layout=None):
 
     Returns
     -------
-    mat : (dim+1, dim+1) tensor
+    mat : (..., dim+1, dim+1) tensor
         Reconstructed affine matrix `mat = T @ Rx @ Ry @ Rz @ Z @ S`
 
     """
 
-    def affine_2d(t, r, z, sh, dtype, device):
-        if t is not None:
-            T = [[1, 0, t[0]],
-                 [0, 1, t[1]],
-                 [0, 0, 1]]
-        else:
-            T = torch.eye(3, dtype=dtype, device=device)
-        if r is not None:
-            c = torch.cos(r)
-            s = torch.sin(r)
-            R = [[c[0],  s[0], 0],
-                 [-s[0], c[0], 0],
-                 [0,     0,    1]]
-        else:
-            R = torch.eye(3, dtype=dtype, device=device)
-        if z is not None:
-            Z = [[z[0], 0,    0],
-                 [0,    z[1], 0],
-                 [0,    0,    1]]
-        else:
-            Z = torch.eye(3, dtype=dtype, device=device)
-        if sh is not None:
-            S = [[1, sh[0], 0],
-                 [0, 1,     0],
-                 [0, 0,     1]]
-        else:
-            S = torch.eye(3, dtype=dtype, device=device)
-
-        T = utils.as_tensor(T, dtype=dtype, device=device)
-        R = utils.as_tensor(R, dtype=dtype, device=device)
-        Z = utils.as_tensor(Z, dtype=dtype, device=device)
-        S = utils.as_tensor(S, dtype=dtype, device=device)
-        return T.mm(R.mm(Z.mm(S)))
-
-    def affine_3d(t, r, z, sh, dtype, device):
-        if t is not None:
-            T = [[1, 0, 0, t[0]],
-                 [0, 1, 0, t[1]],
-                 [0, 0, 1, t[2]],
-                 [0, 0, 0, 1]]
-        else:
-            T = torch.eye(4, dtype=dtype, device=device)
-        if r is not None:
-            c = torch.cos(r)
-            s = torch.sin(r)
-            Rx = [[1, 0,     0,    0],
-                  [0, c[0],  s[0], 0],
-                  [0, -s[0], c[0], 0],
-                  [0, 0,     0,    1]]
-            Ry = [[c[1],  0, s[1], 0],
-                  [0,     1, 0,    0],
-                  [-s[1], 0, c[1], 0],
-                  [0,     0,    0, 1]]
-            Rz = [[c[2],  s[2], 0, 0],
-                  [-s[2], c[2], 0, 0],
-                  [0,     0,    1, 0],
-                  [0,     0,    0, 1]]
-            Rx = utils.as_tensor(Rx, dtype=dtype, device=device)
-            Ry = utils.as_tensor(Ry, dtype=dtype, device=device)
-            Rz = utils.as_tensor(Rz, dtype=dtype, device=device)
-            R = Rx.mm(Ry.mm(Rz))
-        else:
-            R = torch.eye(4, dtype=dtype, device=device)
-        if z is not None:
-            Z = [[z[0], 0,    0,    0],
-                 [0,    z[1], 0,    0],
-                 [0,    0,    z[2], 0],
-                 [0,    0,    0,    1]]
-        else:
-            Z = torch.eye(4, dtype=dtype, device=device)
-        if sh is not None:
-            S = [[1, sh[0], sh[1], 0],
-                 [0, 1, sh[2], 0],
-                 [0, 0,    1,    0],
-                 [0, 0,    0,    1]]
-        else:
-            S = torch.eye(4, dtype=dtype, device=device)
-
-        T = utils.as_tensor(T, dtype=dtype, device=device)
-        R = utils.as_tensor(R, dtype=dtype, device=device)
-        Z = utils.as_tensor(Z, dtype=dtype, device=device)
-        S = utils.as_tensor(S, dtype=dtype, device=device)
-        return T.mm(R.mm(Z.mm(S)))
-
-    def affine_2d_or_3d(t, r, z, s, dim, dtype, device):
-        if dim == 2:
-            return affine_2d(t, r, z, s, dtype, device)
-        else:
-            return affine_3d(t, r, z, s, dtype, device)
-
     # Unstack
-    prm = utils.as_tensor(prm).flatten()
+    prm = utils.as_tensor(prm)
+    prm = prm.permute([-1, *range(prm.dim()-1)])
     dtype = prm.dtype
     device = prm.device
-    nb_prm = prm.numel()
+    nb_prm, *batch_shape = prm.shape
     nb_t = dim
     nb_r = dim*(dim-1) // 2
     nb_z = dim
@@ -920,15 +831,117 @@ def affine_matrix_classic(prm, dim=3, layout=None):
     prm_r = prm[idx:idx+nb_r] if nb_prm > idx else None
     idx = idx + nb_r
     prm_z = prm[idx:idx+nb_z] if nb_prm > idx else None
-    idx = idx + nb_s
+    idx = idx + nb_z
     prm_s = prm[idx:idx+nb_s] if nb_prm > idx else None
 
+    def mat_last(mat):
+        """Move matrix from first to last dimensions"""
+        return mat.permute([*range(2, mat.dim()), 0, 1])
+
+    if dim == 2:
+
+        def make_affine(t, r, z, sh, o, i):
+            if t is not None:
+                T = [[i, o, t[0]],
+                     [o, i, t[1]],
+                     [o, o, i]]
+                T = mat_last(utils.as_tensor(T, dtype=dtype, device=device))
+            else:
+                T = torch.eye(3, dtype=dtype, device=device)
+                T = utils.expand(T, [*batch_shape, 1, 1])
+            if r is not None:
+                c = torch.cos(r)
+                s = torch.sin(r)
+                R = [[c[0],  s[0], o],
+                     [-s[0], c[0], o],
+                     [o,     o,    i]]
+                R = mat_last(utils.as_tensor(R, dtype=dtype, device=device))
+            else:
+                R = torch.eye(3, dtype=dtype, device=device)
+                R = utils.expand(R, [*batch_shape, 1, 1])
+            if z is not None:
+                Z = [[z[0], o,    o],
+                     [o,    z[1], o],
+                     [o,    o,    i]]
+                Z = mat_last(utils.as_tensor(Z, dtype=dtype, device=device))
+            else:
+                Z = torch.eye(3, dtype=dtype, device=device)
+                Z = utils.expand(Z, [*batch_shape, 1, 1])
+            if sh is not None:
+                S = [[i, sh[0], o],
+                     [o, i,     o],
+                     [o, o,     i]]
+                S = mat_last(utils.as_tensor(S, dtype=dtype, device=device))
+            else:
+                S = torch.eye(3, dtype=dtype, device=device)
+                S = utils.expand(S, [*batch_shape, 1, 1])
+
+            return T.matmul(R.matmul(Z.matmul(S)))
+    else:
+        def make_affine(t, r, z, sh, o, i):
+            if t is not None:
+                T = [[i, o, o, t[0]],
+                     [o, i, o, t[1]],
+                     [o, o, i, t[2]],
+                     [o, o, o, i]]
+                T = mat_last(utils.as_tensor(T, dtype=dtype, device=device))
+            else:
+                T = torch.eye(4, dtype=dtype, device=device)
+                T = utils.expand(T, [*batch_shape, 1, 1])
+            if r is not None:
+                c = torch.cos(r)
+                s = torch.sin(r)
+                Rx = [[i, o,     o,    o],
+                      [o, c[0],  s[0], o],
+                      [o, -s[0], c[0], o],
+                      [o, o,     o,    i]]
+                Ry = [[c[1],  o, s[1], o],
+                      [o,     i, o,    o],
+                      [-s[1], o, c[1], o],
+                      [o,     o,    o, i]]
+                Rz = [[c[2],  s[2], o, o],
+                      [-s[2], c[2], o, o],
+                      [o,     o,    i, o],
+                      [o,     o,    o, i]]
+                Rx = mat_last(utils.as_tensor(Rx, dtype=dtype, device=device))
+                Ry = mat_last(utils.as_tensor(Ry, dtype=dtype, device=device))
+                Rz = mat_last(utils.as_tensor(Rz, dtype=dtype, device=device))
+                R = Rx.matmul(Ry.matmul(Rz))
+            else:
+                R = torch.eye(4, dtype=dtype, device=device)
+                R = utils.expand(R, [*batch_shape, 1, 1])
+            if z is not None:
+                Z = [[z[0], o,    o,    o],
+                     [o,    z[1], o,    o],
+                     [o,    o,    z[2], o],
+                     [o,    o,    o,    i]]
+                Z = mat_last(utils.as_tensor(Z, dtype=dtype, device=device))
+            else:
+                Z = torch.eye(4, dtype=dtype, device=device)
+                Z = utils.expand(Z, [*batch_shape, 1, 1])
+            if sh is not None:
+                S = [[i, sh[0], sh[1], o],
+                     [o, i,     sh[2], o],
+                     [o, o,     i,     o],
+                     [o, o,     o,     i]]
+                S = mat_last(utils.as_tensor(S, dtype=dtype, device=device))
+            else:
+                S = torch.eye(4, dtype=dtype, device=device)
+                S = utils.expand(S, [*batch_shape, 1, 1])
+
+            return T.matmul(R.matmul(Z.matmul(S)))
+
+    zero = torch.zeros([], dtype=dtype, device=device)
+    zero = utils.expand(zero, batch_shape)
+    one = torch.ones([], dtype=dtype, device=device)
+    one = utils.expand(one, batch_shape)
+
     # Build affine matrix
-    mat = affine_2d_or_3d(prm_t, prm_r, prm_z, prm_s, dim, dtype, device)
+    mat = make_affine(prm_t, prm_r, prm_z, prm_s, zero, one)
 
     # Multiply with RAS
     if layout is not None:
-        mat = mat.mm(layout_matrix(layout))
+        mat = affine_matmul(layout_matrix(layout))
 
     return mat
 
