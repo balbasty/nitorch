@@ -263,17 +263,20 @@ def slice_tensor(x, index, dim=None):
     return x.__getitem__(full_index)
 
 
-def broadcast_to(*tensors):
+def expand(*tensors, side='left', dry_run=False, **kwargs):
     """Broadcast to a given shape.
 
     Parameters
     ----------
-    *tensors : any number of tensors
-    shape : list[int or None]
+    *tensors : tensor
+        any number of tensors
+    shape : list[int]
         Target shape that must be compatible with all tensors
         according to :ref:`broadcasting-semantics`.
-        If the target shape in a dimension is None, the input
-        shape value is used.
+    side : {'left', 'right'}, default='left'
+        Side to add singleton dimensions.
+    dry_run : bool, default=False
+        Return the broadcasted shape instead of the broadcasted tensors.
 
     Returns
     -------
@@ -285,30 +288,57 @@ def broadcast_to(*tensors):
         It is advided not too write in these tensors.
 
     """
-    *tensors, shape = tensors
+    if 'shape' in kwargs:
+        shape = kwargs['shape']
+    else:
+        *tensors, shape = tensors
     tensors = [torch.as_tensor(tensor) for tensor in tensors]
+
+    def error(s0, s1):
+        raise ValueError('Incompatible shapes for broadcasting: {} and {}.'
+                         .format(s0, s1))
+
+    # -------------
+    # Compute shape
+    # -------------
+
+    # 1. nb dimensions
+    nb_dim = len(shape)
+    for tensor in tensors:
+        nb_dim = max(nb_dim, len(tensor.shape))
+
+    # 2. pad with singleton dimensions
+    pad_size = nb_dim - len(shape)
+    ones = [1] * pad_size
+    if side == 'left':
+        shape = [*ones, *shape]
+    else:
+        shape = [*shape, *ones]
+    for i, tensor in enumerate(tensors):
+        shape1 = tensor.shape
+        pad_size = nb_dim - len(shape1)
+        ones = [1] * pad_size
+        if side == 'left':
+            shape1 = [*ones, *shape1]
+        else:
+            shape1 = [*shape1, *ones]
+        shape = [max(s0, s1) if s0 == 1 or s1 == 1 or s0 == s1
+                 else error(s0, s1) for s0, s1 in zip(shape, shape1)]
+
+    if dry_run:
+        return shape
+
+    # -----------------
+    # Broadcast tensors
+    # -----------------
+
+    pad_dim = 0 if side == 'left' else -1
     for i, tensor in enumerate(tensors):
         # 1. pad with singleton dimensions on the left
-        if len(shape) > tensor.dim():
-            tensor = unsqueeze(tensor, dim=0, ndim=len(shape)-tensor.dim())
-        elif len(shape) < tensor.dim():
-            raise ValueError('Cannot broadcast shape {} to {}: '
-                             'the target shape has less dimensions that '
-                             'the input shape.'.format(tensor.shape, shape))
-        # 2. zero-stride singleton dimensions
-        strides = list(tensor.stride())
-        for d in range(len(shape)):
-            if shape[d] not in (tensor.shape[d], None):
-                if tensor.shape[d] == 1:
-                    strides[d] = 0
-                else:
-                    raise ValueError('Cannot broadcast shape {} to {}: '
-                                     'shapes have different non-singleton '
-                                     'dimensions.'.format(tensor.shape, shape))
-        tensor = tensor.as_strided(shape, strides)
-        tensors[i] = tensor
+        tensor = unsqueeze(tensor, dim=pad_dim, ndim=nb_dim-tensor.dim())
+        # 2. expand tensor
+        tensors[i] = tensor.expand(shape)
 
-    # return
     if len(tensors) == 1:
         return tensors[0]
     else:
@@ -522,3 +552,25 @@ def _pad_bound(inp, padpre, padpost, bound, modifier):
     for d in range(inp.dim()):
         inp = inp.index_select(d, idx[d])
     return inp
+
+
+def channel2last(tensor):
+    """Warps: Channel to Last dimension order.
+
+    . Channel ordering is: (Batch, Channel, X, Y, Z)
+    . Last ordering is: (Batch, X, Y, Z, Channel))
+    """
+    tensor = torch.as_tensor(tensor)
+    tensor = tensor.permute((0,) + tuple(range(2, tensor.dim())) + (1,))
+    return tensor
+
+
+def last2channel(tensor):
+    """Warps: Last to Channel dimension order.
+
+    . Channel ordering is: (Batch, Channel, X, Y, Z)
+    . Last ordering is: (Batch, X, Y, Z, Channel))
+    """
+    tensor = torch.as_tensor(tensor)
+    tensor = tensor.permute((0, - 1) + tuple(range(1, tensor.dim()-1)))
+    return tensor
