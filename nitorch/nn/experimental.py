@@ -8,7 +8,7 @@ from .modules._spatial import GridPull, GridPush, GridExp, VoxelMorph, \
     AffineExp, AffineGrid, GridResize
 from .. import spatial
 from ..core.linalg import matvec
-from ..core.utils import broadcast_to, unsqueeze
+from ..core.utils import expand, unsqueeze
 from ..core.pyutils import make_list
 
 
@@ -282,7 +282,7 @@ class IterativeVoxelMorph(VoxelMorph):
         # chain operations
         for n_iter in range(max_iter):
             # broadcast velocity just in case
-            velocity = broadcast_to(velocity, [batch, *shape, self.dim])
+            velocity = expand(velocity, [batch, *shape, self.dim])
 
             # concatenate inputs to the UNet
             input_unet = []
@@ -299,11 +299,11 @@ class IterativeVoxelMorph(VoxelMorph):
                     input_unet += [self.push(target, grid)]
                 elif f == 'push(pull(ones))':
                     c = self.push(self.pull(ones, grid), grid)
-                    c = broadcast_to(c, [batch, 1, *shape])
+                    c = expand(c, [batch, 1, *shape])
                     input_unet += [c]
                 elif f == 'push(ones)':
                     c = self.push(ones, grid)
-                    c = broadcast_to(c, [batch, 1, *shape])
+                    c = expand(c, [batch, 1, *shape])
                     input_unet += [c]
                 elif f == 'velocity':
                     input_unet += [spatial.grid2channel(velocity)]
