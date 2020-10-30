@@ -11,8 +11,10 @@ from copy import copy
 class Pool(Module):
     """Generic Pooling layer."""
 
+    reduction = 'max'
+
     def __init__(self, dim, kernel_size=3, stride=None, padding=0,
-                 dilation=1, reduction='max'):
+                 dilation=1, reduction=None):
         """
 
         Parameters
@@ -36,7 +38,7 @@ class Pool(Module):
         self.stride = stride
         self.padding = padding
         self.dilation = dilation
-        self.reduction = reduction
+        self.reduction = reduction or self.reduction
 
     def forward(self, x, **overload):
         """
@@ -121,3 +123,15 @@ class MaxPool(Module):
         pool.dilation = dilation
 
         return pool(x)
+
+
+class MinPool(Pool):
+    reduction = 'min'
+
+
+class MeanPool(Pool):
+    reduction = 'mean'
+
+
+class SumPool(Pool):
+    reduction = 'sum'
