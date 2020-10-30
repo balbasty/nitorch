@@ -2,7 +2,7 @@
 
 import torch
 from ..core import utils
-from ..core.utils import broadcast_to, slice_tensor
+from ..core.utils import expand, slice_tensor
 from ..core.pyutils import make_list
 
 
@@ -77,7 +77,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     edge_shape = list(x.shape)
     edge_shape[dim] = 1
     zero = torch.zeros(1, dtype=dtype, device=device)
-    zero = broadcast_to(zero, edge_shape)
+    zero = expand(zero, edge_shape)
 
     if order == 1:
         if side == 'f':  # forward -> diff[i] = x[i+1] - x[i]
