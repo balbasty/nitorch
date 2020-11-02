@@ -615,7 +615,7 @@ class LameShearLoss(Loss):
         loss_offdiag = loss_offdiag.mean(dim=-1)
 
         # Weighted reduction across elements
-        if 1 in make_list(l1) or -(nb_dim+1) in make_list(l1):
+        if loss_diag.shape[1] == 1:
             # element dimension already reduced -> we need a small hack
             loss = (loss_diag.square() + 2*loss_offdiag.square()) / (nb_dim**2)
             loss = loss.sum(dim=1, keepdim=True).sqrt()
