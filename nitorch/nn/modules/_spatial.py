@@ -526,7 +526,7 @@ class GridResize(Module):
     {bound}
     """.format(interpolation=_interpolation_doc, bound=_bound_doc)
 
-    def __init__(self, factor=None, shape=None, anchor='c',
+    def __init__(self, factor=None, shape=None, type='grid', anchor='c',
                  interpolation='linear', bound='dct2', extrapolate=True):
         """
 
@@ -538,6 +538,11 @@ class GridResize(Module):
             * < 1 : smaller image <-> larger voxels
         shape : (ndim,) sequence[int], optional
             Output shape
+        type : {'grid', 'displacement'}, default='grid'
+            Grid type:
+            * 'grid' correspond to dense grids of coordinates.
+            * 'displacement' correspond to dense grid of relative displacements.
+            Both types are not rescaled in the same way.
         anchor : {'centers', 'edges', 'first', 'last'} or list, default='centers'
             * In cases 'c' and 'e', the volume shape is multiplied by the
               zoom factor (and eventually truncated), and two anchor points
@@ -557,6 +562,7 @@ class GridResize(Module):
         super().__init__()
         self.factor = factor
         self.shape = shape
+        self.type = type
         self.anchor = anchor
         self.interpolation = interpolation
         self.bound = bound
@@ -588,6 +594,7 @@ class GridResize(Module):
         kwargs = {
             'factor': overload.get('factor', self.factor),
             'shape': overload.get('shape', self.shape),
+            'type': overload.get('type', self.type),
             'anchor': overload.get('anchor', self.anchor),
             'interpolation': overload.get('interpolation', self.interpolation),
             'bound': overload.get('bound', self.bound),
@@ -716,9 +723,9 @@ class VoxelMorph(Module):
         source_and_target = torch.cat((source, target), dim=1)
         velocity = self.unet(source_and_target)
         velocity = spatial.channel2grid(velocity)
-        velocity_small = self.resize(velocity)
+        velocity_small = self.resize(velocity, type='displacement')
         grid = self.exp(velocity_small)
-        grid = self.resize(grid, shape=target.shape[2:])
+        grid = self.resize(grid, shape=target.shape[2:], type='grid')
         deformed_source = self.pull(source, grid)
 
         # compute loss and metrics
