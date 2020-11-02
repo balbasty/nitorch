@@ -65,7 +65,9 @@ class Module(tnn.Module):
 
         """
         if tag not in self.tags:
-            raise ValueError('Loss tag "{}" not registered.'.format(tag))
+            raise ValueError('Loss tag "{}" not registered. '
+                             'Registered tags are {}.'
+                             .format(tag, self.tags))
         if tag not in self.losses.keys():
             self.losses[tag] = {}
         if '' not in self.losses[tag].keys():
@@ -85,7 +87,9 @@ class Module(tnn.Module):
 
         """
         if tag not in self.tags:
-            raise ValueError('Loss tag "{}" not registered.'.format(tag))
+            raise ValueError('Loss tag "{}" not registered. '
+                             'Registered tags are {}.'
+                             .format(tag, self.tags))            
         self.losses[tag] = dict(named_loss_fn)
         self.losses[tag][''] = list(loss_fn)
 
@@ -142,13 +146,15 @@ class Module(tnn.Module):
             Function of two arguments that returns a scalar value.
 
         """
-        if tag not in self.metrics:
-            raise ValueError('Loss tag "{}" not registered.'.format(tag))
+        if tag not in self.tags:
+            raise ValueError('Metric tag "{}" not registered. '
+                             'Registered tags are {}.'
+                             .format(tag, self.tags))
         if tag not in self.metrics.keys():
             self.metrics[tag] = {}
         if '' not in self.metrics[tag].keys():
             self.metrics[tag][''] = []
-        self.metrics.update(dict(metric_fn))
+        self.metrics[tag].update(dict(metric_fn))
 
     def set_metric(self, tag, **metric_fn):
         """Set one or more metric functions.
@@ -162,7 +168,9 @@ class Module(tnn.Module):
 
         """
         if tag not in self.tags:
-            raise ValueError('Metric tag "{}" not registered.'.format(tag))
+            raise ValueError('Metric tag "{}" not registered. '
+                             'Registered tags are {}.'
+                             .format(tag, self.tags))            
         self.metrics[tag] = dict(metric_fn)
 
     def compute_metric(self, *, prepend=False, **tag_args):
@@ -199,7 +207,11 @@ class Module(tnn.Module):
         for tag, metrics in self.metrics.items():
             args = tag_args[tag]
             for key, metric_fn in metrics.items():
-                add_metric(tag, key, metric_fn, *args)
+                if not key:
+                    for key, metric_fn in enumerate(metric_fn):
+                        add_metric(tag, key, metric_fn, *args)                
+                else:
+                    add_metric(tag, key, metric_fn, *args)
 
         return metric
 
