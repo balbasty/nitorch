@@ -1,7 +1,6 @@
 """Module for affine image registration.
 
 TODO (primary):
-* demo_affine_reg.jupy
 * Comment _test_cost_function
 
 TODO (secondary):
