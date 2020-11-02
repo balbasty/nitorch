@@ -21,6 +21,47 @@ from .spm import identity, matrix
 from .spm import affine as apply_affine
 
 
+def get_origin_mat(dim, vx=None, dtype=torch.float64, device='cpu'):
+    """Get nitorch compatible affine matrix from dimensions and voxel size.
+
+    Parameters
+    ----------
+    dim : (3,), tuple, list, tensor_like
+        Output image dimensions.
+
+    vx : number, tuple, list, tensor_like, default=None
+        Voxel size of resliced image. If None, uses 1 mm isotropic.
+
+    dtype : torch.dtype, default=torch.float64
+        Data type of function output.
+
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+
+    Returns
+    -------
+    mat : (4, 4), tensor_like
+        Affine matrix.
+
+    """
+    if not isinstance(dim, torch.Tensor):
+        dim = torch.tensor(dim, dtype=dtype, device=device)
+    if vx is None:
+        vx = (1,) * 3
+    if not isinstance(vx, tuple) or not isinstance(vx, list):
+        vx = (vx)
+    if not isinstance(vx, torch.Tensor):
+        vx = torch.tensor(vx, dtype=dtype, device=device)
+    orig = (dim + 1) / 2
+    off = -vx * orig
+    mat = torch.tensor([[vx[0], 0, 0, off[0]],
+                        [0, vx[1], 0, off[1]],
+                        [0, 0, vx[2], off[2]],
+                        [0, 0, 0, 1]], dtype=dtype, device=device)
+
+    return mat
+
+
 def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dtype=torch.float32,
            do_mask=True, do_smooth=True):
     """Load image volume (3D) for subsequent image processing.
@@ -96,10 +137,10 @@ def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dt
         scrand = 1  # As we don't know the original data type, we add random noise
     elif isinstance(img, torch.Tensor):
         dat = img
-        affine = _get_origin_mat(dat.shape, device=device, dtype=dtype)
+        affine = get_origin_mat(dat.shape, device=device, dtype=dtype)
         scrand = 1  # As we don't know the original data type, we add random noise
     else:
-        raise AttributeError('Input error!')
+        raise ValueError('Input error!')
 
     # Sanity check
     dim = dat.shape
@@ -272,7 +313,7 @@ def reset_origin(pth, vx=None, prefix='ro_', device='cpu', interpolation='linear
     vx = voxel_size(M0)
     if M0[:3, :3].det() < 0:
         vx[0] = - vx[0]
-    affine = _get_origin_mat(dim, vx, dtype=torch.float64)
+    affine = get_origin_mat(dim, vx, dtype=torch.float64)
     # Write reset image
     pth_out = write_img(pth, dat, affine, prefix=prefix)
 
@@ -514,44 +555,3 @@ def _get_device(device='cpu'):
 
     """
     return torch.device(device if torch.cuda.is_available() else 'cpu')
-
-
-def _get_origin_mat(dim, vx=None, dtype=torch.float64, device='cpu'):
-    """Get nitorch compatible affine matrix from dimensions and voxel size.
-
-    Parameters
-    ----------
-    dim : (3,), tuple, list, tensor_like
-        Output image dimensions.
-
-    vx : number, tuple, list, tensor_like, default=None
-        Voxel size of resliced image. If None, uses 1 mm isotropic.
-
-    dtype : torch.dtype, default=torch.float64
-        Data type of function output.
-
-    device : torch.device or str, default='cpu'
-        PyTorch device type.
-
-    Returns
-    -------
-    mat : (4, 4), tensor_like
-        Affine matrix.
-
-    """
-    if not isinstance(dim, torch.Tensor):
-        dim = torch.tensor(dim, dtype=dtype, device=device)
-    if vx is None:
-        vx = (1,) * 3
-    if not isinstance(vx, tuple) or not isinstance(vx, list):
-        vx = (vx)
-    if not isinstance(vx, torch.Tensor):
-        vx = torch.tensor(vx, dtype=dtype, device=device)
-    orig = (dim + 1) / 2
-    off = -vx * orig
-    mat = torch.tensor([[vx[0], 0, 0, off[0]],
-                        [0, vx[1], 0, off[1]],
-                        [0, 0, vx[2], off[2]],
-                        [0, 0, 0, 1]], dtype=dtype, device=device)
-
-    return mat
