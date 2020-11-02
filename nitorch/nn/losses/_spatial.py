@@ -524,10 +524,16 @@ class LameShearLoss(Loss):
             Dimensions along which to apply a square root reduction
             ('l1 norm'), after taking the square. Dimensions are
             those of the gradient map with shape
-            (batch, channel, *spatial, direction, side)
+            (batch, channel, *spatial, side)
                 * False: nowhere == (squared) l2 norm
                 * True: everywhere == l1 norm
                 * Otherwise: l_{1,2} norm (group sparsity)
+
+            Here, `channel` map to elements of the Jacobian matrix, while
+            `side` map to the combination of sides (forward/backward)
+            used when extracting finite differences. Therefore, the
+            number of channels is dim*(dim+1)//2 and the number of sides
+            is 4.
 
         """
         super().__init__(*args, **kwargs)
@@ -541,8 +547,8 @@ class LameShearLoss(Loss):
 
         Parameters
         ----------
-        x : tensor
-            Input tensor
+        x : (batch, ndim, *spatial) tensor
+            Input displacement tensor (in channel first order)
         overload : dict
             All parameters defined at build time can be overridden
             at call time.
@@ -562,32 +568,61 @@ class LameShearLoss(Loss):
         l1 = overload.get('l1', self.l1)
 
         # Compute spatial gradients
-        loss = []
+        loss_diag = []      # diagonal elements of the Jacobian
+        loss_offdiag = []   # off-diagonal elements of hte (symmetric) Jacobian
         for i in range(nb_dim):
             # symmetric part
             x_i = x[:, i:i+1, ...]
+            subloss_diag = []
+            subloss_offdiag = []
             for j in range(nb_dim):
-                diff = Diff(dim=[j+2], side=['f', 'b'], bound=bound,
-                            voxel_size=voxel_size)
-                diff_ij = diff(x_i)
-                if i == j:
-                    loss.append(diff_ij)
-                else:
-                    x_j = x[:, j:j+1, ...]
-                    diff = Diff(dim=[i+2], side=['f', 'b'], bound=bound,
+                for side_i in ('f', 'b'):
+                    diff = Diff(dim=[j+2], side=side_i, bound=bound,
                                 voxel_size=voxel_size)
-                    diff_ji = diff(x_j)
-                    loss.append((diff_ij + diff_ji)/2)
-        loss = torch.cat(loss, dim=1)
-        loss = loss.square()
+                    diff_ij = diff(x_i)
+                    if i == j:
+                        # diagonal elements
+                        subloss_diag.append(diff_ij)
+                    else:
+                        # off diagonal elements
+                        x_j = x[:, j:j+1, ...]
+                        for side_j in ('f', 'b'):
+                            diff = Diff(dim=[i+2], side=side_j, bound=bound,
+                                        voxel_size=voxel_size)
+                            diff_ji = diff(x_j)
+                            subloss_offdiag.append((diff_ij + diff_ji)/2)
+            loss_diag.append(torch.stack(subloss_diag, dim=-1))
+            loss_offdiag.append(torch.stack(subloss_offdiag, dim=-1))
+        loss_diag = torch.cat(loss_diag, dim=1)
+        loss_offdiag = torch.cat(loss_offdiag, dim=1)
 
-        # Apply l1
         if l1 not in (None, False):
+            # Apply l1 reduction
             if l1 is True:
-                loss = loss.sqrt()
+                loss_diag = loss_diag.abs()
+                loss_offdiag = loss_offdiag.abs()
             else:
                 l1 = make_list(l1)
-                loss = loss.sum(dim=l1).sqrt()
+                loss_diag = loss_diag.square().sum(dim=l1, keepdim=True).sqrt()
+                loss_offdiag = loss_offdiag.square().sum(dim=l1, keepdim=True).sqrt()
+        else:
+            # Apply l2 reduction
+            loss_diag = loss_diag.square()
+            loss_offdiag = loss_offdiag.square()
+
+        # Mean reduction across sides
+        loss_diag = loss_diag.mean(dim=-1)
+        loss_offdiag = loss_offdiag.mean(dim=-1)
+
+        # Weighted reduction across elements
+        if 1 in make_list(l1) or -(nb_dim+1) in make_list(l1):
+            # element dimension already reduced -> we need a small hack
+            loss = (loss_diag.square() + 2*loss_offdiag.square()) / (nb_dim**2)
+            loss = loss.sum(dim=1, keepdim=True).sqrt()
+        else:
+            # simple weighted average
+            loss = (loss_diag.sum(dim=1, keepdim=True) +
+                    loss_offdiag.sum(dim=1, keepdim=True)*2) / (nb_dim**2)
 
         # Reduce
         loss = super().forward(loss)
@@ -686,7 +721,10 @@ class LameZoomLoss(Loss):
                 loss = loss.sqrt()
             else:
                 l1 = make_list(l1)
-                loss = loss.sum(dim=l1).sqrt()
+                loss = loss.sum(dim=l1, keepdim=True).sqrt()
+
+        # Mean reduction across sides
+        loss = loss.mean(dim=-1)
 
         # Reduce
         loss = super().forward(loss)
