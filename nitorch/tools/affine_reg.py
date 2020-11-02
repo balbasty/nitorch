@@ -1,10 +1,6 @@
 """Module for affine image registration.
 
-TODO (primary):
-* demo_affine_reg.jupy
-* Comment _test_cost_function
-
-TODO (secondary):
+TODO
 * Use Bayesian optimisation
 * More affine bases (YB's implementation?)
 * YB's MI implementation? Other YB code that could be re-used?
@@ -90,7 +86,7 @@ def run_affine_reg(imgs, cost_fun='nmi', basis='SE', mean_space=False,
     mean_space : bool, default=False
         Optimise a mean-space fit, only available if cost_fun='njtv' .
     samp : (3,) float, default=(4, 2)
-        optimisation sampling steps (mm).
+        Optimisation sampling steps (mm).
     optimiser : str, default='powell'
         'powell' : Optimisation method.
     fix : int, default=0
@@ -821,11 +817,42 @@ def _to_gradient_magnitudes(dat, M):
     return dat
 
 
-def _test_cost_function(pths, cost_fun='nmi', samp=2,
-    device='cpu', ix_par=0, mean_space=False, jitter=True, verbose=False,
-    x_step=1, x_mn_mx=20, basis='SE'):
+def _test_cost_function(pths, cost_fun='nmi', basis='SE', mean_space=False, samp=2, ix_par=0, jitter=True,
+    x_step=1, x_mn_mx=30, verbose=False, device='cpu'):
     """Check cost function behaviour by keeping one image fixed and re-aligning
-       a second image. Plots cost vs aligment when finished.
+       a second image by modifying one of the affine parameters. Plots cost vs.
+       aligment when finished.
+
+    Parameters
+    ----------
+    pths :[2,] str
+        Paths to two nibabel compatible image volumes.
+    cost_fun : str, default='nmi'
+        'nmi' : Normalised Mutual Information (pairwise method)
+        'mi' : Mutual Information (pairwise method)
+        'ncc' : Normalised Cross Correlation (pairwise method)
+        'ecc' : Entropy Correlation Coefficient (pairwise method)
+        'njtv' : Normalised Joint Total variation (groupwise method)
+    basis : str, default='SE'
+        'T' : Translation
+        'SO' : Special orthogonal (rotation)
+        'SE' : Special Euclidean (translation + rotation)
+    mean_space : bool, default=False
+        Optimise a mean-space fit, only available if cost_fun='njtv' .
+    samp : float, default=2
+        Otimisation sampling steps (mm).
+    ix_par : int, default=0
+        Otimisation sampling steps (mm).
+    jitter : bool, default=True
+        Otimisation sampling steps (mm).
+    x_step : int, default=1
+        Step-size when changing the parameter value.
+    x_mn_mx : float, default=30
+        Min/max value of parameter.
+    verbose : bool, default=False
+        Show registration results.
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
 
     """
     # Parse algorithm options
