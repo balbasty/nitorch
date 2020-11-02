@@ -2,11 +2,12 @@
 
 TODO (primary):
 * demo_affine_reg.jupy
+* Comment _test_cost_function
 
 TODO (secondary):
 * Use Bayesian optimisation
 * More affine bases (YB's implementation?)
-* YB's MI implementation?
+* YB's MI implementation? Other YB code that could be re-used?
 * Work on 2D as well?
 * dexpm is slow (called loads in _compute_cost)
 
@@ -36,7 +37,7 @@ costs_hist = ['mi', 'ecc', 'nmi', 'ncc']
 
 
 def run_affine_reg(imgs, cost_fun='nmi', basis='SE', mean_space=False,
-                   samp=(8, 4, 2), optimiser='powell', fix=0, verbose=False,
+                   samp=(4, 2), optimiser='powell', fix=0, verbose=False,
                    fov=None, device='cpu'):
     """Affinely align images.
 
@@ -88,7 +89,7 @@ def run_affine_reg(imgs, cost_fun='nmi', basis='SE', mean_space=False,
         'SE' : Special Euclidean (translation + rotation)
     mean_space : bool, default=False
         Optimise a mean-space fit, only available if cost_fun='njtv' .
-    samp : (3,) float, default=(8, 4, 2)
+    samp : (3,) float, default=(4, 2)
         optimisation sampling steps (mm).
     optimiser : str, default='powell'
         'powell' : Optimisation method.
@@ -137,7 +138,8 @@ def run_affine_reg(imgs, cost_fun='nmi', basis='SE', mean_space=False,
     opt = _init_torch(opt)
 
     # Rigid registration basis
-    B, Nq = get_affine_basis(basis=opt['basis'], device=opt['device'])
+    B = get_affine_basis(basis=opt['basis'], device=opt['device'])
+    Nq = B.shape[-1]
 
     # Load data
     dat, mats, dims = _data_loader(imgs, opt)
@@ -198,7 +200,32 @@ def run_affine_reg(imgs, cost_fun='nmi', basis='SE', mean_space=False,
     return q, M_fix, dim_fix, B
 
 
-def apply2affine(pths, q, B, prefix='a_', dir_out=None):
+def get_affine_basis(basis='SE', dim=3, dtype=torch.float32, device='cpu'):
+    """Get the affine basis used to parameterise the registration transform.
+
+    Parameters
+    ----------
+    basis : str, default='SE'
+        Basis type.
+    dim : int, default=3
+        Basis dimensions [2|3]
+    dtype : torch.dtype, default=torch.float32
+        Data type of function output.
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+
+    Returns
+    ----------
+    B : (4, 4, Nq), tensor_like
+        Lie basis.
+
+    """
+    B = affine_basis(basis=basis, dim=dim, dtype=dtype, device=device)
+
+    return B
+
+
+def apply2affine(pths, q, B=get_affine_basis(), prefix='a_', dir_out=None):
     """ Apply registration result (q) to affine in input scans header.
 
     OBS: If prefix='' and dir_out=None, overwrites input data.
@@ -250,35 +277,7 @@ def apply2affine(pths, q, B, prefix='a_', dir_out=None):
     return pths_out
 
 
-def get_affine_basis(basis='SE', dim=3, dtype=torch.float32, device='cpu'):
-    """Get the affine basis used to parameterise the registration transform.
-
-    Parameters
-    ----------
-    basis : str, default='SE'
-        Basis type.
-    dim : int, default=3
-        Basis dimensions [2|3]
-    dtype : torch.dtype, default=torch.float32
-        Data type of function output.
-    device : torch.device or str, default='cpu'
-        PyTorch device type.
-
-    Returns
-    ----------
-    B : (4, 4, Nq), tensor_like
-        Lie basis.
-    Nq : int
-        Number of Lie basis.
-
-    """
-    B = affine_basis(basis=basis, dim=dim, dtype=dtype, device=device)
-    Nq = B.shape[-1]
-
-    return B, Nq
-
-
-def reslice2fix(imgs, q, M_fix, dim_fix, B, prefix='ra_', dtype=torch.float32,
+def reslice2fix(imgs, q, M_fix, dim_fix, B=get_affine_basis(), prefix='ra_', dtype=torch.float32,
                 device='cpu', dir_out=None, write=False):
     """Reslice the input files to the grid of the fixed image,
     using the registration transform (q).
@@ -341,7 +340,7 @@ def reslice2fix(imgs, q, M_fix, dim_fix, B, prefix='ra_', dtype=torch.float32,
             A = dexpm(q[n, ...], B)[0]
             A = A.type(M_fix.dtype)
             # Do reslice
-            M = A.mm(M_fix).solve(M_mov)[0]
+            M = A.mm(M_fix).solve(M_mov)[0]  # M_mov\A*M_fix
             rdat[..., n] = reslice_dat(dat[None, None, ...], M, dim_fix)
         else:
             # Fixed image was among input images, do not reslice
@@ -822,19 +821,17 @@ def _to_gradient_magnitudes(dat, M):
     return dat
 
 
-def _test_cost_function(pths, fix=0, cost_fun='nmi', samp=2,
+def _test_cost_function(pths, cost_fun='nmi', samp=2,
     device='cpu', ix_par=0, mean_space=False, jitter=True, verbose=False,
     x_step=1, x_mn_mx=20, basis='SE'):
     """Check cost function behaviour by keeping one image fixed and re-aligning
        a second image. Plots cost vs aligment when finished.
-       
-       
+
     """
     # Parse algorithm options
     opt = {'cost_fun': cost_fun,
            'device': device,
            'samp': samp,
-           'fix': fix,
            'mean_space': mean_space,
            'verbose': verbose,
            'basis' : basis}
@@ -842,7 +839,8 @@ def _test_cost_function(pths, fix=0, cost_fun='nmi', samp=2,
     # Some very basic sanity checks
     N = len(pths)
     mov = list(range(N))  # Indices of images
-    mov_img = int(not opt['fix'])
+    fix_img = 0
+    mov_img = 1
     if N != 2:
         raise ValueError('Two input files required!')
     if opt['cost_fun'] in costs_hist and opt['mean_space']:
@@ -855,7 +853,8 @@ def _test_cost_function(pths, fix=0, cost_fun='nmi', samp=2,
     dat, mats, dims = _data_loader(pths, opt)
 
     # Get affine basis
-    B, Nq = get_affine_basis(basis=opt['basis'], device=opt['device'])
+    B = get_affine_basis(basis=opt['basis'], device=opt['device'])
+    Nq = B.shape[-1]
 
     # Range of parameter
     x = torch.arange(start=-x_mn_mx, end=x_mn_mx, step=x_step, dtype=torch.float32)
@@ -873,10 +872,10 @@ def _test_cost_function(pths, fix=0, cost_fun='nmi', samp=2,
         M_fix, dim_fix = _get_mean_space(mats + mats1, dims + dims1)
         arg_dat_grid = dim_fix
     else:
-        M_fix = mats[opt['fix']]
-        dim_fix = dat[opt['fix']].shape[:3]
-        mov.remove(opt['fix'])
-        arg_dat_grid = dat[opt['fix']]
+        M_fix = mats[fix_img]
+        dim_fix = dat[fix_img].shape[:3]
+        mov.remove(fix_img)
+        arg_dat_grid = dat[fix_img]
     # Get voxel size of fixed image
     vx_fix = voxel_size(M_fix)
 
@@ -891,7 +890,7 @@ def _test_cost_function(pths, fix=0, cost_fun='nmi', samp=2,
     fig_ax = None  # Used for visualisation
     for i, xi in enumerate(x):
         # Change affine matrix a little bit
-        q[mov_img, ix_par] = xi
+        q[fix_img, ix_par] = xi
         # Compute cost
         costs[i], res = _compute_cost(
             q, grid, dat_fix, M_fix, dat, mats, mov, opt['cost_fun'], B, return_res=True)
@@ -902,7 +901,7 @@ def _test_cost_function(pths, fix=0, cost_fun='nmi', samp=2,
     fig, ax = plt.subplots(num=2)
     ax.plot(x, costs)
     ax.set(xlabel='Value q[' + str(ix_par) + ']', ylabel='Cost',
-           title=opt['cost_fun'].upper() + ' cost function (mean_space= ' + str(opt['mean_space']) + ')')
+           title=opt['cost_fun'].upper() + ' cost function (mean_space=' + str(opt['mean_space']) + ')')
     ax.grid()
     plt.show()
 
