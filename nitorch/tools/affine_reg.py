@@ -21,7 +21,7 @@ from ..plot import show_slices
 from ..core.kernels import smooth
 from ..core.utils import pad
 from ..tools.preproc import (get_origin_mat, modify_affine, reslice_dat, write_img)
-from ..tools.spm import (affine, identity, noise_estimate, mean_space)
+from ..tools.spm import (identity, noise_estimate, mean_space)
 from ..spatial import (affine_basis, affine_matvec, grid_pull, im_gradient, voxel_size)
 from ..core._linalg_expm import expm
 
@@ -32,13 +32,13 @@ costs_hist = ['mi', 'ecc', 'nmi', 'ncc']
 
 def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
                    samp=(4, 2), optimiser='powell', fix=0, verbose=False,
-                   fov=None, device='cpu'):
+                   fov=None, device='cpu', mx_int=511):
     """Affinely align images.
 
     This function aligns N images affinely, either pairwise or groupwise,
     by non-gradient based optimisation. An affine transformation has maximum
     12 parameters that control: translation, rotation, scaling and shearing.
-    It is a linear registartion.
+    It is a linear registration.
 
     The transformation model is:
         M_mov\A*M_fix,
@@ -89,7 +89,7 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
         * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
         * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
     mean_space : bool, default=False
-        Optimise a mean-space fit, only available if cost_fun='njtv' .
+        Optimise a mean-space fit, only available if cost_fun='njtv'.
     samp : (3,) float, default=(4, 2)
         Optimisation sampling steps (mm).
     optimiser : str, default='powell'
@@ -102,6 +102,13 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
         Show registration results.
     device : torch.device or str, default='cpu'
         PyTorch device type.
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+    mx_int : int, default=511
+        This parameter sets the max intensity in the images, which decides
+        how many bins to use in the joint image histograms
+        (e.g, mx_int=511 -> H.shape = (512, 512)). This is only done if
+        cost_fun is histogram-based.
 
     Returns
     ----------
@@ -114,61 +121,65 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
         Image dimensions of fixed image.
 
     """
-    # Parse algorithm options
-    opt = {'optimiser': optimiser,
-           'cost_fun': cost_fun,
-           'device': device,
-           'samp': samp,
-           'fix': fix,
-           'mean_space': mean_space,
-           'verbose': verbose,
-           'fov': fov,
-           'group' : group}
+    with torch.no_grad():
+        # Parse algorithm options
+        opt = {'optimiser': optimiser,
+               'cost_fun': cost_fun,
+               'device': device,
+               'samp': samp,
+               'fix': fix,
+               'mean_space': mean_space,
+               'verbose': verbose,
+               'fov': fov,
+               'group' : group,
+               'mx_int' : mx_int}
+        if opt['cost_fun'] not in costs_hist:
+            opt['mx_int'] = None
 
-    # Some very basic sanity checks
-    N = len(imgs) # Number of input scans
-    mov = list(range(N))  # Indices of images
-    if N < 2:
-        raise ValueError('At least two images needed!')
-    if opt['cost_fun'] in costs_hist and opt['mean_space']:
-        raise ValueError('Option mean_space=True not defined for {} cost!'.format(opt['cost_fun']))
+        # Some very basic sanity checks
+        N = len(imgs) # Number of input scans
+        mov = list(range(N))  # Indices of images
+        if N < 2:
+            raise ValueError('At least two images needed!')
+        if opt['cost_fun'] in costs_hist and opt['mean_space']:
+            raise ValueError('Option mean_space=True not defined for {} cost!'.format(opt['cost_fun']))
 
-    # Get affine basis
-    B = affine_basis(group=opt['group'], device=opt['device'])
-    Nq = B.shape[0]
+        # Get affine basis
+        B = affine_basis(group=opt['group'], device=opt['device'])
+        Nq = B.shape[0]
 
-    # Load data
-    dat, mats, dims = _data_loader(imgs, opt)
+        # Load data
+        dat, mats, dims = _data_loader(imgs, opt)
 
-    # Define fixed image space (M_fix, dim_fix, vx_fix)
-    if opt['mean_space']:
-        # Use a mean-space
-        if opt['fov']:
-            # Mean-space given
-            M_fix = opt['fov'][0]
-            dim_fix = opt['fov'][1]
+        # Define fixed image space (M_fix, dim_fix, vx_fix)
+        if opt['mean_space']:
+            # Use a mean-space
+            if opt['fov']:
+                # Mean-space given
+                M_fix = opt['fov'][0]
+                dim_fix = opt['fov'][1]
+            else:
+                # Compute mean-space
+                M_fix, dim_fix = _get_mean_space(mats, dims)
+            arg_dat_grid = dim_fix
         else:
-            # Compute mean-space
-            M_fix, dim_fix = _get_mean_space(mats, dims)
-        arg_dat_grid = dim_fix
-    else:
-        # Use one of the input images
-        M_fix = mats[opt['fix']]
-        dim_fix = dat[opt['fix']].shape[:3]
-        mov.remove(opt['fix'])
-        arg_dat_grid = dat[opt['fix']]
-    # Get voxel size of fixed image
-    vx_fix = voxel_size(M_fix)
+            # Use one of the input images
+            M_fix = mats[opt['fix']]
+            dim_fix = dat[opt['fix']].shape[:3]
+            mov.remove(opt['fix'])
+            arg_dat_grid = dat[opt['fix']]
+        # Get voxel size of fixed image
+        vx_fix = voxel_size(M_fix)
 
-    # Initial guess for registration parameter
-    q = torch.zeros((N, Nq), dtype=torch.float32, device=opt['device'])
+        # Initial guess for registration parameter
+        q = torch.zeros((N, Nq), dtype=torch.float32, device=opt['device'])
 
-    # Do registration
-    for s in opt['samp']:  # Loop over sub-sampling level
-        # Get possibly sub-sampled fixed image, and its resampling grid
-        dat_fix, grid = _get_dat_grid(arg_dat_grid, vx_fix, s, opt)
-        # Do optimisation
-        q, args = _optimise(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt)
+        # Do registration
+        for s in opt['samp']:  # Loop over sub-sampling level
+            # Get possibly sub-sampled fixed image, and its resampling grid
+            dat_fix, grid = _get_dat_grid(arg_dat_grid, vx_fix, s, opt)
+            # Do optimisation
+            q, args = _optimise(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt)
 
     return q, M_fix, dim_fix
 
@@ -306,7 +317,7 @@ def reslice2fix(imgs, q, M_fix, dim_fix, group='SE', prefix='ra_', dtype=torch.f
 
 
 def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=2, ix_par=0, jitter=True,
-    x_step=0.1, x_mn_mx=30, verbose=False, device='cpu'):
+    x_step=0.1, x_mn_mx=30, verbose=False, device='cpu', mx_int=511):
     """Check cost function behaviour by keeping one image fixed and re-aligning
        a second image by modifying one of the affine parameters. Plots cost vs.
        aligment when finished.
@@ -337,83 +348,92 @@ def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=
         Show registration results.
     device : torch.device or str, default='cpu'
         PyTorch device type.
+    mx_int : int, default=511
+        This parameter sets the max intensity in the images, which decides
+        how many bins to use in the joint image histograms
+        (e.g, mx_int=511 -> H.shape = (512, 512)). This is only done if
+        cost_fun is histogram-based.
 
     """
-    # Parse algorithm options
-    opt = {'cost_fun': cost_fun,
-           'device': device,
-           'samp': samp,
-           'mean_space': mean_space,
-           'verbose': verbose}
+    with torch.no_grad():
+        # Parse algorithm options
+        opt = {'cost_fun': cost_fun,
+               'device': device,
+               'samp': samp,
+               'mean_space': mean_space,
+               'verbose': verbose,
+               'mx_int' : mx_int}
+        if opt['cost_fun'] not in costs_hist:
+            opt['mx_int'] = None
 
-    # Some very basic sanity checks
-    N = len(pths)
-    mov = list(range(N))  # Indices of images
-    fix_img = 0
-    mov_img = 1
-    if N != 2:
-        raise ValueError('Two input files required!')
-    if opt['cost_fun'] in costs_hist and opt['mean_space']:
-        raise ValueError('Option mean_space=True not defined for {} cost!'.format(opt['cost_fun']))
+        # Some very basic sanity checks
+        N = len(pths)
+        mov = list(range(N))  # Indices of images
+        fix_img = 0
+        mov_img = 1
+        if N != 2:
+            raise ValueError('Two input files required!')
+        if opt['cost_fun'] in costs_hist and opt['mean_space']:
+            raise ValueError('Option mean_space=True not defined for {} cost!'.format(opt['cost_fun']))
 
-    # Load data
-    dat, mats, dims = _data_loader(pths, opt)
+        # Load data
+        dat, mats, dims = _data_loader(pths, opt)
 
-    # Get full 12 parameter affine basis
-    B = affine_basis(group='Aff+', device=opt['device'])
-    Nq = B.shape[0]
+        # Get full 12 parameter affine basis
+        B = affine_basis(group='Aff+', device=opt['device'])
+        Nq = B.shape[0]
 
-    # Range of parameter
-    x = torch.arange(start=-x_mn_mx, end=x_mn_mx, step=x_step, dtype=torch.float32)
+        # Range of parameter
+        x = torch.arange(start=-x_mn_mx, end=x_mn_mx, step=x_step, dtype=torch.float32)
 
-    if opt['mean_space']:
-        # Use mean-space, so make sure that maximum misalignment is represented
-        # in the input to _get_mean_space()
-        mat_mn = torch.zeros(Nq, dtype=torch.float32, device=opt['device'])
-        mat_mx = torch.zeros(Nq, dtype=torch.float32, device=opt['device'])
-        mat_mn[ix_par] = -x_mn_mx
-        mat_mx[ix_par] = x_mn_mx
-        mats1 = [expm(mat_mn, B).mm(mats[mov_img]), expm(mat_mx, B).mm(mats[mov_img])]
-        dims1 = [dims[mov_img], dims[mov_img]]
-        # Compute mean-space
-        M_fix, dim_fix = _get_mean_space(mats + mats1, dims + dims1)
-        arg_dat_grid = dim_fix
-    else:
-        M_fix = mats[fix_img]
-        dim_fix = dat[fix_img].shape[:3]
-        mov.remove(fix_img)
-        arg_dat_grid = dat[fix_img]
-    # Get voxel size of fixed image
-    vx_fix = voxel_size(M_fix)
+        if opt['mean_space']:
+            # Use mean-space, so make sure that maximum misalignment is represented
+            # in the input to _get_mean_space()
+            mat_mn = torch.zeros(Nq, dtype=torch.float32, device=opt['device'])
+            mat_mx = torch.zeros(Nq, dtype=torch.float32, device=opt['device'])
+            mat_mn[ix_par] = -x_mn_mx
+            mat_mx[ix_par] = x_mn_mx
+            mats1 = [expm(mat_mn, B).mm(mats[mov_img]), expm(mat_mx, B).mm(mats[mov_img])]
+            dims1 = [dims[mov_img], dims[mov_img]]
+            # Compute mean-space
+            M_fix, dim_fix = _get_mean_space(mats + mats1, dims + dims1)
+            arg_dat_grid = dim_fix
+        else:
+            M_fix = mats[fix_img]
+            dim_fix = dat[fix_img].shape[:3]
+            mov.remove(fix_img)
+            arg_dat_grid = dat[fix_img]
+        # Get voxel size of fixed image
+        vx_fix = voxel_size(M_fix)
 
-    # Initial guess
-    q = torch.zeros((N, Nq), dtype=torch.float32)
+        # Initial guess
+        q = torch.zeros((N, Nq), dtype=torch.float32)
 
-    # Get subsampled fixed image and its resampling grid
-    dat_fix, grid = _get_dat_grid(arg_dat_grid, vx_fix, opt['samp'], opt, jitter=jitter)
+        # Get subsampled fixed image and its resampling grid
+        dat_fix, grid = _get_dat_grid(arg_dat_grid, vx_fix, opt['samp'], opt, jitter=jitter)
 
-    # Iterate over a range of values
-    costs = np.zeros(len(x))
-    fig_ax = None  # Used for visualisation
-    for i, xi in enumerate(x):
-        # Change affine matrix a little bit
-        q[fix_img, ix_par] = xi
-        # Compute cost
-        costs[i], res = _compute_cost(
-            q, grid, dat_fix, M_fix, dat, mats, mov, opt['cost_fun'], B, return_res=True)
-        if opt['verbose']:
-            fig_ax = show_slices(res, fig_ax=fig_ax, fig_num=1, cmap='coolwarm', title='x=' + str(xi))
+        # Iterate over a range of values
+        costs = np.zeros(len(x))
+        fig_ax = None  # Used for visualisation
+        for i, xi in enumerate(x):
+            # Change affine matrix a little bit
+            q[fix_img, ix_par] = xi
+            # Compute cost
+            costs[i], res = _compute_cost(
+                q, grid, dat_fix, M_fix, dat, mats, mov, opt['cost_fun'], B, opt['mx_int'], return_res=True)
+            if opt['verbose']:
+                fig_ax = show_slices(res, fig_ax=fig_ax, fig_num=1, cmap='coolwarm', title='x=' + str(xi))
 
-    # Plot results
-    fig, ax = plt.subplots(num=2)
-    ax.plot(x, costs)
-    ax.set(xlabel='Value q[' + str(ix_par) + ']', ylabel='Cost',
-           title=opt['cost_fun'].upper() + ' cost function (mean_space=' + str(opt['mean_space']) + ')')
-    ax.grid()
-    plt.show()
+        # Plot results
+        fig, ax = plt.subplots(num=2)
+        ax.plot(x, costs)
+        ax.set(xlabel='Value q[' + str(ix_par) + ']', ylabel='Cost',
+               title=opt['cost_fun'].upper() + ' cost function (mean_space=' + str(opt['mean_space']) + ')')
+        ax.grid()
+        plt.show()
 
 
-def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, return_res=False):
+def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, mx_int, return_res=False):
     """Compute registration cost function.
 
     Parameters
@@ -436,6 +456,10 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, return_
         Cost function to compute (see run_affine_reg).
     B : (Nq, N, N) tensor_like
         Affine basis.
+    mx_int : int
+        This parameter sets the max intensity in the images, which decides
+        how many bins to use in the joint image histograms
+        (e.g, mx_int=511 -> H.shape = (512, 512)).
     return_res : bool, default=False
         Return registration results for plotting.
 
@@ -486,7 +510,7 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, return_
         # Compute joint histogram
         # OBS: This function expects both images to have the same max and min intesities,
         # this is ensured by the _data_loader() function.
-        H = _hist_2d(dat_fix, dat_new)
+        H = _hist_2d(dat_fix, dat_new, mx_int)
         res = H
 
         # Get probabilities
@@ -559,21 +583,13 @@ def _data_loader(imgs, opt):
         List of image dimensions.
 
     """
-    if opt['cost_fun'] in costs_hist:
-        # This parameter sets the max intensity in the images, which
-        # decides how many bins to use in the joint image histograms
-        # (e.g, mx_int=511 -> H.shape = (512, 512))
-        mx_int = 511
-    elif opt['cost_fun'] == 'njtv':
-        mx_int = None
-
     dat = []
     mats = []
     dims = []
     for img in imgs:
         # Load data
         datn, Mn, _, _, _ = load_3d(img,
-            samp=0, do_mask=False, truncate=True, mx_out=mx_int,
+            samp=0, do_mask=False, truncate=True, mx_out=opt['mx_int'],
             device=opt['device'], dtype=torch.float32, do_smooth=True)
         dimn =  torch.tensor(datn.shape[:3], dtype=torch.float32)
 
@@ -712,7 +728,7 @@ def _get_mean_space(mats, dims):
     return mat, dim
 
 
-def _hist_2d(img0, img1, fwhm=7, mx_int=511):
+def _hist_2d(img0, img1, mx_int, fwhm=7):
     """Make 2D histogram.
 
     Pre-requisites:
@@ -730,11 +746,13 @@ def _hist_2d(img0, img1, fwhm=7, mx_int=511):
         First image volume.
     img1 : (X, Y, Z) tensor_like
         Second image volume.
+    mx_int : int
+        This parameter sets the max intensity in the images, which decides
+        how many bins to use in the joint image histograms
+        (e.g, mx_int=511 -> H.shape = (512, 512)).
     fwhm : float, default=7
         Full-width at half max of Gaussian kernel, for smoothing
         histogram.
-    mx_int : float, default=255
-        Max intensity of input images.
 
     Returns
     ----------
@@ -820,7 +838,7 @@ def _optimise(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt):
     if opt['cost_fun'] == 'njtv':  # Groupwise optimisation
         # Arguments to _compute_cost
         m = mov
-        args = (grid, dat_fix, M_fix, dat, mats, m, opt['cost_fun'], B)
+        args = (grid, dat_fix, M_fix, dat, mats, m, opt['cost_fun'], B, opt['mx_int'])
         # Run groupwise optimisation
         q[m, ...] = _do_optimisation(q[m, ...], Nq, args, opt)
         # Show results
@@ -828,7 +846,7 @@ def _optimise(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt):
     else:  # Pairwise optimisation
         for m in mov:
             # Arguments to _compute_cost
-            args = (grid, dat_fix, M_fix, dat, mats, [m], opt['cost_fun'], B)
+            args = (grid, dat_fix, M_fix, dat, mats, [m], opt['cost_fun'], B, opt['mx_int'])
             # Run pairwise optimisation
             q[m, ...] = _do_optimisation(q[m, ...], Nq, args, opt)
             # Show results
