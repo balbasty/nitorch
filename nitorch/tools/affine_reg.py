@@ -10,7 +10,6 @@ TODO
 import math
 import nibabel as nib
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
 import os
 from torch.nn import functional as F
@@ -425,6 +424,7 @@ def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=
                 fig_ax = show_slices(res, fig_ax=fig_ax, fig_num=1, cmap='coolwarm', title='x=' + str(xi))
 
         # Plot results
+        import matplotlib.pyplot as plt
         fig, ax = plt.subplots(num=2)
         ax.plot(x, costs)
         ax.set(xlabel='Value q[' + str(ix_par) + ']', ylabel='Cost',
@@ -804,6 +804,7 @@ def _hist_2d(img0, img1, mx_int, fwhm=7):
     H = H + 1e-7
 
     # # Visualise histogram
+    # import matplotlib.pyplot as plt
     # plt.figure(num=fig_num)
     # plt.imshow(H,
     #     cmap='coolwarm', interpolation='nearest',
