@@ -404,9 +404,10 @@ class PatchSample(Module):
 
         dim = image.dim() - 2
         shape = make_list(overload.get('shape', self.shape), dim)
+        shape = [min(s0, s1) for s0, s1 in zip(image.shape[2:], shape)]
 
         # sample shift
-        max_shift = [max(0, d0 - d1) for d0, d1 in zip(image.shape[2:], shape)]
+        max_shift = [d0 - d1 for d0, d1 in zip(image.shape[2:], shape)]
         shift = [torch.randint(0, s, [], device=device) if s > 0 else 0
                  for s in max_shift]
 
