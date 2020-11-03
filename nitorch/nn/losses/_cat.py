@@ -137,6 +137,11 @@ class DiceLoss(Loss):
 
         """
 
+        predicted = torch.as_tensor(predicted)
+        reference = torch.as_tensor(reference,
+                                    dtype=predicted.dtype,
+                                    device=predicted.device)
+
         nb_dim = predicted.dim() - 2
         dims = list(range(2, nb_dim+2))
 
