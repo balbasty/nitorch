@@ -10,11 +10,43 @@ class SegNet(Module):
     This is simply a UNet that ends with a softmax activation.
     """
 
-    def __init__(self, dim, output_classes, input_channels=1,
+    def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.2)):
+                 activation=tnn.LeakyReLU(0.2), implicit=True):
+        """
+
+        Parameters
+        ----------
+        dim : int
+            Space dimension
+        output_classes : int, default=1
+            Number of classes, excluding background
+        input_channels : int, default=1
+            Number of input channels
+        encoder : sequence[int]
+            Number of features per encoding layer
+        decoder : sequence[int]
+            Number of features per decoding layer
+        kernel_size : int or sequence[int], default=3
+            Kernel size
+        activation : str or callable, default=LeakyReLU(0.2)
+            Activation function in the UNet.
+        implicit : bool, default=True
+            Only return `output_classes` probabilities (the last one
+            is implicit as probabilities must sum to 1).
+            Else, return `output_classes + 1` probabilities.
+        """
 
         super().__init__()
+
+        self.implicit = implicit
+        self.output_classes = output_classes
+        if implicit and output_classes == 1:
+            final_activation = tnn.Sigmoid
+        else:
+            output_classes = output_classes + 1
+            final_activation = tnn.Softmax(dim=1)
+
         self.unet = UNet(dim,
                          input_channels=input_channels,
                          output_channels=output_classes,
@@ -22,14 +54,13 @@ class SegNet(Module):
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=activation,
-                         final_activation=tnn.Softmax(dim=1))
+                         final_activation=final_activation)
 
         # register loss tag
         self.tags = ['segmentation']
 
     # defer properties
     dim = property(lambda self: self.unet.dim)
-    output_classes = property(lambda self: self.unet.output_channels)
     encoder = property(lambda self: self.unet.encoder)
     decoder = property(lambda self: self.unet.decoder)
     kernel_size = property(lambda self: self.unet.kernel_size)
@@ -48,6 +79,8 @@ class SegNet(Module):
 
         # unet
         prob = self.unet(image)
+        if self.implicit and prob.shape[1] > self.output_classes:
+            prob = prob[:, :-1, ...]
 
         # compute loss and metrics
         if ground_truth is not None:
