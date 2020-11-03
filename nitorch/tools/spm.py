@@ -63,8 +63,8 @@ def affine_basis(basis='SE', dim=3, dtype=torch.float64, device='cpu'):
     Args:
         basis (string, optional): Name of the group that must be encoded:
             . 'T': Translation
-            . 'SO': Special orthogonal (= translation + rotation)
-            . 'SE': Special Euclidean (= translation + rotation + scale)
+            . 'SO': Special orthogonal (rotation)
+            . 'SE': Special Euclidean (translation + rotation)
             Defaults to 'SE'.
         dim (int, optional): Basis dimensions: 0, 2, 3. Defaults to 3.
         dtype (torch.dtype, optional): Data type. Defaults to float64.
@@ -815,7 +815,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
 
     # Mask and get min/max
     mn = torch.min(dat)
-    dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != torch.max(dat)) & (dat != mn)]
+    dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != mn)]
     mx = torch.max(dat)
     mn = mn.round()
     mx = mx.round()
