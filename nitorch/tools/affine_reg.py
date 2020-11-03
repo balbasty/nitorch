@@ -634,13 +634,13 @@ def _do_optimisation(q, Nq, args, opt):
     if opt['optimiser'] == 'powell':
         # Powell optimisation
         dtype = q.dtype
-        q = q.cpu().numpy()  # SciPy's powell optimiser requires CPU Numpy arrays
         # Callback
         callback = None
         if opt['mean_space']:
             # Ensure that the paramters have zero mean, across images.
             callback = lambda x: _zero_mean(x, Nq)
         s = q.shape
+        q = q.cpu().numpy()  # SciPy's powell optimiser requires CPU Numpy arrays
         q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback)
         q = q.reshape(s)
         q = torch.from_numpy(q).type(dtype).to(opt['device'])  # Cast back to tensor
@@ -952,7 +952,7 @@ def _zero_mean(q, Nq):
 
     Parameters
     ----------
-    q : tensor_like
+    q : array_like | tensor_like
         Lie algebra of affine registration fit.
     Nq : int
         Number of Lie groups.
@@ -968,7 +968,12 @@ def _zero_mean(q, Nq):
     # Reshape
     q = q.reshape((N, Nq))
     # Make zero mean
-    q -= q.mean(axis=0)
+    if isinstance(q, np.ndarray):
+        # Numpy array
+        q -= q.mean(axis=0)
+    else:
+        # PyTorch tensor
+        q -= torch.mean(q, dim=0)
     # Reshape back
     q = q.flatten()
 
