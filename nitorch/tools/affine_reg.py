@@ -506,7 +506,9 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, mx_int,
 
     # Compute the cost function
     res = None
-    if cost_fun in costs_hist:  # Histogram based costs
+    if cost_fun in costs_hist:
+        # Histogram based costs
+        # ----------
         # Compute joint histogram
         # OBS: This function expects both images to have the same max and min intesities,
         # this is ensured by the _data_loader() function.
