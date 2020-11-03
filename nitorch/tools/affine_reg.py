@@ -2,8 +2,6 @@
 
 TODO
 * Use Bayesian optimisation
-* More affine bases (YB's implementation?)
-* YB's MI implementation? Other YB code that could be re-used?
 * Work on 2D as well?
 
 """
