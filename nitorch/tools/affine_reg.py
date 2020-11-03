@@ -524,6 +524,8 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, return_
         res = njtv
         c = torch.sum(njtv)
 
+    # _ = show_slices(res, fig_num=1, cmap='coolwarm')  # Can be uncommented for testing
+
     if was_numpy:
         # Back to numpy array
         c = c.cpu().numpy()
@@ -570,21 +572,21 @@ def _data_loader(imgs, opt):
     dims = []
     for img in imgs:
         # Load data
-        dat_p, M_p, _, _, _ = load_3d(img,
+        datn, Mn, _, _, _ = load_3d(img,
             samp=0, do_mask=False, truncate=True, mx_out=mx_int,
             device=opt['device'], dtype=torch.float32, do_smooth=True)
-        dim_p =  torch.tensor(dat_p.shape[:3], dtype=torch.float32)
+        dimn =  torch.tensor(datn.shape[:3], dtype=torch.float32)
 
         # Set affine data type
-        M_p = M_p.type(torch.float32)
+        Mn = Mn.type(torch.float32)
 
         # Smooth
-        dat_p = _smooth_for_reg(dat_p, voxel_size(M_p), opt)
+        datn = _smooth_for_reg(datn, voxel_size(Mn), opt)
 
         # Append
-        dat.append(dat_p)
-        mats.append(M_p)
-        dims.append(dim_p)
+        dat.append(datn)
+        mats.append(Mn)
+        dims.append(dimn)
 
     if opt['cost_fun'] == 'njtv':
         # Compute gradient magnitudes
@@ -916,7 +918,9 @@ def _to_gradient_magnitudes(dat, M):
         _, _, mu_bg, mu_fg = noise_estimate(dat[i], show_fit=False)
         # Get scaling
         scl = 1/torch.abs(mu_fg.float() - mu_bg.float())
-        # Compute gradients, multiplied by scale factor.
+        if not scl.isfinite():
+            scl = torch.tensor(1, device=dat[i].device, dtype=dat[i].dtype)
+        # Compute gradients, multiplied by scaling
         gr = scl*im_gradient(dat[i], vx=vx, which='forward', bound='circular')
         # Square gradients
         gr = torch.sum(gr**2, dim=0)
