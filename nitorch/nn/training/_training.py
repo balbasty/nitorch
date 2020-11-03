@@ -6,6 +6,36 @@ from nitorch.nn.modules._base import Module, nitorchmodule
 import string
 
 
+def update_loss_dict(old, new, weight=1, inplace=True):
+    """Update a dictionary of losses/metrics with a new batch
+
+    Parameters
+    ----------
+    old : dict
+        Previous (accumulated) dictionary of losses/metrics
+    new : dict
+        Dictionary of losses/metrics for the current batch
+    weight : float, default=1
+        Weight for the batch
+    inplace : bool, default=True
+        Modify the dictionary in-place
+
+    Returns
+    -------
+    new : dict
+        Updated (accumulated) dictionary of losses/metrics
+
+    """
+    if not inplace:
+        old = dict(old)
+    for key, val in new.items():
+        if key in old.keys():
+            old[key] += val * weight
+        else:
+            old[key] = val * weight
+    return old
+
+
 class ModelTrainer:
     """A class that simplifies training a network."""
 
