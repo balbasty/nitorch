@@ -537,6 +537,9 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, return_
 def _data_loader(imgs, opt):
     """Load image data, affine matrices, image dimensions.
 
+    NOTE: If cost function is NJTV, then squared gradient
+    magnitudes will be returned.
+
     Parameters
     ----------
     imgs : list
