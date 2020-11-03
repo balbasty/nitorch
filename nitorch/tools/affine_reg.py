@@ -525,11 +525,17 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, mx_int,
             c = -mi
         elif cost_fun == 'ecc':
             # Entropy Correlation Coefficient
+            # Maes, Collignon, Vandermeulen, Marchal & Suetens (1997).
+            # "Multimodality image registration by maximisation of mutual
+            # information". IEEE Transactions on Medical Imaging 16(2):187-198
             mi = torch.sum(pxy * torch.log2(pxy / py.mm(px)))
             ecc = -2*mi/(torch.sum(px*px.log2()) + torch.sum(py*py.log2()))
             c = -ecc
         elif cost_fun == 'nmi':
             # Normalised Mutual Information
+            # Studholme,  Hill & Hawkes (1998).
+            # "A normalized entropy measure of 3-D medical image alignment".
+            # in Proc. Medical Imaging 1998, vol. 3338, San Diego, CA, pp. 132-143.
             nmi = (torch.sum(px*px.log2()) + torch.sum(py*py.log2()))/torch.sum(pxy*pxy.log2())
             c = -nmi
         elif cost_fun == 'ncc':
@@ -543,7 +549,11 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, mx_int,
             i, j = torch.meshgrid(i - m1, j - m2)
             ncc = torch.sum(torch.sum(pxy*i*j))/(sig1*sig2)
             c = -ncc
-    elif cost_fun == 'njtv':  # Total variation based cost
+    elif cost_fun == 'njtv':
+        # Normalised Joint Total Variation
+        # M Brudfors, Y Balbastre, J Ashburner (2020).
+        # "Groupwise Multimodal Image Registration using Joint Total Variation".
+        # in MIUA 2020.
         njtv += torch.sqrt(N)*mtv.sqrt()
         res = njtv
         c = torch.sum(njtv)
