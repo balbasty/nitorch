@@ -220,7 +220,6 @@ def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dt
         dat = F.conv3d(dat[None, None, ...], smo)[0, 0, ...]
 
     if truncate:
-        dat = dat.round()
         dat = dat.clamp_min(mn_out).clamp_max(mx_out)
 
     if do_mask:

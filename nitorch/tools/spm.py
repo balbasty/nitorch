@@ -815,7 +815,7 @@ def noise_estimate(pth_nii, show_fit=False, fig_num=1, num_class=2,
 
     # Mask and get min/max
     mn = torch.min(dat)
-    dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != torch.max(dat)) & (dat != mn)]
+    dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != mn)]
     mx = torch.max(dat)
     mn = mn.round()
     mx = mx.round()
