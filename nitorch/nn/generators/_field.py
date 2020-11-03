@@ -1,4 +1,5 @@
 import torch
+import torch.distributions as td
 from ..modules._base import Module
 from ...core.utils import expand, unsqueeze, ensure_shape, info
 from ...core.constants import pi
@@ -126,3 +127,67 @@ class RandomFieldSample(Module):
         sample = torch.cat(samples_b, dim=0)
 
         return sample
+
+
+class BiasFieldTransform(Module):
+    """Apply a random multiplicative bias field to an image."""
+
+    def __init__(self, mean=None, amplitude=None, fwhm=None):
+        """
+
+        Parameters
+        ----------
+        mean : callable or tensor, default=0
+            Mean value. Should broadcast to (channel, *shape)
+        amplitude : callable or tensor, default=LogNormal(log(1), log(10)/3)
+            Amplitude of the squared-exponential kernel.
+            Should broadcast to (channel, *shape)
+        fwhm : callable or tensor, default=LogNormal(log(5), log(2)/3)
+            Full-width at Half Maximum of the squared-exponential kernel.
+            Should broadcast to (channel, ndim)
+        """
+
+        super().__init__()
+        mean = mean if mean is not None else self.default_mean
+        amplitude = amplitude if amplitude is not None else self.default_amplitude
+        fwhm = fwhm if fwhm is not None else self.default_fwhm
+        self.field = RandomFieldSample(mean=mean, amplitude=amplitude,
+                                       fwhm=fwhm)
+
+    # defer properties
+    mean = property(lambda self: self.field.mean)
+    amplitude = property(lambda self: self.field.amplitude)
+    fwhm = property(lambda self: self.field.fwhm)
+
+    # default generators
+    default_mean = lambda *b: torch.zeros(b)
+
+    @staticmethod
+    def default_amplitude(*b):
+        return td.Normal(0., math.log(10)/3).sample(*b).exp()
+
+    @staticmethod
+    def default_fwhm(*b):
+        return td.Normal(math.log(5.), math.log(2)/3).sample(*b).exp()
+
+    def forward(self, image, **overload):
+        """
+
+        Parameters
+        ----------
+        image : (batch, channel, *shape)
+            Input tensor
+        overload : dict
+
+        Returns
+        -------
+        transformed_image : (batch, channel, *shape)
+            Bias-multiplied tensor
+
+        """
+
+        image = torch.as_tensor(image)
+        bias = self.field(batch=image.shape[0], channel=image.shape[1],
+                          shape=image.shape[2:], **overload)
+        image = image * bias.exp()
+        return image
