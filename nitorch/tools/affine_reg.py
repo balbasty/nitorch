@@ -3,6 +3,7 @@
 TODO
 * Use Bayesian optimisation
 * Work on 2D as well?
+* Seems to be issues with MR to CT registration when using NJTV.
 
 """
 

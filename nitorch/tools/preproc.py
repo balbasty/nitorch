@@ -149,11 +149,11 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
         sf = torch.cat((mn, mx), dim=0)
         sf = torch.tensor([mn_out, mx_out], dtype=dtype, device=device)[..., None].solve(sf)[0].squeeze()
 
-    if scrand:
-        # Add some random noise
-        torch.manual_seed(0)
-        scrand = torch.tensor(scrand, dtype=dtype, device=device)
-        dat = dat + torch.rand_like(dat) * scrand - scrand / 2
+        if scrand:
+            # Add some random noise
+            torch.manual_seed(0)
+            scrand = torch.tensor(scrand, dtype=dtype, device=device)
+            dat = dat + torch.rand_like(dat) * scrand - scrand / 2
 
     if rescale:
         # Truncate
