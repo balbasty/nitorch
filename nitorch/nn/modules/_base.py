@@ -111,18 +111,23 @@ class Module(tnn.Module):
         -------
         loss : dict
             Dictionary of loss values
-
+        metric : dict
+            Dictionary of unweighted loss values
         """
         loss = {}
+        metric = {}
 
         def add_loss(type, key, fn, *args):
             if isinstance(fn, (list, tuple)):
-                _fn, weight = fn
-                fn = lambda *a, **k: weight*_fn(*a, **k)
+                fn, weight = fn
+            else:
+                weight = 1
             key = '{}/{}'.format(type, key)
             if prepend:
                 key = '{}/{}'.format(self.__class__.__name__, key)
-            loss[key] = fn(*args)
+            val = fn(*args)
+            metric[key] = val
+            loss[key] = val if weight == 1 else weight * val
 
         for tag, losses in self.losses.items():
             args = tag_args[tag]
@@ -133,7 +138,7 @@ class Module(tnn.Module):
                 else:
                     add_loss(tag, key, loss_fn, *args)
 
-        return loss
+        return loss, metric
 
     def add_metric(self, tag, **metric_fn):
         """Add one or more metric functions.
@@ -233,8 +238,10 @@ class Module(tnn.Module):
         """
         if _loss is not None:
             assert isinstance(_loss, dict)
-            losses = self.compute_loss(**tag_args)
+            losses, metrics = self.compute_loss(**tag_args)
             self.update_dict(_loss, losses)
+            if _metric is not None:
+                self.update_dict(_metric, metrics)
         if _metric is not None:
             assert isinstance(_metric, dict)
             metrics = self.compute_metric(**tag_args)
