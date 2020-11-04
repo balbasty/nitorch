@@ -659,15 +659,15 @@ def _do_optimisation(q, Nq, args, opt):
     if opt['optimiser'] == 'powell':
         # Powell optimisation
         dtype = q.dtype
+        q = q.cpu().numpy()  # SciPy's powell optimiser requires CPU Numpy arrays
+        q_shape = q.shape
         # Callback
         callback = None
         if opt['mean_space']:
             # Ensure that the paramters have zero mean, across images.
-            callback = lambda x: _zero_mean(x, Nq)
-        s = q.shape
-        q = q.cpu().numpy()  # SciPy's powell optimiser requires CPU Numpy arrays
+            callback = lambda x: _zero_mean(x, q_shape)
         q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback)
-        q = q.reshape(s)
+        q = q.reshape(q_shape)
         q = torch.from_numpy(q).type(dtype).to(opt['device'])  # Cast back to tensor
 
     return q
@@ -973,15 +973,15 @@ def _to_gradient_magnitudes(dat, M):
     return dat
 
 
-def _zero_mean(q, Nq):
-    """Make q have zero mean across channels.
+def _zero_mean(q, q_shape):
+    """Make q have zero mean across input images.
 
     Parameters
     ----------
     q : array_like | tensor_like
         Lie algebra of affine registration fit.
-    Nq : int
-        Number of Lie groups.
+    q_shape : (N, Nq)
+        Original shape of q.
 
     Returns
     ----------
@@ -989,10 +989,9 @@ def _zero_mean(q, Nq):
         Lie algebra of affine registration fit.
 
     """
-    Npar = len(q) # Total number of parameters
-    N = Npar//Nq # Number of input images
     # Reshape
-    q = q.reshape((N, Nq))
+    q_shape0 = q.shape
+    q = q.reshape(q_shape)
     # Make zero mean
     if isinstance(q, np.ndarray):
         # Numpy array
@@ -1001,6 +1000,6 @@ def _zero_mean(q, Nq):
         # PyTorch tensor
         q -= torch.mean(q, dim=0)
     # Reshape back
-    q = q.flatten()
+    q = q.reshape(q_shape0)
 
     return q
