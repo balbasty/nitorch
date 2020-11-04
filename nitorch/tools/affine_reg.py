@@ -3,7 +3,7 @@
 TODO
 * Use Bayesian optimisation
 * Work on 2D as well?
-* Seems to be issues with MR to CT registration when using NJTV.
+* Seems to be issues with MR to CT registration when using NJTV (mean-space).
 
 """
 
@@ -637,15 +637,13 @@ def _data_loader(imgs, opt):
     return dat, mats, dims
 
 
-def _do_optimisation(q, Nq, args, opt):
+def _do_optimisation(q, args, opt):
     """Run optimisation routine to fit q.
 
     Parameters
     ----------
     q : (N, Nq) tensor_like
         Lie algebra of affine registration fit.
-    Nq : int
-        Number of Lie groups.
     args : tuple
         All arguments for optimiser (except the parameters to be fitted)
     opt : dict
@@ -657,17 +655,30 @@ def _do_optimisation(q, Nq, args, opt):
         Optimised Lie algebra of affine registration fit.
 
     """
+    if len(q.shape) == 1:
+        # Pairwise registration
+        N = 1
+        Nq = q.shape[0]
+    else:
+        # Groupwise registration
+        N = q.shape[0]
+        Nq = q.shape[1]
     if opt['optimiser'] == 'powell':
         # Powell optimisation
         dtype = q.dtype
         q = q.cpu().numpy()  # SciPy's powell optimiser requires CPU Numpy arrays
         q_shape = q.shape
+        # Initial search directions
+        direc = np.concatenate([0.5*np.ones(3), 0.025*np.ones(9)])
+        direc = direc[:Nq]
+        direc = np.tile(direc, N)
+        direc = np.diag(direc)
         # Callback
         callback = None
         if opt['mean_space']:
             # Ensure that the paramters have zero mean, across images.
             callback = lambda x: _zero_mean(x, q_shape)
-        q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback)
+        q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback, direc=direc)
         q = q.reshape(q_shape)
         q = torch.from_numpy(q).type(dtype).to(opt['device'])  # Cast back to tensor
 
@@ -706,13 +717,12 @@ def _fit_q(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt):
         All arguments for optimiser (except the parameters to be fitted (q))
 
     '''
-    Nq = B.shape[0]
     if opt['cost_fun'] == 'njtv':  # Groupwise optimisation
         # Arguments to _compute_cost
         m = mov
         args = (grid, dat_fix, M_fix, dat, mats, m, opt['cost_fun'], B, opt['mx_int'])
         # Run groupwise optimisation
-        q[m, ...] = _do_optimisation(q[m, ...], Nq, args, opt)
+        q[m, ...] = _do_optimisation(q[m, ...], args, opt)
         # Show results
         _show_results(q[m, ...], args, opt)
     else:  # Pairwise optimisation
@@ -720,7 +730,7 @@ def _fit_q(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt):
             # Arguments to _compute_cost
             args = (grid, dat_fix, M_fix, dat, mats, [m], opt['cost_fun'], B, opt['mx_int'])
             # Run pairwise optimisation
-            q[m, ...] = _do_optimisation(q[m, ...], Nq, args, opt)
+            q[m, ...] = _do_optimisation(q[m, ...], args, opt)
             # Show results
             _show_results(q[m, ...], args, opt)
 
