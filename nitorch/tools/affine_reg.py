@@ -566,7 +566,7 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, mx_int,
         res = njtv
         c = torch.sum(njtv)
 
-    _ = show_slices(res, fig_num=1, cmap='coolwarm')  # Can be uncommented for testing
+    # _ = show_slices(res, fig_num=1, cmap='coolwarm')  # Can be uncommented for testing
 
     if was_numpy:
         # Back to numpy array
