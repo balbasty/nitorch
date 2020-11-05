@@ -490,9 +490,10 @@ setup(
     name='nitorch',
     version='0.1a.dev',
     packages=find_packages(),
-    install_requires=['torch>=1.5'],
+    install_requires=['torch>=1.5', 
+                      'numpy', 'scipy',  # < used only in spm/affine_reg
+                      ],
     python_requires='>=3.0',
-    setup_requires=['torch>=1.5'],
     ext_package='nitorch',
     ext_modules=build_extensions,
     cmdclass={'build_ext': build_ext}
