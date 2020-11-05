@@ -7,14 +7,11 @@ TODO
 """
 
 
-import math
 import nibabel as nib
 import numpy as np
 import torch
-import os
 from torch.nn import functional as F
 from scipy.optimize import fmin_powell
-from timeit import default_timer as timer
 from ..tools.preproc import load_3d
 from ..plot import show_slices
 from ..core.kernels import smooth
@@ -22,7 +19,7 @@ from ..core.utils import pad
 from ..tools.preproc import (get_origin_mat, modify_affine, reslice_dat, write_img)
 from ..tools.spm import (identity, noise_estimate, mean_space)
 from ..spatial import (affine_basis, affine_matvec, grid_pull, im_gradient, voxel_size)
-from ..core._linalg_expm import expm
+from ..core.linalg import expm
 
 
 # Histogram-based cost functions
