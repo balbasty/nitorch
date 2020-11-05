@@ -56,7 +56,7 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 fig, ax = plt.subplots(1, num_chan, num=fig_num)
         fig_ax = [fig, ax]
         plt.ion()
-        # fig.show()
+        fig.show()
 
     # Get figure and axis objects
     fig = fig_ax[0]

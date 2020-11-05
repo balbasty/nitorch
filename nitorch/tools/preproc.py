@@ -16,54 +16,12 @@ import torch
 from torch.nn import functional as F
 from ..core.kernels import smooth
 from ..core.utils import pad
-from ..spatial import voxel_size, grid_pull
-from .spm import identity, matrix
-from .spm import affine as apply_affine
+from ..spatial import (affine_default, affine_grid, voxel_size, grid_pull)
+from .spm import (identity, matrix)
 
 
-def get_origin_mat(dim, vx=None, dtype=torch.float64, device='cpu'):
-    """Get nitorch compatible affine matrix from dimensions and voxel size.
-
-    Parameters
-    ----------
-    dim : (3,), tuple, list, tensor_like
-        Output image dimensions.
-
-    vx : number, tuple, list, tensor_like, default=None
-        Voxel size of resliced image. If None, uses 1 mm isotropic.
-
-    dtype : torch.dtype, default=torch.float64
-        Data type of function output.
-
-    device : torch.device or str, default='cpu'
-        PyTorch device type.
-
-    Returns
-    -------
-    mat : (4, 4), tensor_like
-        Affine matrix.
-
-    """
-    if not isinstance(dim, torch.Tensor):
-        dim = torch.tensor(dim, dtype=dtype, device=device)
-    if vx is None:
-        vx = (1,) * 3
-    if not isinstance(vx, tuple) or not isinstance(vx, list):
-        vx = (vx)
-    if not isinstance(vx, torch.Tensor):
-        vx = torch.tensor(vx, dtype=dtype, device=device)
-    orig = (dim + 1) / 2
-    off = -vx * orig
-    mat = torch.tensor([[vx[0], 0, 0, off[0]],
-                        [0, vx[1], 0, off[1]],
-                        [0, 0, vx[2], off[2]],
-                        [0, 0, 0, 1]], dtype=dtype, device=device)
-
-    return mat
-
-
-def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dtype=torch.float32,
-           do_mask=True, do_smooth=True):
+def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
+            device='cpu', dtype=torch.float32, do_smooth=True):
     """Load image volume (3D) for subsequent image processing.
 
     Parameters
@@ -77,23 +35,23 @@ def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dt
     samp : int, default=0
         Sub-sampling of image data.
 
-    truncate : bool, default=False
+    rescale : bool, default=False
         Truncate image data based on percentiles.
 
     fwhm : float, default=0.0
         Smoothness estimate for computing a fudge factor.
 
-    mx_out : float, default=None
-        Max output value. If None, uses max in input image.
+    mn_out : float, default=0
+        Minimum intensity in returned image data.
+
+    mx_out : float, default=511
+        Maximum intensity in returned image data.
 
     device : torch.device or str, default='cpu'
         PyTorch device type.
 
     dtype : torch.dtype, default=torch.float64
         Data type of function output.
-
-    do_mask : bool, default=True
-        Set not finite, zeros and minimum values to NaN.
 
     do_smooth : bool, default=True
         If sub-sampling (samp > 0), smooth data a bit.
@@ -109,16 +67,11 @@ def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dt
     grid : (dim_out, 3), tensor_like[dtype]
         Grid with voxel locations in input image (possibly sampled).
 
-    mask : (dim_out), tensor_like[bool]
-        Image mask.
-
     ff : tensor_like[dtype]
         Fudge Factor to (approximately) account for
         non-independence of voxels.
 
     """
-    device = _get_device(device)
-
     # Get image data
     if isinstance(img, str):
         # Input is filepath
@@ -137,7 +90,9 @@ def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dt
         scrand = 1  # As we don't know the original data type, we add random noise
     elif isinstance(img, torch.Tensor):
         dat = img
-        affine = get_origin_mat(dat.shape, device=device, dtype=dtype)
+        affine = affine_default(dat.shape, device=device, dtype=dtype)
+        affine = torch.cat((affine, torch.tensor([0, 0, 0, 1],
+            dtype=affine.dtype, device=affine.device)[None, ...]))  # Add a row to make (4, 4)
         scrand = 1  # As we don't know the original data type, we add random noise
     else:
         raise ValueError('Input error!')
@@ -169,42 +124,38 @@ def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dt
     # Get image dimensions
     dim = tuple(dat.shape[:3])
 
-    # Get mask
-    mask = (torch.isfinite(dat)) & (dat != 0) & (dat > dat.min())
+    # Mask
+    dat[~torch.isfinite(dat)] = 0
 
-    if truncate:
-        # For truncating based on percentiles
-        mn_out = 0
-        if mx_out is None:
-            mx_out = dat.max()
-        else:
-            mx_out = torch.tensor(mx_out, dtype=dtype, device=device)
-
-        mn = torch.tensor([dat.min(), 1], dtype=dtype, device=device)[None, ...]
-        mx = torch.tensor([mx_out, 1], dtype=dtype, device=device)[None, ...]
-        sf = torch.cat((mn, mx), dim=0)
-        sf = torch.tensor([1, 4000], dtype=dtype, device=device)[..., None].solve(sf)[0].squeeze()
-
-        p = dat[mask]
+    if rescale:
+        # Rescale so that image intensities are between 1 and nh (so we can make a histogram)
+        nh = 4000  # Number of histogram bins
+        mn_scl = torch.tensor([dat.min(), 1], dtype=dtype, device=device)[None, ...]
+        mx_scl = torch.tensor([dat.max(), 1], dtype=dtype, device=device)[None, ...]
+        sf = torch.cat((mn_scl, mx_scl), dim=0)
+        sf = torch.tensor([1, nh], dtype=dtype, device=device)[..., None].solve(sf)[0].squeeze()
+        p = dat[(dat != 0) & (dat != dat.min()) & (dat != dat.max())]
         p = (p*sf[0] + sf[1]).round().int()
-        h = torch.bincount(p, weights=None, minlength=4000 - 1)
-        h = h.cumsum(0) / h.sum().type(dtype)
 
-        mn = ((h <= 0.0005).sum(dim=0) - sf[1]) / sf[0]
-        mx = ((h <= 0.9995).sum(dim=0) - sf[1]) / sf[0]
+        # Make histogram and find percentiles
+        h = torch.bincount(p, weights=None, minlength=nh - 1).type(dtype)
+        h = h.cumsum(0) / h.sum()
+        mn_scl = ((h <= 0.0005).sum(dim=0) - sf[1]) / sf[0]
+        mx_scl = ((h <= 0.9999).sum(dim=0) - sf[1]) / sf[0]
 
-        mn = torch.tensor([mn, 1], dtype=dtype, device=device)[None, ...]
-        mx = torch.tensor([mx, 1], dtype=dtype, device=device)[None, ...]
+        # Make scaling to set image intensities between mn_out and mx_out
+        mn = torch.tensor([mn_scl, 1], dtype=dtype, device=device)[None, ...]
+        mx = torch.tensor([mx_scl, 1], dtype=dtype, device=device)[None, ...]
         sf = torch.cat((mn, mx), dim=0)
         sf = torch.tensor([mn_out, mx_out], dtype=dtype, device=device)[..., None].solve(sf)[0].squeeze()
 
-    # Possibly add some random noise
-    if scrand:
-        torch.manual_seed(0)
-    scrand = torch.tensor(scrand, dtype=dtype, device=device)
-    dat = dat + torch.rand_like(dat) * scrand - scrand / 2
+        if scrand:
+            # Add some random noise
+            torch.manual_seed(0)
+            scrand = torch.tensor(scrand, dtype=dtype, device=device)
+            dat = dat + torch.rand_like(dat) * scrand - scrand / 2
 
-    if truncate:
+    if rescale:
         # Truncate
         dat = dat*sf[0] + sf[1]
 
@@ -219,14 +170,10 @@ def load_3d(img, samp=0, truncate=False, fwhm=0.0, mx_out=None, device='cpu', dt
         dat = pad(dat, p, side='both')
         dat = F.conv3d(dat[None, None, ...], smo)[0, 0, ...]
 
-    if truncate:
+    if rescale:
         dat = dat.clamp_min(mn_out).clamp_max(mx_out)
 
-    if do_mask:
-        # Mask data
-        dat[~mask] = float('NaN')
-
-    return dat, affine, grid, mask, ff
+    return dat, affine, grid, ff
 
 
 def modify_affine(pth, M, prefix='ma_', dir_out=None):
@@ -303,7 +250,6 @@ def reset_origin(pth, vx=None, prefix='ro_', device='cpu', interpolation='linear
         Path to reset image.
 
     """
-    device = _get_device(device)
     # Reslice image data to world FOV
     pth, dat, M0 = reslice2world(pth, vx=vx, prefix=prefix, device=device, write=False,
                                  interpolation=interpolation, bound=bound)
@@ -312,7 +258,9 @@ def reset_origin(pth, vx=None, prefix='ro_', device='cpu', interpolation='linear
     vx = voxel_size(M0)
     if M0[:3, :3].det() < 0:
         vx[0] = - vx[0]
-    affine = get_origin_mat(dim, vx, dtype=torch.float64)
+    affine = affine_default(dim, vx, dtype=torch.float64)
+    affine = torch.cat((affine, torch.tensor([0, 0, 0, 1],
+        dtype=affine.dtype, device=affine.device)[None, ...]))  # Add a row to make (4, 4)
     # Write reset image
     pth_out = write_img(pth, dat, affine, prefix=prefix)
 
@@ -352,8 +300,8 @@ def reslice_dat(dat, affine, dim_out, interpolation='linear', bound='zero', extr
     dim_in = dat.shape
     if not isinstance(dat, torch.Tensor):
         dat = torch.from_numpy(dat)
-    grid = apply_affine(dim_out, affine, device=dat.device, dtype=dat.dtype)
-    dat = grid_pull(dat, grid, bound=bound, interpolation=interpolation, extrapolate=extrapolate)
+    grid = affine_grid(affine, dim_out)
+    dat = grid_pull(dat, grid[None, ...], bound=bound, interpolation=interpolation, extrapolate=extrapolate)
 
     return dat[0, 0, ...]
 
@@ -396,8 +344,6 @@ def reslice2world(pth, vx=None, prefix='rw_', device='cpu', write=True, interpol
         Affine transformation of resliced image.
 
     """
-    device = _get_device(device)
-
     # Read file
     img = nib.load(pth)
     dim_in = img.shape
@@ -415,19 +361,20 @@ def reslice2world(pth, vx=None, prefix='rw_', device='cpu', write=True, interpol
     c = c.t()
     # Corners in world space
     c_world = M_in[:3, :4].mm(c)
-    # c_world[0, :] = - c_world[0, :]
+    c_world[0, :] = - c_world[0, :]
     # Get bounding box
     mx = c_world.max(dim=1)[0].round()
     mn = c_world.min(dim=1)[0].round()
     # Compute output affine
-    M_out = matrix(mn).mm(torch.diag(torch.cat((vx_out, torch.ones(1)))).mm(matrix(-1*torch.ones(3, dtype=torch.float64))))
+    M_out = matrix(mn).mm(
+        torch.diag(torch.cat((vx_out, torch.ones(1)))).mm(matrix(-1*torch.ones(3, dtype=torch.float64))))
     # Comput output image dimensions
     dim_out = M_out.inverse().mm(torch.cat((mx, torch.ones(1)))[:, None]).ceil()
     dim_out = dim_out[:3].squeeze()
     dim_out = dim_out.int().tolist()
-    # I = torch.diag(torch.ones(4, dtype=torch.float64))
-    # I[0, 0] = -I[0, 0]
-    # M_out = I.mm(M_out)
+    I = torch.diag(torch.ones(4, dtype=torch.float64))
+    I[0, 0] = -I[0, 0]
+    M_out = I.mm(M_out)
     # Compute mapping from output to input
     M = M_out.solve(M_in)[0]
     # Reslice image data
@@ -537,20 +484,3 @@ def _get_corners(*args):
                       [dim[0], dim[1], dim[2], 1]], dtype=torch.float64)
 
     return c
-
-
-def _get_device(device='cpu'):
-    """Get PyTorch device.
-
-    Parameters
-    ----------
-    device : torch.device or str, default='cpu'
-        PyTorch device type.
-
-    Returns
-    -------
-    device : torch.device or str, default='cpu'
-        PyTorch device type.
-
-    """
-    return torch.device(device if torch.cuda.is_available() else 'cpu')

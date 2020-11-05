@@ -3,6 +3,7 @@
 TODO
 * Use Bayesian optimisation
 * Work on 2D as well?
+* Seems to be issues with MR to CT registration when using NJTV (mean-space).
 
 """
 
@@ -16,9 +17,9 @@ from ..tools.preproc import load_3d
 from ..plot import show_slices
 from ..core.kernels import smooth
 from ..core.utils import pad
-from ..tools.preproc import (get_origin_mat, modify_affine, reslice_dat, write_img)
+from ..tools.preproc import (modify_affine, reslice_dat, write_img)
 from ..tools.spm import (identity, noise_estimate, mean_space)
-from ..spatial import (affine_basis, affine_matvec, grid_pull, im_gradient, voxel_size)
+from ..spatial import (affine_basis, affine_default, affine_matvec, grid_pull, im_gradient, voxel_size)
 from ..core.linalg import expm
 
 
@@ -175,7 +176,7 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
             # Get possibly sub-sampled fixed image, and its resampling grid
             dat_fix, grid = _get_dat_grid(arg_dat_grid, vx_fix, s, opt)
             # Do optimisation
-            q, args = _optimise(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt)
+            q, args = _fit_q(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt)
 
     return q, M_fix, dim_fix
 
@@ -214,7 +215,7 @@ def apply2affine(pths, q, group='SE', prefix='a_', dir_out=None):
         or (isinstance(pths, list) and not isinstance(pths[0], str)):
         raise ValueError('Input should be list of strings!')
     # Get affine basis
-    B = affine_basis(group=group, device=q.device)
+    B = affine_basis(group=group, device=q.device, dtype=q.dtype)
     # Incorporate registration result
     pths_out = []
     N = len(pths)
@@ -275,31 +276,37 @@ def reslice2fix(imgs, q, M_fix, dim_fix, group='SE', prefix='ra_', dtype=torch.f
     """
     pths_out = []
     N = len(imgs)
-    M_fix = M_fix.type(torch.float64)  # affine of resliced data
-    rdat = torch.zeros(dim_fix + (N,), dtype=dtype, device=device)  # tensor for resliced data
+    # Cast to requested data type
+    q = q.type(dtype)
+    M_fix = M_fix.type(dtype)  # affine of resliced data
+    # Make tensor for resliced data
+    rdat = torch.zeros(dim_fix + (N,), dtype=dtype, device=device)
     # Get affine basis
-    B = affine_basis(group=group, device=device)
+    B = affine_basis(group=group, device=device, dtype=dtype)
     for n in range(N):  # Loop over input images
         if isinstance(imgs[n], str):
             # Input is nibabel path
             nii = nib.load(imgs[n])
-            dat = torch.tensor(nii.get_fdata(), device=device)
-            M_mov = torch.from_numpy(nii.affine).type(M_fix.dtype).to(device)
+            dat = torch.tensor(nii.get_fdata(), device=device, dtype=dtype)
+            M_mov = torch.from_numpy(nii.affine).type(dtype).to(device)
         else:
             # Input is image data, and possibly affine matrix
-            write = False  # Do not write to disk
+            if write:
+                raise ValueError('Option write=True not available when input are tensors!')
             if isinstance(imgs[n], tuple):
-                dat = imgs[n][0]
-                M_mov = imgs[n][1]
+                dat = imgs[n][0].type(dtype).to(device)
+                M_mov = imgs[n][1].type(dtype).to(device)
             else:
                 dat = imgs[n]
-                M_mov = _get_origin_mat(imgs[n].shape, device=device, dtype=dtype)
+                M_mov = affine_default(imgs[n].shape, device=device, dtype=dtype)
+                M_mov = torch.cat((M_mov, torch.tensor([0, 0, 0, 1],
+                    dtype=dtype, device=device)[None, ...]))  # Add a row to make (4, 4)
         if not torch.all(q[n, ...] == 0):
             # Get coreg matrix
             A = expm(q[n, ...], B)
-            A = A.type(M_fix.dtype)
-            # Do reslice
+            # Compose transformations
             M = A.mm(M_fix).solve(M_mov)[0]  # M_mov\A*M_fix
+            # Do reslice
             rdat[..., n] = reslice_dat(dat[None, None, ...], M, dim_fix)
         else:
             # Fixed image was among input images, do not reslice
@@ -595,10 +602,17 @@ def _data_loader(imgs, opt):
     dat = []
     mats = []
     dims = []
+    mn_out = None
+    rescale = False
+    if opt['cost_fun'] in costs_hist:
+        # If histogram based coust function, ensure that image intensities are
+        # between mn_out and mx_out.
+        mn_out = 0
+        rescale = True
     for img in imgs:
         # Load data
-        datn, Mn, _, _, _ = load_3d(img,
-            samp=0, do_mask=False, truncate=True, mx_out=opt['mx_int'],
+        datn, Mn, _, _ = load_3d(img,
+            samp=0, rescale=rescale, mx_out=opt['mx_int'],
             device=opt['device'], dtype=torch.float32, do_smooth=True)
         dimn =  torch.tensor(datn.shape[:3], dtype=torch.float32)
 
@@ -620,15 +634,13 @@ def _data_loader(imgs, opt):
     return dat, mats, dims
 
 
-def _do_optimisation(q, Nq, args, opt):
+def _do_optimisation(q, args, opt):
     """Run optimisation routine to fit q.
 
     Parameters
     ----------
     q : (N, Nq) tensor_like
         Lie algebra of affine registration fit.
-    Nq : int
-        Number of Lie groups.
     args : tuple
         All arguments for optimiser (except the parameters to be fitted)
     opt : dict
@@ -640,21 +652,86 @@ def _do_optimisation(q, Nq, args, opt):
         Optimised Lie algebra of affine registration fit.
 
     """
+    if len(q.shape) == 1:
+        # Pairwise registration
+        N = 1
+        Nq = q.shape[0]
+    else:
+        # Groupwise registration
+        N = q.shape[0]
+        Nq = q.shape[1]
     if opt['optimiser'] == 'powell':
         # Powell optimisation
         dtype = q.dtype
+        q = q.cpu().numpy()  # SciPy's powell optimiser requires CPU Numpy arrays
+        q_shape = q.shape
+        # Initial search directions
+        direc = np.concatenate([0.5*np.ones(3), 0.025*np.ones(9)])
+        direc = direc[:Nq]
+        direc = np.tile(direc, N)
+        direc = np.diag(direc)
         # Callback
         callback = None
         if opt['mean_space']:
             # Ensure that the paramters have zero mean, across images.
-            callback = lambda x: _zero_mean(x, Nq)
-        s = q.shape
-        q = q.cpu().numpy()  # SciPy's powell optimiser requires CPU Numpy arrays
-        q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback)
-        q = q.reshape(s)
+            callback = lambda x: _zero_mean(x, q_shape)
+        q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback, direc=direc)
+        q = q.reshape(q_shape)
         q = torch.from_numpy(q).type(dtype).to(opt['device'])  # Cast back to tensor
 
     return q
+
+
+def _fit_q(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt):
+    '''Fit q, either by pairwise or groupwise optimisation.
+
+    Parameters
+    ----------
+     q : (N, Nq) tensor_like
+        Affine parameters.
+    dat_fix : (X1, Y1, Z1) tensor_like
+        Fixed image data.
+    grid : (X1, Y1, Z1) tensor_like
+        Sub-sampled image data's resampling grid.
+    M_fix : (4, 4) tensor_like
+        Fixed affine matrix.
+    dat : [N,] tensor_like
+        List of input images.
+    mats : [N,] tensor_like
+        List of affine matrices.
+    mov : [N,] int
+        Indices of moving images.
+    B : (Nq, N, N) tensor_like
+        Affine basis.
+    opt : dict
+        See run_affine_reg.
+
+    Returns
+    ----------
+    q : (N, Nq) tensor_like
+        Fitted affine parameters.
+    args : tuple
+        All arguments for optimiser (except the parameters to be fitted (q))
+
+    '''
+    if opt['cost_fun'] == 'njtv':  # Groupwise optimisation
+        # Arguments to _compute_cost
+        m = mov
+        args = (grid, dat_fix, M_fix, dat, mats, m, opt['cost_fun'], B, opt['mx_int'])
+        # Run groupwise optimisation
+        q[m, ...] = _do_optimisation(q[m, ...], args, opt)
+        # Show results
+        _show_results(q[m, ...], args, opt)
+    else:  # Pairwise optimisation
+        for m in mov:
+            # Arguments to _compute_cost
+            args = (grid, dat_fix, M_fix, dat, mats, [m], opt['cost_fun'], B, opt['mx_int'])
+            # Run pairwise optimisation
+            q[m, ...] = _do_optimisation(q[m, ...], args, opt)
+            # Show results
+            _show_results(q[m, ...], args, opt)
+
+    return q, args
 
 
 def _get_dat_grid(dat, vx, samp, opt, jitter=True):
@@ -812,59 +889,6 @@ def _hist_2d(img0, img1, mx_int, fwhm=7):
     return H
 
 
-def _optimise(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt):
-    '''Optimise q, either pairwise or groupwise.
-
-    Parameters
-    ----------
-     q : (N, Nq) tensor_like
-        Affine parameters.
-    dat_fix : (X1, Y1, Z1) tensor_like
-        Fixed image data.
-    grid : (X1, Y1, Z1) tensor_like
-        Sub-sampled image data's resampling grid.
-    M_fix : (4, 4) tensor_like
-        Fixed affine matrix.
-    dat : [N,] tensor_like
-        List of input images.
-    mats : [N,] tensor_like
-        List of affine matrices.
-    mov : [N,] int
-        Indices of moving images.
-    B : (Nq, N, N) tensor_like
-        Affine basis.
-    opt : dict
-        See run_affine_reg.
-
-    Returns
-    ----------
-    q : (N, Nq) tensor_like
-        Fitted affine parameters.
-    args : tuple
-        All arguments for optimiser (except the parameters to be fitted (q))
-
-    '''
-    Nq = B.shape[0]
-    if opt['cost_fun'] == 'njtv':  # Groupwise optimisation
-        # Arguments to _compute_cost
-        m = mov
-        args = (grid, dat_fix, M_fix, dat, mats, m, opt['cost_fun'], B, opt['mx_int'])
-        # Run groupwise optimisation
-        q[m, ...] = _do_optimisation(q[m, ...], Nq, args, opt)
-        # Show results
-        _show_results(q[m, ...], args, opt)
-    else:  # Pairwise optimisation
-        for m in mov:
-            # Arguments to _compute_cost
-            args = (grid, dat_fix, M_fix, dat, mats, [m], opt['cost_fun'], B, opt['mx_int'])
-            # Run pairwise optimisation
-            q[m, ...] = _do_optimisation(q[m, ...], Nq, args, opt)
-            # Show results
-            _show_results(q[m, ...], args, opt)
-
-    return q, args
-
-
 def _show_results(q, args, opt):
     """ Simple function for visualising some results during algorithm execution.
     """
@@ -957,15 +981,15 @@ def _to_gradient_magnitudes(dat, M):
     return dat
 
 
-def _zero_mean(q, Nq):
-    """Make q have zero mean across channels.
+def _zero_mean(q, q_shape):
+    """Make q have zero mean across input images.
 
     Parameters
     ----------
     q : array_like | tensor_like
         Lie algebra of affine registration fit.
-    Nq : int
-        Number of Lie groups.
+    q_shape : (N, Nq)
+        Original shape of q.
 
     Returns
     ----------
@@ -973,10 +997,9 @@ def _zero_mean(q, Nq):
         Lie algebra of affine registration fit.
 
     """
-    Npar = len(q) # Total number of parameters
-    N = Npar//Nq # Number of input images
     # Reshape
-    q = q.reshape((N, Nq))
+    q_shape0 = q.shape
+    q = q.reshape(q_shape)
     # Make zero mean
     if isinstance(q, np.ndarray):
         # Numpy array
@@ -985,6 +1008,6 @@ def _zero_mean(q, Nq):
         # PyTorch tensor
         q -= torch.mean(q, dim=0)
     # Reshape back
-    q = q.flatten()
+    q = q.reshape(q_shape0)
 
     return q
