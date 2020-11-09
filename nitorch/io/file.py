@@ -4,6 +4,8 @@ from copy import copy
 from .indexing import expand_index, compose_index
 from ..spatial import affine_sub, affine_permute
 from ..spatial import voxel_size as affvx
+from ..core.optionals import numpy as np
+from . import dtype as cast_dtype
 
 
 class MappedArray(ABC):
@@ -18,6 +20,8 @@ class MappedArray(ABC):
     is_compressed: bool = None    # is compressed
     metadata: dict = dict()       # human-readable metadata (function?)
     dtype: torch.dtype = None     # on-disk data type
+    slope: float = None           # intensity slope
+    inter: float = None           # intensity shift
 
     affine = None                 # voxel-to-world
     _affine = None                # original voxel-to-world
@@ -26,7 +30,7 @@ class MappedArray(ABC):
     shape: tuple = None           # array shape (spatial and others)
     _shape: tuple = None          # original shape
     slicer: tuple = None          # indexing into the parent
-    perm: tuple = None            # permutation of the parent's dimensions
+    permutation: tuple = None     # permutation of the parent's dimensions
 
     dim = property(lambda self: len(self.shape))
     _dim = property(lambda self: len(self._shape))
@@ -41,8 +45,8 @@ class MappedArray(ABC):
         for key, val in kwargs:
             setattr(self, key, val)
 
-        if self.perm is None:
-            self.perm = tuple(range(self._dim))
+        if self.permutation is None:
+            self.permutation = tuple(range(self._dim))
 
         if self.slicer is None:
             # same layout as on-disk
@@ -89,21 +93,21 @@ class MappedArray(ABC):
             affine = None
 
         # update permutation (add/drop axes)
-        perm = []
+        permutation = []
         i = 0
         for idx in index:
             if idx is None or (isinstance(idx, int) and idx < 0):
                 # new axis
-                perm.append(None)
+                permutation.append(None)
                 continue
             elif isinstance(idx, int):
                 # dropped axis
                 i += 1
             else:
                 # kept axis
-                perm.append(self.perm[i])
+                permutation.append(self.permutation[i])
                 i += 1
-        new.perm = tuple(perm)
+        new.permutation = tuple(permutation)
 
         # compute new slicer
         if self.slicer is None:
@@ -113,7 +117,7 @@ class MappedArray(ABC):
 
         # compute new mask of the spatial dimensions
         new.spatial = tuple(False if p is None else self._spatial[p]
-                            for p in new.perm)
+                            for p in new.permutation)
         new.affine = affine
         return new
 
@@ -142,7 +146,7 @@ class MappedArray(ABC):
                              .format(len(set(dims)), self.dim))
 
         # permutations
-        perm = tuple(self.perm[d] for d in dims)
+        permutation = tuple(self.permutation[d] for d in dims)
         shape = tuple(self.shape[d] for d in dims)
         slicer = tuple(self.slicer[d] for d in dims)
         spatial = tuple(self.spatial[d] for d in dims)
@@ -157,7 +161,7 @@ class MappedArray(ABC):
 
         # create new object
         new = copy(self)
-        new.perm = perm
+        new.permutation = permutation
         new.shape = shape
         new.slicer = slicer
         new.spatial = spatial
@@ -181,13 +185,14 @@ class MappedArray(ABC):
             matrix reflecting the transposition.
 
         """
-        perm = list(range(self.dim))
-        perm[dim0] = dim1
-        perm[dim1] = dim0
-        return self.permute(perm)
+        permutation = list(range(self.dim))
+        permutation[dim0] = dim1
+        permutation[dim1] = dim0
+        return self.permute(permutation)
 
     @abstractmethod
-    def data(self, dtype=None, device=None, casting='unsafe', numpy=False):
+    def data(self, dtype=None, device=None, casting='unsafe', rand=True,
+             cutoff=None, dim=None, numpy=False):
         """Load the array in memory
 
         Parameters
@@ -240,7 +245,6 @@ class MappedArray(ABC):
         """
         pass
 
-    @abstractmethod
     def fdata(self, dtype=None, device=None, rand=False, cutoff=None,
               dim=None, numpy=False):
         """Load the scaled array in memory
@@ -275,5 +279,34 @@ class MappedArray(ABC):
         dat : tensor[dtype]
 
         """
-        pass
+        # --- sanity check ---
+        dtype = torch.get_default_dtype() if dtype is None else dtype
+        info = cast_dtype.info(dtype)
+        if not info['is_floating_point']:
+            raise TypeError('Output data type should be a floating point '
+                            'type but got {}.'.format(dtype))
 
+        # --- get unscaled data ---
+        dat = self.data(dtype=dtype, device=device, rand=rand,
+                        cutoff=cutoff, dim=dim, numpy=numpy)
+
+        # --- scale ---
+        if self.slope != 1:
+            dat *= self.slope
+        if self.inter != 0:
+            dat += self.inter
+
+        return dat
+
+    def set_data(self, dat):
+        """Write (partial) data to disk.
+
+        Parameters
+        ----------
+        dat : tensor
+
+        Returns
+        -------
+        self : type(self)
+
+        """

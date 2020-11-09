@@ -4,9 +4,40 @@ from ..core import pyutils
 from .file import MappedArray
 from .indexing import invert_permutation
 from . import dtype as cast_dtype
+from ._babel_utils import writeslice, is_full, array_to_file
+from nibabel import openers
 import torch
 import os
 from warnings import warn
+from contextlib import contextmanager
+
+
+@contextmanager
+def _get_fileobj(self):
+    """Create and return a new ``ImageOpener``, or return an existing one.
+
+    The specific behaviour depends on the value of the ``keep_file_open``
+    flag that was passed to ``__init__``.
+
+    Yields
+    ------
+    ImageOpener
+        A newly created ``ImageOpener`` instance, or an existing one,
+        which provides access to the file.
+    """
+    if self._persist_opener:
+        if not hasattr(self, '_opener'):
+            self._opener = openers.ImageOpener(
+                self.file_like,
+                keep_open=self._keep_file_open,
+                mode=self._mode)
+        yield self._opener
+    else:
+        with openers.ImageOpener(
+                self.file_like,
+                keep_open=False,
+                mode=self._mode) as opener:
+            yield opener
 
 
 class BabelArray(MappedArray):
@@ -34,29 +65,73 @@ class BabelArray(MappedArray):
             iscomp = nib.volumeutils._is_compressed_fobj(f)
         return iscomp
 
-    def __init__(self, file_like):
+    def __init__(self, file_like, perm='r+', keep_open=True):
         """
 
         Parameters
         ----------
         file_like : str or fileobj
             Input file.
+        perm : {'r', 'r+', 'w'}, default='r+'
+            Permission
+        keep_open : bool, default=True
+            Keep file open.
         """
 
         if nib is None:
             raise ImportError('NiBabel is not available.')
 
         if isinstance(file_like, (str, os.PathLike)):
-            obj = nib.load(file_like)
+            obj = nib.load(file_like, mmap=False, keep_file_open=keep_open)
         elif isinstance(file_like, nib.spatialimages.SpatialImage):
             obj = file_like
         else:
             raise TypeError('Input should be a filename or `SpatialImage` '
                             'object. Got {}.'.format(type(file_like)))
 
+        obj.dataobj._mode = perm + 'b'
+        import types
+        obj.dataobj._get_fileobj = types.MethodType(_get_fileobj, obj.dataobj)
         self._image = obj
 
         super().__init__()
+
+    def _set_data_raw(self, dat):
+        """Write native data"""
+        # 0.a) convert to numpy
+        if torch.is_tensor(dat):
+            dat = dat.detach().cpu().numpy()
+        dat = np.asanyarray(dat)
+
+        # 0.b) sanity check for broadcasting
+        slicer = self.slicer or [slice(None)]*self.dim
+        if any(isinstance(idx, int) and idx < 0 for idx in slicer):
+            raise ValueError('Cannot write into a broadcasted volume.')
+
+        # 1) remove new axes
+        drop = [0 if idx is None else slice(None) for idx in slicer]
+        slicer = [idx for idx in slicer if isinstance(idx, slice)
+                  or (isinstance(idx, int) and idx >= 0)]
+        permutation = [p for p in self.permutation if p is not None]
+        dat = dat[tuple(drop)]
+
+        # 2) un-permute indices
+        ipermutation = invert_permutation(permutation)
+        slicer = tuple(slicer[p] for p in ipermutation)
+        dat = dat.transpose(ipermutation)
+
+        # 3) write sub-array (defer to nibabel)
+        if is_full(slicer, self._shape):
+            with self.fileobj as f:
+                array_to_file(dat, f, self.dtype,
+                              offset=self._image.dataobj.offset,
+                              order=self._image.dataobj.order)
+        else:
+            with self.fileobj as f:
+                writeslice(dat, f, slicer, self._shape, self.dtype,
+                           offset=self._image.dataobj.offset,
+                           order=self._image.dataobj.order,
+                           lock=self._image.dataobj._lock)
 
     def _data_raw(self):
         """Read native data
@@ -74,25 +149,28 @@ class BabelArray(MappedArray):
            contiguous, call `np.copy` on it.
 
         """
+
         # 1) remove new axes
-        slicer = [idx for idx in self.slicer if isinstance(idx, slice)
-                  or (isinstance(idx, int) and idx >= 0)]
-        perm = [p for p in self.perm if p is not None]
+        slicer = self.slicer or [slice(None)]*self.dim
+        permutation = self.permutation
+        slicer_simple = [idx for idx in slicer if isinstance(idx, slice)
+                         or (isinstance(idx, int) and idx >= 0)]
+        permutation = [p for p in permutation if p is not None]
 
         # 2) un-permute indices
-        iperm = invert_permutation(perm)
-        slicer = tuple(slicer[p] for p in iperm)
+        ipermutation = invert_permutation(permutation)
+        slicer_simple = tuple(slicer_simple[p] for p in ipermutation)
 
         # 3) load sub-array (defer to nibabel)
-        dat = self._image.dataobj._get_unscaled(slicer)
+        dat = self._image.dataobj._get_unscaled(slicer_simple)
 
         # 4) permute
-        dat = dat.transpose(perm)
+        dat = dat.transpose(permutation)
 
         # 5) compute output shape without any broadcasting
         shape_no_broadcast = []
         i = 0
-        for idx in self.slicer:
+        for idx in slicer:
             if isinstance(idx, int) and idx >= 0:
                 continue
             else:
@@ -184,26 +262,4 @@ class BabelArray(MappedArray):
         # convert to torch if needed
         if not numpy:
             dat = torch.as_tensor(dat, device=device)
-        return dat
-
-    def fdata(self, dtype=None, device=None, rand=False, cutoff=None,
-              dim=None, numpy=False):
-
-        # --- sanity check ---
-        dtype = torch.get_default_dtype() if dtype is None else dtype
-        info = cast_dtype.info(dtype)
-        if not info['is_floating_point']:
-            raise TypeError('Output data type should be a floating point '
-                            'type but got {}.'.format(dtype))
-
-        # --- get unscaled data ---
-        dat = self.data(dtype=dtype, device=device, rand=rand,
-                        cutoff=cutoff, dim=dim, numpy=numpy)
-
-        # --- scale ---
-        if self.slope != 1:
-            dat *= self.slope
-        if self.inter != 0:
-            dat += self.inter
-
         return dat
