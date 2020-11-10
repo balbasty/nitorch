@@ -854,7 +854,8 @@ class AffineMorph(Module):
                              .format(problems, shape1, shape2))
 
     def __init__(self, dim, basis='CSO', encoder=None, stack=None,
-                 kernel_size=3, interpolation='linear', bound='dct2'):
+                 kernel_size=3, interpolation='linear', bound='dct2', *,
+                 _additional_input_channels=0, _additional_output_channels=0):
         """
 
         Parameters
@@ -886,9 +887,9 @@ class AffineMorph(Module):
 
         super().__init__()
         exp = AffineExp(dim, basis=basis)
-        nb_prm = sum(b.shape[0] for b in exp.basis)
+        nb_prm = sum(b.shape[0] for b in exp.basis) + _additional_output_channels
         self.cnn = CNN(dim,
-                       input_channels=2,
+                       input_channels=2 + _additional_input_channels,
                        output_channels=nb_prm,
                        encoder=encoder,
                        stack=stack,

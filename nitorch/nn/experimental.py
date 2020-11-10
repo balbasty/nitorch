@@ -5,7 +5,7 @@ import torch.nn as tnn
 from .modules._base import Module
 from .modules._cnn import UNet, CNN
 from .modules._spatial import GridPull, GridPush, GridExp, VoxelMorph, \
-    AffineExp, AffineGrid, GridResize
+    AffineExp, AffineGrid, GridResize, AffineMorphSemiSupervised
 from .. import spatial
 from ..core.linalg import matvec
 from ..core.utils import expand, unsqueeze
@@ -156,8 +156,6 @@ class DiffeoMovie(Module):
         frames = torch.cat(frames, dim=1)
 
         return frames
-
-
 
 
 class IterativeVoxelMorph(VoxelMorph):
@@ -463,3 +461,73 @@ class AffineVoxelMorph(Module):
                      affine=[affine_prm])
 
         return deformed_source, affine_prm
+
+
+class AffineAndAppearance(AffineMorphSemiSupervised):
+    """An AffineMorph network that also generates an intensity bias field.
+    """
+
+    def __init__(self, dim, *args, bias=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        if bias:
+            self.unet = UNet(dim,
+                             input_channels=2,
+                             output_channels=1,
+                             encoder=None,
+                             decoder=None,
+                             kernel_size=3,
+                             activation=tnn.LeakyReLU(0.2),
+                             final_activation=None)
+        self.tags += ['bias']
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
+
+        # sanity checks
+        self._check_dim(self.dim, source, target, source_seg, target_seg)
+        self._check_shape(target, source, dims=[0], broadcast_ok=True)
+        self._check_shape(target, source, dims=range(2, self.dim+2))
+        self._check_shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        self._check_shape(target_seg, source_seg, dims=range(2, self.dim+2))
+
+        # --- chain operations ---
+        # concat before unet/cnn
+        source_and_target = torch.cat((source, target), dim=1)
+
+        # generate bias field
+        if self.bias:
+            bias = self.unet(source_and_target).exp()
+            source = source * bias
+
+        # generate affine grid
+        affine_prm = self.cnn(source_and_target)
+        affine_prm = affine_prm.reshape(affine_prm.shape[:2])
+        affine = []
+        for prm in affine_prm:
+            affine.append(self.exp(prm))
+        affine = torch.stack(affine, dim=0)
+        grid = self.grid(affine, shape=target.shape[2:])
+
+        # deform source images
+        deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            if source_seg.shape[2:] != source.shape[2:]:
+                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = None
+
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     affine=[affine_prm],
+                     bias=[bias] if self.bias else [],
+                     segmentation=[deformed_source_seg, target_seg])
+
+        if source_seg is None:
+            outputs = (deformed_source, affine_prm)
+        else:
+            output = (deformed_source, deformed_source_seg, affine_prm)
+        if self.bias:
+            output = (*output, bias)
+        return output
