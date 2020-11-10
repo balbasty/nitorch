@@ -5,6 +5,7 @@ from torch import nn as tnn
 from ... import spatial
 from ._cnn import UNet, CNN
 from ._base import Module
+from .. import check
 from ...core.pyutils import make_list
 
 
@@ -700,24 +701,10 @@ class VoxelMorph(Module):
             Velocity field
 
         """
-        # checks
-        if len(source.shape) != self.dim+2:
-            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source.shape))
-        if len(target.shape) != self.dim+2:
-            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target.shape))
-        if not (target.shape[0] == source.shape[0] or
-                target.shape[0] == 1 or source.shape[0] == 1):
-            raise ValueError('Batch dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[0], target.shape[0]))
-        if target.shape[2:] != source.shape[2:]:
-            raise ValueError('Spatial dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[2:], target.shape[2:]))
+        # sanity checks
+        check.dim(self.dim, source, target)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -744,42 +731,15 @@ class VoxelMorphSemiSupervised(VoxelMorph):
         super().__init__(*args, **kwargs)
         self.tags += ['segmentation']
 
-    @staticmethod
-    def _check_dim(dim, *tensors):
-        for tensor in tensors:
-            if tensor is None:
-                continue
-            shape = tensor.shape
-            if len(shape) != dim+2:
-                raise ValueError('Expected tensor to have shape (B, C, *spatial)'
-                                 ' with len(spatial) == {} but found {}.'
-                                 .format(dim, shape))
-
-    @staticmethod
-    def _check_shape(tensor1, tensor2, dims=None, broadcast_ok=False):
-        shape1 = tensor1.shape
-        shape2 = tensor2.shape
-        if dims is None:
-            dims = range(len(shape1))
-        problems = []
-        for d in dims:
-            if shape1[d] != shape2[d]:
-                if not broadcast_ok or (shape1[d] != 1 and shape2[d] == 1):
-                    problems.append(d)
-        if problems:
-            raise ValueError('Dimensions {} of `source` and `target` are '
-                             'not compatible: {} vs {}'
-                             .format(problems, shape1, shape2))
-
     def forward(self, source, target, source_seg=None, target_seg=None,
                 *, _loss=None, _metric=None):
 
         # sanity checks
-        self._check_dim(self.dim, source, target, source_seg, target_seg)
-        self._check_shape(target, source, dims=[0], broadcast_ok=True)
-        self._check_shape(target, source, dims=range(2, self.dim+2))
-        self._check_shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
-        self._check_shape(target_seg, source_seg, dims=range(2, self.dim+2))
+        check.dim(self.dim, source, target, source_seg, target_seg)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -825,33 +785,6 @@ class AffineMorph(Module):
         target |-(cnn)-> lieparam -(exp)-> affine -(pull)-> warped_source
         source |-------------------------------------^
     """
-
-    @staticmethod
-    def _check_dim(dim, *tensors):
-        for tensor in tensors:
-            if tensor is None:
-                continue
-            shape = tensor.shape
-            if len(shape) != dim+2:
-                raise ValueError('Expected tensor to have shape (B, C, *spatial)'
-                                 ' with len(spatial) == {} but found {}.'
-                                 .format(dim, shape))
-
-    @staticmethod
-    def _check_shape(tensor1, tensor2, dims=None, broadcast_ok=False):
-        shape1 = tensor1.shape
-        shape2 = tensor2.shape
-        if dims is None:
-            dims = range(len(shape1))
-        problems = []
-        for d in dims:
-            if shape1[d] != shape2[d]:
-                if not broadcast_ok or (shape1[d] != 1 and shape2[d] == 1):
-                    problems.append(d)
-        if problems:
-            raise ValueError('Dimensions {} of `source` and `target` are '
-                             'not compatible: {} vs {}'
-                             .format(problems, shape1, shape2))
 
     def __init__(self, dim, basis='CSO', encoder=None, stack=None,
                  kernel_size=3, interpolation='linear', bound='dct2', *,
@@ -930,9 +863,9 @@ class AffineMorph(Module):
 
         """
         # sanity checks
-        self._check_dim(self.dim, source, target)
-        self._check_shape(target, source, dims=[0], broadcast_ok=True)
-        self._check_shape(target, source, dims=range(2, self.dim+2))
+        check.dim(self.dim, source, target)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -965,11 +898,11 @@ class AffineMorphSemiSupervised(AffineMorph):
                 *, _loss=None, _metric=None):
 
         # sanity checks
-        self._check_dim(self.dim, source, target, source_seg, target_seg)
-        self._check_shape(target, source, dims=[0], broadcast_ok=True)
-        self._check_shape(target, source, dims=range(2, self.dim+2))
-        self._check_shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
-        self._check_shape(target_seg, source_seg, dims=range(2, self.dim+2))
+        check.dim(self.dim, source, target, source_seg, target_seg)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
