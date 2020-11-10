@@ -952,7 +952,7 @@ class AffineMorph(Module):
         return deformed_source, affine_prm
 
 
-class AffineMorphSemiSupervised(VoxelMorph):
+class AffineMorphSemiSupervised(AffineMorph):
     """An AffineMorph network with a Categorical loss.
     """
 
