@@ -469,6 +469,7 @@ class AffineAndAppearance(AffineMorphSemiSupervised):
 
     def __init__(self, dim, *args, bias=True, **kwargs):
         super().__init__(dim, *args, **kwargs)
+        self.bias = bias
         if bias:
             self.unet = UNet(dim,
                              input_channels=2,
