@@ -6,6 +6,7 @@ from .modules._base import Module
 from .modules._cnn import UNet, CNN
 from .modules._spatial import GridPull, GridPush, GridExp, VoxelMorph, \
     AffineExp, AffineGrid, GridResize, AffineMorphSemiSupervised
+from . import check
 from .. import spatial
 from ..core.linalg import matvec
 from ..core.utils import expand, unsqueeze
@@ -374,9 +375,10 @@ class AffineVoxelMorph(Module):
         self.dim = dim
 
         # register losses/metrics
-        self.tags = ['image', 'velocity', 'affine']
+        self.tags = ['image', 'velocity', 'affine', 'segmentation']
 
-    def forward(self, source, target, *, _loss=None, _metric=None):
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
         """
 
         Parameters
@@ -399,24 +401,12 @@ class AffineVoxelMorph(Module):
             affine Lie parameters
 
         """
-        # checks
-        if len(source.shape) != self.dim + 2:
-            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source.shape))
-        if len(target.shape) != self.dim + 2:
-            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target.shape))
-        if not (target.shape[0] == source.shape[0] or
-                target.shape[0] == 1 or source.shape[0] == 1):
-            raise ValueError('Batch dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[0], target.shape[0]))
-        if target.shape[2:] != source.shape[2:]:
-            raise ValueError('Spatial dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[2:], target.shape[2:]))
+        # sanity checks
+        check.dim(self.dim, source, target, source_seg, target_seg)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
         shape = target.shape[2:]
         info = {'dtype': target.dtype, 'device': target.device}
@@ -453,14 +443,24 @@ class AffineVoxelMorph(Module):
 
         # deform
         deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            if source_seg.shape[2:] != source.shape[2:]:
+                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = None
 
         # compute loss and metrics
         self.compute(_loss, _metric,
                      image=[deformed_source, target],
                      velocity=[velocity],
+                     segmentation=[deformed_source_seg, target_seg],
                      affine=[affine_prm])
 
-        return deformed_source, affine_prm
+        if deformed_source_seg is None:
+            return deformed_source, velocity, affine_prm
+        else:
+            return deformed_source, deformed_source_seg, velocity, affine_prm
 
 
 class AffineAndAppearance(AffineMorphSemiSupervised):
@@ -485,11 +485,11 @@ class AffineAndAppearance(AffineMorphSemiSupervised):
                 *, _loss=None, _metric=None):
 
         # sanity checks
-        self._check_dim(self.dim, source, target, source_seg, target_seg)
-        self._check_shape(target, source, dims=[0], broadcast_ok=True)
-        self._check_shape(target, source, dims=range(2, self.dim+2))
-        self._check_shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
-        self._check_shape(target_seg, source_seg, dims=range(2, self.dim+2))
+        check.dim(self.dim, source, target, source_seg, target_seg)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
         # --- chain operations ---
         # concat before unet/cnn
