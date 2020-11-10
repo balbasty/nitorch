@@ -497,8 +497,8 @@ class AffineAndAppearance(AffineMorphSemiSupervised):
 
         # generate bias field
         if self.bias:
-            bias = self.unet(source_and_target).exp()
-            source = source * bias
+            bias = self.unet(source_and_target)
+            source = source * bias.exp()
 
         # generate affine grid
         affine_prm = self.cnn(source_and_target)
@@ -526,7 +526,7 @@ class AffineAndAppearance(AffineMorphSemiSupervised):
                      segmentation=[deformed_source_seg, target_seg])
 
         if source_seg is None:
-            outputs = (deformed_source, affine_prm)
+            output = (deformed_source, affine_prm)
         else:
             output = (deformed_source, deformed_source_seg, affine_prm)
         if self.bias:
