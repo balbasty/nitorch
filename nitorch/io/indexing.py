@@ -5,6 +5,26 @@ from ..core.optionals import numpy as np
 from copy import copy
 
 
+def is_broadcastaxis(slicer):
+    """Return True if the index represents a broadcasted new axis"""
+    return isinstance(slicer, int) and slicer < 0
+
+
+def is_newaxis(slicer):
+    """Return True if the index represents a new axis"""
+    return slicer is None or (isinstance(slicer, int) and slicer < 0)
+
+
+def is_droppedaxis(slicer):
+    """Return True if the index represents a dropped axis"""
+    return isinstance(slicer, int) and slicer >= 0
+
+
+def is_sliceaxis(slicer):
+    """Return True if the index is a slice"""
+    return isinstance(slicer, slice)
+
+
 def expand_index(index, shape):
     """Expand a tuple of indices into an array of shape `shape`
 

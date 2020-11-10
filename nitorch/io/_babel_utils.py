@@ -21,21 +21,29 @@ slicers2segments = nib.fileslice.slicers2segments
 array_to_file = nib.volumeutils.array_to_file
 
 
+def full_heuristic(*args, **kwargs):
+    """Heuristic that always read the full volume"""
+    return threshold_heuristic(*args, **kwargs, skip_thresh=0)
+
+
 def is_full(slicer, shape):
     return canonical_slicers(slicer, shape, False) == \
            canonical_slicers((), shape, False)
 
+
 def write_segments(fileobj, segments, dat, lock=None):
-    """ Write `n_bytes` byte data implied by `segments` from `fileobj`
+    """Write chunks of `dat` into `fileobj` at locations described in `segments`
 
     Parameters
     ----------
     fileobj : file-like object
-        Implements `seek` and `read`
+        Implements `seek` and `write`
     segments : list
-        list of 2 sequences where sequences are (offset, bytes), giving
-        absolute file offset in bytes and bytes to write
-    dat
+        list of 2 sequences where sequences are (offset, length), giving
+        absolute file offset in bytes and number of bytes to write.
+    dat : byte
+        Byte array to write. Its total length should be equal to the
+        sum of all segment lengths.
     lock : {None, threading.Lock, lock-like} optional
         If provided, used to ensure that paired calls to ``seek`` and ``write``
         cannot be interrupted by another thread accessing the same ``fileobj``.
@@ -55,21 +63,21 @@ def write_segments(fileobj, segments, dat, lock=None):
         offset, length = segments[0]
         with lock:
             fileobj.seek(offset)
-            new_offset = fileobj.write(dat)
-        if new_offset - offset != length:
+            nb_written = fileobj.write(dat)
+        if nb_written != length:
             raise ValueError('Expected to write {} bytes but wrote {}.'
-                             .format(length, new_offset - offset))
+                             .format(length, nb_written))
         return
     # More than one segment
     dat_offset = 0
     for offset, length in segments:
         with lock:
             fileobj.seek(offset)
-            new_offset = fileobj.write(dat[dat_offset:dat_offset+length])
+            nb_written = fileobj.write(dat[dat_offset:dat_offset+length])
         dat_offset += length
-        if new_offset - offset != length:
+        if nb_written != length:
             raise ValueError('Expected to write {} bytes but wrote {}.'
-                             .format(length, new_offset - offset))
+                             .format(length, nb_written))
 
 
 def writeslice(dat, fileobj, sliceobj, shape, dtype, offset=0, order='C',
@@ -134,7 +142,7 @@ def writeslice(dat, fileobj, sliceobj, shape, dtype, offset=0, order='C',
     pre_slicers, segments, sub_slicers, sub_shape = calc_slicedefs_write(
         sliceobj, shape, itemsize, offset, order, heuristic)
     dat = dat[pre_slicers]
-    if not all(sub_slicers == slice(None)):
+    if not all(sub_slicer == slice(None) for sub_slicer in sub_slicers):
         # read-and-write mode
         # it is faster to read a bigger block, write in that block
         # and write it back to disk than writing lots of small chunks
@@ -204,7 +212,7 @@ def calc_slicedefs_write(sliceobj, in_shape, itemsize, offset, order,
         sub_shape = sub_shape[::-1]
         sub_slicers = sub_slicers[::-1]
         pre_slicers = pre_slicers[::-1]
-    return list(pre_slicers), list(segments), list(sub_slicers), sub_shape
+    return tuple(pre_slicers), tuple(segments), tuple(sub_slicers), sub_shape
 
 
 def optimize_write_slicers(sliceobj, in_shape, itemsize, heuristic):

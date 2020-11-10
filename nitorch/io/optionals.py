@@ -1,5 +1,6 @@
 """Check which optional (io) modules are available."""
 
+
 # Nibabel
 try:
     import nibabel
@@ -17,3 +18,4 @@ try:
     import freesurfer
 except ImportError:
     freesurfer = None
+

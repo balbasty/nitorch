@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
 import torch
 from copy import copy
-from .indexing import expand_index, compose_index
+from .indexing import expand_index, compose_index, \
+                      is_droppedaxis, is_newaxis, is_sliceaxis
 from ..spatial import affine_sub, affine_permute
 from ..spatial import voxel_size as affvx
-from ..core.optionals import numpy as np
 from . import dtype as cast_dtype
 
 
@@ -13,29 +13,30 @@ class MappedArray(ABC):
 
     Mapped arrays are usually stored on-disk, along with (diverse) metadata.
 
+    They can be symbolically sliced, allowing for partial reading and
+    (sometimes) writing of data from/to disk.
+    Chaining of symbolic slicing operations is implemented in this base
+    class. The actual partial io must be implemented by the child class.
     """
 
     fname: str = None             # filename (can be None if in-memory proxy)
     fileobj = None                # file-like object (`write`, `seek`, etc)
     is_compressed: bool = None    # is compressed
-    metadata: dict = dict()       # human-readable metadata (function?)
     dtype: torch.dtype = None     # on-disk data type
     slope: float = None           # intensity slope
     inter: float = None           # intensity shift
 
-    affine = None                 # voxel-to-world
+    affine = None                 # sliced voxel-to-world
     _affine = None                # original voxel-to-world
-    spatial: tuple = None         # mask of the spatial dimensions
-    _spatial: tuple = None        # original spatial mask
-    shape: tuple = None           # array shape (spatial and others)
-    _shape: tuple = None          # original shape
+    spatial: tuple = None         # sliced spatial mask (len -> dim)
+    _spatial: tuple = None        # original spatial mask (len -> _dim)
+    shape: tuple = None           # sliced shape (len -> dim)
+    _shape: tuple = None          # original shape (len -> _dim)
     slicer: tuple = None          # indexing into the parent
-    permutation: tuple = None     # permutation of the parent's dimensions
+    permutation: tuple = None     # permutation of original dim (len -> _dim)
 
-    dim = property(lambda self: len(self.shape))
-    _dim = property(lambda self: len(self._shape))
-    batch = property(lambda self: [d for i, d in enumerate(self.shape)
-                                   if i not in self.spatial])
+    dim = property(lambda self: len(self.shape))    # Nb of sliced dimensions
+    _dim = property(lambda self: len(self._shape))  # Nb of original dimensions
     voxel_size = property(lambda self: affvx(self.affine))
 
     def __init__(self, **kwargs):
@@ -91,23 +92,7 @@ class MappedArray(ABC):
             affine, _ = affine_sub(self.affine, spatial_shape, tuple(spatial_index))
         else:
             affine = None
-
-        # update permutation (add/drop axes)
-        permutation = []
-        i = 0
-        for idx in index:
-            if idx is None or (isinstance(idx, int) and idx < 0):
-                # new axis
-                permutation.append(None)
-                continue
-            elif isinstance(idx, int):
-                # dropped axis
-                i += 1
-            else:
-                # kept axis
-                permutation.append(self.permutation[i])
-                i += 1
-        new.permutation = tuple(permutation)
+        new.affine = affine
 
         # compute new slicer
         if self.slicer is None:
@@ -115,11 +100,41 @@ class MappedArray(ABC):
         else:
             new.slicer = compose_index(self.slicer, index)
 
-        # compute new mask of the spatial dimensions
-        new.spatial = tuple(False if p is None else self._spatial[p]
-                            for p in new.permutation)
-        new.affine = affine
+        # compute new spatial mask
+        spatial = []
+        i = 0
+        for idx in index:
+            if is_newaxis(idx):
+                spatial.append(False)
+            else:
+                # original axis
+                if not is_droppedaxis(idx):
+                    spatial.append(self._spatial[self.permutation[i]])
+                i += 1
+        new.spatial = tuple(spatial)
+
         return new
+
+    def __setitem__(self, index, value):
+        """Write scaled data to disk.
+
+        Parameters
+        ----------
+        index : tuple
+            Tuple of indices (see `__getitem__`)
+        value : array or tensor
+            Array-like with shape `self[index].shape`
+
+        Returns
+        -------
+        self : type(self)
+
+        """
+        if isinstance(value, MappedArray):
+            raise NotImplementedError
+        else:
+            self.__getitem__(index).set_fdata(value)
+        return self
 
     def __call__(self, *args, **kwargs):
         return self.fdata(*args, **kwargs)
@@ -145,15 +160,30 @@ class MappedArray(ABC):
                              'as the array\'s dimension. Got {} and {}.'
                              .format(len(set(dims)), self.dim))
 
-        # permutations
-        permutation = tuple(self.permutation[d] for d in dims)
+        # Permute tuples that relate to the current spatial dimensions
         shape = tuple(self.shape[d] for d in dims)
-        slicer = tuple(self.slicer[d] for d in dims)
         spatial = tuple(self.spatial[d] for d in dims)
+
+        # Permute tuples that relate to the slicer indices
+        # (some of these slicers can drop dimensions, so their length
+        #  can be greater than the current number of dimensions)
+        slicer = []
+        dim_map = []
+        n_slicer = 0        # index into the slicer tuple
+        n_dropped = 0       # number of dropped dimensions on the left
+        for d in dims:
+            if is_droppedaxis(self.slicer[n_slicer]):
+                slicer.append(self.slicer[n_slicer])
+                dim_map.append(self.permutation[n_slicer])
+                n_dropped += 1
+            else:
+                slicer.append(self.slicer[d + n_dropped])
+                dim_map.append(self.permutation[d + n_dropped])
+            n_slicer += 1
 
         # permute affine
         # (it's a bit more complicated: we need to find the
-        #  permutation of the *current* spatial dimensions)
+        #  permutation of the *current* *spatial* dimensions)
         perm_spatial = [p for p in dims if self.spatial[p]]
         perm_spatial = sorted(range(len(perm_spatial)),
                               key=lambda k: perm_spatial[k])
@@ -161,10 +191,10 @@ class MappedArray(ABC):
 
         # create new object
         new = copy(self)
-        new.permutation = permutation
         new.shape = shape
-        new.slicer = slicer
         new.spatial = spatial
+        new.permutation = tuple(dim_map)
+        new.slicer = tuple(slicer)
         new.affine = affine
         return new
 
@@ -298,15 +328,127 @@ class MappedArray(ABC):
 
         return dat
 
-    def set_data(self, dat):
+    @abstractmethod
+    def set_data(self, dat, casting='unsafe'):
         """Write (partial) data to disk.
 
         Parameters
         ----------
         dat : tensor
+            Tensor to write on disk. It should have shape `self.shape`.
+        casting : {'no', 'equiv', 'safe', 'same_kind', 'unsafe', 'rescale'}, default='unsafe'
+            Controls what kind of data casting may occur:
+                * 'no': the data types should not be cast at all.
+                * 'equiv': only byte-order changes are allowed.
+                * 'safe': only casts which can preserve values are allowed.
+                * 'same_kind': only safe casts or casts within a kind,
+                  like float64 to float32, are allowed.
+                * 'unsafe': any data conversions may be done.
+                * 'rescale': the input data is rescaled to match the dynamic
+                  range of the output type. The minimum value in the data
+                  is mapped to the minimum value of the data type and the
+                  maximum value in the data is mapped to the maximum value
+                  of the data type.
+                * 'rescale_zero': the input data is rescaled to match the
+                  dynamic range of the output type, but ensuring that
+                  zero maps to zero.
+                  > If the data is signed and cast to a signed datatype,
+                    zero maps to zero, and the scaling is chosen so that
+                    both the maximum and minimum value in the data fit
+                    in the output dynamic range.
+                  > If the data is signed and cast to an unsigned datatype,
+                    negative values "wrap around" (as with an unsafe cast).
+                  > If the data is unsigned and cast to a signed datatype,
+                    values are kept positive (the negative range is unused).
 
         Returns
         -------
         self : type(self)
 
         """
+        pass
+
+    def set_fdata(self, dat):
+        """Write (partial) scaled data to disk.
+
+        Parameters
+        ----------
+        dat : tensor
+            Tensor to write on disk. It should have shape `self.shape`
+            and a floating point data type.
+
+        Returns
+        -------
+        self : type(self)
+
+        """
+        # --- sanity check ---
+        info = cast_dtype.info(dat.dtype)
+        if not info['is_floating_point']:
+            raise TypeError('Input data type should be a floating point '
+                            'type but got {}.'.format(dat.dtype))
+        if dat.shape != self.shape:
+            raise TypeError('Expected input shape {} but got {}.'
+                            .format(self.shape, dat.shape))
+
+        # --- detach ---
+        if torch.is_tensor(dat):
+            dat = dat.detach()
+
+        # --- unscale ---
+        if self.inter != 0 or self.slope != 1:
+            dat = dat.clone() if torch.is_tensor(dat) else dat.copy()
+        if self.inter != 0:
+            dat -= self.inter
+        if self.slope != 1:
+            dat /= self.slope
+
+        # --- set unscaled data ---
+        self.set_data(dat)
+
+        return self
+
+    @abstractmethod
+    def metadata(self, keys=None):
+        """Read metadata
+
+        .. note:: The values returned by this function always relate to
+                  the full volume, even if we're inside a view. That is,
+                  we always return the affine of the original volume.
+                  To get an affine matrix that relates to the view,
+                  use `self.affine`.
+
+        Parameters
+        ----------
+        keys : sequence[str], optional
+            List of metadata to load. They can either be one of the
+            generic metadata keys define in `io.metadata`, or a
+            format-specific metadata key.
+            By default, all generic keys that are found in the file
+            are returned.
+
+        Returns
+        -------
+        metadata : dict
+            A dictionary of metadata
+
+        """
+        pass
+
+    @abstractmethod
+    def set_metadata(self, meta=None):
+        """Write metadata
+
+        Parameters
+        ----------
+        meta : dict, optional
+            Dictionary of metadata.
+            Fields that are absent from the dictionary or that have
+            value `None` are kept untouched.
+
+        Returns
+        -------
+        self : type(self)
+
+        """
+        pass
