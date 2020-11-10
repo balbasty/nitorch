@@ -736,6 +736,78 @@ class VoxelMorph(Module):
         return deformed_source, velocity
 
 
+class VoxelMorphSemiSupervised(VoxelMorph):
+    """A VoxelMorph network with a Categorical loss.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tags += ['segmentation']
+
+    @staticmethod
+    def _check_dim(dim, *tensors):
+        for tensor in tensors:
+            if tensor is None:
+                continue
+            shape = tensor.shape
+            if len(shape) != dim+2:
+                raise ValueError('Expected tensor to have shape (B, C, *spatial)'
+                                 ' with len(spatial) == {} but found {}.'
+                                 .format(dim, shape))
+
+    @staticmethod
+    def _check_shape(tensor1, tensor2, dims=None, broadcast_ok=False):
+        shape1 = tensor1.shape
+        shape2 = tensor2.shape
+        if dims is None:
+            dims = range(len(shape1))
+        problems = []
+        for d in dims:
+            if shape1[d] != shape2[d]:
+                if not broadcast_ok or (shape1[d] != 1 and shape2[d] == 1):
+                    problems.append(d)
+        if problems:
+            raise ValueError('Dimensions {} of `source` and `target` are '
+                             'not compatible: {} vs {}'
+                             .format(problems, shape1, shape2))
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
+
+        # sanity checks
+        self._check_dim(self.dim, source, target, source_seg, target_seg)
+        self._check_shape(target, source, dims=[0], broadcast_ok=True)
+        self._check_shape(target, source, dims=range(2, self.dim+2))
+        self._check_shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        self._check_shape(target_seg, source_seg, dims=range(2, self.dim+2))
+
+        # chain operations
+        source_and_target = torch.cat((source, target), dim=1)
+        velocity = self.unet(source_and_target)
+        velocity = spatial.channel2grid(velocity)
+        velocity_small = self.resize(velocity, type='displacement')
+        grid = self.exp(velocity_small)
+        grid = self.resize(grid, shape=target.shape[2:])
+        deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            if source_seg.shape[2:] != source.shape[2:]:
+                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = None
+
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     velocity=[velocity],
+                     segmentation=[deformed_source_seg, target_seg])
+
+        if source_seg is None:
+            return deformed_source, velocity
+        else:
+            return deformed_source, deformed_source_seg, velocity
+
+
 class AffineMorph(Module):
     """Affine registration network.
 
@@ -753,6 +825,33 @@ class AffineMorph(Module):
         target |-(cnn)-> lieparam -(exp)-> affine -(pull)-> warped_source
         source |-------------------------------------^
     """
+
+    @staticmethod
+    def _check_dim(dim, *tensors):
+        for tensor in tensors:
+            if tensor is None:
+                continue
+            shape = tensor.shape
+            if len(shape) != dim+2:
+                raise ValueError('Expected tensor to have shape (B, C, *spatial)'
+                                 ' with len(spatial) == {} but found {}.'
+                                 .format(dim, shape))
+
+    @staticmethod
+    def _check_shape(tensor1, tensor2, dims=None, broadcast_ok=False):
+        shape1 = tensor1.shape
+        shape2 = tensor2.shape
+        if dims is None:
+            dims = range(len(shape1))
+        problems = []
+        for d in dims:
+            if shape1[d] != shape2[d]:
+                if not broadcast_ok or (shape1[d] != 1 and shape2[d] == 1):
+                    problems.append(d)
+        if problems:
+            raise ValueError('Dimensions {} of `source` and `target` are '
+                             'not compatible: {} vs {}'
+                             .format(problems, shape1, shape2))
 
     def __init__(self, dim, basis='CSO', encoder=None, stack=None,
                  kernel_size=3, interpolation='linear', bound='dct2'):
@@ -829,24 +928,10 @@ class AffineMorph(Module):
             affine Lie parameters
 
         """
-        # checks
-        if len(source.shape) != self.dim + 2:
-            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source.shape))
-        if len(target.shape) != self.dim + 2:
-            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target.shape))
-        if not (target.shape[0] == source.shape[0] or
-                target.shape[0] == 1 or source.shape[0] == 1):
-            raise ValueError('Batch dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[0], target.shape[0]))
-        if target.shape[2:] != source.shape[2:]:
-            raise ValueError('Spatial dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[2:], target.shape[2:]))
+        # sanity checks
+        self._check_dim(self.dim, source, target)
+        self._check_shape(target, source, dims=[0], broadcast_ok=True)
+        self._check_shape(target, source, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -865,3 +950,50 @@ class AffineMorph(Module):
                      affine=[affine_prm])
 
         return deformed_source, affine_prm
+
+
+class AffineMorphSemiSupervised(VoxelMorph):
+    """An AffineMorph network with a Categorical loss.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tags += ['segmentation']
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
+
+        # sanity checks
+        self._check_dim(self.dim, source, target, source_seg, target_seg)
+        self._check_shape(target, source, dims=[0], broadcast_ok=True)
+        self._check_shape(target, source, dims=range(2, self.dim+2))
+        self._check_shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        self._check_shape(target_seg, source_seg, dims=range(2, self.dim+2))
+
+        # chain operations
+        source_and_target = torch.cat((source, target), dim=1)
+        affine_prm = self.cnn(source_and_target)
+        affine_prm = affine_prm.reshape(affine_prm.shape[:2])
+        affine = []
+        for prm in affine_prm:
+            affine.append(self.exp(prm))
+        affine = torch.stack(affine, dim=0)
+        grid = self.grid(affine, shape=target.shape[2:])
+        deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            if source_seg.shape[2:] != source.shape[2:]:
+                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = None
+
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     affine=[affine_prm],
+                     segmentation=[deformed_source_seg, target_seg])
+
+        if source_seg is None:
+            return deformed_source, affine_prm
+        else:
+            return deformed_source, deformed_source_seg, affine_prm
