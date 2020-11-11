@@ -377,6 +377,53 @@ class AffineVoxelMorph(Module):
         # register losses/metrics
         self.tags = ['image', 'velocity', 'affine', 'segmentation']
 
+    def exp(self, velocity, affine=None):
+        """Generate a deformation grid from tangent parameters.
+
+        Parameters
+        ----------
+        velocity : (batch, *spatial, nb_dim)
+            Stationary velocity field
+        affine : (batch, nb_prm)
+            Affine parameters
+
+        Returns
+        -------
+        grid : (batch, *spatial, nb_dim)
+            Transformation grid that maps voxels to voxels.
+
+        """
+        # generate grid
+        shape = velocity.shape[1:-1]
+        velocity_small = self.resize(velocity, type='displacement')
+        grid = self.velexp(velocity_small)
+        grid = self.resize(grid, shape=shape, type='grid')
+
+        if affine is not None:
+            # exponentiate
+            info = {'dtype': affine.dtype, 'device': affine.device}
+            affine_prm = affine
+            affine = []
+            for prm in affine_prm:
+                affine.append(self.affexp(prm))
+            affine = torch.stack(affine, dim=0)
+
+            # shift center of rotation
+            affine_shift = torch.cat((
+                torch.eye(self.dim, **info),
+                -torch.as_tensor(shape, **info)[:, None]/2),
+                dim=1)
+            affine = spatial.affine_matmul(affine, affine_shift)
+            affine = spatial.affine_lmdiv(affine_shift, affine)
+
+            # compose
+            affine = unsqueeze(affine, dim=-3, ndim=self.dim)
+            lin = affine[..., :self.dim, :self.dim]
+            off = affine[..., :self.dim, -1]
+            grid = matvec(lin, grid) + off
+
+        return grid
+
     def forward(self, source, target, source_seg=None, target_seg=None,
                 *, _loss=None, _metric=None):
         """
@@ -408,38 +455,18 @@ class AffineVoxelMorph(Module):
         check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
         check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
-        shape = target.shape[2:]
-        info = {'dtype': target.dtype, 'device': target.device}
-
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
 
         # generate affine
         affine_prm = self.cnn(source_and_target)
         affine_prm = affine_prm.reshape(affine_prm.shape[:2])
-        affine = []
-        for prm in affine_prm:
-            affine.append(self.affexp(prm))
-        affine = torch.stack(affine, dim=0)
-        affine_shift = torch.cat((
-            torch.eye(self.dim, **info),
-            -torch.as_tensor(shape, **info)[:, None]/2),
-            dim=1)
-        affine = spatial.affine_matmul(affine, affine_shift)
-        affine = spatial.affine_lmdiv(affine_shift, affine)
 
-        # generate grid
+        # generate velocity
         velocity = self.unet(source_and_target)
-        velocity = spatial.channel2grid(velocity)
-        velocity_small = self.resize(velocity)
-        grid = self.velexp(velocity_small)
-        grid = self.resize(grid, shape=shape)
 
-        # compose
-        affine = unsqueeze(affine, dim=-3, ndim=self.dim)
-        lin = affine[..., :self.dim, :self.dim]
-        off = affine[..., :self.dim, -1]
-        grid = matvec(lin, grid) + off
+        # generate deformation grid
+        grid = self.exp(velocity, affine_prm)
 
         # deform
         deformed_source = self.pull(source, grid)
