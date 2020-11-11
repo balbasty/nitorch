@@ -471,6 +471,7 @@ class AffineVoxelMorph(Module):
 
         # generate velocity
         velocity = self.unet(source_and_target)
+        velocity = spatial.channel2grid(velocity)
 
         # generate deformation grid
         grid = self.exp(velocity, affine_prm)
