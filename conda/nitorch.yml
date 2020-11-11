@@ -11,3 +11,4 @@ dependencies:
   - pip
   - matplotlib
   - scipy
+  - python-wget
