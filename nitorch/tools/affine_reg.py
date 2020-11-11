@@ -13,18 +13,80 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 from scipy.optimize import fmin_powell
-from ..tools.preproc import load_3d
 from ..plot import show_slices
 from ..core.kernels import smooth
-from ..core.utils import pad
-from ..tools.preproc import (modify_affine, reslice_dat, write_img)
-from ..tools.spm import (identity, noise_estimate, mean_space)
+from ..core.utils import (pad, get_pckg_data)
 from ..spatial import (affine_basis, affine_default, affine_matvec, grid_pull, im_gradient, voxel_size)
 from ..core.linalg import expm
+from .preproc import (load_3d, modify_affine, reslice_dat, write_img)
+from .spm import (identity, noise_estimate, mean_space)
 
 
 # Histogram-based cost functions
 costs_hist = ['mi', 'ecc', 'nmi', 'ncc']
+
+
+def mni_align(imgs, rigid=True, samp=4, cost_fun='nmi', device='cpu', modify_header=False,
+              prefix='mni_', dir_out=None):
+    """Affinely align brain image(s) to MNI space.
+
+    This function aligns each input image, in a pairwise manner, to a
+    T1w intensity atlas. The alignment is rigid+isotropic scaling. At
+    the end, only the rigid part can be extracted.
+
+    Parameters
+    ----------
+    imgs : [N,] str, List of paths to nibabel compatible files
+           [N,] tensor_like, List of 3D image volume ass tensors
+           [N,] (tensor_like, tensor_like) List of tuples, where
+            each tuple has two tensors: 3D image volume and affine matrix.
+    rigid = bool, default=True
+        Do rigid alignment to MNI. If False, does rigid+isotropic scaling.
+    samp : (float, ), default=4
+        Optimisation sampling steps (mm).
+    cost_fun : str, default='nmi'
+        * 'nmi' : Normalised Mutual Information (pairwise method)
+        * 'mi' : Mutual Information (pairwise method)
+        * 'ncc' : Normalised Cross Correlation (pairwise method)
+        * 'ecc' : Entropy Correlation Coefficient (pairwise method)
+        * 'njtv' : Normalised Joint Total variation (groupwise method)
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+    modify_header : bool, default=False
+        If input images are nibabel paths, modify their affine matrices to
+        take MNI alignemnt into account.
+    prefix : str, default='mni_'
+        Filename prefix.
+    dir_out : str, default=None
+        Full path to directory where to write image.
+
+    Returns
+    ----------
+    q_mni : (N, 6|7) tensor_like
+        Registration parameters aligning to MNI space.
+
+    """
+    # Get path to nitorch's T1w intensity atlas
+    pth_atlas = get_pckg_data('atlas_t1')
+    # Get number of input images
+    N = len(imgs)
+    # Append atlas at the end of input data
+    imgs.append(pth_atlas)
+    # Align each image, pair-wise, to atlas. Does a rigid plus isotropic scaling registration.
+    q_mni, mat_fix, dim_fix = run_affine_reg(imgs,
+         group='CSO', device=device, samp=samp, cost_fun=cost_fun,
+         fix=N, verbose=False)
+    # Remove atlas
+    imgs = imgs[:N]
+    q_mni = q_mni[:N, ...]
+    if rigid:
+        # Extract only rigid part
+        q_mni = q_mni[..., :6]
+    if modify_header:
+        # Modify header
+        apply2affine(imgs, q_mni, group='SE', prefix=prefix, dir_out=dir_out)
+
+    return q_mni
 
 
 def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
@@ -87,18 +149,16 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
         * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
     mean_space : bool, default=False
         Optimise a mean-space fit, only available if cost_fun='njtv'.
-    samp : (3,) float, default=(4, 2)
+    samp : (float, ), default=(4, 2)
         Optimisation sampling steps (mm).
     optimiser : str, default='powell'
         'powell' : Optimisation method.
     fix : int, default=0
         Index of image to used as fixed image, not used if mean_space=True.
-    fov : (2,) tuple, default=None
-        A tuple with affine matrix (tensor_like) and dimensions (tuple) of mean space.
     verbose : bool, default=False
         Show registration results.
-    device : torch.device or str, default='cpu'
-        PyTorch device type.
+    fov : (2,) tuple, default=None
+        A tuple with affine matrix (tensor_like) and dimensions (tuple) of mean space.
     device : torch.device or str, default='cpu'
         PyTorch device type.
     mx_int : int, default=511
@@ -132,6 +192,8 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
                'mx_int' : mx_int}
         if opt['cost_fun'] not in costs_hist:
             opt['mx_int'] = None
+        if not isinstance(opt['samp'], tuple):
+            opt['samp'] = (opt['samp'], )
 
         # Some very basic sanity checks
         N = len(imgs) # Number of input scans
