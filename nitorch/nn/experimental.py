@@ -377,7 +377,7 @@ class AffineVoxelMorph(Module):
         # register losses/metrics
         self.tags = ['image', 'velocity', 'affine', 'segmentation']
 
-    def exp(self, velocity, affine=None):
+    def exp(self, velocity, affine=None, displacement=False):
         """Generate a deformation grid from tangent parameters.
 
         Parameters
@@ -386,13 +386,18 @@ class AffineVoxelMorph(Module):
             Stationary velocity field
         affine : (batch, nb_prm)
             Affine parameters
+        displacement : bool, default=False
+            Return a displacement field (voxel to shift) rather than
+            a transformation field (voxel to voxel).
 
         Returns
         -------
         grid : (batch, *spatial, nb_dim)
-            Transformation grid that maps voxels to voxels.
+            Deformation grid (transformation or displacment).
 
         """
+        info = {'dtype': velocity.dtype, 'device': velocity.device}
+
         # generate grid
         shape = velocity.shape[1:-1]
         velocity_small = self.resize(velocity, type='displacement')
@@ -401,7 +406,6 @@ class AffineVoxelMorph(Module):
 
         if affine is not None:
             # exponentiate
-            info = {'dtype': affine.dtype, 'device': affine.device}
             affine_prm = affine
             affine = []
             for prm in affine_prm:
@@ -421,6 +425,9 @@ class AffineVoxelMorph(Module):
             lin = affine[..., :self.dim, :self.dim]
             off = affine[..., :self.dim, -1]
             grid = matvec(lin, grid) + off
+
+        if displacement:
+            grid = grid - spatial.identity_grid(grid.shape[1:-1], **info)
 
         return grid
 
