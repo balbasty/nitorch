@@ -2,6 +2,21 @@
 
 
 def dim(dim, *tensors):
+    """Check that all tensors have `dim + 2` dimensions.
+
+    Parameters
+    ----------
+    dim : int
+        Expected spatial dimension
+    tensors : tensor or None
+        Inputs tensors
+
+    Raises
+    ------
+    ValueError
+        If not `all(tensor.dim == dim+2)`. `None` inputs are discarded.
+
+    """
     for tensor in tensors:
         if tensor is None:
             continue
@@ -13,6 +28,31 @@ def dim(dim, *tensors):
 
 
 def shape(tensor1, tensor2, dims=None, broadcast_ok=False):
+    """Check that the dimensions of two tensors are compatible.
+
+    Parameters
+    ----------
+    tensor1 : tensor or None
+        First input tensor
+    tensor2 : tensor or None
+        Second input tensor
+    dims : int or sequence[int], optional
+        Dimensions to check. By default, all dimensions are checked.
+    broadcast_ok : bool, default=False
+        If `True`, accept dimensions that are compatible for
+        broadcasting (_i.e._, one of them is 1).
+
+    Raises
+    ------
+    ValueError
+        If `tensor1.dim != tensor2.dim` or dimensions listed in `dim`
+        are not compatible.
+        Dimensions are deemed compatible if they are equal or (when
+        `broadcast_ok is True`) if one of them is 1.
+
+    """
+    if tensor1.dim != tensor2.dim:
+        raise ValueError()
     shape1 = tensor1.shape
     shape2 = tensor2.shape
     if dims is None:
