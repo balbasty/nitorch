@@ -51,6 +51,8 @@ def shape(tensor1, tensor2, dims=None, broadcast_ok=False):
         `broadcast_ok is True`) if one of them is 1.
 
     """
+    if tensor1 is None or tensor2 is None:
+        return
     if tensor1.dim() != tensor2.dim():
         raise ValueError("Number of dimensions not consistent: {} vs {}."
                          .format(tensor1.dim(), tensor2.dim()))
