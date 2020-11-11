@@ -15,7 +15,8 @@ from torch.nn import functional as F
 from scipy.optimize import fmin_powell
 from ..plot import show_slices
 from ..core.kernels import smooth
-from ..core.utils import (pad, get_pckg_data)
+from ..core.utils import pad
+from ..core.pyutils import get_pckg_data
 from ..spatial import (affine_basis, affine_default, affine_matvec, grid_pull, im_gradient, voxel_size)
 from ..core.linalg import expm
 from .preproc import (load_3d, modify_affine, reslice_dat, write_img)

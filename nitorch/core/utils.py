@@ -1,75 +1,9 @@
 """PyTorch utilities."""
 
 
-import os
-import wget
-import gzip
-import pathlib
-import shutil
 import torch
 import torch.nn.functional as F
 from .pyutils import make_list, make_tuple
-
-
-# nitorch data directory (ugly, I know..)
-dir_nitorch_data = os.path.join(pathlib.Path(__file__).parent.parent.parent.absolute(), 'data')
-
-# nitorch data dictionary.
-# Keys are data names, values are list of FigShare URL and filename.
-nitorch_data = {}
-nitorch_data['atlas_t1'] = ['https://ndownloader.figshare.com/files/25438340', 'mb_mni_avg218T1.nii.gz']
-nitorch_data['atlas_t2'] = ['https://ndownloader.figshare.com/files/25438343', 'mb_mni_avg218T2.nii.gz']
-nitorch_data['atlas_pd'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_mni_avg218PD.nii.gz']
-
-
-def _download_pckg_data(name):
-    '''Download and extract nitorch data.
-
-    Parameters
-    ----------
-    name : str
-        Name of nitorch data, available are:
-        * atlas_t1: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_t2: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_pd: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
-
-    '''
-    # Make data directory, if not already exists
-    pathlib.Path(dir_nitorch_data).mkdir(parents=True, exist_ok=True)
-    # Get download options
-    url = nitorch_data[name][0]
-    fname = nitorch_data[name][1]
-    pth_data = os.path.join(dir_nitorch_data, fname)
-    # Define wget progress bar
-    def bar(current, total, width=80):
-        print("Downloading %s to %s. Progress: %d%% (%d/%d bytes)" % (fname, dir_nitorch_data, current / total * 100, current, total))
-    if not os.path.exists(pth_data):
-        # Download data
-        wget.download(url, pth_data, bar=bar)
-
-
-def get_pckg_data(name):
-    '''Get nitorch package data.
-
-    Parameters
-    ----------
-    name : str
-        Name of nitorch data, available are:
-        * atlas_t1: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_t2: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_pd: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
-
-    Returns
-    ----------
-    pth_data : str
-        Absolute path to requested nitorch data.
-
-    '''
-    pth_data = os.path.join(dir_nitorch_data, nitorch_data[name][1])
-    if not os.path.exists(pth_data):
-        _download_pckg_data(name)
-
-    return pth_data
 
 
 def as_tensor(input, dtype=None, device=None):
