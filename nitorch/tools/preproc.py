@@ -83,7 +83,7 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
             scrand = nii.dataobj.slope
         else:
             scrand = 0;
-    elif isinstance(img, tuple):
+    elif isinstance(img, tuple) or isinstance(img, list):
         # Input is tuple with two tensors: image data and affine tensors
         dat = img[0]
         affine = img[1]
