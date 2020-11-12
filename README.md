@@ -1,5 +1,5 @@
-# nitorch
-Neuroimaging in PyTorch
+# NITorch
+NeuroImaging in PyTorch
 
 ## DISCLAIMER
 
@@ -42,7 +42,7 @@ import nitorch as ni
 
 ## Demo code
 
-The demo folder contains various Jupyter notebooks that showcase some of NiTorch's funtionality. Just follow the instructions in the notebook to get started.
+The demo folder contains various Jupyter notebooks that showcase some of NITorch's funtionality. Just follow the instructions in the notebook to get started.
 
 ## Compiling your own wheel
 
