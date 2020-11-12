@@ -506,7 +506,7 @@ class LameShearLoss(Loss):
     """
 
     def __init__(self, voxel_size=1, factor=1, bound='dct2', l1=None,
-                 *args, **kwargs):
+                 exclude_zooms=False, *args, **kwargs):
         """
 
         Parameters
@@ -534,6 +534,9 @@ class LameShearLoss(Loss):
             used when extracting finite differences. Therefore, the
             number of channels is dim*(dim+1)//2 and the number of sides
             is 4.
+        exclude_zooms : bool, default=False
+            Do not include diagonal elements of the Jacobian in the
+            penalty (i.e., penalize only shears)
 
         """
         super().__init__(*args, **kwargs)
@@ -541,6 +544,7 @@ class LameShearLoss(Loss):
         self.factor = factor
         self.bound = bound
         self.l1 = l1
+        self.exclude_zooms = exclude_zooms
 
     def forward(self, x, **overload):
         """
@@ -566,6 +570,7 @@ class LameShearLoss(Loss):
         factor = make_list(overload.get('factor', self.factor), nb_dim)
         bound = make_list(overload.get('bound', self.bound), nb_dim)
         l1 = overload.get('l1', self.l1)
+        exclude_zooms = overload.get('exclude_zooms', self.exclude_zooms)
 
         # Compute spatial gradients
         loss_diag = []      # diagonal elements of the Jacobian
@@ -582,7 +587,8 @@ class LameShearLoss(Loss):
                     diff_ij = diff(x_i)
                     if i == j:
                         # diagonal elements
-                        subloss_diag.append(diff_ij)
+                        if not exclude_zooms:
+                            subloss_diag.append(diff_ij)
                     else:
                         # off diagonal elements
                         x_j = x[:, j:j+1, ...]
@@ -591,38 +597,47 @@ class LameShearLoss(Loss):
                                         voxel_size=voxel_size)
                             diff_ji = diff(x_j)
                             subloss_offdiag.append((diff_ij + diff_ji)/2)
-            loss_diag.append(torch.stack(subloss_diag, dim=-1))
+            if not exclude_zooms:
+                loss_diag.append(torch.stack(subloss_diag, dim=-1))
             loss_offdiag.append(torch.stack(subloss_offdiag, dim=-1))
-        loss_diag = torch.cat(loss_diag, dim=1)
+        if not exclude_zooms:
+            loss_diag = torch.cat(loss_diag, dim=1)
         loss_offdiag = torch.cat(loss_offdiag, dim=1)
 
         if l1 not in (None, False):
             # Apply l1 reduction
             if l1 is True:
-                loss_diag = loss_diag.abs()
+                if not exclude_zooms:
+                    loss_diag = loss_diag.abs()
                 loss_offdiag = loss_offdiag.abs()
             else:
                 l1 = make_list(l1)
-                loss_diag = loss_diag.square().sum(dim=l1, keepdim=True).sqrt()
+                if not exclude_zooms:
+                    loss_diag = loss_diag.square().sum(dim=l1, keepdim=True).sqrt()
                 loss_offdiag = loss_offdiag.square().sum(dim=l1, keepdim=True).sqrt()
         else:
             # Apply l2 reduction
-            loss_diag = loss_diag.square()
+            if not exclude_zooms:
+                loss_diag = loss_diag.square()
             loss_offdiag = loss_offdiag.square()
 
         # Mean reduction across sides
-        loss_diag = loss_diag.mean(dim=-1)
+        if not exclude_zooms:
+            loss_diag = loss_diag.mean(dim=-1)
         loss_offdiag = loss_offdiag.mean(dim=-1)
 
         # Weighted reduction across elements
-        if loss_diag.shape[1] == 1:
-            # element dimension already reduced -> we need a small hack
-            loss = (loss_diag.square() + 2*loss_offdiag.square()) / (nb_dim**2)
-            loss = loss.sum(dim=1, keepdim=True).sqrt()
+        if not exclude_zooms:
+            if loss_diag.shape[1] == 1:
+                # element dimension already reduced -> we need a small hack
+                loss = (loss_diag.square() + 2*loss_offdiag.square()) / (nb_dim**2)
+                loss = loss.sum(dim=1, keepdim=True).sqrt()
+            else:
+                # simple weighted average
+                loss = (loss_diag.sum(dim=1, keepdim=True) +
+                        loss_offdiag.sum(dim=1, keepdim=True)*2) / (nb_dim**2)
         else:
-            # simple weighted average
-            loss = (loss_diag.sum(dim=1, keepdim=True) +
-                    loss_offdiag.sum(dim=1, keepdim=True)*2) / (nb_dim**2)
+            loss = loss_offdiag.sum(dim=1, keepdim=True)*2 / (nb_dim**2)
 
         # Reduce
         loss = super().forward(loss)
