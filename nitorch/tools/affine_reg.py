@@ -27,7 +27,7 @@ from .spm import (identity, noise_estimate, max_bb)
 costs_hist = ['mi', 'ecc', 'nmi', 'ncc']
 
 
-def mni_align(imgs, rigid=True, samp=4, cost_fun='nmi', device='cpu', modify_header=False,
+def mni_align(imgs, rigid=True, samp=(4, 2), cost_fun='nmi', device='cpu', modify_header=False,
               prefix='mni_', dir_out=None):
     """Affinely align brain image(s) to MNI space.
 
@@ -43,7 +43,7 @@ def mni_align(imgs, rigid=True, samp=4, cost_fun='nmi', device='cpu', modify_hea
             each tuple has two tensors: 3D image volume and affine matrix.
     rigid = bool, default=True
         Do rigid alignment to MNI. If False, does rigid+isotropic scaling.
-    samp : (float, ), default=4
+    samp : (float, ), default=(4, 2)
         Optimisation sampling steps (mm).
     cost_fun : str, default='nmi'
         * 'nmi' : Normalised Mutual Information (pairwise method)
