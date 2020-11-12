@@ -45,7 +45,7 @@ def get_pckg_data(name):
 
 
 def _download_pckg_data(name):
-    '''Download and extract nitorch data.
+    '''Download nitorch data.
 
     Parameters
     ----------

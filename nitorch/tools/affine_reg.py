@@ -63,8 +63,8 @@ def mni_align(imgs, rigid=True, samp=(4, 2), cost_fun='nmi', device='cpu', modif
 
     Returns
     ----------
-    q_mni : (N, 6|7) tensor_like
-        Registration parameters aligning to MNI space.
+    M_mni : (N, 4, 4) tensor_like
+        Transformation aligning to MNI space as M_mni\M_mov.
 
     """
     # Get path to nitorch's T1w intensity atlas
