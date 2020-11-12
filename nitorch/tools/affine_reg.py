@@ -20,7 +20,7 @@ from ..core.pyutils import get_pckg_data
 from ..spatial import (affine_basis, affine_default, affine_matvec, grid_pull, im_gradient, voxel_size)
 from ..core.linalg import expm
 from .preproc import (load_3d, modify_affine, reslice_dat, write_img)
-from .spm import (identity, noise_estimate, mean_space)
+from .spm import (identity, noise_estimate, max_bb)
 
 
 # Histogram-based cost functions
@@ -870,7 +870,7 @@ def _get_mean_space(mats, dims):
         Mat[..., i] = mats[i].clone()
         Dim[..., i] = dims[i].clone()
     # Compute mean-space
-    dim, mat, _ = mean_space(Mat, Dim)
+    dim, mat = max_bb(Mat, Dim)
     dim = tuple(dim.cpu().int().tolist())
     mat = mat.type(dtype)
 
