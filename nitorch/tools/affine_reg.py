@@ -74,20 +74,27 @@ def mni_align(imgs, rigid=True, samp=(4, 2), cost_fun='nmi', device='cpu', modif
     # Append atlas at the end of input data
     imgs.append(pth_atlas)
     # Align each image, pair-wise, to atlas. Does a rigid plus isotropic scaling registration.
+    group = 'CSO'
     q_mni, mat_fix, dim_fix = run_affine_reg(imgs,
-         group='CSO', device=device, samp=samp, cost_fun=cost_fun,
+         group=group, device=device, samp=samp, cost_fun=cost_fun,
          fix=N, verbose=False)
     # Remove atlas
     imgs = imgs[:N]
     q_mni = q_mni[:N, ...]
+    # Make isotropic scaling the same for all images
+    q_mni[:, -1] = q_mni[:, -1].mean()
     if rigid:
         # Extract only rigid part
+        group = 'SE'
         q_mni = q_mni[..., :6]
     if modify_header:
         # Modify header
-        apply2affine(imgs, q_mni, group='SE', prefix=prefix, dir_out=dir_out)
+        apply2affine(imgs, q_mni, group=group, prefix=prefix, dir_out=dir_out)
+    # Get matrix representation
+    M_mni = expm(q_mni,
+        affine_basis(group=group, device=device, dtype=q_mni.dtype))
 
-    return q_mni
+    return M_mni
 
 
 def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
