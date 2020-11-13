@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from copy import copy
 import torch
+from nitorch.core.pyutils import make_list
 from nitorch.spatial import affine_sub, affine_permute, voxel_size as affvx
 from .indexing import expand_index, compose_index, is_droppedaxis, \
                       is_newaxis, is_sliceaxis, is_broadcastaxis, \
@@ -484,6 +485,126 @@ class MappedArray(ABC):
         """
         pass
 
+    def unsqueeze(self, dim):
+        """Add a dimension of size 1 in position `dim`.
+
+        Parameters
+        ----------
+        dim : int
+            The dimension is added to the right of `dim` if `dim < 0`
+            else it is added to the left of `dim`.
+
+        Returns
+        -------
+        MappedArray
+
+        """
+        index = [slice(None)] * self.dim
+        if dim < 0:
+            dim = self.dim + dim
+        index = index[:dim] + [None] + index[dim:]
+        return self[tuple(index)]
+
+    def squeeze(self, dim):
+        """Remove all dimensions of size 1.
+
+        Parameters
+        ----------
+        dim : int or sequence[int], optional
+            If provided, only this dimension is squeezed. It *must* be a
+            dimension of size 1.
+
+        Returns
+        -------
+        MappedArray
+
+        """
+        if dim is None:
+            dim = [d for d in range(self.dim) if self.shape[d] == 1]
+        dim = make_list(dim)
+        if any(self.shape[d] != 1 for d in dim):
+            raise ValueError('Impossible to squeeze non-singleton dimensions.')
+        index = [slice(None) if d not in dim else 0 for d in range(self.dim)]
+        return self[tuple(index)]
+
+    def unbind(self, dim=0, keepdim=False):
+        """Extract all arrays along dimension `dim` and drop that dimension.
+
+        Parameters
+        ----------
+        dim : int, default=0
+            Dimension along which to unstack.
+        keepdim : bool, default=False
+            Do not drop the unstacked dimension.
+
+        Returns
+        -------
+        list[MappedArray]
+
+        """
+        index = [slice(None)] * self.dim
+        if keepdim:
+            index = index[:dim+1] + [None] + index[dim+1:]
+        out = []
+        for i in range(self.shape[dim]):
+            index[dim] = i
+            out.append(self[tuple(index)])
+        return out
+
+    def chunk(self, chunks, dim=0):
+        """Split the array into smaller arrays of size `chunk` along `dim`.
+
+        Parameters
+        ----------
+        chunks : int
+            Number of chunks.
+        dim : int, default=0
+            Dimensions along which to split.
+
+        Returns
+        -------
+        list[MappedArray]
+
+        """
+        index = [slice(None)] * self.dim
+        out = []
+        for i in range(self.shape[dim]):
+            index[dim] = slice(i*chunks, (i+1)*chunks)
+            out.append(self[tuple(index)])
+        return out
+
+    def split(self, chunks, dim=0):
+        """Split the array into smaller arrays along `dim`.
+
+        Parameters
+        ----------
+        chunks : int or list[int]
+            If `int`: Number of chunks (see `self.chunk`)
+            Else: Size of each chunk. Must sum to `self.shape[dim]`.
+        dim : int, default=0
+            Dimensions along which to split.
+
+        Returns
+        -------
+        list[MappedArray]
+
+        """
+        if isinstance(chunks, int):
+            return self.chunk(chunks, dim)
+        chunks = make_list(chunks)
+        if sum(chunks) != self.shape[dim]:
+            raise ValueError('Chunks must cover the full dimension. '
+                             'Got {} and {}.'
+                             .format(sum(chunks), self.shape[dim]))
+        index = [slice(None)] * self.dim
+        previous_chunks = 0
+        out = []
+        for chunk in chunks:
+            index[dim] = slice(previous_chunks, previous_chunks+chunk)
+            out.append(self[tuple(index)])
+            previous_chunks += chunk
+        return out
+
 
 class CatArray(MappedArray):
     """A concatenation of mapped arrays.
@@ -542,9 +663,9 @@ class CatArray(MappedArray):
         if not all(shape == shape0 for shape in shapes):
             raise ValueError('Shapes of all concatenated arrays should '
                              'be equal except in the concatenation dimension.')
-        shape = list(arrays[0])
 
         # compute output shape
+        shape = list(arrays[0].shape)
         dims = [array.shape[dim] for array in arrays]
         shape[dim] = sum(dims)
         self.shape = tuple(shape)
@@ -676,9 +797,9 @@ class CatArray(MappedArray):
     def data(self, *args, numpy=False, **kwargs):
         # read individual arrays and concatenate them
         # TODO: it would be more efficient to preallocate the whole
-        # array and pass the appropriate buffer to each reader but
-        # (1) we don't have the option to provide a buffer yet
-        # (2) everything's already quite inefficient
+        #   array and pass the appropriate buffer to each reader but
+        #   (1) we don't have the option to provide a buffer yet
+        #   (2) everything's already quite inefficient
 
         dats = [torch.as_tensor(array.data(*args, **kwargs))
                 for array in self._arrays]
@@ -690,9 +811,9 @@ class CatArray(MappedArray):
     def fdata(self, *args, numpy=False, **kwargs):
         # read individual arrays and concatenate them
         # TODO: it would be more efficient to preallocate the whole
-        # array and pass the appropriate buffer to each reader but
-        # (1) we don't have the option to provide a buffer yet
-        # (2) everything's already quite inefficient
+        #   array and pass the appropriate buffer to each reader but
+        #   (1) we don't have the option to provide a buffer yet
+        #   (2) everything's already quite inefficient
 
         dats = [array.fdata(*args, **kwargs) for array in self._arrays]
         dat = torch.cat(dats, dim=self._dim_cat)
@@ -724,3 +845,45 @@ class CatArray(MappedArray):
     def set_metadata(self, **meta):
         raise NotImplementedError('Cannot write metadata into concatenated '
                                   'array')
+
+
+def cat(arrays, dim=0):
+    """Concatenate mapped arrays along a dimension.
+
+    Parameters
+    ----------
+        arrays : sequence[MappedArray]
+            Arrays to concatenate. Their shapes should be identical
+            except along dimension `dim`.
+        dim : int, default=0
+            Dimension along white to concatenate the arrays
+
+    Returns
+    -------
+    CatArray
+        A symbolic concatenation of all input arrays.
+        Its shape along dimension `dim` is the sum of all input shapes
+        along dimension `dim`.
+    """
+    return CatArray(arrays, dim)
+
+
+def stack(arrays, dim=0):
+    """Stack mapped arrays along a dimension.
+
+    Parameters
+    ----------
+        arrays : sequence[MappedArray]
+            Arrays to concatenate. Their shapes should be identical
+            except along dimension `dim`.
+        dim : int, default=0
+            Dimension along white to concatenate the arrays
+
+    Returns
+    -------
+    CatArray
+        A symbolic stack of all input arrays.
+
+    """
+    arrays = [arrays.unsqueeze(array, dim=dim) for array in arrays]
+    return cat(arrays, dim=dim)
