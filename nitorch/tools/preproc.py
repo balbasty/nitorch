@@ -83,7 +83,7 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
             scrand = nii.dataobj.slope
         else:
             scrand = 0;
-    elif isinstance(img, tuple) or isinstance(img, list):
+    elif isinstance(img, (list, tuple)):
         # Input is tuple with two tensors: image data and affine tensors
         dat = img[0]
         affine = img[1]
@@ -125,7 +125,9 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
     dim = tuple(dat.shape[:3])
 
     # Mask
-    dat[~torch.isfinite(dat)] = 0
+    dat[~torch.isfinite(dat) | (dat == 0) | (dat == dat.min()) | (dat == dat.max())] = 0
+
+    import time;
 
     if rescale:
         # Rescale so that image intensities are between 1 and nh (so we can make a histogram)
@@ -134,15 +136,15 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
         mx_scl = torch.tensor([dat.max(), 1], dtype=dtype, device=device)[None, ...]
         sf = torch.cat((mn_scl, mx_scl), dim=0)
         sf = torch.tensor([1, nh], dtype=dtype, device=device)[..., None].solve(sf)[0].squeeze()
-        p = dat[(dat != 0) & (dat != dat.min()) & (dat != dat.max())]
-        p = (p*sf[0] + sf[1]).round().int()
-
+        p = dat[(dat != 0)]
+        p = (p*sf[0] + sf[1]).round().long()
         # Make histogram and find percentiles
-        h = torch.bincount(p, weights=None, minlength=nh - 1).type(dtype)
-        h = h.cumsum(0) / h.sum()
+        h = torch.zeros(nh + 1, device=device, dtype=p.dtype)
+        h.put_(p, torch.ones(1, dtype=p.dtype, device=device).expand_as(p), accumulate=True)
+        h = h.type(dtype)
+        h = h.cumsum(0)/h.sum()
         mn_scl = ((h <= 0.0005).sum(dim=0) - sf[1]) / sf[0]
         mx_scl = ((h <= 0.9999).sum(dim=0) - sf[1]) / sf[0]
-
         # Make scaling to set image intensities between mn_out and mx_out
         mn = torch.tensor([mn_scl, 1], dtype=dtype, device=device)[None, ...]
         mx = torch.tensor([mx_scl, 1], dtype=dtype, device=device)[None, ...]
