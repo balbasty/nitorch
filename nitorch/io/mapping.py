@@ -775,6 +775,14 @@ class CatArray(MappedArray):
             _arrays.append(array)
         self._arrays = tuple(_arrays)
 
+    def __str__(self):
+        dtype_str = tuple(str(dt) for dt in self.dtype)
+        dtype_str = '(' + ', '.join(dtype_str) + ')'
+        return '{}(shape={}, dtype={})'.format(
+            type(self).__name__, self.shape, dtype_str)
+
+    __repr__ = __str__
+
     def slice(self, index, new_shape=None, _pre_expanded=False):
         # overload slicer -> slice individual arrays
         if not _pre_expanded:
