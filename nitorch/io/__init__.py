@@ -142,7 +142,7 @@ Conversely to NIBabel, NITorch allows data to be partially _written_ to disk:
 ```
 However, not all formats implement this feature. Currently, this has been
 tested for nifti and MGH formats. Note that if the file is compressed
-(_e.g._, gziped nifti), true parial writing is not possible and the
+(_e.g._, gziped nifti), true partial writing is not possible and the
 snippet above would effectively trigger a full load of the file to memory
 followed by a full write to disk.
 
