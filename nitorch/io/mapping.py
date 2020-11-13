@@ -7,7 +7,6 @@ from .indexing import expand_index, compose_index, is_droppedaxis, \
                       is_newaxis, is_sliceaxis, is_broadcastaxis, \
                       invert_permutation
 from . import dtype as cast_dtype
-from .readers import map
 
 
 class MappedArray(ABC):
@@ -18,7 +17,24 @@ class MappedArray(ABC):
     They can be symbolically sliced, allowing for partial reading and
     (sometimes) writing of data from/to disk.
     Chaining of symbolic slicing operations is implemented in this base
-    class. The actual partial io must be implemented by the child class.
+    class. The actual io must be implemented by the child class.
+
+    Child classes MUST implement:
+    * self.data(...)
+
+    Child classes SHOULD implement:
+    * self.metadata(...)         default -> returns empty dict
+
+    Child classes MAY implement:
+    * self.set_data(...)         default -> raises cls.FailedWriteError
+    * self.set_metadata(...)     default -> raises cls.FailedWriteError
+    * cls.save_new(...)          default -> raises cls.FailedWriteError
+    * cls.savef_new(...)         default -> raises cls.FailedWriteError
+
+    Child classes SHOULD register themselves in `readers.reader_classes`.
+    If they implement `save_new`, child classes SHOULD register
+    themselves in `writers.writer_classes`.
+
     """
 
     fname: str = None             # filename (can be None if in-memory proxy)
@@ -41,6 +57,9 @@ class MappedArray(ABC):
     _dim = property(lambda self: len(self._shape))  # Nb of original dimensions
     voxel_size = property(lambda self: affvx(self.affine))
 
+    FailedReadError = RuntimeError   # class of errors raised at read time
+    FailedWriteError = RuntimeError  # class of errors raised at write time
+
     def __init__(self, **kwargs):
         self._init(**kwargs)
 
@@ -59,6 +78,12 @@ class MappedArray(ABC):
 
         return self
 
+    def __str__(self):
+        return '{}(shape={}, dtype={})'.format(
+            type(self).__name__, self.shape, self.dtype)
+
+    __repr__ = __str__
+
     @classmethod
     def possible_extensions(cls):
         """List all possible extensions"""
@@ -67,12 +92,11 @@ class MappedArray(ABC):
     def __getitem__(self, index):
         """Extract a sub-part of the array.
 
-        Indices can only be slices, ellipses, lists or integers.
-        Indices *into spatial dimensions* cannot be lists.
+        Indices can only be slices, ellipses, integers or None.
 
         Parameters
         ----------
-        index : tuple[slice or ellipsis or int]
+        index : tuple[slice or ellipsis or int or None]
 
         Returns
         -------
@@ -86,12 +110,14 @@ class MappedArray(ABC):
     def slice(self, index, new_shape=None, _pre_expanded=False):
         """Extract a sub-part of the array.
 
-        Indices can only be slices, ellipses, lists or integers.
-        Indices *into spatial dimensions* cannot be lists.
+        Indices can only be slices, ellipses, integers or None.
 
         Parameters
         ----------
-        index : tuple[slice or ellipsis or int]
+        index : tuple[slice or ellipsis or int or None]
+
+        Other Parameters
+        ----------------
         new_shape : sequence[int], optional
             Output shape of the sliced object
         _pre_expanded : bool, default=False
@@ -117,8 +143,7 @@ class MappedArray(ABC):
         if self.affine is not None:
             spatial_shape = [sz for sz, msk in zip(self.shape, self.spatial)
                              if msk]
-            spatial_index = [idx for idx in index if isinstance(idx, slice)
-                             or (isinstance(idx, int) and idx >= 0)]
+            spatial_index = [idx for idx in index if not is_newaxis(idx)]
             spatial_index = [idx for idx, msk in zip(spatial_index, self.spatial)
                              if msk]
             affine, _ = affine_sub(self.affine, spatial_shape, tuple(spatial_index))
@@ -169,6 +194,7 @@ class MappedArray(ABC):
         return self
 
     def __call__(self, *args, **kwargs):
+        """Get floating point data. See `fdata()`"""
         return self.fdata(*args, **kwargs)
 
     def permute(self, dims):
@@ -360,7 +386,6 @@ class MappedArray(ABC):
 
         return dat
 
-    @abstractmethod
     def set_data(self, dat, casting='unsafe'):
         """Write (partial) data to disk.
 
@@ -398,7 +423,8 @@ class MappedArray(ABC):
         self : type(self)
 
         """
-        pass
+        raise self.FailedWriteError("Method not implemented in class {}."
+                                    .format(type(self).__name__))
 
     def set_fdata(self, dat):
         """Write (partial) scaled data to disk.
@@ -440,7 +466,6 @@ class MappedArray(ABC):
 
         return self
 
-    @abstractmethod
     def metadata(self, keys=None):
         """Read metadata
 
@@ -465,9 +490,8 @@ class MappedArray(ABC):
             A dictionary of metadata
 
         """
-        pass
+        return dict()
 
-    @abstractmethod
     def set_metadata(self, **meta):
         """Write metadata
 
@@ -483,7 +507,81 @@ class MappedArray(ABC):
         self : type(self)
 
         """
-        pass
+        raise NotImplementedError("Method not implemented in class {}."
+                                  .format(type(self).__name__))
+
+    @classmethod
+    def save_new(cls, dat, file_like, like=None, casting='unsafe', **metadata):
+        """Write an array to disk.
+
+        This function makes educated choices for the file format and
+        its metadata based on the file extension, the data type and the
+        other options provided.
+
+        Parameters
+        ----------
+        dat : tensor or array or MappedArray
+            Data to write
+        file_like : str or file object
+            Path to file or file object (with methods `seek`, `read`).
+            If the extension is known, it gets priority over `like` when
+            choosing the output format.
+        like : file or MappedArray
+            An array on-disk that should be used as a template for the new
+            file. Its metadata/layout/etc will be mimicked as much as possible.
+        casting : {'no', 'equiv', 'safe', 'same_kind', 'unsafe', 'rescale'}, default='unsafe'
+            Controls what kind of data casting may occur.
+            See `MappedArray.set_data`
+        metadata : dict
+            Metadata to store on disk. Values provided there will have
+            priority over `like`.
+
+        Returns
+        -------
+        dat : array or tensor
+            The array loaded in memory
+        attributes : dict, if attributes is not None
+            Dictionary of attributes loaded as well
+
+        """
+        raise cls.FailedWriteError("Method not implemented in class {}."
+                                   .format(cls.__name__))
+
+    @classmethod
+    def savef_new(cls, dat, file_like, like=None, **metadata):
+        """Write a scaled array to disk.
+
+        This function makes educated choices for the file format and
+        its metadata based on the file extension, the data type and the
+        other options provided.
+
+        The input data type must be a floating point type.
+
+        Parameters
+        ----------
+        dat : tensor or array or MappedArray
+            Data to write
+        file_like : str or file object
+            Path to file or file object (with methods `seek`, `read`).
+            If the extension is known, it gets priority over `like` when
+            choosing the output format.
+        like : file or MappedArray
+            An array on-disk that should be used as a template for the new
+            file. Its metadata/layout/etc will be mimicked as much as possible.
+        metadata : dict
+            Metadata to store on disk. Values provided there will have
+            priority over `like`.
+
+        Returns
+        -------
+        dat : array or tensor
+            The array loaded in memory
+        attributes : dict, if attributes is not None
+            Dictionary of attributes loaded as well
+
+        """
+        raise cls.FailedWriteError("Method not implemented in class {}."
+                                   .format(cls.__name__))
 
     def unsqueeze(self, dim):
         """Add a dimension of size 1 in position `dim`.
@@ -655,7 +753,8 @@ class CatArray(MappedArray):
         shapes = []
         for i, array in enumerate(arrays):
             if not isinstance(array, MappedArray):
-                arrays[i] = map(array)
+                raise TypeError('Input arrays should be `MappedArray` '
+                                'instances. Got {}.',format(type(array)))
             shape = list(array.shape)
             del shape[dim]
             shapes.append(shape)

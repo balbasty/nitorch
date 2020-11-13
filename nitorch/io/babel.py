@@ -77,7 +77,8 @@ class BabelArray(MappedArray):
     def possible_extensions(cls):
         ext = []
         for klass in all_image_classes:
-            ext.append(*klass.valid_exts)
+            for one_ext in klass.valid_exts:
+                ext.append(one_ext)
         return tuple(ext)
 
     FailedReadError = ImageFileError
@@ -451,6 +452,27 @@ class BabelArray(MappedArray):
         if meta:
             header = metadata_to_header(header, meta)
         self._set_header_raw(header)
+
+    @classmethod
+    def save_new(cls, dat, file_like, like=None, casting='unsafe', **metadata):
+
+        if torch.is_tensor(dat):
+            dat = dat.detach().cpu()
+        dat = np.asanyarray(dat)
+        if like is not None and not isinstance(like, MappedArray):
+            like = map(like)
+
+        # guess data type:
+        dtype = None
+        if dtype is None:
+            dtype = metadata.get('dtype', None)
+        if dtype is None and like is not None:
+            dtype = like.dtype
+        if dtype is None:
+            dtype = dat.dtype
+
+        # guess format
+
 
     # ------------------------------------------------------------------
     #    ADAPTED FROM NIBABEL'S ARRAYPROXY
