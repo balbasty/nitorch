@@ -122,7 +122,7 @@ BabelArray(shape=(256, 192, 128, 1), dtype=int16)
  BabelArray(shape=(260, 311), dtype=float32)]
 ```
 
-Methods `data` and `fdata` correspond to functions `loaf` and `loadf`
+Methods `data` and `fdata` correspond to functions `load` and `loadf`
 seen previously. However, only the subarray described by the current
 slice is effectively loaded in memory.
 ```python
@@ -137,7 +137,7 @@ Conversely to NIBabel, NITorch allows data to be partially _written_ to disk:
 ```python
 >>> import torch
 >>> slice = file[:, :, 0]
->>> new_slice = torch.rand(0, 5000, slice.shape)
+>>> new_slice = torch.randint(0, 5000, slice.shape)
 >>> slice.set_data(new_slice)
 ```
 However, not all formats implement this feature. Currently, this has been
