@@ -14,11 +14,11 @@ Quick load
 The first way to load data is to simply use the methods `load` and
 `loadf`:
 ```python
->>> from nitorch.io import load, loadf
->>> dat = load('path/to/my/nifti_file.nii.gz')
+>>> from nitorch import io
+>>> dat = io.load('path/to/my/nifti_file.nii.gz')
 >>> type(dat), dat.dtype
 (torch.Tensor, torch.int16)
->>> datf = loadf('path/to/my/nifti_file.nii.gz')
+>>> datf = io.loadf('path/to/my/nifti_file.nii.gz')
 >>> type(dat)
 (torch.Tensor, torch.float32)
 ```
@@ -100,8 +100,7 @@ only the data that is covered by the slice is loaded, saving time and
 memory. We implement an almost identical protocol, except that it is
 only exposed to the user when the function `map` is used:
 ```python
->>> from nitorch.io import map
->>> file = map('path/to/my/nifti_file.nii.gz')
+>>> file = io.map('path/to/my/nifti_file.nii.gz')
 >>> file
 BabelArray(shape=(256, 192, 128), dtype=int16)
 ```
@@ -122,6 +121,18 @@ BabelArray(shape=(256, 192, 128, 1), dtype=int16)
  BabelArray(shape=(260, 311), dtype=float32)]
 ```
 
+It is also possible to symbolically concatenate several mapped arrays:
+```python
+>>> file1 = io.map('path/to/my/nifti_file.nii.gz')
+>>> file1
+BabelArray(shape=(256, 192, 128), dtype=int16)
+>>> file2 = io.map('path/to/my/other/nifti_file.nii.gz')
+>>> file2
+BabelArray(shape=(256, 192, 64), dtype=float32)
+>>> file_cat = io.cat((file1, file2), dim=-1)
+CatArray(shape=(256, 192, 192), dtype=(float32, float32))
+```
+
 Methods `data` and `fdata` correspond to functions `load` and `loadf`
 seen previously. However, only the subarray described by the current
 slice is effectively loaded in memory.
@@ -132,6 +143,9 @@ torch.Tensor
 >>> dat.shape
 torch.Size([256, 192])
 ```
+
+Partial writing
+---------------
 
 Conversely to NIBabel, NITorch allows data to be partially _written_ to disk:
 ```python
@@ -161,13 +175,13 @@ is used, the data is unscaled before being written as raw data to disk.
 >>> savef(my_float_tensor, 'path/to/my/new/nifti_file.nii.gz')
 ```
 Generic metadata (as defined in `nitorch.io.metadata`) can be provided
-as additional keyword arguments:```python
+as additional keyword arguments:
 ```python
 >>> save(my_tensor, 'path/to/my/new/nifti_file.nii.gz',
 >>>      affine=my_affine, dtype='int32')
 ```
 Furthermore, the path to a template file -- or a `MappedArray` instance
--- can be provided as well and use to guess non-provided metadata.
+-- can be provided as well and used to guess non-provided metadata.
 It will also be used to choose the output file format, unless it can be
 guessed from the file extension (e.g., '.nii.gz').
 ```python
@@ -195,7 +209,7 @@ from . import optionals
 from . import readers
 from . import writers
 
-from .mapping import MappedArray, CatArray
+from .mapping import MappedArray, CatArray, cat
 from .loadsave import map, load, loadf, save, savef
 
 if optionals.nibabel:
