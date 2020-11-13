@@ -6,6 +6,7 @@ import torch as _torch  # Necessary for linking extensions
 
 
 from . import core
+from . import io
 from . import nn
 from . import plot
 from . import spatial
