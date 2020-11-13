@@ -569,7 +569,7 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
         Group that should be encoded by the basis set:
             * 'T'   : Translations
             * 'SO'  : Special Orthogonal (rotations)
-            * 'SE'  : Special Euclidean (translations + rotations)
+            * 'SE'  : Special as_euclidean (translations + rotations)
             * 'D'   : Dilations (translations + isotropic scalings)
             * 'CSO' : Conformal Special Orthogonal
                       (translations + rotations + isotropic scalings)
@@ -1097,6 +1097,28 @@ def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
     return prm, M
 
 
+def as_homogeneous(affine):
+    """Mark a tensor as having homogeneous coordinates.
+
+    We set the attribute `is_homogeneous` to True.
+    Note that this attribute is not persistent and will be lost
+    after any operation on the tensor.
+    """
+    affine.is_homogeneous = True
+    return affine
+
+
+def as_euclidean(affine):
+    """Mark a tensor as having non-homogeneous coordinates.
+
+    We set the attribute `is_homogeneous` to True.
+    Note that this attribute is not persistent and will be lost
+    after any operation on the tensor.
+    """
+    affine.is_homogeneous = False
+    return affine
+
+
 def affine_is_square(affine):
     """Return True if the matrix is square"""
     affine = torch.as_tensor(affine)
@@ -1111,6 +1133,10 @@ def affine_is_rect(affine):
 
 def affine_is_homogeneous(affine, sym=False):
     """Return true is the last row is [*zeros, 1]"""
+    if getattr(affine, 'is_homogeneous', False):
+        return True
+    if not getattr(affine, 'is_homogeneous', True):
+        return False
     if sym:
         return affine_is_square(affine)
     with torch.no_grad():
@@ -1167,7 +1193,7 @@ def affine_make_rect(affine):
     return affine[..., :ndims, :]
 
 
-def affine_make_homogeneous(affine, sym=False):
+def affine_make_homogeneous(affine, sym=False, force=False):
     """Ensure that the last row of the matrix is (*zeros, 1).
 
     This function is more generic than `make_square` because it
@@ -1190,20 +1216,20 @@ def affine_make_homogeneous(affine, sym=False):
 
     """
     if sym:
-        return affine_make_square(affine)
+        return as_homogeneous(affine_make_square(affine))
 
     affine = torch.as_tensor(affine)
-    if not affine_is_homogeneous(affine):
+    if force or not affine_is_homogeneous(affine):
         info = dict(dtype=affine.dtype, device=affine.device)
         ndims_in = affine.shape[-1] - 1
         bottom_row = torch.cat((torch.zeros(ndims_in, **info),
                                 torch.ones(1, **info)), dim=0)
         bottom_row = utils.unsqueeze(bottom_row, 0, ndim=affine.dim()-1)
         affine = torch.cat((affine, bottom_row), dim=-2)
-    return affine
+    return as_homogeneous(affine)
 
 
-def affine_del_homogeneous(affine, sym=False):
+def affine_del_homogeneous(affine, sym=False, force=False):
     """Ensure that the last row of the matrix is _not_ (*zeros, 1).
 
     This function is more generic than `make_rect` because it
@@ -1226,11 +1252,11 @@ def affine_del_homogeneous(affine, sym=False):
 
     """
     if sym:
-        return affine_make_rect(affine)
+        return as_euclidean(affine_make_rect(affine))
     affine = torch.as_tensor(affine)
-    if affine_is_homogeneous(affine):
+    if force or affine_is_homogeneous(affine):
         affine = affine[..., :-1, :]
-    return affine
+    return as_euclidean(affine)
 
 
 def voxel_size(mat, sym=True):
@@ -1259,7 +1285,7 @@ def voxel_size(mat, sym=True):
         mat = mat[..., :-1, :-1]
     else:
         mat = mat[..., :, :-1]
-    return mat.square().sum(-2).sqrt()
+    return as_euclidean(mat.square().sum(-2).sqrt())
 
 
 def affine_matvec(affine, vector, sym=True):
@@ -1292,10 +1318,13 @@ def affine_matvec(affine, vector, sym=True):
     if is_h:
         one = torch.ones(out.shape[:-1] + (1,), **info)
         out = torch.cat((out, one), dim=-1)
+        out = as_homogeneous(out)
+    else:
+        out = as_euclidean(out)
     return out
 
 
-def affine_matmul(a, b, sym=False):
+def affine_matmul(a, b, sym=False, symb=None):
     """Matrix-matrix product of affine matrices.
 
     Parameters
@@ -1309,6 +1338,8 @@ def affine_matmul(a, b, sym=False):
         input and output space dimensions, _i.e._, it maps from
         ND coordinates to ND coordinates (`ndim_out == ndim_in`).
         Knowing this allows the function to be more efficient.
+    symb : bool, default=sym
+        Same, but for `b`.
 
     Returns
     -------
@@ -1316,9 +1347,10 @@ def affine_matmul(a, b, sym=False):
         The returned matrix is homogeneous iff `a` is too.
 
     """
+    symb = sym if symb is None else symb
     is_h = affine_is_homogeneous(a, sym)
     a = affine_del_homogeneous(a, sym)
-    b = affine_del_homogeneous(b, sym)
+    b = affine_del_homogeneous(b, symb)
     Za = a[..., :, :-1]
     Ta = a[..., :, -1]
     Zb = b[..., :, :-1]
@@ -1327,7 +1359,9 @@ def affine_matmul(a, b, sym=False):
     T = linalg.matvec(Za, Tb) + Ta
     out = torch.cat((Z, T[..., None]), dim=-1)
     if is_h:
-        out = affine_make_homogeneous(out, sym)
+        out = affine_make_homogeneous(out, force=True)
+    else:
+        out = as_euclidean(out)
     return out
 
 
@@ -1362,7 +1396,9 @@ def affine_inv(affine, sym=True):
     translation = -linalg.matvec(zoom, affine[..., :, -1])
     out = torch.cat((zoom, translation[..., None]), dim=-1)
     if is_h:
-        out = affine_make_homogeneous(out, sym)
+        out = affine_make_homogeneous(out, force=True)
+    else:
+        out = as_euclidean(out)
     return out
 
 
@@ -1489,7 +1525,7 @@ def affine_resize(affine, shape, factor, anchor='c'):
     trf = torch.cat((lin, trl), dim=1)
 
     # compose
-    affine = affine_matmul(affine, trf)
+    affine = affine_matmul(affine, as_euclidean(trf))
     return affine, tuple(shape_out)
 
 
@@ -1620,7 +1656,7 @@ def affine_sub(affine, shape, indices):
     # build voxel-to-voxel transformation matrix
     lin = torch.diag(torch.as_tensor(scales, **info))
     if any(not isinstance(s, slice) for s in slicer):
-        #drop/add columns
+        # drop/add columns
         lin = torch.unbind(lin, dim=-1)
         zero = torch.zeros(len(shifts), **info)
         new_lin = []
@@ -1637,7 +1673,7 @@ def affine_sub(affine, shape, indices):
     trf = torch.cat((lin, trl), dim=1) if len(lin) else trl
 
     # compose
-    affine = affine_matmul(affine, trf)
+    affine = affine_matmul(affine, as_euclidean(trf))
     return affine, tuple(shape_out)
 
 
@@ -1775,7 +1811,7 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     trf = torch.cat((lin, trl), dim=1)
 
     # compose
-    affine = affine_matmul(affine, trf)
+    affine = affine_matmul(affine, as_euclidean(trf))
     return affine, tuple(oshape)
 
 
@@ -1822,4 +1858,4 @@ def affine_default(shape, voxel_size=1, layout=None, dtype=None, device=None):
     shift = -linalg.matvec(lin, shape/2)
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
-    return affine
+    return as_euclidean(affine)
