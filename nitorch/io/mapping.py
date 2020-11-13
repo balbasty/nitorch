@@ -1,11 +1,12 @@
 from abc import ABC, abstractmethod
-import torch
 from copy import copy
-from .indexing import expand_index, compose_index, \
-                      is_droppedaxis, is_newaxis, is_sliceaxis
-from ..spatial import affine_sub, affine_permute
-from ..spatial import voxel_size as affvx
+import torch
+from nitorch.spatial import affine_sub, affine_permute, voxel_size as affvx
+from .indexing import expand_index, compose_index, is_droppedaxis, \
+                      is_newaxis, is_sliceaxis, is_broadcastaxis, \
+                      invert_permutation
 from . import dtype as cast_dtype
+from .readers import map
 
 
 class MappedArray(ABC):
@@ -57,6 +58,11 @@ class MappedArray(ABC):
 
         return self
 
+    @classmethod
+    def possible_extensions(cls):
+        """List all possible extensions"""
+        return tuple()
+
     def __getitem__(self, index):
         """Extract a sub-part of the array.
 
@@ -74,12 +80,37 @@ class MappedArray(ABC):
             matrix relating to the new sub-array.
 
         """
-        new = copy(self)
-        index, new.shape = expand_index(index, self.shape)
+        return self.slice(index)
+
+    def slice(self, index, new_shape=None, _pre_expanded=False):
+        """Extract a sub-part of the array.
+
+        Indices can only be slices, ellipses, lists or integers.
+        Indices *into spatial dimensions* cannot be lists.
+
+        Parameters
+        ----------
+        index : tuple[slice or ellipsis or int]
+        new_shape : sequence[int], optional
+            Output shape of the sliced object
+        _pre_expanded : bool, default=False
+            Set to True of `expand_index` has already been called on `index`
+
+        Returns
+        -------
+        subarray : type(self)
+            MappedArray object, with the indexing operations and affine
+            matrix relating to the new sub-array.
+
+        """
+        if not _pre_expanded:
+            index, new_shape = expand_index(index, self.shape)
         if any(isinstance(idx, list) for idx in index) > 1:
             raise ValueError('List indices not currently supported '
                              '(otherwise we enter advanced indexing '
                              'territory and it becomes too complicated).')
+        new = copy(self)
+        new.shape = new_shape
 
         # compute new affine
         if self.affine is not None:
@@ -436,7 +467,7 @@ class MappedArray(ABC):
         pass
 
     @abstractmethod
-    def set_metadata(self, meta=None):
+    def set_metadata(self, **meta):
         """Write metadata
 
         Parameters
@@ -452,3 +483,244 @@ class MappedArray(ABC):
 
         """
         pass
+
+
+class CatArray(MappedArray):
+    """A concatenation of mapped arrays.
+
+    This is largely inspired by virtual concatenation of file_array in
+    SPM: https://github.com/spm/spm12/blob/master/@file_array/cat.m
+
+    """
+
+    _arrays: tuple = []
+    _dim_cat: int = None
+
+    # defer attributes
+    fname = property(lambda self: tuple(a.fname for a in self._arrays))
+    fileobj = property(lambda self: tuple(a.fileobj for a in self._arrays))
+    is_compressed = property(lambda self: tuple(a.is_compressed for a in self._arrays))
+    dtype = property(lambda self: tuple(a.dtype for a in self._arrays))
+    slope = property(lambda self: tuple(a.slope for a in self._arrays))
+    inter = property(lambda self: tuple(a.inter for a in self._arrays))
+    _shape = property(lambda self: tuple(a._shape for a in self._arrays))
+    _dim = property(lambda self: tuple(a._dim for a in self._arrays))
+    affine = property(lambda self: tuple(a.affine for a in self._arrays))
+    _affine = property(lambda self: tuple(a._affine for a in self._arrays))
+    spatial = property(lambda self: tuple(a.spatial for a in self._arrays))
+    _spatial = property(lambda self: tuple(a._spatial for a in self._arrays))
+    slicer = property(lambda self: tuple(a.slicer for a in self._arrays))
+    permutation = property(lambda self: tuple(a.permutation for a in self._arrays))
+    voxel_size = property(lambda self: tuple(a.voxel_size for a in self._arrays))
+
+    def __init__(self, arrays, dim=0):
+        """
+
+        Parameters
+        ----------
+        arrays : sequence[MappedArray]
+            Arrays to concatenate. Their shapes should be identical
+            except along dimension `dim`.
+        dim : int, default=0
+            Dimension along white to concatenate the arrays
+        """
+        super().__init__()
+
+        arrays = list(arrays)
+        dim = dim or 0
+        self._dim_cat = dim
+
+        # sanity checks
+        shapes = []
+        for i, array in enumerate(arrays):
+            if not isinstance(array, MappedArray):
+                arrays[i] = map(array)
+            shape = list(array.shape)
+            del shape[dim]
+            shapes.append(shape)
+        shape0, *shapes = shapes
+        if not all(shape == shape0 for shape in shapes):
+            raise ValueError('Shapes of all concatenated arrays should '
+                             'be equal except in the concatenation dimension.')
+        shape = list(arrays[0])
+
+        # compute output shape
+        dims = [array.shape[dim] for array in arrays]
+        shape[dim] = sum(dims)
+        self.shape = tuple(shape)
+
+        # concatenate
+        _arrays = []
+        for i, array in enumerate(arrays):
+            _arrays.append(array)
+        self._arrays = tuple(_arrays)
+
+    def slice(self, index, new_shape=None, _pre_expanded=False):
+        # overload slicer -> slice individual arrays
+        if not _pre_expanded:
+            index, new_shape = expand_index(index, self.shape)
+        assert len(index) > 0, "index should never be empty here"
+        if any(isinstance(idx, list) for idx in index) > 1:
+            raise ValueError('List indices not currently supported '
+                             '(otherwise we enter advanced indexing '
+                             'territory and it becomes too complicated).')
+        index = list(index)
+        shape_cat = self.shape[self._dim_cat]
+
+        # find out which index corresponds to the concatenated dimension
+        # + compute the concatenated dimension in the output array
+        new_dim_cat = self._dim_cat
+        nb_old_dim = -1
+        for map_dim_cat, idx in enumerate(index):
+            if is_newaxis(idx):
+                # an axis was added: dim_cat moves to the right
+                new_dim_cat = new_dim_cat + 1
+            elif is_droppedaxis(idx):
+                # an axis was dropped: dim_cat moves to the left
+                new_dim_cat = new_dim_cat - 1
+                nb_old_dim += 1
+            else:
+                nb_old_dim += 1
+            if nb_old_dim >= self._dim_cat:
+                # found the concatenated dimension
+                break
+        index_cat = index[map_dim_cat]
+
+        if is_droppedaxis(index_cat):
+            # if the concatenated dimension is dropped, return the
+            # corresponding array (sliced)
+            nb_pre = 0
+            for i in range(len(self._arrays)):
+                if nb_pre < index_cat:
+                    nb_pre += self._arrays[i].shape[self._dim_cat]
+                    continue
+                if i > index_cat:
+                    # we've passed the volume
+                    i = i - 1
+                    nb_pre -= self._arrays[i].shape[self._dim_cat]
+                index_cat = index_cat - nb_pre
+                index[map_dim_cat] = index_cat
+                # slice the array but set `_pre_expanded=True`
+                return self._arrays[i].slice(tuple(index), new_shape, True)
+
+        # else, we may have to drop some volumes and slice the others
+        assert is_sliceaxis(index_cat), "This should not happen"
+        arrays = self._arrays
+
+        if index_cat.step < 0:
+            # if negative step, invert everything and update index_cat
+            invert_index = [slice(None)] * self.dim
+            invert_index[self._dim_cat] = slice(None, None, -1)
+            arrays = [array[tuple(invert_index)] for array in arrays]
+            index_cat = slice(shape_cat - index_cat.start,
+                              shape_cat - index_cat.stop,
+                              -index_cat.step)
+
+        nb_pre = 0
+        kept_arrays = []
+        starts = []
+        stops = []
+        size_since_start = 0
+        while len(arrays) > 0:
+            # pop array
+            array, *arrays = arrays
+            size_cat = array.shape[self._dim_cat]
+            if nb_pre + size_cat < index_cat.start:
+                # discarded volumes at the beginning
+                nb_pre += size_cat
+                continue
+            if nb_pre < index_cat.start:
+                # first volume
+                kept_arrays.append(array)
+                starts.append(index_cat.start - nb_pre)
+            elif nb_pre < index_cat.stop:
+                # other kept volume
+                kept_arrays.append(array)
+                skip = size_since_start - (size_since_start // index_cat.step) * index_cat.step
+                starts.append(skip)
+            # compute stopping point
+            nb_elem_total = (index_cat.stop - index_cat.start) // index_cat.step
+            nb_elem_prev = size_since_start // index_cat.step
+            nb_elem_remaining = nb_elem_total - nb_elem_prev
+            nb_elem_this_volume = (size_cat - starts[-1]) // index_cat.step
+            if nb_elem_this_volume <= nb_elem_remaining:
+                # last volume
+                stops.append(index_cat.stop - nb_pre)
+                break
+            # read as much as possible
+            size_since_start += size_cat
+            nb_pre += size_cat
+            stops.append(None)
+            continue
+
+        # slice kept arrays
+        arrays = []
+        for array, start, stop in zip(kept_arrays, starts, stops):
+            index[map_dim_cat] = slice(start, stop, index_cat.step)
+            arrays.append(array[tuple(index)])
+
+        # create new CatArray
+        new = copy(self)
+        new._arrays = arrays
+        new._dim_cat = new_dim_cat
+        return new
+
+    def permute(self, dims):
+        # overload permutation -> permute individual arrays
+        new = copy(self)
+        new._arrays = [array.permute(dims) for array in new._arrays]
+        iperm = invert_permutation(dims)
+        new._dim_cat = iperm[new._dim_cat]
+        return new
+
+    def data(self, *args, numpy=False, **kwargs):
+        # read individual arrays and concatenate them
+        # TODO: it would be more efficient to preallocate the whole
+        # array and pass the appropriate buffer to each reader but
+        # (1) we don't have the option to provide a buffer yet
+        # (2) everything's already quite inefficient
+
+        dats = [torch.as_tensor(array.data(*args, **kwargs))
+                for array in self._arrays]
+        dat = torch.cat(dats, dim=self._dim_cat)
+        if numpy:
+            dat = dat.numpy()
+        return dat
+
+    def fdata(self, *args, numpy=False, **kwargs):
+        # read individual arrays and concatenate them
+        # TODO: it would be more efficient to preallocate the whole
+        # array and pass the appropriate buffer to each reader but
+        # (1) we don't have the option to provide a buffer yet
+        # (2) everything's already quite inefficient
+
+        dats = [array.fdata(*args, **kwargs) for array in self._arrays]
+        dat = torch.cat(dats, dim=self._dim_cat)
+        if numpy:
+            dat = dat.numpy()
+        return dat
+
+    def set_data(self, dat, *args, **kwargs):
+        # slice the input data and write it into each array
+        size_prev = 0
+        index = [None] * self.dim
+        for array in self._arrays:
+            size_cat = array.shape[self._dim_cat]
+            index[self._dim_cat] = slice(size_prev, size_prev + size_cat)
+            array._set_data(dat[tuple(index)], *args, **kwargs)
+
+    def set_fdata(self, dat, *args, **kwargs):
+        # slice the input data and write it into each array
+        size_prev = 0
+        index = [None] * self.dim
+        for array in self._arrays:
+            size_cat = array.shape[self._dim_cat]
+            index[self._dim_cat] = slice(size_prev, size_prev + size_cat)
+            array._set_fdata(dat[tuple(index)], *args, **kwargs)
+
+    def metadata(self, *args, **kwargs):
+        return tuple(array.metadata(*args, **kwargs) for array in self._arrays)
+
+    def set_metadata(self, **meta):
+        raise NotImplementedError('Cannot write metadata into concatenated '
+                                  'array')

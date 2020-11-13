@@ -1,28 +1,38 @@
-"""Implementation of MappedArray based on nibabel."""
-# general imports
-import torch
+"""Implementation of MappedArray based on nibabel.
+
+..warning:: This file assumes that nibabel (and numpy) is available and
+            should not be imported if it is not the case!
+"""
+
+
+# python imports
 import os
 import sys
 from warnings import warn
 from contextlib import contextmanager
 from threading import RLock
+# external imports
+import torch
+import numpy as np
+import nibabel as nib
+# nibabel imports
+from nibabel import openers
+from nibabel.spatialimages import SpatialImage
+from nibabel.imageclasses import all_image_classes
+from nibabel.volumeutils import _is_compressed_fobj as is_compressed_fobj
+from nibabel.filebasedimages import ImageFileError
+# nitorch imports
+from nitorch.core import pyutils
 # local imports
-from ..core.optionals import try_import
-from ..core import pyutils
-from .file import MappedArray
+from .mapping import MappedArray
+from .readers import reader_classes
 from .indexing import invert_permutation, is_newaxis, is_sliceaxis, \
                       is_droppedaxis, is_broadcastaxis
 from . import dtype as cast_dtype
 from .metadata import keys as metadata_keys
-from._babel_metadata import header_to_metadata, metadata_to_header
+from ._babel_metadata import header_to_metadata, metadata_to_header
 from ._babel_utils import writeslice, is_full, array_to_file, \
                           full_heuristic, threshold_heuristic, _NullLock
-# optional module
-np = try_import('numpy')
-nib = try_import('nibabel')
-openers = try_import('nibabel', 'openers')
-MGHHeader = try_import('nibabel.freesurfer.mghformat', 'MGHHeader')
-AnalyzeHeader = try_import('nibabel', 'AnalyzeHeader')
 
 
 class BabelArray(MappedArray):
@@ -44,7 +54,7 @@ class BabelArray(MappedArray):
         if nib is None:
             raise ImportError('NiBabel is not available.')
 
-        if isinstance(file_like, nib.spatialimages.SpatialImage):
+        if isinstance(file_like, SpatialImage):
             self._image = file_like
         else:
             self._image = nib.load(file_like, mmap=False,
@@ -62,6 +72,15 @@ class BabelArray(MappedArray):
             self._lock[key] = RLock()
 
         super().__init__()
+
+    @classmethod
+    def possible_extensions(cls):
+        ext = []
+        for klass in all_image_classes:
+            ext.append(*klass.valid_exts)
+        return tuple(ext)
+
+    FailedReadError = ImageFileError
 
     # ------------------------------------------------------------------
     #    ATTRIBUTES
@@ -89,7 +108,7 @@ class BabelArray(MappedArray):
         with self.fileobj(key) as f:
             if isinstance(f, nib.openers.Opener):
                 f = f.fobj
-            iscomp = nib.volumeutils._is_compressed_fobj(f)
+            iscomp = is_compressed_fobj(f)
         return iscomp
 
     # ------------------------------------------------------------------
@@ -427,9 +446,9 @@ class BabelArray(MappedArray):
         meta = header_to_metadata(self._image.dataobj._header, keys)
         return meta
 
-    def set_metadata(self, meta=None):
+    def set_metadata(self, **meta):
         header = self._image.dataobj._header
-        if meta is not None:
+        if meta:
             header = metadata_to_header(header, meta)
         self._set_header_raw(header)
 
@@ -490,3 +509,6 @@ class BabelArray(MappedArray):
         """Sets the state of this ``ArrayProxy`` during unpickling. """
         self.__dict__.update(state)
         self._lock = RLock()
+
+
+reader_classes.append(BabelArray)
