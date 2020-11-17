@@ -8,7 +8,7 @@ _dtypes = {
     'bool': {
         'str': ['bool'],
         'torch': torch.bool,
-        'numpy': getattr(np, 'bool', None),
+        'numpy': getattr(np, 'dtype')('bool'),
         'python': bool,
         'bytes': 1,
         'is_floating_point': False,
@@ -20,7 +20,7 @@ _dtypes = {
     'uint8': {
         'str': ['uint8', 'char'],
         'torch': torch.uint8,
-        'numpy': getattr(np, 'uint8', None),
+        'numpy': getattr(np, 'dtype')('uint8'),
         'python': None,
         'python_fallback': int,
         'bytes': 1,
@@ -47,7 +47,7 @@ _dtypes = {
         'str': ['uint16', 'unsigned short'],
         'torch': None,
         'torch_fallback': torch.int32,
-        'numpy': getattr(np, 'uint16', None),
+        'numpy': getattr(np, 'dtype')('uint16'),
         'python': None,
         'python_fallback': int,
         'bytes': 2,
@@ -60,7 +60,7 @@ _dtypes = {
     'int16': {
         'str': ['int16', 'short'],
         'torch': torch.int16,
-        'numpy': getattr(np, 'int16', None),
+        'numpy': getattr(np, 'dtype')('int16'),
         'python': None,
         'python_fallback': int,
         'bytes': 1,
@@ -74,7 +74,7 @@ _dtypes = {
         'str': ['uint32', 'unsigned', 'unsigned int'],
         'torch': None,
         'torch_fallback': torch.int64,
-        'numpy': getattr(np, 'uint32', None),
+        'numpy': getattr(np, 'dtype')('uint32'),
         'python': None,
         'python_fallback': int,
         'bytes': 4,
@@ -87,7 +87,7 @@ _dtypes = {
     'int32': {
         'str': ['int32', 'int'],
         'torch': torch.int32,
-        'numpy': getattr(np, 'int32', None),
+        'numpy': getattr(np, 'dtype')('int32'),
         'python': None,
         'python_fallback': int,
         'bytes': 4,
@@ -101,7 +101,7 @@ _dtypes = {
         'str': ['uint64', 'unsigned long'],
         'torch': None,
         'torch_fallback': torch.int64,
-        'numpy': getattr(np, 'uint64', None),
+        'numpy': getattr(np, 'dtype')('uint64'),
         'python': None,
         'python_fallback': int,
         'bytes': 8,
@@ -114,7 +114,7 @@ _dtypes = {
     'int64': {
         'str': ['int64', 'long'],
         'torch': torch.int64,
-        'numpy': getattr(np, 'int64', None),
+        'numpy': getattr(np, 'dtype')('int64'),
         'python': int,
         'bytes': 8,
         'is_floating_point': False,
@@ -138,9 +138,9 @@ _dtypes = {
         'eps': 1e-03,
     },
     'float32': {
-        'str': ['float32', 'float'],
+        'str': ['float32', 'single'],
         'torch': torch.float,
-        'numpy': getattr(np, 'float32', None),
+        'numpy': getattr(np, 'dtype')('float32'),
         'python': None,
         'python_fallback': float,
         'bytes': 4,
@@ -154,7 +154,7 @@ _dtypes = {
     'float64': {
         'str': ['float64', 'double'],
         'torch': torch.double,
-        'numpy': getattr(np, 'float64', None),
+        'numpy': getattr(np, 'dtype')('float64'),
         'python': float,
         'bytes': 8,
         'is_floating_point': True,
@@ -202,6 +202,11 @@ def info(dtype):
     def isin(dtype, list_dtype):
         found = False
         for dtype2 in list_dtype:
+            if dtype2 is None:
+                # Some np dtypes do compare positively to `None`
+                # Since we use `None` to specify non-implemented types,
+                # we need to treat it separately.
+                continue
             try:
                 found = dtype == dtype2
                 if found:
@@ -212,9 +217,19 @@ def info(dtype):
 
     dinfo = None
     for key, val in _dtypes.items():
-        if isin(dtype, (val['numpy'], val['torch'], val['python'], *val['str'])):
+        all_dtypes = (val['numpy'], val['torch'], val['python'], *val['str'])
+        found = isin(dtype, all_dtypes)
+        if found:
             dinfo = val
             break
+        # try byteswapped version for numpy types
+        if np is not None:
+            try:
+                if dtype == val['numpy'].newbyteorder():
+                    dinfo = val
+                    break
+            except TypeError:
+                pass
     if dinfo is None:
         raise ValueError('Data type {} not found in the dictionary.'
                          .format(dtype))

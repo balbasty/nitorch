@@ -3,9 +3,9 @@ from copy import copy
 import torch
 from nitorch.core.pyutils import make_list
 from nitorch.spatial import affine_sub, affine_permute, voxel_size as affvx
-from .indexing import expand_index, compose_index, is_droppedaxis, \
-                      is_newaxis, is_sliceaxis, is_broadcastaxis, \
-                      invert_permutation
+from .indexing import (expand_index, guess_shape, compose_index, neg2pos,
+                       is_droppedaxis, is_newaxis, is_sliceaxis,
+                       invert_permutation, invert_slice, slice_navigator)
 from . import dtype as cast_dtype
 
 
@@ -75,6 +75,7 @@ class MappedArray(ABC):
             self.spatial = self._spatial
             self.affine = self._affine
             self.shape = self._shape
+            self.slicer = expand_index([Ellipsis], self._shape)
 
         return self
 
@@ -130,8 +131,8 @@ class MappedArray(ABC):
             matrix relating to the new sub-array.
 
         """
-        if not _pre_expanded:
-            index, new_shape = expand_index(index, self.shape)
+        index = expand_index(index, self.shape)
+        new_shape = guess_shape(index, self.shape)
         if any(isinstance(idx, list) for idx in index) > 1:
             raise ValueError('List indices not currently supported '
                              '(otherwise we enter advanced indexing '
@@ -152,10 +153,7 @@ class MappedArray(ABC):
         new.affine = affine
 
         # compute new slicer
-        if self.slicer is None:
-            new.slicer = index
-        else:
-            new.slicer = compose_index(self.slicer, index)
+        new.slicer = compose_index(self.slicer, index, self._shape)
 
         # compute new spatial mask
         spatial = []
@@ -197,6 +195,10 @@ class MappedArray(ABC):
         """Get floating point data. See `fdata()`"""
         return self.fdata(*args, **kwargs)
 
+    def __array__(self, dtype=None):
+        """Convert to numpy array"""
+        return self.fdata(dtype=dtype)
+
     def permute(self, dims):
         """Permute dimensions
 
@@ -218,26 +220,50 @@ class MappedArray(ABC):
                              'as the array\'s dimension. Got {} and {}.'
                              .format(len(set(dims)), self.dim))
 
-        # Permute tuples that relate to the current spatial dimensions
+        # permute tuples that relate to the current spatial dimensions
+        # (that part is easy)
         shape = tuple(self.shape[d] for d in dims)
         spatial = tuple(self.spatial[d] for d in dims)
 
-        # Permute tuples that relate to the slicer indices
-        # (some of these slicers can drop dimensions, so their length
-        #  can be greater than the current number of dimensions)
+        # permute slicer
+        # 1) permute non-dropped dimensions
+        slicer_nodrop = list(filter(lambda x: not is_droppedaxis(x), self.slicer))
+        slicer_nodrop = [slicer_nodrop[d] for d in dims]
+        # 2) insert dropped dimensions
         slicer = []
-        dim_map = []
-        n_slicer = 0        # index into the slicer tuple
-        n_dropped = 0       # number of dropped dimensions on the left
-        for d in dims:
-            if is_droppedaxis(self.slicer[n_slicer]):
-                slicer.append(self.slicer[n_slicer])
-                dim_map.append(self.permutation[n_slicer])
-                n_dropped += 1
+        for idx in self.slicer:
+            if is_droppedaxis(idx):
+                slicer.append(idx)
             else:
-                slicer.append(self.slicer[d + n_dropped])
-                dim_map.append(self.permutation[d + n_dropped])
-            n_slicer += 1
+                new_idx, *slicer_nodrop = slicer_nodrop
+                slicer.append(new_idx)
+
+        # permute permutation
+        # 1) insert None where new axes and remove dropped axes
+        old_perm = self.permutation
+        new_perm = []
+        drop_perm = []
+        for idx in self.slicer:
+            if is_newaxis(idx):
+                new_perm.append(None)
+                continue
+            p, *old_perm = old_perm
+            if not is_droppedaxis(idx):
+                new_perm.append(p)
+            else:
+                drop_perm.append(p)
+        # 2) permute
+        new_perm = [new_perm[d] for d in dims]
+        # 3) insert back dropped axes and remove new axes
+        perm = []
+        for idx in self.slicer:
+            if is_droppedaxis(idx):
+                p, *drop_perm = drop_perm
+                perm.append(p)
+                continue
+            p, *new_perm = new_perm
+            if not is_newaxis(idx):
+                perm.append(p)
 
         # permute affine
         # (it's a bit more complicated: we need to find the
@@ -251,7 +277,7 @@ class MappedArray(ABC):
         new = copy(self)
         new.shape = shape
         new.spatial = spatial
-        new.permutation = tuple(dim_map)
+        new.permutation = tuple(perm)
         new.slicer = tuple(slicer)
         new.affine = affine
         return new
@@ -583,6 +609,7 @@ class MappedArray(ABC):
         raise cls.FailedWriteError("Method not implemented in class {}."
                                    .format(cls.__name__))
 
+
     def unsqueeze(self, dim):
         """Add a dimension of size 1 in position `dim`.
 
@@ -783,10 +810,10 @@ class CatArray(MappedArray):
 
     __repr__ = __str__
 
-    def slice(self, index, new_shape=None, _pre_expanded=False):
+    def slice(self, index, new_shape=None):
         # overload slicer -> slice individual arrays
-        if not _pre_expanded:
-            index, new_shape = expand_index(index, self.shape)
+        index = expand_index(index, self.shape)
+        new_shape = guess_shape(index, self.shape)
         assert len(index) > 0, "index should never be empty here"
         if any(isinstance(idx, list) for idx in index) > 1:
             raise ValueError('List indices not currently supported '
@@ -813,13 +840,18 @@ class CatArray(MappedArray):
                 # found the concatenated dimension
                 break
         index_cat = index[map_dim_cat]
+        index_cat = neg2pos(index_cat, shape_cat)  # /!\ do not call it again
 
         if is_droppedaxis(index_cat):
             # if the concatenated dimension is dropped, return the
             # corresponding array (sliced)
+            if index_cat < 0 or index_cat >= shape_cat:
+                raise IndexError('Index {} out of bounds [0, {}]'
+                                 .format(index_cat, shape_cat))
             nb_pre = 0
             for i in range(len(self._arrays)):
                 if nb_pre < index_cat:
+                    # we haven't found the volume yet
                     nb_pre += self._arrays[i].shape[self._dim_cat]
                     continue
                 if i > index_cat:
@@ -828,52 +860,54 @@ class CatArray(MappedArray):
                     nb_pre -= self._arrays[i].shape[self._dim_cat]
                 index_cat = index_cat - nb_pre
                 index[map_dim_cat] = index_cat
-                # slice the array but set `_pre_expanded=True`
-                return self._arrays[i].slice(tuple(index), new_shape, True)
+                return self._arrays[i].slice(tuple(index), new_shape)
 
         # else, we may have to drop some volumes and slice the others
         assert is_sliceaxis(index_cat), "This should not happen"
         arrays = self._arrays
 
         if index_cat.step < 0:
-            # if negative step, invert everything and update index_cat
+            # if negative step:
+            # 1) invert everything
             invert_index = [slice(None)] * self.dim
             invert_index[self._dim_cat] = slice(None, None, -1)
             arrays = [array[tuple(invert_index)] for array in arrays]
-            index_cat = slice(shape_cat - index_cat.start,
-                              shape_cat - index_cat.stop,
-                              -index_cat.step)
+            # 2) update index_cat
+            index_cat = invert_slice(index_cat, shape_cat, neg2pos=False)
 
-        nb_pre = 0
-        kept_arrays = []
-        starts = []
-        stops = []
-        size_since_start = 0
+        # compute navigator
+        # (step is positive)
+        start, step, nb_elem_total = slice_navigator(index_cat, shape_cat, neg2pos=False)
+
+        nb_pre = 0              # nb of slices on the left of the cursor
+        kept_arrays = []        # arrays at least partly in bounds
+        starts = []             # start in each kept array
+        stops = []              # stop in each kept array
+        size_since_start = 0    # nb of in-bounds slices left of the cursor
         while len(arrays) > 0:
             # pop array
             array, *arrays = arrays
             size_cat = array.shape[self._dim_cat]
-            if nb_pre + size_cat < index_cat.start:
+            if nb_pre + size_cat < start:
                 # discarded volumes at the beginning
                 nb_pre += size_cat
                 continue
-            if nb_pre < index_cat.start:
+            if nb_pre < start:
                 # first volume
                 kept_arrays.append(array)
-                starts.append(index_cat.start - nb_pre)
+                starts.append(start - nb_pre)
             elif nb_pre < index_cat.stop:
                 # other kept volume
                 kept_arrays.append(array)
-                skip = size_since_start - (size_since_start // index_cat.step) * index_cat.step
+                skip = size_since_start - (size_since_start // step) * step
                 starts.append(skip)
             # compute stopping point
-            nb_elem_total = (index_cat.stop - index_cat.start) // index_cat.step
-            nb_elem_prev = size_since_start // index_cat.step
+            nb_elem_prev = size_since_start // step
             nb_elem_remaining = nb_elem_total - nb_elem_prev
-            nb_elem_this_volume = (size_cat - starts[-1]) // index_cat.step
+            nb_elem_this_volume = (size_cat - starts[-1]) // step
             if nb_elem_this_volume <= nb_elem_remaining:
                 # last volume
-                stops.append(index_cat.stop - nb_pre)
+                stops.append(nb_elem_remaining)
                 break
             # read as much as possible
             size_since_start += size_cat
@@ -884,7 +918,7 @@ class CatArray(MappedArray):
         # slice kept arrays
         arrays = []
         for array, start, stop in zip(kept_arrays, starts, stops):
-            index[map_dim_cat] = slice(start, stop, index_cat.step)
+            index[map_dim_cat] = slice(start, stop, step)
             arrays.append(array[tuple(index)])
 
         # create new CatArray
