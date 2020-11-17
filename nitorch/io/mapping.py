@@ -19,6 +19,9 @@ class MappedArray(ABC):
     Chaining of symbolic slicing operations is implemented in this base
     class. The actual io must be implemented by the child class.
 
+    Abstract Methods
+    ----------------
+
     Child classes MUST implement:
     * self.data(...)
 
@@ -34,6 +37,63 @@ class MappedArray(ABC):
     Child classes SHOULD register themselves in `readers.reader_classes`.
     If they implement `save_new`, child classes SHOULD register
     themselves in `writers.writer_classes`.
+
+    Properties
+    ----------
+    dtype : np.dtype            On-disk data type
+    slope : float               Intensity slope from on-disk to unit
+    inter : float               Intensity shift from on-disk to unit
+    affine : tensor             Orientation matrix: maps spatial axes to 'world'
+    spatial : tuple[bool]       Mask of 'spatial' axes (x, y, z, ...)
+    slicer : tuple[index_like]  Indexing into the full on-disk array
+    permutation : tuple[int]    Permutation of the original in-disk axes.
+    dim : int                   Number of axes
+    voxel_size : tuple[float]   World size of the spatial dimensions
+
+    Types
+    -----
+    FailedReadError             Error raised when failing to load
+    FailedWriteError            Error raised when failing to save
+
+    Methods
+    -------
+    slice(tuple[index_like])    Subslice the array
+    permute(tuple[int])         Permute axes
+    transpose(int, int)         Permute two axes
+    unsqueeze(int)              Insert singleton dimension
+    squeeze(int)                Remove singleton dimension
+    unbind -> tuple             Unstack arrays along a dimension
+    chunk -> tuple              Unstack arrays along a dimension by chunks
+    split -> tuple              Unstack arrays along a dimension by chunks
+
+    data(...) -> tensor         Load raw data to memory
+    fdata(...) -> tensor        Load scaled floating-point data to memory
+    metadata(...) -> dict       oad metadata to memory
+    set_data(dat, ...)          Write raw data to disk
+    set_fdata(dat, ...)         Write scaled floating-point data to disk
+    set_metadata(meta, ...)     Write metadata to disk
+
+    Class methods
+    -------------
+    save_new(dat, file_like)    Write new file populated with `dat`
+    savef_new(dat, file_like)   Write new file populated with (scaled) `dat`
+
+    External functions
+    ------------------
+    map(file_like) -> MappedArray   Build a MappedArray
+    load(file_like) -> tensor       Load raw data to memory from a file
+    loadf(file_like) -> tensor      Load scaled data to memory from a file
+    save(dat, file_like) ->         Save raw data into a new file
+    savef(dat, file_like) ->        Save scaled data into a new file
+    cat(tuple[MappedArray])         Concatenate arrays along a dimension
+
+    Syntaxic sugar
+    --------------
+    __call__    -> fdata        Load scaled floating-point data to memory
+    __array__   -> fdata        Load scaled floating-point data to memory
+    __getitem__ -> slice        Subslice the array
+    __setitem__ -> set_fdata    Write scaled floating-point data to disk
+    __len__                     Size of the first dimension (or 0 if scalar)
 
     """
 
@@ -84,6 +144,12 @@ class MappedArray(ABC):
             type(self).__name__, self.shape, self.dtype)
 
     __repr__ = __str__
+
+    def __len__(self):
+        if len(self.shape) > 0:
+            return self.shape[0]
+        else:
+            return 0
 
     @classmethod
     def possible_extensions(cls):
@@ -608,7 +674,6 @@ class MappedArray(ABC):
         """
         raise cls.FailedWriteError("Method not implemented in class {}."
                                    .format(cls.__name__))
-
 
     def unsqueeze(self, dim):
         """Add a dimension of size 1 in position `dim`.
