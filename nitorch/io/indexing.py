@@ -566,7 +566,7 @@ def compose_index(parent, child, full_shape):
     while parent:
         # copy leading `None`s
         while child and child[0] is None:
-            new_parent = [None, *new_parent]
+            new_parent = [*new_parent, None]
             child = child[1:]
 
         # if no more children, just keep the remaining parents

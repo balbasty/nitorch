@@ -219,7 +219,8 @@ class MappedArray(ABC):
         new.affine = affine
 
         # compute new slicer
-        new.slicer = compose_index(self.slicer, index, self._shape)
+        perm_shape = [self._shape[d] for d in self.permutation]
+        new.slicer = compose_index(self.slicer, index, perm_shape)
 
         # compute new spatial mask
         spatial = []
@@ -328,7 +329,7 @@ class MappedArray(ABC):
                 perm.append(p)
                 continue
             p, *new_perm = new_perm
-            if not is_newaxis(idx):
+            if not is_newaxis(p):
                 perm.append(p)
 
         # permute affine
