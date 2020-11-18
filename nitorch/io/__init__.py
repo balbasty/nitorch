@@ -215,3 +215,7 @@ from .loadsave import map, load, loadf, save, savef
 if optionals.nibabel:
     from . import babel
     from .babel import BabelArray
+
+if optionals.tifffile:
+    from . import tiff
+    from .tiff import TiffArray

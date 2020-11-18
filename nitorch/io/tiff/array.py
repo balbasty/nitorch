@@ -2,6 +2,7 @@ from ..mapping import MappedArray
 from ..indexing import is_fullslice, split_operation, slicer_sub2ind, invert_slice
 from .. import dtype as cast_dtype
 from .. import nputils
+from ..readers import reader_classes
 from nitorch.spatial import affine_default
 from nitorch.core import pyutils
 from tifffile import TiffFile
@@ -421,4 +422,4 @@ class TiffArray(MappedArray):
             return tuple(), tuple(shape), tuple(page.shape)
 
 
-
+reader_classes.append(TiffArray)
