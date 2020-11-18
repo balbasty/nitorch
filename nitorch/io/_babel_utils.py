@@ -1,34 +1,15 @@
 """Additional utilities for nibabel."""
-from .optionals import nibabel as nib
-from ..core.optionals import numpy as np
+import numpy as np
 
-
-# import stuff from nibabel
-_NullLock = nib.fileslice._NullLock
-mmap = nib.fileslice.mmap
-threshold_heuristic = nib.fileslice.threshold_heuristic
-is_fancy = nib.fileslice.is_fancy
-fill_slicer = nib.fileslice.fill_slicer
-_positive_slice = nib.fileslice._positive_slice
-Integral = nib.fileslice.Integral
-canonical_slicers = nib.fileslice.canonical_slicers
-_full_slicer_len = nib.fileslice._full_slicer_len
-reduce = nib.fileslice.reduce
-operator = nib.fileslice.operator
-read_segments = nib.fileslice.read_segments
-predict_shape = nib.fileslice.predict_shape
-slicers2segments = nib.fileslice.slicers2segments
-array_to_file = nib.volumeutils.array_to_file
+from nibabel.fileslice import (
+    _NullLock, threshold_heuristic, is_fancy, fill_slicer,
+    _positive_slice, canonical_slicers, reduce, operator, read_segments,
+    predict_shape, slicers2segments)
 
 
 def full_heuristic(*args, **kwargs):
     """Heuristic that always read the full volume"""
     return threshold_heuristic(*args, **kwargs, skip_thresh=0)
-
-
-def is_full(slicer, shape):
-    return canonical_slicers(slicer, shape, False) == \
-           canonical_slicers((), shape, False)
 
 
 def write_segments(fileobj, segments, dat, lock=None):
@@ -91,27 +72,28 @@ def writeslice(dat, fileobj, sliceobj, shape, dtype, offset=0, order='C',
     Our job is to write the array `dat` into the slice ``A[sliceobj]``
     in the most efficient way in terms of memory and time.
 
-    Sometimes it will be quicker to read memory that we will later throw away,
-    to save time we might lose doing short seeks on `fileobj`.  Call these
-    alternatives: (read + discard); and skip.  This routine guesses when to
-    (read+discard) or skip using the callable `heuristic`, with a default using
-    a hard threshold for the memory gap large enough to prefer a skip.
+    Sometimes it will be quicker to read a larger chunk of memory, write
+    into it in memory and write it back to disk, because it will save
+    time we might lose doing short seeks on `fileobj`. Call these
+    alternatives: (read + write); and skip.  This routine guesses when to
+    (read + write) or skip using the callable `heuristic`, with a default
+    using a hard threshold for the memory gap large enough to prefer a skip.
 
-    YB: we can't use the strategy of reading too much and discarding when
-    writing. Maybe I should read a bunch, wite the slice data and rewrite?
+    Currently, we use the same heuristic for writing as the one used for
+    reading. It might not be optimal, as triggering a 'read + write'
+    involves more operations than a 'read + discard'.
 
     Parameters
     ----------
     fileobj : file-like object
-        file-like object, opened for reading in binary mode. Implements
-        ``read`` and ``seek``.
+        file-like object, opened for reading and writing in binary mode.
+        Implements ``read``, ``write`` and ``seek``.
     sliceobj : object
         something that can be used to slice an array as in ``arr[sliceobj]``.
     shape : sequence
-        shape of full array inside `fileobj`.
+        shape of the full array inside `fileobj`.
     dtype : dtype specifier
-        dtype of array inside `fileobj`, or input to ``numpy.dtype`` to specify
-        array dtype.
+        dtype (or input to ``numpy.dtype``) of the array inside `fileobj`.
     offset : int, optional
         offset of array data within `fileobj`
     order : {'C', 'F'}, optional
@@ -158,15 +140,13 @@ def writeslice(dat, fileobj, sliceobj, shape, dtype, offset=0, order='C',
 
 def calc_slicedefs_write(sliceobj, in_shape, itemsize, offset, order,
                          heuristic=threshold_heuristic):
-    """ Return parameters for slicing array with `sliceobj` given memory layout
+    """ Return parameters for slicing an array into `sliceobj`
 
-    Calculate the best combination of skips / (read + discard) to use for
-    reading the data from disk / memory, then generate corresponding
-    `segments`, the disk offsets and read lengths to read the memory.  If we
-    have chosen some (read + discard) optimization, then we need to discard the
-    surplus values from the read array using `post_slicers`, a slicing tuple
-    that takes the array as read from a file-like object, and returns the array
-    we want.
+    Calculate the best combination of skips / (read + write) to use for
+    write the data to disk / memory, then generate corresponding
+    `segments`, the disk offsets and lengths to write in memory.  If we
+    have chosen some (read + write) optimization, then we need to
+    write sub-slices into bigger chunks using `sub_slicers`.
 
     Parameters
     ----------
@@ -187,10 +167,21 @@ def calc_slicedefs_write(sliceobj, in_shape, itemsize, offset, order,
 
     Returns
     -------
-    pre_slicers
-    segments
-    sub_slicers
-    sub_shape
+    pre_slicers : tuple[index_like]
+        Slicers to apply to the data to write before anything else.
+        It removes new axis and makes strides positive.
+    segments : tuple[(int, int)]
+        List of segments defined by an offset and a length.
+        Each segment correspond to one chunk of data to write (and
+        eventually read) on disk.
+    sub_slicers : tuple[index_like]
+        This one implements the `read + write` vs `skip` strategy.
+        Slicer used to write the chunk of data obtained from `pre_slicer`
+        into a bigger chunk read from disk (`read + write` strategy).
+        If `sub_slicers` is only made of full slices, no need to read
+        a bigger chunk (`skip` strategy)
+    sub_shape : tuple[int]
+        Predicted shape of each segment
     """
     if order not in "CF":
         raise ValueError("order should be one of 'CF'")
@@ -220,7 +211,7 @@ def optimize_write_slicers(sliceobj, in_shape, itemsize, heuristic):
 
     Parameters
     ----------
-    sliceobj : object
+    sliceobj : tuple[index_like]
         something that can be used to slice an array as in ``arr[sliceobj]``.
         Can be assumed to be canonical in the sense of ``canonical_slicers``
     in_shape : sequence
@@ -237,11 +228,19 @@ def optimize_write_slicers(sliceobj, in_shape, itemsize, heuristic):
 
     Returns
     -------
-    pre_slicers : tuple
+    pre_slicers : tuple[index_like]
         Any slicing to be applied to the array before writing.
         (discard any ``newaxis``, invert negative strides)
-    sub_slicers : tuple
-    write_slicers : tuple
+    write_slicers : tuple[index_like]
+        Slicers that corresponds to the chunk of data actually written
+        (and eventually read beforehand) to disk.
+    sub_slicers : tuple[index_like]
+        Slicers into the chunk of data described by `write_slicers`.
+        If it is only made of full slices, it is not used and data is
+        directly written to disk using `write_slicers` (skip strategy).
+        Else, `write_slicers` is used to read (then write) a bigger
+        chunk and `sub_slicers` is used to write data into this bigger
+        chunk.
     """
     pre_slicers = []
     sub_slicers = []
@@ -273,7 +272,8 @@ def optimize_write_slicer(slicer, dim_len, all_full, is_slowest, stride,
 
     Parameters
     ----------
-    slicer : slice object or int
+    write_slice : slice or int
+        Index along a single axis
     dim_len : int
         length of axis along which to slice
     all_full : bool
@@ -289,17 +289,15 @@ def optimize_write_slicer(slicer, dim_len, all_full, is_slowest, stride,
 
     Returns
     -------
-    pre_slice : slice object
-        slice to be applied before array is written.
-        If axis will be dropped by `to_read` slicing, so no slicing would make
-        sense, return string ``dropped``
-    sub_slice : slice object
-        slice used to write the current data-block into the larger
-        read-and-written data block. `None` if not needed
-    to_write : slice object or int
+    pre_slice : slice or int
+        slice to be applied before the array is written.
+    write_slice : slice or int
         slice of data to write (or read-and-write).
-        to_write` must always have positive ``step`` (because we don't
+        `write_slice` must always have positive ``step`` (because we don't
         want to go backwards in the buffer / file)
+    sub_slice : slice
+        slice used to write the current data-block into the larger
+        read-and-written data block.
 
     Notes
     -----
@@ -309,16 +307,16 @@ def optimize_write_slicer(slicer, dim_len, all_full, is_slowest, stride,
 
     A full slice is a continuous slice returning all elements.
 
-    The main question we have to ask is whether we should transform `to_read`,
-    `post_slice` to prefer a full read and partial slice.  We only do this in
-    the case of all_full==True.  In this case we might benefit from reading a
-    continuous chunk of data even if the slice is not continuous, or reading
-    all the data even if the slice is not full. Apply a heuristic `heuristic`
-    to decide whether to do this, and adapt `to_read` and `post_slice` slice
+    The main question we have to ask is whether we should split
+    `write_slice` into (`write_slice`, `sub_slice`) to prefer a large
+    read+write over many small writes. We apply a heuristic `heuristic`
+    to decide whether to do this, and adapt `write_slice` and `sub_slice`
     accordingly.
 
-    Otherwise (apart from constraint to be positive) return `to_read` unaltered
-    and `post_slice` as ``slice(None)``
+    Otherwise we return `write_slice` almost unaltered. We simply split
+    is into (`pre_slice`, `write_slice`) to ensure that the strides
+    we use are positive.
+
     """
     # int or slice as input?
     try:  # if int - we drop a dim (no append)
