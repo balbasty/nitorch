@@ -68,10 +68,10 @@ class MappedArray(ABC):
 
     data(...) -> tensor         Load raw data to memory
     fdata(...) -> tensor        Load scaled floating-point data to memory
-    metadata(...) -> dict       oad metadata to memory
+    metadata(...) -> dict       Load metadata to memory
     set_data(dat, ...)          Write raw data to disk
     set_fdata(dat, ...)         Write scaled floating-point data to disk
-    set_metadata(meta, ...)     Write metadata to disk
+    set_metadata(**meta)        Write metadata to disk
 
     Class methods
     -------------
