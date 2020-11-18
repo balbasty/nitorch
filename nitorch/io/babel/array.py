@@ -32,20 +32,19 @@ from nibabel.volumeutils import _is_compressed_fobj as is_compressed_fobj, \
                                 array_from_file, array_to_file
 from nibabel.fileslice import fileslice
 from nibabel.filebasedimages import ImageFileError
-from nibabel.fileholders import FileHolder
 # nitorch imports
 from nitorch.core import pyutils
 # local imports
-from .mapping import MappedArray
-from .readers import reader_classes
-from .writers import writer_classes
-from .loadsave import map as map_array
-from .indexing import invert_permutation, is_newaxis, is_sliceaxis, \
+from ..mapping import MappedArray
+from ..readers import reader_classes
+from ..writers import writer_classes
+from ..loadsave import map as map_array
+from ..indexing import invert_permutation, is_newaxis, is_sliceaxis, \
                       is_droppedaxis, is_fullslice
-from . import dtype as cast_dtype
-from .metadata import keys as metadata_keys
-from ._babel_metadata import header_to_metadata, metadata_to_header
-from ._babel_utils import writeslice
+from .. import dtype as cast_dtype
+from ..metadata import keys as metadata_keys
+from .metadata import header_to_metadata, metadata_to_header
+from .utils import writeslice
 
 
 class BabelArray(MappedArray):

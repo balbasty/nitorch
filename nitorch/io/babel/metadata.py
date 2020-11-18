@@ -1,12 +1,11 @@
 """"Conversions between generic and nibabel-specific metadata"""
 import torch
 from warnings import warn
-from ..spatial import voxel_size
-from ..core.optionals import numpy as np
-from ..core.optionals import try_import
-MGHHeader = try_import('nibabel.freesurfer.mghformat', 'MGHHeader')
-Nifti1Header, Spm2AnalyzeHeader, Spm99AnalyzeHeader, AnalyzeHeader = try_import(
-    'nibabel', ['Nifti1Header', 'Spm2AnalyzeHeader','Spm99AnalyzeHeader', 'AnalyzeHeader'])
+import numpy as np
+from nibabel.freesurfer.mghformat import MGHHeader
+from nibabel import (Nifti1Header, Spm2AnalyzeHeader,
+                     Spm99AnalyzeHeader, AnalyzeHeader)
+from nitorch.spatial import voxel_size
 
 
 def metadata_to_header(header, metadata, shape=None, dtype=None):
