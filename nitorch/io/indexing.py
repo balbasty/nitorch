@@ -664,6 +664,10 @@ def compose_index(parent, child, full_shape):
                 start = start0 + start * step0
                 step = step0 * step
                 stop = start + length * step
+                if step < 0 and stop < 0:
+                    # need to simplify this here because
+                    # simplify_slice fails otherwise
+                    stop = None
                 new_slice = simplify_slice(slice(start, stop, step), sz0,
                                            do_neg2pos=False)
                 new_parent.append(new_slice)
