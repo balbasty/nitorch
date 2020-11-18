@@ -357,6 +357,31 @@ def prod(sequence, inplace=False):
     return accumulate
 
 
+def cumprod(sequence):
+    """Perform the cumulative product of a sequence of elements.
+
+    Parameters
+    ----------
+    sequence : any object that implements `__iter__`
+        Sequence of elements for which the `__mul__` operator is defined.
+
+    Returns
+    -------
+    product :
+        Product of the elements in the sequence.
+
+    """
+    accumulate = None
+    seq = []
+    for elem in sequence:
+        if accumulate is None:
+            accumulate = elem
+        else:
+            accumulate = accumulate * elem
+        seq.append(accumulate)
+    return seq
+
+
 def pop(obj, key=0, *args, **kwargs):
     """Pop an element from a mutable collection.
 

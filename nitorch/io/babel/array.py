@@ -40,8 +40,9 @@ from ..readers import reader_classes
 from ..writers import writer_classes
 from ..loadsave import map as map_array
 from ..indexing import invert_permutation, is_newaxis, is_sliceaxis, \
-                      is_droppedaxis, is_fullslice
+                      is_droppedaxis, is_fullslice, split_operation
 from .. import dtype as cast_dtype
+from .. import nputils
 from ..metadata import keys as metadata_keys
 from .metadata import header_to_metadata, metadata_to_header
 from .utils import writeslice
@@ -345,175 +346,6 @@ class BabelArray(MappedArray):
             header.writeftr_to(fileobj)
         return self
 
-    @staticmethod
-    def _split_op(perm, slicer, direction):
-        """Split the operation `slicer of permutation` into subcomponents.
-
-        Symbolic slicing is encoded by a permutation and an indexing operation.
-        The operation `sub.data()` where `sub` has been obtained by applying
-        a succession of permutations and sub-indexings on `full` should be
-        equivalent to
-        ```python
-        >>> full_data = full.data()
-        >>> sub_data = full_data.permute(sub.permutation)[sub.slicer]
-        ```
-        However, the slicer may create new axes or drop (i.e., index with
-        a scalar) original axes. This function splits `slicer of permutation`
-        into more sub-components.
-        If the direction is 'read'
-            * `slicer_sub`  : unpermuted slicer without new axes
-            * `perm`        : permutation without dropped axes
-            * `slicer_add`  : slicer that adds new axes
-        ```python
-        >>> dat = full[slicer_sub].transpose(perm)[slicer_add]
-        ```
-        If the direction is 'write':
-            * `slicer_drop` : slicer that drops new axes
-            * `perm`        : inverse permutation without dropped axes
-            * `slicer_sub`  : unpermuted slicer without
-        ```python
-        >>> full[slicer_sub] = dat[slicer_drop].transpose(perm)
-        ```
-
-        Parameters
-        ----------
-        perm : sequence[int]
-            Permutation of `range(self._dim)`
-        slicer : sequence[index_like]
-            Sequence of indices that slice into `self._shape`
-        direction : {'r', 'w'}
-            Either split for reading ('r') or writing ('w') a chunk.
-
-        Returns
-        -------
-        slicer_sub ('r') or slicer_drop ('w') : tuple
-        perm : tuple
-        slicer_add ('r') or slicer_sub ('w') : tuple
-
-        """
-        def remap(perm):
-            """Re-index dimensions after some have been dropped"""
-            remaining_dims = sorted(perm)
-            dim_map = {}
-            for new, old in enumerate(remaining_dims):
-                dim_map[old] = new
-            remapped_dim = [dim_map[d] for d in perm]
-            return remapped_dim
-
-        def select(index, seq):
-            """Select elements into a sequence using a list of indices"""
-            return [seq[idx] for idx in list(index)]
-
-        slicer_nonew = list(filter(lambda x: not is_newaxis(x), slicer))
-        slicer_nodrop = filter(lambda x: not is_droppedaxis(x), slicer)
-        slicer_sub = select(invert_permutation(perm), slicer_nonew)
-        perm_nodrop = [d for d, idx in zip(perm, slicer_nonew)
-                       if not is_droppedaxis(idx)]
-        perm_nodrop = remap(perm_nodrop)
-
-        if direction.lower().startswith('r'):
-            slicer_add = map(lambda x: slice(None) if x is not None else x,
-                             slicer_nodrop)
-            return tuple(slicer_sub), tuple(perm_nodrop), tuple(slicer_add)
-        elif direction.lower().startswith('w'):
-            slicer_drop = map(lambda x: 0 if x is None else slice(None),
-                              slicer_nodrop)
-            inv_perm_nodrop = invert_permutation(perm_nodrop)
-            return tuple(slicer_drop), tuple(inv_perm_nodrop), tuple(slicer_sub)
-        else:
-            raise ValueError("direction should be in ('read' ,'write') "
-                             "but got {}.".format(direction))
-
-    @staticmethod
-    def _cast(dat, dtype, casting='unsafe', with_scale=False):
-        """Cast an array to a given type.
-
-        Parameters
-        ----------
-        dat : np.ndarray
-            Input array
-        dtype : np.dtype
-            Output data type (should have the proper on-disk byte order)
-        casting : {'no', 'equiv', 'safe', 'same_kind', 'unsafe',
-                   'rescale', 'rescale_zero}, default='unsafe'
-            Casting method:
-            * 'rescale' makes sure that the dynamic range in the array
-              matches the range of the output data type
-            * 'rescale_zero' does the same, but keeps the mapping `0 -> 0`
-              intact.
-            * all other options are implemented in numpy. See `np.can_cast`.
-        with_scale : bool, default=False
-            Return the scaling applied, if any.
-
-        Returns
-        -------
-        dat : np.ndarray[dtype]
-
-        """
-        scale = 1.
-        info = cast_dtype.info(dtype)
-        if casting.startswith('rescale') and not info['is_floating_point']:
-            # rescale
-            # TODO: I am using float64 as an intermediate to cast
-            #       Maybe I can do things in a nicer / more robust way
-            minval = dat.min().astype(np.float64)
-            maxval = dat.max().astype(np.float64)
-            if dat.dtype != np.float64:
-                dat = dat.astype(np.float64)
-            if not dat.flags.writeable:
-                dat = np.copy(dat)
-            if casting == 'rescale':
-                scale = (1 - minval/maxval) / (1 - info['min']/info['max'])
-                offset = (info['max'] - info['min'])/(maxval - minval)
-                dat *= scale
-                dat += offset
-            else:
-                assert casting == 'rescale_zero'
-                if minval < 0 and not info['is_signed']:
-                    warn("Converting negative values to an unsigned datatype")
-                scale = min(abs(info['max']/maxval) if maxval else float('inf'),
-                            abs(info['min']/minval) if minval else float('inf'))
-                dat *= scale
-            casting = 'unsafe'
-
-        # unsafe cast
-        if dat.dtype != dtype:
-            dat = dat.astype(dtype, casting=casting)
-
-        return (dat, scale) if with_scale else dat
-
-    @staticmethod
-    def _cutoff(dat, cutoff, dim=None):
-        """Clip data when outside of a range defined by percentiles
-
-        Parameters
-        ----------
-        dat : np.ndarray
-            Input data
-        cutoff : max or (min, max)
-            Percentile cutoffs (in [0, 1])
-        dim : int, optional
-            Dimension(s) along which to compute percentiles
-
-        Returns
-        -------
-        dat : np.ndarray
-            Clipped data
-
-        """
-        if cutoff is None:
-            return dat
-        cutoff = sorted([100*val for val in pyutils.make_sequence(cutoff)])
-        if len(cutoff) > 2:
-            raise ValueError('Maximum to percentiles (min, max) should'
-                             ' be provided. Got {}.'.format(len(cutoff)))
-        pct = np.nanpercentile(dat, cutoff, axis=dim, keepdims=True)
-        if len(pct) == 1:
-            dat = np.clip(dat, a_max=pct[0])
-        else:
-            dat = np.clip(dat, a_min=pct[0], a_max=pct[1])
-        return dat
-
     # ------------------------------------------------------------------
     #    HIGH-LEVEL IMPLEMENTATION
     # ------------------------------------------------------------------
@@ -538,10 +370,10 @@ class BabelArray(MappedArray):
             return self
 
         # --- cast ---
-        dat = self._cast(dat, self.dtype, casting)
+        dat = nputils.cast(dat, self.dtype, casting)
 
         # --- unpermute ---
-        drop, perm, slicer = self._split_op(self.permutation, self.slicer, 'w')
+        drop, perm, slicer = split_operation(self.permutation, self.slicer, 'w')
         dat = dat[drop].transpose(perm)
 
         # --- dispatch ---
@@ -588,14 +420,14 @@ class BabelArray(MappedArray):
                 return torch.zeros(self.shape, dtype=outinfo['torch'], device=device)
 
         # --- read native data ---
-        slicer, perm, newdim = self._split_op(self.permutation, self.slicer, 'r')
+        slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
         with self.fileobj('image', 'r') as f:
             dat = self._read_data_raw(slicer, fileobj=f)
         dat = dat.transpose(perm)[newdim]
         ininfo = cast_dtype.info(self.dtype)
 
         # --- cutoff ---
-        dat = self._cutoff(dat, cutoff, dim)
+        dat = nputils.cutoff(dat, cutoff, dim)
 
         # --- cast ---
         rand = rand and ininfo['is_integer']
@@ -603,7 +435,7 @@ class BabelArray(MappedArray):
             tmpdtype = np.float64
         else:
             tmpdtype = dtype
-        dat, scale = self._cast(dat, tmpdtype, casting, with_scale=True)
+        dat, scale = nputils.cast(dat, tmpdtype, casting, with_scale=True)
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
@@ -615,7 +447,7 @@ class BabelArray(MappedArray):
             dat += noise
 
         # --- final cast ---
-        dat = self._cast(dat, dtype, 'unsafe')
+        dat = nputils.cast(dat, dtype, 'unsafe')
 
         # convert to torch if needed
         if not numpy:
@@ -742,7 +574,7 @@ class BabelArray(MappedArray):
                 dat /= slope
 
         # cast
-        dat = cls._cast(dat, dtype, casting)
+        dat = nputils.cast(dat, dtype, casting)
 
         # set dtype / shape
         header.set_data_dtype(dtype)
