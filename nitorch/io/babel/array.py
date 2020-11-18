@@ -139,6 +139,8 @@ class BabelArray(MappedArray):
             Should already have the on-disk data type, including byte-order
         slicer : tuple[index_like]
             Unpermuted slicer, without new axes.
+        fileobj : nibabel.Opener, optional
+            File object
 
         """
 
@@ -214,10 +216,8 @@ class BabelArray(MappedArray):
             lock = self._lock['image']
             return self._read_data_raw_partial(slicer, fileobj, lock)
 
-        return fileslice(fileobj, slicer,
-                         self._shape,
-                         self.dtype,
-                         self._image.dataobj._offset,
+        return fileslice(fileobj, slicer, self._shape, self.dtype,
+                         offset=self._image.dataobj._offset,
                          order=self._image.dataobj.order,
                          lock=lock)
 
@@ -254,6 +254,8 @@ class BabelArray(MappedArray):
     def _read_data_raw(self, slicer=None, fileobj=None, mmap=None):
         """Read native data
 
+        Dispatch to `_read_data_raw_full` or `_read_data_raw_partial`.
+
         Parameters
         ----------
         slicer : tuple[index_like], optional
@@ -283,12 +285,17 @@ class BabelArray(MappedArray):
         return dat
 
     def _set_header_raw(self, header=None, fileobj=None):
-        """Write header to file
+        """Write (nibabel) header to file
+
+        This function assumes that `fileobj` is at -- or can seek to --
+        the beginning of the file.
 
         Parameters
         ----------
-        header : Header
-        fileobj : Opener
+        header : nibabel.Header, default=`self._image.dataobj._header`
+            Header object from nibabel.
+        fileobj : nibabel.Opener, default=`self.fileobj('header')`
+            File object., with `seek` and `write`.
 
         Returns
         -------
@@ -310,7 +317,12 @@ class BabelArray(MappedArray):
         return self
 
     def _set_footer_raw(self, header=None, fileobj=None):
-        """Write footer to file
+        """Write (nibabel) footer to file
+
+        This function assumes that `fileobj` is at -- or can seek to --
+        the footer offset (that is, just after the data block).
+
+        I think this is only used by the MGH format.
 
         Parameters
         ----------
@@ -331,58 +343,6 @@ class BabelArray(MappedArray):
         header.set_data_shape(self._shape)
         if hasattr(header, 'writeftr_to'):
             header.writeftr_to(fileobj)
-        return self
-
-    def _set_full_raw(self, header=None, dat=None):
-        """Write the whole file to disk.
-
-        This should only called when the data is compressed.
-
-        Parameters
-        ----------
-        header : Header, optional
-            If None, read from disk first
-        dat : array_like, optional
-            If None, read from disk first
-
-        Returns
-        -------
-        self : type(self)
-
-        """
-        single_file = ('header' not in self._image.filemap
-                       or self._image.filemap['image'] ==
-                          self._image.filemap['header'])
-        header_changed = header is not None
-        dat_changed = dat is not None
-
-        if not header_changed and not dat_changed:
-            return self
-
-        # load header in memory
-        if header is None and single_file:
-            header = self._image.dataobj._header
-        header.set_data_dtype(self.dtype)
-        header.set_data_shape(self.shape)
-
-        # load data in memory
-        if dat is None and single_file:
-            dat = self._read_data_raw()
-
-        # write everything
-        if header is not None:
-            with self.fileobj('header') as f:
-                f.seek(0)
-                if hasattr(header, 'writehdr_to'):
-                    header.writehdr_to(f)
-                elif hasattr(header, 'write_to'):
-                    header.write_to(f)
-        if dat is not None:
-            self._write_data_raw_partial(dat)
-        if header is not None and hasattr(header, 'writeftr_to'):
-            with self.fileobj('header') as f:
-                header.writeftr_to(f)
-
         return self
 
     @staticmethod
@@ -465,20 +425,32 @@ class BabelArray(MappedArray):
                              "but got {}.".format(direction))
 
     @staticmethod
-    def _cast(dat, dtype, casting='unsafe'):
-        """
+    def _cast(dat, dtype, casting='unsafe', with_scale=False):
+        """Cast an array to a given type.
 
         Parameters
         ----------
         dat : np.ndarray
+            Input array
         dtype : np.dtype
-        casting : str, defualt='unsafe'
+            Output data type (should have the proper on-disk byte order)
+        casting : {'no', 'equiv', 'safe', 'same_kind', 'unsafe',
+                   'rescale', 'rescale_zero}, default='unsafe'
+            Casting method:
+            * 'rescale' makes sure that the dynamic range in the array
+              matches the range of the output data type
+            * 'rescale_zero' does the same, but keeps the mapping `0 -> 0`
+              intact.
+            * all other options are implemented in numpy. See `np.can_cast`.
+        with_scale : bool, default=False
+            Return the scaling applied, if any.
 
         Returns
         -------
         dat : np.ndarray[dtype]
 
         """
+        scale = 1.
         info = cast_dtype.info(dtype)
         if casting.startswith('rescale') and not info['is_floating_point']:
             # rescale
@@ -508,6 +480,38 @@ class BabelArray(MappedArray):
         if dat.dtype != dtype:
             dat = dat.astype(dtype, casting=casting)
 
+        return (dat, scale) if with_scale else dat
+
+    @staticmethod
+    def _cutoff(dat, cutoff, dim=None):
+        """Clip data when outside of a range defined by percentiles
+
+        Parameters
+        ----------
+        dat : np.ndarray
+            Input data
+        cutoff : max or (min, max)
+            Percentile cutoffs (in [0, 1])
+        dim : int, optional
+            Dimension(s) along which to compute percentiles
+
+        Returns
+        -------
+        dat : np.ndarray
+            Clipped data
+
+        """
+        if cutoff is None:
+            return dat
+        cutoff = sorted([100*val for val in pyutils.make_sequence(cutoff)])
+        if len(cutoff) > 2:
+            raise ValueError('Maximum to percentiles (min, max) should'
+                             ' be provided. Got {}.'.format(len(cutoff)))
+        pct = np.nanpercentile(dat, cutoff, axis=dim, keepdims=True)
+        if len(pct) == 1:
+            dat = np.clip(dat, a_max=pct[0])
+        else:
+            dat = np.clip(dat, a_min=pct[0], a_max=pct[1])
         return dat
 
     # ------------------------------------------------------------------
@@ -569,80 +573,49 @@ class BabelArray(MappedArray):
 
         # --- sanity check before reading ---
         dtype = self.dtype if dtype is None else dtype
-        info = cast_dtype.info(dtype)
-        nptype = info['numpy']
-        if not numpy and info['torch'] is None:
+        outinfo = cast_dtype.info(dtype)
+        if not numpy and outinfo['torch'] is None:
             raise TypeError('Data type {} does not exist in PyTorch.'
                             .format(dtype))
+        if not isinstance(dtype, np.dtype):
+            dtype = outinfo['numpy']
 
         # --- check that view is not empty ---
         if pyutils.prod(self.shape) == 0:
             if numpy:
-                return np.zeros(self.shape, dtype=info['numpy'])
+                return np.zeros(self.shape, dtype=dtype)
             else:
-                return torch.zeros(self.shape, dtype=info['torch'], device=device)
+                return torch.zeros(self.shape, dtype=outinfo['torch'], device=device)
 
         # --- read native data ---
         slicer, perm, newdim = self._split_op(self.permutation, self.slicer, 'r')
         with self.fileobj('image', 'r') as f:
             dat = self._read_data_raw(slicer, fileobj=f)
         dat = dat.transpose(perm)[newdim]
-        info_in = cast_dtype.info(self.dtype)
+        ininfo = cast_dtype.info(self.dtype)
 
         # --- cutoff ---
-        if cutoff is not None:
-            cutoff = sorted([100*val for val in pyutils.make_sequence(cutoff)])
-            if len(cutoff) > 2:
-                raise ValueError('Maximum to percentiles (min, max) should'
-                                 ' be provided. Got {}.'.format(len(cutoff)))
-            pct = np.nanpercentile(dat, cutoff, axis=dim, keepdims=True)
-            if len(pct) == 1:
-                dat = np.clip(dat, a_max=pct[0])
-            else:
-                dat = np.clip(dat, a_min=pct[0], a_max=pct[1])
+        dat = self._cutoff(dat, cutoff, dim)
 
         # --- cast ---
-        scale = 1.
-        if not casting.startswith('rescale'):
-            # defer to numpy
-            if nptype != dat.dtype:
-                dat = dat.astype(nptype, casting=casting)
-
-        elif not info['is_floating_point']:
-            # rescale
-            # TODO: I am using float64 as an intermediate to cast
-            #       Maybe I can do things in a nicer / more robust way
-            minval = dat.min().astype(np.float64)
-            maxval = dat.max().astype(np.float64)
-            if dat.dtype != np.float64:
-                dat = dat.astype(np.float64)
-            if not dat.flags.writeable:
-                dat = np.copy(dat)
-            if casting == 'rescale':
-                scale = (1 - minval/maxval) / (1 - info['min']/info['max'])
-                offset = (info['max'] - info['min'])/(maxval - minval)
-                dat *= scale
-                dat += offset
-            else:
-                assert casting == 'rescale_zero'
-                if minval < 0 and not info['is_signed']:
-                    warn("Converting negative values to an unsigned datatype")
-                scale = min(abs(info['max']/maxval) if maxval else float('inf'),
-                            abs(info['min']/minval) if minval else float('inf'))
-                dat *= scale
+        rand = rand and ininfo['is_integer']
+        if rand and not outinfo['is_floating_point']:
+            tmpdtype = np.float64
+        else:
+            tmpdtype = dtype
+        dat, scale = self._cast(dat, tmpdtype, casting, with_scale=True)
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
-        info_tmp = cast_dtype.info(dat.dtype)
-        if rand and info_in['is_integer'] and not info_tmp['is_integer']:
-            noise = np.random.rand(*dat.shape).astype(dat.dtype)
+        if rand and not (scale == 1 and outinfo['is_integer']):
+            noise = np.random.rand(*dat.shape)
             if scale != 1:
                 noise *= scale
+            noise = noise.astype(dat.dtype)
             dat += noise
 
-        # unsafe cast
-        if dat.dtype != nptype:
-            dat = dat.astype(nptype, casting='unsafe')
+        # --- final cast ---
+        dat = self._cast(dat, dtype, 'unsafe')
 
         # convert to torch if needed
         if not numpy:
@@ -810,7 +783,7 @@ class BabelArray(MappedArray):
     # with file opening/permissions/locks.
     # Here, we want to write partially into existing files, so keeping
     # files open (including header files) is more common than in
-    # vanilla nibabel
+    # vanilla nibabel.
 
     def same_file(self, *keys):
         filenames = [self.filename(key) for key in keys]
