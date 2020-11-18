@@ -116,3 +116,9 @@ def test_compose_index():
     try:  idx.compose_index([idx.oob_slice()], [0], [3])
     except IndexError: pass
     else: assert False, "oob: oob_slice[int]"
+
+
+def test_sub2ind():
+    assert idx.slicer_sub2ind([slice(None)], [5]) == slice(None)
+    assert idx.slicer_sub2ind([slice(None), slice(None)], [5, 4]) == slice(None)
+    assert idx.slicer_sub2ind([slice(2, None), slice(None, 3)], [5, 4]) == slice(2, 8)

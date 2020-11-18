@@ -1,8 +1,7 @@
-from . import optionals
-from functools import wraps
 import torch
 from ..core.optionals import numpy as np
-from copy import copy
+from ..core import pyutils
+import itertools
 
 
 class oob_slice:
@@ -677,6 +676,85 @@ def compose_index(parent, child, full_shape):
     return tuple(new_parent)
 
 
+def split_operation(perm, slicer, direction):
+    """Split the operation `slicer of permutation` into subcomponents.
+
+    Symbolic slicing is encoded by a permutation and an indexing operation.
+    The operation `sub.data()` where `sub` has been obtained by applying
+    a succession of permutations and sub-indexings on `full` should be
+    equivalent to
+    ```python
+    >>> full_data = full.data()
+    >>> sub_data = full_data.permute(sub.permutation)[sub.slicer]
+    ```
+    However, the slicer may create new axes or drop (i.e., index with
+    a scalar) original axes. This function splits `slicer of permutation`
+    into more sub-components.
+    If the direction is 'read'
+        * `slicer_sub`  : unpermuted slicer without new axes
+        * `perm`        : permutation without dropped axes
+        * `slicer_add`  : slicer that adds new axes
+    ```python
+    >>> dat = full[slicer_sub].transpose(perm)[slicer_add]
+    ```
+    If the direction is 'write':
+        * `slicer_drop` : slicer that drops new axes
+        * `perm`        : inverse permutation without dropped axes
+        * `slicer_sub`  : unpermuted slicer without
+    ```python
+    >>> full[slicer_sub] = dat[slicer_drop].transpose(perm)
+    ```
+
+    Parameters
+    ----------
+    perm : sequence[int]
+        Permutation of `range(self._dim)`
+    slicer : sequence[index_like]
+        Sequence of indices that slice into `self._shape`
+    direction : {'r', 'w'}
+        Either split for reading ('r') or writing ('w') a chunk.
+
+    Returns
+    -------
+    slicer_sub ('r') or slicer_drop ('w') : tuple
+    perm : tuple
+    slicer_add ('r') or slicer_sub ('w') : tuple
+
+    """
+    def remap(perm):
+        """Re-index dimensions after some have been dropped"""
+        remaining_dims = sorted(perm)
+        dim_map = {}
+        for new, old in enumerate(remaining_dims):
+            dim_map[old] = new
+        remapped_dim = [dim_map[d] for d in perm]
+        return remapped_dim
+
+    def select(index, seq):
+        """Select elements into a sequence using a list of indices"""
+        return [seq[idx] for idx in list(index)]
+
+    slicer_nonew = list(filter(lambda x: not is_newaxis(x), slicer))
+    slicer_nodrop = filter(lambda x: not is_droppedaxis(x), slicer)
+    slicer_sub = select(invert_permutation(perm), slicer_nonew)
+    perm_nodrop = [d for d, idx in zip(perm, slicer_nonew)
+                   if not is_droppedaxis(idx)]
+    perm_nodrop = remap(perm_nodrop)
+
+    if direction.lower().startswith('r'):
+        slicer_add = map(lambda x: slice(None) if x is not None else x,
+                         slicer_nodrop)
+        return tuple(slicer_sub), tuple(perm_nodrop), tuple(slicer_add)
+    elif direction.lower().startswith('w'):
+        slicer_drop = map(lambda x: 0 if x is None else slice(None),
+                          slicer_nodrop)
+        inv_perm_nodrop = invert_permutation(perm_nodrop)
+        return tuple(slicer_drop), tuple(inv_perm_nodrop), tuple(slicer_sub)
+    else:
+        raise ValueError("direction should be in ('read' ,'write') "
+                         "but got {}.".format(direction))
+
+
 def invert_permutation(perm):
     """Return the inverse of a permutation
 
@@ -695,3 +773,126 @@ def invert_permutation(perm):
     for i, p in enumerate(perm):
         iperm[p] = i
     return iperm
+
+
+def slicer_sub2ind(slicer, shape):
+    """Convert a multi-dimensional slicer into a linear slicer.
+
+    Parameters
+    ----------
+    slicer : sequence[slice or int]
+        Should not have new axes.
+        Should have only positive strides.
+    shape : sequence[int]
+        Should have the same length as slicer
+
+    Returns
+    -------
+    index : slice or int or list[int]
+
+    """
+
+    slicer = expand_index(slicer, shape)
+    shape_out = guess_shape(slicer, shape)
+    if any(isinstance(idx, slice) and idx.step and idx.step < 0
+           for idx in slicer):
+        raise ValueError('sub2ind does not like negative strides')
+    if any(is_newaxis(idx) for idx in slicer):
+        raise ValueError('sub2ind does not like new axes')
+
+    slicer0 = slicer
+    shape0 = shape
+
+    # 1) collapse slices
+    slicer = list(reversed(slicer))
+    shape = list(reversed(shape))
+    new_slicer = slice(None)
+    new_shape = 1
+    while len(slicer) > 0:
+        idx, *slicer = slicer
+        shp, *shape = shape
+
+        if isinstance(idx, slice):
+            if idx == slice(None):
+                # merge full slices
+                new_shape *= shp
+                continue
+            else:
+                # stop trying to merge
+                if idx.step in (1, None):
+                    start = idx.start or 0
+                    stop = idx.stop or shp
+                    new_slicer = slice(start * new_shape, stop * new_shape)
+                    new_shape *= shp
+                    new_slicer = simplify_slice(new_slicer, new_shape)
+                    new_slicer = [new_slicer] + slicer
+                    new_shape = [new_shape] + shape
+                else:
+                    if new_shape != 1:
+                        new_slicer = [new_slicer, idx] + slicer
+                        new_shape = [new_shape, shp] + shape
+                    else:
+                        new_slicer = [idx] + slicer
+                        new_shape = [shp] + shape
+                break
+
+        elif isinstance(idx, int):
+            if shp == 1:
+                continue
+            else:
+                new_slicer = slice(idx * new_shape, (idx + 1) * new_shape)
+                new_shape *= shp
+                new_slicer = simplify_slice(new_slicer, new_shape)
+                if new_shape != 1:
+                    new_slicer = [new_slicer] + slicer
+                    new_shape = [new_shape] + shape
+                else:
+                    new_slicer = [idx] + slicer
+                    new_shape = [shp] + shape
+                break
+
+    new_slicer = pyutils.make_list(new_slicer)
+    new_shape = pyutils.make_list(new_shape)
+
+    assert pyutils.prod(shape0) == pyutils.prod(new_shape), \
+           "Oops: lost something: {} vs {}".format(pyutils.prod(shape0),
+                                                   pyutils.prod(new_shape))
+
+    # 2) If we have a unique index, we can stop here
+    if len(new_slicer) == 1:
+        return new_slicer[0]
+
+    # 3) Extract linear indices
+    strides = [1] + list(pyutils.cumprod(new_shape[1:]))
+    new_index = []
+    for idx, shp, stride in zip(new_slicer, new_shape, strides):
+        if isinstance(idx, slice):
+            start = idx.start or 0
+            stop = idx.stop or shp
+            step = idx.step or 1
+            idx = list(range(start, stop, step))
+        else:
+            idx = [idx]
+        idx = [i * stride for i in idx]
+        if new_index:
+            new_index = list(itertools.product(idx, new_index))
+            new_index = [sum(idx) for idx in new_index]
+        else:
+            new_index = idx
+
+    assert len(new_index) == pyutils.prod(shape_out), \
+           "Oops: lost something: {} vs {}".format(len(new_index),
+                                                   pyutils.prod(shape_out))
+
+    return new_index
+
+
+
+
+
+
+
+
+
+
+
