@@ -111,8 +111,10 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs):
                 last = elem
                 yield elem
             if i is None:
-                raise ValueError('Empty sequence')
-            if has_default:
+                if n is None:
+                    return
+                if not has_default:
+                    raise ValueError('Empty sequence')
                 last = default
             for j in range(i+1, n):
                 yield last
@@ -123,7 +125,7 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs):
             input = [input]
         return_type = type(input) if isinstance(input, (list, tuple)) else list
         input = list(input)
-        if len(input) == 0:
+        if len(input) == 0 and n is not None and not has_default:
             raise ValueError('Empty sequence')
         if n is not None:
             if crop:
