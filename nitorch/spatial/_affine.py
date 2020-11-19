@@ -193,20 +193,26 @@ def volume_layout(*args, **kwargs):
     args = list(args)
     if len(args) > 0:
         if isinstance(args[0], str):
-            return layout_from_name(*args, **kwargs)
+            layout = layout_from_name(*args, **kwargs)
         else:
             args[0] = utils.as_tensor(args[0])
             if args[0].dim() == 2:
-                return layout_from_axes(*args, **kwargs)
+                layout = layout_from_axes(*args, **kwargs)
             else:
-                return layout_from_index(*args, **kwargs)
+                layout = layout_from_index(*args, **kwargs)
     else:
         if 'name' in kwargs.keys():
-            return layout_from_name(*args, **kwargs)
+            layout = layout_from_name(*args, **kwargs)
         elif 'index' in kwargs.keys():
-            return layout_from_index(*args, **kwargs)
+            layout = layout_from_index(*args, **kwargs)
         else:
-            return layout_from_axes(*args, **kwargs)
+            layout = layout_from_axes(*args, **kwargs)
+
+    # Remap axes indices if not contiguous
+    axes = layout[:, 0]
+    new_axes = torch.argsort(axes).to(layout.dtype)
+    layout = torch.stack((new_axes, layout[:, 1]), dim=-1)
+    return layout
 
 
 def volume_layout_to_name(layout):
