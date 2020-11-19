@@ -10,6 +10,7 @@ TODO
 
 import nibabel as nib
 import numpy as np
+from scipy.optimize import fmin_powell
 import torch
 from torch.nn import functional as F
 from ..plot import show_slices
@@ -743,7 +744,7 @@ def _do_optimisation(q, args, opt):
     q_shape = q.shape
     if opt['optimiser'] == 'powell':
         # Powell optimisation
-        from scipy.optimize import fmin_powell
+        # ----------
         # Initial search directions
         direc = opt['direc']
         direc = np.concatenate([direc[0]*np.ones(3), direc[1]*np.ones(9)])
@@ -757,32 +758,6 @@ def _do_optimisation(q, args, opt):
             callback = lambda x: _zero_mean(x, q_shape)
         # Do optimisation
         q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback, direc=direc)
-    elif opt['optimiser'] == 'bo':
-        # Bayesian optimisation
-        from bayes_opt import BayesianOptimization
-        # Make cost function compatible with BayesianOptimization library
-        # (maximises, therefore the minus)
-        def f(q1, q2, q3, q4, q5, q6):
-            return - _compute_cost(
-                np.array((q1, q2, q3, q4, q5, q6)), *args)
-        # Set affine parameter bounds
-        t_max = 20
-        o_max = 0.5
-        q_bounds = {'q1' : (-t_max, t_max),
-                    'q2' : (-t_max, t_max),
-                    'q3' : (-t_max, t_max),
-                    'q4' : (-o_max, o_max),
-                    'q5' : (-o_max, o_max),
-                    'q6' : (-o_max, o_max)}
-        # Initialise optimiser
-        optimizer = BayesianOptimization(f=f, pbounds=q_bounds, random_state=1)
-        # Add current estimate (warm start)
-        optimizer.space.register(q, - _compute_cost(q, *args))
-        # Do optimisation
-        optimizer.maximize(init_points=5, n_iter=50)
-        # Get optimum
-        for i, (key, value) in enumerate(optimizer.max['params'].items()):
-            q[i] = value
     # Cast back to tensor
     q = q.reshape(q_shape)
     q = torch.from_numpy(q).type(dtype).to(opt['device'])
