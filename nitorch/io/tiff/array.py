@@ -68,7 +68,7 @@ class TiffArray(MappedArray):
         # TODO: read vx from OME/ImageJ metadata
         if '_affine' not in self._cache:
             with self.tiffobj() as tiff:
-                geotags = tiff.geotiff_tags or {}
+                geotags = tiff.geotiff_metadata or {}
             if 'ModelTransformation' in geotags:
                 aff = geotags['ModelTransformation']
                 aff = torch.as_tensor(aff, dtype=torch.double).reshape(4, 4)
