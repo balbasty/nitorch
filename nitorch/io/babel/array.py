@@ -35,7 +35,7 @@ from nibabel.filebasedimages import ImageFileError
 # nitorch imports
 from nitorch.core import pyutils
 # local imports
-from ..mapping import MappedArray
+from ..mapping import MappedArray, AccessType
 from ..readers import reader_classes
 from ..writers import writer_classes
 from ..loadsave import map as map_array
@@ -124,6 +124,20 @@ class BabelArray(MappedArray):
                 f = f.fobj
             iscomp = is_compressed_fobj(f)
         return iscomp
+
+    @property
+    def readable(self):
+        if self.is_compressed:
+            return AccessType.Partial
+        else:
+            return AccessType.TruePartial
+
+    @property
+    def writable(self):
+        if self.is_compressed:
+            return AccessType.Partial
+        else:
+            return AccessType.TruePartial
 
     # ------------------------------------------------------------------
     #    LOW-LEVEL IMPLEMENTATION

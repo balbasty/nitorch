@@ -209,7 +209,7 @@ from . import optionals
 from . import readers
 from . import writers
 
-from .mapping import MappedArray, CatArray, cat
+from .mapping import MappedArray, CatArray, cat, AccessType
 from .loadsave import map, load, loadf, save, savef
 
 if optionals.nibabel:

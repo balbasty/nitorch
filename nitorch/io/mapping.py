@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from copy import copy
+from enum import Enum
 import torch
 from nitorch.core.pyutils import make_list
 from nitorch.spatial import affine_sub, affine_permute, voxel_size as affvx
@@ -7,6 +8,69 @@ from .indexing import (expand_index, guess_shape, compose_index, neg2pos,
                        is_droppedaxis, is_newaxis, is_sliceaxis,
                        invert_permutation, invert_slice, slice_navigator)
 from . import dtype as cast_dtype
+
+
+class AccessType(int, Enum):
+    """Enumeration that describes the type of access that is implemented
+
+        * No : Read (or write) is not possible at all
+        * Full : Only the full volume can be read (or written)
+        * Partial : The volume can be read (or written) partially.
+            However, it is possible than, under the hood, a full read
+            (or write) is triggered.
+        * TruePartial : The volume can be read (or written) partially.
+            It is ensured that data is really accessed partially,
+            in an efficient manner.
+
+        These values map to {0, 1, 2, 3}. Therefore, they are *ordered*
+        (`Partial > Full`) and only `No` evaluates to `False`
+        (`bool(No) -> False`, `bool(Full) -> True`).
+    """
+
+    @staticmethod
+    def _name2inst(val):
+        if isinstance(val, str):
+            val = val.lower()
+            if val == 'no':
+                val = 0
+            elif val == 'full':
+                val = 1
+            elif val == 'partial':
+                val = 2
+            elif val == 'truepartial':
+                val = 3
+            else:
+                raise ValueError('{} does not map to any value'.format(val))
+        return AccessType(val)
+
+    def __eq__(self, other):
+        try:
+            return self.value == self._name2inst(other).value
+        except ValueError:
+            return False
+
+    def __ne__(self, other):
+        try:
+            return self.value != self._name2inst(other).value
+        except ValueError:
+            return True
+
+    def __ge__(self, other):
+        return self.value >= self._name2inst(other).value
+
+    def __gt__(self, other):
+        return self.value > self._name2inst(other).value
+
+    def __le__(self, other):
+        return self.value <= self._name2inst(other).value
+
+    def __lt__(self, other):
+        return self.value < self._name2inst(other).value
+
+    No = 0
+    Full = 1
+    Partial = 2
+    TruePartial = 3
 
 
 class MappedArray(ABC):
@@ -49,6 +113,8 @@ class MappedArray(ABC):
     permutation : tuple[int]    Permutation of the original in-disk axes.
     dim : int                   Number of axes
     voxel_size : tuple[float]   World size of the spatial dimensions
+    readable : AccessType       See `AccessType`
+    writable : AccessType       See `AccessType`
 
     Types
     -----
@@ -117,6 +183,8 @@ class MappedArray(ABC):
     _dim = property(lambda self: len(self._shape))  # Nb of original dimensions
     voxel_size = property(lambda self: affvx(self.affine))
 
+    readable: AccessType = AccessType.No
+    writable: AccessType = AccessType.No
     FailedReadError = RuntimeError   # class of errors raised at read time
     FailedWriteError = RuntimeError  # class of errors raised at write time
 

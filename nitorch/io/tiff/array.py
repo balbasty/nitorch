@@ -1,14 +1,16 @@
-from ..mapping import MappedArray
+from ..mapping import MappedArray, AccessType
 from ..indexing import is_fullslice, split_operation, slicer_sub2ind, invert_slice
 from .. import dtype as cast_dtype
 from .. import nputils
 from ..readers import reader_classes
+from .metadata import ome_zooms, parse_unit
 from nitorch.spatial import affine_default
 from nitorch.core import pyutils
 from tifffile import TiffFile
 from contextlib import contextmanager
 import torch
 import numpy as np
+from warnings import warn
 
 
 class TiffArray(MappedArray):
@@ -59,23 +61,44 @@ class TiffArray(MappedArray):
     @property
     def _spatial(self):
         """Mask of spatial axes of a series+level"""
-        msk = [ax in ('X', 'Y', 'Z') for ax in self._axes]
+        msk = [ax in 'XYZ' for ax in self._axes]
         return msk
 
     @property
     def _affine(self):
         """Affine orientation matrix of a series+level"""
-        # TODO: read vx from OME/ImageJ metadata
+        # TODO: I don't know yet how we should use GeoTiff to encode
+        #   affine matrices. In the matrix/zooms, their voxels are ordered
+        #   as [x, y, z] even though their dimensions in the returned array
+        #   are ordered as [Z, Y, X]. If we want to keep the same convention
+        #   as nitorch, I need to permute the matrix/zooms.
         if '_affine' not in self._cache:
             with self.tiffobj() as tiff:
+                omexml = tiff.ome_metadata
                 geotags = tiff.geotiff_metadata or {}
+            zooms, units, axes = ome_zooms(omexml, self.series)
+            if zooms:
+                # convert to mm + drop non-spatial zooms
+                units = [parse_unit(u) for u in units]
+                zooms = [z * (f / 1e-3) for z, (f, type) in zip(zooms, units)
+                         if type == 'm']
+                if 'ModelPixelScaleTag' in geotags:
+                    warn("Both OME and GeoTiff pixel scales are present: "
+                         "{} vs {}. Using OME."
+                         .format(zooms, geotags['ModelPixelScaleTag']))
+            elif 'ModelPixelScaleTag' in geotags:
+                zooms = geotags['ModelPixelScaleTag']
+                axes = 'XYZ'
+            else:
+                zooms = 1.
+                axes = [ax for ax in self._axes if ax in 'XYZ']
             if 'ModelTransformation' in geotags:
                 aff = geotags['ModelTransformation']
                 aff = torch.as_tensor(aff, dtype=torch.double).reshape(4, 4)
                 self._cache['_affine'] = aff
-            elif 'ModelPixelScaleTag' in geotags and 'ModelTiepointTag' is geotags:
+            elif ('ModelTiepointTag' in geotags):
                 # copied from tifffile
-                sx, sy, sz = geotags['ModelPixelScaleTag']
+                sx, sy, sz = pyutils.make_list(zooms, n=3)
                 tiepoints = torch.as_tensor(geotags['ModelTiepointTag'])
                 affines = []
                 for tiepoint in tiepoints:
@@ -90,11 +113,14 @@ class TiffArray(MappedArray):
                     affines = affines[0]
                     self._cache['_affine'] = affines
             else:
-                zooms = geotags.get('ModelPixelScaleTag', [1., 1., 1.])
+                ax2zoom = {ax: zoom for ax, zoom in zip(axes, zooms)}
+                axes = [ax for ax in self._axes if ax in 'XYZ']
                 shape = [shp for shp, msk in zip(self._shape, self._spatial)
                          if msk]
-                zooms = pyutils.make_list(zooms, len(shape))
-                aff = affine_default(shape, zooms, layout='RPS')
+                zooms = [ax2zoom.get(ax, 1.) for ax in axes]
+                layout = [('R' if ax == 'Z' else 'P' if ax == 'Y' else 'S')
+                          for ax in axes]
+                aff = affine_default(shape, zooms, layout=''.join(layout))
                 self._cache['_affine'] = aff
         return self._cache['_affine']
 
@@ -131,6 +157,15 @@ class TiffArray(MappedArray):
         self._level = val
         self._cache = {}
 
+    @property
+    def readable(self):
+        # That's not exact: pseudo partial access in-plane
+        return AccessType.TruePartial
+
+    @property
+    def writable(self):
+        return AccessType.No
+
     @contextmanager
     def tiffobj(self):
         """Returns an *open* Tiff reader.
@@ -147,6 +182,10 @@ class TiffArray(MappedArray):
         yield self._tiff
         if closed:
             self._tiff.close()
+
+    def __del__(self):
+        # make sure we close all file objects
+        self._tiff.close()
 
     @property
     def filename(self):
@@ -279,8 +318,7 @@ class TiffArray(MappedArray):
                       if isinstance(idx, slice)]
         slicer_stack = [invert_slice(idx, shp) if isinstance(idx, slice) and
                                                   idx.step and idx.step < 0
-                        else idx for idx, shp in zip(slicer_stack, shape_stack)
-                        if isinstance(idx, slice)]
+                        else idx for idx, shp in zip(slicer_stack, shape_stack)]
 
         # 4) convert stack slice to list of linear indices
         #    (or to one slice if possible)
