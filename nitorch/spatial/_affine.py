@@ -575,7 +575,7 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
         Group that should be encoded by the basis set:
             * 'T'   : Translations
             * 'SO'  : Special Orthogonal (rotations)
-            * 'SE'  : Special as_euclidean (translations + rotations)
+            * 'SE'  : Special Euclidean (translations + rotations)
             * 'D'   : Dilations (translations + isotropic scalings)
             * 'CSO' : Conformal Special Orthogonal
                       (translations + rotations + isotropic scalings)
