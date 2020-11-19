@@ -16,7 +16,7 @@ class TiffArray(MappedArray):
     MappedArray that uses `tifffile` under the hood.
     """
 
-    def __init__(self, file_like, keep_file_open=True, **hints):
+    def __init__(self, file_like, permission='r', keep_file_open=True, **hints):
         """
 
         Parameters
