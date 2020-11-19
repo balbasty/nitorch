@@ -73,8 +73,11 @@ def test_expand_index():
     # index expansion
     assert idx.expand_index([Ellipsis], [2, 3]) == (slice(None), slice(None)), "ellipsis"
     assert idx.expand_index([slice(None)], [2, 3]) == (slice(None), slice(None)), "implicit dims"
-    assert idx.expand_index([2, slice(None)], [2, 3]) == (2, slice(None)), "int"
-    assert idx.expand_index([None, 2, slice(None)], [2, 3]) == (None, 2, slice(None)), "none"
+    assert idx.expand_index([None, 1, slice(None)], [2, 3]) == (None, 1, slice(None)), "none"
+    assert idx.expand_index([1, slice(None)], [2, 3]) == (1, slice(None)), "int"
+    try:  idx.expand_index([2, slice(None)], [2, 3])
+    except IndexError: pass
+    else: assert False, "oob index"
 
 
 def test_guess_shape():

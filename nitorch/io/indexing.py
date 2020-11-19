@@ -219,6 +219,8 @@ def simplify_slice(index, shape, do_neg2pos=True):
         if start is None or start >= shape - 1:
             start = shape - 1
         stop = start + length * step
+        if stop >= start:
+            return oob_slice()
         if stop < 0:
             stop = None
         if start >= shape - 1:
@@ -227,6 +229,8 @@ def simplify_slice(index, shape, do_neg2pos=True):
         if start is None or start <= 0:
             start = 0
         stop = start + length * step
+        if stop <= start:
+            return oob_slice()
         if stop >= shape:
             stop = None
         if start <= 0:
@@ -390,15 +394,12 @@ def expand_index(index, shape):
     * Ellipses are replaced with slices
     * Slices are simplified
     * Implicit slices are appended on the right
-    * The output shape is computed
+    * Negative indices (that count from then end) are made positive.
 
     This function is related to `nibabel.fileslice.canonical_slicers`,
     but with a few differences:
     * Floating point indices are *not* accepted
     * Negative steps are *not* made positive
-
-    Note also that:
-    * Negative indices (that count from then end) are kept as is
 
     Parameters
     ----------
@@ -420,6 +421,8 @@ def expand_index(index, shape):
     ValueError
         * If more than one ellipsis is present
         * If a tensor or array that does not represent a scalar is present
+    IndexError
+        * If a scalar index falls out-of-bound
 
     """
     index = list(index)
@@ -522,6 +525,11 @@ def expand_index(index, shape):
         else:
             # scalar (1 -> 0)
             assert isinstance(ind, int)  # already checked
+            ind = neg2pos(ind, shape[nb_ind])
+            if ind < 0 or ind >= shape[nb_ind]:
+                raise IndexError('Out-of-bound index in dimension {} '
+                                 '({} not in [0, {}])'
+                                 .format(nb_ind, ind, shape[nb_ind]-1))
             index.append(ind)
             nb_ind += nb_dim_in[d]
 
@@ -592,7 +600,6 @@ def compose_index(parent, child, full_shape):
         if p is None:
             # virtual axis
             if isinstance(c, int):
-                c = neg2pos(c, sz)
                 if c != 0:
                     # out-of-bound
                     oob(i_parent)
@@ -605,6 +612,8 @@ def compose_index(parent, child, full_shape):
                 else:
                     new_parent.append(None)
                 continue
+            if isinstance(c, oob_slice):
+                new_parent.append(oob_slice(newaxis=True))
             assert False, "p is None and c is {}".format(c)
 
         if isinstance(p, oob_slice):
@@ -615,8 +624,8 @@ def compose_index(parent, child, full_shape):
                 # out-of-bound
                 oob(i_parent)
                 continue
-            if isinstance(c, slice):
-                # keep the new axis
+            if isinstance(c, (slice, oob_slice)):
+                # keep the axis
                 new_parent.append(p)
                 continue
             assert False, "p is oob_slice(newaxis=True) and c is {}".format(c)
@@ -626,10 +635,8 @@ def compose_index(parent, child, full_shape):
 
         if isinstance(p, slice):
             # slice
-            p = neg2pos(p, sz0)                 # TODO: do I need this?
             if isinstance(c, int):
                 # convert to scalar
-                c = neg2pos(c, sz)
                 if c < 0 or c >= sz:
                     oob(i_parent)
                 if p.step is not None and p.step < 0:
@@ -646,7 +653,6 @@ def compose_index(parent, child, full_shape):
                     new_parent.append(oob_slice())
                     continue
                 # pre-compute child's start and step
-                c = neg2pos(c, sz)
                 if c.step is not None and c.step < 0:
                     start = sz - 1 if c.start is None else c.start
                     step = c.step
@@ -671,6 +677,8 @@ def compose_index(parent, child, full_shape):
                                            do_neg2pos=False)
                 new_parent.append(new_slice)
                 continue
+            if isinstance(c, oob_slice):
+                new_parent.append(c)
             assert False, "p is slice and c is {}".format(c)
 
     return tuple(new_parent)
