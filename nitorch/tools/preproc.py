@@ -19,7 +19,7 @@ from ..core.pyutils import get_pckg_data
 from ..core.utils import pad
 from ..plot.volumes import show_slices
 from ..spatial import (affine_default, affine_grid, voxel_size, grid_pull)
-from .spm import (identity, matrix)
+from ._spm import (identity, matrix)
 
 
 def atlas_crop(dat, mat_in, mni_align=False, fov='full'):

@@ -20,7 +20,7 @@ from ..core.pyutils import get_pckg_data
 from ..spatial import (affine_basis, affine_default, affine_matvec, grid_pull, im_gradient, voxel_size)
 from ..core.linalg import expm
 from .preproc import (load_3d, modify_affine, reslice_dat, write_img)
-from .spm import (identity, noise_estimate, max_bb)
+from ._spm import (identity, noise_estimate, max_bb)
 
 
 costs_edge = ['jtv', 'njtv']              # Edge-based cost functions
