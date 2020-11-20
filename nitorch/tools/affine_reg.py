@@ -23,8 +23,8 @@ from .preproc import (load_3d, modify_affine, reslice_dat, write_img)
 from .spm import (identity, noise_estimate, max_bb)
 
 
-# Histogram-based cost functions
-costs_hist = ['mi', 'ecc', 'nmi', 'ncc']
+costs_edge = ['jtv', 'njtv']              # Edge-based cost functions
+costs_hist = ['mi', 'ecc', 'nmi', 'ncc']  # Histogram-based cost functions
 
 
 def apply2affine(pths, q, group='SE', prefix='a_', dir_out=None):
@@ -237,7 +237,8 @@ def reslice2fix(imgs, q, M_fix, dim_fix, group='SE', prefix='ra_', dtype=torch.f
 
 def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
                    samp=(4, 2), optimiser='powell', fix=0, verbose=False,
-                   fov=None, device='cpu', mx_int=511, direc=(0.5, 0.025)):
+                   fov=None, device='cpu', mx_int=511, direc=(0.5, 0.025),
+                   raw=False, jitter=True):
     """Affinely align images.
 
     This function aligns N images affinely, either pairwise or groupwise,
@@ -283,6 +284,7 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
         * 'ncc' : Normalised Cross Correlation (pairwise method)
         * 'ecc' : Entropy Correlation Coefficient (pairwise method)
         * 'njtv' : Normalised Joint Total variation (groupwise method)
+        * 'jtv' : Joint Total variation (groupwise method)
     group : str, default='SE'
         * 'T'   : Translations
         * 'SO'  : Special Orthogonal (rotations)
@@ -315,6 +317,10 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
     direc : (2, ) float, default=(0.5, 0.025)
         Initial search directions for the Powell opimiser, in translation
         and rotation/scaling/shears.
+    raw : bool, default=False
+        Do no processing of input images, work on raw data.
+    jitter : bool, default=True
+        Add random jittering to resampling grid.
 
     Returns
     ----------
@@ -339,6 +345,8 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
                'fov': fov,
                'group' : group,
                'direc': direc,
+               'raw': raw,
+               'jitter': jitter,
                'mx_int' : mx_int}
         if opt['cost_fun'] not in costs_hist:
             opt['mx_int'] = None
@@ -386,15 +394,18 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
         # Do registration
         for s in opt['samp']:  # Loop over sub-sampling level
             # Get possibly sub-sampled fixed image, and its resampling grid
-            dat_fix, grid = _get_dat_grid(arg_dat_grid, vx_fix, s, opt)
+            dat_fix, grid = _get_dat_grid(
+                arg_dat_grid, vx_fix, s, opt, jitter=opt['jitter'])
             # Do optimisation
             q, args = _fit_q(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt)
 
     return q, M_fix, dim_fix
 
 
-def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=2, ix_par=0, jitter=True,
-    x_step=0.1, x_mn_mx=30, verbose=False, device='cpu', mx_int=511, direc=(0.5, 0.025)):
+def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False,
+                       samp=2, ix_par=0, jitter=True, x_step=0.1, x_mn_mx=30,
+                       verbose=False, device='cpu', mx_int=511, direc=(0.5, 0.025),
+                       raw=False):
     """Check cost function behaviour by keeping one image fixed and re-aligning
        a second image by modifying one of the affine parameters. Plots cost vs.
        aligment when finished.
@@ -409,6 +420,7 @@ def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=
         * 'ncc' : Normalised Cross Correlation (pairwise method)
         * 'ecc' : Entropy Correlation Coefficient (pairwise method)
         * 'njtv' : Normalised Joint Total variation (groupwise method)
+        * 'jtv' : Joint Total variation (groupwise method)
     mean_space : bool, default=False
         Optimise a mean-space fit, only available if cost_fun='njtv' .
     samp : float, default=2
@@ -433,6 +445,8 @@ def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=
     direc : (2, ) float, default=(0.5, 0.025)
         Initial search directions for the Powell opimiser, in translation
         and rotation/scaling/shears.
+    raw : bool, default=False
+        Do no processing of input images, work on raw data.
 
     """
     with torch.no_grad():
@@ -443,6 +457,7 @@ def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=
                'mean_space': mean_space,
                'verbose': verbose,
                'direc': direc,
+               'raw': raw,
                'mx_int' : mx_int}
         if opt['cost_fun'] not in costs_hist:
             opt['mx_int'] = None
@@ -564,12 +579,12 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, mx_int,
         q = torch.from_numpy(q).to(device).type(dtype)  # To torch tensor
     dm_fix = dat_fix.shape
     Nq = B.shape[0]
+    N = torch.tensor(len(dat), device=device, dtype=dtype)  # For modulating NJTV cost
 
-    if cost_fun == 'njtv':
-        # Compute NJTV cost for fixed image
-        N = torch.tensor(len(dat), device=device, dtype=dtype)  # For modulating cost later on
-        njtv = -dat_fix.sqrt()
-        mtv = dat_fix.clone()
+    if cost_fun in costs_edge:
+        jtv = dat_fix.clone()
+        if cost_fun == 'njtv':
+            njtv = -dat_fix.sqrt()
 
     for i, m in enumerate(mov):  # Loop over moving images
         # Get affine matrix
@@ -581,10 +596,10 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, mx_int,
         # Resample to fixed grid
         dat_new = grid_pull(dat[m][None, None, ...], grid[None, ...],
             bound='dft', extrapolate=True, interpolation=1)[0, 0, ...]
-        if cost_fun == 'njtv':
-            # Add to NJTV cost for moving image
-            mtv += dat_new
-            njtv -= dat_new.sqrt()
+        if cost_fun in costs_edge:
+            jtv += dat_new
+            if cost_fun == 'njtv':
+                njtv -= dat_new.sqrt()
 
     # Compute the cost function
     res = None
@@ -633,14 +648,19 @@ def _compute_cost(q, grid0, dat_fix, M_fix, dat, mats, mov, cost_fun, B, mx_int,
             i, j = torch.meshgrid(i - m1, j - m2)
             ncc = torch.sum(torch.sum(pxy*i*j))/(sig1*sig2)
             c = -ncc
-    elif cost_fun == 'njtv':
+    elif cost_fun in costs_edge:
         # Normalised Joint Total Variation
         # M Brudfors, Y Balbastre, J Ashburner (2020).
         # "Groupwise Multimodal Image Registration using Joint Total Variation".
         # in MIUA 2020.
-        njtv += torch.sqrt(N)*mtv.sqrt()
-        res = njtv
-        c = torch.sum(njtv)
+        jtv.sqrt_()
+        if cost_fun == 'njtv':
+            njtv += torch.sqrt(N)*jtv
+            res = njtv
+            c = torch.sum(njtv)
+        else:
+            res = jtv
+            c = torch.sum(jtv)
 
     # _ = show_slices(res, fig_num=1, cmap='coolwarm')  # Can be uncommented for testing
 
@@ -690,22 +710,23 @@ def _data_loader(imgs, opt):
     for img in imgs:
         # Load data
         datn, Mn, _, _ = load_3d(img,
-            samp=0, rescale=rescale, mx_out=opt['mx_int'],
-            device=opt['device'], dtype=torch.float32, do_smooth=True)
+            rescale=rescale, mx_out=opt['mx_int'], raw=opt['raw'],
+            device=opt['device'], dtype=torch.float32)
         dimn =  torch.tensor(datn.shape[:3], dtype=torch.float32)
 
         # Set affine data type
         Mn = Mn.type(torch.float32)
 
-        # Smooth
-        datn = _smooth_for_reg(datn, voxel_size(Mn), opt)
+        if not opt['raw']:
+            # Smooth a bit
+            datn = _smooth_for_reg(datn, voxel_size(Mn), opt)
 
         # Append
         dat.append(datn)
         mats.append(Mn)
         dims.append(dimn)
 
-    if opt['cost_fun'] == 'njtv':
+    if not opt['raw'] and opt['cost_fun'] in costs_edge:
         # Compute gradient magnitudes
         dat = _to_gradient_magnitudes(dat, mats)
 
@@ -797,7 +818,7 @@ def _fit_q(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt):
         All arguments for optimiser (except the parameters to be fitted (q))
 
     '''
-    if opt['cost_fun'] == 'njtv':  # Groupwise optimisation
+    if opt['cost_fun'] in costs_edge:  # Groupwise optimisation
         # Arguments to _compute_cost
         m = mov
         args = (grid, dat_fix, M_fix, dat, mats, m, opt['cost_fun'], B, opt['mx_int'])

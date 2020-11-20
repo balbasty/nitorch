@@ -110,7 +110,7 @@ def get_corners(dim, o=((0,)*3, (0,)*3), dtype=torch.float64, device='cpu'):
 
 
 def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
-            device='cpu', dtype=torch.float32, do_smooth=True):
+            device='cpu', dtype=torch.float32, do_smooth=True, raw=False):
     """Load image volume (3D) for subsequent image processing.
 
     Parameters
@@ -144,6 +144,9 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
 
     do_smooth : bool, default=True
         If sub-sampling (samp > 0), smooth data a bit.
+
+    raw : bool, default=False
+        Do no processing, just return raw data.
 
     Returns
     ----------
@@ -185,6 +188,11 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
         scrand = 1  # As we don't know the original data type, we add random noise
     else:
         raise ValueError('Input error!')
+    if raw:
+        # Do no processing
+        grid = None
+        ff = torch.tensor(0, dtype=dtype, device=device)
+        return dat, affine, grid, ff
 
     # Sanity check
     dim = dat.shape
