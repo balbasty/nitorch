@@ -111,8 +111,10 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs):
                 last = elem
                 yield elem
             if i is None:
-                raise ValueError('Empty sequence')
-            if has_default:
+                if n is None:
+                    return
+                if not has_default:
+                    raise ValueError('Empty sequence')
                 last = default
             for j in range(i+1, n):
                 yield last
@@ -123,7 +125,7 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs):
             input = [input]
         return_type = type(input) if isinstance(input, (list, tuple)) else list
         input = list(input)
-        if len(input) == 0:
+        if len(input) == 0 and n is not None and not has_default:
             raise ValueError('Empty sequence')
         if n is not None:
             if crop:
@@ -355,6 +357,31 @@ def prod(sequence, inplace=False):
         else:
             accumulate = accumulate * elem
     return accumulate
+
+
+def cumprod(sequence):
+    """Perform the cumulative product of a sequence of elements.
+
+    Parameters
+    ----------
+    sequence : any object that implements `__iter__`
+        Sequence of elements for which the `__mul__` operator is defined.
+
+    Returns
+    -------
+    product :
+        Product of the elements in the sequence.
+
+    """
+    accumulate = None
+    seq = []
+    for elem in sequence:
+        if accumulate is None:
+            accumulate = elem
+        else:
+            accumulate = accumulate * elem
+        seq.append(accumulate)
+    return seq
 
 
 def pop(obj, key=0, *args, **kwargs):
