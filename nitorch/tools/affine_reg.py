@@ -10,6 +10,7 @@ TODO
 
 import nibabel as nib
 import numpy as np
+from scipy.optimize import fmin_powell
 import torch
 from torch.nn import functional as F
 from ..plot import show_slices
@@ -24,6 +25,60 @@ from .spm import (identity, noise_estimate, max_bb)
 
 # Histogram-based cost functions
 costs_hist = ['mi', 'ecc', 'nmi', 'ncc']
+
+
+def apply2affine(pths, q, group='SE', prefix='a_', dir_out=None):
+    """ Apply registration result (q) to affine in input scans header.
+
+    OBS: If prefix='' and dir_out=None, overwrites input data.
+
+    Parameters
+    ----------
+    pths : [N,] str
+        List of nibabel compatible paths.
+    q : (N, Nq), tensor_like
+        Lie parameterisation of registration results (N=channels, Nq=Number of bases).
+    group : str, default='SE'
+        OBS: Should be same that was used in call to run_affine_reg().
+    prefix : str, default='a_'
+        Filename prefix.
+    dir_out : str, default=None
+        Full path to directory where to write image.
+
+    Returns
+    ----------
+    pths_out : [N,] str
+        List of paths after applying registration results.
+
+    Notes
+    ----------
+    Good reference on nibabel i/o:
+    https://www.nipreps.org/niworkflows/1.0.0rc2/_modules/niworkflows/utils/images.html
+
+    """
+    # Sanity check
+    if (not isinstance(pths, list) and not isinstance(pths[0], str)) \
+        or (isinstance(pths, list) and not isinstance(pths[0], str)):
+        raise ValueError('Input should be list of strings!')
+    # Get affine basis
+    B = affine_basis(group=group, device=q.device, dtype=q.dtype)
+    # Incorporate registration result
+    pths_out = []
+    N = len(pths)
+    for n in range(N):  # Loop over input images
+        # Read image
+        nii = nib.load(pths[n])
+        affine = nii.affine
+        M = torch.from_numpy(affine).type(q.dtype).to(q.device)
+        # Get registration transform
+        A = expm(q[n, ...], B)
+        # Apply registration transform
+        M = M.solve(A)[0]  # A\M
+        # Modify affine
+        pth = modify_affine(pths[n], M, prefix=prefix, dir_out=dir_out)
+        pths_out.append(pth)
+
+    return pths_out
 
 
 def mni_align(imgs, rigid=True, samp=(4, 2), cost_fun='nmi', device='cpu', modify_header=False,
@@ -94,6 +149,90 @@ def mni_align(imgs, rigid=True, samp=(4, 2), cost_fun='nmi', device='cpu', modif
         affine_basis(group=group, device=device, dtype=q_mni.dtype))
 
     return M_mni
+
+
+def reslice2fix(imgs, q, M_fix, dim_fix, group='SE', prefix='ra_', dtype=torch.float32,
+                device='cpu', dir_out=None, write=False):
+    """Reslice the input files to the grid of the fixed image,
+    using the registration transform (q).
+
+    OBS: If write=True, prefix='' and dir_out=None, overwrites input data.
+
+    Parameters
+    ----------
+    imgs : [N,] str, List of paths to nibabel compatible files
+           [N,] (tensor_like, tensor_like) List of tuples, where
+            each tuple has two tensors: 3D image volume and affine matrix.
+    q : (N, Nq), tensor_like
+        Lie parameterisation of registration results (N=channels, Nq=Number of bases).
+    M_fix : (4, 4), tensor_like
+        Affine matrix of fixed image.
+    dim_fix : (3,), tuple, list, tensor_like
+        Image dimensions of fixed image.
+    group : str, default='SE'
+        OBS: Should be same that was used in call to run_affine_reg().
+    prefix : str, default='ra_'
+        Filename prefix.
+    dtype : torch.dtype, default=torch.float32
+        Data type of function output.
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+    dir_out : str, default=None
+        Full path to directory where to write image.
+    write : bool, default=False
+        Write resliced data to disk, if inputs are given as paths to nibabel data.
+
+    Returns
+    ----------
+    rdat : (X, Y, Z, N), tensor_like
+        Resliced image data.
+    pths_out : [N,] str, default=[]
+        List of paths after applying reslice, if write=True.
+
+    """
+    pths_out = []
+    N = len(imgs)
+    # Cast to requested data type
+    q = q.type(dtype)
+    M_fix = M_fix.type(dtype)  # affine of resliced data
+    # Make tensor for resliced data
+    rdat = torch.zeros(dim_fix + (N,), dtype=dtype, device=device)
+    # Get affine basis
+    B = affine_basis(group=group, device=device, dtype=dtype)
+    for n in range(N):  # Loop over input images
+        if isinstance(imgs[n], str):
+            # Input is nibabel path
+            nii = nib.load(imgs[n])
+            dat = torch.tensor(nii.get_fdata(), device=device, dtype=dtype)
+            M_mov = torch.from_numpy(nii.affine).type(dtype).to(device)
+        else:
+            # Input is image data, and possibly affine matrix
+            if write:
+                raise ValueError('Option write=True not available when input are tensors!')
+            if isinstance(imgs[n], tuple):
+                dat = imgs[n][0].type(dtype).to(device)
+                M_mov = imgs[n][1].type(dtype).to(device)
+            else:
+                dat = imgs[n]
+                M_mov = affine_default(imgs[n].shape, device=device, dtype=dtype)
+                M_mov = torch.cat((M_mov, torch.tensor([0, 0, 0, 1],
+                    dtype=dtype, device=device)[None, ...]))  # Add a row to make (4, 4)
+        if not torch.all(q[n, ...] == 0):
+            # Get coreg matrix
+            A = expm(q[n, ...], B)
+            # Compose transformations
+            M = A.mm(M_fix).solve(M_mov)[0]  # M_mov\A*M_fix
+            # Do reslice
+            rdat[..., n] = reslice_dat(dat[None, None, ...], M, dim_fix)
+        else:
+            # Fixed image was among input images, do not reslice
+            rdat[..., n] = dat
+        if write:
+            # Write resliced data
+            pth = write_img(imgs[n], dat=rdat[..., n], prefix=prefix, affine=M_fix, dir_out=dir_out)
+            pths_out.append(pth)
+
+    return rdat, pths_out
 
 
 def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
@@ -252,144 +391,6 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
             q, args = _fit_q(q, dat_fix, grid, M_fix, dat, mats, mov, B, opt)
 
     return q, M_fix, dim_fix
-
-
-def apply2affine(pths, q, group='SE', prefix='a_', dir_out=None):
-    """ Apply registration result (q) to affine in input scans header.
-
-    OBS: If prefix='' and dir_out=None, overwrites input data.
-
-    Parameters
-    ----------
-    pths : [N,] str
-        List of nibabel compatible paths.
-    q : (N, Nq), tensor_like
-        Lie parameterisation of registration results (N=channels, Nq=Number of bases).
-    group : str, default='SE'
-        OBS: Should be same that was used in call to run_affine_reg().
-    prefix : str, default='a_'
-        Filename prefix.
-    dir_out : str, default=None
-        Full path to directory where to write image.
-
-    Returns
-    ----------
-    pths_out : [N,] str
-        List of paths after applying registration results.
-
-    Notes
-    ----------
-    Good reference on nibabel i/o:
-    https://www.nipreps.org/niworkflows/1.0.0rc2/_modules/niworkflows/utils/images.html
-
-    """
-    # Sanity check
-    if (not isinstance(pths, list) and not isinstance(pths[0], str)) \
-        or (isinstance(pths, list) and not isinstance(pths[0], str)):
-        raise ValueError('Input should be list of strings!')
-    # Get affine basis
-    B = affine_basis(group=group, device=q.device, dtype=q.dtype)
-    # Incorporate registration result
-    pths_out = []
-    N = len(pths)
-    for n in range(N):  # Loop over input images
-        # Read image
-        nii = nib.load(pths[n])
-        affine = nii.affine
-        M = torch.from_numpy(affine).type(q.dtype).to(q.device)
-        # Get registration transform
-        A = expm(q[n, ...], B)
-        # Apply registration transform
-        M = M.solve(A)[0]  # A\M
-        # Modify affine
-        pth = modify_affine(pths[n], M, prefix=prefix, dir_out=dir_out)
-        pths_out.append(pth)
-
-    return pths_out
-
-
-def reslice2fix(imgs, q, M_fix, dim_fix, group='SE', prefix='ra_', dtype=torch.float32,
-                device='cpu', dir_out=None, write=False):
-    """Reslice the input files to the grid of the fixed image,
-    using the registration transform (q).
-
-    OBS: If write=True, prefix='' and dir_out=None, overwrites input data.
-
-    Parameters
-    ----------
-    imgs : [N,] str, List of paths to nibabel compatible files
-           [N,] (tensor_like, tensor_like) List of tuples, where
-            each tuple has two tensors: 3D image volume and affine matrix.
-    q : (N, Nq), tensor_like
-        Lie parameterisation of registration results (N=channels, Nq=Number of bases).
-    M_fix : (4, 4), tensor_like
-        Affine matrix of fixed image.
-    dim_fix : (3,), tuple, list, tensor_like
-        Image dimensions of fixed image.
-    group : str, default='SE'
-        OBS: Should be same that was used in call to run_affine_reg().
-    prefix : str, default='ra_'
-        Filename prefix.
-    dtype : torch.dtype, default=torch.float32
-        Data type of function output.
-    device : torch.device or str, default='cpu'
-        PyTorch device type.
-    dir_out : str, default=None
-        Full path to directory where to write image.
-    write : bool, default=False
-        Write resliced data to disk, if inputs are given as paths to nibabel data.
-
-    Returns
-    ----------
-    rdat : (X, Y, Z, N), tensor_like
-        Resliced image data.
-    pths_out : [N,] str, default=[]
-        List of paths after applying reslice, if write=True.
-
-    """
-    pths_out = []
-    N = len(imgs)
-    # Cast to requested data type
-    q = q.type(dtype)
-    M_fix = M_fix.type(dtype)  # affine of resliced data
-    # Make tensor for resliced data
-    rdat = torch.zeros(dim_fix + (N,), dtype=dtype, device=device)
-    # Get affine basis
-    B = affine_basis(group=group, device=device, dtype=dtype)
-    for n in range(N):  # Loop over input images
-        if isinstance(imgs[n], str):
-            # Input is nibabel path
-            nii = nib.load(imgs[n])
-            dat = torch.tensor(nii.get_fdata(), device=device, dtype=dtype)
-            M_mov = torch.from_numpy(nii.affine).type(dtype).to(device)
-        else:
-            # Input is image data, and possibly affine matrix
-            if write:
-                raise ValueError('Option write=True not available when input are tensors!')
-            if isinstance(imgs[n], tuple):
-                dat = imgs[n][0].type(dtype).to(device)
-                M_mov = imgs[n][1].type(dtype).to(device)
-            else:
-                dat = imgs[n]
-                M_mov = affine_default(imgs[n].shape, device=device, dtype=dtype)
-                M_mov = torch.cat((M_mov, torch.tensor([0, 0, 0, 1],
-                    dtype=dtype, device=device)[None, ...]))  # Add a row to make (4, 4)
-        if not torch.all(q[n, ...] == 0):
-            # Get coreg matrix
-            A = expm(q[n, ...], B)
-            # Compose transformations
-            M = A.mm(M_fix).solve(M_mov)[0]  # M_mov\A*M_fix
-            # Do reslice
-            rdat[..., n] = reslice_dat(dat[None, None, ...], M, dim_fix)
-        else:
-            # Fixed image was among input images, do not reslice
-            rdat[..., n] = dat
-        if write:
-            # Write resliced data
-            pth = write_img(imgs[n], dat=rdat[..., n], prefix=prefix, affine=M_fix, dir_out=dir_out)
-            pths_out.append(pth)
-
-    return rdat, pths_out
 
 
 def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=2, ix_par=0, jitter=True,
@@ -743,7 +744,7 @@ def _do_optimisation(q, args, opt):
     q_shape = q.shape
     if opt['optimiser'] == 'powell':
         # Powell optimisation
-        from scipy.optimize import fmin_powell
+        # ----------
         # Initial search directions
         direc = opt['direc']
         direc = np.concatenate([direc[0]*np.ones(3), direc[1]*np.ones(9)])
@@ -757,32 +758,6 @@ def _do_optimisation(q, args, opt):
             callback = lambda x: _zero_mean(x, q_shape)
         # Do optimisation
         q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback, direc=direc)
-    elif opt['optimiser'] == 'bo':
-        # Bayesian optimisation
-        from bayes_opt import BayesianOptimization
-        # Make cost function compatible with BayesianOptimization library
-        # (maximises, therefore the minus)
-        def f(q1, q2, q3, q4, q5, q6):
-            return - _compute_cost(
-                np.array((q1, q2, q3, q4, q5, q6)), *args)
-        # Set affine parameter bounds
-        t_max = 20
-        o_max = 0.5
-        q_bounds = {'q1' : (-t_max, t_max),
-                    'q2' : (-t_max, t_max),
-                    'q3' : (-t_max, t_max),
-                    'q4' : (-o_max, o_max),
-                    'q5' : (-o_max, o_max),
-                    'q6' : (-o_max, o_max)}
-        # Initialise optimiser
-        optimizer = BayesianOptimization(f=f, pbounds=q_bounds, random_state=1)
-        # Add current estimate (warm start)
-        optimizer.space.register(q, - _compute_cost(q, *args))
-        # Do optimisation
-        optimizer.maximize(init_points=5, n_iter=50)
-        # Get optimum
-        for i, (key, value) in enumerate(optimizer.max['params'].items()):
-            q[i] = value
     # Cast back to tensor
     q = q.reshape(q_shape)
     q = torch.from_numpy(q).type(dtype).to(opt['device'])
