@@ -1,5 +1,6 @@
 """PyTorch utilities."""
 
+
 import torch
 import torch.nn.functional as F
 from .pyutils import make_list, make_tuple
@@ -574,3 +575,34 @@ def last2channel(tensor):
     tensor = torch.as_tensor(tensor)
     tensor = tensor.permute((0, - 1) + tuple(range(1, tensor.dim()-1)))
     return tensor
+
+
+def isin(tensor, labels):
+    """Returns a mask for elements that belong to labels
+
+    Parameters
+    ----------
+    tensor : (*shape_tensor) tensor_like
+        Input tensor
+    labels : (*shape_labels, nb_labels) tensor_like
+        Labels.
+        `shape_labels` and `shape_tensor` should be broadcastable.
+
+    Returns
+    -------
+    mask : (*shape) tensor[bool]
+
+    """
+
+    tensor = torch.as_tensor(tensor)
+    labels = torch.as_tensor(labels)
+
+    if labels.shape[-1] == 1:
+        # only one label in the list
+        return tensor == labels[..., 0]
+
+    mask = tensor.new_zeros(tensor.shape, dtype=torch.bool)
+    for label in torch.unbind(labels, dim=-1):
+        mask = mask | (tensor == label)
+
+    return mask

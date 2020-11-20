@@ -93,6 +93,7 @@ class MutualInfoLoss(Loss):
         if x.shape[1] != 1 or y.shape[1] != 1:
             raise ValueError('Mutual info is only implemented for '
                              'single channel tensors.')
+        shape = x.shape[2:]
 
         # get parameters
         x_min, y_min = make_list(overload.get('min_val', self.min_val), 2)
@@ -108,6 +109,7 @@ class MutualInfoLoss(Loss):
         if patch_size is not None:
             # extract patches about each voxel
             patch_size = make_list(patch_size, nb_dim)
+            patch_size = [pch or dim for pch, dim in zip(patch_size, shape)]
             patch_stride = make_list(patch_stride, nb_dim)
             patch_stride = [sz if st is None else st
                             for sz, st in zip(patch_size, patch_stride)]

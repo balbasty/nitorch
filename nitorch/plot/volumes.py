@@ -1,9 +1,13 @@
-"""Plotting utilities for multi-dimensional tensors."""
+"""Plotting utilities for multi-dimensional tensors.
+
+TODO
+* Real-time plotting slows down with number of calls to show_slices!
+
+"""
 
 
 import torch
 from ..core.optionals import matplotlib
-
 
 def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 fig_num=1, colorbar=False):
