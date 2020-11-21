@@ -5,7 +5,8 @@ import torch.nn as tnn
 from .modules._base import Module
 from .modules._cnn import UNet, CNN
 from .modules._spatial import GridPull, GridPush, GridExp, VoxelMorph, \
-    AffineExp, AffineGrid, GridResize
+    AffineExp, AffineGrid, GridResize, AffineMorphSemiSupervised
+from . import check
 from .. import spatial
 from ..core.linalg import matvec
 from ..core.utils import expand, unsqueeze
@@ -156,75 +157,6 @@ class DiffeoMovie(Module):
         frames = torch.cat(frames, dim=1)
 
         return frames
-
-
-class VoxelMorphSemiSupervised(VoxelMorph):
-    """A VoxelMorph network with a Categorical loss.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.tags += ['segmentation']
-
-    def forward(self, source, target, source_seg=None, target_seg=None,
-                *, _loss=None, _metric=None):
-
-        if len(source.shape) != self.dim+2:
-            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source.shape))
-        if len(target.shape) != self.dim+2:
-            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target.shape))
-        if len(source_seg.shape) != self.dim+2:
-            raise ValueError('Expected `source_seg` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source_seg.shape))
-        if len(target_seg.shape) != self.dim+2:
-            raise ValueError('Expected `target_seg` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target_seg.shape))
-        if not (target.shape[0] == source.shape[0] or
-                target.shape[0] == 1 or source.shape[0] == 1):
-            raise ValueError('Batch dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[0], target.shape[0]))
-        if target.shape[2:] != source.shape[2:]:
-            raise ValueError('Spatial dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[2:], target.shape[2:]))
-        if target_seg.shape[2:] != source_seg.shape[2:]:
-            raise ValueError('Spatial dimensions of `source_seg` and `target_seg` are '
-                             'not compatible: got {} and {}'
-                             .format(source_seg.shape[2:], target_seg.shape[2:]))
-        # TODO: more checks + helper functions
-
-        # chain operations
-        source_and_target = torch.cat((source, target), dim=1)
-        velocity = self.unet(source_and_target)
-        velocity = spatial.channel2grid(velocity)
-        velocity_small = self.resize(velocity, type='displacement')
-        grid = self.exp(velocity_small)
-        grid = self.resize(grid, shape=target.shape[2:])
-        deformed_source = self.pull(source, grid)
-        if source_seg is not None:
-            if source_seg.shape[2:] != source.shape[2:]:
-                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
-            deformed_source_seg = self.pull(source_seg, grid)
-        else:
-            deformed_source_seg = None
-
-        # compute loss and metrics
-        self.compute(_loss, _metric,
-                     image=[deformed_source, target],
-                     velocity=[velocity],
-                     segmentation=[deformed_source_seg, target_seg])
-
-        if source_seg is None:
-            return deformed_source, velocity
-        else:
-            return deformed_source, deformed_source_seg, velocity
 
 
 class IterativeVoxelMorph(VoxelMorph):
@@ -443,9 +375,64 @@ class AffineVoxelMorph(Module):
         self.dim = dim
 
         # register losses/metrics
-        self.tags = ['image', 'velocity', 'affine']
+        self.tags = ['image', 'velocity', 'affine', 'segmentation']
 
-    def forward(self, source, target, *, _loss=None, _metric=None):
+    def exp(self, velocity, affine=None, displacement=False):
+        """Generate a deformation grid from tangent parameters.
+
+        Parameters
+        ----------
+        velocity : (batch, *spatial, nb_dim)
+            Stationary velocity field
+        affine : (batch, nb_prm)
+            Affine parameters
+        displacement : bool, default=False
+            Return a displacement field (voxel to shift) rather than
+            a transformation field (voxel to voxel).
+
+        Returns
+        -------
+        grid : (batch, *spatial, nb_dim)
+            Deformation grid (transformation or displacment).
+
+        """
+        info = {'dtype': velocity.dtype, 'device': velocity.device}
+
+        # generate grid
+        shape = velocity.shape[1:-1]
+        velocity_small = self.resize(velocity, type='displacement')
+        grid = self.velexp(velocity_small)
+        grid = self.resize(grid, shape=shape, type='grid')
+
+        if affine is not None:
+            # exponentiate
+            affine_prm = affine
+            affine = []
+            for prm in affine_prm:
+                affine.append(self.affexp(prm))
+            affine = torch.stack(affine, dim=0)
+
+            # shift center of rotation
+            affine_shift = torch.cat((
+                torch.eye(self.dim, **info),
+                -torch.as_tensor(shape, **info)[:, None]/2),
+                dim=1)
+            affine = spatial.affine_matmul(affine, affine_shift)
+            affine = spatial.affine_lmdiv(affine_shift, affine)
+
+            # compose
+            affine = unsqueeze(affine, dim=-3, ndim=self.dim)
+            lin = affine[..., :self.dim, :self.dim]
+            off = affine[..., :self.dim, -1]
+            grid = matvec(lin, grid) + off
+
+        if displacement:
+            grid = grid - spatial.identity_grid(grid.shape[1:-1], **info)
+
+        return grid
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
         """
 
         Parameters
@@ -468,27 +455,12 @@ class AffineVoxelMorph(Module):
             affine Lie parameters
 
         """
-        # checks
-        if len(source.shape) != self.dim + 2:
-            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source.shape))
-        if len(target.shape) != self.dim + 2:
-            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target.shape))
-        if not (target.shape[0] == source.shape[0] or
-                target.shape[0] == 1 or source.shape[0] == 1):
-            raise ValueError('Batch dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[0], target.shape[0]))
-        if target.shape[2:] != source.shape[2:]:
-            raise ValueError('Spatial dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[2:], target.shape[2:]))
-
-        shape = target.shape[2:]
-        info = {'dtype': target.dtype, 'device': target.device}
+        # sanity checks
+        check.dim(self.dim, source, target, source_seg, target_seg)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -496,37 +468,102 @@ class AffineVoxelMorph(Module):
         # generate affine
         affine_prm = self.cnn(source_and_target)
         affine_prm = affine_prm.reshape(affine_prm.shape[:2])
-        affine = []
-        for prm in affine_prm:
-            affine.append(self.affexp(prm))
-        affine = torch.stack(affine, dim=0)
-        affine_shift = torch.cat((
-            torch.eye(self.dim, **info),
-            -torch.as_tensor(shape, **info)[:, None]/2),
-            dim=1)
-        affine = spatial.affine_matmul(affine, affine_shift)
-        affine = spatial.affine_lmdiv(affine_shift, affine)
 
-        # generate grid
+        # generate velocity
         velocity = self.unet(source_and_target)
         velocity = spatial.channel2grid(velocity)
-        velocity_small = self.resize(velocity)
-        grid = self.velexp(velocity_small)
-        grid = self.resize(grid, shape=shape)
 
-        # compose
-        affine = unsqueeze(affine, dim=-3, ndim=self.dim)
-        lin = affine[..., :self.dim, :self.dim]
-        off = affine[..., :self.dim, -1]
-        grid = matvec(lin, grid) + off
+        # generate deformation grid
+        grid = self.exp(velocity, affine_prm)
 
         # deform
         deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            if source_seg.shape[2:] != source.shape[2:]:
+                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = None
 
         # compute loss and metrics
         self.compute(_loss, _metric,
                      image=[deformed_source, target],
                      velocity=[velocity],
+                     segmentation=[deformed_source_seg, target_seg],
                      affine=[affine_prm])
 
-        return deformed_source, affine_prm
+        if deformed_source_seg is None:
+            return deformed_source, velocity, affine_prm
+        else:
+            return deformed_source, deformed_source_seg, velocity, affine_prm
+
+
+class AffineAndAppearance(AffineMorphSemiSupervised):
+    """An AffineMorph network that also generates an intensity bias field.
+    """
+
+    def __init__(self, dim, *args, bias=True, **kwargs):
+        super().__init__(dim, *args, **kwargs)
+        self.bias = bias
+        if bias:
+            self.unet = UNet(dim,
+                             input_channels=2,
+                             output_channels=1,
+                             encoder=None,
+                             decoder=None,
+                             kernel_size=3,
+                             activation=tnn.LeakyReLU(0.2),
+                             final_activation=None)
+        self.tags += ['bias']
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
+
+        # sanity checks
+        check.dim(self.dim, source, target, source_seg, target_seg)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
+
+        # --- chain operations ---
+        # concat before unet/cnn
+        source_and_target = torch.cat((source, target), dim=1)
+
+        # generate bias field
+        if self.bias:
+            bias = self.unet(source_and_target)
+            source = source * bias.exp()
+
+        # generate affine grid
+        affine_prm = self.cnn(source_and_target)
+        affine_prm = affine_prm.reshape(affine_prm.shape[:2])
+        affine = []
+        for prm in affine_prm:
+            affine.append(self.exp(prm))
+        affine = torch.stack(affine, dim=0)
+        grid = self.grid(affine, shape=target.shape[2:])
+
+        # deform source images
+        deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            if source_seg.shape[2:] != source.shape[2:]:
+                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = None
+
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     affine=[affine_prm],
+                     bias=[bias] if self.bias else [],
+                     segmentation=[deformed_source_seg, target_seg])
+
+        if source_seg is None:
+            output = (deformed_source, affine_prm)
+        else:
+            output = (deformed_source, deformed_source_seg, affine_prm)
+        if self.bias:
+            output = (*output, bias)
+        return output

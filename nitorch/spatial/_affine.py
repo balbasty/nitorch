@@ -1205,12 +1205,15 @@ def affine_make_square(affine):
 
     """
     affine = torch.as_tensor(affine)
+    device = affine.device
+    dtype = affine.dtype
     ndims = affine.shape[-1]-1
     if affine.shape[-2] not in (ndims, ndims+1):
         raise ValueError('Input affine matrix should be of shape\n'
                          '(..., ndims+1, ndims+1) or (..., ndims, ndims+1).')
     if affine.shape[-1] != affine.shape[-2]:
-        bottom_row = torch.cat((torch.zeros(ndims), torch.ones(1)), dim=0)
+        bottom_row = torch.cat((torch.zeros(ndims, device=device, dtype=dtype),
+                                torch.ones(1, device=device, dtype=dtype)), dim=0)
         bottom_row = utils.unsqueeze(bottom_row, 0, ndim=affine.dim()-1)
         affine = torch.cat((affine, bottom_row), dim=-2)
     return affine

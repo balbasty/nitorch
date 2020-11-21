@@ -5,6 +5,7 @@ from torch import nn as tnn
 from ... import spatial
 from ._cnn import UNet, CNN
 from ._base import Module
+from .. import check
 from ...core.pyutils import make_list
 
 
@@ -700,24 +701,10 @@ class VoxelMorph(Module):
             Velocity field
 
         """
-        # checks
-        if len(source.shape) != self.dim+2:
-            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source.shape))
-        if len(target.shape) != self.dim+2:
-            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target.shape))
-        if not (target.shape[0] == source.shape[0] or
-                target.shape[0] == 1 or source.shape[0] == 1):
-            raise ValueError('Batch dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[0], target.shape[0]))
-        if target.shape[2:] != source.shape[2:]:
-            raise ValueError('Spatial dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[2:], target.shape[2:]))
+        # sanity checks
+        check.dim(self.dim, source, target)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -734,6 +721,51 @@ class VoxelMorph(Module):
                      velocity=[velocity])
 
         return deformed_source, velocity
+
+
+class VoxelMorphSemiSupervised(VoxelMorph):
+    """A VoxelMorph network with a Categorical loss.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tags += ['segmentation']
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
+
+        # sanity checks
+        check.dim(self.dim, source, target, source_seg, target_seg)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
+
+        # chain operations
+        source_and_target = torch.cat((source, target), dim=1)
+        velocity = self.unet(source_and_target)
+        velocity = spatial.channel2grid(velocity)
+        velocity_small = self.resize(velocity, type='displacement')
+        grid = self.exp(velocity_small)
+        grid = self.resize(grid, shape=target.shape[2:])
+        deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            if source_seg.shape[2:] != source.shape[2:]:
+                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = None
+
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     velocity=[velocity],
+                     segmentation=[deformed_source_seg, target_seg])
+
+        if source_seg is None:
+            return deformed_source, velocity
+        else:
+            return deformed_source, deformed_source_seg, velocity
 
 
 class AffineMorph(Module):
@@ -755,7 +787,8 @@ class AffineMorph(Module):
     """
 
     def __init__(self, dim, basis='CSO', encoder=None, stack=None,
-                 kernel_size=3, interpolation='linear', bound='dct2'):
+                 kernel_size=3, interpolation='linear', bound='dct2', *,
+                 _additional_input_channels=0, _additional_output_channels=0):
         """
 
         Parameters
@@ -787,9 +820,9 @@ class AffineMorph(Module):
 
         super().__init__()
         exp = AffineExp(dim, basis=basis)
-        nb_prm = sum(b.shape[0] for b in exp.basis)
+        nb_prm = sum(b.shape[0] for b in exp.basis) + _additional_output_channels
         self.cnn = CNN(dim,
-                       input_channels=2,
+                       input_channels=2 + _additional_input_channels,
                        output_channels=nb_prm,
                        encoder=encoder,
                        stack=stack,
@@ -829,24 +862,10 @@ class AffineMorph(Module):
             affine Lie parameters
 
         """
-        # checks
-        if len(source.shape) != self.dim + 2:
-            raise ValueError('Expected `source` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, source.shape))
-        if len(target.shape) != self.dim + 2:
-            raise ValueError('Expected `target` to have shape (B, C, *spatial)'
-                             ' with len(spatial) == {} but found {}.'
-                             .format(self.dim, target.shape))
-        if not (target.shape[0] == source.shape[0] or
-                target.shape[0] == 1 or source.shape[0] == 1):
-            raise ValueError('Batch dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[0], target.shape[0]))
-        if target.shape[2:] != source.shape[2:]:
-            raise ValueError('Spatial dimensions of `source` and `target` are '
-                             'not compatible: got {} and {}'
-                             .format(source.shape[2:], target.shape[2:]))
+        # sanity checks
+        check.dim(self.dim, source, target)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -865,3 +884,50 @@ class AffineMorph(Module):
                      affine=[affine_prm])
 
         return deformed_source, affine_prm
+
+
+class AffineMorphSemiSupervised(AffineMorph):
+    """An AffineMorph network with a Categorical loss.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tags += ['segmentation']
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
+
+        # sanity checks
+        check.dim(self.dim, source, target, source_seg, target_seg)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
+
+        # chain operations
+        source_and_target = torch.cat((source, target), dim=1)
+        affine_prm = self.cnn(source_and_target)
+        affine_prm = affine_prm.reshape(affine_prm.shape[:2])
+        affine = []
+        for prm in affine_prm:
+            affine.append(self.exp(prm))
+        affine = torch.stack(affine, dim=0)
+        grid = self.grid(affine, shape=target.shape[2:])
+        deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            if source_seg.shape[2:] != source.shape[2:]:
+                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = None
+
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     affine=[affine_prm],
+                     segmentation=[deformed_source_seg, target_seg])
+
+        if source_seg is None:
+            return deformed_source, affine_prm
+        else:
+            return deformed_source, deformed_source_seg, affine_prm

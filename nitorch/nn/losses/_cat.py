@@ -136,6 +136,23 @@ class DiceLoss(Loss):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
+        # TODO:
+        #   I need to make this a lot more generic:
+        #   - inputs can be hard labels or prob
+        #   - the background class can be implicit
+        #   - we may want to compute the dice w.r.t. a subset of classes
+
+        predicted = torch.as_tensor(predicted)
+        reference = torch.as_tensor(reference,
+                                    dtype=predicted.dtype,
+                                    device=predicted.device)
+
+        # only compute Dice on foreground (unless the ref has a
+        # background class
+        if predicted.shape[1] != reference.shape[1]:
+            nb_class = max(predicted.shape[1], reference.shape[1])
+            predicted = predicted[:, :nb_class, ...]
+            reference = reference[:, :nb_class, ...]
 
         # TODO:
         #   I need to make this a lot more generic:
