@@ -88,7 +88,7 @@ def cutoff(dat, cutoff, dim=None):
                          ' be provided. Got {}.'.format(len(cutoff)))
     pct = np.nanpercentile(dat, cutoff, axis=dim, keepdims=True)
     if len(pct) == 1:
-        dat = np.clip(dat, a_max=pct[0])
+        dat = np.clip(dat, a_min=None, a_max=pct[0])
     else:
         dat = np.clip(dat, a_min=pct[0], a_max=pct[1])
     return dat
