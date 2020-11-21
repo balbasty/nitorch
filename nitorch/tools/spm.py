@@ -24,7 +24,7 @@ from ..spatial import voxel_size, im_gradient
 
 
 __all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'estimate_fwhm', 'identity',
-           'imatrix', 'matrix', 'mean_matrix', 'mean_space', 'noise_estimate']
+           'imatrix', 'matrix', 'mean_matrix', 'mean_space', 'noise_estimate', 'max_bb']
 
 
 def affine(dm, mat, dtype=torch.float32, device='cpu', jitter=False):
@@ -574,6 +574,77 @@ def matrix(P):
                       [0, 0,    0,     1]], device=device, dtype=dtype)
 
     return T.mm(R.mm(Z.mm(S)))
+
+
+def max_bb(all_mat, all_dim, vx=None, mni=False):
+    """Specify mean space voxel-to-world matrix (mat) and dimensions (dm),
+    from a collection of images, as their maximum bounding-box.
+
+    Args:
+        all_mat (torch.tensor): N subjects' orientation matrices (4, 4, N).
+        all_dim (torch.tensor): N subjects' dimensions (3, N).
+        vx (torch.tensor): Voxel size (3,), defaults to [1, 1, 1]
+        mni (bool): Use NITorch's MNI space atlas' field of view, defaults to False.
+            OBS: This assumes that all input images are aligned with the atlas.
+
+    Returns:
+        dm (torch.tensor): Mean dimensions (3,).
+        mat (torch.tensor): Mean orientation matrix (4, 4).
+
+    """
+    dtype = all_mat.dtype
+    device = all_mat.device
+    if vx is None:
+        # Default output voxel size
+        vx = torch.ones(3, device=device, dtype=dtype)
+    # Number of subjects
+    N = all_mat.shape[-1]
+    # Get all images field of view
+    mx = torch.zeros([3, N], device=device, dtype=dtype)
+    mn = torch.zeros([3, N], device=device, dtype=dtype)
+    for n in range(N):
+        dm = all_dim[..., n]
+        corners = torch.tensor([[1, dm[0], 1, dm[0], 1, dm[0], 1, dm[0]],
+                                [1, 1, dm[1], dm[1], 1, 1, dm[1], dm[1]],
+                                [1, 1, 1, 1, dm[2], dm[2], dm[2], dm[2]],
+                                [1, 1, 1, 1, 1, 1, 1, 1]],
+                               device=device, dtype=dtype)
+        M = all_mat[..., n]
+        pos = M[:-1,:].mm(corners)
+        mx[..., n] = torch.max(pos, dim=1)[0]
+        mn[..., n] = torch.min(pos, dim=1)[0]
+    # Get bounding box
+    mx = torch.sort(mx, dim=1, descending=False)[0]
+    mn = torch.sort(mn, dim=1, descending=True)[0]
+    mx = mx[..., -1]
+    mn = mn[..., -1]
+    bb = torch.stack((mn, mx))
+    # Change voxel size
+    vx = torch.tensor([-1, 1, 1], dtype=dtype, device=device)*vx.abs()
+    mn = vx*torch.min(bb/vx, dim=0)[0]
+    mx = vx*torch.max(bb/vx, dim=0)[0]
+    # Make output affine matrix and image dimensions
+    mat = matrix(torch.cat((mn, torch.zeros(3, dtype=dtype, device=device), vx)))\
+        .mm(matrix(-torch.ones(3, dtype=dtype, device=device)))
+    dm = torch.cat((mx, torch.ones(1, dtype=dtype, device=device)))[..., None].solve(mat)[0]
+    dm = dm[:3].round().flatten()
+    if mni:
+        # Modify FOV to cover a reasonable amount of the NITorch MNI T1 atlas
+        # (nitorch/data/atlas_t1.nii.gz).
+        # OBS: This assumes that the input images are aligned with the atlas.
+        dim_mni = torch.tensor([181, 231, 181], device=device)
+        dim_mni = (dim_mni / vx.abs()).round()  # Modulate with voxel size
+        off = - (dm - dim_mni) / 2
+        dm = dm + 2 * off
+        # Note that we add an extra offset to the 'z' translation because the nitorch
+        # atlas has its origin quite low down the head
+        mat_crop = torch.tensor([[1, 0, 0, - (off[0] + 1)],
+                                 [0, 1, 0, - (off[1] + 1)],
+                                 [0, 0, 1, - (off[2] + 1 - 44 / vx[-1])],
+                                 [0, 0, 0, 1]], device=device)
+        mat = mat.mm(mat_crop)
+
+    return dm, mat
 
 
 def mean_matrix(Mat):

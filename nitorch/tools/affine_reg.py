@@ -12,7 +12,6 @@ import nibabel as nib
 import numpy as np
 import torch
 from torch.nn import functional as F
-from scipy.optimize import fmin_powell
 from ..plot import show_slices
 from ..core.kernels import smooth
 from ..core.utils import pad
@@ -20,14 +19,14 @@ from ..core.pyutils import get_pckg_data
 from ..spatial import (affine_basis, affine_default, affine_matvec, grid_pull, im_gradient, voxel_size)
 from ..core.linalg import expm
 from .preproc import (load_3d, modify_affine, reslice_dat, write_img)
-from .spm import (identity, noise_estimate, mean_space)
+from .spm import (identity, noise_estimate, max_bb)
 
 
 # Histogram-based cost functions
 costs_hist = ['mi', 'ecc', 'nmi', 'ncc']
 
 
-def mni_align(imgs, rigid=True, samp=4, cost_fun='nmi', device='cpu', modify_header=False,
+def mni_align(imgs, rigid=True, samp=(4, 2), cost_fun='nmi', device='cpu', modify_header=False,
               prefix='mni_', dir_out=None):
     """Affinely align brain image(s) to MNI space.
 
@@ -43,7 +42,7 @@ def mni_align(imgs, rigid=True, samp=4, cost_fun='nmi', device='cpu', modify_hea
             each tuple has two tensors: 3D image volume and affine matrix.
     rigid = bool, default=True
         Do rigid alignment to MNI. If False, does rigid+isotropic scaling.
-    samp : (float, ), default=4
+    samp : (float, ), default=(4, 2)
         Optimisation sampling steps (mm).
     cost_fun : str, default='nmi'
         * 'nmi' : Normalised Mutual Information (pairwise method)
@@ -63,8 +62,8 @@ def mni_align(imgs, rigid=True, samp=4, cost_fun='nmi', device='cpu', modify_hea
 
     Returns
     ----------
-    q_mni : (N, 6|7) tensor_like
-        Registration parameters aligning to MNI space.
+    M_mni : (N, 4, 4) tensor_like
+        Transformation aligning to MNI space as M_mni\M_mov.
 
     """
     # Get path to nitorch's T1w intensity atlas
@@ -74,25 +73,32 @@ def mni_align(imgs, rigid=True, samp=4, cost_fun='nmi', device='cpu', modify_hea
     # Append atlas at the end of input data
     imgs.append(pth_atlas)
     # Align each image, pair-wise, to atlas. Does a rigid plus isotropic scaling registration.
+    group = 'CSO'
     q_mni, mat_fix, dim_fix = run_affine_reg(imgs,
-         group='CSO', device=device, samp=samp, cost_fun=cost_fun,
+         group=group, device=device, samp=samp, cost_fun=cost_fun,
          fix=N, verbose=False)
     # Remove atlas
     imgs = imgs[:N]
     q_mni = q_mni[:N, ...]
+    # Make isotropic scaling the same for all images
+    q_mni[:, -1] = q_mni[:, -1].mean()
     if rigid:
         # Extract only rigid part
+        group = 'SE'
         q_mni = q_mni[..., :6]
     if modify_header:
         # Modify header
-        apply2affine(imgs, q_mni, group='SE', prefix=prefix, dir_out=dir_out)
+        apply2affine(imgs, q_mni, group=group, prefix=prefix, dir_out=dir_out)
+    # Get matrix representation
+    M_mni = expm(q_mni,
+        affine_basis(group=group, device=device, dtype=q_mni.dtype))
 
-    return q_mni
+    return M_mni
 
 
 def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
                    samp=(4, 2), optimiser='powell', fix=0, verbose=False,
-                   fov=None, device='cpu', mx_int=511):
+                   fov=None, device='cpu', mx_int=511, direc=(0.5, 0.025)):
     """Affinely align images.
 
     This function aligns N images affinely, either pairwise or groupwise,
@@ -167,6 +173,9 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
         how many bins to use in the joint image histograms
         (e.g, mx_int=511 -> H.shape = (512, 512)). This is only done if
         cost_fun is histogram-based.
+    direc : (2, ) float, default=(0.5, 0.025)
+        Initial search directions for the Powell opimiser, in translation
+        and rotation/scaling/shears.
 
     Returns
     ----------
@@ -190,6 +199,7 @@ def run_affine_reg(imgs, cost_fun='nmi', group='SE', mean_space=False,
                'verbose': verbose,
                'fov': fov,
                'group' : group,
+               'direc': direc,
                'mx_int' : mx_int}
         if opt['cost_fun'] not in costs_hist:
             opt['mx_int'] = None
@@ -383,7 +393,7 @@ def reslice2fix(imgs, q, M_fix, dim_fix, group='SE', prefix='ra_', dtype=torch.f
 
 
 def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=2, ix_par=0, jitter=True,
-    x_step=0.1, x_mn_mx=30, verbose=False, device='cpu', mx_int=511):
+    x_step=0.1, x_mn_mx=30, verbose=False, device='cpu', mx_int=511, direc=(0.5, 0.025)):
     """Check cost function behaviour by keeping one image fixed and re-aligning
        a second image by modifying one of the affine parameters. Plots cost vs.
        aligment when finished.
@@ -419,6 +429,9 @@ def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=
         how many bins to use in the joint image histograms
         (e.g, mx_int=511 -> H.shape = (512, 512)). This is only done if
         cost_fun is histogram-based.
+    direc : (2, ) float, default=(0.5, 0.025)
+        Initial search directions for the Powell opimiser, in translation
+        and rotation/scaling/shears.
 
     """
     with torch.no_grad():
@@ -428,6 +441,7 @@ def test_cost_function(pths, cost_fun='nmi', group='SE', mean_space=False, samp=
                'samp': samp,
                'mean_space': mean_space,
                'verbose': verbose,
+               'direc': direc,
                'mx_int' : mx_int}
         if opt['cost_fun'] not in costs_hist:
             opt['mx_int'] = None
@@ -723,13 +737,16 @@ def _do_optimisation(q, args, opt):
         # Groupwise registration
         N = q.shape[0]
         Nq = q.shape[1]
+    # Optimisers require CPU Numpy arrays
+    dtype = q.dtype
+    q = q.cpu().numpy()
+    q_shape = q.shape
     if opt['optimiser'] == 'powell':
         # Powell optimisation
-        dtype = q.dtype
-        q = q.cpu().numpy()  # SciPy's powell optimiser requires CPU Numpy arrays
-        q_shape = q.shape
+        from scipy.optimize import fmin_powell
         # Initial search directions
-        direc = np.concatenate([0.5*np.ones(3), 0.025*np.ones(9)])
+        direc = opt['direc']
+        direc = np.concatenate([direc[0]*np.ones(3), direc[1]*np.ones(9)])
         direc = direc[:Nq]
         direc = np.tile(direc, N)
         direc = np.diag(direc)
@@ -738,9 +755,37 @@ def _do_optimisation(q, args, opt):
         if opt['mean_space']:
             # Ensure that the paramters have zero mean, across images.
             callback = lambda x: _zero_mean(x, q_shape)
+        # Do optimisation
         q = fmin_powell(_compute_cost, q, args=args, disp=False, callback=callback, direc=direc)
-        q = q.reshape(q_shape)
-        q = torch.from_numpy(q).type(dtype).to(opt['device'])  # Cast back to tensor
+    elif opt['optimiser'] == 'bo':
+        # Bayesian optimisation
+        from bayes_opt import BayesianOptimization
+        # Make cost function compatible with BayesianOptimization library
+        # (maximises, therefore the minus)
+        def f(q1, q2, q3, q4, q5, q6):
+            return - _compute_cost(
+                np.array((q1, q2, q3, q4, q5, q6)), *args)
+        # Set affine parameter bounds
+        t_max = 20
+        o_max = 0.5
+        q_bounds = {'q1' : (-t_max, t_max),
+                    'q2' : (-t_max, t_max),
+                    'q3' : (-t_max, t_max),
+                    'q4' : (-o_max, o_max),
+                    'q5' : (-o_max, o_max),
+                    'q6' : (-o_max, o_max)}
+        # Initialise optimiser
+        optimizer = BayesianOptimization(f=f, pbounds=q_bounds, random_state=1)
+        # Add current estimate (warm start)
+        optimizer.space.register(q, - _compute_cost(q, *args))
+        # Do optimisation
+        optimizer.maximize(init_points=5, n_iter=50)
+        # Get optimum
+        for i, (key, value) in enumerate(optimizer.max['params'].items()):
+            q[i] = value
+    # Cast back to tensor
+    q = q.reshape(q_shape)
+    q = torch.from_numpy(q).type(dtype).to(opt['device'])
 
     return q
 
@@ -870,7 +915,7 @@ def _get_mean_space(mats, dims):
         Mat[..., i] = mats[i].clone()
         Dim[..., i] = dims[i].clone()
     # Compute mean-space
-    dim, mat, _ = mean_space(Mat, Dim)
+    dim, mat = max_bb(Mat, Dim)
     dim = tuple(dim.cpu().int().tolist())
     mat = mat.type(dtype)
 

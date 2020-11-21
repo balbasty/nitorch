@@ -15,9 +15,98 @@ import os
 import torch
 from torch.nn import functional as F
 from ..core.kernels import smooth
+from ..core.pyutils import get_pckg_data
 from ..core.utils import pad
+from ..plot.volumes import show_slices
 from ..spatial import (affine_default, affine_grid, voxel_size, grid_pull)
 from .spm import (identity, matrix)
+
+
+def atlas_crop(dat, mat_in, mni_align=False, fov='full'):
+    """Crop an image to the NITorch atlas field-of-view.
+
+    Parameters
+    ----------
+    dat : (X0, Y0, Z0) tensorlike
+        Input image.
+    mat_in : (4, 4) tensorlike
+        Input affine matrix.
+    mni_align : bool, default=False
+        Do alignment to MNI space.
+    fov : str, default='full'
+        Output field-of-view (FOV):
+        * 'full' : Full atlas FOV.
+        * 'brain' : Brain FOV.
+
+    Returns
+    ----------
+    dat : (X1, Y1, Z1) tensorlike
+        Cropped image.
+    mat : (4, 4) tensorlike
+        Cropped affine matrix.
+    dim : (3, ) tuple
+        Cropped dimensions.
+
+    """
+    device = dat.device
+    dtype = dat.dtype
+    mat_in = mat_in.type(dtype)
+    if mni_align:
+        # TODO: Align to MNI
+        raise ValueError('Not implemented!')
+    offset = ((0, ) * 3, (0, ) * 3)
+    if fov == 'brain':
+        # Gives a good fit around the brain of the atlas
+        offset = ((10, 55, 120), (10, 40, 60))
+    # Get atlas information
+    nii = nib.load(get_pckg_data('atlas_t1'))
+    mat_mu = torch.tensor(nii.affine).type(dtype).to(device)
+    dim_mu = torch.tensor(nii.shape).type(dtype).to(device)
+    # Get atlas corners in image space
+    mat = mat_mu.solve(mat_in)[0]
+    c = get_corners(dim_mu, offset, dtype=dtype, device=device)
+    c = mat[:3, ...].mm(c.t())
+    # Make bounding-box
+    mn = torch.min(c, dim=1)[0]
+    mx = torch.max(c, dim=1)[0]
+    bb = torch.stack((mn, mx))
+    # Extract sub-volume
+    dat, mat, dim = subvol(dat, mat_in, bb)
+
+    return dat, mat, dim
+
+
+def get_corners(dim, o=((0,)*3, (0,)*3), dtype=torch.float64, device='cpu'):
+    """Get eight corners of 3D image volume.
+
+    Parameters
+    ----------
+    dim : (3,), list or tuple
+        Image dimensions.
+    o : (2, 3), default=((0,)*3, (0,)*3)
+        Add offset to corners.
+    dtype : torch.dtype, default=torch.float64
+        Data type of function output.
+    device : torch.device or str, default='cpu'
+        PyTorch device type.
+
+    Returns
+    -------
+    c : (8, 4), tensor_like[torch.float64]
+        Corners of volume.
+
+    """
+    c = torch.tensor([[     1 + o[0][0],      1 + o[0][1],      1 + o[0][2], 1],
+                      [     1 + o[0][0],      1 + o[0][1], dim[2] - o[1][2], 1],
+                      [     1 + o[0][0], dim[1] - o[1][1],      1 + o[0][2], 1],
+                      [     1 + o[0][0], dim[1] - o[1][1], dim[2] - o[1][2], 1],
+                      [dim[0] - o[1][0],      1 + o[0][1],      1 + o[0][2], 1],
+                      [dim[0] - o[1][0],      1 + o[0][1], dim[2] - o[1][2], 1],
+                      [dim[0] - o[1][0], dim[1] - o[1][1],      1 + o[0][2], 1],
+                      [dim[0] - o[1][0], dim[1] - o[1][1], dim[2] - o[1][2], 1]],
+                     device=device, dtype=dtype)
+
+    return c
 
 
 def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
@@ -83,7 +172,7 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
             scrand = nii.dataobj.slope
         else:
             scrand = 0;
-    elif isinstance(img, tuple):
+    elif isinstance(img, (list, tuple)):
         # Input is tuple with two tensors: image data and affine tensors
         dat = img[0]
         affine = img[1]
@@ -125,7 +214,9 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
     dim = tuple(dat.shape[:3])
 
     # Mask
-    dat[~torch.isfinite(dat)] = 0
+    dat[~torch.isfinite(dat) | (dat == 0) | (dat == dat.min()) | (dat == dat.max())] = 0
+
+    import time;
 
     if rescale:
         # Rescale so that image intensities are between 1 and nh (so we can make a histogram)
@@ -134,15 +225,15 @@ def load_3d(img, samp=0, rescale=False, fwhm=0.0, mn_out=0, mx_out=511,
         mx_scl = torch.tensor([dat.max(), 1], dtype=dtype, device=device)[None, ...]
         sf = torch.cat((mn_scl, mx_scl), dim=0)
         sf = torch.tensor([1, nh], dtype=dtype, device=device)[..., None].solve(sf)[0].squeeze()
-        p = dat[(dat != 0) & (dat != dat.min()) & (dat != dat.max())]
-        p = (p*sf[0] + sf[1]).round().int()
-
+        p = dat[(dat != 0)]
+        p = (p*sf[0] + sf[1]).round().long()
         # Make histogram and find percentiles
-        h = torch.bincount(p, weights=None, minlength=nh - 1).type(dtype)
-        h = h.cumsum(0) / h.sum()
+        h = torch.zeros(nh + 1, device=device, dtype=p.dtype)
+        h.put_(p, torch.ones(1, dtype=p.dtype, device=device).expand_as(p), accumulate=True)
+        h = h.type(dtype)
+        h = h.cumsum(0)/h.sum()
         mn_scl = ((h <= 0.0005).sum(dim=0) - sf[1]) / sf[0]
         mx_scl = ((h <= 0.9999).sum(dim=0) - sf[1]) / sf[0]
-
         # Make scaling to set image intensities between mn_out and mx_out
         mn = torch.tensor([mn_scl, 1], dtype=dtype, device=device)[None, ...]
         mx = torch.tensor([mx_scl, 1], dtype=dtype, device=device)[None, ...]
@@ -216,15 +307,18 @@ def modify_affine(pth, M, prefix='ma_', dir_out=None):
     return pth
 
 
-def reset_origin(pth, vx=None, prefix='ro_', device='cpu', interpolation='linear', bound='zero'):
+def reset_origin(img, vx=None, prefix='ro_', device='cpu', write=True,
+                 interpolation='linear', bound='zero'):
     """Reset affine matrix.
 
     OBS: Reslices image data.
 
     Parameters
     ----------
-    pth : str
+    img : str
         Path to nibabel compatible file.
+          (tensor_like, tensor_like)
+        Image data and affine matrix.
 
     vx : int or tuple[int], default=None
         Voxel size of resliced image. If None, uses same as input.
@@ -249,25 +343,34 @@ def reset_origin(pth, vx=None, prefix='ro_', device='cpu', interpolation='linear
     pth_out : str
         Path to reset image.
 
+    dat : (X, Y, Z), tensor_like[]
+        Resliced image data.
+
+    affine : (4, 4), tensor_like[torch.float64]
+        Affine transformation of resliced image.
+
     """
     # Reslice image data to world FOV
-    pth, dat, M0 = reslice2world(pth, vx=vx, prefix=prefix, device=device, write=False,
+    pth, dat, M0 = reslice2world(img, vx=vx, prefix=prefix, device=device, write=False,
                                  interpolation=interpolation, bound=bound)
     # Compute new, reset, affine matrix
-    dim = torch.tensor(dat.shape, dtype=torch.float64)
-    vx = voxel_size(M0)
+    dim = dat.shape
+    vx = voxel_size(M0).cpu().tolist()
     if M0[:3, :3].det() < 0:
         vx[0] = - vx[0]
-    affine = affine_default(dim, vx, dtype=torch.float64)
+    affine = affine_default(dim, vx, dtype=torch.float64, device=device)
     affine = torch.cat((affine, torch.tensor([0, 0, 0, 1],
         dtype=affine.dtype, device=affine.device)[None, ...]))  # Add a row to make (4, 4)
-    # Write reset image
-    pth_out = write_img(pth, dat, affine, prefix=prefix)
+    pth_out = None
+    if write and pth is not None:
+        # Write reset image
+        pth_out = write_img(pth, dat, affine, prefix=prefix)
 
-    return pth_out
+    return pth_out, dat, affine
 
 
-def reslice_dat(dat, affine, dim_out, interpolation='linear', bound='zero', extrapolate=False):
+def reslice_dat(dat, affine, dim_out, interpolation='linear',
+                bound='zero', extrapolate=False):
     """ Reslice image data.
 
     Parameters
@@ -306,13 +409,16 @@ def reslice_dat(dat, affine, dim_out, interpolation='linear', bound='zero', extr
     return dat[0, 0, ...]
 
 
-def reslice2world(pth, vx=None, prefix='rw_', device='cpu', write=True, interpolation='linear', bound='zero'):
+def reslice2world(img, vx=None, prefix='rw_', device='cpu',
+                  write=True, interpolation='linear', bound='zero'):
     """Reslice image data to world field of view.
 
     Parameters
     ----------
-    pth : str
+    img : str
         Path to nibabel compatible file.
+          (tensor_like, tensor_like)
+        Image data and affine matrix.
 
     vx : int or tuple[int], default=None
         Voxel size of resliced image. If None, uses same as input.
@@ -324,7 +430,7 @@ def reslice2world(pth, vx=None, prefix='rw_', device='cpu', write=True, interpol
         PyTorch device type.
 
     write : bool, default=True
-        Write resliced image to disk.
+        Write resliced image to disk (only if input was given as nibabel path).
 
     interpolation : str, default='linear'
         Interpolation order.
@@ -335,7 +441,7 @@ def reslice2world(pth, vx=None, prefix='rw_', device='cpu', write=True, interpol
     Returns
     -------
     pth_out : str
-        Path to resliced image.
+        Path to resliced image (only if input was given as nibabel path).
 
     dat : (X, Y, Z), tensor_like[]
         Resliced image data.
@@ -344,10 +450,19 @@ def reslice2world(pth, vx=None, prefix='rw_', device='cpu', write=True, interpol
         Affine transformation of resliced image.
 
     """
-    # Read file
-    img = nib.load(pth)
-    dim_in = img.shape
-    M_in = torch.from_numpy(img.affine).type(torch.float64)
+    if isinstance(img, str):
+        # Read file
+        img = nib.load(img)
+        dat = torch.tensor(img.get_fdata(), device=device, dtype=torch.float32)
+        M_in = torch.from_numpy(img.affine).type(torch.float64)
+        pth_out = pth  # Image out same as input
+    else:
+        # Image given as tensors
+        dat = img[0]
+        M_in = img[1].type(torch.float64)
+        pth_out = None
+        write = False
+    dim_in = dat.shape
     # Get output voxel size
     if vx is not None:
         if not isinstance(vx, tuple):
@@ -355,9 +470,8 @@ def reslice2world(pth, vx=None, prefix='rw_', device='cpu', write=True, interpol
         vx_out = torch.tensor(vx_out, dtype=torch.float64)
     else:
         vx_out = voxel_size(M_in)
-
     # Get corners
-    c = _get_corners(dim_in)
+    c = get_corners(dim_in).to(device)
     c = c.t()
     # Corners in world space
     c_world = M_in[:3, :4].mm(c)
@@ -367,26 +481,73 @@ def reslice2world(pth, vx=None, prefix='rw_', device='cpu', write=True, interpol
     mn = c_world.min(dim=1)[0].round()
     # Compute output affine
     M_out = matrix(mn).mm(
-        torch.diag(torch.cat((vx_out, torch.ones(1)))).mm(matrix(-1*torch.ones(3, dtype=torch.float64))))
+        torch.diag(torch.cat((vx_out, torch.ones(1, dtype=torch.float64, device=device)))).mm(matrix(-1*torch.ones(3, dtype=torch.float64, device=device))))
     # Comput output image dimensions
-    dim_out = M_out.inverse().mm(torch.cat((mx, torch.ones(1)))[:, None]).ceil()
+    dim_out = M_out.inverse().mm(torch.cat((mx, torch.ones(1, dtype=torch.float64, device=device)))[:, None]).ceil()
     dim_out = dim_out[:3].squeeze()
     dim_out = dim_out.int().tolist()
-    I = torch.diag(torch.ones(4, dtype=torch.float64))
+    I = torch.diag(torch.ones(4, dtype=torch.float64, device=device))
     I[0, 0] = -I[0, 0]
     M_out = I.mm(M_out)
     # Compute mapping from output to input
     M = M_out.solve(M_in)[0]
     # Reslice image data
-    dat = torch.tensor(img.get_fdata(), device=device)
-    dat = reslice_dat(dat[None, None, ...], M.to(device), dim_out, interpolation=interpolation, bound=bound)
-
-    pth_out = pth  # Image out same as input
+    dat = reslice_dat(dat[None, None, ...],
+        M.type(dat.dtype), dim_out, interpolation=interpolation, bound=bound)
     if write:
         # Write resliced image
         pth_out = write_img(pth, dat, M_out, prefix=prefix)
 
     return pth_out, dat, M_out
+
+
+def subvol(dat, mat, bb):
+    """Extract a sub-volume.
+
+    Parameters
+    ----------
+    dat : (X0, Y0, Z0) tensorlike
+        Image volume.
+    mat : (4, 4) tensorlike
+        Image affine matrix.
+    bb : (2, 3) tensorlike
+        Bounding box.
+
+    Returns
+    ----------
+    dat : (X1, Y1, Z1) tensorlike
+        Image sub-volume.
+    mat : (4, 4) tensorlike
+        Sub-volume affine matrix.
+    dim : (3, ) tuple
+        Sub-volume dimensions.
+
+    """
+    # show_slices(dat, fig_num=1)  # For debugging
+    device = dat.device
+    dtype = dat.dtype
+    mat = mat.type(dtype)
+    bb = bb.type(dtype)
+    # Sanity check
+    bb = bb.round()
+    bb = bb.sort(dim=0)[0]
+    bb[0, ...] = torch.max(bb[0, ...],
+        torch.ones(3, device=device, dtype=dtype))
+    bb[1, ...] = torch.min(bb[1, ...],
+        torch.tensor(dat.shape, device=device, dtype=dtype))
+    # Output dimensions
+    dim = bb[1, ...] - bb[0, ...] + 1
+    dim = dim.cpu().int().tolist()
+    # Bounding-box affine
+    mat_bb = matrix(bb[0, ...] - 1)
+    # Output data
+    dat = reslice_dat(dat[None, None, ...], mat_bb, dim,
+        interpolation='nearest', bound='zero', extrapolate=False)
+    # Output affine
+    mat = mat.mm(mat_bb)
+    # show_slices(dat, fig_num=2)  # For debugging
+
+    return dat, mat, dim
 
 
 def write_img(pth, dat=None, affine=None, prefix='', dir_out=None):
@@ -445,42 +606,3 @@ def write_img(pth, dat=None, affine=None, prefix='', dir_out=None):
 
     return pth_out
 
-
-def _get_corners(*args):
-    """Get eight corners of image volume.
-
-    Signature
-    ---------
-    _get_corners(pth)
-    _get_corners(dim)
-
-    Parameters
-    ----------
-    pth : str
-        Path to nibabel compatible file.
-
-    dim : (3,), list or tuple
-        Image dimensions.
-
-    Returns
-    -------
-    c : (8, 4), tensor_like[torch.float64]
-        Corners of volume.
-
-    """
-    if isinstance(args[0], str):
-        img = nib.load(args[0])
-        dim = img.shape
-    else:
-        dim = args[0]
-    # Get corners
-    c = torch.tensor([[     1,      1,      1, 1],
-                      [     1,      1, dim[2], 1],
-                      [     1, dim[1],      1, 1],
-                      [     1, dim[1], dim[2], 1],
-                      [dim[0],      1,      1, 1],
-                      [dim[0],      1, dim[2], 1],
-                      [dim[0], dim[1],      1, 1],
-                      [dim[0], dim[1], dim[2], 1]], dtype=torch.float64)
-
-    return c
