@@ -30,6 +30,10 @@ def as_tensor(input, dtype=None, device=None):
         Output tensor.
 
     """
+    # TODO: if torch >= 1.6, use` torch.as_tensor`
+    #   I have to clean uses of `utils.as_tensor` first because the
+    #   order of arguments is a bit different (I think it is device then
+    #   dtype in torch)
     def _stack(x, dtype, device):
         if torch.is_tensor(x):
             return x.to(device if device is not None else x.device,
