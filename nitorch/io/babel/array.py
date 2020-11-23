@@ -294,6 +294,8 @@ class BabelArray(MappedArray):
         # load sub-array
         if slicer is None or all(is_fullslice(slicer, self._shape)):
             dat = self._read_data_raw_full(fileobj, mmap=mmap)
+            if slicer is not None:
+                dat = dat[slicer]
         else:
             dat = self._read_data_raw_partial(slicer, fileobj)
 
@@ -556,7 +558,7 @@ class BabelArray(MappedArray):
         # build header
         if isinstance(like, BabelArray):
             # defer metadata conversion to nibabel
-            header = format.header_class(like._image.header)
+            header = format.header_class.from_header(like._image.header)
         else:
             header = format.header_class()
             if like is not None:
@@ -565,7 +567,12 @@ class BabelArray(MappedArray):
                 like_metadata.update(metadata)
                 metadata = like_metadata
         header = metadata_to_header(header, metadata)
-
+        slope, inter = header.get_slope_inter()
+        if slope is None:
+            slope = 1
+        if inter is None:
+            inter = 0
+        header.set_slope_inter(slope, inter)
         # check endianness
         disk_byteorder = header.endianness
         data_byteorder = dtype.byteorder
@@ -602,7 +609,7 @@ class BabelArray(MappedArray):
         fmap_header = file_map.get('header', file_map.get('image'))
         fmap_image = file_map.get('image')
         fmap_footer = file_map.get('footer', file_map.get('image'))
-        fhdr = fmap_header.get_prepare_fileobj('w')
+        fhdr = fmap_header.get_prepare_fileobj('wb')
         if hasattr(header, 'writehdr_to'):
             header.writehdr_to(fhdr)
         elif hasattr(header, 'write_to'):
@@ -610,14 +617,14 @@ class BabelArray(MappedArray):
         if fmap_image == fmap_header:
             fimg = fhdr
         else:
-            fimg = fmap_image.get_prepare_fileobj('w')
+            fimg = fmap_image.get_prepare_fileobj('wb')
         array_to_file(dat, fimg, dtype,
                       offset=header.get_data_offset(),
                       order=image.ImageArrayProxy.order)
         if fmap_image == fmap_footer:
             fftr = fimg
         else:
-            fftr = fmap_footer.get_prepare_fileobj('w')
+            fftr = fmap_footer.get_prepare_fileobj('wb')
         if hasattr(header, 'writeftr_to'):
             header.writeftr_to(fftr)
 
