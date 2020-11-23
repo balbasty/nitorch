@@ -294,6 +294,8 @@ class BabelArray(MappedArray):
         # load sub-array
         if slicer is None or all(is_fullslice(slicer, self._shape)):
             dat = self._read_data_raw_full(fileobj, mmap=mmap)
+            if slicer is not None:
+                dat = dat[slicer]
         else:
             dat = self._read_data_raw_partial(slicer, fileobj)
 
@@ -436,7 +438,7 @@ class BabelArray(MappedArray):
         # --- read native data ---
         slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
         with self.fileobj('image', 'r') as f:
-            dat = self._read_data_raw(slicer, fileobj=f)
+            dat = self._read_data_raw(slicer, fileobj=f
         dat = dat.transpose(perm)[newdim]
         ininfo = cast_dtype.info(self.dtype)
 
