@@ -415,6 +415,8 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
     contraction in the orthogonal (diagonal) direction. It is a bit
     harder to draw in ascii, but it can also be seen as a horizontal
     shear followed by a vertical shear.
+    The 'S' basis is orthogonal to the 'R' basis, but the 'SC' basis is
+    not.
 
     Parameters
     ----------
@@ -505,6 +507,7 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
 
     elif mode == 'I':
         basis = torch.eye(dim+1, dtype=dtype, device=device)[None, ...]
+        basis /= torch.sqrt(utils.as_tensor(dim, basis.dtype, device))
         basis[:, dim, dim] = 0
 
     elif mode == 'R':

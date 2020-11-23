@@ -5,6 +5,7 @@ from . import utils
 
 # Expose from private implementation
 from ._linalg_expm import expm, _expm
+from ._linalg_logm import logm
 
 
 def meanm(mats, max_iter=1024, tol=1e-20):
@@ -69,16 +70,6 @@ def meanm(mats, max_iter=1024, tol=1e-20):
             break
 
     return mean_mat
-
-
-def logm(*args, **kwargs):
-    # TODO:
-    #   we want a differentiable matrix logarithm.
-    #   I have started working on this, but it cannot be implemented in
-    #   pure python if we want it to work on batched matrices.
-    #   In the meantime, we should use scipy's implementation (which
-    #   does not accept batched matrices either) with a (parallel?) loop
-    raise NotImplementedError
 
 
 def lmdiv(a, b, method='lu', rcond=1e-15, out=None):
@@ -238,3 +229,66 @@ def matvec(mat, vec, out=None):
         out = out[..., 0]
 
     return mv
+
+
+def mdot(a, b):
+    """Compute the Frobenius inner product of two matrices
+
+    Parameters
+    ----------
+    a : (..., N, M) tensor
+        Left matrix
+    b : (..., N, M) tensor
+        Rightmatrix
+
+    Returns
+    -------
+    dot : (...) tensor
+        Matrix inner product
+
+    References
+    ----------
+    ..[1] https://en.wikipedia.org/wiki/Frobenius_inner_product
+
+    """
+    a = torch.as_tensor(a)
+    b = torch.as_tensor(b)
+    mm = torch.matmul(a.conj().transpose(-1, -2), b)
+    if a.dim() == b.dim() == 2:
+        return mm.trace()
+    else:
+        return mm.diagonal(0, -1, -2).sum(dim=-1)
+
+
+def is_orthonormal(basis, return_matrix=False):
+    """Check that a basis is an orthonormal basis.
+
+    Parameters
+    ----------
+    basis : (F, N, [M])
+        A basis of a vector or matrix space.
+        `F` is the number of elements in the basis.
+    return_matrix : bool, default=False
+        If True, return the matrix of all pairs of inner products
+        between elements if the basis
+
+    Returns
+    -------
+    check : bool
+        True if the basis is orthonormal
+    matrix : (F, F) tensor, if `return_matrix is True`
+        Matrix of all pairs of inner products
+
+    """
+    basis = torch.as_tensor(basis)
+    info = dict(dtype=basis.dtype, device=basis.device)
+    F = basis.shape[0]
+    dot = torch.dot if basis.dim() == 2 else mdot
+    mat = basis.new_zeros(F, F)
+    for i in range(F):
+        mat[i, i] = dot(basis[i], basis[i])
+        for j in range(i+1, F):
+            mat[i, j] = dot(basis[i], basis[j])
+            mat[j, i] = mat[i, j].conj()
+    check = torch.allclose(mat, torch.eye(F, **info))
+    return (check, mat) if return_matrix else check
