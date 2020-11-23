@@ -531,6 +531,8 @@ class BabelArray(MappedArray):
                 dtype = like.dtype
             if dtype is None:
                 dtype = dat.dtype
+            if not hasattr(dtype, 'byteorder'):
+                dtype = cast_dtype.info(dtype)['numpy']
             return dtype
         dtype = guess_dtype()
 
@@ -598,7 +600,7 @@ class BabelArray(MappedArray):
         dat = nputils.cast(dat, dtype, casting)
 
         # set dtype / shape
-        header.set_data_dtype(dtype)
+        header.set_data_dtype(dat.dtype)
         header.set_data_shape(dat.shape)
 
         # create image object
