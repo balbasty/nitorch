@@ -114,7 +114,7 @@ class CategoricalLoss(Loss):
         implicit = overridden.get('implicit', self.implicit)
 
         prior = torch.as_tensor(prior)
-        obs = torch.as_tensor(obs, prior.device)
+        obs = torch.as_tensor(obs, device=prior.device)
 
         # take log if needed
         if log:
@@ -239,7 +239,7 @@ class DiceLoss(Loss):
         one_hot_map = overridden.get('one_hot_map', self.one_hot_map)
 
         predicted = torch.as_tensor(predicted)
-        reference = torch.as_tensor(reference, predicted.device)
+        reference = torch.as_tensor(reference, device=predicted.device)
 
         # if only one predicted class -> must be implicit
         implicit = implicit or (predicted.shape[1] == 1)
