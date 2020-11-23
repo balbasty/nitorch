@@ -294,6 +294,8 @@ class BabelArray(MappedArray):
         # load sub-array
         if slicer is None or all(is_fullslice(slicer, self._shape)):
             dat = self._read_data_raw_full(fileobj, mmap=mmap)
+            is slicer is not None:
+                dat = dat[slicer]
         else:
             dat = self._read_data_raw_partial(slicer, fileobj)
 
