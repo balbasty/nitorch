@@ -1180,7 +1180,8 @@ def affine_make_square(affine):
     if affine.shape[-1] != affine.shape[-2]:
         bottom_row = torch.cat((torch.zeros(ndims, device=device, dtype=dtype),
                                 torch.ones(1, device=device, dtype=dtype)), dim=0)
-        bottom_row = utils.unsqueeze(bottom_row, 0, ndim=affine.dim()-1)
+        bottom_row = bottom_row.unsqueeze(0)
+        bottom_row = bottom_row.expand(affine.shape[:-2] + bottom_row.shape)
         affine = torch.cat((affine, bottom_row), dim=-2)
     return affine
 
@@ -1233,7 +1234,8 @@ def affine_make_homogeneous(affine, sym=False, force=False):
         ndims_in = affine.shape[-1] - 1
         bottom_row = torch.cat((torch.zeros(ndims_in, **info),
                                 torch.ones(1, **info)), dim=0)
-        bottom_row = utils.unsqueeze(bottom_row, 0, ndim=affine.dim()-1)
+        bottom_row = bottom_row.unsqueeze(0)
+        bottom_row = bottom_row.expand(affine.shape[:-2] + bottom_row.shape)
         affine = torch.cat((affine, bottom_row), dim=-2)
     return as_homogeneous(affine)
 
