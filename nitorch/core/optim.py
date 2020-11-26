@@ -202,7 +202,7 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
     fig = fig_ax[0]
     ax = fig_ax[1]
 
-    vals = vals.cpu()  # To CPU
+    vals = vals.detach().cpu()  # To CPU
 
     ax[0].clear()
     x = torch.arange(0, len(vals)) + 1

@@ -40,7 +40,7 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
     if metadata.get('affine', None) is not None:
         affine = metadata['affine']
         if torch.is_tensor(affine):
-            affine = affine.detach()
+            affine = affine.detach().cpu()
         affine = np.asanyarray(affine)
         if isinstance(header, MGHHeader):
             if shape is None:
@@ -50,7 +50,6 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
                 raise ValueError('Expected a (3, 4) or (4, 4) affine matrix. '
                                  'Got {}'.format(affine.shape))
             else:
-                affine = np.asanyarray(affine)
                 vx = voxel_size(affine)
                 Mdc = affine[:3, :3] / vx
                 c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
