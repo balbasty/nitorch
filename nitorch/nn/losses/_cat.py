@@ -49,9 +49,6 @@ class CategoricalLoss(Loss):
     This loss loosely corresponds to the categorical cross-entropy loss.
     In this loss, we accept one-hot-encoded "ground truth" on top of
     hard labels.
-    Note that no normalization is performed here. It is assumed that a
-    softmax or log-softmax has already been applied to the prior (and
-    eventually to the observation, if one-hot encoded).
 
     """
 
@@ -61,11 +58,17 @@ class CategoricalLoss(Loss):
 
         Parameters
         ----------
-        one_hot_map : list[int] or callable, optional
-            Mapping from one-hot to hard index.
-            By default: identity mapping.
+        one_hot_map : list[int or list[int] or None], optional
+            Mapping from one-hot to hard index. Default: identity mapping.
+            Each index of the list corresponds to a soft label.
+            Each soft label can be mapped to a hard label or a list of
+            hard labels. Up to one `None` can be used, in which case the
+            corresponding soft label will be considered a background class
+            and will be mapped to all remaining labels. If `len(one_hot_map)`
+            has one less element than the number of soft labels, such a
+            background class will be appended to the right.
         log : bool, default=True
-            If True, priors are log-probabilities.
+            If True, priors are log-probabilities (pre-softmax).
             Else, they are probabilities and we take their log in the
             forward pass.
         implicit : bool, default=False

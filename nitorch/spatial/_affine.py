@@ -415,6 +415,8 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
     contraction in the orthogonal (diagonal) direction. It is a bit
     harder to draw in ascii, but it can also be seen as a horizontal
     shear followed by a vertical shear.
+    The 'S' basis is orthogonal to the 'R' basis, but the 'SC' basis is
+    not.
 
     Parameters
     ----------
@@ -505,6 +507,7 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
 
     elif mode == 'I':
         basis = torch.eye(dim+1, dtype=dtype, device=device)[None, ...]
+        basis /= torch.sqrt(utils.as_tensor(dim, basis.dtype, device))
         basis[:, dim, dim] = 0
 
     elif mode == 'R':
@@ -1177,7 +1180,8 @@ def affine_make_square(affine):
     if affine.shape[-1] != affine.shape[-2]:
         bottom_row = torch.cat((torch.zeros(ndims, device=device, dtype=dtype),
                                 torch.ones(1, device=device, dtype=dtype)), dim=0)
-        bottom_row = utils.unsqueeze(bottom_row, 0, ndim=affine.dim()-1)
+        bottom_row = bottom_row.unsqueeze(0)
+        bottom_row = bottom_row.expand(affine.shape[:-2] + bottom_row.shape)
         affine = torch.cat((affine, bottom_row), dim=-2)
     return affine
 
@@ -1230,7 +1234,8 @@ def affine_make_homogeneous(affine, sym=False, force=False):
         ndims_in = affine.shape[-1] - 1
         bottom_row = torch.cat((torch.zeros(ndims_in, **info),
                                 torch.ones(1, **info)), dim=0)
-        bottom_row = utils.unsqueeze(bottom_row, 0, ndim=affine.dim()-1)
+        bottom_row = bottom_row.unsqueeze(0)
+        bottom_row = bottom_row.expand(affine.shape[:-2] + bottom_row.shape)
         affine = torch.cat((affine, bottom_row), dim=-2)
     return as_homogeneous(affine)
 
