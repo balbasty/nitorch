@@ -1,11 +1,5 @@
 """Module for affine image registration.
 
-TODO
-* Use Bayesian optimisation
-* Work on 2D as well
-* Set 4th dimension to 1
-* jitter correct?
-
 """
 
 
@@ -158,7 +152,7 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
 
 
 def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
-    """Affinely align brain image to some atlas space.
+    """Affinely align image to some atlas space.
 
     Parameters
     ----------
@@ -167,7 +161,7 @@ def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
     mat : [N, ...], tensor_like
         List of affine matrices.
     rigid = bool, default=True
-        Do rigid alignment to MNI. If False, does rigid+isotropic scaling.
+        Do rigid alignment, else does rigid+isotropic scaling.
     pth_atlas : str, optional
         Path to atlas image to match to. Uses Brain T1w atlas by default.
 

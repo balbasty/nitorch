@@ -184,7 +184,7 @@ def affine_align(img, write=None, nam='', odir='', prefix='aa_',
 
 def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='ma_',
                 device='cpu', pth_atlas=None):
-    """Affinely align brain image to some atlas space.
+    """Affinely align an image to some atlas space.
 
     Parameters
     ----------
@@ -193,7 +193,7 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='ma_',
         where each element contains two tensors: the image data (X, Y, Z)
         and the image affine matrix (4, 4).
     rigid = bool, default=True
-        Do rigid alignment to MNI. If False, does rigid+isotropic scaling.
+        Do rigid alignment, else does rigid+isotropic scaling.
     write : str, default=None
         Write preprocessed data to disk.
         * 'reslice' : writes image data resliced to fixed image.
