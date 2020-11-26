@@ -15,9 +15,50 @@ dir_nitorch_data = os.path.join(pathlib.Path(__file__).parent.parent.parent.abso
 # nitorch data dictionary.
 # Keys are data names, values are list of FigShare URL and filename.
 nitorch_data = {}
-nitorch_data['atlas_t1'] = ['https://ndownloader.figshare.com/files/25438340', 'mb_mni_avg218T1.nii.gz']
-nitorch_data['atlas_t2'] = ['https://ndownloader.figshare.com/files/25438343', 'mb_mni_avg218T2.nii.gz']
-nitorch_data['atlas_pd'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_mni_avg218PD.nii.gz']
+nitorch_data['atlas_t1'] = ['https://ndownloader.figshare.com/files/25595000', 'mb_avg218T1.nii.gz']
+nitorch_data['atlas_t2'] = ['https://ndownloader.figshare.com/files/25595003', 'mb_avg218T2.nii.gz']
+nitorch_data['atlas_pd'] = ['https://ndownloader.figshare.com/files/25594997', 'mb_avg218PD.nii.gz']
+nitorch_data['atlas_t1_mni'] = ['https://ndownloader.figshare.com/files/25438340', 'mb_mni_avg218T1.nii.gz']
+nitorch_data['atlas_t2_mni'] = ['https://ndownloader.figshare.com/files/25438343', 'mb_mni_avg218T2.nii.gz']
+nitorch_data['atlas_pd_mni'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_mni_avg218PD.nii.gz']
+
+def file_mod(s, nam='', prefix='', suffix='', odir='', ext=''):
+    """Modify a file path.
+
+    Parameters
+    ----------
+    s : str
+        File path.
+    nam : str, default=''
+        Filename, if empty string, unchanged.
+    prefix : str, default=''
+        Filename prefix.
+    suffix : str, default=''
+        Filename suffix.
+    odir : str, default=''
+        Output directory, if empty string, unchanged.
+    ext : str, default=''
+        Extension, if empty string, unchanged.
+
+    Returns
+    ----------
+    s : str
+        Modified file path.
+
+    """
+    odir0, nam0 = os.path.split(s)
+    parts = nam0.split('.')
+    nam0 = parts[0]
+    ext0 = '.' + '.'.join(parts[1:])
+    if not odir:
+        odir = odir0
+    odir = os.path.abspath(odir)  # Get absolute path
+    if not nam:
+        nam = nam0
+    if not ext:
+        ext = ext0
+
+    return os.path.join(odir, prefix + nam + suffix + ext)
 
 
 def get_pckg_data(name):
@@ -27,9 +68,12 @@ def get_pckg_data(name):
     ----------
     name : str
         Name of nitorch data, available are:
-        * atlas_t1: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_t2: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_pd: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
+        * atlas_t1: MRI T1w intensity atlas, 1 mm resolution.
+        * atlas_t2: MRI T2w intensity atlas, 1 mm resolution.
+        * atlas_pd: MRI PDw intensity atlas, 1 mm resolution.
+        * atlas_t1_mni: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
+        * atlas_t2_mni: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
+        * atlas_pd_mni: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
 
     Returns
     ----------
@@ -46,14 +90,6 @@ def get_pckg_data(name):
 
 def _download_pckg_data(name):
     '''Download nitorch data.
-
-    Parameters
-    ----------
-    name : str
-        Name of nitorch data, available are:
-        * atlas_t1: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_t2: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_pd: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
 
     '''
     # Make data directory, if not already exists

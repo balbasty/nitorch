@@ -456,6 +456,7 @@ class BabelArray(MappedArray):
         # --- random sample ---
         # uniform noise in the uncertainty interval
         if rand and not (scale == 1 and outinfo['is_integer']):
+            np.random.seed(0)
             noise = np.random.rand(*dat.shape)
             if scale != 1:
                 noise *= scale

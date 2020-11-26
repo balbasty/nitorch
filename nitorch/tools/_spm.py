@@ -1,17 +1,9 @@
-# -*- coding: utf-8 -*-
-""" Various SPM functions (and bit of extras). SPM functions in this file include:
-    . def2sparse (spm_def2sparse, 'Longitudinal' toolbox)
-    . dexpm (spm_dexpm, 'Longitudinal' toolbox)
-    . imatrix (spm_imatrix)
-    . matrix (spm_matrix)
-    . mean_matrix (spm_meanm, 'Longitudinal' toolbox)
-    . noise_estimate (modified version of spm_noise_estimate, 'Longitudinal' toolbox)
-
-    Mostly authored by John Ashburner as part of the SPM software:
+""" Functions simillar of inspired by the SPM package:
         fil.ion.ucl.ac.uk/spm/software/spm12
-    SPM is copyright, distributed under the GNU General Public Licence, hence this code is too.
-"""
+    SPM is copyright, distributed under the GNU General Public 
+    Licence, hence this code is too.
 
+"""
 
 import math
 import nibabel as nib
@@ -21,40 +13,7 @@ from ..core.math import expm, logm
 from ..vb.mixtures import GMM
 from ..vb.mixtures import RMM
 from ..spatial import voxel_size, im_gradient
-
-
-__all__ = ['affine', 'affine_basis', 'def2sparse', 'dexpm', 'estimate_fwhm', 'identity',
-           'imatrix', 'matrix', 'mean_matrix', 'mean_space', 'noise_estimate', 'max_bb']
-
-
-def affine(dm, mat, dtype=torch.float32, device='cpu', jitter=False):
-    """ Generate an affine warp on a lattice defined by dm and mat.
-
-    Args:
-        dm (torch.Size): Image dimensions (X, Y, Z).
-        mat (torch.Tensor): Affine transform.
-        dtype (torch.dtype, optional): Defaults to torch.float32.
-        device (string, optional): Defaults to 'cpu'.
-        jitter (bool, optional): Add random jittering, defaults to False.
-
-    Returns:
-        a (torch.Tensor): Affine warp (1, X, Y, Z, 3).
-
-    """
-    mat = mat.type(dtype)
-    a = identity(dm, dtype=dtype, device=device, jitter=jitter)
-    if len(dm) > 2:  # 3D
-        a = torch.reshape(a, (dm[0]*dm[1]*dm[2], 3))
-        a = torch.matmul(a, torch.t(mat[:3, :3])) + torch.t(mat[:3, 3])
-        a = torch.reshape(a, (dm[0], dm[1], dm[2], 3))
-    else:  # 2D
-        a = torch.reshape(a, (dm[0] * dm[1], 2))
-        a = torch.matmul(a, torch.t(mat[:2, :2])) + torch.t(mat[:2, 2])
-        a = torch.reshape(a, (dm[0], dm[1], 2))
-    # if dm[0] == 1:
-    #     a[:, :, :, 0] = 0
-    a = a[None, ...]
-    return a
+from ..core.constants import pi
 
 
 def affine_basis(basis='SE', dim=3, dtype=torch.float64, device='cpu'):
@@ -315,53 +274,6 @@ def def2sparse(phi, dm_in, nn=False):
     return Phi
 
 
-def dexpm(A, dA=None, max_iter=10000, diff=False):
-    """ Differentiate a matrix exponential.
-
-    Args:
-        A (torch.tensor): Lie algebra (num_basis,).
-        dA (torch.tensor, optional): Basis function to differentiate
-            with respect to (4, 4, num_basis). Defaults to None.
-        max_iter (int, optional): Max number of iterations, defaults to 10,000.
-        diff (bool, optional): Compute derivatives, defaults to False.
-
-    Returns:
-        E (torch.tensor): expm(A) (4, 4).
-        dE (torch.tensor): Derivative of expm(A) (4, 4, num_basis).
-
-    Authors:
-        John Ashburner, as part of the SPM12 software.
-
-    """
-    device = A.device
-    dtype = A.dtype
-    num_basis = A.numel()
-    if dA is None:
-        dA = torch.zeros(num_basis, num_basis, device=device, dtype=dtype)
-        dA = dA[..., None]
-    else:
-        p = A.flatten()
-        A = torch.zeros(4, 4, device=device, dtype=dtype)
-        for m in range(dA.shape[2]):
-            A += p[m]*dA[..., m]
-    An = A.clone()
-    E = torch.eye(4, device=device, dtype=dtype) + A
-
-    dAn = dA.clone()
-    dE = dA.clone()
-    for n_iter in range(2, max_iter):
-        if diff:
-            for m in range(dA.shape[2]):
-                dAn[..., m] = (dAn[..., m].mm(A) + An.mm(dA[..., m]))/n_iter
-            dE += dAn
-        An = An.mm(A)/n_iter
-        E += An
-        if torch.sum(An**2) < A.numel()*1e-32:
-            break
-
-    return E, dE
-
-
 def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf'), sum_dtype=torch.float64):
     """ Estimates full width at half maximum (FWHM) and noise standard
         deviation (sd) of a 2D or 3D image.
@@ -434,39 +346,39 @@ def estimate_fwhm(x, vx=None, verbose=0, mn=-float('inf'), mx=float('inf'), sum_
     return fwhm, sd
 
 
-def identity(dm, dtype=torch.float32, device='cpu', jitter=False, step=1):
-    """ Generate the identity warp on a lattice defined by dm.
-
-    Args:
-        dm (torch.Size): Defines the size of the output lattice (X, Y, Z).
-        dtype (torch.dtype, optional): Defaults to torch.float32.
-        device (string, optional): Defaults to 'cpu'.
-        jitter (bool, optional): Add random jittering, defaults to False.
-        step (int or tuple[int], optional): Gap between each pair of adjacent points, defaults to 1.
-
-    Returns:
-        i (torch.Tensor): Identity warp (X, Y, Z, 3).
-
-    """
-    if not isinstance(step, tuple) and not isinstance(step, list):
-        step = (step,) * 3
-    if len(dm) > 2:  # 3D
-        i = torch.zeros((math.ceil(dm[0]/step[0]), math.ceil(dm[1]/step[1]), math.ceil(dm[2]/step[2]), 3),
-                        dtype=dtype, device=device)
-        i[:, :, :, 0], i[:, :, :, 1], i[:, :, :, 2] = \
-            torch.meshgrid([torch.arange(0, dm[0], step=step[0], dtype=dtype, device=device),
-                            torch.arange(0, dm[1], step=step[1], dtype=dtype, device=device),
-                            torch.arange(0, dm[2], step=step[2], dtype=dtype, device=device)])
-    else:  # 2D
-        i = torch.zeros((math.ceil(dm[0]/step[0]), math.ceil(dm[1]/step[1]), 2),
-                        dtype=dtype, device=device)
-        i[:, :, 0], i[:, :, 1] = \
-            torch.meshgrid([torch.arange(0, dm[0], step=step[0], dtype=dtype, device=device),
-                            torch.arange(0, dm[1], step=step[1], dtype=dtype, device=device)])
-    if jitter:
-        torch.manual_seed(0)
-        i += torch.rand_like(i)
-    return i
+# def identity(dm, dtype=torch.float32, device='cpu', jitter=False, step=1):
+#     """ Generate the identity warp on a lattice defined by dm.
+#
+#     Args:
+#         dm (torch.Size): Defines the size of the output lattice (X, Y, Z).
+#         dtype (torch.dtype, optional): Defaults to torch.float32.
+#         device (string, optional): Defaults to 'cpu'.
+#         jitter (bool, optional): Add random jittering, defaults to False.
+#         step (int or tuple[int], optional): Gap between each pair of adjacent points, defaults to 1.
+#
+#     Returns:
+#         i (torch.Tensor): Identity warp (X, Y, Z, 3).
+#
+#     """
+#     if not isinstance(step, tuple) and not isinstance(step, list):
+#         step = (step,) * 3
+#     if len(dm) > 2:  # 3D
+#         i = torch.zeros((math.ceil(dm[0]/step[0]), math.ceil(dm[1]/step[1]), math.ceil(dm[2]/step[2]), 3),
+#                         dtype=dtype, device=device)
+#         i[:, :, :, 0], i[:, :, :, 1], i[:, :, :, 2] = \
+#             torch.meshgrid([torch.arange(0, dm[0], step=step[0], dtype=dtype, device=device),
+#                             torch.arange(0, dm[1], step=step[1], dtype=dtype, device=device),
+#                             torch.arange(0, dm[2], step=step[2], dtype=dtype, device=device)])
+#     else:  # 2D
+#         i = torch.zeros((math.ceil(dm[0]/step[0]), math.ceil(dm[1]/step[1]), 2),
+#                         dtype=dtype, device=device)
+#         i[:, :, 0], i[:, :, 1] = \
+#             torch.meshgrid([torch.arange(0, dm[0], step=step[0], dtype=dtype, device=device),
+#                             torch.arange(0, dm[1], step=step[1], dtype=dtype, device=device)])
+#     if jitter:
+#         torch.manual_seed(0)
+#         i += torch.rand_like(i)
+#     return i
 
 
 def imatrix(M):
@@ -485,7 +397,7 @@ def imatrix(M):
     device = M.device
     dtype = M.dtype
     one = torch.tensor(1.0, device=device, dtype=dtype)
-    pi = torch.tensor(math.pi, device=device, dtype=dtype)
+    pi = torch.tensor(pi, device=device, dtype=dtype)
     # Translations and Zooms
     R = M[:-1, :-1]
     C = torch.cholesky(R.t().mm(R))
