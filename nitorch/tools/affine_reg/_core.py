@@ -13,8 +13,8 @@ from ...plot import show_slices
 from ...core.kernels import smooth
 from ...core.utils import pad
 from ...spatial import (affine_default, grid_pull, identity_grid,
-                        im_gradient, voxel_size)
-from .._spm import (noise_estimate, max_bb)
+                        im_gradient, voxel_size, max_bb)
+from ..img_statistics import estimate_noise
 from ._costs import (_compute_cost, _costs_edge, _costs_hist)
 from ...core.constants import pi
 
@@ -41,7 +41,7 @@ def _data_loader(dat, mat, opt):
     for n in range(len(dat)):  # loop over input images
         if opt['cost_fun'] in _costs_edge:
             # Get gradient scaling values
-            _, _, mu_bg, mu_fg = noise_estimate(dat[n], show_fit=False)
+            _, _, mu_bg, mu_fg = estimate_noise(dat[n], show_fit=False)
             scl = 1.0 / torch.abs(mu_fg.float() - mu_bg.float())
             if not scl.isfinite():
                 scl = 1.0
@@ -264,14 +264,14 @@ def _get_mean_space(dat, mat):
     dtype = mat[0].dtype
     device = mat[0].device
     N = len(mat)
-    tmat = torch.zeros((4, 4, N), dtype=dtype, device=device)
-    tdim = torch.zeros((3, N), dtype=dtype, device=device)
-    for i in range(N):
-        tmat[..., i] = mat[i]
-        tdim[..., i] = torch.tensor(dat[i].shape,
+    all_mat = torch.zeros((N, 4, 4), dtype=dtype, device=device)
+    all_dim = torch.zeros((N, 3), dtype=dtype, device=device)
+    for n in range(N):
+        all_mat[n, ...] = mat[n]
+        all_dim[n, ...] = torch.tensor(dat[n].shape,
                                     dtype=dtype, device=device)
     # Compute mean-space
-    dim, mat = max_bb(tmat, tdim)
+    mat, dim = max_bb(all_mat, all_dim)
     dim = tuple(dim.int().tolist())
 
     return mat, dim

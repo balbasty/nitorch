@@ -5,5 +5,5 @@ from .preproc import *
 from ._preproc_fov import *
 from ._preproc_img import *
 from ._preproc_utils import *
-from ._spm import *
+from .img_statistics import *
 
