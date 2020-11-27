@@ -124,11 +124,10 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     dat = dat.double()
 
     # Mask and get min/max
-    mn = torch.min(dat)
-    dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != mn)]
-    mx = torch.max(dat)
-    mn = mn.round()
-    mx = mx.round()
+    dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != dat.min()) &
+              (dat != dat.max())]
+    mn = torch.min(dat).round()
+    mx = torch.max(dat).round()
     bins = (mx - mn).int()
     if bins < 1024:
         bins = 1024

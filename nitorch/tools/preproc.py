@@ -240,7 +240,7 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='ma_',
                             prefix=prefix)
         pth = pth[0]
 
-    return rdat[0, ...], mat_a[0, ...], pth[0]
+    return rdat[0, ...], mat_a[0, ...], pth
 
 
 def reset_origin(img, write=False, nam='', odir='', prefix='ro_',

@@ -55,7 +55,7 @@ def _atlas_crop(dat, mat_in, do_align=True, fov='full'):
     mat_mu = torch.tensor(nii.affine, dtype=torch.float64, device=device)
     dim_mu = nii.shape
     # Get atlas corners in image space
-    mat = mat_a[0, ...].mm(mat_mu).solve(mat_in)[0]
+    mat = mat_a.mm(mat_mu).solve(mat_in)[0]
     c = _get_corners_3d(dim_mu, offset).type(torch.float64).to(device)
     c = mat[:3, ...].mm(c.t())
     # Make bounding-box

@@ -39,6 +39,8 @@ def _data_loader(dat, mat, opt):
         return dat
 
     for n in range(len(dat)):  # loop over input images
+        # Mask
+        dat[n][~dat[n].isfinite()] = 0.0
         if opt['cost_fun'] in _costs_edge:
             # Get gradient scaling values
             _, _, mu_bg, mu_fg = estimate_noise(dat[n], show_fit=False)

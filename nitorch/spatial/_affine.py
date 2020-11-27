@@ -1893,7 +1893,7 @@ def max_bb(all_mat, all_dim, vx=None):
     device = all_mat.device
     if vx is None:
         vx = (1, ) * 3
-    vx = torch.tensor(vx, device=device, dtype=dtype)
+    vx = torch.as_tensor(vx, device=device, dtype=dtype)
     # Number of subjects
     N = all_mat.shape[0]
     # Get all images field of view

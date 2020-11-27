@@ -14,22 +14,24 @@ def _format_input(img, device='cpu', rand=False, cutoff=None):
     """Format preprocessing input data.
 
     """
-    was_list = True
-    if not isinstance(img, list):
+    if (not isinstance(img, list)) or \
+        (isinstance(img, list) and not isinstance(img[0], list)):
         img = [img]
     file = []
     dat = []
     mat = []
     for n in range(len(img)):
         if isinstance(img[n], str):
+            # Input are nitorch.io compatible paths
             file.append(map(img[n]))
             dat.append(file[n].fdata(dtype=torch.float32, device=device,
                                      rand=rand, cutoff=cutoff))
             mat.append(file[n].affine.to(device).type(torch.float64))
         else:
+            # Input are tensors (clone so to not modify input data)
             file.append(None)
-            dat.append(torch.tensor(img[n]).type(torch.float32))
-            mat.append(torch.tensor(img[n]).type(torch.float64))
+            dat.append(img[n][0].clone().type(torch.float32))
+            mat.append(img[n][1].clone().type(torch.float64))
 
     return dat, mat, file
 
