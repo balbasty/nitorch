@@ -12,6 +12,7 @@ import torch
 from ast import literal_eval
 from warnings import warn
 import functools
+from nitorch import core
 from nitorch.core import utils
 from nitorch.core import pyutils
 from nitorch.core import itertools
@@ -684,7 +685,7 @@ def build_affine_basis(*basis, dim=None, dtype=None, device=None):
         Basis sets.
 
     """
-    if basis and isinstance(basis[-1], int):
+    if basis and (isinstance(basis[-1], int) or basis[-1] is None):
         *basis, dim = basis
     opts = dict(dtype=dtype, device=device, dim=dim)
     bases = [_build_affine_basis(b, **opts) for b in basis]
@@ -801,9 +802,9 @@ def affine_matrix(prm, *basis, dim=None):
     # Make sure basis is a vector_like of (F, D+1, D+1) tensor_like
     if len(basis) == 0:
         basis = ['CSO']
-    if basis and isinstance(basis[-1], int):
+    if basis and (isinstance(basis[-1], int) or basis[-1] is None):
         *basis, dim = basis
-    basis = build_affine_basis(basis, dim, **info)
+    basis = build_affine_basis(*basis, dim, **info)
     basis = pyutils.make_list(basis)
 
     # Check length
@@ -980,7 +981,7 @@ def affine_matrix_classic(prm, dim=3):
     return mat
 
 
-def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
+def affine_parameters(mat, *basis, max_iter=10000, tol=None,
                       max_line_search=6):
     """Compute the parameters of an affine matrix in a basis of the algebra.
 
@@ -1002,8 +1003,9 @@ def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
     max_iter : int, default=10000
         Maximum number of Gauss-Newton iterations in the least-squares fit.
 
-    tol : float, default = 1e-16
+    tol : float, optional
         Tolerance criterion for convergence.
+        Use the data type's machine epsilon by default.
         It is based on the squared norm of the GN step divided by the
         squared norm of the input matrix.
 
@@ -1028,22 +1030,20 @@ def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
     dtype = mat.dtype
     dim = mat.shape[-1] - 1
 
-    # Format basis
-    basis, _ = build_affine_basis(basis, dim)
-    nb_basis = sum([len(b) for b in basis])
+    if tol is None:
+        tol = core.dtypes.info(dtype)['eps']
 
-    # Create layout matrix
-    # TODO: check that it works with new layout
-    if isinstance(layout, str):
-        layout = layout_matrix(layout)
+    # Format basis
+    basis = build_affine_basis(*basis, dim)
+    basis = pyutils.make_list(basis)
+    nb_basis = sum([len(b) for b in basis])
 
     def gauss_newton():
         # Predefine these values in case max_iter == 0
         n_iter = -1
         # Gauss-Newton optimisation
         prm = torch.zeros(nb_basis, dtype=dtype)
-        M = torch.eye(nb_basis, dtype=dtype)
-        M = torch.mm(M, layout)
+        M = torch.eye(dim+1, dtype=dtype)
         sos = ((M - mat) ** 2).sum()
         norm = (mat ** 2).sum()
         crit = constants.inf
@@ -1078,19 +1078,15 @@ def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
             dM = torch.cat(dMs)
             M = torch.chain_matmul(*M)
 
-            # Multiply with layout
-            M = M.mm(layout)
-            dM = dM.mm(layout)
-
             # Compute gradient/Hessian of the loss (squared residuals)
             diff = M - mat
             diff = diff.flatten()
             dM = dM.reshape((nb_basis, -1))
-            gradient = dM.mm(diff)
-            hessian = dM.mm(dM.t())
-            delta_prm = linalg.lmdiv(hessian, gradient)
+            gradient = linalg.matvec(dM, diff)
+            hessian = torch.matmul(dM, dM.t())
+            delta_prm = hessian.inverse().matmul(gradient)
 
-            crit = (delta_prm ** 2).sum() / norm
+            crit = delta_prm.square().sum() / norm
             if crit < tol:
                 break
 
@@ -1106,7 +1102,7 @@ def affine_parameters(mat, basis, layout='RAS', max_iter=10000, tol=1e-16,
                 success = False
                 for _ in range(max_line_search):
                     prm = prm0 - armijo * delta_prm
-                    M = affine_matrix(prm, basis)
+                    M = affine_matrix(prm, *basis)
                     sos = ((M - mat) ** 2).sum()
                     if sos < sos0:
                         success = True
@@ -2152,7 +2148,7 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
     shapes = torch.as_tensor(shapes, device=device).detach()
     mats = torch.as_tensor(mats, device=device).detach()
     info = dict(dtype=mats.dtype, device=mats.device)
-    dim = mats.shape[0] - 1
+    dim = mats.shape[-1] - 1
 
     # Compute mean affine
     mat = affine_mean(mats, shapes)
@@ -2162,7 +2158,7 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
     if layout is None:
         all_layouts = [hashable_layout(affine_to_layout(mat)) for mat in mats]
         layout = pyutils.majority(all_layouts)
-        print('Output layout: {}'.format(volume_layout_to_name(layout)))
+        # print('Output layout: {}'.format(volume_layout_to_name(layout)))
     else:
         layout = volume_layout(layout)
 
@@ -2173,16 +2169,15 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
     # Voxel size
     if voxel_size is not None:
         vs0 = torch.as_tensor(voxel_size, **info)
-        voxel_size = voxel_size(mat)
+        voxel_size = _voxel_size(mat)
         vs0[~torch.isfinite(vs0)] = voxel_size[~torch.isfinite(vs0)]
         one = torch.ones([1], **info)
         mat = mat * torch.diag(torch.cat((vs0 / voxel_size, one)))
-    voxel_size = _voxel_size(mat)
 
     # Field of view
     if fov == 'bb':
-        mn = torch.full(dim, constants.inf, **info)
-        mx = torch.full(dim, constants.ninf, **info)
+        mn = torch.full([dim], constants.inf, **info)
+        mx = torch.full([dim], constants.ninf, **info)
         for a_mat, a_shape in zip(mats, shapes):
             corners = itertools.product([False, True], r=dim)
             corners = [[a_shape[i] if top else 1 for i, top in enumerate(c)] + [1]
