@@ -92,3 +92,32 @@ def cutoff(dat, cutoff, dim=None):
     else:
         dat = np.clip(dat, a_min=pct[0], a_max=pct[1])
     return dat
+
+
+def addnoise(dat, amplitude=1):
+    """
+
+    Parameters
+    ----------
+    dat : np.ndarray
+        Input array
+    amplitude : float, default=1
+        Noise amplitude
+
+    Returns
+    -------
+
+    """
+    # make sure the sampling dtype has native byte order
+    tmpdtype = dat.dtype
+    if not tmpdtype.isnative:
+        tmpdtype = tmpdtype.newbyteorder()
+
+    rng = np.random.default_rng(seed=0)
+    noise = np.empty_like(dat, dtype=tmpdtype)
+    noise = rng.random(size=dat.shape, dtype=tmpdtype, out=noise)
+    if amplitude != 1:
+        noise *= amplitude
+    dat += noise
+
+    return dat

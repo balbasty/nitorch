@@ -12,11 +12,11 @@ import torch
 from ast import literal_eval
 from warnings import warn
 import functools
-from ..core import utils
-from ..core import pyutils
-from ..core import itertools
-from ..core import linalg
-from ..core import constants
+from nitorch.core import utils
+from nitorch.core import pyutils
+from nitorch.core import itertools
+from nitorch.core import linalg
+from nitorch.core import constants
 import math
 
 
@@ -139,13 +139,20 @@ def volume_layout(*args, **kwargs):
 
     Signature
     ---------
-    volume_layout(name='RAS', device=None)
+    volume_layout(dim=3, device=None)
+    volume_layout(name, device=None)
     volume_layout(axes, device=None)
     volume_layout(index, flipped=False, device=None)
 
     Parameters
     ----------
-    name : str, default='RAS'
+    dim : int, default=3
+        Dimension of the space.
+        This version of the function always returns a directed layout
+        (identity permutation, no flips), which is equivalent to 'RAS'
+        but in any dimension.
+
+    name : str
         Permutation of axis names,  according to the neuroimaging convention:
         * 'R' for *left to Right* (index=0, flipped=False) or
           'L' for *right to Left* (index=0, flipped=True)
@@ -171,6 +178,9 @@ def volume_layout(*args, **kwargs):
         Description of the layout.
 
     """
+    def layout_from_dim(dim, device=None):
+        return volume_layout(list(range(dim)), flipped=False, device=device)
+
     def layout_from_name(name, device=None):
         return volume_layout([volume_axis(a, device) for a in name])
 
@@ -196,12 +206,16 @@ def volume_layout(*args, **kwargs):
             layout = layout_from_name(*args, **kwargs)
         else:
             args[0] = utils.as_tensor(args[0])
-            if args[0].dim() == 2:
+            if args[0].dim() == 0:
+                layout = layout_from_dim(*args, **kwargs)
+            elif args[0].dim() == 2:
                 layout = layout_from_axes(*args, **kwargs)
             else:
                 layout = layout_from_index(*args, **kwargs)
     else:
-        if 'name' in kwargs.keys():
+        if 'dim' in kwargs.keys():
+            layout = layout_from_dim(*args, **kwargs)
+        elif 'name' in kwargs.keys():
             layout = layout_from_name(*args, **kwargs)
         elif 'index' in kwargs.keys():
             layout = layout_from_index(*args, **kwargs)
@@ -216,7 +230,10 @@ def volume_layout(*args, **kwargs):
 
 
 def volume_layout_to_name(layout):
-    """Return the (neuroimaging) name of a layout. Its length must be < 3.
+    """Return the (neuroimaging) name of a layout.
+
+    Its length must be <= 3 (else, we just return the permutation and
+    flips), e.g. '[2, 3, -1, 4]'
 
     Parameters
     ----------
@@ -227,9 +244,10 @@ def volume_layout_to_name(layout):
     name : str
 
     """
+    layout = volume_layout(layout)
     if len(layout) > 3:
-        raise ValueError('Layout names are only defined up to dimension 3. '
-                         'Got {}.'.format(len(layout)))
+        layout = [('-' if bool(f) else '') + str(int(p)) for p, f in layout]
+        return '[' + ', '.join(layout) + ']'
     names = [volume_axis_to_name(axis) for axis in layout]
     return ''.join(names)
 
@@ -639,121 +657,135 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
                           affine_subbasis('S', dim, dtype=dtype, device=device)))
 
 
-def build_affine_basis(basis, dim=None):
-    """Transform an Outter/Inner Lie basis into a list of tensors.
+def build_affine_basis(*basis, dim=None, dtype=None, device=None):
+    """Transform Affine Lie bases into tensors.
+
+    Signatures
+    ----------
+    basis = build_affine_basis(basis)
+    basis1, basis2, ... = build_affine_basis(basis1, basis2, ...)
 
     Parameters
     ----------
-    basis : basis_like or list[basis_like] or list[list[basis_like]]
-        A basis_like is a str or (F, D+1, D+1) tensor_like that
-        describes a basis.
+    *basis : basis_like or sequence[basis_like]
+        A basis_like is a str or ([F], D+1, D+1) tensor_like that
+        describes a basis. If several arguments are provided, each one
+        is built independently.
     dim : int, optional
         Dimensionality. If None, infer.
+    dtype : torch.dtype, optional
+        Output data type
+    device : torch.device, optional
+        Output device
 
     Returns
     -------
-    basis : list[tensor]
-        A list of basis sets.
+    *basis : (F, D+1, D+1) tensor
+        Basis sets.
 
     """
+    if basis and isinstance(basis[-1], int):
+        *basis, dim = basis
+    opts = dict(dtype=dtype, device=device, dim=dim)
+    bases = [_build_affine_basis(b, **opts) for b in basis]
+    return bases[0] if len(bases) == 1 else tuple(bases)
 
-    if isinstance(basis, str):
-        basis = [basis]
 
-    # Guess dimension
-    if dim is None:
-        if torch.is_tensor(basis):
-            dim = basis.shape[-1] - 1
-        elif isinstance(basis, str):
-            dim = len(basis)
-        else:
-            for outer_basis in basis:
-                if torch.is_tensor(outer_basis):
-                    dim = outer_basis.shape[0] - 1
-                    break
-                elif isinstance(outer_basis, str):
-                    dim = len(outer_basis)
-                    break
-                else:
-                    for inner_basis in outer_basis:
-                        if torch.is_tensor(inner_basis):
-                            dim = inner_basis.shape[-1] - 1
-                            break
-                        elif isinstance(inner_basis, str):
-                            dim = len(inner_basis)
-                            break
-                        else:
-                            inner_basis = utils.as_tensor(inner_basis)
-                            dim = inner_basis.shape[0] - 1
-                            break
-                    break
-    if dim is None:
-        # Guess failed
-        dim = 3
+def _build_affine_basis(basis, dim=None, dtype=None, device=None):
+    """Actual implementation: only one basis set."""
 
     # Helper to convert named bases to matrices
-    def name_to_basis(name):
+    def name_to_basis(name, dim, dtype, device):
         basename = name.split('[')[0]
         if basename in affine_subbasis_choices:
-            return affine_subbasis(name, dim)
+            return affine_subbasis(name, dim, dtype=dtype, device=device)
         elif basename in affine_basis_choices:
-            return affine_basis(name, dim)
+            return affine_basis(name, dim, dtype=dtype, device=device)
         else:
             raise ValueError('Unknown basis name {}.'.format(basename))
 
-    # Convert 'named' bases to matrix bases
-    if not torch.is_tensor(basis):
-        basis = list(basis)
-        for n_outer, outer_basis in enumerate(basis):
-            if isinstance(outer_basis, str):
-                basis[n_outer] = name_to_basis(outer_basis)
-            elif not torch.is_tensor(outer_basis):
-                outer_basis = list(outer_basis)
-                for n_inner, inner_basis in enumerate(outer_basis):
-                    if isinstance(inner_basis, str):
-                        outer_basis[n_inner] = name_to_basis(inner_basis)
-                    else:
-                        outer_basis[n_inner] = utils.as_tensor(inner_basis)
-                outer_basis = torch.cat(outer_basis)
-                basis[n_outer] = outer_basis
+    # make list
+    basis = pyutils.make_list(basis)
+    built_bases = [b for b in basis if not isinstance(b, str)]
 
-    return basis, dim
+    # check dimension
+    dims = [dim] if dim else []
+    dims = dims + [b.shape[-1] - 1 for b in built_bases]
+    dims = set(dims)
+    if not dims:
+        dim = 3
+    elif len(dims) > 1:
+        raise ValueError('Dimension not consistent across bases.')
+    else:
+        dim = dims.pop()
+
+    # max dtype and device
+    dtype = dtype or utils.max_dtype(*built_bases, force_float=True)
+    device = device or utils.max_device(*built_bases)
+    info = dict(dtype=dtype, device=device)
+
+    # build bases
+    basis0 = basis
+    basis = []
+    for b in basis0:
+        if isinstance(b, str):
+            b = name_to_basis(b, dim, **info)
+        else:
+            b = utils.as_tensor(b, **info)
+        b = utils.unsqueeze(b, dim=0, ndim=max(0, 3-b.dim()))
+        if b.shape[-2] != b.shape[-1] or b.dim() != 3:
+            raise ValueError('Expected basis with shape (B, D+1, D+1) '
+                             'but got {}'.format(tuple(b.shape)))
+        basis.append(b)
+    basis = torch.cat(basis, dim=0)
+
+    return basis
 
 
-def affine_matrix(prm, basis, dim=None, layout=None):
+def affine_matrix(prm, *basis, dim=None):
     r"""Reconstruct an affine matrix from its Lie parameters.
 
     Affine matrices are encoded as product of sub-matrices, where
-    each sub-matrix is encoded in a Lie algebra. Finally, the right
-    most matrix is a 'layout' matrix (see affine_layout).
-    ..math:: M   = exp(A_1) \times ... \times exp(A_n) \times L
+    each sub-matrix is encoded in a Lie algebra.
+    ..math:: M   = exp(A_1) \times ... \times exp(A_n)
     ..math:: A_i = \sum_k = p_{ik} B_{ik}
 
-    An SPM-like construction (as in ``spm_matrix``) would be:
-    >>> M = affine_matrix(prm, ['T', 'R[0]', 'R[1]', 'R[2]', 'Z', 'SC'])
-    Rotations need to be split by axis because they do not commute.
+    Examples
+    --------
+    ```python
+    >> prm = torch.randn(6)
+    >> # from a classic Lie group
+    >> A = affine_matrix_lie(prm, 'SE', dim=3)
+    >> # from a user-defined Lie group
+    >> A = affine_matrix_lie(prm, ['Z', 'R[0]', 'T[1]', 'T[2]'], dim=3)
+    >> # from two Lie groups
+    >> A = affine_matrix_lie(prm, 'Z', 'R', dim=3)
+    >> B = affine_matrix_lie(prm[:3], 'Z', dim=3)
+    >> C = affine_matrix_lie(prm[3:], 'R', dim=3)
+    >> assert torch.allclose(A, B @ C)
+    >> # from a pre-built basis
+    >> basis = affine_basis('SE', dim=3)
+    >> A = affine_matrix_lie(prm, basis, dim=3)
+    ```
 
     Parameters
     ----------
-    prm : vector_like or vector_like[vector_like]
+    prm : (..., nb_basis)
         Parameters in the Lie algebra(s).
 
-    basis : list[basis_like]
-        The outer level corresponds to matrices in the product (*i.e.*,
-        exponentiated matrices), while the inner level corresponds to
-        Lie algebras.
+    *basis : basis_like, default='CSO'
+        A basis_like is a (sequence of) (F, D+1, D+1) tensor or string.
+        The number of parameters (for each batch element) should be equal
+        to the total number of bases (the sum of all bases across sub-bases).
 
     dim : int, default=guess or 3
         If not provided, the function tries to guess it from the shape
         of the basis matrices. If the dimension cannot be guessed
         (because all bases are named bases), the default is 3.
 
-    layout : str or matrix_like, default=None
-        A layout matrix.
-
     Returns
     -------
-    mat : (dim+1, dim+1) tensor
+    mat : (..., dim+1, dim+1) tensor
         Reconstructed affine matrix.
 
     """
@@ -762,38 +794,37 @@ def affine_matrix(prm, basis, dim=None, layout=None):
     # ------
     # .. Yael Balbastre <yael.balbastre@gmail.com>
 
+    # Input parameters
+    prm = utils.as_tensor(prm)
+    info = dict(dtype=prm.dtype, device=prm.device)
+
     # Make sure basis is a vector_like of (F, D+1, D+1) tensor_like
-    basis, dim = build_affine_basis(basis, dim)
+    if len(basis) == 0:
+        basis = ['CSO']
+    if basis and isinstance(basis[-1], int):
+        *basis, dim = basis
+    basis = build_affine_basis(basis, dim, **info)
+    basis = pyutils.make_list(basis)
 
     # Check length
     nb_basis = sum([len(b) for b in basis])
-    prm = utils.as_tensor(prm).flatten()
-    dtype = prm.dtype
-    device = prm.device
-    if len(prm) != nb_basis:
+    if prm.shape[-1] != nb_basis:
         raise ValueError('Number of parameters and number of bases do '
                          'not match. Got {} and {}'
                          .format(len(prm), nb_basis))
 
-    # Helper to reconstruct a log-matrix
+    # Helper to reconstruct a matrix
     def recon(p, B):
-        p = utils.as_tensor(p, dtype=dtype, device=device)
-        B = utils.as_tensor(B, dtype=dtype, device=device)
-        return linalg.expm(torch.sum(B*p[:, None, None], dim=0))
+        return linalg.expm(torch.sum(B*p[..., None, None], dim=-3))
 
     # Reconstruct each sub matrix
     n_prm = 0
     mats = []
     for a_basis in basis:
         nb_prm = len(a_basis)
-        a_prm = prm[n_prm:(n_prm+nb_prm)]
+        a_prm = prm[..., n_prm:(n_prm+nb_prm)]
         mats.append(recon(a_prm, a_basis))
         n_prm += nb_prm
-
-    # Add layout matrix
-    if layout is not None:
-        layout = layout_matrix(layout)
-        mats.append(layout)
 
     # Matrix product
     if len(mats) > 1:
@@ -803,7 +834,7 @@ def affine_matrix(prm, basis, dim=None, layout=None):
     return affine
 
 
-def affine_matrix_classic(prm, dim=3, layout=None):
+def affine_matrix_classic(prm, dim=3):
     """Build an affine matrix in the "classic" way (no Lie algebra).
 
     Parameters
@@ -814,8 +845,6 @@ def affine_matrix_classic(prm, dim=3, layout=None):
         Rotation parameters should be expressed in radians.
     dim : () tensor_like[int]
         Dimensionality.
-    layout : str or matrix_like, default=None
-        Volume layout.
 
     Returns
     -------
@@ -947,10 +976,6 @@ def affine_matrix_classic(prm, dim=3, layout=None):
 
     # Build affine matrix
     mat = make_affine(prm_t, prm_r, prm_z, prm_s, zero, one)
-
-    # Multiply with RAS
-    if layout is not None:
-        mat = affine_matmul(layout_matrix(layout))
 
     return mat
 
@@ -1688,44 +1713,43 @@ def affine_sub(affine, shape, indices):
     return affine, tuple(shape_out)
 
 
-def affine_permute(affine, shape, perm=None):
+def affine_permute(affine, perm=None, shape=None):
     """Update an affine matrix according to a permutation of the lattice dims.
 
     Parameters
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
         Input affine matrix.
-    shape : (ndim_in,) sequence[int]
-        Input shape.
     perm : sequence[int], optional
         Permutation of the lattice dimensions.
         By default, reverse dimension order.
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+    shape : (ndim_in,) sequence[int], optional
+        Input shape.
 
     Returns
     -------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
         Updated affine matrix.
-    shape : (ndim_in,) tuple[int]
+    shape : (ndim_in,) tuple[int], optional
         Updated shape.
     """
     nb_dim = affine.shape[-1] - 1
     if perm is None:
         perm = list(range(nb_dim-1, -1, -1))
+    if torch.is_tensor(perm):
+        perm = perm.tolist()
     if len(perm) != nb_dim:
         raise ValueError('Expected perm to have {} elements. Got {}.'
                          .format(nb_dim, len(perm)))
-    shape = [shape[p] for p in perm]
-    perm = perm + [-1]
-    affine = affine[..., :, perm]
-    return affine, tuple(shape)
+    affine = affine[..., :, perm + [-1]]
+    if shape is not None:
+        shape = tuple(shape[p] for p in perm)
+        return affine, shape
+    else:
+        return affine
 
 
-def affine_transpose(affine, shape, dim0, dim1):
+def affine_transpose(affine, dim0, dim1, shape):
     """Update an affine matrix according to a transposition of the lattice.
 
     A transposition is a permutation that only impacts two dimensions.
@@ -1734,18 +1758,18 @@ def affine_transpose(affine, shape, dim0, dim1):
     ----------
     affine : (..., ndim[+1], ndim+1) tensor
         Input affine matrix.
-    shape : (ndim,) sequence[int]
-        Input shape.
     dim0 : int
         Index of the first dimension
     dim1 : int
         Index of the second dimension
+    shape : (ndim,) sequence[int], optional
+        Input shape.
 
     Returns
     -------
     affine : (..., ndim[+1], ndim+1) tensor
         Updated affine matrix.
-    shape : (ndim,) tuple[int]
+    shape : (ndim,) tuple[int], optional
         Updated shape.
     """
     affine = torch.as_tensor(affine)
@@ -1753,7 +1777,7 @@ def affine_transpose(affine, shape, dim0, dim1):
     perm = list(range(nb_dim))
     perm[dim0] = dim1
     perm[dim1] = dim0
-    return affine_permute(affine, shape, perm)
+    return affine_permute(affine, perm, shape)
 
 
 def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
@@ -1927,3 +1951,257 @@ def max_bb(all_mat, all_dim, vx=None):
     dm = dm[:3].round().flatten()
 
     return mat, dm
+
+
+def affine_reorient(mat, shape_or_tensor=None, layout=None):
+    """Reorient an affine matrix / a tensor to match a target layout.
+
+    Parameters
+    ----------
+    mat : (dim[+1], dim+1) tensor_like
+        Orientation matrix
+    shape_or_tensor : (dim,) sequence[int] or (..., *shape) tensor_like, optional
+        Shape or Volume
+    layout : layout_like, optional
+        Target layout. Defaults to a directed layout (equivalent to 'RAS').
+
+    Returns
+    -------
+    mat : (dim[+1], dim+1) tensor
+        Reoriented orientation matrix
+    shape_or_tensor : (dim,) tuple or (..., *permuted_shape) tensor, optional
+        Reoriented shape or volume
+
+    """
+    # parse inputs
+    mat = torch.as_tensor(mat)
+    dim = mat.shape[-1] - 1
+    shape = tensor = None
+    if shape_or_tensor is not None:
+        shape_or_tensor = torch.as_tensor(shape_or_tensor)
+        if shape_or_tensor.dim() > 1:
+            tensor = shape_or_tensor
+            shape = torch.as_tensor(tensor.shape[-dim:])
+        else:
+            shape = shape_or_tensor
+
+    # find current layout and target layout
+    #   layouts are (dim, 2) tensors where
+    #       - the first column stores indices of the axes in RAS space
+    #         (and is therefore a permutation that transforms a RAS
+    #          space into this layout)
+    #       - the second column stores 0|1 values that indicate whether
+    #         this axis (after permutation) is flipped.
+    current_layout = affine_to_layout(mat)
+    target_layout = volume_layout(dim if layout is None else layout)
+    ras_to_current, current_flips = current_layout.unbind(-1)
+    ras_to_target, target_flips = target_layout.unbind(-1)
+    current_to_ras = utils.invert_permutation(ras_to_current)
+
+    # compose flips (xor)
+    current_flips = current_flips.bool()
+    target_flips = target_flips.bool()
+    ras_flips = current_flips[current_to_ras]
+    target_flips = target_flips ^ ras_flips[ras_to_target]
+
+    # compose permutations
+    current_to_target = current_to_ras[ras_to_target]
+
+    # apply permutation and flips
+    mat, shape = affine_permute(mat, current_to_target, shape)
+    index = tuple(slice(None, None, -1) if flip else slice(None)
+                  for flip in target_flips)
+    mat, _ = affine_sub(mat, shape, index)
+
+    if tensor is not None:
+        # we need to append stuff to take into account batch dimensions
+        nb_dim_left = tensor.dim() - len(index)
+        current_to_target = current_to_target + nb_dim_left
+        current_to_target = list(range(nb_dim_left)) + current_to_target.tolist()
+        tensor = tensor.permute(current_to_target)
+        index = (slice(None),) * nb_dim_left + index
+        tensor = tensor[index]
+        return mat, tensor
+    else:
+        return mat, shape
+
+
+def affine_mean(mats, shapes):
+    """Compute a mean orientation matrix.
+
+    Gradient *do not* propagate through this function.
+
+    Parameters
+    ----------
+    mats : (N, dim+1, dim+1) tensor_like
+        Input orientation matrices
+    shapes : (N, dim) tensor_like
+        Input shape
+
+    Returns
+    -------
+    mat : (dim+1, dim+1) np.ndarray
+        Mean orientation matrix, with an RAS layout
+
+    """
+
+    # Authors
+    # -------
+    # .. John Ashburner <j.ashburner@ucl.ac.uk> : original Matlab code
+    # .. Mikael Brudfors <brudfors@gmail.com> : Python port
+    # .. Yael Balbastre <yael.balbastre@gmail.com> : Python port
+    #
+    # License
+    # -------
+    # The original Matlab code is (C) 2019-2020 WCHN / John Ashburner
+    # and was distributed as part of [SPM](https://www.fil.ion.ucl.ac.uk/spm)
+    # under the GNU General Public Licence (version >= 2).
+
+    # Convert to (N, D+1, D+1) tensor
+    device = utils.max_device(mats, shapes)
+    shapes = torch.as_tensor(shapes, device=device).detach().clone()
+    mats = torch.as_tensor(mats, device=device).detach().clone()
+    dim = mats.shape[-1] - 1
+
+    # STEP 1: Reorient to RAS layout
+    # ------
+    # Computing an exponential mean only works if all matrices are
+    # "close". In particular, if the voxel layout associated with these
+    # matrices is different (e.g., RAS vs LAS vs RSA), the exponential
+    # mean will fail. The first step is therefore to reorient all
+    # matrices so that they map to a common voxel layout.
+    # We choose RAS as the common layout, as it makes further steps
+    # easier and matches the world space orientation.
+    for mat, shape in zip(mats, shapes):
+        mat1, shape1 = affine_reorient(mat, shape)
+        mat[:, :] = torch.as_tensor(mat1)
+        shape[:] = torch.as_tensor(shape1)
+
+    # STEP 2: Compute exponential barycentre
+    # ------
+    mat = linalg.meanm(mats)
+
+    # STEP 3: Remove spurious shears
+    # ------
+    # We want the matrix to be "rigid" = the combination of a
+    # rotation+translation (T*R) in world space and of a "voxel size"
+    # scaling (Z), i.e., M = T*R*Z.
+    # We look for the matrix that can be encoded without shears
+    # that is the closest to the original matrix (in terms of the
+    # Frobenius norm of the residual matrix)
+    _, M = affine_parameters(mat, ['R', 'Z'])
+    mat[:dim, :dim] = M[:dim, :dim]
+
+    return mat
+
+
+_voxel_size = voxel_size  # little alias to avoid the function being shadowed
+
+
+def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
+    """Compute a mean space from a set of spaces (= affine + shape).
+
+    Gradient *do not* propagate through this function.
+
+    Parameters
+    ----------
+    mats : (N, dim+1, dim+1) tensor_like
+        Input affine matrices
+    shapes : (N, dim) tensor_like
+        Input shapes
+    voxel_size : (dim,) tensor_like, optional
+        Output voxel size.
+        Uses the mean voxel size of all input matrices by default.
+    layout : str or (dim+1, dim+1) array_like, default=None
+        Output layout.
+        Uses the majority layout of all input matrices by default
+    fov : {'bb'}, default='bb'
+        Method for determining the output field-of-view:
+            * 'bb': Bounding box of all input field-of-views, minus
+              some optional cropping.
+    crop : [0..1], default=0
+        Amount of cropping applied to the field-of-view.
+
+    Returns
+    -------
+    mat : (dim+1, dim+1) tensor
+        Mean affine matrix
+    shape : (dim,) tuple
+        Corresponding shape
+
+    """
+
+    # Authors
+    # -------
+    # .. John Ashburner <j.ashburner@ucl.ac.uk> : original Matlab code
+    # .. Mikael Brudfors <brudfors@gmail.com> : Python port
+    # .. Yael Balbastre <yael.balbastre@gmail.com> : Python port
+    #
+    # License
+    # -------
+    # The original Matlab code is (C) 2019-2020 WCHN / John Ashburner
+    # and was distributed as part of [SPM](https://www.fil.ion.ucl.ac.uk/spm)
+    # under the GNU General Public Licence (version >= 2).
+
+    def hashable_layout(layout):
+        layout = layout.tolist()
+        layout = tuple((int(index), bool(flip)) for index, flip in layout)
+        return layout
+
+    device = utils.max_device(mats, shapes)
+    shapes = torch.as_tensor(shapes, device=device).detach()
+    mats = torch.as_tensor(mats, device=device).detach()
+    info = dict(dtype=mats.dtype, device=mats.device)
+    dim = mats.shape[0] - 1
+
+    # Compute mean affine
+    mat = affine_mean(mats, shapes)
+
+    # Majority layout
+    # (we must make layouts hashable so that they can be counted)
+    if layout is None:
+        all_layouts = [hashable_layout(affine_to_layout(mat)) for mat in mats]
+        layout = pyutils.majority(all_layouts)
+        print('Output layout: {}'.format(volume_layout_to_name(layout)))
+    else:
+        layout = volume_layout(layout)
+
+    # Switch layout
+    layout = layout_matrix(layout, **info)
+    mat = torch.matmul(mat, layout)
+
+    # Voxel size
+    if voxel_size is not None:
+        vs0 = torch.as_tensor(voxel_size, **info)
+        voxel_size = voxel_size(mat)
+        vs0[~torch.isfinite(vs0)] = voxel_size[~torch.isfinite(vs0)]
+        one = torch.ones([1], **info)
+        mat = mat * torch.diag(torch.cat((vs0 / voxel_size, one)))
+    voxel_size = _voxel_size(mat)
+
+    # Field of view
+    if fov == 'bb':
+        mn = torch.full(dim, constants.inf, **info)
+        mx = torch.full(dim, constants.ninf, **info)
+        for a_mat, a_shape in zip(mats, shapes):
+            corners = itertools.product([False, True], r=dim)
+            corners = [[a_shape[i] if top else 1 for i, top in enumerate(c)] + [1]
+                       for c in corners]
+            corners = torch.as_tensor(corners, **info).T
+            M = linalg.lmdiv(mat, a_mat)
+            corners = torch.matmul(M[:dim, :], corners)
+            mx = torch.max(mx, torch.max(corners, dim=1).values)
+            mn = torch.min(mn, torch.min(corners, dim=1).values)
+        mx = torch.ceil(mx).long()
+        mn = torch.floor(mn).long()
+        offset = -crop * (mx - mn)
+        shape = (mx - mn + 2*offset + 1)
+        M = mn - (offset + 1)
+        M = torch.cat((torch.eye(dim, **info), M[:, None]), dim=1)
+        pad = torch.as_tensor([[0] * dim + [1]], **info)
+        M = torch.cat((M, pad), dim=0)
+        mat = torch.matmul(mat, M)
+    else:
+        raise NotImplementedError('method {} not implemented'.format(fov))
+
+    return mat, tuple(shape.tolist())

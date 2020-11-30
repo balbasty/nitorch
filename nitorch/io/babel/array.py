@@ -445,7 +445,7 @@ class BabelArray(MappedArray):
         # --- cutoff ---
         dat = nputils.cutoff(dat, cutoff, dim)
 
-        # --- cast ---
+        # --- cast + rescale ---
         rand = rand and ininfo['is_integer']
         if rand and not outinfo['is_floating_point']:
             tmpdtype = np.float64
@@ -456,12 +456,7 @@ class BabelArray(MappedArray):
         # --- random sample ---
         # uniform noise in the uncertainty interval
         if rand and not (scale == 1 and outinfo['is_integer']):
-            np.random.seed(0)
-            noise = np.random.rand(*dat.shape)
-            if scale != 1:
-                noise *= scale
-            noise = noise.astype(dat.dtype)
-            dat += noise
+            dat = nputils.addnoise(dat, scale)
 
         # --- final cast ---
         dat = nputils.cast(dat, dtype, 'unsafe')
