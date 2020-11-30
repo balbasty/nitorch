@@ -212,16 +212,25 @@ class AffineSample(Module):
         self.dtype = dtype if dtype.is_floating_point \
             else torch.get_default_dtype()
 
-    default_translation = td.Normal(0., 5.).sample.\
-        type(self.dtype).to(self.device)
-    default_rotation = td.Normal(0., 20.).sample.\
-        type(self.dtype).to(self.device)
-    default_shear = td.Normal(0., .1).sample.\
-        type(self.dtype).to(self.device)
+    def default_translation(self, *b):
+        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
+        one = torch.tensor(1, device=self.device, dtype=self.dtype)
+        return td.Normal(zero, 5.*one).sample(*b)
+
+    def default_rotation(self, *b):
+        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
+        one = torch.tensor(1, device=self.device, dtype=self.dtype)
+        return td.Normal(zero, 20.*one).sample(*b)
+
+    def default_shear(self, *b):
+        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
+        one = torch.tensor(1, device=self.device, dtype=self.dtype)
+        return td.Normal(zero, .1*one).sample(*b)
 
     def default_zoom(self, *b):
-        return td.Normal(0., math.log(2)/3).sample(*b).exp().\
-            type(self.dtype).to(self.device)
+        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
+        one = torch.tensor(1, device=self.device, dtype=self.dtype)
+        return td.Normal(zero, math.log(2)/3*one).sample(*b).exp()
 
     def forward(self, batch=1, **overload):
         """
