@@ -15,7 +15,7 @@ class RandomFieldSample(Module):
     """
 
     def __init__(self, shape=None, mean=0, amplitude=1, fwhm=1, channel=1,
-                 basis=1):
+                 basis=1, device='cpu', dtype=torch.get_default_dtype()):
         """
 
         Parameters
@@ -34,6 +34,11 @@ class RandomFieldSample(Module):
             Number of channels
         basis : {0, 1}, default=1
             See `nitorch.core.kernels.smooth`
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+
         """
         super().__init__()
         self.shape = shape
@@ -42,6 +47,9 @@ class RandomFieldSample(Module):
         self.fwhm = fwhm
         self.channel = channel
         self.basis = basis
+        self.device = device
+        self.dtype = dtype if dtype.is_floating_point \
+            else torch.get_default_dtype()
 
     def forward(self, batch=1, **overload):
         """
@@ -66,6 +74,8 @@ class RandomFieldSample(Module):
         fwhm = overload.get('fwhm', self.fwhm)
         channel = overload.get('channel', self.channel)
         basis = overload.get('basis', self.basis)
+        dtype = overload.get('dtype', self.dtype)
+        device = overload.get('device', self.device)
 
         # sample if parameters are callable
         mean = mean() if callable(mean) else mean
@@ -73,8 +83,6 @@ class RandomFieldSample(Module):
         fwhm = fwhm() if callable(fwhm) else fwhm
 
         # device/dtype
-        dtype, device = info(mean, amplitude, fwhm)
-        dtype = dtype if dtype.is_floating_point else torch.get_default_dtype()
         mean = torch.as_tensor(mean, dtype=dtype, device=device)
         amplitude = torch.as_tensor(amplitude, dtype=dtype, device=device)
         fwhm = torch.as_tensor(fwhm, dtype=dtype, device=device)
@@ -101,7 +109,8 @@ class RandomFieldSample(Module):
         for b in range(batch):
             samples_c = []
             for c in range(channel):
-                kernel = smooth('gauss', fwhm[b, c], basis=basis)
+                kernel = smooth('gauss', fwhm[b, c], basis=basis,
+                                device=device, dtype=dtype)
 
                 # compute input shape
                 pad_shape = [shape[d] + kernel[d].shape[d+2] - 1

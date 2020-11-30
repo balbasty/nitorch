@@ -14,8 +14,9 @@ def _format_input(img, device='cpu', rand=False, cutoff=None):
     """Format preprocessing input data.
 
     """
-    if (not isinstance(img, list)) or \
-        (isinstance(img, list) and not isinstance(img[0], list)):
+    if isinstance(img, str):
+        img = [img]
+    if isinstance(img, list) and isinstance(img[0], torch.Tensor):
         img = [img]
     file = []
     dat = []
