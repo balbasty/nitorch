@@ -1870,3 +1870,60 @@ def affine_default(shape, voxel_size=1, layout=None, dtype=None, device=None):
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
     return as_euclidean(affine)
+
+
+def max_bb(all_mat, all_dim, vx=None):
+    """Specify mean space voxel-to-world matrix (mat) and dimensions (dm),
+    from a collection of images, as the maximum bounding-box containing
+    all of the images.
+
+    Parameters
+    ----------
+    all_mat : (N, 4, 4) tensor
+    all_dim (N, 3) tensor
+    vx : (3, ), default=(1, 1, 1)
+
+    Returns
+    -------
+    mat : (4, 4) tensor
+    dm : (3, ) tensor
+
+    """
+    dtype = all_mat.dtype
+    device = all_mat.device
+    if vx is None:
+        vx = (1, ) * 3
+    vx = torch.as_tensor(vx, device=device, dtype=dtype)
+    # Number of subjects
+    N = all_mat.shape[0]
+    # Get all images field of view
+    mx = torch.zeros([3, N], device=device, dtype=dtype)
+    mn = torch.zeros([3, N], device=device, dtype=dtype)
+    for n in range(N):
+        dm = all_dim[n, ...]
+        corners = torch.tensor([[1, dm[0], 1, dm[0], 1, dm[0], 1, dm[0]],
+                                [1, 1, dm[1], dm[1], 1, 1, dm[1], dm[1]],
+                                [1, 1, 1, 1, dm[2], dm[2], dm[2], dm[2]],
+                                [1, 1, 1, 1, 1, 1, 1, 1]],
+                               device=device, dtype=dtype)
+        M = all_mat[n, ...]
+        pos = M[:-1,:].mm(corners)
+        mx[..., n] = torch.max(pos, dim=1)[0]
+        mn[..., n] = torch.min(pos, dim=1)[0]
+    # Get bounding box
+    mx = torch.sort(mx, dim=1, descending=False)[0]
+    mn = torch.sort(mn, dim=1, descending=True)[0]
+    mx = mx[..., -1]
+    mn = mn[..., -1]
+    bb = torch.stack((mn, mx))
+    # Change voxel size
+    vx = torch.tensor([-1, 1, 1], dtype=dtype, device=device)*vx.abs()
+    mn = vx*torch.min(bb/vx, dim=0)[0]
+    mx = vx*torch.max(bb/vx, dim=0)[0]
+    # Make output affine matrix and image dimensions
+    mat = affine_matrix_classic(torch.cat((mn, torch.zeros(3, dtype=dtype, device=device), vx)))\
+        .mm(affine_matrix_classic(-torch.ones(3, dtype=dtype, device=device)))
+    dm = torch.cat((mx, torch.ones(1, dtype=dtype, device=device)))[..., None].solve(mat)[0]
+    dm = dm[:3].round().flatten()
+
+    return mat, dm

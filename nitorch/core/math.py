@@ -317,7 +317,7 @@ def expm(M):
     """
     device = M.device
     dtype = M.dtype
-    M = M.cpu().numpy()
+    M = M.detach().cpu().numpy()
     M = expm_scipy(M)
     M = torch.from_numpy(M).type(dtype).to(device)
     return M
@@ -335,7 +335,7 @@ def logm(M):
     """
     device = M.device
     dtype = M.dtype
-    M = M.cpu().numpy()
+    M = M.detach().cpu().numpy()
     M = logm_scipy(M)
     M = real(M)
     M = torch.from_numpy(M).type(dtype).to(device)

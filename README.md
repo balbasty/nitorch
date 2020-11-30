@@ -3,7 +3,7 @@ NeuroImaging in PyTorch
 
 ## DISCLAIMER
 
-NiTorch is currently in a very *alpha* state: its API is far from stable, 
+NITorch is currently in a very *alpha* state: its API is far from stable, 
 it has been loosely tested, and there is not warranty that it can run on any 
 OS or against any version of PyTorch. Up to now, it has only been used 
 on linux, compiled from source against PyTorch 1.4, 1.5 and 1.6.
@@ -51,7 +51,7 @@ The demo folder contains various Jupyter notebooks that showcase some of NITorch
 conda env create --file ./conda/nitorch.yml
 conda activate nitorch
 ```
-NiTorch is a **compiled** package and is therefore specific to an **OS**, a **Python version** and (if CUDA is enabled) a **CUDA version**. 
+NITorch is a **compiled** package and is therefore specific to an **OS**, a **Python version** and (if CUDA is enabled) a **CUDA version**. 
 Since we link against libtorch, I *think* it is also specific to a **PyTorch version** (this should be checked).
 You must therefore be careful about what packages are present in your environment. It would be good practice to name the created wheel files accordingly.
 
@@ -102,7 +102,7 @@ pip install nitorch-[*].whl
 
 ## Authors
 
-NiTorch has been mostly written by Yael Balbastre and Mikael Brudfors, while post-docs 
+NITorch has been mostly written by Yael Balbastre and Mikael Brudfors, while post-docs 
 in John Ashburner's group at the FIL (or *Wellcome Centre for Human Neuroimaging* as it 
 is officially known). It is therefore conceptually related to SPM.
 
@@ -111,6 +111,4 @@ All contributions are welcome
 
 ## License
 
-NiTorch is released under the MIT license. However, the `spm.py` module is directly 
-based on MATLAB code from the SPM software (https://www.fil.ion.ucl.ac.uk/spm/software/), 
-which is copyright and released under the GNU-GPL license (version >= 2).
+NITorch is released under the MIT license.
