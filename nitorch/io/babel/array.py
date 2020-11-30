@@ -558,7 +558,7 @@ class BabelArray(MappedArray):
         # build header
         if isinstance(like, BabelArray):
             # defer metadata conversion to nibabel
-            header = format.header_class.from_header(like._image.header)
+            header = format.header_class.from_header(like._image.dataobj._header)
         else:
             header = format.header_class()
             if like is not None:
