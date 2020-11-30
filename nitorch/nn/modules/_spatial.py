@@ -339,7 +339,7 @@ class AffineExp(Module):
         super().__init__()
 
         self.dim = dim
-        self.basis, _ = spatial.build_affine_basis(basis, dim)
+        self.basis = spatial.build_affine_basis(basis, dim)
         self.fwd = fwd
         self.inv = inv
 
