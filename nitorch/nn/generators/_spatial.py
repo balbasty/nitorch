@@ -220,12 +220,12 @@ class AffineSample(Module):
     def default_rotation(self, *b):
         zero = torch.tensor(0, device=self.device, dtype=self.dtype)
         one = torch.tensor(1, device=self.device, dtype=self.dtype)
-        return td.Normal(zero, 20.*one).sample(*b)
+        return td.Normal(zero, 0.1*one).sample(*b)
 
     def default_shear(self, *b):
         zero = torch.tensor(0, device=self.device, dtype=self.dtype)
         one = torch.tensor(1, device=self.device, dtype=self.dtype)
-        return td.Normal(zero, .1*one).sample(*b)
+        return td.Normal(zero, 0.01*one).sample(*b)
 
     def default_zoom(self, *b):
         zero = torch.tensor(0, device=self.device, dtype=self.dtype)
