@@ -406,7 +406,7 @@ class MappedArray(ABC):
         perm_spatial = [p for p in dims if self.spatial[p]]
         perm_spatial = sorted(range(len(perm_spatial)),
                               key=lambda k: perm_spatial[k])
-        affine, _ = affine_permute(self.affine, self.shape, perm_spatial)
+        affine, _ = affine_permute(self.affine, perm_spatial, self.shape)
 
         # create new object
         new = copy(self)
@@ -863,6 +863,72 @@ class MappedArray(ABC):
             out.append(self[tuple(index)])
             previous_chunks += chunk
         return out
+
+    def channel_first(self, atleast=0):
+        """Permute the dimensions such that all spatial axes are on the right.
+
+        Parameters
+        ----------
+        atleast : int, default=0
+            Make sure that at least this number of non-spatial dimensions
+            exist (new axes are inserted accordingly).
+
+        Returns
+        -------
+        MappedArray
+
+        """
+        # 1) move spatial dimensions to the right
+        perm = []
+        spatial = []
+        for d, is_spatial in enumerate(self.spatial):
+            if is_spatial:
+                spatial.append(d)
+            else:
+                perm.append(d)
+        nb_channels = len(perm)
+        perm = perm + spatial
+        new = self.permute(perm)
+        # 2) add channel axes
+        add_channels = max(0, atleast - nb_channels)
+        if add_channels:
+            index = [slice(None)] * nb_channels \
+                  + [None] * add_channels \
+                  + [Ellipsis]
+            new = new.slice(tuple(index))
+        return new
+
+    def channel_last(self, atleast=0):
+        """Permute the dimensions such that all spatial axes are on the left.
+
+        Parameters
+        ----------
+        atleast : int, default=0
+            Make sure that at least this number of non-spatial dimensions
+            exist (new axes are inserted accordingly).
+
+        Returns
+        -------
+        MappedArray
+
+        """
+        # 1) move spatial dimensions to the right
+        perm = []
+        spatial = []
+        for d, is_spatial in enumerate(self.spatial):
+            if is_spatial:
+                spatial.append(d)
+            else:
+                perm.append(d)
+        nb_channels = len(perm)
+        perm = spatial + perm
+        new = self.permute(perm)
+        # 2) add channel axes
+        add_channels = max(0, atleast - nb_channels)
+        if add_channels:
+            index = [Ellipsis] + [None] * add_channels
+            new = new.slice(tuple(index))
+        return new
 
 
 class CatArray(MappedArray):
