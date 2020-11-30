@@ -1226,5 +1226,5 @@ def stack(arrays, dim=0):
         A symbolic stack of all input arrays.
 
     """
-    arrays = [arrays.unsqueeze(array, dim=dim) for array in arrays]
+    arrays = [array.unsqueeze(array, dim=dim) for array in arrays]
     return cat(arrays, dim=dim)
