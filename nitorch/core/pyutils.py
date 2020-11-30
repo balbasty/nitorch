@@ -1,12 +1,11 @@
 """Python utilities."""
-
-
 import os
 import wget
 import pathlib
 import functools
 from types import GeneratorType as generator
 import warnings
+from collections import Counter
 
 
 # nitorch data directory (ugly, I know..)
@@ -414,3 +413,21 @@ def pop(obj, key=0, *args, **kwargs):
                 return args[0]
             else:
                 return kwargs.get('default')
+
+
+def majority(x):
+    """Return majority element in a sequence.
+
+    Parameters
+    ----------
+    x : sequence
+        Input sequence of hashable elements
+
+    Returns
+    -------
+    elem
+        Majority element
+
+    """
+    count = Counter(x)
+    return count.most_common(1)[0][0]
