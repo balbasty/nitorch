@@ -232,11 +232,7 @@ class TiffArray(MappedArray):
         # --- random sample ---
         # uniform noise in the uncertainty interval
         if rand and not (scale == 1 and outinfo['is_integer']):
-            noise = np.random.rand(*dat.shape)
-            if scale != 1:
-                noise *= scale
-            noise = noise.astype(dat.dtype)
-            dat += noise
+            dat = nputils.addnoise(dat, scale)
 
         # --- final cast ---
         dat = nputils.cast(dat, dtype, 'unsafe')
