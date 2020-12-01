@@ -201,7 +201,6 @@ keyword attributes.
 
 """
 
-from . import dtype
 from . import loadsave
 from . import mapping
 from . import metadata

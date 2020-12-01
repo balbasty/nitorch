@@ -3,11 +3,11 @@ from copy import copy
 from enum import Enum
 import torch
 from nitorch.core.pyutils import make_list
+from nitorch.core import dtypes
 from nitorch.spatial import affine_sub, affine_permute, voxel_size as affvx
 from .indexing import (expand_index, guess_shape, compose_index, neg2pos,
                        is_droppedaxis, is_newaxis, is_sliceaxis,
                        invert_permutation, invert_slice, slice_navigator)
-from . import dtype as cast_dtype
 
 
 class AccessType(int, Enum):
@@ -530,8 +530,8 @@ class MappedArray(ABC):
         """
         # --- sanity check ---
         dtype = torch.get_default_dtype() if dtype is None else dtype
-        info = cast_dtype.info(dtype)
-        if not info['is_floating_point']:
+        info = dtypes.dtype(dtype)
+        if not info.is_floating_point:
             raise TypeError('Output data type should be a floating point '
                             'type but got {}.'.format(dtype))
 
@@ -602,8 +602,8 @@ class MappedArray(ABC):
 
         """
         # --- sanity check ---
-        info = cast_dtype.info(dat.dtype)
-        if not info['is_floating_point']:
+        info = dtypes.dtype(dat.dtype)
+        if not info.is_floating_point:
             raise TypeError('Input data type should be a floating point '
                             'type but got {}.'.format(dat.dtype))
         if dat.shape != self.shape:
@@ -1226,5 +1226,5 @@ def stack(arrays, dim=0):
         A symbolic stack of all input arrays.
 
     """
-    arrays = [array.unsqueeze(array, dim=dim) for array in arrays]
+    arrays = [array.unsqueeze(dim=dim) for array in arrays]
     return cat(arrays, dim=dim)

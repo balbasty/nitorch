@@ -1,7 +1,6 @@
 import numpy as np
 from warnings import warn
-from nitorch.core import pyutils
-from . import dtype as cast_dtype
+from nitorch.core import pyutils, dtypes
 
 
 def cast(dat, dtype, casting='unsafe', with_scale=False):
@@ -30,8 +29,9 @@ def cast(dat, dtype, casting='unsafe', with_scale=False):
 
     """
     scale = 1.
-    info = cast_dtype.info(dtype)
-    if casting.startswith('rescale') and not info['is_floating_point']:
+    info = dtypes.dtype(dtype)
+    dtype = dtypes.as_numpy(info)
+    if casting.startswith('rescale') and not info.is_floating_point:
         # rescale
         # TODO: I am using float64 as an intermediate to cast
         #       Maybe I can do things in a nicer / more robust way
@@ -42,16 +42,16 @@ def cast(dat, dtype, casting='unsafe', with_scale=False):
         if not dat.flags.writeable:
             dat = np.copy(dat)
         if casting == 'rescale':
-            scale = (1 - minval / maxval) / (1 - info['min'] / info['max'])
-            offset = (info['max'] - info['min']) / (maxval - minval)
+            scale = (1 - minval / maxval) / (1 - info.min / info.max)
+            offset = (info.max - info.min) / (maxval - minval)
             dat *= scale
             dat += offset
         else:
             assert casting == 'rescale_zero'
-            if minval < 0 and not info['is_signed']:
+            if minval < 0 and not info.is_signed:
                 warn("Converting negative values to an unsigned datatype")
-            scale = min(abs(info['max'] / maxval) if maxval else float('inf'),
-                        abs(info['min'] / minval) if minval else float('inf'))
+            scale = min(abs(info.max / maxval) if maxval else float('inf'),
+                        abs(info.min / minval) if minval else float('inf'))
             dat *= scale
         casting = 'unsafe'
 

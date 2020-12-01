@@ -4,7 +4,8 @@
 import torch
 import torch.nn.functional as F
 from .pyutils import make_list, make_tuple
-from .dtypes import astorch as dtype_astorch
+# from ._dtypes import astorch as dtype_astorch
+from .dtypes import as_torch as dtype_astorch
 import numbers
 
 

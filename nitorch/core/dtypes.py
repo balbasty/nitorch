@@ -1,370 +1,1399 @@
-"""Information and conversion of low-level data types.
+"""Sort of like numpy.dtype, but with support for torch and python types.
 
-Warning: We do not deal with numpy's byte orders here.
+Flexible/Shaped/Structured types, like `('void', 10)`, `('int', [2, 3])`,
+`[('field1', type1), ('field2, type2)]`, etc. are not accepted.
+Only basic types are.
+
+For the generic types 'int' and 'float`, we follow numpy's and python's
+convention and map them to 'int64' and 'float64'. This conflicts with
+torch's and C's convention where they are mapped to 'int32' and 'float32'.
+
+
+- To generate a dtype object: ` dtype(dtype_like)`
+- To upcast dtypes: `upcast(dtype1, dtype2)`
+- To convert dtypes: `as_torch(dtype, upcast=True)`,
+    `as_numpy(...)`, `as_python(...)`.
 """
-
-from ..core.optionals import numpy as np
-import torch
-
-npdtype = getattr(np, 'dtype', lambda *args: None)
-
-
-_dtypes = {
-    'bool': {
-        'str': ['bool'],
-        'torch': torch.bool,
-        'numpy': npdtype('bool'),
-        'python': bool,
-        'bytes': 1,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': False,
-        'is_signed': False,
-        'min': 0,
-        'max': 1,
-    },
-    'uint8': {
-        'str': ['uint8', 'char'],
-        'torch': torch.uint8,
-        'numpy': npdtype('uint8'),
-        'python': None,
-        'python_upcast': int,
-        'bytes': 1,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': True,
-        'is_signed': False,
-        'min': 0,
-        'max': 255,
-    },
-    'int8': {
-        'str': ['int8'],
-        'torch': torch.int8,
-        'numpy': getattr(np, 'int8', None),
-        'python': None,
-        'python_upcast': int,
-        'bytes': 1,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': True,
-        'is_signed': True,
-        'min': -128,
-        'max': 127,
-    },
-    'uint16': {
-        'str': ['uint16', 'unsigned short'],
-        'torch': None,
-        'torch_upcast': torch.int32,
-        'numpy': npdtype('uint16'),
-        'python': None,
-        'python_upcast': int,
-        'bytes': 2,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': True,
-        'is_signed': False,
-        'min': 0,
-        'max': 65535,
-    },
-    'int16': {
-        'str': ['int16', 'short'],
-        'torch': torch.int16,
-        'numpy': npdtype('int16'),
-        'python': None,
-        'python_upcast': int,
-        'bytes': 1,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': True,
-        'is_signed': True,
-        'min': -32768,
-        'max': 32767,
-    },
-    'uint32': {
-        'str': ['uint32', 'unsigned', 'unsigned int'],
-        'torch': None,
-        'torch_upcast': torch.int64,
-        'numpy': npdtype('uint32'),
-        'python': None,
-        'python_upcast': int,
-        'bytes': 4,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': True,
-        'is_signed': False,
-        'min': 0,
-        'max': 4294967295,
-    },
-    'int32': {
-        'str': ['int32', 'int'],
-        'torch': torch.int32,
-        'numpy': npdtype('int32'),
-        'python': None,
-        'python_upcast': int,
-        'bytes': 4,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': True,
-        'is_signed': True,
-        'min': -2147483648,
-        'max': 2147483647,
-    },
-    'uint64': {
-        'str': ['uint64', 'unsigned long'],
-        'torch': None,
-        'torch_upcast': torch.float64,
-        'numpy': npdtype('uint64'),
-        'python': None,
-        'python_upcast': float,
-        'bytes': 8,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': True,
-        'is_signed': False,
-        'min': 0,
-        'max': 18446744073709551615,
-    },
-    'int64': {
-        'str': ['int64', 'long'],
-        'torch': torch.int64,
-        'numpy': npdtype('int64'),
-        'python': int,
-        'bytes': 8,
-        'is_complex': False,
-        'is_floating_point': False,
-        'is_integer': True,
-        'is_signed': True,
-        'min': -9223372036854775808,
-        'max': 9223372036854775807,
-    },
-    'float16': {
-        'str': ['float16', 'half'],
-        'torch': torch.half,
-        'numpy': npdtype('float16'),
-        'python': None,
-        'python_upcast': float,
-        'bytes': 2,
-        'is_complex': False,
-        'is_floating_point': True,
-        'is_integer': False,
-        'is_signed': True,
-        'min': -6.55040e+04,
-        'max': 6.55040e+04,
-        'eps': 1e-03,
-    },
-    'float32': {
-        'str': ['float32', 'single'],
-        'torch': torch.float,
-        'numpy': npdtype('float32'),
-        'python': None,
-        'python_upcast': float,
-        'bytes': 4,
-        'is_complex': False,
-        'is_floating_point': True,
-        'is_integer': False,
-        'is_signed': True,
-        'min': -3.4028235e+38,
-        'max': 3.4028235e+38,
-        'eps': 1e-06,
-    },
-    'float64': {
-        'str': ['float64', 'double'],
-        'torch': torch.double,
-        'numpy': npdtype('float64'),
-        'python': float,
-        'bytes': 8,
-        'is_complex': False,
-        'is_floating_point': True,
-        'is_integer': False,
-        'is_signed': True,
-        'min': -1.7976931348623157e+308,
-        'max': 1.7976931348623157e+308,
-        'eps': 1e-15,
-    },
-    'complex32': {
-        'str': ['complex32'],
-        'torch': torch.complex32,
-        'numpy': None,
-        'numpy_upcast': npdtype('complex64'),
-        'python': None,
-        'python_upcast': complex,
-        'bytes': 4,
-        'is_complex': True,
-        'is_floating_point': True,
-        'is_integer': False,
-        'is_signed': True,
-        'min': -6.55040e+04,
-        'max': 6.55040e+04,
-        'eps': 1e-03,
-    },
-    'complex64': {
-        'str': ['complex64'],
-        'torch': torch.complex64,
-        'numpy': npdtype('complex64'),
-        'python': None,
-        'python_upcast': complex,
-        'bytes': 8,
-        'is_complex': True,
-        'is_floating_point': True,
-        'is_integer': False,
-        'is_signed': True,
-        'min': -3.4028235e+38,
-        'max': 3.4028235e+38,
-        'eps': 1e-06,
-    },
-    'complex128': {
-        'str': ['complex128'],
-        'torch': torch.complex128,
-        'numpy': npdtype('complex128'),
-        'python': complex,
-        'bytes': 16,
-        'is_complex': True,
-        'is_floating_point': True,
-        'is_integer': False,
-        'is_signed': True,
-        'min': -1.7976931348623157e+308,
-        'max': 1.7976931348623157e+308,
-        'eps': 1e-15,
-    },
-}
+import abc
+import sys
+import copy
+import numbers
+import torch as _torch
+from .optionals import numpy as np
 
 
-def info(dtype):
-    """Return information on a datatype.
+concrete_types = []
 
-    Parameters
-    ----------
-    dtype : str or type
-        Generic data type (numpy, torch, python, string)
 
-    Returns
-    -------
-    info : dict
-        Dictionary with [optional] fields:
-            *  'str'               : list of str
-            *  'torch'             : torch.dtype or None
-           [*] 'torch_upcast'      : torch.dtype
-            *  'numpy'             : np.dtype or None
-           [*] 'numpy_upcast'      : np.dtype
-            *  'python'            : type
-           [*] 'python_upcast'     : type
-            *  'bytes'             : int
-            *  'is_floating_point' : bool
-            *  'is_integer'        : bool
-            *  'is_signed'         : bool
-            *  'min'               : int or float
-            *  'max'               : int or float
+# ----------------------------------------------------------------------
+#                               BYTE ORDER
+# ----------------------------------------------------------------------
 
-    Raises
-    ------
-    ValueError
-        If the input data type cannot be found in the dictionary.
 
+class ByteOrderType(abc.ABCMeta):
+    is_native: bool = property(lambda cls: False)
+    is_little: bool = property(lambda cls: False)
+    is_big: bool = property(lambda cls: False)
+    str: str = property(lambda cls: '')
+    char = property(lambda cls: '')
+
+    def __str__(self):
+        return "byteorder('{}')".format(self.char)
+
+    __repr__ = __str__
+
+    def __eq__(self, other):
+        return self is byteorder(other)
+
+
+class byteorder(abc.ABC, metaclass=ByteOrderType):
+    """Base class for byte orders.
+
+    Objects generated by the constructor of this class are singletons.
     """
-    def isin(dtype, list_dtype):
-        found = False
-        for dtype2 in list_dtype:
-            if dtype2 is None:
-                # Some np dtypes do compare positively to `None`
-                # Since we use `None` to specify non-implemented types,
-                # we need to treat it separately.
-                continue
-            try:
-                found = dtype == dtype2
-                if found:
-                    break
-            except (ValueError, TypeError):
-                found = False
-        return found
 
-    dinfo = None
-    for key, val in _dtypes.items():
-        all_dtypes = (val['numpy'], val['torch'], val['python'], *val['str'])
-        found = isin(dtype, all_dtypes)
-        if found:
-            dinfo = val
-            break
-        # try byteswapped version for numpy types
-        if hasattr(val['numpy'], 'newbyteorder'):
-            try:
-                if dtype == val['numpy'].newbyteorder():
-                    dinfo = val
-                    break
-            except TypeError:
-                pass
-    if dinfo is None:
-        raise ValueError('Data type {} not found in the dictionary.'
-                         .format(dtype))
-    return dinfo
+    def __new__(cls, order):
+        if isinstance(order, str):
+            if order.lower() in ('>', 'big'):
+                return bigendian
+            elif order.lower() in ('<', 'little'):
+                return littleendian
+            elif order in ('=', '==', 'native'):
+                if sys.byteorder == 'little':
+                    return littleendian
+                else:
+                    return bigendian
+            elif order.lower() in ('|', 'none'):
+                return noendian
+            else:
+                raise ValueError('Unknown byte order {}'.format(order))
+        elif isinstance(order, type) and issubclass(order, byteorder):
+            return order
+        elif isinstance(order, type) and issubclass(order, dtype):
+            return order.byteorder
+        else:
+            raise TypeError('{} cannot be interpreted as a byte order'
+                            .format(order))
+
+    def __init__(self, order):
+        """
+
+        Parameters
+        ----------
+        order : ByteOrderType or str
+            Possible string values are:
+            - {'>', 'big'} for big endian
+            - {'<', 'little'} for little endian
+            - {'=', 'native'} for native endianness
+            - {'|', 'none'} for no endianness
+        """
+        # this is just used for documentation
+        pass
 
 
-def asdtype(dtype, family):
-    """Convert a data type to another family of data types.
+class LittleEndianType(ByteOrderType):
+    is_native = property(lambda cls: sys.byteorder == 'little')
+    is_little = property(lambda cls: True)
+    is_big = property(lambda cls: False)
+    str = property(lambda cls: 'little')
+    char = property(lambda cls: '<')
+
+
+class littleendian(byteorder, metaclass=LittleEndianType):
+    """Little endian
+
+    Bytes are ordered from the least significant to the most significant.
+    """
+
+    def __new__(cls):
+        return littleendian
+
+
+class BigEndianType(ByteOrderType):
+    is_native = property(lambda cls: sys.byteorder == 'big')
+    is_little = property(lambda cls: False)
+    is_big = property(lambda cls: True)
+    str = property(lambda cls: 'big')
+    char = property(lambda cls: '>')
+
+
+class bigendian(byteorder, metaclass=BigEndianType):
+    """Big endian
+
+    Bytes are ordered from the most significant to the least significant.
+    """
+
+    def __new__(cls):
+        return bigendian
+
+
+class NoEndianType(ByteOrderType):
+    is_native = property(lambda cls: True)
+    is_little = property(lambda cls: True)
+    is_big = property(lambda cls: True)
+    str = property(lambda cls: 'none')
+    char = property(lambda cls: '|')
+
+
+class noendian(byteorder, metaclass=NoEndianType):
+    """Endianness does not make sense.
+
+    This endianness is used for words made of zero or one byte.
+    """
+
+    def __new__(cls):
+        return noendian
+
+
+native = littleendian if sys.byteorder == 'little' else bigendian
+
+
+# ----------------------------------------------------------------------
+#                               DTYPE MAKER
+# ----------------------------------------------------------------------
+
+
+def _new_dtype(cls, obj):
+    if isinstance(obj, type) and issubclass(obj, dtype):
+        if not issubclass(obj, cls):
+            raise TypeError('Cannot make {} from {} (wrong hierarchy)'
+                            .format(cls, obj))
+        return obj
+    if obj is None:
+        return _new_dtype(cls, _torch.get_default_dtype())
+    if np and isinstance(obj, str):
+        return _from_str(cls, obj)
+    if np and isinstance(obj, np.dtype):
+        return _from_np_dtype(cls, obj)
+    if np and isinstance(obj, type) and issubclass(obj, np.generic):
+        return _from_np_dtype(cls, np.dtype(obj))
+    if isinstance(obj, _torch.dtype):
+        return _from_torch(cls, obj)
+    if isinstance(obj, type) and issubclass(obj, numbers.Number):
+        return _from_python(cls, obj)
+    raise TypeError('{} cannot be interpreted as a type'.format(obj))
+
+
+def _from_str(cls, obj):
+    if not isinstance(obj, str):
+        raise TypeError('Expected a string. Got {}.'.format(type(obj)))
+    if len(obj) == 1:
+        # from char
+        for dt in concrete_types:
+            if dt.char == obj:
+                return _new_dtype(cls, dt)
+    elif len(obj) in (2, 3):
+        # from str
+        if obj[0] in ('<', '>', '=', '|'):
+            bo = obj[0]
+            obj = obj[1:]
+        else:
+            bo = '='
+        if bo in ('=', '|'):
+            bo = native.char
+        for dt in concrete_types:
+            if dt.str in (bo + obj, '|' + obj):
+                return _new_dtype(cls, dt)
+    elif len(obj) > 3:
+        # from name
+        for dt in concrete_types:
+            if dt.name == obj.lower() and dt.is_native:
+                return _new_dtype(cls, dt)
+    raise ValueError('{} could not be interpreted as a type.'
+                     .format(obj))
+
+
+def _from_np_dtype(cls, obj):
+    if not np or not isinstance(obj, np.dtype):
+        raise TypeError('Expected numpy dtype but got {}.'.format(obj))
+    for dt in concrete_types:
+        if dt.numpy == obj:
+            return _new_dtype(cls, dt)
+    raise ValueError('{} could not be interpreted as a type.'
+                     .format(obj))
+
+
+def _from_torch(cls, obj):
+    if obj is _torch.bool:
+        return _new_dtype(cls, logical)
+    if obj is _torch.uint8:
+        return _new_dtype(cls, uint8)
+    if obj is _torch.int8:
+        return _new_dtype(cls, int8)
+    if obj is _torch.int16:
+        return _new_dtype(cls, int16)
+    if obj is _torch.int32:
+        return _new_dtype(cls, int32)
+    if obj is _torch.int64:
+        return _new_dtype(cls, int64)
+    if obj is _torch.float16:
+        return _new_dtype(cls, float16)
+    if obj is _torch.float32:
+        return _new_dtype(cls, float32)
+    if obj is _torch.float64:
+        return _new_dtype(cls, float64)
+    if obj is _torch.complex32:
+        return _new_dtype(cls, complex32)
+    if obj is _torch.complex64:
+        return _new_dtype(cls, complex64)
+    if obj is _torch.complex128:
+        return _new_dtype(cls, complex128)
+    if not isinstance(obj, _torch.dtype):
+        raise TypeError('Input object is not a torch data type')
+    raise TypeError('Input (quantized?) data type is not supported')
+
+
+def _from_python(cls, obj):
+    if obj is bool:
+        return _new_dtype(cls, bool_)
+    if obj is int:
+        return _new_dtype(cls, int_)
+    if obj is float:
+        return _new_dtype(cls, float_)
+    if obj is complex:
+        return _new_dtype(cls, complex_)
+    if not isinstance(obj, numbers.Number):
+        raise TypeError('Input object is not a python data type')
+    raise TypeError('Input data type is not supported')
+
+
+# ----------------------------------------------------------------------
+#                               DATA TYPES
+# ----------------------------------------------------------------------
+
+
+class DataType(type):
+    is_floating_point: bool = property(lambda cls: False)
+    is_complex: bool = property(lambda cls: False)
+    is_signed: bool = property(lambda cls: False)
+    is_native: bool = property(lambda cls: cls.byteorder in (native, noendian))
+    is_builtin: bool = property(lambda cls: False)
+    is_concrete: bool = property(lambda cls: False)
+    byteorder: byteorder = property(lambda cls: native)
+    alignment: int = property(lambda cls: 0)
+    itemsize: int = property(lambda cls: 0)
+    kind: str = property(lambda cls: '')
+    min: int = property(lambda cls: None)
+    max: int = property(lambda cls: None)
+    eps: int = property(lambda cls: None)
+    numpy: (np.dtype if np else type(None)) = abc.abstractmethod(lambda: None)
+    torch: _torch.dtype = abc.abstractmethod(lambda: None)
+    python: type = abc.abstractmethod(lambda: None)
+    numpy_upcast = property(lambda cls: cls.numpy)
+    torch_upcast = property(lambda cls: cls.torch)
+    python_upcast = property(lambda cls: cls.python)
+    numpy_byteswap = property(lambda cls: cls.numpy.newbyteorder()
+                                          if cls.numpy else None)
+    torch_byteswap = property(lambda cls: None)
+    python_byteswap = property(lambda cls: None)
+    str: str = property(lambda cls: None)
+    name: str = property(lambda cls: None)
+    char: str = property(lambda cls: None)
+
+    def same_byteorder(cls, other):
+        return (cls.byteorder == other.byteorder or
+                cls.byteorder == noendian or
+                other.byteorder == noendian)
+
+    def __str__(self):
+        return self.__name__
+
+    __repr__ = __str__
+
+    def __eq__(self, other):
+        return self is dtype(other)
+
+    def __lt__(cls, other):
+        other = dtype(other)
+        if cls is other:
+            return False
+        if issubclass(cls, integer) and issubclass(other, integer):
+            return cls.min >= other.min and cls.max <= other.max
+        elif issubclass(cls, integer) and issubclass(other, floatingpoint):
+            return cls.max <= other.significand_max
+        elif issubclass(cls, floatingpoint) and issubclass(other, floatingpoint):
+            return (cls.exponent_precision <= other.exponent_precision or
+                    cls.significand_precision <= other.significand_precision)
+        else:
+            return False
+
+    def __gt__(cls, other):
+        other = dtype(other)
+        return other < cls
+
+    def __le__(cls, other):
+        other = dtype(other)
+        return cls < other or cls == other
+
+    def __ge__(cls, other):
+        other = dtype(other)
+        return cls > other or cls == other
+
+
+class dtype(metaclass=DataType):
+    """Base class for all data types.
+
+    Objects generated by the constructor of this class are singletons.
+
+    Properties
+    ----------
+    is_floating_point: bool           True if `float*` or `complex*` type
+    is_complex: bool                  True if `complex*` type
+    is_signed: bool                   True if `int*`, `float*`, `complex*` type
+    is_native: bool                   True if `byteorder is native`
+    is_builtin: bool                  True if it is a builtin data type
+    is_concrete: bool                 True if concrete (not abstract) type
+    byteorder: byteorder              {bigendian, littleendian, noendian}
+    itemsize: int                     Size of one element in bytes
+    alignment: int                    Size of one element in bytes, including alignment padding
+    kind: str                         Character representing the general family ('u', 'i', 'b', 'f', 'c')
+    min: litteral                     Smallest value that can be encoded
+    max: litteral                     Largest value that can be encoded
+    eps: litteral                     Machine epsilon (smallest value such that `1 + eps != 1` in that type)
+    numpy: np.dtype or NoneType       The corresponding data type in numpy (`None` if no equivalent data type)
+    torch: torch.dtype or NoneType    The corresponding data type in torch (`None` if no equivalent data type)
+    python: type or NoneType          The corresponding data type in python (`None` if no equivalent data type)
+    numpy_upcast: np.dtype            Smallest numpy datatype that can be used to upcast the type
+    torch_upcast: torch.dtype         Smallest torch datatype that can be used to upcast the type
+    python_upcast: type               Smallest python datatype that can be used to upcast the type
+    name: str                         A (nice) name for the data type
+    str: str                          A unique string identifier for the data type
+    char: str                         A unique char identifier for the data type
+
+    Methods
+    -------
+    newbyteorder() -> dtype           Same data type with opposite byte order
+    __eq__(other) -> bool             True if exact same types (including byte order)
+    __lt__(other) -> bool             Self can be converted to other without loss
+    __gt__(other) -> bool             Other can be converted to self without loss
+    __le__(other) -> bool             `__eq__ or __lt__`
+    __ge__(other) -> bool             `__eq__ or __gt__`
+    same_byteorder(other) -> bool     True if types have same byte order
+    """
+
+    def __new__(cls, *args, **kwargs):
+        return _new_dtype(cls, *args, **kwargs)
+
+
+class Number(DataType):
+    pass
+
+
+class number(dtype, metaclass=Number):
+    """Base class for numbers (booleans, integers, floats)."""
+    pass
+
+
+class Integer(Number):
+    is_floating_point = property(lambda cls: False)
+
+
+class integer(number, metaclass=Integer):
+    """Base class for integers (signed, unsigned)"""
+    pass
+
+
+class Signed(Integer):
+    is_signed = property(lambda cls: True)
+    kind = property(lambda cls: 'i')
+
+
+class signed(integer, metaclass=Signed):
+    """Base class for signed integers (int*)"""
+    pass
+
+
+class Unsigned(Integer):
+    is_signed = property(lambda cls: False)
+    kind = property(lambda cls: 'u')
+
+
+class unsigned(integer, metaclass=Unsigned):
+    """Base class for unsigned integers (uint*)"""
+    is_signed = property(lambda cls: False)
+    kind = property(lambda cls: 'u')
+
+
+class FloatingPoint(Number):
+    is_floating_point = property(lambda cls: True)
+    basis = property(lambda cls: 2)
+    exponent_precision = property(lambda cls: None)
+    exponent_bias = property(lambda cls: None)
+    exponent_max = property(lambda cls: None)
+    exponent_min = property(lambda cls: None)
+    significand_precision = property(lambda cls: None)
+    significand_max = property(lambda cls: None)
+    significand_min = property(lambda cls: 0)
+    normalized_min = property(lambda cls: None)
+
+
+class floatingpoint(number, metaclass=FloatingPoint):
+    """Base class for IEEE floats (float*, complex*)
+
+    Additional Properties
+    ---------------------
+    exponent_basis: litteral    Floating point basis (2)
+    exponent_precision: int     Size of the exponent in bits
+    exponent_bias: int          Bias added to the exponent
+    exponent_max: int           Largest possible exponent
+    exponent_min: int           Smallest possible exponent
+    significand_precision: int  Size of the significand in bits (inc. implicit bit)
+    significand_max: int        Largest possible significand
+    significand_min: int        Smallest possible significand
+    normalized_min: float       Smallest non-negative normalized value
+    """
+    pass
+
+
+class Real(FloatingPoint):
+    kind = property(lambda cls: 'f')
+
+
+class real(floatingpoint, metaclass=Real):
+    """Base class for real floats (float*)"""
+    pass
+
+
+class Complex(FloatingPoint):
+    is_complex = property(lambda cls: True)
+    kind = property(lambda cls: 'c')
+
+
+class complex(floatingpoint, metaclass=Complex):
+    """Base class for complex floats (float*)"""
+    pass
+
+
+class Logical(Unsigned):
+    kind = property(lambda cls: 'b')
+    min = property(lambda cls: 0)
+    max = property(lambda cls: 1)
+    eps = property(lambda cls: 1)
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: noendian)
+    alignment = property(lambda cls: 1)
+    itemsize = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('b1') if np else None)
+    torch = property(lambda cls: _torch.bool)
+    python = property(lambda cls: bool)
+    name = property(lambda cls: 'bool')
+    str = property(lambda cls: '|b1')
+    char = property(lambda cls: '?')
+
+    def newbyteorder(cls):
+        return cls
+
+
+class logical(unsigned, metaclass=Logical):
+    """Boolean data type"""
+    pass
+
+
+bool_ = logical
+
+# ----------------------------------------------------------------------
+#                            CONCRETE TYPES
+# ----------------------------------------------------------------------
+
+
+class UInt8(Unsigned):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: noendian)
+    alignment = property(lambda cls: 1)
+    itemsize = property(lambda cls: 1)
+    min = property(lambda cls: 0)
+    max = property(lambda cls: 255)
+    eps = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('u1') if np else None)
+    torch = property(lambda cls: _torch.uint8)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: int)
+    name = property(lambda cls: 'uint8')
+    str = property(lambda cls: '|u1')
+    char = property(lambda cls: 'B')
+
+    def newbyteorder(cls):
+        return cls
+
+
+class uint8(unsigned, metaclass=UInt8):
+    pass
+
+
+class UInt16(Unsigned):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 2)
+    itemsize = property(lambda cls: 2)
+    min = property(lambda cls: 0)
+    max = property(lambda cls: 65535)
+    eps = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('u2') if np else None)
+    torch = property(lambda cls: None)
+    torch_upcast = property(lambda cls: _torch.int32)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: int)
+    name = property(lambda cls: 'uint16')
+    str = property(lambda cls: cls.byteorder.char + 'u2')
+    char = property(lambda cls: 'H')
+
+    def newbyteorder(cls):
+        return uint16l if native == bigendian else uint16b
+
+
+class uint16(unsigned, metaclass=UInt16):
+    pass
+
+
+if native is littleendian:
+    UInt16Little = UInt16
+    uint16l = uint16
+
+    class UInt16Big(UInt16):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>u2') if np else None)
+
+        def newbyteorder(cls):
+            return uint16l
+
+    class uint16b(uint16, metaclass=UInt16Big):
+        pass
+
+else:
+    UInt16Big = UInt16
+    uint16b = uint16
+
+    class UInt16Little(UInt16):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<u2') if np else None)
+
+        def newbyteorder(cls):
+            return uint16b
+
+
+    class uint16l(uint16, metaclass=UInt16Little):
+        pass
+
+
+class UInt32(Unsigned):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 4)
+    itemsize = property(lambda cls: 4)
+    min = property(lambda cls: 0)
+    max = property(lambda cls: 4294967295)
+    eps = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('u4') if np else None)
+    torch = property(lambda cls: None)
+    torch_upcast = property(lambda cls: _torch.int64)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: int)
+    name = property(lambda cls: 'uint32')
+    str = property(lambda cls: cls.byteorder.char + 'u4')
+    char = property(lambda cls: 'I')
+
+    def newbyteorder(cls):
+        return uint32l if native == bigendian else uint32b
+
+
+class uint32(unsigned, metaclass=UInt32):
+    pass
+
+
+if native is littleendian:
+    UInt32Little = UInt32
+    uint32l = uint32
+
+    class UInt32Big(UInt32):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>u4') if np else None)
+
+        def newbyteorder(cls):
+            return uint32l
+
+    class uint32b(uint32, metaclass=UInt32Big):
+        pass
+
+else:
+    UInt32Big = UInt32
+    uint32b = uint32
+
+    class UInt32Little(UInt32):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<u4') if np else None)
+
+        def newbyteorder(cls):
+            return uint32b
+
+    class uint32l(uint32, metaclass=UInt32Little):
+        pass
+
+
+class UInt64(Unsigned):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 8)
+    itemsize = property(lambda cls: 8)
+    min = property(lambda cls: 0)
+    max = property(lambda cls: 18446744073709551615)
+    eps = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('u8') if np else None)
+    torch = property(lambda cls: None)
+    torch_upcast = property(lambda cls: _torch.double)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: float)
+    name = property(lambda cls: 'uint64')
+    str = property(lambda cls: cls.byteorder.char + 'u8')
+    char = property(lambda cls: 'L')
+
+    def newbyteorder(cls):
+        return uint64l if native == bigendian else uint64b
+
+
+class uint64(unsigned, metaclass=UInt64):
+    pass
+
+
+if native is littleendian:
+    UInt64Little = UInt64
+    uint64l = uint64
+
+    class UInt64Big(UInt64):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>u8') if np else None)
+
+        def newbyteorder(cls):
+            return uint64l
+
+    class uint64b(uint64, metaclass=UInt64Big):
+        pass
+
+else:
+    UInt64Big = UInt64
+    uint64b = uint64
+
+    class UInt64Little(UInt64):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<u8') if np else None)
+
+        def newbyteorder(cls):
+            return uint64b
+
+    class uint64l(uint64, metaclass=UInt64Little):
+        pass
+
+
+class Int8(Signed):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: noendian)
+    alignment = property(lambda cls: 1)
+    itemsize = property(lambda cls: 1)
+    min = property(lambda cls: -128)
+    max = property(lambda cls: 127)
+    eps = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('i1') if np else None)
+    torch = property(lambda cls: _torch.int8)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: int)
+    name = property(lambda cls: 'int8')
+    str = property(lambda cls: '|i1')
+    char = property(lambda cls: 'b')
+
+    def newbyteorder(cls):
+        return cls
+
+
+class int8(signed, metaclass=Int8):
+    pass
+
+
+class Int16(Signed):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 2)
+    itemsize = property(lambda cls: 2)
+    min = property(lambda cls: -32768)
+    max = property(lambda cls: 32767)
+    eps = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('i2') if np else None)
+    torch = property(lambda cls: _torch.int16)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: int)
+    name = property(lambda cls: 'int16')
+    str = property(lambda cls: cls.byteorder.char + 'i2')
+    char = property(lambda cls: 'h')
+
+    def newbyteorder(cls):
+        return int16l if native == bigendian else int16b
+
+
+class int16(signed, metaclass=Int16):
+    pass
+
+
+if native is littleendian:
+    Int16Little = Int16
+    int16l = int16
+
+    class Int16Big(Int16):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>i2') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.int16)
+
+        def newbyteorder(cls):
+            return int16l
+
+    class int16b(int16, metaclass=Int16Big):
+        pass
+
+else:
+    Int16Big = Int16
+    int16b = int16
+
+    class Int16Little(Int16):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<i2') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.int16)
+
+        def newbyteorder(cls):
+            return int16b
+
+
+    class int16l(int16, metaclass=Int16Little):
+        pass
+
+
+class Int32(Signed):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 4)
+    itemsize = property(lambda cls: 4)
+    min = property(lambda cls: -2147483648)
+    max = property(lambda cls: 2147483647)
+    eps = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('i4') if np else None)
+    torch = property(lambda cls: _torch.int32)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: int)
+    name = property(lambda cls: 'int32')
+    str = property(lambda cls: cls.byteorder.char + 'i4')
+    char = property(lambda cls: 'i')
+
+    def newbyteorder(cls):
+        return int32l if native == bigendian else int32b
+
+class int32(signed, metaclass=Int32):
+    pass
+
+
+if native is littleendian:
+    Int32Little = Int32
+    int32l = int32
+
+    class Int32Big(Int32):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>i4') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.int32)
+
+        def newbyteorder(cls):
+            return int32l
+
+    class int32b(int32, metaclass=Int32Big):
+        pass
+
+else:
+    Int32Big = Int32
+    int32b = int32
+
+    class Int32Little(Int32):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<i4') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.int32)
+
+        def newbyteorder(cls):
+            return int32b
+
+    class int32l(int32, metaclass=Int32Little):
+        pass
+
+
+class Int64(Signed):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 8)
+    itemsize = property(lambda cls: 8)
+    min = property(lambda cls: -9223372036854775808)
+    max = property(lambda cls: 9223372036854775807)
+    eps = property(lambda cls: 1)
+    numpy = property(lambda cls: np.dtype('i8') if np else None)
+    torch = property(lambda cls: _torch.int64)
+    python = property(lambda cls: int)
+    name = property(lambda cls: 'int64')
+    str = property(lambda cls: cls.byteorder.char + 'i8')
+    char = property(lambda cls: 'l')
+
+    def newbyteorder(cls):
+        return int64l if native == bigendian else int64b
+
+
+class int64(signed, metaclass=Int64):
+    pass
+
+
+if native is littleendian:
+    Int64Little = Int64
+    int64l = int64
+
+    class Int64Big(Int64):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>i8') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.int64)
+        python = property(lambda cls: None)
+        python_upcast = property(lambda cls: int)
+
+        def newbyteorder(cls):
+            return int64l
+
+    class int64b(int64, metaclass=Int64Big):
+        pass
+
+else:
+    Int64Big = Int64
+    int64b = int64
+
+    class Int64Little(Int64):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<i8') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.int64)
+        python = property(lambda cls: None)
+        python_upcast = property(lambda cls: int)
+
+        def newbyteorder(cls):
+            return int64b
+
+    class int64l(int64, metaclass=Int64Little):
+        pass
+
+
+int_ = int64
+
+
+class Float16(Real):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 2)
+    itemsize = property(lambda cls: 2)
+    exponent_precision = property(lambda cls: 5)
+    exponent_bias = property(lambda cls: 15)
+    exponent_max = property(lambda cls: 15)
+    exponent_min = property(lambda cls: -14)
+    significand_precision = property(lambda cls: 11)
+    significand_max = property(lambda cls: 2047)
+    significand_min = property(lambda cls: 0)
+    normalized_min = property(lambda cls: 2**-14)
+    min = property(lambda cls: -65504.0)
+    max = property(lambda cls: 65504.0)
+    eps = property(lambda cls: 1e-03)
+    numpy = property(lambda cls: np.dtype('f2') if np else None)
+    torch = property(lambda cls: _torch.float16)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: float)
+    name = property(lambda cls: 'float16')
+    str = property(lambda cls: cls.byteorder.char + 'f2')
+    char = property(lambda cls: 'e')
+
+    def newbyteorder(cls):
+        return float16l if native == bigendian else float16b
+
+
+class float16(real, metaclass=Float16):
+    pass
+
+
+if native is littleendian:
+    Float16Little = Float16
+    float16l = float16
+
+    class Float16Big(Float16):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>f2') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.float16)
+        python = property(lambda cls: None)
+
+        def newbyteorder(cls):
+            return float16l
+
+    class float16b(float16, metaclass=Float16Big):
+        pass
+
+else:
+    Float16Big = Float16
+    float16b = float16
+
+    class Float16Little(Float16):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<f2') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.float16)
+        python = property(lambda cls: None)
+
+        def newbyteorder(cls):
+            return float16b
+
+    class float16l(float16, metaclass=Float16Little):
+        pass
+
+
+class Float32(Real):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 4)
+    itemsize = property(lambda cls: 4)
+    exponent_precision = property(lambda cls: 8)
+    exponent_bias = property(lambda cls: -126)
+    exponent_max = property(lambda cls: 127)
+    exponent_min = property(lambda cls: 127)
+    significand_precision = property(lambda cls: 24)
+    significand_max = property(lambda cls: 16777215)
+    significand_min = property(lambda cls: 0)
+    normalized_min = property(lambda cls: 2**-126)
+    min = property(lambda cls: -3.4028235e+38)
+    max = property(lambda cls: 3.4028235e+38)
+    eps = property(lambda cls: 1e-06)
+    numpy = property(lambda cls: np.dtype('f4') if np else None)
+    torch = property(lambda cls: _torch.float32)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: float)
+    name = property(lambda cls: 'float32')
+    str = property(lambda cls: cls.byteorder.char + 'f4')
+    char = property(lambda cls: 'f')
+
+    def newbyteorder(cls):
+        return float32l if native == bigendian else float32b
+
+
+class float32(real, metaclass=Float32):
+    pass
+
+
+if native is littleendian:
+    Float32Little = Float32
+    float32l = float32
+
+    class Float32Big(Float32):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>f4') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.float32)
+        python = property(lambda cls: None)
+
+        def newbyteorder(cls):
+            return float32l
+
+    class float32b(float32, metaclass=Float32Big):
+        pass
+
+else:
+    Float32Big = Float32
+    float32b = float32
+
+    class Float32Little(Float32):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<f4') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.float32)
+        python = property(lambda cls: None)
+
+        def newbyteorder(cls):
+            return float32b
+
+    class float32l(float32, metaclass=Float32Little):
+        pass
+
+
+class Float64(Real):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 8)
+    itemsize = property(lambda cls: 8)
+    exponent_precision = property(lambda cls: 11)
+    exponent_bias = property(lambda cls: -1022)
+    exponent_max = property(lambda cls: 1023)
+    exponent_min = property(lambda cls: 1023)
+    significand_precision = property(lambda cls: 53)
+    significand_max = property(lambda cls: 9007199254740991)
+    significand_min = property(lambda cls: 0)
+    normalized_min = property(lambda cls: 2**-1022)
+    min = property(lambda cls: -1.7976931348623157e+308)
+    max = property(lambda cls: 1.7976931348623157e+308)
+    eps = property(lambda cls: 1e-15)
+    numpy = property(lambda cls: np.dtype('f8') if np else None)
+    torch = property(lambda cls: _torch.float64)
+    python = property(lambda cls: float)
+    name = property(lambda cls: 'float64')
+    str = property(lambda cls: cls.byteorder.char + 'f8')
+    char = property(lambda cls: 'd')
+
+    def newbyteorder(cls):
+        return float64l if native == bigendian else float64b
+
+
+class float64(real, metaclass=Float64):
+    pass
+
+
+if native is littleendian:
+    Float64Little = Float64
+    float64l = float64
+
+    class Float64Big(Float64):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>f8') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.float64)
+        python = property(lambda cls: None)
+        python_upcast = property(lambda cls: float)
+
+        def newbyteorder(cls):
+            return float64l
+
+    class float64b(float64, metaclass=Float64Big):
+        pass
+
+else:
+    Float64Big = Float64
+    float64b = float64
+
+    class Float64Little(Float64):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<f8') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.float64)
+        python = property(lambda cls: None)
+        python_upcast = property(lambda cls: float)
+
+        def newbyteorder(cls):
+            return float64b
+
+    class float64l(float64, metaclass=Float64Little):
+        pass
+
+
+float_ = float64
+
+
+class Complex32(Complex):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 4)
+    itemsize = property(lambda cls: 4)
+    exponent_precision = property(lambda cls: 5)
+    exponent_bias = property(lambda cls: 15)
+    exponent_max = property(lambda cls: 15)
+    exponent_min = property(lambda cls: -14)
+    significand_precision = property(lambda cls: 11)
+    significand_max = property(lambda cls: 2047)
+    significand_min = property(lambda cls: 0)
+    normalized_min = property(lambda cls: 2**-14)
+    min = property(lambda cls: -65504.0)
+    max = property(lambda cls: 65504.0)
+    eps = property(lambda cls: 1e-03)
+    numpy = property(lambda cls: None)
+    numpy_upcast = property(lambda cls: np.dtype('c8') if np else None)
+    torch = property(lambda cls: _torch.complex32)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: complex)
+    name = property(lambda cls: 'complex32')
+    str = property(lambda cls: cls.byteorder.char + 'c8')
+    char = property(lambda cls: 'E')
+
+    def newbyteorder(cls):
+        return complex32l if native == bigendian else complex32b
+
+
+class complex32(complex, metaclass=Complex32):
+    pass
+
+
+if native is littleendian:
+    Complex32Little = Complex32
+    complex32l = complex32
+
+    class Complex32Big(Complex32):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy_upcast = property(lambda cls: np.dtype('>c8') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.complex32)
+
+        def newbyteorder(cls):
+            return complex32l
+
+    class complex32b(complex32, metaclass=Complex32Big):
+        pass
+
+else:
+    Complex32Big = Complex32
+    complex32b = complex32
+
+    class Complex32Little(Complex32):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy_upcast = property(lambda cls: np.dtype('<c8') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.complex32)
+
+        def newbyteorder(cls):
+            return complex32b
+
+    class complex32l(complex32, metaclass=Complex32Little):
+        pass
+
+
+class Complex64(Complex):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 8)
+    itemsize = property(lambda cls: 8)
+    exponent_precision = property(lambda cls: 11)
+    exponent_bias = property(lambda cls: -1022)
+    exponent_max = property(lambda cls: 1023)
+    exponent_min = property(lambda cls: 1023)
+    significand_precision = property(lambda cls: 53)
+    significand_max = property(lambda cls: 9007199254740991)
+    significand_min = property(lambda cls: 0)
+    normalized_min = property(lambda cls: 2**-1022)
+    min = property(lambda cls: -1.7976931348623157e+308)
+    max = property(lambda cls: 1.7976931348623157e+308)
+    eps = property(lambda cls: 1e-15)
+    numpy = property(lambda cls: np.dtype('c8') if np else None)
+    torch = property(lambda cls: _torch.complex64)
+    python = property(lambda cls: None)
+    python_upcast = property(lambda cls: complex)
+    name = property(lambda cls: 'complex64')
+    str = property(lambda cls: cls.byteorder.char + 'c8')
+    char = property(lambda cls: 'F')
+
+    def newbyteorder(cls):
+        return complex64l if native == bigendian else complex64b
+
+
+class complex64(complex, metaclass=Complex64):
+    pass
+
+
+if native is littleendian:
+    Complex64Little = Complex64
+    complex64l = complex64
+
+    class Complex64Big(Complex64):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>c8') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.complex64)
+
+        def newbyteorder(cls):
+            return complex64l
+
+    class complex64b(complex64, metaclass=Complex64Big):
+        pass
+
+else:
+    Complex64Big = Complex64
+    complex64b = complex64
+
+    class Complex64Little(Complex64):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<c8') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.complex64)
+
+        def newbyteorder(cls):
+            return complex64b
+
+    class complex64l(complex64, metaclass=Complex64Little):
+        pass
+
+
+class Complex128(Complex):
+    is_builtin = property(lambda cls: True)
+    is_concrete = property(lambda cls: True)
+    byteorder = property(lambda cls: native)
+    alignment = property(lambda cls: 8)
+    itemsize = property(lambda cls: 8)
+    exponent_precision = property(lambda cls: 11)
+    exponent_bias = property(lambda cls: -1022)
+    exponent_max = property(lambda cls: 1023)
+    exponent_min = property(lambda cls: 1023)
+    significand_precision = property(lambda cls: 53)
+    significand_max = property(lambda cls: 9007199254740991)
+    significand_min = property(lambda cls: 0)
+    normalized_min = property(lambda cls: 2**-1022)
+    min = property(lambda cls: -1.7976931348623157e+308)
+    max = property(lambda cls: 1.7976931348623157e+308)
+    eps = property(lambda cls: 1e-15)
+    numpy = property(lambda cls: np.dtype('c16') if np else None)
+    torch = property(lambda cls: _torch.complex128)
+    python = property(lambda cls: complex)
+    name = property(lambda cls: 'complex128')
+    str = property(lambda cls: cls.byteorder.char + 'c16')
+    char = property(lambda cls: 'D')
+
+    def newbyteorder(cls):
+        return complex128l if native == bigendian else complex128b
+
+
+class complex128(complex, metaclass=Complex128):
+    pass
+
+
+if native is littleendian:
+    Complex128Little = Complex128
+    complex128l = complex128
+
+    class Complex128Big(Complex128):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: bigendian)
+        numpy = property(lambda cls: np.dtype('>c16') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.complex128)
+        python = property(lambda cls: None)
+        python_upcast = property(lambda cls: complex)
+
+        def newbyteorder(cls):
+            return complex128l
+
+    class complex128b(complex128, metaclass=Complex128Big):
+        pass
+
+else:
+    Complex128Big = Complex128
+    complex128b = complex128
+
+    class Complex128Little(Complex128):
+        is_builtin = property(lambda cls: False)
+        byteorder = property(lambda cls: littleendian)
+        numpy = property(lambda cls: np.dtype('<c16') if np else None)
+        torch = property(lambda cls: None)
+        torch_upcast = property(lambda cls: _torch.complex128)
+        python = property(lambda cls: None)
+        python_upcast = property(lambda cls: complex)
+
+        def newbyteorder(cls):
+            return complex128b
+
+    class complex128l(complex128, metaclass=Complex128Little):
+        pass
+
+
+complex_ = complex128
+
+
+concrete_types.extend([
+    logical, uint8, int8, uint16l, uint16b, int16l, int16b,
+    uint32l, uint32b, int32l, int32b, uint64l, uint64b, int64l, int64b,
+    float16l, float16b, float32l, float32b, float64l, float64b,
+    complex32l, complex32b, complex64l, complex64b, complex128l, complex128b,
+])
+
+
+def upcast(*dtypes):
+    """Return a data type that upcasts both input types
 
     Parameters
     ----------
-    dtype : str or type
-        Generic data type (numpy, torch, python, string)
-    family : {'numpy', 'torch', 'python'}
-        A family of data types
+    *dtypes : dtype
 
     Returns
     -------
     dtype
-        Converted data type
 
     """
-    dinfo = info(dtype)
-    return dinfo[family] or dinfo[family + '_upcast']
+    if len(dtypes) == 0:
+        raise ValueError('Expected at least one type')
+    if len(dtypes) == 1:
+        return dtype(dtypes[0])
+    if len(dtypes) > 2:
+        dtype1, dtype2, *dtypes = dtypes
+        return upcast(upcast(dtype1, dtype2), *dtypes)
+
+    dtype1, dtype2 = dtypes
+    dtype1 = dtype(dtype1)
+    dtype2 = dtype(dtype2)
+    if dtype1 == dtype2:
+        return dtype1
+    elif dtype1 < dtype2 and dtype2 < dtype1:
+        if dtype1.byteorder is native:
+            return dtype1
+        else:
+            return dtype2
+    elif not (dtype1 < dtype2) and not (dtype2 < dtype1):
+        return dtype(_torch.get_default_dtype())
+    elif dtype1 < dtype2:
+        return dtype2
+    elif dtype2 < dtype1:
+        return dtype1
 
 
-def asnumpy(dtype):
-    """Convert a data type to a numpy dtype.
-
-    Parameters
-    ----------
-    dtype : str or type
-        Generic data type (numpy, torch, python, string)
-
-    Returns
-    -------
-    dtype : np.number
-        Numpy data type
-
-    """
-    return asdtype(dtype, 'numpy')
+def as_dtype(package, dt, upcast=True):
+    dt = dtype(dt)
+    dt0 = getattr(dt, package)
+    if dt0 is None:
+        if upcast:
+            dt0 = getattr(dt, package + '_upcast')
+        else:
+            raise TypeError('Cannot convert type {} to torch.'.format(dt))
+    return dt0
 
 
-def astorch(dtype):
-    """Convert a data type to a torch dtype.
-
-    Parameters
-    ----------
-    dtype : str or type
-        Generic data type (numpy, torch, python, string)
-
-    Returns
-    -------
-    dtype : torch.dtype
-        Torch data type
-
-    """
-    return asdtype(dtype, 'torch')
+def as_torch(dt, upcast=True):
+    return as_dtype('torch', dt, upcast)
 
 
-def aspython(dtype):
-    """Convert a data type to a python dtype.
+def as_numpy(dt, upcast=True):
+    return as_dtype('numpy', dt, upcast)
 
-    Parameters
-    ----------
-    dtype : str or type
-        Generic data type (numpy, torch, python, string)
 
-    Returns
-    -------
-    dtype : type
-        Python data type
-
-    """
-    return asdtype(dtype, 'python')
-
+def as_python(dt, upcast=True):
+    return as_dtype('python', dt, upcast)
