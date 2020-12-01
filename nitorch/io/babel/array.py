@@ -33,7 +33,7 @@ from nibabel.volumeutils import _is_compressed_fobj as is_compressed_fobj, \
 from nibabel.fileslice import fileslice
 from nibabel.filebasedimages import ImageFileError
 # nitorch imports
-from nitorch.core import pyutils
+from nitorch.core import pyutils, dtypes
 # local imports
 from ..mapping import MappedArray, AccessType
 from ..readers import reader_classes
@@ -41,8 +41,7 @@ from ..writers import writer_classes
 from ..loadsave import map as map_array
 from ..indexing import invert_permutation, is_newaxis, is_sliceaxis, \
                       is_droppedaxis, is_fullslice, split_operation
-from .. import dtype as cast_dtype
-from .. import nputils
+from .. import volutils
 from ..metadata import keys as metadata_keys
 from .metadata import header_to_metadata, metadata_to_header
 from .utils import writeslice
@@ -386,7 +385,7 @@ class BabelArray(MappedArray):
             return self
 
         # --- cast ---
-        dat = nputils.cast(dat, self.dtype, casting)
+        dat = volutils.cast(dat, self.dtype, casting)
 
         # --- unpermute ---
         drop, perm, slicer = split_operation(self.permutation, self.slicer, 'w')
@@ -421,49 +420,40 @@ class BabelArray(MappedArray):
 
         # --- sanity check before reading ---
         dtype = self.dtype if dtype is None else dtype
-        outinfo = cast_dtype.info(dtype)
-        if not numpy and outinfo['torch'] is None:
+        dtype = dtypes.dtype(dtype)
+        if not numpy and dtype.torch is None:
             raise TypeError('Data type {} does not exist in PyTorch.'
                             .format(dtype))
-        if not isinstance(dtype, np.dtype):
-            dtype = outinfo['numpy']
 
         # --- check that view is not empty ---
         if pyutils.prod(self.shape) == 0:
             if numpy:
-                return np.zeros(self.shape, dtype=dtype)
+                return np.zeros(self.shape, dtype=dtype.numpy)
             else:
-                return torch.zeros(self.shape, dtype=outinfo['torch'], device=device)
+                return torch.zeros(self.shape, dtype=dtype.torch, device=device)
 
         # --- read native data ---
         slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
         with self.fileobj('image', 'r') as f:
             dat = self._read_data_raw(slicer, fileobj=f)
         dat = dat.transpose(perm)[newdim]
-        ininfo = cast_dtype.info(self.dtype)
+        indtype = dtypes.dtype(self.dtype)
 
         # --- cutoff ---
-        dat = nputils.cutoff(dat, cutoff, dim)
+        dat = volutils.cutoff(dat, cutoff, dim)
 
-        # --- cast ---
-        rand = rand and ininfo['is_integer']
-        if rand and not outinfo['is_floating_point']:
-            tmpdtype = np.float64
-        else:
-            tmpdtype = dtype
-        dat, scale = nputils.cast(dat, tmpdtype, casting, with_scale=True)
+        # --- cast + rescale ---
+        rand = rand and not indtype.is_floating_point
+        tmpdtype = dtypes.float64 if (rand and not dtype.is_floating_point) else dtype
+        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
-        if rand and not (scale == 1 and outinfo['is_integer']):
-            noise = np.random.rand(*dat.shape)
-            if scale != 1:
-                noise *= scale
-            noise = noise.astype(dat.dtype)
-            dat += noise
+        if rand and not (scale == 1 and not dtype.is_floating_point):
+            dat = volutils.addnoise(dat, scale)
 
         # --- final cast ---
-        dat = nputils.cast(dat, dtype, 'unsafe')
+        dat = volutils.cast(dat, dtype.numpy, 'unsafe')
 
         # convert to torch if needed
         if not numpy:
@@ -499,8 +489,8 @@ class BabelArray(MappedArray):
     @classmethod
     def savef_new(cls, dat, file_like, like=None, **metadata):
         # sanity check
-        info = cast_dtype.info(dat.dtype)
-        if not info['is_floating_point']:
+        dtype = dtypes.dtype(dat.dtype)
+        if not dtype.is_floating_point:
             raise TypeError('Input data type should be a floating point '
                             'type but got {}.'.format(dat.dtype))
 
@@ -560,7 +550,7 @@ class BabelArray(MappedArray):
         # build header
         if isinstance(like, BabelArray):
             # defer metadata conversion to nibabel
-            header = format.header_class.from_header(like._image.header)
+            header = format.header_class.from_header(like._image.dataobj._header)
         else:
             header = format.header_class()
             if like is not None:
@@ -569,12 +559,7 @@ class BabelArray(MappedArray):
                 like_metadata.update(metadata)
                 metadata = like_metadata
         header = metadata_to_header(header, metadata)
-        slope, inter = header.get_slope_inter()
-        if slope is None:
-            slope = 1
-        if inter is None:
-            inter = 0
-        header.set_slope_inter(slope, inter)
+
         # check endianness
         disk_byteorder = header.endianness
         data_byteorder = dtype.byteorder
@@ -585,9 +570,18 @@ class BabelArray(MappedArray):
         if disk_byteorder != data_byteorder:
             dtype = dtype.newbyteorder()
 
+        # set scale
+        if hasattr(header, 'set_slope_inter'):
+            slope, inter = header.get_slope_inter()
+            if slope is None:
+                slope = 1
+            if inter is None:
+                inter = 0
+            header.set_slope_inter(slope, inter)
+
         # unscale
         if _savef:
-            assert cast_dtype.info(dat.dtype)['is_floating_point']
+            assert dtypes.dtype(dat.dtype).is_floating_point
             slope, inter = header.get_slope_inter()
             if inter not in (0, None) or slope not in (1, None):
                 dat = dat.copy()
@@ -597,7 +591,7 @@ class BabelArray(MappedArray):
                 dat /= slope
 
         # cast
-        dat = nputils.cast(dat, dtype, casting)
+        dat = volutils.cast(dat, dtype, casting)
 
         # set dtype / shape
         header.set_data_dtype(dat.dtype)

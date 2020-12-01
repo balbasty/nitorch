@@ -307,7 +307,7 @@ def savef(dat, file_like, like=None, **metadata):
         for klass in writer_classes:
             if ext.lower() in klass.possible_extensions():
                 try:
-                    return klass.save_new(dat, file_like, like, **metadata)
+                    return klass.savef_new(dat, file_like, like, **metadata)
                 except klass.FailedWriteError:
                     pass
             else:
@@ -317,7 +317,7 @@ def savef(dat, file_like, like=None, **metadata):
     if like is not None and type(like) in remaining_classes:
         klass = type(like)
         try:
-            return klass.save_new(dat, file_like, like, **metadata)
+            return klass.savef_new(dat, file_like, like, **metadata)
         except klass.FailedWriteError:
             remaining_classes = [k for k in remaining_classes
                                  if k is not klass]
@@ -325,7 +325,7 @@ def savef(dat, file_like, like=None, **metadata):
     # third guess: try everything that's left
     for klass in remaining_classes:
         try:
-            return klass.save_new(dat, file_like, like, **metadata)
+            return klass.savef_new(dat, file_like, like, **metadata)
         except klass.FailedWriteError:
             pass
 

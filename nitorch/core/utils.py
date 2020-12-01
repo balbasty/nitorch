@@ -4,6 +4,9 @@
 import torch
 import torch.nn.functional as F
 from .pyutils import make_list, make_tuple
+# from ._dtypes import astorch as dtype_astorch
+from .dtypes import as_torch as dtype_astorch
+import numbers
 
 
 def as_tensor(input, dtype=None, device=None):
@@ -28,6 +31,10 @@ def as_tensor(input, dtype=None, device=None):
         Output tensor.
 
     """
+    # TODO: if torch >= 1.6, use` torch.as_tensor`
+    #   I have to clean uses of `utils.as_tensor` first because the
+    #   order of arguments is a bit different (I think it is device then
+    #   dtype in torch)
     def _stack(x, dtype, device):
         if torch.is_tensor(x):
             return x.to(device if device is not None else x.device,
@@ -167,6 +174,239 @@ def info(*args):
             return a.dtype, a.device
     a = torch.as_tensor(args[0])
     return a.dtype, a.device
+
+
+def to_common(*args, force_float=False):
+    """Move to a common dtype and device.
+
+    See `max_dtype` and `max_device`.
+
+    Parameters
+    ----------
+    *args : tensor_like
+    force_float : bool, default=False
+
+    Returns
+    -------
+    *args_to : tensor
+
+    """
+    if len(args) == 0:
+        return
+    dtype = max_dtype(*args, force_float=force_float)
+    device = max_device(*args)
+    if len(args) == 1:
+        return torch.as_tensor(args[0], dtype=dtype, device=device)
+    else:
+        return tuple(torch.as_tensor(arg, dtype=dtype, device=device)
+                     for arg in args)
+
+
+def to_common_device(*args):
+    """Move to a common device.
+
+    See `max_device`.
+
+    Parameters
+    ----------
+    *args : tensor_like
+
+    Returns
+    -------
+    *args_to : tensor
+
+    """
+    if len(args) == 0:
+        return
+    device = max_device(*args)
+    if len(args) == 1:
+        return torch.as_tensor(args[0], device=device)
+    else:
+        return tuple(torch.as_tensor(arg, device=device)
+                     for arg in args)
+
+
+def max_device(*args):
+    """Find a common device for all inputs.
+
+    If at least one input object is on a CUDA device:
+        * if all cuda object are on the same cuda device, return it
+        * if some objects are on different cuda devices, return
+          `device('cuda')` without an index.
+    Else, return device('cpu') or None.
+
+    Parameters
+    ----------
+    *args : tensor_like or device_like
+
+    Returns
+    -------
+    device : torch.device
+
+    """
+    from .optionals import numpy as np
+    is_array = lambda x: (isinstance(x, np.ndarray) if np else False)
+    is_tensor = torch.is_tensor
+
+    def select_device(*many_devices):
+        if len(many_devices) == 0:
+            return None
+        elif len(many_devices) == 1:
+            return many_devices[0]
+        device1, device2, *many_devices = many_devices
+        if len(many_devices) > 0:
+            return select_device(select_device(device1, device2), *many_devices)
+        if device1 is None:
+            return device2
+        elif device2 is None:
+            return device1
+        elif device1.type == 'cuda' and device2.type != 'cuda':
+            return device1
+        elif device2.type == 'cuda' and device1.type != 'cuda':
+            return device2
+        elif device1.index is None:
+            return device2
+        elif device2.index is None:
+            return device1
+        elif device1.index == device2.index:
+            return device1
+        else:
+            return torch.device('cuda')
+
+    def explore_device(x):
+        if x is None:
+            return None
+        if isinstance(x, (torch.device, str)):
+            return torch.device(x)
+        elif is_tensor(x):
+            return x.device
+        elif is_array(x) or isinstance(x, numbers.Number):
+            # numpy/builtin type: None
+            return None
+        else:
+            # assume it is a sequence: check what we find in there
+            devices = [explore_device(elem) for elem in x]
+            return select_device(*devices)
+
+    return explore_device(args)
+
+
+def max_dtype(*args, force_float=False):
+    """Find the maximum data type from a series of inputs.
+
+    The returned dtype is the best one to use for upcasting the objects.
+
+        * Tensors and arrays have priority python objects.
+        * Tensors and arrays with non-null dimensionality have priority
+          over scalars.
+        * If any of the torch/numpy objects have a floating point type
+          a floating point type is returned.
+        * If any of the objects is complex, a complex type is returned.
+        * If all torch/numpy objects have an integer type and there is
+          an integer type that avoids overflowing, it is returned.
+        * If no integer type that ensures underflowing exists, the default
+          floating point data type is returned.
+        * If `force_float is True`, a floating point data type is returned
+          even if all input objects have an integer data type.
+
+    Parameters
+    ----------
+    *args : tensor_like or type_like
+    force_float : bool, default=False
+
+    Returns
+    -------
+    dtype : torch.dtype
+
+    """
+    from .optionals import numpy as np
+    is_array = lambda x: (isinstance(x, np.ndarray) if np else False)
+    is_tensor = torch.is_tensor
+    is_np_dtype = lambda x: ((isinstance(x, np.dtype) or
+                                 (isinstance(x, type) and
+                                  issubclass(x, np.number)))
+                                if np else False)
+    is_torch_dtype = lambda x: isinstance(x, torch.dtype)
+    is_py_dtype = lambda x: isinstance(x, type) and issubclass(x, numbers.Number)
+    is_dtype = lambda x: is_torch_dtype(x) or is_np_dtype(x) or is_py_dtype(x)
+
+    def upcast(*many_types):
+        if len(many_types) == 0:
+            return None
+        elif len(many_types) == 1:
+            return many_types[0]
+        dtype1, dtype2, *many_types = many_types
+        if len(many_types) > 0:
+            return upcast(upcast(dtype1, dtype2), *many_types)
+        # here, we only have torch dtypes
+        if dtype1 is None:
+            return dtype2
+        elif dtype2 is None:
+            return dtype1
+        elif dtype1 is torch.complex128 or dtype2 is torch.complex128:
+            return torch.complex128
+        elif dtype1 is torch.complex64 or dtype2 is torch.complex64:
+            return torch.complex64
+        elif dtype1 is torch.complex32 or dtype2 is torch.complex32:
+            return torch.complex32
+        elif dtype1 is torch.float64 or dtype2 is torch.float64:
+            return torch.float64
+        elif dtype1 is torch.float32 or dtype2 is torch.float32:
+            return torch.float32
+        elif dtype1 is torch.float16 or dtype2 is torch.float16:
+            return torch.float16
+        elif dtype1 is torch.int64 or dtype2 is torch.int64:
+            return torch.int64
+        elif dtype1 is torch.int32 or dtype2 is torch.int32:
+            return torch.int32
+        elif dtype1 is torch.int16 or dtype2 is torch.int16:
+            return torch.int16
+        elif dtype1 is torch.int8 and dtype2 is torch.int8:
+            return torch.int8
+        elif dtype1 is torch.uint8 and dtype2 is torch.uint8:
+            return torch.uint8
+        elif (dtype1 is torch.int8 and dtype2 is torch.uint8) or \
+             (dtype1 is torch.uint8 and dtype2 is torch.int8):
+            return torch.int16
+        elif dtype1 is torch.bool and dtype2 is torch.bool:
+            return torch.bool
+        else:
+            raise TypeError('We do not deal with type {} or {} yet.'
+                            .format(dtype1, dtype2))
+
+    def explore_dtype(x, n_pass=1):
+        # find the max data type at a given pass
+        if is_dtype(x):
+            return dtype_astorch(x)
+        elif (is_tensor(x) or is_array(x)) and len(x.shape) > 0:
+            return dtype_astorch(x.dtype)
+        elif is_tensor(x) or is_array(x):
+            # scalar: only return if pass 2+
+            return dtype_astorch(x.dtype) if n_pass >= 2 else None
+        elif isinstance(x, numbers.Number):
+            # builtin type:  only return if pass 3+
+            return dtype_astorch(type(x)) if n_pass >= 3 else None
+        else:
+            # assume it is a sequence: check what we find in there
+            dtypes = [explore_dtype(elem, n_pass) for elem in x]
+            return upcast(*dtypes)
+
+    # 1) tensors/arrays with dim > 0
+    maxdtype = explore_dtype(args, n_pass=1)
+
+    # 2) tensor/arrays with dim == 0
+    if maxdtype is None:
+        maxdtype = upcast(maxdtype, explore_dtype(args, n_pass=2))
+
+    # 3) tensor/arrays
+    if maxdtype is None:
+        maxdtype = upcast(maxdtype, explore_dtype(args, n_pass=3))
+
+    # Finally) ensure float
+    if force_float:
+        maxdtype = upcast(maxdtype, torch.get_default_dtype())
+
+    return maxdtype
 
 
 def same_storage(x, y):

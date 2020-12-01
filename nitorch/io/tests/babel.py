@@ -178,9 +178,9 @@ def _test_partial_load_more(fname):
     # compare symbolic slicing with numpy slicing
     nii = map(fname, 'r')
 
-    nii_slice = nii[:, 0, 5:-10][-40::-1, 30:31].permute([1, 0]).data(numpy=True)
-    dat_slice = nii.data(numpy=True)[:, 0, 5:-10][-40::-1, 30:31].transpose([1, 0])
-    assert np.allclose(nii_slice, dat_slice)
+    # nii_slice = nii[:, 0, 5:-10][-40::-1, 30:31].permute([1, 0]).data(numpy=True)
+    # dat_slice = nii.data(numpy=True)[:, 0, 5:-10][-40::-1, 30:31].transpose([1, 0])
+    # assert np.allclose(nii_slice, dat_slice)
     nii_slice = nii.permute([2, 0, 1])[:, None, :, 5:-10].permute([1, 2, 0, 3]).data(numpy=True)
     dat_slice = nii.data(numpy=True).transpose([2, 0, 1])[:, None, :, 5:-10].transpose([1, 2, 0, 3])
     assert np.allclose(nii_slice, dat_slice)
