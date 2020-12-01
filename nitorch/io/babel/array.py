@@ -521,8 +521,7 @@ class BabelArray(MappedArray):
                 dtype = like.dtype
             if dtype is None:
                 dtype = dat.dtype
-            if not hasattr(dtype, 'byteorder'):
-                dtype = cast_dtype.info(dtype)['numpy']
+            dtype = dtypes(dtype).numpy
             return dtype
         dtype = guess_dtype()
 
