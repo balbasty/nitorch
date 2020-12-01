@@ -1,6 +1,6 @@
 from ..mapping import MappedArray, AccessType
 from ..indexing import is_fullslice, split_operation, slicer_sub2ind, invert_slice
-from .. import nputils
+from .. import volutils
 from ..readers import reader_classes
 from .metadata import ome_zooms, parse_unit
 from nitorch.spatial import affine_default
@@ -216,7 +216,7 @@ class TiffArray(MappedArray):
         indtype = dtypes.dtype(self.dtype)
 
         # --- cutoff ---
-        dat = nputils.cutoff(dat, cutoff, dim)
+        dat = volutils.cutoff(dat, cutoff, dim)
 
         # --- cast ---
         rand = rand and not indtype.is_floating_point
@@ -224,15 +224,15 @@ class TiffArray(MappedArray):
             tmpdtype = dtypes.float64
         else:
             tmpdtype = dtype
-        dat, scale = nputils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
+        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
         if rand and not (scale == 1 and not dtype.is_floating_point):
-            dat = nputils.addnoise(dat, scale)
+            dat = volutils.addnoise(dat, scale)
 
         # --- final cast ---
-        dat = nputils.cast(dat, dtype.numpy, 'unsafe')
+        dat = volutils.cast(dat, dtype.numpy, 'unsafe')
 
         # convert to torch if needed
         if not numpy:

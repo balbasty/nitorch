@@ -41,7 +41,7 @@ from ..writers import writer_classes
 from ..loadsave import map as map_array
 from ..indexing import invert_permutation, is_newaxis, is_sliceaxis, \
                       is_droppedaxis, is_fullslice, split_operation
-from .. import nputils
+from .. import volutils
 from ..metadata import keys as metadata_keys
 from .metadata import header_to_metadata, metadata_to_header
 from .utils import writeslice
@@ -385,7 +385,7 @@ class BabelArray(MappedArray):
             return self
 
         # --- cast ---
-        dat = nputils.cast(dat, self.dtype, casting)
+        dat = volutils.cast(dat, self.dtype, casting)
 
         # --- unpermute ---
         drop, perm, slicer = split_operation(self.permutation, self.slicer, 'w')
@@ -440,20 +440,20 @@ class BabelArray(MappedArray):
         indtype = dtypes.dtype(self.dtype)
 
         # --- cutoff ---
-        dat = nputils.cutoff(dat, cutoff, dim)
+        dat = volutils.cutoff(dat, cutoff, dim)
 
         # --- cast + rescale ---
         rand = rand and not indtype.is_floating_point
         tmpdtype = dtypes.float64 if (rand and not dtype.is_floating_point) else dtype
-        dat, scale = nputils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
+        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
         if rand and not (scale == 1 and not dtype.is_floating_point):
-            dat = nputils.addnoise(dat, scale)
+            dat = volutils.addnoise(dat, scale)
 
         # --- final cast ---
-        dat = nputils.cast(dat, dtype.numpy, 'unsafe')
+        dat = volutils.cast(dat, dtype.numpy, 'unsafe')
 
         # convert to torch if needed
         if not numpy:
@@ -589,7 +589,7 @@ class BabelArray(MappedArray):
                 dat /= slope
 
         # cast
-        dat = nputils.cast(dat, dtype, casting)
+        dat = volutils.cast(dat, dtype, casting)
 
         # set dtype / shape
         header.set_data_dtype(dtype)

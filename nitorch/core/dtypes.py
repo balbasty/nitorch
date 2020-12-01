@@ -8,15 +8,14 @@ For the generic types 'int' and 'float`, we follow numpy's and python's
 convention and map them to 'int64' and 'float64'. This conflicts with
 torch's and C's convention where they are mapped to 'int32' and 'float32'.
 
-
 - To generate a dtype object: ` dtype(dtype_like)`
-- To upcast dtypes: `upcast(dtype1, dtype2)`
+- To upcast dtypes: `upcast(a, b)`
 - To convert dtypes: `as_torch(dtype, upcast=True)`,
     `as_numpy(...)`, `as_python(...)`.
+- Other utilities: `same_kind(a, b)`, `equivalent(a, b)`
 """
 import abc
 import sys
-import copy
 import numbers
 import torch as _torch
 from .optionals import numpy as np
@@ -276,16 +275,12 @@ class DataType(type):
     min: int = property(lambda cls: None)
     max: int = property(lambda cls: None)
     eps: int = property(lambda cls: None)
-    numpy: (np.dtype if np else type(None)) = abc.abstractmethod(lambda: None)
-    torch: _torch.dtype = abc.abstractmethod(lambda: None)
-    python: type = abc.abstractmethod(lambda: None)
+    numpy: (np.dtype if np else type(None)) = property(lambda cls: None)
+    torch: _torch.dtype = property(lambda cls: None)
+    python: type = property(lambda cls: None)
     numpy_upcast = property(lambda cls: cls.numpy)
     torch_upcast = property(lambda cls: cls.torch)
     python_upcast = property(lambda cls: cls.python)
-    numpy_byteswap = property(lambda cls: cls.numpy.newbyteorder()
-                                          if cls.numpy else None)
-    torch_byteswap = property(lambda cls: None)
-    python_byteswap = property(lambda cls: None)
     str: str = property(lambda cls: None)
     name: str = property(lambda cls: None)
     char: str = property(lambda cls: None)
@@ -356,7 +351,7 @@ class dtype(metaclass=DataType):
     numpy_upcast: np.dtype            Smallest numpy datatype that can be used to upcast the type
     torch_upcast: torch.dtype         Smallest torch datatype that can be used to upcast the type
     python_upcast: type               Smallest python datatype that can be used to upcast the type
-    name: str                         A (nice) name for the data type
+    name: str                         A (pretty) name for the data type
     str: str                          A unique string identifier for the data type
     char: str                         A unique char identifier for the data type
 
@@ -373,6 +368,41 @@ class dtype(metaclass=DataType):
 
     def __new__(cls, *args, **kwargs):
         return _new_dtype(cls, *args, **kwargs)
+
+    def __init__(self, dtype):
+        """
+
+        Parameters
+        ----------
+        dtype : ni.dtype or np.dtype or torch.dtype or type or str
+            Data type: either a data type from a supported package
+            (torch, numpy or python) or a character or a string.
+            Each builtin type is associated to a unique character:
+                - '?'           -> bool
+                - 'b', 'B'      -> int8, uint8
+                - 'h', 'H'      -> int16, uint16
+                - 'i', 'I'      -> int32, uint32
+                - 'l', 'L'      -> int64, uint64
+                - 'e', 'E'      -> float16, complex32
+                - 'f', 'F'      -> float32, complex64
+                - 'd', 'D'      -> float64, complex128
+            These types can also be described by a letter (encoding the
+            'kind') and a number (encoding the size in bytes):
+                - 'b1'                      -> bool
+                - 'i1', 'i2', 'i4', 'i8'    -> int8, int16, int32, int64
+                - 'u1', 'u2', 'u4', 'u8'    -> uint8, uint16, uint32, uint64
+                - 'f2', 'f4', 'f8'          -> float16, float32, float64
+                - 'c4', 'c8', 'c16'         -> complex16, complex32, complex64
+            These two character types can be appended with a byte-order:
+                - '>'   -> big endian
+                - '<'   -> little endian
+                - '='   -> native endianness (default)
+                - '|'   -> no endianness (for types with itemsize < 1)
+            Finally, common names ('bool', 'uint8', etc) can be used.
+            They always map to the native byte order.
+        """
+        # this is just used for documentation
+        pass
 
 
 class Number(DataType):
@@ -1397,3 +1427,15 @@ def as_numpy(dt, upcast=True):
 
 def as_python(dt, upcast=True):
     return as_dtype('python', dt, upcast)
+
+
+def equivalent(dtype1, dtype2):
+    dtype1 = dtype(dtype1)
+    dtype2 = dtype(dtype2)
+    return dtype1 in (dtype2, dtype2.newbyteorder())
+
+
+def same_kind(dtype1, dtype2):
+    dtype1 = dtype(dtype1)
+    dtype2 = dtype(dtype2)
+    return dtype1.kind == dtype2.kind
