@@ -80,8 +80,42 @@ def _write_output(dat, mat, file=None, prefix='', odir='', nam=''):
         pth.append(file_mod(filename,
             odir=odir, prefix=prefix, nam=nam))
         savef(dat[n], pth[n], like=file[n], affine=mat[n])
+    if len(dat) == 1:
+        pth = pth[0]
 
-    return dat, mat, pth
+    return pth
+
+
+def _msk_fov(dat, mat, mat0, dim0):
+    """Mask field-of-view (FOV) of image data according to other image's
+    FOV.
+
+    Parameters
+    ----------
+    dat : (X, Y, Z), tensor
+        Image data.
+    mat : (4, 4), tensor
+        Image's affine.
+    mat0 : (4, 4), tensor
+        Other image's affine.
+    dim0 : (3, ), list/tuple
+        Other image's dimensions.
+
+    Returns
+    -------
+    dat : (X, Y, Z), tensor
+        Masked image data.
+
+    """
+    dim = dat.shape
+    M = mat.solve(mat0)[0]  # mat0\mat1
+    grid = affine_grid(M, dim)
+    msk = (grid[..., 0] >= 1) & (grid[..., 0] <= dim0[0]) & \
+          (grid[..., 1] >= 1) & (grid[..., 1] <= dim0[1]) & \
+          (grid[..., 2] >= 1) & (grid[..., 2] <= dim0[2])
+    dat[~msk] = 0
+
+    return dat
 
 
 def _get_corners_3d(dim, o=[0] * 6):

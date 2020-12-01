@@ -47,7 +47,7 @@ def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
         Preprocessed image data.
     mat : (4, 4) tensor_like, dtype=float64
         New affine matrix.
-    pth : str or [str, ...]
+    pth : str
         Paths to preprocessed data (only if write=True).
 
     """
@@ -67,7 +67,6 @@ def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
     if write:
         pth = _write_output(dat, mat, file=file, nam=nam, odir=odir,
                             prefix=prefix)
-        pth = pth[0]
 
     return dat[0], mat[0], pth
 
@@ -157,7 +156,7 @@ def affine_align(img, write=None, nam='', odir='', prefix='aa_',
         Preprocessed image data.
     mat_a : (N, 4, 4) tensor_like, dtype=float64
         Affine matrices aligning as mat_mov\mat_a*mat_fix.
-    pth : str or [str, ...]
+    pth : [str, ...]
         Paths to preprocessed data (only if write=True).
 
     """
@@ -182,7 +181,7 @@ def affine_align(img, write=None, nam='', odir='', prefix='aa_',
     return rdat, mat_a, pth
 
 
-def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='ma_',
+def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='aa_',
                 device='cpu', pth_atlas=None):
     """Affinely align an image to some atlas space.
 
@@ -202,7 +201,7 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='ma_',
         Output filename, if empty, uses same as input.
     odir = str, default=''
         Output directory, if empty, uses same as input.
-    prefix = str, default='ma_'
+    prefix = str, default='aa_'
         Output prefix.
     device : torch.device, default='cpu'
         Output device, only used if input are paths. If input are tensors,
@@ -216,7 +215,7 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='ma_',
         Preprocessed image data.
     mat_a : (4, 4) tensor_like, dtype=float64
         Affine matrix aligning as mat_mov\mat_a*mat_fix.
-    pth : str or [str, ...]
+    pth : str
         Paths to preprocessed data (only if write=True).
 
     """
@@ -238,13 +237,12 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='ma_',
     if write:
         pth = _write_output(dat, mat, file=file, nam=nam, odir=odir,
                             prefix=prefix)
-        pth = pth[0]
 
     return rdat[0, ...], mat_a[0, ...], pth
 
 
 def reset_origin(img, write=False, nam='', odir='', prefix='ro_',
-                 device='cpu'):
+                 device='cpu', interpolation=1):
     """Reset affine matrix.
 
     Parameters
@@ -264,6 +262,8 @@ def reset_origin(img, write=False, nam='', odir='', prefix='ro_',
     device : torch.device, default='cpu'
         Output device, only used if input are paths. If input are tensors,
         then the device of those tensors will be used.
+    interpolation : int, default=1 (linear)
+        Interpolation order.
 
     Returns
     -------
@@ -271,7 +271,7 @@ def reset_origin(img, write=False, nam='', odir='', prefix='ro_',
         Preprocessed image data.
     mat : (4, 4) tensor_like, dtype=float64
         New affine matrix.
-    pth : str or [str, ...]
+    pth : str
         Paths to preprocessed data (only if write=True).
 
     """
@@ -280,13 +280,12 @@ def reset_origin(img, write=False, nam='', odir='', prefix='ro_',
     if len(dat) != 1:
         raise ValueError('Only one input image should be given!')
     # Do preprocessing
-    dat[0], mat[0] = _reset_origin(dat[0], mat[0])
+    dat[0], mat[0] = _reset_origin(dat[0], mat[0], interpolation=interpolation)
     # Possibly write output to disk
     pth = None
     if write:
         pth = _write_output(dat, mat, file=file, nam=nam, odir=odir,
                             prefix=prefix)
-        pth = pth[0]
 
     return dat[0], mat[0], pth
 
@@ -326,7 +325,7 @@ def subvol(img, bb=None, write=False, nam='', odir='', prefix='sv_',
         Preprocessed image data.
     mat : (4, 4) tensor_like, dtype=float64
         New affine matrix.
-    pth : str or [str, ...]
+    pth : str
         Paths to preprocessed data (only if write=True).
 
     """
@@ -335,19 +334,18 @@ def subvol(img, bb=None, write=False, nam='', odir='', prefix='sv_',
     if len(dat) != 1:
         raise ValueError('Only one input image should be given!')
     # Do preprocessing
-    dat[0], mat[0] = _subvol(dat[0], mat[0])
+    dat[0], mat[0] = _subvol(dat[0], mat[0], bb=bb)
     # Possibly write output to disk
     pth = None
     if write:
         pth = _write_output(dat, mat, file=file, nam=nam, odir=odir,
                             prefix=prefix)
-        pth = pth[0]
 
     return dat[0], mat[0], pth
 
 
 def world_reslice(img, write=False, nam='', odir='', prefix='wr_',
-                  device='cpu'):
+                  device='cpu', interpolation=1):
     """Reslice image data to world space.
 
     Parameters
@@ -367,6 +365,8 @@ def world_reslice(img, write=False, nam='', odir='', prefix='wr_',
     device : torch.device, default='cpu'
         Output device, only used if input are paths. If input are tensors,
         then the device of those tensors will be used.
+    interpolation : int, default=1 (linear)
+        Interpolation order.
 
     Returns
     -------
@@ -374,7 +374,7 @@ def world_reslice(img, write=False, nam='', odir='', prefix='wr_',
         Preprocessed image data.
     mat : (4, 4) tensor_like, dtype=float64
         New affine matrix.
-    pth : str or [str, ...]
+    pth : str
         Paths to preprocessed data (only if write=True).
 
     """
@@ -383,12 +383,11 @@ def world_reslice(img, write=False, nam='', odir='', prefix='wr_',
     if len(dat) != 1:
         raise ValueError('Only one input image should be given!')
     # Do preprocessing
-    dat[0], mat[0] = _world_reslice(dat[0], mat[0])
+    dat[0], mat[0] = _world_reslice(dat[0], mat[0], interpolation=interpolation)
     # Possibly write output to disk
     pth = None
     if write:
         pth = _write_output(dat, mat, file=file, nam=nam, odir=odir,
                             prefix=prefix)
-        pth = pth[0]
 
     return dat[0], mat[0], pth
