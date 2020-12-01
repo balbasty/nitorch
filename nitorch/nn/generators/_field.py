@@ -15,7 +15,7 @@ class RandomFieldSample(Module):
     """
 
     def __init__(self, shape=None, mean=0, amplitude=1, fwhm=1, channel=1,
-                 basis=1, device='cpu', dtype=torch.get_default_dtype()):
+                 basis=1, device='cpu', dtype=None):
         """
 
         Parameters
@@ -48,8 +48,9 @@ class RandomFieldSample(Module):
         self.channel = channel
         self.basis = basis
         self.device = device
-        self.dtype = dtype if dtype.is_floating_point \
-            else torch.get_default_dtype()
+        if dtype is None or not dtype.is_floating_point:
+            dtype = torch.get_default_dtype()
+        self.dtype = dtype
 
     def forward(self, batch=1, **overload):
         """

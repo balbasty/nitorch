@@ -14,7 +14,7 @@ class VelocitySample(Module):
     """Sample a random velocity field."""
 
     def __init__(self, dim=None, shape=None, amplitude=15, fwhm=10,
-                 device='cpu', dtype=torch.get_default_dtype()):
+                 device='cpu', dtype=None):
         """
 
         Parameters
@@ -97,7 +97,7 @@ class DiffeoSample(Module):
 
     def __init__(self, dim=None, shape=None, amplitude=15, fwhm=10,
                  bound='dft', interpolation=1, device='cpu',
-                 dtype=torch.get_default_dtype()):
+                 dtype=None):
         """
 
         Parameters
@@ -177,7 +177,7 @@ class AffineSample(Module):
 
     def __init__(self, dim=None, translation=True, rotation=True,
                  zoom=True, shear=True, device='cpu',
-                 dtype=torch.get_default_dtype()):
+                 dtype=None):
         """
 
         Parameters
@@ -209,8 +209,9 @@ class AffineSample(Module):
         self.zoom = zoom
         self.shear = shear
         self.device = device
-        self.dtype = dtype if dtype.is_floating_point \
-            else torch.get_default_dtype()
+        if dtype is None or not dtype.is_floating_point:
+            dtype = torch.get_default_dtype()
+        self.dtype = dtype
 
     def default_translation(self, *b):
         zero = torch.tensor(0, device=self.device, dtype=self.dtype)
@@ -302,7 +303,7 @@ class DeformedSample(Module):
     def __init__(self, vel_amplitude=15, vel_fwhm=10,
                  translation=True, rotation=True, zoom=True, shear=True,
                  vel_bound='dft', image_bound='dct2', interpolation=1,
-                 device='cpu', dtype=torch.get_default_dtype()):
+                 device='cpu', dtype=None):
         """
 
         Parameters

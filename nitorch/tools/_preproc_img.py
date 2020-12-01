@@ -11,7 +11,7 @@ from ..spatial import (affine_matrix_classic, voxel_size)
 from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d)
 
 
-def _world_reslice(dat, mat):
+def _world_reslice(dat, mat, interpolation=1):
     """Reslice image data to world space.
 
     Parameters
@@ -20,6 +20,8 @@ def _world_reslice(dat, mat):
         Image data.
     mat : (4, 4) tensor_like, dtype=float64
         Affine matrix.
+    interpolation : int, default=1 (linear)
+        Interpolation order.
 
     Returns
     -------
@@ -58,6 +60,6 @@ def _world_reslice(dat, mat):
     # Compute mapping from output to input
     mat = mat_out.solve(mat)[0]
     # Reslice image data
-    dat = _reslice_dat_3d(dat, mat, dim_out)
+    dat = _reslice_dat_3d(dat, mat, dim_out, interpolation=interpolation)
 
     return dat, mat_out
