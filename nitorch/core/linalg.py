@@ -1,6 +1,7 @@
 """Linear algebra."""
 import torch
 from . import utils
+from warnings import warn
 
 
 # Expose from private implementation
@@ -50,26 +51,34 @@ def meanm(mats, max_iter=1024, tol=1e-20):
     # and was distributed as part of [SPM](https://www.fil.ion.ucl.ac.uk/spm)
     # under the GNU General Public Licence (version >= 2).
 
+    # NOTE: all computations are performed in double, else logm is not
+    # precise enough
+
     mats = utils.as_tensor(mats)
     dim = mats.shape[-1] - 1
     dtype = mats.dtype
     device = mats.device
+    mats = mats.double()
 
-    mean_mat = torch.eye(dim+1, dtype=dtype, device=device)
-    log_mats = torch.empty_like(mats)
+    mean_mat = torch.eye(dim+1, dtype=torch.double, device=device)
     for n_iter in range(max_iter):
         # Project all matrices to the tangent space about the current mean_mat
-        log_mats = logm(lmdiv(mean_mat, mats), out=log_mats)
+        log_mats = lmdiv(mean_mat, mats)
+        log_mats = logm(log_mats)
+        if log_mats.is_complex():
+            warn('`meanm` failed to converge (`logm` -> complex)',
+                 RuntimeWarning)
+            break
         # Compute the new mean in the tangent space
         mean_log_mat = torch.mean(log_mats, dim=0)
         # Compute sum-of-squares in tangent space (should be zero at optimum)
-        sos = torch.sum(mean_log_mat ** 2)
+        sos = mean_log_mat.square().sum()
         # Exponentiate to original space
         mean_mat = torch.matmul(mean_mat, expm(mean_log_mat), out=mean_mat)
         if sos <= tol:
             break
 
-    return mean_mat
+    return mean_mat.to(dtype)
 
 
 def lmdiv(a, b, method='lu', rcond=1e-15, out=None):
