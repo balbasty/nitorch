@@ -1373,7 +1373,7 @@ def upcast(*dtypes):
 
     Parameters
     ----------
-    *dtypes : dtype
+    *dtypes : dtype_like
 
     Returns
     -------
@@ -1407,6 +1407,23 @@ def upcast(*dtypes):
 
 
 def as_dtype(package, dt, upcast=True):
+    """Convert a generic data type to another package type
+
+    Parameters
+    ----------
+    package : {'torch', 'numpy', 'python'}
+        Target package
+    dt : dtype_like
+        Input data type
+    upcast : bool, default=True
+        If True, authorize upcasting the input type
+
+    Returns
+    -------
+    dtype_like
+        Torch data type
+
+    """
     dt = dtype(dt)
     dt0 = getattr(dt, package)
     if dt0 is None:
@@ -1418,24 +1435,93 @@ def as_dtype(package, dt, upcast=True):
 
 
 def as_torch(dt, upcast=True):
+    """Convert a generic data type to a torch type
+
+    Parameters
+    ----------
+    dt : dtype_like
+        Input data type
+    upcast : bool, default=True
+        If True, authorize upcasting the input type
+
+    Returns
+    -------
+    torch.dtype
+        Torch data type
+
+    """
     return as_dtype('torch', dt, upcast)
 
 
 def as_numpy(dt, upcast=True):
+    """Convert a generic data type to a numpy type
+
+    Parameters
+    ----------
+    dt : dtype_like
+        Input data type
+    upcast : bool, default=True
+        If True, authorize upcasting the input type
+
+    Returns
+    -------
+    np.dtype
+        Numpy data type
+
+    """
     return as_dtype('numpy', dt, upcast)
 
 
 def as_python(dt, upcast=True):
+    """Convert a generic data type to a python type
+
+    Parameters
+    ----------
+    dt : dtype_like
+        Input data type
+    upcast : bool, default=True
+        If True, authorize upcasting the input type
+
+    Returns
+    -------
+    type
+        Python data type
+
+    """
     return as_dtype('python', dt, upcast)
 
 
 def equivalent(dtype1, dtype2):
+    """Two data types are equivalent if they are equal up-to byte order
+
+    Parameters
+    ----------
+    dtype1 : dtype_like
+    dtype2 : dtype_like
+
+    Returns
+    -------
+    bool
+
+    """
     dtype1 = dtype(dtype1)
     dtype2 = dtype(dtype2)
     return dtype1 in (dtype2, dtype2.newbyteorder())
 
 
 def same_kind(dtype1, dtype2):
+    """Check that two data types have the same kind
+
+    Parameters
+    ----------
+    dtype1 : dtype_like
+    dtype2 : dtype_like
+
+    Returns
+    -------
+    bool
+
+    """
     dtype1 = dtype(dtype1)
     dtype2 = dtype(dtype2)
     return dtype1.kind == dtype2.kind
