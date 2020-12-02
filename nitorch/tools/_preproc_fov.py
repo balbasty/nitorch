@@ -14,6 +14,9 @@ from .affine_reg._align import _atlas_align
 from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d, _msk_fov)
 from ._preproc_img import _world_reslice
 
+# Bounding-boxes
+bb_brain = torch.tensor([[18, 55, 130], [180, 261, 270]])
+bb_tight = torch.tensor([[18, 55, 1], [180, 261, 270]])
 
 def _atlas_crop(dat, mat_in, do_align=True, fov='full', mat_a=None):
     """Crop an image to the NITorch T1w atlas field-of-view.
@@ -58,22 +61,21 @@ def _atlas_crop(dat, mat_in, do_align=True, fov='full', mat_a=None):
     mat_mu = file.affine.type(torch.float64).to(device)
     if fov == 'brain':
         # Get atlas 'brain' bounding-box
-        bb = torch.tensor([[18, 55, 130], [180, 261, 270]],
-                           device=device, dtype=torch.float64)
+        bb = bb_brain
     elif fov == 'tight':
         # Get atlas 'tight' bounding-box
-        bb = torch.tensor([[18, 55, 1], [180, 261, 270]],
-                           device=device, dtype=torch.float64)
+        bb = bb_tight
+    bb = bb.type(torch.float64).to(device)
     # Output dimensions
     dim_mu = bb[1, ...] - bb[0, ...] + 1
-    # Bounding-box affine
+    # Bounding-box atlas affine
     mat_bb = affine_matrix_classic(bb[0, ...] - 1)
     # Modulate atlas affine with bb affine
     mat_mu = mat_mu.mm(mat_bb)
     # and affine matrix
     mat_mu = mat_a.mm(mat_mu)
-    # Mask field-of-view of image data to be the same as the atlas
-    dat = _msk_fov(dat, mat_in, mat_mu, dim_mu)
+    # # Mask field-of-view of image data to be the same as the atlas
+    # dat = _msk_fov(dat, mat_in, mat_mu, dim_mu)
     # Get atlas corners in image space
     mat = mat_mu.solve(mat_in)[0]
     c = _get_corners_3d(dim_mu).type(torch.float64).to(device)
