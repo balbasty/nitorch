@@ -18,64 +18,74 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         The method of conjugate gradients solves linear systems of
         the form A*x = b, where A is positive-definite.
 
-    Args:
-        A (torch.tensor or function): Linear operator (M, N).
-            If a function: should take an (N, 1) vector and return
-            an (M, 1) vector.
-        b (torch.tensor): Right hand side vector (N, 1).
-        x (torch.tensor, optional): Initial guess.
-            Defaults to zeros(M, 1).
-        precond (function, optional): Preconditioner (M, M).
-            Defaults to lambda x: x (i.e., identity)
-        max_iter (int, optional): Maximum number of iteration.
-            Defaults to len(b)*10.
-        tolerance (float, optional): Tolerance for early-stopping,
-            based on the L2 norm of residuals. Defaults to  1e-5.
-        verbose (bool, optional): Defaults to False.
-        sum_dtype (torch.dtype, optional): Accumulator type.
-            Choose torch.float32 for speed ortorch. float64 for precision.
-            Defaults to torch.float64.
-        inplace (bool, optional): Perform computations inplace
-            (saves performance but overrides x and may break the
-            computational graph). Defaults to True.
-        stop (str, optional): What stopping criteria to use ('residuals'|'norm').
-            The squared residuals ('residuals') are not motonically decreasing,
-            whilst the norm induced by the 𝐴-weighted scalar product ('norm') is.
-            If monotinicity is important then select 'norm'. However, this requires
-            an additional evaluation of A. Defaults to 'residuals'.
+    Parameters
+    ----------
+    A : tensor or callable
+        Linear operator.
+        If a function: should take a tensor with the same shape as `b` and
+        return a tensor with the same shape as `b`.
+    b : tensor
+        Right hand side 'vector'.
+    x : tensor, optional, default=0
+        Initial guess.
+    precond : callable, default=identity
+        Preconditioner.
+    max_iter : int, default=len(b)*10
+        Maximum number of iteration.
+    tolerance : float, default=1e-5
+        Tolerance for early-stopping.
+    verbose : bool, default = False
+        Write something at each iteration.
+    sum_dtype : torch.dtype, default=float64
+        Choose `float32` for speed or `float64` for precision.
+    inplace : bool, default=True
+        Perform computations inplace (saves performance but overrides
+        `x` and may break the computational graph).
+    stop : {'residuals', 'norm'}, default='residuals'
+        What stopping criteria to use.
+        The squared residuals ('residuals') are not motonically decreasing,
+        whilst the norm induced by the A-weighted scalar product ('norm') is.
+        If monotinicity is important then select 'norm'. However, this requires
+        an additional evaluation of A.
 
-    Returns:
-        x (torch.tensor): Solution of the linear system (M, 1).
+    Returns
+    -------
+    x : tensor
+        Solution of the linear system.
 
-    Note:
-        In practice, if A is provided as a function, b and x do not need
-        to be vector-shaped.
+    Note
+    ----
+    In practice, if A is provided as a function, b and x do not need
+    to be vector-shaped.
 
-    Example:
-        >>> # Let's solve Ax = b using both regular inversion and CG
-        >>> import torch
-        >>> from nitorch.core.optim import cg
-        >>> from timeit import default_timer as timer
-        >>> # Simulate A and b
-        >>> N = 100
-        >>> A = torch.randn(N, N)
-        >>> b = torch.randn(N, 1)
-        >>> # Make A symmetric and pos. def.
-        >>> U, S, _ = torch.svd(A)
-        >>> A = U.matmul((S + S.max()).diag().matmul(U.t()))
-        >>> # Solve by inversion
-        >>> t0 = timer()
-        >>> x1 = torch.solve(b, A)[0]
-        >>> print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
-        >>> # Solve by CG
-        >>> t0 = timer()
-        >>> x2 = cg(A, b, verbose=True, sum_dtype=torch.float32)
-        >>> print('cg(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
-        >>> # Inspect errors
-        >>> e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
-        >>> print(e1)
-        >>> e2 = torch.sqrt(torch.sum((b - A.matmul(x2)) ** 2))
-        >>> print(e2)
+    Example
+    -------
+    ```python
+    >>> # Let's solve Ax = b using both regular inversion and CG
+    >>> import torch
+    >>> from nitorch.core.optim import cg
+    >>> from timeit import default_timer as timer
+    >>> # Simulate A and b
+    >>> N = 100
+    >>> A = torch.randn(N, N)
+    >>> b = torch.randn(N, 1)
+    >>> # Make A symmetric and pos. def.
+    >>> U, S, _ = torch.svd(A)
+    >>> A = U.matmul((S + S.max()).diag().matmul(U.t()))
+    >>> # Solve by inversion
+    >>> t0 = timer()
+    >>> x1 = torch.solve(b, A)[0]
+    >>> print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
+    >>> # Solve by CG
+    >>> t0 = timer()
+    >>> x2 = cg(A, b, verbose=True, sum_dtype=torch.float32)
+    >>> print('cg(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
+    >>> # Inspect errors
+    >>> e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
+    >>> print(e1)
+    >>> e2 = torch.sqrt(torch.sum((b - A.matmul(x2)) ** 2))
+    >>> print(e2)
+    ```
 
     """
     # Format arguments
