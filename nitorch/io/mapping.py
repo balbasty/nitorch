@@ -293,7 +293,7 @@ class MappedArray(ABC):
         # compute new spatial mask
         spatial = []
         i = 0
-        for idx in index:
+        for idx in new.slicer:
             if is_newaxis(idx):
                 spatial.append(False)
             else:

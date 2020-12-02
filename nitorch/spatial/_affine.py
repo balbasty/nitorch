@@ -1309,6 +1309,7 @@ def voxel_size(mat, sym=True):
         Voxel size
 
     """
+    mat = torch.as_tensor(mat)
     dim = mat.shape[-1] - 1
     if sym:
         mat = mat[..., :dim, :dim]
@@ -2144,8 +2145,8 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
         return layout
 
     device = utils.max_device(mats, shapes)
-    shapes = torch.as_tensor(shapes, device=device).detach()
-    mats = torch.as_tensor(mats, device=device).detach()
+    shapes = utils.as_tensor(shapes, device=device).detach()
+    mats = utils.as_tensor(mats, device=device).detach()
     info = dict(dtype=mats.dtype, device=mats.device)
     dim = mats.shape[-1] - 1
 

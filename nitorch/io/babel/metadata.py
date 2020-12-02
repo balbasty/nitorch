@@ -43,6 +43,10 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
         if torch.is_tensor(affine):
             affine = affine.detach().cpu()
         affine = np.asanyarray(affine)
+        vx = np.asanyarray(voxel_size(affine))
+        vx0 = header.get_zooms()
+        vx = [vx[i] if i < len(vx) else vx0[i] for i in range(len(vx0))]
+        header.set_zooms(vx)
         if isinstance(header, MGHHeader):
             if shape is None:
                 warn('Cannot set the affine of a MGH file without '
@@ -51,7 +55,6 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
                 raise ValueError('Expected a (3, 4) or (4, 4) affine matrix. '
                                  'Got {}'.format(affine.shape))
             else:
-                vx = voxel_size(affine)
                 Mdc = affine[:3, :3] / vx
                 c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
 
@@ -61,11 +64,8 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
                 header['Pxyz_c'] = c_ras
         elif isinstance(header, Nifti1Header):
             header.set_sform(affine)
-            header.set_zooms(voxel_size(affine))
-        elif isinstance(header, AnalyzeHeader):
-            header.set_zooms(voxel_size(affine))
-            if isinstance(header, Spm99AnalyzeHeader):
-                header.set_origin_from_affine(affine)
+        elif isinstance(header, Spm99AnalyzeHeader):
+            header.set_origin_from_affine(affine)
         else:
             warn('Format {} does not accept orientation matrices. '
                  'It will be discarded.'.format(type(header).__name__),
