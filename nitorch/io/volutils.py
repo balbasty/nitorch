@@ -240,3 +240,46 @@ def _torch_addnoise(dat, amplitude=1, seed=0):
 
     return dat
 
+
+def _torch_cutoff(dat, cutoff=(0.0005, 0.9995), nh=4000):
+    """Torch clip data when outside of a range, defined by percentiles.
+
+     Parameters
+    ----------
+    dat : tensor
+        Input data.
+    cutoff : (min, max), default=(0.0005, 0.9995)
+        Percentile cutoffs.
+    nh : int, default=4000
+        Number of histogram bins.
+
+    Returns
+    -------
+    dat : tensor
+        Clipped data.
+
+    """
+    device = dat.device
+    dtype = dat.dtype
+    # Rescale intensities between 1 and nh
+    mn = torch.tensor([dat.min(), 1],
+        dtype=dtype, device=device)[None, ...]
+    mx = torch.tensor([dat.max(), 1],
+        dtype=dtype, device=device)[None, ...]
+    mc = torch.cat((mn, mx), dim=0)
+    mc = torch.tensor([1, nh],
+        dtype=dtype, device=device)[..., None].solve(mc)[0].squeeze()
+    p = dat[(dat != 0)]
+    p = (p * mc[0] + mc[1])
+    # Make histogram
+    p = p.round().long()
+    h = torch.zeros(nh + 1, device=device, dtype=p.dtype)
+    h.put_(p, torch.ones(1, dtype=p.dtype, device=device).
+        expand_as(p), accumulate=True)
+    h = h.type(dtype)
+    h = h.cumsum(0)/h.sum()
+    # Find percentiles
+    mn_out = ((h <= cutoff[0]).sum(dim=0) - mc[1]) / mc[0]
+    mx_out = ((h <= cutoff[1]).sum(dim=0) - mc[1]) / mc[0]
+
+    return torch.clamp(dat, min=mn_out, max=mx_out)
