@@ -11,7 +11,6 @@ This
 import torch
 from ast import literal_eval
 from warnings import warn
-import functools
 from nitorch import core
 from nitorch.core import utils
 from nitorch.core import pyutils

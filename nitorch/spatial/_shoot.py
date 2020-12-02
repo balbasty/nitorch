@@ -1,7 +1,8 @@
 """Integrate/Shoot velocity fields."""
 
 import torch
-from ._grid import grid_pull, channel2grid, grid2channel, identity_grid
+from ._grid import grid_pull, identity_grid
+from nitorch.core.utils import channel2last, last2channel
 
 __all__ = ['exp']
 
@@ -86,5 +87,5 @@ def _pull_vel(vel, grid, *args, **kwargs):
         Velocity
 
     """
-    return channel2grid(grid_pull(grid2channel(vel), grid, *args, **kwargs))
+    return channel2last(grid_pull(last2channel(vel), grid, *args, **kwargs))
 
