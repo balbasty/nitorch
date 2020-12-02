@@ -6,6 +6,7 @@ import re
 from nibabel.freesurfer.mghformat import MGHHeader
 from nibabel import (Nifti1Header, Spm99AnalyzeHeader, AnalyzeHeader)
 from nitorch.spatial import voxel_size
+from nitorch.core import dtypes
 
 
 def metadata_to_header(header, metadata, shape=None, dtype=None):
@@ -100,6 +101,7 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
 
     if dtype is not None or metadata.get('dtype', None) is not None:
         dtype = dtype or metadata.get('dtype', None)
+        dtype = dtypes(dtype).numpy
         header.set_data_dtype(dtype)
 
     return header
