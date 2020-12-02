@@ -60,6 +60,7 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
                 header['Pxyz_c'] = c_ras
         elif isinstance(header, Nifti1Header):
             header.set_sform(affine)
+            header.set_zooms(voxel_size(affine))
         elif isinstance(header, AnalyzeHeader):
             header.set_zooms(voxel_size(affine))
             if isinstance(header, Spm99AnalyzeHeader):
