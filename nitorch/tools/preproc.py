@@ -13,7 +13,7 @@ from ..io import (loadf, save)
 
 
 def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
-               device='cpu', do_align=True, fov='full'):
+               device='cpu', do_align=True, fov='full', mat_a=None):
     """Crop an image to the NITorch atlas field-of-view.
 
     Parameters
@@ -40,6 +40,8 @@ def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
         * 'full' : Full FOV.
         * 'brain' : Brain FOV.
         * 'tight' : Head+spine FOV.
+    mat_a : (4, 4) tensor_like, dtype=float64, optional
+        Pre-computed atlas alignment affine matrix.
 
     Returns
     -------
@@ -61,7 +63,7 @@ def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
         raise ValueError('Only one input image should be given!')
     # Do preprocessing
     dat[0], mat[0] = _atlas_crop(dat[0], mat[0], do_align=do_align,
-                                 fov=fov)
+                                 fov=fov, mat_a=mat_a)
     # Possibly write output to disk
     pth = None
     if write:
@@ -217,6 +219,8 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='aa_',
         Affine matrix aligning as mat_mov\mat_a*mat_fix.
     pth : str
         Paths to preprocessed data (only if write=True).
+    mat_cso : (4, 4) tensor_like
+        CSO transformation.
 
     """
     # Get properly formatted function input
@@ -225,8 +229,8 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='aa_',
     if len(dat) != 1:
         raise ValueError('Only one input image should be given!')
     # Do preprocessing
-    mat_a, mat_fix, dim_fix = _atlas_align(dat, mat, rigid=rigid,
-                                           pth_atlas=pth_atlas)
+    mat_a, mat_fix, dim_fix, mat_cso = _atlas_align(dat, mat, rigid=rigid,
+                                                    pth_atlas=pth_atlas)
     # Get original data
     dat = _format_input(img, device=device)[0]
     # Process registration results
@@ -238,7 +242,7 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='aa_',
         pth = _write_output(dat, mat, file=file, nam=nam, odir=odir,
                             prefix=prefix)
 
-    return rdat[0, ...], mat_a[0, ...], pth
+    return rdat[0, ...], mat_a[0, ...], pth, mat_cso[0, ...]
 
 
 def reset_origin(img, write=False, nam='', odir='', prefix='ro_',

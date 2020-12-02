@@ -173,6 +173,8 @@ def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
         Affine matrix of MNI image.
     dim_mni : (3,), tuple, list, tensor_like
         Image dimensions of MNI image.
+    mat_cso : (N, 4, 4) tensor_like
+        CSO transformation.
 
     """
     if pth_atlas is None:
@@ -194,6 +196,8 @@ def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
     q = q[:N, ...]
     dat = dat[:N]
     mat = mat[:N]
+    # Get matrix representation
+    mat_cso = expm(q, affine_basis(group=group))
     if rigid:
         # Extract only rigid part
         group = 'SE'
@@ -201,7 +205,7 @@ def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
     # Get matrix representation
     mat_a = expm(q, affine_basis(group=group))
 
-    return mat_a, mat_mni, dim_mni
+    return mat_a, mat_mni, dim_mni, mat_cso
 
 
 def _test_cost(dat, mat, cost_fun='nmi', group='SE', mean_space=False,

@@ -15,7 +15,7 @@ from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d, _msk_fov)
 from ._preproc_img import _world_reslice
 
 
-def _atlas_crop(dat, mat_in, do_align=True, fov='full'):
+def _atlas_crop(dat, mat_in, do_align=True, fov='full', mat_a=None):
     """Crop an image to the NITorch T1w atlas field-of-view.
 
     OBS: This function is implemented so to not resample the image data.
@@ -35,6 +35,8 @@ def _atlas_crop(dat, mat_in, do_align=True, fov='full'):
         * 'full' : Full FOV.
         * 'brain' : Brain FOV.
         * 'tight' : Head+spine FOV.
+    mat_a : (4, 4) tensor_like, dtype=float64, optional
+        Pre-computed atlas alignment affine matrix.
 
     Returns
     ----------
@@ -45,7 +47,8 @@ def _atlas_crop(dat, mat_in, do_align=True, fov='full'):
 
     """
     device = dat.device
-    mat_a = torch.eye(4, dtype=torch.float64, device=device)
+    if mat_a is None:
+        mat_a = torch.eye(4, dtype=torch.float64, device=device)
     if do_align:
         # Align to MNI
         mat_a = _atlas_align([dat], [mat_in], rigid=False)[0]
