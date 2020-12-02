@@ -1030,7 +1030,7 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
     dim = mat.shape[-1] - 1
 
     if tol is None:
-        tol = core.dtypes.info(dtype)['eps']
+        tol = core.dtypes.dtype(dtype).eps
 
     # Format basis
     basis = build_affine_basis(*basis, dim)
@@ -1846,7 +1846,7 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     return affine, tuple(oshape)
 
 
-def affine_default(shape, voxel_size=1, layout=None, dtype=None, device=None):
+def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
     """Generate an orientation matrix with the origin in the center of the FOV.
 
     Parameters
@@ -1886,7 +1886,7 @@ def affine_default(shape, voxel_size=1, layout=None, dtype=None, device=None):
 
     # compute shift
     lin = layout[:nb_dim, :nb_dim]
-    shift = -linalg.matvec(lin, shape/2)
+    shift = -linalg.matvec(lin, shape/2.)
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
     return as_euclidean(affine)
