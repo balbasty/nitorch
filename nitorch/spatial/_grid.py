@@ -3,18 +3,49 @@
 
 import torch
 import torch.nn.functional as _F
-from ..core import kernels, utils, linalg
-from ..core.utils import expand
-from ..core.pyutils import make_list
-from .._C import spatial as _Cspatial
-from .._C.spatial import BoundType, InterpolationType
+from nitorch.core import kernels, utils, linalg
+from nitorch.core.utils import expand
+from nitorch.core.pyutils import make_list
+from nitorch._C import spatial as _Cspatial
+from nitorch._C.spatial import BoundType, InterpolationType
 from ._affine import affine_resize
 
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
            'identity_grid', 'affine_grid', 'compose', 'jacobian',
-           'channel2grid', 'grid2channel', 'BoundType', 'InterpolationType',
-           'resize', 'resize_grid']
+           'BoundType', 'InterpolationType', 'resize', 'resize_grid']
+
+_doc_interpolation = \
+"""`interpolation` can be an int, a string or an InterpolationType.
+Possible values are:
+    - 0 or 'nearest'    or InterpolationType.nearest
+    - 1 or 'linear'     or InterpolationType.linear
+    - 2 or 'quadratic'  or InterpolationType.quadratic
+    - 3 or 'cubic'      or InterpolationType.cubic
+    - 4 or 'fourth'     or InterpolationType.fourth
+    - etc.
+A list of values can be provided, in the order [W, H, D],
+to specify dimension-specific interpolation orders."""
+
+_doc_bound = \
+"""`bound` can be an int, a string or a BoundType.
+Possible values are:
+    - 'replicate'  or BoundType.replicate
+    - 'dct1'       or BoundType.dct1
+    - 'dct2'       or BoundType.dct2
+    - 'dst1'       or BoundType.dst1
+    - 'dst2'       or BoundType.dst2
+    - 'dft'        or BoundType.dft
+    - 'zero'       or BoundType.zero
+A list of values can be provided, in the order [W, H, D],
+to specify dimension-specific boundary conditions.
+Note that
+- `dft` corresponds to circular padding
+- `dct2` corresponds to Neumann boundary conditions (symmetric)
+- `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
+See https://en.wikipedia.org/wiki/Discrete_cosine_transform
+    https://en.wikipedia.org/wiki/Discrete_sine_transform
+"""
 
 
 class _GridPull(torch.autograd.Function):
@@ -52,52 +83,31 @@ class _GridPull(torch.autograd.Function):
 def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=True):
     """Sample an image with respect to a deformation field.
 
-        `interpolation` can be an int, a string or an InterpolationType.
-        Possible values are:
-            - 0 or 'nearest'    or InterpolationType.nearest
-            - 1 or 'linear'     or InterpolationType.linear
-            - 2 or 'quadratic'  or InterpolationType.quadratic
-            - 3 or 'cubic'      or InterpolationType.cubic
-            - 4 or 'fourth'     or InterpolationType.fourth
-            - etc.
-        A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific interpolation orders.
+    Notes
+    -----
+    {interpolation}
 
-        `bound` can be an int, a string or a BoundType.
-        Possible values are:
-            - 0 or 'replicate'  or BoundType.replicate
-            - 1 or 'dct1'       or BoundType.dct1
-            - 2 or 'dct2'       or BoundType.dct2
-            - 3 or 'dst1'       or BoundType.dst1
-            - 4 or 'dst2'       or BoundType.dst2
-            - 5 or 'dft'        or BoundType.dft
-            - 6 or 'sliding'    or BoundType.sliding [not implemented]
-            - 7 or 'zero'       or BoundType.zero
-        A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific boundary conditions.
-        `sliding` is a specific condition than only applies to flow fields
-        (with as many channels as dimensions). It cannot be dimension-specific.
-        Note that
-        - `dft` corresponds to circular padding
-        - `dct2` corresponds to Neumann boundary conditions (symmetric)
-        - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
-        See https://en.wikipedia.org/wiki/Discrete_cosine_transform
-            https://en.wikipedia.org/wiki/Discrete_sine_transform
+    {bound}
 
-    Args:
-        input (torch.Tensor): Input image. (B, C, Wi, Hi, Di).
-        grid (torch.Tensor): Deformation field. (B, Wo, Ho, Do, 2|3).
-        interpolation (int or list[int] , optional): Interpolation order.
-            Defaults to 1.
-        bound (BoundType, or list[BoundType], optional): Boundary conditions.
-            Defaults to 'zero'.
-        extrapolate (bool, optional): Extrapolate out-of-bound data.
-            Defaults to True.
+    Parameters
+    ----------
+    input : (batch, channel, *inshape) tensor
+        Input image.
+    grid : (batch, *outshape, dim) tensor
+        Transformation field.
+    interpolation : int or sequence[int], default=1
+        Interpolation order.
+    bound : BoundType, or sequence[BoundType], default='zero'
+        Boundary conditions.
+    extrapolate : bool, default=True
+        Extrapolate out-of-bound data.
 
-    Returns:
-        output (torch.Tensor): Deformed image (B, C, Wo, Ho, Do).
+    Returns
+    -------
+    output : (batch, channel, *outshape) tensor
+        Deformed image.
 
-    """
+    """.format(interpolation=_doc_interpolation, bound=_doc_bound)
     # Convert parameters
     if not isinstance(bound, list) and \
        not isinstance(bound, tuple):
@@ -154,52 +164,33 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
               extrapolate=True):
     """Splat an image with respect to a deformation field (pull adjoint).
 
-        `interpolation` can be an int, a string or an InterpolationType.
-        Possible values are:
-            - 0 or 'nearest'    or InterpolationType.nearest
-            - 1 or 'linear'     or InterpolationType.linear
-            - 2 or 'quadratic'  or InterpolationType.quadratic
-            - 3 or 'cubic'      or InterpolationType.cubic
-            - 4 or 'fourth'     or InterpolationType.fourth
-            - etc.
-        A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific interpoaltion orders.
+    Notes
+    -----
+    {interpolation}
 
-        `bound` can be an int, a string or a BoundType.
-        Possible values are:
-            - 0 or 'replicate'  or BoundType.replicate
-            - 1 or 'dct1'       or BoundType.dct1
-            - 2 or 'dct2'       or BoundType.dct2
-            - 3 or 'dst1'       or BoundType.dst1
-            - 4 or 'dst2'       or BoundType.dst2
-            - 5 or 'dft'        or BoundType.dft
-            - 6 or 'sliding'    or BoundType.sliding [not implemented]
-            - 7 or 'zero'       or BoundType.zero
-        A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific boundary conditions.
-        `sliding` is a specific condition than only applies to flow fields
-        (with as many channels as dimensions). It cannot be dimension-specific.
-        Note that
-        - `dft` corresponds to circular padding
-        - `dct2` corresponds to Neumann boundary conditions (symmetric)
-        - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
-        See https://en.wikipedia.org/wiki/Discrete_cosine_transform
-            https://en.wikipedia.org/wiki/Discrete_sine_transform
+    {bound}
 
-    Args:
-        input (torch.Tensor): Input image (B, C, Wi, Hi, Di).
-        grid (torch.Tensor): Deformation field (B, Wi, Hi, Di, 2|3).
-        interpolation (int or list[int] , optional): Interpolation order.
-            Defaults to 1.
-        bound (BoundType, or list[BoundType], optional): Boundary conditions.
-            Defaults to 'zero'.
-        extrapolate (bool, optional): Extrapolate out-of-bound data.
-            Defaults to True.
+    Parameters
+    ----------
+    input : (batch, channel, *inshape) tensor
+        Input image.
+    grid : (batch, *inshape, dim) tensor
+        Transformation field.
+    shape : sequence[int], default=inshape
+        Output shape
+    interpolation : int or sequence[int], default=1
+        Interpolation order.
+    bound : BoundType, or sequence[BoundType], default='zero'
+        Boundary conditions.
+    extrapolate : bool, default=True
+        Extrapolate out-of-bound data.
 
-    Returns:
-        output (torch.Tensor): Splatted image (B, C, Wo, Ho, Do).
+    Returns
+    -------
+    output : (batch, channel, *shape) tensor
+        Spatted image.
 
-    """
+    """.format(interpolation=_doc_interpolation, bound=_doc_bound)
     # Convert parameters
     if not isinstance(bound, list) and \
        not isinstance(bound, tuple):
@@ -212,7 +203,6 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
              for b in bound]
     interpolation = [InterpolationType.__members__[i] if type(i) is str
                      else InterpolationType(i) for i in interpolation]
-
 
     # Broadcast
     batch = max(input.shape[0], grid.shape[0])
@@ -261,53 +251,31 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
                extrapolate=True):
     """Splatting weights with respect to a deformation field (pull adjoint).
 
-        This function is equivalent to applying grid_push to an image of ones.
+    Notes
+    -----
+    {interpolation}
 
-        `interpolation` can be an int, a string or an InterpolationType.
-        Possible values are:
-            - 0 or 'nearest'    or InterpolationType.nearest
-            - 1 or 'linear'     or InterpolationType.linear
-            - 2 or 'quadratic'  or InterpolationType.quadratic
-            - 3 or 'cubic'      or InterpolationType.cubic
-            - 4 or 'fourth'     or InterpolationType.fourth
-            - etc.
-        A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific interpoaltion orders.
+    {bound}
 
-        `bound` can be an int, a string or a BoundType.
-        Possible values are:
-            - 0 or 'replicate'  or BoundType.replicate
-            - 1 or 'dct1'       or BoundType.dct1
-            - 2 or 'dct2'       or BoundType.dct2
-            - 3 or 'dst1'       or BoundType.dst1
-            - 4 or 'dst2'       or BoundType.dst2
-            - 5 or 'dft'        or BoundType.dft
-            - 6 or 'sliding'    or BoundType.sliding [not implemented]
-            - 7 or 'zero'       or BoundType.zero
-        A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific boundary conditions.
-        `sliding` is a specific condition than only applies to flow fields
-        (with as many channels as dimensions). It cannot be dimension-specific.
-        Note that
-        - `dft` corresponds to circular padding
-        - `dct2` corresponds to Neumann boundary conditions (symmetric)
-        - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
-        See https://en.wikipedia.org/wiki/Discrete_cosine_transform
-            https://en.wikipedia.org/wiki/Discrete_sine_transform
+    Parameters
+    ----------
+    grid : (batch, *inshape, dim) tensor
+        Transformation field.
+    shape : sequence[int], default=inshape
+        Output shape
+    interpolation : int or sequence[int], default=1
+        Interpolation order.
+    bound : BoundType, or sequence[BoundType], default='zero'
+        Boundary conditions.
+    extrapolate : bool, default=True
+        Extrapolate out-of-bound data.
 
-    Args:
-        grid (torch.Tensor): Deformation field (B, Wi, Hi, Di, 2|3).
-        interpolation (int or list[int] , optional): Interpolation order.
-            Defaults to 1.
-        bound (BoundType, or list[BoundType], optional): Boundary conditions.
-            Defaults to 'zero'.
-        extrapolate (bool, optional): Extrapolate out-of-bound data.
-            Defaults to True.
+    Returns
+    -------
+    output : (batch, channel, *shape) tensor
+        Spatting weights.
 
-    Returns:
-        output (torch.Tensor): Splat weights (B, 1, Wo, Ho, Do).
-
-    """
+    """.format(interpolation=_doc_interpolation, bound=_doc_bound)
     # Convert parameters
     if not isinstance(bound, list) and \
        not isinstance(bound, tuple):
@@ -361,54 +329,35 @@ class _GridGrad(torch.autograd.Function):
 
 
 def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=True):
-    """Sample an image with respect to a deformation field.
+    """Sample spatial gradients of an image with respect to a deformation field.
+    
+    Notes
+    -----
+    {interpolation}
 
-        `interpolation` can be an int, a string or an InterpolationType.
-        Possible values are:
-            - 0 or 'nearest'    or InterpolationType.nearest
-            - 1 or 'linear'     or InterpolationType.linear
-            - 2 or 'quadratic'  or InterpolationType.quadratic
-            - 3 or 'cubic'      or InterpolationType.cubic
-            - 4 or 'fourth'     or InterpolationType.fourth
-            - etc.
-        A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific interpoaltion orders.
+    {bound}
 
-        `bound` can be an int, a string or a BoundType.
-        Possible values are:
-            - 0 or 'replicate'  or BoundType.replicate
-            - 1 or 'dct1'       or BoundType.dct1
-            - 2 or 'dct2'       or BoundType.dct2
-            - 3 or 'dst1'       or BoundType.dst1
-            - 4 or 'dst2'       or BoundType.dst2
-            - 5 or 'dft'        or BoundType.dft
-            - 6 or 'sliding'    or BoundType.sliding [not implemented]
-            - 7 or 'zero'       or BoundType.zero
-        A list of values can be provided, in the order [W, H, D],
-        to specify dimension-specific boundary conditions.
-        `sliding` is a specific condition than only applies to flow fields
-        (with as many channels as dimensions). It cannot be dimension-specific.
-        Note that
-        - `dft` corresponds to circular padding
-        - `dct2` corresponds to Neumann boundary conditions (symmetric)
-        - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
-        See https://en.wikipedia.org/wiki/Discrete_cosine_transform
-            https://en.wikipedia.org/wiki/Discrete_sine_transform
+    Parameters
+    ----------
+    input : (batch, channel, *inshape) tensor
+        Input image.
+    grid : (batch, *inshape, dim) tensor
+        Transformation field.
+    shape : sequence[int], default=inshape
+        Output shape
+    interpolation : int or sequence[int], default=1
+        Interpolation order.
+    bound : BoundType, or sequence[BoundType], default='zero'
+        Boundary conditions.
+    extrapolate : bool, default=True
+        Extrapolate out-of-bound data.
 
-    Args:
-        input (torch.Tensor): Input image. (B, C, Wi, Hi, Di).
-        grid (torch.Tensor): Deformation field. (B, Wo, Ho, Do, 2|3).
-        interpolation (int or list[int] , optional): Interpolation order.
-            Defaults to 1.
-        bound (BoundType, or list[BoundType], optional): Boundary conditions.
-            Defaults to 'zero'.
-        extrapolate (bool, optional): Extrapolate out-of-bound data.
-            Defaults to True.
+    Returns
+    -------
+    output : (batch, channel, *shape, dim) tensor
+        Sampled gradients.
 
-    Returns:
-        output (torch.Tensor): Sampled gradients (B, C, Wo, Ho, Do, 2|3).
-
-    """
+    """.format(interpolation=_doc_interpolation, bound=_doc_bound)
     # Convert parameters
     if not isinstance(bound, list) and \
        not isinstance(bound, tuple):
@@ -472,7 +421,7 @@ def _fov2vox(shape, align_corners=True):
     return mat
 
 
-def make_square(mat):
+def _make_square(mat):
     """Transform a compact affine matrix into a square affine matrix."""
     mat = torch.as_tensor(mat)
     shape = mat.size()
@@ -485,7 +434,7 @@ def make_square(mat):
     return mat
 
 
-def make_compact(mat):
+def _make_compact(mat):
     """Transform a square affine matrix into a compact affine matrix."""
     mat = torch.as_tensor(mat)
     shape = mat.size()
@@ -496,54 +445,28 @@ def make_compact(mat):
     return mat
 
 
-def channel2grid(warp):
-    """Warps: Channel to Grid dimension order.
-
-    . Channel ordering is: (Batch, Direction, X, Y, Z)
-    . Grid ordering is: (Batch, X, Y, Z, Direction))
-    """
-    warp = torch.as_tensor(warp)
-    warp = warp.permute((0,) + tuple(range(2, warp.dim())) + (1,))
-    return warp
-
-
-def grid2channel(warp):
-    """Warps: Grid to Channel dimension order.
-
-    . Channel ordering is: (Batch, Direction, X, Y, Z)
-    . Grid ordering is: (Batch, X, Y, Z, Direction))
-    """
-    warp = torch.as_tensor(warp)
-    warp = warp.permute((0, - 1) + tuple(range(1, warp.dim()-1)))
-    return warp
-
-
 def identity_grid(shape, dtype=None, device=None):
     """Returns an identity deformation field.
 
-    Args:
-        shape (sequence of int): Spatial dimension of the field.
-        dtype (torch.dtype, optional): Data type. Defaults to None.
-        device (torch.device, optional): Device. Defaults to None.
+    Parameters
+    ----------
+    shape : (dim,) sequence of int
+        Spatial dimension of the field.
+    dtype : torch.dtype, default=`get_default_dtype()`
+        Data type.
+    device torch.device, optional
+        Device.
 
-    Returns:
-        g (torch.Tensor): Deformation field with shape (*shape, len(shape)).
+    Returns
+    -------
+    grid : (*shape, dim) tensor
+        Transformation field
 
     """
     mesh1d = [torch.arange(float(s), dtype=dtype, device=device)
               for s in shape]
     grid = torch.meshgrid(*mesh1d)
     grid = torch.stack(grid, dim=-1)
-
-    # mat = torch.cat((torch.eye(dim, dtype=dtype, device=device),
-    #                  torch.zeros(dim, 1, dtype=dtype, device=device)), dim=1)
-    # mat = mat[None, ...]
-    # f2v = _fov2vox(shape, False).to(device, dtype)
-    # g = _F.affine_grid(mat, (1, 1) + shape[::-1], align_corners=False)
-    # g = g.permute([0] + list(range(1, dim+1))[::-1] + [dim+1])
-    # g = g.matmul(f2v[:-1, :-1].transpose(0, 1)) \
-    #     + f2v[:-1, -1].reshape((1,)*(dim+1) + (dim,))
-
     return grid
 
 
@@ -552,12 +475,15 @@ def affine_grid(mat, shape):
 
     Parameters
     ----------
-    mat (tensor) : Affine matrix (or matrices) with shape (..., D[+1], D+1).
-    shape (sequence of int) : Shape of the grid, with length D.
+    mat : (..., D[+1], D[+1]) tensor
+        Affine matrix (or matrices).
+    shape : (D,) sequence[int]
+        Shape of the grid, with length D.
 
     Returns
     -------
-    grid (tensor) : Dense transformation grid with shape (..., *shape, D)
+    grid : (..., *shape, D) tensor
+        Dense transformation grid
 
     """
     mat = torch.as_tensor(mat)
@@ -567,10 +493,12 @@ def affine_grid(mat, shape):
         raise ValueError('Dimension of the affine matrix ({}) and shape ({}) '
                          'are not the same.'.format(nb_dim, len(shape)))
     if mat.shape[-2] not in (nb_dim, nb_dim+1):
-        raise ValueError('First argument should be a matrix of shape ')
+        raise ValueError('First argument should be matrces of shape '
+                         '(..., {0}, {1}) or (..., {1], {1}) but got {2}.'
+                         .format(nb_dim, nb_dim+1, mat.shape))
+    batch_shape = mat.shape[:-2]
     grid = identity_grid(shape, mat.dtype, mat.device)
-    # TODO: use expand_dim to pad mat's and grid's dimensions
-    # TODO: add matvec (with broacasting) to module linalg
+    grid = utils.unsqueeze(grid, dim=0, ndim=len(batch_shape))
     mat = utils.unsqueeze(mat, dim=-3, ndim=nb_dim)
     lin = mat[..., :nb_dim, :nb_dim]
     off = mat[..., :nb_dim, -1]
@@ -621,9 +549,9 @@ def compose(*args, interpolation='linear', bound='dft'):
     for arg in args:
         if ismatrix(arg):
             if last_affine is None:
-                last_affine = make_square(arg)
+                last_affine = _make_square(arg)
             else:
-                last_affine = last_affine.matmul(make_square(arg))
+                last_affine = last_affine.matmul(_make_square(arg))
         else:
             if last_affine is not None:
                 args1.append(last_affine)
@@ -654,8 +582,8 @@ def compose(*args, interpolation='linear', bound='dft'):
     field = args2[-1]
     for arg in args2[-2::-1]:  # args2[-2:0:-1]
         arg = arg - identity_grid(arg.shape[1:-1], arg.dtype, arg.device)
-        arg = grid2channel(arg)
-        field = field + channel2grid(grid_pull(arg, field, interpolation, bound))
+        arg = utils.last2channel(arg)
+        field = field + utils.channel2last(grid_pull(arg, field, interpolation, bound))
 
     # /!\ (TODO) The very first field (the first one being interpolated)
     # potentially contains a multiplication with an affine matrix (i.e.,
@@ -691,7 +619,7 @@ def compose(*args, interpolation='linear', bound='dft'):
     # M, _ = torch.solve(AI, AA)                       # Solution
     # arg = arg.bmm(M) - Id                            # Closest displacement
     # arg = arg[..., :-1].reshape(shape)
-    # arg = grid2channel(arg)
+    # arg = utils.last2channel(arg)
     # field = grid_pull(arg, field, interpolation, bound)     # Interpolate
     # field = field + channel2grid(grid_pull(arg, field, interpolation, bound))
     # shape = field.shape
@@ -733,7 +661,7 @@ def jacobian(warp, bound='circular'):
     dim = shape[-1]
     ker = kernels.imgrad(dim, device=warp.device, dtype=warp.dtype)
     ker = kernels.make_separable(ker, dim)
-    warp = grid2channel(warp)
+    warp = utils.last2channel(warp)
     if bound in ('circular', 'fft'):
         warp = utils.pad(warp, (1,)*dim, mode='circular', side='both')
         pad = 0
@@ -941,13 +869,13 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
     """
     # resize grid
     kwargs['_return_trf'] = True
-    grid = grid2channel(grid)
+    grid = utils.last2channel(grid)
     outputs = resize(grid, factor, shape, affine, *args, **kwargs)
     if affine is not None:
         grid, affine, (scales, shifts) = outputs
     else:
         grid, (scales, shifts) = outputs
-    grid = channel2grid(grid)
+    grid = utils.channel2last(grid)
 
     # rescale each component
     # scales and shifts map resized coordinates to original coordinates:
