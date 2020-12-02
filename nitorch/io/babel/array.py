@@ -521,7 +521,7 @@ class BabelArray(MappedArray):
                 dtype = like.dtype
             if dtype is None:
                 dtype = dat.dtype
-            dtype = dtypes(dtype).numpy
+            dtype = dtypes.dtype(dtype).numpy
             return dtype
         dtype = guess_dtype()
 
