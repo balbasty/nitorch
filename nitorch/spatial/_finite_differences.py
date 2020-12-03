@@ -6,7 +6,7 @@ from ..core.utils import expand, slice_tensor
 from ..core.pyutils import make_list
 
 
-__all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d']
+__all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div']
 
 
 # Converts from nitorch.utils.pad boundary naming to
@@ -41,7 +41,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
         * 'c': central finite differences
         * 'f': forward finite differences
         * 'b': backward finite differences
-    bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'}, default='dct2'
+    bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'replicate', 'zero'}, default='dct2'
         Boundary condition.
 
     Returns
@@ -56,7 +56,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
 
     # check options
     bound = bound.lower()
-    if bound not in ('dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'):
+    if bound not in ('dct2', 'dct1', 'dst2', 'dst1', 'dft', 'replicate', 'zero'):
         raise ValueError('Unknown boundary type {}.'.format(bound))
     side = side.lower()[0]
     if side not in ('f', 'b', 'c'):
@@ -234,7 +234,7 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     voxel_size = make_list(voxel_size)
     nb_dim = max(len(dim), len(voxel_size))
     dim = make_list(dim, nb_dim)
-    voxel_size = make_list(dim, voxel_size)
+    voxel_size = make_list(voxel_size, nb_dim)
 
     # compute diffs in each dimension
     diffs = []
@@ -280,19 +280,19 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
         * 'f': forward finite differences
         * 'b': backward finite differences
       [ * 'c': central finite differences ] => NotImplemented
-    bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'}, default='dct2'
+    bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'replicate', 'zero'}, default='dct2'
         Boundary condition.
 
     Returns
     -------
-    diff : tensor
-        Tensor of finite differences, with same shape as the input tensor.
+    div : tensor
+        Divergence tensor, with same shape as the input tensor.
 
     """
 
     # check options
     bound = bound.lower()
-    if bound not in ('dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'):
+    if bound not in ('dct2', 'dct1', 'dst2', 'dst1', 'dft', 'replicate', 'zero'):
         raise ValueError('Unknown boundary type {}.'.format(bound))
     side = side.lower()[0]
     if side not in ('f', 'b'):
@@ -305,14 +305,6 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
 
     # ensure tensor
     x = torch.as_tensor(x)
-    dtype = x.dtype
-    device = x.device
-
-    # build "light" zero using zero strides
-    edge_shape = list(x.shape)
-    edge_shape[dim] = 1
-    zero = torch.zeros(1, dtype=dtype, device=device)
-    zero = expand(zero, edge_shape)
 
     if order == 1:
         if side == 'f':
@@ -391,6 +383,60 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
                     side=side, bound=bound)
         div = div1d(div, order=1, dim=dim, voxel_size=voxel_size,
                     side=side, bound=bound)
+
+    return div
+
+
+def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
+    """Finite differences.
+
+    Parameters
+    ----------
+    x : (*shape, [L]) tensor
+        Input tensor
+        If `dim` or `voxel_size` is a list, the last dimension of `x`
+        must have the same size as their length.
+    order : int, default=1
+        Finite difference order (1=first derivative, 2=second derivative, ...)
+    dim : int or list[int], default=-1
+        Dimension along which finite differences were computed.
+    voxel_size : float or list[float], default=1
+        Unit size used in the denominator of the gradient.
+    side : {'f', 'b'}, default='f'
+        * 'f': forward finite differences
+        * 'b': backward finite differences
+      [ * 'c': central finite differences ] => NotImplemented
+    bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'}, default='dct2'
+        Boundary condition.
+
+    Returns
+    -------
+    div : (*shape) tensor
+        Divergence tensor, with same shape as the input tensor, minus the
+        (eventual) difference dimension.
+
+    """
+    x = torch.as_tensor(x)
+
+    # find number of dimensions
+    has_last = (torch.as_tensor(dim).dim() > 0 or
+                torch.as_tensor(voxel_size).dim() > 0)
+    dim = make_list(dim)
+    voxel_size = make_list(voxel_size)
+    nb_dim = max(len(dim), len(voxel_size))
+    dim = make_list(dim, nb_dim)
+    voxel_size = make_list(voxel_size, nb_dim)
+
+    if has_last and x.shape[-1] != nb_dim:
+        raise ValueError('Last dimension of `x` should be {} but got {}'
+                         .format(nb_dim, x.shape[-1]))
+    if not has_last:
+        x = x[..., None]
+
+    # compute divergence in each dimension
+    div = 0.
+    for diff, d, v in zip(x.unbind(-1), dim, voxel_size):
+        div = div + div1d(diff, order, d, v, side, bound)
 
     return div
 
