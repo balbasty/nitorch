@@ -13,7 +13,8 @@ from ...plot import show_slices
 from ...core.kernels import smooth
 from ...core.utils import pad
 from ...spatial import (affine_default, grid_pull, identity_grid,
-                        im_gradient, voxel_size, max_bb)
+                        im_gradient, voxel_size)
+from .._preproc_utils import _mean_space
 from ..img_statistics import estimate_noise
 from ._costs import (_compute_cost, _costs_edge, _costs_hist)
 from ...core.constants import pi
@@ -273,7 +274,7 @@ def _get_mean_space(dat, mat):
         all_dim[n, ...] = torch.tensor(dat[n].shape,
                                     dtype=dtype, device=device)
     # Compute mean-space
-    mat, dim = max_bb(all_mat, all_dim)
+    mat, dim, _ = _mean_space(all_mat, all_dim)
     dim = tuple(dim.int().tolist())
 
     return mat, dim

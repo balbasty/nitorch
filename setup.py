@@ -494,7 +494,7 @@ setup(
                       'wget',            # < used for downloading nitorch data
                       'numpy', 'scipy',  # < used only in spm/affine_reg
                       ],
-    python_requires='>=3.0',
+    python_requires='>=3.6',
     ext_package='nitorch',
     ext_modules=build_extensions,
     cmdclass={'build_ext': build_ext}

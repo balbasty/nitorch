@@ -14,9 +14,11 @@ from .affine_reg._align import _atlas_align
 from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d, _msk_fov)
 from ._preproc_img import _world_reslice
 
+
 # Bounding-boxes
 bb_brain = torch.tensor([[18, 55, 130], [180, 261, 270]])
 bb_tight = torch.tensor([[18, 55, 1], [180, 261, 270]])
+
 
 def _atlas_crop(dat, mat_in, do_align=True, fov='full', mat_a=None):
     """Crop an image to the NITorch T1w atlas field-of-view.
@@ -169,6 +171,3 @@ def _subvol(dat, mat, bb=None):
     mat = mat.mm(mat_bb)
 
     return dat, mat
-
-
-
