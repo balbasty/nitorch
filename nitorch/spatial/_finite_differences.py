@@ -183,18 +183,30 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
         if voxel_size != 1:
             diff = diff / voxel_size
 
-    elif order == 2 and side == 'c':
-        # we must deal with central differences differently
-        fwd = diff1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
-                     side='f', bound=bound)
-        bwd = diff1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
-                     side='b', bound=bound)
-        diff = (fwd - bwd) / voxel_size
+    elif side == 'c':
+        # we must deal with central differences differently:
+        # -> second order differences are exact but first order
+        #    differences are approximated (we should sample between
+        #    two voxels so we must interpolate)
+        # -> for order > 2, we compose as many second order differences
+        #    as possible and then (eventually) deal with the remaining
+        #    1st order using the approximate implementation.
+        if order == 2:
+            fwd = diff1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
+                         side='f', bound=bound)
+            bwd = diff1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
+                         side='b', bound=bound)
+            diff = (fwd - bwd) / voxel_size
+        else:
+            diff = diff1d(x, order=2, dim=dim, voxel_size=voxel_size,
+                          side=side, bound=bound)
+            diff = diff1d(diff, order=order-2, dim=dim, voxel_size=voxel_size,
+                          side=side, bound=bound)
 
     else:
-        diff = diff1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
+        diff = diff1d(x, order=1, dim=dim, voxel_size=voxel_size,
                       side=side, bound=bound)
-        diff = diff1d(diff, order=1, dim=dim, voxel_size=voxel_size,
+        diff = diff1d(diff, order=order-1, dim=dim, voxel_size=voxel_size,
                       side=side, bound=bound)
 
     return diff
