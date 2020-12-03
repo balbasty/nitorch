@@ -230,7 +230,7 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     # find number of dimensions
     dim = torch.as_tensor(dim)
     voxel_size = torch.as_tensor(voxel_size)
-    drop_last = dim.dim() > 0 or voxel_size.dim() > 0
+    drop_last = dim.dim() == 0 and voxel_size.dim() == 0
     dim = make_list(dim.tolist())
     voxel_size = make_list(voxel_size.tolist())
     nb_dim = max(len(dim), len(voxel_size))
@@ -389,7 +389,7 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
 
 
 def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
-    """Finite differences.
+    """Divergence.
 
     Parameters
     ----------
