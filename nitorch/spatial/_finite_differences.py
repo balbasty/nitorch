@@ -209,9 +209,9 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
         Input tensor
     order : int, default=1
         Finite difference order (1=first derivative, 2=second derivative, ...)
-    dim : int or list[int], default=-1
+    dim : int or sequence[int], default=-1
         Dimension along which to compute finite differences.
-    voxel_size : float or list[float], default=1
+    voxel_size : float or sequence[float], default=1
         Unit size used in the denominator of the gradient.
     side : {'c', 'f', 'b'}, default='c'
         * 'c': central finite differences
@@ -228,10 +228,11 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
 
     """
     # find number of dimensions
-    drop_last = not (isinstance(dim, (list, tuple)) or
-                     isinstance(voxel_size, (list, tuple)))
-    dim = make_list(dim)
-    voxel_size = make_list(voxel_size)
+    dim = torch.as_tensor(dim)
+    voxel_size = torch.as_tensor(voxel_size)
+    drop_last = dim.dim() > 0 or voxel_size.dim() > 0
+    dim = make_list(dim.tolist())
+    voxel_size = make_list(voxel_size.tolist())
     nb_dim = max(len(dim), len(voxel_size))
     dim = make_list(dim, nb_dim)
     voxel_size = make_list(voxel_size, nb_dim)
@@ -419,10 +420,11 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
     x = torch.as_tensor(x)
 
     # find number of dimensions
-    has_last = (torch.as_tensor(dim).dim() > 0 or
-                torch.as_tensor(voxel_size).dim() > 0)
-    dim = make_list(dim)
-    voxel_size = make_list(voxel_size)
+    dim = torch.as_tensor(dim)
+    voxel_size = torch.as_tensor(voxel_size)
+    has_last = (dim.dim() > 0 or voxel_size.dim() > 0)
+    dim = make_list(dim.tolist())
+    voxel_size = make_list(voxel_size.tolist())
     nb_dim = max(len(dim), len(voxel_size))
     dim = make_list(dim, nb_dim)
     voxel_size = make_list(voxel_size, nb_dim)
