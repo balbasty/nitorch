@@ -49,7 +49,7 @@ MINIMUM_MSVC_VERSION = (19, 0, 24215)
 
 
 def torch_version(astuple=True):
-    version = torch.__version__.split('.')
+    version = torch.__version__.split('+')[0].split('.')
     version = tuple(int(v) for v in version)
     if len(version) == 2:
         version = version + (0,)
@@ -491,7 +491,7 @@ setup(
     version='0.1a.dev',
     packages=find_packages(),
     install_requires=['torch>=1.5',
-                      'wget',            # < used for downloading nitorch data
+                      'wget', 'appdirs', # < used for downloading nitorch data
                       'numpy', 'scipy',  # < used only in spm/affine_reg
                       ],
     python_requires='>=3.6',
