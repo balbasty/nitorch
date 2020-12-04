@@ -123,7 +123,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         print(s.format(0, stop, obj))
 
     # Run algorithm
-    obj0 = obj
+    # obj0 = obj
     obj = torch.zeros(max_iter, dtype=sum_dtype, device=device)
     for n_iter in range(max_iter):
         # Calculate conjugate directions P (descent direction)
