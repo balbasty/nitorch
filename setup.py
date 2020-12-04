@@ -49,7 +49,7 @@ MINIMUM_MSVC_VERSION = (19, 0, 24215)
 
 
 def torch_version(astuple=True):
-    version = torch.__version__.split('.')
+    version = torch.__version__.split('+')[0].split('.')
     version = tuple(int(v) for v in version)
     if len(version) == 2:
         version = version + (0,)
