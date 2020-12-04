@@ -19,7 +19,7 @@ data['atlas_t2_mni'] = ['https://ndownloader.figshare.com/files/25438343', 'mb_m
 data['atlas_pd_mni'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_mni_avg218PD.nii.gz']
 
 
-def fetch_data(name):
+def fetch_data(name, speak=False):
     '''Get nitorch package data.
 
     Parameters
@@ -32,6 +32,8 @@ def fetch_data(name):
         * atlas_t1_mni: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
         * atlas_t2_mni: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
         * atlas_pd_mni: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
+    speak : bool, default=False
+        Print download progress.
 
     Returns
     ----------
@@ -41,12 +43,12 @@ def fetch_data(name):
     '''
     pth_data = os.path.join(dir_os_cache, data[name][1])
     if not os.path.exists(pth_data):
-        _downloader(name)
+        _downloader(name, speak=speak)
 
     return pth_data
 
 
-def _downloader(name):
+def _downloader(name, speak):
     '''Download NITorch data.
     '''
     if not os.path.exists(dir_os_cache):
@@ -55,9 +57,10 @@ def _downloader(name):
     url = data[name][0]
     fname = data[name][1]
     pth_data = os.path.join(dir_os_cache, fname)
-    # Define wget progress bar
-    def bar(current, total, width=80):
-        print("Downloading %s to %s. Progress: %d%% (%d/%d bytes)" % (fname, dir_os_cache, current / total * 100, current, total))
+    bar = None
+    if speak:
+        def bar(current, total, width=80):
+            print("Downloading %s to %s. Progress: %d%% (%d/%d bytes)" % (fname, dir_os_cache, current / total * 100, current, total))
     if not os.path.exists(pth_data):
         # Download data
         wget.download(url, pth_data, bar=bar)
