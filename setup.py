@@ -491,7 +491,7 @@ setup(
     version='0.1a.dev',
     packages=find_packages(),
     install_requires=['torch>=1.5',
-                      'wget',            # < used for downloading nitorch data
+                      'wget', 'appdirs', # < used for downloading nitorch data
                       'numpy', 'scipy',  # < used only in spm/affine_reg
                       ],
     python_requires='>=3.6',
