@@ -6,7 +6,7 @@
 import numpy as np
 import torch
 from ...plot import show_slices
-from ...core.pyutils import get_pckg_data
+from ...core.datasets import fetch_data
 from ...spatial import (affine_basis, voxel_size)
 from ...core.linalg import expm
 from ._costs import (_costs_hist, _compute_cost)
@@ -179,7 +179,7 @@ def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
     """
     if pth_atlas is None:
         # Get path to nitorch's T1w intensity atlas
-        pth_atlas = get_pckg_data('atlas_t1')
+        pth_atlas = fetch_data('atlas_t1')
     # Get number of input images
     N = len(dat)
     # Append atlas at the end of input data

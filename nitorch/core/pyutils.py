@@ -1,26 +1,9 @@
 """Python utilities."""
 import os
-import wget
-import pathlib
 import functools
 from types import GeneratorType as generator
 import warnings
 from collections import Counter
-import appdirs
-
-
-# Download NITorch data to OS cache
-dir_os_cache = pathlib.Path(appdirs.user_cache_dir('nitorch'))
-
-# NITorch data dictionary.
-# Keys are data names, values are list of FigShare URL and filename.
-nitorch_data = {}
-nitorch_data['atlas_t1'] = ['https://ndownloader.figshare.com/files/25595000', 'mb_avg218T1.nii.gz']
-nitorch_data['atlas_t2'] = ['https://ndownloader.figshare.com/files/25595003', 'mb_avg218T2.nii.gz']
-nitorch_data['atlas_pd'] = ['https://ndownloader.figshare.com/files/25594997', 'mb_avg218PD.nii.gz']
-nitorch_data['atlas_t1_mni'] = ['https://ndownloader.figshare.com/files/25438340', 'mb_mni_avg218T1.nii.gz']
-nitorch_data['atlas_t2_mni'] = ['https://ndownloader.figshare.com/files/25438343', 'mb_mni_avg218T2.nii.gz']
-nitorch_data['atlas_pd_mni'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_mni_avg218PD.nii.gz']
 
 
 def file_mod(s, nam='', prefix='', suffix='', odir='', ext=''):
@@ -60,50 +43,6 @@ def file_mod(s, nam='', prefix='', suffix='', odir='', ext=''):
         ext = ext0
 
     return os.path.join(odir, prefix + nam + suffix + ext)
-
-
-def get_pckg_data(name):
-    '''Get nitorch package data.
-
-    Parameters
-    ----------
-    name : str
-        Name of nitorch data, available are:
-        * atlas_t1: MRI T1w intensity atlas, 1 mm resolution.
-        * atlas_t2: MRI T2w intensity atlas, 1 mm resolution.
-        * atlas_pd: MRI PDw intensity atlas, 1 mm resolution.
-        * atlas_t1_mni: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_t2_mni: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_pd_mni: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
-
-    Returns
-    ----------
-    pth_data : str
-        Absolute path to requested nitorch data.
-
-    '''
-    pth_data = os.path.join(dir_os_cache, nitorch_data[name][1])
-    if not os.path.exists(pth_data):
-        _download_pckg_data(name)
-
-    return pth_data
-
-
-def _download_pckg_data(name):
-    '''Download NITorch data.
-    '''
-    if not os.path.exists(dir_os_cache):
-        os.makedirs(dir_os_cache, exist_ok=True)
-    # Get download options
-    url = nitorch_data[name][0]
-    fname = nitorch_data[name][1]
-    pth_data = os.path.join(dir_os_cache, fname)
-    # Define wget progress bar
-    def bar(current, total, width=80):
-        print("Downloading %s to %s. Progress: %d%% (%d/%d bytes)" % (fname, dir_os_cache, current / total * 100, current, total))
-    if not os.path.exists(pth_data):
-        # Download data
-        wget.download(url, pth_data, bar=bar)
 
 
 def make_sequence(input, n=None, crop=True, *args, **kwargs):

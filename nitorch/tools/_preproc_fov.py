@@ -6,7 +6,7 @@
 from pathlib import Path
 import os
 import torch
-from ..core.pyutils import get_pckg_data
+from ..core.datasets import fetch_data
 from ..plot.volumes import show_slices
 from ..io import map
 from ..spatial import (affine_default, affine_matrix_classic, voxel_size)
@@ -59,7 +59,7 @@ def _atlas_crop(dat, mat_in, do_align=True, fov='full', mat_a=None):
         mat_a = _atlas_align([dat], [mat_in], rigid=False)[0]
         mat_a = mat_a[0, ...]
     # Get atlas information
-    file = map(get_pckg_data('atlas_t1'))
+    file = map(fetch_data('atlas_t1'))
     mat_mu = file.affine.type(torch.float64).to(device)
     if fov == 'brain':
         # Get atlas 'brain' bounding-box
