@@ -3,7 +3,7 @@ import nitorch as ni
 from nitorch import core, spatial
 from nitorch.tools.qmri import io as qio
 from ._options import Options
-from ._preproc import preproc
+from ._preproc import preproc, postproc
 from ._utils import hessian_loaddiag, hessian_matmul
 from ._param import ParameterMap
 
@@ -20,8 +20,10 @@ def nonlin(data, opt=None):
 
     Returns
     -------
-    maps : estatics.ParameterMaps
-        Fitted parameters.
+    intecepts : sequence[GradientEcho]
+        Echo series extrapolated to TE=0
+    decay : estatics.ParameterMap
+        R2* decay map
 
     """
 
@@ -148,7 +150,8 @@ def nonlin(data, opt=None):
             sumrls = -0.5 * rls.sum(dtype=torch.double)
             rls = rls.reciprocal_()
 
-    return maps
+    # --- Prepare output ---
+    return postproc(maps, data)
 
 
 def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):

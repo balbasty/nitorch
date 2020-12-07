@@ -424,4 +424,24 @@ class GradientEchoMulti(GradientEcho):
             yield self.echo(e)
 
 
+class PrecomputedFieldMap(Volume3D):
+    """A field map, eventually associated to a structural image in the
+    same space."""
 
+    def attributes(self):
+        """Return the name of all attributes"""
+        return super().attributes() + ['magnitude', 'unit']
+
+    _magnitude: Volume3D or type(None) = None
+    unit: str = '%'
+
+    @property
+    def magnitude(self):
+        return self._magnitude
+
+    @magnitude.setter
+    def magnitude(self, val):
+        if val is not None:
+            self._magnitude = Volume3D(val)
+        else:
+            self._magnitude = None

@@ -3,7 +3,7 @@ import nitorch as ni
 from nitorch import core, spatial
 from nitorch.tools.qmri import io as qio
 from ._options import Options
-from ._preproc import preproc
+from ._preproc import preproc, postproc
 from ._utils import hessian_loaddiag
 
 
@@ -19,8 +19,10 @@ def loglin(data, opt=None):
 
     Returns
     -------
-    maps : estatics.ParameterMaps
-        Fitted parameters.
+    intecepts : sequence[GradientEcho]
+        Echo series extrapolated to TE=0
+    decay : estatics.ParameterMap
+        R2* decay map
 
     """
 
@@ -75,7 +77,7 @@ def loglin(data, opt=None):
                for contrast, intercept in zip(data, maps.intercepts))
     print('{:3d} | {:12.6g}'.format(n_iter+1, crit))
 
-    return maps
+    return postproc(maps, data)
 
 
 def _loglin_gradient(contrast, intercept, decay, opt, do_grad=True):

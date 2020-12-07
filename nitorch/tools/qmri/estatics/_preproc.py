@@ -2,8 +2,39 @@ import torch
 from nitorch import core, spatial
 from nitorch.tools.img_statistics import estimate_noise
 from nitorch.tools.preproc import affine_align
+from nitorch.tools.qmri import io as qio
 from ._options import Options
 from ._param import ParameterMap, ParameterMaps
+
+
+def postproc(maps, contrasts):
+    """Generate TE=0 and R2* volumes from log-parameters
+
+    Parameters
+    ----------
+    maps : ParameterMaps
+    contrasts : sequence[GradientEchoMulti]
+
+    Returns
+    -------
+    intercepts : sequence[GradientEchoSingle]
+    decay : ParameterMap
+
+    """
+    intercepts = []
+    for loginter, contrast in zip(maps.intercepts, contrasts):
+        volume = loginter.volume.exp_()
+        attributes = {key: getattr(contrast, key)
+                      for key in contrast.attributes}
+        attributes['affine'] = loginter.affine
+        attributes['te'] = 0.
+        inter = qio.GradientEchoSingle(volume, **attributes)
+        intercepts.append(inter)
+    decay = maps.decay
+    decay.name = 'R2*'
+    decay.unit = '1/s'
+
+    return intercepts, decay
 
 
 def preproc(data, opt):
