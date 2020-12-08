@@ -235,9 +235,10 @@ class ModelTrainer:
             self.optimizer.step()
             # update average across batches
             with torch.no_grad():
-                epoch_loss += loss
-                update_loss_dict(epoch_losses, losses)
-                update_loss_dict(epoch_metrics, metrics)
+                weight = float(batch[0].shape[0])
+                epoch_loss += loss * weight
+                update_loss_dict(epoch_losses, losses, weight)
+                update_loss_dict(epoch_metrics, metrics, weight)
                 # print
                 if n_batch % self.log_interval == 0:
                     self._print('train', epoch, n_batch+1, nb_steps,
@@ -272,9 +273,10 @@ class ModelTrainer:
                 self.model(*batch, _loss=losses, _metric=metrics)
                 loss = sum(losses.values())
                 # update average across batches
-                epoch_loss += loss
-                update_loss_dict(epoch_losses, losses)
-                update_loss_dict(epoch_metrics, metrics)
+                weight = float(batch[0].shape[0])
+                epoch_loss += loss * weight
+                update_loss_dict(epoch_losses, losses, weight)
+                update_loss_dict(epoch_metrics, metrics, weight)
                 # print
                 if n_batch % self.log_interval == 0:
                     self._print('eval', epoch, n_batch + 1, nb_steps,
