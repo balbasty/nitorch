@@ -125,12 +125,53 @@ class MaxPool(Module):
         return pool(x)
 
 
+class MeanPool(Module):
+    """Generic mean pooling layer"""
+
+    def __init__(self, dim, kernel_size=3, stride=None, padding=0,
+                 dilation=1):
+        super().__init__(dim, kernel_size, stride, padding, dilation,
+                         reduction='mean')
+
+        if dim == 1:
+            self.pool = tnn.AvgPool1d
+        elif dim == 2:
+            self.pool = tnn.AvgPool2d
+        elif dim == 3:
+            self.pool = tnn.AvgPool3d
+        else:
+            self.pool = None
+
+        if self.pool is not None:
+            self.pool = self.pool(kernel_size, stride, padding, dilation)
+
+    def forward(self, x, w=None, **overload):
+
+        if self.pool is None and w is None:
+            return super().forward(x, **overload)
+
+        dim = self.dim
+        kernel_size = make_list(overload.get('kernel_size', self.kernel_size), dim)
+        stride = make_list(overload.get('stride', self.stride))
+        padding = make_list(overload.get('padding', self.padding))
+        dilation = make_list(overload.get('dilation', self.dilation))
+
+        if w is not None:
+            pool = SumPool(dim=dim, kernel_size=kernel_size, stride=stride,
+                           padding=padding, dilation=dilation)
+            w = w.expand(x.shape)
+            return pool(x*w) / pool(w)
+        else:
+            pool = copy(self.pool)
+            pool.kernel_size = kernel_size
+            pool.stride = stride
+            pool.padding = padding
+            pool.dilation = dilation
+            return pool(x)
+
+
 class MinPool(Pool):
     reduction = 'min'
-
-
-class MeanPool(Pool):
-    reduction = 'mean'
 
 
 class SumPool(Pool):

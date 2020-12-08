@@ -1,73 +1,48 @@
 """Python utilities."""
-
-
 import os
-import wget
-import pathlib
 import functools
 from types import GeneratorType as generator
 import warnings
+from collections import Counter
 
 
-# nitorch data directory (ugly, I know..)
-dir_nitorch_data = os.path.join(pathlib.Path(__file__).parent.parent.parent.absolute(), 'data')
-
-# nitorch data dictionary.
-# Keys are data names, values are list of FigShare URL and filename.
-nitorch_data = {}
-nitorch_data['atlas_t1'] = ['https://ndownloader.figshare.com/files/25438340', 'mb_mni_avg218T1.nii.gz']
-nitorch_data['atlas_t2'] = ['https://ndownloader.figshare.com/files/25438343', 'mb_mni_avg218T2.nii.gz']
-nitorch_data['atlas_pd'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_mni_avg218PD.nii.gz']
-
-
-def get_pckg_data(name):
-    '''Get nitorch package data.
+def file_mod(s, nam='', prefix='', suffix='', odir='', ext=''):
+    """Modify a file path.
 
     Parameters
     ----------
-    name : str
-        Name of nitorch data, available are:
-        * atlas_t1: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_t2: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_pd: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
+    s : str
+        File path.
+    nam : str, default=''
+        Filename, if empty string, unchanged.
+    prefix : str, default=''
+        Filename prefix.
+    suffix : str, default=''
+        Filename suffix.
+    odir : str, default=''
+        Output directory, if empty string, unchanged.
+    ext : str, default=''
+        Extension, if empty string, unchanged.
 
     Returns
     ----------
-    pth_data : str
-        Absolute path to requested nitorch data.
+    s : str
+        Modified file path.
 
-    '''
-    pth_data = os.path.join(dir_nitorch_data, nitorch_data[name][1])
-    if not os.path.exists(pth_data):
-        _download_pckg_data(name)
+    """
+    odir0, nam0 = os.path.split(s)
+    parts = nam0.split('.')
+    nam0 = parts[0]
+    ext0 = '.' + '.'.join(parts[1:])
+    if not odir:
+        odir = odir0
+    odir = os.path.abspath(odir)  # Get absolute path
+    if not nam:
+        nam = nam0
+    if not ext:
+        ext = ext0
 
-    return pth_data
-
-
-def _download_pckg_data(name):
-    '''Download nitorch data.
-
-    Parameters
-    ----------
-    name : str
-        Name of nitorch data, available are:
-        * atlas_t1: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_t2: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
-        * atlas_pd: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
-
-    '''
-    # Make data directory, if not already exists
-    pathlib.Path(dir_nitorch_data).mkdir(parents=True, exist_ok=True)
-    # Get download options
-    url = nitorch_data[name][0]
-    fname = nitorch_data[name][1]
-    pth_data = os.path.join(dir_nitorch_data, fname)
-    # Define wget progress bar
-    def bar(current, total, width=80):
-        print("Downloading %s to %s. Progress: %d%% (%d/%d bytes)" % (fname, dir_nitorch_data, current / total * 100, current, total))
-    if not os.path.exists(pth_data):
-        # Download data
-        wget.download(url, pth_data, bar=bar)
+    return os.path.join(odir, prefix + nam + suffix + ext)
 
 
 def make_sequence(input, n=None, crop=True, *args, **kwargs):
@@ -414,3 +389,21 @@ def pop(obj, key=0, *args, **kwargs):
                 return args[0]
             else:
                 return kwargs.get('default')
+
+
+def majority(x):
+    """Return majority element in a sequence.
+
+    Parameters
+    ----------
+    x : sequence
+        Input sequence of hashable elements
+
+    Returns
+    -------
+    elem
+        Majority element
+
+    """
+    count = Counter(x)
+    return count.most_common(1)[0][0]

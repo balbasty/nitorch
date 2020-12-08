@@ -13,7 +13,8 @@ import math
 class VelocitySample(Module):
     """Sample a random velocity field."""
 
-    def __init__(self, dim=None, shape=None, amplitude=15, fwhm=10):
+    def __init__(self, dim=None, shape=None, amplitude=15, fwhm=10,
+                 device='cpu', dtype=None):
         """
 
         Parameters
@@ -26,15 +27,23 @@ class VelocitySample(Module):
             Amplitude of the random field (per channel).
         fwhm : float or callable or list, default=10
             Full-width at half-maximum of the random field (per direction).
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+
         """
         super().__init__()
         self.field = RandomFieldSample(shape=shape, channel=dim,
-                                       amplitude=amplitude, fwhm=fwhm)
+                                       amplitude=amplitude, fwhm=fwhm,
+                                       device=device, dtype=dtype)
 
     dim = property(lambda self: self.field.channel)
     shape = property(lambda self: self.field.shape)
     amplitude = property(lambda self: self.field.amplitude)
     fwhm = property(lambda self: self.field.fwhm)
+    device = property(lambda self: self.field.device)
+    dtype = property(lambda self: self.field.dtype)
 
     def forward(self, batch=1, **overload):
         """
@@ -59,6 +68,8 @@ class VelocitySample(Module):
             'shape': overload.get('shape', self.field.shape),
             'amplitude': overload.get('amplitude', self.field.amplitude),
             'fwhm': overload.get('fwhm', self.field.fwhm),
+            'dtype': overload.get('dtype', self.field.dtype),
+            'device': overload.get('device', self.field.device),
         }
 
         # preprocess amplitude
@@ -85,7 +96,8 @@ class DiffeoSample(Module):
     """Sample a random diffeomorphic transformation field."""
 
     def __init__(self, dim=None, shape=None, amplitude=15, fwhm=10,
-                 bound='dft', interpolation=1):
+                 bound='dft', interpolation=1, device='cpu',
+                 dtype=None):
         """
 
         Parameters
@@ -102,16 +114,24 @@ class DiffeoSample(Module):
             Boundary condition when exponentiating the velocity field.
         interpolation : InterpolationType, default=1
             Interpolation order when exponentiating the velocity field
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+
         """
         super().__init__()
         self.velocity = VelocitySample(shape=shape, dim=dim,
-                                       amplitude=amplitude, fwhm=fwhm)
+                                       amplitude=amplitude, fwhm=fwhm,
+                                       device=device, dtype=dtype)
         self.exp = GridExp(bound=bound, interpolation=interpolation)
 
     dim = property(lambda self: self.velocity.dim)
     shape = property(lambda self: self.velocity.shape)
     amplitude = property(lambda self: self.velocity.amplitude)
     fwhm = property(lambda self: self.velocity.fwhm)
+    device = property(lambda self: self.velocity.device)
+    dtype = property(lambda self: self.velocity.dtype)
     bound = property(lambda self: self.exp.bound)
     interpolation = property(lambda self: self.exp.interpolation)
 
@@ -138,6 +158,8 @@ class DiffeoSample(Module):
             'shape': overload.get('shape', self.velocity.shape),
             'amplitude': overload.get('amplitude', self.velocity.amplitude),
             'fwhm': overload.get('fwhm', self.velocity.fwhm),
+            'dtype': overload.get('dtype', self.velocity.dtype),
+            'device': overload.get('device', self.velocity.device),
         }
         opt_exp = {
             'bound': overload.get('bound', self.exp.bound),
@@ -154,7 +176,8 @@ class AffineSample(Module):
     """Sample an affine transformation matrix"""
 
     def __init__(self, dim=None, translation=True, rotation=True,
-                 zoom=True, shear=True):
+                 zoom=True, shear=True, device='cpu',
+                 dtype=None):
         """
 
         Parameters
@@ -173,6 +196,11 @@ class AffineSample(Module):
         shear : bool or callable or list, default=True
             Shear parameters in voxels
             If True -> Normal(0, 10)
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+
         """
         super().__init__()
         self.dim = dim
@@ -180,14 +208,30 @@ class AffineSample(Module):
         self.rotation = rotation
         self.zoom = zoom
         self.shear = shear
+        self.device = device
+        if dtype is None or not dtype.is_floating_point:
+            dtype = torch.get_default_dtype()
+        self.dtype = dtype
 
-    default_translation = td.Normal(0., 5.).sample
-    default_rotation = td.Normal(0., 20.).sample
-    default_shear = td.Normal(0., .1).sample
+    def default_translation(self, *b):
+        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
+        one = torch.tensor(1, device=self.device, dtype=self.dtype)
+        return td.Normal(zero, 5.*one).sample(*b)
 
-    @staticmethod
-    def default_zoom(*b):
-        return td.Normal(0., math.log(2)/3).sample(*b).exp()
+    def default_rotation(self, *b):
+        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
+        one = torch.tensor(1, device=self.device, dtype=self.dtype)
+        return td.Normal(zero, 0.1*one).sample(*b)
+
+    def default_shear(self, *b):
+        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
+        one = torch.tensor(1, device=self.device, dtype=self.dtype)
+        return td.Normal(zero, 0.01*one).sample(*b)
+
+    def default_zoom(self, *b):
+        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
+        one = torch.tensor(1, device=self.device, dtype=self.dtype)
+        return td.Normal(zero, math.log(2)/3*one).sample(*b).exp()
 
     def forward(self, batch=1, **overload):
         """
@@ -210,6 +254,8 @@ class AffineSample(Module):
         rotation = make_list(overload.get('rotation', self.rotation))
         zoom = make_list(overload.get('zoom', self.zoom))
         shear = make_list(overload.get('shear', self.shear))
+        dtype = make_list(overload.get('dtype', self.dtype))
+        device = make_list(overload.get('device', self.device))
 
         # compute dimension
         dim = dim or max(len(translation), len(rotation), len(zoom), len(shear))
@@ -245,7 +291,8 @@ class AffineSample(Module):
         prm = prm.transpose(0, 1)
 
         # generate affine matrix
-        mat = affine_matrix_classic(prm, dim=dim)
+        mat = affine_matrix_classic(prm, dim=dim).\
+            type(self.dtype).to(self.device)
 
         return mat
 
@@ -255,7 +302,8 @@ class DeformedSample(Module):
 
     def __init__(self, vel_amplitude=15, vel_fwhm=10,
                  translation=True, rotation=True, zoom=True, shear=True,
-                 vel_bound='dft', image_bound='dct2', interpolation=1):
+                 vel_bound='dft', image_bound='dct2', interpolation=1,
+                 device='cpu', dtype=None):
         """
 
         Parameters
@@ -282,13 +330,20 @@ class DeformedSample(Module):
             Boundary condition when sampling the image.
         interpolation : InterpolationType, default=1
             Interpolation order
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+
         """
         super().__init__()
         self.affine = AffineSample(translation=translation, rotation=rotation,
-                                   zoom=zoom, shear=shear)
+                                   zoom=zoom, shear=shear, device=device,
+                                   dtype=dtype)
         self.grid = DiffeoSample(amplitude=vel_amplitude,
                                  fwhm=vel_fwhm, bound=vel_bound,
-                                 interpolation=interpolation)
+                                 interpolation=interpolation, device=device,
+                                 dtype=dtype)
         self.pull = GridPull(bound=image_bound,
                              interpolation=interpolation)
 
@@ -296,10 +351,14 @@ class DeformedSample(Module):
     rotation = property(lambda self: self.affine.rotation)
     zoom = property(lambda self: self.affine.zoom)
     shear = property(lambda self: self.affine.shear)
+    dtype = property(lambda self: self.affine.dtype)
+    device = property(lambda self: self.affine.device)
     vel_amplitude = property(lambda self: self.grid.amplitude)
     vel_fwhm = property(lambda self: self.grid.fwhm)
     vel_bound = property(lambda self: self.grid.bound)
     interpolation = property(lambda self: self.grid.interpolation)
+    dtype = property(lambda self: self.grid.dtype)
+    device = property(lambda self: self.grid.device)
     image_bound = property(lambda self: self.pull.bound)
 
     def forward(self, image, **overload):
@@ -332,6 +391,8 @@ class DeformedSample(Module):
             'fwhm': overload.get('vel_fwhm', self.grid.fwhm),
             'bound': overload.get('vel_bound', self.grid.bound),
             'interpolation': overload.get('interpolation', self.grid.interpolation),
+            'dtype': overload.get('dtype', self.grid.dtype),
+            'device': overload.get('device', self.grid.device),
         }
         opt_affine = {
             'dim': dim,
@@ -339,6 +400,8 @@ class DeformedSample(Module):
             'rotation': overload.get('rotation', self.affine.rotation),
             'zoom': overload.get('zoom', self.affine.zoom),
             'shear': overload.get('shear', self.affine.shear),
+            'dtype': overload.get('dtype', self.affine.dtype),
+            'device': overload.get('device', self.affine.device),
         }
         opt_pull = {
             'bound': overload.get('image_bound', self.pull.bound),

@@ -7,7 +7,12 @@ TODO
 
 
 import torch
-from ..core.optionals import matplotlib
+from ..core.optionals import try_import
+# Try import matplotlib
+plt = try_import('matplotlib.pyplot', _as=True)
+make_axes_locatable = try_import(
+    'mpl_toolkits.axes_grid1', keys='make_axes_locatable', _as=False)
+
 
 def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 fig_num=1, colorbar=False):
@@ -28,11 +33,8 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
         fig_ax ([matplotlib.figure, matplotlib.axes])
 
     """
-    if matplotlib is None:
+    if plt is None:
         return
-
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
 
     # Work out dimensions/channels
     img = img[..., None, None]
@@ -65,17 +67,17 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
     # Show images
     img_list = []
     for c in range(num_chan):  # loop over image channels
-        im_c = torch.squeeze(img[:, :, ix[2], c]).cpu()
+        im_c = torch.squeeze(img[:, :, ix[2], c]).detach().cpu()
         if is_3d:
             ax_c = ax[0] if num_chan == 1 else ax[0, c] if not flip else ax[c, 0]
             im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
             img_list.append(im_c)
             ax_c = ax[1] if num_chan == 1 else ax[1, c] if not flip else ax[c, 1]
-            im_c = torch.squeeze(img[:, ix[1], :, c]).cpu()
+            im_c = torch.squeeze(img[:, ix[1], :, c]).detach().cpu()
             im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
             img_list.append(im_c)
             ax_c = ax[2] if num_chan == 1 else ax[2, c] if not flip else ax[c, 2]
-            im_c = torch.squeeze(img[ix[0], :, :, c]).cpu()
+            im_c = torch.squeeze(img[ix[0], :, :, c]).detach().cpu()
             im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
             img_list.append(im_c)
         else:

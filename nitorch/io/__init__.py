@@ -201,7 +201,6 @@ keyword attributes.
 
 """
 
-from . import dtype
 from . import loadsave
 from . import mapping
 from . import metadata
@@ -209,7 +208,7 @@ from . import optionals
 from . import readers
 from . import writers
 
-from .mapping import MappedArray, CatArray, cat, AccessType
+from .mapping import MappedArray, CatArray, cat, stack, AccessType
 from .loadsave import map, load, loadf, save, savef
 
 if optionals.nibabel:
