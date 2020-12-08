@@ -1,6 +1,7 @@
 """Tools to ease model training (like torch.ignite)"""
 
 import torch
+from nitorch.core.utils import benchmark
 from nitorch.core.pyutils import make_tuple, make_list
 from nitorch.nn.modules._base import Module, nitorchmodule
 import string
@@ -77,6 +78,7 @@ class ModelTrainer:
                  dtype=None,
                  epoch=0,
                  log_interval=10,
+                 benchmark=False,
                  save_model=None,
                  save_optimizer=None,
                  load_model=None,
@@ -120,6 +122,11 @@ class ModelTrainer:
             First epoch
         log_interval : int, default=float
             Print/save model
+        benchmark : bool, default=False
+            Use the cudnn benchmarking utility that uses the first forward
+            pass to compare different convolution algorithms and select the
+            best performing one. You should only use this option if the
+            spatial shape of your input dat ais constant across mini batches.
         save_model : str, optional
             A path to save the model at each epoch. Can have a
             formatted component ('mymodel_{}.pth') for the epoch number.
@@ -140,6 +147,7 @@ class ModelTrainer:
         self.eval_set = eval_set
         self.optimizer = optimizer(model.parameters())
         self.log_interval = log_interval
+        self.benchmark = benchmark
         self.save_model = save_model
         self.save_optimizer = save_optimizer
         self.load_model = load_model
@@ -366,13 +374,14 @@ class ModelTrainer:
 
     def train(self):
         """Launch training"""
-        self.model.to(dtype=self.dtype, device=self.device)
-        self._eval(self.epoch)
-        self._save(self.epoch)
-        for self.epoch in range(self.epoch+1, self.nb_epoch+1):
-            self._train(self.epoch)
+        with benchmark(self.benchmark):
+            self.model.to(dtype=self.dtype, device=self.device)
             self._eval(self.epoch)
             self._save(self.epoch)
+            for self.epoch in range(self.epoch+1, self.nb_epoch+1):
+                self._train(self.epoch)
+                self._eval(self.epoch)
+                self._save(self.epoch)
 
     def eval(self):
         """Launch evaluation"""
