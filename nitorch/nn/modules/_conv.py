@@ -3,6 +3,7 @@
 import torch
 from torch import nn as tnn
 from ._base import nitorchmodule
+from ._norm import BatchNorm
 from ..activations import _map_activations
 from ...core.pyutils import make_tuple, rep_sequence, getargs
 from copy import copy
@@ -74,6 +75,11 @@ class Conv(tnn.Module):
                 * have a learnable activation specific to this module
                 * have a learnable activation shared with other modules
                 * have a non-learnable activation
+        batch_norm : bool or callable, optional
+            Batch normalization layer.
+            Can be a class (typically a Module), which is then instantiated,
+            or a callable (an already instantiated class or a more simple
+            function).
         try_inplace : bool, default=True
             Apply activation inplace if possible
             (i.e., not (is_leaf and requires_grad).
@@ -82,10 +88,11 @@ class Conv(tnn.Module):
         super().__init__()
 
         # Get additional arguments that are not present in torch's conv
-        transposed, activation, try_inplace = getargs(
+        transposed, activation, batch_norm, try_inplace = getargs(
             [('transposed', 10, False),
              ('activation', 11, None),
-             ('try_inplace', 12, True)],
+             ('batch_norm', 12, None),
+             ('try_inplace', 13, True)],
             args, kwargs, consume=True)
 
         # Store dimension
@@ -95,22 +102,33 @@ class Conv(tnn.Module):
         # Select Conv
         if transposed:
             if dim == 1:
-                self.conv = nitorchmodule(tnn.ConvTranspose1d)(*args, **kwargs)
+                conv = nitorchmodule(tnn.ConvTranspose1d)(*args, **kwargs)
             elif dim == 2:
-                self.conv = nitorchmodule(tnn.ConvTranspose2d)(*args, **kwargs)
+                conv = nitorchmodule(tnn.ConvTranspose2d)(*args, **kwargs)
             elif dim == 3:
-                self.conv = nitorchmodule(tnn.ConvTranspose3d)(*args, **kwargs)
+                conv = nitorchmodule(tnn.ConvTranspose3d)(*args, **kwargs)
             else:
                 NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
         else:
             if dim == 1:
-                self.conv = nitorchmodule(tnn.Conv1d)(*args, **kwargs)
+                conv = nitorchmodule(tnn.Conv1d)(*args, **kwargs)
             elif dim == 2:
-                self.conv = nitorchmodule(tnn.Conv2d)(*args, **kwargs)
+                conv = nitorchmodule(tnn.Conv2d)(*args, **kwargs)
             elif dim == 3:
-                self.conv = nitorchmodule(tnn.Conv3d)(*args, **kwargs)
+                conv = nitorchmodule(tnn.Conv3d)(*args, **kwargs)
             else:
                 NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
+
+        # Select batch norm
+        if isinstance(batch_norm, bool) and batch_norm:
+                batch_norm = BatchNorm(self.dim, conv.in_channels)
+        self.batch_norm = batch_norm() if inspect.isclass(batch_norm) \
+                          else batch_norm if callable(batch_norm) \
+                          else None
+
+        # Set conv attribute after batch_norm so that they are nicely
+        # ordered during pretty printing
+        self.conv = conv
 
         # Add activation
         #   an activation can be a class (typically a Module), which is
@@ -166,6 +184,12 @@ class Conv(tnn.Module):
         conv.dilation = make_tuple(dilation, self.dim)
         conv.padding_mode = padding_mode
 
+        # Batch norm
+        batch_norm = overload.get('batch_norm', self.batch_norm)
+        batch_norm = batch_norm() if inspect.isclass(batch_norm)    \
+                     else batch_norm if callable(batch_norm)        \
+                     else None
+
         # Activation
         activation = overload.get('activation', self.activation)
         if isinstance(activation, str):
@@ -179,7 +203,9 @@ class Conv(tnn.Module):
                 and not (x.is_leaf and x.requires_grad):
             activation.inplace = True
 
-        # Convolution + Activation
+        # BatchNorm + Convolution + Activation
+        if batch_norm is not None:
+            x = batch_norm(x)
         x = conv(x)
         if activation is not None:
             x = activation(x)
