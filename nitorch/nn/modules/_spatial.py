@@ -2,11 +2,11 @@
 
 import torch
 from torch import nn as tnn
-from ... import spatial
+from nitorch import core, spatial
+from nitorch.core.pyutils import make_list
 from ._cnn import UNet, CNN
 from ._base import Module
 from .. import check
-from ...core.pyutils import make_list
 
 
 _interpolation_doc = \
@@ -339,7 +339,7 @@ class AffineExp(Module):
         super().__init__()
 
         self.dim = dim
-        self.basis, _ = spatial.build_affine_basis(basis, dim)
+        self.basis = spatial.build_affine_basis(basis, dim)
         self.fwd = fwd
         self.inv = inv
 
@@ -709,7 +709,7 @@ class VoxelMorph(Module):
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
         velocity = self.unet(source_and_target)
-        velocity = spatial.channel2grid(velocity)
+        velocity = core.utils.channel2last(velocity)
         velocity_small = self.resize(velocity, type='displacement')
         grid = self.exp(velocity_small)
         grid = self.resize(grid, shape=target.shape[2:], type='grid')
@@ -744,7 +744,7 @@ class VoxelMorphSemiSupervised(VoxelMorph):
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
         velocity = self.unet(source_and_target)
-        velocity = spatial.channel2grid(velocity)
+        velocity = core.utils.channel2last(velocity)
         velocity_small = self.resize(velocity, type='displacement')
         grid = self.exp(velocity_small)
         grid = self.resize(grid, shape=target.shape[2:])

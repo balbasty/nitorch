@@ -2,10 +2,11 @@
 import torch
 from warnings import warn
 import numpy as np
+import re
 from nibabel.freesurfer.mghformat import MGHHeader
-from nibabel import (Nifti1Header, Spm2AnalyzeHeader,
-                     Spm99AnalyzeHeader, AnalyzeHeader)
+from nibabel import (Nifti1Header, Spm99AnalyzeHeader, AnalyzeHeader)
 from nitorch.spatial import voxel_size
+from nitorch.core import dtypes
 
 
 def metadata_to_header(header, metadata, shape=None, dtype=None):
@@ -40,8 +41,12 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
     if metadata.get('affine', None) is not None:
         affine = metadata['affine']
         if torch.is_tensor(affine):
-            affine = affine.detach()
+            affine = affine.detach().cpu()
         affine = np.asanyarray(affine)
+        vx = np.asanyarray(voxel_size(affine))
+        vx0 = header.get_zooms()
+        vx = [vx[i] if i < len(vx) else vx0[i] for i in range(len(vx0))]
+        header.set_zooms(vx)
         if isinstance(header, MGHHeader):
             if shape is None:
                 warn('Cannot set the affine of a MGH file without '
@@ -50,8 +55,6 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
                 raise ValueError('Expected a (3, 4) or (4, 4) affine matrix. '
                                  'Got {}'.format(affine.shape))
             else:
-                affine = np.asanyarray(affine)
-                vx = voxel_size(affine)
                 Mdc = affine[:3, :3] / vx
                 c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
 
@@ -61,10 +64,8 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
                 header['Pxyz_c'] = c_ras
         elif isinstance(header, Nifti1Header):
             header.set_sform(affine)
-        elif isinstance(header, AnalyzeHeader):
-            header.set_zooms(voxel_size(affine))
-            if isinstance(header, Spm99AnalyzeHeader):
-                header.set_origin_from_affine(affine)
+        elif isinstance(header, Spm99AnalyzeHeader):
+            header.set_origin_from_affine(affine)
         else:
             warn('Format {} does not accept orientation matrices. '
                  'It will be discarded.'.format(type(header).__name__),
@@ -85,11 +86,8 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
     if (metadata.get('time_step', None) is not None or
         metadata.get('tr', None) is not None):
         time_step = metadata.get('time_step', None) or metadata['tr']
-        if isinstance(header, Nifti1Header):
-            time_step = time_step / header.get_n_slices()
-            header.set_slice_duration(time_step)
-        elif isinstance(header, MGHHeader):
-            zooms = header.get_zooms()[:-1]
+        if isinstance(header, (MGHHeader, Nifti1Header)):
+            zooms = header.get_zooms()[:3]
             zooms = (*zooms, time_step)
             header.set_zooms(zooms)
         else:
@@ -103,6 +101,7 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
 
     if dtype is not None or metadata.get('dtype', None) is not None:
         dtype = dtype or metadata.get('dtype', None)
+        dtype = dtypes(dtype).numpy
         header.set_data_dtype(dtype)
 
     return header
@@ -131,6 +130,10 @@ def header_to_metadata(header, metadata):
 
     if 'voxel_size' in metadata:
         metadata['voxel_size'] = header.get_zooms()[:3]
+        if hasattr(header, 'get_xyzt_units'):
+            metadata['voxel_size_unit'], _ = header.get_xyzt_units()
+        else:
+            metadata['voxel_size_unit'] = 'mm'
 
     if 'affine' in metadata:
         metadata['affine'] = torch.as_tensor(header.get_best_affine())
@@ -142,30 +145,92 @@ def header_to_metadata(header, metadata):
         _, metadata['inter'] = header.get_slope_inter()
 
     if 'time_step' in metadata or 'tr' in metadata:
-        if isinstance(header, Nifti1Header):
-            try:
-                time_step = header.get_slice_duration() * header.get_n_slices()
-            except:
-                time_step = None
-            if 'time_step' in metadata:
-                metadata['time_step'] = time_step
-            if 'tr' in metadata:
-                metadata['tr'] = time_step
-        elif isinstance(header, MGHHeader):
-            time_step = header.get_zooms()[-1]
-            if 'time_step' in metadata:
-                metadata['time_step'] = time_step
-            if 'tr' in metadata:
-                metadata['tr'] = time_step
+        zooms = header.get_zooms()
+        time_step = zooms[3] if len(zooms) > 3 else None
+        time_step = time_step or None
+        if hasattr(header, 'get_xyzt_units'):
+            _, time_unit = header.get_xyzt_units()
         else:
-            if 'time_step' in metadata:
-                metadata['time_step'] = None
-            if 'tr' in metadata:
-                metadata['tr'] = None
-            warn('Format {} does not store time steps. ', RuntimeWarning)
+            time_unit = 'ms' if isinstance(header, MGHHeader) else 'sec'
+        if time_step is None and isinstance(header, Nifti1Header):
+            descrip = header['descrip'].tobytes().decode().rstrip('\x00')
+            parse = re.search('tr=(?P<tr>[\d.]+)\s*(?P<unit>([m]?s)?)',
+                              descrip, re.IGNORECASE)
+            if parse:
+                time_step = float(parse.group('tr'))
+                time_unit = parse.group('unit') or time_unit
 
-    # TODO: time offset / intent for nifti format
-    # TODO: te/ti/fa for MGH format
+        if 'time_step' in metadata:
+            metadata['time_step'] = time_step
+            if time_step is not None:
+                metadata['time_step_unit'] = time_unit
+        if 'tr' in metadata:
+            metadata['tr'] = time_step
+            if time_step is not None:
+                metadata['tr_unit'] = time_unit
+
+    if 'time_offset' in metadata:
+        if isinstance(header, Nifti1Header):
+            metadata['time_offset'] = float(header['toffset'])
+        else:
+            metadata['time_offset'] = None
+
+    if 'te' in metadata:
+        if isinstance(header, MGHHeader):
+            te = float(header['te']) or None
+            te_unit = 'ms'
+        else:
+            te = None
+            te_unit = 'sec'
+        if te is None and isinstance(header, Nifti1Header):
+            descrip = header['descrip'].tobytes().decode().rstrip('\x00')
+            parse = re.search('te=(?P<te>[\d.]+)\s*(?P<unit>([m]?s)?)',
+                              descrip, re.IGNORECASE)
+            if parse:
+                te = float(parse.group('te'))
+                te_unit = parse.group('unit') or te_unit
+
+        metadata['te'] = te
+        if te:
+            metadata['te_unit'] = te_unit
+
+    if 'ti' in metadata:
+        if isinstance(header, MGHHeader):
+            ti = float(header['ti']) or None
+            ti_unit = 'ms'
+        else:
+            ti = None
+            ti_unit = 'sec'
+        if ti is None and isinstance(header, Nifti1Header):
+            descrip = header['descrip'].tobytes().decode().rstrip('\x00')
+            parse = re.search('ti=(?P<ti>[\d.]+)\s*(?P<unit>([m]?s)?)',
+                              descrip, re.IGNORECASE)
+            if parse:
+                ti = float(parse.group('ti'))
+                ti_unit = parse.group('unit') or ti_unit
+
+        metadata['ti'] = ti
+        if ti:
+            metadata['ti_unit'] = ti_unit
+
+    if 'fa' in metadata:
+        if isinstance(header, MGHHeader):
+            fa = float(header['flip_angle']) or None
+            fa_unit = 'rad'
+        else:
+            fa = None
+            fa_unit = 'deg'
+        if fa is None and isinstance(header, Nifti1Header):
+            descrip = header['descrip'].tobytes().decode().rstrip('\x00')
+            parse = re.search('fa=(?P<fa>[\d.]+)\s*(?P<unit>(deg|rad)?)',
+                              descrip, re.IGNORECASE)
+            if parse:
+                fa = float(parse.group('fa'))
+                fa_unit = parse.group('unit') or fa_unit
+
+        metadata['fa'] = fa
+        if fa:
+            metadata['fa_unit'] = fa_unit
 
     if 'dtype' in metadata:
         metadata['dtype'] = header.get_data_dtype()

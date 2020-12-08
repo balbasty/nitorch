@@ -1,11 +1,10 @@
 from ..mapping import MappedArray, AccessType
 from ..indexing import is_fullslice, split_operation, slicer_sub2ind, invert_slice
-from .. import dtype as cast_dtype
-from .. import nputils
+from .. import volutils
 from ..readers import reader_classes
 from .metadata import ome_zooms, parse_unit
 from nitorch.spatial import affine_default
-from nitorch.core import pyutils
+from nitorch.core import pyutils, dtypes
 from tifffile import TiffFile
 from contextlib import contextmanager
 import torch
@@ -197,49 +196,43 @@ class TiffArray(MappedArray):
 
         # --- sanity check before reading ---
         dtype = self.dtype if dtype is None else dtype
-        outinfo = cast_dtype.info(dtype)
-        if not numpy and outinfo['torch'] is None:
+        dtype = dtypes.dtype(dtype)
+        if not numpy and dtype.torch is None:
             raise TypeError('Data type {} does not exist in PyTorch.'
                             .format(dtype))
-        if not isinstance(dtype, np.dtype):
-            dtype = outinfo['numpy']
 
         # --- check that view is not empty ---
         if pyutils.prod(self.shape) == 0:
             if numpy:
-                return np.zeros(self.shape, dtype=dtype)
+                return np.zeros(self.shape, dtype=dtype.numpy)
             else:
-                return torch.zeros(self.shape, dtype=outinfo['torch'], device=device)
+                return torch.zeros(self.shape, dtype=dtype.torch, device=device)
 
         # --- read native data ---
         slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
         with self.tiffobj() as f:
             dat = self._read_data_raw(slicer, tiffobj=f)
         dat = dat.transpose(perm)[newdim]
-        ininfo = cast_dtype.info(self.dtype)
+        indtype = dtypes.dtype(self.dtype)
 
         # --- cutoff ---
-        dat = nputils.cutoff(dat, cutoff, dim)
+        dat = volutils.cutoff(dat, cutoff, dim)
 
         # --- cast ---
-        rand = rand and ininfo['is_integer']
-        if rand and not outinfo['is_floating_point']:
-            tmpdtype = np.float64
+        rand = rand and not indtype.is_floating_point
+        if rand and not dtype.is_floating_point:
+            tmpdtype = dtypes.float64
         else:
             tmpdtype = dtype
-        dat, scale = nputils.cast(dat, tmpdtype, casting, with_scale=True)
+        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
-        if rand and not (scale == 1 and outinfo['is_integer']):
-            noise = np.random.rand(*dat.shape)
-            if scale != 1:
-                noise *= scale
-            noise = noise.astype(dat.dtype)
-            dat += noise
+        if rand and not (scale == 1 and not dtype.is_floating_point):
+            dat = volutils.addnoise(dat, scale)
 
         # --- final cast ---
-        dat = nputils.cast(dat, dtype, 'unsafe')
+        dat = volutils.cast(dat, dtype.numpy, 'unsafe')
 
         # convert to torch if needed
         if not numpy:
