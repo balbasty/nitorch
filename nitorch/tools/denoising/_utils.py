@@ -54,10 +54,10 @@ def patch_dry_run(shape, patch_size, window_size=None):
     nb_dim = len(shape)
     patch_size = core.pyutils.make_list(patch_size, nb_dim)
     patch_size = [pch or dim for pch, dim in zip(patch_size, shape)]
-    window_size = core.pyutils.make_tuple(window_size, nb_dim)
-    window_size = [pch or dim for pch, dim in zip(window_size, shape)]
-
     post_patch_shape = [s // p for s, p in zip(shape, patch_size)]
+
+    window_size = core.pyutils.make_tuple(window_size, nb_dim)
+    window_size = [pch or dim for pch, dim in zip(window_size, post_patch_shape)]
     post_window_shape = [s // p for s, p in zip(post_patch_shape, window_size)]
 
     return tuple(post_window_shape), tuple(window_size), tuple(patch_size)
@@ -97,7 +97,7 @@ def extract_patches(x, patch_size, window_size=None):
         window_size = [pch or dim for pch, dim in zip(window_size, shape)]
         for d, sz in enumerate(window_size):
             x = x.unfold(dimension=d, size=sz, step=sz)
-        x = x.reshape((-1, *patch_size, -1))
+        x = x.reshape((-1, *patch_size, core.pyutils.prod(window_size)))
         x = last_to_first(x).transpose(0, 1)
     else:
         x = x.reshape((1, -1, *patch_size))
