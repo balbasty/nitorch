@@ -352,6 +352,24 @@ class ModelTrainer:
         if last:
             print('')
 
+    def _hello(self, mode):
+        if self.device.type == 'cuda':
+            device = torch.cuda.get_device_name(self.device)
+        else:
+            assert self.device.type == 'cpu'
+            device = 'CPU'
+        dtype = str(self.dtype).split('.')[-1]
+        if mode == 'train':
+            hello = 'Training model {} for {} epochs (steps per epoch: {}) ' \
+                    'on {} (dtype = {})'
+            hello = hello.format(type(self.model).__name__, self.nb_epoch,
+                                 len(self.train_set), device, dtype)
+        else:
+            hello = 'Evaluating model {} (minibatches: {}) on {} (dtype = {})'
+            hello = hello.format(type(self.model).__name__,
+                                 len(self.eval_set), device, dtype)
+        print(hello, flush=True)
+
     def _save(self, epoch):
         """Save once"""
         if self.save_model:
@@ -374,6 +392,7 @@ class ModelTrainer:
 
     def train(self):
         """Launch training"""
+        self._hello('train')
         with benchmark(self.benchmark):
             self.model.to(dtype=self.dtype, device=self.device)
             self._eval(self.epoch)
@@ -385,6 +404,7 @@ class ModelTrainer:
 
     def eval(self):
         """Launch evaluation"""
+        self._hello('eval')
         self.model.to(dtype=self.dtype, device=self.device)
         self._eval()
 
