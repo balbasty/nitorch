@@ -12,7 +12,8 @@ class SegNet(Module):
 
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.2), implicit=True):
+                 activation=tnn.LeakyReLU(0.2), batch_norm=False,
+                 implicit=True):
         """
 
         Parameters
@@ -31,6 +32,11 @@ class SegNet(Module):
             Kernel size
         activation : str or callable, default=LeakyReLU(0.2)
             Activation function in the UNet.
+        batch_norm : bool or callable, optional
+            Batch normalization layer.
+            Can be a class (typically a Module), which is then instantiated,
+            or a callable (an already instantiated class or a more simple
+            function).
         implicit : bool, default=True
             Only return `output_classes` probabilities (the last one
             is implicit as probabilities must sum to 1).
@@ -54,7 +60,8 @@ class SegNet(Module):
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=activation,
-                         final_activation=final_activation)
+                         final_activation=final_activation,
+                         batch_norm=batch_norm)
 
         # register loss tag
         self.tags = ['segmentation']
