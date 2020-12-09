@@ -73,7 +73,7 @@ class SegNet(Module):
     kernel_size = property(lambda self: self.unet.kernel_size)
     activation = property(lambda self: self.unet.activation)
 
-    def forward(self, image, ground_truth=None, *, _loss, _metric):
+    def forward(self, image, ground_truth=None, *, _loss=None, _metric=None):
 
         image = torch.as_tensor(image)
 
