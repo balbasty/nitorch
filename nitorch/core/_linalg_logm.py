@@ -46,7 +46,7 @@ def matrix_chain_rule(A, G, f):
         if torch.is_tensor(mat):
             return mat.new_zeros(shape)
         else:
-            return np.zeros(mat.shape, dtype=mat.dtype)
+            return np.zeros(shape, dtype=mat.dtype)
 
     A = transpose(A)
     n = A.shape[-1]

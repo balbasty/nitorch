@@ -894,3 +894,33 @@ def ceil_pow(t, p=2.0, l=2.0):
     ct = ct.type(dtype0)
 
     return ct
+
+class benchmark:
+    """Context manager for the voncolution benchar;inking utility
+    from pytorch.
+
+    When the benchmark value is True, each time a convolution is called
+    on a new input shape, several algorithms are performed and evaluated,
+    and the best one kept in memory. Therefore, benchmarking is beneficial
+    if and only if the (channel + spatial) shape of your input data is
+    constant.
+
+    Examples
+    --------
+    ```python
+    from nitorch.core.utils import benchmark
+    with benchmark(True):
+        train_my_model(model)
+    ```
+
+    """
+
+    def __init__(self, value=True):
+        self.do_benchmark = value
+
+    def __enter__(self):
+        self.prev_value = torch.backends.cudnn.benchmark
+        torch.backends.cudnn.benchmark = self.do_benchmark
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        torch.backends.cudnn.benchmark = self.prev_value
