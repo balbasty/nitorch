@@ -33,10 +33,13 @@ jobs:
       env:
         cuda: ${{ github.event.inputs.cuda-version }}
       run: |
-        if [ !-z ${{ github.event.inputs.cuda-version }} ]; then
-          os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.cuda-version }})"
-          [ !-f "./scripts/actions/install_cuda_${os}.sh" ] \
-            && {echo "cuda not available on %{os}"; return 1;}
+        if [ ! -z ${{ github.event.inputs.cuda-version }} ]; then
+          os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.os }})"
+          echo "$os"
+          if [ ! -f "./scripts/actions/install_cuda_${os}.sh" ]; then
+            echo "cuda not available on ${os}"
+            exit 1
+          fi
           source "./scripts/actions/install_cuda_${os}.sh"
           if [[ $? -eq 0 ]]; then
             # Set paths for subsequent steps, using ${CUDA_PATH}
@@ -61,7 +64,7 @@ jobs:
     - name: Install PyTorch ${{ github.event.inputs.pytorch-version }}
       run: |
         version=${{ github.event.inputs.pytorch-version }}
-        if [ !-z ${{ github.event.inputs.cuda-version }} ]; then
+        if [ ! -z ${{ github.event.inputs.cuda-version }} ]; then
           cudaversion = "$(sed 's/.//' <<< ${{ github.event.inputs.cuda-version }})"
           version += '+${cudaversion}'
         fi
