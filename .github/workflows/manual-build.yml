@@ -66,7 +66,7 @@ jobs:
         version=${{ github.event.inputs.pytorch-version }}
         if [ ! -z ${{ github.event.inputs.cuda-version }} ]; then
           cudaversion="$(sed 's/.//' <<< ${{ github.event.inputs.cuda-version }})"
-          version+="${cudaversion}"
+          version+="+cu${cudaversion}"
         fi
         pip install torch=="${version}"
     - name: Build nitorch
