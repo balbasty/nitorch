@@ -1,11 +1,11 @@
 name: nitorch-build
 
 on:
-  push:
-    branches: [  ]
-  pull_request:
-    branches: [  ]
-
+  workflow_dispatch
+#  push:
+#    branches: [  ]
+#  pull_request:
+#    branches: [  ]
 
 jobs:
 
