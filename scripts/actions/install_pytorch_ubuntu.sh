@@ -1,7 +1,15 @@
 
+# parse pytorch version
+TORCH_VERSION_MAJOR_MINOR=${torch}
+TORCH_MAJOR=$(echo "${TORCH_VERSION_MAJOR_MINOR}" | cut -d. -f1)
+TORCH_MINOR=$(echo "${TORCH_VERSION_MAJOR_MINOR}" | cut -d. -f2)
+TORCH_PATCH=$(echo "${TORCH_VERSION_MAJOR_MINOR}" | cut -d. -f3)
+TORCH_SHORT="${TORCH_MAJOR}${TORCH_MINOR}"
+TORCH_REPO="https://download.pytorch.org/whl/torch_stable.html"
+
 # parse cuda version
 CUDA_VERSION_MAJOR_MINOR=${cuda}
-if [ ! -z "$CUDA_VERSION_MAJOR_MINOR" ]; then
+if [ -z "$CUDA_VERSION_MAJOR_MINOR" ]; then
   CUDA_SHORT="cpu"
 else
   CUDA_MAJOR=$(echo "${CUDA_VERSION_MAJOR_MINOR}" | cut -d. -f1)
@@ -10,13 +18,6 @@ else
   CUDA_SHORT="${CUDA_MAJOR}${CUDA_MINOR}"
 fi
 
-# parse pytorch version
-TORCH_VERSION_MAJOR_MINOR=${torch}
-TORCH_MAJOR=$(echo "${TORCH_VERSION_MAJOR_MINOR}" | cut -d. -f1)
-TORCH_MINOR=$(echo "${TORCH_VERSION_MAJOR_MINOR}" | cut -d. -f2)
-TORCH_PATCH=$(echo "${TORCH_VERSION_MAJOR_MINOR}" | cut -d. -f3)
-TORCH_SHORT="${TORCH_MAJOR}${TORCH_MINOR}"
-TORCH_REPO="https://download.pytorch.org/whl/torch_stable.html"
 
 if [ "$TORCH_SHORT" == "17" ]; then
   [ "$CUDA_SHORT" == "cpu" ] || \
