@@ -6,6 +6,7 @@ from nitorch.core.pyutils import make_tuple, make_list
 from nitorch.nn.modules._base import Module, nitorchmodule
 import string
 import math
+import os
 
 
 def update_loss_dict(old, new, weight=1, inplace=True):
@@ -374,9 +375,13 @@ class ModelTrainer:
         """Save once"""
         if self.save_model:
             save_model = self._formatfile(self.save_model, epoch)
+            dir_model = os.path.jdirname(save_model)
+            os.makedirs(dir_model, exist_ok=True)
             torch.save(self.model.state_dict(), save_model)
         if self.save_optimizer:
             save_optimizer = self._formatfile(self.save_optimizer, epoch)
+            dir_optimizer = os.path.jdirname(save_optimizer)
+            os.makedirs(dir_optimizer, exist_ok=True)
             torch.save(self.optimizer.state_dict(), save_optimizer)
 
     @ staticmethod
