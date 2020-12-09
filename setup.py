@@ -355,23 +355,27 @@ def omp_flags():
     else:
         return ['-fopenmp']
 
+
 def omp_libraries():
     if is_darwin():
-        return [find_omp_darwin()[1]]
+        lib = find_omp_darwin()[1]
+        return [lib] if lib else []
     else:
         return []
 
 
 def omp_library_dirs():
     if is_darwin():
-        return [os.path.join(find_omp_darwin()[2], 'lib')]
+        ompdir = find_omp_darwin()[2]
+        return [os.path.join(ompdir, 'lib')] if ompdir else []
     else:
         return []
 
 
 def omp_include_dirs():
     if is_darwin():
-        return [os.path.join(find_omp_darwin()[2], 'include')]
+        ompdir = find_omp_darwin()[2]
+        return [os.path.join(ompdir, 'include')] if ompdir else []
     else:
         return []
 
