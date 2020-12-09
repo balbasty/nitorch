@@ -15,6 +15,10 @@ on:
         description: 'Version of pytorch'
         required: false
         default: '1.6'
+      cuda-version:
+        description: 'Version of cuda'
+        required: false
+        default: '10.1'
 
 jobs:
 
@@ -24,15 +28,43 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+
+    - name: Install CUDA ${{ github.event.inputs.cuda-version }}
+      env:
+        cuda: ${{ github.event.inputs.cuda-version }}
+      run: |
+        if [ !-z ${{ github.event.inputs.cuda-version }} ]; then
+          os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.cuda-version }})"
+          [ !-f "./scripts/actions/install_cuda_${os}.sh" ] \
+            && {echo "cuda not available on %{os}"; return 1;}
+          source "./scripts/actions/install_cuda_${os}.sh"
+          if [[ $? -eq 0 ]]; then
+            # Set paths for subsequent steps, using ${CUDA_PATH}
+            echo "Adding CUDA to CUDA_PATH, PATH and LD_LIBRARY_PATH"
+            echo "CUDA_PATH=${CUDA_PATH}" >> $GITHUB_ENV
+            echo "${CUDA_PATH}/bin" >> $GITHUB_PATH
+            echo "LD_LIBRARY_PATH=${CUDA_PATH}/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          fi
+        fi
+      shell: bash
+
     - name: Set up Python ${{ github.event.inputs.python-version }} on ${{ github.event.inputs.os }}
       uses: actions/setup-python@v2
       with:
         python-version: ${{ github.event.inputs.python-version }}
+
     - name: Install pip
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
     - name: Install PyTorch ${{ github.event.inputs.pytorch-version }}
-      run: pip install torch==${{ github.event.inputs.pytorch-version }}
+      run: |
+        version=${{ github.event.inputs.pytorch-version }}
+        if [ !-z ${{ github.event.inputs.cuda-version }} ]; then
+          cudaversion = "$(sed 's/.//' <<< ${{ github.event.inputs.cuda-version }})"
+          version += '+${cudaversion}'
+        fi
+        pip install torch=="${version}"
     - name: Build nitorch
-      run: python ./setup.py install
+      run: python setup.py install
