@@ -54,10 +54,10 @@ jobs:
     - name: Build nitorch
       run: python setup.py install
 
-    - name: Lint
-      run: |
-        pip install flake8
-        flake8 .
+#    - name: Lint
+#      run: |
+#        pip install flake8
+#        flake8 .
 
     - name: Tests
       run: |
