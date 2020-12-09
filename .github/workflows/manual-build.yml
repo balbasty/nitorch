@@ -4,38 +4,35 @@ on:
   workflow_dispatch:
     inputs:
       os:
-        description: 'List of operating systems'
-        default: [ubuntu-latest]
+        description: 'Operating system'
+        required: false
+        default: 'ubuntu-latest'
       python-version:
-        description: 'List of versions of python'
-        default: [ 3.6 ]
+        description: 'Version of python'
+        required: false
+        default: '3.6'
       pytorch-version:
-        description: 'List of versions of pytorch'
-        default: [ 1.6 ]
+        description: 'Version of pytorch'
+        required: false
+        default: '1.6'
 
 jobs:
 
   build:
 
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:  ${{ github.event.inputs.os }}
-        python-version: ${{ github.event.inputs.python-version }}
-        pytorch-version: ${{ github.event.inputs.pytorch-version }}
+    runs-on: ${{ github.event.inputs.os }}
 
     steps:
     - uses: actions/checkout@v2
-    - name: Set up Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    - name: Set up Python ${{ github.event.inputs.python-version }} on ${{ github.event.inputs.os }}
       uses: actions/setup-python@v2
       with:
-        python-version: ${{ matrix.python-version }}
+        python-version: ${{ github.event.inputs.python-version }}
     - name: Install pip
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-    - name: Install PyTorch
-      run: pip install torch==${{ matrix.pytorch-version }}
-    - name: Build
+    - name: Install PyTorch ${{ github.event.inputs.pytorch-version }}
+      run: pip install torch==${{ github.event.inputs.pytorch-version }}
+    - name: Build nitorch
       run: python ./setup.py install
