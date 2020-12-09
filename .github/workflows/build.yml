@@ -2,9 +2,9 @@ name: nitorch-build
 
 on:
   push:
-    branches: [ ci ]
+    branches: [ ci, buildsystem ]
   pull_request:
-    branches: [ ci ]
+    branches: [ ci, buildsystem ]
 
 
 jobs:
