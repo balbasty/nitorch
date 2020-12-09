@@ -1,11 +1,17 @@
-name: nitorch-build
+name: nitorch-manual-build
 
 on:
-  push:
-    branches: [ ci, buildsystem ]
-  pull_request:
-    branches: [ ci, buildsystem ]
-
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'List of operating systems'
+        default: [ubuntu-latest]
+      python-version:
+        description: 'List of versions of python'
+        default: [ 3.6 ]
+      pytorch-version:
+        description: 'List of versions of pytorch'
+        default: [ 1.6 ]
 
 jobs:
 
@@ -15,9 +21,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: [ 3.6, 3.7, 3.8 ]
-        pytorch-version: [ 1.3, 1.4, 1.5, 1.6, 1.7 ]
+        os:  ${{ github.event.inputs.os }}
+        python-version: ${{ github.event.inputs.python-version }}
+        pytorch-version: ${{ github.event.inputs.pytorch-version }}
 
     steps:
     - uses: actions/checkout@v2
