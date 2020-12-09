@@ -1,0 +1,41 @@
+name: nitorch-manual-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: 'List of operating systems'
+        default: [ubuntu-latest]
+      python-version:
+        description: 'List of versions of python'
+        default: [ 3.6 ]
+      pytorch-version:
+        description: 'List of versions of pytorch'
+        default: [ 1.6 ]
+
+jobs:
+
+  build:
+
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:  ${{ github.event.inputs.os }}
+        python-version: ${{ github.event.inputs.python-version }}
+        pytorch-version: ${{ github.event.inputs.pytorch-version }}
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python ${{ matrix.python-version }} on ${{ matrix.os }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install pip
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    - name: Install PyTorch
+      run: pip install torch==${{ matrix.pytorch-version }}
+    - name: Build
+      run: python ./setup.py install
