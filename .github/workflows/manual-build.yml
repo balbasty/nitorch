@@ -29,9 +29,29 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
-    - name: Install CUDA ${{ github.event.inputs.cuda-version }}
+    - if: ${{ runner.os }} == 'Windows'
+      # Windows -> powershell
+      name: Install CUDA ${{ github.event.inputs.cuda-version }}
       env:
         cuda: ${{ github.event.inputs.cuda-version }}
+      shell: powershell
+      run: |
+        # Install CUDA via a powershell script
+        .\scripts\actions\install_cuda_windows.ps1
+        if ($?) {
+          # Set paths for subsequent steps, using $env:CUDA_PATH
+          echo "Adding CUDA to CUDA_PATH, CUDA_PATH_X_Y and PATH"
+          echo "CUDA_PATH=$env:CUDA_PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "$env:CUDA_PATH_VX_Y=$env:CUDA_PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "$env:CUDA_PATH/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        }
+
+    - if: ${{ runner.os }} != 'Windows'
+      # Unix -> bash
+      name: Install CUDA ${{ github.event.inputs.cuda-version }}
+      env:
+        cuda: ${{ github.event.inputs.cuda-version }}
+      shell: bash
       run: |
         if [ ! -z ${{ github.event.inputs.cuda-version }} ]; then
           os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.os }})"
@@ -49,7 +69,6 @@ jobs:
             echo "LD_LIBRARY_PATH=${CUDA_PATH}/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
           fi
         fi
-      shell: bash
 
     - name: Set up Python ${{ github.event.inputs.python-version }} on ${{ github.event.inputs.os }}
       uses: actions/setup-python@v2
@@ -62,14 +81,17 @@ jobs:
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Install PyTorch ${{ github.event.inputs.pytorch-version }}
+      env:
+        cuda: ${{ github.event.inputs.cuda-version }}
+        torch: ${{ github.event.inputs.pytorch-version }}
+      shell: bash
       run: |
-        version=${{ github.event.inputs.pytorch-version }}
-        if [ ! -z ${{ github.event.inputs.cuda-version }} ]; then
-          cudaversion="$(sed 's/\.//' <<< ${{ github.event.inputs.cuda-version }})"
-          version+="+cu${cudaversion}"
-        else
-          version+="+cpu"
+        os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.os }})"
+        echo "$os"
+        if [ ! -f "./scripts/actions/install_pytorch_${os}.sh" ]; then
+          echo "pytorch not available on ${os}"
+          exit 1
         fi
-        pip install torch=="${version}" -f https://download.pytorch.org/whl/torch_stable.html
+        source "./scripts/actions/install_pytorch_${os}.sh"
     - name: Build nitorch
       run: python setup.py install
