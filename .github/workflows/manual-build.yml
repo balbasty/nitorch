@@ -36,7 +36,7 @@ jobs:
         if [ !-z ${{ github.event.inputs.cuda-version }} ]; then
           os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.cuda-version }})"
           [ !-f "./scripts/actions/install_cuda_${os}.sh" ] \
-            && {echo "cuda not available on %{os}"; return 1;}
+            && {echo "cuda not available on ${os}"; return 1;}
           source "./scripts/actions/install_cuda_${os}.sh"
           if [[ $? -eq 0 ]]; then
             # Set paths for subsequent steps, using ${CUDA_PATH}
