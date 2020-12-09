@@ -38,7 +38,7 @@ jobs:
           echo "$os"
           if [ ! -f "./scripts/actions/install_cuda_${os}.sh" ]; then
             echo "cuda not available on ${os}"
-            return 1
+            exit 1
           fi
           source "./scripts/actions/install_cuda_${os}.sh"
           if [[ $? -eq 0 ]]; then
