@@ -34,7 +34,7 @@ jobs:
         cuda: ${{ github.event.inputs.cuda-version }}
       run: |
         if [ ! -z ${{ github.event.inputs.cuda-version }} ]; then
-          os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.cuda-version }})"
+          os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.os }})"
           echo "$os"
           if [ ! -f "./scripts/actions/install_cuda_${os}.sh" ]; then
             echo "cuda not available on ${os}"
