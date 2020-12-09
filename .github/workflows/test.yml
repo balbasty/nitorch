@@ -2,9 +2,9 @@ name: nitorch-test
 
 on:
   push:
-    branches: [ ci ]
+    branches: [  ]
   pull_request:
-    branches: [ ci ]
+    branches: [  ]
 
 jobs:
 
