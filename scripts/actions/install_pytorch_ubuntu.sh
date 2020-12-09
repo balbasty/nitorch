@@ -11,6 +11,8 @@ TORCH_REPO="https://download.pytorch.org/whl/torch_stable.html"
 CUDA_VERSION_MAJOR_MINOR=${cuda}
 if [ -z "$CUDA_VERSION_MAJOR_MINOR" ]; then
   CUDA_SHORT="cpu"
+elif [ "$CUDA_VERSION_MAJOR_MINOR" == "cpu" ]; then
+  CUDA_SHORT="cpu"
 else
   CUDA_MAJOR=$(echo "${CUDA_VERSION_MAJOR_MINOR}" | cut -d. -f1)
   CUDA_MINOR=$(echo "${CUDA_VERSION_MAJOR_MINOR}" | cut -d. -f2)

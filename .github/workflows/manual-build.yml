@@ -31,7 +31,7 @@ jobs:
 
     - if: runner.os == 'Windows'
       # Windows -> powershell
-      name: Install CUDA ${{ github.event.inputs.cuda-version }}
+      name: Install CUDA ${{ github.event.inputs.cuda-version }} (Windows)
       env:
         cuda: ${{ github.event.inputs.cuda-version }}
       shell: powershell
@@ -48,7 +48,7 @@ jobs:
 
     - if: runner.os != 'Windows'
       # Unix -> bash
-      name: Install CUDA ${{ github.event.inputs.cuda-version }}
+      name: Install CUDA ${{ github.event.inputs.cuda-version }} (Unix)
       env:
         cuda: ${{ github.event.inputs.cuda-version }}
       shell: bash
@@ -93,5 +93,6 @@ jobs:
           exit 1
         fi
         source "./scripts/actions/install_pytorch_${os}.sh"
+
     - name: Build nitorch
       run: python setup.py install
