@@ -240,7 +240,7 @@ def cuda_arch_flags():
         arch_list = os.popen(cuobjdump + " '" + libtorch + \
                              "' -lelf | awk -F. '{print $3}' | " \
                              "grep sm | sort -u").read().split('\n')
-        arch_list = [arch[4] + '.' + arch[5] for arch in arch_list
+        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list
                      if arch.startswith('sm_')]
 
         #   this bit was in the torch extension util but I have replaced
