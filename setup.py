@@ -237,7 +237,7 @@ def cuda_arch_flags():
         else:
             assert not is_darwin()
             libtorch = os.path.join(libtorch, 'libtorch_cuda.so')
-        arch_list = os.popen(cuobjdump + "'" + libtorch + \
+        arch_list = os.popen(cuobjdump + " '" + libtorch + \
                              "' -lelf | awk -F. '{print $3}' | " \
                              "grep sm | sort -u").read().split('\n')
         arch_list = [arch[4] + '.' + arch[5] for arch in arch_list
