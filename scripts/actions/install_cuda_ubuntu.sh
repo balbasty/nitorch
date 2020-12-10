@@ -139,8 +139,7 @@ fi
 ## Set environment vars / vars to be propagated
 ## -----------------
 
-ls -l /usr/include/*cublas*
-ls -l "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/include/*cublas*"
+sudo cp /usr/include/cublas* "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/include/"
 
 CUDA_PATH=/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}
 echo "CUDA_PATH=${CUDA_PATH}"
