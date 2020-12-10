@@ -82,8 +82,10 @@ fi
 # prepended with the version
 if [ "$CUDA_SHORT" == "102" ]; then
   CUDA_SHORT=""
+elif [ "${CUDA_SHORT}" != "cpu" ]; then
+  CUDA_SHORT="+cu${CUDA_SHORT}"
 else
-  CUDA_SHORT="+${CUDA_SHORT}"
+    CUDA_SHORT="+${CUDA_SHORT}"
 fi
 
 pip install "torch==${TORCH_VERSION_MAJOR_MINOR}${CUDA_SHORT}" -f "${TORCH_REPO}"
