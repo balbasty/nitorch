@@ -88,8 +88,10 @@ fi
 [ -n "${CUDA_SHORT}" ] && [ "${CUDA_SHORT}" != "cpu" ] && CUDA_SHORT="cu${CUDA_SHORT}"
 [ -n "${CUDA_SHORT}" ] && CUDA_SHORT="+${CUDA_SHORT}"
 
-# uninstall numpy first so that torch decides on the right version
-pip uninstall numpy
+# torch 1.4 => pre-install numpy
+# (it seems to only be an optional dependency in 1.4, but it breaks
+#  later on if numpy is not present)
+[ "$TORCH_SHORT" == "14" ] && pip install numpy
 
 # install pytorch
 pip install "torch==${TORCH_VERSION_MAJOR_MINOR}${CUDA_SHORT}" -f "${TORCH_REPO}"

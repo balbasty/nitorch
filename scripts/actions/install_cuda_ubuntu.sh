@@ -98,7 +98,10 @@ do :
     if [[ "${package}" == "nvcc" ]] && version_ge "$CUDA_VERSION_MAJOR_MINOR" "9.1" ; then
         package="compiler"
     elif [[ "${package}" == "compiler" ]] && version_lt "$CUDA_VERSION_MAJOR_MINOR" "9.1" ; then
-        package="nvcc"
+        # package="nvcc"
+        # it seems that cuda-nvcc 10.1 does not include some headers (cublas)
+        # -> better to install the whole toolkit
+        package="toolkit"
     fi
     # Build the full package name and append to the string.
     CUDA_PACKAGES+=" cuda-${package}-${CUDA_MAJOR}-${CUDA_MINOR}"
