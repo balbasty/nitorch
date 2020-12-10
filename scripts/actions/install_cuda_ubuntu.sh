@@ -135,11 +135,35 @@ if [[ $? -ne 0 ]]; then
     echo "CUDA Installation Error."
     exit 1
 fi
+
+
+## -----------------
+## Copy/Link cublas libraries
+## They can be installed in /usr/ or in /usr/local/cuda-10.2
+## even if we are installing another version of cuda. This is due to
+## a weird packaging decision by nvidia.
+## -----------------
+if [ ! -f "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/lib64/libcublas.so" ]
+then
+  if [ ! -f "/usr/local/cuda-10.2/lib64/libcublas.so" ]
+  then
+    cp -P "/usr/local/cuda-10.2/lib64/lib*blas*" \
+          "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/lib64/"
+    cp -P "/usr/local/cuda-10.2/include/*blas*" \
+          "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/include/"
+  elif [ ! -f "/usr/lib/x86_64-linux-gnu/libcublas.so" ]
+  then
+    cp -P "/usr/lib/x86_64-linux-gnu/lib*blas*" \
+          "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/lib64/"
+    cp -P "/usr/include/*blas*" \
+          "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/include/"
+  fi
+fi
+
+
 ## -----------------
 ## Set environment vars / vars to be propagated
 ## -----------------
-
-sudo cp /usr/include/cublas* "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/include/"
 
 CUDA_PATH=/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}
 echo "CUDA_PATH=${CUDA_PATH}"

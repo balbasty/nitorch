@@ -156,10 +156,9 @@ def torch_include_dirs(use_cuda=False, use_cudnn=False):
                     os.path.join(torch_include_dir, 'TH'),
                     os.path.join(torch_include_dir, 'THC')]
     if use_cuda:
-        cuda_include_dir = [os.path.join(cuda_home(), 'include')]
+        cuda_include_dir = os.path.join(cuda_home(), 'include')
         if cuda_include_dir != '/usr/include':
-            cuda_include_dir += ['/usr/include']
-        include_dirs += cuda_include_dir
+            include_dirs += [cuda_include_dir]
     if use_cudnn:
         include_dirs += [os.path.join(cudnn_home(), 'include')]
     if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
