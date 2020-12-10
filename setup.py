@@ -227,8 +227,29 @@ def cuda_arch_flags():
     # See cmake/Modules_CUDA_fix/upstream/FindCUDA/select_compute_arch.cmake
     arch_list = os.environ.get('TORCH_CUDA_ARCH_LIST', None)
 
-    # If not given, determine what's needed for the GPU that can be found
+    # If not given, look into libtorch_cuda
     if not arch_list:
+        cuobjdump = os.path.join(cuda_home(), 'bin', 'cuobjdump')
+        torchdir = os.path.dirname(os.path.abspath(torch.__file__))
+        libtorch = os.path.join(torchdir, 'lib')
+        if is_windows():
+            libtorch = os.path.join(libtorch, 'torch_cuda.lib')
+        else:
+            assert not is_darwin()
+            libtorch = os.path.join(libtorch, 'libtorch_cuda.so')
+        arch_list = os.popen(cuobjdump + " '" + libtorch + \
+                             "' -lelf | awk -F. '{print $3}' | " \
+                             "grep sm | sort -u").read().split('\n')
+        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list]
+        ptx_list = os.popen(cuobjdump + " '" + libtorch + \
+                             "' -lptx | awk -F. '{print $3}' | " \
+                             "grep sm | sort -u").read().split('\n')
+        ptx_list = [arch[3] + '.' + arch[4] for arch in ptx_list]
+        arch_list = [arch + '+PTX' if arch in ptx_list else arch
+                     for arch in arch_list]
+    elif arch_list == 'mine':
+        #   this bit was in the torch extension util but I have replaced
+        #   it with the bit above that looks into libtorch
         capability = torch.cuda.get_device_capability()
         arch_list = ['{}.{}'.format(capability[0], capability[1])]
     else:
@@ -355,23 +376,27 @@ def omp_flags():
     else:
         return ['-fopenmp']
 
+
 def omp_libraries():
     if is_darwin():
-        return [find_omp_darwin()[1]]
+        lib = find_omp_darwin()[1]
+        return [lib] if lib else []
     else:
         return []
 
 
 def omp_library_dirs():
     if is_darwin():
-        return [os.path.join(find_omp_darwin()[2], 'lib')]
+        ompdir = find_omp_darwin()[2]
+        return [os.path.join(ompdir, 'lib')] if ompdir else []
     else:
         return []
 
 
 def omp_include_dirs():
     if is_darwin():
-        return [os.path.join(find_omp_darwin()[2], 'include')]
+        ompdir = find_omp_darwin()[2]
+        return [os.path.join(ompdir, 'include')] if ompdir else []
     else:
         return []
 

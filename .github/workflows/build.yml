@@ -1,35 +1,146 @@
 name: nitorch-build
 
 on:
-  workflow_dispatch
-#  push:
-#    branches: [  ]
-#  pull_request:
-#    branches: [  ]
+  workflow_dispatch:
+    inputs:
+      fail-fast:
+        description: 'Fail fast mode'
+        required: false
+        default: 'true'
+  push:
+    paths:
+      # all c++/cuda source files
+      - "**.c"
+      - "**.cc"
+      - "**.cu"
+      - "**.cpp"
+      - "**.h"
+      - "**.cuh"
+      # github actions
+      - ".github/workflows/build.yml"
+      - "scripts/actions/**"
+      # all python files in the root directory
+      - "*.py"
+    branches: [ master ]
+  pull_request:
+    paths:
+      # all c++/cuda source files
+      - "**.c"
+      - "**.cc"
+      - "**.cu"
+      - "**.cpp"
+      - "**.h"
+      - "**.cuh"
+      # github actions
+      - ".github/workflows/build.yml"
+      - "scripts/actions/**"
+      # all python files in the root directory
+      - "*.py"
+    branches: [ master ]
 
 jobs:
 
   build:
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
+#    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event.inputs.fail-fast == 'true' }}
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: [ 3.6, 3.7, 3.8 ]
-        pytorch-version: [ 1.3, 1.4, 1.5, 1.6, 1.7 ]
+        os: [ ubuntu-latest ]
+        # os: [ ubuntu-latest, macos-latest, windows-latest ]
+        python-version: [ '3.6', '3.8' ]  # '3.7' fails for some weird reason
+        pytorch-version: [ '1.3', '1.4', '1.5', '1.6', '1.7' ]
+        cuda-version: [ 'cpu', '10.1', '10.2', '11.0' ]
+        exclude:
+        - pytorch-version: '1.3'
+          python-version: '3.8'
+        - pytorch-version: '1.3'
+          cuda-version: '10.2'
+        - pytorch-version: '1.4'
+          cuda-version: '10.2'
+        - pytorch-version: '1.3'
+          cuda-version: '11.0'
+        - pytorch-version: '1.4'
+          cuda-version: '11.0'
+        - pytorch-version: '1.5'
+          cuda-version: '11.0'
+        - pytorch-version: '1.6'
+          cuda-version: '11.0'
 
     steps:
+
     - uses: actions/checkout@v2
+
+    - if: matrix.cuda-version != 'cpu' && runner.os == 'Windows'
+      # Windows -> powershell
+      name: Install CUDA ${{ matrix.cuda-version }} (Windows)
+      env:
+        cuda: ${{ matrix.cuda-version }}
+      shell: powershell
+      run: |
+        # Install CUDA via a powershell script
+        .\scripts\actions\install_cuda_windows.ps1
+        if ($?) {
+          # Set paths for subsequent steps, using $env:CUDA_PATH
+          echo "Adding CUDA to CUDA_PATH, CUDA_PATH_X_Y and PATH"
+          echo "CUDA_PATH=$env:CUDA_PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "$env:CUDA_PATH_VX_Y=$env:CUDA_PATH" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "$env:CUDA_PATH/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        }
+
+    - if: matrix.cuda-version != 'cpu' && runner.os != 'Windows'
+      # Unix -> bash
+      name: Install CUDA ${{ matrix.cuda-version }} (Unix)
+      env:
+        cuda: ${{ matrix.cuda-version }}
+      shell: bash
+      run: |
+        if [ ! -z ${{ matrix.cuda-version }} ]; then
+          os="$(cut -d'-' -f1 <<< ${{ matrix.os }})"
+          echo "$os"
+          if [ ! -f "./scripts/actions/install_cuda_${os}.sh" ]; then
+            echo "cuda not available on ${os}"
+            exit 1
+          fi
+          source "./scripts/actions/install_cuda_${os}.sh"
+          if [[ $? -eq 0 ]]; then
+            # Set paths for subsequent steps, using ${CUDA_PATH}
+            echo "Adding CUDA to CUDA_PATH, PATH and LD_LIBRARY_PATH"
+            echo "CUDA_PATH=${CUDA_PATH}" >> $GITHUB_ENV
+            echo "${CUDA_PATH}/bin" >> $GITHUB_PATH
+            echo "LD_LIBRARY_PATH=${CUDA_PATH}/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          fi
+        fi
+
     - name: Set up Python ${{ matrix.python-version }} on ${{ matrix.os }}
       uses: actions/setup-python@v2
       with:
         python-version: ${{ matrix.python-version }}
+
     - name: Install pip
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-    - name: Install PyTorch
-      run: pip install torch==${{ matrix.pytorch-version }}
-    - name: Build
-      run: python ./setup.py install
+
+    - name: Install PyTorch ${{ matrix.pytorch-version }}
+      env:
+        cuda: ${{ matrix.cuda-version }}
+        torch: ${{ matrix.pytorch-version }}
+      shell: bash
+      run: |
+        os="$(cut -d'-' -f1 <<< ${{ matrix.os }})"
+        echo "$os"
+        if [ ! -f "./scripts/actions/install_pytorch_${os}.sh" ]; then
+          echo "pytorch not available on ${os}"
+          exit 1
+        fi
+        source "./scripts/actions/install_pytorch_${os}.sh"
+
+    - name: Build nitorch
+      # Compiling for all architectures takes ages and this workflow is just
+      # here to test that we didn't break anything in the compilation chain
+      # so we only test one architecture (sm_35 -> the default)
+      # In the package distribution workflow, we'll need to compile for
+      # all architectures supported by (the pypi version of) pytorch.
+      run: TORCH_CUDA_ARCH_LIST="3.5" python setup.py install

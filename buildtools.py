@@ -73,7 +73,13 @@ def cuda_version():
         return None
     with open(os.devnull, 'w') as devnull:
         version = subprocess.check_output([nvcc, '--version'], stderr=devnull).decode()
-    match = re.search(r'V(?P<version>[0-9\.]+)$', version)
+    match = None
+    for line in version.split('\n'):
+        match = re.search(r'V(?P<version>[0-9\.]+)$', line)
+        if match:
+            break
+    if not match:
+        raise RuntimeError('Failed to parse cuda version')
     version = match.group('version').split('.')
     version = tuple(int(v) for v in version)
     return version
