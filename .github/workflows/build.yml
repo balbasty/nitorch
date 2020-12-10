@@ -2,6 +2,11 @@ name: nitorch-build
 
 on:
   workflow_dispatch:
+    inputs:
+      fail-fast:
+        description: 'Fail fast mode'
+        required: false
+        default: 'true'
   push:
     paths:
       # all c++/cuda source files
@@ -40,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
 #    runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event.inputs.fail-fast }} == 'true'
       matrix:
         os: [ ubuntu-latest ]
         # os: [ ubuntu-latest, macos-latest, windows-latest ]

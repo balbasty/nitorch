@@ -2,6 +2,11 @@ name: nitorch-test
 
 on:
   workflow_dispatch:
+    inputs:
+      fail-fast:
+        description: 'Fail fast mode'
+        required: false
+        default: 'true'
   push:
     paths:
       # all library files
@@ -17,7 +22,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      fail-fast: ${{ github.event.inputs.fail-fast }} == 'true'
       matrix:
         os: [ ubuntu-latest ]               # we only run tests on ubuntu/cpu
         python-version: [ '3.6' ]           # smallest version supported
