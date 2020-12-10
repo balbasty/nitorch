@@ -138,4 +138,4 @@ jobs:
       # so we only test one architecture (sm_30 -> the default)
       # In the package distribution workflow, we'll need to compile for
       # all architectures supported by (the pypi version of) pytorch.
-      run: TORCH_CUDA_ARCH_LIST=sm_30 python setup.py install
+      run: TORCH_CUDA_ARCH_LIST="3.0" python setup.py install
