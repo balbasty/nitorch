@@ -51,8 +51,11 @@ jobs:
         fi
         source "./scripts/actions/install_pytorch_${os}.sh"
 
+    # we must build in development mode for pytest to work in place
     - name: Build nitorch
-      run: python setup.py install
+      run: |
+        python setup.py develop
+        python -c "from nitorch._C import spatial"
 
 #    - name: Lint
 #      run: |
