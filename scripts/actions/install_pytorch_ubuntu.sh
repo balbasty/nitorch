@@ -20,7 +20,7 @@ else
   CUDA_SHORT="${CUDA_MAJOR}${CUDA_MINOR}"
 fi
 
-
+# check compatibility
 if [ "$TORCH_SHORT" == "17" ]; then
   [ "$CUDA_SHORT" == "cpu" ] || \
   [ "$CUDA_SHORT" == "110" ] || \
@@ -78,15 +78,18 @@ elif [ "$TORCH_SHORT" == "10" ]; then
   "and cuda ${CUDA_MAJOR}.${CUDA_MINOR}"; exit 1; }
 fi
 
-# CUDA 10.2 is the default version so the corresponding wheels are not
-# prepended with the version
-if [ "$CUDA_SHORT" == "102" ]; then
-  CUDA_SHORT=""
-elif [ "${CUDA_SHORT}" != "cpu" ]; then
-  CUDA_SHORT="+cu${CUDA_SHORT}"
-else
-    CUDA_SHORT="+${CUDA_SHORT}"
-fi
+# for torch >= 1.5 CUDA 10.2 is the default version
+# for torch <  1.5 CUDA 10.1 is the default version
+# for torch <  1.3 CUDA 10.0 is the default version
+# the corresponding wheels are not prepended with the version number
+[ "$TORCH_SHORT" -lt "13" ] && [ "$CUDA_SHORT" == "100" ] && CUDA_SHORT=""
+[ "$TORCH_SHORT" -lt "15" ] && [ "$CUDA_SHORT" == "101" ] && CUDA_SHORT=""
+[ "$TORCH_SHORT" -ge "15" ] && [ "$CUDA_SHORT" == "102" ] && CUDA_SHORT=""
+[ -n "${CUDA_SHORT}" ] && [ "${CUDA_SHORT}" != "cpu" ] && CUDA_SHORT="cu${CUDA_SHORT}"
+[ -n "${CUDA_SHORT}" ] && CUDA_SHORT="+${CUDA_SHORT}"
 
+# uninstall numpy first so that torch decides on the right version
+pip uninstall numpy
+
+# install pytorch
 pip install "torch==${TORCH_VERSION_MAJOR_MINOR}${CUDA_SHORT}" -f "${TORCH_REPO}"
-
