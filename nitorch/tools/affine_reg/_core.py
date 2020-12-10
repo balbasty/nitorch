@@ -3,7 +3,6 @@
 """
 
 
-import nibabel as nib
 import numpy as np
 from scipy.optimize.optimize import _minimize_powell
 from scipy.optimize._constraints import Bounds
