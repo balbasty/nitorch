@@ -15,8 +15,7 @@
 
 # Ideally choose from the list of meta-packages to minimise variance between cuda versions (although it does change too)
 CUDA_PACKAGES_IN=(
-    "command-line-tools"
-    "libraries-dev"
+    "toolkit"
 )
 
 ## -------------------
@@ -90,23 +89,7 @@ fi
 ## -------------------------------
 ## Select CUDA packages to install
 ## -------------------------------
-CUDA_PACKAGES=""
-for package in "${CUDA_PACKAGES_IN[@]}"
-do :
-    # @todo This is not perfect. Should probably provide a separate list for diff versions
-    # cuda-compiler-X-Y if CUDA >= 9.1 else cuda-nvcc-X-Y
-    if [[ "${package}" == "nvcc" ]] && version_ge "$CUDA_VERSION_MAJOR_MINOR" "9.1" ; then
-        package="compiler"
-    elif [[ "${package}" == "compiler" ]] && version_lt "$CUDA_VERSION_MAJOR_MINOR" "9.1" ; then
-        # package="nvcc"
-        # it seems that cuda-nvcc 10.1 does not include some headers (cublas)
-        # -> better to install the whole toolkit
-        package="toolkit"
-    fi
-    # Build the full package name and append to the string.
-    CUDA_PACKAGES+=" cuda-${package}-${CUDA_MAJOR}-${CUDA_MINOR}"
-done
-echo "CUDA_PACKAGES ${CUDA_PACKAGES}"
+CUDA_PACKAGES=" cuda-toolkit-${CUDA_MAJOR}-${CUDA_MINOR}"
 
 ## -----------------
 ## Prepare to install
