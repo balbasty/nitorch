@@ -22,7 +22,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: github.event.inputs.fail-fast == 'true'
+      fail-fast: ${{ github.event.inputs.fail-fast == 'true' }}
       matrix:
         os: [ ubuntu-latest ]               # we only run tests on ubuntu/cpu
         python-version: [ '3.6' ]           # smallest version supported
