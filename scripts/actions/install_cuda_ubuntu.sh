@@ -15,7 +15,8 @@
 
 # Ideally choose from the list of meta-packages to minimise variance between cuda versions (although it does change too)
 CUDA_PACKAGES_IN=(
-    "toolkit"
+    "command-line-tools"
+    "libraries-dev"
 )
 
 ## -------------------
@@ -89,7 +90,20 @@ fi
 ## -------------------------------
 ## Select CUDA packages to install
 ## -------------------------------
-CUDA_PACKAGES=" cuda-toolkit-${CUDA_MAJOR}-${CUDA_MINOR}"
+CUDA_PACKAGES=""
+for package in "${CUDA_PACKAGES_IN[@]}"
+do :
+    # @todo This is not perfect. Should probably provide a separate list for diff versions
+    # cuda-compiler-X-Y if CUDA >= 9.1 else cuda-nvcc-X-Y
+    if [[ "${package}" == "nvcc" ]] && version_ge "$CUDA_VERSION_MAJOR_MINOR" "9.1" ; then
+        package="compiler"
+    elif [[ "${package}" == "compiler" ]] && version_lt "$CUDA_VERSION_MAJOR_MINOR" "9.1" ; then
+        package="nvcc"
+    fi
+    # Build the full package name and append to the string.
+    CUDA_PACKAGES+=" cuda-${package}-${CUDA_MAJOR}-${CUDA_MINOR}"
+done
+echo "CUDA_PACKAGES ${CUDA_PACKAGES}"
 
 ## -----------------
 ## Prepare to install
@@ -121,17 +135,17 @@ if [[ $? -ne 0 ]]; then
     echo "CUDA Installation Error."
     exit 1
 fi
-
-ll /usr/include/cublas*
-ll "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/include/cublas*"
-
 ## -----------------
 ## Set environment vars / vars to be propagated
 ## -----------------
 
+ls -l /usr/include/*cublas*
+ls -l "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/include/*cublas*"
+
 CUDA_PATH=/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}
 echo "CUDA_PATH=${CUDA_PATH}"
 export CUDA_PATH=${CUDA_PATH}
+
 
 # Quick test. @temp
 export PATH="$CUDA_PATH/bin:$PATH"
