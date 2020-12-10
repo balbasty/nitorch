@@ -94,4 +94,8 @@ fi
 [ "$TORCH_SHORT" == "14" ] && pip install numpy
 
 # install pytorch
-pip install "torch==${TORCH_VERSION_MAJOR_MINOR}${CUDA_SHORT}" -f "${TORCH_REPO}"
+if [ -z "${CUDA_SHORT}" ]; then
+  pip install "torch==${TORCH_VERSION_MAJOR_MINOR}"
+else
+  pip install "torch==${TORCH_VERSION_MAJOR_MINOR}${CUDA_SHORT}" -f "${TORCH_REPO}"
+fi
