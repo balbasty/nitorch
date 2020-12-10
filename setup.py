@@ -240,13 +240,18 @@ def cuda_arch_flags():
         arch_list = os.popen(cuobjdump + " '" + libtorch + \
                              "' -lelf | awk -F. '{print $3}' | " \
                              "grep sm | sort -u").read().split('\n')
-        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list
-                     if arch.startswith('sm_')]
-
+        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list]
+        ptx_list = os.popen(cuobjdump + " '" + libtorch + \
+                             "' -lptx | awk -F. '{print $3}' | " \
+                             "grep sm | sort -u").read().split('\n')
+        ptx_list = [arch[3] + '.' + arch[4] for arch in ptx_list]
+        arch_list = [arch + '+PTX' if arch in ptx_list else arch
+                     for arch in arch_list]
+    elif arch_list == 'mine':
         #   this bit was in the torch extension util but I have replaced
-        #   with the bit above that looks into libtorch
-        # capability = torch.cuda.get_device_capability()
-        # arch_list = ['{}.{}'.format(capability[0], capability[1])]
+        #   it with the bit above that looks into libtorch
+        capability = torch.cuda.get_device_capability()
+        arch_list = ['{}.{}'.format(capability[0], capability[1])]
     else:
         # Deal with lists that are ' ' separated (only deal with ';' after)
         arch_list = arch_list.replace(' ', ';')
