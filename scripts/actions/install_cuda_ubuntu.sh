@@ -121,6 +121,10 @@ if [[ $? -ne 0 ]]; then
     echo "CUDA Installation Error."
     exit 1
 fi
+
+ll /usr/include/cublas*
+ll "/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}/include/cublas*"
+
 ## -----------------
 ## Set environment vars / vars to be propagated
 ## -----------------
@@ -128,7 +132,6 @@ fi
 CUDA_PATH=/usr/local/cuda-${CUDA_MAJOR}.${CUDA_MINOR}
 echo "CUDA_PATH=${CUDA_PATH}"
 export CUDA_PATH=${CUDA_PATH}
-
 
 # Quick test. @temp
 export PATH="$CUDA_PATH/bin:$PATH"
