@@ -226,7 +226,6 @@ def cuda_arch_flags():
     # Can be one or more architectures, e.g. "6.1" or "3.5;5.2;6.0;6.1;7.0+PTX"
     # See cmake/Modules_CUDA_fix/upstream/FindCUDA/select_compute_arch.cmake
     arch_list = os.environ.get('TORCH_CUDA_ARCH_LIST', None)
-    print('arch_list:', arch_list)
 
     # If not given, look into libtorch_cuda
     if not arch_list:
