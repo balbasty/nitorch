@@ -32,4 +32,4 @@ jobs:
     - name: Install PyTorch
       run: pip install torch==${{ matrix.pytorch-version }}
     - name: Build
-      run: python ./setup.py install
+      run: pip install .
