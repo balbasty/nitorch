@@ -1,18 +1,21 @@
-from ._base import Module
-from ._cnn import UNet
 import torch
 import torch.nn as tnn
+from ._base import Module
+from ._cnn import UNet
+from .. import check
 
 
 class SegNet(Module):
     """Segmentation network.
 
     This is simply a UNet that ends with a softmax activation.
+
+    Batch normalization is used by default.
     """
 
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.2), batch_norm=False,
+                 activation=tnn.LeakyReLU(0.2), batch_norm=True,
                  implicit=True):
         """
 
@@ -24,15 +27,15 @@ class SegNet(Module):
             Number of classes, excluding background
         input_channels : int, default=1
             Number of input channels
-        encoder : sequence[int]
+        encoder : sequence[int], optional
             Number of features per encoding layer
-        decoder : sequence[int]
+        decoder : sequence[int], optional
             Number of features per decoding layer
         kernel_size : int or sequence[int], default=3
             Kernel size
         activation : str or callable, default=LeakyReLU(0.2)
             Activation function in the UNet.
-        batch_norm : bool or callable, optional
+        batch_norm : bool or callable, default=True
             Batch normalization layer.
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
@@ -74,15 +77,39 @@ class SegNet(Module):
     activation = property(lambda self: self.unet.activation)
 
     def forward(self, image, ground_truth=None, *, _loss=None, _metric=None):
+        """
+
+        Parameters
+        ----------
+        image : (batch, input_channels, *spatial) tensor
+            Input image
+        ground_truth : (batch, output_classes[+1], *spatial) tensor, optional
+            Ground truth segmentation, used by the loss function.
+            Its data type should be integer if it contains hard labels,
+            and floating point if it contains soft segmentations.
+        _loss : dict, optional
+            Dictionary of losses that will be modified in place.
+            If provided along with `ground_truth`, all registered loss
+            functions will be applied and stored under the key
+            '<tag>/<name>' in the dictionary.
+        _metric : dict, optional
+            Dictionary of losses that will be modified in place.
+            If provided along with `ground_truth`, all registered loss
+            functions will be applied and stored under the key
+            '<tag>/<name>' in the dictionary.
+
+        Returns
+        -------
+        probability : (batch, output_classes[+1], *spatial)
+            Tensor of class probabilities.
+            If `implicit` is True, the background class is not returned.
+
+        """
 
         image = torch.as_tensor(image)
 
         # sanity check
-        if image.dim() != self.dim + 2:
-            raise ValueError('Expected image with shape '
-                             '(batch, channels, *spatial) '
-                             'with len(spatial) == {}, but found {}.'
-                             .format(self.dim, image.shape))
+        check.dim(self.dim, image)
 
         # unet
         prob = self.unet(image)
@@ -91,15 +118,11 @@ class SegNet(Module):
 
         # compute loss and metrics
         if ground_truth is not None:
-            # sanity check
-            if ground_truth.shape[0] != image.shape[0] or \
-                    ground_truth.shape[2:] != image.shape[2:]:
-                raise ValueError('Expected ground truth with shape '
-                                 '(batch, classes|1, *spatial) '
-                                 'but found {}.'
-                                 .format(self.dim, ground_truth.shape))
-            self.compute(_loss, _metric,
-                         segmentation=[prob, ground_truth])
+            # sanity checks
+            check.dim(self.dim, ground_truth)
+            dims = [0] + list(range(2, self.dim+2))
+            check.shape(image, ground_truth, dims=dims)
+            self.compute(_loss, _metric, segmentation=[prob, ground_truth])
 
         return prob
 
