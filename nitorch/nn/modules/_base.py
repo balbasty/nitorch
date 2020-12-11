@@ -220,7 +220,7 @@ class Module(tnn.Module):
 
         return metric
 
-    def compute(self, _loss, _metric, **tag_args):
+    def compute(self, _loss=None, _metric=None, **tag_args):
         """Compute losses and metrics if necessary
 
         Parameters
