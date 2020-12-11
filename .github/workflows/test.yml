@@ -61,7 +61,7 @@ jobs:
     # we must build in development mode for pytest to work in place
     - name: Build nitorch
       run: |
-        pip install -e .
+        pip install --no-build-isolation -e .
 
 #    - name: Lint
 #      run: |

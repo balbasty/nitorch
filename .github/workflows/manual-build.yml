@@ -100,4 +100,4 @@ jobs:
       # so we only test one architecture (sm_35 -> the default)
       # In the package distribution workflow, we'll need to compile for
       # all architectures supported by (the pypi version of) pytorch.
-      run: TORCH_CUDA_ARCH_LIST="3.5" pip install .
+      run: TORCH_CUDA_ARCH_LIST="3.5" pip install . --no-build-isolation

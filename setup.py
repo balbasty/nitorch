@@ -9,7 +9,7 @@ Created on Mon May  4 17:26:01 2020
 # ~~~ imports
 import collections
 from setuptools import setup, find_packages, Extension
-from buildtools import *
+from .buildtools import *
 import torch
 
 
@@ -172,7 +172,7 @@ def cuda_check():
     ok = (local_version[0] == torch_version[0] and
           local_version[1] == torch_version[1])
     if not ok:
-        print('Your version of CUDA is v{}.{} while PyTorch was compiled with'
+        print('Your version of CUDA is v{}.{} while PyTorch was compiled with '
               'CUDA v{}.{}. NiTorch cannot be compiled with CUDA.'.format(
               local_version[0], local_version[1],
               torch_version[0], torch_version[1]))
@@ -185,7 +185,7 @@ def cudnn_check():
     ok = (local_version[0] == torch_version[0] and
           local_version[1] == torch_version[1])
     if not ok:
-        print('Your version of CuDNN is v{}.{} while PyTorch was compiled with'
+        print('Your version of CuDNN is v{}.{} while PyTorch was compiled with '
               'CuDNN v{}.{}. NiTorch cannot be compiled with CuDNN.'.format(
               local_version[0], local_version[1],
               torch_version[0], torch_version[1]))
@@ -240,11 +240,12 @@ def cuda_arch_flags():
         arch_list = os.popen(cuobjdump + " '" + libtorch + \
                              "' -lelf | awk -F. '{print $3}' | " \
                              "grep sm | sort -u").read().split('\n')
-        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list]
+        print(arch_list)
+        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list if arch]
         ptx_list = os.popen(cuobjdump + " '" + libtorch + \
                              "' -lptx | awk -F. '{print $3}' | " \
                              "grep sm | sort -u").read().split('\n')
-        ptx_list = [arch[3] + '.' + arch[4] for arch in ptx_list]
+        ptx_list = [arch[3] + '.' + arch[4] for arch in ptx_list if arch]
         arch_list = [arch + '+PTX' if arch in ptx_list else arch
                      for arch in arch_list]
     elif arch_list == 'mine':
