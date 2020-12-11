@@ -9,7 +9,7 @@ Created on Mon May  4 17:26:01 2020
 # ~~~ imports
 import collections
 from setuptools import setup, find_packages, Extension
-from buildtools import *
+from .buildtools import *
 import torch
 
 
