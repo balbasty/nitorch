@@ -12,7 +12,7 @@ def test_neg2pos():
     try: idx.neg2pos(0, -1)
     except ValueError: pass
     else: assert False, "raise on negative shape"
-    try:  idx.neg2pos(0, 3.)
+    try:  idx.neg2pos(0, 3.5)
     except TypeError: pass
     else: assert False, "raise on non integer shape"
     try:  idx.neg2pos(4., 3)

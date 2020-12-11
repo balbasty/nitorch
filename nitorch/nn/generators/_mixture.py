@@ -117,7 +117,7 @@ class MixtureSample(Module):
 
         # check distribution shape
         batches = [batch]
-        channels = [] if channels is 1 else [channels]
+        channels = [] if channels == 1 else [channels]
         for dist in distributions:
             sample_shape = dist.batch_shape + dist.event_shape
             if len(sample_shape) > 0:

@@ -82,7 +82,10 @@ def neg2pos(index, shape):
 
     # sanity checks
     try:
-        shape = int(shape)
+        shape0 = shape
+        shape = int(shape0)
+        if shape != shape0:
+            raise TypeError('Shape should be an integer')
     except TypeError:
         raise TypeError('Shape should be an integer')
     if shape < 0:
@@ -97,9 +100,9 @@ def neg2pos(index, shape):
         if index is not None and index < 0:
             index = shape + index
         return index
-    else:
-        assert isinstance(index, (oob_slice, type(None), type(Ellipsis)))
+    elif isinstance(index, (oob_slice, type(None), type(Ellipsis))):
         return index
+    raise TypeError('Index should be an int, slice, Ellipsis or None')
 
 
 def is_fullslice(index, shape, do_neg2pos=True):
