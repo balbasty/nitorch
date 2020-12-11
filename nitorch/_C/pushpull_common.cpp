@@ -840,7 +840,7 @@ void PushPullImpl<scalar_t,offset_t>::loop() const
           }
         }
       }); 
-      return
+      return;
     }
 #  endif
 
