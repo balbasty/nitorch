@@ -470,8 +470,8 @@ class AffineMorphFromDense(Module):
     square sense. Finally, we project the matrix to a Lie algebra.
     """
 
-    def __init__(self, dim, basis='CSO', mode='lie', encoder=None,
-                 decoder=None,
+    def __init__(self, dim, basis='CSO', mode='lie',
+                 encoder=None, decoder=None, batch_norm=False,
                  kernel_size=3, interpolation='linear', bound='dct2', *,
                  _additional_input_channels=0, _additional_output_channels=0):
         """
@@ -495,9 +495,11 @@ class AffineMorphFromDense(Module):
             Encoding of the affine parameters.
             The basis 'SL' is only available in mode 'lie'.
         encoder : list[int], optional
-            Number of channels after each encoding layer .
+            Number of channels after each encoding layer.
         decoder : list[int], optional
             Number of channels after each decoding layer.
+        batch_norm : bool, default=False
+            Use batch normalization in the UNet.
         kernel_size : int or list[int], default=3
             Kernel size of the UNet.
         interpolation : int, default=1
@@ -512,6 +514,7 @@ class AffineMorphFromDense(Module):
                          output_channels=dim + _additional_output_channels,
                          encoder=encoder,
                          decoder=decoder,
+                         batch_norm=batch_norm,
                          kernel_size=kernel_size,
                          activation=tnn.LeakyReLU(0.2))
         self.dense2aff = DenseToAffine(shift=True)
