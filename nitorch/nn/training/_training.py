@@ -1,13 +1,18 @@
 """Tools to ease model training (like torch.ignite)"""
 
 import torch
-from torch.utils.tensorboard import SummaryWriter
 from nitorch.core.utils import benchmark
 from nitorch.core.pyutils import make_tuple
 from nitorch.nn.modules import Module
 import string
 import math
 import os
+
+try:
+    from torch.utils.tensorboard import SummaryWriter
+except ImportError:
+    def SummaryWriter():
+        raise ImportError('Optional dependency TensorBoard not found')
 
 
 def update_loss_dict(old, new, weight=1, inplace=True):
