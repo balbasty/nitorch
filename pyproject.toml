@@ -1,8 +1,8 @@
 [build-system]
 # Minimum requirements for the build system to execute.
+# The build also requires torch, but it is a complex dependency that is
+# dealt with in setup.py
 requires = [
     "setuptools",
     "wheel",
-    "torch>=1.3"
 ]
-build-backend = "setuptools.build_meta"

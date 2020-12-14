@@ -1,0 +1,22 @@
+[libnitorch]
+sources = [ "pushpull.cpp" ]
+headers = [ "pushpull_common.h", "interpolation.h", "bounds.h" ]
+
+    [libnitorch.dual]
+    # sources and headers that can be compiled both as c++ and cuda
+    sources = [ "pushpull_common.cpp" ]
+    headers = [
+        "common.h",
+        "interpolation.h",
+        "interpolation_common.h",
+        "bounds.h",
+        "bounds_common.h"
+    ]
+
+[extensions]
+
+    [extensions.spatial]
+    sources = [ "spatial.cpp" ]
+    headers = [ "pushpull.h", "interpolation.h", "bounds.h" ]
+
+

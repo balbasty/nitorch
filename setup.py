@@ -9,7 +9,7 @@ Created on Mon May  4 17:26:01 2020
 # ~~~ imports
 import collections
 from setuptools import setup, find_packages, Extension
-from .buildtools import *
+from setup_buildtools import *
 import torch
 
 
@@ -48,122 +48,6 @@ MINIMUM_MSVC_VERSION = (19, 0, 24215)
 # here are specific to the version of pytorch that we compile against.
 
 
-def torch_version(astuple=True):
-    version = torch.__version__.split('+')[0].split('.')
-    version = tuple(int(v) for v in version)
-    if len(version) == 2:
-        version = version + (0,)
-    if not astuple:
-        version = version[0]*10000 + version[1]*100 + version[0]
-    return version
-
-
-def torch_cuda_version(astuple=True):
-    version = torch.version.cuda.split('.')
-    version = tuple(int(v) for v in version)
-    if len(version) == 2:
-        version = version + (0,)
-    if not astuple:
-        version = version[0]*10000 + version[1]*100 + version[0]
-    return version
-
-
-def torch_cudnn_version(astuple=True):
-    version = torch.backends.cudnn.version()
-    version = (version//1000, version//100 % 10, version % 100)
-    if not astuple:
-        version = version[0]*10000 + version[1]*100 + version[0]
-    return version
-
-
-def torch_parallel_backend():
-    match = re.search('^ATen parallel backend: (?P<backend>.*)$',
-                      torch._C._parallel_info(), re.MULTILINE)
-    if match is None:
-        return None
-    backend = match.group('backend')
-    if backend == 'OpenMP':
-        return 'AT_PARALLEL_OPENMP'
-    elif backend == 'native thread pool':
-        return 'AT_PARALLEL_NATIVE'
-    elif backend == 'native thread pool and TBB':
-        return 'AT_PARALLEL_NATIVE_TBB'
-    else:
-        return None
-
-
-def torch_abi():
-  return str(int(torch._C._GLIBCXX_USE_CXX11_ABI))
-
-
-def torch_omp_lib():
-    torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
-    torch_library_dir = os.path.join(torch_dir, 'lib')
-    if is_darwin():
-        libtorch = os.path.join(torch_library_dir, 'libtorch.dylib')
-        linked_libs = os.popen('otool -L "{}"'.format(libtorch))
-        if 'libiomp5' in linked_libs:
-            return 'iomp5'
-        elif 'libomp' in linked_libs:
-            return 'omp'
-        else:
-            return None
-
-
-def torch_libraries(use_cuda=False):
-    version = torch_version(astuple=False)
-    if version < 10500:
-        libraries = ['c10', 'torch', 'torch_python']
-        if use_cuda:
-            libraries += ['cudart', 'c10_cuda']
-    else:
-        libraries = ['c10', 'torch_cpu', 'torch_python', 'torch']
-        if use_cuda:
-            libraries += ['cudart', 'c10_cuda', 'torch_cuda']
-    if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
-        libraries += omp_libraries()
-    return libraries
-
-
-def torch_library_dirs(use_cuda=False, use_cudnn=False):
-    torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
-    torch_library_dir = os.path.join(torch_dir, 'lib')
-    library_dirs = [torch_library_dir]
-    if use_cuda:
-        if is_windows():
-            library_dirs += [os.path.join(cuda_home(), 'lib/x64')]
-        elif os.path.exists(os.path.join(cuda_home(), 'lib64')):
-            library_dirs += [os.path.join(cuda_home(), 'lib64')]
-        elif os.path.exists(os.path.join(cuda_home(), 'lib')):
-            library_dirs += [os.path.join(cuda_home(), 'lib')]
-    if use_cudnn:
-        if is_windows():
-            library_dirs += [os.path.join(cudnn_home(), 'lib/x64')]
-        elif os.path.exists(os.path.join(cudnn_home(), 'lib64')):
-            library_dirs += [os.path.join(cudnn_home(), 'lib64')]
-        elif os.path.exists(os.path.join(cudnn_home(), 'lib')):
-            library_dirs += [os.path.join(cudnn_home(), 'lib')]
-    if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
-        library_dirs += omp_library_dirs()
-    return library_dirs
-
-
-def torch_include_dirs(use_cuda=False, use_cudnn=False):
-    torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
-    torch_include_dir = os.path.join(torch_dir, 'include')
-    include_dirs = [torch_include_dir,
-                    os.path.join(torch_include_dir, 'torch', 'csrc', 'api', 'include'),
-                    os.path.join(torch_include_dir, 'TH'),
-                    os.path.join(torch_include_dir, 'THC')]
-    if use_cuda:
-        cuda_include_dir = os.path.join(cuda_home(), 'include')
-        if cuda_include_dir != '/usr/include':
-            include_dirs += [cuda_include_dir]
-    if use_cudnn:
-        include_dirs += [os.path.join(cudnn_home(), 'include')]
-    if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
-        include_dirs += omp_include_dirs()
-    return include_dirs
 
 
 def cuda_check():

@@ -4,9 +4,6 @@
 import os
 import os.path
 import sys
-import subprocess
-import glob
-import re
 import shlex
 
 # (from sklearn) import setuptools before because it monkey-patches distutils
@@ -17,117 +14,16 @@ from distutils.command import build_ext as build_ext_base
 from distutils.sysconfig import customize_compiler
 from distutils.extension import Extension as duExtension
 
-_all__ = [
-    'is_windows',
-    'is_darwin',
-    'cuda_home',
-    'cuda_version',
-    'cudnn_home',
-    'cudnn_version',
-    'build_ext',
-]
-
-
-def is_windows():
-    return sys.platform == 'win32'
-
-
-def is_darwin():
-    return sys.platform.startswith('darwin')
-
-
-def cuda_home():
-    """Home of local CUDA."""
-    # Guess #1
-    home = os.environ.get('CUDA_HOME') or os.environ.get('CUDA_PATH')
-    if home is None:
-        # Guess #2
-        try:
-            which = 'where' if is_windows() else 'which'
-            with open(os.devnull, 'w') as devnull:
-                nvcc = subprocess.check_output([which, 'nvcc'],
-                                               stderr=devnull).decode().rstrip('\r\n')
-                home = os.path.dirname(os.path.dirname(nvcc))
-        except Exception:
-            # Guess #3
-            if is_windows():
-                homes = glob.glob(
-                    'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v*.*')
-                if len(homes) == 0:
-                    home = ''
-                else:
-                    home = homes[0]
-            else:
-                home = '/usr/local/cuda'
-        if not os.path.exists(home):
-            home = None
-    if not home:
-        print('-- CUDA not found.')
-    return home
-
-
-def cuda_version():
-    """Version of local CUDA toolkit: (MAJOR, MINOR, PATCH)."""
-    nvcc = os.path.join(cuda_home(), 'bin', 'nvcc')
-    if not nvcc:
-        return None
-    with open(os.devnull, 'w') as devnull:
-        version = subprocess.check_output([nvcc, '--version'], stderr=devnull).decode()
-    match = None
-    for line in version.split('\n'):
-        match = re.search(r'V(?P<version>[0-9\.]+)$', line)
-        if match:
-            break
-    if not match:
-        raise RuntimeError('Failed to parse cuda version')
-    version = match.group('version').split('.')
-    version = tuple(int(v) for v in version)
-    return version
-
-
-def cudnn_home():
-    """Home of local CuDNN."""
-    home = os.environ.get('CUDNN_HOME') or os.environ.get('CUDNN_PATH')
-    if home is None:
-        home = cuda_home()
-    if home and not os.path.exists(os.path.join(home, 'include', 'cudnn.h')):
-        home = None
-    if not home:
-        print('-- CUDNN not found.')
-    return home
-
-
-def cudnn_version():
-    """Version of local CuDNN: (MAJOR, MINOR, PATCH)."""
-    def search_define(name, line, default=None):
-        match = re.search(r'#\s*[Dd][Ee][Ff][Ii][Nn][Ee]\s+' + name +
-                          r'\s+(?P<version>\d+)', line)
-        if match:
-            return int(match.group('version'))
-        else:
-            return default
-
-    home = cudnn_home()
-    if not home:
-        return None
-    header = os.path.join(home, 'include', 'cudnn.h')
-    with open(header, 'r') as file:
-        lines = file.readlines()
-    version = [None, None, None]
-    for line in lines:
-        if version[0] is None:
-            version[0] = search_define('CUDNN_MAJOR', line, version[0])
-        if version[1] is None:
-            version[1] = search_define('CUDNN_MINOR', line, version[1])
-        if version[2] is None:
-            version[2] = search_define('CUDNN_PATCHLEVEL', line, version[2])
-    return tuple(version)
+# local import
+import setup_utils
+import setup_system
+import setup_cuda
 
 
 def link_relative(path):
-    if is_windows():
+    if setup_system.is_windows():
         return None
-    elif is_darwin():
+    elif setup_system.is_darwin():
         return os.path.join('@loader_path', path)
     else:
         return os.path.join('$ORIGIN', path)
@@ -157,7 +53,7 @@ def customize_compiler_for_shared_lib(self):
             return extra_args
 
         # On MacOS: we need to manually specify a name stored inside the dylib
-        if is_darwin():
+        if setup_system.is_darwin():
             args = list(args)
             if len(args) > 4:
                 args[3] = add_install_name(args[3], libpath)
@@ -174,7 +70,7 @@ def fix_compiler_rpath(self):
         func_original = self.runtime_library_dir_option
 
         def func_fixed(dir):
-            if sys.platform[:6] == "darwin":
+            if setup_system.is_darwin():
                 return "-Wl,-rpath," + dir
                 # return "-Xlinker -rpath -Xlinker " + dir
             else:
@@ -243,7 +139,7 @@ class build_ext(build_ext_base.build_ext):
         into the name of the file from which it will be loaded (eg.
         "foo/libbar.so", or "foo/libbar.dylib").
         """
-        if sys.platform[:6] == "darwin":
+        if setup_system.is_darwin():
             lib_type = 'dylib'
         else:
             lib_type = 'shared'
@@ -345,7 +241,7 @@ class NVCCompiler(unixccompiler.UnixCCompiler):
 
         unixccompiler.UnixCCompiler.__init__(self, verbose, dry_run, force)
 
-        home = cuda_home()
+        home = setup_cuda.cuda_home()
         nvcc = os.path.join(home, 'bin', 'nvcc')
 
         self.set_executables(compiler=nvcc,
@@ -381,7 +277,7 @@ compiler_class = {
     'cygwin':  ('distutils.cygwinccompiler', 'CygwinCCompiler'),
     'mingw32': ('distutils.cygwinccompiler', 'Mingw32CCompiler'),
     'bcpp':    ('distutils.bcppcompiler', 'BCPPCompiler'),
-    'nvcc':    ('buildtools', 'NVCCompiler'),
+    'nvcc':    ('setup_compilers', 'NVCCompiler'),
 }
 
 
