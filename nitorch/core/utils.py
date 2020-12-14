@@ -527,7 +527,7 @@ def expand(*tensors, side='left', dry_run=False, **kwargs):
     .. warning::
         This function makes use of zero strides, so more than
         one output values can point to the same memory location.
-        It is advided not too write in these tensors.
+        It is advised not too write in these tensors.
 
     """
     if 'shape' in kwargs:
@@ -568,7 +568,7 @@ def expand(*tensors, side='left', dry_run=False, **kwargs):
                  else error(s0, s1) for s0, s1 in zip(shape, shape1)]
 
     if dry_run:
-        return shape
+        return tuple(shape)
 
     # -----------------
     # Broadcast tensors

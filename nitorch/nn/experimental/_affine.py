@@ -2,11 +2,12 @@ import torch
 import torch.nn as tnn
 from ..modules._base import Module
 from ..modules._cnn import UNet, CNN
-from ..modules._spatial import GridPull, GridExp, GridResize, \
-                               AffineExp, AffineGrid
+from ..modules._spatial import GridPull, GridExp, GridResize, AffineGrid, \
+    AffineExp, AffineLog, AffineClassic, \
+    AffineClassicInverse
 from .. import check
 from nitorch import spatial
-from nitorch.core.linalg import matvec, logm, mdot
+from nitorch.core.linalg import matvec
 from nitorch.core.utils import unsqueeze, channel2last
 from nitorch.core.pyutils import make_list
 
@@ -63,7 +64,8 @@ class AffineMorph(Module):
 
         super().__init__()
         exp = AffineExp(dim, basis=basis)
-        nb_prm = sum(b.shape[0] for b in exp.basis) + _additional_output_channels
+        nb_prm = sum(
+            b.shape[0] for b in exp.basis) + _additional_output_channels
         self.cnn = CNN(dim,
                        input_channels=2 + _additional_input_channels,
                        output_channels=nb_prm,
@@ -108,7 +110,7 @@ class AffineMorph(Module):
         # sanity checks
         check.dim(self.dim, source, target)
         check.shape(target, source, dims=[0], broadcast_ok=True)
-        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target, source, dims=range(2, self.dim + 2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -143,9 +145,9 @@ class AffineMorphSemiSupervised(AffineMorph):
         # sanity checks
         check.dim(self.dim, source, target, source_seg, target_seg)
         check.shape(target, source, dims=[0], broadcast_ok=True)
-        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target, source, dims=range(2, self.dim + 2))
         check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
-        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -188,7 +190,7 @@ class AffineVoxelMorph(Module):
         super().__init__()
 
         resize_factor = make_list(downsample_velocity, dim)
-        resize_factor = [1/f for f in resize_factor]
+        resize_factor = [1 / f for f in resize_factor]
 
         affexp = AffineExp(dim, basis=basis)
         nb_prm = sum(b.shape[0] for b in affexp.basis)
@@ -259,7 +261,7 @@ class AffineVoxelMorph(Module):
             # shift center of rotation
             affine_shift = torch.cat((
                 torch.eye(self.dim, **info),
-                -torch.as_tensor(shape, **info)[:, None]/2),
+                -torch.as_tensor(shape, **info)[:, None] / 2),
                 dim=1)
             affine = spatial.affine_matmul(affine, affine_shift)
             affine = spatial.affine_lmdiv(affine_shift, affine)
@@ -302,9 +304,9 @@ class AffineVoxelMorph(Module):
         # sanity checks
         check.dim(self.dim, source, target, source_seg, target_seg)
         check.shape(target, source, dims=[0], broadcast_ok=True)
-        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target, source, dims=range(2, self.dim + 2))
         check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
-        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
+        check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
@@ -342,31 +344,20 @@ class AffineVoxelMorph(Module):
             return deformed_source, deformed_source_seg, velocity, affine_prm
 
 
-
 class DenseToAffine(Module):
     """Convert a dense displacement field to an affine matrix"""
 
-    def __init__(self, dim=3, basis='Aff+', shift=True):
+    def __init__(self, shift=True):
         """
 
         Parameters
         ----------
-        dim : int, default=3
-            Dimensionality
-        basis : {'T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+', None}, default='Aff+'
-            Basis of the Lie algebra.
-            If None: return the least square affine without projecting it
-            to the tangent space (det > 0 is not ensured anymore).
         shift : bool, default=True
             Apply a shift so that the center of rotation is in the
             center of the field of view.
         """
         super().__init__()
         self.shift = shift
-        if basis is not None:
-            self.basis = spatial.build_affine_basis(basis, dim)
-        else:
-            self.basis = None
 
     def forward(self, grid, **overload):
         """
@@ -384,19 +375,15 @@ class DenseToAffine(Module):
 
         """
         shift = overload.get('shift', self.shift)
-        basis = overload.get('basis', self.basis)
         grid = torch.as_tensor(grid)
         info = dict(dtype=grid.dtype, device=grid.device)
         nb_dim = grid.shape[-1]
         shape = grid.shape[1:-1]
 
-        if basis is not None:
-            basis = spatial.build_affine_basis(basis, nb_dim).to(**info)
-
         if shift:
             affine_shift = torch.cat((
                 torch.eye(nb_dim, **info),
-                -torch.as_tensor(shape, **info)[:, None]/2),
+                -torch.as_tensor(shape, **info)[:, None] / 2),
                 dim=1)
             affine_shift = spatial.as_euclidean(affine_shift)
 
@@ -457,7 +444,7 @@ class DenseToAffine(Module):
             x = torch.eye(d, **info)
             z = x.new_zeros([1, d], **info)
             x = torch.cat((x, z), dim=0)
-            z = x.new_zeros([d+1, 1], **info)
+            z = x.new_zeros([d + 1, 1], **info)
             x = torch.cat((x, z), dim=1)
             return x
 
@@ -472,18 +459,6 @@ class DenseToAffine(Module):
             affine = spatial.affine_rmdiv(affine, affine_shift)
         affine = spatial.affine_make_square(affine)
 
-        if basis is not None:
-            # When the affine is well conditioned, its log should be real.
-            # Here, I take the real part just in case.
-            # Another solution could be to regularise the affine (by loading
-            # slightly the diagonal) until it is well conditioned -- but
-            # how would that work with autograd?
-            affine = logm(affine.double())
-            if affine.is_complex():
-                affine = affine.real
-            affine = affine.to(dtype=info['dtype'])
-            affine = mdot(affine[:, None, ...], basis[None, ...])
-
         return affine
 
 
@@ -495,7 +470,8 @@ class AffineMorphFromDense(Module):
     square sense. Finally, we project the matrix to a Lie algebra.
     """
 
-    def __init__(self, dim, basis='CSO', encoder=None, decoder=None,
+    def __init__(self, dim, basis='CSO', mode='lie', encoder=None,
+                 decoder=None,
                  kernel_size=3, interpolation='linear', bound='dct2', *,
                  _additional_input_channels=0, _additional_output_channels=0):
         """
@@ -515,6 +491,9 @@ class AffineMorphFromDense(Module):
                 * 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
                 * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
                 * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+        mode : {'lie', 'classic'}, default='lie'
+            Encoding of the affine parameters.
+            The basis 'SL' is only available in mode 'lie'.
         encoder : list[int], optional
             Number of channels after each encoding layer .
         decoder : list[int], optional
@@ -529,14 +508,19 @@ class AffineMorphFromDense(Module):
 
         super().__init__()
         self.unet = UNet(dim,
-                       input_channels=2 + _additional_input_channels,
-                       output_channels=dim + _additional_output_channels,
-                       encoder=encoder,
-                       decoder=decoder,
-                       kernel_size=kernel_size,
-                       activation=tnn.LeakyReLU(0.2))
-        self.dense2aff = DenseToAffine(dim=dim, basis=basis, shift=True)
-        self.exp = AffineExp(dim, basis=basis)
+                         input_channels=2 + _additional_input_channels,
+                         output_channels=dim + _additional_output_channels,
+                         encoder=encoder,
+                         decoder=decoder,
+                         kernel_size=kernel_size,
+                         activation=tnn.LeakyReLU(0.2))
+        self.dense2aff = DenseToAffine(shift=True)
+        if mode == 'lie':
+            self.log = AffineLog(basis=basis)
+            self.exp = AffineExp(dim, basis=basis)
+        else:
+            self.log = AffineClassicInverse(basis=basis)
+            self.exp = AffineClassic(dim, basis=basis)
         self.grid = AffineGrid(shift=True)
         self.pull = GridPull(interpolation=interpolation,
                              bound=bound,
@@ -565,30 +549,28 @@ class AffineMorphFromDense(Module):
         -------
         deformed_source : tensor (batch, channel, *spatial)
             Deformed source image
-        affine_prm : tensor (batch,, *spatial, len(spatial))
-            affine Lie parameters
+        affine_prm : tensor (batch,, *nb_prm)
+            affine Lie/Classic parameters
 
         """
         # sanity checks
         check.dim(self.dim, source, target)
         check.shape(target, source, dims=[0], broadcast_ok=True)
-        check.shape(target, source, dims=range(2, self.dim+2))
+        check.shape(target, source, dims=range(2, self.dim + 2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
         dense = self.unet(source_and_target)
         dense = channel2last(dense)
-        affine_prm = self.dense2aff(dense)
-        affine = []
-        for prm in affine_prm:
-            affine.append(self.exp(prm))
-        affine = torch.stack(affine, dim=0)
+        affine = self.dense2aff(dense)
+        affprm = self.log(affine)    # exp(log) is not an identity because log
+        affine = self.exp(affprm)    # projects on a lower dimensional space.
         grid = self.grid(affine, shape=target.shape[2:])
         deformed_source = self.pull(source, grid)
 
         # compute loss and metrics
         self.compute(_loss, _metric,
                      image=[deformed_source, target],
-                     affine=[affine_prm])
+                     affine=[affprm])
 
-        return deformed_source, affine_prm
+        return deformed_source, affprm

@@ -834,17 +834,36 @@ def affine_matrix(prm, *basis, dim=None):
     return affine
 
 
-def affine_matrix_classic(prm, dim=3):
+def affine_matrix_classic(prm=None, dim=3, *,
+                          translations=None,
+                          rotations=None,
+                          zooms=None,
+                          shears=None):
     """Build an affine matrix in the "classic" way (no Lie algebra).
+
+    Parameters can either be provided already concatenated in the last
+    dimension (`prm=...`) or as individual components (`translations=...`)
 
     Parameters
     ----------
     prm : (..., K) tensor_like
-        Affine parameters, ordered as
+        Affine parameters, ordered -- in the last dimension -- as
         `[*translations, *rotations, *zooms, *shears]`
         Rotation parameters should be expressed in radians.
     dim : () tensor_like[int]
         Dimensionality.
+
+    Alternative Parameters
+    ----------------------
+    translations : (..., dim) tensor_like, optional
+        Translation parameters (along X, Y, Z).
+    rotations : (..., dim*(dim-1)//2) tensor_like, optional
+        Rotation parameters, in radians (about X, Y, Z)
+    zooms : (..., dim|1) tensor_like, optional
+        Zoom parameters (along X, Y, Z).
+    shears : (..., dim*(dim-1)//2) tensor_like, optional
+        Shear parameters (about XY, XZ, YZ).
+
 
     Returns
     -------
@@ -852,29 +871,52 @@ def affine_matrix_classic(prm, dim=3):
         Reconstructed affine matrix `mat = T @ Rx @ Ry @ Rz @ Z @ S`
 
     """
-
-    # Unstack
-    prm = utils.as_tensor(prm)
-    prm = prm.permute([-1, *range(prm.dim()-1)])
-    dtype = prm.dtype
-    device = prm.device
-    nb_prm, *batch_shape = prm.shape
-    nb_t = dim
-    nb_r = dim*(dim-1) // 2
-    nb_z = dim
-    nb_s = dim*(dim-1) // 2
-    idx = 0
-    prm_t = prm[idx:idx+nb_t] if nb_prm > idx else None
-    idx = idx + nb_t
-    prm_r = prm[idx:idx+nb_r] if nb_prm > idx else None
-    idx = idx + nb_r
-    prm_z = prm[idx:idx+nb_z] if nb_prm > idx else None
-    idx = idx + nb_z
-    prm_s = prm[idx:idx+nb_s] if nb_prm > idx else None
-
     def mat_last(mat):
         """Move matrix from first to last dimensions"""
         return mat.permute([*range(2, mat.dim()), 0, 1])
+
+    def vec_first(mat):
+        """Move vector from last to first dimension"""
+        return mat.permute([-1, *range(mat.dim()-1)])
+
+    # Prepare parameter vector
+    if prm is not None:
+        # A stacked tensor was provided: we must unstack it and extract
+        # each component. We expect them to be ordered as [*T, *R, *Z, *S].
+        prm = vec_first(utils.as_tensor(prm))
+        nb_prm, *batch_shape = prm.shape
+        nb_t = dim
+        nb_r = dim*(dim-1) // 2
+        nb_z = dim
+        nb_s = dim*(dim-1) // 2
+        idx = 0
+        prm_t = prm[idx:idx+nb_t] if nb_prm > idx else None
+        idx = idx + nb_t
+        prm_r = prm[idx:idx+nb_r] if nb_prm > idx else None
+        idx = idx + nb_r
+        prm_z = prm[idx:idx+nb_z] if nb_prm > idx else None
+        idx = idx + nb_z
+        prm_s = prm[idx:idx+nb_s] if nb_prm > idx else None
+    else:
+        # Individual components were provided, but some may be None, and
+        # they might not have exactly the same batch shape (we only
+        # require that their batch shapes can be broadcasted together).
+        prm_t = translations if translations is not None else [0] * dim
+        prm_r = rotations if rotations is not None else [0] * (dim*(dim-1)//2)
+        prm_z = zooms if zooms is not None else [1] * dim
+        prm_s = shears if shears is not None else [0] * (dim*(dim-1)//2)
+        # Convert and move to a common backend (dtype + device)
+        prm_t, prm_r, prm_z, prm_s = utils.to_common(prm_t, prm_r, prm_z, prm_s)
+        # Broadcast all batch shapes
+        batch_shape = utils.expand(prm_t[..., 0], prm_r[..., 0],
+                                   prm_z[..., 0], prm_s[..., 0],
+                                   shape=[], dry_run=True)
+        prm_t = vec_first(prm_t.expand(batch_shape + prm_t.shape[-1:]))
+        prm_r = vec_first(prm_r.expand(batch_shape + prm_r.shape[-1:]))
+        prm_z = vec_first(prm_z.expand(batch_shape + prm_z.shape[-1:]))
+        prm_s = vec_first(prm_s.expand(batch_shape + prm_s.shape[-1:]))
+
+    backend = dict(dtype=prm_t.dtype, device=prm_t.device)
 
     if dim == 2:
 
@@ -883,9 +925,9 @@ def affine_matrix_classic(prm, dim=3):
                 T = [[i, o, t[0]],
                      [o, i, t[1]],
                      [o, o, i]]
-                T = mat_last(utils.as_tensor(T, dtype=dtype, device=device))
+                T = mat_last(utils.as_tensor(T, **backend))
             else:
-                T = torch.eye(3, dtype=dtype, device=device)
+                T = torch.eye(3, **backend)
                 T = utils.expand(T, [*batch_shape, 1, 1])
             if r is not None:
                 c = torch.cos(r)
@@ -893,25 +935,25 @@ def affine_matrix_classic(prm, dim=3):
                 R = [[c[0],  s[0], o],
                      [-s[0], c[0], o],
                      [o,     o,    i]]
-                R = mat_last(utils.as_tensor(R, dtype=dtype, device=device))
+                R = mat_last(utils.as_tensor(R, **backend))
             else:
-                R = torch.eye(3, dtype=dtype, device=device)
+                R = torch.eye(3, **backend)
                 R = utils.expand(R, [*batch_shape, 1, 1])
             if z is not None:
                 Z = [[z[0], o,    o],
                      [o,    z[1], o],
                      [o,    o,    i]]
-                Z = mat_last(utils.as_tensor(Z, dtype=dtype, device=device))
+                Z = mat_last(utils.as_tensor(Z, **backend))
             else:
-                Z = torch.eye(3, dtype=dtype, device=device)
+                Z = torch.eye(3, **backend)
                 Z = utils.expand(Z, [*batch_shape, 1, 1])
             if sh is not None:
                 S = [[i, sh[0], o],
                      [o, i,     o],
                      [o, o,     i]]
-                S = mat_last(utils.as_tensor(S, dtype=dtype, device=device))
+                S = mat_last(utils.as_tensor(S, **backend))
             else:
-                S = torch.eye(3, dtype=dtype, device=device)
+                S = torch.eye(3, **backend)
                 S = utils.expand(S, [*batch_shape, 1, 1])
 
             return T.matmul(R.matmul(Z.matmul(S)))
@@ -922,9 +964,9 @@ def affine_matrix_classic(prm, dim=3):
                      [o, i, o, t[1]],
                      [o, o, i, t[2]],
                      [o, o, o, i]]
-                T = mat_last(utils.as_tensor(T, dtype=dtype, device=device))
+                T = mat_last(utils.as_tensor(T, **backend))
             else:
-                T = torch.eye(4, dtype=dtype, device=device)
+                T = torch.eye(4, **backend)
                 T = utils.expand(T, [*batch_shape, 1, 1])
             if r is not None:
                 c = torch.cos(r)
@@ -941,37 +983,37 @@ def affine_matrix_classic(prm, dim=3):
                       [-s[2], c[2], o, o],
                       [o,     o,    i, o],
                       [o,     o,    o, i]]
-                Rx = mat_last(utils.as_tensor(Rx, dtype=dtype, device=device))
-                Ry = mat_last(utils.as_tensor(Ry, dtype=dtype, device=device))
-                Rz = mat_last(utils.as_tensor(Rz, dtype=dtype, device=device))
+                Rx = mat_last(utils.as_tensor(Rx, **backend))
+                Ry = mat_last(utils.as_tensor(Ry, **backend))
+                Rz = mat_last(utils.as_tensor(Rz, **backend))
                 R = Rx.matmul(Ry.matmul(Rz))
             else:
-                R = torch.eye(4, dtype=dtype, device=device)
+                R = torch.eye(4, **backend)
                 R = utils.expand(R, [*batch_shape, 1, 1])
             if z is not None:
                 Z = [[z[0], o,    o,    o],
                      [o,    z[1], o,    o],
                      [o,    o,    z[2], o],
                      [o,    o,    o,    i]]
-                Z = mat_last(utils.as_tensor(Z, dtype=dtype, device=device))
+                Z = mat_last(utils.as_tensor(Z, **backend))
             else:
-                Z = torch.eye(4, dtype=dtype, device=device)
+                Z = torch.eye(4, **backend)
                 Z = utils.expand(Z, [*batch_shape, 1, 1])
             if sh is not None:
                 S = [[i, sh[0], sh[1], o],
                      [o, i,     sh[2], o],
                      [o, o,     i,     o],
                      [o, o,     o,     i]]
-                S = mat_last(utils.as_tensor(S, dtype=dtype, device=device))
+                S = mat_last(utils.as_tensor(S, **backend))
             else:
-                S = torch.eye(4, dtype=dtype, device=device)
+                S = torch.eye(4, **backend)
                 S = utils.expand(S, [*batch_shape, 1, 1])
 
             return T.matmul(R.matmul(Z.matmul(S)))
 
-    zero = torch.zeros([], dtype=dtype, device=device)
+    zero = torch.zeros([], **backend)
     zero = utils.expand(zero, batch_shape)
-    one = torch.ones([], dtype=dtype, device=device)
+    one = torch.ones([], **backend)
     one = utils.expand(one, batch_shape)
 
     # Build affine matrix
@@ -994,10 +1036,6 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
 
     basis : vector_like[basis_like]
         Basis of the Lie algebra(s).
-
-    layout : str or (D+1, D+1) tensor_like, default='RAS'
-        "Point" at which to take the matrix exponential
-        (see affine_layout)
 
     max_iter : int, default=10000
         Maximum number of Gauss-Newton iterations in the least-squares fit.
@@ -1124,6 +1162,124 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
 
     # TODO: should I stack parameters per basis?
     return prm, M
+
+
+def affine_parameters_classic(mat, return_stacked=True):
+    """Compute the parameters of an affine matrix.
+
+    This functions decomposes the input matrix into a product of
+    simpler matrices (translation, rotation, ...) and extracts their
+    parameters, so that the input matrix can be (approximately)
+    reconstructed by `mat = T @ Rx @ Ry @ Rz @ Z @ S`
+
+    This function only works in 2D and 3D.
+
+    Parameters
+    ----------
+    mat : (..., dim+1, dim+1) tensor_like
+        Affine matrix
+    return_stacked : bool, default=True
+        Return all parameters stacked in a vector
+
+    Returns
+    -------
+    prm : (..., dim*(dim+1)) tensor, if return_stacked
+        Individual parameters, ordered as
+        [*translations, *rotations, *zooms, *shears].
+
+    translations : (..., dim) tensor, if not return_stacked
+        Translation parameters.
+    rotations : (..., dim*(dim-1)//2) tensor, if not return_stacked
+        Rotation parameters, in radian.
+    zooms : (..., dim*) tensor, if not return_stacked
+        Zoom parameters.
+    shears : (..., dim*(dim-1)//2) tensor, if not return_stacked
+        Shear parameters.
+
+    """
+
+    # Authors
+    # -------
+    # .. John Ashburner <j.ashburner@ucl.ac.uk> : original code (SPM12)
+    # .. Stefan Kiebel <stefan.kiebel@tu-dresden.de> : original code (SPM12)
+    # .. Mikael Brudfors <brudfors@gmail.com> : Python port
+    # .. Yael Balbastre <yael.balbastre@gmail.com> : Batching + Autograd
+
+    mat = torch.as_tensor(mat)
+    dim = mat.shape[-1] - 1
+
+    if dim not in (2, 3):
+        raise ValueError(f'Expected dimension 2 or 3, but got {dim}.')
+
+    # extract linear part + cholesky decomposition
+    # (note that matlab's chol is upper-triangular by default while
+    #  pytorch's is lower-triangular by default).
+    #
+    # > the idea is that M = R @ Z @ S and
+    #   M.T @ M = (S.T @ Z.T @ R.T) @ (R @ Z @ S)
+    #   M.T @ M = (S.T @ Z.T) @ (Z @ S)
+    #           = U.T @ U
+    #  where U is upper-triangular, such that the diagonal of U contains
+    #  zooms and the off-diagonal elements of Z\U are the shears.
+    lin = mat[..., :dim, :dim]
+    chol = torch.cholesky(lin.transpose(-1, -2).matmul(lin), upper=True)
+    diag_chol = torch.diagonal(chol, dim1=-1, dim2=-2)
+
+    # Translations
+    prm_t = mat[..., :dim, -1]
+
+    # Zooms (with fix for negative determinants)
+    # > diagonal of the cholesky factor
+    prm_z = diag_chol
+    prm_z0 = torch.where(lin.det() < 0, -prm_z[..., 0], prm_z[..., 0])
+    prm_z0 = prm_z0[..., None]
+    prm_z = torch.cat((prm_z0, prm_z[..., 1:]), dim=-1)
+
+    # Shears
+    # > off-diagonal of the normalized cholesky factor
+    chol = chol / diag_chol[..., None]
+    upper_ind = torch.triu_indices(chol.shape[-2], chol.shape[-1],
+                                   device=mat.device, offset=1)
+    prm_s = chol[..., upper_ind[0], upper_ind[1]]
+
+    # Rotations
+    # > we know the zooms and shears and therefore `Z @ S`.
+    #   If the problem is well conditioned, we can recover the pure
+    #   rotation (orthogonal) matrix as `R = M / (Z @ S)`.
+    lin0 = affine_matrix_classic(zooms=prm_z, shears=prm_s, dim=dim)
+    lin0 = lin0[..., :dim, :dim]
+    rot = lin.matmul(lin0.inverse())          # `R = M / (Z @ S)`
+    clamp = lambda x: x.clamp(min=-1, max=1)  # correct rounding errors
+
+    xz = rot[..., 0, -1]
+    rot_y = torch.asin(clamp(xz))
+    if dim == 2:
+        prm_r = rot_y[..., None]
+    else:
+        xy = rot[..., 0, 1]
+        yx = rot[..., 1, 0]
+        yz = rot[..., 1, -1]
+        xx = rot[..., 0, 0]
+        zz = rot[..., -1, -1]
+        zx = rot[..., -1, 0]
+        cos_y = torch.cos(rot_y)
+
+        # find matrices for which the first rotation is 90 deg
+        # (we cannot divide by its cos in that case)
+        cos_zero = (torch.abs(rot_y) - constants.pi/2)**2 < 1e-9
+        zero = cos_zero.new_zeros([]).expand(cos_zero.shape)
+
+        rot_x = torch.where(cos_zero, zero,
+                            torch.atan2(clamp(yz/cos_y), clamp(zz/cos_y)))
+        rot_z = torch.where(cos_zero,
+                            torch.atan2(-clamp(yx), clamp(-zx/xz)),
+                            torch.atan2(clamp(xy/cos_y), clamp(xx/cos_y)))
+        prm_r = torch.stack((rot_x, rot_y, rot_z), dim=-1)
+
+    if return_stacked:
+        return torch.cat((prm_t, prm_r, prm_z, prm_s), dim=-1)
+    else:
+        return prm_t, prm_r, prm_z, prm_s
 
 
 def as_homogeneous(affine):
