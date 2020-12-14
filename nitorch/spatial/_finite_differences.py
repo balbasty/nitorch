@@ -388,6 +388,50 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
                 div = slice_tensor(div, slice(None, -1), dim)
                 div = torch.cat((div, last), dim)
 
+        elif side == 'c':
+            # central -> diff[i] = (x[i+1] - x[i-1])/2
+            #         -> div[i]  = (x[i-1] - x[i+1])/2
+            pre = slice_tensor(x, slice(None, -2), dim)
+            post = slice_tensor(x, slice(2, None), dim)
+            div = pre - post
+            if bound in ('dct2', 'replicate'):
+                # x[-1]    = x[0]   => diff[0]   = x[1] - x[0]
+                # x[end+1] = x[end] => diff[end] = x[end] - x[end-1]
+                first = slice_tensor(x, 1, dim) - slice_tensor(x, 0, dim)
+                first = torch.unsqueeze(first, dim)
+                last = slice_tensor(x, -1, dim) - slice_tensor(x, -2, dim)
+                last = torch.unsqueeze(last, dim)
+                diff = torch.cat((first, diff, last), dim)
+            elif bound == 'dct1':
+                # x[-1]    = x[1]     => diff[0]   = 0
+                # x[end+1] = x[end-1] => diff[end] = 0
+                diff = torch.cat((zero, diff, zero), dim)
+            elif bound == 'dst2':
+                # x[-1]    = -x[0]   => diff[0]   = x[1] + x[0]
+                # x[end+1] = -x[end] => diff[end] = -(x[end] + x[end-1])
+                first = slice_tensor(x, 1, dim) + slice_tensor(x, 0, dim)
+                first = torch.unsqueeze(first, dim)
+                last = - slice_tensor(x, -1, dim) - slice_tensor(x, -2, dim)
+                last = torch.unsqueeze(last, dim)
+                diff = torch.cat((first, diff, last), dim)
+            elif bound in ('dst1', 'zero'):
+                # x[-1]    = 0 => diff[0]   = x[1]
+                # x[end+1] = 0 => diff[end] = -x[end-1]
+                first = slice_tensor(x, 1, dim)
+                first = torch.unsqueeze(first, dim)
+                last = -slice_tensor(x, -2, dim)
+                last = torch.unsqueeze(last, dim)
+                diff = torch.cat((first, diff, last), dim)
+            else:
+                assert bound == 'dft'
+                # x[-1]    = x[end] => diff[0]   = x[1] - x[end]
+                # x[end+1] = x[0]   => diff[end] = x[0] - x[end-1]
+                first = slice_tensor(x, 1, dim) - slice_tensor(x, -1, dim)
+                first = torch.unsqueeze(first, dim)
+                last = slice_tensor(x, 0, dim) - slice_tensor(x, -1, dim)
+                last = torch.unsqueeze(last, dim)
+                diff = torch.cat((first, diff, last), dim)
+
         if voxel_size != 1:
             div = div / voxel_size
 

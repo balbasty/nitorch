@@ -354,6 +354,13 @@ class ModelTrainer:
             print('')
 
     def _hello(self, mode):
+        """Tell the use what we are going to do (mode, device, dtype, ...)
+
+        Parameters
+        ----------
+        mode : {'train', 'eval'}
+
+        """
         if self.device.type == 'cuda':
             device = torch.cuda.get_device_name(self.device)
         else:
