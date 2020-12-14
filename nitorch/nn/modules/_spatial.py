@@ -598,10 +598,6 @@ class AffineClassicInverse(Module):
             Parameters
 
         """
-        # I build the matrix at each call, which is not great.
-        # Hard to be efficient *and* generic...
-        dim = affine.shape[-1] - 1
-        backend = dict(dtype=affine.dtype, device=affine.device)
         logzooms = overload.get('logzooms', self.logzooms)
         basis = overload.get('basis', self.basis)
 
