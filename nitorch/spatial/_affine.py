@@ -1267,9 +1267,9 @@ def affine_parameters_classic(mat, return_stacked=True):
         # find matrices for which the first rotation is 90 deg
         # (we cannot divide by its cos in that case)
         cos_zero = (torch.abs(rot_y) - constants.pi/2)**2 < 1e-9
-        zero = cos_zero.new_zeros([]).expand(cos_zero.shape)
+        zero = xy.new_zeros([]).expand(cos_zero.shape)
 
-        rot_x = torch.where(cos_zero, zero,
+        rot_x = torch.where(cos_zero.bool(), zero,
                             torch.atan2(clamp(yz/cos_y), clamp(zz/cos_y)))
         rot_z = torch.where(cos_zero,
                             torch.atan2(-clamp(yx), clamp(-zx/xz)),
