@@ -225,10 +225,10 @@ def cuda_arch_flags():
     # First check for an env var (same as used by the main setup.py)
     # Can be one or more architectures, e.g. "6.1" or "3.5;5.2;6.0;6.1;7.0+PTX"
     # See cmake/Modules_CUDA_fix/upstream/FindCUDA/select_compute_arch.cmake
-    arch_list = os.environ.get('TORCH_CUDA_ARCH_LIST', None)
+    arch_list = os.environ.get('TORCH_CUDA_ARCH_LIST', 'mine')
 
     # If not given, look into libtorch_cuda
-    if not arch_list:
+    if not arch_list or arch_list.lower() == 'all':
         cuobjdump = os.path.join(cuda_home(), 'bin', 'cuobjdump')
         torchdir = os.path.dirname(os.path.abspath(torch.__file__))
         libtorch = os.path.join(torchdir, 'lib')
