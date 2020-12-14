@@ -240,11 +240,11 @@ def cuda_arch_flags():
         arch_list = os.popen(cuobjdump + " '" + libtorch + \
                              "' -lelf | awk -F. '{print $3}' | " \
                              "grep sm | sort -u").read().split('\n')
-        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list]
+        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list if arch]
         ptx_list = os.popen(cuobjdump + " '" + libtorch + \
                              "' -lptx | awk -F. '{print $3}' | " \
                              "grep sm | sort -u").read().split('\n')
-        ptx_list = [arch[3] + '.' + arch[4] for arch in ptx_list]
+        ptx_list = [arch[3] + '.' + arch[4] for arch in ptx_list if arch]
         arch_list = [arch + '+PTX' if arch in ptx_list else arch
                      for arch in arch_list]
     elif arch_list == 'mine':
