@@ -1,9 +1,10 @@
 """Tools to ease model training (like torch.ignite)"""
 
 import torch
+from torch.utils.tensorboard import SummaryWriter
 from nitorch.core.utils import benchmark
-from nitorch.core.pyutils import make_tuple, make_list
-from nitorch.nn.modules._base import Module, nitorchmodule
+from nitorch.core.pyutils import make_tuple
+from nitorch.nn.modules import Module
 import string
 import math
 import os
@@ -70,16 +71,22 @@ class ModelTrainer:
     _nb_steps = None
     _train_set = None
     _eval_set = None
+    _tensorboard = None
+    _tensorboard_callbacks = None
+    random_state = []
 
     def __init__(self, model, train_set, eval_set=None,
                  optimizer=torch.optim.Adam,
                  nb_epoch=100,
                  nb_steps=None,
+                 *, # the remaining parameters *must be* keywords
                  device=None,
                  dtype=None,
-                 epoch=0,
+                 initial_epoch=0,
                  log_interval=10,
                  benchmark=False,
+                 seed=None,
+                 tensorboard=None,
                  save_model=None,
                  save_optimizer=None,
                  load_model=None,
@@ -119,15 +126,23 @@ class ModelTrainer:
             any, else use cpu.
         dtype : torch.dtype, optional
             Data type to use. By default use `torch.get_default_dtype`.
-        epoch : int, default=0
+        initial_epoch : int, default=0
             First epoch
-        log_interval : int, default=float
-            Print/save model
+        log_interval : int, default=10
+            Number of steps between screen updates.
         benchmark : bool, default=False
             Use the cudnn benchmarking utility that uses the first forward
             pass to compare different convolution algorithms and select the
             best performing one. You should only use this option if the
-            spatial shape of your input dat ais constant across mini batches.
+            spatial shape of your input data is constant across mini batches.
+        seed : int, optional
+            Manual seed to use for training. The seed is set when
+            training starts. A context manager is used so that the global
+            state is kept untouched. If `None`, use the global state.
+        tensorboard : str, optional
+            A path to the tensorboard log directory.
+            If provided, losses and metrics are registered to the board
+            by default.
         save_model : str, optional
             A path to save the model at each epoch. Can have a
             formatted component ('mymodel_{}.pth') for the epoch number.
@@ -149,6 +164,11 @@ class ModelTrainer:
         self.optimizer = optimizer(model.parameters())
         self.log_interval = log_interval
         self.benchmark = benchmark
+        self.seed = seed
+        self.initial_seed = seed
+        self.tensorboard = tensorboard
+        self._tensorboard_callbacks = dict(train=dict(epoch=[], step=[]),
+                                           eval=dict(epoch=[], step=[]))
         self.save_model = save_model
         self.save_optimizer = save_optimizer
         self.load_model = load_model
@@ -157,7 +177,8 @@ class ModelTrainer:
         self.show_metrics = show_metrics
         self.nb_epoch = nb_epoch
         self.nb_steps = nb_steps
-        self.epoch = epoch
+        self.initial_epoch = initial_epoch
+        self.epoch = initial_epoch
         self.device = device or 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = torch.device(self.device)
         self.dtype = dtype or torch.get_default_dtype()
@@ -187,6 +208,20 @@ class ModelTrainer:
                         return
                     yield batch
                     d += 1
+
+    @property
+    def tensorboard(self):
+        if self._tensorboard:
+            return self._tensorboard
+        else:
+            return self._tensorboard
+
+    @tensorboard.setter
+    def tensorboard(self, val):
+        if not val:
+            self._tensorboard = val
+        else:
+            self._tensorboard = SummaryWriter(val)
 
     @property
     def nb_steps(self):
@@ -225,7 +260,7 @@ class ModelTrainer:
         """Train for one epoch"""
 
         self.model.train()
-        epoch_loss = 0
+        epoch_loss = 0.
         epoch_losses = {}
         epoch_metrics = {}
         nb_batches = 0
@@ -238,7 +273,7 @@ class ModelTrainer:
             batch = tuple(torch.as_tensor(b, dtype=self.dtype, device=self.device) for b in batch)
             nb_batches += batch[0].shape[0]
             self.optimizer.zero_grad()
-            self.model(*batch, _loss=losses, _metric=metrics)
+            output = self.model(*batch, _loss=losses, _metric=metrics)
             loss = sum(losses.values())
             # backward pass
             loss.backward()
@@ -253,6 +288,11 @@ class ModelTrainer:
                 if n_batch % self.log_interval == 0:
                     self._print('train', epoch, n_batch+1, nb_steps,
                                 loss, losses, metrics)
+                # tb callback
+                if self.tensorboard:
+                    for func in self._tensorboard_callbacks['train']['step']:
+                        func(self.tensorboard, epoch, n_batch,
+                             batch, output, loss, losses, metrics)
         # print summary
         with torch.no_grad():
             epoch_loss /= nb_batches
@@ -260,6 +300,11 @@ class ModelTrainer:
             normalize_loss_dict(epoch_metrics, nb_batches)
             self._print('train', epoch, nb_steps, nb_steps,
                         epoch_loss, epoch_losses, epoch_metrics, last=True)
+            self._board('train', epoch, epoch_loss, epoch_metrics)
+            # tb callback
+            if self.tensorboard:
+                for func in self._tensorboard_callbacks['train']['epoch']:
+                    func(self.tensorboard, epoch, loss, losses, metrics)
 
     def _eval(self, epoch=0):
         """Evaluate once"""
@@ -281,7 +326,7 @@ class ModelTrainer:
                 batch = tuple(torch.as_tensor(b, dtype=self.dtype, device=self.device) for b in batch)
                 nb_batches += batch[0].shape[0]
                 self.optimizer.zero_grad()
-                self.model(*batch, _loss=losses, _metric=metrics)
+                output = self.model(*batch, _loss=losses, _metric=metrics)
                 loss = sum(losses.values())
                 # update average across batches
                 weight = float(batch[0].shape[0])
@@ -292,12 +337,22 @@ class ModelTrainer:
                 if n_batch % self.log_interval == 0:
                     self._print('eval', epoch, n_batch + 1, nb_steps,
                                 loss, losses, metrics)
+                # tb callback
+                if self.tensorboard:
+                    for func in self._tensorboard_callbacks['eval']['step']:
+                        func(self.tensorboard, epoch, n_batch,
+                             batch, output, loss, losses, metrics)
             # print summary
             epoch_loss /= nb_batches
             normalize_loss_dict(epoch_losses, nb_batches)
             normalize_loss_dict(epoch_metrics, nb_batches)
             self._print('eval', epoch, nb_steps, nb_steps,
                         epoch_loss, epoch_losses, epoch_metrics, last=True)
+            self._board('eval', epoch, epoch_loss, epoch_metrics)
+            # tb callback
+            if self.tensorboard:
+                for func in self._tensorboard_callbacks['eval']['epoch']:
+                    func(self.tensorboard, epoch, loss, losses, metrics)
 
     def _print(self, mode, n_epoch, n_batch, nb_steps, loss,
                losses=None, metrics=None, last=False):
@@ -353,6 +408,38 @@ class ModelTrainer:
         if last:
             print('')
 
+    def _board(self, mode, epoch, loss, epoch_metrics):
+        """Add losses and metrics to tensorboard."""
+        if not self.tensorboard:
+            return
+        tb = self.tensorboard
+        tb.add_scalars('loss', {mode: loss.item()}, epoch)
+        for tag, value in epoch_metrics.items():
+            tb.add_scalars(tag, {mode: value.item()}, epoch)
+        tb.flush()
+
+    def add_tensorboard_callback(self, func, mode='train', trigger='epoch'):
+        """Register tensorboard callbacks
+
+        Parameters
+        ----------
+        func : callable
+            If trigger 'step', with signature
+                `(tb, epoch, step, input, output, loss, losses, metrics)`
+            If trigger 'epoch', with signature:
+                `(tb, epoch, loss, losses, metrics)`
+        mode : {'train', 'eval'}
+            Trigger either during a training or evaluation call.
+        trigger : {'epoch', 'step'}
+            Trigger either at the end of a step or at the end of an epoch.
+
+        """
+        if mode not in self._tensorboard_callbacks.keys():
+            self._tensorboard_callbacks[mode] = dict()
+        if trigger not in self._tensorboard_callbacks[mode].keys():
+            self._tensorboard_callbacks[mode][trigger] = list()
+        self._tensorboard_callbacks[mode][trigger].append(func)
+
     def _hello(self, mode):
         """Tell the use what we are going to do (mode, device, dtype, ...)
 
@@ -405,14 +492,19 @@ class ModelTrainer:
     def train(self):
         """Launch training"""
         self._hello('train')
-        with benchmark(self.benchmark):
-            self.model.to(dtype=self.dtype, device=self.device)
-            self._eval(self.epoch)
-            self._save(self.epoch)
-            for self.epoch in range(self.epoch+1, self.nb_epoch+1):
-                self._train(self.epoch)
+        with torch.random.fork_rng(enabled=self.seed is not None):
+            if self.seed is not None:
+                torch.random.manual_seed(self.seed)
+            self.initial_seed = torch.random.initial_seed()
+            with benchmark(self.benchmark):
+                self.model.to(dtype=self.dtype, device=self.device)
+                self.epoch = self.initial_epoch
                 self._eval(self.epoch)
                 self._save(self.epoch)
+                for self.epoch in range(self.epoch+1, self.nb_epoch+1):
+                    self._train(self.epoch)
+                    self._eval(self.epoch)
+                    self._save(self.epoch)
 
     def eval(self):
         """Launch evaluation"""
@@ -420,80 +512,42 @@ class ModelTrainer:
         self.model.to(dtype=self.dtype, device=self.device)
         self._eval()
 
+    def init(self):
+        """Initialize the random state + run one evaluation."""
+        with torch.random.fork_rng(enabled=self.seed is not None):
+            if self.seed is not None:
+                torch.random.manual_seed(self.seed)
+            self.initial_seed = torch.random.initial_seed()
+            self.save_random_state()
+            self.epoch = self.initial_epoch
+            self.model.to(dtype=self.dtype, device=self.device)
+            self._eval(self.epoch)
+            self._save(self.epoch)
 
-class SupervisedModel(Module):
-    """A wrapper class for classic supervised models.
+    def set_random_state(self):
+        """Populate the random state using a saved state."""
+        if self.random_state:
+            cpu_state, *gpu_states = self.random_state
+            devices = list(range(torch.cuda.device_count()))
+            torch.set_rng_state(self.random_state[0])
+            for device, state in zip(devices, gpu_states):
+                torch.cuda.set_rng_state(state, device)
 
-    This makes `ModelTrainer` work with keras-like inputs and losses.
-    """
+    def save_random_state(self):
+        """Save the current random state."""
+        devices = list(range(torch.cuda.device_count()))
+        self.random_state = [torch.get_rng_state()]
+        self.random_state.extend(torch.cuda.get_rng_state(device)
+                                 for device in devices)
 
-    def __init__(self, model, losses=None, metrics=None):
-        """
+    def train1(self):
+        """Train for one epoch."""
+        with torch.random.fork_rng():
+            self.set_random_state()
+            self.model.to(dtype=self.dtype, device=self.device)
+            self.epoch += 1
+            self._train(self.epoch)
+            self._eval(self.epoch)
+            self._save(self.epoch)
+            self.save_random_state()
 
-        Parameters
-        ----------
-        model : Module
-            A model to train
-        losses : callable or list[callable]
-            Loss functions (this is what we optimize by backpropagation)
-        metrics : callable or list[callable]
-            Metric functions (this is not optimized, only monitored)
-        """
-        super().__init__(self)
-        self.model = nitorchmodule(model)
-        self.losses = make_list(losses) or []
-        self.metrics = make_list(metrics) or []
-
-    def forward(self, inputs, labels, *, _loss=None, _metric=None):
-        """
-        The forward pass is applied to the unpacked inputs.
-        Then, for each triplet (output, label, loss), the loss
-        is computed as `loss(output, label)`. Note that the number
-        of losses can be smaller than the number of outputs (in this
-        case the remaining outputs do not enter a loss). Similarly, the
-        number of labels can be smaller than the number of outputs
-        (in this case, the loss is called with only one argument).
-
-        Parameters
-        ----------
-        inputs : tensor or sequence[tensor]
-            Input tensors that are fed to the network.
-        labels : tensor or sequence[tensor]
-            Ground truth labels.
-
-        Returns
-        -------
-        outputs : tensor or tuple[tensor]
-            Outputs of the network
-        """
-
-        inputs = make_tuple(inputs)
-        labels = make_tuple(labels)
-
-        # forward pass
-        outputs = self.model(*inputs, _loss=_loss, _metric=_metric)
-        outputs = make_tuple(outputs)
-
-        # compute losses
-        if _loss is not None:
-            losses = {}
-            for i, loss in enumerate(self.losses):
-                if len(labels) > i and labels[i] is not None:
-                    loss_inputs = (outputs[i], labels[i])
-                else:
-                    loss_inputs = (outputs[i],)
-                losses[str(i)] = loss(*loss_inputs)
-            self.update_dict(_loss, losses)
-
-        # compute metrics
-        if _metric is not None:
-            metrics = {}
-            for i, metric in enumerate(self.metrics):
-                if len(labels) > i and labels[i] is not None:
-                    metric_inputs = (outputs[i], labels[i])
-                else:
-                    metric_inputs = (outputs[i],)
-                metrics[str(i)] = metric(*metric_inputs)
-            self.update_dict(_metric, metrics)
-
-        return outputs
