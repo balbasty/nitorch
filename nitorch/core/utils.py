@@ -888,7 +888,7 @@ def ceil_pow(t, p=2.0, l=2.0):
     ct = ct.squeeze()
     # Ceil input
     for n in range(d):
-        if p[n, ix[n]].isfinite():
+        if torch.isfinite(p[n, ix[n]]):
             ct[n] = p[n, ix[n]]
     # Return same datatype
     ct = ct.type(dtype0)

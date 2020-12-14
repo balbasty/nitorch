@@ -40,12 +40,12 @@ def _data_loader(dat, mat, opt):
 
     for n in range(len(dat)):  # loop over input images
         # Mask
-        dat[n][~dat[n].isfinite()] = 0.0
+        dat[n][~torch.isfinite(dat[n])] = 0.0
         if opt['cost_fun'] in _costs_edge:
             # Get gradient scaling values
             _, _, mu_bg, mu_fg = estimate_noise(dat[n], show_fit=False)
             scl = 1.0 / torch.abs(mu_fg.float() - mu_bg.float())
-            if not scl.isfinite():
+            if not torch.isfinite(scl):
                 scl = 1.0
         if opt['cost_fun'] in _costs_hist:
             # Rescale
