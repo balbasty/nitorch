@@ -6,6 +6,7 @@ from nitorch.core.pyutils import make_tuple, make_list
 from nitorch.nn.modules._base import Module, nitorchmodule
 import string
 import math
+import os
 
 
 def update_loss_dict(old, new, weight=1, inplace=True):
@@ -352,13 +353,35 @@ class ModelTrainer:
         if last:
             print('')
 
+    def _hello(self, mode):
+        if self.device.type == 'cuda':
+            device = torch.cuda.get_device_name(self.device)
+        else:
+            assert self.device.type == 'cpu'
+            device = 'CPU'
+        dtype = str(self.dtype).split('.')[-1]
+        if mode == 'train':
+            hello = 'Training model {} for {} epochs (steps per epoch: {}) ' \
+                    'on {} (dtype = {})'
+            hello = hello.format(type(self.model).__name__, self.nb_epoch,
+                                 len(self.train_set), device, dtype)
+        else:
+            hello = 'Evaluating model {} (minibatches: {}) on {} (dtype = {})'
+            hello = hello.format(type(self.model).__name__,
+                                 len(self.eval_set), device, dtype)
+        print(hello, flush=True)
+
     def _save(self, epoch):
         """Save once"""
         if self.save_model:
             save_model = self._formatfile(self.save_model, epoch)
+            dir_model = os.path.dirname(save_model)
+            os.makedirs(dir_model, exist_ok=True)
             torch.save(self.model.state_dict(), save_model)
         if self.save_optimizer:
             save_optimizer = self._formatfile(self.save_optimizer, epoch)
+            dir_optimizer = os.path.dirname(save_optimizer)
+            os.makedirs(dir_optimizer, exist_ok=True)
             torch.save(self.optimizer.state_dict(), save_optimizer)
 
     @ staticmethod
@@ -374,6 +397,7 @@ class ModelTrainer:
 
     def train(self):
         """Launch training"""
+        self._hello('train')
         with benchmark(self.benchmark):
             self.model.to(dtype=self.dtype, device=self.device)
             self._eval(self.epoch)
@@ -385,6 +409,7 @@ class ModelTrainer:
 
     def eval(self):
         """Launch evaluation"""
+        self._hello('eval')
         self.model.to(dtype=self.dtype, device=self.device)
         self._eval()
 
