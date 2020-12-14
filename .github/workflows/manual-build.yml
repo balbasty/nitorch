@@ -95,9 +95,12 @@ jobs:
         source "./scripts/actions/install_pytorch_${os}.sh"
 
     - name: Build nitorch
-        # Compiling for all architectures takes ages and this workflow is just
-        # here to test that we didn't break anything in the compilation chain
-        # so we only test one architecture (sm_35 -> the default)
-        # In the package distribution workflow, we'll need to compile for
-        # all architectures supported by (the pypi version of) pytorch.
-        run: TORCH_CUDA_ARCH_LIST="3.5" python setup.py install
+      # Compiling for all architectures takes ages and this workflow is just
+      # here to test that we didn't break anything in the compilation chain
+      # so we only test one architecture (sm_35 -> the default)
+      # In the package distribution workflow, we'll need to compile for
+      # all architectures supported by (the pypi version of) pytorch.
+      run: |
+        # install scipy ourselves because setuptools does a poor job
+        pip install scipy
+        TORCH_CUDA_ARCH_LIST="3.5" python setup.py install
