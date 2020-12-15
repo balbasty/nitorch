@@ -531,7 +531,7 @@ class AffineMorphFromDense(Module):
         self.dim = dim
 
         # register losses/metrics
-        self.tags = ['image', 'affine']
+        self.tags = ['image', 'dense', 'affine']
 
     def forward(self, source, target, *, _loss=None, _metric=None):
         """
@@ -574,6 +574,7 @@ class AffineMorphFromDense(Module):
         # compute loss and metrics
         self.compute(_loss, _metric,
                      image=[deformed_source, target],
-                     affine=[affprm])
+                     affine=[affprm],
+                     dense=[dense])
 
         return deformed_source, affprm
