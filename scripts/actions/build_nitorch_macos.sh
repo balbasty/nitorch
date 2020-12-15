@@ -36,7 +36,7 @@ else
   OMP_URL="openmp-10.0.0-darwin17-Release.tar.gz"
 fi
 curl -O "https://mac.r-project.org/openmp/${OMP_URL}"
-sudo tar fvx openmp-9.0.1-darwin17-Release.tar.gz -C /
+sudo tar fvx "$OMP_URL" -C /
 
 #export CC='gcc-8'
 #export CXX='g++-8'
