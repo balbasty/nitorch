@@ -7,6 +7,10 @@ on:
         description: 'Operating system'
         required: false
         default: 'ubuntu-latest'
+      target-version:
+        description: 'Target OS version (mac only)'
+        required: false
+        default: 'same'
       python-version:
         description: 'Version of python'
         required: false
@@ -100,7 +104,15 @@ jobs:
       # so we only test one architecture (sm_35 -> the default)
       # In the package distribution workflow, we'll need to compile for
       # all architectures supported by (the pypi version of) pytorch.
+      env:
+        TORCH_CUDA_ARCH_LIST: "3.5"
+        TARGET_VERSION: ${{ github.event.inputs.target-version }}
+        BUILD_ACTION: "install"
       run: |
-        # install scipy ourselves because setuptools does a poor job
-        pip install scipy
-        TORCH_CUDA_ARCH_LIST="3.5" python setup.py install
+        os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.os }})"
+        echo "$os"
+        if [ ! -f "./scripts/actions/build_nitorch_${os}.sh" ]; then
+          echo "build not available on ${os}"
+          exit 1
+        fi
+        source "./scripts/actions/build_nitorch_${os}.sh"
