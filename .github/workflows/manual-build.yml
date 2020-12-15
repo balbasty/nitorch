@@ -10,7 +10,11 @@ on:
       target-version:
         description: 'Target OS version (mac only)'
         required: false
-        default: 'same'
+        default: ''
+      compiler:
+        description: 'Compiler (mac only): {clang, gcc-8, gcc-9}'
+        required: false
+        default: ''
       python-version:
         description: 'Version of python'
         required: false
@@ -108,6 +112,7 @@ jobs:
         TORCH_CUDA_ARCH_LIST: "3.5"
         TARGET_VERSION: ${{ github.event.inputs.target-version }}
         BUILD_ACTION: "install"
+        COMPILER: ${{ github.event.inputs.compiler }}
       run: |
         os="$(cut -d'-' -f1 <<< ${{ github.event.inputs.os }})"
         echo "$os"
