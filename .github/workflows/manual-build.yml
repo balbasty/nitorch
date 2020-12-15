@@ -78,10 +78,15 @@ jobs:
           fi
         fi
 
-    - name: Set up Python ${{ github.event.inputs.python-version }} on ${{ github.event.inputs.os }}
-      uses: actions/setup-python@v2
-      with:
-        python-version: ${{ github.event.inputs.python-version }}
+#    - name: Set up Python ${{ github.event.inputs.python-version }} on ${{ github.event.inputs.os }}
+#      uses: actions/setup-python@v2
+#      with:
+#        python-version: ${{ github.event.inputs.python-version }}
+
+    - name: Set up Python 3.6 on macos
+      run : |
+        curl -O https://www.python.org/ftp/python/3.6.8/python-3.6.8-macosx10.6.pkg
+        sudo installer -pkg python-3.6.8-macosx10.6.pkg -target /
 
     - name: Install pip
       run: |
