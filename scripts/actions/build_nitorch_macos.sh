@@ -21,6 +21,7 @@ MACOS_SHORT="${MACOS_MAJOR}${MINORSHORT}"
 ##echo "XCODE VERsion)"
 export CC='gcc-8'
 export CXX='g++-8'
+export MACOSX_DEPLOYMENT_TARGET="${TARGET_VERSION}"  # used by setuptools
 
 
 # 2) install scipy ourselves because setuptools does a poor job
