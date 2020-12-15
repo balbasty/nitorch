@@ -339,15 +339,12 @@ def find_omp_darwin():
     # (gcc, apple clang or external clang)
     CC = os.environ.get('CC', 'clang')
     CC_name = os.popen(CC + ' --version').read().split(' ')[0]
-    print(CC_name)
-    CC_name = CC_name.split(' ')[0]
     if CC_name == 'Apple':
         CC_type = 'apple_clang'
     elif CC_name == 'clang':
         CC_type = 'other_clang'
     else:
         CC_type = 'other'
-    print('Compiler type:', CC_type)
 
     # If not clang: openmp should be packaged with the compiler:
     if CC_type == 'other':
