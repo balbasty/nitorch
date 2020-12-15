@@ -363,7 +363,7 @@ def find_omp_darwin():
     if lib_name is None:
         # OpenMP not found.
         # Let's just hope that the compiler knows what it's doing.
-        return ['-fopenmp'], None, None
+        return ['-Xpreprocessor', '-fopenmp'], None, None
     else:
         return ['-Xpreprocessor', '-fopenmp'], lib_name, lib_dir
 
