@@ -11,7 +11,7 @@ import collections
 from setuptools import setup, find_packages, Extension
 from buildtools import *
 import torch
-
+import os
 
 # ~~~ libnitorch files
 # Note that sources are identical between libnitorch_cpu and libnitorch_cuda.
@@ -339,12 +339,15 @@ def find_omp_darwin():
     # (gcc, apple clang or external clang)
     CC = os.environ.get('CC', 'clang')
     CC_name = os.popen(CC + ' --version').read().split(' ')[0]
+    print(CC_name)
+    CC_name = CC_name.split(' ')[0]
     if CC_name == 'Apple':
         CC_type = 'apple_clang'
     elif CC_name == 'clang':
         CC_type = 'other_clang'
     else:
         CC_type = 'other'
+    print('Compiler type:', CC_type)
 
     # If not clang: openmp should be packaged with the compiler:
     if CC_type == 'other':
@@ -446,7 +449,13 @@ def abspathC(files):
     return [os.path.join(sourcedir, f) for f in files]
 
 # ~~~ checks
-use_cuda = cuda_home() and cuda_check()
+use_cuda = os.environ.get('NITORCH_WITH_CUDA', None)
+if use_cuda is None:
+    use_cuda = cuda_home() and cuda_check()
+elif use_cuda:
+    use_cuda = cuda_home() and cuda_check()
+    if not use_cuda:
+        print('CANNOT COMPILE WITH CUDA EVEN THOUGH IT WAS REQUESTED')
 use_cudnn = False  # cudnn_home() and cudnn_check()
 
 
