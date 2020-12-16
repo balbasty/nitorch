@@ -319,8 +319,7 @@ class CNN(tnn.Sequential):
         modules.append(('reduction', reduction))
         stk = StackedConv(dim, stack, kernel_size=1,
                           activation=activation,
-                          final_activation=final_activation,
-                          batch_norm=batch_norm)
+                          final_activation=final_activation)
         modules.append(('stack', stk))
         super().__init__(OrderedDict(modules))
 
