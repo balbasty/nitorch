@@ -5,12 +5,12 @@
 
 import os
 import torch
-from ..spatial import (affine_grid, affine_basis, affine_matrix_classic,
-                       grid_pull, voxel_size)
-from ..io import map, savef
-from ..core.pyutils import file_mod
-from ..core.constants import pi
-from ..core.linalg import (meanm, _expm)
+from nitorch.spatial import (affine_grid, affine_basis, affine_matrix_classic,
+                             grid_pull, voxel_size)
+from nitorch.io import map, savef
+from nitorch.core.pyutils import file_mod
+from nitorch.core.constants import pi
+from nitorch.core.linalg import (meanm, _expm)
 
 
 def _format_input(img, device='cpu', rand=False, cutoff=None):
@@ -34,8 +34,8 @@ def _format_input(img, device='cpu', rand=False, cutoff=None):
         else:
             # Input are tensors (clone so to not modify input data)
             file.append(None)
-            dat.append(img[n][0].clone().type(torch.float32))
-            mat.append(img[n][1].clone().type(torch.float64))
+            dat.append(img[n][0].clone().to(dtype=torch.float32, device=device))
+            mat.append(img[n][1].clone().to(dtype=torch.float64, device=device))
 
     return dat, mat, file
 
