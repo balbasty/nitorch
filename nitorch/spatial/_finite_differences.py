@@ -2,7 +2,7 @@
 
 import torch
 from ..core import utils
-from ..core.utils import expand, slice_tensor
+from ..core.utils import expand, slice_tensor, same_storage
 from ..core.pyutils import make_list
 
 
@@ -524,7 +524,9 @@ def sobel(x, dim=None, bound='dct2', value=0):
     """
     dim = dim or x.dim()
     dims = set(range(x.dim()-dim, x.dim()))
-    g = None
+    if not dims:
+        return x
+    g = 0
     for d in dims:
         g1 = x
         other_dims = set(dims)
@@ -533,17 +535,18 @@ def sobel(x, dim=None, bound='dct2', value=0):
             # triangular smoothing
             kernel = [1, 2, 1]
             window = _window1d(g1, dd, [-1, 0, 1], bound, value)
-            g1 = _lincomb(window, kernel, dd)
+            g1 = _lincomb(window, kernel, dd, ref=g1)
         # central finite differences
         kernel = [-1, 1]
         window = _window1d(g1, d, [-1, 1], bound, value)
-        g1 = _lincomb(window, kernel, d).square()
-        g = g1 if g is None else g + g1
-    g = g.sqrt()
+        g1 = _lincomb(window, kernel, d, ref=g1)
+        g1 = g1.square() if g1.requires_grad else g1.square_()
+        g += g1
+    g = g.sqrt() if g.requires_grad else g.sqrt_()
     return g
 
 
-def _lincomb(slices, weights, dim):
+def _lincomb(slices, weights, dim, ref=None):
     """Perform the linear combination of a sequence of chunked tensors.
 
     Parameters
@@ -558,26 +561,48 @@ def _lincomb(slices, weights, dim):
 
     Returns
     -------
+    lincomb : tensor
 
     """
+
     result = None
-    for slice, weight in zip(slices, weights):
-        chunks = []
-        for chunk in slice:
+    for chunks, weight in zip(slices, weights):
+
+        # multiply chunk with weight
+        new_chunks = []
+        for chunk in chunks:
             if chunk.numel() == 0:
                 continue
             if weight == 0:
-                chunks.append(chunk.new_zeros([]).expand(chunk.shape))
+                new_chunks.append(chunk.new_zeros([]).expand(chunk.shape))
                 continue
             if weight == 1:
-                chunks.append(chunk)
+                new_chunks.append(chunk)
                 continue
             if weight == -1:
-                chunks.append(-chunk)
+                if ref is not None and not same_storage(ref, chunk):
+                    chunk = chunk.neg_()
+                else:
+                    chunk = -chunk
+                new_chunks.append(chunk)
                 continue
-            chunks.append(chunk * weight)
-        slice = torch.cat(chunks, dim)
-        result = slice if result is None else result + slice
+            if ref is not None and not same_storage(ref, chunk):
+                chunk *= weight
+            else:
+                chunk = chunk * weight
+            new_chunks.append(chunk)
+
+        # accumulate
+        if result is None:
+            result = torch.cat(new_chunks, dim)
+        else:
+            offset = 0
+            for chunk in new_chunks:
+                index = slice(offset, offset+chunk.shape[dim])
+                view = slice_tensor(result, index, dim)
+                view += chunk
+                offset += chunk.shape[dim]
+
     return result
 
 
