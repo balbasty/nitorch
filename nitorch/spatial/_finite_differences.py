@@ -500,7 +500,7 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', value=0):
     return div
 
 
-def sobel(x, dim=None, bound='dct2', value=0):
+def sobel(x, dim=None, bound='replicate', value=0):
     """Sobel (edge detector) filter.
 
     This function supports autograd.
@@ -581,13 +581,19 @@ def _lincomb(slices, weights, dim, ref=None):
                 continue
             if weight == -1:
                 if ref is not None and not same_storage(ref, chunk):
-                    chunk = chunk.neg_()
+                    if any(s == 0 for s in chunk.stride()):
+                        chunk = -chunk
+                    else:
+                        chunk = chunk.neg_()
                 else:
                     chunk = -chunk
                 new_chunks.append(chunk)
                 continue
             if ref is not None and not same_storage(ref, chunk):
-                chunk *= weight
+                if any(s == 0 for s in chunk.stride()):
+                    chunk = chunk * weight
+                else:
+                    chunk *= weight
             else:
                 chunk = chunk * weight
             new_chunks.append(chunk)
