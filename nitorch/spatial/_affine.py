@@ -656,6 +656,30 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
                           affine_subbasis('Z', dim, dtype=dtype, device=device),
                           affine_subbasis('S', dim, dtype=dtype, device=device)))
 
+    
+def affine_basis_size(group, dim=3):  
+    """Return the number of parameters in a given group."""
+    
+    if group not in affine_basis_choices:
+        raise ValueError('group must be one of {}.'
+                         .format(affine_basis_choices))
+    if group == 'T':
+        return dim
+    elif group == 'SO':
+        return dim*(dim-1)//2
+    elif group == 'SE':
+        return dim + dim*(dim-1)//2
+    elif group == 'D':
+        return dim + 1
+    elif group == 'CSO':
+        return dim + dim*(dim-1)//2 + 1
+    elif group == 'SL':
+        return (dim+1)*(dim-1)
+    elif group == 'GL+':
+        return dim*dim
+    elif group == 'Aff+':
+        return (dim+1)*dim
+    
 
 def build_affine_basis(*basis, dim=None, dtype=None, device=None):
     """Transform Affine Lie bases into tensors.
