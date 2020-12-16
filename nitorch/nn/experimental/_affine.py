@@ -8,7 +8,7 @@ from ..modules._spatial import GridPull, GridExp, GridResize, AffineGrid, \
 from .. import check
 from nitorch import spatial
 from nitorch.core.linalg import matvec
-from nitorch.core.utils import unsqueeze, channel2last
+from nitorch.core.utils import unsqueeze, channel2last, last2channel
 from nitorch.core.pyutils import make_list
 
 
@@ -470,69 +470,214 @@ class AffineMorphFromDense(Module):
     square sense. Finally, we project the matrix to a Lie algebra.
     """
 
-    def __init__(self, dim, basis='CSO', mode='lie',
-                 encoder=None, decoder=None, batch_norm=False,
-                 kernel_size=3, interpolation='linear', bound='dct2', *,
-                 _additional_input_channels=0, _additional_output_channels=0):
+    def __init__(self, dim, group='CSO', mode='lie', encoder='leastsquares', 
+                 unet=None, pull=None, interpolation='linear', bound='dct2'):
         """
 
         Parameters
         ----------
-        dim : int
-            Dimensionalityy of the input (1|2|3)
-        basis : {'T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+'}, default='CSO'
-            Basis of a matrix Lie group:
-                * 'T'   : Translations
-                * 'SO'  : Special Orthogonal (rotations)
-                * 'SE'  : Special Euclidean (translations + rotations)
-                * 'D'   : Dilations (translations + isotropic scalings)
-                * 'CSO' : Conformal Special Orthogonal
-                          (translations + rotations + isotropic scalings)
-                * 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
-                * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
-                * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+        dim : {1, 2, 3}
+            Dimensionality of the input.
+            
+        group : {'T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+'}, default='CSO'
+            Affine group encoded:
+            
+            - 'T'   : Translations
+            - 'SO'  : Special Orthogonal (rotations)
+            - 'SE'  : Special Euclidean (translations + rotations)
+            - 'D'   : Dilations (translations + isotropic scalings)
+            - 'CSO' : Conformal Special Orthogonal
+                      (translations + rotations + isotropic scalings)
+            - 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
+            - 'GL+' : General Linear [det>0] (rotations + zooms + shears)
+            - 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+                
         mode : {'lie', 'classic'}, default='lie'
             Encoding of the affine parameters.
             The basis 'SL' is only available in mode 'lie'.
-        encoder : list[int], optional
-            Number of channels after each encoding layer.
-        decoder : list[int], optional
-            Number of channels after each decoding layer.
-        batch_norm : bool, default=False
-            Use batch normalization in the UNet.
-        kernel_size : int or list[int], default=3
-            Kernel size of the UNet.
-        interpolation : int, default=1
-            Interpolation order.
-        bound : bound_type, default='dct2'
-            Boundary conditions of the image.
+
+        encoder : {'leastsquares', 'cnn'} or dict, default='leastsquares'
+            Encoder used to transform the dense displacement field
+            into affine parameters. If 'leastsquares', compute the 
+            least squares affine matrix and convert it into parameters
+            using `AffineLog` or `AffineClassicInverse`. If a'cnn' (or 
+            a dictionary of CNN options), use an encoding CNN that takes 
+            as input the displacement field and an identity grid and 
+            directy outputs the affine parameters.
+
+        unet : dict, optional
+            Dictionary of UNet parameters, with fields:
+            
+            - kernel_size : int, default=3
+                Kernel size of the UNet.
+            - encoder : list[int], default=[16, 32, 32, 32]
+                Number of channels after each encoding layer.
+            - decoder : list[int], default=[32, 32, 32, 32, 32, 16, 16]
+                Number of channels after each decoding layer.
+            - batch_norm : bool, default=True
+                Use batch normalization in the UNet.
+            - activation : callable, default=LeakyReLU(0.2)
+                Activation function.
+        
+        pull : dict, optional
+            Dictionary of GridPull parameters, with fields:
+            
+            - interpolation : int, default=1
+                Interpolation order.
+            - bound : bound_type, default='dct2'
+                Boundary conditions of the image.
+            - extrapolate : bool, default=False
+                Extrapolate data outside of the field of view.
         """
 
+        # default parameters for the submodules
+        
+        unet = unet or dict()
+        unet['encoder'] = unet.get('encoder', None)
+        unet['decoder'] = unet.get('decoder', None)
+        unet['kernel_size'] = unet.get('kernel_size', 3)
+        unet['batch_norm'] = unet.get('batch_norm', False)
+        unet['activation'] = unet.get('activation', tnn.LeakyReLU(0.2))
+        
+        pull = unet or dict()
+        pull['interpolation'] = pull.get('interpolation', 1)
+        pull['bound'] = pull.get('bound', 'dct2')
+        pull['extrapolate'] = pull.get('extrapolate', False)
+        
+        cnn = dict()
+        if isinstance(encoder, dict):
+            cnn = encoder
+            encoder = 'cnn'
+        if encoder == 'cnn':
+            cnn['encoder'] = unet.get('encoder', None)
+            cnn['stack'] = unet.get('stack', None)
+            cnn['kernel_size'] = cnn.get('kernel_size', 3)
+            cnn['batch_norm'] = cnn.get('batch_norm', False)
+            cnn['reduction'] = cnn.get('reduction', 'max')
+            cnn['activation'] = cnn.get('activation', tnn.LeakyReLU(0.2))
+            cnn['final_activation'] = cnn.get('final_activation', 'same')
+        
+        # instantiate submodules
+        
         super().__init__()
         self.unet = UNet(dim,
-                         input_channels=2 + _additional_input_channels,
-                         output_channels=dim + _additional_output_channels,
-                         encoder=encoder,
-                         decoder=decoder,
-                         batch_norm=batch_norm,
-                         kernel_size=kernel_size,
-                         activation=tnn.LeakyReLU(0.2))
-        self.dense2aff = DenseToAffine(shift=True)
-        if mode == 'lie':
-            self.log = AffineLog(basis=basis)
-            self.exp = AffineExp(dim, basis=basis)
+                         input_channels=2,
+                         output_channels=dim,
+                         encoder=unet['encoder'],
+                         decoder=unet['decoder'],
+                         batch_norm=unet['batch_norm'],
+                         kernel_size=unet['kernel_size'],
+                         activation=unet['activation'])
+        if encoder == 'leastsquares':
+            self.dense2aff = DenseToAffine(shift=True)
+            if mode == 'lie':
+                self.log = AffineLog(basis=group)
+            else:
+                self.log = AffineClassicInverse(basis=group)
+            self.dense2prm = self._dense2prm_ls
         else:
-            self.log = AffineClassicInverse(basis=basis)
-            self.exp = AffineClassic(dim, basis=basis)
+            nb_prm = spatial.affine_basis_size(group, dim)
+            self.cnn = CNN(dim,
+                           input_channels=2*dim,
+                           output_channels=nb_prm,
+                           encoder=cnn['encoder'],
+                           stack=cnn['stack'],
+                           batch_norm=cnn['batch_norm'],
+                           kernel_size=cnn['kernel_size'],
+                           reduction=cnn['reduction'],
+                           activation=cnn['activation'],
+                           final_activation=cnn['final_activation'])
+            self.dense2prm = self._dense2prm_cnn
+            
+        if mode == 'lie':
+            self.exp = AffineExp(dim, basis=group)
+        else:
+            self.exp = AffineClassic(dim, basis=group)
         self.grid = AffineGrid(shift=True)
-        self.pull = GridPull(interpolation=interpolation,
-                             bound=bound,
-                             extrapolate=False)
+        self.pull = GridPull(interpolation=pull['interpolation'],
+                             bound=pull['bound'],
+                             extrapolate=pull['extrapolate'])
         self.dim = dim
+        self.group = group
+        self.encoder = encoder
+        self.mode = mode
 
         # register losses/metrics
         self.tags = ['image', 'dense', 'affine']
 
+    @staticmethod
+    def _identity(x):
+        """Build an identity grid with same shape/backend as a tensor.
+        The grid is built such that coordinate zero is at the center of 
+        the FOV."""
+        shape = x.shape[2:]
+        backend = dict(dtype=x.dtype, device=x.device)
+        grid = spatial.identity_grid(shape, **backend)
+        grid -= torch.as_tensor(shape, **backend)/2.
+        grid /= torch.as_tensor(shape, **backend)/2.
+        grid = last2channel(grid[None, ...])
+        return grid
+    
+    def _dense2prm_ls(self, x):
+        """Least-squares implementation of dense2prm."""
+        shape = x.shape[2:]
+        backend = dict(dtype=x.dtype, device=x.device)
+        x = x * torch.as_tensor(shape, **backend) / 2.
+        return self.log(self.dense2aff(x))
+    
+    def _dense2prm_cnn(self, x):
+        """CNN-based implementation of dense2prm"""
+        x = last2channel(x)
+        shape = x.shape[2:]
+        grid = self._identity(x)
+        x = torch.cat([x, grid], dim=1)
+        prm = self.cnn(x)
+        prm = prm.reshape(prm.shape[:2])
+        return self._std_prm(prm, shape)
+    
+    def _std_prm(self, prm, shape):
+        """Multiply generated parameters by a factor that is 
+        related to their (expected) standard deviation."""
+        backend = dict(dtype=prm.dtype, device=prm.device)
+        trl_factor = torch.as_tensor(shape, **backend) / 2.
+        rot_factor = 1. / (3. if self.mode == 'classic' else 2.)
+        zom_factor = 0.5 if self.mode == 'classic' else 0.2
+        shr_factor = 1.
+        if self.group == 'T':
+            prm = prm * trl_factor
+        elif self.group == 'SO':
+            prm = prm * rot_factor
+        elif self.group == 'SE':
+            trl = prm[:, :self.dim] * trl_factor
+            rot = prm[:, self.dim:] * rot_factor
+            prm = torch.cat([trl, rot], dim=1)
+        elif self.group == 'D':
+            trl = prm[:, :self.dim] * trl_factor
+            zom = prm[:, self.dim:] * rot_factor
+            prm = torch.cat([trl, zom], dim=1)
+        elif self.group == 'CSO':
+            trl = prm[:, :self.dim] * trl_factor
+            rot = prm[:, self.dim:-1] * rot_factor
+            zom = prm[:, -1:] * zom_factor
+            prm = torch.cat([trl, rot, zom], dim=1)
+        elif self.group == 'SL':
+            trl = prm[:, :self.dim] * trl_factor
+            rot = prm[:, self.dim:-(self.dim-1)] * rot_factor
+            zom = prm[:, -(self.dim-1):] * zom_factor
+            prm = torch.cat([trl, rot, zom], dim=1)
+        elif self.group == 'GL+':
+            rot = prm[:, :(self.dim)*(self.dim-1)//2] * rot_factor
+            zom = prm[:, (self.dim)*(self.dim-1)//2:-((self.dim)*(self.dim-1)//2)] * zom_factor
+            shr = prm[:, -((self.dim)*(self.dim-1)//2):] * shr_factor
+            prm = torch.cat([rot, zom, shr], dim=1)
+        elif self.group == 'Aff+':
+            trl =  prm[:, :self.dim] * trl_factor
+            rot = prm[:, self.dim:self.dim+(self.dim)*(self.dim-1)//2] * rot_factor
+            zom = prm[:, self.dim+(self.dim)*(self.dim-1)//2:-((self.dim)*(self.dim-1)//2)] * zom_factor
+            shr = prm[:, -((self.dim)*(self.dim-1)//2):] * shr_factor
+            prm = torch.cat([trl, rot, zom, shr], dim=1)
+        return prm
+        
     def forward(self, source, target, *, _loss=None, _metric=None):
         """
 
@@ -563,11 +708,9 @@ class AffineMorphFromDense(Module):
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
-        dense = self.unet(source_and_target)
-        dense = channel2last(dense)
-        affine = self.dense2aff(dense)
-        affprm = self.log(affine)    # exp(log) is not an identity because log
-        affine = self.exp(affprm)    # projects on a lower dimensional space.
+        dense = channel2last(self.unet(source_and_target))
+        affprm = self.dense2prm(dense)
+        affine = self.exp(affprm.double()).to(dense.dtype)
         grid = self.grid(affine, shape=target.shape[2:])
         deformed_source = self.pull(source, grid)
 
@@ -577,4 +720,4 @@ class AffineMorphFromDense(Module):
                      affine=[affprm],
                      dense=[dense])
 
-        return deformed_source, affprm
+        return deformed_source, affprm, dense
