@@ -50,7 +50,9 @@ namespace ni {
   template <typename scalar_t, typename offset_t>
   static inline void cpuAtomicAdd(scalar_t * ptr, offset_t offset, scalar_t value) {
 #   if AT_PARALLEL_OPENMP
-#     pragma omp atomic
+#     if _OPENMP
+#       pragma omp atomic
+#     endif
 #   endif
     ptr[offset] += value;
   }
