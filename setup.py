@@ -101,7 +101,7 @@ def torch_omp_lib():
     torch_library_dir = os.path.join(torch_dir, 'lib')
     if is_darwin():
         libtorch = os.path.join(torch_library_dir, 'libtorch.dylib')
-        linked_libs = os.popen('otool -L "{}"'.format(libtorch))
+        linked_libs = os.popen('otool -L "{}"'.format(libtorch)).read()
         if 'libiomp5' in linked_libs:
             return 'iomp5'
         elif 'libomp' in linked_libs:
@@ -311,7 +311,7 @@ def find_omp_darwin():
     needs to install one herself, which we need to find and reference
     properly.
 
-    Return (flag, lib_name, lib_dir)."""
+    Return (cflag, lflag, lib_name, lib_dir)."""
 
     # TODO: LLVM's clang embeds OpenMP for version >= 3.8.0
     #       I need to add a special case for earlier versions.
@@ -346,16 +346,17 @@ def find_omp_darwin():
     else:
         CC_type = 'other'
 
-    # If not clang: openmp should be packaged with the compiler:
-    if CC_type == 'other':
-        return ['-fopenmp'], None, None
-    elif CC_type == 'other_clang':
-        if torch_omp_lib() == 'iomp5':
-            return ['-fopenmp=libiomp5'], None, None
-        elif torch_omp_lib() == 'omp':
-            return ['-fopenmp=libgomp'], None, None
-        else:
-            return ['-fopenmp'], None, None
+    # If not apple clang: openmp should be packaged with the compiler:
+    if CC_type != 'apple_clang':
+        flag = '-fopenmp'
+        if CC_type == 'other_clang':
+            if torch_omp_lib() == 'iomp5':
+                flag = '-fopenmp=libiomp5'
+            elif torch_omp_lib() == 'omp':
+                flag = '-fopenmp=libgomp'
+        return [flag], [flag], [], None
+
+    # Else, opnemp is no different than any other dependency
 
     # First, check if omp/iomp5 has been installed (e.g., using homebrew)
     lib_name, lib_dir = find_lib([torch_omp_lib(), 'iomp5', 'omp'])
@@ -363,9 +364,22 @@ def find_omp_darwin():
     if lib_name is None:
         # OpenMP not found.
         # Let's just hope that the compiler knows what it's doing.
-        return ['-fopenmp'], None, None
+        return ['-fopenmp'], ['-fopenmp'], [], None
     else:
-        return ['-Xpreprocessor', '-fopenmp'], lib_name, lib_dir
+        return ['-Xpreprocessor', '-fopenmp'], [], [], lib_dir
+        # return ['-Xpreprocessor', '-fopenmp'], [lib_name], [], lib_dir
+
+        # It is super weird:
+        # - precompiled torch wheels on mac link against libomp (or libiomp5)
+        # - but openmp was not detected in their compilation chain, so
+        #   it was actually compiled *without* openmp (pragmas were not used,
+        #   parallel loops are actually sequential, (set/get)_num_threads
+        #   is always 1)
+        # - I can't get my mac to link against the correct omp lib (it
+        #   links against libomp even though I ask it to link against
+        #   libiomp5)
+        # - If I don't link against openmp at all, things seem to work (!!)
+        # - I really need to rewrite our compilation stuff anyway
 
 
 def omp_flags():
@@ -377,17 +391,23 @@ def omp_flags():
         return ['-fopenmp']
 
 
+def omp_link_flags():
+    if is_darwin():
+        return find_omp_darwin()[1]
+    else:
+        return []
+
+
 def omp_libraries():
     if is_darwin():
-        lib = find_omp_darwin()[1]
-        return [lib] if lib else []
+        return find_omp_darwin()[2]
     else:
         return []
 
 
 def omp_library_dirs():
     if is_darwin():
-        ompdir = find_omp_darwin()[2]
+        ompdir = find_omp_darwin()[3]
         return [os.path.join(ompdir, 'lib')] if ompdir else []
     else:
         return []
@@ -395,7 +415,7 @@ def omp_library_dirs():
 
 def omp_include_dirs():
     if is_darwin():
-        ompdir = find_omp_darwin()[2]
+        ompdir = find_omp_darwin()[3]
         return [os.path.join(ompdir, 'include')] if ompdir else []
     else:
         return []
@@ -425,7 +445,7 @@ def torch_link_flags(cuda=False):
     backend = torch_parallel_backend()
     flags = []
     if not cuda and backend == 'AT_PARALLEL_OPENMP':
-        flags += omp_flags()
+        flags += omp_link_flags()
     return flags
 
 
