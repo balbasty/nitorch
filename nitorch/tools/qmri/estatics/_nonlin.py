@@ -66,8 +66,9 @@ def nonlin(data, opt=None):
         opt.optim.max_iter_gn *= opt.optim.max_iter_rls
         opt.optim.max_iter_rls = 1
 
-    print('{:^3s} | {:^3s} | {:^12s} + {:^12s} + {:^12s} = {:^12s} | {:^2s}'
-          .format('rls', 'gn', 'fit', 'reg', 'rls', 'crit', 'ls'))
+    if opt.verbose:
+        print('{:^3s} | {:^3s} | {:^12s} + {:^12s} + {:^12s} = {:^12s} | {:^2s}'
+              .format('rls', 'gn', 'fit', 'reg', 'rls', 'crit', 'ls'))
 
     for n_iter_rls in range(opt.optim.max_iter_rls):
 
@@ -140,9 +141,10 @@ def nonlin(data, opt=None):
                     maps = maps0
                     break
 
-            print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | {:2d}'
-                  .format(n_iter_rls, n_iter_gn, crit, reg, sumrls,
-                          crit + reg + sumrls, n_iter_ls))
+            if opt.verbose:
+                print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | {:2d}'
+                      .format(n_iter_rls, n_iter_gn, crit, reg, sumrls,
+                              crit + reg + sumrls, n_iter_ls))
 
         # --- Update RLS weights ---
         if opt.regularization.norm in ('tv', 'jtv'):
@@ -336,7 +338,7 @@ def _nonlin_solve(hess, grad, rls, lam, affine, opt):
         return result
 
     result = core.optim.cg(hess_fn, grad,
-                           verbose=True, stop='norm',
+                           verbose=(opt.verbose > 1), stop='norm',
                            max_iter=opt.optim.max_iter_cg,
                            tolerance=opt.optim.tolerance_cg)
     return result

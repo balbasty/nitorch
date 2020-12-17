@@ -44,3 +44,4 @@ class Options:
     optim: OptimOptions = OptimOptions()
     backend: BackendOptions = BackendOptions()
     regularization: RegularizationOptions = RegularizationOptions()
+    verbose : int or bool = 1
