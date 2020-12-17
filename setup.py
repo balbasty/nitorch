@@ -101,7 +101,7 @@ def torch_omp_lib():
     torch_library_dir = os.path.join(torch_dir, 'lib')
     if is_darwin():
         libtorch = os.path.join(torch_library_dir, 'libtorch.dylib')
-        linked_libs = os.popen('otool -L "{}"'.format(libtorch))
+        linked_libs = os.popen('otool -L "{}"'.format(libtorch)).read()
         if 'libiomp5' in linked_libs:
             return 'iomp5'
         elif 'libomp' in linked_libs:
@@ -225,10 +225,31 @@ def cuda_arch_flags():
     # First check for an env var (same as used by the main setup.py)
     # Can be one or more architectures, e.g. "6.1" or "3.5;5.2;6.0;6.1;7.0+PTX"
     # See cmake/Modules_CUDA_fix/upstream/FindCUDA/select_compute_arch.cmake
-    arch_list = os.environ.get('TORCH_CUDA_ARCH_LIST', None)
+    arch_list = os.environ.get('TORCH_CUDA_ARCH_LIST', 'mine')
 
-    # If not given, determine what's needed for the GPU that can be found
-    if not arch_list:
+    # If not given, look into libtorch_cuda
+    if not arch_list or arch_list.lower() == 'all':
+        cuobjdump = os.path.join(cuda_home(), 'bin', 'cuobjdump')
+        torchdir = os.path.dirname(os.path.abspath(torch.__file__))
+        libtorch = os.path.join(torchdir, 'lib')
+        if is_windows():
+            libtorch = os.path.join(libtorch, 'torch_cuda.lib')
+        else:
+            assert not is_darwin()
+            libtorch = os.path.join(libtorch, 'libtorch_cuda.so')
+        arch_list = os.popen(cuobjdump + " '" + libtorch + \
+                             "' -lelf | awk -F. '{print $3}' | " \
+                             "grep sm | sort -u").read().split('\n')
+        arch_list = [arch[3] + '.' + arch[4] for arch in arch_list if arch]
+        ptx_list = os.popen(cuobjdump + " '" + libtorch + \
+                             "' -lptx | awk -F. '{print $3}' | " \
+                             "grep sm | sort -u").read().split('\n')
+        ptx_list = [arch[3] + '.' + arch[4] for arch in ptx_list if arch]
+        arch_list = [arch + '+PTX' if arch in ptx_list else arch
+                     for arch in arch_list]
+    elif arch_list == 'mine':
+        #   this bit was in the torch extension util but I have replaced
+        #   it with the bit above that looks into libtorch
         capability = torch.cuda.get_device_capability()
         arch_list = ['{}.{}'.format(capability[0], capability[1])]
     else:
@@ -290,7 +311,7 @@ def find_omp_darwin():
     needs to install one herself, which we need to find and reference
     properly.
 
-    Return (flag, lib_name, lib_dir)."""
+    Return (cflag, lflag, lib_name, lib_dir)."""
 
     # TODO: LLVM's clang embeds OpenMP for version >= 3.8.0
     #       I need to add a special case for earlier versions.
@@ -325,16 +346,17 @@ def find_omp_darwin():
     else:
         CC_type = 'other'
 
-    # If not clang: openmp should be packaged with the compiler:
-    if CC_type == 'other':
-        return ['-fopenmp'], None, None
-    elif CC_type == 'other_clang':
-        if torch_omp_lib() == 'iomp5':
-            return ['-fopenmp=libiomp5'], None, None
-        elif torch_omp_lib() == 'omp':
-            return ['-fopenmp=libgomp'], None, None
-        else:
-            return ['-fopenmp'], None, None
+    # If not apple clang: openmp should be packaged with the compiler:
+    if CC_type != 'apple_clang':
+        flag = '-fopenmp'
+        if CC_type == 'other_clang':
+            if torch_omp_lib() == 'iomp5':
+                flag = '-fopenmp=libiomp5'
+            elif torch_omp_lib() == 'omp':
+                flag = '-fopenmp=libgomp'
+        return [flag], [flag], [], None
+
+    # Else, opnemp is no different than any other dependency
 
     # First, check if omp/iomp5 has been installed (e.g., using homebrew)
     lib_name, lib_dir = find_lib([torch_omp_lib(), 'iomp5', 'omp'])
@@ -342,9 +364,22 @@ def find_omp_darwin():
     if lib_name is None:
         # OpenMP not found.
         # Let's just hope that the compiler knows what it's doing.
-        return ['-fopenmp'], None, None
+        return ['-fopenmp'], ['-fopenmp'], [], None
     else:
-        return ['-Xpreprocessor', '-fopenmp'], lib_name, lib_dir
+        return ['-Xpreprocessor', '-fopenmp'], [], [], lib_dir
+        # return ['-Xpreprocessor', '-fopenmp'], [lib_name], [], lib_dir
+
+        # It is super weird:
+        # - precompiled torch wheels on mac link against libomp (or libiomp5)
+        # - but openmp was not detected in their compilation chain, so
+        #   it was actually compiled *without* openmp (pragmas were not used,
+        #   parallel loops are actually sequential, (set/get)_num_threads
+        #   is always 1)
+        # - I can't get my mac to link against the correct omp lib (it
+        #   links against libomp even though I ask it to link against
+        #   libiomp5)
+        # - If I don't link against openmp at all, things seem to work (!!)
+        # - I really need to rewrite our compilation stuff anyway
 
 
 def omp_flags():
@@ -355,23 +390,33 @@ def omp_flags():
     else:
         return ['-fopenmp']
 
+
+def omp_link_flags():
+    if is_darwin():
+        return find_omp_darwin()[1]
+    else:
+        return []
+
+
 def omp_libraries():
     if is_darwin():
-        return [find_omp_darwin()[1]]
+        return find_omp_darwin()[2]
     else:
         return []
 
 
 def omp_library_dirs():
     if is_darwin():
-        return [os.path.join(find_omp_darwin()[2], 'lib')]
+        ompdir = find_omp_darwin()[3]
+        return [os.path.join(ompdir, 'lib')] if ompdir else []
     else:
         return []
 
 
 def omp_include_dirs():
     if is_darwin():
-        return [os.path.join(find_omp_darwin()[2], 'include')]
+        ompdir = find_omp_darwin()[3]
+        return [os.path.join(ompdir, 'include')] if ompdir else []
     else:
         return []
 
@@ -400,7 +445,7 @@ def torch_link_flags(cuda=False):
     backend = torch_parallel_backend()
     flags = []
     if not cuda and backend == 'AT_PARALLEL_OPENMP':
-        flags += omp_flags()
+        flags += omp_link_flags()
     return flags
 
 

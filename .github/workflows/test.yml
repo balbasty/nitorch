@@ -1,0 +1,77 @@
+name: nitorch-test
+
+on:
+  workflow_dispatch:
+    inputs:
+      fail-fast:
+        description: 'Fail fast mode'
+        required: false
+        default: 'true'
+  push:
+    paths:
+      # all library files
+      - "nitorch/**"
+    branches: [ master ]
+  pull_request:
+    # always run tests on pull request
+    branches: [ master ]
+
+jobs:
+
+  test:
+
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: ${{ github.event.inputs.fail-fast == 'true' }}
+      matrix:
+        os: [ ubuntu-latest ]               # we only run tests on ubuntu/cpu
+        python-version: [ '3.6' ]           # smallest version supported
+        pytorch-version: [ '1.3', '1.7' ]   # smallest and biggest versions
+
+    steps:
+
+    - uses: actions/checkout@v2
+
+    - name: Set up Python ${{ matrix.python-version }} on ${{ matrix.os }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install pip
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install nibabel
+        pip install tifffile
+
+    - name: Install PyTorch ${{ matrix.pytorch-version }}
+      env:
+        cuda: cpu
+        torch: ${{ matrix.pytorch-version }}
+      shell: bash
+      run: |
+        os="$(cut -d'-' -f1 <<< ${{ matrix.os }})"
+        echo "$os"
+        if [ ! -f "./scripts/actions/install_pytorch_${os}.sh" ]; then
+          echo "pytorch not available on ${os}"
+          exit 1
+        fi
+        source "./scripts/actions/install_pytorch_${os}.sh"
+
+    # we must build in development mode for pytest to work in place
+    - name: Build nitorch
+      run: |
+        # install scipy ourselves because setuptools does a poor job
+        pip install scipy
+        TORCH_CUDA_ARCH_LIST="3.5" python setup.py develop
+        python -c "from nitorch._C import spatial"
+
+#    - name: Lint
+#      run: |
+#        pip install flake8
+#        flake8 .
+
+    - name: Tests
+      run: |
+        pip install pytest
+        pytest

@@ -46,7 +46,7 @@ def matrix_chain_rule(A, G, f):
         if torch.is_tensor(mat):
             return mat.new_zeros(shape)
         else:
-            return np.zeros(mat.shape, dtype=mat.dtype)
+            return np.zeros(shape, dtype=mat.dtype)
 
     A = transpose(A)
     n = A.shape[-1]
@@ -71,9 +71,12 @@ class _LogM(torch.autograd.Function):
         if mat.requires_grad:
             ctx.save_for_backward(mat)
         device = mat.device
+        input_complex = mat.is_complex()
         mat = mat.cpu().numpy()
         mat = logm(mat)
         mat = torch.as_tensor(mat, device=device)
+        if not input_complex and mat.is_complex():
+            mat = mat.real
         return mat
 
     @staticmethod
@@ -81,10 +84,13 @@ class _LogM(torch.autograd.Function):
         from scipy.linalg import logm
         mat, = ctx.saved_tensors
         device = output_grad.device
+        input_complex = output_grad.is_complex()
         mat = mat.cpu().numpy()
         output_grad = output_grad.cpu().numpy()
         grad = matrix_chain_rule(mat, output_grad, logm)
         grad = torch.as_tensor(grad, device=device)
+        if not input_complex and grad.is_complex():
+            grad = grad.real
         return grad
 
 

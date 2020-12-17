@@ -114,7 +114,7 @@ class CategoricalLoss(Loss):
         implicit = overridden.get('implicit', self.implicit)
 
         prior = torch.as_tensor(prior)
-        obs = torch.as_tensor(obs, prior.device)
+        obs = torch.as_tensor(obs, device=prior.device)
 
         # take log if needed
         if log:
@@ -191,9 +191,9 @@ class DiceLoss(Loss):
         implicit : bool, default=False
             If True, the one-hot tensors only use K-1 channels to encode
             K classes.
-        weighted : bool, default=False
+        weighted : bool or list[float], default=False
             If True, weight the Dice of each class by its size in the
-            reference.
+            reference. If a list, use these weights for each class.
         reduction : {'mean', 'sum'} or callable, default='mean'
             Type of reduction to apply.
         """
@@ -239,7 +239,8 @@ class DiceLoss(Loss):
         one_hot_map = overridden.get('one_hot_map', self.one_hot_map)
 
         predicted = torch.as_tensor(predicted)
-        reference = torch.as_tensor(reference, predicted.device)
+        reference = torch.as_tensor(reference, device=predicted.device)
+        backend = dict(dtype=predicted.dtype, device=predicted.device)
 
         # if only one predicted class -> must be implicit
         implicit = implicit or (predicted.shape[1] == 1)
@@ -268,8 +269,11 @@ class DiceLoss(Loss):
             union = nansum(predicted + reference, dim=spatial_dims)
             loss = -2 * inter / union
             if weighted:
-                weights = nansum(reference, dim=spatial_dims)
-                weights = weights / weights.sum(dim=1, keepdim=True)
+                if isinstance(weighted, bool):
+                    weights = nansum(reference, dim=spatial_dims)
+                    weights = weights / weights.sum(dim=1, keepdim=True)
+                else:
+                    weights = torch.as_tensor(weighted, **backend)[None, :]
                 loss = loss * weights
 
         else:
@@ -289,13 +293,16 @@ class DiceLoss(Loss):
                 union = nansum(pred1 + ref1, dim=spatial_dims)
                 loss1 = -2 * inter / union
                 if weighted:
-                    weight1 = ref1.sum()
+                    if isinstance(weighted, bool):
+                        weight1 = ref1.sum()
+                    else:
+                        weight1 = float(weighted[soft])
                     loss1 = loss1 * weight1
                     weights.append(weight1)
                 loss.append(loss1)
 
             loss = torch.cat(loss, dim=1)
-            if weighted:
+            if weighted and isinstance(weighted, bool):
                 weights = sum(weights)
                 loss = loss / weights
 

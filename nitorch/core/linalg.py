@@ -193,12 +193,18 @@ def inv(a, method='lu', rcond=1e-15, out=None):
 
     """
     a = utils.as_tensor(a)
+    backend = dict(dtype=a.dtype, device=a.device)
     if a.shape[-1] != a.shape[-2]:
         method = 'pinv'
     if method.lower().startswith('lu'):
         return torch.inverse(a, out=out)
     elif method.lower().startswith('chol'):
-        return torch.cholesky_inverse(a, upper=False, out=out)
+        if a.dim() == 2:
+            return torch.cholesky_inverse(a, upper=False, out=out)
+        else:
+            chol = torch.cholesky(a, upper=False)
+            eye = torch.eye(a.shape[-2], **backend)
+            return torch.cholesky_solve(eye, chol, upper=False, out=out)
     elif method.lower().startswith('svd'):
         u, s, v = torch.svd(a)
         s = s[..., None]

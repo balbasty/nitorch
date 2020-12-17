@@ -15,7 +15,7 @@ class Encoder(tnn.ModuleList):
     """Encoder network (for U-nets, VAEs, etc.)"""
 
     def __init__(self, dim, channels, kernel_size=3, skip=False,
-                 activation=tnn.ReLU):
+                 activation=tnn.ReLU, batch_norm=False):
         """
 
         Parameters
@@ -32,6 +32,8 @@ class Encoder(tnn.ModuleList):
             If True, ``forward`` returns  all output layers in a tuple.
         activation : str or type or callable, default='relu'
             Activation function.
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
 
         """
         self.dim = dim
@@ -40,8 +42,8 @@ class Encoder(tnn.ModuleList):
         output_channels = list(channels)[1:]
         modules = []
         for (i, o) in zip(input_channels, output_channels):
-            modules.append(Conv(dim, i, o, kernel_size,
-                                stride=2, activation=activation))
+            modules.append(Conv(dim, i, o, kernel_size, stride=2,
+                                activation=activation, batch_norm=batch_norm))
         super().__init__(modules)
 
     def forward(self, x):
@@ -67,7 +69,7 @@ class Decoder(tnn.ModuleList):
     """Decoder network (for U-nets, VAEs, etc.)"""
 
     def __init__(self, dim, channels, kernel_size=3, skip=False,
-                 activation=tnn.ReLU, encoder=None):
+                 activation=tnn.ReLU, batch_norm=False, encoder=None):
         """
 
         Parameters
@@ -81,6 +83,8 @@ class Decoder(tnn.ModuleList):
             Kernel size per dimension.
         activation : str or type or callable, default='relu'
             Activation function.
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
         encoder : sequence[int], optional
             Number of channels in each encoding layer.
             In a UNet, this argument is necessary to determine the
@@ -99,7 +103,8 @@ class Decoder(tnn.ModuleList):
         modules = []
         for (i, o) in zip(input_channels, output_channels):
             modules.append(Conv(dim, i, o, kernel_size=kernel_size, stride=2,
-                                transposed=True, activation=activation))
+                                transposed=True, activation=activation,
+                                batch_norm=batch_norm))
         super().__init__(modules)
 
     def forward(self, x):
@@ -145,7 +150,8 @@ class StackedConv(tnn.Sequential):
     """Stacked convolutions, without up/down-sampling."""
 
     def __init__(self, dim, channels, kernel_size=3,
-                 activation=tnn.ReLU, final_activation='same'):
+                 activation=tnn.ReLU, final_activation='same',
+                 batch_norm=False):
         """
 
         Parameters
@@ -161,6 +167,8 @@ class StackedConv(tnn.Sequential):
             Activation function.
         final_activation : str or type or callable, default='same'
             Final activation function. If 'same', same as `activation`.
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
         """
         self.dim = dim
         input_channels = channels[:-1]
@@ -173,7 +181,8 @@ class StackedConv(tnn.Sequential):
             if l == nb_module-1 and final_activation != 'same':
                 activation = final_activation
             modules.append(Conv(dim, i, o, kernel_size, padding=pad,
-                                stride=1, activation=activation))
+                                stride=1, activation=activation,
+                                batch_norm=batch_norm))
         super().__init__(*modules)
 
 
@@ -183,7 +192,8 @@ class UNet(tnn.Sequential):
 
     def __init__(self, dim, input_channels, output_channels,
                  encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.ReLU, final_activation='same'):
+                 activation=tnn.ReLU, final_activation='same',
+                 batch_norm=False):
         """
 
         Parameters
@@ -214,6 +224,8 @@ class UNet(tnn.Sequential):
                 * have a non-learnable activation
         final_activation : str or type or callable, default='same'
             Final activation function. If 'same', same as `activation`.
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
         """
         self.dim = dim
 
@@ -229,16 +241,19 @@ class UNet(tnn.Sequential):
 
         modules = []
         enc = Encoder(dim, encoder, kernel_size=kernel_size,
-                      skip=True, activation=activation)
+                      skip=True, activation=activation,
+                      batch_norm=batch_norm)
         modules.append(('encoder', enc))
-        dec = Decoder(dim, decoder, kernel_size=kernel_size,
-                      skip=True, encoder=encoder, activation=activation)
+        dec = Decoder(dim, decoder, kernel_size=kernel_size, skip=True,
+                      encoder=encoder, activation=activation,
+                      batch_norm=batch_norm)
         modules.append(('decoder', dec))
         # there should always be at least one stacked conv
         stack[0] += encoder[0]
         stk = StackedConv(dim, stack, kernel_size=kernel_size,
                           activation=activation,
-                          final_activation=final_activation)
+                          final_activation=final_activation,
+                          batch_norm=batch_norm)
         modules.append(('stack', stk))
         super().__init__(OrderedDict(modules))
 
@@ -249,7 +264,7 @@ class CNN(tnn.Sequential):
 
     def __init__(self, dim, input_channels, output_channels,
                  encoder=None, stack=None, kernel_size=3, reduction='max',
-                 activation='relu', final_activation='same'):
+                 activation='relu', final_activation='same', batch_norm=False):
         """
 
         Parameters
@@ -280,6 +295,8 @@ class CNN(tnn.Sequential):
                 * have a non-learnable activation
         final_activation : str or type or callable, default='same'
             Final activation function. If 'same', same as `activation`.
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
         """
         self.dim = dim
 
@@ -297,7 +314,7 @@ class CNN(tnn.Sequential):
 
         modules = []
         enc = Encoder(dim, encoder, kernel_size=kernel_size,
-                      activation=activation)
+                      activation=activation, batch_norm=batch_norm)
         modules.append(('encoder', enc))
         modules.append(('reduction', reduction))
         stk = StackedConv(dim, stack, kernel_size=1,

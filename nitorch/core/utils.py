@@ -4,6 +4,7 @@
 import torch
 import torch.nn.functional as F
 from .pyutils import make_list, make_tuple
+from .constants import inf
 # from ._dtypes import astorch as dtype_astorch
 from .dtypes import as_torch as dtype_astorch
 import numbers
@@ -526,7 +527,7 @@ def expand(*tensors, side='left', dry_run=False, **kwargs):
     .. warning::
         This function makes use of zero strides, so more than
         one output values can point to the same memory location.
-        It is advided not too write in these tensors.
+        It is advised not too write in these tensors.
 
     """
     if 'shape' in kwargs:
@@ -567,7 +568,7 @@ def expand(*tensors, side='left', dry_run=False, **kwargs):
                  else error(s0, s1) for s0, s1 in zip(shape, shape1)]
 
     if dry_run:
-        return shape
+        return tuple(shape)
 
     # -----------------
     # Broadcast tensors
@@ -846,3 +847,80 @@ def isin(tensor, labels):
         mask = mask | (tensor == label)
 
     return mask
+
+
+def ceil_pow(t, p=2.0, l=2.0):
+    """Ceils each element in vector t to the
+    closest n that satisfies: l*p**n.
+
+    This function is useful, for example, to ensure an image's dimensions
+    work well in an encoding/decoding architecture.
+
+    Parameters
+    ----------
+    t : (d, ), tensor
+    p : float, default=2.0
+    l : float, default=2.0
+
+    Returns
+    ----------
+    ct : (d, ), tensor
+
+    """
+    ct = t.clone()  # Do not modify in-place
+    device = ct.device
+    dtype0 = ct.dtype
+    dtype = torch.float32
+    dim = torch.as_tensor(ct, dtype=dtype, device=device)
+    d = len(ct)
+    # Build array of l*p**[0, ..., N]
+    N = 32
+    p = torch.tensor(l, dtype=dtype, device=device) \
+        * torch.tensor(p, dtype=dtype, device=device) \
+        ** torch.arange(0, N, dtype=dtype, device=device)
+    p = p.repeat(d, 1)
+    # Ensure we ceil
+    for n in range(d):
+        p[n, p[n, ...] < ct[n]] = -inf
+    ct = ct[..., None]
+    # Find closest indices
+    ix = torch.min((p - ct).abs(), dim=1)[1]
+    ct = ct.squeeze()
+    # Ceil input
+    for n in range(d):
+        if torch.isfinite(p[n, ix[n]]):
+            ct[n] = p[n, ix[n]]
+    # Return same datatype
+    ct = ct.type(dtype0)
+
+    return ct
+
+class benchmark:
+    """Context manager for the voncolution benchar;inking utility
+    from pytorch.
+
+    When the benchmark value is True, each time a convolution is called
+    on a new input shape, several algorithms are performed and evaluated,
+    and the best one kept in memory. Therefore, benchmarking is beneficial
+    if and only if the (channel + spatial) shape of your input data is
+    constant.
+
+    Examples
+    --------
+    ```python
+    from nitorch.core.utils import benchmark
+    with benchmark(True):
+        train_my_model(model)
+    ```
+
+    """
+
+    def __init__(self, value=True):
+        self.do_benchmark = value
+
+    def __enter__(self):
+        self.prev_value = torch.backends.cudnn.benchmark
+        torch.backends.cudnn.benchmark = self.do_benchmark
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        torch.backends.cudnn.benchmark = self.prev_value

@@ -2,15 +2,14 @@
 
 """
 
-
 import nibabel as nib
 import torch
-from ..core.kernels import smooth
-from ..vb.mixtures import GMM
-from ..vb.mixtures import RMM
-from ..spatial import im_gradient
-from ..core.constants import inf
-from ..plot import show_slices
+from nitorch.core.kernels import smooth
+from nitorch.vb.mixtures import GMM
+from nitorch.vb.mixtures import RMM
+from nitorch.spatial import im_gradient
+from nitorch.core.constants import inf
+from nitorch.plot import show_slices
 
 
 def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):

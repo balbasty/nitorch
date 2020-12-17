@@ -235,6 +235,19 @@ class _ExpM(torch.autograd.Function):
         return grad_X, grad_basis, None, None
 
 
+def _expm_torch(X, basis=None):
+    dtype, device = utils.info(X, basis)
+    X = utils.as_tensor(X, dtype=dtype, device=device)
+
+    if basis is not None:
+        # X contains parameters in the Lie algebra -> reconstruct the matrix
+        # X.shape = [.., F], basis.shape = [..., F, D, D]
+        basis = utils.as_tensor(basis, dtype=dtype, device=device)
+        X = torch.sum(basis * X[..., None, None], dim=-3)
+
+    return torch.matrix_exp(X)
+
+
 def expm(X, basis=None, max_order=10000, tol=1e-32):
     """Matrix exponential.
 
@@ -268,4 +281,7 @@ def expm(X, basis=None, max_order=10000, tol=1e-32):
         Matrix exponential
 
     """
-    return _ExpM.apply(X, basis, max_order, tol)
+    if hasattr(torch, 'matrix_exp'):
+        return _expm_torch(X, basis)
+    else:
+        return _ExpM.apply(X, basis, max_order, tol)

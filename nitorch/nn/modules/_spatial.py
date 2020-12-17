@@ -2,11 +2,11 @@
 
 import torch
 from torch import nn as tnn
-from ... import spatial
+from nitorch import core, spatial
+from nitorch.core.pyutils import make_list
 from ._cnn import UNet, CNN
 from ._base import Module
 from .. import check
-from ...core.pyutils import make_list
 
 
 _interpolation_doc = \
@@ -361,25 +361,269 @@ class AffineExp(Module):
             Inverse matrix
 
         """
-        basis = overload.get('basis', self.basis)
         fwd = overload.get('fwd', self.forward)
         inv = overload.get('inverse', self.inv)
+        basis = overload.get('basis', self.basis)
+        basis = spatial.build_affine_basis(basis, self.dim)
 
         output = []
         if fwd:
-            aff = spatial.affine_matrix(prm, basis, dim=self.dim)
+            aff = spatial.affine_matrix(prm, basis)
             output.append(aff)
         if inv:
             if isinstance(prm, (list, tuple)):
                 prm = [-p for p in prm]
             else:
                 prm = -prm
-            iaff = spatial.affine_matrix(prm, basis, dim=self.dim)
+            iaff = spatial.affine_matrix(prm, basis)
             output.append(iaff)
 
         return output if len(output) > 1 else \
                output[0] if len(output) == 1 else \
                None
+
+
+class AffineLog(Module):
+    """Take the Riemannian logarithm of an affine (recovers Lie algebra).
+
+    Note
+    ----
+    The matrix logarithm is currently only implemented on cpu
+    and is not parallelized across batches (we just call scipy).
+    This is therefore a quite slow layer, which causes data transfer
+    between cpu and cuda devices. Hopefully it is not too big a
+    bottelneck (affines are quite small in size).
+
+    """
+
+    def __init__(self, basis='CSO'):
+        """
+
+        Parameters
+        ----------
+        basis : basis_like or list[basis_like], default='CSO'
+            The simplest way to define an affine basis is to choose from
+            a list of Lie groups:
+            * 'T'   : Translations
+            * 'SO'  : Special Orthogonal (rotations)
+            * 'SE'  : Special Euclidean (translations + rotations)
+            * 'D'   : Dilations (translations + isotropic scalings)
+            * 'CSO' : Conformal Special Orthogonal
+                      (translations + rotations + isotropic scalings)
+            * 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
+            * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
+            * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+            More complex (hierarchical) encodings can be achieved as well.
+            See `affine_matrix`.
+        """
+        super().__init__()
+
+        self.basis = basis
+
+    def forward(self, affine, **overload):
+        """
+
+        Parameters
+        ----------
+        prm : (batch, nb_prm) tensor or list[tensor]
+            Affine parameters on the Lie algebra.
+        overload : dict
+            All parameters of the module can be overridden at call time.
+
+        Returns
+        -------
+        forward : (batch, dim+1, dim+1) tensor, optional
+            Forward matrix
+        inverse : (batch, dim+1, dim+1) tensor, optional
+            Inverse matrix
+
+        """
+        # I build the matrix at each call, which is not great.
+        # Hard to be efficient *and* generic...
+        dim = affine.shape[-1] - 1
+        backend = dict(dtype=affine.dtype, device=affine.device)
+        basis = overload.get('basis', self.basis)
+        basis = spatial.build_affine_basis(basis, dim, **backend)
+
+        # When the affine is well conditioned, its log should be real.
+        # Here, I take the real part just in case.
+        # Another solution could be to regularise the affine (by loading
+        # slightly the diagonal) until it is well conditioned -- but
+        # how would that work with autograd?
+        affine = core.linalg.logm(affine.double())
+        if affine.is_complex():
+            affine = affine.real
+        affine = affine.to(**backend)
+        affine = core.linalg.mdot(affine[:, None, ...], basis[None, ...])
+        return affine
+
+
+class AffineClassic(Module):
+    """Build an affine by matrix multiplication of individual affines."""
+
+    def __init__(self, dim, basis='CSO', logzooms=False):
+        """
+
+        Parameters
+        ----------
+        dim : {2, 3}
+            Spatial dimension
+        basis : str, default='CSO'
+            Chosen from a list of Lie groups:
+            * 'T'   : Translations
+            * 'SO'  : Special Orthogonal (rotations)
+            * 'SE'  : Special Euclidean (translations + rotations)
+            * 'D'   : Dilations (translations + isotropic scalings)
+            * 'CSO' : Conformal Special Orthogonal
+                      (translations + rotations + isotropic scalings)
+            * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
+            * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+        logzooms : bool, default=False
+            If True, this function will exponentiate the input zoom parameters.
+        """
+        super().__init__()
+
+        self.dim = dim
+        self.basis = basis
+        self.logzooms = logzooms
+
+    def forward(self, prm, **overload):
+        """
+
+        Parameters
+        ----------
+        prm : (batch, nb_prm) tensor or list[tensor]
+            Affine parameters, ordered as
+            (*translations, *rotations, *zooms, *shears).
+        overload : dict
+            All parameters of the module can be overridden at call time.
+
+        Returns
+        -------
+        affine : (batch, dim+1, dim+1) tensor
+            Affine matrix
+
+        """
+        dim = overload.get('dim', self.dim)
+        basis = overload.get('basis', self.basis)
+        logzooms = overload.get('logzooms', self.logzooms)
+
+        def checkdim(expected, got):
+            if got != expected:
+                raise ValueError('Expected {} parameters for group {}({}) but '
+                                 'got {}.'.format(expected, basis, dim, got))
+
+        nb_prm = prm.shape[-1]
+        eps = core.constants.eps(prm.dtype)
+
+        if basis == 'T':
+            checkdim(dim, nb_prm)
+        elif basis == 'SO':
+            checkdim(dim*(dim-1)//2, nb_prm)
+        elif basis == 'SE':
+            checkdim(dim + dim*(dim-1)//2, nb_prm)
+        elif basis == 'D':
+            checkdim(dim + 1, nb_prm)
+            translations = prm[..., :dim]
+            zooms = prm[..., -1]
+            zooms = zooms.expand([*zooms.shape, dim])
+            zooms = zooms.exp() if logzooms else zooms.clamp_min(eps)
+            prm = torch.cat((translations, zooms), dim=-1)
+        elif basis == 'CSO':
+            checkdim(dim + dim*(dim-1)//2 + 1, nb_prm)
+            rigid = prm[..., :-1]
+            zooms = prm[..., -1]
+            zooms = zooms.expand([*zooms.shape, dim])
+            zooms = zooms.exp() if logzooms else zooms.clamp_min(eps)
+            prm = torch.cat((rigid, zooms), dim=-1)
+        elif basis == 'GL+':
+            checkdim((dim-1)*(dim+1), nb_prm)
+            rigid = prm[..., :dim*(dim-1)//2]
+            zooms = prm[..., dim*(dim-1)//2:(dim + dim*(dim-1)//2)]
+            zooms = zooms.exp() if logzooms else zooms.clamp_min(eps)
+            strides = prm[..., (dim + dim*(dim-1)//2):]
+            prm = torch.cat((rigid, zooms, strides), dim=-1)
+        elif basis == 'Aff+':
+            checkdim(dim*(dim+1), nb_prm)
+            rigid = prm[..., :(dim + dim*(dim-1)//2)]
+            zooms = prm[..., (dim + dim*(dim-1)//2):(2*dim + dim*(dim-1)//2)]
+            zooms = zooms.exp() if logzooms else zooms.clamp_min(eps)
+            strides = prm[..., (2*dim + dim*(dim-1)//2):]
+            prm = torch.cat((rigid, zooms, strides), dim=-1)
+        else:
+            raise ValueError(f'Unknown basis {basis}')
+
+        return spatial.affine_matrix_classic(prm, dim=dim)
+
+
+class AffineClassicInverse(Module):
+    """Recover affine parameters from an affine matrix."""
+
+    def __init__(self, basis='CSO', logzooms=False):
+        """
+
+        Parameters
+        ----------
+        basis : str, default='CSO'
+            Chosen from a list of Lie groups:
+            * 'T'   : Translations
+            * 'SO'  : Special Orthogonal (rotations)
+            * 'SE'  : Special Euclidean (translations + rotations)
+            * 'D'   : Dilations (translations + isotropic scalings)
+            * 'CSO' : Conformal Special Orthogonal
+                      (translations + rotations + isotropic scalings)
+            * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
+            * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+        logzooms : bool, default=False
+            If True, this function will return the logarithm of the zooms.
+        """
+        super().__init__()
+
+        self.basis = basis
+        self.logzooms = logzooms
+
+    def forward(self, affine, **overload):
+        """
+
+        Parameters
+        ----------
+        affine : (batch, dim+1, dim+1) tensor
+            Affine matrix
+        overload : dict
+            All parameters of the module can be overridden at call time.
+
+        Returns
+        -------
+        prm : (batch, nb_prm) tensor
+            Parameters
+
+        """
+        logzooms = overload.get('logzooms', self.logzooms)
+        basis = overload.get('basis', self.basis)
+
+        T, R, Z, S = spatial.affine_parameters_classic(affine,
+                                                       return_stacked=False)
+        if logzooms:
+            Z = Z.log()
+
+        if basis == 'T':
+            return T
+        elif basis == 'SO':
+            return R
+        elif basis == 'SE':
+            return torch.cat((T, R), dim=-1)
+        elif basis == 'D':
+            Z = torch.mean(Z, dim=-1)[..., None]
+            return torch.cat((T, Z), dim=-1)
+        elif basis == 'CSO':
+            Z = torch.mean(Z, dim=-1)[..., None]
+            return torch.cat((T, R, Z), dim=-1)
+        elif basis == 'GL+':
+            return torch.cat((R, Z, S), dim=-1)
+        elif basis == 'Aff+':
+            return torch.cat((T, R, Z, S), dim=-1)
+        else:
+            raise ValueError(f'Unknown basis {basis}')
 
 
 class AffineGrid(Module):
@@ -669,16 +913,46 @@ class VoxelMorph(Module):
         self.resize = GridResize(interpolation=interpolation,
                                  bound=grid_bound,
                                  factor=resize_factor)
-        self.exp = GridExp(interpolation=interpolation,
-                           bound=grid_bound)
+        self.velexp = GridExp(interpolation=interpolation,
+                              bound=grid_bound)
         self.pull = GridPull(interpolation=interpolation,
                              bound=image_bound)
         self.dim = dim
 
         # register losses/metrics
-        self.tags = ['image', 'velocity']
+        self.tags = ['image', 'velocity', 'segmentation']
 
-    def forward(self, source, target, *, _loss=None, _metric=None):
+    def exp(self, velocity, displacement=False):
+        """Generate a deformation grid from tangent parameters.
+
+        Parameters
+        ----------
+        velocity : (batch, *spatial, nb_dim)
+            Stationary velocity field
+        displacement : bool, default=False
+            Return a displacement field (voxel to shift) rather than
+            a transformation field (voxel to voxel).
+
+        Returns
+        -------
+        grid : (batch, *spatial, nb_dim)
+            Deformation grid (transformation or displacement).
+
+        """
+        backend = dict(dtype=velocity.dtype, device=velocity.device)
+
+        # generate grid
+        shape = velocity.shape[1:-1]
+        velocity_small = self.resize(velocity, type='displacement')
+        grid = self.velexp(velocity_small)
+        grid = self.resize(grid, shape=shape, type='grid')
+
+        if displacement:
+            grid = grid - spatial.identity_grid(grid.shape[1:-1], **backend)
+        return grid
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
         """
 
         Parameters
@@ -687,7 +961,13 @@ class VoxelMorph(Module):
             Source/moving image
         target : tensor (batch, channel, *spatial)
             Target/fixed image
+        source_seg : tensor (batch, classes, *spatial), optional
+            Source/moving segmentation
+        target_seg : tensor (batch, classes, *spatial), optional
+            Target/fixed segmentation
 
+        Other Parameters
+        ----------------
         _loss : dict, optional
             If provided, all registered losses are computed and appended.
         _metric : dict, optional
@@ -697,6 +977,8 @@ class VoxelMorph(Module):
         -------
         deformed_source : tensor (batch, channel, *spatial)
             Deformed source image
+        deformed_source_seg : tensor (batch, classes, *spatial), optional
+            Deformed source segmentation
         velocity : tensor (batch,, *spatial, len(spatial))
             Velocity field
 
@@ -705,50 +987,16 @@ class VoxelMorph(Module):
         check.dim(self.dim, source, target)
         check.shape(target, source, dims=[0], broadcast_ok=True)
         check.shape(target, source, dims=range(2, self.dim+2))
-
-        # chain operations
-        source_and_target = torch.cat((source, target), dim=1)
-        velocity = self.unet(source_and_target)
-        velocity = spatial.channel2grid(velocity)
-        velocity_small = self.resize(velocity, type='displacement')
-        grid = self.exp(velocity_small)
-        grid = self.resize(grid, shape=target.shape[2:], type='grid')
-        deformed_source = self.pull(source, grid)
-
-        # compute loss and metrics
-        self.compute(_loss, _metric,
-                     image=[deformed_source, target],
-                     velocity=[velocity])
-
-        return deformed_source, velocity
-
-
-class VoxelMorphSemiSupervised(VoxelMorph):
-    """A VoxelMorph network with a Categorical loss.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.tags += ['segmentation']
-
-    def forward(self, source, target, source_seg=None, target_seg=None,
-                *, _loss=None, _metric=None):
-
-        # sanity checks
-        check.dim(self.dim, source, target, source_seg, target_seg)
-        check.shape(target, source, dims=[0], broadcast_ok=True)
-        check.shape(target, source, dims=range(2, self.dim+2))
         check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
         check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
         # chain operations
         source_and_target = torch.cat((source, target), dim=1)
         velocity = self.unet(source_and_target)
-        velocity = spatial.channel2grid(velocity)
-        velocity_small = self.resize(velocity, type='displacement')
-        grid = self.exp(velocity_small)
-        grid = self.resize(grid, shape=target.shape[2:])
+        velocity = core.utils.channel2last(velocity)
+        grid = self.exp(velocity)
         deformed_source = self.pull(source, grid)
+
         if source_seg is not None:
             if source_seg.shape[2:] != source.shape[2:]:
                 grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
@@ -766,168 +1014,3 @@ class VoxelMorphSemiSupervised(VoxelMorph):
             return deformed_source, velocity
         else:
             return deformed_source, deformed_source_seg, velocity
-
-
-class AffineMorph(Module):
-    """Affine registration network.
-
-    This network builds on VoxelMorph, but replaces the U-Net by an
-    encoding CNN, and the dense spatial transformer by an affine spatial
-    transformer. Like VoxelMorph, this network encodes deformation on
-    their tangent space: here, the Lie algebra of a variety of affine
-    Lie groups is used. Affine transformation matrices are recovered
-    from their Lie algebra representation using matrix exponentiation.
-
-    * VoxelMorph:
-        target |-(unet)-> velocity -(exp)-> grid -(pull)-> warped_source
-        source |------------------------------------^
-    * AffineMorph:
-        target |-(cnn)-> lieparam -(exp)-> affine -(pull)-> warped_source
-        source |-------------------------------------^
-    """
-
-    def __init__(self, dim, basis='CSO', encoder=None, stack=None,
-                 kernel_size=3, interpolation='linear', bound='dct2', *,
-                 _additional_input_channels=0, _additional_output_channels=0):
-        """
-
-        Parameters
-        ----------
-        dim : int
-            Dimensionalityy of the input (1|2|3)
-        basis : {'T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+'}, default='CSO'
-            Basis of a matrix Lie group:
-                * 'T'   : Translations
-                * 'SO'  : Special Orthogonal (rotations)
-                * 'SE'  : Special Euclidean (translations + rotations)
-                * 'D'   : Dilations (translations + isotropic scalings)
-                * 'CSO' : Conformal Special Orthogonal
-                          (translations + rotations + isotropic scalings)
-                * 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
-                * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
-                * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
-        encoder : list[int], optional
-            Number of channels after each encoding layer of the CNN.
-        stack : list[int], optional
-            Number of channels after each fully-connected layer of the CNN.
-        kernel_size : int or list[int], default=3
-            Kernel size of the UNet.
-        interpolation : int, default=1
-            Interpolation order.
-        bound : bound_type, default='dct2'
-            Boundary conditions of the image.
-        """
-
-        super().__init__()
-        exp = AffineExp(dim, basis=basis)
-        nb_prm = sum(b.shape[0] for b in exp.basis) + _additional_output_channels
-        self.cnn = CNN(dim,
-                       input_channels=2 + _additional_input_channels,
-                       output_channels=nb_prm,
-                       encoder=encoder,
-                       stack=stack,
-                       kernel_size=kernel_size,
-                       activation=tnn.LeakyReLU(0.2),
-                       final_activation=None)
-        self.exp = exp
-        self.grid = AffineGrid(shift=True)
-        self.pull = GridPull(interpolation=interpolation,
-                             bound=bound,
-                             extrapolate=False)
-        self.dim = dim
-
-        # register losses/metrics
-        self.tags = ['image', 'affine']
-
-    def forward(self, source, target, *, _loss=None, _metric=None):
-        """
-
-        Parameters
-        ----------
-        source : tensor (batch, channel, *spatial)
-            Source/moving image
-        target : tensor (batch, channel, *spatial)
-            Target/fixed image
-
-        _loss : dict, optional
-            If provided, all registered losses are computed and appended.
-        _metric : dict, optional
-            If provided, all registered metrics are computed and appended.
-
-        Returns
-        -------
-        deformed_source : tensor (batch, channel, *spatial)
-            Deformed source image
-        affine_prm : tensor (batch,, *spatial, len(spatial))
-            affine Lie parameters
-
-        """
-        # sanity checks
-        check.dim(self.dim, source, target)
-        check.shape(target, source, dims=[0], broadcast_ok=True)
-        check.shape(target, source, dims=range(2, self.dim+2))
-
-        # chain operations
-        source_and_target = torch.cat((source, target), dim=1)
-        affine_prm = self.cnn(source_and_target)
-        affine_prm = affine_prm.reshape(affine_prm.shape[:2])
-        affine = []
-        for prm in affine_prm:
-            affine.append(self.exp(prm))
-        affine = torch.stack(affine, dim=0)
-        grid = self.grid(affine, shape=target.shape[2:])
-        deformed_source = self.pull(source, grid)
-
-        # compute loss and metrics
-        self.compute(_loss, _metric,
-                     image=[deformed_source, target],
-                     affine=[affine_prm])
-
-        return deformed_source, affine_prm
-
-
-class AffineMorphSemiSupervised(AffineMorph):
-    """An AffineMorph network with a Categorical loss.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.tags += ['segmentation']
-
-    def forward(self, source, target, source_seg=None, target_seg=None,
-                *, _loss=None, _metric=None):
-
-        # sanity checks
-        check.dim(self.dim, source, target, source_seg, target_seg)
-        check.shape(target, source, dims=[0], broadcast_ok=True)
-        check.shape(target, source, dims=range(2, self.dim+2))
-        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
-        check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
-
-        # chain operations
-        source_and_target = torch.cat((source, target), dim=1)
-        affine_prm = self.cnn(source_and_target)
-        affine_prm = affine_prm.reshape(affine_prm.shape[:2])
-        affine = []
-        for prm in affine_prm:
-            affine.append(self.exp(prm))
-        affine = torch.stack(affine, dim=0)
-        grid = self.grid(affine, shape=target.shape[2:])
-        deformed_source = self.pull(source, grid)
-        if source_seg is not None:
-            if source_seg.shape[2:] != source.shape[2:]:
-                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
-            deformed_source_seg = self.pull(source_seg, grid)
-        else:
-            deformed_source_seg = None
-
-        # compute loss and metrics
-        self.compute(_loss, _metric,
-                     image=[deformed_source, target],
-                     affine=[affine_prm],
-                     segmentation=[deformed_source_seg, target_seg])
-
-        if source_seg is None:
-            return deformed_source, affine_prm
-        else:
-            return deformed_source, deformed_source_seg, affine_prm

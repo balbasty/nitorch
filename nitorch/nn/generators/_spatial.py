@@ -429,3 +429,60 @@ class DeformedSample(Module):
         warped = self.pull(image, grid, **opt_pull)
 
         return warped
+
+
+class PatchSample(Module):
+    """Extract a random patch from a tensor."""
+
+    def __init__(self, shape):
+        """
+
+        Parameters
+        ----------
+        shape : sequence[int]
+            Patch shape
+        """
+
+        super().__init__()
+        self.shape = shape
+
+    def forward(self, *image, **overload):
+        """
+
+        Parameters
+        ----------
+        image : (batch, channel, *spatial)
+
+        shape
+        overload
+
+        Returns
+        -------
+
+        """
+
+        image, *other_images = image
+        image = torch.as_tensor(image)
+        device = image.device
+
+        dim = image.dim() - 2
+        shape = make_list(overload.get('shape', self.shape), dim)
+        shape = [min(s0, s1) for s0, s1 in zip(image.shape[2:], shape)]
+
+        # sample shift
+        max_shift = [d0 - d1 for d0, d1 in zip(image.shape[2:], shape)]
+        shift = [torch.randint(0, s, [], device=device) if s > 0 else 0
+                 for s in max_shift]
+
+        # subslice
+        index = (slice(None), slice(None))  # batch, channel
+        index = index + tuple(slice(s, s+d) for s, d in zip(shift, shape))
+        image = image.__getitem__(index)
+        other_images = [im.__getitem__(index) for im in other_images]
+
+        if len(other_images) > 0:
+            return (image, *other_images)
+        else:
+            return image
+
+

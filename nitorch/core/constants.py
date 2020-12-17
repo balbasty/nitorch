@@ -14,9 +14,11 @@ e = math.e        # exp(0)
 
 def eps(dtype='float32'):
     """Machine epsilon for different precisions."""
-    f16_types = ['float16', torch.float16]
-    f32_types = ['float32', torch.float32] + ([np.float] if np else [])
-    f64_types = ['float64', torch.float64] + ([np.double] if np else [])
+    f16_types = ['float16', torch.float16, 'complex32', torch.complex32]
+    f32_types = ['float32', torch.float32, 'complex64', torch.complex64] \
+                + ([np.float32, np.complex64] if np else [])
+    f64_types = ['float64', torch.float64, 'complex128', torch.complex128] \
+                + ([np.float64, np.complex128] if np else [])
 
     if dtype in f16_types:
         return 2 ** -10

@@ -3,18 +3,15 @@
 """
 
 
-import torch
 from .affine_reg._align import (_affine_align, _atlas_align)
 from ._preproc_fov import (_atlas_crop, _reset_origin, _subvol)
 from ._preproc_img import _world_reslice
-from ._preproc_utils import (_format_input, _process_reg,
-                             _reslice_dat_3d, _write_output)
-from ..io import (loadf, save)
+from ._preproc_utils import (_format_input, _process_reg, _write_output)
 
 
 def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
-               device='cpu', do_align=True, fov='full', mat_a=None):
-    """Crop an image to the NITorch atlas field-of-view.
+               device='cpu', do_align=True, fov='head', mat_a=None):
+    """Crop an image to the NITorch T1w brain atlas' field-of-view.
 
     Parameters
     ----------
@@ -35,11 +32,9 @@ def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
         then the device of those tensors will be used.
     do_align : bool, default=True
         Do alignment to MNI space.
-    fov : str, default='full'
-        Output field-of-view (FOV):
-        * 'full' : Full FOV.
+    fov : str, default='head'
+        * 'head' : Head FOV.
         * 'brain' : Brain FOV.
-        * 'tight' : Head+spine FOV.
     mat_a : (4, 4) tensor_like, dtype=float64, optional
         Pre-computed atlas alignment affine matrix.
 
@@ -54,9 +49,8 @@ def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
 
     """
     # Sanity check
-    if fov not in ['full', 'brain', 'tight']:
-        raise ValueError('Option fov should be one of: full, brain, '
-                         'head, head+neck')
+    if fov not in ['brain', 'head']:
+        raise ValueError('Option fov should be one of: brain, head')
     # Get properly formatted function input
     dat, mat, file = _format_input(img, device=device)
     if len(dat) != 1:

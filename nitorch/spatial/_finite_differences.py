@@ -2,11 +2,12 @@
 
 import torch
 from ..core import utils
-from ..core.utils import expand, slice_tensor
+from ..core.utils import expand, slice_tensor, same_storage
 from ..core.pyutils import make_list
 
 
-__all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div']
+__all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',
+           'sobel']
 
 
 # Converts from nitorch.utils.pad boundary naming to
@@ -388,6 +389,50 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
                 div = slice_tensor(div, slice(None, -1), dim)
                 div = torch.cat((div, last), dim)
 
+        # elif side == 'c':
+        #     # central -> diff[i] = (x[i+1] - x[i-1])/2
+        #     #         -> div[i]  = (x[i-1] - x[i+1])/2
+        #     pre = slice_tensor(x, slice(None, -2), dim)
+        #     post = slice_tensor(x, slice(2, None), dim)
+        #     div = pre - post
+        #     if bound in ('dct2', 'replicate'):
+        #         # x[-1]    = x[0]   => diff[0]   = x[1] - x[0]
+        #         # x[end+1] = x[end] => diff[end] = x[end] - x[end-1]
+        #         first = slice_tensor(x, 1, dim) - slice_tensor(x, 0, dim)
+        #         first = torch.unsqueeze(first, dim)
+        #         last = slice_tensor(x, -1, dim) - slice_tensor(x, -2, dim)
+        #         last = torch.unsqueeze(last, dim)
+        #         diff = torch.cat((first, diff, last), dim)
+        #     elif bound == 'dct1':
+        #         # x[-1]    = x[1]     => diff[0]   = 0
+        #         # x[end+1] = x[end-1] => diff[end] = 0
+        #         diff = torch.cat((zero, diff, zero), dim)
+        #     elif bound == 'dst2':
+        #         # x[-1]    = -x[0]   => diff[0]   = x[1] + x[0]
+        #         # x[end+1] = -x[end] => diff[end] = -(x[end] + x[end-1])
+        #         first = slice_tensor(x, 1, dim) + slice_tensor(x, 0, dim)
+        #         first = torch.unsqueeze(first, dim)
+        #         last = - slice_tensor(x, -1, dim) - slice_tensor(x, -2, dim)
+        #         last = torch.unsqueeze(last, dim)
+        #         diff = torch.cat((first, diff, last), dim)
+        #     elif bound in ('dst1', 'zero'):
+        #         # x[-1]    = 0 => diff[0]   = x[1]
+        #         # x[end+1] = 0 => diff[end] = -x[end-1]
+        #         first = slice_tensor(x, 1, dim)
+        #         first = torch.unsqueeze(first, dim)
+        #         last = -slice_tensor(x, -2, dim)
+        #         last = torch.unsqueeze(last, dim)
+        #         diff = torch.cat((first, diff, last), dim)
+        #     else:
+        #         assert bound == 'dft'
+        #         # x[-1]    = x[end] => diff[0]   = x[1] - x[end]
+        #         # x[end+1] = x[0]   => diff[end] = x[0] - x[end-1]
+        #         first = slice_tensor(x, 1, dim) - slice_tensor(x, -1, dim)
+        #         first = torch.unsqueeze(first, dim)
+        #         last = slice_tensor(x, 0, dim) - slice_tensor(x, -1, dim)
+        #         last = torch.unsqueeze(last, dim)
+        #         diff = torch.cat((first, diff, last), dim)
+
         if voxel_size != 1:
             div = div / voxel_size
 
@@ -400,7 +445,7 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     return div
 
 
-def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
+def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', value=0):
     """Divergence.
 
     Parameters
@@ -453,6 +498,223 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
         div = div + div1d(diff, order, d, v, side, bound)
 
     return div
+
+
+def sobel(x, dim=None, bound='replicate', value=0):
+    """Sobel (edge detector) filter.
+
+    This function supports autograd.
+
+    Parameters
+    ----------
+    x : (*batch_shape, *spatial_shape) tensor_like
+        Input (batched) tensor.
+    dim : int
+        Length of `spatial_shape`.
+    bound : bound_like, default='dct2'
+        Boundary condition.
+    value : number, defualt=0
+        Out-of-bounds value if `bound='constant'`.
+
+    Returns
+    -------
+    edges : (*batch_shape, *spatial_shape) tensor
+        Volume of edges.
+
+    """
+    dim = dim or x.dim()
+    dims = set(range(x.dim()-dim, x.dim()))
+    if not dims:
+        return x
+    g = 0
+    for d in dims:
+        g1 = x
+        other_dims = set(dims)
+        other_dims.discard(dim)
+        for dd in other_dims:
+            # triangular smoothing
+            kernel = [1, 2, 1]
+            window = _window1d(g1, dd, [-1, 0, 1], bound, value)
+            g1 = _lincomb(window, kernel, dd, ref=g1)
+        # central finite differences
+        kernel = [-1, 1]
+        window = _window1d(g1, d, [-1, 1], bound, value)
+        g1 = _lincomb(window, kernel, d, ref=g1)
+        g1 = g1.square() if g1.requires_grad else g1.square_()
+        g += g1
+    g = g.sqrt() if g.requires_grad else g.sqrt_()
+    return g
+
+
+def _lincomb(slices, weights, dim, ref=None):
+    """Perform the linear combination of a sequence of chunked tensors.
+
+    Parameters
+    ----------
+    slices : sequence[sequence[tensor]]
+        First level contains elements in the combinations.
+        Second level contains chunks.
+    weights : sequence[number]
+        Linear weights
+    dim : int
+        Dimension along which the tensor was chunked.
+
+    Returns
+    -------
+    lincomb : tensor
+
+    """
+
+    result = None
+    for chunks, weight in zip(slices, weights):
+
+        # multiply chunk with weight
+        new_chunks = []
+        for chunk in chunks:
+            if chunk.numel() == 0:
+                continue
+            if weight == 0:
+                new_chunks.append(chunk.new_zeros([]).expand(chunk.shape))
+                continue
+            if weight == 1:
+                new_chunks.append(chunk)
+                continue
+            if weight == -1:
+                if ref is not None and not same_storage(ref, chunk):
+                    if any(s == 0 for s in chunk.stride()):
+                        chunk = -chunk
+                    else:
+                        chunk = chunk.neg_()
+                else:
+                    chunk = -chunk
+                new_chunks.append(chunk)
+                continue
+            if ref is not None and not same_storage(ref, chunk):
+                if any(s == 0 for s in chunk.stride()):
+                    chunk = chunk * weight
+                else:
+                    chunk *= weight
+            else:
+                chunk = chunk * weight
+            new_chunks.append(chunk)
+
+        # accumulate
+        if result is None:
+            result = torch.cat(new_chunks, dim)
+        else:
+            offset = 0
+            for chunk in new_chunks:
+                index = slice(offset, offset+chunk.shape[dim])
+                view = slice_tensor(result, index, dim)
+                view += chunk
+                offset += chunk.shape[dim]
+
+    return result
+
+
+def _window1d(x, dim, offsets, bound='dct2', value=0):
+    """Extract a sliding window from a tensor.
+
+    Views are used to minimize allocations.
+
+    Parameters
+    ----------
+    x : tensor_like
+        Input tensor
+    dim : int
+        Dimension along which to extract offsets
+    offsets : sequence[int]
+        Offsets to extract, with respect to each voxel.
+        To extract a centered window of length 3, use `offsets=[-1, 0, 1]`.
+    bound : bound_like, default='dct2'
+        Boundary conditions
+    value : number, default=0
+        Filling value if `bound='constant'`
+
+    Returns
+    -------
+    win : tuple[tuple[tensor]]
+        The first level corresponds to offsets.
+        The second levels are tensors that could be concatenated along
+        `dim` to generate the input tensor shifted by `offset`. However,
+        to avoid unnecessary allocations, a list of (eventually empty)
+        chunks is returned instead of the full shifted tensor.
+        Some of these tensors can be views into the input tensor.
+
+    """
+    offsets = list(offsets)
+    x = torch.as_tensor(x)
+    backend = dict(dtype=x.dtype, device=x.device)
+    length = x.shape[dim]
+
+    # sanity check
+    for i in offsets:
+        nb_pre = max(0, -i)
+        nb_post = max(0, i)
+        if nb_pre > x.shape[dim] or nb_post > x.shape[dim]:
+            raise ValueError('Offset cannot be farther than one length away.')
+
+    slices = []
+    for i in offsets:
+        nb_pre = max(0, -i)
+        nb_post = max(0, i)
+        central = slice_tensor(x, slice(nb_post or None, -nb_pre or None), dim)
+        if bound == 'dct2':
+            pre = slice_tensor(x, slice(None, nb_pre), dim)
+            pre = torch.flip(pre, [dim])
+            post = slice_tensor(x, slice(length-nb_post, None), dim)
+            post = torch.flip(post, [dim])
+            slices.append([pre, central, post])
+        elif bound == 'dct1':
+            pre = slice_tensor(x, slice(1, nb_pre+1), dim)
+            pre = torch.flip(pre, [dim])
+            post = slice_tensor(x, slice(length-nb_post-1, -1), dim)
+            post = torch.flip(post, [dim])
+            slices.append([pre, central, post])
+        elif bound == 'dst2':
+            pre = slice_tensor(x, slice(None, nb_pre), dim)
+            pre = -torch.flip(pre, [dim])
+            post = slice_tensor(x, slice(-nb_post, None), dim)
+            post = -torch.flip(post, [dim])
+            slices.append([pre, central, post])
+        elif bound == 'dst1':
+            pre = slice_tensor(x, slice(None, nb_pre-1), dim)
+            pre = -torch.flip(pre, [dim])
+            post = slice_tensor(x, slice(length-nb_post+1, None), dim)
+            post = -torch.flip(post, [dim])
+            shape1 = list(x.shape)
+            shape1[dim] = 1
+            zero = torch.zeros([], **backend).expand(shape1)
+            slices.append([pre, zero, central, zero, post])
+        elif bound == 'dft':
+            pre = slice_tensor(x, slice(length-nb_pre, None), dim)
+            post = slice_tensor(x, slice(None, nb_post), dim)
+            slices.append([pre, central, post])
+        elif bound == 'replicate':
+            shape_pre = list(x.shape)
+            shape_pre[dim] = nb_pre
+            shape_post = list(x.shape)
+            shape_post[dim] = nb_post
+            pre = slice_tensor(x, slice(None, 1), dim).expand(shape_pre)
+            post = slice_tensor(x, slice(-1, None), dim).expand(shape_post)
+            slices.append([pre, central, post])
+        elif bound == 'zero':
+            shape_pre = list(x.shape)
+            shape_pre[dim] = nb_pre
+            shape_post = list(x.shape)
+            shape_post[dim] = nb_post
+            pre = torch.zeros([], **backend).expand(shape_pre)
+            post = torch.zeros([], **backend).expand(shape_post)
+            slices.append([pre, central, post])
+        elif bound == 'constant':
+            shape_pre = list(x.shape)
+            shape_pre[dim] = nb_pre
+            shape_post = list(x.shape)
+            shape_post[dim] = nb_post
+            pre = torch.full([], value, **backend).expand(shape_pre)
+            post = torch.full([], value, **backend).expand(shape_post)
+            slices.append([pre, central, post])
+    return slices
 
 
 def im_divergence(dat, vx=None, which='forward', bound='constant'):

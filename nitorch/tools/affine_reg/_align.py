@@ -2,25 +2,24 @@
 
 """
 
-
 import numpy as np
 import torch
-from ...plot import show_slices
-from ...core.datasets import fetch_data
-from ...spatial import (affine_basis, voxel_size)
-from ...core.linalg import expm
+from nitorch.plot import show_slices
+from nitorch.core.datasets import fetch_data
+from nitorch.spatial import (affine_basis, voxel_size)
+from nitorch.core.linalg import expm
 from ._costs import (_costs_hist, _compute_cost)
 from ._core import (_data_loader, _get_dat_grid, _get_mean_space, _fit_q)
-from ...core.optionals import try_import
 from .._preproc_utils import _format_input
 # Try import matplotlib.pyplot
+from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
 
 
 def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
                   samp=(3, 1.5), optimiser='powell', fix=0, verbose=False,
                   fov=None, mx_int=1023, raw=False, jitter=False):
-    """Affinely align images.
+    """Affine registration of a collection of images.
 
     Parameters
     ----------
@@ -29,12 +28,14 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
     mat : [N, ...], tensor_like
         List of affine matrices.
     cost_fun : str, default='nmi'
-        * 'nmi' : Normalised Mutual Information (pairwise method)
-        * 'mi' : Mutual Information (pairwise method)
-        * 'ncc' : Normalised Cross Correlation (pairwise method)
-        * 'ecc' : Entropy Correlation Coefficient (pairwise method)
-        * 'njtv' : Normalised Joint Total variation (groupwise method)
-        * 'jtv' : Joint Total variation (groupwise method)
+        Pairwise methods:
+            * 'nmi'  : Normalised Mutual Information
+            * 'mi'   : Mutual Information
+            * 'ncc'  : Normalised Cross Correlation
+            * 'ecc'  : Entropy Correlation Coefficient
+        Groupwise methods:
+            * 'njtv' : Normalised Joint Total variation
+            * 'jtv'  : Joint Total variation
     group : str, default='SE'
         * 'T'   : Translations
         * 'SO'  : Special Orthogonal (rotations)
