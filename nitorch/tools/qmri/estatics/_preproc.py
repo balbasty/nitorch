@@ -25,7 +25,7 @@ def postproc(maps, contrasts):
     for loginter, contrast in zip(maps.intercepts, contrasts):
         volume = loginter.volume.exp_()
         attributes = {key: getattr(contrast, key)
-                      for key in contrast.attributes}
+                      for key in contrast.attributes()}
         attributes['affine'] = loginter.affine
         attributes['te'] = 0.
         inter = qio.GradientEchoSingle(volume, **attributes)

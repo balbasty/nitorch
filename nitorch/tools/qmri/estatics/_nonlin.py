@@ -1,7 +1,6 @@
 import torch
 import nitorch as ni
 from nitorch import core, spatial
-from nitorch.tools.qmri import io as qio
 from ._options import Options
 from ._preproc import preproc, postproc
 from ._utils import hessian_loaddiag, hessian_matmul
@@ -239,7 +238,7 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
             res *= lam
             grad[0] += res
             grad[1] -= res * echo.te
-            res = res.clamp_min_(0)
+            res = res.abs_()
 
             fit = fit.square_()
             fit *= lam

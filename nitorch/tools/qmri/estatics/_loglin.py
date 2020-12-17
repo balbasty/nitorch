@@ -4,7 +4,7 @@ from nitorch import core, spatial
 from nitorch.tools.qmri import io as qio
 from ._options import Options
 from ._preproc import preproc, postproc
-from ._utils import hessian_loaddiag
+from ._utils import hessian_loaddiag,hessian_solve
 
 
 def loglin(data, opt=None):
@@ -188,36 +188,29 @@ def _loglin_solve(hess, grad):
         Solution
 
     """
+    return hessian_solve(hess, grad)
 
-    # TODO: I could compute the inverse of H in closed form using the
-    #       formula for the inverse of a 2x2 block matrix
-    #       https://en.wikipedia.org/wiki/Block_matrix#Block_matrix_inversion
-    #       That is because each small matrix in H has the form
-    #           [[D, b],
-    #            [b', r]]
-    #       where D is diagonal, r is a scalar and b is a vector
-
-    # build full matrix
-    nb_prm = (hess.shape[0]-1)//2
-    nb_dim = hess.dim() - 1
-    hess0 = hess
-    zero = hess[0].new_zeros(1).expand(hess[0].shape)
-    hess = [[zero] * (nb_prm+1) for _ in range(nb_prm+1)]
-    for i in range(nb_prm):
-        hess[i][i] = hess0[2*i]
-        hess[i][-1] = hess0[2*i + 1]
-        hess[-1][i] = hess0[2*i + 1]
-    hess[-1][-1] = hess0[-1]
-    del hess0
-    hess = core.utils.as_tensor(hess)
-
-    # reorganize as batched matrices
-    hess = hess.permute(list(range(2, nb_dim+2)) + [0, 1])
-    grad = grad.permute(list(range(1, nb_dim+1)) + [0])
-
-    # solve
-    grad, _ = torch.solve(grad[..., None], hess)
-    grad = grad[..., 0]
-    grad = grad.permute([-1] + list(range(nb_dim)))
-
-    return grad
+    # # build full matrix
+    # nb_prm = (hess.shape[0]-1)//2
+    # nb_dim = hess.dim() - 1
+    # hess0 = hess
+    # zero = hess[0].new_zeros(1).expand(hess[0].shape)
+    # hess = [[zero] * (nb_prm+1) for _ in range(nb_prm+1)]
+    # for i in range(nb_prm):
+    #     hess[i][i] = hess0[2*i]
+    #     hess[i][-1] = hess0[2*i + 1]
+    #     hess[-1][i] = hess0[2*i + 1]
+    # hess[-1][-1] = hess0[-1]
+    # del hess0
+    # hess = core.utils.as_tensor(hess)
+    #
+    # # reorganize as batched matrices
+    # hess = hess.permute(list(range(2, nb_dim+2)) + [0, 1])
+    # grad = grad.permute(list(range(1, nb_dim+1)) + [0])
+    #
+    # # solve
+    # grad, _ = torch.solve(grad[..., None], hess)
+    # grad = grad[..., 0]
+    # grad = grad.permute([-1] + list(range(nb_dim)))
+    #
+    # return grad

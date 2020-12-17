@@ -57,10 +57,12 @@ def hessian_solve(hess, grad):
     """Left matrix division specialized to the ESTATICS sparse hessian.
 
     The Hessian of the likelihood term is sparse with structure:
-    [[D, b],
-     [b', r]]
-    where D = diag(d) is diagonal.
-    It is stored in a flattened form: [d0, b0, d1, b1, ..., dP, bP, r]
+    `[[D, b], [b.T, r]]` where `D = diag(d)` is diagonal.
+    It is stored in a flattened form: `[d0, b0, d1, b1, ..., dP, bP, r]`
+
+    Because of this specific structure, the Hessian is inverted in
+    closed-form using the formula for the inverse of a 2x2 block matrix.
+    See: https://en.wikipedia.org/wiki/Block_matrix#Block_matrix_inversion
 
     Parameters
     ----------
@@ -72,4 +74,28 @@ def hessian_solve(hess, grad):
     result : (P+1, ...) tensor
 
     """
-    pass
+
+    # H = [[diag, vec], [vec.T, scal]]
+    diag = hess[:-1:2]
+    vec = hess[1:-1:2]
+    scal = hess[-1]
+
+    # precompute stuff
+    vec_norm = vec/diag
+    mini_inv = scal - (vec*vec_norm).sum(dim=0)
+    result = grad.new_empty()
+
+    # top left corner
+    result[:-1] = ((vec_norm * grad[:-1]).sum() / mini_inv) * vec_norm
+    result[:-1] += grad[:-1]/diag
+
+    # top right corner:
+    result[:-1] -= vec_norm * grad[-1] / mini_inv
+
+    # bottom left corner:
+    result[-1] = - (vec_norm * grad[:-1]).sum(0) / mini_inv
+
+    # bottom right corner:
+    result[-1] += grad[-1] / mini_inv
+
+    return result
