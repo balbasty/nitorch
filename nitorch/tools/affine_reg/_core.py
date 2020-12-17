@@ -1,22 +1,18 @@
 """Core functions for affine image registration.
 
 """
-
-
 import numpy as np
 from scipy.optimize.optimize import _minimize_powell
 from scipy.optimize._constraints import Bounds
 import torch
 from torch.nn import functional as F
-from ...plot import show_slices
-from ...core.kernels import smooth
-from ...core.utils import pad
-from ...spatial import (affine_default, grid_pull, identity_grid,
-                        im_gradient, voxel_size)
+from nitorch.plot import show_slices
+from nitorch.core.kernels import smooth
+from nitorch.core.utils import pad
+from nitorch.spatial import identity_grid, im_gradient, voxel_size
 from .._preproc_utils import _mean_space
 from ..img_statistics import estimate_noise
 from ._costs import (_compute_cost, _costs_edge, _costs_hist)
-from ...core.constants import pi
 
 
 def _data_loader(dat, mat, opt):
@@ -133,7 +129,7 @@ def _do_optimisation(q, args, s, opt):
         # Callback
         callback = None
         if opt['mean_space']:
-            # Ensure that the paramters have zero mean, across images.
+            # Ensure that the parameters have zero mean, across images.
             callback = lambda x: _zero_mean(x, q_shape)
         # Do optimisation
         res = _minimize_powell(_compute_cost, q, args,

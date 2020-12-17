@@ -2,15 +2,14 @@
 
 """
 
-
 import numpy as np
 import torch
 from torch.nn import functional as F
-from ...plot import show_slices
-from ...core.kernels import smooth
-from ...core.utils import pad
-from ...spatial import (affine_matvec, grid_pull)
-from ...core.linalg import expm
+from nitorch.core.kernels import smooth
+from nitorch.core.utils import pad
+from nitorch.spatial import (affine_matvec, grid_pull)
+from nitorch.core.linalg import expm
+from nitorch.plot import show_slices
 
 
 _costs_edge = ['jtv', 'njtv']              # Edge-based cost functions

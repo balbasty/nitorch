@@ -30,7 +30,7 @@ def _format_input(img, device='cpu', rand=False, cutoff=None):
             file.append(map(img[n]))
             dat.append(file[n].fdata(dtype=torch.float32, device=device,
                                      rand=rand, cutoff=cutoff))
-            mat.append(file[n].affine.to(device).type(torch.float64))
+            mat.append(file[n].affine.to(dtype=torch.float64, device=device))
         else:
             # Input are tensors (clone so to not modify input data)
             file.append(None)

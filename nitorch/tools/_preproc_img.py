@@ -3,11 +3,8 @@
 """
 
 
-import nibabel as nib
-from pathlib import Path
 import torch
-from ..plot.volumes import show_slices
-from ..spatial import (affine_matrix_classic, voxel_size)
+from nitorch.spatial import (affine_matrix_classic, voxel_size)
 from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d)
 
 

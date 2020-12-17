@@ -6,10 +6,10 @@
 from pathlib import Path
 import os
 import torch
-from ..core.datasets import fetch_data
-from ..plot.volumes import show_slices
-from ..io import map
-from ..spatial import (affine_default, affine_matrix_classic, voxel_size)
+from nitorch.core.datasets import fetch_data
+from nitorch.plot.volumes import show_slices
+from nitorch.io import map
+from nitorch.spatial import (affine_default, affine_matrix_classic, voxel_size)
 from .affine_reg._align import _atlas_align
 from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d, _msk_fov)
 from ._preproc_img import _world_reslice

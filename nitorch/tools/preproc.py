@@ -3,13 +3,10 @@
 """
 
 
-import torch
 from .affine_reg._align import (_affine_align, _atlas_align)
 from ._preproc_fov import (_atlas_crop, _reset_origin, _subvol)
 from ._preproc_img import _world_reslice
-from ._preproc_utils import (_format_input, _process_reg,
-                             _reslice_dat_3d, _write_output)
-from ..io import (loadf, save)
+from ._preproc_utils import (_format_input, _process_reg, _write_output)
 
 
 def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
