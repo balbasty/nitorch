@@ -3,6 +3,8 @@ from nitorch import core, spatial
 from nitorch.tools.img_statistics import estimate_noise
 from nitorch.tools.preproc import affine_align
 from nitorch.tools.qmri import io as qio
+from nitorch.core.optionals import try_import
+plt = try_import('matplotlib.pyplot', _as=True)
 from ._options import Options
 from ._param import ParameterMap, ParameterMaps
 
@@ -26,7 +28,7 @@ def postproc(maps, contrasts):
         volume = loginter.volume.exp_()
         attributes = {key: getattr(contrast, key)
                       for key in contrast.attributes()}
-        attributes['affine'] = loginter.affine
+        attributes['affine'] = loginter.affine.clone()
         attributes['te'] = 0.
         inter = qio.GradientEchoSingle(volume, **attributes)
         intercepts.append(inter)
@@ -57,16 +59,18 @@ def preproc(data, opt):
 
     dtype = opt.backend.dtype
     device = opt.backend.device
-    info = dict(dtype=dtype, device=device)
+    backend = dict(dtype=dtype, device=device)
 
     # --- estimate hyper parameters ---
     logmeans = []
     te = []
-    for contrast in data:
+    for c, contrast in enumerate(data):
         means = []
         vars = []
-        for echo in contrast:
-            dat = echo.fdata(**info, rand=True, cache=False)
+        for e, echo in enumerate(contrast):
+            if opt.verbose:
+                print(f'Estimate noise: contrast {c+1:d} - echo {e+1:2d}', end='\r')
+            dat = echo.fdata(**backend, rand=True, cache=False)
             sd0, sd1, mu0, mu1 = estimate_noise(dat)
             echo.mean = mu1.item()
             echo.sd = sd0.item()
@@ -79,22 +83,36 @@ def preproc(data, opt):
 
         te.append(contrast.te)
         logmeans.append(means.log())
+    if opt.verbose:
+        print('')
 
     # --- initial minifit ---
+    print('Compute initial parameters')
     inter, decay = _loglin_minifit(logmeans, te)
+    print('    - log intercepts: [' + ', '.join([f'{i:.1f}' for i in inter.tolist()]) + ']')
+    print(f'    - decay:          {decay.tolist():.3g}')
 
     # --- initial align ---
     if opt.preproc.register and len(data) > 1:
-        data_reg = [(contrast.echo(0).fdata(rand=True, cache=False),
+        print('Register volumes')
+        data_reg = [(contrast.echo(0).fdata(rand=True, cache=False, **backend),
                      contrast.affine) for contrast in data]
-        _, affines, _ = affine_align(data_reg)
+        dats, affines, _ = affine_align(data_reg, device=device)
+        if opt.verbose > 1 and plt:
+            plt.figure()
+            for i in range(len(dats)):
+                plt.subplot(1, len(dats), i+1)
+                plt.imshow(dats[i, :, dats.shape[2]//2, :].cpu())
+            plt.show()
         for contrast, aff in zip(data, affines):
+            aff, contrast.affine = core.utils.to_common(aff, contrast.affine)
             contrast.affine = torch.matmul(aff.inverse(), contrast.affine)
 
     # --- compute recon space ---
     affines = [contrast.affine for contrast in data]
     shapes = [dat.volume.shape[1:] for dat in data]
     if opt.recon.space == 'mean':
+        print('Estimate recon space')
         if isinstance(opt.recon.space, int):
             mean_affine = affines[opt.recon.space]
             mean_shape = shapes[opt.recon.space]
@@ -108,9 +126,9 @@ def preproc(data, opt):
 
     # --- allocate maps ---
     maps = ParameterMaps()
-    maps.intercepts = [ParameterMap(mean_shape, fill=inter[c], affine=mean_affine, **info)
+    maps.intercepts = [ParameterMap(mean_shape, fill=inter[c], affine=mean_affine, **backend)
                        for c in range(len(data))]
-    maps.decay = ParameterMap(mean_shape, fill=decay, affine=mean_affine, min=0, **info)
+    maps.decay = ParameterMap(mean_shape, fill=decay, affine=mean_affine, min=0, **backend)
     maps.affine = mean_affine
     maps.shape = mean_shape
 

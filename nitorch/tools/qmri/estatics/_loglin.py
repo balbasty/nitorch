@@ -4,7 +4,8 @@ from nitorch import core, spatial
 from nitorch.tools.qmri import io as qio
 from ._options import Options
 from ._preproc import preproc, postproc
-from ._utils import hessian_loaddiag,hessian_solve
+from ._utils import (hessian_loaddiag, hessian_solve,
+                     smart_grid, smart_pull, smart_push)
 
 
 def loglin(data, opt=None):
@@ -62,22 +63,29 @@ def loglin(data, opt=None):
 
         print('{:3d} | {:12.6g}'.format(n_iter, crit))
 
+        # --- mask of voxels where there's no data ---
+        msk = hess[:-1:2] == 0
+
         # --- load diagonal of the Hessian ---
         hess = hessian_loaddiag(hess)
-
+        
         # --- gauss-newton ---
-        deltas = _loglin_solve(hess, grad)
+        deltas = hessian_solve(hess, grad)
 
         for map, delta in zip(maps, deltas):
             map.volume -= delta
             if map.min is not None or map.max is not None:
                 map.volume.clamp_(map.min, map.max)
+               
 
     crit = sum(_loglin_gradient(contrast, intercept, maps.decay, opt, do_grad=False)
                for contrast, intercept in zip(data, maps.intercepts))
     print('{:3d} | {:12.6g}'.format(n_iter+1, crit))
 
-    return postproc(maps, data)
+    te0, decay = postproc(maps, data)
+    for d, map in enumerate(te0):
+        map.volume[msk[d]] = 0  # replace voxels where there's no data
+    return te0, decay
 
 
 def _loglin_gradient(contrast, intercept, decay, opt, do_grad=True):
@@ -121,10 +129,10 @@ def _loglin_gradient(contrast, intercept, decay, opt, do_grad=True):
     lam = 1/contrast.noise
 
     # pull parameter maps to observed space
-    grid = spatial.affine_grid(aff, obs_shape)[None, ...]
+    grid = smart_grid(aff, obs_shape, recon_shape)
     inter_slope = torch.stack([intercept.fdata(**backend),
                                decay.fdata(**backend)])
-    inter_slope = spatial.grid_pull(inter_slope[None, ...], grid)[0]
+    inter_slope = smart_pull(inter_slope, grid)
     inter, slope = inter_slope
 
     crit = 0
@@ -165,52 +173,8 @@ def _loglin_gradient(contrast, intercept, decay, opt, do_grad=True):
 
     if do_grad:
         # push gradient and Hessian to recon space
-        grad = spatial.grid_push(grad[None, ...], grid, recon_shape)[0]
-        hess = spatial.grid_push(hess[None, ...], grid, recon_shape)[0]
+        grad = smart_push(grad, grid, recon_shape)
+        hess = smart_push(hess, grid, recon_shape)
         return crit, grad, hess
 
     return crit
-
-
-def _loglin_solve(hess, grad):
-    """Solve a batch of small linear systems
-
-    Parameters
-    ----------
-    hess : (D*2+1, *shape) tensor
-        Hessian
-    grad : (D+1, *shape) tensor
-        Gradient
-
-    Returns
-    -------
-    diff : (D+1, *shape) tensor
-        Solution
-
-    """
-    return hessian_solve(hess, grad)
-
-    # # build full matrix
-    # nb_prm = (hess.shape[0]-1)//2
-    # nb_dim = hess.dim() - 1
-    # hess0 = hess
-    # zero = hess[0].new_zeros(1).expand(hess[0].shape)
-    # hess = [[zero] * (nb_prm+1) for _ in range(nb_prm+1)]
-    # for i in range(nb_prm):
-    #     hess[i][i] = hess0[2*i]
-    #     hess[i][-1] = hess0[2*i + 1]
-    #     hess[-1][i] = hess0[2*i + 1]
-    # hess[-1][-1] = hess0[-1]
-    # del hess0
-    # hess = core.utils.as_tensor(hess)
-    #
-    # # reorganize as batched matrices
-    # hess = hess.permute(list(range(2, nb_dim+2)) + [0, 1])
-    # grad = grad.permute(list(range(1, nb_dim+1)) + [0])
-    #
-    # # solve
-    # grad, _ = torch.solve(grad[..., None], hess)
-    # grad = grad[..., 0]
-    # grad = grad.permute([-1] + list(range(nb_dim)))
-    #
-    # return grad

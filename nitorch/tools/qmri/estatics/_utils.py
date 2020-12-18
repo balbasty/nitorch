@@ -1,5 +1,5 @@
 import torch
-from nitorch import core
+from nitorch import core, spatial
 
 
 def hessian_matmul(hess, grad):
@@ -17,6 +17,7 @@ def hessian_matmul(hess, grad):
     ----------
     hess : (2*P+1, ...) tensor
     grad : (P+1, ...) tensor
+    
 
     Returns
     -------
@@ -46,10 +47,10 @@ def hessian_loaddiag(hess, eps=None):
     """
     if eps is None:
         eps = core.constants.eps(hess.dtype)
-    weight = hess[:-1:2, ...].max(dim=0, keepdim=True).values
-    weight.clamp_max_(eps)
+    weight = hess[:-1:2].max(dim=0, keepdim=True).values
+    weight.clamp_min_(eps)
     weight *= eps
-    hess[:-1:2, ...] += weight
+    hess[:-1:2] += weight
     return hess
 
 
@@ -83,19 +84,90 @@ def hessian_solve(hess, grad):
     # precompute stuff
     vec_norm = vec/diag
     mini_inv = scal - (vec*vec_norm).sum(dim=0)
-    result = grad.new_empty()
+    result = torch.empty_like(grad)
 
     # top left corner
-    result[:-1] = ((vec_norm * grad[:-1]).sum() / mini_inv) * vec_norm
+    result[:-1] = ((vec_norm * grad[:-1]).sum(dim=0) / mini_inv) * vec_norm
     result[:-1] += grad[:-1]/diag
 
     # top right corner:
     result[:-1] -= vec_norm * grad[-1] / mini_inv
 
     # bottom left corner:
-    result[-1] = - (vec_norm * grad[:-1]).sum(0) / mini_inv
+    result[-1] = - (vec_norm * grad[:-1]).sum(dim=0) / mini_inv
 
     # bottom right corner:
     result[-1] += grad[-1] / mini_inv
 
     return result
+
+
+def smart_grid(aff, shape, inshape=None):
+    """Generate a sampling grid iff it is not the identity.
+    
+    Parameters
+    ----------
+    aff : (D+1, D+1) tensor
+        Affine transformation matrix (voxels to voxels)
+    shape : (D,) tuple[int]
+        Output shape
+    inshape : (D,) tuple[int], optional
+        Input shape
+
+    Returns
+    -------
+    grid : (*shape, D) tensor or None
+        Sampling grid
+    
+    """
+    backend = dict(dtype=aff.dtype, device=aff.device)
+    identity = torch.eye(aff.shape[-1], **backend)
+    inshape = inshape or shape
+    if torch.allclose(aff, identity) and shape == inshape:
+        return None
+    return spatial.affine_grid(aff, shape)
+
+
+def smart_pull(tensor, grid):
+    """Pull iff grid is defined (+ add/remove batch dim).
+    
+    Parameters
+    ----------
+    tensor : (channels, *input_shape) tensor
+        Input volume
+    grid : (*output_shape, D) tensor or None
+        Sampling grid
+
+    Returns
+    -------
+    pulled : (channels, *output_shape) tensor
+        Sampled volume
+    
+    """
+    if grid is None:
+        return tensor
+    return spatial.grid_pull(tensor[None, ...], grid[None, ...])[0]
+
+
+def smart_push(tensor, grid, shape=None):
+    """Pull iff grid is defined (+ add/remove batch dim).
+    
+    Parameters
+    ----------
+    tensor : (channels, *input_shape) tensor
+        Input volume
+    grid : (*input_shape, D) tensor or None
+        Sampling grid
+    shape : (D,) tuple[int], default=input_shape
+        Output shape
+
+    Returns
+    -------
+    pushed : (channels, *output_shape) tensor
+        Sampled volume
+    
+    """
+    if grid is None:
+        return tensor
+    return spatial.grid_push(tensor[None, ...], grid[None, ...], shape)[0]
+

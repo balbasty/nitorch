@@ -176,7 +176,11 @@ class BaseND:
         new.volume = instance.volume
         new.affine = instance.affine
         new.scanner_position = instance.scanner_position
-        new.set_attributes(**attributes)
+        old_attributes = [getattr(instance, key) 
+                          for key in new.attributes()
+                          if key in instance.attributes()]
+        old_attributes.update(attributes)
+        new.set_attributes(**old_attributes)
         new.atleast_3d_()
         return new
 
@@ -330,10 +334,25 @@ class GradientEcho(BaseND):
 
     @classmethod
     def from_mapped(cls, mapped, **attributes):
-        meta = mapped.metadata(['te', 'tr', 'ti', 'fa', 'mt'])
+        missing = [key for key in ['te', 'tr', 'ti', 'fa', 'mt']
+                  if key not in attributes ]
+        meta = mapped.metadata(missing)
         if not isinstance(meta, dict):
             meta = meta[0]
         meta = {key: val for key, val in meta.items() if val is not None}
+        if 'te' in meta:
+            if meta['te_unit'] in ('ms', 'msec'):
+                meta['te'] /= 1e3
+        if 'tr' in meta:
+            if meta['tr_unit'] in ('ms', 'msec'):
+                meta['tr'] /= 1e3
+        if 'ti' in meta:
+            if meta['ti_unit'] in ('ms', 'msec'):
+                meta['ti'] /= 1e3
+        if 'fa' in meta:
+            if meta['fa_unit'] in ('rad',):
+                meta['fa'] *= 180. / ni.core.constants.pi
+                
         meta.update(attributes)
         attributes = meta
         return super().from_mapped(mapped, **attributes)
