@@ -34,8 +34,14 @@ def nonlin(data, opt=None):
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
 
+    # --- be polite ---
+    print(f'Fitting a (multi) exponential decay model with {len(data)} contrasts. Echo times:')
+    for i, contrast in enumerate(data):
+        print(f'    - contrast {i:2d}: [' + ', '.join([f'{te*1e3:.1f}' for te in contrast.te]) + '] ms')
+    
     # --- estimate noise / register / initialize maps ---
     data, maps = preproc(data, opt)
+    vx = spatial.voxel_size(maps.affine)
 
     # --- prepare regularization factor ---
     lam = opt.regularization.factor
@@ -46,6 +52,7 @@ def nonlin(data, opt=None):
         lam_decay = lam[0]
     lam = core.utils.make_list(lam, len(maps)-1)
     lam.append(lam_decay)
+
     
     # --- initialize weights (RLS) ---
     if (not opt.regularization.norm or 
@@ -61,9 +68,16 @@ def nonlin(data, opt=None):
         if opt.regularization.norm == 'tv':
             rls_shape = (len(maps),) + rls_shape
         rls = ParameterMap(rls_shape, fill=1, **backend).volume
-        sumrls = rls.sum(dtype=torch.double)
+        sumrls = 0.5 * rls.sum(dtype=torch.double)
 
-
+    if opt.regularization.norm:
+        print(f'With {opt.regularization.norm.upper()} regularization:')
+        print('    - log intercepts: [' + ', '.join([f'{i:.3g}' for i in lam[:-1]]) + ']')
+        print(f'    - decay:          {lam[-1]:.3g}')
+    else:
+        print('Without regularization:')
+    
+        
     # --- compute derivatives ---
     grad = torch.empty((len(data) + 1,) + mean_shape, **backend)
     hess = torch.empty((len(data)*2 + 1,) + mean_shape, **backend)
@@ -78,7 +92,6 @@ def nonlin(data, opt=None):
               .format('rls', 'gn', 'fit', 'reg', 'rls', 'crit', 'ls'))
 
     ll_rls = []
-    ll_gn = []
     ll_max = core.constants.ninf
         
     for n_iter_rls in range(opt.optim.max_iter_rls):
@@ -87,6 +100,7 @@ def nonlin(data, opt=None):
                     else [rls] * len(maps)
 
         # --- Gauss Newton loop ---
+        ll_gn = []
         for n_iter_gn in range(opt.optim.max_iter_gn):
             decay = maps.decay
             crit = 0
@@ -111,7 +125,7 @@ def nonlin(data, opt=None):
                 for i, (map, weight, l) in enumerate(zip(maps, multi_rls, lam)):
                     if not l:
                         continue
-                    reg1, g1 = _nonlin_reg(map, weight, l)
+                    reg1, g1 = _nonlin_reg(map.volume, vx, weight, l)
                     reg += reg1
                     grad[i] += g1
 
@@ -120,7 +134,7 @@ def nonlin(data, opt=None):
 
             # --- gauss-newton ---
             if opt.regularization.norm:
-                deltas = _nonlin_solve(hess, grad, multi_rls, lam, maps.affine, opt)
+                deltas = _nonlin_solve(hess, grad, multi_rls, lam, vx, opt)
             else:
                 deltas = hessian_solve(hess, grad)
 
@@ -147,7 +161,7 @@ def nonlin(data, opt=None):
                     crit = sum(_nonlin_gradient(contrast, intercept, maps.decay, opt, do_grad=False)
                                for contrast, intercept in zip(data, maps.intercepts))
                     if opt.regularization.norm:
-                        reg = sum(_nonlin_reg(map, weight, l, do_grad=False)
+                        reg = sum(_nonlin_reg(map.volume, vx, weight, l, do_grad=False)
                                   for map, weight, l in zip(maps, multi_rls, lam))
                     else:
                         reg = 0.
@@ -184,16 +198,18 @@ def nonlin(data, opt=None):
         if opt.regularization.norm in ('tv', 'jtv'):
             rls = _nonlin_rls(maps, lam, opt.regularization.norm)
             sumrls = 0.5 * rls.sum(dtype=torch.double)
-            rls = rls.reciprocal_()
+            eps = core.constants.eps(rls.dtype)
+            rls = rls.clamp_min_(eps).reciprocal_()
         
             # --- Compute gain ---
-            ll = crit + reg + sumrls
-            ll_max = max(ll_max, ll)
+            # (we are late by one full RLS iteration when computing the 
+            #  gain but we save some computations)
+            ll = ll_gn[-1]
             ll_prev = ll_rls[-1][-1] if ll_rls else ll_max
-            gain = (ll_prev - ll) / (ll_max - ll_prev)
             ll_rls.append(ll_gn)
+            gain = (ll_prev - ll) / (ll_max - ll_prev)
             if gain < opt.optim.tolerance_rls:
-                print(gain)
+                print(f'Converged ({gain:7.2g})')
                 break
 
     # --- Prepare output ---
@@ -290,7 +306,6 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
             hess[0] += res
             fit *= echo.te
             hess[2] -= fit
-#             hess[2] -= res * echo.te
             fit *= echo.te
             hess[1] += fit
             res *= (echo.te * echo.te)
@@ -306,7 +321,7 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
     return crit
 
 
-def _nonlin_reg(map, rls=None, lam=1., do_grad=True):
+def _nonlin_reg(map, vx=1., rls=None, lam=1., do_grad=True):
     """Compute the gradient of the regularisation term.
 
     The regularisation term has the form:
@@ -317,8 +332,10 @@ def _nonlin_reg(map, rls=None, lam=1., do_grad=True):
 
     Parameters
     ----------
-    map : (*shape) ParameterMap
+    map : (*shape) tensor
         Parameter map
+    vx : float or sequence[float]
+        Voxel size
     rls : (*shape) tensor, optional
         Weights from the reweighted least squares scheme
     lam : float, default=1
@@ -335,9 +352,8 @@ def _nonlin_reg(map, rls=None, lam=1., do_grad=True):
 
     """
 
-    vx = spatial.voxel_size(map.affine)
-    grad_fwd = spatial.diff(map.volume, dim=[0, 1, 2], voxel_size=vx, side='f')
-    grad_bwd = spatial.diff(map.volume, dim=[0, 1, 2], voxel_size=vx, side='b')
+    grad_fwd = spatial.diff(map, dim=[0, 1, 2], voxel_size=vx, side='f')
+    grad_bwd = spatial.diff(map, dim=[0, 1, 2], voxel_size=vx, side='b')
     if rls is not None:
         grad_fwd *= rls[..., None]
         grad_bwd *= rls[..., None]
@@ -349,14 +365,14 @@ def _nonlin_reg(map, rls=None, lam=1., do_grad=True):
     grad *= lam / (2*3)   # average across directions (3) and side (2)
 
     if do_grad:
-        reg = (map.volume * grad).sum(dtype=torch.double)
+        reg = (map * grad).sum(dtype=torch.double)
         return 0.5 * reg, grad
     else:
-        grad *= map.volume
+        grad *= map
         return 0.5 * grad.sum(dtype=torch.double)
 
 
-def _nonlin_solve(hess, grad, rls, lam, affine, opt):
+def _nonlin_solve(hess, grad, rls, lam, vx, opt):
     """Solve the regularized linear system
 
     Parameters
@@ -365,6 +381,7 @@ def _nonlin_solve(hess, grad, rls, lam, affine, opt):
     grad : (P+1, *shape) tensor
     rls : (P+1, *shape) tensor_like
     lam : (P,) sequence[float]
+    vx : (D,) sequence[float]
     opt : Options
 
     Returns
@@ -380,13 +397,29 @@ def _nonlin_solve(hess, grad, rls, lam, affine, opt):
         for i, (map, weight, l) in enumerate(zip(x, rls, lam)):
             if not l:
                 continue
-            map = ParameterMap(map)
-            map.affine = affine
-            _, res1 = _nonlin_reg(map, weight, l)
+            _, res1 = _nonlin_reg(map, vx, weight, l)
             result[i] += res1
         return result
+
+    # The Hessian is A = H + L, 
+    # where H corresponds to the data term and L to the regularizer.
+    # We use (H + sI) as a preconditioner because it is easy to invert,
+    # and s is chosen to keep (H + L + sI) diagonal dominant.
+    # In practive, L = D'WD where D is the gradient operator, D' the
+    # divergence and W a diagonal matrix that contains the RLS weights.
+    # We choose s = max(W) * d, where d is the value of D'D on its
+    # diagonal (i.e., it is the central weight in the corresponding
+    # convolution)
+    smo = (2/3)*torch.as_tensor(vx).square().reciprocal().sum().item()
+    bnd = []
+    for weight, l in zip(rls, lam):
+        bnd.append(weight.max() * l)
+    bnd = torch.as_tensor(bnd) * smo
     
-    result = core.optim.cg(hess_fn, grad,
+    def precond(x):
+        return hessian_solve(hess, x, bnd)
+    
+    result = core.optim.cg(hess_fn, grad, precond=precond,
                            verbose=(opt.verbose > 1), stop='norm',
                            max_iter=opt.optim.max_iter_cg,
                            tolerance=opt.optim.tolerance_cg)
@@ -428,7 +461,6 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
         return grad
 
     # multiple maps
-    eps = core.constants.eps('float32')
 
     if norm == 'tv':
         rls = []
@@ -442,7 +474,6 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
         rls = 0
         for map, l in zip(maps, lam):
             rls += _nonlin_rls(map, l, '__internal__')
-        rls += eps
         rls = rls.sqrt_()
 
     return rls

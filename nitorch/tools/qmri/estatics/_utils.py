@@ -54,7 +54,7 @@ def hessian_loaddiag(hess, eps=None):
     return hess
 
 
-def hessian_solve(hess, grad):
+def hessian_solve(hess, grad, lam=None):
     """Left matrix division specialized to the ESTATICS sparse hessian.
 
     The Hessian of the likelihood term is sparse with structure:
@@ -69,6 +69,8 @@ def hessian_solve(hess, grad):
     ----------
     hess : (2*P+1, ...) tensor
     grad : (P+1, ...) tensor
+    lam : float or (P+1,) sequence[float], optional
+        Smoothing term added to the diagonal of H
 
     Returns
     -------
@@ -76,11 +78,23 @@ def hessian_solve(hess, grad):
 
     """
 
+    backend = dict(dtype=hess.dtype, device=hess.device)
+    nb_prm = len(grad)
+    
+    
     # H = [[diag, vec], [vec.T, scal]]
     diag = hess[:-1:2]
     vec = hess[1:-1:2]
     scal = hess[-1]
 
+    if lam is not None:
+        # add smoothing term
+        lam = torch.as_tensor(lam, **backend).flatten()
+        lam = torch.cat([lam, lam[-1].expand(nb_prm-len(lam))])
+        lam = lam.reshape([len(lam)] + [1] * (hess.dim()-1))
+        diag = diag + lam[:-1]
+        scal = scal + lam[1]
+                                              
     # precompute stuff
     vec_norm = vec/diag
     mini_inv = scal - (vec*vec_norm).sum(dim=0)
