@@ -401,23 +401,24 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
             result[i] += res1
         return result
 
-    # The Hessian is A = H + L, 
-    # where H corresponds to the data term and L to the regularizer.
-    # We use (H + sI) as a preconditioner because it is easy to invert,
-    # and s is chosen to keep (H + L + sI) diagonal dominant.
-    # In practive, L = D'WD where D is the gradient operator, D' the
-    # divergence and W a diagonal matrix that contains the RLS weights.
-    # We choose s = max(W) * d, where d is the value of D'D on its
-    # diagonal (i.e., it is the central weight in the corresponding
-    # convolution)
+    # The Hessian is A = H + L, where H corresponds to the data term 
+    # and L to the regularizer. Note that, L = D'WD where D is the 
+    # gradient operator, D' the divergence and W a diagonal matrix 
+    # that contains the RLS weights.
+    # We use (H + W*diag(D'D)) as a preconditioner because it is easy to 
+    # invert. I think that it works because D'D has a nice form where
+    # its rows sum to zero. Otherwise, we'd need to add a bit of 
+    # something on the diagonal of the preconditioner.
+    # Furthermore, diag(D'D) = d*I, where d is the central weight in 
+    # the corresponding convolution
+    hessp = hess.clone()
     smo = (2/3)*torch.as_tensor(vx).square().reciprocal().sum().item()
     bnd = []
-    for weight, l in zip(rls, lam):
-        bnd.append(weight.max() * l)
-    bnd = torch.as_tensor(bnd) * smo
+    for i, (weight, l) in enumerate(zip(rls, lam)):
+        hessp[2*i] += l * weight * smo
     
     def precond(x):
-        return hessian_solve(hess, x, bnd)
+        return hessian_solve(hessp, x)  # , bnd)
     
     result = core.optim.cg(hess_fn, grad, precond=precond,
                            verbose=(opt.verbose > 1), stop='norm',
