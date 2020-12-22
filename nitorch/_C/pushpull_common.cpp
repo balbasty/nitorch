@@ -415,9 +415,9 @@ NI_HOST
 void PushPullAllocator::init_grid(const Tensor& grid)
 {
   N        = grid.size(0);
-  trgt_X   = grid.size(1);
-  trgt_Y   = dim < 2 ? 1L : grid.size(2);
-  trgt_Z   = dim < 3 ? 1L : grid.size(3);
+  src_X   = grid.size(1);
+  src_Y   = dim < 2 ? 1L : grid.size(2);
+  src_Z   = dim < 3 ? 1L : grid.size(3);
   grid_sN  = grid.stride(0);
   grid_sX  = grid.stride(1);
   grid_sY  = dim < 2 ? 0L : grid.stride(2);
