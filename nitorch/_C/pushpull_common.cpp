@@ -199,7 +199,12 @@ public:
 
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  NI_HOST void ioset // Pull
+  // Usually used for pull:
+  // - do_pull  -> return source[grid]
+  // - do_push  -> fails
+  // - do_grad  -> return J(source)[grid]
+  // - do_sgrad -> return H(source)[grid]
+  NI_HOST void ioset
   (const Tensor& source, const Tensor& grid)
   {
     init_all();
@@ -208,6 +213,11 @@ public:
     init_output();
   }
 
+  // Usually used for pull_backward:
+  // - do_pull  -> return source[grid]
+  // - do_push  -> return push(target, grid, source.shape)
+  // - do_grad  -> return J(source)[grid]
+  // - do_sgrad -> return H(source)[grid]
   NI_HOST void ioset
   (const Tensor& source, const Tensor& grid, const Tensor& target)
   {
@@ -218,7 +228,12 @@ public:
     init_output();
   }
 
-  NI_HOST void ioset // Push
+  // Usually used for push:
+  // - do_pull  -> fails
+  // - do_push  -> return push(target, grid, source_size)
+  // - do_grad  -> fails
+  // - do_sgrad -> fails
+  NI_HOST void ioset
   (IntArrayRef source_size, const Tensor& grid, const Tensor& target)
   {
     init_all();
@@ -228,7 +243,12 @@ public:
     init_output();
   }
 
-  NI_HOST void ioset // Count
+  // Usually used for count:
+  // - do_pull  -> fails
+  // - do_push  -> return push(ones, grid, source_size)
+  // - do_grad  -> fails
+  // - do_sgrad -> fails
+  NI_HOST void ioset
   (IntArrayRef source_size, const Tensor& grid)
   {
     init_all();
@@ -415,9 +435,9 @@ NI_HOST
 void PushPullAllocator::init_grid(const Tensor& grid)
 {
   N        = grid.size(0);
-  src_X   = grid.size(1);
-  src_Y   = dim < 2 ? 1L : grid.size(2);
-  src_Z   = dim < 3 ? 1L : grid.size(3);
+  trgt_X   = grid.size(1);
+  trgt_Y   = dim < 2 ? 1L : grid.size(2);
+  trgt_Z   = dim < 3 ? 1L : grid.size(3);
   grid_sN  = grid.stride(0);
   grid_sX  = grid.stride(1);
   grid_sY  = dim < 2 ? 0L : grid.stride(2);
