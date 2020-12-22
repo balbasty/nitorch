@@ -79,18 +79,18 @@ class ReconOptions(OptionBase):
 class RegularizationOptions(OptionBase):
     """Options for the regularization"""
     norm: str = 'jtv'                       # Norm to optimize: {'jtv', 'tv', 'tkh', None}
-    factor: float or list = 32.             # Regularization factor
+    factor: float or list = [48., .01]      # Regularization factor
 
 
 class OptimOptions(OptionBase):
     """Options for the optimizer(s)"""
-    max_iter_gn: int = 1                   # Number of Gauss-Newton iterations
-    max_iter_cg: int = 10                  # Number of Conjugate Gradient iteration
+    max_iter_gn: int = 32                  # Number of Gauss-Newton iterations
+    max_iter_cg: int = 32                  # Number of Conjugate Gradient iteration
     max_iter_rls: int = 10                 # Number of Reweighted LS iterations
     max_iter_ls: int = 0                   # Number of Line Search iterations
-    tolerance_gn: float = 1e-7
+    tolerance_gn: float = 1e-5
     tolerance_cg: float = 1e-5
-    tolerance_rls: float = 1e-7
+    tolerance_rls: float = 1e-5
 
 
 class BackendOptions(OptionBase):
