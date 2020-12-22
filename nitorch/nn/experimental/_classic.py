@@ -7,7 +7,8 @@ from nitorch import nn as nni
 
 def affine(source, target, group='SE', loss=None, optim=None,
            interpolation='linear', bound='dct2', extrapolate=False,
-           max_iter=1000, tolerance=1e-5, device=None, origin='center'):
+           max_iter=1000, tolerance=1e-5, device=None, origin='center',
+           init=None):
     """
 
     Parameters
@@ -38,9 +39,11 @@ def affine(source, target, group='SE', loss=None, optim=None,
     def prepare(inp):
         if isinstance(inp, (list, tuple)):
             has_aff = len(inp) > 1
+            if has_aff:
+                aff0 = inp[1]
             inp, aff = prepare(inp[0])
             if has_aff:
-                aff = inp[1]
+                aff = aff0
             return inp, aff
         if isinstance(inp, str):
             inp = io.map(inp)
@@ -82,8 +85,13 @@ def affine(source, target, group='SE', loss=None, optim=None,
     # Prepare affine utils + Initialize parameters
     basis = spatial.affine_basis(group, dim, **backend)
     nb_prm = spatial.affine_basis_size(group, dim)
-    parameters = Variable(torch.zeros(nb_prm, **backend), requires_grad=True)
-    identity = spatial.identity_grid(target.shape)
+    if init is not None:
+        parameters = torch.as_tensor(init, **backend)
+        parameters = parameters.reshape(nb_prm)
+    else:
+        parameters = torch.zeros(nb_prm, **backend)
+    parameters = Variable(parameters, requires_grad=True)
+    identity = spatial.identity_grid(target.shape, **backend)
 
     def pull(q):
         aff = core.linalg.expm(q, basis)
@@ -102,7 +110,7 @@ def affine(source, target, group='SE', loss=None, optim=None,
 
     if optim is None:
         optim = torch.optim.Adam
-    optim = optim([parameters])
+    optim = optim([parameters], lr=1e-4)
 
     # Optim loop
     loss_val = core.constants.inf
@@ -116,10 +124,14 @@ def affine(source, target, group='SE', loss=None, optim=None,
 
         with torch.no_grad():
             crit = (loss_val0 - loss_val)
-            print('{:12.6f} ({:12.6g})'.format(loss_val.item(), crit.item()))
+            if n_iter % 10 == 0:
+                print('{:4d} {:12.6f} ({:12.6g})'
+                      .format(n_iter, loss_val.item(), crit.item()), 
+                      end='\r')
             if crit.abs() < tolerance:
                 break
 
+    print('')
     with torch.no_grad():
         moved = pull(parameters)
         aff = core.linalg.expm(parameters, basis)
