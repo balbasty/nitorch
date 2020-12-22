@@ -471,7 +471,7 @@ class AffineMorphFromDense(Module):
     """
 
     def __init__(self, dim, group='CSO', mode='lie', encoder='leastsquares', 
-                 unet=None, pull=None, interpolation='linear', bound='dct2'):
+                 unet=None, pull=None):
         """
 
         Parameters
@@ -539,7 +539,7 @@ class AffineMorphFromDense(Module):
         unet['batch_norm'] = unet.get('batch_norm', False)
         unet['activation'] = unet.get('activation', tnn.LeakyReLU(0.2))
         
-        pull = unet or dict()
+        pull = pull or dict()
         pull['interpolation'] = pull.get('interpolation', 1)
         pull['bound'] = pull.get('bound', 'dct2')
         pull['extrapolate'] = pull.get('extrapolate', False)

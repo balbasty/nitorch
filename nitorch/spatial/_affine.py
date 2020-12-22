@@ -1690,6 +1690,8 @@ def affine_resize(affine, shape, factor, anchor='c'):
         Input shape.
     factor : float or sequence[float]
         Resizing factor.
+        * > 1 : larger image <-> smaller voxels
+        * < 1 : smaller image <-> larger voxels
     anchor : {'centers', 'edges', 'first', 'last'} or list, default='centers'
         Anchor points.
 
@@ -2069,7 +2071,7 @@ def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
     shift = -linalg.matvec(lin, shape/2.)
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
-    return as_euclidean(affine)
+    return affine_make_homogeneous(as_euclidean(affine))
 
 
 def max_bb(all_mat, all_dim, vx=None):
