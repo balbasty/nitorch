@@ -72,11 +72,8 @@ def ome_zooms(omexml, series=None):
     ```
 
     """
-    if not isinstance(omexml, (str, bytes)):
-        raise TypeError('OME XML must be a string')
-
-    if omexml[-4:] != 'OME>':
-        return None
+    if not isinstance(omexml, (str, bytes)) or omexml[-4:] != 'OME>':
+        return None, None, None
 
     # Open XML parser (copied from tifffile)
     try:

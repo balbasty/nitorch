@@ -1,6 +1,12 @@
 """Check which optional (io) modules are available."""
 
 
+# Numpy
+try:
+    import numpy
+except ImportError:
+    numpy = None
+    
 # Nibabel
 try:
     import nibabel

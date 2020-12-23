@@ -684,6 +684,12 @@ def compose_index(parent, child, full_shape):
                 new_parent.append(c)
             assert False, "p is slice and c is {}".format(c)
 
+    while child:
+        c, *child = child
+        if c is not None:
+            raise IndexError('More indices than dimensions')
+        new_parent.append(c)
+            
     return tuple(new_parent)
 
 

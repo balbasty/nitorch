@@ -8,6 +8,7 @@ from nitorch.spatial import affine_sub, affine_permute, voxel_size as affvx
 from .indexing import (expand_index, guess_shape, compose_index, neg2pos,
                        is_droppedaxis, is_newaxis, is_sliceaxis,
                        invert_permutation, invert_slice, slice_navigator)
+from . import volutils
 
 
 class AccessType(int, Enum):
@@ -167,8 +168,8 @@ class MappedArray(ABC):
     fileobj = None                # file-like object (`write`, `seek`, etc)
     is_compressed: bool = None    # is compressed
     dtype: torch.dtype = None     # on-disk data type
-    slope: float = None           # intensity slope
-    inter: float = None           # intensity shift
+    slope: float = 1              # intensity slope
+    inter: float = 0              # intensity shift
 
     affine = None                 # sliced voxel-to-world
     _affine = None                # original voxel-to-world
@@ -332,7 +333,7 @@ class MappedArray(ABC):
 
     def __array__(self, dtype=None):
         """Convert to numpy array"""
-        return self.fdata(dtype=dtype)
+        return self.fdata(dtype=dtype, numpy=True)
 
     def permute(self, dims):
         """Permute dimensions
@@ -541,9 +542,9 @@ class MappedArray(ABC):
 
         # --- scale ---
         if self.slope != 1:
-            dat *= self.slope
+            dat *= float(self.slope)
         if self.inter != 0:
-            dat += self.inter
+            dat += float(self.inter)
 
         return dat
 
@@ -618,9 +619,9 @@ class MappedArray(ABC):
         if self.inter != 0 or self.slope != 1:
             dat = dat.clone() if torch.is_tensor(dat) else dat.copy()
         if self.inter != 0:
-            dat -= self.inter
+            dat -= float(self.inter)
         if self.slope != 1:
-            dat /= self.slope
+            dat /= float(self.slope)
 
         # --- set unscaled data ---
         self.set_data(dat)
@@ -1135,32 +1136,24 @@ class CatArray(MappedArray):
         new._dim_cat = iperm[new._dim_cat]
         return new
 
-    def data(self, *args, numpy=False, **kwargs):
+    def data(self, *args, **kwargs):
         # read individual arrays and concatenate them
         # TODO: it would be more efficient to preallocate the whole
         #   array and pass the appropriate buffer to each reader but
         #   (1) we don't have the option to provide a buffer yet
         #   (2) everything's already quite inefficient
+        dats = [array.data(*args, **kwargs) for array in self._arrays]
+        print([dat.shape for dat in dats])
+        return volutils.cat(dats, dim=self._dim_cat)
 
-        dats = [torch.as_tensor(array.data(*args, **kwargs))
-                for array in self._arrays]
-        dat = torch.cat(dats, dim=self._dim_cat)
-        if numpy:
-            dat = dat.numpy()
-        return dat
-
-    def fdata(self, *args, numpy=False, **kwargs):
+    def fdata(self, *args,  **kwargs):
         # read individual arrays and concatenate them
         # TODO: it would be more efficient to preallocate the whole
         #   array and pass the appropriate buffer to each reader but
         #   (1) we don't have the option to provide a buffer yet
         #   (2) everything's already quite inefficient
-
         dats = [array.fdata(*args, **kwargs) for array in self._arrays]
-        dat = torch.cat(dats, dim=self._dim_cat)
-        if numpy:
-            dat = dat.numpy()
-        return dat
+        return volutils.cat(dats, dim=self._dim_cat)
 
     def set_data(self, dat, *args, **kwargs):
         # slice the input data and write it into each array
