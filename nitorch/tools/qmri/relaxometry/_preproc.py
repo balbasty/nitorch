@@ -2,7 +2,6 @@ import torch
 from nitorch import core, spatial
 from nitorch.tools.img_statistics import estimate_noise
 from nitorch.tools.preproc import affine_align
-from nitorch.tools.qmri import io as qio
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
 from ._options import Options
@@ -10,43 +9,50 @@ from ..param import ParameterMap
 from ._param import ParameterMaps
 
 
-def postproc(maps, contrasts):
-    """Generate TE=0 and R2* volumes from log-parameters
+def postproc(maps):
+    """Generate PD, R1, R2* (and MTsat) volumes from log-parameters
 
     Parameters
     ----------
     maps : ParameterMaps
-    contrasts : sequence[GradientEchoMulti]
 
     Returns
     -------
-    intercepts : sequence[GradientEchoSingle]
-    decay : ParameterMap
+    pd : ParameterMap
+    r1 : ParameterMap
+    r2s : ParameterMap
+    mt : ParameterMap, optional
 
     """
-    intercepts = []
-    for loginter, contrast in zip(maps.intercepts, contrasts):
-        volume = loginter.volume.exp_()
-        attributes = {key: getattr(contrast, key)
-                      for key in contrast.attributes()}
-        attributes['affine'] = loginter.affine.clone()
-        attributes['te'] = 0.
-        inter = qio.GradientEchoSingle(volume, **attributes)
-        intercepts.append(inter)
-    decay = maps.decay
-    decay.name = 'R2*'
-    decay.unit = '1/s'
+    maps.r1.volume = maps.r1.volume.exp_()
+    maps.r1.name = 'R1'
+    maps.r1.unit = '1/s'
+    maps.r2s.volume = maps.r2s.volume.exp_()
+    maps.r2s.name = 'R2*'
+    maps.r2s.unit = '1/s'
+    maps.pd.volume = maps.pd.volume.exp_()
+    maps.r2s.name = 'PD'
+    maps.r2s.unit = 'a.u.'
+    if hasattr(maps, 'mt'):
+        maps.mt.volume = maps.mt.volume.neg_().exp_()
+        maps.mt.volume += 1
+        maps.mt.volume = maps.mt.volume.reciprocal_()
+        maps.mt.volume *= 100
+        maps.mt.name = 'MTsat'
+        maps.mt.unit = 'p.u.'
+        return maps.pd, maps.r1, maps.r2s, maps.mt
+    return maps.pd, maps.r1, maps.r2s
 
-    return intercepts, decay
 
-
-def preproc(data, opt):
+def preproc(data, transmit=[], receive=[], opt=None):
     """Estimate noise variance + register + compute recon space + init maps
 
     Parameters
     ----------
     data : sequence[GradientEchoMulti]
-    opt : Options
+    transmit : sequence[PrecomputedFieldMap], optional
+    receive : sequence[PrecomputedFieldMap], optional
+    opt : Options, optional
 
     Returns
     -------
@@ -65,6 +71,9 @@ def preproc(data, opt):
     # --- estimate hyper parameters ---
     logmeans = []
     te = []
+    tr = []
+    fa = []
+    mt = []
     for c, contrast in enumerate(data):
         means = []
         vars = []
@@ -83,15 +92,26 @@ def preproc(data, opt):
         contrast.noise = var.item()
 
         te.append(contrast.te)
+        tr.append(contrast.tr)
+        fa.append(contrast.fa / 180 * core.constants.pi)
+        mt.append(contrast.mt)
         logmeans.append(means.log())
     if opt.verbose:
         print('')
 
     # --- initial minifit ---
     print('Compute initial parameters')
-    inter, decay = _loglin_minifit(logmeans, te)
-    print('    - log intercepts: [' + ', '.join([f'{i:.1f}' for i in inter.tolist()]) + ']')
-    print(f'    - decay:          {decay.tolist():.3g}')
+    inter, r2s = _loglin_minifit(logmeans, te)
+    pd, r1, mt = _rational_minifit(inter, tr, fa, mt)
+    print(f'    - PD:    {pd.tolist():.3g}')
+    print(f'    - R1:    {r1.tolist():.3g} s')
+    print(f'    - R2*:   {r2s.tolist():.3g} s')
+    pd = pd.log()
+    r1 = r1.log()
+    r2s = r2s.log()
+    if mt is not None:
+        print(f'    - MT:    {100*mt.tolist():.3g} %')
+        mt = mt.log() - (1 - mt).log()
 
     # --- initial align ---
     if opt.preproc.register and len(data) > 1:
@@ -127,13 +147,15 @@ def preproc(data, opt):
 
     # --- allocate maps ---
     maps = ParameterMaps()
-    maps.intercepts = [ParameterMap(mean_shape, fill=inter[c], affine=mean_affine, **backend)
-                       for c in range(len(data))]
-    maps.decay = ParameterMap(mean_shape, fill=decay, affine=mean_affine, min=0, **backend)
+    maps.pd = ParameterMap(mean_shape, fill=pd, affine=mean_affine, **backend)
+    maps.r1 = ParameterMap(mean_shape, fill=r1, affine=mean_affine, **backend)
+    maps.r2s = ParameterMap(mean_shape, fill=r2s, affine=mean_affine, **backend)
+    if mt is not None:
+        maps.mt = ParameterMap(mean_shape, fill=mt, affine=mean_affine, **backend)
     maps.affine = mean_affine
     maps.shape = mean_shape
 
-    return data, maps
+    return data, transmit, receive, maps
 
 
 def _loglin_minifit(dat, te):
@@ -153,7 +175,7 @@ def _loglin_minifit(dat, te):
     Returns
     -------
     inter : (C,) tensor
-        Log-intercepts
+        Intercepts (extrapolated at TE = 0)
     decay : () tensor
         Decay
 
@@ -176,4 +198,53 @@ def _loglin_minifit(dat, te):
     contrast_matrix = torch.pinverse(contrast_matrix)
     param = core.linalg.matvec(contrast_matrix, observed)
 
-    return param[:-1], param[-1]
+    return param[:-1].exp(), param[-1]
+
+
+def _rational_minifit(inter, tr, fa, mt):
+    """Rational approximation on a single voxel
+
+    Parameters
+    ----------
+    inter : (C,) sequence[float]
+        Intercepts (=data extrapolated at TE = 0)
+    tr : (C,) sequence[float]
+        Repetition times, in sec.
+    fa : (C,) sequence[float]
+        Flip angles, in rad.
+    mt : (C,) sequence[float or bool or None]
+        MT pulse (frequency or boolean)
+
+    Returns
+    -------
+    pd : () tensor
+    r1 : () tensor
+    mt : () tensor or None
+
+    """
+
+    data_for_pdr1 = [(inter1, tr1, fa1)
+                     for inter1, tr1, fa1, mt1 in zip(inter, tr, fa, mt)
+                     if not mt]
+    data_for_pdr1 = data_for_pdr1[:2]
+    (pdw, pdw_tr, pdw_fa), (t1w, t1w_tr, t1w_fa) = data_for_pdr1
+
+    pdw = torch.as_tensor(pdw)
+    t1w = torch.as_tensor(t1w)
+
+    r1 = 0.5 * (t1w * (t1w_fa / t1w_tr) - pdw * (pdw_fa / pdw_tr))
+    r1 /= ((pdw / pdw_fa) - (t1w / t1w_fa))
+
+    pd = (t1w * pdw) * (t1w_tr * (pdw_fa / t1w_fa) - pdw_tr * (t1w_fa / pdw_fa))
+    pd /= (pdw * (pdw_tr * pdw_fa) - t1w * (t1w_tr * t1w_fa))
+
+    data_for_mt = [(inter1, tr1, fa1)
+                   for inter1, tr1, fa1, mt1 in zip(inter, tr, fa, mt)
+                   if mt]
+    if not data_for_mt:
+        return pd, r1, None
+    data_for_mt = data_for_mt[0]
+    mtw, mtw_tr, mtw_fa = data_for_mt
+    mtw = torch.as_tensor(mtw)
+    mt = (mtw_fa * pd / mtw - 1) * r1 * mtw_tr - 0.5 * (mtw_fa ** 2)
+    return pd, r1, mt

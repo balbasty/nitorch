@@ -4,16 +4,19 @@ import copy
 
 
 class ParameterMaps:
-    intercepts: list = None
-    decay: ParameterMap = None
+    pd: ParameterMap = None
+    r1: ParameterMap = None
+    r2s: ParameterMap = None
     shape: tuple = None
     affine: torch.tensor = None
 
     def __len__(self):
-        return len(self.intercepts) + 1
+        return 3 + hasattr(self, 'mt')
 
     def __iter__(self):
-        maps = self.intercepts + [self.decay]
+        maps = [self.pd, self.r1, self.r2s]
+        if hasattr(self, 'mt'):
+            maps.append(self.mt)
         for map in maps:
             yield map
 

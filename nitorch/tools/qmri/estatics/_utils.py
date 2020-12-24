@@ -88,7 +88,7 @@ def hessian_solve(hess, grad, lam=None):
     scal = hess[-1]
 
     if lam is not None:
-        # add smoothing term
+        # add smoothing term
         lam = torch.as_tensor(lam, **backend).flatten()
         lam = torch.cat([lam, lam[-1].expand(nb_prm-len(lam))])
         lam = lam.reshape([len(lam)] + [1] * (hess.dim()-1))

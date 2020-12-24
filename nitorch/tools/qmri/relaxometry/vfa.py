@@ -4,7 +4,7 @@ from nitorch import core, spatial
 from nitorch.tools.preproc import affine_align
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
-from ..estatics._param import ParameterMap
+from nitorch.tools.qmri.param import ParameterMap
 from ..estatics._options import Options
 
 

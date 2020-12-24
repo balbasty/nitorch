@@ -24,5 +24,4 @@ References
 
 from ._loglin import loglin
 from ._nonlin import nonlin
-from ._param import ParameterMap, ParameterMaps
 from ._options import *

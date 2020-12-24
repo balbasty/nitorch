@@ -1,11 +1,10 @@
 import torch
-import nitorch as ni
 from nitorch import core, spatial
 from ._options import Options
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag, hessian_matmul, hessian_solve,
                      smart_grid, smart_pull, smart_push)
-from ._param import ParameterMap
+from ..param import ParameterMap
 
 
 def nonlin(data, opt=None):
@@ -53,7 +52,6 @@ def nonlin(data, opt=None):
     lam = core.utils.make_list(lam, len(maps)-1)
     lam.append(lam_decay)
 
-    
     # --- initialize weights (RLS) ---
     if (not opt.regularization.norm or 
         opt.regularization.norm.lower() == 'none' or
@@ -403,17 +401,16 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
 
     # The Hessian is A = H + L, where H corresponds to the data term 
     # and L to the regularizer. Note that, L = D'WD where D is the 
-    # gradient operator, D' the divergence and W a diagonal matrix 
-    # that contains the RLS weights.
+    # gradient operator, D' the divergence and W a diagonal matrix
+    # that contains the RLS weights.
     # We use (H + W*diag(D'D)) as a preconditioner because it is easy to 
     # invert. I think that it works because D'D has a nice form where
     # its rows sum to zero. Otherwise, we'd need to add a bit of 
     # something on the diagonal of the preconditioner.
-    # Furthermore, diag(D'D) = d*I, where d is the central weight in 
+    # Furthermore, diag(D'D) = d*I, where d is the central weight in
     # the corresponding convolution
     hessp = hess.clone()
     smo = (2/3)*torch.as_tensor(vx).square().reciprocal().sum().item()
-    bnd = []
     for i, (weight, l) in enumerate(zip(rls, lam)):
         hessp[2*i] += l * weight * smo
     
@@ -467,7 +464,6 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
         rls = []
         for map, l in zip(maps, lam):
             rls1 = _nonlin_rls(map, l, '__internal__')
-            rls1 += eps
             rls1 = rls1.sqrt_()
             rls.append(rls1)
     else:
