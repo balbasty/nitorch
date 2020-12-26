@@ -199,7 +199,12 @@ public:
 
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  NI_HOST void ioset // Pull
+  // Usually used for pull:
+  // - do_pull  -> return source[grid]
+  // - do_push  -> fails
+  // - do_grad  -> return J(source)[grid]
+  // - do_sgrad -> return H(source)[grid]
+  NI_HOST void ioset
   (const Tensor& source, const Tensor& grid)
   {
     init_all();
@@ -208,6 +213,11 @@ public:
     init_output();
   }
 
+  // Usually used for pull_backward:
+  // - do_pull  -> return source[grid]
+  // - do_push  -> return push(target, grid, source.shape)
+  // - do_grad  -> return J(source)[grid]
+  // - do_sgrad -> return H(source)[grid]
   NI_HOST void ioset
   (const Tensor& source, const Tensor& grid, const Tensor& target)
   {
@@ -218,7 +228,12 @@ public:
     init_output();
   }
 
-  NI_HOST void ioset // Push
+  // Usually used for push:
+  // - do_pull  -> fails
+  // - do_push  -> return push(target, grid, source_size)
+  // - do_grad  -> fails
+  // - do_sgrad -> fails
+  NI_HOST void ioset
   (IntArrayRef source_size, const Tensor& grid, const Tensor& target)
   {
     init_all();
@@ -228,7 +243,12 @@ public:
     init_output();
   }
 
-  NI_HOST void ioset // Count
+  // Usually used for count:
+  // - do_pull  -> fails
+  // - do_push  -> return push(ones, grid, source_size)
+  // - do_grad  -> fails
+  // - do_sgrad -> fails
+  NI_HOST void ioset
   (IntArrayRef source_size, const Tensor& grid)
   {
     init_all();
@@ -531,11 +551,11 @@ void PushPullAllocator::init_output()
   }
   if (do_grad) {
     if (dim == 1)
-      output.push_back(at::zeros({N, src_X, 1}, grid_opt));
+      output.push_back(at::zeros({N, trgt_X, 1}, grid_opt));
     else if (dim == 2)
-      output.push_back(at::zeros({N, src_X, src_Y, 2}, grid_opt));
+      output.push_back(at::zeros({N, trgt_X, trgt_Y, 2}, grid_opt));
     else
-      output.push_back(at::zeros({N, src_X, src_Y, src_Z, 3}, grid_opt));
+      output.push_back(at::zeros({N, trgt_X, trgt_Y, trgt_Z, 3}, grid_opt));
     auto grad = output.back();
     grad_sN   = grad.stride(0);
     grad_sX   = grad.stride(1);

@@ -9,6 +9,54 @@ from nitorch.spatial import voxel_size
 from nitorch.core import dtypes
 
 
+def set_affine(header, affine):
+    if torch.is_tensor(affine):
+        affine = affine.detach().cpu()
+    affine = np.asanyarray(affine)
+    vx = np.asanyarray(voxel_size(affine))
+    vx0 = header.get_zooms()
+    vx = [vx[i] if i < len(vx) else vx0[i] for i in range(len(vx0))]
+    header.set_zooms(vx)
+    if isinstance(header, MGHHeader):
+        if shape is None:
+            warn('Cannot set the affine of a MGH file without '
+                 'knowing the data shape', RuntimeWarning)
+        elif affine.shape not in ((3, 4), (4, 4)):
+            raise ValueError('Expected a (3, 4) or (4, 4) affine matrix. '
+                             'Got {}'.format(affine.shape))
+        else:
+            Mdc = affine[:3, :3] / vx
+            c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
+
+            # Assign after we've had a chance to raise exceptions
+            header['delta'] = vx
+            header['Mdc'] = Mdc.T
+            header['Pxyz_c'] = c_ras
+    elif isinstance(header, Nifti1Header):
+        header.set_sform(affine)
+        header.set_qform(affine)
+    elif isinstance(header, Spm99AnalyzeHeader):
+        header.set_origin_from_affine(affine)
+    else:
+        warn('Format {} does not accept orientation matrices. '
+             'It will be discarded.'.format(type(header).__name__),
+             RuntimeWarning)
+    return header
+    
+
+def set_voxel_size(header, vx):
+    vx0 = header.get_zooms()
+    nb_dim = max(len(vx0), len(vx))
+    vx = [vx[i] if i < len(vx) else vx0[i] for i in range(nb_dim)]
+    header.set_zooms(vx)
+    aff = torch.as_tensor(header.get_best_affine())
+    vx = torch.as_tensor(vx, dtype=aff.dtype, device=aff.device)
+    vx0 = voxel_size(aff)
+    aff[:-1,:] *= vx[:, None] / vx0[:, None]
+    header = set_affine(header, aff)
+    return header
+    
+
 def metadata_to_header(header, metadata, shape=None, dtype=None):
     """Register metadata into a nibabel Header object
 
@@ -33,43 +81,10 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
     # --- generic fields ---
 
     if metadata.get('voxel_size', None) is not None:
-        vx0 = header.get_zooms()
-        vx = metadata['voxel_size']
-        vx = [vx[i] if i < len(vx) else vx0[i] for i in range(len(vx0))]
-        header.set_zooms(vx)
+        header = set_voxel_size(header, metadata['voxel_size'])
 
     if metadata.get('affine', None) is not None:
-        affine = metadata['affine']
-        if torch.is_tensor(affine):
-            affine = affine.detach().cpu()
-        affine = np.asanyarray(affine)
-        vx = np.asanyarray(voxel_size(affine))
-        vx0 = header.get_zooms()
-        vx = [vx[i] if i < len(vx) else vx0[i] for i in range(len(vx0))]
-        header.set_zooms(vx)
-        if isinstance(header, MGHHeader):
-            if shape is None:
-                warn('Cannot set the affine of a MGH file without '
-                     'knowing the data shape', RuntimeWarning)
-            elif affine.shape not in ((3, 4), (4, 4)):
-                raise ValueError('Expected a (3, 4) or (4, 4) affine matrix. '
-                                 'Got {}'.format(affine.shape))
-            else:
-                Mdc = affine[:3, :3] / vx
-                c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
-
-                # Assign after we've had a chance to raise exceptions
-                header['delta'] = vx
-                header['Mdc'] = Mdc.T
-                header['Pxyz_c'] = c_ras
-        elif isinstance(header, Nifti1Header):
-            header.set_sform(affine)
-        elif isinstance(header, Spm99AnalyzeHeader):
-            header.set_origin_from_affine(affine)
-        else:
-            warn('Format {} does not accept orientation matrices. '
-                 'It will be discarded.'.format(type(header).__name__),
-                 RuntimeWarning)
+        header = set_affine(header, metadata['affine'])
 
     if (metadata.get('slope', None) is not None or
         metadata.get('inter', None) is not None):

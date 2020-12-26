@@ -33,6 +33,9 @@ class TiffArray(MappedArray):
         if not keep_file_open:
             self._tiff.close()
 
+        self._series = 0
+        self._level = 0
+        self._cache = dict()
         super().__init__()
 
     _series: int = 0   # index of series to map
@@ -112,6 +115,7 @@ class TiffArray(MappedArray):
                     affines = affines[0]
                     self._cache['_affine'] = affines
             else:
+                zooms = pyutils.make_list(zooms, n=len(axes))
                 ax2zoom = {ax: zoom for ax, zoom in zip(axes, zooms)}
                 axes = [ax for ax in self._axes if ax in 'XYZ']
                 shape = [shp for shp, msk in zip(self._shape, self._spatial)

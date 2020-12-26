@@ -488,6 +488,12 @@ class BabelArray(MappedArray):
 
     @classmethod
     def savef_new(cls, dat, file_like, like=None, **metadata):
+        
+        if isinstance(dat, MappedArray):
+            if like is None:
+                like = dat
+            dat = dat.fdata(numpy=True)
+        
         # sanity check
         dtype = dtypes.dtype(dat.dtype)
         if not dtype.is_floating_point:
@@ -506,6 +512,10 @@ class BabelArray(MappedArray):
     def save_new(cls, dat, file_like, like=None, casting='unsafe',
                  _savef=False, **metadata):
 
+        if isinstance(dat, MappedArray):
+            if like is None:
+                like = dat
+            dat = dat.data(numpy=True)
         if torch.is_tensor(dat):
             dat = dat.detach().cpu()
         dat = np.asanyarray(dat)
@@ -557,8 +567,10 @@ class BabelArray(MappedArray):
                 like_metadata = like.metadata()
                 like_metadata.update(metadata)
                 metadata = like_metadata
+        # set shape now so that we can set zooms/etc
+        header.set_data_shape(dat.shape)
         header = metadata_to_header(header, metadata)
-
+        
         # check endianness
         disk_byteorder = header.endianness
         data_byteorder = dtype.byteorder
@@ -589,12 +601,9 @@ class BabelArray(MappedArray):
             if slope not in (1, None):
                 dat /= slope
 
-        # cast
+        # cast + setdtype
         dat = volutils.cast(dat, dtype, casting)
-
-        # set dtype / shape
         header.set_data_dtype(dat.dtype)
-        header.set_data_shape(dat.shape)
 
         # create image object
         image = format(dat, affine=None, header=header)

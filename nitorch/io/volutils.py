@@ -1,7 +1,7 @@
-import numpy as np
 from warnings import warn
-from nitorch.core import pyutils, dtypes
+from nitorch.core import utils, pyutils, dtypes
 import torch
+from .optionals import numpy as np
 
 
 def astype(dat, dtype, casting='unsafe'):
@@ -82,6 +82,17 @@ def max(dat, dim=None):
     else:
         return dat.max(axis=dim)
 
+
+def cat(dats, dim=None):
+    if any(torch.is_tensor(dat) for dat in dats):
+        dtype = utils.max_dtype(dats)
+        device = utils.max_device(dats)
+        dats = [torch.as_tensor(dat, dtype=dtype, device=device)
+                for dat in dats]
+        return torch.cat(dats, dim=dim)
+    else:
+        return np.concatenate(dats, axis=dim)
+    
 
 def writeable(dat):
     """Check if a tensor or array is writeable"""
