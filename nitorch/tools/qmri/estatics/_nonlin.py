@@ -167,7 +167,7 @@ def nonlin(data, opt=None):
                         print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | {:2d}  {:2s}'
                               .format(n_iter_rls, n_iter_gn, crit, reg, sumrls,
                                       crit + reg + sumrls, n_iter_ls, 
-                                      ':D' if (crit + reg > crit0 + reg0) else ':('))
+                                      ':D' if (crit + reg < crit0 + reg0) else ':('))
                     if crit + reg < crit0 + reg0:
                         ok = True
                         break

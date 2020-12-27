@@ -14,11 +14,17 @@ class ParameterMaps:
         return 3 + hasattr(self, 'mt')
 
     def __iter__(self):
+        yield self.pd
+        yield self.r1
+        yield self.r2s
+        if hasattr(self, 'mt'):
+            yield self.mt
+            
+    def __getitem__(self, index):
         maps = [self.pd, self.r1, self.r2s]
         if hasattr(self, 'mt'):
             maps.append(self.mt)
-        for map in maps:
-            yield map
+        return maps[index]
 
     def copy(self):
         return copy.copy(self)

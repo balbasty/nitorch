@@ -114,10 +114,16 @@ def preproc(data, transmit=[], receive=[], opt=None):
         mt = mt.log() - (1 - mt).log()
 
     # --- initial align ---
+    transmit = core.utils.make_list(transmit)
+    receive = core.utils.make_list(receive)
     if opt.preproc.register and len(data) > 1:
         print('Register volumes')
         data_reg = [(contrast.echo(0).fdata(rand=True, cache=False, **backend),
                      contrast.affine) for contrast in data]
+        data_reg += [(map.magnitude.fdata(rand=True, cache=False, **backend),
+                      map.magnitude.affine) for map in transmit]
+        data_reg += [(map.magnitude.fdata(rand=True, cache=False, **backend),
+                      map.magnitude.affine) for map in receive]
         dats, affines, _ = affine_align(data_reg, device=device)
         if opt.verbose > 1 and plt:
             plt.figure()
@@ -125,7 +131,7 @@ def preproc(data, transmit=[], receive=[], opt=None):
                 plt.subplot(1, len(dats), i+1)
                 plt.imshow(dats[i, :, dats.shape[2]//2, :].cpu())
             plt.show()
-        for contrast, aff in zip(data, affines):
+        for contrast, aff in zip(data + transmit + receive, affines):
             aff, contrast.affine = core.utils.to_common(aff, contrast.affine)
             contrast.affine = torch.matmul(aff.inverse(), contrast.affine)
 
@@ -155,6 +161,16 @@ def preproc(data, transmit=[], receive=[], opt=None):
     maps.affine = mean_affine
     maps.shape = mean_shape
 
+    # --- repeat fields if not enough ---
+    if transmit:
+        transmit = core.pyutils.make_list(transmit, len(data))
+    else:
+        transmit = [None] * len(data)
+    if receive:
+        receive = core.pyutils.make_list(receive, len(data))
+    else:
+        receive = [None] * len(data)
+    
     return data, transmit, receive, maps
 
 
@@ -222,10 +238,9 @@ def _rational_minifit(inter, tr, fa, mt):
     mt : () tensor or None
 
     """
-
     data_for_pdr1 = [(inter1, tr1, fa1)
                      for inter1, tr1, fa1, mt1 in zip(inter, tr, fa, mt)
-                     if not mt]
+                     if not mt1]
     data_for_pdr1 = data_for_pdr1[:2]
     (pdw, pdw_tr, pdw_fa), (t1w, t1w_tr, t1w_fa) = data_for_pdr1
 
@@ -240,7 +255,7 @@ def _rational_minifit(inter, tr, fa, mt):
 
     data_for_mt = [(inter1, tr1, fa1)
                    for inter1, tr1, fa1, mt1 in zip(inter, tr, fa, mt)
-                   if mt]
+                   if mt1]
     if not data_for_mt:
         return pd, r1, None
     data_for_mt = data_for_mt[0]
