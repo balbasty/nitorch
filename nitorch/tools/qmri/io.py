@@ -72,7 +72,7 @@ class BaseND:
     discard()                               Delete cached data
 
     """
-    volume: io.MappedArray or torch.Tensor = None   # Mapped volume file
+    _volume: io.MappedArray or torch.Tensor = None  # Mapped volume file
     affine: torch.Tensor = None                     # Orientation matrix
     scanner_position: UUID = None                   # Link positions in scanner
     _fdata: torch.Tensor = None                     # Cached scaled data
@@ -80,6 +80,21 @@ class BaseND:
     _device: torch.device = None                    # default device
     dtype = property(lambda self: self._dtype  or torch.get_default_dtype())
     device = property(lambda self: self._device  or torch.device('cpu'))
+
+    @property
+    def volume(self):
+        # just in case volume is modified
+        self._fdata = None
+        return self._volume
+
+    @volume.setter
+    def volume(self, val):
+        self._volume = val
+        self._fdata = None
+
+    @property
+    def shape(self):
+        return self.volume.shape
 
     def __new__(cls, input=None, *args, **kwargs):
         if isinstance(input, str):

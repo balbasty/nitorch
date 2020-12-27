@@ -59,7 +59,7 @@ def nonlin(data, transmit=[], receive=[], opt=None):
             all(l == 0 for l in lam)):
         opt.regularization.norm = ''
     opt.regularization.norm = opt.regularization.norm.lower()
-    mean_shape = maps[0].volume.shape
+    mean_shape = maps[0].shape
     rls = None
     sumrls = 0
     if opt.regularization.norm in ('tv', 'jtv'):
@@ -150,7 +150,7 @@ def nonlin(data, transmit=[], receive=[], opt=None):
                     for i, (map, weight, l) in enumerate(zip(maps, multi_rls, lam)):
                         if not l:
                             continue
-                        reg1, g1 = _nonlin_reg(map.volume, vx, weight, l)
+                        reg1, g1 = _nonlin_reg(map.fdata(), vx, weight, l)
                         reg += reg1
                         grad[i] += g1
 
@@ -320,13 +320,11 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     tr = contrast.tr
     fa = contrast.fa
 
-    obs_shape = contrast.volume.shape[1:]
+    obs_shape = contrast.shape[1:]
     recon_shape = maps.shape
-    print(maps.shape, maps.r1.volume.shape)
 
     # pull parameter maps to observed space
     aff = core.linalg.lmdiv(maps.affine, contrast.affine)
-    print(aff)
     aff = aff.to(**backend)
     grid = smart_grid(aff, obs_shape, recon_shape)
     dmaps = torch.stack([map.fdata(**backend) for map in maps])
@@ -342,19 +340,20 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     else:
         nb_prm = 3
         nb_hes = 6
+    show_images(pd, r1, r2s)
 
     # pull field maps to observed space
     if receive is not None:
         aff = core.linalg.lmdiv(receive.affine, contrast.affine)
         aff = aff.to(**backend)
-        grid1 = smart_grid(aff, obs_shape, receive.volume.shape)
+        grid1 = smart_grid(aff, obs_shape, receive.shape)
         b1m = smart_pull(receive.fdata(**backend)[None, ...], grid1)[0]
         del grid1
 
     if transmit is not None:
         aff = core.linalg.lmdiv(transmit.affine, contrast.affine)
         aff = aff.to(**backend)
-        grid1 = smart_grid(aff, obs_shape, transmit.volume.shape)
+        grid1 = smart_grid(aff, obs_shape, transmit.shape)
         b1p = smart_pull(transmit.fdata(**backend)[None, ...], grid1)[0]
         if grid1 is None:
             b1p = b1p.clone()
@@ -632,8 +631,8 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
         # -> we return the squared gradient map
         assert norm == '__internal__'
         vx = spatial.voxel_size(maps.affine)
-        grad_fwd = spatial.diff(maps.volume, dim=[0, 1, 2], voxel_size=vx, side='f')
-        grad_bwd = spatial.diff(maps.volume, dim=[0, 1, 2], voxel_size=vx, side='b')
+        grad_fwd = spatial.diff(maps.fdata(), dim=[0, 1, 2], voxel_size=vx, side='f')
+        grad_bwd = spatial.diff(maps.fdata(), dim=[0, 1, 2], voxel_size=vx, side='b')
 
         grad = grad_fwd.square_().sum(-1)
         grad += grad_bwd.square_().sum(-1)
@@ -663,23 +662,23 @@ def show_maps(maps):
     n = 3 + hasattr(maps, 'mt')
     z = maps.shape[1]//2
     plt.subplot(1, n, 1)
-    q = plt.imshow(maps.pd.volume[:, z, :].exp().cpu())
+    q = plt.imshow(maps.pd.fdata()[:, z, :].exp().cpu())
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
     plt.subplot(1, n, 2)
-    plt.imshow(maps.r1.volume[:, z, :].exp().cpu())
+    plt.imshow(maps.r1.fdata()[:, z, :].exp().cpu())
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
     plt.subplot(1, n, 3)
-    plt.imshow(maps.r2s.volume[:, z, :].exp().cpu())
+    plt.imshow(maps.r2s.fdata()[:, z, :].exp().cpu())
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
     if hasattr(maps, 'mt'):
         plt.subplot(1, n, 4)
-        mtslice = 100 / (1 + maps.mt.volume[:, z, :].neg().exp())
+        mtslice = 100 / (1 + maps.mt.fdata()[:, z, :].neg().exp())
         plt.imshow(mtslice.cpu())
         plt.xticks([])
         plt.yticks([])
@@ -696,4 +695,3 @@ def show_images(*args):
         plt.colorbar()
         plt.axis('off')
     plt.show()
-    
