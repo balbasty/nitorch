@@ -94,10 +94,12 @@ def nonlin(data, transmit=[], receive=[], opt=None):
     aff0 = maps.affine
     for level in range(5, 0, -1):
         
+        print('begin iter')
         show_maps(maps)
         aff, shape = _get_level(level, aff0, shape0)
         print(aff0, aff)
         maps, multi_rls = _resize(maps, multi_rls, aff, shape)
+        print('after resize')
         show_maps(maps)
         
         # --- compute derivatives ---
@@ -124,7 +126,6 @@ def nonlin(data, transmit=[], receive=[], opt=None):
                 # --- loop over contrasts ---
                 for contrast, b1m, b1p in zip(data, receive, transmit):
                     # compute gradient
-                    print('contrast', contrast.fa)
                     crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt)
 
                     # increment
@@ -167,7 +168,7 @@ def nonlin(data, transmit=[], receive=[], opt=None):
                     # --- check improvement ---
                     n_iter_ls = 0
                     for map, delta in zip(maps, deltas):
-                        map.volume -= 0.01 * delta
+                        map.volume -= delta
                         if map.min is not None or map.max is not None:
                             map.volume.clamp_(map.min, map.max)
                 else:
@@ -186,7 +187,6 @@ def nonlin(data, transmit=[], receive=[], opt=None):
                             map.volume -= armijo * delta
                             if map.min is not None or map.max is not None:
                                 map.volume.clamp_(map.min, map.max)
-                        show_maps(maps)
                         crit = sum(_nonlin_gradient(contrast, maps, b1m, b1p, opt, do_grad=False)
                                    for contrast, b1m, b1p in zip(data, receive, transmit))
                         if opt.regularization.norm:
@@ -211,6 +211,7 @@ def nonlin(data, transmit=[], receive=[], opt=None):
                         break
 
 
+                print('end iter')
                 show_maps(maps)
                 # --- Compute gain ---
                 ll = crit + reg + sumrls
@@ -340,7 +341,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     else:
         nb_prm = 3
         nb_hes = 6
-    show_images(pd, r1, r2s)
 
     # pull field maps to observed space
     if receive is not None:
@@ -363,7 +363,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     pd = pd.exp() if grid is not None else pd.exp_()
     r1 = r1.exp() if grid is not None else r1.exp_()
     r2s = r2s.exp() if grid is not None else r2s.exp_()
-    show_images(pd, r1, r2s)
     if has_mt:
         # mt is encoded by a sigmoid:
         # > mt = 1 / (1 + exp(-prm))
@@ -463,11 +462,11 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             
             # increment hessian
             hess1 = torch.empty_like(hess)
-            hess1[0] = grad1[0].square() #+ hess0[0]
-            hess1[1] = grad1[1].square() #+ hess0[1]
-            hess1[2] = grad1[2].square() #+ hess0[2]
+            hess1[0] = grad1[0].square() + hess0[0]
+            hess1[1] = grad1[1].square() + hess0[1]
+            hess1[2] = grad1[2].square() + hess0[2]
             if has_mt:
-                hess1[3] = grad1[3].square() #+ hess0[3]
+                hess1[3] = grad1[3].square() + hess0[3]
                 del hess0
                 hess1[4] = grad1[0] * grad1[1]
                 hess1[5] = grad1[0] * grad1[2]
