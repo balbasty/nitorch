@@ -109,9 +109,9 @@ def lmdiv(a, b, method='lu', rcond=1e-15, out=None):
         Solution of the linear system.
 
     """
-    dtype, device = utils.info(a, b)
-    a = utils.as_tensor(a, dtype, device)
-    b = utils.as_tensor(b, dtype, device)
+    backend = utils.max_backend(a, b)
+    a = utils.as_tensor(a, **backend)
+    b = utils.as_tensor(b, **backend)
     if a.shape[-1] != a.shape[-2]:
         method = 'pinv'
     if method.lower().startswith('lu'):
@@ -159,9 +159,9 @@ def rmdiv(a, b, method='lu', rcond=1e-15, out=None):
         Solution of the linear system.
 
     """
-    dtype, device = utils.info(a, b)
-    a = utils.as_tensor(a, dtype, device).transpose(-1, -2)
-    b = utils.as_tensor(b, dtype, device).transpose(-1, -2)
+    backend = utils.max_backend(a, b)
+    a = utils.as_tensor(a, **backend).transpose(-1, -2)
+    b = utils.as_tensor(b, **backend).transpose(-1, -2)
     x = lmdiv(b, a, method=method, rcond=rcond).transpose(-1, -2)
     return x
 

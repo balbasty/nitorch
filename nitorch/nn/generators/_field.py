@@ -1,7 +1,7 @@
 import torch
 import torch.distributions as td
 from ..modules._base import Module
-from ...core.utils import expand, unsqueeze, ensure_shape, info
+from ...core.utils import expand, unsqueeze, ensure_shape, max_backend
 from ...core.constants import pi
 from ...core.kernels import smooth
 import math

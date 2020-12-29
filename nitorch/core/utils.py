@@ -43,8 +43,8 @@ def as_tensor(input, dtype=None, device=None):
         else:
             if isinstance(x, (list, tuple)):
                 subs = [_stack(e, dtype, device) for e in x]
-                dtype, device = info(*subs)
-                subs = [elem.to(dtype=dtype, device=device) for elem in subs]
+                backend = max_backend(*subs)
+                subs = [elem.to(**backend) for elem in subs]
                 return torch.stack(subs)
             else:
                 return torch.as_tensor(x, dtype=dtype, device=device)
@@ -168,16 +168,32 @@ def shiftdim(x, n=None):
     return x
 
 
-def info(*args):
-    """Get the dtype and device of the first tensor of a list of objects."""
-    for a in args:
-        if torch.is_tensor(a):
-            return a.dtype, a.device
-    a = torch.as_tensor(args[0])
-    return a.dtype, a.device
+def to(*args, dtype=None, device=None):
+    """Move/convert to a common dtype or device.
+
+    Parameters
+    ----------
+    *args : tensor_like
+        Input tensors or tensor-like objects
+    dtype : str or torch.dtype, optional
+        Target data type
+    device : str or torch.device, optional
+        Target device
+
+    Returns
+    -------
+    *args : tensor_like
+        Converted tensors
+
+    """
+    if len(args) == 1:
+        return torch.as_tensor(args[0], dtype=dtype, device=device)
+    else:
+        return tuple(torch.as_tensor(arg, dtype=dtype, device=device)
+                     for arg in args)
 
 
-def to_common(*args, force_float=False):
+def to_max_backend(*args, force_float=False):
     """Move to a common dtype and device.
 
     See `max_dtype` and `max_device`.
@@ -203,7 +219,7 @@ def to_common(*args, force_float=False):
                      for arg in args)
 
 
-def to_common_device(*args):
+def to_max_device(*args):
     """Move to a common device.
 
     See `max_device`.
@@ -225,6 +241,21 @@ def to_common_device(*args):
     else:
         return tuple(torch.as_tensor(arg, device=device)
                      for arg in args)
+
+
+def max_backend(*args):
+    """Get the (max) dtype and device.
+
+    Parameters
+    ----------
+    args : tensors
+
+    Returns
+    -------
+    dict with keys 'dtype' and 'device'
+
+    """
+    return dict(dtype=max_dtype(*args), device=max_device(*args))
 
 
 def max_device(*args):
