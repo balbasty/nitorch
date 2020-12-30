@@ -90,10 +90,11 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
         metadata.get('inter', None) is not None):
         slope = metadata.get('slope', 1.)
         inter = metadata.get('inter', None)
-        if isinstance(header, Spm99AnalyzeHeader):
+        if isinstance(header, (Spm99AnalyzeHeader, Nifti1Header)):
             header.set_slope_inter(slope, inter)
         else:
             if slope not in (1, None) or inter not in (0, None):
+                format_name = type(header).__name__.split('Header')[0]
                 warn('Format {} does not accept intensity transforms. '
                      'It will be discarded.'.format(type(header).__name__),
                      RuntimeWarning)
@@ -116,7 +117,7 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
 
     if dtype is not None or metadata.get('dtype', None) is not None:
         dtype = dtype or metadata.get('dtype', None)
-        dtype = dtypes(dtype).numpy
+        dtype = dtypes.dtype(dtype).numpy
         header.set_data_dtype(dtype)
 
     return header
