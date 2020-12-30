@@ -536,6 +536,46 @@ def slice_tensor(x, index, dim=None):
     return x.__getitem__(full_index)
 
 
+def max_shape(*shapes, side='left'):
+    """Compute maximum (= broadcasted) shape.
+
+    Parameters
+    ----------
+    *shapes : sequence[int]
+        any number of shapes
+    side : {'left', 'right'}, default='left'
+        Side to add singleton dimensions.
+
+    Returns
+    -------
+    shape : tuple[int]
+        Maximum shape
+
+    """
+    def error(s0, s1):
+        raise ValueError('Incompatible shapes for broadcasting: {} and {}.'
+                         .format(s0, s1))
+
+    # 1. nb dimensions
+    nb_dim = 0
+    for shape in shapes:
+        nb_dim = max(nb_dim, len(shape))
+
+    # 2. pad with singleton dimensions
+    max_shape = [1] * nb_dim
+    for i, shape in enumerate(shapes):
+        pad_size = nb_dim - len(shape)
+        ones = [1] * pad_size
+        if side == 'left':
+            shape = [*ones, *shape]
+        else:
+            shape = [*shape, *ones]
+        max_shape = [max(s0, s1) if s0 == 1 or s1 == 1 or s0 == s1
+                     else error(s0, s1) for s0, s1 in zip(max_shape, shape)]
+
+    return max_shape
+
+
 def expand(*tensors, side='left', dry_run=False, **kwargs):
     """Broadcast to a given shape.
 
