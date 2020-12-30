@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.autograd import Variable
 from nitorch import core, spatial, io
 from nitorch import nn as nni
@@ -57,7 +58,7 @@ def get_backend(tensor):
 def affine(source, target, group='SE', loss=None,
            interpolation='linear', bound='dct2', extrapolate=False,
            max_iter=1000, tolerance=1e-5, device=None, origin='center',
-           init=None, lr=1e-4):
+           init=None, lr=0.1, scheduler=ReduceLROnPlateau):
     """
 
     Parameters
@@ -136,23 +137,31 @@ def affine(source, target, group='SE', loss=None,
         loss = lambda x, y: loss_fn(x[None, None, ...], y[None, None, ...])
 
     optim = torch.optim.Adam([parameters], lr=lr)
+    if scheduler is not None:
+        scheduler = scheduler(optim)
 
     # Optim loop
     loss_val = core.constants.inf
-    for n_iter in range(max_iter):
+    for n_iter in range(1, max_iter+1):
 
         loss_val0 = loss_val
-        zero_grad_(parameters)
+        optim.zero_grad(set_to_none=True)
         moved = pull(parameters)
         loss_val = loss(moved, target)
         loss_val.backward()
         optim.step()
+        if scheduler is not None and n_iter % 10 == 0:
+            if isinstance(scheduler, ReduceLROnPlateau):
+                scheduler.step(loss_val)
+            else:
+                scheduler.step()
 
         with torch.no_grad():
             crit = (loss_val0 - loss_val)
             if n_iter % 10 == 0:
-                print('{:4d} {:12.6f} ({:12.6g})'
-                      .format(n_iter, loss_val.item(), crit.item()), 
+                print('{:4d} {:12.6f} ({:12.6g}) | lr={:g}'
+                      .format(n_iter, loss_val.item(), crit.item(), 
+                              optim.param_groups[0]['lr']), 
                       end='\r')
             if crit.abs() < tolerance:
                 break
@@ -173,7 +182,7 @@ def affine(source, target, group='SE', loss=None,
 def diffeo(source, target, group='SE', image_loss=None, vel_loss=None,
            interpolation='linear', bound='dct2', extrapolate=False,
            max_iter=1000, tolerance=1e-5, device=None, origin='center',
-           init=None, lr=1e-4, optim_affine=True):
+           init=None, lr=1e-4, optim_affine=True, scheduler=ReduceLROnPlateau):
     """
 
     Parameters
@@ -271,26 +280,42 @@ def diffeo(source, target, group='SE', image_loss=None, vel_loss=None,
     opt_prm = [{'params': parameters}, {'params': velocity, 'lr': lr[1]}] \
               if optim_affine else [velocity]
     optim = torch.optim.Adam(opt_prm, lr=lr[0])
+    if scheduler is not None:
+        scheduler = scheduler(optim, cooldown=5)
 
     # Optim loop
     loss_val = core.constants.inf
-    for n_iter in range(max_iter):
+    loss_avg = 0
+    for n_iter in range(1, max_iter+1):
 
         loss_val0 = loss_val
-        zero_grad_([parameters, velocity])
+        optim.zero_grad(set_to_none=True)
         moved = pull(parameters, velocity)
         loss_val = image_loss(moved, target) + vel_loss(velocity)
         loss_val.backward()
         optim.step()
-
         with torch.no_grad():
-            crit = (loss_val0 - loss_val)
-            if n_iter % 10 == 0:
-                print('{:4d} {:12.6f} ({:12.6g})'
-                      .format(n_iter, loss_val.item(), crit.item()),
-                      end='\r')
-            if crit.abs() < tolerance:
-                break
+            loss_avg += loss_val
+            
+        if n_iter % 10 == 0:
+            loss_avg /= 10
+            if scheduler is not None:
+                if isinstance(scheduler, ReduceLROnPlateau):
+                    scheduler.step(loss_avg)
+                else:
+                    scheduler.step()
+
+            with torch.no_grad():
+                crit = (loss_val0 - loss_val)
+                if n_iter % 10 == 0:
+                    print('{:4d} {:12.6f} ({:12.6g}) | lr={:g}'
+                          .format(n_iter, loss_avg.item(), crit.item(),
+                                  optim.param_groups[0]['lr']),
+                          end='\r')
+                if crit.abs() < tolerance:
+                    break
+                    
+            loss_avg = 0
 
     print('')
     with torch.no_grad():
