@@ -209,18 +209,20 @@ def _hist_2d(img0, img1, mx_int, fwhm=7):
     H.put_(ind.long(),
            torch.ones(1, device=img0.device, dtype=ind.dtype).expand_as(ind),
            accumulate=True)
-    # Smooth the histogram
+    # Smoothing kernel
     smo = smooth(('gauss',) * 2, fwhm=fwhm,
                  device=img0.device, dtype=torch.float32, sep=True)
-    # Padding amount for subsequent convolution
-    size_pad = (smo[0].shape[2], smo[1].shape[3])
-    size_pad = (torch.tensor(size_pad) - 1) // 2
-    size_pad = tuple(size_pad.int().tolist())
-    # Smooth deformation with Gaussian kernel (by convolving)
-    H = pad(H, size_pad, side='both')
+    # Pad
+    p = (smo[0].shape[2], smo[1].shape[3])
+    p = (torch.tensor(p) - 1) // 2
+    p = tuple(p.int().tolist())
+    H = pad(H, p, side='both')
+    # Smooth
     H = H[None, None, ...]
     H = F.conv2d(H, smo[0])
-    H = F.conv2d(H, smo[1])[0, 0, ...]
+    H = F.conv2d(H, smo[1])
+    H = H[0, 0, ...]
+    # Clamp
     H = H.clamp_min(0.0)
     # Add eps
     H = H + 1e-7
