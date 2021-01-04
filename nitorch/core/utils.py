@@ -408,6 +408,8 @@ def max_dtype(*args, force_float=False):
 
     def explore_dtype(x, n_pass=1):
         # find the max data type at a given pass
+        if x is None:
+            return None
         if is_dtype(x):
             return dtype_astorch(x)
         elif (is_tensor(x) or is_array(x)) and len(x.shape) > 0:
