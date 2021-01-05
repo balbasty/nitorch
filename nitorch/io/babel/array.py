@@ -46,6 +46,14 @@ from ..metadata import keys as metadata_keys
 from .metadata import header_to_metadata, metadata_to_header
 from .utils import writeslice
 
+# With x, y, z being quaternions, NiBabel's reader requires that:
+# 1 - [x, y, z]*[x, y, z]' > threshold, where threshold = -1e-7 (by
+# default - see nibabel.quaternions.fillpositive - the dot product is 
+# supposed to be 1, but this sometimes does not hold because of numerical 
+# precision). As this is a bit conservative, we here decreases this 
+# threshold.
+nib.Nifti1Header.quaternion_threshold = -1e-6
+
 
 class BabelArray(MappedArray):
     """MappedArray that relies on NiBabel."""
