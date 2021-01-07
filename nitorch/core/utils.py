@@ -168,6 +168,59 @@ def shiftdim(x, n=None):
     return x
 
 
+def movedim(input, source, destination):
+    """Moves the position of one or more dimensions
+
+    Other dimensions that are not explicitly moved remain in their
+    original order and appear at the positions not specified in
+    destination.
+
+    Note
+    ----
+    This function uses `torch.movedim` when PyTorch version is >= 1.7
+
+    Parameters
+    ----------
+    input : tensor
+        Input tensor
+    source : int or sequence[int]
+        Initial positions of the dimensions
+    destination : int or sequence[int]
+        Output positions of the dimensions
+
+    Returns
+    -------
+    output : tensor
+        Tensor with moved dimensions.
+
+    """
+    input = torch.as_tensor(input)
+    dim = input.dim()
+    source = make_list(source)
+    destination = make_list(destination)
+    if len(source) != len(destination):
+        raise ValueError('Expected as many source as destination positions.')
+    source = [dim + src if src < 0 else src for src in source]
+    destination = [dim + dst if dst < 0 else dst for dst in destination]
+    if len(set(source)) != len(source):
+        raise ValueError('Expected source positions to be unique')
+    if len(set(destination)) != len(destination):
+        raise ValueError('Expected destination positions to be unique')
+
+    # compute permutation
+    positions_in = list(range(dim))
+    positions_out = [None] * dim
+    for src, dst in zip(source, destination):
+        positions_out[dst] = src
+        positions_in[src] = None
+    positions_in = filter(lambda x: x is not None, positions_in)
+    for i, pos in enumerate(positions_out):
+        if pos is None:
+            positions_out[i], *positions_in = positions_in
+
+    return input.permute(*positions_out)
+
+
 def to(*args, dtype=None, device=None):
     """Move/convert to a common dtype or device.
 
