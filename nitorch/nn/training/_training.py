@@ -7,6 +7,8 @@ from nitorch.nn.modules import Module
 import string
 import math
 import os
+import random
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
