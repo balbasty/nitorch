@@ -2,6 +2,7 @@
 import torch
 from . import utils
 from warnings import warn
+import math
 
 
 # Expose from private implementation
@@ -307,3 +308,313 @@ def is_orthonormal(basis, return_matrix=False):
             mat[j, i] = mat[i, j].conj()
     check = torch.allclose(mat, torch.eye(F, **info))
     return (check, mat) if return_matrix else check
+
+
+def sym_to_full(mat):
+    """Transform a symmetric matrix into a full matrix
+
+    Parameters
+    ----------
+    mat : (..., M * (M+1) // 2) tensor
+        A symmetric matrix that is stored in a sparse way.
+        Its elements along the last (flat) dimension are the
+        diagonal elements followed by the flattened upper-half elements.
+        E.g., [a00, a11, aa22, a01, a02, a12]
+
+    Returns
+    -------
+    full : (..., M, M) tensor
+        Full matrix
+
+    """
+
+    mat = torch.as_tensor(mat)
+    mat = utils.movedim(mat, -1, 0)
+    nb_prm = int((math.sqrt(1 + 8 * len(mat)) - 1)//2)
+    if not mat.requires_grad:
+        full = mat.new_empty([nb_prm, nb_prm, *mat.shape[1:]])
+        i = 0
+        for i in range(nb_prm):
+            full[i, i] = mat[i]
+        count = i + 1
+        for i in range(nb_prm):
+            for j in range(i+1, nb_prm):
+                full[i, j] = full[j, i] = mat[count]
+                count += 1
+    else:
+        full = [[None] * nb_prm for _ in range(nb_prm)]
+        i = 0
+        for i in range(nb_prm):
+            full[i][i] = mat[i]
+        count = i + 1
+        for i in range(nb_prm):
+            for j in range(i+1, nb_prm):
+                full[i][j] = full[j][i] = mat[count]
+                count += 1
+        full = utils.as_tensor(full)
+    return utils.movedim(full, [0, 1], [-2, -1])
+
+
+def sym_matvec(mat, vec):
+    """Matrix-vector product with a symmetric matrix
+
+    Parameters
+    ----------
+    mat : (..., M * (M+1) // 2) tensor
+        A symmetric matrix that is stored in a sparse way.
+        Its elements along the last (flat) dimension are the
+        diagonal elements followed by the flattened upper-half elements.
+        E.g., [a00, a11, aa22, a01, a02, a12]
+    vec : (..., M) tensor
+        A vector
+
+    Returns
+    -------
+    matvec : (..., M) tensor
+        The matrix-vector product
+
+    """
+    # make the vector dimension first so that the code is less ugly
+    mat, vec = utils.to_max_backend(mat, vec)
+    mat = utils.movedim(mat, -1, 0)
+    vec = utils.movedim(vec, -1, 0)
+
+    nb_prm = len(vec)
+    if nb_prm == 1:
+        mm = mat * vec
+    elif nb_prm == 2:
+        mm = torch.empty_like(vec)
+        mm[0] = mat[0] * vec[0] + mat[2] * vec[1]
+        mm[1] = mat[1] * vec[1] + mat[2] * vec[0]
+    elif nb_prm == 3:
+        mm = torch.empty_like(vec)
+        mm[0] = mat[0] * vec[0] + mat[3] * vec[1] + mat[4] * vec[2]
+        mm[1] = mat[1] * vec[1] + mat[3] * vec[0] + mat[5] * vec[2]
+        mm[2] = mat[2] * vec[2] + mat[4] * vec[0] + mat[5] * vec[1]
+    elif nb_prm == 4:
+        mm = torch.empty_like(vec)
+        mm[0] = mat[0] * vec[0]
+        mm[0] += mat[4] * vec[1]
+        mm[0] += mat[5] * vec[2]
+        mm[0] += mat[6] * vec[3]
+        mm[1] = mat[1] * vec[1]
+        mm[1] += mat[4] * vec[0]
+        mm[1] += mat[7] * vec[2]
+        mm[1] += mat[8] * vec[3]
+        mm[2] = mat[2] * vec[2]
+        mm[2] += mat[5] * vec[0]
+        mm[2] += mat[7] * vec[1]
+        mm[2] += mat[9] * vec[3]
+        mm[3] = mat[3] * vec[3]
+        mm[3] += mat[6] * vec[0]
+        mm[3] += mat[8] * vec[1]
+        mm[3] += mat[9] * vec[2]
+    else:
+        mm = torch.empty_like(vec)
+        for i in range(nb_prm):
+            mm[i] = mat[i] * vec[i]
+        c = nb_prm
+        for i in range(nb_prm):
+            for j in range(i+1, nb_prm):
+                mm[i] += mat[c] * vec[j]
+                mm[j] += mat[c] * vec[i]
+                c += 1
+
+    return utils.movedim(mm, 0, -1)
+
+
+def sym_diag(mat):
+    """Diagonal of a symmetric matrix
+
+    Parameters
+    ----------
+    mat : (..., M * (M+1) // 2) tensor
+        A symmetric matrix that is stored in a sparse way.
+        Its elements along the last (flat) dimension are the
+        diagonal elements followed by the flattened upper-half elements.
+        E.g., [a00, a11, aa22, a01, a02, a12]
+
+    Returns
+    -------
+    diag : (..., M) tensor
+        Main diagonal of the matrix
+
+    """
+    mat = torch.as_tensor(mat)
+    nb_prm = int((math.sqrt(1 + 8 * mat.shape[-1]) - 1)//2)
+    return mat[..., :nb_prm]
+
+
+def sym_solve(mat, vec, eps=None):
+    """Left matrix division for sparse symmetric matrices.
+
+    `>>> mat \ vec`
+
+    Warning
+    -------
+    .. Currently, autograd does not work through this function.
+    .. The order of arguments is the inverse of torch.solve
+
+    Notes
+    -----
+    `mat` contains only the diagonal and upper part of the matrix, in
+    a flattened array. Elements are ordered as:
+     `[(i, i) for i in range(P)] +
+      [(i, j) for i in range(P) for j in range(i+1, P)]
+
+    Orders up to 4 are implemented in closed-form.
+    Orders > 4 use torch's batched implementation but require
+    building the full matrices.
+
+    Parameters
+    ----------
+    mat : (..., M*(M+1)//2) tensor
+    vec : (..., M) tensor
+    eps : float or (M,) sequence[float], optional
+        Smoothing term added to the diagonal of `mat`
+
+    Returns
+    -------
+    result : (..., M) tensor
+    """
+
+    # make the vector dimension first so that the code is less ugly
+    mat, vec = utils.to_max_backend(mat, vec)
+    backend = dict(dtype=mat.dtype, device=mat.device)
+    mat = utils.movedim(mat, -1, 0)
+    vec = utils.movedim(vec, -1, 0)
+    nb_prm = len(vec)
+
+    diag = mat[:nb_prm]  # diagonal
+    uppr = mat[nb_prm:]  # upper triangular part
+
+    if eps is not None:
+        # add smoothing term
+        eps = torch.as_tensor(eps, **backend).flatten()
+        eps = torch.cat([eps, eps[-1].expand(nb_prm - len(eps))])
+        eps = eps.reshape([len(eps)] + [1] * (mat.dim() - 1))
+        diag = diag + eps[:-1]
+
+    if nb_prm == 1:
+        res = vec / diag
+        return utils.movedim(res, 0, -1)
+    elif nb_prm == 2:
+        det = uppr[0].square().neg_()
+        det += diag[0] * diag[1]
+        res = torch.empty_like(vec)
+        res[0] = diag[1] * vec[0] - uppr[0] * vec[1]
+        res[1] = diag[0] * vec[1] - uppr[0] * vec[0]
+        res /= det
+        return utils.movedim(res, 0, -1)
+    elif nb_prm == 3:
+        det = diag.prod(0) + 2 * uppr.prod(0) \
+            - (diag[0] * uppr[2].square() +
+               diag[2] * uppr[0].square() +
+               diag[1] * uppr[1].square())
+        res = torch.empty_like(vec)
+        res[0] = (diag[1] * diag[2] - uppr[2].square()) * vec[0] \
+               + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[1] \
+               + (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[2]
+        res[1] = (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[0] \
+               + (diag[0] * diag[2] - uppr[1].square()) * vec[1] \
+               + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[2]
+        res[2] = (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[0] \
+               + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[1] \
+               + (diag[0] * diag[1] - uppr[0].square()) * vec[2]
+        res /= det
+        return utils.movedim(res, 0, -1)
+    elif nb_prm == 4:
+        det = diag.prod(0) \
+             + ((uppr[0] * uppr[5]).square() +
+                (uppr[1] * uppr[4]).square() +
+                (uppr[2] * uppr[3]).square()) + \
+             - 2 * (uppr[0] * uppr[1] * uppr[4] * uppr[5] +
+                    uppr[0] * uppr[2] * uppr[3] * uppr[5] +
+                    uppr[1] * uppr[2] * uppr[3] * uppr[4]) \
+             + 2 * (diag[0] * uppr[3] * uppr[4] * uppr[5] +
+                    diag[1] * uppr[1] * uppr[2] * uppr[5] +
+                    diag[2] * uppr[0] * uppr[2] * uppr[4] +
+                    diag[3] * uppr[0] * uppr[1] * uppr[3]) \
+             - (diag[0] * diag[1] * uppr[5].square() +
+                diag[0] * diag[2] * uppr[4].square() +
+                diag[0] * diag[3] * uppr[3].square() +
+                diag[1] * diag[2] * uppr[2].square() +
+                diag[1] * diag[3] * uppr[1].square() +
+                diag[2] * diag[3] * uppr[0].square())
+        inv01 = (- diag[2] * diag[3] * uppr[0]
+                 + diag[2] * uppr[2] * uppr[4]
+                 + diag[3] * uppr[1] * uppr[3]
+                 + uppr[0] * uppr[5].square()
+                 - uppr[1] * uppr[4] * uppr[5]
+                 - uppr[2] * uppr[3] * uppr[5])
+        inv02 = (- diag[1] * diag[3] * uppr[1]
+                 + diag[1] * uppr[2] * uppr[5]
+                 + diag[3] * uppr[0] * uppr[3]
+                 + uppr[1] * uppr[4].square()
+                 - uppr[0] * uppr[4] * uppr[5]
+                 - uppr[2] * uppr[3] * uppr[4])
+        inv03 = (- diag[1] * diag[2] * uppr[2]
+                 + diag[1] * uppr[1] * uppr[5]
+                 + diag[2] * uppr[0] * uppr[4]
+                 + uppr[2] * uppr[3].square()
+                 - uppr[0] * uppr[3] * uppr[5]
+                 - uppr[1] * uppr[3] * uppr[4])
+        inv12 = (- diag[0] * diag[3] * uppr[3]
+                 + diag[0] * uppr[4] * uppr[5]
+                 + diag[3] * uppr[0] * uppr[1]
+                 + uppr[3] * uppr[2].square()
+                 - uppr[0] * uppr[2] * uppr[5]
+                 - uppr[1] * uppr[2] * uppr[4])
+        inv13 = (- diag[0] * diag[2] * uppr[4]
+                 + diag[0] * uppr[3] * uppr[5]
+                 + diag[2] * uppr[0] * uppr[2]
+                 + uppr[4] * uppr[1].square()
+                 - uppr[0] * uppr[1] * uppr[5]
+                 - uppr[1] * uppr[2] * uppr[3])
+        inv23 = (- diag[0] * diag[1] * uppr[5]
+                 + diag[0] * uppr[4] * uppr[3]
+                 + diag[1] * uppr[1] * uppr[2]
+                 + uppr[5] * uppr[0].square()
+                 - uppr[0] * uppr[1] * uppr[4]
+                 - uppr[0] * uppr[2] * uppr[3])
+        res = torch.empty_like(vec)
+        res[0] = (diag[1] * diag[2] * diag[3]
+                  - diag[1] * uppr[5].square()
+                  - diag[2] * uppr[4].square()
+                  - diag[3] * uppr[3].square()
+                  + 2 * uppr[3] * uppr[4] * uppr[5]) * vec[0]
+        res[0] += inv01 * vec[1]
+        res[0] += inv02 * vec[2]
+        res[0] += inv03 * vec[3]
+        res[1] = (diag[0] * diag[2] * diag[3]
+                  - diag[0] * uppr[5].square()
+                  - diag[2] * uppr[2].square()
+                  - diag[3] * uppr[1].square()
+                  + 2 * uppr[1] * uppr[2] * uppr[5]) * vec[1]
+        res[1] += inv01 * vec[0]
+        res[1] += inv12 * vec[2]
+        res[1] += inv13 * vec[3]
+        res[2] = (diag[0] * diag[1] * diag[3]
+                  - diag[0] * uppr[4].square()
+                  - diag[1] * uppr[2].square()
+                  - diag[3] * uppr[0].square()
+                  + 2 * uppr[0] * uppr[2] * uppr[4]) * vec[2]
+        res[2] += inv02 * vec[0]
+        res[2] += inv12 * vec[1]
+        res[2] += inv23 * vec[3]
+        res[3] = (diag[0] * diag[1] * diag[2]
+                  - diag[0] * uppr[3].square()
+                  - diag[1] * uppr[1].square()
+                  - diag[2] * uppr[0].square()
+                  + 2 * uppr[0] * uppr[1] * uppr[3]) * vec[3]
+        res[3] += inv03 * vec[0]
+        res[3] += inv13 * vec[1]
+        res[3] += inv23 * vec[2]
+        res /= det
+        return utils.movedim(res, 0, -1)
+    else:
+        vec = utils.movedim(vec, 0, -1)
+        mat = utils.movedim(mat, 0, -1)
+        mat = sym_to_full(mat)
+        return torch.solve(vec, mat)
+
