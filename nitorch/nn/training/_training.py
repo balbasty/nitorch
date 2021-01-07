@@ -274,7 +274,7 @@ class ModelTrainer:
             losses = {}
             metrics = {}
             # forward pass
-            batch = make_list(batch)
+            batch = make_tuple(batch)
             batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
             batch = tuple(b.to(dtype=self.dtype) 
                           if b.dtype in (torch.half, torch.float, torch.double) 
