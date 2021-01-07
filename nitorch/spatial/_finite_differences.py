@@ -456,9 +456,9 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', value=0):
         must have the same size as their length.
     order : int, default=1
         Finite difference order (1=first derivative, 2=second derivative, ...)
-    dim : int or list[int], default=-1
+    dim : int or sequence[int], default=-1
         Dimension along which finite differences were computed.
-    voxel_size : float or list[float], default=1
+    voxel_size : float or sequence[float], default=1
         Unit size used in the denominator of the gradient.
     side : {'f', 'b'}, default='f'
         * 'f': forward finite differences
