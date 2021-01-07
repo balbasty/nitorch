@@ -18,7 +18,7 @@ plt = try_import('matplotlib.pyplot', _as=True)
 
 def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
                   samp=(3, 1.5), optimiser='powell', fix=0, verbose=False,
-                  fov=None, mx_int=1023, raw=False, jitter=False):
+                  fov=None, mx_int=1023, raw=False, jitter=False, fwhm=7.0):
     """Affine registration of a collection of images.
 
     Parameters
@@ -67,6 +67,9 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
         Do no processing of input images -> work on raw data.
     jitter : bool, default=False
         Add random jittering to resampling grid.
+    fwhm : float, default=7
+        Full-width at half max of Gaussian kernel, for smoothing
+        histogram.
 
     Returns
     ----------
@@ -93,7 +96,8 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
                'group' : group,
                'raw': raw,
                'jitter': jitter,
-               'mx_int' : mx_int}
+               'mx_int' : mx_int,
+               'fwhm' : fwhm}
         if not isinstance(opt['samp'], (list, tuple)):
             opt['samp'] = (opt['samp'], )
         # Some very basic sanity checks
@@ -211,7 +215,7 @@ def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
 
 def _test_cost(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
                samp=2, ix_par=0, jitter=False, x_step=0.1, x_mn_mx=30,
-               verbose=False, mx_int=1023, raw=False):
+               verbose=False, mx_int=1023, raw=False, fwhm=7.0):
     """Check cost function behaviour by keeping one image fixed and re-aligning
     a second image by modifying one of the affine parameters. Plots cost vs.
     aligment when finished.
@@ -225,7 +229,8 @@ def _test_cost(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
                'mean_space': mean_space,
                'verbose': verbose,
                'raw': raw,
-               'mx_int' : mx_int}
+               'mx_int' : mx_int,
+               'fwhm' : fwhm}
         if not isinstance(opt['samp'], (list, tuple)):
             opt['samp'] = (opt['samp'], )
         # Some very basic sanity checks
@@ -283,7 +288,7 @@ def _test_cost(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
             q[fix_img, ix_par] = xi
             # Compute cost
             costs[i], res = _compute_cost(
-                q, grid, dat_fix, mat_fix, dat, mat, mov, opt['cost_fun'], B, opt['mx_int'], return_res=True)
+                q, grid, dat_fix, mat_fix, dat, mat, mov, opt['cost_fun'], B, opt['mx_int'], opt['fwhm'], return_res=True)
             if opt['verbose']:
                 fig_ax = show_slices(res, fig_ax=fig_ax, fig_num=1, cmap='coolwarm', title='x=' + str(xi))
             # print(costs[i])
