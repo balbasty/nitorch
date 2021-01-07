@@ -180,7 +180,7 @@ def _fit_q(q, dat_fix, grid, mat_fix, dat, mat, mov, B, s, opt):
         # Arguments to _compute_cost
         m = mov
         args = (grid, dat_fix, mat_fix, dat, mat, m, opt['cost_fun'], B,
-                opt['mx_int'])
+                opt['mx_int'], opt['fwhm'])
         # Run groupwise optimisation
         q[m, ...] = _do_optimisation(q[m, ...], args, s, opt)
         # Show results
@@ -189,7 +189,7 @@ def _fit_q(q, dat_fix, grid, mat_fix, dat, mat, mov, B, s, opt):
         for m in mov:
             # Arguments to _compute_cost
             args = (grid, dat_fix, mat_fix, dat, mat, [m],
-                    opt['cost_fun'], B, opt['mx_int'])
+                    opt['cost_fun'], B, opt['mx_int'], opt['fwhm'])
             # Run pairwise optimisation
             q[m, ...] = _do_optimisation(q[m, ...], args, s, opt)
             # Show results
