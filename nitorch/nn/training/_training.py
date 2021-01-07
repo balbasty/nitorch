@@ -486,7 +486,7 @@ class ModelTrainer:
             torch.save(self.model.state_dict(), save_model)
         if self.save_optimizer:
             save_optimizer = self._formatfile(self.save_optimizer, epoch)
-            dir_optimizer = os.path.dirname(save_optimizer))
+            dir_optimizer = os.path.dirname(save_optimizer)
             if dir_optimizer:
                 os.makedirs(dir_optimizer, exist_ok=True)
             torch.save(self.optimizer.state_dict(), save_optimizer)
