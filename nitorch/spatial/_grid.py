@@ -5,10 +5,10 @@ import torch
 import torch.nn.functional as _F
 from nitorch.core import kernels, utils, linalg
 from nitorch.core.utils import expand
-from nitorch.core.pyutils import make_list
+from nitorch.core.pyutils import make_list, prod
 from nitorch._C import spatial as _Cspatial
 from nitorch._C.spatial import BoundType, InterpolationType
-from ._affine import affine_resize
+from ._affine import affine_resize, affine_lmdiv
 
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
@@ -898,3 +898,52 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
         return grid
 
 
+def reslice(image, affine, affine_to, shape_to=None, **kwargs):
+    """Reslice a spatial image to a different space (shape + affine).
+
+    Parameters
+    ----------
+    image : (*batch, *channels, *spatial)
+        Input image
+    affine : (*batch, dim[+1], dim+1)
+        Input affine
+    affine_to : (*batch, dim[+1], dim+1)
+        Target affine
+    shape_to : (dim,) sequence[int], optional
+        Target shape. Default: same as input shape
+
+    Other Parameters
+    ----------------
+    Parameters of `grid_pull`
+
+    Returns
+    -------
+    resliced : (*batch, *channels, *shape_to)
+        Resliced image.
+
+    """
+    # prepare tensors
+    image = torch.as_tensor(image)
+    backend = dict(dtype=image.dtype, device=image.device)
+    affine = torch.as_tensor(affine, **backend)
+    affine_to = torch.as_tensor(affine_to, **backend)
+
+    # compute shape components
+    dim = affine.shape[-1] - 1
+    batch = affine.shape[:-2]
+    channels = image.shape[len(batch):-dim]
+    shape = image.shape[-dim:]
+    if shape_to is None:
+        shape_to = shape
+
+    # perform reslicing
+    #   > image must be reshaped to (B, C, *spatial) for grid_pull
+    transformation = affine_lmdiv(affine, affine_to)        # (*batch, d+1, d+1)
+    grid = affine_grid(transformation, shape_to)            # (*batch, *shape_to, d)
+    if not prod(batch):
+        grid = grid[None]                                   # (*batch|1, *shape_to, d)
+    squeeze_shape = [prod(batch) or 1, prod(channels) or 1, *shape]
+    image = image.reshape(squeeze_shape)                    # (b, c, *spatial)
+    image = grid_pull(image, grid, **kwargs)                # (b, c, *shape_to)
+    image = image.reshape([*batch, *channels, *shape_to])   # (*batch, *channels, *shape_to)
+    return image
