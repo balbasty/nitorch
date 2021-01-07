@@ -274,8 +274,11 @@ class ModelTrainer:
             losses = {}
             metrics = {}
             # forward pass
-            batch = make_tuple(batch)
-            batch = tuple(torch.as_tensor(b, dtype=self.dtype, device=self.device) for b in batch)
+            batch = make_list(batch)
+            batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
+            batch = tuple(b.to(dtype=self.dtype) 
+                          if b.dtype in (torch.half, torch.float, torch.double) 
+                          else b for b in batch)
             nb_batches += batch[0].shape[0]
             self.optimizer.zero_grad()
             output = self.model(*batch, _loss=losses, _metric=metrics)
@@ -328,7 +331,10 @@ class ModelTrainer:
                 metrics = {}
                 # forward pass
                 batch = make_tuple(batch)
-                batch = tuple(torch.as_tensor(b, dtype=self.dtype, device=self.device) for b in batch)
+                batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
+                batch = tuple(b.to(dtype=self.dtype) 
+                              if b.dtype in (torch.half, torch.float, torch.double) 
+                              else b for b in batch)
                 nb_batches += batch[0].shape[0]
                 self.optimizer.zero_grad()
                 output = self.model(*batch, _loss=losses, _metric=metrics)
