@@ -709,7 +709,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
         default='constant'
     value : scalar, default=0
         Value for mode 'constant'
-    side : {'pre', 'post', 'both'}, defualt='post'
+    side : {'pre', 'post', 'both'}, default='post'
         Side to pad
 
     Returns
@@ -813,6 +813,7 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     if mode not in tuple(_bounds.keys()) + ('constant',):
         raise ValueError('Padding mode should be one of {}. Got {}.'
                          .format(tuple(_bounds.keys()) + ('constant',), mode))
+    padsize = tuple(padsize)
     if side == 'both':
         padpre = padsize
         padpost = padsize
