@@ -127,7 +127,7 @@ class SegNet(Module):
         return prob
 
 
-    def _board(self, tb, input, target, prediction):
+    def board(self, tb, inputs, outputs):
         """TensorBoard visualisation of model input image, reference segmentation
         and predicted segmentation
 
@@ -135,24 +135,24 @@ class SegNet(Module):
         ----------
         tb : torch.utils.tensorboard.writer.SummaryWriter
             TensorBoard writer object.
-        input : (N, C, dim) tensor_like
-            Input image.
-        target : (N, K, dim) tensor_like
-            Reference segmentation.
-        prediction : (N, K, dim) tensor_like
+        inputs : (tensor_like, tensor_like) tuple
+            Input image (N, C, dim)  and reference segmentation (N, K, dim) .
+        outputs : (N, K, dim) tensor_like
             Predicted segmentation.
 
         """
+        input = inputs[0]
+        target = inputs[1]
         if self.dim == 3:
             z = round(0.5*input.shape[-1])
             input = input[..., z]
             target = target[..., z]
-            prediction = prediction[..., z]
+            outputs = outputs[..., z]
         tb.add_image('input', input[0, ...])
         tb.add_image('target',
             target[0, ...].float()/target[0, ...].max().float())
         if self.implicit:
-            prediction = torch.cat((1 - prediction.sum(dim=1, keepdim=True), prediction), dim=1)
+            outputs = torch.cat((1 - outputs.sum(dim=1, keepdim=True), outputs), dim=1)
         tb.add_image('prediction',
-            (prediction[0, ...].argmax(dim=0, keepdim=True))/(float(prediction.shape[1]) - 1))
+            (outputs[0, ...].argmax(dim=0, keepdim=True))/(float(outputs.shape[1]) - 1))
         tb.flush()

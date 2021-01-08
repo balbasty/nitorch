@@ -248,19 +248,17 @@ class Module(tnn.Module):
             self.update_dict(_metric, metrics)
 
 
-    def _board(self, tb, input, target, prediction):
+    def board(self, tb, inputs, outputs):
         """Defines model-specific tensorboard callback.
 
         Parameters
         ----------
         tb : torch.utils.tensorboard.writer.SummaryWriter
             TensorBoard writer object.
-        input : (N, C, ...) tensor_like
-            Model input.
-        target : (N, ...) tensor_like
-            Model target.
-        prediction : (N, ...) tensor_like
-            Model prediction.
+        inputs : tuple
+            Model inputs.
+        outputs : tuple
+            Model outputs.
 
         """
         pass
