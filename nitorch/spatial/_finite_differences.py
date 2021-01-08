@@ -2,7 +2,7 @@
 
 import torch
 from ..core import utils
-from ..core.utils import expand, slice_tensor, same_storage
+from ..core.utils import expand, slice_tensor, same_storage, make_vector
 from ..core.pyutils import make_list
 
 
@@ -242,7 +242,7 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     """
     # find number of dimensions
     dim = torch.as_tensor(dim)
-    voxel_size = torch.as_tensor(voxel_size)
+    voxel_size = make_vector(voxel_size)
     drop_last = dim.dim() == 0 and voxel_size.dim() == 0
     dim = make_list(dim.tolist())
     voxel_size = make_list(voxel_size.tolist())
@@ -478,7 +478,7 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', value=0):
 
     # find number of dimensions
     dim = torch.as_tensor(dim)
-    voxel_size = torch.as_tensor(voxel_size)
+    voxel_size = make_vector(voxel_size)
     has_last = (dim.dim() > 0 or voxel_size.dim() > 0)
     dim = make_list(dim.tolist())
     voxel_size = make_list(voxel_size.tolist())

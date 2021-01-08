@@ -1,6 +1,6 @@
 import torch
 from nitorch import core
-from nitorch.core.utils import movedim, ensure_shape
+from nitorch.core.utils import movedim, ensure_shape, make_vector
 from nitorch.core.pyutils import make_list
 from nitorch.core.linalg import sym_matvec, sym_solve
 from ._finite_differences import diff, div
@@ -38,7 +38,7 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None):
     """
     field = torch.as_tensor(field)
     dim = dim or field.dim()
-    voxel_size = make_list(voxel_size, dim)
+    voxel_size = make_vector(voxel_size, dim)
     dims = list(range(field.dim()-dim, field.dim()))
     field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
     field = div(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
@@ -62,7 +62,7 @@ def bending(field, voxel_size=1, bound='dct2', dim=None):
     """
     field = torch.as_tensor(field)
     dim = dim or field.dim()
-    voxel_size = make_list(voxel_size, dim)
+    voxel_size = make_vector(voxel_size, dim)
     dims = list(range(field.dim()-dim, field.dim()))
     field = diff(field, 2, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
     field = div(field, 2, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
@@ -100,13 +100,11 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     dim = dim or x.dim() - 1
     nb_prm = x.shape[-1]
 
-    voxel_size = torch.as_tensor(voxel_size, **backend)
-    voxel_size = core.utils.ensure_shape(voxel_size, dim)
-    factor = torch.as_tensor(factor, **backend)
-    factor = ensure_shape(factor, nb_prm)
-    absolute = torch.as_tensor(absolute, **backend) * factor
-    membrane = torch.as_tensor(membrane, **backend) * factor
-    bending = torch.as_tensor(bending, **backend) * factor
+    voxel_size = make_vector(voxel_size, dim, **backend)
+    factor = make_vector(factor, nb_prm, **backend)
+    absolute = make_vector(absolute, **backend) * factor
+    membrane = make_vector(membrane, **backend) * factor
+    bending = make_vector(bending, **backend) * factor
     fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
 
     y = 0
@@ -146,16 +144,12 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     hessian = movedim(hessian, -dim-1, -1)
     gradient = movedim(gradient, -dim-1, -1)
     nb_prm = gradient.shape[-1]
-    voxel_size = torch.as_tensor(voxel_size, **backend)
-    voxel_size = core.utils.ensure_shape(voxel_size, dim)
-    is_diag = hessian.shape[-1] == gradient.shape[-1]
+    voxel_size = make_vector(voxel_size, dim, **backend)
+    is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
 
-    absolute = make_list(absolute, nb_prm)
-    absolute = torch.as_tensor(absolute, **backend)
-    membrane = make_list(membrane, nb_prm)
-    membrane = torch.as_tensor(membrane, **backend)
-    bending = make_list(bending, nb_prm)
-    bending = torch.as_tensor(bending, **backend)
+    absolute = make_vector(absolute, nb_prm, **backend)
+    membrane = make_vector(membrane, nb_prm, **backend)
+    bending = make_vector(bending, nb_prm, **backend)
     no_reg = not (any(membrane) or any(bending))
 
     # regulariser
@@ -190,9 +184,11 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
                (lambda x: sym_matvec(hessian, x) + regulariser(x)))
 
+    print(hessian_smo.shape, hessian.shape, gradient.shape)
     if no_reg:
         result = precond(gradient)
     else:
-        result = core.optim.cg(forward, gradient, precond=precond)
+        result = core.optim.cg(forward, gradient, precond=precond,
+                               max_iter=100)
     return movedim(result, -1, -dim - 1)
 

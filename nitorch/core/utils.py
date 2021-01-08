@@ -52,6 +52,50 @@ def as_tensor(input, dtype=None, device=None):
     return _stack(input, dtype, device)
 
 
+def make_vector(input, n=None, crop=True, *args, 
+                dtype=None, device=None, **kwargs):
+    """Ensure that the input is a (tensor) vector and pad/crop if necessary.
+
+    Parameters
+    ----------
+    input : scalar or sequence or generator
+        Input argument(s).
+    n : int, optional
+        Target length.
+    crop : bool, default=True
+        Crop input sequence if longer than `n`.
+    default : optional
+        Default value to pad with.
+        If not provided, replicate the last value.
+    dtype : torch.dtype, optional
+        Output data type.
+    device : torch.device, optional
+        Output device
+
+    Returns
+    -------
+    output : tensor
+        Output vector.
+
+    """
+    input = as_tensor(input, dtype=dtype, device=device).flatten()
+    if n is None:
+        return input
+    if n is not None and input.numel() >= n:
+        return input[:n] if crop else input
+    has_default = False
+    if args:
+        has_default = True
+        default = args[0]
+    elif 'default' in kwargs:
+        has_default = True
+        default = kwargs['default']
+    if has_default:
+        return ensure_shape(input, n, mode='constant', value=default)
+    else:
+        return ensure_shape(input, n, mode='replicate')
+        
+
 def unsqueeze(input, dim=0, ndim=1):
     """Adds singleton dimensions to a tensor.
 
@@ -772,7 +816,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
 
     """
     inp = torch.as_tensor(inp)
-    shape = list(shape)
+    shape = make_list(shape)
     shape = shape + [1] * max(0, inp.dim() - len(shape))
     if inp.dim() < len(shape):
         inp = inp.reshape(inp.shape + (1,) * max(0, len(shape) - inp.dim()))
