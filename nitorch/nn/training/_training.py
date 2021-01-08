@@ -342,6 +342,7 @@ class ModelTrainer:
                                 loss, losses, metrics)
                 # tb callback
                 if self.tensorboard:
+                    self.model.board(self.tensorboard, batch, output)
                     for func in self._tensorboard_callbacks['train']['step']:
                         func(self.tensorboard, epoch, n_batch,
                              batch, output, loss, losses, metrics)
@@ -355,6 +356,7 @@ class ModelTrainer:
             self._board('train', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
+                self.model.board(self.tensorboard, batch, output)
                 for func in self._tensorboard_callbacks['train']['epoch']:
                     func(self.tensorboard, epoch, loss, losses, metrics)
 
@@ -394,6 +396,7 @@ class ModelTrainer:
                                 loss, losses, metrics)
                 # tb callback
                 if self.tensorboard:
+                    self.model.board(self.tensorboard, batch, output)
                     for func in self._tensorboard_callbacks['eval']['step']:
                         func(self.tensorboard, epoch, n_batch,
                              batch, output, loss, losses, metrics)
@@ -406,6 +409,7 @@ class ModelTrainer:
             self._board('eval', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
+                self.model.board(self.tensorboard, batch, output)
                 for func in self._tensorboard_callbacks['eval']['epoch']:
                     func(self.tensorboard, epoch, loss, losses, metrics)
 
