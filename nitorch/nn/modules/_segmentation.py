@@ -143,6 +143,11 @@ class SegNet(Module):
             Predicted segmentation.
 
         """
+        if self.dim == 3:
+            z = round(0.5*input.shape[-1])
+            input = input[..., z]
+            target = target[..., z]
+            prediction = prediction[..., z]
         tb.add_image('input', input[0, ...])
         tb.add_image('target',
             target[0, ...].float()/target[0, ...].max().float())
