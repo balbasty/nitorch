@@ -7,12 +7,56 @@ from nitorch.nn.modules import Module
 import string
 import math
 import os
+import random
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
     def SummaryWriter():
         raise ImportError('Optional dependency TensorBoard not found')
+
+
+def split_train_val_test(data, split=[0.5, 0.25, 0.25], shuffle=False):
+    """Split sequence of data into train, validation and test.
+
+    Parameters
+    ----------
+    data : [N,] list
+        Input data.
+    split : [3,] list, default=[0.5, 0.25, 0.25]
+        Train, validation, test fractions.
+    suffle : bool, default=False
+        Randomly shuffle input data (with seed for reproducibility)
+
+    Returns
+    ----------
+    train : [split[0]*N,] list
+        Train split.
+    val : [split[1]*N,] list
+        Validation split.
+    test : [split[2]*N,] list
+        Test split.
+
+    """
+    N = len(data)
+    # Ensure split is normalised
+    split = [s / sum(split) for s in split]
+    # Randomly shuffle input data (with seed for reproducibility)
+    if shuffle:
+        random.seed(0)
+        data = random.sample(data, N)
+    # Do train/val/test split
+    train, val, test = [], [], []
+    for i, d in enumerate(data):
+        if i < split[0] * N:
+            train.append(d)
+        elif i < sum(split[:2]) * N:
+            val.append(d)
+        elif i < sum(split) * N:
+            test.append(d)
+
+    return train, val, test
 
 
 def update_loss_dict(old, new, weight=1, inplace=True):
