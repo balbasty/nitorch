@@ -469,7 +469,7 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     no_reg = not (membrane or bending or any(lame))
 
     # regulariser
-    fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
+    fdopt = dict(bound=bound, voxel_size=voxel_size)
 
     def regulariser(v):
         y = 0
