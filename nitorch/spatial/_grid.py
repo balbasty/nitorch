@@ -14,7 +14,8 @@ from ._regularisers import solve_field_sym
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
            'identity_grid', 'affine_grid', 'compose', 'jacobian',
-           'BoundType', 'InterpolationType', 'resize', 'resize_grid']
+           'BoundType', 'InterpolationType', 'resize', 'resize_grid',
+           'reslice', 'grid_inv']
 
 _doc_interpolation = \
 """`interpolation` can be an int, a string or an InterpolationType.
