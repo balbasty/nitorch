@@ -92,13 +92,13 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
             a = a + b
         return a
 
-    dtype, device = utils.info(X, basis)
-    X = utils.as_tensor(X, dtype=dtype, device=device)
+    backend = utils.max_backend(X, basis)
+    X = utils.as_tensor(X, **backend)
 
     if basis is not None:
         # X contains parameters in the Lie algebra -> reconstruct the matrix
         # X.shape = [.., F], basis.shape = [..., F, D, D]
-        basis = utils.as_tensor(basis, dtype=dtype, device=device)
+        basis = utils.as_tensor(basis, **backend)
         param = X
         X = torch.sum(basis * X[..., None, None], dim=-3, keepdim=True)
         dim = basis.shape[-1]
@@ -107,8 +107,9 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
         # X.shape = [..., D, D]
         dim = X.shape[-1]
         param = X.reshape(X.shape[:-2] + (-1,))
-        basis = torch.arange(dim ** 2, dtype=torch.long, device=device)
-        basis = F.one_hot(basis).type(dtype)
+        basis = torch.arange(dim ** 2, dtype=torch.long,
+                             device=backend['device'])
+        basis = F.one_hot(basis).to(**backend)
         basis = basis.reshape((dim**2, dim, dim))
         X = X[..., None, :, :]
 
@@ -117,8 +118,9 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
 
     if grad_basis:
         # Build a basis for the basis
-        basis_basis = torch.arange(dim ** 2, dtype=torch.long, device=device)
-        basis_basis = F.one_hot(basis_basis).type(dtype)
+        basis_basis = torch.arange(dim ** 2, dtype=torch.long,
+                                   device=backend['device'])
+        basis_basis = F.one_hot(basis_basis).to(**backend)
         basis_basis = basis_basis.reshape((1, dim, dim, dim, dim))
         basis_basis = basis_basis * param[..., None, None, None, None]
         basis_basis = basis_basis.reshape(XB_batch_shape + (-1, dim, dim))
@@ -130,7 +132,7 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
     #   basis_basis.shape = [*XB_batch_shape, F*D*D, D, D]
 
     # Aliases
-    I = torch.eye(dim, dtype=dtype, device=device)
+    I = torch.eye(dim, **backend)
     E = I + X                            # expm(X)
     En = X.clone()                       # n-th Taylor coefficient of expm
     if grad_X:
@@ -236,13 +238,13 @@ class _ExpM(torch.autograd.Function):
 
 
 def _expm_torch(X, basis=None):
-    dtype, device = utils.info(X, basis)
-    X = utils.as_tensor(X, dtype=dtype, device=device)
+    backend = utils.max_backend(X, basis)
+    X = utils.as_tensor(X, **backend)
 
     if basis is not None:
         # X contains parameters in the Lie algebra -> reconstruct the matrix
         # X.shape = [.., F], basis.shape = [..., F, D, D]
-        basis = utils.as_tensor(basis, dtype=dtype, device=device)
+        basis = utils.as_tensor(basis, **backend)
         X = torch.sum(basis * X[..., None, None], dim=-3)
 
     return torch.matrix_exp(X)

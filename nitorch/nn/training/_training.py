@@ -7,12 +7,56 @@ from nitorch.nn.modules import Module
 import string
 import math
 import os
+import random
+
 
 try:
     from torch.utils.tensorboard import SummaryWriter
 except ImportError:
     def SummaryWriter():
         raise ImportError('Optional dependency TensorBoard not found')
+
+
+def split_train_val_test(data, split=[0.5, 0.25, 0.25], shuffle=False):
+    """Split sequence of data into train, validation and test.
+
+    Parameters
+    ----------
+    data : [N,] list
+        Input data.
+    split : [3,] list, default=[0.5, 0.25, 0.25]
+        Train, validation, test fractions.
+    suffle : bool, default=False
+        Randomly shuffle input data (with seed for reproducibility)
+
+    Returns
+    ----------
+    train : [split[0]*N,] list
+        Train split.
+    val : [split[1]*N,] list
+        Validation split.
+    test : [split[2]*N,] list
+        Test split.
+
+    """
+    N = len(data)
+    # Ensure split is normalised
+    split = [s / sum(split) for s in split]
+    # Randomly shuffle input data (with seed for reproducibility)
+    if shuffle:
+        random.seed(0)
+        data = random.sample(data, N)
+    # Do train/val/test split
+    train, val, test = [], [], []
+    for i, d in enumerate(data):
+        if i < split[0] * N:
+            train.append(d)
+        elif i < sum(split[:2]) * N:
+            val.append(d)
+        elif i < sum(split) * N:
+            test.append(d)
+
+    return train, val, test
 
 
 def update_loss_dict(old, new, weight=1, inplace=True):
@@ -275,7 +319,10 @@ class ModelTrainer:
             metrics = {}
             # forward pass
             batch = make_tuple(batch)
-            batch = tuple(torch.as_tensor(b, dtype=self.dtype, device=self.device) for b in batch)
+            batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
+            batch = tuple(b.to(dtype=self.dtype) 
+                          if b.dtype in (torch.half, torch.float, torch.double) 
+                          else b for b in batch)
             nb_batches += batch[0].shape[0]
             self.optimizer.zero_grad()
             output = self.model(*batch, _loss=losses, _metric=metrics)
@@ -295,6 +342,7 @@ class ModelTrainer:
                                 loss, losses, metrics)
                 # tb callback
                 if self.tensorboard:
+                    self.model.board(self.tensorboard, batch, output)
                     for func in self._tensorboard_callbacks['train']['step']:
                         func(self.tensorboard, epoch, n_batch,
                              batch, output, loss, losses, metrics)
@@ -308,6 +356,7 @@ class ModelTrainer:
             self._board('train', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
+                self.model.board(self.tensorboard, batch, output)
                 for func in self._tensorboard_callbacks['train']['epoch']:
                     func(self.tensorboard, epoch, loss, losses, metrics)
 
@@ -328,7 +377,10 @@ class ModelTrainer:
                 metrics = {}
                 # forward pass
                 batch = make_tuple(batch)
-                batch = tuple(torch.as_tensor(b, dtype=self.dtype, device=self.device) for b in batch)
+                batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
+                batch = tuple(b.to(dtype=self.dtype) 
+                              if b.dtype in (torch.half, torch.float, torch.double) 
+                              else b for b in batch)
                 nb_batches += batch[0].shape[0]
                 self.optimizer.zero_grad()
                 output = self.model(*batch, _loss=losses, _metric=metrics)
@@ -344,6 +396,7 @@ class ModelTrainer:
                                 loss, losses, metrics)
                 # tb callback
                 if self.tensorboard:
+                    self.model.board(self.tensorboard, batch, output)
                     for func in self._tensorboard_callbacks['eval']['step']:
                         func(self.tensorboard, epoch, n_batch,
                              batch, output, loss, losses, metrics)
@@ -356,6 +409,7 @@ class ModelTrainer:
             self._board('eval', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
+                self.model.board(self.tensorboard, batch, output)
                 for func in self._tensorboard_callbacks['eval']['epoch']:
                     func(self.tensorboard, epoch, loss, losses, metrics)
 
@@ -475,12 +529,14 @@ class ModelTrainer:
         if self.save_model:
             save_model = self._formatfile(self.save_model, epoch)
             dir_model = os.path.dirname(save_model)
-            os.makedirs(dir_model, exist_ok=True)
+            if dir_model:
+                os.makedirs(dir_model, exist_ok=True)
             torch.save(self.model.state_dict(), save_model)
         if self.save_optimizer:
             save_optimizer = self._formatfile(self.save_optimizer, epoch)
             dir_optimizer = os.path.dirname(save_optimizer)
-            os.makedirs(dir_optimizer, exist_ok=True)
+            if dir_optimizer:
+                os.makedirs(dir_optimizer, exist_ok=True)
             torch.save(self.optimizer.state_dict(), save_optimizer)
 
     @ staticmethod

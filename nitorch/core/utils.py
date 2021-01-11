@@ -43,14 +43,58 @@ def as_tensor(input, dtype=None, device=None):
         else:
             if isinstance(x, (list, tuple)):
                 subs = [_stack(e, dtype, device) for e in x]
-                dtype, device = info(*subs)
-                subs = [elem.to(dtype=dtype, device=device) for elem in subs]
+                backend = max_backend(*subs)
+                subs = [elem.to(**backend) for elem in subs]
                 return torch.stack(subs)
             else:
                 return torch.as_tensor(x, dtype=dtype, device=device)
 
     return _stack(input, dtype, device)
 
+
+def make_vector(input, n=None, crop=True, *args, 
+                dtype=None, device=None, **kwargs):
+    """Ensure that the input is a (tensor) vector and pad/crop if necessary.
+
+    Parameters
+    ----------
+    input : scalar or sequence or generator
+        Input argument(s).
+    n : int, optional
+        Target length.
+    crop : bool, default=True
+        Crop input sequence if longer than `n`.
+    default : optional
+        Default value to pad with.
+        If not provided, replicate the last value.
+    dtype : torch.dtype, optional
+        Output data type.
+    device : torch.device, optional
+        Output device
+
+    Returns
+    -------
+    output : tensor
+        Output vector.
+
+    """
+    input = as_tensor(input, dtype=dtype, device=device).flatten()
+    if n is None:
+        return input
+    if n is not None and input.numel() >= n:
+        return input[:n] if crop else input
+    has_default = False
+    if args:
+        has_default = True
+        default = args[0]
+    elif 'default' in kwargs:
+        has_default = True
+        default = kwargs['default']
+    if has_default:
+        return ensure_shape(input, n, mode='constant', value=default)
+    else:
+        return ensure_shape(input, n, mode='replicate')
+        
 
 def unsqueeze(input, dim=0, ndim=1):
     """Adds singleton dimensions to a tensor.
@@ -168,16 +212,85 @@ def shiftdim(x, n=None):
     return x
 
 
-def info(*args):
-    """Get the dtype and device of the first tensor of a list of objects."""
-    for a in args:
-        if torch.is_tensor(a):
-            return a.dtype, a.device
-    a = torch.as_tensor(args[0])
-    return a.dtype, a.device
+def movedim(input, source, destination):
+    """Moves the position of one or more dimensions
+
+    Other dimensions that are not explicitly moved remain in their
+    original order and appear at the positions not specified in
+    destination.
+
+    Note
+    ----
+    This function uses `torch.movedim` when PyTorch version is >= 1.7
+
+    Parameters
+    ----------
+    input : tensor
+        Input tensor
+    source : int or sequence[int]
+        Initial positions of the dimensions
+    destination : int or sequence[int]
+        Output positions of the dimensions
+
+    Returns
+    -------
+    output : tensor
+        Tensor with moved dimensions.
+
+    """
+    input = torch.as_tensor(input)
+    dim = input.dim()
+    source = make_list(source)
+    destination = make_list(destination)
+    if len(source) != len(destination):
+        raise ValueError('Expected as many source as destination positions.')
+    source = [dim + src if src < 0 else src for src in source]
+    destination = [dim + dst if dst < 0 else dst for dst in destination]
+    if len(set(source)) != len(source):
+        raise ValueError('Expected source positions to be unique')
+    if len(set(destination)) != len(destination):
+        raise ValueError('Expected destination positions to be unique')
+
+    # compute permutation
+    positions_in = list(range(dim))
+    positions_out = [None] * dim
+    for src, dst in zip(source, destination):
+        positions_out[dst] = src
+        positions_in[src] = None
+    positions_in = filter(lambda x: x is not None, positions_in)
+    for i, pos in enumerate(positions_out):
+        if pos is None:
+            positions_out[i], *positions_in = positions_in
+
+    return input.permute(*positions_out)
 
 
-def to_common(*args, force_float=False):
+def to(*args, dtype=None, device=None):
+    """Move/convert to a common dtype or device.
+
+    Parameters
+    ----------
+    *args : tensor_like
+        Input tensors or tensor-like objects
+    dtype : str or torch.dtype, optional
+        Target data type
+    device : str or torch.device, optional
+        Target device
+
+    Returns
+    -------
+    *args : tensor_like
+        Converted tensors
+
+    """
+    if len(args) == 1:
+        return torch.as_tensor(args[0], dtype=dtype, device=device)
+    else:
+        return tuple(torch.as_tensor(arg, dtype=dtype, device=device)
+                     for arg in args)
+
+
+def to_max_backend(*args, force_float=False):
     """Move to a common dtype and device.
 
     See `max_dtype` and `max_device`.
@@ -203,7 +316,7 @@ def to_common(*args, force_float=False):
                      for arg in args)
 
 
-def to_common_device(*args):
+def to_max_device(*args):
     """Move to a common device.
 
     See `max_device`.
@@ -225,6 +338,21 @@ def to_common_device(*args):
     else:
         return tuple(torch.as_tensor(arg, device=device)
                      for arg in args)
+
+
+def max_backend(*args):
+    """Get the (max) dtype and device.
+
+    Parameters
+    ----------
+    args : tensors
+
+    Returns
+    -------
+    dict with keys 'dtype' and 'device'
+
+    """
+    return dict(dtype=max_dtype(*args), device=max_device(*args))
 
 
 def max_device(*args):
@@ -377,7 +505,9 @@ def max_dtype(*args, force_float=False):
 
     def explore_dtype(x, n_pass=1):
         # find the max data type at a given pass
-        if is_dtype(x):
+        if x is None:
+            return None
+        elif is_dtype(x):
             return dtype_astorch(x)
         elif (is_tensor(x) or is_array(x)) and len(x.shape) > 0:
             return dtype_astorch(x.dtype)
@@ -503,6 +633,46 @@ def slice_tensor(x, index, dim=None):
     full_index = tuple(full_index)
 
     return x.__getitem__(full_index)
+
+
+def max_shape(*shapes, side='left'):
+    """Compute maximum (= broadcasted) shape.
+
+    Parameters
+    ----------
+    *shapes : sequence[int]
+        any number of shapes
+    side : {'left', 'right'}, default='left'
+        Side to add singleton dimensions.
+
+    Returns
+    -------
+    shape : tuple[int]
+        Maximum shape
+
+    """
+    def error(s0, s1):
+        raise ValueError('Incompatible shapes for broadcasting: {} and {}.'
+                         .format(s0, s1))
+
+    # 1. nb dimensions
+    nb_dim = 0
+    for shape in shapes:
+        nb_dim = max(nb_dim, len(shape))
+
+    # 2. pad with singleton dimensions
+    max_shape = [1] * nb_dim
+    for i, shape in enumerate(shapes):
+        pad_size = nb_dim - len(shape)
+        ones = [1] * pad_size
+        if side == 'left':
+            shape = [*ones, *shape]
+        else:
+            shape = [*shape, *ones]
+        max_shape = [max(s0, s1) if s0 == 1 or s1 == 1 or s0 == s1
+                     else error(s0, s1) for s0, s1 in zip(max_shape, shape)]
+
+    return max_shape
 
 
 def expand(*tensors, side='left', dry_run=False, **kwargs):
@@ -636,7 +806,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
         default='constant'
     value : scalar, default=0
         Value for mode 'constant'
-    side : {'pre', 'post', 'both'}, defualt='post'
+    side : {'pre', 'post', 'both'}, default='post'
         Side to pad
 
     Returns
@@ -646,7 +816,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
 
     """
     inp = torch.as_tensor(inp)
-    shape = list(shape)
+    shape = make_list(shape)
     shape = shape + [1] * max(0, inp.dim() - len(shape))
     if inp.dim() < len(shape):
         inp = inp.reshape(inp.shape + (1,) * max(0, len(shape) - inp.dim()))
@@ -740,6 +910,7 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     if mode not in tuple(_bounds.keys()) + ('constant',):
         raise ValueError('Padding mode should be one of {}. Got {}.'
                          .format(tuple(_bounds.keys()) + ('constant',), mode))
+    padsize = tuple(padsize)
     if side == 'both':
         padpre = padsize
         padpost = padsize

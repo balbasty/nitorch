@@ -930,7 +930,7 @@ def affine_matrix_classic(prm=None, dim=3, *,
         prm_z = zooms if zooms is not None else [1] * dim
         prm_s = shears if shears is not None else [0] * (dim*(dim-1)//2)
         # Convert and move to a common backend (dtype + device)
-        prm_t, prm_r, prm_z, prm_s = utils.to_common(prm_t, prm_r, prm_z, prm_s)
+        prm_t, prm_r, prm_z, prm_s = utils.to_max_backend(prm_t, prm_r, prm_z, prm_s)
         # Broadcast all batch shapes
         batch_shape = utils.expand(prm_t[..., 0], prm_r[..., 0],
                                    prm_z[..., 0], prm_s[..., 0],

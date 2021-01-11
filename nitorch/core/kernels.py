@@ -210,30 +210,35 @@ def smooth(types, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     For more information about ordering conventions in nitorch, see
     `nitorch.spatial?`.
 
-    Args:
-        types (str or int or list[str or int]):
-            Smoothing function (integrates to one).
-            . -1, 'dirac': Dirac function
-            . 0,  'rect': Rectangular function (0th order B-spline)
-            . 1,  'tri': Triangular function (1st order B-spline)
-            . 2,  'gauss': Gaussian
-        fwhm (vector_like,optional): Full-width at half-maximum of the
-            smoothing function (in voxels), in each dimension.
-            Defaults to 1.
-        basis (int,optional): Image encoding basis (B-spline order)
-            Defaults to 0.
-        x (tuple or vector_like,optional): Coordinates at which to
-            evaluate the kernel. If None, evaluate at all integer coordinates
-            from its support (truncated support for 'gauss').
-            Defaults to None.
-        sep(bool,optional): Return separable 1D kernels. If False, the 1D
-            kernels are combined to form an N-D kernel. Defaults to True.
-        dtype (torch.dtype,optional): Data type. Defaults to None.
-        device (torch.device): Device. Defaults to None.
+    Parameters
+    ----------
+    types : str or int or sequence[str or int]
+        Smoothing function (integrates to one).
+        - -1 or 'dirac' : Dirac function
+        -  0 or 'rect'  : Rectangular function (0th order B-spline)
+        -  1 or 'tri'   : Triangular function (1st order B-spline)
+        -  2 or 'gauss' : Gaussian
+    fwhm : int or sequence[int], default=1
+        Full-width at half-maximum of the smoothing function 
+        (in voxels), in each dimension.
+    basis : int, default=0
+        Image encoding basis (B-spline order)
+    x : tuple or vector_like, optional
+        Coordinates at which to evaluate the kernel. 
+        If None, evaluate at all integer coordinates from its support 
+        (truncated support for 'gauss').
+    sep : bool, default=True
+        Return separable 1D kernels. 
+        If False, the 1D kernels are combined to form an N-D kernel.
+    dtype : torch.dtype, optional
+    device : torch.device, optional
 
-    Returns:
-        If `sep is False` or all input parameters are scalar: a `torch.Tensor`
-        Else: a tuple of `torch.Tensor`
+    Returns
+    -------
+    tuple or (channel_in, channel_out, *kernel_size) tensor
+        If `sep is False` or all input parameters are scalar,
+        a single kernel is returned. 
+        Else, a tuple of kernels is returned.
 
 
     """

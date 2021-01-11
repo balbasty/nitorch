@@ -246,3 +246,19 @@ class Module(tnn.Module):
             assert isinstance(_metric, dict)
             metrics = self.compute_metric(**tag_args)
             self.update_dict(_metric, metrics)
+
+
+    def board(self, tb, inputs, outputs):
+        """Defines model-specific tensorboard callback.
+
+        Parameters
+        ----------
+        tb : torch.utils.tensorboard.writer.SummaryWriter
+            TensorBoard writer object.
+        inputs : tuple
+            Model inputs.
+        outputs : tuple
+            Model outputs.
+
+        """
+        pass

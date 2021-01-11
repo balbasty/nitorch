@@ -17,7 +17,7 @@ _costs_hist = ['mi', 'ecc', 'nmi', 'ncc']  # Histogram-based cost functions
 
 
 def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
-                  mx_int, return_res=False):
+                  mx_int, fwhm, return_res=False):
     """Compute registration cost function.
 
     Parameters
@@ -44,6 +44,9 @@ def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
         This parameter sets the max intensity in the images, which decides
         how many bins to use in the joint image histograms
         (e.g, mx_int=511 -> H.shape = (512, 512)).
+    fwhm : float
+        Full-width at half max of Gaussian kernel, for smoothing
+        histogram.
     return_res : bool, default=False
         Return registration results for plotting.
 
@@ -95,7 +98,7 @@ def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
         # Compute joint histogram
         # OBS: This function expects both images to have the same max and min intesities,
         # this is ensured by the _data_loader() function.
-        H = _hist_2d(dat_fix, dat_new, mx_int)
+        H = _hist_2d(dat_fix, dat_new, mx_int, fwhm)
         res = H
 
         # Get probabilities
@@ -162,10 +165,10 @@ def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
         return c
 
 
-def _hist_2d(img0, img1, mx_int, fwhm=7):
+def _hist_2d(img0, img1, mx_int, fwhm):
     """Make 2D histogram, requires:
         * Images same size.
-        * Images same min and max intensities.
+        * Images same min and max intensities (non-negative).
 
     Parameters
     ----------
@@ -177,7 +180,7 @@ def _hist_2d(img0, img1, mx_int, fwhm=7):
         This parameter sets the max intensity in the images, which decides
         how many bins to use in the joint image histograms
         (e.g, mx_int=511 -> H.shape = (512, 512)).
-    fwhm : float, default=7
+    fwhm : float
         Full-width at half max of Gaussian kernel, for smoothing
         histogram.
 
@@ -209,25 +212,27 @@ def _hist_2d(img0, img1, mx_int, fwhm=7):
     H.put_(ind.long(),
            torch.ones(1, device=img0.device, dtype=ind.dtype).expand_as(ind),
            accumulate=True)
-    # Smooth the histogram
+    # Smoothing kernel
     smo = smooth(('gauss',) * 2, fwhm=fwhm,
                  device=img0.device, dtype=torch.float32, sep=True)
-    # Padding amount for subsequent convolution
-    size_pad = (smo[0].shape[2], smo[1].shape[3])
-    size_pad = (torch.tensor(size_pad) - 1) // 2
-    size_pad = tuple(size_pad.int().tolist())
-    # Smooth deformation with Gaussian kernel (by convolving)
-    H = pad(H, size_pad, side='both')
+    # Pad
+    p = (smo[0].shape[2], smo[1].shape[3])
+    p = (torch.tensor(p) - 1) // 2
+    p = tuple(p.int().tolist())
+    H = pad(H, p, side='both')
+    # Smooth
     H = H[None, None, ...]
     H = F.conv2d(H, smo[0])
-    H = F.conv2d(H, smo[1])[0, 0, ...]
+    H = F.conv2d(H, smo[1])
+    H = H[0, 0, ...]
+    # Clamp
     H = H.clamp_min(0.0)
     # Add eps
     H = H + 1e-7
     # # Visualise histogram
     # import matplotlib.pyplot as plt
-    # plt.figure(num=fig_num)
-    # plt.imshow(H,
+    # plt.figure(num=1)
+    # plt.imshow(H.detach().cpu(),
     #     cmap='coolwarm', interpolation='nearest',
     #     aspect='equal', vmax=0.05*H.max())
     # plt.axis('off')

@@ -4,7 +4,7 @@ from nitorch.spatial import diff, div, diff1d, div1d
 
 bounds = ('dct2', 'dst2', 'dct1', 'dst1', 'zero', 'replicate')
 orders = (1, 2, 3, 4)
-sides = ('f', 'b')
+sides = ('f', 'b', 'c')
 
 
 @pytest.mark.parametrize('bound', bounds)

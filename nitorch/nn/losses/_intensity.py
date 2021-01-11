@@ -6,10 +6,12 @@ import torch
 import torch.nn as tnn
 import math
 from ._base import Loss
-from ...core.pyutils import make_list
-from ...core.utils import unsqueeze
-from ...core.constants import eps, nan, inf
-from ...core.math import nanmin, nanmax, nansum
+from nitorch.core.pyutils import make_list
+from nitorch.core.utils import unsqueeze, channel2last, last2channel
+from nitorch.core.constants import eps, nan, inf, pi
+from nitorch.core.math import nanmin, nanmax, nansum
+from nitorch.core.linalg import matvec
+from nitorch.vb.mixtures import GMM
 
 
 class MutualInfoLoss(Loss):
@@ -223,3 +225,123 @@ class MutualInfoLoss(Loss):
 
         # reduce
         return super().forward(mi)
+
+
+class GMMLoss(Loss):
+
+    def __init__(self, nb_classes=9, max_iter=100, tolerance=1e-3):
+        super().__init__()
+        self.nb_classes = nb_classes
+        self.max_iter = max_iter
+        self.tolerance = tolerance
+
+    def forward(self, *image, **opt):
+
+        opt['nb_classes'] = opt.get('nb_classes', self.nb_classes)
+        opt['max_iter'] = opt.get('max_iter', self.nb_classes)
+        opt['tolerance'] = opt.get('tolerance', self.nb_classes)
+        if len(image) > 1:
+            image = torch.cat(image, dim=1)
+        else:
+            image = image[0]
+
+        # first: estimate parameters without computing gradients
+        with torch.no_grad():
+            means, precisions, proportions = self.fit(image, **opt)
+
+        # second: compute log-likelihood
+        resp, log_resp = self.responsibilities(image, means, precisions, proportions)
+        loss = self.nll(image, resp, means, precisions)
+        loss = loss + self.kl(resp, log_resp, proportions)
+
+        return super().forward(loss)
+
+    @staticmethod
+    def nll(image, resp, means, precisions):
+        # aliases
+        x = image
+        z = resp
+        m = means
+        A = precisions
+        nb_dim = image.dim() - 2
+        del image, resp, means, precisions
+
+        x = channel2last(x).unsqueeze(-2)       # [B, ...,  1, C]
+        z = channel2last(z)                     # [B, ..., K]
+        m = unsqueeze(m, dim=1, ndim=nb_dim)    # [B, ones, K, C]
+        A = unsqueeze(A, dim=1, ndim=nb_dim)    # [B, ones, K, C, C]
+        x = x - m
+        loss = matvec(A, x)
+        loss = (loss * x).sum(dim=-1)           # [B, ..., K]
+        loss = (loss * z).sum(dim=-1)           # [B, ...]
+        loss = loss * 0.5
+        return loss
+
+    @staticmethod
+    def kl(resp, log_resp, proportions):
+        # aliases
+        z = resp
+        logz = log_resp
+        p = proportions
+        nb_dim = resp.dim() - 2
+        del resp, log_resp, proportions
+
+        p = unsqueeze(p, dim=-1, ndim=nb_dim)       # [B, K, ones]
+        loss = z * (logz - p.log())                 # [B, K, ...]
+        loss = loss.sum(dim=1)                      # [B, ...]
+        return loss
+
+    @staticmethod
+    def fit(images, nb_classes, max_iter, tolerance):
+        means = []
+        precisions = []
+        proportions = []
+        for n, image in enumerate(images):
+            gmm = GMM(nb_classes)
+            gmm.fit(image.reshape([image.shape[0], -1]).T,
+                    max_iter=max_iter, tol=tolerance, verbose=False)
+            m, C = gmm.get_means_variances()
+            m = m.T
+            A = C.permute([2, 0, 1]).inverse()
+            p = gmm.mp
+            means.append(m)
+            precisions.append(A)
+            proportions.append(p)
+        means = torch.stack(means)
+        precisions = torch.stack(precisions)
+        proportions = torch.stack(proportions)
+        return means, precisions, proportions
+
+    @staticmethod
+    def responsibilities(image, means, precisions, proportions):
+        # aliases
+        x = image
+        m = means
+        A = precisions
+        p = proportions
+        nb_dim = image.dim() - 2
+        del image, means, precisions, proportions
+
+        # voxel-wise term
+        x = channel2last(x).unsqueeze(-2)       # [B, ...,  1, C]
+        p = unsqueeze(p, dim=1, ndim=nb_dim)    # [B, ones, K]
+        m = unsqueeze(m, dim=1, ndim=nb_dim)    # [B, ones, K, C]
+        A = unsqueeze(A, dim=1, ndim=nb_dim)    # [B, ones, K, C, C]
+        x = x - m
+        z = matvec(A, x)
+        z = (z * x).sum(dim=-1)                 # [B, ..., K]
+        z = -0.5 * z
+
+        # constant term
+        twopi = torch.as_tensor(2*pi, dtype=A.dtype, device=A.device)
+        nrm = torch.logdet(A) - A.shape[-1] * twopi.log()
+        nrm = 0.5 * nrm + p.log()
+        z = z + nrm
+
+        # softmax
+        z = last2channel(z)
+        logz = torch.nn.functional.log_softmax(z, dim=1)
+        z = torch.nn.functional.softmax(z, dim=1)
+
+        return z, logz
+

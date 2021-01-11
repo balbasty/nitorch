@@ -42,7 +42,10 @@ import nitorch as ni
 
 ## Demo code
 
-The demo folder contains various Jupyter notebooks that showcase some of NITorch's funtionality. Just follow the instructions in the notebook to get started.
+The demo folder contains various Jupyter notebooks that showcase some of NITorch's funtionality. Just follow the instructions in the notebook to get started, or follow the links below to run an installation-free copy instantly in Google Colab:
+
+* **Affine Registration** <br /> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/13eSBtEvAp1wIJD0Rlvq5Q9kJWnuEc7WI?usp=sharing "NITorch Affine Registration Demo")
+* **Spatial Tools** <br /> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1-dfCosj9XoesFt7byIhp84p2JMUuHxby?usp=sharing "NITorch Spatial Tools Demo")
 
 ## Compiling your own wheel
 

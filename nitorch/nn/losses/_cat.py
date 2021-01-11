@@ -284,7 +284,6 @@ class DiceLoss(Loss):
 
             loss = []
             weights = []
-            print(one_hot_map)
             for soft, hard in enumerate(one_hot_map):
                 pred1 = predicted[:, soft, ...][:, None, ...]
                 ref1 = isin(reference, hard)

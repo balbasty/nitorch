@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.autograd import Variable
 from nitorch import core, spatial, io
 from nitorch import nn as nni
@@ -57,7 +58,7 @@ def get_backend(tensor):
 def affine(source, target, group='SE', loss=None,
            interpolation='linear', bound='dct2', extrapolate=False,
            max_iter=1000, tolerance=1e-5, device=None, origin='center',
-           init=None, lr=1e-4):
+           init=None, lr=0.1, scheduler=ReduceLROnPlateau):
     """
 
     Parameters
@@ -136,23 +137,31 @@ def affine(source, target, group='SE', loss=None,
         loss = lambda x, y: loss_fn(x[None, None, ...], y[None, None, ...])
 
     optim = torch.optim.Adam([parameters], lr=lr)
+    if scheduler is not None:
+        scheduler = scheduler(optim)
 
     # Optim loop
     loss_val = core.constants.inf
-    for n_iter in range(max_iter):
+    for n_iter in range(1, max_iter+1):
 
         loss_val0 = loss_val
-        zero_grad_(parameters)
+        optim.zero_grad(set_to_none=True)
         moved = pull(parameters)
         loss_val = loss(moved, target)
         loss_val.backward()
         optim.step()
+        if scheduler is not None and n_iter % 10 == 0:
+            if isinstance(scheduler, ReduceLROnPlateau):
+                scheduler.step(loss_val)
+            else:
+                scheduler.step()
 
         with torch.no_grad():
             crit = (loss_val0 - loss_val)
             if n_iter % 10 == 0:
-                print('{:4d} {:12.6f} ({:12.6g})'
-                      .format(n_iter, loss_val.item(), crit.item()), 
+                print('{:4d} {:12.6f} ({:12.6g}) | lr={:g}'
+                      .format(n_iter, loss_val.item(), crit.item(), 
+                              optim.param_groups[0]['lr']), 
                       end='\r')
             if crit.abs() < tolerance:
                 break
@@ -170,10 +179,114 @@ def affine(source, target, group='SE', loss=None,
     return parameters, aff, moved
 
 
+def ffd(source, target, grid_shape=10, group='SE', image_loss=None,
+        def_loss=None, interpolation='linear', bound='dct2', extrapolate=False,
+        max_iter=1000, tolerance=1e-5, device=None, origin='center',
+        init=None, lr=1e-4, optim_affine=True):
+    # prepare all data tensors
+    ((source, source_aff), (target, target_aff)) = prepare([source, target],
+                                                           device)
+    backend = get_backend(source)
+    dim = source.dim()
+
+    # Rescale to [0, 1]
+    source_min = source.min()
+    source_max = source.max()
+    target_min = target.min()
+    target_max = target.max()
+    source -= source_min
+    source /= source_max - source_min
+    target -= target_min
+    target /= target_max - target_min
+
+    # Shift origin
+    if origin == 'center':
+        shift = torch.as_tensor(target.shape, **backend) / 2
+        shift = -spatial.affine_matvec(target_aff, shift)
+        target_aff[:-1, -1] += shift
+        source_aff[:-1, -1] += shift
+
+    # Prepare affine utils + Initialize parameters
+    basis = spatial.affine_basis(group, dim, **backend)
+    nb_prm = spatial.affine_basis_size(group, dim)
+    if init is not None:
+        affine_parameters = torch.as_tensor(init, **backend).clone().detach()
+        affine_parameters = affine_parameters.reshape(nb_prm)
+    else:
+        affine_parameters = torch.zeros(nb_prm, **backend)
+    affine_parameters = nn.Parameter(affine_parameters, requires_grad=optim_affine)
+    grid_shape = core.pyutils.make_list(grid_shape, dim)
+    grid_parameters = torch.zeros([*grid_shape, dim], **backend)
+    grid_parameters = nn.Parameter(grid_parameters, requires_grad=True)
+
+    def pull(q, grid):
+        aff = core.linalg.expm(q, basis)
+        aff = spatial.affine_matmul(aff, target_aff)
+        aff = spatial.affine_lmdiv(source_aff, aff)
+        grid = spatial.affine_matvec(aff, grid)
+        moved = spatial.grid_pull(source[None, None, ...], grid,
+                                  interpolation=interpolation, bound=bound,
+                                  extrapolate=extrapolate)[0, 0]
+        return moved
+
+    # Prepare loss and optimizer
+    if not callable(image_loss):
+        image_loss_fn = nni.MutualInfoLoss()
+        factor = 1. if image_loss is None else image_loss
+        image_loss = lambda x, y: factor * image_loss_fn(x[None, None, ...],
+                                                         y[None, None, ...])
+
+    if not callable(def_loss):
+        def_loss_fn = nni.BendingLoss()
+        factor = 1. if def_loss is None else def_loss
+        def_loss = lambda x: factor * def_loss_fn(
+            core.utils.last2channel(x[None, ...]))
+
+    lr = core.utils.make_list(lr, 2)
+    opt_prm = [{'params': affine_parameters}, {'params': grid_parameters, 'lr': lr[1]}] \
+        if optim_affine else [grid_parameters]
+    optim = torch.optim.Adam(opt_prm, lr=lr[0])
+
+    # Optim loop
+    loss_val = core.constants.inf
+    for n_iter in range(max_iter):
+
+        loss_val0 = loss_val
+        zero_grad_([affine_parameters, grid_parameters])
+        grid = spatial.resize_grid(grid_parameters[None, ...],
+                                   shape=target.shape, interpolation='cubic',
+                                   bound='dft', extrapolate=True)
+        moved = pull(affine_parameters, grid)
+        loss_val = image_loss(moved, target) + def_loss(grid[0])
+        loss_val.backward()
+        optim.step()
+
+        with torch.no_grad():
+            crit = (loss_val0 - loss_val)
+            if n_iter % 10 == 0:
+                print('{:4d} {:12.6f} ({:12.6g})'
+                      .format(n_iter, loss_val.item(), crit.item()),
+                      end='\r')
+            if crit.abs() < tolerance:
+                break
+
+    print('')
+    with torch.no_grad():
+        moved = pull(affine_parameters, grid_parameters)
+        aff = core.linalg.expm(affine_parameters, basis)
+        if origin == 'center':
+            aff[:-1, -1] -= shift
+            shift = core.linalg.matvec(aff[:-1, :-1], shift)
+            aff[:-1, -1] += shift
+        aff = aff.inverse()
+        aff.requires_grad_(False)
+    return affine_parameters, aff, grid_parameters, moved
+
+
 def diffeo(source, target, group='SE', image_loss=None, vel_loss=None,
            interpolation='linear', bound='dct2', extrapolate=False,
            max_iter=1000, tolerance=1e-5, device=None, origin='center',
-           init=None, lr=1e-4, optim_affine=True):
+           init=None, lr=1e-4, optim_affine=True, scheduler=ReduceLROnPlateau):
     """
 
     Parameters
@@ -271,26 +384,42 @@ def diffeo(source, target, group='SE', image_loss=None, vel_loss=None,
     opt_prm = [{'params': parameters}, {'params': velocity, 'lr': lr[1]}] \
               if optim_affine else [velocity]
     optim = torch.optim.Adam(opt_prm, lr=lr[0])
+    if scheduler is not None:
+        scheduler = scheduler(optim, cooldown=5)
 
     # Optim loop
     loss_val = core.constants.inf
-    for n_iter in range(max_iter):
+    loss_avg = 0
+    for n_iter in range(1, max_iter+1):
 
         loss_val0 = loss_val
-        zero_grad_([parameters, velocity])
+        optim.zero_grad(set_to_none=True)
         moved = pull(parameters, velocity)
         loss_val = image_loss(moved, target) + vel_loss(velocity)
         loss_val.backward()
         optim.step()
-
         with torch.no_grad():
-            crit = (loss_val0 - loss_val)
-            if n_iter % 10 == 0:
-                print('{:4d} {:12.6f} ({:12.6g})'
-                      .format(n_iter, loss_val.item(), crit.item()),
-                      end='\r')
-            if crit.abs() < tolerance:
-                break
+            loss_avg += loss_val
+            
+        if n_iter % 10 == 0:
+            loss_avg /= 10
+            if scheduler is not None:
+                if isinstance(scheduler, ReduceLROnPlateau):
+                    scheduler.step(loss_avg)
+                else:
+                    scheduler.step()
+
+            with torch.no_grad():
+                crit = (loss_val0 - loss_val)
+                if n_iter % 10 == 0:
+                    print('{:4d} {:12.6f} ({:12.6g}) | lr={:g}'
+                          .format(n_iter, loss_avg.item(), crit.item(),
+                                  optim.param_groups[0]['lr']),
+                          end='\r')
+                if crit.abs() < tolerance:
+                    break
+                    
+            loss_avg = 0
 
     print('')
     with torch.no_grad():

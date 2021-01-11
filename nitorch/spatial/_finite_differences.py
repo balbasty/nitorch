@@ -2,7 +2,7 @@
 
 import torch
 from ..core import utils
-from ..core.utils import expand, slice_tensor, same_storage
+from ..core.utils import expand, slice_tensor, same_storage, make_vector
 from ..core.pyutils import make_list
 
 
@@ -176,12 +176,16 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
                 # x[end+1] = x[0]   => diff[end] = x[0] - x[end-1]
                 first = slice_tensor(x, 1, dim) - slice_tensor(x, -1, dim)
                 first = torch.unsqueeze(first, dim)
-                last = slice_tensor(x, 0, dim) - slice_tensor(x, -1, dim)
+                last = slice_tensor(x, 0, dim) - slice_tensor(x, -2, dim)
                 last = torch.unsqueeze(last, dim)
                 diff = torch.cat((first, diff, last), dim)
-            diff = diff / 2.
 
-        if voxel_size != 1:
+        if side == 'c':
+            if voxel_size != 1:
+                diff = diff / (voxel_size * 2)
+            else:
+                diff = diff / 2.
+        elif voxel_size != 1:
             diff = diff / voxel_size
 
     elif side == 'c':
@@ -197,7 +201,9 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
                          side='f', bound=bound)
             bwd = diff1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
                          side='b', bound=bound)
-            diff = (fwd - bwd) / voxel_size
+            diff = fwd - bwd
+            if voxel_size != 1:
+                diff = diff / voxel_size
         else:
             diff = diff1d(x, order=2, dim=dim, voxel_size=voxel_size,
                           side=side, bound=bound)
@@ -242,7 +248,7 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     """
     # find number of dimensions
     dim = torch.as_tensor(dim)
-    voxel_size = torch.as_tensor(voxel_size)
+    voxel_size = make_vector(voxel_size)
     drop_last = dim.dim() == 0 and voxel_size.dim() == 0
     dim = make_list(dim.tolist())
     voxel_size = make_list(voxel_size.tolist())
@@ -309,7 +315,7 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     if bound not in ('dct2', 'dct1', 'dst2', 'dst1', 'dft', 'replicate', 'zero'):
         raise ValueError('Unknown boundary type {}.'.format(bound))
     side = side.lower()[0]
-    if side not in ('f', 'b'):
+    if side not in ('f', 'b', 'c'):
         raise ValueError('Unknown side {}.'.format(side))
     order = int(order)
     if order < 0:
@@ -389,52 +395,101 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
                 div = slice_tensor(div, slice(None, -1), dim)
                 div = torch.cat((div, last), dim)
 
-        # elif side == 'c':
-        #     # central -> diff[i] = (x[i+1] - x[i-1])/2
-        #     #         -> div[i]  = (x[i-1] - x[i+1])/2
-        #     pre = slice_tensor(x, slice(None, -2), dim)
-        #     post = slice_tensor(x, slice(2, None), dim)
-        #     div = pre - post
-        #     if bound in ('dct2', 'replicate'):
-        #         # x[-1]    = x[0]   => diff[0]   = x[1] - x[0]
-        #         # x[end+1] = x[end] => diff[end] = x[end] - x[end-1]
-        #         first = slice_tensor(x, 1, dim) - slice_tensor(x, 0, dim)
-        #         first = torch.unsqueeze(first, dim)
-        #         last = slice_tensor(x, -1, dim) - slice_tensor(x, -2, dim)
-        #         last = torch.unsqueeze(last, dim)
-        #         diff = torch.cat((first, diff, last), dim)
-        #     elif bound == 'dct1':
-        #         # x[-1]    = x[1]     => diff[0]   = 0
-        #         # x[end+1] = x[end-1] => diff[end] = 0
-        #         diff = torch.cat((zero, diff, zero), dim)
-        #     elif bound == 'dst2':
-        #         # x[-1]    = -x[0]   => diff[0]   = x[1] + x[0]
-        #         # x[end+1] = -x[end] => diff[end] = -(x[end] + x[end-1])
-        #         first = slice_tensor(x, 1, dim) + slice_tensor(x, 0, dim)
-        #         first = torch.unsqueeze(first, dim)
-        #         last = - slice_tensor(x, -1, dim) - slice_tensor(x, -2, dim)
-        #         last = torch.unsqueeze(last, dim)
-        #         diff = torch.cat((first, diff, last), dim)
-        #     elif bound in ('dst1', 'zero'):
-        #         # x[-1]    = 0 => diff[0]   = x[1]
-        #         # x[end+1] = 0 => diff[end] = -x[end-1]
-        #         first = slice_tensor(x, 1, dim)
-        #         first = torch.unsqueeze(first, dim)
-        #         last = -slice_tensor(x, -2, dim)
-        #         last = torch.unsqueeze(last, dim)
-        #         diff = torch.cat((first, diff, last), dim)
-        #     else:
-        #         assert bound == 'dft'
-        #         # x[-1]    = x[end] => diff[0]   = x[1] - x[end]
-        #         # x[end+1] = x[0]   => diff[end] = x[0] - x[end-1]
-        #         first = slice_tensor(x, 1, dim) - slice_tensor(x, -1, dim)
-        #         first = torch.unsqueeze(first, dim)
-        #         last = slice_tensor(x, 0, dim) - slice_tensor(x, -1, dim)
-        #         last = torch.unsqueeze(last, dim)
-        #         diff = torch.cat((first, diff, last), dim)
+        else:
+            assert side == 'c'
+            # central -> diff[i] = (x[i+1] - x[i-1])/2
+            #         -> div[i]  = (x[i-1] - x[i+1])/2
+            pre = slice_tensor(x, slice(None, -2), dim)
+            post = slice_tensor(x, slice(2, None), dim)
+            div = pre - post
+            if bound in ('dct2', 'replicate'):
+                # x[-1]    = x[0]   => diff[0]   = x[1] - x[0]
+                # x[end+1] = x[end] => diff[end] = x[end] - x[end-1]
+                first = -slice_tensor(x, 0, dim) - slice_tensor(x, 1, dim)
+                first = torch.unsqueeze(first, dim)
+                last = slice_tensor(x, -2, dim) + slice_tensor(x, -1, dim)
+                last = torch.unsqueeze(last, dim)
+                div = torch.cat((first, div, last), dim)
+            elif bound == 'dct1':
+                # x[-1]    = x[1]     => diff[0]   = 0
+                # x[end+1] = x[end-1] => diff[end] = 0
+                div = slice_tensor(div, slice(1, -1), dim)
+                first = - slice_tensor(x, 1, dim)
+                first = torch.unsqueeze(first, dim)
+                second = - slice_tensor(x, 2, dim)
+                second = torch.unsqueeze(second, dim)
+                last = slice_tensor(x, -2, dim)
+                last = torch.unsqueeze(last, dim)
+                secondlast = slice_tensor(x, -3, dim)
+                secondlast = torch.unsqueeze(secondlast, dim)
+                div = torch.cat((first, second, div, secondlast, last), dim)
+            elif bound == 'dst2':
+                # x[-1]    = -x[0]   => diff[0]   = x[1] + x[0]
+                # x[end+1] = -x[end] => diff[end] = -(x[end] + x[end-1])
+                first = slice_tensor(x, 0, dim) - slice_tensor(x, 1, dim)
+                first = torch.unsqueeze(first, dim)
+                last = slice_tensor(x, -2, dim) - slice_tensor(x, -1, dim)
+                last = torch.unsqueeze(last, dim)
+                div = torch.cat((first, div, last), dim)
+            elif bound in ('dst1', 'zero'):
+                # x[-1]    = 0 => diff[0]   = x[1]
+                # x[end+1] = 0 => diff[end] = -x[end-1]
+                first = -slice_tensor(x, 1, dim)
+                first = torch.unsqueeze(first, dim)
+                last = slice_tensor(x, -2, dim)
+                last = torch.unsqueeze(last, dim)
+                div = torch.cat((first, div, last), dim)
+            else:
+                assert bound == 'dft'
+                # x[-1]    = x[end] => diff[0]   = x[1] - x[end]
+                # x[end+1] = x[0]   => diff[end] = x[0] - x[end-1]
+                first = slice_tensor(x, -1, dim) - slice_tensor(x, 1, dim)
+                first = torch.unsqueeze(first, dim)
+                last = slice_tensor(x, -2, dim) - slice_tensor(x, 0, dim)
+                last = torch.unsqueeze(last, dim)
+                div = torch.cat((first, div, last), dim)
 
-        if voxel_size != 1:
+        if side == 'c':
+            if voxel_size != 1:
+                div = div / (voxel_size * 2)
+            else:
+                div = div / 2.
+        elif voxel_size != 1:
             div = div / voxel_size
+
+    elif side == 'c':
+        # we must deal with central differences differently:
+        # -> second order differences are exact but first order
+        #    differences are approximated (we should sample between
+        #    two voxels so we must interpolate)
+        # -> for order > 2, we take the reverse order to what's done
+        #    in `diff`: we start with a first-order difference if
+        #    the order is odd, and then unroll all remaining second-order
+        #    differences.
+        if order == 2:
+            # exact implementation
+            # (I use the forward and backward implementations to save
+            #  code, but it could be reimplemented exactly to
+            #  save speed)
+            fwd = div1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
+                         side='f', bound=bound)
+            bwd = div1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
+                         side='b', bound=bound)
+            div = fwd - bwd
+            if voxel_size != 1:
+                div = div / voxel_size
+        elif order % 2:
+            # odd order -> start with a first order
+            div = div1d(x, order=1, dim=dim, voxel_size=voxel_size,
+                          side=side, bound=bound)
+            div = div1d(div, order=order-1, dim=dim, voxel_size=voxel_size,
+                          side=side, bound=bound)
+        else:
+            # even order -> recursive call
+            div = div1d(x, order=2, dim=dim, voxel_size=voxel_size,
+                          side=side, bound=bound)
+            div = div1d(div, order=order-2, dim=dim, voxel_size=voxel_size,
+                          side=side, bound=bound)
 
     else:
         div = div1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
@@ -445,7 +500,7 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     return div
 
 
-def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', value=0):
+def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
     """Divergence.
 
     Parameters
@@ -456,9 +511,9 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', value=0):
         must have the same size as their length.
     order : int, default=1
         Finite difference order (1=first derivative, 2=second derivative, ...)
-    dim : int or list[int], default=-1
+    dim : int or sequence[int], default=-1
         Dimension along which finite differences were computed.
-    voxel_size : float or list[float], default=1
+    voxel_size : float or sequence[float], default=1
         Unit size used in the denominator of the gradient.
     side : {'f', 'b'}, default='f'
         * 'f': forward finite differences
@@ -478,7 +533,7 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', value=0):
 
     # find number of dimensions
     dim = torch.as_tensor(dim)
-    voxel_size = torch.as_tensor(voxel_size)
+    voxel_size = make_vector(voxel_size)
     has_last = (dim.dim() > 0 or voxel_size.dim() > 0)
     dim = make_list(dim.tolist())
     voxel_size = make_list(voxel_size.tolist())
