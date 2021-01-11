@@ -129,7 +129,7 @@ class SegNet(Module):
 
     def board(self, tb, inputs, outputs):
         """TensorBoard visualisation of model input image, reference segmentation
-        and predicted segmentation
+        and predicted segmentation.
 
         Parameters
         ----------
@@ -141,18 +141,55 @@ class SegNet(Module):
             Predicted segmentation.
 
         """
-        input = inputs[0]
-        target = inputs[1]
+        def get_slice(vol, plane, dim):
+            if dim == 2:
+                return vol.squeeze()
+            if plane == 'z':
+                z = round(0.5 * vol.shape[-1])
+                slice = vol[..., z]
+            elif plane == 'y':
+                y = round(0.5 * vol.shape[-2])
+                slice = vol[..., y, :]
+            elif plane == 'x':
+                x = round(0.5 * vol.shape[-3])
+                slice = vol[..., x, :, :]
+
+            return slice.squeeze()
+
+        def input_view(slice_input):
+            return slice_input
+
+        def prediction_view(slice_prediction, implicit):
+            if implicit:
+                slice_prediction = torch.cat(
+                    (1 - slice_prediction.sum(dim=0, keepdim=True), slice_prediction), dim=0)
+            K1 = float(slice_prediction.shape[0])
+            slice_prediction = (slice_prediction.argmax(dim=0, keepdim=False))/(K1 - 1)
+            return slice_prediction
+
+        def target_view(slice_target):
+            return slice_target.float()/slice_target.max().float()
+
+        def to_grid(slice_input, slice_target, slice_prediction):
+            return torch.cat((slice_input, slice_target, slice_prediction), dim=1)
+
+        def get_slices(plane, inputs, outputs, dim, implicit):
+            slice_input = input_view(get_slice(inputs[0][0, ...], plane, dim=dim))
+            slice_target = target_view(get_slice(inputs[1][0, ...], plane, dim=dim))
+            slice_prediction = prediction_view(get_slice(outputs[0, ...], plane, dim=dim),
+                                               implicit=implicit)
+            return slice_input, slice_target, slice_prediction
+
+        def get_image(plane, inputs, outputs, dim, implicit):
+            return to_grid(*get_slices(plane, inputs, outputs, dim, implicit))[None, ...]
+
+        # Add to TensorBoard
+        title = 'Image-Target-Prediction_'
+        tb.add_image(title + 'z', get_image('z', inputs, outputs,
+                                            self.dim, self.implicit))
         if self.dim == 3:
-            z = round(0.5*input.shape[-1])
-            input = input[..., z]
-            target = target[..., z]
-            outputs = outputs[..., z]
-        tb.add_image('input', input[0, ...])
-        tb.add_image('target',
-            target[0, ...].float()/target[0, ...].max().float())
-        if self.implicit:
-            outputs = torch.cat((1 - outputs.sum(dim=1, keepdim=True), outputs), dim=1)
-        tb.add_image('prediction',
-            (outputs[0, ...].argmax(dim=0, keepdim=True))/(float(outputs.shape[1]) - 1))
+            tb.add_image(title + 'y', get_image('y', inputs, outputs,
+                                                self.dim, self.implicit))
+            tb.add_image(title + 'x', get_image('x', inputs, outputs,
+                                                self.dim, self.implicit))
         tb.flush()
