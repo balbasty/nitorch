@@ -7,40 +7,54 @@ from ._finite_differences import diff, div, diff1d, div1d
 import itertools
 
 
-def absolute(field):
+def absolute(field, weight=None):
     """Precision matrix for the Absolute energy
 
     Parameters
     ----------
     field : tensor
+    weight : tensor, optional
 
     Returns
     -------
     field : tensor
 
     """
-    return field
+    field = torch.as_tensor(field)
+    if weight is not None:
+        backend = dict(dtype=field.dtype, device=field.device)
+        weight = torch.as_tensor(weight, **backend)
+        return field * weight
+    else:
+        return field
 
 
-def absolute_grid(field, voxel_size=1):
+def absolute_grid(field, voxel_size=1, weight=None):
     """Precision matrix for the Absolute energy of a deformation grid
 
     Parameters
     ----------
     field : (..., *spatial, dim) tensor
+    voxel_size : float or sequence[float], default=1
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
     field : (..., *spatial, dim) tensor
 
     """
+    field = torch.as_tensor(field)
     dim = field.shape[-1]
     voxel_size = make_vector(voxel_size, dim)
     field = field * voxel_size.square()
+    if weight is not None:
+        backend = dict(dtype=field.dtype, device=field.device)
+        weight = torch.as_tensor(weight, **backend)
+        field = field * weight[..., None]
     return field
 
 
-def membrane(field, voxel_size=1, bound='dct2', dim=None):
+def membrane(field, voxel_size=1, bound='dct2', dim=None, weight=None):
     """Precision matrix for the Membrane energy
 
     Note
@@ -53,6 +67,7 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None):
     voxel_size : float or sequence[float], default=1
     bound : str, default='dct2'
     dim : int, default=field.dim()
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
@@ -64,11 +79,15 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None):
     voxel_size = make_vector(voxel_size, dim)
     dims = list(range(field.dim()-dim, field.dim()))
     field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
+    if weight is not None:
+        backend = dict(dtype=field.dtype, device=field.device)
+        weight = torch.as_tensor(weight, **backend)
+        field = field * weight[..., None]
     field = div(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
     return field
 
 
-def membrane_grid(field, voxel_size=1, bound='dft'):
+def membrane_grid(field, voxel_size=1, bound='dft', weight=None):
     """Precision matrix for the Membrane energy of a deformation grid
 
     Parameters
@@ -76,6 +95,7 @@ def membrane_grid(field, voxel_size=1, bound='dft'):
     field : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
@@ -85,12 +105,13 @@ def membrane_grid(field, voxel_size=1, bound='dft'):
     field = torch.as_tensor(field)
     dim = field.shape[-1]
     field = movedim(field, -1, -(dim + 1))
-    field = membrane(field, voxel_size, bound, dim)
+    field = membrane(field, weight=weight, voxel_size=voxel_size,
+                     bound=bound, dim=dim)
     field = movedim(field, -(dim + 1), -1)
     return field
 
 
-def bending(field, voxel_size=1, bound='dct2', dim=None):
+def bending(field, voxel_size=1, bound='dct2', dim=None, weight=None):
     """Precision matrix for the Bending energy
 
     Note
@@ -103,6 +124,7 @@ def bending(field, voxel_size=1, bound='dct2', dim=None):
     voxel_size : float or sequence[float], default=1
     bound : str, default='dct2'
     dim : int, default=field.dim()
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
@@ -114,6 +136,9 @@ def bending(field, voxel_size=1, bound='dct2', dim=None):
     voxel_size = make_vector(voxel_size, dim)
     bound = make_list(bound, dim)
     dims = list(range(field.dim()-dim, field.dim()))
+    if weight is not None:
+        backend = dict(dtype=field.dtype, device=field.device)
+        weight = torch.as_tensor(weight, **backend)
 
     mom = 0
     for i in range(dim):
@@ -126,6 +151,8 @@ def bending(field, voxel_size=1, bound='dct2', dim=None):
                     optj = dict(dim=dims[j], bound=bound[j], side=side_j,
                                 voxel_size=voxel_size[j])
                     dj = diff1d(di, **optj)
+                    if weight is not None:
+                        dj = dj * weight
                     dj = div1d(dj, **optj)
                     dj = div1d(dj, **opti)
                     if i != j:
@@ -136,7 +163,7 @@ def bending(field, voxel_size=1, bound='dct2', dim=None):
     return mom
 
 
-def bending_grid(field, voxel_size=1, bound='dft'):
+def bending_grid(field, voxel_size=1, bound='dft', weight=None):
     """Precision matrix for the Bending energy of a deformation grid
 
     Parameters
@@ -144,6 +171,7 @@ def bending_grid(field, voxel_size=1, bound='dft'):
     field : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
@@ -153,12 +181,13 @@ def bending_grid(field, voxel_size=1, bound='dft'):
     field = torch.as_tensor(field)
     dim = field.shape[-1]
     field = movedim(field, -1, -(dim + 1))
-    field = bending(field, voxel_size, bound, dim)
+    field = bending(field, weight=weight, voxel_size=voxel_size,
+                    bound=bound, dim=dim)
     field = movedim(field, -(dim + 1), -1)
     return field
 
 
-def lame_shear(field, voxel_size=1, bound='dft'):
+def lame_shear(field, voxel_size=1, bound='dft', weight=None):
     """Precision matrix for the Shear component of the Linear-Elastic energy.
 
     Notes
@@ -177,6 +206,7 @@ def lame_shear(field, voxel_size=1, bound='dft'):
     field : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
@@ -188,6 +218,9 @@ def lame_shear(field, voxel_size=1, bound='dft'):
     voxel_size = make_vector(voxel_size, dim)
     bound = make_list(bound, dim)
     dims = list(range(field.dim()-1-dim, field.dim()-1))
+    if weight is not None:
+        backend = dict(dtype=field.dtype, device=field.device)
+        weight = torch.as_tensor(weight, **backend)
 
     mom = [0] * dim
     for i in range(dim):
@@ -200,7 +233,8 @@ def lame_shear(field, voxel_size=1, bound='dft'):
                 diff_ij = diff1d(x_i, **opt_ij)
                 if i == j:
                     # diagonal elements
-                    mom[i] += 2 ** (dim-1) * div1d(diff_ij, **opt_ij)
+                    diff_ij_w = diff_ij if weight is None else diff_ij * weight
+                    mom[i] += 2 ** (dim-1) * div1d(diff_ij_w, **opt_ij)
                 else:
                     # off diagonal elements
                     x_j = field[..., j]
@@ -209,6 +243,8 @@ def lame_shear(field, voxel_size=1, bound='dft'):
                                       voxel_size=voxel_size[i])
                         diff_ji = diff1d(x_j, **opt_ji)
                         diff_ji = (diff_ij + diff_ji) / 2.
+                        if weight is not None:
+                            diff_ji = diff_ji * weight
                         mom[j] += div1d(diff_ji, **opt_ji)
                         mom[i] += div1d(diff_ji, **opt_ij)
                     del x_j
@@ -220,7 +256,7 @@ def lame_shear(field, voxel_size=1, bound='dft'):
     return mom
 
 
-def lame_div(field, voxel_size=1, bound='dft'):
+def lame_div(field, voxel_size=1, bound='dft', weight=None):
     """Precision matrix for the Divergence component of the Linear-Elastic energy.
 
     Notes
@@ -237,6 +273,7 @@ def lame_div(field, voxel_size=1, bound='dft'):
     field : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
@@ -248,6 +285,9 @@ def lame_div(field, voxel_size=1, bound='dft'):
     voxel_size = make_vector(voxel_size, dim)
     bound = make_list(bound, dim)
     dims = list(range(field.dim()-1-dim, field.dim()-1))
+    if weight is not None:
+        backend = dict(dtype=field.dtype, device=field.device)
+        weight = torch.as_tensor(weight, **backend)
 
     # precompute gradients
     grad = [dict(f={}, b={}) for _ in range(dim)]
@@ -267,6 +307,8 @@ def lame_div(field, voxel_size=1, bound='dft'):
         div = 0
         for i, side in enumerate(sides):
             div += grad[i][side]
+        if weight is not None:
+            div = div * weight
         for i, side in enumerate(sides):
             mom[i] += div1d(div, **(opt[i][side]))
 
@@ -282,7 +324,7 @@ _bending = bending
 
 
 def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
-                     voxel_size=1, bound='dft'):
+                     voxel_size=1, bound='dft', weight=None):
     """Precision matrix for a mixture of energies for a deformation grid.
 
     Parameters
@@ -294,6 +336,9 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     lame : (float, float), default=0
     voxel_size : [sequence of] float, default=1
     bound : str, default='dft'
+    weight : [dict of] (..., *spatial) tensor, optional
+        If a dict: keys must be in {'absolute', 'membrane', 'bending', 'lame'}
+        Else: the same weight map is shared across penalties.
 
     Returns
     -------
@@ -307,18 +352,26 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     voxel_size = make_vector(voxel_size, dim, **backend)
     lame = make_vector(lame, 2, **backend)
     fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
+    if isinstance(weight, dict):
+        wa = weight.get('absolute', None)
+        wm = weight.get('membrane', None)
+        wb = weight.get('bending', None)
+        wl = weight.get('lame', None)
+    else:
+        wa = wm = wb = wl = weight
+    wl = make_list(wl, 2)
 
     y = 0
     if absolute:
-        y += absolute_grid(v) * absolute
+        y += absolute_grid(v, weight=wa) * absolute
     if membrane:
-        y += membrane_grid(v, **fdopt) * membrane
+        y += membrane_grid(v, weight=wm, **fdopt) * membrane
     if bending:
-        y += bending_grid(v, **fdopt) * bending
+        y += bending_grid(v, weight=wb, **fdopt) * bending
     if lame[0]:
-        y += lame_div(v, **fdopt) * lame[0]
+        y += lame_div(v, weight=wl[0], **fdopt) * lame[0]
     if lame[1]:
-        y += lame_shear(v, **fdopt) * lame[1]
+        y += lame_shear(v, weight=wl[1], **fdopt) * lame[1]
 
     if y is 0:
         y = torch.zeros_like(v)
@@ -326,19 +379,22 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
 
 
 def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
-                voxel_size=1, bound='dct2', dim=None):
+                voxel_size=1, bound='dct2', dim=None, weight=None):
     """Precision matrix for a mixture of energies.
 
     Parameters
     ----------
     x : (..., K, *spatial) tensor
-    absolute : [sequence of] float, default=0
-    membrane : [sequence of] float, default=0
-    bending : [sequence of] float, default=0
-    factor : [sequence of] float, default=1
-    voxel_size : [sequence of] float, default=1
+    absolute : (sequence of) float, default=0
+    membrane : (sequence of) float, default=0
+    bending : (sequence of) float, default=0
+    factor : (sequence of) float, default=1
+    voxel_size : (sequence of) float, default=1
     bound : str, default='dct2'
     dim : int, default=`gradient.dim()-1`
+    weight : [dict of] (..., 1|K, *spatial) tensor, optional
+        If a dict: keys must be in {'absolute', 'membrane', 'bending'}
+        Else: the same weight map is shared across penalties.
 
     Returns
     -------
@@ -349,6 +405,8 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     backend = dict(dtype=x.dtype, device=x.device)
     dim = dim or x.dim() - 1
     nb_prm = x.shape[-1]
+    channel2last = lambda x: movedim(x, -(dim + 1), -1)
+    last2channel = lambda x: movedim(x, -1, -(dim + 1))
 
     voxel_size = make_vector(voxel_size, dim, **backend)
     factor = make_vector(factor, nb_prm, **backend)
@@ -356,80 +414,115 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     membrane = make_vector(membrane, **backend) * factor
     bending = make_vector(bending, **backend) * factor
     fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
+    if isinstance(weight, dict):
+        wa = weight.get('absolute', None)
+        wm = weight.get('membrane', None)
+        wb = weight.get('bending', None)
+    else:
+        wa = wm = wb = weight
 
     y = 0
     if any(absolute):
-        y += movedim(_absolute(x), -(dim + 1), -1) * absolute
+        y += channel2last(_absolute(x, weight=wa)) * absolute
     if any(membrane):
-        y += movedim(_membrane(x, **fdopt), -(dim + 1), -1) * membrane
+        y += channel2last(_membrane(x, weight=wm, **fdopt)) * membrane
     if any(bending):
-        y += movedim(_bending(x, **fdopt), -(dim + 1), -1) * bending
+        y += channel2last(_bending(x, weight=wb, **fdopt)) * bending
 
     if y is 0:
         y = torch.zeros_like(x)
     else:
-        y = movedim(y, -1, -(dim + 1))
+        y = last2channel(y)
     return y
 
 
 def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
-                    voxel_size=1, bound='dct2', dim=None):
+                    factor=1, voxel_size=1, bound='dct2', dim=None,
+                    weight=None):
     """Solve a positive-definite linear system of the form (H + L)x = g
 
     Parameters
     ----------
-    hessian : (..., K or K*(K+1)//2, *spatial) tensor
+    hessian : (..., 1 or K or K*(K+1)//2, *spatial) tensor
     gradient : (..., K, *spatial) tensor
-    absolute : float, default=0
-    membrane : float, default=0
-    bending : float, default=0
-    voxel_size : float or sequence[float], default=1
+    absolute : (sequence of) float, default=0
+    membrane : (sequence of) float, default=0
+    bending : (sequence of) float, default=0
+    factor : (sequence of) float, default=1
+    voxel_size : (sequence of) float, default=1
     bound : str, default='dct2'
     dim : int, default=`gradient.dim()-1`
+    weight : [dict of] (..., *spatial, 1|K) tensor, optional
+        If a dict: keys must be in {'absolute', 'membrane', 'bending'}
+        Else: the same weight map is shared across penalties.
 
     """
     hessian, gradient = core.utils.to_max_backend(hessian, gradient)
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = dim or gradient.dim() - 1
-    hessian = movedim(hessian, -dim-1, -1)
-    gradient = movedim(gradient, -dim-1, -1)
+    channel2last = lambda x: (movedim(x, -(dim + 1), -1)
+                              if x is not None else x)
+    last2channel = lambda x: (movedim(x, -1, -(dim + 1))
+                              if x is not None else x)
+    hessian = channel2last(hessian)
+    gradient = channel2last(gradient)
     nb_prm = gradient.shape[-1]
     voxel_size = make_vector(voxel_size, dim, **backend)
     is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
 
-    absolute = make_vector(absolute, nb_prm, **backend)
-    membrane = make_vector(membrane, nb_prm, **backend)
-    bending = make_vector(bending, nb_prm, **backend)
+    factor = make_vector(factor, nb_prm, **backend)
+    absolute = make_vector(absolute, **backend) * factor
+    membrane = make_vector(membrane, **backend) * factor
+    bending = make_vector(bending, **backend) * factor
     no_reg = not (any(membrane) or any(bending))
 
     # regulariser
     fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
+    if isinstance(weight, dict):
+        wa = weight.get('absolute', None)
+        wm = weight.get('membrane', None)
+        wb = weight.get('bending', None)
+    else:
+        wa = wm = wb = weight
 
     def regulariser(x):
-        x = movedim(x, -1, -dim-1)
+        x = last2channel(x)
         y = 0
         if any(absolute):
-            y += movedim(_absolute(x), -dim-1, -1) * absolute
+            y += channel2last(_absolute(x, weight=last2channel(wa))) * absolute
         if any(membrane):
-            y += movedim(_membrane(x, **fdopt), -dim-1, -1) * membrane
+            y += channel2last(_membrane(x, weight=last2channel(wm), **fdopt)) * membrane
         if any(bending):
-            y += movedim(_bending(x, **fdopt), -dim-1, -1) * bending
+            y += channel2last(_bending(x, weight=last2channel(wb), **fdopt)) * bending
         return y
 
     # diagonal of the regulariser
     smo = 0
     if any(absolute):
-        smo = smo + absolute
+        if wa is not None:
+            smo += absolute * wa
+        else:
+            smo += absolute
     if any(membrane):
         ivx2 = voxel_size.square().reciprocal().sum()
-        smo = smo + 2 * membrane * ivx2
+        if wm is not None:
+            smo += smo + 2 * membrane * ivx2 * wm
+        else:
+            smo += smo + 2 * membrane * ivx2
     if any(bending):
         ivx4 = voxel_size.square().square().reciprocal().sum()
         ivx2 = torch.combinations(voxel_size.square().reciprocal(), r=2)
         ivx2 = ivx2.prod(dim=-1).sum()
-        smo = smo + bending * (8 * ivx2 + 6 * ivx4)
+        if wb is not None:
+            smo = smo + bending * (8 * ivx2 + 6 * ivx4) * wb
+        else:
+            smo = smo + bending * (8 * ivx2 + 6 * ivx4)
 
-    hessian_smo = hessian + smo
+    if is_diag:
+        hessian_smo = hessian + smo
+    else:
+        hessian_smo = hessian.clone()
+        hessian_smo[..., :nb_prm] += smo
     precond = ((lambda x: x / hessian_smo) if is_diag else
                (lambda x: sym_solve(hessian_smo, x)))
     forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
@@ -440,16 +533,16 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     else:
         result = core.optim.cg(forward, gradient, precond=precond,
                                max_iter=100)
-    return movedim(result, -1, -dim - 1)
+    return last2channel(result)
 
 
 def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
-                   lame=0, voxel_size=1, bound='dft'):
+                   lame=0, voxel_size=1, bound='dft', weight=None):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
     Parameters
     ----------
-    hessian : (..., *spatial, D or D*(D+1)//2) tensor
+    hessian : (..., *spatial, 1 or D or D*(D+1)//2) tensor
     gradient : (..., *spatial, D) tensor
     absolute : float, default=0
     membrane : float, default=0
@@ -457,6 +550,9 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     lame : (float, float), default=0
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
+    weight : [dict of] (..., *spatial) tensor, optional
+        If a dict: keys must be in {'absolute', 'membrane', 'bending', 'lame'}
+        Else: the same weight map is shared across penalties.
 
     """
     hessian, gradient = core.utils.to_max_backend(hessian, gradient)
@@ -470,35 +566,58 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
 
     # regulariser
     fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
+    if isinstance(weight, dict):
+        wa = weight.get('absolute', None)
+        wm = weight.get('membrane', None)
+        wb = weight.get('bending', None)
+        wl = weight.get('lame', None)
+    else:
+        wa = wm = wb = wl = weight
+    wl = make_list(wl, 2)
 
     def regulariser(v):
         y = 0
         if absolute:
-            y += absolute_grid(v) * absolute
+            y += absolute_grid(v, weight=wa) * absolute
         if membrane:
-            y += membrane_grid(v, **fdopt) * membrane
+            y += membrane_grid(v, weight=wm, **fdopt) * membrane
         if bending:
-            y += bending_grid(v, **fdopt) * bending
+            y += bending_grid(v, weight=wb, **fdopt) * bending
         if lame[0]:
-            y += lame_div(v, **fdopt) * lame[0]
+            y += lame_div(v, weight=wl[0], **fdopt) * lame[0]
         if lame[1]:
-            y += lame_shear(v, **fdopt) * lame[1]
+            y += lame_shear(v, weight=wl[1], **fdopt) * lame[1]
         return y
 
     # diagonal of the regulariser
     ivx2 = voxel_size.square().reciprocal()
     smo = 0
     if absolute:
-        smo = smo + absolute * voxel_size.square()
+        if wa is not None:
+            smo = smo + absolute * voxel_size.square() * wa
+        else:
+            smo = smo + absolute * voxel_size.square()
     if membrane:
-        smo = smo + 2 * membrane * ivx2.sum()
+        if wm is not None:
+            smo = smo + 2 * membrane * ivx2.sum() * wm
+        else:
+            smo = smo + 2 * membrane * ivx2.sum()
     if bending:
         val = torch.combinations(ivx2, r=2).prod(dim=-1).sum()
-        smo = smo + bending * (8 * val + 6 * ivx2.square().sum())
+        if wb is not None:
+            smo = smo + bending * (8 * val + 6 * ivx2.square().sum()) * wb
+        else:
+            smo = smo + bending * (8 * val + 6 * ivx2.square().sum())
     if lame[0]:
-        smo = smo + 2 * lame[0]
+        if wl[0] is not None:
+            smo = smo + 2 * lame[0] * wl[0]
+        else:
+            smo = smo + 2 * lame[0]
     if lame[1]:
-        smo = smo + 2 * lame[1] * (ivx2.sum() + ivx2)/ivx2
+        if wl[1] is not None:
+            smo = smo + 2 * lame[1] * (ivx2.sum() + ivx2)/ivx2 * wl[1]
+        else:
+            smo = smo + 2 * lame[1] * (ivx2.sum() + ivx2)/ivx2
 
     hessian_smo = hessian + smo
     precond = ((lambda x: x / hessian_smo) if is_diag else
