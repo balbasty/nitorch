@@ -540,7 +540,7 @@ def _nonlin_reg(map, vx=1., rls=None, lam=1., do_grad=True):
 
     grad = grad_fwd
     grad += grad_bwd
-    grad *= lam / (2*3)   # average across directions (3) and side (2)
+    grad *= lam / 2.   # average across directions (3) and side (2)
 
     if do_grad:
         reg = (map * grad).sum(dtype=torch.double)
@@ -590,9 +590,9 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
     # Furthermore, diag(D'D) = d*I, where d is the central weight in
     # the corresponding convolution
     hessp = hess.clone()
-    smo = (2 / 3) * torch.as_tensor(vx).square().reciprocal().sum().item()
+    smo = 2 * torch.as_tensor(vx).square().reciprocal().sum().item()
     for i, (weight, l) in enumerate(zip(rls, lam)):
-        hessp[2 * i] += l * smo * (weight if weight is not None else 1)
+        hessp[i] += l * smo * (weight if weight is not None else 1)
 
     def precond(x):
         return hessian_sym_solve(hessp, x)  # , bnd)
@@ -635,7 +635,7 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
 
         grad = grad_fwd.square_().sum(-1)
         grad += grad_bwd.square_().sum(-1)
-        grad *= lam / (2*3)   # average across directions (3) and side (2)
+        grad *= lam / 2.   # average across directions (3) and side (2)
         return grad
 
     # multiple maps
