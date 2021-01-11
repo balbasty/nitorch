@@ -9,7 +9,7 @@ from nitorch.core.pyutils import make_list, prod
 from nitorch._C import spatial as _Cspatial
 from nitorch._C.spatial import BoundType, InterpolationType
 from ._affine import affine_resize, affine_lmdiv
-from ._regularisers import solve_field_sym
+from ._regularisers import solve_grid_sym
 
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
@@ -1017,11 +1017,12 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
     disp = utils.movedim(disp, -1, 1)
     disp = grid_push(disp, grid, **push_opt)
     count = grid_count(grid, **push_opt)
+    disp = utils.movedim(disp, 1, -1)
+    count = utils.movedim(count, 1, -1)
     
     # Fill missing values using regularised least squares
-    disp = solve_field_sym(count, disp, membrane=lam, 
-                           bound=bound, dim=dim)
-    disp = utils.movedim(disp, 1, -1)
+    disp = solve_grid_sym(count, disp, bound=bound,
+                          membrane=lam)
     disp = disp.reshape([*batch, *shape, dim])
     
     if type == 'grid':

@@ -8,7 +8,7 @@ __all__ = ['exp']
 
 
 def exp(vel, inverse=False, steps=None, interpolation='linear', bound='dft',
-        displacement=False, energy=None, vs=None, greens=None, inplace=None):
+        displacement=False, energy=None, vs=None, greens=None, inplace=False):
     # Deal with inplace computation
     if inplace is None:
         inplace = not vel.requires_grad

@@ -351,7 +351,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
 
     voxel_size = make_vector(voxel_size, dim, **backend)
     lame = make_vector(lame, 2, **backend)
-    fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
+    fdopt = dict(bound=bound, voxel_size=voxel_size)
     if isinstance(weight, dict):
         wa = weight.get('absolute', None)
         wm = weight.get('membrane', None)
@@ -565,7 +565,7 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     no_reg = not (membrane or bending or any(lame))
 
     # regulariser
-    fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
+    fdopt = dict(bound=bound, voxel_size=voxel_size)
     if isinstance(weight, dict):
         wa = weight.get('absolute', None)
         wm = weight.get('membrane', None)
