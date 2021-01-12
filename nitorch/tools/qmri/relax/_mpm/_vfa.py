@@ -3,12 +3,12 @@ import torch
 from nitorch import core, spatial
 from nitorch.tools.preproc import affine_align
 from nitorch.core.optionals import try_import
-plt = try_import('matplotlib.pyplot', _as=True)
 from nitorch.tools.qmri.param import ParameterMap
-from ..estatics._options import Options
+from ._options import VFAOptions
+plt = try_import('matplotlib.pyplot', _as=True)
 
 
-def rational(data, transmit=None, receive=None, opt=None):
+def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
     """Compute PD, R1 (and MTsat) from two GRE at two flip angles using
     rational approximations of the Ernst equations.
 
@@ -28,17 +28,37 @@ def rational(data, transmit=None, receive=None, opt=None):
         provided, there should be one for each contrast.
         If no receive map is provided, the output `pd` map will have
         a remaining b1- bias field.
-    opt : Options
+    opt : VFAOptions
+        Algorithm options.
+        {'preproc': {'register':      True},     # Co-register contrasts
+         'backend': {'dtype':  torch.float32,    # Data type
+                     'device': 'cpu'},           # Device
+         'verbose': 1}                           # Verbosity: 1=print, 2=plot
 
     Returns
     -------
     pd : ParameterMap
+        Proton density (potentially, with R2* bias)
     r1 : ParameterMap
+        Longitudinal relaxation rate
     mt : ParameterMap, optional
+        Magnetization transfer
+
+    References
+    ----------
+    ..[1] Tabelow et al., "hMRI - A toolbox for quantitative MRI in
+          neuroscience and clinical research", NeuroImage (2019).
+          https://www.sciencedirect.com/science/article/pii/S1053811919300291
+    ..[2] Helms et al., "Quantitative FLASH MRI at 3T using a rational
+          approximation of the Ernst equation", MRM (2008).
+          https://onlinelibrary.wiley.com/doi/full/10.1002/mrm.21732
+    ..[3] Helms et al., "High-resolution maps of magnetization transfer
+          with inherent correction for RF inhomogeneity and T1 relaxation
+          obtained from 3D FLASH MRI", MRM (2008).
+          https://onlinelibrary.wiley.com/doi/full/10.1002/mrm.21732
 
     """
-    if opt is None:
-        opt = Options()
+    opt = VFAOptions().update(opt, **kwopt)
     dtype = opt.backend.dtype
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
@@ -48,12 +68,11 @@ def rational(data, transmit=None, receive=None, opt=None):
         raise ValueError('Expected at least two input images')
     transmit = core.pyutils.make_list(transmit or [])
     receive = core.pyutils.make_list(receive or [])
-    
-    
+
     # --- Copy instances to avoid modifying the inputs ---
-    data = [obj.copy() for obj in data]
-    transmit = [obj.copy() for obj in transmit]
-    receive = [obj.copy() for obj in receive]
+    data = list(map(lambda x: x.copy(), data))
+    transmit = list(map(lambda x: x.copy(), transmit))
+    receive = list(map(lambda x: x.copy(), receive))
 
     # --- check TEs ---
     if len(set([contrast.te for contrast in data])) > 1:
@@ -64,10 +83,10 @@ def rational(data, transmit=None, receive=None, opt=None):
         print('Register volumes')
         data_reg = [(contrast.fdata(rand=True, cache=False, **backend),
                      contrast.affine) for contrast in data]
-        data_reg += [(map.magnitude.fdata(rand=True, cache=False, **backend),
-                      map.magnitude.affine) for map in transmit]
-        data_reg += [(map.magnitude.fdata(rand=True, cache=False, **backend),
-                      map.magnitude.affine) for map in receive]
+        data_reg += [(fmap.magnitude.fdata(rand=True, cache=False, **backend),
+                      fmap.magnitude.affine) for fmap in transmit]
+        data_reg += [(fmap.magnitude.fdata(rand=True, cache=False, **backend),
+                      fmap.magnitude.affine) for fmap in receive]
         dats, affines, _ = affine_align(data_reg, device=device)
         
         if opt.verbose > 1 and plt:
@@ -76,20 +95,16 @@ def rational(data, transmit=None, receive=None, opt=None):
                 plt.subplot(1, len(dats), i+1)
                 plt.imshow(dats[i, :, dats.shape[2]//2, :].cpu())
                 plt.axis('off')
+            plt.suptitle('Registered magnitude images')
             plt.show()
-            for map, aff in zip(data + transmit + receive, affines):
-                aff, map.affine = core.utils.to_common(aff, map.affine)
-                map.affine = torch.matmul(aff.inverse(), map.affine)
+
+        for vol, aff in zip(data + transmit + receive, affines):
+            aff, vol.affine = core.utils.to_max_device(aff, vol.affine)
+            vol.affine = torch.matmul(aff.inverse(), vol.affine)
 
     # --- repeat fields if not enough ---
-    if transmit:
-        transmit = core.pyutils.make_list(transmit, len(data))
-    else:
-        transmit = [None] * len(data)
-    if receive:
-        receive = core.pyutils.make_list(receive, len(data))
-    else:
-        receive = [None] * len(data)
+    transmit = core.pyutils.make_list(transmit or [None], len(data))
+    receive = core.pyutils.make_list(receive or [None], len(data))
 
     # --- compute recon space ---
     affines = [contrast.affine for contrast in data]
@@ -99,7 +114,7 @@ def rational(data, transmit=None, receive=None, opt=None):
         if isinstance(opt.recon.space, int):
             mean_affine = affines[opt.recon.space]
             mean_shape = shapes[opt.recon.space]
-        elif isinstance(opt.recon.space, str) and opt.recon.space.lower() == 'mean':
+        elif isinstance(opt.recon.space, str) and opt.recon.space == 'mean':
             mean_affine, mean_shape = spatial.mean_space(affines, shapes)
         else:
             raise NotImplementedError()
@@ -117,7 +132,7 @@ def rational(data, transmit=None, receive=None, opt=None):
     (pdw_idx, pdw_struct), (t1w_idx, t1w_struct) = pdt1
     
     if t1w_struct.te != pdw_struct.te:
-        warnings.warn('Echo times not consistant across volumes')
+        warnings.warn('Echo times not consistent across volumes')
     
     print('Computing PD and R1 from volumes:')
     print(f'  - '
@@ -193,8 +208,6 @@ def rational(data, transmit=None, receive=None, opt=None):
         if unit in ('%', 'pct', 'p.u.'):
             t1w_fa /= 100
         del b1p
-
-    eps = core.constants.eps(t1w.dtype)
     
     r1 = 0.5 * (t1w * (t1w_fa / t1w_tr) - pdw * (pdw_fa / pdw_tr))
     r1 /= ((pdw / pdw_fa) - (t1w / t1w_fa))

@@ -5,9 +5,9 @@ from nitorch.tools.preproc import affine_align
 from nitorch.tools.qmri import io as qio
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
-from ._options import Options
-from ..param import ParameterMap
-from ._param import ParameterMaps
+from ._options import ESTATICSOptions
+from nitorch.tools.qmri.param import ParameterMap
+from ._param import ESTATICSParameterMaps
 
 
 def postproc(maps, contrasts):
@@ -56,7 +56,7 @@ def preproc(data, opt):
     """
 
     if opt is None:
-        opt = Options()
+        opt = ESTATICSOptions()
 
     dtype = opt.backend.dtype
     device = opt.backend.device
@@ -126,7 +126,7 @@ def preproc(data, opt):
         mean_shape = shapes[opt.recon.space]
 
     # --- allocate maps ---
-    maps = ParameterMaps()
+    maps = ESTATICSParameterMaps()
     maps.intercepts = [ParameterMap(mean_shape, fill=inter[c], affine=mean_affine, **backend)
                        for c in range(len(data))]
     maps.decay = ParameterMap(mean_shape, fill=decay, affine=mean_affine, min=0, **backend)

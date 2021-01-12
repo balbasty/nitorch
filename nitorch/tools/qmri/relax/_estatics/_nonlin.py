@@ -1,10 +1,10 @@
 import torch
 from nitorch import core, spatial
-from ._options import Options
+from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag, hessian_matmul, hessian_solve,
                      smart_grid, smart_pull, smart_push)
-from ..param import ParameterMap
+from nitorch.tools.qmri.param import ParameterMap
 
 
 def nonlin(data, opt=None):
@@ -27,7 +27,7 @@ def nonlin(data, opt=None):
     """
 
     if opt is None:
-        opt = Options()
+        opt = ESTATICSOptions()
     opt = opt.copy()
     dtype = opt.backend.dtype
     device = opt.backend.device

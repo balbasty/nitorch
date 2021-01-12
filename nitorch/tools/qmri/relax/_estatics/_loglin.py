@@ -2,7 +2,7 @@ import torch
 import nitorch as ni
 from nitorch import core, spatial
 from nitorch.tools.qmri import io as qio
-from ._options import Options
+from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag, hessian_solve,
                      smart_grid, smart_pull, smart_push)
@@ -27,8 +27,7 @@ def loglin(data, opt=None):
 
     """
 
-    if opt is None:
-        opt = Options()
+    opt = ESTATICSOptions().update(opt)
 
     # --- estimate noise / register / initialize maps ---
     data, maps = preproc(data, opt)
@@ -76,7 +75,6 @@ def loglin(data, opt=None):
             map.volume -= delta
             if map.min is not None or map.max is not None:
                 map.volume.clamp_(map.min, map.max)
-               
 
     crit = sum(_loglin_gradient(contrast, intercept, maps.decay, opt, do_grad=False)
                for contrast, intercept in zip(data, maps.intercepts))

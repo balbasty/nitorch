@@ -4,9 +4,9 @@ from nitorch.tools.img_statistics import estimate_noise
 from nitorch.tools.preproc import affine_align
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
-from ._options import Options
-from ..param import ParameterMap
-from ._param import ParameterMaps
+from ._options import GREEQOptions
+from nitorch.tools.qmri.param import ParameterMap
+from ._param import GREEQParameterMaps
 
 
 def postproc(maps):
@@ -24,19 +24,19 @@ def postproc(maps):
     mt : ParameterMap, optional
 
     """
-    maps.r1.volume = maps.r1.volume.exp_()
+    maps.r1.volume = maps.r1.fdata().exp_()
     maps.r1.name = 'R1'
     maps.r1.unit = '1/s'
-    maps.r2s.volume = maps.r2s.volume.exp_()
+    maps.r2s.volume = maps.r2s.fdata().exp_()
     maps.r2s.name = 'R2*'
     maps.r2s.unit = '1/s'
-    maps.pd.volume = maps.pd.volume.exp_()
+    maps.pd.volume = maps.pd.fdata().exp_()
     maps.r2s.name = 'PD'
     maps.r2s.unit = 'a.u.'
     if hasattr(maps, 'mt'):
-        maps.mt.volume = maps.mt.volume.neg_().exp_()
+        maps.mt.volume = maps.mt.fdata().neg_().exp_()
         maps.mt.volume += 1
-        maps.mt.volume = maps.mt.volume.reciprocal_()
+        maps.mt.volume = maps.mt.fdata().reciprocal_()
         maps.mt.volume *= 100
         maps.mt.name = 'MTsat'
         maps.mt.unit = 'p.u.'
@@ -44,7 +44,7 @@ def postproc(maps):
     return maps.pd, maps.r1, maps.r2s
 
 
-def preproc(data, transmit=[], receive=[], opt=None):
+def preproc(data, transmit=None, receive=None, opt=None):
     """Estimate noise variance + register + compute recon space + init maps
 
     Parameters
@@ -61,9 +61,7 @@ def preproc(data, transmit=[], receive=[], opt=None):
 
     """
 
-    if opt is None:
-        opt = Options()
-
+    opt = GREEQOptions().update(opt)
     dtype = opt.backend.dtype
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
@@ -125,8 +123,8 @@ def preproc(data, transmit=[], receive=[], opt=None):
         mt = mt.log() - (1 - mt).log()
 
     # --- initial align ---
-    transmit = core.utils.make_list(transmit)
-    receive = core.utils.make_list(receive)
+    transmit = core.utils.make_list(transmit or [])
+    receive = core.utils.make_list(receive or [])
     if opt.preproc.register and len(data) > 1:
         print('Register volumes')
         data_reg = [(contrast.echo(0).fdata(rand=True, cache=False, **backend),
@@ -164,14 +162,13 @@ def preproc(data, transmit=[], receive=[], opt=None):
         mean_shape = shapes[opt.recon.space]
 
     # --- allocate maps ---
-    maps = ParameterMaps()
+    maps = GREEQParameterMaps()
     maps.pd = ParameterMap(mean_shape, fill=pd, affine=mean_affine, **backend)
     maps.r1 = ParameterMap(mean_shape, fill=r1, affine=mean_affine, **backend)
     maps.r2s = ParameterMap(mean_shape, fill=r2s, affine=mean_affine, **backend)
     if mt is not None:
         maps.mt = ParameterMap(mean_shape, fill=mt, affine=mean_affine, **backend)
     maps.affine = mean_affine
-    maps.shape = mean_shape
 
     # --- repeat fields if not enough ---
     if transmit:

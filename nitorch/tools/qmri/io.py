@@ -2,12 +2,18 @@
 import warnings
 import copy
 from uuid import uuid4, UUID
-from types import GeneratorType as generator
 import torch
 # nitorch
 import nitorch as ni
 from nitorch import io
 from nitorch.spatial import affine_default
+from nitorch.core.utils import same_storage
+
+
+# TODO:
+#   - set proper affine after call to __getitem__
+#   - read/write 4d volumes
+#   - test, test, test
 
 
 def set_same_scanner_position(*images):
@@ -252,6 +258,23 @@ class BaseND:
         """Return a copy of the object with `scanner_position = None`."""
         return self.copy().detach_position_()
 
+    def __getitem__(self, item):
+        """Slice the array"""
+        new = self.copy()
+        new.volume = self.volume[item]
+        if self._fdata is self.volume:
+            new._fdata = new.volume
+        elif self._fdata is not None:
+            new._fdata = self._fdata[item]
+        return new
+
+    def __setitem__(self, item, value):
+        """Write array slice"""
+        self.volume[item] = value
+        if self._fdata is not None and self._fdata is not self.volume:
+            self._fdata[item] = value
+        return self
+
     def fdata(self, dtype=None, device=None, rand=True, cache=True, **kwargs):
         """Get scaled floating-point data.
 
@@ -284,6 +307,10 @@ class BaseND:
         else:
             _fdata = self._fdata
         return _fdata.to(**backend)
+
+    def savef(self, fname, *args, **kwargs):
+        """Save to disk"""
+        io.savef(self.volume, fname, *args, **kwargs)
 
     def discard(self):
         """Delete cached data."""
@@ -394,6 +421,8 @@ class GradientEchoMulti(GradientEcho):
 
     @classmethod
     def from_instance(cls, instance, **attributes):
+        """Build a multi-echo gradient-echo volume from an
+        instance of GradientEchoMulti or GradientEcho."""
         if isinstance(instance, GradientEchoMulti):
             new = instance.copy()
             new.set_attributes(**attributes)
@@ -407,8 +436,9 @@ class GradientEchoMulti(GradientEcho):
         return super().from_instance(instance, **attributes)
 
     @classmethod
-    def from_fnames(cls, fnames, **attributes):
-        echoes = [GradientEchoSingle.from_fname(fname) for fname in fnames]
+    def from_instances(cls, echoes, **attributes):
+        """Build a multi-echo gradient-echo volume from mutiple
+        instances of GradientEchoSingle."""
         volume = io.stack([echo.volume for echo in echoes], dim=0)
         if 'tr' not in attributes:
             trs = set([echo.tr for echo in echoes if echo.tr is not None])
@@ -442,6 +472,11 @@ class GradientEchoMulti(GradientEcho):
             attributes['te'] = [echo.te for echo in echoes]
         return cls.from_mapped(volume, **attributes)
 
+    @classmethod
+    def from_fnames(cls, fnames, **attributes):
+        echoes = [GradientEchoSingle.from_fname(fname) for fname in fnames]
+        return cls.from_instances(echoes, **attributes)
+
     def echo(self, index):
         volume = self.volume[index, ...]
         te = self.te[index]
@@ -449,6 +484,20 @@ class GradientEchoMulti(GradientEcho):
                       if key != 'te'}
         attributes['te'] = te
         return GradientEcho.from_mapped(volume, **attributes)
+
+    def __getitem__(self, item):
+        item = ni.core.pyutils.make_tuple(item)
+        if (not item) or item[0] in (slice(None), Ellipsis):
+            return super().__getitem__(item)
+        elif item[0] is None:
+            raise IndexError('Cannot left-pad dimensions of a '
+                             '<GradientEchoMulti>')
+        else:
+            subecho, *item = item
+            if isinstance(subecho, slice):
+                return self.echo(subecho)[(slice(None), *item)]
+            else:
+                return self.echo(subecho)[item]
 
     def __len__(self):
         return len(self.volume)

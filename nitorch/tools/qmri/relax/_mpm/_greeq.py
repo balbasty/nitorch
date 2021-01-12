@@ -1,14 +1,13 @@
 import torch
-import nitorch as ni
 from nitorch import core, spatial
-from ._options import Options
+from ._options import GREEQOptions
 from ._preproc import preproc, postproc
-from ._utils import (hessian_sym_loaddiag, hessian_sym_matmul, hessian_sym_solve,
+from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul, hessian_sym_solve,
                      smart_grid, smart_pull, smart_push)
-from ..param import ParameterMap
+from nitorch.tools.qmri.param import ParameterMap
 
 
-def nonlin(data, transmit=[], receive=[], opt=None):
+def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     """Fit a non-linear relaxometry model to multi-echo Gradient-Echo data.
 
     Parameters
@@ -25,21 +24,39 @@ def nonlin(data, transmit=[], receive=[], opt=None):
         provided, there should be one for each contrast.
         If no receive map is provided, the output `pd` map will have
         a remaining b1- bias field.
-    opt : Options, optional
+    opt : GREEQOptions or dict, optional
         Algorithm options.
+        {'preproc': {'register':      True},     # Co-register contrasts
+         'optim':   {'nb_levels':     1,         # Number of pyramid levels
+                     'max_iter_rls':  10,        # Max reweighting iterations
+                     'max_iter_gn':   5,         # Max Gauss-Newton iterations
+                     'max_iter_cg':   32,        # Max Conjugate-Gradient iterations
+                     'tolerance_rls': 1e-05,     # Tolerance for early stopping (RLS)
+                     'tolerance_gn':  1e-05,         ""
+                     'tolerance_cg':  1e-03},        ""
+         'backend': {'dtype':  torch.float32,    # Data type
+                     'device': 'cpu'},           # Device
+         'penalty': {'norm':    'jtv',           # Type of penalty: {'tkh', 'tv', 'jtv', None}
+                     'factor':  {'r1':  10,      # Penalty factor per (log) map
+                                 'pd':  10,
+                                 'r2s': 2,
+                                 'mt':  2}},
+         'verbose': 1}
 
     Returns
     -------
-    intecepts : sequence[GradientEcho]
-        Echo series extrapolated to TE=0
-    decay : estatics.ParameterMap
-        R2* decay map
+    pd : ParameterMap
+        Proton density
+    r1 : ParameterMap
+        Longitudinal relaxation rate
+    r2s : ParameterMap
+        Apparent transversal relaxation rate
+    mt : ParameterMap, optional
+        Magnetisation transfer saturation
+        Only returned is MT-weighted data is provided.
 
     """
-
-    if opt is None:
-        opt = Options()
-    opt = opt.copy()
+    opt = GREEQOptions().update(opt, **kwopt)
     dtype = opt.backend.dtype
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
@@ -49,51 +66,55 @@ def nonlin(data, transmit=[], receive=[], opt=None):
     vx = spatial.voxel_size(maps.affine)
     has_mt = hasattr(maps, 'mt')
 
-    # --- prepare regularization factor ---
-    lam = opt.regularization.factor
-    lam = core.utils.make_list(lam, 3 + has_mt)  # PD, R1, R2*, MT
+    # --- prepare penalty factor ---
+    lam = opt.penalty.factor
+    if isinstance(lam, dict):
+        lam = [lam.get('pd', 0), lam.get('r1', 0),
+               lam.get('r2s', 0), lam.get('mt', 0)]
+    lam = core.utils.make_list(lam, 4)  # PD, R1, R2*, MT
 
     # --- initialize weights (RLS) ---
-    if (not opt.regularization.norm or
-            opt.regularization.norm.lower() == 'none' or
+    if (not opt.penalty.norm or opt.penalty.norm.lower() == 'none' or
             all(l == 0 for l in lam)):
-        opt.regularization.norm = ''
-    opt.regularization.norm = opt.regularization.norm.lower()
+        opt.penalty.norm = ''
+    opt.penalty.norm = opt.penalty.norm.lower()
     mean_shape = maps[0].shape
     rls = None
     sumrls = 0
-    if opt.regularization.norm in ('tv', 'jtv'):
+    if opt.penalty.norm in ('tv', 'jtv'):
         rls_shape = mean_shape
-        if opt.regularization.norm == 'tv':
+        if opt.penalty.norm == 'tv':
             rls_shape = (len(maps),) + rls_shape
         rls = ParameterMap(rls_shape, fill=1, **backend).volume
         sumrls = rls.sum(dtype=torch.double)
-    multi_rls = rls if opt.regularization.norm == 'tv' \
-                else [rls] * len(maps)
 
-    if opt.regularization.norm:
-        print(f'With {opt.regularization.norm.upper()} regularization:')
-        print(f'    - PD:  {lam[0]:.3g}')
-        print(f'    - R1:  {lam[1]:.3g}')
-        print(f'    - R2*: {lam[2]:.3g}')
+    if opt.penalty.norm:
+        print(f'With {opt.penalty.norm.upper()} penalty:')
+        print(f'    - PD:  {lam["pd"]:.3g}')
+        print(f'    - R1:  {lam["r1"]:.3g}')
+        print(f'    - R2*: {lam["r2s"]:.3g}')
         if has_mt:
-            print(f'    - MT:  {lam[3]:.3g}')
+            print(f'    - MT:  {lam["mt"]:.3g}')
     else:
-        print('Without regularization:')
+        print('Without penalty:')
 
-    if opt.regularization.norm not in ('tv', 'jtv'):
+    if opt.penalty.norm not in ('tv', 'jtv'):
         # no reweighting -> do more gauss-newton updates instead
         opt.optim.max_iter_gn *= opt.optim.max_iter_rls
         opt.optim.max_iter_rls = 1
 
-    if opt.verbose:
-        print('{:^3s} | {:^3s} | {:^12s} + {:^12s} + {:^12s} = {:^12s} | {:^2s} | {:^7s}'
-              .format('rls', 'gn', 'fit', 'reg', 'rls', 'crit', 'ls', 'gain'))
+    printer = CritPrinter(max_levels=opt.optim.nb_levels,
+                          max_rls=opt.optim.max_iter_rls,
+                          max_gn=opt.optim.max_iter_gn,
+                          penalty=opt.penalty.norm,
+                          verbose=opt.verbose)
+    printer.print_head()
 
     shape0 = shape = maps.shape
     aff0 = aff = maps.affine
     for level in range(opt.optim.nb_levels, 0, -1):
-        
+        printer.level = level
+
         if opt.optim.nb_levels > 1:
             print('begin iter')
             show_maps(maps)
@@ -112,13 +133,14 @@ def nonlin(data, transmit=[], receive=[], opt=None):
         ll_max = core.constants.ninf
 
         for n_iter_rls in range(opt.optim.max_iter_rls):
-
-            multi_rls = rls if opt.regularization.norm == 'tv' \
-                        else [rls] * len(maps)
+            # --- Reweighted least-squares loop ---
+            printer.rls = n_iter_rls
+            multi_rls = rls if opt.penalty.norm == 'tv' else [rls] * len(maps)
 
             # --- Gauss Newton loop ---
             ll_gn = []
             for n_iter_gn in range(opt.optim.max_iter_gn):
+                printer.gn = n_iter_gn
                 crit = 0
                 grad.zero_()
                 hess.zero_()
@@ -130,6 +152,9 @@ def nonlin(data, transmit=[], receive=[], opt=None):
 
                     # increment
                     if hasattr(maps, 'mt') and not contrast.mt:
+                        # we optimize for mt but this particular contrast
+                        # has no information about mt so g1/h1 are smaller
+                        # than grad/hess.
                         grad[:-1] += g1
                         hind = list(range(nb_prm-1))
                         cnt = nb_prm
@@ -145,9 +170,9 @@ def nonlin(data, transmit=[], receive=[], opt=None):
                         hess += h1
                         crit += crit1
 
-                # --- regularization ---
+                # --- penalty ---
                 reg = 0.
-                if opt.regularization.norm:
+                if opt.penalty.norm:
                     for i, (map, weight, l) in enumerate(zip(maps, multi_rls, lam)):
                         if not l:
                             continue
@@ -159,79 +184,31 @@ def nonlin(data, transmit=[], receive=[], opt=None):
                 hess = hessian_sym_loaddiag(hess)
 
                 # --- gauss-newton ---
-                if opt.regularization.norm:
+                if opt.penalty.norm:
                     deltas = _nonlin_solve(hess, grad, multi_rls, lam, vx, opt)
                 else:
                     deltas = hessian_sym_solve(hess, grad)
 
-                if not opt.optim.max_iter_ls:
-                    # --- check improvement ---
-                    n_iter_ls = 0
-                    for map, delta in zip(maps, deltas):
-                        map.volume -= delta
-                        if map.min is not None or map.max is not None:
-                            map.volume.clamp_(map.min, map.max)
-                else:
-                    # --- line search ---
-                    armijo = 1.
-                    ok = False
-                    crit0 = crit
-                    reg0 = reg
-                    maps0 = maps
-                    if opt.verbose > 1:
-                        print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | {:2d}'
-                              .format(n_iter_rls, n_iter_gn, crit, reg, sumrls, crit + reg + sumrls, 0))
-                    for n_iter_ls in range(opt.optim.max_iter_ls):
-                        maps = maps0.deepcopy()
-                        for map, delta in zip(maps, deltas):
-                            map.volume -= armijo * delta
-                            if map.min is not None or map.max is not None:
-                                map.volume.clamp_(map.min, map.max)
-                        crit = sum(_nonlin_gradient(contrast, maps, b1m, b1p, opt, do_grad=False)
-                                   for contrast, b1m, b1p in zip(data, receive, transmit))
-                        if opt.regularization.norm:
-                            reg = sum(_nonlin_reg(map.volume, vx, weight, l, do_grad=False)
-                                      for map, weight, l in zip(maps, multi_rls, lam))
-                        else:
-                            reg = 0.
-                        if opt.verbose > 1:
-                            print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | {:2d}  {:2s}'
-                                  .format(n_iter_rls, n_iter_gn, crit, reg, sumrls,
-                                          crit + reg + sumrls, n_iter_ls+1,
-                                          ':D' if ( crit + reg < crit0 + reg0) else ':('))
-                        if crit + reg < crit0 + reg0:
-                            ok = True
-                            break
-                        else:
-                            armijo /= 2.
-                    if not ok:
-                        reg = reg0
-                        crit = crit0
-                        maps = maps0
-                        break
+                for map, delta in zip(maps, deltas):
+                    map.volume -= delta
+                    if map.min is not None or map.max is not None:
+                        map.volume.clamp_(map.min, map.max)
 
+                show_maps(maps) ## DEBUG
 
-                print('end iter')
-                show_maps(maps)
                 # --- Compute gain ---
                 ll = crit + reg + sumrls
                 ll_max = max(ll_max, ll)
                 ll_prev = ll_gn[-1] if ll_gn else ll_max
-                if ll_max != ll_prev:
-                    gain = (ll_prev - ll) / (ll_max - ll_prev)
-                else:
-                    gain = core.constants.inf
+                gain = (ll_prev - ll) / (ll_max - ll_prev)
                 ll_gn.append(ll)
-                if opt.verbose:
-                    print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | {:2d} | gain = {:7.2g}'
-                          .format(n_iter_rls, n_iter_gn, crit, reg, sumrls,
-                                  crit + reg + sumrls, n_iter_ls, gain))
+                printer.print_crit(crit, reg, sumrls, gain)
                 if gain < opt.optim.tolerance_gn:
                     break
 
             # --- Update RLS weights ---
-            if opt.regularization.norm in ('tv', 'jtv'):
-                rls = _nonlin_rls(maps, lam, opt.regularization.norm)
+            if opt.penalty.norm in ('tv', 'jtv'):
+                rls = _nonlin_rls(maps, lam, opt.penalty.norm)
                 sumrls = 0.5 * rls.sum(dtype=torch.double)
                 eps = core.constants.eps(rls.dtype)
                 rls = rls.clamp_min_(eps).reciprocal_()
@@ -251,12 +228,100 @@ def nonlin(data, transmit=[], receive=[], opt=None):
     return postproc(maps)
 
 
+class CritPrinter:
+    """Utility to print info about convergence"""
+
+    def __init__(self, penalty='', max_levels=1, max_rls=1, max_gn=1,
+                 verbose=True):
+        self.penalty = penalty
+        self.max_levels = max_levels
+        self.max_rls = max_rls
+        self.max_gn = max_gn
+        self.verbose = verbose
+        self.level = max_levels
+        self.rls = 1
+        self.gn = 1
+
+    def print_head(self):
+        if not self.verbose:
+            return
+        pattern = ''
+        args = []
+        if self.max_levels > 1:
+            pattern = '{:^3s}'
+            args.append('lvl')
+        if self.max_rls > 1:
+            if pattern:
+                pattern += ' | '
+            pattern += '{:^3s}'
+            args.append('rls')
+        if self.max_gn > 1:
+            if pattern:
+                pattern += ' | '
+            pattern += '{:^3s}'
+            args.append('gn')
+        if pattern:
+            pattern += ' | '
+        pattern += '{:^12s}'
+        args.append('fit')
+        if self.penalty:
+            pattern += ' + {:^12s}'
+            args.append('reg')
+            if self.penalty in ('tv', 'jtv'):
+                pattern += ' + {:^12s}'
+                args.append('rls')
+            pattern += ' = {:^12s}'
+            args.append('crit')
+        pattern += ' | {:^7s}'
+        args.append('gain')
+        pattern = pattern.format(*args)
+        print(pattern)
+        print('-' * len(pattern))
+
+    def print_crit(self, fit, reg=None, rls=None, gain=None):
+        if not self.verbose:
+            return
+        pattern = ''
+        args = []
+        if self.max_levels > 1:
+            pattern = '{:3d}'
+            args.append(self.level)
+        if self.max_rls > 1:
+            if pattern:
+                pattern += ' | '
+            pattern += '{:3d}'
+            args.append(self.rls)
+        if self.max_gn > 1:
+            if pattern:
+                pattern += ' | '
+            pattern += '{:3d}'
+            args.append(self.gn)
+        if pattern:
+            pattern += ' | '
+        pattern += '{:12.6g}'
+        args.append(fit)
+        if self.penalty:
+            crit = fit
+            pattern += ' + {:12.6g}'
+            args.append(reg)
+            crit = crit + fit
+            if self.penalty in ('tv', 'jtv'):
+                pattern += ' + {:12.6g}'
+                args.append(rls)
+                crit = crit + rls
+            pattern += ' = {:12.6g}'
+            args.append(crit)
+        pattern += ' | {:7.2g}'
+        args.append(gain)
+        pattern = pattern.format(*args)
+        print(pattern)
+
+
 def _get_level(level, aff0, shape0):
     return spatial.affine_resize(aff0, shape0, 1/(2 ** (level-1)))
 
 
 def _resize(maps, rls, aff, shape):
-    grid = spatial.affine_grid(aff, shape)[None, ...]
     for map in maps:
         map.volume = spatial.resize(map.volume[None, None, ...], 
                                     shape=shape)[0, 0]
@@ -318,11 +383,11 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
 
     # sequence parameters
     lam = 1 / contrast.noise
-    tr = contrast.tr
-    fa = contrast.fa / 180. * core.constants.pi
+    tr = contrast.tr                                # TR is stored in sec
+    fa = contrast.fa / 180. * core.constants.pi     # FA is stored in deg
     
     obs_shape = contrast.shape[1:]
-    recon_shape = maps.shape
+    recon_shape = maps.shape[1:]
 
     # pull parameter maps to observed space
     aff = core.linalg.lmdiv(maps.affine, contrast.affine)
@@ -330,11 +395,9 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     grid = smart_grid(aff, obs_shape, recon_shape)
     dmaps = torch.stack([map.fdata(**backend) for map in maps])
     dmaps = smart_pull(dmaps, grid)
-    if hasattr(maps, 'mt'):
-        pd, r1, r2s, mt = dmaps
-    else:
-        pd, r1, r2s = dmaps
-    has_mt = bool(contrast.mt)
+    pd, r1, r2s, *mt = dmaps
+    mt = mt[0] if mt else None
+    has_mt = mt is not None
     if has_mt:
         nb_prm = 4
         nb_hes = 10
@@ -349,10 +412,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         grid1 = smart_grid(aff, obs_shape, receive.shape)
         b1m = smart_pull(receive.fdata(**backend)[None, ...], grid1)[0]
         if receive.unit in ('%', 'pct', 'p.u.'):
-            if grid1 is None:
-                b1m = b1m * 100
-            else:
-                b1m /= 100
+            b1m = b1m.div(100.) if grid1 is None else b1m.div_(100.)
         del grid1
 
     if transmit is not None:
@@ -363,17 +423,17 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         if grid1 is None:
             b1p = b1p.clone()
         if transmit.unit in ('%', 'pct', 'p.u.'):
-            b1p /= 100
+            b1p /= 100.
         del grid1
 
     # exponentiate
-    pd = pd.exp() if grid is not None else pd.exp_()
-    r1 = r1.exp() if grid is not None else r1.exp_()
-    r2s = r2s.exp() if grid is not None else r2s.exp_()
+    pd = pd.exp() if grid is None else pd.exp_()
+    r1 = r1.exp() if grid is None else r1.exp_()
+    r2s = r2s.exp() if grid is None else r2s.exp_()
     if has_mt:
         # mt is encoded by a sigmoid:
         # > mt = 1 / (1 + exp(-prm))
-        mt = mt.neg() if grid is not None else mt.neg_()
+        mt = mt.neg() if grid is None else mt.neg_()
         mt = mt.exp_()
         mt += 1
         mt = mt.reciprocal_()
@@ -577,7 +637,7 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
 
     def hess_fn(x):
         result = hessian_sym_matmul(hess, x)
-        if not opt.regularization.norm:
+        if not opt.penalty.norm:
             return result
         for i, (map, weight, l) in enumerate(zip(x, rls, lam)):
             if not l:
