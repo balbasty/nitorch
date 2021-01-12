@@ -90,17 +90,17 @@ def nonlin(data, transmit=[], receive=[], opt=None):
         print('{:^3s} | {:^3s} | {:^12s} + {:^12s} + {:^12s} = {:^12s} | {:^2s} | {:^7s}'
               .format('rls', 'gn', 'fit', 'reg', 'rls', 'crit', 'ls', 'gain'))
 
-    shape0 = maps.shape
-    aff0 = maps.affine
-    for level in range(5, 0, -1):
+    shape0 = shape = maps.shape
+    aff0 = aff = maps.affine
+    for level in range(opt.optim.nb_levels, 0, -1):
         
-        print('begin iter')
-        show_maps(maps)
-        aff, shape = _get_level(level, aff0, shape0)
-        print(aff0, aff)
-        maps, multi_rls = _resize(maps, multi_rls, aff, shape)
-        print('after resize')
-        show_maps(maps)
+        if opt.optim.nb_levels > 1:
+            print('begin iter')
+            show_maps(maps)
+            aff, shape = _get_level(level, aff0, shape0)
+            maps, rls = _resize(maps, rls, aff, shape)
+            print('after resize')
+            show_maps(maps)
         
         # --- compute derivatives ---
         nb_prm = len(maps)
@@ -263,11 +263,11 @@ def _resize(maps, rls, aff, shape):
         map.affine = aff
     maps.affine = aff
     maps.shape = shape
-    for weight in rls:
-        if weight is not None:
-            weight.volume = spatial.resize(weight.volume[None, None, ...], 
-                                           shape=shape)[0, 0]
-            weight.affine = aff
+    if rls is not None:
+        if rls.dim() == len(shape):
+            rls = spatial.resize(rls[None, None], shape=shape)[0, 0]
+        else:
+            rls = spatial.resize(rls[None], shape=shape)[0]
     return maps, rls
 
 
@@ -319,8 +319,8 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     # sequence parameters
     lam = 1 / contrast.noise
     tr = contrast.tr
-    fa = contrast.fa
-
+    fa = contrast.fa / 180. * core.constants.pi
+    
     obs_shape = contrast.shape[1:]
     recon_shape = maps.shape
 
@@ -348,6 +348,11 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         aff = aff.to(**backend)
         grid1 = smart_grid(aff, obs_shape, receive.shape)
         b1m = smart_pull(receive.fdata(**backend)[None, ...], grid1)[0]
+        if receive.unit in ('%', 'pct', 'p.u.'):
+            if grid1 is None:
+                b1m = b1m * 100
+            else:
+                b1m /= 100
         del grid1
 
     if transmit is not None:
@@ -357,6 +362,8 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         b1p = smart_pull(transmit.fdata(**backend)[None, ...], grid1)[0]
         if grid1 is None:
             b1p = b1p.clone()
+        if transmit.unit in ('%', 'pct', 'p.u.'):
+            b1p /= 100
         del grid1
 
     # exponentiate
@@ -366,7 +373,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     if has_mt:
         # mt is encoded by a sigmoid:
         # > mt = 1 / (1 + exp(-prm))
-        mt = r2s.neg() if grid is not None else mt.neg_()
+        mt = mt.neg() if grid is not None else mt.neg_()
         mt = mt.exp_()
         mt += 1
         mt = mt.reciprocal_()
@@ -439,7 +446,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             # (hess_crit = grad_signal^2 + hess_signal * residuals)
             hess0 = torch.empty_like(grad)
             hess0[0] = grad1[0]
-            hess0[2] = grad1[1]
+            hess0[2] = grad1[2]
             hess0[2] *= (1 - echo.te * r2s)
             if has_mt:
                 omt_x_cosfa = omt * cosfa
@@ -595,7 +602,7 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
         hessp[i] += l * smo * (weight if weight is not None else 1)
 
     def precond(x):
-        return hessian_sym_solve(hessp, x)  # , bnd)
+        return hessian_sym_solve(hessp, x)
 
     result = core.optim.cg(hess_fn, grad, precond=precond,
                            verbose=(opt.verbose > 1), stop='norm',
@@ -658,27 +665,28 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
 
 def show_maps(maps):
     import matplotlib.pyplot as plt
+    clamps = [2e4, 1.5, 50, 3]
     n = 3 + hasattr(maps, 'mt')
     z = maps.shape[1]//2
     plt.subplot(1, n, 1)
-    q = plt.imshow(maps.pd.fdata()[:, z, :].exp().cpu())
+    q = plt.imshow(maps.pd.fdata()[:, z, :].exp().cpu().clamp_max(2e4))
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
     plt.subplot(1, n, 2)
-    plt.imshow(maps.r1.fdata()[:, z, :].exp().cpu())
+    plt.imshow(maps.r1.fdata()[:, z, :].exp().cpu().clamp_max(1.5))
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
     plt.subplot(1, n, 3)
-    plt.imshow(maps.r2s.fdata()[:, z, :].exp().cpu())
+    plt.imshow(maps.r2s.fdata()[:, z, :].exp().cpu().clamp_max(50))
     plt.xticks([])
     plt.yticks([])
     plt.colorbar()
     if hasattr(maps, 'mt'):
         plt.subplot(1, n, 4)
         mtslice = 100 / (1 + maps.mt.fdata()[:, z, :].neg().exp())
-        plt.imshow(mtslice.cpu())
+        plt.imshow(mtslice.cpu().clamp_max(3))
         plt.xticks([])
         plt.yticks([])
         plt.colorbar()

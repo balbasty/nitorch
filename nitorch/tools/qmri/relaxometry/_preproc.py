@@ -67,7 +67,7 @@ def preproc(data, transmit=[], receive=[], opt=None):
     dtype = opt.backend.dtype
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
-
+    
     # --- estimate hyper parameters ---
     logmeans = []
     te = []
@@ -99,6 +99,17 @@ def preproc(data, transmit=[], receive=[], opt=None):
     if opt.verbose:
         print('')
 
+        
+    print('Estimating maps from volumes:')
+    for i in range(len(data)):
+        print(f'    - Contrast {i:d}: ', end='')
+        print(f'FA = {fa[i]*180/core.constants.pi:2.0f} deg  / ', end='')
+        print(f'TR = {tr[i]*1e3:4.1f} ms / ', end='')
+        print('TE = [' + ', '.join([f'{t*1e3:.1f}' for t in te[i]]) + '] ms', end='')
+        if mt[i]:
+            print(f' / MT = True', end='')
+        print()
+        
     # --- initial minifit ---
     print('Compute initial parameters')
     inter, r2s = _loglin_minifit(logmeans, te)
@@ -130,9 +141,10 @@ def preproc(data, transmit=[], receive=[], opt=None):
             for i in range(len(dats)):
                 plt.subplot(1, len(dats), i+1)
                 plt.imshow(dats[i, :, dats.shape[2]//2, :].cpu())
+                plt.axis('off')
             plt.show()
         for contrast, aff in zip(data + transmit + receive, affines):
-            aff, contrast.affine = core.utils.to_common(aff, contrast.affine)
+            aff, contrast.affine = core.utils.to_max_device(aff, contrast.affine)
             contrast.affine = torch.matmul(aff.inverse(), contrast.affine)
 
     # --- compute recon space ---

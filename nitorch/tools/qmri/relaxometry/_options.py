@@ -18,6 +18,7 @@ class RegularizationOptions(OptionBase):
 
 class OptimOptions(OptionBase):
     """Options for the optimizer(s)"""
+    nb_levels: int = 1                     # Number of pyramid leveks
     max_iter_gn: int = 32                  # Number of Gauss-Newton iterations
     max_iter_cg: int = 32                  # Number of Conjugate Gradient iteration
     max_iter_rls: int = 10                 # Number of Reweighted LS iterations
