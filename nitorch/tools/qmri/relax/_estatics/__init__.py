@@ -36,7 +36,7 @@ def estatics(data, opt=None, **kwopt):
         Observed GRE data.
 
     opt : ESTATICSOptions, optional
-        {'mode':    'nonlin',                    # 'loglin' (= ESTATICS) or 'nonlin' (=JTV-ESTATICS)
+        {'model':    'nonlin',                   # 'loglin' (= ESTATICS) or 'nonlin' (=JTV-ESTATICS)
          'preproc': {'register':      True},     # Co-register contrasts
          'optim':   {'max_iter_rls':  10,        # Max reweighting iterations
                      'max_iter_gn':   5,         # Max Gauss-Newton iterations
@@ -74,7 +74,7 @@ def estatics(data, opt=None, **kwopt):
 
     """
     opt = ESTATICSOptions().update(opt, **kwopt)
-    if opt.mode.lower() == 'loglin':
+    if opt.model.lower() == 'loglin':
         return loglin(data, opt)
     else:
         return nonlin(data, opt)

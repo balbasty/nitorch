@@ -106,7 +106,7 @@ def preproc(data, opt):
                 plt.imshow(dats[i, :, dats.shape[2]//2, :].cpu())
             plt.show()
         for contrast, aff in zip(data, affines):
-            aff, contrast.affine = core.utils.to_common(aff, contrast.affine)
+            aff, contrast.affine = core.utils.to_max_device(aff, contrast.affine)
             contrast.affine = torch.matmul(aff.inverse(), contrast.affine)
 
     # --- compute recon space ---
@@ -131,7 +131,6 @@ def preproc(data, opt):
                        for c in range(len(data))]
     maps.decay = ParameterMap(mean_shape, fill=decay, affine=mean_affine, min=0, **backend)
     maps.affine = mean_affine
-    maps.shape = mean_shape
 
     return data, maps
 
