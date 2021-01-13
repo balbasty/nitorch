@@ -207,7 +207,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     for i, (map, weight, l) in enumerate(zip(maps, multi_rls, lam)):
                         if not l:
                             continue
-                        reg1, g1 = _nonlin_reg(map.fdata(), vx, weight, l)
+                        reg1, g1 = _nonlin_reg(map.fdata(**backend), vx, weight, l)
                         reg += reg1
                         grad[i] += g1
 

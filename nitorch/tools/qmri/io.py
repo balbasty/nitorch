@@ -84,9 +84,23 @@ class BaseND:
     _fdata: torch.Tensor = None                     # Cached scaled data
     _dtype: torch.dtype = None                      # default dtype
     _device: torch.device = None                    # default device
-    dtype = property(lambda self: self._dtype  or torch.get_default_dtype())
-    device = property(lambda self: self._device  or torch.device('cpu'))
 
+    @property
+    def dtype(self):
+        return self._dtype or torch.get_default_dtype()
+    
+    @dtype.setter
+    def dtype(self, value):
+        return self.to(dtype=value)
+    
+    @property
+    def device(self):
+        return self._device or torch.device('cpu')
+    
+    @device.setter
+    def device(self, value):
+        return self.to(device=value)
+    
     @property
     def volume(self):
         # just in case volume is modified
@@ -188,6 +202,7 @@ class BaseND:
         new.reset_attributes()
         new.set_attributes(**attributes)
         new.atleast_3d_()
+        new.device = tensor.device
         return new
 
     @classmethod
@@ -293,8 +308,8 @@ class BaseND:
         dat : torch.tensor[dtype]
 
         """
-        dtype = dtype or self._dtype or torch.get_default_dtype()
-        device = device or self._device
+        dtype = dtype or self.dtype
+        device = device or self.device
         backend = dict(dtype=dtype, device=device)
 
         if not cache or self._fdata is None:
@@ -329,9 +344,12 @@ class BaseND:
         self
 
         """
+        if dtype is not None and not isinstance(dtype, torch.dtype):
+            raise TypeError('Expected a torch.dtype but got '
+                            f'{type(dtype)}')
         self._dtype = dtype or self._dtype
-        self._device = device or self._device
-        backend = dict(dtype=self._dtype, device=self._device)
+        self._device = torch.device(device or self._device)
+        backend = dict(dtype=self.dtype, device=self.device)
         if self._fdata is not None:
             self._fdata = self._fdata.to(**backend)
         if self.affine is not None:
