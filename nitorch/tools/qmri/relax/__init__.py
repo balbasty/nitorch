@@ -16,6 +16,8 @@ greeq
     relaxation rate R1, the magnetisation transfer saturation MTsat and
     the unbiased proton density PD from variable flip angle multi-echo
     GRE images.
+gre
+    Simulate Gradient-Echo images from pre-computed parameter maps.
 
 Examples
 --------
@@ -52,3 +54,4 @@ Examples
 from ._estatics import estatics, ESTATICSOptions
 from ._mpm import greeq, GREEQOptions
 from ._mpm import vfa, VFAOptions
+from ._mpm import gre

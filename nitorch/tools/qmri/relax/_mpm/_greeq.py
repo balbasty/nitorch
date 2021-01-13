@@ -7,6 +7,40 @@ from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul, hessian_sym_solve
 from nitorch.tools.qmri.param import ParameterMap
 
 
+# NOTE:
+#   In our model, we first deform the parameter maps and then apply the
+#   FLASH signal equation. The objective function is therefore
+#                   L = l2(flash(phi @ y) - x) / 2
+#   where phi is the deformation encoded in a large matrix.
+#   The forward operation phi @ y is implemented by `grid_pull`.
+#   By applying the chain rule, we get
+#                   dL/dy = phi.T @ (flash'(phi @ y) * res)
+#   where res = (flash(phi @ y) - x) is the residual image in
+#   acquisition space. The adjoint operation phi.T @ y is implemented
+#   by `grid_push`. In practice, this means that we pull the parameter
+#   maps in observed space, compute the derivative of the flash equation,
+#   multiply it with the residuals and push back the whole thing to
+#   parameter space.
+#
+#   Alternately, we could have first applied the FLASH equation and then
+#   deformed the resulting signal
+#                       L = l2(phi @ flash(y) - x) / 2
+#   which, after chain rule, yields
+#                   dL/dy = flash'(y) * (phi.T @ res)
+#   where this time res = (phi @ flash(y) - x)
+#   In that case, we pull the param the signal only to compute the
+#   residuals that are then pushed back to parameter space.
+#   The derivative of the flash equation is computed in parameter space
+#   and multiplied with the pushed residuals.
+#
+#   It is not too complicated to implement the alternate, and it might
+#   even save some computation (although many of the components of the
+#   flash function depend on te/tr/fa which are at least contrast-specific,
+#   and even echo-time specific for the r2* component, so it may not save
+#   that much; and we still need to pull from param to observed to compute
+#   the residuals).
+
+
 def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     """Fit a non-linear relaxometry model to multi-echo Gradient-Echo data.
 
