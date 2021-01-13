@@ -258,9 +258,11 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
             sample *= sigma1
             del sigma1
             if noise == 'rician':
-                sample = sample.square().sum(dim=0)
+                sample = sample.square_().sum(dim=0)
             flash += sample
             del sample
+            if noise == 'rician':
+                flash = flash.sqrt_()
 
         te1 = te1.tolist()
         tr1 = tr1.item()
