@@ -87,7 +87,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
                       fmap.magnitude.affine) for fmap in transmit]
         data_reg += [(fmap.magnitude.fdata(rand=True, cache=False, **backend),
                       fmap.magnitude.affine) for fmap in receive]
-        dats, affines, _ = affine_align(data_reg, device=device)
+        dats, affines, _ = affine_align(data_reg, device=device, fwhm=3)
         
         if opt.verbose > 1 and plt:
             plt.figure()

@@ -112,14 +112,14 @@ def preproc(data, transmit=None, receive=None, opt=None):
     print('Compute initial parameters')
     inter, r2s = _loglin_minifit(logmeans, te)
     pd, r1, mt = _rational_minifit(inter, tr, fa, mt)
-    print(f'    - PD:    {pd.tolist():.3g}')
-    print(f'    - R1:    {r1.tolist():.3g} s')
-    print(f'    - R2*:   {r2s.tolist():.3g} s')
+    print(f'    - PD:    {pd.tolist():9.3g} a.u.')
+    print(f'    - R1:    {r1.tolist():9.3g} 1/s')
+    print(f'    - R2*:   {r2s.tolist():9.3g} 1/s')
     pd = pd.log()
     r1 = r1.log()
     r2s = r2s.log()
     if mt is not None:
-        print(f'    - MT:    {100*mt.tolist():.3g} %')
+        print(f'    - MT:    {100*mt.tolist():9.3g} %')
         mt = mt.log() - (1 - mt).log()
 
     # --- initial align ---

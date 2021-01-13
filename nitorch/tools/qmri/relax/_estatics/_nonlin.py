@@ -86,8 +86,8 @@ def nonlin(data, opt=None):
         opt.optim.max_iter_rls = 1
 
     if opt.verbose:
-        print('{:^3s} | {:^3s} | {:^12s} + {:^12s} + {:^12s} = {:^12s} | {:^2s}'
-              .format('rls', 'gn', 'fit', 'reg', 'rls', 'crit', 'ls'))
+        print('{:^3s} | {:^3s} | {:^12s} + {:^12s} + {:^12s} = {:^12s}'
+              .format('rls', 'gn', 'fit', 'reg', 'rls', 'crit'))
 
     ll_rls = []
     ll_max = core.constants.ninf
@@ -136,48 +136,10 @@ def nonlin(data, opt=None):
             else:
                 deltas = hessian_solve(hess, grad)
 
-            if not opt.optim.max_iter_ls:
-                # --- check improvement ---
-                n_iter_ls = 0
-                for map, delta in zip(maps, deltas):
-                    map.volume -= delta
-                    if map.min is not None or map.max is not None:
-                        map.volume.clamp_(map.min, map.max)
-            else:
-                # --- line search ---
-                armijo = 1.
-                ok = False
-                crit0 = crit
-                reg0 = reg
-                maps0 = maps
-                for n_iter_ls in range(opt.optim.max_iter_ls):
-                    maps = maps0.deepcopy()
-                    for map, delta in zip(maps, deltas):
-                        map.volume -= armijo * delta
-                        if map.min is not None or map.max is not None:
-                            map.volume.clamp_(map.min, map.max)
-                    crit = sum(_nonlin_gradient(contrast, intercept, maps.decay, opt, do_grad=False)
-                               for contrast, intercept in zip(data, maps.intercepts))
-                    if opt.regularization.norm:
-                        reg = sum(_nonlin_reg(map.volume, vx, weight, l, do_grad=False)
-                                  for map, weight, l in zip(maps, multi_rls, lam))
-                    else:
-                        reg = 0.
-                    if opt.verbose > 1:
-                        print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | {:2d}  {:2s}'
-                              .format(n_iter_rls, n_iter_gn, crit, reg, sumrls,
-                                      crit + reg + sumrls, n_iter_ls, 
-                                      ':D' if (crit + reg < crit0 + reg0) else ':('))
-                    if crit + reg < crit0 + reg0:
-                        ok = True
-                        break
-                    else:
-                        armijo /= 2.
-                if not ok:
-                    reg = reg0
-                    crit = crit0
-                    maps = maps0
-                    break
+            for map, delta in zip(maps, deltas):
+                map.volume -= delta
+                if map.min is not None or map.max is not None:
+                    map.volume.clamp_(map.min, map.max)
 
             # --- Compute gain ---
             ll = crit + reg + sumrls
@@ -186,9 +148,9 @@ def nonlin(data, opt=None):
             gain = (ll_prev - ll) / (ll_max - ll_prev)
             ll_gn.append(ll)
             if opt.verbose:
-                print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | {:2d} | gain = {:7.2g}'
+                print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | gain = {:7.2g}'
                       .format(n_iter_rls, n_iter_gn, crit, reg, sumrls,
-                              crit + reg + sumrls, n_iter_ls, gain))
+                              crit + reg + sumrls, gain))
             if gain < opt.optim.tolerance_gn:
                 break
 

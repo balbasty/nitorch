@@ -86,15 +86,14 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         if opt.penalty.norm == 'tv':
             rls_shape = (len(maps),) + rls_shape
         rls = ParameterMap(rls_shape, fill=1, **backend).volume
-        sumrls = rls.sum(dtype=torch.double)
 
     if opt.penalty.norm:
         print(f'With {opt.penalty.norm.upper()} penalty:')
-        print(f'    - PD:  {lam["pd"]:.3g}')
-        print(f'    - R1:  {lam["r1"]:.3g}')
-        print(f'    - R2*: {lam["r2s"]:.3g}')
+        print(f'    - PD:  {lam[0]:.3g}')
+        print(f'    - R1:  {lam[1]:.3g}')
+        print(f'    - R2*: {lam[2]:.3g}')
         if has_mt:
-            print(f'    - MT:  {lam["mt"]:.3g}')
+            print(f'    - MT:  {lam[3]:.3g}')
     else:
         print('Without penalty:')
 
@@ -110,18 +109,15 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                           verbose=opt.verbose)
     printer.print_head()
 
-    shape0 = shape = maps.shape
+    shape0 = shape = maps.shape[1:]
     aff0 = aff = maps.affine
     for level in range(opt.optim.nb_levels, 0, -1):
         printer.level = level
 
         if opt.optim.nb_levels > 1:
-            print('begin iter')
-            show_maps(maps)
             aff, shape = _get_level(level, aff0, shape0)
             maps, rls = _resize(maps, rls, aff, shape)
-            print('after resize')
-            show_maps(maps)
+            sumrls = rls.sum(dtype=torch.double)
         
         # --- compute derivatives ---
         nb_prm = len(maps)
@@ -132,7 +128,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         ll_rls = []
         ll_max = core.constants.ninf
 
-        for n_iter_rls in range(opt.optim.max_iter_rls):
+        max_iter_rls = opt.optim.max_iter_rls // level
+        for n_iter_rls in range(max_iter_rls):
             # --- Reweighted least-squares loop ---
             printer.rls = n_iter_rls
             multi_rls = rls if opt.penalty.norm == 'tv' else [rls] * len(maps)
@@ -194,8 +191,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     if map.min is not None or map.max is not None:
                         map.volume.clamp_(map.min, map.max)
 
-                show_maps(maps) ## DEBUG
-
                 # --- Compute gain ---
                 ll = crit + reg + sumrls
                 ll_max = max(ll_max, ll)
@@ -220,7 +215,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 ll_prev = ll_rls[-1][-1] if ll_rls else ll_max
                 ll_rls.append(ll_gn)
                 gain = (ll_prev - ll) / (ll_max - ll_prev)
-                if gain < opt.optim.tolerance_rls:
+                if abs(gain) < opt.optim.tolerance_rls:
                     print(f'Converged ({gain:7.2g})')
                     break
 
@@ -327,7 +322,6 @@ def _resize(maps, rls, aff, shape):
                                     shape=shape)[0, 0]
         map.affine = aff
     maps.affine = aff
-    maps.shape = shape
     if rls is not None:
         if rls.dim() == len(shape):
             rls = spatial.resize(rls[None, None], shape=shape)[0, 0]
@@ -393,6 +387,9 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     aff = core.linalg.lmdiv(maps.affine, contrast.affine)
     aff = aff.to(**backend)
     grid = smart_grid(aff, obs_shape, recon_shape)
+    drop_mt = hasattr(maps, 'mt') and not getattr(contrast, 'mt', False)
+    if drop_mt:
+        maps = maps[:-1]
     dmaps = torch.stack([map.fdata(**backend) for map in maps])
     dmaps = smart_pull(dmaps, grid)
     pd, r1, r2s, *mt = dmaps
