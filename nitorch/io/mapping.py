@@ -998,10 +998,7 @@ class CatArray(MappedArray):
         self.shape = tuple(shape)
 
         # concatenate
-        _arrays = []
-        for i, array in enumerate(arrays):
-            _arrays.append(array)
-        self._arrays = tuple(_arrays)
+        self._arrays = tuple(arrays)
 
     def __str__(self):
         dtype_str = tuple(str(dt) for dt in self.dtype)
@@ -1067,7 +1064,8 @@ class CatArray(MappedArray):
         assert is_sliceaxis(index_cat), "This should not happen"
         arrays = self._arrays
 
-        if index_cat.step < 0:
+        step = index_cat.step or 1
+        if step < 0:
             # if negative step:
             # 1) invert everything
             invert_index = [slice(None)] * self.dim
@@ -1078,7 +1076,7 @@ class CatArray(MappedArray):
 
         # compute navigator
         # (step is positive)
-        start, step, nb_elem_total = slice_navigator(index_cat, shape_cat, neg2pos=False)
+        start, step, nb_elem_total = slice_navigator(index_cat, shape_cat, do_neg2pos=False)
 
         nb_pre = 0              # nb of slices on the left of the cursor
         kept_arrays = []        # arrays at least partly in bounds
@@ -1097,7 +1095,7 @@ class CatArray(MappedArray):
                 # first volume
                 kept_arrays.append(array)
                 starts.append(start - nb_pre)
-            elif nb_pre < index_cat.stop:
+            elif index_cat.stop is None or nb_pre < index_cat.stop:
                 # other kept volume
                 kept_arrays.append(array)
                 skip = size_since_start - (size_since_start // step) * step
@@ -1106,7 +1104,7 @@ class CatArray(MappedArray):
             nb_elem_prev = size_since_start // step
             nb_elem_remaining = nb_elem_total - nb_elem_prev
             nb_elem_this_volume = (size_cat - starts[-1]) // step
-            if nb_elem_this_volume <= nb_elem_remaining:
+            if nb_elem_remaining <= nb_elem_this_volume:
                 # last volume
                 stops.append(nb_elem_remaining)
                 break
@@ -1126,6 +1124,7 @@ class CatArray(MappedArray):
         new = copy(self)
         new._arrays = arrays
         new._dim_cat = new_dim_cat
+        new.shape = new_shape
         return new
 
     def permute(self, dims):
@@ -1134,6 +1133,7 @@ class CatArray(MappedArray):
         new._arrays = [array.permute(dims) for array in new._arrays]
         iperm = invert_permutation(dims)
         new._dim_cat = iperm[new._dim_cat]
+        new.shape = tuple(self.shape[d] for d in dims)
         return new
 
     def data(self, *args, **kwargs):

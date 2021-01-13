@@ -50,7 +50,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     r1 : ParameterMap
         Longitudinal relaxation rate
     r2s : ParameterMap
-        Apparent transversal relaxation rate
+        Apparent transverse relaxation rate
     mt : ParameterMap, optional
         Magnetisation transfer saturation
         Only returned is MT-weighted data is provided.

@@ -416,7 +416,19 @@ class GradientEchoSingle(GradientEcho, Volume3D):
 
 
 class GradientEchoMulti(GradientEcho):
-    """Multi-Echo Gradient Echo series."""
+    """Multi-Echo Gradient Echo series.
+
+    Properties
+    ----------
+    volume : io.MappedArray or tensor       Mapped volume file
+    affine : tensor                         Orientation matrix
+    scanner_position : UUID                 Link scanner positions
+    te : list[float]                        Echo times (in sec)
+    tr : float                              Repetition time (in sec)
+    ti : float                              Inversion time (in sec)
+    fa : float                              Flip angle (in deg)
+    mt : float or bool                      Off-resonance pulse (in hz, or bool)
+    """
     te: list = None
 
     @classmethod
@@ -495,9 +507,15 @@ class GradientEchoMulti(GradientEcho):
         else:
             subecho, *item = item
             if isinstance(subecho, slice):
-                return self.echo(subecho)[(slice(None), *item)]
+                subecho = self.echo(subecho)
+                if item:
+                    subecho = subecho[(slice(None), *item)]
+                return subecho
             else:
-                return self.echo(subecho)[item]
+                subecho = self.echo(subecho)
+                if item:
+                    subecho = subecho[item]
+                return subecho
 
     def __len__(self):
         return len(self.volume)
