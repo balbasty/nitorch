@@ -148,7 +148,6 @@ def ffd(source, target, grid_shape=10, group='SE', origin='center',
               if optim_affine else [grid_parameters]
     optim = torch.optim.Adam(opt_prm, lr=lr[0])
     scheduler = ReduceLROnPlateau(optim)
-    optim = BacktrackingLineSearch(optim)
 
     def forward():
         disp, grid = exp(grid_parameters)

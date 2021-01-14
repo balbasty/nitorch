@@ -118,7 +118,6 @@ def affine(source, target, group='SE', origin='center', loss=None, pull=None,
 
     optim = torch.optim.Adam([parameters], lr=lr)
     scheduler = ReduceLROnPlateau(optim)
-    optim = BacktrackingLineSearch(optim)
 
     def forward():
         moved = pull(parameters)
@@ -126,6 +125,8 @@ def affine(source, target, group='SE', origin='center', loss=None, pull=None,
         return loss_val
 
     # Optim loop
+    steps = 1
+    loss_avg = 0
     for n_iter in range(1, max_iter + 1):
 
         optim.zero_grad(set_to_none=True)
@@ -134,12 +135,15 @@ def affine(source, target, group='SE', origin='center', loss=None, pull=None,
         loss_val = optim.step(forward)
 
         with torch.no_grad():
-            if n_iter % 10 == 0:
+            loss_avg += loss_val
+            if n_iter % steps == 0:
+                loss_avg /= steps
                 scheduler.step(loss_val)
                 print('{:4d} {:12.6f} | lr={:g}'
                       .format(n_iter, loss_val.item(),
                               optim.param_groups[0]['lr']),
                       end='\r')
+                loss_avg = 0
 
         if optim.param_groups[0]['lr'] < min_lr:
             print('\nConverged.')

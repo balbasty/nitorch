@@ -8,10 +8,11 @@ from nitorch import nn as nni
 
 class BacktrackingLineSearch(torch.optim.Optimizer):
 
-    def __init__(self, optim, armijo=1, max_iter=6):
+    def __init__(self, optim, armijo=1, max_iter=6, adaptive=True):
         self.optim = optim
-        self.armijo = armijo
+        self.armijo = float(armijo)
         self.max_iter = max_iter
+        self.adaptive = True
 
     def step(self, closure, loss=None):
         """
@@ -26,22 +27,33 @@ class BacktrackingLineSearch(torch.optim.Optimizer):
         tensor
 
         """
+        def get_params():
+            params = []
+            for group in self.optim.param_groups:
+                params.extend(group['params'])
+            return params
+        
         with torch.no_grad():
             if loss is None:
                 loss = closure()
             armijo = self.armijo
-            params0 = [param.detach().clone() for param in self.optim.params]
+           
+            params0 = [param.detach().clone() for param in get_params()]
             self.optim.step()
-            delta = [p - p0 for p, p0 in zip(self.optim.params, params0)]
+            deltas = [p - p0 for p, p0 in zip(get_params(), params0)]
+            self.last_ok = False
             for n_iter in range(self.max_iter):
                 new_loss = closure()
                 if new_loss < loss:
+                    armijo = 2 * armijo
+                    self.last_ok = True
                     break
                 else:
-                    armijo = armijo / 2
-                    for param, param0 in zip(self.optim.params, params0):
+                    armijo = armijo / 2.
+                    for param, param0, delta in zip(get_params(), params0, deltas):
                         param.copy_(param0 + armijo * delta)
-
+        if self.adaptive:
+            self.armijo = max(min(armijo, 1), 0.01)
         return new_loss
 
     def add_param_group(self, param_group: dict) -> None:
@@ -55,6 +67,10 @@ class BacktrackingLineSearch(torch.optim.Optimizer):
 
     def zero_grad(self, *args, **kwargs) -> None:
         return self.optim.zero_grad(*args, **kwargs)
+    
+    @property
+    def param_groups(self):
+        return self.optim.param_groups
 
 
 def affine_group_converter(group):

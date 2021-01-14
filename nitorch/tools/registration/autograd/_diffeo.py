@@ -41,9 +41,9 @@ def diffeo(source, target, group='SE', origin='center',
     image_loss : callable(mov, fix) -> loss, default=MutualInfoLoss()
         A loss function that takestwo  inputs of shape
         (batch, channel, *spatial).
-    vel_loss : callable(mov, fix) -> loss, default=MutualInfoLoss()
-        A loss function that takestwo  inputs of shape
-        (batch, channel, *spatial).
+    vel_loss : float or callable(mov, fix) -> loss, default=BendingLoss()
+        Either a factor to muultiply the bending loss with or a loss 
+        function that takes two inputs of shape (batch, channel, *spatial).
     pull : dict
         interpolation : int, default=1
             Interpolation order
@@ -137,7 +137,6 @@ def diffeo(source, target, group='SE', origin='center',
               if optim_affine else [velocity]
     optim = torch.optim.Adam(opt_prm, lr=lr[0])
     scheduler = ReduceLROnPlateau(optim)
-    optim = BacktrackingLineSearch(optim)
 
     def forward():
         moved = pull(parameters, velocity)
@@ -145,23 +144,21 @@ def diffeo(source, target, group='SE', origin='center',
         return loss_val
 
     # Optim loop
-    loss_val = core.constants.inf
     loss_avg = 0
     for n_iter in range(1, max_iter + 1):
 
         optim.zero_grad(set_to_none=True)
         loss_val = forward()
         loss_val.backward()
-        optim.step()
+        optim.step(forward)
 
         with torch.no_grad():
             loss_avg += loss_val
-
             if n_iter % 10 == 0:
                 loss_avg /= 10
                 scheduler.step(loss_avg)
 
-                print('{:4d} {:12.6f} | lr={:g}'
+                print('{:4d} {:12.6f} | lr={:g} '
                       .format(n_iter, loss_avg.item(),
                               optim.param_groups[0]['lr']),
                       end='\r')
