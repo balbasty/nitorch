@@ -858,7 +858,7 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
           This case with an integer factor corresponds to subslicing
           the volume (e.g., `vol[::f, ::f, ::f]`).
         * A list of anchors (one per dimension) can also be provided.
-    **kwargs : dict
+    **kwargs
         Parameters of `grid_pull`.
 
     Returns
