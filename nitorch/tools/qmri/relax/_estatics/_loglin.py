@@ -1,7 +1,5 @@
 import torch
-import nitorch as ni
-from nitorch import core, spatial
-from nitorch.tools.qmri import io as qio
+from nitorch import core
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag, hessian_solve,
