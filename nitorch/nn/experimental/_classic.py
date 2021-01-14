@@ -1,10 +1,9 @@
 import torch
 from torch import nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from torch.autograd import Variable
 from nitorch import core, spatial, io
 from nitorch import nn as nni
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 
 def zero_grad_(param):
