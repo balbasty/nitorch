@@ -1,6 +1,6 @@
 import torch
-from ..core.optionals import numpy as np
-from ..core import pyutils
+from nitorch.core.optionals import numpy as np
+from nitorch.core import pyutils
 import itertools
 
 
@@ -406,7 +406,7 @@ def expand_index(index, shape):
 
     Parameters
     ----------
-    index : sequence of index_like
+    index : index_like or sequence of index_like
         A tuple of indices with value types in
         {None, int, slice, oob_slice, ellipsis}
     shape : sequence of int
@@ -428,7 +428,7 @@ def expand_index(index, shape):
         * If a scalar index falls out-of-bound
 
     """
-    index = list(index)
+    index = pyutils.make_list(index)
     shape = list(shape)
     nb_dim = len(shape)
 
