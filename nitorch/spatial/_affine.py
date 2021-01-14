@@ -223,9 +223,11 @@ def volume_layout(*args, **kwargs):
             layout = layout_from_axes(*args, **kwargs)
 
     # Remap axes indices if not contiguous
+    backend = dict(dtype=layout.dtype, device=layout.device)
     axes = layout[:, 0]
-    new_axes = torch.argsort(axes).to(layout.dtype)
-    layout = torch.stack((new_axes, layout[:, 1]), dim=-1)
+    remap = torch.argsort(axes)
+    axes[remap] = torch.arange(len(axes), **backend)
+    layout = torch.stack((axes, layout[:, 1]), dim=-1)
     return layout
 
 
