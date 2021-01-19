@@ -105,11 +105,10 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     if isinstance(lam, dict):
         lam = [lam.get('pd', 0), lam.get('r1', 0),
                lam.get('r2s', 0), lam.get('mt', 0)]
-    lam = core.utils.make_list(lam, 4)  # PD, R1, R2*, MT
+    lam = core.utils.make_vector(lam, 4, **backend)  # PD, R1, R2*, MT
 
     # --- initialize weights (RLS) ---
-    if (not opt.penalty.norm or opt.penalty.norm.lower() == 'none' or
-            all(l == 0 for l in lam)):
+    if str(opt.penalty.norm).lower() == 'none' or all(lam == 0):
         opt.penalty.norm = ''
     opt.penalty.norm = opt.penalty.norm.lower()
     mean_shape = maps[0].shape
@@ -120,6 +119,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         if opt.penalty.norm == 'tv':
             rls_shape = (len(maps),) + rls_shape
         rls = ParameterMap(rls_shape, fill=1, **backend).volume
+        sumrls = 0.5 * core.pyutils.prod(rls_shape)
 
     if opt.penalty.norm:
         print(f'With {opt.penalty.norm.upper()} penalty:')
@@ -145,14 +145,19 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
 
     shape0 = shape = maps.shape[1:]
     aff0 = aff = maps.affine
+    vx0 = vx = spatial.voxel_size(aff0)
+    vol0 = vx0.prod()
+    vol = vx.prod() / vol0
     for level in range(opt.optim.nb_levels, 0, -1):
         printer.level = level
 
         if opt.optim.nb_levels > 1:
             aff, shape = _get_level(level, aff0, shape0)
+            vx = spatial.voxel_size(aff)
+            vol = vx.prod() / vol0
             maps, rls = _resize(maps, rls, aff, shape)
             if opt.penalty.norm in ('tv', 'jtv'):
-                sumrls = rls.sum(dtype=torch.double)
+                sumrls = 0.5 * vol * rls.reciprocal().sum(dtype=torch.double)
         
         # --- compute derivatives ---
         nb_prm = len(maps)
@@ -210,7 +215,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     for i, (map, weight, l) in enumerate(zip(maps, multi_rls, lam)):
                         if not l:
                             continue
-                        reg1, g1 = _nonlin_reg(map.fdata(**backend), vx, weight, l)
+                        reg1, g1 = _nonlin_reg(map.fdata(**backend), vx, weight, l * vol)
                         reg += reg1
                         grad[i] += g1
                         del g1
@@ -220,7 +225,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
 
                 # --- gauss-newton ---
                 if opt.penalty.norm:
-                    deltas = _nonlin_solve(hess, grad, multi_rls, lam, vx, opt)
+                    deltas = _nonlin_solve(hess, grad, multi_rls, lam * vol, vx, opt)
                 else:
                     deltas = hessian_sym_solve(hess, grad)
 
@@ -243,7 +248,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
             # --- Update RLS weights ---
             if opt.penalty.norm in ('tv', 'jtv'):
                 rls = _nonlin_rls(maps, lam, opt.penalty.norm)
-                sumrls = 0.5 * rls.sum(dtype=torch.double)
+                sumrls = (0.5 * vol) * rls.sum(dtype=torch.double)
                 eps = core.constants.eps(rls.dtype)
                 rls = rls.clamp_min_(eps).reciprocal_()
 
@@ -447,7 +452,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         aff1 = core.linalg.lmdiv(receive.affine, contrast.affine)
         aff1 = aff1.to(**backend)
         grid1 = smart_grid(aff1, obs_shape, receive.shape)
-        b1m = smart_pull(receive.fdata(**backend)[None, ...], grid1)[0]
+        b1m = smart_pull(receive.fdata(**backend)[None], grid1)[0]
         if receive.unit in ('%', 'pct', 'p.u.'):
             b1m = b1m.div(100.) if grid1 is None else b1m.div_(100.)
         del grid1
@@ -456,7 +461,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         aff1 = core.linalg.lmdiv(transmit.affine, contrast.affine)
         aff1 = aff1.to(**backend)
         grid1 = smart_grid(aff1, obs_shape, transmit.shape)
-        b1p = smart_pull(transmit.fdata(**backend)[None, ...], grid1)[0]
+        b1p = smart_pull(transmit.fdata(**backend)[None], grid1)[0]
         if grid1 is None:
             b1p = b1p.clone()
         if transmit.unit in ('%', 'pct', 'p.u.'):
@@ -527,42 +532,56 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
 
             # PD / R1 / R2* / MT
             grad1 = torch.empty_like(grad)
+
+            # grad_crit = grad_signal * residuals
+            # hess_crit = grad_signal^2 + hess_signal * residuals
             
-            # all gradients are multiplied by fit at some point
-            # so we initialize them with fit
+            # grad_signal: compute gradient of the signal term
+            #   all gradients are multiplied by fit at some point
+            #   so we initialize them with fit
             grad1[...] = fit[None].expand((3+has_mt, *fit.shape))
 
-            # compute gradient of the signal term
-            # (grad_crit = grad_signal * residuals)
+            grad1[1] *= -tr * r1 * (omt_x_cosfa - 1) * e1
+            grad1[1] /= (1 - e1) * (1 - omt_x_cosfa * e1)
             grad1[2] *= -echo.te * r2s
             if has_mt:
                 grad1[3] *= (omt - 1) / (1 - omt_x_cosfa * e1)
-            grad1[1] = -tr * r1 * (omt_x_cosfa - 1) * e1
-            grad1[1] /= (1 - e1) * (1 - omt_x_cosfa * e1)
 
-            # compute diagonal of the hessian of the signal term 
-            # (hess_crit = grad_signal^2 + hess_signal * residuals)
+#             grad1[0] = fit
+#             grad1[1] = -tr * r1 * (e1 / (1 - e1)) * ((omt_x_cosfa - 1) / (1 - omt_x_cosfa * e1))
+#             grad1[1] *= fit
+#             grad1[2] = -echo.te * r2s
+#             grad1[2] *= fit
+#             if has_mt:
+#                 grad1[3] = (omt - 1) / (1 - omt_x_cosfa * e1)
+#                 grad1[3] *= fit
+            
+            # hess_signal: compute diagonal of the hessian of the signal term 
             hess0 = torch.empty_like(grad)
+            
             hess0[0] = grad1[0]
-            hess0[2] = grad1[2]
-            hess0[2] *= (1 - echo.te * r2s)
+            hess0[1] = - tr * r1 
+            hess0[1] *= (1 + omt_x_cosfa * e1) 
+            hess0[1] /= (1 - omt_x_cosfa * e1)
+            hess0[1] += 1
+            hess0[1] *= grad1[1]
+            hess0[2] = r2s
+            hess0[2] *= -echo.te
+            hess0[2] += 1
+            hess0[2] *= grad1[2]
             if has_mt:
                 hess0[3] = (omt - 1) * omt_x_cosfa * e1 
                 hess0[3] /= 1 - omt_x_cosfa * e1
                 hess0[3] += omt 
                 hess0[3] -= 0.5
                 hess0[3] *= 2
-                hess0[3] = grad1[3]
-            hess0[1] = - tr * r1 
-            hess0[1] *= (1 + omt_x_cosfa * e1) 
-            hess0[1] /= (1 - omt_x_cosfa * e1)
-            hess0[1] += 1
-            hess0[1] *= grad1[1]
+                hess0[3] *= grad1[3]
             
+            # hess_signal: multiply by residuals
             hess0 *= res
             hess0 = hess0.abs_()
             
-            # increment hessian
+            # hess_crit: add grad_signal^2 to hess_signal
             hess1 = torch.empty_like(hess)
             hess1[0] = grad1[0].square().add_(hess0[0])
             hess1[1] = grad1[1].square().add_(hess0[1])
@@ -586,7 +605,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             hess += hess1
             del hess1
 
-            # increment gradient
+            # grad_crit: multiply by residuals
             grad1 *= res
             grad1 *= lam
             grad += grad1

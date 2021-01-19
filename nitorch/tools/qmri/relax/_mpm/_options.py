@@ -13,8 +13,7 @@ class ReconOptions(Option):
 class PenaltyOptions(Option):
     """Options for the regularization"""
     norm: str = 'jtv'                       # Norm to optimize: {'jtv', 'tv', 'tkh', None}
-    factor: float or list or dict \
-        = dict(r1=10, pd=10, r2s=2, mt=2)   # Regularization factor
+    factor: float or list or dict = 10      # Regularization factor
 
 
 class OptimOptions(Option):
