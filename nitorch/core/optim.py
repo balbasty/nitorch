@@ -116,8 +116,8 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         if stop == 'residuals':
             obj0 = torch.sqrt(rz)
         else:
-            obj0 = A(x) - 2 * b
-            obj0 = torch.sum(0.5 * x * obj0, dtype=sum_dtype)
+            obj0 = A(x).sub_(2*b).mul_(x)
+            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
         if verbose:
             s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g}'
             print(s.format(0, stop, obj0))
@@ -148,8 +148,8 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
             if stop == 'residuals':
                 obj1 = torch.sqrt(rz)
             else:
-                obj1 = A(x) - 2 * b
-                obj1 = torch.sum(0.5 * x * obj1, dtype=sum_dtype)
+                obj1 = A(x).sub_(2*b).mul_(x)
+                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
             obj[n_iter] = obj1
             gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
             if verbose:
