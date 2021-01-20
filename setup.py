@@ -542,5 +542,10 @@ setup(
     python_requires='>=3.6',
     ext_package='nitorch',
     ext_modules=build_extensions,
-    cmdclass={'build_ext': build_ext}
+    cmdclass={'build_ext': build_ext},
+    entry_points={
+        'console_scripts': [
+            'autoreg=nitorch.tools.registration.autograd.command_line:autoreg',
+        ],
+    }
 )
