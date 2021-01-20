@@ -1044,8 +1044,7 @@ def ceil_pow(t, p=2.0, l=2.0, mx=None):
     dtype0 = ct.dtype
     dtype = torch.float32
     dim = torch.as_tensor(ct, dtype=dtype, device=device)
-    if mx is not None:
-        ct[ct > mx] = mx
+    ct.clamp_max_(mx)
     d = len(ct)
     # Build array of l*p**[0, ..., N]
     N = 32
