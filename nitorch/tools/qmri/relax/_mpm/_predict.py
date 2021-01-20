@@ -74,6 +74,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
     tr = make_list(tr)
     fa = make_list(fa)
     mtpulse = make_list(mtpulse)
+    mtpulse = [bool(p) for p in mtpulse]
     sigma = make_list(sigma)
     transmit = make_list(transmit or [])
     receive = make_list(receive or [])
@@ -187,11 +188,13 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
             f1pd = f1pd.clone()  # clone it so that we can work in-place later
 
         if transmit1 is not None:
+            unit = transmit1.unit
+            taff1 = transmit1.affine.to(**backend)
             transmit1 = transmit1.fdata(**backend)
-            if transmit1.unit in ('%', 'pct', 'p.u'):
+            if unit in ('%', 'pct', 'p.u'):
                 transmit1 = transmit1 / 100.
             if aff1 is not None:
-                mat = core.linalg.lmdiv(transmit1.affine.to(**backend), aff1)
+                mat = core.linalg.lmdiv(taff1, aff1)
                 grid = smart_grid(mat, shape1, transmit1.shape)
                 transmit1 = smart_pull(transmit1[None], grid)[0]
                 del grid
@@ -199,11 +202,13 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
             del transmit1
 
         if receive1 is not None:
+            unit = receive1.unit
+            raff1 = receive1.affine.to(**backend)
             receive1 = receive1.fdata(**backend)
-            if receive1.unit in ('%', 'pct', 'p.u'):
+            if unit in ('%', 'pct', 'p.u'):
                 receive1 = receive1 / 100.
             if aff1 is not None:
-                mat = core.linalg.lmdiv(receive1.affine.to(**backend), aff1)
+                mat = core.linalg.lmdiv(raff1, aff1)
                 grid = smart_grid(mat, shape1, receive1.shape)
                 receive1 = smart_pull(receive1[None], grid)[0]
                 del grid
@@ -238,7 +243,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
                                  'an R2* must be provided.')
             te1 = te1.reshape([-1] + [1] * f1r2s.dim())
             flash = flash * (-te1 * f1r2s).exp_()
-            del r2s
+            del f1r2s
 
         # sample noise
         if sigma1:

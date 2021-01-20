@@ -4,7 +4,7 @@ from nitorch.core.options import Option
 
 class ReconOptions(Option):
     """Options for the reconstruction space"""
-    space: int or str = 'mean'              # Orientation of the recon space
+    space: int or str = 0                   # Orientation of the recon space
     layout: int or str or None = None       # ?
     fov: str = 'bb'                         # Field-of-view of the recon space
     crop: float = 0                         # Crop size if fov == 'bb'
@@ -18,7 +18,7 @@ class PenaltyOptions(Option):
 
 class OptimOptions(Option):
     """Options for the optimizer(s)"""
-    nb_levels: int = 1                     # Number of pyramid leveks
+    nb_levels: int = 5                     # Number of pyramid leveks
     max_iter_gn: int = 5                   # Number of Gauss-Newton iterations
     max_iter_cg: int = 32                  # Number of Conjugate Gradient iteration
     max_iter_rls: int = 10                 # Number of Reweighted LS iterations

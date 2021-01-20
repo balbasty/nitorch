@@ -243,10 +243,12 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 ll_gn.append(ll)
                 printer.print_crit(crit, reg, sumrls, gain)
                 if gain < opt.optim.tolerance_gn:
+                    print('GN converged: ', ll_prev.item(), '->', ll.item())
                     break
 
             # --- Update RLS weights ---
             if opt.penalty.norm in ('tv', 'jtv'):
+                del multi_rls
                 rls = _nonlin_rls(maps, lam, opt.penalty.norm)
                 sumrls = (0.5 * vol) * rls.sum(dtype=torch.double)
                 eps = core.constants.eps(rls.dtype)
@@ -260,7 +262,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 ll_rls.append(ll_gn)
                 gain = (ll_prev - ll) / (ll_max - ll_prev)
                 if abs(gain) < opt.optim.tolerance_rls:
-                    print(f'Converged ({gain:7.2g})')
+                    print(f'RLS converged ({gain:7.2g})')
                     break
 
     # --- Prepare output ---
@@ -343,7 +345,7 @@ class CritPrinter:
             crit = fit
             pattern += ' + {:12.6g}'
             args.append(reg)
-            crit = crit + fit
+            crit = crit + reg
             if self.penalty in ('tv', 'jtv'):
                 pattern += ' + {:12.6g}'
                 args.append(rls)
