@@ -11,3 +11,4 @@ from . import losses
 from . import training
 from . import generators
 from . import experimental
+from . import models
