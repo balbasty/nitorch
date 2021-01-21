@@ -3,11 +3,12 @@
 import torch
 from torch import nn as tnn
 from ._base import nitorchmodule, Module
-from ._conv import Conv
+from ._conv import (Conv, ConvZeroCentre)
 from ._reduction import reductions, Reduction
 from nitorch.core.pyutils import make_list
 from collections import OrderedDict
 import inspect
+import math
 
 
 @nitorchmodule
@@ -324,3 +325,61 @@ class CNN(tnn.Sequential):
         super().__init__(OrderedDict(modules))
 
 
+@nitorchmodule
+class MRF(tnn.Sequential):
+    """MRF network"""
+
+    def __init__(self, dim, num_classes, num_iter=1, num_filters=16, num_layers=0,
+                 kernel_size=3, activation=tnn.LeakyReLU(0.1), batch_norm=False):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+        num_classes : int
+            Number of input classes.
+        num_iter : int, default=1
+            Number of mean-field iterations.
+        num_layers : int, default=0
+            Number of additional layers between MRF layer and final layer.
+        num_filters : int, default=16
+            Number of conv filters in first, MRF layer.
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+        activation : str or type or callable, default='tnn.LeakyReLU(0.1)'
+            Activation function.
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
+
+        """
+        self.dim = dim
+        self.num_iter = num_iter
+        if num_classes == 1:
+            final_activation = tnn.Sigmoid
+        else:
+            final_activation = tnn.Softmax(dim=1)
+        # Build MRF model
+        modules = [ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
+                                       kernel_size=kernel_size, activation=activation,
+                                       batch_norm=batch_norm, bias=False)]
+        for i in range(num_layers):
+            modules.append(Conv(dim, in_channels=num_filters, out_channels=num_filters,
+                                kernel_size=1, activation=activation, batch_norm=batch_norm,
+                                bias=False))
+        modules.append(Conv(dim, in_channels=num_filters, out_channels=num_classes,
+                            kernel_size=1, activation=final_activation, batch_norm=batch_norm,
+                            bias=False))
+
+        super().__init__(modules)
+
+    def forward(self, x):
+        """Forward pass with mean-field iterations.
+        """
+        with torch.no_grad():
+            ox = x.clone()
+        for i in range(self.iter):
+            for layer in self:
+                x = layer(x)
+            x = 0.5*x + 0.5*ox
+        return x
