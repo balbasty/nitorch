@@ -6,3 +6,4 @@ from ._conv import *
 from ._norm import *
 from ._pool import *
 from ._spatial import *
+from ._segmentation import *
