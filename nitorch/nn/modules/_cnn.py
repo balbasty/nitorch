@@ -326,7 +326,7 @@ class CNN(tnn.Sequential):
 
 
 @nitorchmodule
-class MRF(tnn.Sequential):
+class MRF(Module):
     """MRF network"""
 
     def __init__(self, dim, num_classes, num_iter=1, num_filters=16, num_layers=0,
