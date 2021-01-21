@@ -574,20 +574,23 @@ class ModelTrainer:
                 self._eval(self.epoch)
                 self._save(self.epoch)
                 for self.epoch in range(self.epoch+1, self.nb_epoch+1):
-                    _ = self._train(self.epoch)
+                    train_loss = self._train(self.epoch)
                     val_loss = self._eval(self.epoch)
                     self._save(self.epoch)
                     # incorporate learning rate scheduler
                     if self.scheduler is not None:
+                        sched_loss = val_loss
+                        if sched_loss is None:
+                            sched_loss = train_loss
                         if isinstance(self.scheduler, ReduceLROnPlateau):
-                            self.scheduler.step(val_loss)
+                            self.scheduler.step(sched_loss)
                         else:
                             self.scheduler.step()
     def eval(self):
         """Launch evaluation"""
         self._hello('eval')
         self.model.to(dtype=self.dtype, device=self.device)
-        _ = self._eval()
+        self._eval()
 
     def init(self):
         """Initialize the random state + run one evaluation."""
@@ -598,7 +601,7 @@ class ModelTrainer:
             self.save_random_state()
             self.epoch = self.initial_epoch
             self.model.to(dtype=self.dtype, device=self.device)
-            _ = self._eval(self.epoch)
+            self._eval(self.epoch)
             self._save(self.epoch)
 
     def set_random_state(self):
@@ -623,8 +626,7 @@ class ModelTrainer:
             self.set_random_state()
             self.model.to(dtype=self.dtype, device=self.device)
             self.epoch += 1
-            _ = self._train(self.epoch)
-            _ = self._eval(self.epoch)
+            self._train(self.epoch)
+            self._eval(self.epoch)
             self._save(self.epoch)
             self.save_random_state()
-s
