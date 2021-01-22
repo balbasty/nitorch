@@ -369,7 +369,7 @@ class MRF(Module):
             final_activation = tnn.Softmax(dim=1)
         # make layers
         layers = []
-        p = ((kernel_size - 1) // 2,)*self.dim
+        p = ((kernel_size - 1) // 2,)*self.dim  # for 'same' convolution in first layer
         layer = ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
                                kernel_size=kernel_size, activation=activation,
                                batch_norm=batch_norm, bias=False, padding=p)
