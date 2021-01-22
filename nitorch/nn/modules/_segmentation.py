@@ -175,9 +175,11 @@ class MRFNet(Module):
         """
         super().__init__()
 
+        if num_iter < 1:
+            raise ValueError('Parameter num_iter should be greater than 0 , got {:}'.format(num_iter))
         self.num_iter = num_iter
         if w < 0 or w > 1:
-            raise ValueError('Parameter w should be between 0 and 1, got {w}'.format(w))
+            raise ValueError('Parameter w should be between 0 and 1, got {:}'.format(w))
         self.w = w
         if num_classes == 1:
             final_activation = tnn.Sigmoid
@@ -221,7 +223,7 @@ class MRFNet(Module):
         with torch.no_grad():
             if self.train():
                 # Training: variable number of iterations
-                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter))
+                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
             else:
                 # Testing: fixed number of iterations
                 num_iter = self.num_iter
