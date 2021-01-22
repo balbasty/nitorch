@@ -137,7 +137,14 @@ class SegNet(Module):
 
 
 class MRFNet(Module):
-    """MRF network"""
+    """MRF network.
+
+    This network takes as input one-hot encoded, probabilistic segmentation
+    data (one-hot encoded). It currently assumes an explicit representation of
+    the number of segmentation classes. Its outputs same sized one-hot encoded,
+    probabilistic segmentations.
+
+    """
 
     def __init__(self, dim, num_classes, num_iter=20, num_filters=16, num_extra=0,
                  kernel_size=3, activation=tnn.LeakyReLU(0.2), batch_norm=False,

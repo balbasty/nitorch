@@ -374,5 +374,3 @@ class MRF(tnn.Sequential):
         modules.append(('final', module))
         # build model
         super().__init__(OrderedDict(modules))
-
-
