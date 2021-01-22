@@ -286,7 +286,7 @@ class AffineSample(Module):
         prm = [p.expand(batch) if torch.is_tensor(p) and p.shape[0] != batch
                else make_list(p, batch) if not torch.is_tensor(p)
                else p for p in prm]
-        print(prm)
+
         prm = utils.as_tensor(prm)
         prm = prm.transpose(0, 1)
 
@@ -375,6 +375,8 @@ class DeformedSample(Module):
         -------
         warped : (batch, channel, *shape) tensor
             Deformed image
+        grid : (batch, *shape, 3) tensor
+            Resampling grid
 
         """
 
@@ -428,7 +430,7 @@ class DeformedSample(Module):
         # pull
         warped = self.pull(image, grid, **opt_pull)
 
-        return warped
+        return warped, grid
 
 
 class PatchSample(Module):

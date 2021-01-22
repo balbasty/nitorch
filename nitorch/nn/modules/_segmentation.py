@@ -1,7 +1,8 @@
 import torch
 import torch.nn as tnn
-from ._base import Module
-from ._cnn import UNet
+from ..modules._base import Module
+from ..modules._cnn import UNet
+from ...spatial import grid_pull
 from .. import check
 
 
@@ -55,6 +56,9 @@ class SegNet(Module):
         else:
             output_classes = output_classes + 1
             final_activation = tnn.Softmax(dim=1)
+        # Add tensorboard callback
+        self.board = lambda tb, inputs, outputs: board(
+            dim, implicit, tb, inputs, outputs)
 
         self.unet = UNet(dim,
                          input_channels=input_channels,
@@ -111,6 +115,11 @@ class SegNet(Module):
         # sanity check
         check.dim(self.dim, image)
 
+        # augmentation (only if reference is given, i.e., not at test-time)
+        if ground_truth is not None:
+            for augmenter in self.augmenters:
+                image, ground_truth = augmenter(image, ground_truth)
+
         # unet
         prob = self.unet(image)
         if self.implicit and prob.shape[1] > self.output_classes:
@@ -127,69 +136,74 @@ class SegNet(Module):
         return prob
 
 
-    def board(self, tb, inputs, outputs):
-        """TensorBoard visualisation of model input image, reference segmentation
-        and predicted segmentation.
+def board(dim, implicit, tb, inputs, outputs):
+    """TensorBoard visualisation of a segmentation model's inputs and outputs.
 
-        Parameters
-        ----------
-        tb : torch.utils.tensorboard.writer.SummaryWriter
-            TensorBoard writer object.
-        inputs : (tensor_like, tensor_like) tuple
-            Input image (N, C, dim)  and reference segmentation (N, K, dim) .
-        outputs : (N, K, dim) tensor_like
-            Predicted segmentation.
+    Parameters
+    ----------
+    dim : int
+        Space dimension
+    implicit : bool
+        Only return `output_classes` probabilities (the last one
+        is implicit as probabilities must sum to 1).
+        Else, return `output_classes + 1` probabilities.
+    tb : torch.utils.tensorboard.writer.SummaryWriter
+        TensorBoard writer object.
+    inputs : (tensor_like, tensor_like) tuple
+        Input image (N, C, dim)  and reference segmentation (N, K, dim) .
+    outputs : (N, K, dim) tensor_like
+        Predicted segmentation.
 
-        """
-        def get_slice(vol, plane, dim):
-            if dim == 2:
-                return vol.squeeze()
-            if plane == 'z':
-                z = round(0.5 * vol.shape[-1])
-                slice = vol[..., z]
-            elif plane == 'y':
-                y = round(0.5 * vol.shape[-2])
-                slice = vol[..., y, :]
-            elif plane == 'x':
-                x = round(0.5 * vol.shape[-3])
-                slice = vol[..., x, :, :]
+    """
+    def get_slice(vol, plane, dim):
+        if dim == 2:
+            return vol.squeeze()
+        if plane == 'z':
+            z = round(0.5 * vol.shape[-1])
+            slice = vol[..., z]
+        elif plane == 'y':
+            y = round(0.5 * vol.shape[-2])
+            slice = vol[..., y, :]
+        elif plane == 'x':
+            x = round(0.5 * vol.shape[-3])
+            slice = vol[..., x, :, :]
 
-            return slice.squeeze()
+        return slice.squeeze()
 
-        def input_view(slice_input):
-            return slice_input
+    def input_view(slice_input):
+        return slice_input
 
-        def prediction_view(slice_prediction, implicit):
-            if implicit:
-                slice_prediction = torch.cat(
-                    (1 - slice_prediction.sum(dim=0, keepdim=True), slice_prediction), dim=0)
-            K1 = float(slice_prediction.shape[0])
-            slice_prediction = (slice_prediction.argmax(dim=0, keepdim=False))/(K1 - 1)
-            return slice_prediction
+    def prediction_view(slice_prediction, implicit):
+        if implicit:
+            slice_prediction = torch.cat(
+                (1 - slice_prediction.sum(dim=0, keepdim=True), slice_prediction), dim=0)
+        K1 = float(slice_prediction.shape[0])
+        slice_prediction = (slice_prediction.argmax(dim=0, keepdim=False))/(K1 - 1)
+        return slice_prediction
 
-        def target_view(slice_target):
-            return slice_target.float()/slice_target.max().float()
+    def target_view(slice_target):
+        return slice_target.float()/slice_target.max().float()
 
-        def to_grid(slice_input, slice_target, slice_prediction):
-            return torch.cat((slice_input, slice_target, slice_prediction), dim=1)
+    def to_grid(slice_input, slice_target, slice_prediction):
+        return torch.cat((slice_input, slice_target, slice_prediction), dim=1)
 
-        def get_slices(plane, inputs, outputs, dim, implicit):
-            slice_input = input_view(get_slice(inputs[0][0, ...], plane, dim=dim))
-            slice_target = target_view(get_slice(inputs[1][0, ...], plane, dim=dim))
-            slice_prediction = prediction_view(get_slice(outputs[0, ...], plane, dim=dim),
-                                               implicit=implicit)
-            return slice_input, slice_target, slice_prediction
+    def get_slices(plane, inputs, outputs, dim, implicit):
+        slice_input = input_view(get_slice(inputs[0][0, ...], plane, dim=dim))
+        slice_target = target_view(get_slice(inputs[1][0, ...], plane, dim=dim))
+        slice_prediction = prediction_view(get_slice(outputs[0, ...], plane, dim=dim),
+                                           implicit=implicit)
+        return slice_input, slice_target, slice_prediction
 
-        def get_image(plane, inputs, outputs, dim, implicit):
-            return to_grid(*get_slices(plane, inputs, outputs, dim, implicit))[None, ...]
+    def get_image(plane, inputs, outputs, dim, implicit):
+        return to_grid(*get_slices(plane, inputs, outputs, dim, implicit))[None, ...]
 
-        # Add to TensorBoard
-        title = 'Image-Target-Prediction_'
-        tb.add_image(title + 'z', get_image('z', inputs, outputs,
-                                            self.dim, self.implicit))
-        if self.dim == 3:
-            tb.add_image(title + 'y', get_image('y', inputs, outputs,
-                                                self.dim, self.implicit))
-            tb.add_image(title + 'x', get_image('x', inputs, outputs,
-                                                self.dim, self.implicit))
-        tb.flush()
+    # Add to TensorBoard
+    title = 'Image-Target-Prediction_'
+    tb.add_image(title + 'z', get_image('z', inputs, outputs,
+                                        dim, implicit))
+    if dim == 3:
+        tb.add_image(title + 'y', get_image('y', inputs, outputs,
+                                            dim, implicit))
+        tb.add_image(title + 'x', get_image('x', inputs, outputs,
+                                            dim, implicit))
+    tb.flush()

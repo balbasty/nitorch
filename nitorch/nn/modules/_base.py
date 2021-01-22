@@ -52,6 +52,18 @@ class Module(tnn.Module):
         self.losses = {}
         self.metrics = {}
         self.tags = []
+        self.augmenters = []
+
+    def add_augmenter(self, augmenter):
+        """Add one or more augmenters.
+
+        Parameters
+        ----------
+        augmenter : callable
+            Function that applies some augmentation.
+
+        """
+        self.augmenters.append(augmenter)
 
     def add_loss(self, tag, *loss_fn, **named_loss_fn):
         """Add one or more loss functions.
