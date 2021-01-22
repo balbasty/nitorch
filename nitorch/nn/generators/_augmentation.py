@@ -64,6 +64,9 @@ def seg_augmentation(tag, image, ground_truth):
         if dtype_gt not in (torch.half, torch.float, torch.double):
             # One-hot labels to hard labels
             ground_truth = ground_truth.argmax(dim=1, keepdim=True).type(dtype_gt)
+        else:
+            # Normalise one-hot labels
+            ground_truth = ground_truth/ground_truth.sum(dim=1, keepdim=True)
     elif tag == 'noise':
         # Additive gaussian noise to image
         # Parameter
