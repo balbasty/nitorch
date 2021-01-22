@@ -9,6 +9,7 @@ from nitorch.core.pyutils import make_list
 from collections import OrderedDict
 import inspect
 import math
+from .. import check
 
 
 @nitorchmodule
@@ -325,12 +326,12 @@ class CNN(tnn.Sequential):
         super().__init__(OrderedDict(modules))
 
 
-@nitorchmodule
 class MRF(Module):
     """MRF network"""
 
-    def __init__(self, dim, num_classes, num_iter=1, num_filters=16, num_layers=0,
-                 kernel_size=3, activation=tnn.LeakyReLU(0.1), batch_norm=False):
+    def __init__(self, dim, num_classes, num_iter=20, num_filters=16, num_extra=0,
+                 kernel_size=3, activation=tnn.LeakyReLU(0.1), batch_norm=False,
+                 w=0.5):
         """
 
         Parameters
@@ -339,10 +340,10 @@ class MRF(Module):
             Dimension.
         num_classes : int
             Number of input classes.
-        num_iter : int, default=1
+        num_iter : int, default=20
             Number of mean-field iterations.
-        num_layers : int, default=0
-            Number of additional layers between MRF layer and final layer.
+        num_extra : int, default=0
+            Number of extra layers between MRF layer and final layer.
         num_filters : int, default=16
             Number of conv filters in first, MRF layer.
         kernel_size : int or sequence[int], default=3
@@ -351,35 +352,70 @@ class MRF(Module):
             Activation function.
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
+        w : float, default=0.5
+            Weight between new and old prediction [0, 1].
 
         """
+        super().__init__()
+
         self.dim = dim
         self.num_iter = num_iter
+        if w < 0 or w > 1:
+            raise ValueError('Parameter w should be between 0 and 1, got {w}'.format(w))
+        self.w = w
         if num_classes == 1:
             final_activation = tnn.Sigmoid
         else:
             final_activation = tnn.Softmax(dim=1)
-        # Build MRF model
-        modules = [ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
-                                       kernel_size=kernel_size, activation=activation,
-                                       batch_norm=batch_norm, bias=False)]
-        for i in range(num_layers):
-            modules.append(Conv(dim, in_channels=num_filters, out_channels=num_filters,
-                                kernel_size=1, activation=activation, batch_norm=batch_norm,
-                                bias=False))
-        modules.append(Conv(dim, in_channels=num_filters, out_channels=num_classes,
-                            kernel_size=1, activation=final_activation, batch_norm=batch_norm,
-                            bias=False))
+        # make layers
+        layers = []
+        p = (0, 0,) + ((kernel_size - 1) // 2,)*self.dim
+        layer = ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
+                               kernel_size=kernel_size, activation=activation,
+                               batch_norm=batch_norm, bias=False, padding=1)
+        layers.append(('mrf', layer))
+        for i in range(num_extra):
+            layer = Conv(dim, in_channels=num_filters, out_channels=num_filters,
+                         kernel_size=1, activation=activation, batch_norm=batch_norm,
+                         bias=False)
+            layers.append(('extra', layer))
+        layer = Conv(dim, in_channels=num_filters, out_channels=num_classes,
+                     kernel_size=1, activation=final_activation, batch_norm=batch_norm,
+                     bias=False)
+        layers.append(('final', layer))
+        # build model
+        self.layers = tnn.Sequential(OrderedDict(layers))
+        # register loss tag
+        self.tags = ['mrf']
 
-        super().__init__(modules)
-
-    def forward(self, x):
-        """Forward pass with mean-field iterations.
+    def forward(self, seg, ref=None, *, _loss=None, _metric=None):
+        """Forward pass, with mean-field iterations.
         """
+        seg = torch.as_tensor(seg)
+
+        # sanity check
+        check.dim(self.dim, seg)
+
+        # mrf
         with torch.no_grad():
-            ox = x.clone()
-        for i in range(self.iter):
-            for layer in self:
-                x = layer(x)
-            x = 0.5*x + 0.5*ox
-        return x
+            if self.train():
+                # Training: variable number of iterations
+                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter))
+            else:
+                # Testing: fixed number of iterations
+                num_iter = self.num_iter
+        for i in range(num_iter):
+            oseg = seg.clone()
+            for layer in self.layers:
+                seg = layer(seg)
+            seg = self.w*seg + (1 - self.w)*oseg
+
+        # compute loss and metrics
+        if ref is not None:
+            # sanity checks
+            check.dim(self.dim, ref)
+            dims = [0] + list(range(2, self.dim+2))
+            check.shape(seg, ref, dims=dims)
+            self.compute(_loss, _metric, mrf=[seg, ref])
+
+        return seg
