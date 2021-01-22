@@ -2,7 +2,7 @@
 """
 import torch
 from ._field import (BiasFieldTransform, RandomFieldSample)
-from ._spatial import DeformedSample
+from ._spatial import (DiffeoSample, DeformedSample)
 from ...spatial import grid_pull
 
 
@@ -14,7 +14,10 @@ def seg_augmentation(tag, image, ground_truth):
     -------
     tag : str
         Augmentation method:
-        'warp' : Nonlinear warp of image and ground_truth
+        'warp-img-img' : Nonlinear warp of input image and output image
+        'warp-img-seg' : Nonlinear warp of input image and output segmentation
+        'warp-seg-img' : Nonlinear warp of input segmentation and output image
+        'warp-seg-seg' : Nonlinear warp of input segmentation and output segmentation
         'noise' : Additive gaussian noise to image
         'inu' : Multiplicative intensity non-uniformity (INU) to image
     image : (batch, input_channels, *spatial) tensor
@@ -34,39 +37,35 @@ def seg_augmentation(tag, image, ground_truth):
     """
     nbatch = image.shape[0]
     nchan = image.shape[1]
-    ndim = len(image.shape[2:])
+    dim = tuple(image.shape[2:])
+    ndim = len(dim)
     nvox = int(torch.as_tensor(image.shape[2:]).prod())
     # Augmentation method
-    if tag == 'warp':
-        # Nonlinear warp of image and ground_truth
+    if 'warp' in tag:
+        # Nonlinear warp
         # Parameters
         amplitude = 1.0
         fwhm = 3.0
         # Instantiate augmenter
-        aug = DeformedSample(vel_amplitude=amplitude, vel_fwhm=fwhm,
-                             translation=False, rotation=False, zoom=False, shear=False,
-                             device=image.device, dtype=image.dtype, image_bound='zero')
-        # Augment image (and get grid)
-        image, grid = aug(image)
-        # Augment labels, with the same grid
-        dtype_gt = ground_truth.dtype
-        if dtype_gt not in (torch.half, torch.float, torch.double):
-            # Hard labels to one-hot labels
-            M = torch.eye(len(ground_truth.unique()), device=ground_truth.device, dtype=torch.float32)
-            ground_truth = M[ground_truth.type(torch.int64)]
-            if ndim == 3:
-                ground_truth = ground_truth.permute((0, 5, 2, 3, 4, 1))
-            else:
-                ground_truth = ground_truth.permute((0, 4, 2, 3, 1))
-            ground_truth = ground_truth.squeeze(-1)
-        # warp labels
-        ground_truth = grid_pull(ground_truth, grid, bound='zero', extrapolate=True, interpolation=1)
-        if dtype_gt not in (torch.half, torch.float, torch.double):
-            # One-hot labels to hard labels
-            ground_truth = ground_truth.argmax(dim=1, keepdim=True).type(dtype_gt)
+        aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
+                           device=image.device, dtype=image.dtype)
+        # Get random grid
+        grid = aug(batch=nbatch, shape=dim, dim=ndim)
+        # Warp
+        if tag == 'warp-img-img':
+            image = warp_img(image, grid)
+            ground_truth = warp_img(ground_truth, grid)
+        elif tag == 'warp-img-seg':
+            image = warp_img(image, grid)
+            ground_truth = warp_seg(ground_truth, grid)
+        elif tag == 'warp-seg-img':
+            image = warp_seg(image, grid)
+            ground_truth = warp_img(ground_truth, grid)
+        elif tag == 'warp-seg-seg':
+            image = warp_seg(image, grid)
+            ground_truth = warp_seg(ground_truth, grid)
         else:
-            # Normalise one-hot labels
-            ground_truth = ground_truth/ground_truth.sum(dim=1, keepdim=True)
+            raise ValueError('')
     elif tag == 'noise':
         # Additive gaussian noise to image
         # Parameter
@@ -93,3 +92,38 @@ def seg_augmentation(tag, image, ground_truth):
 
     return image, ground_truth
 
+
+def warp_img(img, grid):
+    """Warp image according to grid.
+    """
+    img = grid_pull(img, grid, bound='zero', extrapolate=False,
+                    interpolation=1)
+
+    return img
+
+
+def warp_seg(seg, grid):
+    """Warp segmentation according to grid.
+    """
+    dtype_seg = seg.dtype
+    if dtype_seg not in (torch.half, torch.float, torch.double):
+        # hard labels to one-hot labels
+        M = torch.eye(len(seg.unique()), device=seg.device,
+                      dtype=torch.float32)
+        seg = M[seg.type(torch.int64)]
+        if ndim == 3:
+            seg = seg.permute((0, 5, 2, 3, 4, 1))
+        else:
+            seg = seg.permute((0, 4, 2, 3, 1))
+        seg = seg.squeeze(-1)
+    # warp
+    seg = grid_pull(seg, grid, bound='zero', extrapolate=True,
+                    interpolation=1)
+    if dtype_seg not in (torch.half, torch.float, torch.double):
+        # one-hot labels to hard labels
+        seg = seg.argmax(dim=1, keepdim=True).type(dtype_seg)
+    else:
+        # normalise one-hot labels
+        seg = seg / seg.sum(dim=1, keepdim=True)
+
+    return seg

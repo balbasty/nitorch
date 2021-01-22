@@ -326,12 +326,13 @@ class CNN(tnn.Sequential):
         super().__init__(OrderedDict(modules))
 
 
-class MRF(Module):
-    """MRF network"""
+@nitorchmodule
+class MRF(tnn.Sequential):
+    """Categorical MRF network."""
 
-    def __init__(self, dim, num_classes, num_iter=20, num_filters=16, num_extra=0,
-                 kernel_size=3, activation=tnn.LeakyReLU(0.1), batch_norm=False,
-                 w=0.5):
+    def __init__(self, dim, num_classes, num_filters=16, num_extra=0,
+                 kernel_size=3, activation=tnn.LeakyReLU(0.2),
+                 batch_norm=False, final_activation='same'):
         """
 
         Parameters
@@ -340,82 +341,38 @@ class MRF(Module):
             Dimension.
         num_classes : int
             Number of input classes.
-        num_iter : int, default=20
-            Number of mean-field iterations.
         num_extra : int, default=0
             Number of extra layers between MRF layer and final layer.
         num_filters : int, default=16
             Number of conv filters in first, MRF layer.
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
-        activation : str or type or callable, default='tnn.LeakyReLU(0.1)'
+        activation : str or type or callable, default='tnn.LeakyReLU(0.2)'
             Activation function.
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
-        w : float, default=0.5
-            Weight between new and old prediction [0, 1].
-
+        final_activation : str or type or callable, default='same'
+            Final activation function. If 'same', same as `activation`.
         """
-        super().__init__()
-
         self.dim = dim
-        self.num_iter = num_iter
-        if w < 0 or w > 1:
-            raise ValueError('Parameter w should be between 0 and 1, got {w}'.format(w))
-        self.w = w
-        if num_classes == 1:
-            final_activation = tnn.Sigmoid
-        else:
-            final_activation = tnn.Softmax(dim=1)
+
         # make layers
-        layers = []
+        modules = []
         p = ((kernel_size - 1) // 2,)*self.dim  # for 'same' convolution in first layer
-        layer = ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
+        module = ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
                                kernel_size=kernel_size, activation=activation,
                                batch_norm=batch_norm, bias=False, padding=p)
-        layers.append(('mrf', layer))
+        modules.append(('mrf', module))
         for i in range(num_extra):
-            layer = Conv(dim, in_channels=num_filters, out_channels=num_filters,
+            module = Conv(dim, in_channels=num_filters, out_channels=num_filters,
                          kernel_size=1, activation=activation, batch_norm=batch_norm,
                          bias=False)
-            layers.append(('extra', layer))
-        layer = Conv(dim, in_channels=num_filters, out_channels=num_classes,
+            modules.append(('extra', module))
+        module = Conv(dim, in_channels=num_filters, out_channels=num_classes,
                      kernel_size=1, activation=final_activation, batch_norm=batch_norm,
                      bias=False)
-        layers.append(('final', layer))
+        modules.append(('final', module))
         # build model
-        self.layers = tnn.Sequential(OrderedDict(layers))
-        # register loss tag
-        self.tags = ['mrf']
+        super().__init__(OrderedDict(modules))
 
-    def forward(self, seg, ref=None, *, _loss=None, _metric=None):
-        """Forward pass, with mean-field iterations.
-        """
-        seg = torch.as_tensor(seg)
 
-        # sanity check
-        check.dim(self.dim, seg)
-
-        # mrf
-        with torch.no_grad():
-            if self.train():
-                # Training: variable number of iterations
-                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter))
-            else:
-                # Testing: fixed number of iterations
-                num_iter = self.num_iter
-        for i in range(num_iter):
-            oseg = seg.clone()
-            for layer in self.layers:
-                seg = layer(seg)
-            seg = self.w*seg + (1 - self.w)*oseg
-
-        # compute loss and metrics
-        if ref is not None:
-            # sanity checks
-            check.dim(self.dim, ref)
-            dims = [0] + list(range(2, self.dim+2))
-            check.shape(seg, ref, dims=dims)
-            self.compute(_loss, _metric, mrf=[seg, ref])
-
-        return seg
