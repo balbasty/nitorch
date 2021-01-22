@@ -265,9 +265,11 @@ class ConvZeroCentre(Conv):
         # zero centre
         k = self.conv.kernel_size
         if self.dim == 3:
-            self.weight[:, :, k[0] // 2, k[1] // 2, k[2] // 2].clamp_(0, 0)
+            self.conv.weight[:, :, k[0] // 2, k[1] // 2, k[2] // 2].clamp_(0, 0)
+        elif self.dim == 2:
+            self.conv.weight[:, :, k[0] // 2, k[1] // 2].clamp_(0, 0)
         else:
-            self.weight[:, :, k[0] // 2, k[1] // 2].clamp_(0, 0)
+            self.conv.weight[:, :, k[0] // 2].clamp_(0, 0)
         # parent class forward pass
         x = super().forward(x, **overload)
 
