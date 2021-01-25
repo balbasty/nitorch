@@ -109,18 +109,18 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
     # --- compute recon space ---
     affines = [contrast.affine for contrast in data]
     shapes = [dat.volume.shape for dat in data]
-    if opt.recon.space == 'mean':
-        print('Estimate recon space')
-        if isinstance(opt.recon.space, int):
-            mean_affine = affines[opt.recon.space]
-            mean_shape = shapes[opt.recon.space]
-        elif isinstance(opt.recon.space, str) and opt.recon.space == 'mean':
-            mean_affine, mean_shape = spatial.mean_space(affines, shapes)
-        else:
-            raise NotImplementedError()
+    if opt.recon.affine is None:
+        opt.recon.affine = opt.recon.space
+    if opt.recon.fov is None:
+        opt.recon.fov = opt.recon.space
+    if isinstance(opt.recon.affine, int):
+        mean_affine = affines[opt.recon.affine]
     else:
-        mean_affine = affines[opt.recon.space]
-        mean_shape = shapes[opt.recon.space]
+        mean_affine = torch.as_tensor(opt.recon.affine)
+    if isinstance(opt.recon.fov, int):
+        mean_shape = shapes[opt.recon.fov]
+    else:
+        mean_shape = tuple(opt.recon.fov)
 
     # --- compute PD/R1 ---
     pdt1 = [(id, contrast) for id, contrast in enumerate(data) if not contrast.mt]

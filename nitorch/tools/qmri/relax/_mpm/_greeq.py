@@ -548,15 +548,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             grad1[2] *= -echo.te * r2s
             if has_mt:
                 grad1[3] *= (omt - 1) / (1 - omt_x_cosfa * e1)
-
-#             grad1[0] = fit
-#             grad1[1] = -tr * r1 * (e1 / (1 - e1)) * ((omt_x_cosfa - 1) / (1 - omt_x_cosfa * e1))
-#             grad1[1] *= fit
-#             grad1[2] = -echo.te * r2s
-#             grad1[2] *= fit
-#             if has_mt:
-#                 grad1[3] = (omt - 1) / (1 - omt_x_cosfa * e1)
-#                 grad1[3] *= fit
             
             # hess_signal: compute diagonal of the hessian of the signal term 
             hess0 = torch.empty_like(grad)
