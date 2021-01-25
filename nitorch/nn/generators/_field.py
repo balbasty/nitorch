@@ -94,7 +94,7 @@ class RandomFieldSample(Module):
         full_shape = [batch, channel, *shape]
         mean = mean.expand(full_shape)
         amplitude = amplitude.expand(full_shape)
-        fwhm = fwhm.expand([basis, channel, nb_dim])
+        fwhm = fwhm.expand([batch, channel, nb_dim])
 
         conv = torch.nn.functional.conv1d if nb_dim == 1 else \
                torch.nn.functional.conv2d if nb_dim == 2 else \
@@ -142,7 +142,8 @@ class RandomFieldSample(Module):
 class BiasFieldTransform(Module):
     """Apply a random multiplicative bias field to an image."""
 
-    def __init__(self, mean=None, amplitude=None, fwhm=None):
+    def __init__(self, mean=None, amplitude=None, fwhm=None,
+                 device='cpu', dtype=None):
         """
 
         Parameters
@@ -155,6 +156,10 @@ class BiasFieldTransform(Module):
         fwhm : callable or tensor, default=LogNormal(log(5), log(2)/3)
             Full-width at Half Maximum of the squared-exponential kernel.
             Should broadcast to (channel, ndim)
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
         """
 
         super().__init__()
@@ -162,7 +167,7 @@ class BiasFieldTransform(Module):
         amplitude = amplitude if amplitude is not None else self.default_amplitude
         fwhm = fwhm if fwhm is not None else self.default_fwhm
         self.field = RandomFieldSample(mean=mean, amplitude=amplitude,
-                                       fwhm=fwhm)
+                                       fwhm=fwhm, device=device, dtype=dtype)
 
     # defer properties
     mean = property(lambda self: self.field.mean)
