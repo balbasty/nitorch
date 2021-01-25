@@ -264,17 +264,13 @@ class ConvZeroCentre(Conv):
     def forward(self, x, **overload):
         # zero centre
         k = self.conv.kernel_size
-        msk = torch.ones(self.conv.weight.shape, device=x.device, dtype=x.dtype)
         if self.dim == 3:
-            msk[:, :, k[0] // 2, k[1] // 2, k[2] // 2] = 0
-            self.conv.weight.data = msk*self.conv.weight
+            self.conv.weight.data[:, :, k[0] // 2, k[1] // 2, k[2] // 2].clamp_(0, 0)
         elif self.dim == 2:
-            msk[:, :, k[0] // 2, k[1] // 2] = 0
-            self.conv.weight.data = msk * self.conv.weight
+            self.conv.weight.data[:, :, k[0] // 2, k[1] // 2].clamp_(0, 0)
         else:
-            msk[:, :, k[0] // 2] = 0
-            self.conv.weight.data = msk * self.conv.weight
-        # parent class forward pass
+            self.conv.weight.data[:, :, k[0] // 2].clamp_(0, 0)
+        # parent class' forward pass
         x = super().forward(x, **overload)
 
         return x

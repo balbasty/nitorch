@@ -139,14 +139,18 @@ class SegNet(Module):
 class MRFNet(Module):
     """MRF network.
 
-    This network takes as input one-hot encoded, probabilistic segmentation
-    data (one-hot encoded). It currently assumes an explicit representation of
-    the number of segmentation classes. Its outputs same sized one-hot encoded,
-    probabilistic segmentations.
+    A network that aims at cleaning up categorical image data of num_classes
+    classes. The first layer is a, so called, MRF layer. Sub-sequent layers are
+    then 1x1 convolutions layers. The output of the network are softmaxed,
+    categorical data. The idea is described in:
+
+    Brudfors, Mikael, Yaël Balbastre, and John Ashburner.
+    "Nonlinear markov random fields learned via backpropagation."
+    IPMI. Springer, Cham, 2019.
 
     """
 
-    def __init__(self, dim, num_classes, num_iter=20, num_filters=16, num_extra=0,
+    def __init__(self, dim, num_classes, num_iter=10, num_filters=32, num_extra=0,
                  kernel_size=3, activation=tnn.LeakyReLU(0.2), batch_norm=False,
                  w=0.5):
         """
@@ -157,11 +161,11 @@ class MRFNet(Module):
             Dimension.
         num_classes : int
             Number of input classes.
-        num_iter : int, default=20
+        num_iter : int, default=10
             Number of mean-field iterations.
         num_extra : int, default=0
             Number of extra layers between MRF layer and final layer.
-        num_filters : int, default=16
+        num_filters : int, default=32
             Number of conv filters in first, MRF layer.
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
@@ -181,14 +185,13 @@ class MRFNet(Module):
         if w < 0 or w > 1:
             raise ValueError('Parameter w should be between 0 and 1, got {:}'.format(w))
         self.w = w
-        if num_classes == 1:
-            final_activation = tnn.Sigmoid
-        else:
-            final_activation = tnn.Softmax(dim=1)
+        # As the final activation is applied at the end of the forward method
+        # below, it is not applied in the final Conv layer
+        final_activation = None
         # Add tensorboard callback
         self.board = lambda tb, inputs, outputs: board(
             dim, tb, inputs, outputs)
-
+        # Build MRF net
         self.mrf = MRF(dim,
                        num_classes=num_classes,
                        num_filters=num_filters,
@@ -197,7 +200,6 @@ class MRFNet(Module):
                        activation=activation,
                        batch_norm=batch_norm,
                        final_activation=final_activation)
-
         # register loss tag
         self.tags = ['mrf']
 
@@ -206,43 +208,70 @@ class MRFNet(Module):
     kernel_size = property(lambda self: self.mrf.kernel_size)
     activation = property(lambda self: self.mrf.activation)
 
-    def forward(self, seg, ref=None, *, _loss=None, _metric=None):
+    def forward(self, ll, ref=None, *, _loss=None, _metric=None):
         """Forward pass, with mean-field iterations.
+
+        Parameters
+        ----------
+        ll : (batch, input_channels, *spatial) tensor
+            Input image, the log-likelihood term.
+        ref : (batch, output_classes[+1], *spatial) tensor, optional
+            Reference segmentation, used by the loss function.
+        _loss : dict, optional
+            Dictionary of losses that will be modified in place.
+            If provided along with `ground_truth`, all registered loss
+            functions will be applied and stored under the key
+            '<tag>/<name>' in the dictionary.
+        _metric : dict, optional
+            Dictionary of losses that will be modified in place.
+            If provided along with `ground_truth`, all registered loss
+            functions will be applied and stored under the key
+            '<tag>/<name>' in the dictionary.
+
+        Returns
+        -------
+        probability : (batch, output_classes[+1], *spatial)
+            Tensor of class probabilities.
+
         """
-        seg = torch.as_tensor(seg)
+        ll = torch.as_tensor(ll)
 
         # sanity check
-        check.dim(self.dim, seg)
+        check.dim(self.dim, ll)
 
         # augmentation (only if reference is given, i.e., not at test-time)
         if ref is not None:
             for augmenter in self.augmenters:
-                seg, ref = augmenter(seg, ref)
+                ll, ref = augmenter(ll, ref)
 
-        # mrf
+        # number of VB iterations
         with torch.no_grad():
-            if self.train():
+            if ref is not None:
                 # Training: variable number of iterations
                 num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
             else:
                 # Testing: fixed number of iterations
                 num_iter = self.num_iter
-        oseg = seg.clone()
-        for i in range(num_iter):
-            pred = self.mrf(seg)
-            pred = self.w*pred + (1 - self.w)*oseg
-            if i < num_iter - 1:
-                oseg = pred.clone()
 
-        # compute loss and metrics
+        # MRF
+        p = torch.zeros_like(ll)
+        for i in range(num_iter):
+            op = p.clone()
+            p = self.mrf((ll + p).softmax(dim=1))
+            p = self.w*p + (1 - self.w)*op
+
+        # compute loss and metrics (in logit space)
         if ref is not None:
             # sanity checks
             check.dim(self.dim, ref)
             dims = [0] + list(range(2, self.dim+2))
-            check.shape(seg, ref, dims=dims)
-            self.compute(_loss, _metric, mrf=[pred, ref])
+            check.shape(p, ref, dims=dims)
+            self.compute(_loss, _metric, mrf=[p, ref])
 
-        return pred
+        # softmax
+        p = p.softmax(dim=1)
+
+        return p
 
 
 def board(dim, tb, inputs, outputs, implicit=False):

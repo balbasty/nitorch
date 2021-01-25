@@ -330,9 +330,9 @@ class CNN(tnn.Sequential):
 class MRF(tnn.Sequential):
     """Categorical MRF network."""
 
-    def __init__(self, dim, num_classes, num_filters=16, num_extra=0,
+    def __init__(self, dim, num_classes, num_filters=16, num_extra=1,
                  kernel_size=3, activation=tnn.LeakyReLU(0.2),
-                 batch_norm=False, final_activation='same'):
+                 batch_norm=False, final_activation='same', bias=False):
         """
 
         Parameters
@@ -353,6 +353,8 @@ class MRF(tnn.Sequential):
             Batch normalization before each convolution.
         final_activation : str or type or callable, default='same'
             Final activation function. If 'same', same as `activation`.
+        bias : bool, default=False
+            Adds learnable bias to the output.
         """
         self.dim = dim
 
@@ -361,16 +363,16 @@ class MRF(tnn.Sequential):
         p = ((kernel_size - 1) // 2,)*self.dim  # for 'same' convolution in first layer
         module = ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
                                kernel_size=kernel_size, activation=activation,
-                               batch_norm=batch_norm, bias=False, padding=p)
+                               batch_norm=batch_norm, bias=bias, padding=p)
         modules.append(('mrf', module))
         for i in range(num_extra):
             module = Conv(dim, in_channels=num_filters, out_channels=num_filters,
                          kernel_size=1, activation=activation, batch_norm=batch_norm,
-                         bias=False)
+                         bias=bias)
             modules.append(('extra', module))
         module = Conv(dim, in_channels=num_filters, out_channels=num_classes,
                      kernel_size=1, activation=final_activation, batch_norm=batch_norm,
-                     bias=False)
+                     bias=bias)
         modules.append(('final', module))
         # build model
         super().__init__(OrderedDict(modules))
