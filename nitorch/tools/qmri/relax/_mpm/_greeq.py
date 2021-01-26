@@ -118,7 +118,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         rls_shape = mean_shape
         if opt.penalty.norm == 'tv':
             rls_shape = (len(maps),) + rls_shape
-        rls = ParameterMap(rls_shape, fill=1, **backend).volume
+        rls = torch.ones(rls_shape, **backend)
         sumrls = 0.5 * core.pyutils.prod(rls_shape)
 
     if opt.penalty.norm:
@@ -129,7 +129,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         if has_mt:
             print(f'    - MT:  {lam[3]:.3g}')
     else:
-        print('Without penalty:')
+        print('Without penalty')
 
     if opt.penalty.norm not in ('tv', 'jtv'):
         # no reweighting -> do more gauss-newton updates instead
@@ -168,7 +168,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         ll_rls = []
         ll_max = core.constants.ninf
 
-        max_iter_rls = opt.optim.max_iter_rls // level
+        max_iter_rls = max(opt.optim.max_iter_rls // level, 1)
         for n_iter_rls in range(max_iter_rls):
             # --- Reweighted least-squares loop ---
             printer.rls = n_iter_rls
@@ -221,12 +221,13 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                         del g1
 
                 # --- load diagonal of the Hessian ---
-                hess = hessian_sym_loaddiag(hess)
 
                 # --- gauss-newton ---
                 if opt.penalty.norm:
+                    hess = hessian_sym_loaddiag(hess, 1e-5)
                     deltas = _nonlin_solve(hess, grad, multi_rls, lam * vol, vx, opt)
                 else:
+                    hess = hessian_sym_loaddiag(hess, 1e-3)
                     deltas = hessian_sym_solve(hess, grad)
 
                 for map, delta in zip(maps, deltas):
@@ -265,6 +266,38 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     print(f'RLS converged ({gain:7.2g})')
                     break
 
+    # --- Diagonal (approximate) uncertainty ---
+    if opt.uncertainty:
+        maps.pd.uncertainty = hess[0]
+        maps.r1.uncertainty = hess[1]
+        maps.r2s.uncertainty = hess[2]
+        if hasattr(maps, 'mt'):
+            maps.mt.uncertainty = hess[3]
+        if opt.penalty.norm:
+            vxterm = torch.as_tensor(vx).square().reciprocal().sum().item()
+            if opt.penalty.norm == 'tv':
+                maps.pd.uncertainty += rls[0] * 2 * lam[0] * vxterm
+                maps.r1.uncertainty += rls[1] * 2 * lam[1] * vxterm
+                maps.r2s.uncertainty += rls[2] * 2 * lam[2] * vxterm
+                if hasattr(maps, 'mt'):
+                    maps.mt.uncertainty += rls[3] * 2 * lam[3] * vxterm
+            elif opt.penalty.norm == 'jtv':
+                maps.pd.uncertainty += rls * 2 * lam[0] * vxterm
+                maps.r1.uncertainty += rls * 2 * lam[1] * vxterm
+                maps.r2s.uncertainty += rls * 2 * lam[2] * vxterm
+                if hasattr(maps, 'mt'):
+                    maps.mt.uncertainty += rls * 2 * lam[3] * vxterm
+            elif opt.penalty.norm == 'tkh':
+                maps.pd.uncertainty += 2 * lam[0] * vxterm
+                maps.r1.uncertainty += 2 * lam[0] * vxterm
+                maps.r2s.uncertainty += 2 * lam[0] * vxterm
+                if hasattr(maps, 'mt'):
+                    maps.mt.uncertainty += 2 * lam[3] * vxterm
+        maps.pd.uncertainty.reciprocal_()
+        maps.r1.uncertainty.reciprocal_()
+        maps.r2s.uncertainty.reciprocal_()
+        
+    
     # --- Prepare output ---
     return postproc(maps)
 
@@ -762,6 +795,7 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
             rls1 = _nonlin_rls(map, l, '__internal__')
             rls1 = rls1.sqrt_()
             rls.append(rls1)
+        return torch.stack(rls, dim=0)
     else:
         assert norm == 'jtv'
         rls = 0

@@ -47,6 +47,7 @@ class GREEQOptions(Option):
     backend: BackendOptions = BackendOptions()
     penalty: PenaltyOptions = PenaltyOptions()
     verbose: int or bool = 1
+    uncertainty: bool = False            # Whether to return uncertainty maps (posterior variance)
 
 
 class VFAOptions(Option):

@@ -47,3 +47,4 @@ class ESTATICSOptions(Option):
     backend: BackendOptions = BackendOptions()
     regularization: RegularizationOptions = RegularizationOptions()
     verbose: int or bool = 1
+    uncertainty: bool = False                  # Whether to return uncertainty maps (posterior variance)
