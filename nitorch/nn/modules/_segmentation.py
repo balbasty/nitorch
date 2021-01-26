@@ -130,7 +130,7 @@ class SegNet(Module):
             # sanity checks
             check.dim(self.dim, ground_truth)
             dims = [0] + list(range(2, self.dim+2))
-            check.shape(image, ground_truth, dims=dims)
+            check.shape(prob, ground_truth, dims=dims)
             self.compute(_loss, _metric, segmentation=[prob, ground_truth])
 
         return prob
@@ -150,9 +150,9 @@ class MRFNet(Module):
 
     """
 
-    def __init__(self, dim, num_classes, num_iter=10, num_filters=32, num_extra=0,
+    def __init__(self, dim, num_classes, num_iter=5, num_filters=64, num_extra=0,
                  kernel_size=3, activation=tnn.LeakyReLU(0.2), batch_norm=False,
-                 w=0.5):
+                 w=1.0):
         """
 
         Parameters
@@ -161,11 +161,11 @@ class MRFNet(Module):
             Dimension.
         num_classes : int
             Number of input classes.
-        num_iter : int, default=10
+        num_iter : int, default=5
             Number of mean-field iterations.
         num_extra : int, default=0
             Number of extra layers between MRF layer and final layer.
-        num_filters : int, default=32
+        num_filters : int, default=64
             Number of conv filters in first, MRF layer.
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
@@ -173,7 +173,7 @@ class MRFNet(Module):
             Activation function.
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
-        w : float, default=0.5
+        w : float, default=1.0
             Weight between new and old prediction [0, 1].
 
         """

@@ -105,6 +105,7 @@ def warp_img(img, grid):
 def warp_seg(seg, grid):
     """Warp segmentation according to grid.
     """
+    ndim = len(seg.shape[2:])
     dtype_seg = seg.dtype
     if dtype_seg not in (torch.half, torch.float, torch.double):
         # hard labels to one-hot labels
