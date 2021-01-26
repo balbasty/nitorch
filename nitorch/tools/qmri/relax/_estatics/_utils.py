@@ -30,7 +30,7 @@ def hessian_matmul(hess, grad):
     return mm
 
 
-def hessian_loaddiag(hess, eps=None):
+def hessian_loaddiag(hess, eps=None, eps2=None):
     """Load the diagonal of the (sparse) Hessian
 
     ..warning:: Modifies `hess` in place
@@ -47,10 +47,12 @@ def hessian_loaddiag(hess, eps=None):
     """
     if eps is None:
         eps = core.constants.eps(hess.dtype)
-    weight = hess[:-1:2].max(dim=0, keepdim=True).values
+    weight = hess[::2].max(dim=0, keepdim=True).values
     weight.clamp_min_(eps)
     weight *= eps
-    hess[:-1:2] += weight
+    if eps2:
+        weight += eps2
+    hess[::2] += weight
     return hess
 
 
