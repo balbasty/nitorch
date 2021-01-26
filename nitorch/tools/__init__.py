@@ -1,6 +1,9 @@
 """High level tools for processing medical imaging data."""
 
 from . import affine_reg
+from . import qmri
+
+
 from .preproc import *
 from ._preproc_fov import *
 from ._preproc_img import *

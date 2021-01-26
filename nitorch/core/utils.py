@@ -1020,7 +1020,7 @@ def isin(tensor, labels):
     return mask
 
 
-def ceil_pow(t, p=2.0, l=2.0):
+def ceil_pow(t, p=2.0, l=2.0, mx=None):
     """Ceils each element in vector t to the
     closest n that satisfies: l*p**n.
 
@@ -1032,6 +1032,7 @@ def ceil_pow(t, p=2.0, l=2.0):
     t : (d, ), tensor
     p : float, default=2.0
     l : float, default=2.0
+    mx : float, optional
 
     Returns
     ----------
@@ -1043,6 +1044,7 @@ def ceil_pow(t, p=2.0, l=2.0):
     dtype0 = ct.dtype
     dtype = torch.float32
     dim = torch.as_tensor(ct, dtype=dtype, device=device)
+    ct.clamp_max_(mx)
     d = len(ct)
     # Build array of l*p**[0, ..., N]
     N = 32

@@ -111,20 +111,21 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
     p = z.clone()  # Initial conjugate directions p
     beta = torch.tensor(0, dtype=dtype, device=device)  # Initial step size
-    if verbose:
+    
+    if tolerance or verbose:
         if stop == 'residuals':
-            obj = torch.sqrt(rz)
+            obj0 = torch.sqrt(rz)
         else:
-            # obj = x - b
-            # obj = torch.sum(0.5 * A(obj) * obj, dtype=sum_dtype)
-            obj = A(x) - 2 * b
-            obj = torch.sum(0.5 * x * obj, dtype=sum_dtype)
-        s = '{:' + str(len(str(max_iter))) + '} | {} = {:12.6g}'
-        print(s.format(0, stop, obj))
+            obj0 = A(x).sub_(2*b).mul_(x)
+            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+        if verbose:
+            s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g}'
+            print(s.format(0, stop, obj0))
+        obj = torch.zeros(max_iter+1, dtype=sum_dtype, device=device)
+        obj[0] = obj0
 
     # Run algorithm
-    obj = torch.zeros(max_iter, dtype=sum_dtype, device=device)
-    for n_iter in range(max_iter):
+    for n_iter in range(1, max_iter+1):
         # Calculate conjugate directions P (descent direction)
         p *= beta
         p += z
@@ -140,23 +141,22 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         # Finds the step size for updating P
         rz0 = rz
         rz = torch.sum(r * z, dtype=sum_dtype)
-        # Check convergence
-        if stop == 'residuals':
-            obj1 = torch.sqrt(rz)
-        else:
-            # obj1 = x - b
-            # obj1 = torch.sum(0.5 * A(obj1) * obj1, dtype=sum_dtype)
-            # obj1 = obj1 - obj0
-            obj1 = A(x) - 2 * b
-            obj1 = torch.sum(0.5 * x * obj1, dtype=sum_dtype)
-        obj[n_iter] = obj1
-        gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
-        if verbose:
-            s = '{:' + str(len(str(max_iter))) + '} | {} = {:12.6g} | gain = {:12.6g}'
-            print(s.format(n_iter + 1, stop, obj[n_iter], gain))
-        if gain.abs() < tolerance:
-            break
         beta = rz / rz0
+        
+        # Check convergence
+        if tolerance or verbose:
+            if stop == 'residuals':
+                obj1 = torch.sqrt(rz)
+            else:
+                obj1 = A(x).sub_(2*b).mul_(x)
+                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
+            obj[n_iter] = obj1
+            gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
+            if verbose:
+                s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g} | gain = {:12.6g}'
+                print(s.format(n_iter, stop, obj[n_iter], gain))
+            if gain.abs() < tolerance:
+                break
 
     return x
 

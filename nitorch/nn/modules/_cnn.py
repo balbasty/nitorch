@@ -3,11 +3,13 @@
 import torch
 from torch import nn as tnn
 from ._base import nitorchmodule, Module
-from ._conv import Conv
+from ._conv import (Conv, ConvZeroCentre)
 from ._reduction import reductions, Reduction
 from nitorch.core.pyutils import make_list
 from collections import OrderedDict
 import inspect
+import math
+from .. import check
 
 
 @nitorchmodule
@@ -324,3 +326,53 @@ class CNN(tnn.Sequential):
         super().__init__(OrderedDict(modules))
 
 
+@nitorchmodule
+class MRF(tnn.Sequential):
+    """Categorical MRF network."""
+
+    def __init__(self, dim, num_classes, num_filters=16, num_extra=1,
+                 kernel_size=3, activation=tnn.LeakyReLU(0.2),
+                 batch_norm=False, final_activation='same', bias=False):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+        num_classes : int
+            Number of input classes.
+        num_extra : int, default=0
+            Number of extra layers between MRF layer and final layer.
+        num_filters : int, default=16
+            Number of conv filters in first, MRF layer.
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+        activation : str or type or callable, default='tnn.LeakyReLU(0.2)'
+            Activation function.
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
+        final_activation : str or type or callable, default='same'
+            Final activation function. If 'same', same as `activation`.
+        bias : bool, default=False
+            Adds learnable bias to the output.
+        """
+        self.dim = dim
+
+        # make layers
+        modules = []
+        p = ((kernel_size - 1) // 2,)*self.dim  # for 'same' convolution in first layer
+        module = ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
+                               kernel_size=kernel_size, activation=activation,
+                               batch_norm=batch_norm, bias=bias, padding=p)
+        modules.append(('mrf', module))
+        for i in range(num_extra):
+            module = Conv(dim, in_channels=num_filters, out_channels=num_filters,
+                         kernel_size=1, activation=activation, batch_norm=batch_norm,
+                         bias=bias)
+            modules.append(('extra', module))
+        module = Conv(dim, in_channels=num_filters, out_channels=num_classes,
+                     kernel_size=1, activation=final_activation, batch_norm=batch_norm,
+                     bias=bias)
+        modules.append(('final', module))
+        # build model
+        super().__init__(OrderedDict(modules))
