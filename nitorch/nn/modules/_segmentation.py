@@ -6,6 +6,92 @@ from ...spatial import grid_pull
 from .. import check
 
 
+class SegMRFNet(Module):
+    """Segmentation+MRF network.
+    """
+    def __init__(self, dim, output_classes=1, input_channels=1,
+                 encoder=None, decoder=None, kernel_size_seg=3,
+                 kernel_size_mrf=3, activation=tnn.LeakyReLU(0.2),
+                 batch_norm_seg=True, num_iter=1, w=1, num_extra=0):
+        super().__init__()
+
+
+        # Add tensorboard callback
+        self.board = lambda tb, inputs, outputs: board(
+            dim, tb, inputs, outputs)
+
+        self.unet = SegNet(dim,
+                         input_channels=input_channels,
+                         output_classes=output_classes,
+                         encoder=encoder,
+                         decoder=decoder,
+                         kernel_size=kernel_size_seg,
+                         activation=activation,
+                         batch_norm=batch_norm_seg,
+                         has_final_activation=False)
+
+        self.mrf = MRFNet(dim,
+                       num_classes=output_classes,
+                       num_filters=output_classes*output_classes,
+                       num_extra=num_extra,
+                       kernel_size=kernel_size_mrf,
+                       activation=activation,
+                       w=w,
+                       num_iter=num_iter,
+                       batch_norm=False)
+
+        # register loss tag
+        self.tags = ['unet', 'mrf']
+
+    # defer properties
+    dim = property(lambda self: self.unet.dim)
+
+    def forward(self, image, ref=None, *, _loss=None, _metric=None):
+        """Forward pass.
+        """
+        image = torch.as_tensor(image)
+
+        # sanity check
+        check.dim(self.dim, image)
+
+        # augmentation (only if reference is given, i.e., not at test-time)
+        if ref is not None:
+            for augmenter in self.augmenters:
+                image, ref = augmenter(image, ref)
+
+        # unet
+        ll = self.unet(image)
+
+        # number of VB iterations
+        with torch.no_grad():
+            if ref is not None:
+                # Training: variable number of iterations
+                num_iter = int(torch.LongTensor(1).random_(1, self.mrf.num_iter + 1))
+            else:
+                # Testing: fixed number of iterations
+                num_iter = self.mrf.num_iter
+
+        # MRF
+        p = torch.zeros_like(ll)
+        for i in range(num_iter):
+            op = p.clone()
+            p = self.mrf((ll + p).softmax(dim=1))
+            p = self.mrf.w*p + (1 - self.mrf.w)*op
+
+        # compute loss and metrics (in logit space)
+        if ref is not None:
+            # sanity checks
+            check.dim(self.dim, ref)
+            dims = [0] + list(range(2, self.dim+2))
+            check.shape(ll, ref, dims=dims)
+            self.compute(_loss, _metric, unet=[ll, ref], mrf=[p, ref])
+
+        # softmax
+        p = p.softmax(dim=1)
+
+        return p
+
+
 class SegNet(Module):
     """Segmentation network.
 
@@ -17,7 +103,7 @@ class SegNet(Module):
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.2), batch_norm=True,
-                 implicit=True):
+                 implicit=True, has_final_activation=True):
         """
 
         Parameters
@@ -45,17 +131,21 @@ class SegNet(Module):
             Only return `output_classes` probabilities (the last one
             is implicit as probabilities must sum to 1).
             Else, return `output_classes + 1` probabilities.
+        has_final_activation : bool, default=True
+           Append final activation function.
         """
 
         super().__init__()
 
         self.implicit = implicit
         self.output_classes = output_classes
-        if implicit and output_classes == 1:
-            final_activation = tnn.Sigmoid
-        else:
-            output_classes = output_classes + 1
-            final_activation = tnn.Softmax(dim=1)
+        final_activation = None
+        if has_final_activation:
+            if implicit and output_classes == 1:
+                final_activation = tnn.Sigmoid
+            else:
+                output_classes = output_classes + 1
+                final_activation = tnn.Softmax(dim=1)
         # Add tensorboard callback
         self.board = lambda tb, inputs, outputs: board(
             dim, tb, inputs, outputs, implicit=implicit)
