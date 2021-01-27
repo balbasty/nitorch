@@ -459,7 +459,7 @@ def rls_maj(rls, vx=1., lam=1.):
     backend = dict(dtype=rls.dtype, device=rls.device)
     vx = core.utils.make_vector(vx, 3, **backend)
     lam = core.utils.make_vector(lam, nb_prm, **backend)
-    vx = torch.as_tensor(vx).square().reciprocal()
+    vx = vx.square().reciprocal()
     
     if rls.dim() > 3:
         rls = core.utils.movedim(rls, 0, -1)
