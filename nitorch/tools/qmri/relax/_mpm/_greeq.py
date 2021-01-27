@@ -2,8 +2,9 @@ import torch
 from nitorch import core, spatial
 from ._options import GREEQOptions
 from ._preproc import preproc, postproc
-from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul, hessian_sym_solve,
-                     smart_grid, smart_pull, smart_push, rls_maj)
+from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul,
+                     hessian_sym_solve, hessian_sym_inv, rls_maj,
+                     smart_grid, smart_pull, smart_push)
 from nitorch.tools.qmri.param import ParameterMap
 
 
@@ -264,42 +265,27 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     print(f'RLS converged ({gain:7.2g})')
                     break
 
-    # --- Diagonal (approximate) uncertainty ---
     if opt.uncertainty:
-        if opt.penalty.norm in ('tv', 'jtv'):
-            rls = rls_maj(rls, vx)
-        maps.pd.uncertainty = hess[0]
-        maps.r1.uncertainty = hess[1]
-        maps.r2s.uncertainty = hess[2]
+        uncertainty = _nonlin_uncertainty(hess, multi_rls, lam * vol, vx, opt)
+        maps.pd.uncertainty = uncertainty[0]
+        maps.r1.uncertainty = uncertainty[1]
+        maps.r2s.uncertainty = uncertainty[2]
         if hasattr(maps, 'mt'):
-            maps.mt.uncertainty = hess[3]
-        if opt.penalty.norm:
-            if opt.penalty.norm == 'tv':
-                maps.pd.uncertainty += rls[0] * lam[0]
-                maps.r1.uncertainty += rls[1] * lam[1]
-                maps.r2s.uncertainty += rls[2] * lam[2]
-                if hasattr(maps, 'mt'):
-                    maps.mt.uncertainty += rls[3] * 2 * lam[3]
-            elif opt.penalty.norm == 'jtv':
-                maps.pd.uncertainty += rls * lam[0]
-                maps.r1.uncertainty += rls * lam[1]
-                maps.r2s.uncertainty += rls * lam[2]
-                if hasattr(maps, 'mt'):
-                    maps.mt.uncertainty += rls * lam[3] * vxterm
-            elif opt.penalty.norm == 'tkh':
-                smo = torch.as_tensor(vx).square().reciprocal().sum().item()
-                maps.pd.uncertainty += 4 * lam[0] * smo
-                maps.r1.uncertainty += 4 * lam[0] * smo
-                maps.r2s.uncertainty += 4 * lam[0] * smo
-                if hasattr(maps, 'mt'):
-                    maps.mt.uncertainty += 4 * lam[3] * smo
-        maps.pd.uncertainty.reciprocal_()
-        maps.r1.uncertainty.reciprocal_()
-        maps.r2s.uncertainty.reciprocal_()
-        
+            maps.mt.uncertainty = uncertainty[3]
     
     # --- Prepare output ---
     return postproc(maps)
+
+
+def _nonlin_uncertainty(hess, rls, lam, vx, opt):
+    """Diagonal posterior uncertainty"""
+    uncertainty = hess.clone()
+    if opt.penalty:
+        smo = torch.as_tensor(vx).square().reciprocal().sum().item()
+        for i, (weight, l) in enumerate(zip(rls, lam)):
+            uncertainty[i] += l * (rls_maj(weight, vx) if weight is not None
+                                   else 4 * smo)
+    return hessian_sym_inv(uncertainty, diag=True)
 
 
 class CritPrinter:

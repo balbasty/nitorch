@@ -101,7 +101,7 @@ def hessian_sym_loaddiag(hess, eps=None, eps2=None):
 
 
 def hessian_sym_inv(hess, diag=False):
-    """MAtrix inversion for sparse symmetric hessians.
+    """Matrix inversion for sparse symmetric hessians.
 
     `hess` contains only the diagonal and upper part of the matrix, in
     a flattened array. Elements are ordered as:
