@@ -540,7 +540,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             
             # grad_signal: compute gradient of the signal term
             #   all gradients are multiplied by fit at some point
-            #   so we initialize them with fit
+            #   so we initialize them with fit
             grad1[...] = fit[None].expand((3+has_mt, *fit.shape))
 
             grad1[1] *= -tr * r1 * (omt_x_cosfa - 1) * e1
