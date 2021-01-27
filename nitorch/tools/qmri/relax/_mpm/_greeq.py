@@ -265,7 +265,9 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     print(f'RLS converged ({gain:7.2g})')
                     break
 
+    del grad
     if opt.uncertainty:
+        multi_rls = rls if opt.penalty.norm == 'tv' else [rls] * len(maps)
         uncertainty = _nonlin_uncertainty(hess, multi_rls, lam * vol, vx, opt)
         maps.pd.uncertainty = uncertainty[0]
         maps.r1.uncertainty = uncertainty[1]
