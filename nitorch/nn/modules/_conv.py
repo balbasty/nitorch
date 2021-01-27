@@ -252,3 +252,25 @@ class Conv(tnn.Module):
             else:
                 shape += [math.floor((L + 2 * Pi - D * (K - 1) - 1) / S + 1)]
         return tuple(shape)
+
+
+class ConvZeroCentre(Conv):
+    """Same as Conv, but constrains convolution filter to have zero centre.
+
+    """
+    def __init__(self, dim, *args, **kwargs):
+        super().__init__(dim, *args, **kwargs)
+
+    def forward(self, x, **overload):
+        # zero centre
+        k = self.conv.kernel_size
+        if self.dim == 3:
+            self.conv.weight.data[:, :, k[0] // 2, k[1] // 2, k[2] // 2].clamp_(0, 0)
+        elif self.dim == 2:
+            self.conv.weight.data[:, :, k[0] // 2, k[1] // 2].clamp_(0, 0)
+        else:
+            self.conv.weight.data[:, :, k[0] // 2].clamp_(0, 0)
+        # parent class' forward pass
+        x = super().forward(x, **overload)
+
+        return x

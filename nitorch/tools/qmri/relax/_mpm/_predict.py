@@ -115,6 +115,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
         r2s = ParameterMap(r2s)
     if has_mt and not isinstance(mt, ParameterMap):
         mt = ParameterMap(mt)
+        mt.unit = '%'
 
     # 4) ensure all fields are `PrecomputedFieldMap`s
     for n in range(nb_contrasts):

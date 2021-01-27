@@ -4,6 +4,7 @@ from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag, hessian_matmul, hessian_solve,
                      smart_grid, smart_pull, smart_push)
+from ..utils import rls_maj
 from nitorch.tools.qmri.param import ParameterMap
 
 
@@ -127,14 +128,17 @@ def nonlin(data, opt=None):
                     reg += reg1
                     grad[i] += g1
 
-            # --- load diagonal of the Hessian ---
-            hess = hessian_loaddiag(hess)
-
             # --- gauss-newton ---
+            if not hess.isfinite().all():
+                print('WARNING: NaNs in hess (??)')
             if opt.regularization.norm:
+                hess = hessian_loaddiag(hess, 1e-5, 1e-8)
                 deltas = _nonlin_solve(hess, grad, multi_rls, lam, vx, opt)
             else:
+                hess = hessian_loaddiag(hess, 1e-3, 1e-6)
                 deltas = hessian_solve(hess, grad)
+            if not deltas.isfinite().all():
+                print('WARNING: NaNs in delta (non stable Hessian)')
 
             for map, delta in zip(maps, deltas):
                 map.volume -= delta
@@ -322,7 +326,7 @@ def _nonlin_reg(map, vx=1., rls=None, lam=1., do_grad=True):
 
     grad = grad_fwd
     grad += grad_bwd
-    grad *= lam / (2*3)   # average across directions (3) and side (2)
+    grad *= lam / 2   # average across side (2)
 
     if do_grad:
         reg = (map * grad).sum(dtype=torch.double)
@@ -365,19 +369,15 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
     # and L to the regularizer. Note that, L = D'WD where D is the 
     # gradient operator, D' the divergence and W a diagonal matrix
     # that contains the RLS weights.
-    # We use (H + W*diag(D'D)) as a preconditioner because it is easy to 
-    # invert. I think that it works because D'D has a nice form where
-    # its rows sum to zero. Otherwise, we'd need to add a bit of 
-    # something on the diagonal of the preconditioner.
-    # Furthermore, diag(D'D) = d*I, where d is the central weight in
-    # the corresponding convolution
+    # We use (H + diag(|D'D|w)) as a preconditioner because it is easy to 
+    # invert and majorises the true Hessian.
     hessp = hess.clone()
-    smo = (2/3)*torch.as_tensor(vx).square().reciprocal().sum().item()
+    smo = torch.as_tensor(vx).square().reciprocal().sum().item()
     for i, (weight, l) in enumerate(zip(rls, lam)):
-        hessp[2*i] += l * weight * smo
+        hessp[2*i] += l * (rls_maj(weight, vx) if weight is not None else 4*smo)
     
     def precond(x):
-        return hessian_solve(hessp, x)  # , bnd)
+        return hessian_solve(hessp, x)
     
     result = core.optim.cg(hess_fn, grad, precond=precond,
                            verbose=(opt.verbose > 1), stop='norm',
@@ -417,7 +417,7 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
 
         grad = grad_fwd.square_().sum(-1)
         grad += grad_bwd.square_().sum(-1)
-        grad *= lam / (2*3)   # average across directions (3) and side (2)
+        grad *= lam / 2   # average across side (2)
         return grad
 
     # multiple maps

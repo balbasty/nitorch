@@ -4,10 +4,11 @@ from nitorch.core.options import Option
 
 class ReconOptions(Option):
     """Options for the reconstruction space"""
-    space: int or str = 0                   # Orientation of the recon space
-    layout: int or str or None = None       # ?
-    fov: str = 'bb'                         # Field-of-view of the recon space
-    crop: float = 0                         # Crop size if fov == 'bb'
+    space: int or str = 0                   # Recon space: 
+    affine: torch.tensor or None = None     # Recon orientation matrix (default: from space)
+    layout: int or str or None = None       # Force output RAS layout (default: same as affine)
+    fov: tuple or str = None                # Field-of-view of the recon space: shape or 'bb' (default: from space)
+    crop: float = 0                         # Crop size (in pct) if fov == 'bb'
 
 
 class PenaltyOptions(Option):
@@ -46,6 +47,7 @@ class GREEQOptions(Option):
     backend: BackendOptions = BackendOptions()
     penalty: PenaltyOptions = PenaltyOptions()
     verbose: int or bool = 1
+    uncertainty: bool = False            # Whether to return uncertainty maps (posterior variance)
 
 
 class VFAOptions(Option):

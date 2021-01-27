@@ -69,7 +69,7 @@ def hessian_sym_matmul(hess, grad):
         return mm
 
 
-def hessian_sym_loaddiag(hess, eps=None):
+def hessian_sym_loaddiag(hess, eps=None, eps2=None):
     """Load the diagonal of the (symmetric) Hessian
 
     `hess` contains only the diagonal and upper part of the matrix, in
@@ -94,6 +94,8 @@ def hessian_sym_loaddiag(hess, eps=None):
     weight = hess[:nb_prm].max(dim=0, keepdim=True).values
     weight.clamp_min_(eps)
     weight *= eps
+    if eps2:
+        weight += eps2
     hess[:nb_prm] += weight
     return hess
 
@@ -370,3 +372,230 @@ def smart_push(tensor, grid, shape=None):
         return tensor
     return spatial.grid_push(tensor[None, ...], grid[None, ...], shape)[0]
 
+
+def reg(tensor, vx=1., rls=None, lam=1., do_grad=True):
+    """Compute the gradient of the regularisation term.
+
+    The regularisation term has the form:
+    `0.5 * lam * sum(w[i] * (g+[i]**2 + g-[i]**2) / 2)`
+    where `i` indexes a voxel, `lam` is the regularisation factor,
+    `w[i]` is the RLS weight, `g+` and `g-` are the forward and
+    backward spatial gradients of the parameter map.
+
+    Parameters
+    ----------
+    tensor : (K, *shape) tensor
+        Parameter map
+    vx : float or sequence[float], default=1
+        Voxel size
+    rls : (K|1, *shape) tensor, optional
+        Weights from the reweighted least squares scheme
+    lam : float or sequence[float], default=1
+        Regularisation factor
+    do_grad : bool, default=True
+        Return both the criterion and gradient
+
+    Returns
+    -------
+    reg : () tensor[double]
+        Regularisation term
+    grad : (K, *shape) tensor
+        Gradient with respect to the parameter map
+
+    """
+    nb_prm = tensor.shape[0]
+    backend = dict(dtype=tensor.dtype, device=tensor.device)
+    vx = core.utils.make_vector(vx, 3, **backend)
+    lam = core.utils.make_vector(lam, nb_prm, **backend)
+    
+    grad_fwd = spatial.diff(tensor, dim=[1, 2, 3], voxel_size=vx, side='f')
+    grad_bwd = spatial.diff(tensor, dim=[1, 2, 3], voxel_size=vx, side='b')
+    if rls is not None:
+        grad_fwd *= rls[..., None]
+        grad_bwd *= rls[..., None]
+    grad_fwd = spatial.div(grad_fwd, dim=[1, 2, 3], voxel_size=vx, side='f')
+    grad_bwd = spatial.div(grad_bwd, dim=[1, 2, 3], voxel_size=vx, side='b')
+
+    grad = grad_fwd
+    grad += grad_bwd
+    grad *= lam.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) / 2.
+    # ^ average across side
+
+    if do_grad:
+        reg = (tensor * grad).sum(dtype=torch.double)
+        return 0.5 * reg, grad
+    else:
+        grad *= tensor
+        return 0.5 * grad.sum(dtype=torch.double)
+    
+
+def reg1(tensor, vx=1., rls=None, lam=1., do_grad=True):
+    """Compute the gradient of the regularisation term.
+
+    The regularisation term has the form:
+    `0.5 * lam * sum(w[i] * (g+[i]**2 + g-[i]**2) / 2)`
+    where `i` indexes a voxel, `lam` is the regularisation factor,
+    `w[i]` is the RLS weight, `g+` and `g-` are the forward and
+    backward spatial gradients of the parameter map.
+
+    Parameters
+    ----------
+    tensor : (*shape) tensor
+        Parameter map
+    vx : float or sequence[float], default=1
+        Voxel size
+    rls : (*shape) tensor, optional
+        Weights from the reweighted least squares scheme
+    lam : float, default=1
+        Regularisation factor
+    do_grad : bool, default=True
+        Return both the criterion and gradient
+
+    Returns
+    -------
+    reg : () tensor[double]
+        Regularisation term
+    grad : (*shape) tensor
+        Gradient with respect to the parameter map
+
+    """
+
+    grad_fwd = spatial.diff(tensor, dim=[0, 1, 2], voxel_size=vx, side='f')
+    grad_bwd = spatial.diff(tensor, dim=[0, 1, 2], voxel_size=vx, side='b')
+    if rls is not None:
+        grad_fwd *= rls[..., None]
+        grad_bwd *= rls[..., None]
+    grad_fwd = spatial.div(grad_fwd, dim=[0, 1, 2], voxel_size=vx, side='f')
+    grad_bwd = spatial.div(grad_bwd, dim=[0, 1, 2], voxel_size=vx, side='b')
+
+    grad = grad_fwd
+    grad += grad_bwd
+    grad *= lam / 2.   # average across directions (3) and side (2)
+
+    if do_grad:
+        reg = (tensor * grad).sum(dtype=torch.double)
+        return 0.5 * reg, grad
+    else:
+        grad *= tensor
+        return 0.5 * grad.sum(dtype=torch.double)
+
+def rls_maj(rls, vx=1., lam=1.):
+    """Diagonal majoriser of the RLS regulariser.
+    
+    Parameters
+    ----------
+    rls : (..., *shape) tensor
+        Weights from the reweighted least squares scheme
+    vx : float or sequence[float], default=1
+        Voxel size
+    lam : float or sequence[float], default=1
+        Regularisation factor
+
+    Returns
+    -------
+    rls : (*shape) tensor
+        Convolved weights
+
+    """
+    
+    nb_prm = rls.shape[0] if rls.dim() > 3 else 1
+    backend = dict(dtype=rls.dtype, device=rls.device)
+    vx = core.utils.make_vector(vx, 3, **backend)
+    lam = core.utils.make_vector(lam, nb_prm, **backend)
+    vx = vx.square().reciprocal()
+    
+    if rls.dim() > 3:
+        rls = core.utils.movedim(rls, 0, -1)
+    
+    out = (2*vx.sum())*rls
+    # center
+    out[1:-1, 1:-1, 1:-1] += ((rls[ :-2, 1:-1, 1:-1] + rls[2:  , 1:-1, 1:-1])*vx[0] + 
+                              (rls[1:-1,  :-2, 1:-1] + rls[1:-1, 2:,   1:-1])*vx[1] + 
+                              (rls[1:-1, 1:-1,  :-2] + rls[1:-1, 1:-1, 2:  ])*vx[2])
+    # sides
+    out[0, 1:-1, 1:-1]  += ((rls[   0, 1:-1, 1:-1] + rls[   1, 1:-1, 1:-1])*vx[0] + 
+                            (rls[   0,  :-2, 1:-1] + rls[   0, 2:  , 1:-1])*vx[1] + 
+                            (rls[   0, 1:-1,  :-2] + rls[   0, 1:-1, 2:  ])*vx[2])
+    out[-1, 1:-1, 1:-1] += ((rls[  -2, 1:-1, 1:-1] + rls[  -1, 1:-1, 1:-1])*vx[0] + 
+                            (rls[  -1,  :-2, 1:-1] + rls[  -1, 2:  , 1:-1])*vx[1] + 
+                            (rls[  -1, 1:-1,  :-2] + rls[  -1, 1:-1, 2:  ])*vx[2])
+    out[1:-1, 0, 1:-1]  += ((rls[ :-2,    0, 1:-1] + rls[2:  ,    0, 1:-1])*vx[0] + 
+                            (rls[1:-1,    0, 1:-1] + rls[1:-1,    1, 1:-1])*vx[1] + 
+                            (rls[1:-1,    0,  :-2] + rls[1:-1,    0, 2:  ])*vx[2])
+    out[1:-1, -1, 1:-1] += ((rls[ :-2,   -1, 1:-1] + rls[2:  ,   -1, 1:-1])*vx[0] + 
+                            (rls[1:-1,   -2, 1:-1] + rls[1:-1,   -1, 1:-1])*vx[1] + 
+                            (rls[1:-1,   -1,  :-2] + rls[1:-1,   -1, 2:  ])*vx[2])
+    out[1:-1, 1:-1, 0]  += ((rls[ :-2, 1:-1,    0] + rls[2:  , 1:-1,    0])*vx[0] + 
+                            (rls[1:-1,  :-2,    0] + rls[1:-1, 2:  ,    0])*vx[1] + 
+                            (rls[1:-1, 1:-1,    0] + rls[1:-1, 1:-1,    1])*vx[2])
+    out[1:-1, 1:-1, -1] += ((rls[ :-2, 1:-1,   -1] + rls[2:  , 1:-1,   -1])*vx[0] + 
+                            (rls[1:-1,  :-2,   -1] + rls[1:-1, 2:  ,   -1])*vx[1] + 
+                            (rls[1:-1, 1:-1,   -2] + rls[1:-1, 1:-1,   -1])*vx[2])
+    # edges
+    out[0, 0, 1:-1]   += ((rls[   0,    0, 1:-1] + rls[   1,    0, 1:-1])*vx[0] + 
+                          (rls[   0,    0, 1:-1] + rls[   0,    1, 1:-1])*vx[1] + 
+                          (rls[   0,    0,  :-2] + rls[   0,    0, 2:  ])*vx[2])
+    out[0, -1, 1:-1]  += ((rls[   0,   -1, 1:-1] + rls[   1,   -1, 1:-1])*vx[0] + 
+                          (rls[   0,   -2, 1:-1] + rls[   0,   -1, 1:-1])*vx[1] + 
+                          (rls[   0,   -1,  :-2] + rls[   0,   -1, 2:  ])*vx[2])
+    out[-1, 0, 1:-1]  += ((rls[  -1,    0, 1:-1] + rls[  -1,    0, 1:-1])*vx[0] + 
+                          (rls[  -1,    0, 1:-1] + rls[  -1,    1, 1:-1])*vx[1] + 
+                          (rls[  -1,    0,  :-2] + rls[  -1,    0, 2:  ])*vx[2])
+    out[-1, -1, 1:-1] += ((rls[  -2,   -1, 1:-1] + rls[  -1,   -1, 1:-1])*vx[0] + 
+                          (rls[  -1,   -2, 1:-1] + rls[  -1,   -1, 1:-1])*vx[1] + 
+                          (rls[  -1,   -1,  :-2] + rls[  -1,   -1, 2:  ])*vx[2])
+    out[0, 1:-1, 0]   += ((rls[   0, 1:-1,    0] + rls[   1, 1:-1,    0])*vx[0] + 
+                          (rls[   0,  :-2,    0] + rls[   0, 2:  ,    0])*vx[1] + 
+                          (rls[   0, 1:-1,    0] + rls[   0, 1:-1,    1])*vx[2])
+    out[0, 1:-1, -1]  += ((rls[   0, 1:-1,   -1] + rls[   1, 1:-1,   -1])*vx[0] + 
+                          (rls[   0,  :-2,   -1] + rls[   0, 2: ,    -1])*vx[1] + 
+                          (rls[   0, 1:-1,   -2] + rls[   0, 1:-1,   -1])*vx[2])
+    out[-1, 1:-1, 0]  += ((rls[  -2, 1:-1,    0] + rls[  -1, 1:-1,    0])*vx[0] + 
+                          (rls[  -1,  :-2,    0] + rls[  -1, 2:  ,    0])*vx[1] + 
+                          (rls[  -1, 1:-1,    0] + rls[  -1, 1:-1,   -1])*vx[2])
+    out[-1, 1:-1, -1] += ((rls[  -2, 1:-1,   -1] + rls[  -1, 1:-1,   -1])*vx[0] + 
+                          (rls[  -1,  :-2,   -1] + rls[  -1, 2:  ,   -1])*vx[1] + 
+                          (rls[  -1, 1:-1,   -2] + rls[  -1, 1:-1,   -1])*vx[2])
+    out[1:-1, 0, 0]   += ((rls[ :-2,    0,    0] + rls[2:  ,    0,    0])*vx[0] + 
+                          (rls[1:-1,    0,    0] + rls[1:-1,    1,    0])*vx[1] + 
+                          (rls[1:-1,    0,    0] + rls[1:-1,    0,    1])*vx[2])
+    out[1:-1, 0, -1]  += ((rls[ :-2,    0,   -1] + rls[2:  ,    0,   -1])*vx[0] + 
+                          (rls[1:-1,    0,   -1] + rls[1:-1,    1,   -1])*vx[1] + 
+                          (rls[1:-1,    0,   -2] + rls[1:-1,    0,   -1])*vx[2])
+    out[1:-1, -1, 0]  += ((rls[ :-2,    0,    0] + rls[2:  ,   -1,    0])*vx[0] + 
+                          (rls[1:-1,   -2,    0] + rls[1:-1,   -1,    0])*vx[1] + 
+                          (rls[1:-1,    0,    0] + rls[1:-1,   -1,    1])*vx[2])
+    out[1:-1, -1, -1] += ((rls[ :-2,   -1,   -1] + rls[2:  ,   -1,   -1])*vx[0] + 
+                          (rls[1:-1,   -2,   -1] + rls[1:-1,   -1,   -1])*vx[1] + 
+                          (rls[1:-1,   -1,   -2] + rls[1:-1,   -1,   -1])*vx[2])
+    
+    # corners
+    out[0, 0, 0]    += ((rls[ 0,  0,  0] + rls[ 1,  0,  0])*vx[0] + 
+                        (rls[ 0,  0,  0] + rls[ 0,  1,  0])*vx[1] + 
+                        (rls[ 0,  0,  0] + rls[ 0,  0,  1])*vx[2])
+    out[0, 0, -1]   += ((rls[ 0,  0, -1] + rls[ 1,  0, -1])*vx[0] + 
+                        (rls[ 0,  0, -1] + rls[ 0,  1, -1])*vx[1] + 
+                        (rls[ 0,  0, -2] + rls[ 0,  0, -1])*vx[2])
+    out[0, -1, 0]   += ((rls[ 0, -1,  0] + rls[ 1, -1,  0])*vx[0] + 
+                        (rls[ 0, -2,  0] + rls[ 0, -1,  0])*vx[1] + 
+                        (rls[ 0, -1,  0] + rls[ 0, -1,  1])*vx[2])
+    out[0, -1, -1]  += ((rls[ 0, -1, -1] + rls[ 1, -1, -1])*vx[0] + 
+                        (rls[ 0, -2, -1] + rls[ 0, -1, -1])*vx[1] + 
+                        (rls[ 0, -1, -2] + rls[ 0, -1, -1])*vx[2])
+    out[-1, 0, 0]   += ((rls[-2,  0,  0] + rls[-1,  0,  0])*vx[0] + 
+                        (rls[-1,  0,  0] + rls[-1,  1,  0])*vx[1] + 
+                        (rls[-1,  0,  0] + rls[-1,  0,  1])*vx[2])
+    out[-1, 0, -1]  += ((rls[-2,  0, -1] + rls[-1,  0, -1])*vx[0] + 
+                        (rls[-1,  0, -1] + rls[-1,  1, -1])*vx[1] + 
+                        (rls[-1,  0, -2] + rls[-1,  0, -1])*vx[2])
+    out[-1, -1, 0]  += ((rls[-2, -1,  0] + rls[-1, -1,  0])*vx[0] + 
+                        (rls[-1, -2,  0] + rls[-1, -1,  0])*vx[1] + 
+                        (rls[-1, -1,  0] + rls[-1, -1,  1])*vx[2])
+    out[-1, -1, -1] += ((rls[-2, -1, -1] + rls[-1, -1, -1])*vx[0] + 
+                        (rls[-1, -2, -1] + rls[-1, -1, -1])*vx[1] + 
+                        (rls[-1, -1, -2] + rls[-1, -1, -1])*vx[2])
+    
+    out *= lam
+    if out.dim() > 3:
+        out = core.utils.movedim(-1, 0)
+    return out

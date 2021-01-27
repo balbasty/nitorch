@@ -148,18 +148,18 @@ def preproc(data, transmit=None, receive=None, opt=None):
     # --- compute recon space ---
     affines = [contrast.affine for contrast in data]
     shapes = [dat.volume.shape[1:] for dat in data]
-    if opt.recon.space == 'mean':
-        print('Estimate recon space')
-        if isinstance(opt.recon.space, int):
-            mean_affine = affines[opt.recon.space]
-            mean_shape = shapes[opt.recon.space]
-        elif isinstance(opt.recon.space, str) and opt.recon.space.lower() == 'mean':
-            mean_affine, mean_shape = spatial.mean_space(affines, shapes)
-        else:
-            raise NotImplementedError()
+    if opt.recon.affine is None:
+        opt.recon.affine = opt.recon.space
+    if opt.recon.fov is None:
+        opt.recon.fov = opt.recon.space
+    if isinstance(opt.recon.affine, int):
+        mean_affine = affines[opt.recon.affine]
     else:
-        mean_affine = affines[opt.recon.space]
-        mean_shape = shapes[opt.recon.space]
+        mean_affine = torch.as_tensor(opt.recon.affine)
+    if isinstance(opt.recon.fov, int):
+        mean_shape = shapes[opt.recon.fov]
+    else:
+        mean_shape = tuple(opt.recon.fov)
 
     # --- allocate maps ---
     maps = GREEQParameterMaps()
