@@ -173,6 +173,12 @@ def hessian_sym_solve(hess, grad, lam=None):
     backend = dict(dtype=hess.dtype, device=hess.device)
     nb_prm = len(grad)
 
+    grad_shape = grad.shape[1:]
+    hess_shape = hess.shape[1:]
+    grad_shape = (1,) * max(0, len(hess_shape) - len(grad_shape)) + grad_shape
+    hess_shape = (1,) * max(0, len(grad_shape) - len(hess_shape)) + hess_shape
+    res_shape = tuple([max(g, h) for g, h in zip(grad_shape, hess_shape)])
+
     diag = hess[:nb_prm]  # diagonal
     uppr = hess[nb_prm:]  # upper triangular part
 
@@ -188,7 +194,7 @@ def hessian_sym_solve(hess, grad, lam=None):
     elif nb_prm == 2:
         det = uppr[0].square().neg_()
         det += diag[0] * diag[1]
-        res = torch.empty_like(grad)
+        res = grad.new_like([nb_prm, *res_shape])
         res[0] = diag[1] * grad[0] - uppr[0] * grad[1]
         res[1] = diag[0] * grad[1] - uppr[0] * grad[0]
         res /= det
@@ -198,7 +204,7 @@ def hessian_sym_solve(hess, grad, lam=None):
             - (diag[0] * uppr[2].square() +
                diag[2] * uppr[0].square() +
                diag[1] * uppr[1].square())
-        res = torch.empty_like(grad)
+        res = grad.new_like([nb_prm, *res_shape])
         res[0] = (diag[1] * diag[2] - uppr[2].square()) * grad[0] \
                + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * grad[1] \
                + (uppr[0] * uppr[2] - diag[1] * uppr[1]) * grad[2]
@@ -264,7 +270,7 @@ def hessian_sym_solve(hess, grad, lam=None):
                  + uppr[5] * uppr[0].square()
                  - uppr[0] * uppr[1] * uppr[4]
                  - uppr[0] * uppr[2] * uppr[3])
-        res = torch.empty_like(grad)
+        res = grad.new_like([nb_prm, *res_shape])
         res[0] = (diag[1] * diag[2] * diag[3]
                   - diag[1] * uppr[5].square()
                   - diag[2] * uppr[4].square()
