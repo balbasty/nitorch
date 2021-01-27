@@ -98,6 +98,49 @@ def hessian_sym_loaddiag(hess, eps=None):
     return hess
 
 
+def hessian_sym_inv(hess, diag=False):
+    """MAtrix inversion for sparse symmetric hessians.
+
+    `hess` contains only the diagonal and upper part of the matrix, in
+    a flattened array. Elements are ordered as:
+     `[(i, i) for i in range(P)] +
+      [(i, j) for i in range(P) for j in range(i+1, P)]
+
+    Orders up to 4 are implemented in closed-form.
+    Orders > 4 use torch's batched implementation but require
+    building the full matrices.
+
+    Parameters
+    ----------
+    hess : (P*(P+1)//2, ...) tensor
+        Sparse symmetric matrix
+    diag : bool, default=False
+        If True, only return the diagonal of the inverse
+
+    Returns
+    -------
+    result : (P*(P+1)//2, ...) tensor
+
+    """
+    nb_prm = int((math.sqrt(1 + 8 * len(hess)) - 1)//2)
+    if diag:
+        out = hess.new_empty([nb_prm, *hess.shape[1:]])
+    else:
+        out = torch.empty_like(hess)
+
+    cnt = nb_prm
+    for i in range(nb_prm):
+        e = hess.new_zeros(nb_prm)
+        e[i] = 1
+        vec = hessian_sym_solve(hess, e)
+        out[i] = vec[i]
+        if not diag:
+            for j in range(i+1, nb_prm):
+                out[cnt] = vec[j]
+                cnt += 1
+    return out
+
+
 def hessian_sym_solve(hess, grad, lam=None):
     """Left matrix division for sparse symmetric hessians.
 
