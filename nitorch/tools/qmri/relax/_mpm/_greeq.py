@@ -222,12 +222,19 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                         del g1
 
                 # --- gauss-newton ---
+                if not hess.isfinite().all():
+                    print('WARNING: NaNs in hess')
+                if not grad.isfinite().all():
+                    print('WARNING: NaNs in hess')
                 if opt.penalty.norm:
                     hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)
                     deltas = _nonlin_solve(hess, grad, multi_rls, lam * vol, vx, opt)
                 else:
-                    hess = hessian_sym_loaddiag(hess, 1e-3, 1e-6)
+                    print('closed form')
+                    hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
                     deltas = hessian_sym_solve(hess, grad)
+                if not deltas.isfinite().all():
+                    print('WARNING: NaNs in delta')
 
                 for map, delta in zip(maps, deltas):
                     map.volume -= delta
@@ -616,12 +623,17 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
                 hess1[5] = grad1[1] * grad1[2]
             hess1 *= lam
             hess1[:, ~msk] = 0
+            diag = hess1[:(3+has_mt)]
+            diag[~torch.isfinite(diag)] = 1e-3
+            offdiag = hess1[(3+has_mt):]
+            offdiag[~torch.isfinite(offdiag)] = 0
             hess += hess1
             del hess1
 
             # grad_crit: multiply by residuals
             grad1 *= res
             grad1 *= lam
+            grad1[~torch.isfinite(grad1)] = 0
             grad += grad1
             del grad1
 
