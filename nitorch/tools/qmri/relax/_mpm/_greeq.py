@@ -230,7 +230,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)
                     deltas = _nonlin_solve(hess, grad, multi_rls, lam * vol, vx, opt)
                 else:
-                    print('closed form')
                     hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
                     deltas = hessian_sym_solve(hess, grad)
                 if not deltas.isfinite().all():
