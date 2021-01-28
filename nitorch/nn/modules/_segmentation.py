@@ -12,7 +12,7 @@ class SegMRFNet(Module):
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size_seg=3,
                  kernel_size_mrf=3, activation=tnn.LeakyReLU(0.2),
-                 batch_norm_seg=True, num_iter=20, w=0.5, num_extra=0,
+                 batch_norm_seg=True, num_iter=30, w=0.5, num_extra=0,
                  num_filters_mrf=64):
         super().__init__()
 
@@ -63,32 +63,16 @@ class SegMRFNet(Module):
         # unet
         ll = self.unet(image)
 
-        # number of VB iterations
-        with torch.no_grad():
-            if ref is not None:
-                # Training: variable number of iterations
-                num_iter = int(torch.LongTensor(1).random_(1, self.mrf.num_iter + 1))
-            else:
-                # Testing: fixed number of iterations
-                num_iter = self.mrf.num_iter
-
         # MRF
-        p = torch.zeros_like(ll)
-        for i in range(num_iter):
-            op = p.clone()
-            p = (ll + self.mrf(p)).softmax(dim=1)
-            p = self.mrf.w*p + (1 - self.mrf.w)*op
+        p = self.mrf.iter_mrf(ll, ref)
 
-        # compute loss and metrics (in logit space)
+        # compute loss and metrics
         if ref is not None:
             # sanity checks
             check.dim(self.dim, ref)
             dims = [0] + list(range(2, self.dim+2))
             check.shape(ll, ref, dims=dims)
             self.compute(_loss, _metric, unet=[ll, ref], mrf=[p, ref])
-
-        # softmax
-        p = p.softmax(dim=1)
 
         return p
 
@@ -242,7 +226,7 @@ class MRFNet(Module):
 
     """
 
-    def __init__(self, dim, num_classes, num_iter=20, num_filters=64, num_extra=0,
+    def __init__(self, dim, num_classes, num_iter=30, num_filters=64, num_extra=0,
                  kernel_size=3, activation=tnn.LeakyReLU(0.2), batch_norm=False,
                  w=0.5):
         """
@@ -336,23 +320,10 @@ class MRFNet(Module):
             for augmenter in self.augmenters:
                 ll, ref = augmenter(ll, ref)
 
-        # number of VB iterations
-        with torch.no_grad():
-            if ref is not None:
-                # Training: variable number of iterations
-                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
-            else:
-                # Testing: fixed number of iterations
-                num_iter = self.num_iter
-
         # MRF
-        p = torch.zeros_like(ll)
-        for i in range(num_iter):
-            op = p.clone()
-            p = (ll + self.mrf(p)).softmax(dim=1)
-            p = self.w*p + (1 - self.w)*op
+        p = self.iter_mrf(ll, ref)
 
-        # compute loss and metrics (in logit space)
+        # compute loss and metrics
         if ref is not None:
             # sanity checks
             check.dim(self.dim, ref)
@@ -360,10 +331,31 @@ class MRFNet(Module):
             check.shape(p, ref, dims=dims)
             self.compute(_loss, _metric, mrf=[p, ref])
 
-        # softmax
-        p = p.softmax(dim=1)
+        return p
+
+    def iter_mrf(self, ll, ref):
+        """Iterate over MRF.
+        """
+        p = torch.zeros_like(ll)
+        for i in range(self.get_num_iter(ref)):
+            op = p.clone()
+            p = (ll + self.mrf(p)).softmax(dim=1)
+            p = self.w*p + (1 - self.w)*op
 
         return p
+
+    def get_num_iter(self, ref):
+        """ Get number of VB iterations.
+        """
+        with torch.no_grad():
+            if ref is not None:
+                # Training: random number of iterations
+                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
+            else:
+                # Testing: fixed number of iterations
+                num_iter = self.num_iter
+
+        return num_iter
 
 
 def board(dim, tb, inputs, outputs, implicit=False):
