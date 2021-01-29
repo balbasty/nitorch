@@ -56,3 +56,4 @@ class VFAOptions(Option):
     recon: ReconOptions = ReconOptions()
     backend: BackendOptions = BackendOptions()
     verbose: int or bool = 1
+    rational: bool = False
