@@ -135,8 +135,10 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
     
     if t1w_struct.te != pdw_struct.te:
         warnings.warn('Echo times not consistent across volumes')
-    
-    print('Computing PD and R1 from volumes:')
+
+    rational = opt .rational or t1w_struct.tr != pdw_struct.tr
+    method = 'rational' if rational else 'analytical'
+    print(f'Computing PD and R1 ({method}) from volumes:')
     print(f'  - '
           f'FA = {pdw_struct.fa:2.0f} deg  /  '
           f'TR = {pdw_struct.tr*1e3:4.1f} ms /  '
@@ -256,7 +258,8 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
     if mtw_struct.te != pdw_struct.te:
         warnings.warn('Echo times not consistent across volumes')
 
-    print('Computing MTsat from PD/R1 maps and volume:')
+    method = 'rational' if opt.rational else 'analytical'
+    print(f'Computing MTsat ({method}) from PD/R1 maps and volume:')
     print(f'  - '
           f'FA = {mtw_struct.fa:2.0f} deg  /  '
           f'TR = {mtw_struct.tr*1e3:4.1f} ms /  '
@@ -294,12 +297,12 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
             mtw_fa /= 100
         del b1p
 
-    if opt.rational or mtw_tr != pdw_tr:
+    if opt.rational:
         # we must use rational approximations
         mtsat = (mtw_fa * pd / mtw - 1) * r1 * mtw_tr - 0.5 * (mtw_fa ** 2)
         del mtw_fa, mtw
     else:
-        # we have ana analytical solution (work backward from PD/R1)
+        # we have an analytical solution (work backward from PD/R1)
         cosfa_mtw = mtw_fa.cos()
         sinfa_mtw = mtw_fa.sin()
         del mtw_fa
