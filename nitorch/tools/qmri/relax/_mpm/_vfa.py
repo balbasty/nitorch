@@ -1,4 +1,5 @@
 import warnings
+import math
 import torch
 from nitorch import core, spatial
 from nitorch.tools.preproc import affine_align
@@ -33,7 +34,8 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
         {'preproc': {'register':      True},     # Co-register contrasts
          'backend': {'dtype':  torch.float32,    # Data type
                      'device': 'cpu'},           # Device
-         'verbose': 1}                           # Verbosity: 1=print, 2=plot
+         'verbose': 1,                           # Verbosity: 1=print, 2=plot
+         'rational': False}                      # Force rational approximation
 
     Returns
     -------
@@ -171,6 +173,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
         if unit in ('%', 'pct', 'p.u.'):
             pdw_fa /= 100
         del b1p
+    pdw_fa = torch.as_tensor(pdw_fa, **backend)
 
     print(f'  - '
           f'FA = {t1w_struct.fa:2.0f} deg  /  '
@@ -208,13 +211,35 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
         if unit in ('%', 'pct', 'p.u.'):
             t1w_fa /= 100
         del b1p
-    
-    r1 = 0.5 * (t1w * (t1w_fa / t1w_tr) - pdw * (pdw_fa / pdw_tr))
-    r1 /= ((pdw / pdw_fa) - (t1w / t1w_fa))
-    r1[~torch.isfinite(r1)] = 0
+    t1w_fa = torch.as_tensor(t1w_fa, **backend)
 
-    pd = (t1w * pdw) * (t1w_tr * (pdw_fa / t1w_fa) - pdw_tr * (t1w_fa / pdw_fa))
-    pd /= (pdw * (pdw_tr * pdw_fa) - t1w * (t1w_tr * t1w_fa))
+    if opt.rational or t1w_tr != pdw_tr:
+        # we must use rational approximations
+        r1 = 0.5 * (t1w * (t1w_fa / t1w_tr) - pdw * (pdw_fa / pdw_tr))
+        r1 /= ((pdw / pdw_fa) - (t1w / t1w_fa))
+
+        pd = (t1w * pdw) * (t1w_tr * (pdw_fa / t1w_fa) - pdw_tr * (t1w_fa / pdw_fa))
+        pd /= (pdw * (pdw_tr * pdw_fa) - t1w * (t1w_tr * t1w_fa))
+        del t1w_fa, pdw_fa, t1w, pdw
+    else:
+        # there is an analytical solution
+        cosfa_t1w = t1w_fa.cos()
+        sinfa_t1w = t1w_fa.sin_()
+        del t1w_fa
+        cosfa_pdw = pdw_fa.cos()
+        sinfa_pdw = pdw_fa.sin_()
+        del pdw_fa
+        e1 = sinfa_pdw * t1w - sinfa_t1w * pdw
+        e1 /= sinfa_pdw * cosfa_t1w * t1w - sinfa_t1w * cosfa_pdw * pdw
+
+        pd = t1w / sinfa_t1w * (1 - cosfa_t1w * e1) / (1 - e1)
+        pd += pdw / sinfa_pdw * (1 - cosfa_pdw * e1) / (1 - e1)
+        pd /= 2.
+
+        r1 = e1.log_().neg_().div_(t1w_tr)
+        del t1w, pdw, cosfa_pdw, cosfa_t1w
+
+    r1[~torch.isfinite(r1)] = 0
     pd[~torch.isfinite(pd)] = 0
 
     # --- compute MTsat ---
@@ -227,6 +252,9 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
     if len(mtw_struct) > 1:
         warnings.warn('More than one volume could be used to compute MTsat')
     mtw_idx, mtw_struct = mtw_struct[0]
+
+    if mtw_struct.te != pdw_struct.te:
+        warnings.warn('Echo times not consistent across volumes')
 
     print('Computing MTsat from PD/R1 maps and volume:')
     print(f'  - '
@@ -265,8 +293,21 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
         if unit in ('%', 'pct', 'p.u.'):
             mtw_fa /= 100
         del b1p
-        
-    mtsat = (mtw_fa * pd / mtw - 1) * r1 * mtw_tr - 0.5 * (mtw_fa ** 2)
+
+    if opt.rational or mtw_tr != pdw_tr:
+        # we must use rational approximations
+        mtsat = (mtw_fa * pd / mtw - 1) * r1 * mtw_tr - 0.5 * (mtw_fa ** 2)
+        del mtw_fa, mtw
+    else:
+        # we have ana analytical solution (work backward from PD/R1)
+        cosfa_mtw = mtw_fa.cos()
+        sinfa_mtw = mtw_fa.sin()
+        del mtw_fa
+        e1 = (-mtw_tr * r1).exp()
+        mtsat = mtw / (cosfa_mtw * e1 * mtw + pd * sinfa_mtw * (1 - e1))
+        del mtw, cosfa_mtw, sinfa_mtw
+        mtsat = 1 - mtsat
+
     mtsat *= 100
     mtsat[~torch.isfinite(mtsat)] = 0
 

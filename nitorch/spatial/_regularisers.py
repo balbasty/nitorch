@@ -1,6 +1,6 @@
 import torch
 from nitorch import core
-from nitorch.core.utils import movedim, make_vector
+from nitorch.core.utils import movedim, make_vector, unsqueeze
 from nitorch.core.pyutils import make_list
 from nitorch.core.linalg import sym_matvec, sym_solve
 from ._finite_differences import diff, div, diff1d, div1d
@@ -12,8 +12,8 @@ def absolute(field, weight=None):
 
     Parameters
     ----------
-    field : tensor
-    weight : tensor, optional
+    field : (..., *spatial) tensor
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
@@ -83,6 +83,7 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weight=None):
         backend = dict(dtype=field.dtype, device=field.device)
         weight = torch.as_tensor(weight, **backend)
         field = field * weight[..., None]
+    dims = list(range(field.dim()-1-dim, field.dim()-1))
     field = div(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
     return field
 
@@ -420,6 +421,9 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
         wb = weight.get('bending', None)
     else:
         wa = wm = wb = weight
+    wa = core.utils.unsqueeze(wa, 0, max(0, dim+1-wa.dim()))
+    wm = core.utils.unsqueeze(wm, 0, max(0, dim+1-wa.dim()))
+    wb = core.utils.unsqueeze(wb, 0, max(0, dim+1-wa.dim()))
 
     y = 0
     if any(absolute):
@@ -452,7 +456,7 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     voxel_size : (sequence of) float, default=1
     bound : str, default='dct2'
     dim : int, default=`gradient.dim()-1`
-    weight : [dict of] (..., *spatial, 1|K) tensor, optional
+    weight : [dict of] (..., 1|K, *spatial) tensor, optional
         If a dict: keys must be in {'absolute', 'membrane', 'bending'}
         Else: the same weight map is shared across penalties.
 
@@ -460,12 +464,13 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     hessian, gradient = core.utils.to_max_backend(hessian, gradient)
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = dim or gradient.dim() - 1
-    channel2last = lambda x: (movedim(x, -(dim + 1), -1)
-                              if x is not None else x)
-    last2channel = lambda x: (movedim(x, -1, -(dim + 1))
-                              if x is not None else x)
-    hessian = channel2last(hessian)
-    gradient = channel2last(gradient)
+    ch2last = lambda x: (movedim(unsqueeze(x, 0, max(0, dim+1-x.dim())),
+                                 -(dim + 1), -1)
+                         if x is not None else x)
+    last2ch = lambda x: (movedim(x, -1, -(dim + 1))
+                         if x is not None else x)
+    hessian = ch2last(hessian)
+    gradient = ch2last(gradient)
     nb_prm = gradient.shape[-1]
     voxel_size = make_vector(voxel_size, dim, **backend)
     is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
@@ -484,37 +489,33 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         wb = weight.get('bending', None)
     else:
         wa = wm = wb = weight
+    wa = unsqueeze(wa, 0, max(0, dim+1-wa.dim()))
+    wm = unsqueeze(wm, 0, max(0, dim+1-wa.dim()))
+    wb = unsqueeze(wb, 0, max(0, dim+1-wa.dim()))
 
     def regulariser(x):
-        x = last2channel(x)
+        x = last2ch(x)
         y = 0
         if any(absolute):
-            y += channel2last(_absolute(x, weight=last2channel(wa))) * absolute
+            y += ch2last(_absolute(x, weight=wa)) * absolute
         if any(membrane):
-            y += channel2last(_membrane(x, weight=last2channel(wm), **fdopt)) * membrane
+            y += ch2last(_membrane(x, weight=wm, **fdopt)) * membrane
         if any(bending):
-            y += channel2last(_bending(x, weight=last2channel(wb), **fdopt)) * bending
+            y += ch2last(_bending(x, weight=wb, **fdopt)) * bending
         return y
 
     # diagonal of the regulariser
     smo = 0
     if any(absolute):
-        if wa is not None:
-            smo += absolute * wa
-        else:
-            smo += absolute
+        smo += absolute * ch2last(absolute_diag(weight=wa))
     if any(membrane):
-        ivx2 = voxel_size.square().reciprocal().sum()
-        if wm is not None:
-            smo += smo + 2 * membrane * ivx2 * wm
-        else:
-            smo += smo + 2 * membrane * ivx2
+        smo += membrane * ch2last(membrane_diag(weight=wm, **fdopt))
     if any(bending):
         ivx4 = voxel_size.square().square().reciprocal().sum()
         ivx2 = torch.combinations(voxel_size.square().reciprocal(), r=2)
         ivx2 = ivx2.prod(dim=-1).sum()
         if wb is not None:
-            smo = smo + bending * (8 * ivx2 + 6 * ivx4) * wb
+            smo = smo + bending * (8 * ivx2 + 6 * ivx4) * ch2last(wb)
         else:
             smo = smo + bending * (8 * ivx2 + 6 * ivx4)
 
@@ -533,7 +534,7 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     else:
         result = core.optim.cg(forward, gradient, precond=precond,
                                max_iter=100)
-    return last2channel(result)
+    return last2ch(result)
 
 
 def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
@@ -632,3 +633,265 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                                max_iter=100)
     return result
 
+
+# ---- WORK IN PROGRESS ----
+
+
+def absolute_diag(weight=None):
+    """Diagonal of the membrane regulariser.
+
+    Parameters
+    ----------
+    weight : (..., *spatial) tensor
+        Weights from the reweighted least squares scheme
+
+    Returns
+    -------
+    diag : () or (..., *spatial) tensor
+        Convolved weight map if provided.
+        Else, central convolution weight.
+
+    """
+    if weight is None:
+        return 1
+    else:
+        return weight
+
+
+def membrane_diag(voxel_size=1, bound='dct2', dim=None, weight=None):
+    """Diagonal of the membrane regulariser.
+
+    Parameters
+    ----------
+    weight : (..., *spatial) tensor
+        Weights from the reweighted least squares scheme
+    voxel_size : float or sequence[float], default=1
+        Voxel size
+    bound : str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions.
+        Default: from voxel_size
+
+    Returns
+    -------
+    diag : () or (..., *spatial) tensor
+        Convolved weight map if provided.
+        Else, central convolution weight.
+
+    """
+    vx = core.utils.make_vector(voxel_size)
+    if dim is None:
+        dim = len(vx)
+    vx = core.utils.make_vector(vx, dim)
+    if weight is not None:
+        weight = torch.as_tensor(weight)
+        backend = dict(dtype=weight.dtype, device=weight.device)
+        # move spatial dimensions to the front
+        spdim = list(range(weight.dim()-dim, weight.dim()))
+        weight = core.utils.movedim(weight, spdim, list(range(dim)))
+    else:
+        backend = dict(dtype=vx.dtype, device=vx.device)
+    vx = vx.to(**backend)
+    vx = vx.square().reciprocal()
+
+    if weight is None:
+        return 2 * vx.sum()
+
+    w = weight  # alias for readability
+    out = (2 * vx.sum()) * w
+
+    # define out-of-bound coordinate on the left and right
+    # and the eventual value transformer depending on the
+    # boundary condition
+    f = (1 if bound == 'dct1' else -1 if bound == 'dft' else 0)
+    l = (-2 if bound == 'dct1' else 0 if bound == 'dft' else -1)
+    m = ((lambda w: -w) if bound == 'dst2' else
+         (lambda w: 0) if bound in ('dst1', 'zero') else
+         (lambda w: w))
+
+    if dim == 3:
+        # center
+        out[1:-1, 1:-1, 1:-1] += (
+                (w[:-2, 1:-1, 1:-1] + w[2:, 1:-1, 1:-1]) * vx[0] +
+                (w[1:-1, :-2, 1:-1] + w[1:-1, 2:, 1:-1]) * vx[1] +
+                (w[1:-1, 1:-1, :-2] + w[1:-1, 1:-1, 2:]) * vx[2])
+        # sides
+        out[0, 1:-1, 1:-1] += (
+                (m(w[f, 1:-1, 1:-1]) + w[1, 1:-1, 1:-1]) * vx[0] +
+                (w[0, :-2, 1:-1] + w[0, 2:, 1:-1]) * vx[1] +
+                (w[0, 1:-1, :-2] + w[0, 1:-1, 2:]) * vx[2])
+        out[-1, 1:-1, 1:-1] += (
+                (w[-2, 1:-1, 1:-1] + m(w[l, 1:-1, 1:-1])) * vx[0] +
+                (w[-1, :-2, 1:-1] + w[-1, 2:, 1:-1]) * vx[1] +
+                (w[-1, 1:-1, :-2] + w[-1, 1:-1, 2:]) * vx[2])
+        out[1:-1, 0, 1:-1] += (
+                (w[:-2, 0, 1:-1] + w[2:, 0, 1:-1]) * vx[0] +
+                (m(w[1:-1, f, 1:-1]) + w[1:-1, 1, 1:-1]) * vx[1] +
+                (w[1:-1, 0, :-2] + w[1:-1, 0, 2:]) * vx[2])
+        out[1:-1, -1, 1:-1] += (
+                (w[:-2, -1, 1:-1] + w[2:, -1, 1:-1]) * vx[0] +
+                (w[1:-1, -2, 1:-1] + m(w[1:-1, l, 1:-1])) * vx[1] +
+                (w[1:-1, -1, :-2] + w[1:-1, -1, 2:]) * vx[2])
+        out[1:-1, 1:-1, 0] += (
+                (w[:-2, 1:-1, 0] + w[2:, 1:-1, 0]) * vx[0] +
+                (w[1:-1, :-2, 0] + w[1:-1, 2:, 0]) * vx[1] +
+                (m(w[1:-1, 1:-1, f]) + w[1:-1, 1:-1, 1]) * vx[2])
+        out[1:-1, 1:-1, -1] += (
+                (w[:-2, 1:-1, -1] + w[2:, 1:-1, -1]) * vx[0] +
+                (w[1:-1, :-2, -1] + w[1:-1, 2:, -1]) * vx[1] +
+                (w[1:-1, 1:-1, -2] + m(w[1:-1, 1:-1, l])) * vx[2])
+        # edges
+        out[0, 0, 1:-1] += (
+                (m(w[f, 0, 1:-1]) + w[1, 0, 1:-1]) * vx[0] +
+                (m(w[0, f, 1:-1]) + w[0, 1, 1:-1]) * vx[1] +
+                (w[0, 0, :-2] + w[0, 0, 2:]) * vx[2])
+        out[0, -1, 1:-1] += (
+                (m(w[f, -1, 1:-1]) + w[1, -1, 1:-1]) * vx[0] +
+                (w[0, -2, 1:-1] + m(w[0, l, 1:-1])) * vx[1] +
+                (w[0, -1, :-2] + w[0, -1, 2:]) * vx[2])
+        out[-1, 0, 1:-1] += (
+                (w[-1, 0, 1:-1] + m(w[l, 0, 1:-1])) * vx[0] +
+                (m(w[-1, f, 1:-1]) + w[-1, 1, 1:-1]) * vx[1] +
+                (w[-1, 0, :-2] + w[-1, 0, 2:]) * vx[2])
+        out[-1, -1, 1:-1] += (
+                (w[-2, -1, 1:-1] + m(w[l, -1, 1:-1])) * vx[0] +
+                (w[-1, -2, 1:-1] + m(w[-1, l, 1:-1])) * vx[1] +
+                (w[-1, -1, :-2] + w[-1, -1, 2:]) * vx[2])
+        out[0, 1:-1, 0] += (
+                (m(w[f, 1:-1, 0]) + w[1, 1:-1, 0]) * vx[0] +
+                (w[0, :-2, 0] + w[0, 2:, 0]) * vx[1] +
+                (m(w[0, 1:-1, f]) + w[0, 1:-1, 1]) * vx[2])
+        out[0, 1:-1, -1] += (
+                (m(w[f, 1:-1, -1]) + w[1, 1:-1, -1]) * vx[0] +
+                (w[0, :-2, -1] + w[0, 2:, -1]) * vx[1] +
+                (w[0, 1:-1, -2] + m(w[0, 1:-1, l])) * vx[2])
+        out[-1, 1:-1, 0] += (
+                (w[-2, 1:-1, 0] + w[l, 1:-1, 0]) * vx[0] +
+                (w[-1, :-2, 0] + w[-1, 2:, 0]) * vx[1] +
+                (w[-1, 1:-1, f] + w[-1, 1:-1, -1]) * vx[2])
+        out[-1, 1:-1, -1] += (
+                (w[-2, 1:-1, -1] + m(w[l, 1:-1, -1])) * vx[0] +
+                (w[-1, :-2, -1] + w[-1, 2:, -1]) * vx[1] +
+                (w[-1, 1:-1, -2] + m(w[-1, 1:-1, l])) * vx[2])
+        out[1:-1, 0, 0] += (
+                (w[:-2, 0, 0] + w[2:, 0, 0]) * vx[0] +
+                (w[1:-1, f, 0] + w[1:-1, 1, 0]) * vx[1] +
+                (w[1:-1, 0, f] + w[1:-1, 0, 1]) * vx[2])
+        out[1:-1, 0, -1] += (
+                (w[:-2, 0, -1] + w[2:, 0, -1]) * vx[0] +
+                (w[1:-1, f, -1] + w[1:-1, 1, -1]) * vx[1] +
+                (w[1:-1, 0, -2] + w[1:-1, 0, l]) * vx[2])
+        out[1:-1, -1, 0] += (
+                (w[:-2, 0, 0] + w[2:, -1, 0]) * vx[0] +
+                (w[1:-1, -2, 0] + w[1:-1, l, 0]) * vx[1] +
+                (w[1:-1, 0, f] + w[1:-1, -1, 1]) * vx[2])
+        out[1:-1, -1, -1] += (
+                (w[:-2, -1, -1] + w[2:, -1, -1]) * vx[0] +
+                (w[1:-1, -2, -1] + m(w[1:-1, l, -1])) * vx[1] +
+                (w[1:-1, -1, -2] + m(w[1:-1, -1, l])) * vx[2])
+    
+        # corners
+        out[0, 0, 0] += ((m(w[f, 0, 0]) + w[1, 0, 0]) * vx[0] +
+                         (m(w[0, f, 0]) + w[0, 1, 0]) * vx[1] +
+                         (m(w[0, 0, f]) + w[0, 0, 1]) * vx[2])
+        out[0, 0, -1] += ((m(w[f, 0, -1]) + w[1, 0, -1]) * vx[0] +
+                          (m(w[0, f, -1]) + w[0, 1, -1]) * vx[1] +
+                          (w[0, 0, -2] + m(w[0, 0, l])) * vx[2])
+        out[0, -1, 0] += ((m(w[f, -1, 0]) + w[1, -1, 0]) * vx[0] +
+                          (w[0, -2, 0] + m(w[0, l, 0])) * vx[1] +
+                          (m(w[0, -1, f]) + w[0, -1, 1]) * vx[2])
+        out[0, -1, -1] += ((m(w[f, -1, -1]) + w[1, -1, -1]) * vx[0] +
+                           (w[0, -2, -1] + m(w[0, l, -1])) * vx[1] +
+                           (w[0, -1, -2] + m(w[0, -1, l])) * vx[2])
+        out[-1, 0, 0] += ((w[-2, 0, 0] + w[l, 0, 0]) * vx[0] +
+                          (m(w[-1, f, 0]) + w[-1, 1, 0]) * vx[1] +
+                          (m(w[-1, 0, f]) + w[-1, 0, 1]) * vx[2])
+        out[-1, 0, -1] += ((w[-2, 0, -1] + m(w[l, 0, -1])) * vx[0] +
+                           (m(w[-1, f, -1]) + w[-1, 1, -1]) * vx[1] +
+                           (w[-1, 0, -2] + m(w[-1, 0, l])) * vx[2])
+        out[-1, -1, 0] += ((w[-2, -1, 0] + m(w[l, -1, 0])) * vx[0] +
+                           (w[-1, -2, 0] + m(w[-1, l, 0])) * vx[1] +
+                           (m(w[-1, -1, f]) + w[-1, -1, 1]) * vx[2])
+        out[-1, -1, -1] += ((w[-2, -1, -1] + m(w[l, -1, -1])) * vx[0] +
+                            (w[-1, -2, -1] + m(w[-1, l, -1])) * vx[1] +
+                            (w[-1, -1, -2] + m(w[-1, -1, l])) * vx[2])
+    elif dim == 2:
+        # center
+        out[1:-1, 1:-1] += ((w[:-2, 1:-1] + w[2:, 1:-1]) * vx[0] +
+                            (w[1:-1, :-2] + w[1:-1, 2:]) * vx[1])
+        # edges
+        out[0, 1:-1] += ((m(w[f, 1:-1]) + w[1, 1:-1]) * vx[0] +
+                         (w[0, :-2] + w[0, 2:]) * vx[1])
+        out[-1, 1:-1] += ((w[-2, 1:-1] + m(w[l, 1:-1])) * vx[0] +
+                          (w[-1, :-2] + w[-1, 2:]) * vx[1])
+        out[1:-1, 0] += ((w[:-2, 0] + w[2:, 0]) * vx[0] +
+                         (m(w[1:-1, f]) + w[1:-1, 1]) * vx[1])
+        out[1:-1, -1] += ((w[:-2, -1] + w[2:, -1]) * vx[0] +
+                          (w[1:-1, -2] + m(w[1:-1, l])) * vx[1])
+        # corners
+        out[0, 0] += ((m(w[f, 0]) + w[1, 0]) * vx[0] +
+                      (m(w[0, f]) + w[0, 1]) * vx[1])
+        out[0, -1] += ((m(w[f, -1]) + w[1, -1]) * vx[0] +
+                       (w[0, -2] + m(w[0, l])) * vx[1])
+        out[-1, 0] += ((w[-1, 0] + m(w[l, 0])) * vx[0] +
+                       (m(w[-1, f]) + w[-1, 1]) * vx[1])
+        out[-1, -1] += ((w[-2, -1] + m(w[l, -1])) * vx[0] +
+                        (w[-1, -2] + w[-1, l]) * vx[1])
+    elif dim == 1:
+        # center
+        out[1:-1] += (w[:-2] + w[2:]) * vx[0]
+        # corners
+        out[0] += (m(w[f]) + w[1]) * vx[0]
+        out[-1] += (w[-2] + m(w[l])) * vx[0]
+    else:
+        raise NotImplementedError
+
+    # send spatial dimensions to the back
+    out = core.utils.movedim(out, list(range(dim)), spdim)
+    return out
+
+
+def membrane_weights(field, lam=1, voxel_size=1, bound='dct2',
+                     dim=None, joint=True, return_sum=False):
+    """Update the (L1) weights ofthe membrane energy.
+
+    Parameters
+    ----------
+    field : (..., K, *spatial) tensor
+        Field
+    lam : float or (K,) sequence[float], default=1
+        Regularisation factor
+    voxel_size : float or sequence[float], default=1
+        Voxel size
+    bound : str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions
+    joint : bool, default=False
+        Joint norm across channels.
+    return_sum : bool, default=False
+
+    Returns
+    -------
+    weight : (..., 1 or K, *spatial) tensor
+        Weights for the reweighted least squares scheme
+    """
+    field = torch.as_tensor(field)
+    dim = dim or field.dim() - 1
+    nb_prm = field.shape[-dim-1]
+    voxel_size = make_vector(voxel_size, dim)
+    lam = make_vector(lam, nb_prm)
+    lam = core.utils.unsqueeze(lam, -1, dim+1)
+    if joint:
+        lam = lam * nb_prm
+    dims = list(range(field.dim()-dim, field.dim()))
+    field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
+    field.square_().mul_(lam)
+    dims = [-1] + ([-dim-2] if joint else [])
+    field = field.sum(dim=dims, keepdims=True)[..., 0].sqrt_()
+    if return_sum:
+        ll = field.sum()
+        return field.clamp_min_(1e-5).reciprocal_(), ll
+    else:
+        return field.clamp_min_(1e-5).reciprocal_()
