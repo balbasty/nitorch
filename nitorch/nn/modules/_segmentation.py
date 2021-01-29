@@ -12,10 +12,10 @@ class SegMRFNet(Module):
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.2), batch_norm_seg=True,
-                 num_iter=10, w=1, num_extra=0):
+                 num_iter=10, w=1, num_extra=0, only_unet=False):
         super().__init__()
 
-
+        self.only_unet = only_unet
         # Add tensorboard callback
         self.board = lambda tb, inputs, outputs: board(
             dim, tb, inputs, outputs)
@@ -30,15 +30,18 @@ class SegMRFNet(Module):
                          batch_norm=batch_norm_seg,
                          inc_final_activation=False)
 
-        self.mrf = MRFNet(dim,
-                       num_classes=output_classes,
-                       num_extra=num_extra,
-                       activation=activation,
-                       w=w,
-                       num_iter=num_iter)
+        if not only_unet:
+            self.mrf = MRFNet(dim,
+                           num_classes=output_classes,
+                           num_extra=num_extra,
+                           activation=activation,
+                           w=w,
+                           num_iter=num_iter)
 
         # register loss tag
-        self.tags = ['unet', 'mrf']
+        self.tags = ['unet']
+        if not only_unet:
+            self.tags.append('mrf')
 
     # defer properties
     dim = property(lambda self: self.unet.dim)
@@ -59,8 +62,9 @@ class SegMRFNet(Module):
         # unet
         ll = self.unet(image)
 
-        # MRF
-        p = self.mrf.iter_mrf(ll, ref)
+        if not self.only_unet:
+            # MRF
+            p = self.mrf.iter_mrf(ll, ref)
 
         # compute loss and metrics
         if ref is not None:
@@ -68,7 +72,13 @@ class SegMRFNet(Module):
             check.dim(self.dim, ref)
             dims = [0] + list(range(2, self.dim+2))
             check.shape(ll, ref, dims=dims)
-            self.compute(_loss, _metric, unet=[ll, ref], mrf=[p, ref])
+            if not self.only_unet:
+                self.compute(_loss, _metric, unet=[ll, ref], mrf=[p, ref])
+            else:
+                self.compute(_loss, _metric, unet=[ll, ref])
+
+        if self.only_unet:
+           p = ll.softmax(dim=1)
 
         return p
 
