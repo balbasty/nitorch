@@ -18,14 +18,14 @@ except ImportError:
         raise ImportError('Optional dependency TensorBoard not found')
 
 
-def split_train_val_test(data, split=[0.5, 0.25, 0.25], shuffle=False):
+def split_train_val_test(data, split=[0.6, 0.1, 0.3], shuffle=False):
     """Split sequence of data into train, validation and test.
 
     Parameters
     ----------
     data : [N,] list
         Input data.
-    split : [3,] list, default=[0.5, 0.25, 0.25]
+    split : [3,] list, default=[0.6, 0.2, 0.2]
         Train, validation, test fractions.
     suffle : bool, default=False
         Randomly shuffle input data (with seed for reproducibility)
