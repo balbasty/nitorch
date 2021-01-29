@@ -276,6 +276,13 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
             hess[1] += res
             del res, fit
 
+    
+    grad[~torch.isfinite(grad)] = 0
+    diag = hess[:-1]
+    diag[~torch.isfinite(diag)] = 1e-3
+    offdiag = hess[-1]
+    offdiag[~torch.isfinite(offdiag)] = 0
+            
     if do_grad:
         # push gradient and Hessian to recon space
         grad = smart_push(grad, grid, recon_shape)
