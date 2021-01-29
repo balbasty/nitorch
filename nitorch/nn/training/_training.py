@@ -18,7 +18,7 @@ except ImportError:
         raise ImportError('Optional dependency TensorBoard not found')
 
 
-def split_train_val_test(data, split=[0.6, 0.2, 0.2], shuffle=False):
+def split_train_val_test(data, split=[0.6, 0.1, 0.3], shuffle=False):
     """Split sequence of data into train, validation and test.
 
     Parameters
