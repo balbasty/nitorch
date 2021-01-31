@@ -73,7 +73,7 @@ class SegMRFNet(Module):
             dims = [0] + list(range(2, self.dim+2))
             check.shape(ll, ref, dims=dims)
             if not self.only_unet:
-                self.compute(_loss, _metric, unet=[ll, ref], mrf=[p, ref])
+                self.compute(_loss, _metric, mrf=[p, ref])
             else:
                 self.compute(_loss, _metric, unet=[ll, ref])
 
@@ -340,10 +340,6 @@ class MRFNet(Module):
         """Get number of MRF filters.
         """
         num_filters = self.num_classes**2
-        # if dim == 3:
-        #     num_filters *= 6
-        # else:
-        #     num_filters *= 4
         if num_filters > 128:
             num_filters = 128
         return num_filters
@@ -356,21 +352,19 @@ class MRFNet(Module):
             op = p.clone()
             p = (ll + self.mrf(p)).softmax(dim=1)
             p = self.w*p + (1 - self.w)*op
-
         return p
 
     def get_num_iter(self, ref):
         """ Get number of VB iterations.
         """
-        # with torch.no_grad():
-        #     if ref is not None:
-        #         # Training: random number of iterations
-        #         num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
-        #     else:
-        #         # Testing: fixed number of iterations
-        #         num_iter = self.num_iter
-
-        return self.num_iter
+        with torch.no_grad():
+            if ref is not None:
+                # Training
+                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
+            else:
+                # Testing
+                num_iter = self.num_iter
+        return num_iter
 
 
 def board(dim, tb, inputs, outputs, implicit=False):
