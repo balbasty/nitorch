@@ -6,6 +6,82 @@ from ...spatial import grid_pull
 from .. import check
 
 
+class SegMRFNet(Module):
+    """Segmentation+MRF network.
+    """
+    def __init__(self, dim, output_classes=1, input_channels=1,
+                 encoder=None, decoder=None, kernel_size=3,
+                 activation=tnn.LeakyReLU(0.2), batch_norm_seg=True,
+                 num_iter=10, w=1, num_extra=0, only_unet=False):
+        super().__init__()
+
+        self.only_unet = only_unet
+        # Add tensorboard callback
+        self.board = lambda tb, inputs, outputs: board(
+            dim, tb, inputs, outputs)
+
+        self.unet = SegNet(dim,
+                         input_channels=input_channels,
+                         output_classes=output_classes,
+                         encoder=encoder,
+                         decoder=decoder,
+                         kernel_size=kernel_size,
+                         activation=activation,
+                         batch_norm=batch_norm_seg,
+                         inc_final_activation=False,
+                         implicit=False)
+
+        if not only_unet:
+            self.mrf = MRFNet(dim,
+                           num_classes=output_classes,
+                           num_extra=num_extra,
+                           activation=activation,
+                           w=w,
+                           num_iter=num_iter)
+
+        # register loss tag
+        self.tags = ['mrfseg']
+
+    # defer properties
+    dim = property(lambda self: self.unet.dim)
+
+    def forward(self, image, ref=None, *, _loss=None, _metric=None):
+        """Forward pass.
+        """
+        image = torch.as_tensor(image)
+
+        # sanity check
+        check.dim(self.dim, image)
+
+        # augmentation (only if reference is given, i.e., not at test-time)
+        if ref is not None:
+            for augmenter in self.augmenters:
+                image, ref = augmenter(image, ref)
+
+        # unet
+        ll = self.unet(image)
+
+        if not self.only_unet:
+            # MRF
+            p = self.mrf.iter_mrf(ll, ref)
+
+        # compute loss and metrics
+        if ref is not None:
+            # sanity checks
+            check.dim(self.dim, ref)
+            dims = [0] + list(range(2, self.dim+2))
+            check.shape(ll, ref, dims=dims)
+            if not self.only_unet:
+                self.compute(_loss, _metric, mrfseg=[p, ref])
+            else:
+                self.compute(_loss, _metric, mrfseg=[ll, ref])
+
+        if self.only_unet:
+           p = ll.softmax(dim=1)
+
+        return p
+
+
 class SegNet(Module):
     """Segmentation network.
 
@@ -17,7 +93,7 @@ class SegNet(Module):
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.2), batch_norm=True,
-                 implicit=True):
+                 implicit=True, inc_final_activation=True):
         """
 
         Parameters
@@ -45,17 +121,22 @@ class SegNet(Module):
             Only return `output_classes` probabilities (the last one
             is implicit as probabilities must sum to 1).
             Else, return `output_classes + 1` probabilities.
+        inc_final_activation : bool, default=True
+           Append final activation function.
         """
 
         super().__init__()
 
         self.implicit = implicit
         self.output_classes = output_classes
-        if implicit and output_classes == 1:
-            final_activation = tnn.Sigmoid
-        else:
-            output_classes = output_classes + 1
-            final_activation = tnn.Softmax(dim=1)
+        final_activation = None
+        if inc_final_activation:
+            if implicit and output_classes == 1:
+                final_activation = tnn.Sigmoid
+            else:
+                final_activation = tnn.Softmax(dim=1)
+        if implicit:
+            output_classes += 1
         # Add tensorboard callback
         self.board = lambda tb, inputs, outputs: board(
             dim, tb, inputs, outputs, implicit=implicit)
@@ -150,9 +231,8 @@ class MRFNet(Module):
 
     """
 
-    def __init__(self, dim, num_classes, num_iter=5, num_filters=64, num_extra=0,
-                 kernel_size=3, activation=tnn.LeakyReLU(0.2), batch_norm=False,
-                 w=1.0):
+    def __init__(self, dim, num_classes, num_iter=10, num_extra=0, w=1,
+                 activation=tnn.LeakyReLU(0.2)):
         """
 
         Parameters
@@ -165,20 +245,15 @@ class MRFNet(Module):
             Number of mean-field iterations.
         num_extra : int, default=0
             Number of extra layers between MRF layer and final layer.
-        num_filters : int, default=64
-            Number of conv filters in first, MRF layer.
-        kernel_size : int or sequence[int], default=3
-            Kernel size per dimension.
-        activation : str or type or callable, default='tnn.LeakyReLU(0.2)'
-            Activation function.
-        batch_norm : bool or type or callable, default=False
-            Batch normalization before each convolution.
         w : float, default=1.0
             Weight between new and old prediction [0, 1].
+        activation : str or type or callable, default='tnn.LeakyReLU(0.2)'
+            Activation function.
 
         """
         super().__init__()
 
+        self.num_classes = num_classes
         if num_iter < 1:
             raise ValueError('Parameter num_iter should be greater than 0 , got {:}'.format(num_iter))
         self.num_iter = num_iter
@@ -188,6 +263,9 @@ class MRFNet(Module):
         # As the final activation is applied at the end of the forward method
         # below, it is not applied in the final Conv layer
         final_activation = None
+        # We use a first-order neigbourhood
+        kernel_size = 3
+        num_filters = self.get_num_filters(dim)
         # Add tensorboard callback
         self.board = lambda tb, inputs, outputs: board(
             dim, tb, inputs, outputs)
@@ -198,7 +276,7 @@ class MRFNet(Module):
                        num_extra=num_extra,
                        kernel_size=kernel_size,
                        activation=activation,
-                       batch_norm=batch_norm,
+                       batch_norm=False,
                        final_activation=final_activation)
         # register loss tag
         self.tags = ['mrf']
@@ -244,23 +322,10 @@ class MRFNet(Module):
             for augmenter in self.augmenters:
                 ll, ref = augmenter(ll, ref)
 
-        # number of VB iterations
-        with torch.no_grad():
-            if ref is not None:
-                # Training: variable number of iterations
-                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
-            else:
-                # Testing: fixed number of iterations
-                num_iter = self.num_iter
-
         # MRF
-        p = torch.zeros_like(ll)
-        for i in range(num_iter):
-            op = p.clone()
-            p = self.mrf((ll + p).softmax(dim=1))
-            p = self.w*p + (1 - self.w)*op
+        p = self.iter_mrf(ll, ref)
 
-        # compute loss and metrics (in logit space)
+        # compute loss and metrics
         if ref is not None:
             # sanity checks
             check.dim(self.dim, ref)
@@ -268,10 +333,37 @@ class MRFNet(Module):
             check.shape(p, ref, dims=dims)
             self.compute(_loss, _metric, mrf=[p, ref])
 
-        # softmax
-        p = p.softmax(dim=1)
-
         return p
+
+    def get_num_filters(self, dim):
+        """Get number of MRF filters.
+        """
+        num_filters = self.num_classes**2
+        if num_filters > 128:
+            num_filters = 128
+        return num_filters
+
+    def iter_mrf(self, ll, ref):
+        """Iterate over MRF.
+        """
+        p = torch.zeros_like(ll)
+        for i in range(self.get_num_iter(ref)):
+            op = p.clone()
+            p = (ll + self.mrf(p)).softmax(dim=1)
+            p = self.w*p + (1 - self.w)*op
+        return p
+
+    def get_num_iter(self, ref):
+        """ Get number of VB iterations.
+        """
+        with torch.no_grad():
+            if ref is not None:
+                # Training
+                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
+            else:
+                # Testing
+                num_iter = self.num_iter
+        return num_iter
 
 
 def board(dim, tb, inputs, outputs, implicit=False):
