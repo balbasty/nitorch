@@ -309,7 +309,7 @@ def hessian_sym_solve(hess, grad, lam=None):
         raise NotImplemented
 
 
-def smart_grid(aff, shape, inshape=None):
+def smart_grid(aff, shape, inshape=None, force=False):
     """Generate a sampling grid iff it is not the identity.
 
     Parameters
@@ -330,7 +330,7 @@ def smart_grid(aff, shape, inshape=None):
     backend = dict(dtype=aff.dtype, device=aff.device)
     identity = torch.eye(aff.shape[-1], **backend)
     inshape = inshape or shape
-    if torch.allclose(aff, identity) and shape == inshape:
+    if not force and torch.allclose(aff, identity) and shape == inshape:
         return None
     return spatial.affine_grid(aff, shape)
 

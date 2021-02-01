@@ -161,7 +161,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
     # 7) generate noise-free signal
     contrasts = []
     for n in range(nb_contrasts):
-
+        
         shape1 = shape[n]
         if shape1 is None:
             shape1 = pd.shape
@@ -179,14 +179,20 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
 
         if aff1 is not None:
             mat = core.linalg.lmdiv(pd.affine.to(**backend), aff1)
-            grid = smart_grid(mat, shape1, pd.shape)
+            grid = smart_grid(mat, shape1, pd.shape, force=True)
             prm1 = smart_pull(logprm, grid)
-            del grid
+            inplace = grid is not None
             f1pd, f1r1, f1r2s, f1mt = unstack_maps(prm1, has_r2s, has_mt)
-            f1pd, f1r1, f1r2s, f1mt = exp_maps_(f1pd, f1r1, f1r2s, f1mt)
+            f1pd, f1r1, f1r2s, f1mt = exp_maps(f1pd, f1r1, f1r2s, f1mt, inplace=inplace)
         else:
             f1pd, f1r1, f1r2s, f1mt = (fpd, fr1, fr2s, fmt)
-            f1pd = f1pd.clone()  # clone it so that we can work in-place later
+            # clone it so that we can work in-place later
+            f1pd = f1pd.clone()
+            f1r1 = f1r1.clone()
+            if f1r2s is not None:
+                f1r2s = f1r2s.clone()
+            if f1mt is not None:
+                f1mt = f1mt.clone()
 
         if transmit1 is not None:
             unit = transmit1.unit
@@ -215,7 +221,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
                 del grid
             f1pd = f1pd * receive1
             del receive1
-
+            
         # generate signal
         flash = f1pd
         flash *= fa1.sin()
