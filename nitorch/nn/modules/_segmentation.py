@@ -28,7 +28,8 @@ class SegMRFNet(Module):
                          kernel_size=kernel_size,
                          activation=activation,
                          batch_norm=batch_norm_seg,
-                         inc_final_activation=False)
+                         inc_final_activation=False,
+                         implicit=False)
 
         if not only_unet:
             self.mrf = MRFNet(dim,
@@ -39,9 +40,7 @@ class SegMRFNet(Module):
                            num_iter=num_iter)
 
         # register loss tag
-        self.tags = ['unet']
-        if not only_unet:
-            self.tags.append('mrf')
+        self.tags = ['mrfseg']
 
     # defer properties
     dim = property(lambda self: self.unet.dim)
@@ -73,9 +72,9 @@ class SegMRFNet(Module):
             dims = [0] + list(range(2, self.dim+2))
             check.shape(ll, ref, dims=dims)
             if not self.only_unet:
-                self.compute(_loss, _metric, mrf=[p, ref])
+                self.compute(_loss, _metric, mrfseg=[p, ref])
             else:
-                self.compute(_loss, _metric, unet=[ll, ref])
+                self.compute(_loss, _metric, mrfseg=[ll, ref])
 
         if self.only_unet:
            p = ll.softmax(dim=1)
