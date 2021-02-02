@@ -75,7 +75,7 @@ def meanm(mats, max_iter=1024, tol=1e-20):
         # Compute sum-of-squares in tangent space (should be zero at optimum)
         sos = mean_log_mat.square().sum()
         # Exponentiate to original space
-        mean_mat = torch.matmul(mean_mat, expm(mean_log_mat), out=mean_mat)
+        mean_mat = torch.matmul(mean_mat, expm(mean_log_mat))
         if sos <= tol:
             break
 
