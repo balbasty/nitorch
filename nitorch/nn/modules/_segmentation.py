@@ -2,7 +2,7 @@ import torch
 import torch.nn as tnn
 from ..modules._base import Module
 from ..modules._cnn import (UNet, MRF)
-from ..modules._spatial import (GridPull, GridPush)
+from ..modules._spatial import (GridPull, GridPushCount)
 from ...spatial import affine_grid
 from ...spatial import grid_pull
 from .. import check
@@ -20,7 +20,7 @@ class MeanSpaceNet(Module):
 
         self.implicit = implicit
         self.output_classes = output_classes
-        self.mean_mat = common_space[0]
+        self.mean_mat = common_space[0].unsqueeze(0)
         self.mean_dim = common_space[1]
         if implicit and output_classes == 1:
             final_activation = tnn.Sigmoid
@@ -29,8 +29,12 @@ class MeanSpaceNet(Module):
         if implicit:
             output_classes += 1
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: board(
+        self.board = lambda tb, inputs, outputs: self.board_custom(
             dim, tb, inputs, outputs, implicit=implicit)
+        # Add push operators
+        self.push = GridPushCount()
+        # Add channel to take into account count image
+        input_channels += 1
         # Add UNet
         self.unet = UNet(dim,
                          input_channels=input_channels,
@@ -41,10 +45,8 @@ class MeanSpaceNet(Module):
                          activation=activation,
                          final_activation=final_activation,
                          batch_norm=batch_norm)
-        # Add pull/push operators
-        self.push = self.GridPushCount()
-        self.pull = self.GridPull()
-
+        # Add pull operators
+        self.pull = GridPull()
         # register loss tag
         self.tags = ['native']
 
@@ -55,12 +57,18 @@ class MeanSpaceNet(Module):
     kernel_size = property(lambda self: self.unet.kernel_size)
     activation = property(lambda self: self.unet.activation)
 
-    def compute_grid(self, mat_native):
+    def board_custom(self, dim, tb, inputs, outputs, implicit=False):
+        """For removing affine matrix from inputs when calling board.
+        """
+        board(dim, tb, (inputs[0], inputs[2]), outputs, implicit=implicit)
+
+    def compute_grid(self, mat_native, dim_native):
         """
         """
-        self.mean_mat = self.mean_mat.type(mat_native.dtype).to(mat_native.device)
-        mat = mat_native.solve(self.mean_mat)[0]        
-        grid = affine_grid(mat, self.mean_dim)
+        with torch.no_grad():
+            self.mean_mat = self.mean_mat.type(mat_native.dtype).to(mat_native.device)
+            mat = mat_native.solve(self.mean_mat)[0]
+            grid = affine_grid(mat, dim_native)
 
         return grid
 
@@ -69,30 +77,33 @@ class MeanSpaceNet(Module):
         """
         image = torch.as_tensor(image)
 
+        if image.shape[0] != 1:
+            raise NotImplementedError('Only batch size 1 supported, got {:}'.format(image.shape[0]))
+
         # sanity check
         check.dim(self.dim, image)
-        check.dim(self.mean_mat, mat_native)
+        check.shape(self.mean_mat, mat_native)
 
         # augment
         image, ref = augment(image, ref, self.augmenters)
 
         # Compute grid
-        with torch.no_grad():            
-            grid = self.compute_grid(mat_native)
+        dim_native = image.shape[2:]
+        grid = self.compute_grid(mat_native, dim_native)
 
         # Push image into common space
-        image, count = self.do_push(image, grid)
-        image = torch.cat((image, count), dim=1)  # add count image as channel
+        image_pushed, count = self.push(image, grid, shape=self.mean_dim)
+        image_pushed = torch.cat((image_pushed, count), dim=1)  # add count image as channel
         
         # Apply UNet
-        pred = self.unet(image)
+        pred = self.unet(image_pushed)
 
         # Remove last class, if implicit
         if self.implicit and pred.shape[1] > self.output_classes:
             pred = pred[:, :-1, ...]
             
         # Pull prediction into native space
-        pred = self.do_pull(pred, grid)
+        pred = self.pull(pred, grid)
         pred = pred/pred.sum(dim=1)  # re-normalise        
 
         # compute loss and metrics (in native space)
@@ -526,7 +537,12 @@ def board(dim, tb, inputs, outputs, implicit=False):
         return slice_prediction
 
     def target_view(slice_target):
-        return slice_target.float() / slice_target.max().float()
+        if len(slice_target.shape) == 3 and slice_target.shape[0] > 1:
+            K1 = float(slice_target.shape[0])
+            slice_target = (slice_target.argmax(dim=0, keepdim=False))/(K1 - 1)
+        else:
+            slice_target =  slice_target.float() / slice_target.max().float()
+        return slice_target
 
     def to_grid(slice_input, slice_target, slice_prediction):
         return torch.cat((slice_input, slice_target, slice_prediction), dim=1)
@@ -547,15 +563,12 @@ def board(dim, tb, inputs, outputs, implicit=False):
             slice_input = (slice_input.argmax(dim=0, keepdim=False)) / (K1 - 1)
             slice_target = (slice_target.argmax(dim=0, keepdim=False)) / (
                         K1 - 1)
-        return to_grid(slice_input, slice_target, slice_prediction)[None, ...]
+        return to_grid(slice_input, slice_target, slice_prediction)[None, ...].detach().cpu()
 
     # Add to TensorBoard
     title = 'Image-Target-Prediction_'
-    tb.add_image(title + 'z', get_image('z', inputs, outputs,
-                                        dim, implicit))
+    tb.add_image(title + 'z', get_image('z', inputs, outputs, dim, implicit))
     if dim == 3:
-        tb.add_image(title + 'y', get_image('y', inputs, outputs,
-                                            dim, implicit))
-        tb.add_image(title + 'x', get_image('x', inputs, outputs,
-                                            dim, implicit))
+        tb.add_image(title + 'y', get_image('y', inputs, outputs, dim, implicit))
+        tb.add_image(title + 'x', get_image('x', inputs, outputs, dim, implicit))
     tb.flush()
