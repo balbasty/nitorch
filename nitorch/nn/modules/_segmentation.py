@@ -2,9 +2,111 @@ import torch
 import torch.nn as tnn
 from ..modules._base import Module
 from ..modules._cnn import (UNet, MRF)
+from ..modules._spatial import (GridPull, GridPush)
+from ...spatial import affine_grid
 from ...spatial import grid_pull
 from .. import check
 
+
+class CommonSegNet(Module):
+    """Segmentation network that trains in a shared common space, but computes
+       losses in native space.
+    """
+    def __init__(self, dim, common_space, output_classes=1, input_channels=1,
+                 encoder=None, decoder=None, kernel_size=3,
+                 activation=tnn.LeakyReLU(0.2), batch_norm=True,
+                 implicit=True):
+        super().__init__()
+
+        self.implicit = implicit
+        self.output_classes = output_classes
+        self.mean_mat = common_space[0]
+        self.mean_dim = common_space[1]
+        if implicit and output_classes == 1:
+            final_activation = tnn.Sigmoid
+        else:
+            final_activation = tnn.Softmax(dim=1)
+        if implicit:
+            output_classes += 1
+        # Add tensorboard callback
+        self.board = lambda tb, inputs, outputs: board(
+            dim, tb, inputs, outputs, implicit=implicit)
+        # Add UNet
+        self.unet = UNet(dim,
+                         input_channels=input_channels,
+                         output_channels=output_classes,
+                         encoder=encoder,
+                         decoder=decoder,
+                         kernel_size=kernel_size,
+                         activation=activation,
+                         final_activation=final_activation,
+                         batch_norm=batch_norm)
+        # Add pull/push operators
+        self.push = self.GridPushCount()
+        self.pull = self.GridPull()
+
+        # register loss tag
+        self.tags = ['native']
+
+    # defer properties
+    dim = property(lambda self: self.unet.dim)
+    encoder = property(lambda self: self.unet.encoder)
+    decoder = property(lambda self: self.unet.decoder)
+    kernel_size = property(lambda self: self.unet.kernel_size)
+    activation = property(lambda self: self.unet.activation)
+
+    def compute_grid(self, mat_native):
+        """
+        """
+        self.mean_mat = self.mean_mat.type(mat_native.dtype).to(mat_native.device)
+        mat = mat_native.solve(self.mean_mat)[0]        
+        grid = affine_grid(mat, self.mean_dim)
+
+        return grid
+
+    def forward(self, image, mat_native, ref=None, *, _loss=None, _metric=None):
+        """
+        """
+        image = torch.as_tensor(image)
+
+        # sanity check
+        check.dim(self.dim, image)
+        check.dim(self.mean_mat, mat_native)
+
+        # augmentation (only if reference is given, i.e., not at test-time)
+        if ref is not None:
+            with torch.no_grad():            
+                for augmenter in self.augmenters:
+                    image, ref = augmenter(image, ref)
+
+        # Compute grid
+        with torch.no_grad():            
+            grid = self.compute_grid(mat_native)
+
+        # Push image into common space
+        image, count = self.do_push(image, grid)
+        image = torch.cat((image, count), dim=1)  # add count image as channel
+        
+        # Apply UNet
+        pred = self.unet(image)
+
+        # Remove last class, if implicit
+        if self.implicit and pred.shape[1] > self.output_classes:
+            pred = pred[:, :-1, ...]
+            
+        # Pull prediction into native space
+        pred = self.do_pull(pred, grid)
+        pred = pred/pred.sum(dim=1)  # re-normalise        
+
+        # compute loss and metrics (in native space)
+        if ref is not None:
+            # sanity checks
+            check.dim(self.dim, ref)
+            dims = [0] + list(range(2, self.dim+2))
+            check.shape(pred, ref, dims=dims)
+            self.compute(_loss, _metric, native=[pred, ref])
+
+        return pred
 
 class SegMRFNet(Module):
     """Segmentation+MRF network.
