@@ -73,11 +73,8 @@ class MeanSpaceNet(Module):
         check.dim(self.dim, image)
         check.dim(self.mean_mat, mat_native)
 
-        # augmentation (only if reference is given, i.e., not at test-time)
-        if ref is not None:
-            with torch.no_grad():            
-                for augmenter in self.augmenters:
-                    image, ref = augmenter(image, ref)
+        # augment
+        image, ref = augment(image, ref, self.augmenters)
 
         # Compute grid
         with torch.no_grad():            
