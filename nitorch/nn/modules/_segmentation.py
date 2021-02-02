@@ -8,8 +8,8 @@ from ...spatial import grid_pull
 from .. import check
 
 
-class CommonSegNet(Module):
-    """Segmentation network that trains in a shared common space, but computes
+class MeanSpaceNet(Module):
+    """Segmentation network that trains in a shared mean space, but computes
        losses in native space.
     """
     def __init__(self, dim, common_space, output_classes=1, input_channels=1,
