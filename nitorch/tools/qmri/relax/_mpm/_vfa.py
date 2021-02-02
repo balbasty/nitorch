@@ -99,6 +99,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
                 plt.axis('off')
             plt.suptitle('Registered magnitude images')
             plt.show()
+        del dats
 
         for vol, aff in zip(data + transmit + receive, affines):
             aff, vol.affine = core.utils.to_max_device(aff, vol.affine)
@@ -144,11 +145,11 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
           f'TR = {pdw_struct.tr*1e3:4.1f} ms /  '
           f'TE = {pdw_struct.te*1e3:4.1f} ms')
     
-    pdw = load_and_pull(pdw_struct, mean_affine, mean_shape)
+    pdw = load_and_pull(pdw_struct, mean_affine, mean_shape, **backend)
     pdw_fa = pdw_struct.fa / 180. * core.constants.pi
     pdw_tr = pdw_struct.tr
     if receive[pdw_idx]:
-        b1m = load_and_pull(receive[pdw_idx], mean_affine, mean_shape)
+        b1m = load_and_pull(receive[pdw_idx], mean_affine, mean_shape, **backend)
         unit = receive[pdw_idx].unit
         minval = b1m[b1m > 0].min()
         maxval = b1m[b1m > 0].max()
@@ -162,7 +163,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
             pdw *= 100
         del b1m 
     if transmit[pdw_idx]:
-        b1p = load_and_pull(transmit[pdw_idx], mean_affine, mean_shape)
+        b1p = load_and_pull(transmit[pdw_idx], mean_affine, mean_shape, **backend)
         unit = transmit[pdw_idx].unit
         minval = b1p[b1p > 0].min()
         maxval = b1p[b1p > 0].max()
@@ -182,11 +183,11 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
           f'TR = {t1w_struct.tr*1e3:4.1f} ms /  '
           f'TE = {t1w_struct.te*1e3:4.1f} ms')
     
-    t1w = load_and_pull(t1w_struct, mean_affine, mean_shape)
+    t1w = load_and_pull(t1w_struct, mean_affine, mean_shape, **backend)
     t1w_fa = t1w_struct.fa / 180. * core.constants.pi
     t1w_tr = t1w_struct.tr
     if receive[t1w_idx]:
-        b1m = load_and_pull(receive[t1w_idx], mean_affine, mean_shape)
+        b1m = load_and_pull(receive[t1w_idx], mean_affine, mean_shape, **backend)
         unit = receive[t1w_idx].unit
         minval = b1m[b1m > 0].min()
         maxval = b1m[b1m > 0].max()
@@ -200,7 +201,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
             t1w *= 100
         del b1m
     if transmit[pdw_idx]:
-        b1p = load_and_pull(transmit[t1w_idx], mean_affine, mean_shape)
+        b1p = load_and_pull(transmit[t1w_idx], mean_affine, mean_shape, **backend)
         unit = transmit[t1w_idx].unit
         minval = b1p[b1p > 0].min()
         maxval = b1p[b1p > 0].max()
@@ -215,7 +216,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
         del b1p
     t1w_fa = torch.as_tensor(t1w_fa, **backend)
 
-    if opt.rational or t1w_tr != pdw_tr:
+    if rational:
         # we must use rational approximations
         r1 = 0.5 * (t1w * (t1w_fa / t1w_tr) - pdw * (pdw_fa / pdw_tr))
         r1 /= ((pdw / pdw_fa) - (t1w / t1w_fa))
@@ -265,11 +266,11 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
           f'TR = {mtw_struct.tr*1e3:4.1f} ms /  '
           f'TE = {mtw_struct.te*1e3:4.1f} ms')
     
-    mtw = load_and_pull(mtw_struct, mean_affine, mean_shape)
+    mtw = load_and_pull(mtw_struct, mean_affine, mean_shape, **backend)
     mtw_fa = mtw_struct.fa / 180. * core.constants.pi
     mtw_tr = mtw_struct.tr
     if receive[mtw_idx]:
-        b1m = load_and_pull(receive[mtw_idx], mean_affine, mean_shape)
+        b1m = load_and_pull(receive[mtw_idx], mean_affine, mean_shape, **backend)
         unit = receive[mtw_idx].unit
         minval = b1m[b1m > 0].min()
         maxval = b1m[b1m > 0].max()
@@ -296,6 +297,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
         if unit in ('%', 'pct', 'p.u.'):
             mtw_fa /= 100
         del b1p
+    mtw_fa = torch.as_tensor(mtw_fa, **backend)
 
     if opt.rational:
         # we must use rational approximations
@@ -319,7 +321,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
             ParameterMap(mtsat, affine=mean_affine, unit='%'))
 
 
-def load_and_pull(volume, aff, shape):
+def load_and_pull(volume, aff, shape, dtype=None, device=None):
     """
 
     Parameters
@@ -334,7 +336,8 @@ def load_and_pull(volume, aff, shape):
 
     """
 
-    backend = dict(dtype=aff.dtype, device=aff.device)
+    backend = dict(dtype=dtype or aff.dtype, device=device or aff.device)
+    aff = aff.to(**backend)
     identity = torch.eye(aff.shape[-1], **backend)
     fdata = volume.fdata(cache=False, **backend)
     inshape = fdata.shape

@@ -27,9 +27,7 @@ def nonlin(data, opt=None):
 
     """
 
-    if opt is None:
-        opt = ESTATICSOptions()
-    opt = opt.copy()
+    opt = ESTATICSOptions().update(opt)
     dtype = opt.backend.dtype
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
@@ -41,6 +39,7 @@ def nonlin(data, opt=None):
     
     # --- estimate noise / register / initialize maps ---
     data, maps = preproc(data, opt)
+    print(maps.affine)
     vx = spatial.voxel_size(maps.affine)
 
     # --- prepare regularization factor ---
@@ -132,10 +131,10 @@ def nonlin(data, opt=None):
             if not hess.isfinite().all():
                 print('WARNING: NaNs in hess (??)')
             if opt.regularization.norm:
-                hess = hessian_loaddiag(hess, 1e-5, 1e-8)
+                hess = hessian_loaddiag(hess, 1e-6, 1e-8)
                 deltas = _nonlin_solve(hess, grad, multi_rls, lam, vx, opt)
             else:
-                hess = hessian_loaddiag(hess, 1e-3, 1e-6)
+                hess = hessian_loaddiag(hess, 1e-6, 1e-8)
                 deltas = hessian_solve(hess, grad)
             if not deltas.isfinite().all():
                 print('WARNING: NaNs in delta (non stable Hessian)')
@@ -381,6 +380,8 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
     hessp = hess.clone()
     smo = torch.as_tensor(vx).square().reciprocal().sum().item()
     for i, (weight, l) in enumerate(zip(rls, lam)):
+        if not l:
+            continue
         hessp[2*i] += l * (rls_maj(weight, vx) if weight is not None else 4*smo)
     
     def precond(x):

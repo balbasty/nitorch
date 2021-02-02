@@ -111,10 +111,11 @@ class MeanSpaceNet(Module):
 class SegMRFNet(Module):
     """Segmentation+MRF network.
     """
+
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.2), batch_norm_seg=True,
-                 num_iter=10, w=1, num_extra=0, only_unet=False):
+                 activation=tnn.LeakyReLU(0.1), batch_norm_seg=True,
+                 num_iter=20, w=0.5, num_extra=0, only_unet=False):
         super().__init__()
 
         self.only_unet = only_unet
@@ -123,26 +124,26 @@ class SegMRFNet(Module):
             dim, tb, inputs, outputs)
 
         self.unet = SegNet(dim,
-                         input_channels=input_channels,
-                         output_classes=output_classes,
-                         encoder=encoder,
-                         decoder=decoder,
-                         kernel_size=kernel_size,
-                         activation=activation,
-                         batch_norm=batch_norm_seg,
-                         inc_final_activation=False,
-                         implicit=False)
+                           input_channels=input_channels,
+                           output_classes=output_classes,
+                           encoder=encoder,
+                           decoder=decoder,
+                           kernel_size=kernel_size,
+                           activation=activation,
+                           batch_norm=batch_norm_seg,
+                           inc_final_activation=False,
+                           implicit=False)
 
         if not only_unet:
             self.mrf = MRFNet(dim,
-                           num_classes=output_classes,
-                           num_extra=num_extra,
-                           activation=activation,
-                           w=w,
-                           num_iter=num_iter)
+                              num_classes=output_classes,
+                              num_extra=num_extra,
+                              activation=activation,
+                              w=w,
+                              num_iter=num_iter)
 
         # register loss tag
-        self.tags = ['mrfseg']
+        self.tags = ['unet', 'mrf']
 
     # defer properties
     dim = property(lambda self: self.unet.dim)
@@ -155,10 +156,8 @@ class SegMRFNet(Module):
         # sanity check
         check.dim(self.dim, image)
 
-        # augmentation (only if reference is given, i.e., not at test-time)
-        if ref is not None:
-            for augmenter in self.augmenters:
-                image, ref = augmenter(image, ref)
+        # augment
+        image, ref = augment(image, ref, self.augmenters)        
 
         # unet
         ll = self.unet(image)
@@ -171,15 +170,17 @@ class SegMRFNet(Module):
         if ref is not None:
             # sanity checks
             check.dim(self.dim, ref)
-            dims = [0] + list(range(2, self.dim+2))
+            dims = [0] + list(range(2, self.dim + 2))
             check.shape(ll, ref, dims=dims)
             if not self.only_unet:
-                self.compute(_loss, _metric, mrfseg=[p, ref])
+                # self.compute(_loss, _metric, mrfseg=[p, ref])
+                self.compute(_loss, _metric, unet=[ll, ref], mrf=[p, ref])
             else:
-                self.compute(_loss, _metric, mrfseg=[ll, ref])
+                # self.compute(_loss, _metric, mrfseg=[ll, ref])
+                self.compute(_loss, _metric, unet=[ll, ref])
 
         if self.only_unet:
-           p = ll.softmax(dim=1)
+            p = ll.softmax(dim=1)
 
         return p
 
@@ -263,25 +264,25 @@ class SegNet(Module):
     kernel_size = property(lambda self: self.unet.kernel_size)
     activation = property(lambda self: self.unet.activation)
 
-    def forward(self, image, ground_truth=None, *, _loss=None, _metric=None):
+    def forward(self, image, ref=None, *, _loss=None, _metric=None):
         """
 
         Parameters
         ----------
         image : (batch, input_channels, *spatial) tensor
             Input image
-        ground_truth : (batch, output_classes[+1], *spatial) tensor, optional
+        ref : (batch, output_classes[+1], *spatial) tensor, optional
             Ground truth segmentation, used by the loss function.
             Its data type should be integer if it contains hard labels,
             and floating point if it contains soft segmentations.
         _loss : dict, optional
             Dictionary of losses that will be modified in place.
-            If provided along with `ground_truth`, all registered loss
+            If provided along with `ref`, all registered loss
             functions will be applied and stored under the key
             '<tag>/<name>' in the dictionary.
         _metric : dict, optional
             Dictionary of losses that will be modified in place.
-            If provided along with `ground_truth`, all registered loss
+            If provided along with `ref`, all registered loss
             functions will be applied and stored under the key
             '<tag>/<name>' in the dictionary.
 
@@ -298,10 +299,8 @@ class SegNet(Module):
         # sanity check
         check.dim(self.dim, image)
 
-        # augmentation (only if reference is given, i.e., not at test-time)
-        if ground_truth is not None:
-            for augmenter in self.augmenters:
-                image, ground_truth = augmenter(image, ground_truth)
+        # augment
+        image, ref = augment(image, ref, self.augmenters)
 
         # unet
         prob = self.unet(image)
@@ -309,12 +308,12 @@ class SegNet(Module):
             prob = prob[:, :-1, ...]
 
         # compute loss and metrics
-        if ground_truth is not None:
+        if ref is not None:
             # sanity checks
-            check.dim(self.dim, ground_truth)
-            dims = [0] + list(range(2, self.dim+2))
-            check.shape(prob, ground_truth, dims=dims)
-            self.compute(_loss, _metric, segmentation=[prob, ground_truth])
+            check.dim(self.dim, ref)
+            dims = [0] + list(range(2, self.dim + 2))
+            check.shape(prob, ref, dims=dims)
+            self.compute(_loss, _metric, segmentation=[prob, ref])
 
         return prob
 
@@ -357,10 +356,13 @@ class MRFNet(Module):
 
         self.num_classes = num_classes
         if num_iter < 1:
-            raise ValueError('Parameter num_iter should be greater than 0 , got {:}'.format(num_iter))
+            raise ValueError(
+                'Parameter num_iter should be greater than 0 , got {:}'.format(
+                    num_iter))
         self.num_iter = num_iter
         if w < 0 or w > 1:
-            raise ValueError('Parameter w should be between 0 and 1, got {:}'.format(w))
+            raise ValueError(
+                'Parameter w should be between 0 and 1, got {:}'.format(w))
         self.w = w
         # As the final activation is applied at the end of the forward method
         # below, it is not applied in the final Conv layer
@@ -399,12 +401,12 @@ class MRFNet(Module):
             Reference segmentation, used by the loss function.
         _loss : dict, optional
             Dictionary of losses that will be modified in place.
-            If provided along with `ground_truth`, all registered loss
+            If provided along with `ref`, all registered loss
             functions will be applied and stored under the key
             '<tag>/<name>' in the dictionary.
         _metric : dict, optional
             Dictionary of losses that will be modified in place.
-            If provided along with `ground_truth`, all registered loss
+            If provided along with `ref`, all registered loss
             functions will be applied and stored under the key
             '<tag>/<name>' in the dictionary.
 
@@ -419,10 +421,8 @@ class MRFNet(Module):
         # sanity check
         check.dim(self.dim, ll)
 
-        # augmentation (only if reference is given, i.e., not at test-time)
-        if ref is not None:
-            for augmenter in self.augmenters:
-                ll, ref = augmenter(ll, ref)
+        # augment
+        image, ref = augment(image, ref, self.augmenters)
 
         # MRF
         p = self.iter_mrf(ll, ref)
@@ -431,7 +431,7 @@ class MRFNet(Module):
         if ref is not None:
             # sanity checks
             check.dim(self.dim, ref)
-            dims = [0] + list(range(2, self.dim+2))
+            dims = [0] + list(range(2, self.dim + 2))
             check.shape(p, ref, dims=dims)
             self.compute(_loss, _metric, mrf=[p, ref])
 
@@ -440,7 +440,7 @@ class MRFNet(Module):
     def get_num_filters(self, dim):
         """Get number of MRF filters.
         """
-        num_filters = self.num_classes**2
+        num_filters = self.num_classes ** 2
         if num_filters > 128:
             num_filters = 128
         return num_filters
@@ -452,7 +452,7 @@ class MRFNet(Module):
         for i in range(self.get_num_iter(ref)):
             op = p.clone()
             p = (ll + self.mrf(p)).softmax(dim=1)
-            p = self.w*p + (1 - self.w)*op
+            p = self.w * p + (1 - self.w) * op
         return p
 
     def get_num_iter(self, ref):
@@ -461,11 +461,23 @@ class MRFNet(Module):
         with torch.no_grad():
             if ref is not None:
                 # Training
-                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
+                num_iter = int(
+                    torch.LongTensor(1).random_(1, self.num_iter + 1))
             else:
                 # Testing
                 num_iter = self.num_iter
         return num_iter
+
+
+def augment(image, ref, augmenters):
+    """Apply augmentation (only if reference is given, i.e., not at test-time).
+    """
+    with torch.no_grad():        
+        if ref is not None:
+            for augmenter in augmenters:
+                image, ref = augmenter(image, ref)
+                
+    return image, ref
 
 
 def board(dim, tb, inputs, outputs, implicit=False):
@@ -487,6 +499,7 @@ def board(dim, tb, inputs, outputs, implicit=False):
         Else, return `output_classes + 1` probabilities.
 
     """
+
     def get_slice(vol, plane, dim):
         if dim == 2:
             return vol.squeeze()
@@ -508,13 +521,15 @@ def board(dim, tb, inputs, outputs, implicit=False):
     def prediction_view(slice_prediction, implicit):
         if implicit:
             slice_prediction = torch.cat(
-                (1 - slice_prediction.sum(dim=0, keepdim=True), slice_prediction), dim=0)
+                (1 - slice_prediction.sum(dim=0, keepdim=True),
+                 slice_prediction), dim=0)
         K1 = float(slice_prediction.shape[0])
-        slice_prediction = (slice_prediction.argmax(dim=0, keepdim=False))/(K1 - 1)
+        slice_prediction = (slice_prediction.argmax(dim=0, keepdim=False)) / (
+                    K1 - 1)
         return slice_prediction
 
     def target_view(slice_target):
-        return slice_target.float()/slice_target.max().float()
+        return slice_target.float() / slice_target.max().float()
 
     def to_grid(slice_input, slice_target, slice_prediction):
         return torch.cat((slice_input, slice_target, slice_prediction), dim=1)
@@ -522,8 +537,9 @@ def board(dim, tb, inputs, outputs, implicit=False):
     def get_slices(plane, inputs, outputs, dim, implicit):
         slice_input = input_view(get_slice(inputs[0][0, ...], plane, dim=dim))
         slice_target = target_view(get_slice(inputs[1][0, ...], plane, dim=dim))
-        slice_prediction = prediction_view(get_slice(outputs[0, ...], plane, dim=dim),
-                                           implicit=implicit)
+        slice_prediction = prediction_view(
+            get_slice(outputs[0, ...], plane, dim=dim),
+            implicit=implicit)
         return slice_input, slice_target, slice_prediction
 
     def get_image(plane, inputs, outputs, dim, implicit):
@@ -532,7 +548,8 @@ def board(dim, tb, inputs, outputs, implicit=False):
         if len(slice_input.shape) != len(slice_prediction.shape):
             K1 = float(slice_input.shape[0])
             slice_input = (slice_input.argmax(dim=0, keepdim=False)) / (K1 - 1)
-            slice_target = (slice_target.argmax(dim=0, keepdim=False)) / (K1 - 1)
+            slice_target = (slice_target.argmax(dim=0, keepdim=False)) / (
+                        K1 - 1)
         return to_grid(slice_input, slice_target, slice_prediction)[None, ...]
 
     # Add to TensorBoard

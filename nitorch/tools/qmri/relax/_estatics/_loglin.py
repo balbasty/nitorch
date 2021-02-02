@@ -64,7 +64,7 @@ def loglin(data, opt=None):
         msk = hess[:-1:2] == 0
 
         # --- load diagonal of the Hessian ---
-        hess = hessian_loaddiag(hess)
+        hess = hessian_loaddiag(hess, 1e-6, 1e-8)
         
         # --- gauss-newton ---
         deltas = hessian_solve(hess, grad)
