@@ -142,8 +142,7 @@ class MeanSpaceNet(Module):
         check.shape(self.mean_mat, mat_native)
 
         # augment (taking voxel size into account)
-        with torch.no_grad():
-            vx = voxel_size(mat_native).squeeze().detach().cpu().tolist()
+        vx = voxel_size(mat_native).squeeze().tolist()
         image, ref = augment(image, ref, self.augmenters, vx)
 
         # Compute grid
@@ -193,10 +192,9 @@ class MeanSpaceNet(Module):
             Resampling grid.
 
         """
-        with torch.no_grad():
-            self.mean_mat = self.mean_mat.type(mat_native.dtype).to(mat_native.device)
-            mat = mat_native.solve(self.mean_mat)[0]
-            grid = affine_grid(mat, dim_native)
+        self.mean_mat = self.mean_mat.type(mat_native.dtype).to(mat_native.device)
+        mat = mat_native.solve(self.mean_mat)[0]
+        grid = affine_grid(mat, dim_native)
 
         return grid
 
@@ -649,13 +647,12 @@ class MRFNet(Module):
             Number of VB iterations for optimising MRF fit.
 
         """
-        with torch.no_grad():
-            if ref is not None:
-                # Training
-                num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
-            else:
-                # Testing
-                num_iter = self.num_iter
+        if ref is not None:
+            # Training
+            num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
+        else:
+            # Testing
+            num_iter = self.num_iter
 
         return num_iter
 
@@ -682,10 +679,9 @@ def augment(image, ref, augmenters, vx=None):
         Augmented reference segmentation.
 
     """
-    with torch.no_grad():        
-        if ref is not None:
-            for augmenter in augmenters:
-                image, ref = augmenter(image, ref, vx)
+    if ref is not None:
+        for augmenter in augmenters:
+            image, ref = augmenter(image, ref, vx)
                 
     return image, ref
 
