@@ -85,8 +85,8 @@ def seg_augmentation(tag, image, ground_truth, vx=None):
     elif tag == 'inu':
         # Multiplicative intensity non-uniformity (INU) to image
         # Parameters
-        amplitude = 0.5
-        fwhm = (60.0, ) * ndim
+        amplitude = 0.25
+        fwhm = (20.0,) * ndim
         fwhm = [f/v for f, v in zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
         aug = BiasFieldTransform(amplitude=amplitude, fwhm=fwhm, mean=0.0,
