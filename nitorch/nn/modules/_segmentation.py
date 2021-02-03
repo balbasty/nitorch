@@ -63,8 +63,13 @@ class MeanSpaceNet(Module):
         # Add tensorboard callback
         self.board = lambda tb, inputs, outputs: self.board_custom(
             dim, tb, inputs, outputs, implicit=implicit)
+        # Push/pull settings
+        interpolation = 'linear'
+        bound = 'dct2'  # symmetric
+        extrapolate = False
         # Add push operators
-        self.push = GridPushCount()
+        self.push = GridPushCount(interpolation=interpolation,
+                                  bound=bound, extrapolate=extrapolate)
         # Add channel to take into account count image
         input_channels += 1
         # Add UNet
@@ -78,7 +83,8 @@ class MeanSpaceNet(Module):
                          final_activation=None,  # so that pull is performed in log-space
                          batch_norm=batch_norm)
         # Add pull operators
-        self.pull = GridPull()
+        self.pull = GridPull(interpolation=interpolation,
+                             bound=bound, extrapolate=extrapolate)
         # register loss tag
         self.tags = ['native']
 
@@ -133,7 +139,8 @@ class MeanSpaceNet(Module):
         check.shape(self.mean_mat, mat_native)
 
         # augment (taking voxel size into account)
-        vx = voxel_size(mat_native).squeeze().detach().cpu().tolist()
+        with torch.no_grad():
+            vx = voxel_size(mat_native).squeeze().detach().cpu().tolist()
         image, ref = augment(image, ref, self.augmenters, vx)
 
         # Compute grid
@@ -742,7 +749,9 @@ def board(dim, tb, inputs, outputs, implicit=False):
         slice_target = target_view(get_slice(inputs[1][0, ...], plane, dim=dim))
         slice_prediction = prediction_view(
             get_slice(outputs[0, ...], plane, dim=dim), implicit=implicit)
-        return slice_input, slice_target, slice_prediction
+        return slice_input.detach().cpu(), \
+               slice_target.detach().cpu(), \
+               slice_prediction.detach().cpu()
 
     def get_image(plane, inputs, outputs, dim, implicit):
         slice_input, slice_target, slice_prediction = \
@@ -751,7 +760,10 @@ def board(dim, tb, inputs, outputs, implicit=False):
             K1 = float(slice_input.shape[0])
             slice_input = (slice_input.argmax(dim=0, keepdim=False)) / (K1 - 1)
             slice_target = (slice_target.argmax(dim=0, keepdim=False)) / (K1 - 1)
-        return to_grid(slice_input, slice_target, slice_prediction)[None, ...].detach().cpu()
+        return to_grid(slice_input, slice_target, slice_prediction)[None, ...]
+
+    # from nitorch.plot import show_slices
+    # show_slices(get_image('z', inputs, outputs, dim, implicit).squeeze())
 
     # Add to TensorBoard
     title = 'Image-Target-Prediction_'
