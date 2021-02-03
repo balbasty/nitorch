@@ -11,6 +11,9 @@ class MeanSpaceNet(Module):
     """Segmentation network that trains in a shared mean space, but computes
     losses in native space.
 
+    OBS: For optimal performance, both memory- and prediction-wise, it is important
+    that the input data is aligned in the common space.
+
     """
     def __init__(self, dim, common_space, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
