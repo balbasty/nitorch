@@ -3,8 +3,7 @@ import torch.nn as tnn
 from ..modules._base import Module
 from ..modules._cnn import (UNet, MRF)
 from ..modules._spatial import (GridPull, GridPushCount)
-from ...spatial import affine_grid
-from ...spatial import grid_pull
+from ...spatial import (affine_grid, voxel_size)
 from .. import check
 
 
@@ -133,8 +132,9 @@ class MeanSpaceNet(Module):
         check.dim(self.dim, image)
         check.shape(self.mean_mat, mat_native)
 
-        # augment
-        image, ref = augment(image, ref, self.augmenters)
+        # augment (taking voxel size into account)
+        vx = voxel_size(mat_native).squeeze().detach().cpu().tolist()
+        image, ref = augment(image, ref, self.augmenters, vx)
 
         # Compute grid
         dim_native = image.shape[2:]
@@ -650,7 +650,7 @@ class MRFNet(Module):
         return num_iter
 
 
-def augment(image, ref, augmenters):
+def augment(image, ref, augmenters, vx=None):
     """Apply augmentation (only if reference is given, i.e., not at test-time).
 
     Parameters
@@ -661,6 +661,8 @@ def augment(image, ref, augmenters):
         Reference segmentation.
     augmenters : list
         List of augmentation functions (defined in nn.seg_augmentation).
+    vx : [ndim, ] sequence, optional
+        Image voxel size (in mm), defaults to 1 mm isotropic.
 
     Returns
     ----------
@@ -673,7 +675,7 @@ def augment(image, ref, augmenters):
     with torch.no_grad():        
         if ref is not None:
             for augmenter in augmenters:
-                image, ref = augmenter(image, ref)
+                image, ref = augmenter(image, ref, vx)
                 
     return image, ref
 
