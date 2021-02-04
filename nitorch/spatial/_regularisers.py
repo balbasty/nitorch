@@ -895,3 +895,59 @@ def membrane_weights(field, lam=1, voxel_size=1, bound='dct2',
         return field.clamp_min_(1e-5).reciprocal_(), ll
     else:
         return field.clamp_min_(1e-5).reciprocal_()
+
+
+def membrane_diag_alt(voxel_size=1, bound='dct2', dim=None, weight=None):
+    """Diagonal of the membrane regulariser.
+
+    This is an alternate implementation of `membrane_diag` that uses the
+    window/lincomb mechanism. Almost the same speed and easier to read
+    and maintain. It is also easier to extend to other kernels or
+    different boundary condition per dimension.
+
+    Parameters
+    ----------
+    weight : (..., *spatial) tensor
+        Weights from the reweighted least squares scheme
+    voxel_size : float or sequence[float], default=1
+        Voxel size
+    bound : str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions.
+        Default: from voxel_size
+
+    Returns
+    -------
+    diag : () or (..., *spatial) tensor
+        Convolved weight map if provided.
+        Else, central convolution weight.
+
+    """
+    vx = core.utils.make_vector(voxel_size)
+    if dim is None:
+        dim = len(vx)
+    vx = core.utils.make_vector(vx, dim)
+    if weight is not None:
+        weight = torch.as_tensor(weight)
+        backend = dict(dtype=weight.dtype, device=weight.device)
+        # move spatial dimensions to the front
+        spdim = list(range(weight.dim()-dim, weight.dim()))
+        weight = core.utils.movedim(weight, spdim, list(range(dim)))
+    else:
+        backend = dict(dtype=vx.dtype, device=vx.device)
+    vx = vx.to(**backend)
+    vx = vx.square().reciprocal()
+
+    from ._finite_differences import _window1d, _lincomb
+    values = [[weight]]
+    dims = [None] + [d for d in range(dim) for _ in range(2)]
+    kernel = [2 * vx.sum()]
+    for d in range(dim):
+        values.extend(_window1d(weight, d, [-1, 1], bound=bound))
+        kernel += [vx[d], vx[d]]
+    weight = _lincomb(values, kernel, dims, ref=weight)
+
+    # send spatial dimensions to the back
+    weight = core.utils.movedim(weight, list(range(dim)), spdim)
+    return weight

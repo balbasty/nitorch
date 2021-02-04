@@ -611,39 +611,51 @@ def _lincomb(slices, weights, dim, ref=None):
         Second level contains chunks.
     weights : sequence[number]
         Linear weights
-    dim : int
+    dim : int or sequence[int]
         Dimension along which the tensor was chunked.
+    ref : tensor, optional
+        Tensor whose data we do not want to overwrite.
+        If provided, and some slices point to the same underlying data
+        as `ref`, the slice is not written into inplace.
 
     Returns
     -------
     lincomb : tensor
 
     """
+    slices = make_list(slices)
+    dims = make_list(dim, len(slices))
 
     result = None
-    for chunks, weight in zip(slices, weights):
+    for chunks, weight, dim in zip(slices, weights, dims):
 
         # multiply chunk with weight
+        chunks = make_list(chunks)
+        if chunks:
+            weight = torch.as_tensor(weight, dtype=chunks[0].dtype,
+                                     device=chunks[0].device)
         new_chunks = []
         for chunk in chunks:
             if chunk.numel() == 0:
                 continue
-            if weight == 0:
-                new_chunks.append(chunk.new_zeros([]).expand(chunk.shape))
-                continue
-            if weight == 1:
-                new_chunks.append(chunk)
-                continue
-            if weight == -1:
-                if ref is not None and not same_storage(ref, chunk):
-                    if any(s == 0 for s in chunk.stride()):
-                        chunk = -chunk
+            if not weight.requires_grad:
+                # save computations when possible
+                if weight == 0:
+                    new_chunks.append(chunk.new_zeros([]).expand(chunk.shape))
+                    continue
+                if weight == 1:
+                    new_chunks.append(chunk)
+                    continue
+                if weight == -1:
+                    if ref is not None and not same_storage(ref, chunk):
+                        if any(s == 0 for s in chunk.stride()):
+                            chunk = -chunk
+                        else:
+                            chunk = chunk.neg_()
                     else:
-                        chunk = chunk.neg_()
-                else:
-                    chunk = -chunk
-                new_chunks.append(chunk)
-                continue
+                        chunk = -chunk
+                    new_chunks.append(chunk)
+                    continue
             if ref is not None and not same_storage(ref, chunk):
                 if any(s == 0 for s in chunk.stride()):
                     chunk = chunk * weight
@@ -655,7 +667,10 @@ def _lincomb(slices, weights, dim, ref=None):
 
         # accumulate
         if result is None:
-            result = torch.cat(new_chunks, dim)
+            if len(new_chunks) == 1:
+                result = new_chunks[0]
+            else:
+                result = torch.cat(new_chunks, dim)
         else:
             offset = 0
             for chunk in new_chunks:
