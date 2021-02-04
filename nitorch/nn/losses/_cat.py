@@ -26,20 +26,20 @@ def _pad_norm(x, implicit=False):
 def _softmax(x, implicit=False):
     """Safe softmax (with implicit class)"""
     if implicit:
-        x = _pad_zero(x)
+        x = _pad_zero(x, implicit=implicit)
     x = torch.softmax(x, dim=1)
     return x
 
 
 def _logsoftmax(x, implicit=False):
     """Log(softmax(x)) (with implicit class)"""
-    x = _pad_zero(x, implicit)
+    x = _pad_zero(x, implicit=implicit)
     return torch.log_softmax(x, dim=1)
 
 
 def _log(x, implicit=False):
     """Log (with implicit class)"""
-    x = _pad_norm(x, implicit)
+    x = _pad_norm(x, implicit=implicit)
     return x.clamp(min=1e-7, max=1-1e-7).log()
 
 
