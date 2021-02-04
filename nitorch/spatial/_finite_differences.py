@@ -693,7 +693,7 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
         Input tensor
     dim : int
         Dimension along which to extract offsets
-    offsets : sequence[int]
+    offsets : [sequence of] int
         Offsets to extract, with respect to each voxel.
         To extract a centered window of length 3, use `offsets=[-1, 0, 1]`.
     bound : bound_like, default='dct2'
@@ -703,16 +703,20 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
 
     Returns
     -------
-    win : tuple[tuple[tensor]]
-        The first level corresponds to offsets.
+    win : [tuple of] tuple[tensor]
+        If a sequence of offsets was provided, the first level
+        corresponds to offsets.
         The second levels are tensors that could be concatenated along
         `dim` to generate the input tensor shifted by `offset`. However,
         to avoid unnecessary allocations, a list of (eventually empty)
         chunks is returned instead of the full shifted tensor.
-        Some of these tensors can be views into the input tensor.
+        Some (hopefully most) of these tensors can be views into the
+        input tensor.
 
     """
-    offsets = list(offsets)
+    return_list = isinstance(offsets, (list, tuple))
+    offsets = make_list(offsets)
+    return_list = return_list or len(offsets) > 1
     x = torch.as_tensor(x)
     backend = dict(dtype=x.dtype, device=x.device)
     length = x.shape[dim]
@@ -734,19 +738,19 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             pre = torch.flip(pre, [dim])
             post = slice_tensor(x, slice(length-nb_post, None), dim)
             post = torch.flip(post, [dim])
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'dct1':
             pre = slice_tensor(x, slice(1, nb_pre+1), dim)
             pre = torch.flip(pre, [dim])
             post = slice_tensor(x, slice(length-nb_post-1, -1), dim)
             post = torch.flip(post, [dim])
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'dst2':
             pre = slice_tensor(x, slice(None, nb_pre), dim)
             pre = -torch.flip(pre, [dim])
             post = slice_tensor(x, slice(-nb_post, None), dim)
             post = -torch.flip(post, [dim])
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'dst1':
             pre = slice_tensor(x, slice(None, nb_pre-1), dim)
             pre = -torch.flip(pre, [dim])
@@ -755,11 +759,11 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             shape1 = list(x.shape)
             shape1[dim] = 1
             zero = torch.zeros([], **backend).expand(shape1)
-            slices.append([pre, zero, central, zero, post])
+            slices.append(tuple([pre, zero, central, zero, post]))
         elif bound == 'dft':
             pre = slice_tensor(x, slice(length-nb_pre, None), dim)
             post = slice_tensor(x, slice(None, nb_post), dim)
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'replicate':
             shape_pre = list(x.shape)
             shape_pre[dim] = nb_pre
@@ -767,7 +771,7 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             shape_post[dim] = nb_post
             pre = slice_tensor(x, slice(None, 1), dim).expand(shape_pre)
             post = slice_tensor(x, slice(-1, None), dim).expand(shape_post)
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'zero':
             shape_pre = list(x.shape)
             shape_pre[dim] = nb_pre
@@ -775,7 +779,7 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             shape_post[dim] = nb_post
             pre = torch.zeros([], **backend).expand(shape_pre)
             post = torch.zeros([], **backend).expand(shape_post)
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'constant':
             shape_pre = list(x.shape)
             shape_pre[dim] = nb_pre
@@ -783,7 +787,11 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             shape_post[dim] = nb_post
             pre = torch.full([], value, **backend).expand(shape_pre)
             post = torch.full([], value, **backend).expand(shape_post)
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
+
+    slices = tuple(slices)
+    if not return_list:
+        slices = slices[0]
     return slices
 
 
