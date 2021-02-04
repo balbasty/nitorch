@@ -215,7 +215,7 @@ class SegMRFNet(Module):
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.1), batch_norm_seg=True,
-                 num_iter=20, w=0.5, num_extra=0, only_unet=False):
+                 num_iter=10, w=0.5, num_extra=0, only_unet=False):
         """
 
         Parameters
@@ -307,6 +307,8 @@ class SegMRFNet(Module):
             Tensor of class probabilities.
 
         """
+        is_train = True if ref is not None else False
+
         image = torch.as_tensor(image)
 
         # sanity check
@@ -319,14 +321,14 @@ class SegMRFNet(Module):
         p = self.unet(image)
 
         if not self.only_unet:
-            p = self.mrf.apply(p, ref)
+            p = self.mrf.apply(p, is_train)
 
         # compute loss and metrics
         if ref is not None:
             # sanity checks
             check.dim(self.dim, ref)
             dims = [0] + list(range(2, self.dim + 2))
-            check.shape(ll, ref, dims=dims)
+            check.shape(p, ref, dims=dims)
             self.compute(_loss, _metric, unetmrf=[p, ref])
 
         return p
@@ -477,7 +479,7 @@ class MRFNet(Module):
     IPMI. Springer, Cham, 2019.
 
     """
-    def __init__(self, dim, num_classes, num_iter=20, num_extra=0, w=0.5,
+    def __init__(self, dim, num_classes, num_iter=10, num_extra=0, w=0.5,
                  activation=tnn.LeakyReLU(0.1)):
         """
 
@@ -526,6 +528,7 @@ class MRFNet(Module):
                        kernel_size=kernel_size,
                        activation=activation,
                        batch_norm=False,
+                       bias=True,
                        final_activation=final_activation)
         # register loss tag
         self.tags = ['mrf']
@@ -561,19 +564,21 @@ class MRFNet(Module):
             Tensor of class probabilities.
 
         """
+        is_train = True if ref is not None else False
+
         resp = torch.as_tensor(resp)
 
         # sanity check
         check.dim(self.dim, resp)
 
         # augment
-        image, ref = augment(image, ref, self.augmenters)
+        resp, ref = augment(resp, ref, self.augmenters)
 
         # MRF
-        p = self.apply(resp, ref)
+        p = self.apply(resp, is_train)
 
         # compute loss and metrics
-        if ref is not None:
+        if is_train:
             # sanity checks
             check.dim(self.dim, ref)
             dims = [0] + list(range(2, self.dim + 2))
@@ -595,17 +600,22 @@ class MRFNet(Module):
         num_filters = self.num_classes ** 2
         if num_filters > 64:
             num_filters = 64
+
         return num_filters
 
-    def iter_mrf(self, ll, ref):
-        """Iterate over MRF.
+    def apply(self, resp, is_train):
+        """Apply MRFNet.
+
+        For training, one forward pass through the MRFNet is performed
+        with a softmax at the end. For testing, the forward pass is iterated over
+        as part of a VB update of the responsibilities.
 
         Parameters
         ----------
-        ll : (batch, input_channels, *spatial) tensor
+        resp : (batch, input_channels, *spatial) tensor
             Input image, the log-likelihood term.
-        ref : (batch, output_classes[+1], *spatial) tensor, optional
-            Reference segmentation, used by the loss function.
+        is_train : bool
+            Is model training?
 
         Returns
         ----------
@@ -613,41 +623,14 @@ class MRFNet(Module):
             VB optimal tissue posterior, under the given MRF assumption.
 
         """
-        if ref is not None:
-            p = self.mrf(resp)
-            p = p.softmax(dim=1)
-        else:
-            resp = resp.log()
-            p = torch.zeros_like(resp)
-            for i in range(self.num_iter):
-                op = p.clone()
-                p = (resp + self.mrf(p)).softmax(dim=1)
-                p = self.w * p + (1 - self.w) * op
+        resp = resp.log()
+        p = torch.zeros_like(resp)
+        for i in range(self.num_iter):
+            op = p.clone()
+            p = (resp + self.mrf(p)).softmax(dim=1)
+            p = self.w * p + (1 - self.w) * op
+
         return p
-
-    def get_num_iter(self, ref):
-        """Get number of VB iterations. Training uses a random number, whilst
-        testing uses a fixed number of iterations.
-
-        Parameters
-        ----------
-        ref : (batch, output_classes[+1], *spatial) tensor, optional
-            Reference segmentation, used by the loss function.
-
-        Returns
-        ----------
-        num_iter : int
-            Number of VB iterations for optimising MRF fit.
-
-        """
-        if ref is not None:
-            # Training
-            num_iter = int(torch.LongTensor(1).random_(1, self.num_iter + 1))
-        else:
-            # Testing
-            num_iter = self.num_iter
-
-        return num_iter
 
 
 def augment(image, ref, augmenters, vx=None):
