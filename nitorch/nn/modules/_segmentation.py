@@ -29,7 +29,6 @@ class SegMRFNet(Module):
                            kernel_size=kernel_size,
                            activation=activation,
                            batch_norm=batch_norm_seg,
-                           inc_final_activation=False,
                            implicit=False)
 
         if not only_unet:
@@ -41,7 +40,7 @@ class SegMRFNet(Module):
                               num_iter=num_iter)
 
         # register loss tag
-        self.tags = ['unet', 'mrf']
+        self.tags = ['unetmrf']
 
     # defer properties
     dim = property(lambda self: self.unet.dim)
@@ -58,11 +57,10 @@ class SegMRFNet(Module):
         image, ref = augment(image, ref, self.augmenters)        
 
         # unet
-        ll = self.unet(image)
+        p = self.unet(image)
 
         if not self.only_unet:
-            # MRF
-            p = self.mrf.iter_mrf(ll, ref)
+            p = self.mrf.apply(p, ref)
 
         # compute loss and metrics
         if ref is not None:
@@ -70,15 +68,7 @@ class SegMRFNet(Module):
             check.dim(self.dim, ref)
             dims = [0] + list(range(2, self.dim + 2))
             check.shape(ll, ref, dims=dims)
-            if not self.only_unet:
-                # self.compute(_loss, _metric, mrfseg=[p, ref])
-                self.compute(_loss, _metric, unet=[ll, ref], mrf=[p, ref])
-            else:
-                # self.compute(_loss, _metric, mrfseg=[ll, ref])
-                self.compute(_loss, _metric, unet=[ll, ref])
-
-        if self.only_unet:
-            p = ll.softmax(dim=1)
+            self.compute(_loss, _metric, unetmrf=[p, ref])
 
         return p
 
@@ -288,13 +278,13 @@ class MRFNet(Module):
     kernel_size = property(lambda self: self.mrf.kernel_size)
     activation = property(lambda self: self.mrf.activation)
 
-    def forward(self, ll, ref=None, *, _loss=None, _metric=None):
+    def forward(self, resp, ref=None, *, _loss=None, _metric=None):
         """Forward pass, with mean-field iterations.
 
         Parameters
         ----------
-        ll : (batch, input_channels, *spatial) tensor
-            Input image, the log-likelihood term.
+        resp : (batch, input_channels, *spatial) tensor
+            Input responsibilities.
         ref : (batch, output_classes[+1], *spatial) tensor, optional
             Reference segmentation, used by the loss function.
         _loss : dict, optional
@@ -314,16 +304,16 @@ class MRFNet(Module):
             Tensor of class probabilities.
 
         """
-        ll = torch.as_tensor(ll)
+        resp = torch.as_tensor(resp)
 
         # sanity check
-        check.dim(self.dim, ll)
+        check.dim(self.dim, resp)
 
         # augment
         image, ref = augment(image, ref, self.augmenters)
 
         # MRF
-        p = self.iter_mrf(ll, ref)
+        p = self.apply(resp, ref)
 
         # compute loss and metrics
         if ref is not None:
@@ -339,32 +329,24 @@ class MRFNet(Module):
         """Get number of MRF filters.
         """
         num_filters = self.num_classes ** 2
-        if num_filters > 128:
-            num_filters = 128
+        if num_filters > 64:
+            num_filters = 64
         return num_filters
 
-    def iter_mrf(self, ll, ref):
-        """Iterate over MRF.
+    def apply(self, resp, ref):
+        """Apply MRF.
         """
-        p = torch.zeros_like(ll)
-        for i in range(self.get_num_iter(ref)):
-            op = p.clone()
-            p = (ll + self.mrf(p)).softmax(dim=1)
-            p = self.w * p + (1 - self.w) * op
+        if ref is not None:
+            p = self.mrf(resp)
+            p = p.softmax(dim=1)
+        else:
+            resp = resp.log()
+            p = torch.zeros_like(resp)
+            for i in range(self.num_iter):
+                op = p.clone()
+                p = (resp + self.mrf(p)).softmax(dim=1)
+                p = self.w * p + (1 - self.w) * op
         return p
-
-    def get_num_iter(self, ref):
-        """ Get number of VB iterations.
-        """
-        with torch.no_grad():
-            if ref is not None:
-                # Training
-                num_iter = int(
-                    torch.LongTensor(1).random_(1, self.num_iter + 1))
-            else:
-                # Testing
-                num_iter = self.num_iter
-        return num_iter
 
 
 def augment(image, ref, augmenters):
