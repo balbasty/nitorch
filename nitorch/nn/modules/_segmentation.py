@@ -3,7 +3,7 @@ import torch.nn as tnn
 from ..modules._base import Module
 from ..modules._cnn import (UNet, MRF)
 from ..modules._spatial import (GridPull, GridPushCount)
-from ...spatial import (affine_grid, voxel_size)
+from ...spatial import (affine_grid, identity_grid, voxel_size)
 from .. import check
 
 
@@ -18,7 +18,7 @@ class MeanSpaceNet(Module):
     def __init__(self, dim, common_space, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.2), batch_norm=True,
-                 implicit=True):
+                 implicit=True, coord_conv=False):
         """
 
         Parameters
@@ -49,6 +49,8 @@ class MeanSpaceNet(Module):
             Only return `output_classes` probabilities (the last one
             is implicit as probabilities must sum to 1).
             Else, return `output_classes + 1` probabilities.
+        coord_conv : bool, default=False
+            Use mean space coordinate grid as input to the UNet.
 
         """
         super().__init__()
@@ -57,6 +59,7 @@ class MeanSpaceNet(Module):
         self.output_classes = output_classes
         self.mean_mat = common_space[0].unsqueeze(0)
         self.mean_dim = common_space[1]
+        self.coord_conv = coord_conv
         if implicit and output_classes == 1:
             final_activation = tnn.Sigmoid
         else:
@@ -75,6 +78,8 @@ class MeanSpaceNet(Module):
                                   bound=bound, extrapolate=extrapolate)
         # Add channel to take into account count image
         input_channels += 1
+        if coord_conv:
+            input_channels += dim
         # Add UNet
         self.unet = UNet(dim,
                          input_channels=input_channels,
@@ -152,6 +157,18 @@ class MeanSpaceNet(Module):
         # Push image into common space
         image_pushed, count = self.push(image, grid, shape=self.mean_dim)
         image_pushed = torch.cat((image_pushed, count), dim=1)  # add count image as channel
+
+        if self.coord_conv:
+            # Append mean space coordinate grid to UNet input
+            id = identity_grid(self.mean_dim, dtype=image_pushed.dtype, device=image_pushed.device)
+            id = id.unsqueeze(0)
+            if self.dim == 3:
+                id = id.permute((0, 4, 1, 2, 3))
+                id = id.repeat(image_pushed.shape[0], 1, 1, 1, 1)
+            else:
+                id = id.permute((0, 3, 1, 2))
+                id = id.repeat(image_pushed.shape[0], 1, 1, 1)
+            image_pushed = torch.cat((image_pushed, id), dim=1)
 
         # Apply UNet
         pred = self.unet(image_pushed)
