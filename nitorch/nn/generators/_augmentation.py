@@ -6,9 +6,9 @@ from ._spatial import (DiffeoSample, DeformedSample)
 from ...spatial import grid_pull
 
 
-def seg_augmentation(tag, image, ground_truth):
+def seg_augmentation(tag, image, ground_truth, vx=None):
     """Augmentation methods for segmentation network, with parameters that
-    should, hopefully, work well.
+    should, hopefully, work well by default.
 
     Parameters
     -------
@@ -26,6 +26,8 @@ def seg_augmentation(tag, image, ground_truth):
         Ground truth segmentation, used by the loss function.
         Its data type should be integer if it contains hard labels,
         and floating point if it contains soft segmentations.
+    vx : [ndim, ] sequence, optional
+        Image voxel size (in mm), defaults to 1 mm isotropic.
 
     Returns
     -------
@@ -40,12 +42,15 @@ def seg_augmentation(tag, image, ground_truth):
     dim = tuple(image.shape[2:])
     ndim = len(dim)
     nvox = int(torch.as_tensor(image.shape[2:]).prod())
+    if vx is None:
+        vx = (1.0, ) * ndim
     # Augmentation method
     if 'warp' in tag:
         # Nonlinear warp
         # Parameters
         amplitude = 1.0
-        fwhm = 3.0
+        fwhm = (3.0, ) * ndim
+        fwhm = [f / v for f, v in zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
         aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
                            device=image.device, dtype=image.dtype)
@@ -80,8 +85,9 @@ def seg_augmentation(tag, image, ground_truth):
     elif tag == 'inu':
         # Multiplicative intensity non-uniformity (INU) to image
         # Parameters
-        amplitude = 0.5
-        fwhm = 60
+        amplitude = 0.25
+        fwhm = (20.0,) * ndim
+        fwhm = [f/v for f, v in zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
         aug = BiasFieldTransform(amplitude=amplitude, fwhm=fwhm, mean=0.0,
                                  device=image.device, dtype=image.dtype)
