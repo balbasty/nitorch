@@ -4,6 +4,7 @@ from ..modules._base import Module
 from ..modules._cnn import (UNet, MRF)
 from ..modules._spatial import (GridPull, GridPushCount)
 from ...spatial import (affine_grid, voxel_size)
+from ...core.constants import eps
 from .. import check
 
 
@@ -623,7 +624,7 @@ class MRFNet(Module):
             VB optimal tissue posterior, under the given MRF assumption.
 
         """
-        resp = resp.log()
+        resp = (resp + eps()).log()
         p = torch.zeros_like(resp)
         for i in range(self.num_iter):
             op = p.clone()
