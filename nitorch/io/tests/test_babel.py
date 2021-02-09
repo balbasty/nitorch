@@ -190,7 +190,7 @@ def _test_partial_load_more(fname):
 
 
 def _test_partial_save(fname):
-    nii = map(fname, 'r')
+    nii = map(fname, 'r+')
     slicer = (slice(None), 0, slice(None))
     perm = [1, 0]
     nii_slice = nii[slicer].permute(perm)

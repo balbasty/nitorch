@@ -309,10 +309,10 @@ def layout_matrix(layout, voxel_size=1., shape=0., dtype=None, device=None):
     layout : str or (ndim, 2) tensor_like[long]
         See `affine.layout`
 
-    voxel_size : (ndim, 1) tensor_like, default=1
+    voxel_size : (ndim,) tensor_like, default=1
         Voxel size of the lattice
 
-    shape : (ndim, 1) tensor_like, default=0
+    shape : (ndim,) tensor_like, default=0
         Shape of the lattice
 
     dtype : torch.dtype, optional
@@ -358,8 +358,8 @@ def layout_matrix(layout, voxel_size=1., shape=0., dtype=None, device=None):
     mflip = torch.diag(mflip)
     shift = torch.where(flip, shape[perm], zero)
     mflip = torch.cat((mflip, shift[:, None]), dim=1)
-    mat = affine_matmul(mflip, mat)
-    mat = affine_make_square(mat)
+    mat = affine_matmul(as_euclidean(mflip), as_euclidean(mat))
+    mat = affine_make_homogeneous(mat)
 
     return mat
 
@@ -1342,22 +1342,9 @@ def affine_is_rect(affine):
     return affine.shape[-1] == affine.shape[-2] + 1
 
 
-def affine_is_homogeneous(affine, sym=False):
+def is_homogeneous(affine):
     """Return true is the last row is [*zeros, 1]"""
-    if getattr(affine, 'is_homogeneous', False):
-        return True
-    if not getattr(affine, 'is_homogeneous', True):
-        return False
-    if sym:
-        return affine_is_square(affine)
-    with torch.no_grad():
-        affine = torch.as_tensor(affine)
-        info = dict(dtype=affine.dtype, device=affine.device)
-        last_row = affine[..., -1, :]
-        template_row = torch.zeros(last_row.shape[-1], **info)
-        template_row[-1] = 1
-        check = (last_row == template_row).all().item()
-    return check
+    return getattr(affine, 'is_homogeneous', True)
 
 
 def affine_make_square(affine):
@@ -1405,7 +1392,7 @@ def affine_make_rect(affine):
     return affine[..., :ndims, :]
 
 
-def affine_make_homogeneous(affine, sym=False, force=False):
+def affine_make_homogeneous(affine):
     """Ensure that the last row of the matrix is (*zeros, 1).
 
     This function is more generic than `make_square` because it
@@ -1415,34 +1402,29 @@ def affine_make_homogeneous(affine, sym=False, force=False):
     Parameters
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
-        Input affine matrix
-    sym : bool, default=False
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+        Input affine matrix.
+
+        To inform this function that the input matrix is not homogeneous,
+        `as_euclidean` should be called on it beforehand, e.g.,
+        `affine_make_homogeneous(as_euclidean(mat))`.
 
     Returns
     -------
     affine : (..., ndim_out+1, ndim_in+1) tensor
 
     """
-    if sym:
-        return as_homogeneous(affine_make_square(affine))
-
+    if is_homogeneous(affine):
+        return affine
     affine = torch.as_tensor(affine)
-    if force or not affine_is_homogeneous(affine):
-        info = dict(dtype=affine.dtype, device=affine.device)
-        ndims_in = affine.shape[-1] - 1
-        bottom_row = torch.cat((torch.zeros(ndims_in, **info),
-                                torch.ones(1, **info)), dim=0)
-        bottom_row = bottom_row.unsqueeze(0)
-        bottom_row = bottom_row.expand(affine.shape[:-2] + bottom_row.shape)
-        affine = torch.cat((affine, bottom_row), dim=-2)
-    return as_homogeneous(affine)
+    new_shape = list(affine.shape)
+    new_shape[-2] += 1
+    new_affine = affine.new_zeros(new_shape)
+    new_affine[..., :-1, :] = affine
+    new_affine[..., -1, -1] = 1
+    return as_homogeneous(new_affine)
 
 
-def affine_del_homogeneous(affine, sym=False, force=False):
+def affine_del_homogeneous(affine):
     """Ensure that the last row of the matrix is _not_ (*zeros, 1).
 
     This function is more generic than `make_rect` because it
@@ -1453,37 +1435,35 @@ def affine_del_homogeneous(affine, sym=False, force=False):
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
         Input affine matrix
-    sym : bool, default=False
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+
+        To inform this function that the input matrix is not homogeneous,
+        `as_euclidean` should be called on it beforehand, e.g.,
+        `affine_make_homogeneous(as_euclidean(mat))`.
 
     Returns
     -------
     affine : (..., ndim_out, ndim_in+1) tensor
 
     """
-    if sym:
-        return as_euclidean(affine_make_rect(affine))
+    if not is_homogeneous(affine):
+        return affine
     affine = torch.as_tensor(affine)
-    if force or affine_is_homogeneous(affine):
-        affine = affine[..., :-1, :]
+    affine = affine[..., :-1, :]
     return as_euclidean(affine)
 
 
-def voxel_size(mat, sym=True):
+def voxel_size(mat):
     """ Compute voxel sizes from affine matrices.
 
     Parameters
     ----------
     mat :  (..., ndim_out[+1], ndim_in+1) tensor
-        Affine matrix
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+        Affine matrix.
+
+        If the matrix is not homogeneous (i.e., the last row [*zeros, 1]
+        is omitted), it must have the attribute `is_homogeneous = False`.
+        This attribute can be set on the input tensor by calling
+        `as_euclidean` on it.
 
     Returns
     -------
@@ -1492,28 +1472,28 @@ def voxel_size(mat, sym=True):
 
     """
     mat = torch.as_tensor(mat)
-    dim = mat.shape[-1] - 1
-    if sym:
-        mat = mat[..., :dim, :dim]
-    elif affine_is_homogeneous(mat):
+    if is_homogeneous(mat):
         mat = mat[..., :-1, :-1]
     else:
         mat = mat[..., :, :-1]
     return as_euclidean(mat.square().sum(-2).sqrt())
 
 
-def affine_matvec(affine, vector, sym=True):
+def affine_matvec(affine, vector):
     """Matrix-vector product of an affine and a (possibly homogeneous) vector.
 
     Parameters
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
+        Affine matrix.
+        If the matrix is not homogeneous (i.e., the last row [*zeros, 1]
+        is omitted), it must have the attribute `is_homogeneous = False`.
+        This attribute can be set on the input tensor by calling
+        `as_euclidean` on it.
     vector : (..., ndim_in[+1]) tensor
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+        The vector can be homogeneous or not (it is detected
+        automatically). The output will be of the same type
+        (homogeneous or euclidean) as `vector`.
 
     Returns
     -------
@@ -1521,7 +1501,7 @@ def affine_matvec(affine, vector, sym=True):
         The returned vector is homogeneous iff `vector` is too.
 
     """
-    affine = affine_del_homogeneous(affine, sym)
+    affine = affine_del_homogeneous(affine)
     vector = torch.as_tensor(vector)
     info = dict(dtype=vector.dtype, device=vector.device)
     ndims_in = affine.shape[-1] - 1
@@ -1538,7 +1518,7 @@ def affine_matvec(affine, vector, sym=True):
     return out
 
 
-def affine_matmul(a, b, sym=False, symb=None):
+def affine_matmul(a, b):
     """Matrix-matrix product of affine matrices.
 
     Parameters
@@ -1547,13 +1527,6 @@ def affine_matmul(a, b, sym=False, symb=None):
         Affine matrix
     b : (..., ndim_inter[+1], ndim_in+1) tensor
         Affine matrix
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
-    symb : bool, default=sym
-        Same, but for `b`.
 
     Returns
     -------
@@ -1561,10 +1534,9 @@ def affine_matmul(a, b, sym=False, symb=None):
         The returned matrix is homogeneous iff `a` is too.
 
     """
-    symb = sym if symb is None else symb
-    is_h = affine_is_homogeneous(a, sym)
-    a = affine_del_homogeneous(a, sym)
-    b = affine_del_homogeneous(b, symb)
+    is_h = is_homogeneous(a)
+    a = affine_del_homogeneous(a)
+    b = affine_del_homogeneous(b)
     Za = a[..., :, :-1]
     Ta = a[..., :, -1]
     Zb = b[..., :, :-1]
@@ -1572,14 +1544,13 @@ def affine_matmul(a, b, sym=False, symb=None):
     Z = torch.matmul(Za, Zb)
     T = linalg.matvec(Za, Tb) + Ta
     out = torch.cat((Z, T[..., None]), dim=-1)
+    out = as_euclidean(out)
     if is_h:
-        out = affine_make_homogeneous(out, force=True)
-    else:
-        out = as_euclidean(out)
+        out = affine_make_homogeneous(out)
     return out
 
 
-def affine_inv(affine, sym=True):
+def affine_inv(affine):
     """Inverse of an affine matrix.
 
     If the input matrix is not symmetric with respect to its input
@@ -1589,11 +1560,6 @@ def affine_inv(affine, sym=True):
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
         Input affine
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
 
     Returns
     -------
@@ -1601,22 +1567,21 @@ def affine_inv(affine, sym=True):
         The returned matrix is homogeneous iff `affine` is too.
 
     """
-    is_h = affine_is_homogeneous(affine, sym)
-    affine = affine_del_homogeneous(affine, sym)
+    is_h = is_homogeneous(affine)
+    affine = affine_del_homogeneous(affine)
     ndims_in = affine.shape[-1] - 1
     ndims_out = affine.shape[-2]
     inverse = torch.inverse if ndims_in == ndims_out else torch.pinverse
     zoom = inverse(affine[..., :, :-1])
     translation = -linalg.matvec(zoom, affine[..., :, -1])
     out = torch.cat((zoom, translation[..., None]), dim=-1)
+    out = as_euclidean(out)
     if is_h:
-        out = affine_make_homogeneous(out, force=True)
-    else:
-        out = as_euclidean(out)
+        out = affine_make_homogeneous(out)
     return out
 
 
-def affine_lmdiv(a, b, sym=True):
+def affine_lmdiv(a, b):
     """Left matrix division of affine matrices: inv(a) @ b
 
     Parameters
@@ -1626,11 +1591,6 @@ def affine_lmdiv(a, b, sym=True):
         A peudo-inverse is used if `ndim_inter != ndim_out`
     b : (..., ndim_inter[+1], ndim_in+1) tensor
         Affine matrix.
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
 
     Returns
     -------
@@ -1638,10 +1598,10 @@ def affine_lmdiv(a, b, sym=True):
         The returned matrix is homogeneous iff `a` is too.
 
     """
-    return affine_matmul(affine_inv(a, sym), b, sym)
+    return affine_matmul(affine_inv(a), b)
 
 
-def affine_rmdiv(a, b, sym=True):
+def affine_rmdiv(a, b):
     """Right matrix division of affine matrices: a @ inv(b)
 
     Parameters
@@ -1651,11 +1611,6 @@ def affine_rmdiv(a, b, sym=True):
     b : (..., ndim_in[+1], ndim_inter+1) tensor
         Affine matrix that will be inverted.
         A peudo-inverse is used if `ndim_inter != ndim_in`
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
 
     Returns
     -------
@@ -1663,7 +1618,7 @@ def affine_rmdiv(a, b, sym=True):
         The returned matrix is homogeneous iff `a` is too.
 
     """
-    return affine_matmul(a, affine_inv(b, sym), sym)
+    return affine_matmul(a, affine_inv(b))
 
 
 def affine_resize(affine, shape, factor, anchor='c'):
@@ -1921,7 +1876,9 @@ def affine_permute(affine, perm=None, shape=None):
     if len(perm) != nb_dim:
         raise ValueError('Expected perm to have {} elements. Got {}.'
                          .format(nb_dim, len(perm)))
+    is_h = is_homogeneous(affine)
     affine = affine[..., :, perm + [-1]]
+    affine = as_euclidean(affine) if is_h else as_homogeneous(affine)
     if shape is not None:
         shape = tuple(shape[p] for p in perm)
         return affine, shape
