@@ -42,6 +42,8 @@ def autoreg(argv=None):
 def load_data(s):
     """Loads data and prepare loss functions"""
 
+    device = torch.device(s.device)
+
     def load(files, is_label):
         """Load one multi-channel multi-file volume.
         Returns a (channels, *spatial) tensor
@@ -49,9 +51,11 @@ def load_data(s):
         dats = []
         for file in files:
             if is_label:
-                dat = io.volumes.load(file.fname, dtype=torch.int32)
+                dat = io.volumes.load(file.fname,
+                                      dtype=torch.int32, device=device)
             else:
-                dat = io.volumes.loadf(file.fname, dtype=torch.float32)
+                dat = io.volumes.loadf(file.fname, rand=True,
+                                       dtype=torch.float32, device=device)
             dat = dat.reshape([*file.shape, file.channels])
             dat = utils.movedim(dat, -1, 0)
             dats.append(dat)
@@ -79,12 +83,15 @@ def load_data(s):
         loss.fixed.dat = load(loss.fixed.files, loss.fixed.type == 'labels')
         loss.moving.dat = load(loss.moving.files, loss.moving.type == 'labels')
         lvl = levels if loss.fixed.type != 'labels' else 1
-        loss.fixed.dat = pyramid(loss.fixed.dat, loss.fixed.affine, lvl)
-        loss.moving.dat = pyramid(loss.moving.dat, loss.moving.affine, lvl)
+        loss.fixed.dat = pyramid(loss.fixed.dat,
+                                 loss.fixed.affine.to(device), lvl)
+        loss.moving.dat = pyramid(loss.moving.dat,
+                                  loss.moving.affine.to(device), lvl)
 
 
 def load_transforms(s):
     """Initialize transforms"""
+    device = torch.device(s.device)
 
     def reshape3d(dat, channels=None):
         """Reshape as (*spatial) or (C, *spatial) or (*spatial, C).
@@ -111,9 +118,11 @@ def load_transforms(s):
         if isinstance(trf, struct.Linear):
             # Affine
             if isinstance(trf.init, str):
-                trf.dat = io.transforms.loadf(trf.init, dtype=torch.float32)
+                trf.dat = io.transforms.loadf(trf.init, dtype=torch.float32,
+                                              device=device)
             else:
-                trf.dat = torch.zeros(trf.nb_prm(3), dtype=torch.float32)
+                trf.dat = torch.zeros(trf.nb_prm(3), dtype=torch.float32,
+                                      device=device)
         else:
             # compute mean space
             all_affines = []
@@ -130,13 +139,15 @@ def load_transforms(s):
             # FFD/Diffeo
             if isinstance(trf.init, str):
                 f = io.volumes.map(trf.init)
-                trf.dat = reshape3d(f.loadf(dtype=torch.float32), 'last')
+                trf.dat = reshape3d(f.loadf(dtype=torch.float32, device=device),
+                                    'last')
                 if len(trf.dat) != 3:
                     raise ValueError('Field should have 3 channels')
                 factor = [int(s//g) for g, s in zip(trf.shape[:-1], shape)]
                 trf.affine, trf.shape = affine_resize(trf.affine, trf.shape[:-1], factor)
             else:
-                trf.dat = torch.zeros([*shape, 3], dtype=torch.float32)
+                trf.dat = torch.zeros([*shape, 3], dtype=torch.float32,
+                                      device=device)
                 trf.affine = affine
                 trf.shape = shape
 
@@ -399,7 +410,7 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
             g = None
 
     for file, ofname in zip(moving.files, fname):
-        dat = io.volumes.loadf(file.fname)
+        dat = io.volumes.loadf(file.fname, rand=True)
         dat = dat.reshape([*file.shape, file.channels])
         if g is not None:
             dat = utils.movedim(dat, -1, 0)
@@ -457,7 +468,7 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
             g = None
 
     for file, ofname in zip(moving.files, fname):
-        dat = io.volumes.loadf(file.fname)
+        dat = io.volumes.loadf(file.fname, rand=True)
         dat = dat.reshape([*file.shape, file.channels])
         if g is not None:
             dat = utils.movedim(dat, -1, 0)
