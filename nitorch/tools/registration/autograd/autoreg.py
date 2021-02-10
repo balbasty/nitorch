@@ -76,16 +76,17 @@ def load_data(s):
                 dats.append((dat, affine))
         return dats
 
-    levels = list(sorted(set(s.pyramid)))
-
     for loss in s.losses:
         if isinstance(loss, struct.NoLoss):
             continue
         loss.fixed.dat = load(loss.fixed.files, loss.fixed.type == 'labels')
         loss.moving.dat = load(loss.moving.files, loss.moving.type == 'labels')
-        lvl = levels if loss.fixed.type != 'labels' else 1
+        lvl = (list(sorted(set(loss.fixed.pyramid)))
+               if loss.fixed.type != 'labels' else 1)
         loss.fixed.dat = pyramid(loss.fixed.dat,
                                  loss.fixed.affine.to(device), lvl)
+        lvl = (list(sorted(set(loss.moving.pyramid)))
+               if loss.moving.type != 'labels' else 1)
         loss.moving.dat = pyramid(loss.moving.dat,
                                   loss.moving.affine.to(device), lvl)
 
@@ -136,6 +137,9 @@ def load_transforms(s):
                 all_shapes.append(loss.moving.shape)
                 all_shapes.append(loss.moving.affine)
             affine, shape = mean_space(all_affines, all_shapes)
+            if trf.pyramid > 1:
+                factor = 1/(2**(trf.pyramid-1))
+                affine, shape = affine_resize(affine, shape, factor)
 
             # FFD/Diffeo
             if isinstance(trf.init, str):
@@ -370,7 +374,44 @@ def write_transforms(options):
 
 
 def update(moving, fname, inv=False, lin=None, nonlin=None,
-           interpolation=1, bound='dct2', extrapolate=False, device=None):
+           interpolation=1, bound='dct2', extrapolate=False, device='cpu'):
+    """Apply the linear transform to the header of a file +
+    apply the non-linear component in the original space.
+
+    Notes
+    -----
+    .. The shape and general orientation of the moving image is kept untouched.
+    .. The linear transform is composed with the original orientation matrix.
+    .. The non-linear component is "wrapped" in the input space, where it
+       is applied.
+    .. This function writes a new file (it does not modify the input files
+       in place).
+
+    Parameters
+    ----------
+    moving : ImageFile
+        An object describing an image to wrap.
+    fname : list of str
+        Output filename for each input file of the moving image
+        (since images can be encoded over multiple volumes)
+    inv : bool, default=False
+        True if we are warping the fixed image to the moving space.
+        In the case, `moving` should be a `FixedImageFile`.
+        Else it should be a `MovingImageFile`.
+    lin : (4, 4) tensor, optional
+        Linear (or rather affine) transformation
+    nonlin : dict, optional
+        Non-linear displacement field, with keys:
+        disp : (..., 3) tensor
+            Displacement field (in voxels)
+        affine : (4, 4) tensor
+            Orientation matrix of the displacement field
+    interpolation : int, default=1
+    bound : str, default='dct2'
+    extrapolate : bool, default = False
+    device : default='cpu'
+
+    """
     nonlin = nonlin or dict(disp=None, affine=None)
     prm = dict(interpolation=interpolation, bound=bound, extrapolate=extrapolate)
 
@@ -385,12 +426,12 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
 
         if nonlin.fwd is not None:
             # moving voxels to param voxels (warps param to moving)
-            mov2nlin = affine_lmdiv(nonlin['affine'], moving_affine)
+            mov2nlin = affine_lmdiv(nonlin['affine'].to(device), moving_affine)
             if samespace(mov2nlin, nonlin['disp'].shape[:-1], moving.shape):
-                g = smalldef(nonlin['disp'])
+                g = smalldef(nonlin['disp'].to(device))
             else:
                 g = affine_grid(mov2nlin, moving.shape)
-                g += pull_grid(nonlin['disp'], g)
+                g += pull_grid(nonlin['disp'].to(device), g)
             # param to moving
             nonlin2mov = affine_inv(mov2nlin)
             g = affine_matvec(nonlin2mov, g)
@@ -406,12 +447,12 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
 
         if nonlin['disp'] is not None:
             # moving voxels to param voxels (warps param to moving)
-            mov2nlin = affine_lmdiv(nonlin['affine'], new_affine)
+            mov2nlin = affine_lmdiv(nonlin['affine'].to(device), new_affine)
             if samespace(mov2nlin, nonlin['disp'].shape[:-1], moving.shape):
-                g = smalldef(nonlin['disp'])
+                g = smalldef(nonlin['disp'].to(device))
             else:
                 g = affine_grid(mov2nlin, moving.shape)
-                g += pull_grid(nonlin['disp'], g)
+                g += pull_grid(nonlin['disp'].to(device), g)
             # param to moving
             nonlin2mov = affine_inv(mov2nlin)
             g = affine_matvec(nonlin2mov, g)
@@ -430,6 +471,46 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
 
 def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
            interpolation=1, bound='dct2', extrapolate=False, device=None):
+    """Apply the linear and non-linear components of the transform and
+    reslice the image to the target space.
+
+    Notes
+    -----
+    .. The shape and general orientation of the moving image is kept untouched.
+    .. The linear transform is composed with the original orientation matrix.
+    .. The non-linear component is "wrapped" in the input space, where it
+       is applied.
+    .. This function writes a new file (it does not modify the input files
+       in place).
+
+    Parameters
+    ----------
+    moving : ImageFile
+        An object describing a moving image.
+    fname : list of str
+        Output filename for each input file of the moving image
+        (since images can be encoded over multiple volumes)
+    like : ImageFile
+        An object describing the target space
+    inv : bool, default=False
+        True if we are warping the fixed image to the moving space.
+        In the case, `moving` should be a `FixedImageFile` and `like` a
+        `MovingImageFile`. Else it should be a `MovingImageFile` and `'like`
+        a `FixedImageFile`.
+    lin : (4, 4) tensor, optional
+        Linear (or rather affine) transformation
+    nonlin : dict, optional
+        Non-linear displacement field, with keys:
+        disp : (..., 3) tensor
+            Displacement field (in voxels)
+        affine : (4, 4) tensor
+            Orientation matrix of the displacement field
+    interpolation : int, default=1
+    bound : str, default='dct2'
+    extrapolate : bool, default = False
+    device : default='cpu'
+
+    """
     lin = lin or None
     nonlin = nonlin or dict(disp=None, affine=None)
     prm = dict(interpolation=interpolation, bound=bound, extrapolate=extrapolate)
@@ -446,14 +527,14 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
 
         if nonlin['disp'] is not None:
             # fixed voxels to param voxels (warps param to fixed)
-            fix2nlin = affine_lmdiv(nonlin['affine'], fix2lin)
+            fix2nlin = affine_lmdiv(nonlin['affine'].to(device), fix2lin)
             if samespace(fix2nlin, nonlin['disp'].shape[:-1], like.shape):
-                g = smalldef(nonlin['disp'])
+                g = smalldef(nonlin['disp'].to(device))
             else:
                 g = affine_grid(fix2nlin, like.shape)
-                g += pull_grid(nonlin['disp'], g)
+                g += pull_grid(nonlin['disp'].to(device), g)
             # param to moving
-            nlin2mov = affine_lmdiv(moving_affine, nonlin['affine'])
+            nlin2mov = affine_lmdiv(moving_affine, nonlin['affine'].to(device))
             g = affine_matvec(nlin2mov, g)
         else:
             g = None
@@ -467,12 +548,12 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
 
         if nonlin.fwd is not None:
             # fixed voxels to param voxels (warps param to fixed)
-            fix2nlin = affine_lmdiv(nonlin['affine'], fixed_affine)
+            fix2nlin = affine_lmdiv(nonlin['affine'].to(device), fixed_affine)
             if samespace(fix2nlin, nonlin['disp'].shape[:-1], like.shape):
-                g = smalldef(nonlin['disp'])
+                g = smalldef(nonlin['disp'].to(device))
             else:
                 g = affine_grid(fix2nlin, like.shape)
-                g += pull_grid(nonlin['disp'], g)
+                g += pull_grid(nonlin['disp'].to(device), g)
             # param voxels to moving voxels (warps moving to fixed)
             nonlin2mov = affine_inv(mov2lin)
             g = affine_matvec(nonlin2mov, g)

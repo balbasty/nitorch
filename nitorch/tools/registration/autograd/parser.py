@@ -1,19 +1,15 @@
-import torch
-import os
-from nitorch import io
 from . import struct
 
 help = r"""[AutoReg] AUTOgrad REGistration tool
 
 usage: 
-    autoreg <*LOSS> [FACTOR] -fix *FILE [-o *FILE] [-r *FILE] 
-                             -mov *FILE [-o *FILE] [-r *FILE] 
-                             [-inter N] [-bnd BND] [-ex]
-            <*TRF> [FACTOR] [-init PATH/*VALUES] [-lr LEARNING_RATE] [-stop LIMIT] [-o FILE]
+    autoreg <*LOSS> [FACTOR] -fix *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
+                             -mov *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
+            <*TRF> [FACTOR] [-init PATH] [-lr LRNRATE] [-o FILE] [-pyr LVL] 
                    <*REG> [FACTOR]
-            <*OPT> [-nit MAXITER] [-lr LEARNING_RATE] [-stop LIMIT] [-ls [MAXLS]]
+            <*OPT> [-nit MAXITER] [-lr LRNRATE] [-stop LIMIT] [-ls [MAXLS]]
             [+mov *FILE [-inter N] [-bnd BND] [-ex] [-o *FILE] [-r *FILE]]
-            [-all ...] [-prg] [-pyr N] [-gpu|-cpu] [-h]
+            [-all ...] [-prg] [-pyr *LVL] [-gpu|-cpu] [-h]
 
     <LOSS> can take values (with additional options): 
         -mi,  --mutual-info         Normalized Mutual Information
@@ -29,6 +25,7 @@ usage:
             -l, --labels                Labels to use (default: all except 0)
             -w, ---weights *WEIGHTS     Label-wise weights 
         -cat,  --categorical        Categorical cross-entropy (for soft segments)
+        -oth, --other               Not a loss -> other images to warp at the end.
     Note that the -fix and -mov tags must be placed directly after their 
     corresponding <LOSS> (The <LOSS> tag "opens a group"). Similarly, the 
     interpolation tags (-inter, -bnd, -ext) must be placed directly after 
@@ -44,7 +41,7 @@ usage:
         -aff, --affine              Affine (tr + rot + zoom + shear)
         -ffd, --free-form           Free-form deformation (cubic)
             -g, --grid *SIZE            Number of nodes (10)
-        -diffeo, --diffeo           Diffeomorphic field
+        -dif, --diffeo              Diffeomorphic field
     Only one of -tr, -rig, -sim, -aff can be used.
     Only one of -ffd and -diffeo can be used.
     The ffd and diffeomorphic fields always live in the (mean) space of the 
@@ -82,34 +79,34 @@ usage:
     parameters for ffd, the initial velocity for diffeo).
 
     Other options
-        -cpu, -gpu                   Device to use (gpu if available)
+        -cpu, -gpu                   Device to use (cpu)
         -prg, --progressive          Progressively increase degrees of freedom (no)
         -pyr, --pyramid *LEVELS      Pyramid levels. Can be a range [start]:stop[:step] (1)
-        +mov, --other-moving         Additional moving images, without loss
 
 examples:
     # rigid registration between two images
     autoreg -mi -fix target.nii -mov source.nii
 
     # diffeo + similitude registration between two images
-    autoreg -mi -fix target.nii -mov source.nii -diffeo -sim
+    autoreg -mi -fix target.nii -mov source.nii -dif -sim
 
     # diffeo + rigid between a template and a segment from SPM
     # > note that the tpm is the *moving* image but we use the -o tag
     #   in the -fix group so that the fixed image is also wrapped to 
     #   moving space.
-    autoreg -cat -fix c1.nii c2.nii -o -mov tpm.nii -diffeo -rig
+    autoreg -cat -fix c1.nii c2.nii -o -mov tpm.nii -dif -rig
 
     # semi-supervised registration
     autoreg -mi   -fix target.nii     -mov source.nii \
             -dice -fix target_seg.nii -mov source_seg.nii \
-            -diffeo
+            -dif
 
     # registration using gradient descent with a backtracking line 
     autoreg -mi -fix target.nii -mov source.nii -gd -ls
 
-    # register based on intensity images use it to warp segments
-    autoreg -mi -fix target.nii -mov source.nii +mov segment.nii -inter 0
+    # register based on intensity images and use it to warp segments
+    autoreg -mi  -fix target.nii  -mov source.nii \
+            -oth -mov segment.nii -inter 0
 """
 
 # --------------------
@@ -123,8 +120,8 @@ mi = ('-mi', '--mutual-info', '--mutual-information')
 jtv = ('-jtv', '--total-variation')
 dice = ('-dice', '--dice')
 cat = ('-cat', '--categorical')
-mov2 = ('+mov', '--other-moving')
-match_losses = (*mi, *jtv, *dice, *cat, *mov2)
+oth = ('-oth', '--other')
+match_losses = (*mi, *jtv, *dice, *cat, *oth)
 
 # -
 # transformations
@@ -134,7 +131,7 @@ rigid = ('-rig', '--rigid')
 similitude = ('-sim', '--similitude')
 affine = ('-aff', '--affine')
 all_affine = (*translation, *rigid, *similitude, *affine)
-diffeo = ('-diffeo', '--diffeo')
+diffeo = ('-dif', '--diffeo')
 ffd = ('-ffd', '--free-form')
 transformations = (*all_affine, *diffeo, *ffd)
 
@@ -159,137 +156,164 @@ optim = (*adam, *gd)
 #                     PARSE COMMANDLINE ARGUMENTS
 # ----------------------------------------------------------------------
 def istag(x):
-    return x.startswith(('-', '+'))
+    return x.startswith('-')
+
+
+def isvalue(x):
+    return not istag(x)
+
+
+def next_istag(args):
+    return args and istag(args[0])
+
+
+def next_isvalue(args):
+    return args and isvalue(args[0])
+
+
+def check_next_isvalue(args, group):
+    if not next_isvalue(args):
+        raise RuntimeError(f'Expected a value for tag {group} '
+                           f'but found nothing.')
+
+
+def parse_pyramid(args):
+    levels = []
+    while next_isvalue(args):
+        level, *args = args
+        if ':' in level:
+            level = level.split(':')
+            start = int(level[0] or 1)
+            stop = (int(level[1] or start) if len(level) > 1 else start) + 1
+            step = (int(level[2] or 1) if len(level) > 2 else 1)
+            level = list(range(start, stop, step))
+        else:
+            level = [int(level)]
+        levels.extend(level)
+    return args, levels
 
 
 def parse_file(args, opt):
     """Parse a moving or fixed file"""
+
     opt.files = list()
-    while args and not istag(args[0]):
-        opt.files.append(args[0])
-        args = args[1:]
+    while next_isvalue(args):
+        val, *args = args
+        opt.files.append(val)
+
     while args:
-        if args[0] in ('-o', '--output'):
-            args = args[1:]
+        if not next_istag(args):
+            break
+        tag, *args = args
+        if tag in ('-o', '--output'):
+            # Path to "updated" output file
+            # (updated header + nonlin applied in original space)
             opt.updated = True
-            while args and not istag(args[0]):
+            while next_isvalue(args):
                 if isinstance(opt.updated, bool):
                     opt.updated = []
-                opt.updated.append(args[0])
-                args = args[1:]
-        elif args[0] in ('-r', '--resliced'):
-            args = args[1:]
+                val, *args = args
+                opt.updated.append(val)
+        elif tag in ('-r', '--resliced'):
+            # Path to "resliced" output file
+            # (lin + nonlin applied, final space = target space)
             opt.resliced = True
-            while args and not istag(args[0]):
+            while next_isvalue(args):
                 if isinstance(opt.resliced, bool):
                     opt.resliced = []
-                opt.resliced.append(args[0])
-                args = args[1:]
+                val, *args = args
+                opt.resliced.append(val)
+        elif tag in ('-inter', '--interpolation'):
+            check_next_isvalue(args, tag)
+            opt.interpolation, *args = args
+            opt.interpolation = int(opt.interpolation)
+        elif tag in ('-bnd', '--bound'):
+            check_next_isvalue(args, tag)
+            opt.bound, *args = args
+        elif tag in ('-ex', '--extrapolate'):
+            opt.extrapolate = True
+        elif tag in ('-pyr', '--pyramid'):
+            args, levels = parse_pyramid(args)
+            if levels:
+                opt.pyramid = levels
+            else:
+                opt.pyramid = [1]
         else:
+            args = [tag, *args]
             break
     return args
 
 
 def parse_moving_and_target(args, opt):
     """Parse a loss that involves a moving and a target file"""
-    loss = opt.name
 
-    if args and not args[0].startswith(('-', '+')):
-        opt.factor = float(args[0])
-        args = args[1:]
+    if args and not next_istag(args):
+        opt.factor, *args = args
+        opt.factor = float(opt.factor)
 
     while args:
-        if args[0] in ('-mov', '--moving', '-src', '--source'):
-            args = parse_file(args[1:], opt.moving)
-        elif args[0] in ('-fix', '--fixed', '-trg', '--target'):
-            args = parse_file(args[1:], opt.fixed)
-        elif args[0] in ('-inter', '--interpolation'):
-            opt['interpolation'] = int(args[1])
-            args = args[2:]
-        elif args[0] in ('-bnd', '--bound'):
-            opt['bound'] = args[1]
-            args = args[2:]
-        elif args[0] in ('-ex', '--extrapolate'):
-            opt['extrapolate'] = True
-            args = args[1:]
-        elif loss == 'mi' and args[0] in ('-p', '--patch'):
-            opt.patch = list()
-            args = args[1:]
-            while not args[0].startswith(('-', '+')):
-                opt.patch.append(int(args[0]))
-                args = args[1:]
-        elif loss == 'mi' and args[0] in ('-f', '--fwhm'):
-            opt.fwhn = float(args[1])
-            args = args[2:]
-        elif loss == 'mi' and args[0] in ('-b', '--bins'):
-            opt.bins = int(args[1])
-            args = args[2:]
-        else:
+        if not next_istag(args):
             break
-    return args
-
-
-def parse_moving(args, opt):
-    """Parse a moving file that is not part of a loss"""
-    opt.moving.files = []
-    while args and not istag(args[0]):
-        opt.moving.files.append(args[0])
-        args = args[1:]
-    while args:
-        if args[0] in ('-inter', '--interpolation'):
-            opt.interpolation = int(args[1])
-            args = args[2:]
-        elif args[0] in ('-bnd', '--bound'):
-            opt.bound = args[1]
-            args = args[2:]
-        elif args[0] in ('-ex', '--extrapolate'):
+        tag, *args = args
+        if tag in ('-mov', '--moving', '-src', '--source'):
+            opt.moving = struct.MovingImageFile()
+            args = parse_file(args, opt.moving)
+        elif tag in ('-fix', '--fixed', '-trg', '--target'):
+            opt.fixed = struct.FixedImageFile()
+            args = parse_file(args, opt.fixed)
+        elif tag in ('-inter', '--interpolation'):
+            check_next_isvalue(args, tag)
+            opt.interpolation, *args = args
+            opt.interpolation = int(opt.interpolation)
+        elif tag in ('-bnd', '--bound'):
+            check_next_isvalue(args, tag)
+            opt.bound, *args = args
+        elif tag in ('-ex', '--extrapolate'):
             opt.extrapolate = True
-            args = args[1:]
-        elif args[0] in ('-o', '--output'):
-            args = args[1:]
-            opt.updated = True
-            while args and not istag(args[0]):
-                if isinstance(opt.updated, bool):
-                    opt.updated = []
-                opt.updated.append(args[0])
-                args = args[1:]
-        elif args[0] in ('-r', '--resliced'):
-            args = args[1:]
-            opt.resliced = True
-            while args and not istag(args[0]):
-                if isinstance(opt.resliced, bool):
-                    opt.resliced = []
-                opt.resliced.append(args[0])
-                args = args[1:]
+        elif tag in ('-pyr', '--pyramid'):
+            args, levels = parse_pyramid(args)
+            if levels:
+                opt.pyramid = levels
+            else:
+                opt.pyramid = [1]
+        elif isinstance(opt, struct.MILoss) and tag in ('-p', '--patch'):
+            opt.patch = list()
+            while next_isvalue(args):
+                val, *args = args
+                opt.patch.append(int(val))
+        elif isinstance(opt, struct.MILoss) and tag in ('-f', '--fwhm'):
+            check_next_isvalue(args, tag)
+            opt.fwhm, *args = args
+            opt.fwhm = float(opt.fwhm)
+        elif isinstance(opt, struct.MILoss) and tag in ('-b', '--bins'):
+            check_next_isvalue(args, tag)
+            opt.bins, *args = args
+            opt.bins = int(opt.bins)
         else:
+            args = [tag, *args]
             break
     return args
 
 
 # --- WORKER FOR MATCHING GROUPS ---------------------------------------
 def parse_match(args, options):
+    """Parse a loss group"""
     loss, *args = args
-
-    if loss in ('+mov', '--other-moving'):
-        opt = struct.NoLoss()
-        args = parse_moving(args, opt)
-    else:
-        opt = (struct.MILoss if loss in mi else
-               struct.JTVLoss if loss in jtv else
-               struct.DiceLoss if loss in dice else
-               struct.CatLoss if loss in cat else
-               struct.NoLoss)
-        opt = opt()
-        args = parse_moving_and_target(args, opt)
-
+    opt = (struct.MILoss if loss in mi else
+           struct.JTVLoss if loss in jtv else
+           struct.DiceLoss if loss in dice else
+           struct.CatLoss if loss in cat else
+           struct.NoLoss)
+    opt = opt()
+    args = parse_moving_and_target(args, opt)
     options.losses.append(opt)
     return args
 
 
 # --- WORKER FOR TRANSFORMATION GROUPS ---------------------------------
 def parse_transform(args, options):
+    """Parse a transformation group"""
     trf, *args = args
-    print(trf)
     opt = (struct.Translation if trf in translation else
            struct.Rigid if trf in rigid else
            struct.Similitude if trf in similitude else
@@ -299,42 +323,53 @@ def parse_transform(args, options):
            None)
     opt = opt()
     while args:
-        if args[0] in regularizations:
+        if not next_istag(args):
+            break
+        tag, *args = args
+        if tag in regularizations:
             reg, *args = args
-            factor = []
-            while args and not args[0].startswith(('-', '+')):
-                factor.append(args[0])
-                args = args[1:]
             optreg = (struct.AbsoluteLoss if reg in absolute else
                       struct.MembraneLoss if reg in membrane else
                       struct.BendingLoss if reg in bending else
                       struct.LinearElasticLoss if reg in linelastic else
                       None)
+            islinelastic = isinstance(optreg, struct.LinearElasticLoss)
             optreg = optreg()
+            factor = []
+            while next_isvalue(args):
+                val, *args = args
+                factor.append(float(val))
             if factor:
-                optreg.factor = (factor[0] if reg not in linelastic
-                                 else factor)
+                optreg.factor = (factor[0] if not islinelastic else factor)
             opt.losses.append(optreg)
-        elif args[0] in ('-init', '--init'):
-            opt.init = args[1]
-            args = args[2:]
-        elif args[0] in ('-lr', '--learning-rate'):
-            opt.lr = float(args[1])
-            args = args[2:]
-        elif args[0] in ('-stop', '--stop'):
-            opt.stop = float(args[1])
-            args = args[2:]
-        elif args[0] in ('-o', '--output'):
-            opt.output = args[1]
-            args = args[2:]
-        elif trf in ffd and args[0] in ('-g', '--grid'):
-            grid = []
-            args = args[1:]
-            while not args[0].startswith(('-', '+')):
-                grid.append(int(args[0]))
-                args = args[1:]
-            opt.grid = grid
+        elif tag in ('-init', '--init'):
+            check_next_isvalue(args, tag)
+            opt.init, *args = args
+        elif tag in ('-lr', '--learning-rate'):
+            check_next_isvalue(args, tag)
+            opt.lr, *args = args
+            opt.lr = float(opt.lr)
+        elif tag in ('-stop', '--stop'):
+            check_next_isvalue(args, tag)
+            opt.stop, *args = args
+            opt.stop = float(opt.stop)
+        elif tag in ('-o', '--output'):
+            opt.output = True
+            if next_isvalue(args):
+                opt.output, *args = args
+        elif tag in ('-pyr', '--pyramid'):
+            args, levels = parse_pyramid(args)
+            if levels:
+                opt.pyramid = levels
+            else:
+                opt.pyramid = [1]
+        elif isinstance(opt, struct.FFD) and tag in ('-g', '--grid'):
+            opt.grid = []
+            while next_isvalue(args):
+                val, *args = args
+                opt.grid.append(int(val))
         else:
+            args = [tag, *args]
             break
 
     options.transformations.append(opt)
@@ -350,23 +385,28 @@ def parse_optim(args, options):
     opt = opt()
 
     while args:
-        if args[0] in ('-nit', '--max-iter'):
-            opt.max_iter = int(args[1])
-            args = args[2:]
-        elif args[0] in ('-lr', '--learning-rate'):
-            opt.lr = float(args[1])
-            args = args[2:]
-        elif args[0] in ('-stop', '--stop'):
-            opt.stop = float(args[1])
-            args = args[2:]
-        elif args[0] in ('-ls', '--line-search'):
-            args = args[1:]
-            if args and not args[0].startswith(('-', '+')):
-                opt.ls = int(args[1])
-                args = args[1:]
-            else:
-                opt.ls = True
+        if not next_istag(args):
+            break
+        tag, *args = args
+        if tag in ('-nit', '--max-iter'):
+            check_next_isvalue(args, tag)
+            opt.max_iter, *args = args
+            opt.max_iter = int(opt.max_iter)
+        elif tag in ('-lr', '--learning-rate'):
+            check_next_isvalue(args, tag)
+            opt.lr, *args = args
+            opt.lr = float(opt.lr)
+        elif tag in ('-stop', '--stop'):
+            check_next_isvalue(args, tag)
+            opt.stop, *args = args
+            opt.stop = float(opt.stop)
+        elif tag in ('-ls', '--line-search'):
+            opt.ls = True
+            if next_isvalue(args):
+                opt.ls, *args = args
+                opt.ls = int(opt.ls)
         else:
+            args = [tag, *args]
             break
 
     options.optimizers.append(opt)
@@ -378,102 +418,93 @@ def parse_defaults(args, options):
     """Parse default parameters for all groups"""
     opt = options.defaults
     while args:
-        if args[0] in ('-nit', '--max-iter'):
-            opt.max_iter = int(args[1])
-            args = args[2:]
-        elif args[0] in ('-lr', '--learning-rate'):
-            opt.lr = float(args[1])
-            args = args[2:]
-        elif args[0] in ('-stop', '--stop'):
-            opt.stop = float(args[1])
-            args = args[2:]
-        elif args[0] in ('-ls', '--line-search'):
-            args = args[1:]
-            if args and not args[0].startswith(('-', '+')):
-                opt.ls = int(args[1])
-                args = args[1:]
-            else:
-                opt.ls = True
-        elif args[0] in ('-inter', '--interpolation'):
-            opt.interpolation = int(args[1])
-            args = args[2:]
-        elif args[0] in ('-bnd', '--bound'):
-            opt.bound = args[1]
-            args = args[2:]
-        elif args[0] in ('-ex', '--extrapolate'):
-            opt.extrapolate = True
-            args = args[1:]
-        elif args[0] in ('-o', '--output'):
-            opt.output = args[1]
-            args = args[2:]
-        else:
+        if not next_istag(args):
             break
+        tag, *args = args
+        if tag in ('-nit', '--max-iter'):
+            check_next_isvalue(args, tag)
+            opt.max_iter, *args = args
+            opt.max_iter = int(opt.max_iter)
+        elif tag in ('-lr', '--learning-rate'):
+            check_next_isvalue(args, tag)
+            opt.lr, *args = args
+            opt.lr = float(opt.lr)
+        elif tag in ('-stop', '--stop'):
+            check_next_isvalue(args, tag)
+            opt.stop, *args = args
+            opt.stop = float(opt.stop)
+            args = args[2:]
+        elif tag in ('-ls', '--line-search'):
+            opt.ls = True
+            if next_isvalue(args):
+                opt.ls, *args = args
+                opt.ls = int(opt.ls)
+        elif tag in ('-inter', '--interpolation'):
+            check_next_isvalue(args, tag)
+            opt.interpolation, *args = args
+            opt.interpolation = int(opt.interpolation)
+        elif tag in ('-bnd', '--bound'):
+            check_next_isvalue(args, tag)
+            opt.bound, *args = args
+        elif tag in ('-ex', '--extrapolate'):
+            opt.extrapolate = True
+        elif tag in ('-o', '--output'):
+            check_next_isvalue(args, tag)
+            opt.output, *args = args
+        else:
+            args = [tag, *args]
+            break
+
+    return args
 
 
 # --- MAIN PARSER -----------------------------------------------------
 def parse(args):
     """Parse AutoGrad's command-line arguments"""
 
-    args = list(args)
-
     # This is the object that we will populate
     options = struct.AutoReg()
 
-    args = args[1:]  # remove script name from list
+    _, *args = args  # remove script name from list
     while args:
+        if not next_istag(args):
+            break
+        tag, *args = args
         # Parse groups
-        if args[0] in match_losses:
-            args = parse_match(args, options)
-        elif args[0] in transformations:
-            args = parse_transform(args, options)
-        elif args[0] in optim:
-            args = parse_optim(args, options)
-        elif args[0] in ('-all', '--all'):
-            args = parse_defaults(args[1:], options)
+        if tag in match_losses:
+            args = parse_match([tag, *args], options)
+        elif tag in transformations:
+            args = parse_transform([tag, *args], options)
+        elif tag in optim:
+            args = parse_optim([tag, *args], options)
+        elif tag in ('-all', '--all'):
+            args = parse_defaults(args, options)
 
         # Help -> return empty option
-        elif args[0] in ('-h', '--help'):
+        elif tag in ('-h', '--help'):
             print(help)
             return {}
 
         # Parse remaining top-level tags
-        elif args[0] in ('-prg', '--progressive'):
+        elif tag in ('-prg', '--progressive'):
             options.progressive = True
-            args = args[1:]
-        elif args[0] in ('-cpu', '--cpu'):
-            if 'device' in options:
-                raise ValueError('Cannot use both -cpu and -gpu')
+        elif tag in ('-cpu', '--cpu'):
             options.device = 'cpu'
-            args = args[1:]
-        elif args[0] in ('-gpu', '--gpu'):
-            args = args[1:]
-            if args and not args[0].startswith(('-', '+')):
-                options.device = 'cuda:{:d}'.format(int(args[0]))
-                args = args[1:]
-            else:
-                options.device = 'cuda'
-        elif args[0] in ('-pyr', '--pyramid'):
-            args = args[1:]
-            levels = []
-            while args and not args[0].startswith(('-', '+')):
-                level, *args = args
-                if ':' in level:
-                    level = level.split(':')
-                    start = int(level[0] or 1)
-                    stop = (int(level[1] or start) if len(level) > 1 else start) + 1
-                    step = (int(level[2] or 1) if len(level) > 2 else 1)
-                    level = list(range(start, stop, step))
-                else:
-                    level = [int(level)]
-                levels.extend(level)
+        elif tag in ('-gpu', '--gpu'):
+            options.device = 'cuda'
+            if next_isvalue(args):
+                gpu, *args = args
+                options.device = 'cuda:{:d}'.format(int(gpu))
+        elif tag in ('-pyr', '--pyramid'):
+            args, levels = parse_pyramid(args)
             if levels:
                 options.pyramid = levels
             else:
-                options.pyramid = True
+                options.pyramid = [1]
 
         # Something went wrong
         else:
-            raise RuntimeError(f'Argument {args[0]} does not seem to '
+            raise RuntimeError(f'Argument {tag} does not seem to '
                                f'belong to a group')
 
     return options

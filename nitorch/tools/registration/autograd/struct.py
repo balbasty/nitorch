@@ -77,14 +77,14 @@ class Base:
 
 
 class FileWithInfo(Base):
-    fname: str = None      # Full path
-    shape: tuple = None    # Spatial shape
-    affine = None          # Orientation matrix
-    dir: str = None        # Directory
-    base: str = None       # Base name (without extension)
-    ext: str = None        # Extension
-    channels: int = None   # Number of channels
-    float: bool = True     # Is raw dtype floating point
+    fname: str = None               # Full path
+    shape: tuple = None             # Spatial shape
+    affine = None                   # Orientation matrix
+    dir: str = None                 # Directory
+    base: str = None                # Base name (without extension)
+    ext: str = None                 # Extension
+    channels: int = None            # Number of channels
+    float: bool = True              # Is raw dtype floating point
 
 
 class ImageFile(Base):
@@ -99,12 +99,12 @@ class ImageFile(Base):
 
 class FixedImageFile(ImageFile):
     """A fixed image -> nothing is written by default"""
-    updated: list or bool = False
+    updated: list or bool = False   # Nothing written by default
 
 
 class MovingImageFile(ImageFile):
     """A moving image -> updated version is written by default"""
-    updated: list or bool = True
+    updated: list or bool = True    # Updated image written by default
 
 
 class MatchingLoss(Base):
@@ -120,13 +120,14 @@ class MatchingLoss(Base):
 
 class NoLoss(MatchingLoss):
     """Additional image to warp -- not involved in the loss"""
-    fixed: FixedImageFile = None
+    fixed: FixedImageFile = None    # There may be no fixed image
 
 
 class DiceLoss(MatchingLoss):
+    """Dice"""
     name = 'dice'
-    labels: list = []
-    weights: list = []
+    labels: list = []               # Labels to keep
+    weights: list = []              # Weight per label
 
     def call(self, x, y):
         fn = nn.DiceLoss(discard_background=True, weighted=self.weights)
@@ -137,10 +138,11 @@ class DiceLoss(MatchingLoss):
 
 
 class MILoss(MatchingLoss):
+    """Mutual Information"""
     name = 'mi'
-    patch: list = []
-    bins: int = 32
-    fwhm: float = 1.
+    patch: list = []                # Patch size for local MI
+    bins: int = 32                  # Number of bins
+    fwhm: float = 1.                # Full-width half-max of each bin
 
     def call(self, x, y):
         xs = x.unbind(0)
@@ -159,6 +161,7 @@ class MILoss(MatchingLoss):
 
 
 class CatLoss(MatchingLoss):
+    """Categorical cross-entropy"""
     name = 'cat'
 
     def call(self,x, y):
@@ -170,6 +173,7 @@ class CatLoss(MatchingLoss):
 
 
 class JTVLoss(MatchingLoss):
+    """Joint total-variation"""
     name = 'jtv'
 
     def call(self, x, y):
@@ -177,6 +181,7 @@ class JTVLoss(MatchingLoss):
 
 
 class MSELoss(MatchingLoss):
+    """Means squared error"""
     name = 'mse'
 
     def call(self, x, y):
@@ -191,7 +196,7 @@ matching_losses = [NoLoss, DiceLoss, MILoss, CatLoss, JTVLoss, MSELoss]
 
 class TransformationLoss(Base):
     name = None
-    factor: float = 1.
+    factor: float = 1.      # Multiplicative factor for the losses
 
 
 class AbsoluteLoss(TransformationLoss):
@@ -206,6 +211,7 @@ class AbsoluteLoss(TransformationLoss):
 
 
 class MembraneLoss(TransformationLoss):
+    """Penalty on first spatial derivatives"""
     name = 'membrane'
 
     def call(self, v):
@@ -217,6 +223,7 @@ class MembraneLoss(TransformationLoss):
 
 
 class BendingLoss(TransformationLoss):
+    """Penalty on second spatial derivatives"""
     name = 'Bending'
 
     def call(self, v):
@@ -228,6 +235,7 @@ class BendingLoss(TransformationLoss):
 
 
 class LinearElasticLoss(TransformationLoss):
+    """Penalty on divergence and shears"""
     name = 'LinearElastic'
 
     def call(self, v):
@@ -251,21 +259,23 @@ transformation_losses = [AbsoluteLoss, MembraneLoss, BendingLoss, LinearElasticL
 
 class Transformation(Base):
     name = None
-    factor: float = 1.
-    init: list = []
-    lr: float = 1.
-    stop: float = 1.
-    output = True
-    losses: list = []
+    factor: float = 1.              # Multiplicative factor for all losses
+    init: list = []                 # Path to file holding initial guesses
+    lr: float = 1.                  # Transformation-specific learning rate
+    output = True                   # Path to output file
+    losses: list = []               # List of losses on that transformation
+    ext: str = None                 # Default extension for that transform
 
 
 class NonLinear(Transformation):
     ext: str = '.nii.gz'
 
     def freeable(self):
+        """Are there parameters remaining to free?"""
         return not hasattr(self, 'optdat')
 
     def free(self):
+        """Free the next batch/ladder of parameters"""
         if not self.freeable():
             return
         print('Free nonlin')
@@ -275,7 +285,7 @@ class NonLinear(Transformation):
 
 class FFD(NonLinear):
     name = 'ffd'
-    grid: list or int = 10
+    grid: list or int = 10          # Number of nodes in the FFD grid
 
 
 class Diffeo(NonLinear):
@@ -283,14 +293,16 @@ class Diffeo(NonLinear):
 
 
 class Linear(Transformation):
-    nb_prm: callable
-    basis = None
+    nb_prm: callable                # Number of parameters at a dim (2d/3d)
+    basis = None                    # Lie basis set
     ext: str = '.lta'
 
     def freeable(self):
+        """Are there parameters remaining to free?"""
         return not hasattr(self, 'optdat') or len(self.dat) != len(self.optdat)
 
     def free(self):
+        """Free the next batch/ladder of parameters"""
         if not self.freeable():
             return
         nb_prm = len(self.optdat) if hasattr(self, 'optdat') else 0
@@ -338,10 +350,10 @@ class Affine(Linear):
 
 class Optimizer(Base):
     name = None
-    max_iter: int = None
-    lr: float = None
-    stop: float = None
-    ls: int = None
+    max_iter: int = None                # Maximum number of iterations
+    lr: float = None                    # Learning rate
+    stop: float = None                  # Stop if `lr/lr[0] < stop`
+    ls: int = None                      # Number of line search steps
 
 
 class Adam(Optimizer):
@@ -375,14 +387,14 @@ class Defaults(Base):
 class AutoReg(Base):
 
     # main blocks of parameters
-    losses: list = []
-    transformations: list = []
-    optimizers: list = []
+    losses: list = []                   # All matched pairs
+    transformations: list = []          # All transformations
+    optimizers: list = []               # All optimizers
     # other parameters
-    defaults: Defaults = Defaults()
-    device: str = 'cpu'
-    progressive: bool = False
-    pyramid: list = [1]
+    defaults: Defaults = Defaults()     # All defaults that propagate everywhere
+    device: str = 'cpu'                 # Device on which to run
+    progressive: bool = False           # Progressive freeing of parameters
+    pyramid: list = [1]                 # Pyramid levels to build
 
     def propagate_defaults(self):
         """Propagate defaults from root to leaves"""
@@ -400,16 +412,19 @@ class AutoReg(Base):
             set_default(loss, 'interpolation')
             set_default(loss, 'bound')
             set_default(loss, 'extrapolate')
+            set_default(loss, 'pyramid')
             if loss.fixed:
                 set_default(loss.fixed, 'interpolation', loss)
                 set_default(loss.fixed, 'bound', loss)
                 set_default(loss.fixed, 'extrapolate', loss)
+                set_default(loss.fixed, 'pyramid', loss)
                 set_fname(loss.fixed, 'updated')
                 set_fname(loss.fixed, 'resliced')
             if loss.moving:
                 set_default(loss.moving, 'interpolation', loss)
                 set_default(loss.moving, 'bound', loss)
                 set_default(loss.moving, 'extrapolate', loss)
+                set_default(loss.moving, 'pyramid', loss)
                 set_fname(loss.moving, 'updated')
                 set_fname(loss.moving, 'resliced')
 
@@ -422,6 +437,9 @@ class AutoReg(Base):
         for trf in self.transformations:
             set_default(trf, 'init')
             set_default(trf, 'output')
+            set_default(trf, 'pyramid')
+            if isinstance(trf.pyramid, (list, tuple)):
+                trf.pyramid = list(sorted(trf.pyramid))[0]
             if isinstance(trf.output, bool) and trf.output:
                 trf.output = self.defaults.output
 
