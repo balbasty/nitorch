@@ -35,7 +35,7 @@ def autoreg(argv=None):
         optimize(options)
 
     free_data(options)
-    detach_transforms()
+    detach_transforms(options)
     write_transforms(options)
     write_data(options)
 
