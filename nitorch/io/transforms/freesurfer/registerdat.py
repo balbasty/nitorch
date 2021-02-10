@@ -8,6 +8,8 @@ from nitorch.io.mapping import AccessType
 from nitorch.io.loadsave import map as map_affine
 from nitorch.io.utils.volutils import cast
 from nitorch.io.utils.opener import Opener
+from ..readers import reader_classes
+from ..writers import writer_classes
 
 
 class RegisterDatStruct:
@@ -221,7 +223,7 @@ class RegisterDat(MappedAffine):
                 setattr(self._struct, key, conv(value))
         return self
 
-    def save(self, file_like=None, **meta):
+    def save(self, file_like=None, *args, **meta):
         if '+' not in self.mode:
             raise RuntimeError('Cannot write into read-only volume. '
                                'Re-map in mode "r+" to allow in-place '
@@ -232,7 +234,7 @@ class RegisterDat(MappedAffine):
         return self
 
     @classmethod
-    def save_new(cls, affine, file_like, like=None, **meta):
+    def save_new(cls, affine, file_like, like=None, *args, **meta):
 
         if isinstance(affine, MappedAffine):
             if like is None:
@@ -262,3 +264,5 @@ class RegisterDat(MappedAffine):
         struct.to(file_like)
 
 
+reader_classes.append(RegisterDat)
+writer_classes.append(RegisterDat)

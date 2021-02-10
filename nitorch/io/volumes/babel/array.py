@@ -696,7 +696,7 @@ class BabelArray(MappedArray):
                     self._opener[(key, mode)] = open(file_like, 'rb', keep_open=True)
             else:
                 self._opener[(key, 'r')] = open(file_like, 'rb', keep_open=False)
-                if not self._opener[key].is_indexed:
+                if not self._opener[(key, 'r')].is_indexed:
                     del self._opener[(key, 'r')]
 
     @contextmanager

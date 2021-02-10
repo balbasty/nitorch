@@ -38,6 +38,8 @@ from nitorch.io.utils.volutils import cast
 from nitorch.io.loadsave import map as map_affine
 from nitorch.io.transforms.mapping import MappedAffine
 from nitorch.io.utils.opener import open
+from ..readers import reader_classes
+from ..writers import writer_classes
 from .fsutils import (read_key, read_values, write_key, write_values,
                       fs_to_affine)
 
@@ -220,7 +222,7 @@ class LTAStruct:
 
     def to_filename(self, fname):
         """Write to file"""
-        with open(fname, 'w') as f:
+        with open(fname, 'wt') as f:
             return self.to_file_like(f)
 
     def to(self, thing):
@@ -524,7 +526,7 @@ class LinearTransformArray(MappedAffine):
         self._set_metadata(self._struct, **meta)
         return self
 
-    def save(self, file_like=None, **meta):
+    def save(self, file_like=None, *args, **meta):
         if '+' not in self.mode:
             raise RuntimeError('Cannot write into read-only volume. '
                                'Re-map in mode "r+" to allow in-place '
@@ -535,7 +537,7 @@ class LinearTransformArray(MappedAffine):
         return self
 
     @classmethod
-    def save_new(cls, affine, file_like, like=None, **meta):
+    def save_new(cls, affine, file_like, like=None, *args, **meta):
         if isinstance(affine, MappedAffine):
             if like is None:
                 like = affine
@@ -552,7 +554,11 @@ class LinearTransformArray(MappedAffine):
 
         struct = LTAStruct()
         struct.affine = affine
-        metadata = like.metadata()
+        metadata = like.metadata() if like is not None else dict()
         nested_update(metadata, meta)
         cls._set_metadata(struct, **metadata)
         struct.to(file_like)
+
+
+reader_classes.append(LinearTransformArray)
+writer_classes.append(LinearTransformArray)
