@@ -35,6 +35,7 @@ def autoreg(argv=None):
         optimize(options)
 
     free_data(options)
+    detach_transforms()
     write_transforms(options)
     write_data(options)
 
@@ -337,6 +338,12 @@ def free_data(options):
                 delattr(loss.moving, 'dat')
 
 
+def detach_transforms(options):
+    for trf in options.transformations:
+        trf.dat = trf.dat.detach()
+        delattr(trf, 'optdat')
+
+
 def write_transforms(options):
     """Write transformations (affine and nonlin) on disk"""
     nonlin = None
@@ -351,7 +358,7 @@ def write_transforms(options):
         q = affine.dat
         B = affine.basis
         lin = linalg.expm(q, B)
-        io.transforms.savef(lin, affine.output, type=2)
+        io.transforms.savef(lin.cpu(), affine.output, type=2)
 
     if nonlin:
         affine = nonlin.affine
@@ -359,11 +366,11 @@ def write_transforms(options):
         if isinstance(nonlin, struct.FFD):
             factor = [s/g for s, g in zip(shape, nonlin.dat.shape[:-1])]
             affine, _ = spatial.affine_resize(affine, shape, factor)
-        io.volumes.savef(nonlin.dat, nonlin.output, affine=affine)
+        io.volumes.savef(nonlin.dat.cpu(), nonlin.output, affine=affine.cpu())
 
 
 def update(moving, fname, inv=False, lin=None, nonlin=None,
-           interpolation=1, bound='dct2', extrapolate=False):
+           interpolation=1, bound='dct2', extrapolate=False, device=None):
     nonlin = nonlin or dict(disp=None, affine=None)
     prm = dict(interpolation=interpolation, bound=bound, extrapolate=extrapolate)
 
@@ -410,17 +417,17 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
             g = None
 
     for file, ofname in zip(moving.files, fname):
-        dat = io.volumes.loadf(file.fname, rand=True)
+        dat = io.volumes.loadf(file.fname, rand=True, device=device)
         dat = dat.reshape([*file.shape, file.channels])
         if g is not None:
             dat = utils.movedim(dat, -1, 0)
             dat = pull(dat, g, **prm)
             dat = utils.movedim(dat, 0, -1)
-        io.savef(dat, ofname, like=file.fname, affine=new_affine)
+        io.savef(dat.cpu(), ofname, like=file.fname, affine=new_affine.cpu())
 
 
 def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
-           interpolation=1, bound='dct2', extrapolate=False):
+           interpolation=1, bound='dct2', extrapolate=False, device=None):
     lin = lin or None
     nonlin = nonlin or dict(disp=None, affine=None)
     prm = dict(interpolation=interpolation, bound=bound, extrapolate=extrapolate)
@@ -468,13 +475,13 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
             g = None
 
     for file, ofname in zip(moving.files, fname):
-        dat = io.volumes.loadf(file.fname, rand=True)
+        dat = io.volumes.loadf(file.fname, rand=True, device=device)
         dat = dat.reshape([*file.shape, file.channels])
         if g is not None:
             dat = utils.movedim(dat, -1, 0)
             dat = pull(dat, g, **prm)
             dat = utils.movedim(dat, 0, -1)
-        io.savef(dat, ofname, like=file.fname, affine=like.affine)
+        io.savef(dat.cpu(), ofname, like=file.fname, affine=like.affine.cpu())
 
 
 def write_data(options):
@@ -524,7 +531,8 @@ def write_data(options):
         fixed = match.fixed
         prm = dict(interpolation=moving.interpolation,
                    bound=moving.bound,
-                   extrapolate=moving.extrapolate)
+                   extrapolate=moving.extrapolate,
+                   device=device)
         nonlin = dict(disp=d, affine=d_aff)
         if moving.updated:
             update(moving, moving.updated, lin=lin, nonlin=nonlin, **prm)
@@ -534,7 +542,8 @@ def write_data(options):
             continue
         prm = dict(interpolation=fixed.interpolation,
                    bound=fixed.bound,
-                   extrapolate=fixed.extrapolate)
+                   extrapolate=fixed.extrapolate,
+                   device=device)
         nonlin = dict(disp=id, affine=d_aff)
         if fixed.updated:
             update(fixed, fixed.updated, inv=True, lin=lin, nonlin=nonlin, **prm)
