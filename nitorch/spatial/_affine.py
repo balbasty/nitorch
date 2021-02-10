@@ -854,7 +854,7 @@ def affine_matrix(prm, *basis, dim=None):
 
     # Matrix product
     if len(mats) > 1:
-        affine = torch.chain_matmul(mats)
+        affine = torch.chain_matmul(*mats)
     else:
         affine = mats[0]
     return affine
@@ -1049,7 +1049,7 @@ def affine_matrix_classic(prm=None, dim=3, *,
 
 
 def affine_parameters(mat, *basis, max_iter=10000, tol=None,
-                      max_line_search=6):
+                      max_line_search=8):
     """Compute the parameters of an affine matrix in a basis of the algebra.
 
     This function finds the matrix closest to ``mat`` (in the least squares
@@ -1132,11 +1132,11 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             # * dM/dBi = mprod(M[:i, ...]) @ dMi/dBi @ mprod(M[i+1:, ...])
             for n_mat, dM in enumerate(dMs):
                 if n_mat > 0:
-                    pre = torch.chain_matmul(*M[:n_mat, ...])
-                    dM = pre.mm(dM)
-                if n_mat < M.shape[0]-1:
-                    post = torch.chain_matmul(*M[(n_mat+1):, ...])
-                    dM = dM.mm(post)
+                    pre = torch.chain_matmul(*M[:n_mat])
+                    dM = torch.matmul(pre, dM)
+                if n_mat < len(M)-1:
+                    post = torch.chain_matmul(*M[(n_mat+1):])
+                    dM = torch.matmul(dM, post)
                 dMs[n_mat] = dM
             dM = torch.cat(dMs)
             M = torch.chain_matmul(*M)
@@ -1147,6 +1147,7 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             dM = dM.reshape((nb_basis, -1))
             gradient = linalg.matvec(dM, diff)
             hessian = torch.matmul(dM, dM.t())
+            hessian.diagonal().mul_(1 + 1e-3)
             delta_prm = hessian.inverse().matmul(gradient)
 
             crit = delta_prm.square().sum() / norm
@@ -1163,7 +1164,7 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
                 M0 = M
                 armijo = 1
                 success = False
-                for _ in range(max_line_search):
+                for lsit in range(max_line_search):
                     prm = prm0 - armijo * delta_prm
                     M = affine_matrix(prm, *basis)
                     sos = ((M - mat) ** 2).sum()
@@ -2226,7 +2227,7 @@ def affine_mean(mats, shapes):
     # We look for the matrix that can be encoded without shears
     # that is the closest to the original matrix (in terms of the
     # Frobenius norm of the residual matrix)
-    _, M = affine_parameters(mat, ['R', 'Z'])
+    _, M = affine_parameters(mat, 'R', 'Z')
     mat[:dim, :dim] = M[:dim, :dim]
 
     return mat
@@ -2235,7 +2236,7 @@ def affine_mean(mats, shapes):
 _voxel_size = voxel_size  # little alias to avoid the function being shadowed
 
 
-def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
+def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     """Compute a mean space from a set of spaces (= affine + shape).
 
     Gradient *do not* propagate through this function.
@@ -2251,13 +2252,13 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
         Uses the mean voxel size of all input matrices by default.
     layout : str or (dim+1, dim+1) array_like, default=None
         Output layout.
-        Uses the majority layout of all input matrices by default
-    fov : {'bb'}, default='bb'
+        Uses the majority layout of all input matrices by default.
+    fov : {'max'}, default='max'
         Method for determining the output field-of-view:
-            * 'bb': Bounding box of all input field-of-views, minus
-              some optional cropping.
-    crop : [0..1], default=0
-        Amount of cropping applied to the field-of-view.
+            * 'max': Bounding box of all input field-of-views, plus/minus
+              some optional padding/cropping.
+    **fovopt :
+        Additional options for the FOV function.
 
     Returns
     -------
@@ -2288,8 +2289,7 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
     device = utils.max_device(mats, shapes)
     shapes = utils.as_tensor(shapes, device=device).detach()
     mats = utils.as_tensor(mats, device=device).detach()
-    info = dict(dtype=mats.dtype, device=mats.device)
-    dim = mats.shape[-1] - 1
+    backend = dict(dtype=mats.dtype, device=mats.device)
 
     # Compute mean affine
     mat = affine_mean(mats, shapes)
@@ -2304,40 +2304,75 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
         layout = volume_layout(layout)
 
     # Switch layout
-    layout = layout_matrix(layout, **info)
-    mat = torch.matmul(mat, layout)
+    layout = layout_matrix(layout, **backend)
+    mat = affine_matmul(mat, layout)
 
     # Voxel size
     if voxel_size is not None:
-        vs0 = torch.as_tensor(voxel_size, **info)
+        vs0 = torch.as_tensor(voxel_size, **backend)
         voxel_size = _voxel_size(mat)
         vs0[~torch.isfinite(vs0)] = voxel_size[~torch.isfinite(vs0)]
-        one = torch.ones([1], **info)
+        one = torch.ones([1], **backend)
         mat = mat * torch.diag(torch.cat((vs0 / voxel_size, one)))
 
     # Field of view
-    if fov == 'bb':
-        mn = torch.full([dim], constants.inf, **info)
-        mx = torch.full([dim], constants.ninf, **info)
-        for a_mat, a_shape in zip(mats, shapes):
-            corners = itertools.product([False, True], r=dim)
-            corners = [[a_shape[i] if top else 1 for i, top in enumerate(c)] + [1]
-                       for c in corners]
-            corners = torch.as_tensor(corners, **info).T
-            M = linalg.lmdiv(mat, a_mat)
-            corners = torch.matmul(M[:dim, :], corners)
-            mx = torch.max(mx, torch.max(corners, dim=1).values)
-            mn = torch.min(mn, torch.min(corners, dim=1).values)
-        mx = torch.ceil(mx).long()
-        mn = torch.floor(mn).long()
-        offset = -crop * (mx - mn)
-        shape = (mx - mn + 2*offset + 1)
-        M = mn - (offset + 1)
-        M = torch.cat((torch.eye(dim, **info), M[:, None]), dim=1)
-        pad = torch.as_tensor([[0] * dim + [1]], **info)
-        M = torch.cat((M, pad), dim=0)
-        mat = torch.matmul(mat, M)
+    if fov == 'max':
+        mat, shape = fov_max(mat, mats, shapes, **fovopt)
     else:
         raise NotImplementedError('method {} not implemented'.format(fov))
+
+    return mat, shape
+
+
+def fov_max(mat, affines, shapes, pad=0, pad_unit='%'):
+    """Return a space (orientation + shape) that englobes all spaces.
+
+    Parameters
+    ----------
+    mat : (D+1, D+1) tensor_like
+        Output orientation matrix (up to a shift)
+    affines : (N, D+1, D+1), tensor_like
+        Input orientation matrices
+    shapes : (N, D) tensor_like[int]
+        Input shapes
+    pad : [sequence of] float, default=0
+        Amount of padding (or cropping) to add to the bounding box.
+    pad_unit : [sequence of] {'mm', '%'}, default='%'
+        Unit of the padding/cropping.
+
+    Returns
+    -------
+    mat : (4, 4) tensor
+    shape : (D,) tuple
+
+    """
+    mat = torch.as_tensor(mat)
+    backend = dict(device=mat.device, dtype=mat.dtype)
+    affines = torch.as_tensor(affines, **backend)
+    shapes = torch.as_tensor(shapes, **backend)
+    dim = mat.shape[-1] - 1
+
+    mn = torch.full([dim], constants.inf, **backend)
+    mx = torch.full([dim], constants.ninf, **backend)
+    for a_mat, a_shape in zip(affines, shapes):
+        corners = itertools.product([False, True], r=dim)
+        corners = [[a_shape[i] if top else 1 for i, top in enumerate(c)] + [1]
+                   for c in corners]
+        corners = torch.as_tensor(corners, **backend).T
+        M = linalg.lmdiv(mat, a_mat)
+        corners = torch.matmul(M[:dim, :], corners)
+        mx = torch.max(mx, torch.max(corners, dim=1)[0])
+        mn = torch.min(mn, torch.min(corners, dim=1)[0])
+    pad = utils.make_vector(pad, dim, **backend)
+    if pad_unit == '%':
+        pad = pad * (mx - mn) / 2.
+    mx = torch.ceil(mx + pad)
+    mn = torch.floor(mn - pad)
+    offset = -(mx - mn)
+    shape = (mx - mn + 1).long()
+    M = mn - 1
+    M = torch.cat((torch.eye(dim, **backend), M[:, None]), dim=1)
+    M = affine_make_homogeneous(as_euclidean(M))
+    mat = torch.matmul(mat, M)
 
     return mat, tuple(shape.tolist())
