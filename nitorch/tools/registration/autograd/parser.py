@@ -446,8 +446,6 @@ def parse(args):
             options.device = 'cpu'
             args = args[1:]
         elif args[0] in ('-gpu', '--gpu'):
-            if 'device' in options:
-                raise ValueError('Cannot use both -cpu and -gpu')
             args = args[1:]
             if args and not args[0].startswith(('-', '+')):
                 options.device = 'cuda:{:d}'.format(int(args[0]))
