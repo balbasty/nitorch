@@ -8,6 +8,7 @@ from nitorch.spatial import (identity_grid, affine_grid, grid_pull,
                              affine_conv)
 from nitorch.core.utils import movedim
 from ._utils import BacktrackingLineSearch
+from . import struct
 
 
 help = r"""[AutoReg] AUTOgrad REGistration tool
@@ -19,7 +20,7 @@ usage:
             <*TRF> [FACTOR] [-init PATH/*VALUES] [-lr LEARNING_RATE] [-stop LIMIT] [-o FILE]
                    <*REG> [FACTOR]
             <*OPT> [-nit MAXITER] [-lr LEARNING_RATE] [-stop LIMIT] [-ls [MAXLS]]
-            [+mov *FILE [-inter N] [-bnd BND] [-ex] [-o *FILE] [-w *FILE]]
+            [+mov *FILE [-inter N] [-bnd BND] [-ex] [-o *FILE] [-r *FILE]]
             [-all ...] [-prg] [-pyr N] [-gpu|-cpu] [-h]
     
     <LOSS> can take values (with additional options): 
@@ -195,6 +196,10 @@ def parse_file(args, opt):
 def parse_moving_and_target(args, opt):
     """Parse a loss that involves a moving and a target file"""
     loss = opt['loss']
+
+    if args and not args[0].startswith(('-', '+')):
+        opt['factor'].append(args[0])
+        args = args[1:]
 
     while args:
         if args[0] in ('-mov', '--moving', '-src', '--source'):
@@ -675,13 +680,13 @@ def autoreg():
         for optimizer in optimizers:
             optimize(data, parameters, losses, optimizer, device=device)
 
-    write_parameters(parameters)
-    write_data(options, parameters)
+    write_parameters(parameters, options)
+    write_data(data, parameters, options)
 
 
 def init_losses(options):
 
-    def mi(patch=None):
+    def mi(factor, patch=None):
         def _mi(x, y):
             xs = x.unbind(0)
             ys = y.unbind(0)
@@ -693,48 +698,66 @@ def init_losses(options):
                 loss += nn.MutualInfoLoss(patch=patch)(x, y) / nb_channels
             # I take the average of MI across channels to be consistent
             # with how MSE works.
-            return loss
+            return loss * factor
         return _mi
 
-    def mse(x, y):
-        return torch.nn.MSELoss(x[None], y[None])
+    def mse(factor):
+        def _mse(x, y):
+            return torch.nn.MSELoss(x[None], y[None]) * factor
+        return _mse
 
-    def dice(weighted=False):
+    def dice(factor, weighted=False):
         def _dice(x, y):
             fn = nn.DiceLoss(discard_background=True, weighted=weighted)
-            return fn(x[None], y[None])
+            return fn(x[None], y[None]) * factor
         return _dice
 
-    def cat(x, y):
-        fn = nn.CategoricalLoss(log=False, implicit=True)
-        return fn(x[None], y[None])
+    def cat(factor):
+        def _cat(x, y):
+            fn = nn.CategoricalLoss(log=False, implicit=True)
+            return fn(x[None], y[None]) * factor
+        return _cat
 
     defaults = options['defaults']
 
     losses = dict(match=[])
     for match in options['matches']:
+        factor = match.get('factor', 1)
         if match['loss'] == 'mi':
             patch = match.get('patch', defaults.get('patch', 0))
-            losses['matches'].append(mi(patch))
+            losses['matches'].append(mi(factor, patch))
         elif match['loss'] == 'mse':
-            losses['matches'].append(mse)
+            losses['matches'].append(mse(factor))
         elif match['loss'] == 'dice':
             weighted = match.get('weighted', defaults.get('weighted', False))
-            losses['matches'].append(dice(weighted))
+            losses['matches'].append(dice(factor, weighted))
         elif match['loss'] == 'cat':
-            losses['matches'].append(cat)
+            losses['matches'].append(cat(factor))
 
     for trf in options['transformations']:
         if trf['regularizations']:
             if trf['transformation'] in ('ffd', 'diffeo'):
-                losses[trf['transformation']] = []
+                trfkey = trf['transformation']
             else:
-                losses['affine'] = []
+                trfkey = 'affine'
+            losses[trfkey] = []
+            for reg in trf['regularizations']:
+                factor = reg.get('factor', 1)
+                if reg['regularization'] == 'absolute':
+                    losses[trfkey].append(lambda v: factor * spatial.absolute_grid(v))
+                elif reg['regularization'] == 'membrane':
+                    losses[trfkey].append(lambda v: factor * spatial.membrane_grid(v))
+                elif reg['regularization'] == 'bending':
+                    losses[trfkey].append(lambda v: factor * spatial.bending_grid(v))
+                elif reg['regularization'] == 'linearelastic':
+                    factor = core.pyutils.make_list(factor, 2)
+                    losses[trfkey].append(lambda v: factor[0] * spatial.lame_div(v))
+                    losses[trfkey].append(lambda v: factor[1] * spatial.lame_shear(v))
 
 
 def init_parameters(options):
-    nb_affine_prm = 0
     nonlin = ''
+    affine = ''
     grid = None
     for trf in options['transformations']:
         if trf['tranformation'] in ('ffd', 'diffeo'):
@@ -743,17 +766,19 @@ def init_parameters(options):
                 grid = trf['tranformation'].get('grid', [10])
                 grid = core.pyutils.make_list(grid, 3)
         else:
-            if trf['tranformation'] == 'translation':
-                nb_affine_prm = 3
-            elif trf['tranformation'] == 'rigid':
-                nb_affine_prm = 6
-            elif trf['tranformation'] == 'similitude':
-                nb_affine_prm = 7
-            elif trf['tranformation'] == 'affine':
-                nb_affine_prm = 12
+            affine = trf['tranformation']
 
     parameters = dict()
-    if nb_affine_prm != 0:
+
+    if affine:
+        if affine == 'translation':
+            nb_affine_prm = 3
+        elif affine == 'rigid':
+            nb_affine_prm = 6
+        elif affine == 'similitude':
+            nb_affine_prm = 7
+        elif affine == 'affine':
+            nb_affine_prm = 12
         parameters['affine'] = torch.zeros(nb_affine_prm)
 
     if nonlin:
@@ -776,6 +801,89 @@ def init_parameters(options):
             parameters[nonlin]['parameters'] = torch.zeros([*shape, 3])
 
     return dict(hidden=parameters)
+
+
+def write_parameters(parameters, options):
+    nonlin = None
+    affine = None
+    for trf in options['transformations']:
+        if trf['tranformation'] in ('ffd', 'diffeo'):
+            nonlin = trf
+        else:
+            affine = trf
+
+    if affine:
+        fname = affine['output']
+        param = parameters['affine']
+        io.transforms.savef(param, fname, type=2)
+
+    if nonlin:
+        fname = nonlin['output']
+        tname = nonlin['transformation']
+        param = parameters[tname]['parameters']
+        affine = parameters[tname]['affine']
+        shape = parameters[tname]['shape']
+        if tname == 'grid':
+            factor = [s/g for s, g in zip(shape, param.shape[:-1])]
+            affine, _ = spatial.affine_resize(affine, shape, factor)
+        io.volumes.savef(param, fname, affine=affine)
+
+
+def write_data(matches, parameters, options):
+
+    def load_data1(match, tag):
+        source = []
+        affine = None
+        for file in match[tag]['files']:
+            f = io.map(file['fname'])
+            if affine is None:
+                affine = f.affine
+            if match[tag]['type'] == 'labels':
+                f = f.data(dtype=torch.int32)
+            else:
+                f = f.fdata(rand=True)
+            f = f.reshape((*file['shape'], file['channels']))
+            f = movedim(f, -1, 0)
+            source.append(f)
+        source = torch.cat(source, dim=0)
+
+        if match[tag]['type'] == 'labels':
+            # I don't have a nice pooling implemented for hard labels
+            # There are plenty of ways to do this, I'll have to think.
+            sources = [(source, affine)]
+        else:
+            sources = [(source, affine)] if 1 in levels else []
+            for l in range(2, max_level+1):
+                shape = source.shape[1:]
+                ker = [min(2, d) for d in shape]
+
+                source = torch.nn.functional.avg_pool3d(source[None], ker)[0]
+                affine, _ = affine_conv(affine, shape, ker, ker)
+                if l in levels:
+                    sources.append((source, affine))
+
+        return sources
+
+    data = []
+    for match in matches:
+        if not match['loss']:
+            continue
+
+        default_order = 0 if match['source']['type'] == 'labels' else 1
+        prm = {
+            'interpolation': match.get('interpolation',
+                                       defaults.get('interpolation',
+                                                    default_order)),
+            'bound': match.get('bound', defaults.get('bound', 'dct2')),
+            'extrapolate': match.get('extrapolate',
+                                     defaults.get('extrapolate', False)),
+        }
+
+        sources = load_data1(match, 'source')
+        targets = load_data1(match, 'target')
+        data_match = [(src, tgt) for src, tgt in zip(sources, targets)]
+        data.append((data_match, prm))
+
 
 
 def load_data(matches, defaults, pyramid=[1]):
