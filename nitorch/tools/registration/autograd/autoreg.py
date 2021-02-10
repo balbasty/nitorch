@@ -374,16 +374,18 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
     nonlin = nonlin or dict(disp=None, affine=None)
     prm = dict(interpolation=interpolation, bound=bound, extrapolate=extrapolate)
 
+    moving_affine = moving.affine.to(device)
+
     if inv:
         # affine-corrected fixed space
         if lin is not None:
-            new_affine = affine_lmdiv(lin, moving.affine)
+            new_affine = affine_lmdiv(lin, moving_affine)
         else:
             new_affine = moving.affine
 
         if nonlin.fwd is not None:
             # moving voxels to param voxels (warps param to moving)
-            mov2nlin = affine_lmdiv(nonlin['affine'], moving.affine)
+            mov2nlin = affine_lmdiv(nonlin['affine'], moving_affine)
             if samespace(mov2nlin, nonlin['disp'].shape[:-1], moving.shape):
                 g = smalldef(nonlin['disp'])
             else:
@@ -398,9 +400,9 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
     else:
         # affine-corrected moving space
         if lin is not None:
-            new_affine = affine_matmul(lin, moving.affine)
+            new_affine = affine_matmul(lin, moving_affine)
         else:
-            new_affine = moving.affine
+            new_affine = moving_affine
 
         if nonlin['disp'] is not None:
             # moving voxels to param voxels (warps param to moving)
@@ -432,10 +434,13 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
     nonlin = nonlin or dict(disp=None, affine=None)
     prm = dict(interpolation=interpolation, bound=bound, extrapolate=extrapolate)
 
+    moving_affine = moving.affine.to(device)
+    fixed_affine = like.affine.to(device)
+
     if inv:
         # affine-corrected fixed space
         if lin is not None:
-            fix2lin = affine_lmdiv(lin, like.affine)
+            fix2lin = affine_lmdiv(lin, fixed_affine)
         else:
             fix2lin = moving.affine
 
@@ -448,7 +453,7 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
                 g = affine_grid(fix2nlin, like.shape)
                 g += pull_grid(nonlin['disp'], g)
             # param to moving
-            nlin2mov = affine_lmdiv(moving.affine, nonlin['affine'])
+            nlin2mov = affine_lmdiv(moving_affine, nonlin['affine'])
             g = affine_matvec(nlin2mov, g)
         else:
             g = None
@@ -456,13 +461,13 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
     else:
         # affine-corrected moving space
         if lin is not None:
-            mov2lin = affine_matmul(lin, moving.affine)
+            mov2lin = affine_matmul(lin, moving_affine)
         else:
-            mov2lin = moving.affine
+            mov2lin = moving_affine
 
         if nonlin.fwd is not None:
             # fixed voxels to param voxels (warps param to fixed)
-            fix2nlin = affine_lmdiv(nonlin['affine'], like.affine)
+            fix2nlin = affine_lmdiv(nonlin['affine'], fixed_affine)
             if samespace(fix2nlin, nonlin['disp'].shape[:-1], like.shape):
                 g = smalldef(nonlin['disp'])
             else:
