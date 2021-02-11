@@ -19,12 +19,19 @@ def autoreg(argv=None):
     if not options:
         return
 
+    # add a couple of defaults
+    for trf in options.transformations:
+        if isinstance(trf, struct.NonLinear) and not trf.losses:
+            trf.losses.append(struct.BendingLoss())
     if not options.optimizers:
         options.optimizers.append(struct.Adam())
+
     options.propagate_defaults()
     options.read_info()
     options.propagate_filenames()
-    print(repr(options))
+
+    if options.verbose >= 2:
+        print(repr(options))
 
     load_data(options)
     load_transforms(options)
@@ -133,9 +140,9 @@ def load_transforms(s):
                 if isinstance(loss, struct.NoLoss):
                     continue
                 all_shapes.append(loss.fixed.shape)
-                all_shapes.append(loss.fixed.affine)
+                all_affines.append(loss.fixed.affine)
                 all_shapes.append(loss.moving.shape)
-                all_shapes.append(loss.moving.affine)
+                all_affines.append(loss.moving.affine)
             affine, shape = mean_space(all_affines, all_shapes)
             if trf.pyramid > 1:
                 factor = 1/(2**(trf.pyramid-1))
@@ -236,6 +243,7 @@ def optimize(options):
         # affine matrix
         A = None
         for trf in options.transformations:
+            trf.update()
             if isinstance(trf, struct.Linear):
                 q = trf.dat.to(**backend)
                 B = trf.basis.to(**backend)
@@ -259,7 +267,7 @@ def optimize(options):
                 d = trf.dat.to(**backend)
                 for loss1 in trf.losses:
                     loss += loss1.call(d)
-                d = spatial.exp(d, displacement=True)
+                d = spatial.exp(d[None], displacement=True)[0]
                 d_aff = trf.affine.to(**backend)
                 break
 
@@ -294,7 +302,7 @@ def optimize(options):
                         g = smalldef(d)
                     else:
                         g = affine_grid(Mt, fixed_dat.shape[1:])
-                        g += pull_grid(d, g)
+                        g = g + pull_grid(d, g)
                     # param to moving
                     Ms = affine_lmdiv(Ms, d_aff)
                     g = affine_matvec(Ms, g)
@@ -324,11 +332,13 @@ def optimize(options):
         for n_iter in range(1, optimizer.max_iter):
             loss = optimizer.step(forward)
             current_lr = optimizer.current_lr()
-            print(f'{n_iter:4d} | {loss.item():12.6f} | '
-                  f'lr/lr0 = {sum(current_lr)/len(current_lr):7.3g}', end='\r')
+            if options.verbose:
+                print(f'{n_iter:4d} | {loss.item():12.6f} | '
+                      f'lr/lr0 = {sum(current_lr)/len(current_lr):7.3g}', end='\r')
             if all(lr < optimizer.stop for lr in current_lr):
                 break
-    print('')
+    if options.verbose:
+        print('')
 
 
 def free_data(options):
@@ -344,6 +354,7 @@ def free_data(options):
 
 def detach_transforms(options):
     for trf in options.transformations:
+        trf.update()
         trf.dat = trf.dat.detach()
         delattr(trf, 'optdat')
 
@@ -374,7 +385,8 @@ def write_transforms(options):
 
 
 def update(moving, fname, inv=False, lin=None, nonlin=None,
-           interpolation=1, bound='dct2', extrapolate=False, device='cpu'):
+           interpolation=1, bound='dct2', extrapolate=False, device='cpu',
+           verbose=True):
     """Apply the linear transform to the header of a file +
     apply the non-linear component in the original space.
 
@@ -424,7 +436,7 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
         else:
             new_affine = moving.affine
 
-        if nonlin.fwd is not None:
+        if nonlin['disp'] is not None:
             # moving voxels to param voxels (warps param to moving)
             mov2nlin = affine_lmdiv(nonlin['affine'].to(device), moving_affine)
             if samespace(mov2nlin, nonlin['disp'].shape[:-1], moving.shape):
@@ -460,6 +472,8 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
             g = None
 
     for file, ofname in zip(moving.files, fname):
+        print(f'Registered: {file.fname}\n'
+              f'         -> {ofname}')
         dat = io.volumes.loadf(file.fname, rand=True, device=device)
         dat = dat.reshape([*file.shape, file.channels])
         if g is not None:
@@ -511,7 +525,6 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
     device : default='cpu'
 
     """
-    lin = lin or None
     nonlin = nonlin or dict(disp=None, affine=None)
     prm = dict(interpolation=interpolation, bound=bound, extrapolate=extrapolate)
 
@@ -521,9 +534,9 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
     if inv:
         # affine-corrected fixed space
         if lin is not None:
-            fix2lin = affine_lmdiv(lin, fixed_affine)
+            fix2lin = affine_matmul(lin, fixed_affine)
         else:
-            fix2lin = moving.affine
+            fix2lin = fixed_affine
 
         if nonlin['disp'] is not None:
             # fixed voxels to param voxels (warps param to fixed)
@@ -537,16 +550,17 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
             nlin2mov = affine_lmdiv(moving_affine, nonlin['affine'].to(device))
             g = affine_matvec(nlin2mov, g)
         else:
-            g = None
+            g = affine_lmdiv(moving_affine, fix2lin)
+            g = affine_grid(g, like.shape)
 
     else:
         # affine-corrected moving space
         if lin is not None:
-            mov2lin = affine_matmul(lin, moving_affine)
+            mov2nlin = affine_matmul(lin, moving_affine)
         else:
-            mov2lin = moving_affine
+            mov2nlin = moving_affine
 
-        if nonlin.fwd is not None:
+        if nonlin['disp'] is not None:
             # fixed voxels to param voxels (warps param to fixed)
             fix2nlin = affine_lmdiv(nonlin['affine'].to(device), fixed_affine)
             if samespace(fix2nlin, nonlin['disp'].shape[:-1], like.shape):
@@ -555,12 +569,15 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
                 g = affine_grid(fix2nlin, like.shape)
                 g += pull_grid(nonlin['disp'].to(device), g)
             # param voxels to moving voxels (warps moving to fixed)
-            nonlin2mov = affine_inv(mov2lin)
-            g = affine_matvec(nonlin2mov, g)
+            nlin2mov = affine_lmdiv(mov2nlin, nonlin['affine'].to(device))
+            g = affine_matvec(nlin2mov, g)
         else:
-            g = None
+            g = affine_lmdiv(mov2nlin, fixed_affine)
+            g = affine_grid(g, like.shape)
 
     for file, ofname in zip(moving.files, fname):
+        print(f'Resliced:   {file.fname}\n'
+              f'         -> {ofname}')
         dat = io.volumes.loadf(file.fname, rand=True, device=device)
         dat = dat.reshape([*file.shape, file.channels])
         if g is not None:
@@ -605,8 +622,8 @@ def write_data(options):
         elif isinstance(trf, struct.Diffeo):
             d = trf.dat.to(**backend)
             if need_inv:
-                id = spatial.exp(d, displacement=True, inverse=True)
-            d = spatial.exp(d, displacement=True)
+                id = spatial.exp(d[None], displacement=True, inverse=True)[0]
+            d = spatial.exp(d[None], displacement=True)[0]
             d_aff = trf.affine.to(**backend)
             break
 

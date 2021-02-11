@@ -95,6 +95,7 @@ class ImageFile(Base):
     interpolation: int = None       # interpolation order
     bound: str = None               # boundary conditions for interpolation
     extrapolate: bool = None        # extrapolate out-of-bounds using `bound`
+    pyramid: list = None            # Pyramid levels
 
 
 class FixedImageFile(ImageFile):
@@ -116,6 +117,7 @@ class MatchingLoss(Base):
     interpolation: int = None       # Interpolation order (default for f+m)
     bound: str = None               # Bound order         (default for f+m)
     extrapolate: bool = None        # Extrapolate order   (default for f+m)
+    pyramid: list = None            # Pyramid levels      (default for f+m)
 
 
 class NoLoss(MatchingLoss):
@@ -204,7 +206,7 @@ class AbsoluteLoss(TransformationLoss):
 
     def call(self, v):
         m = spatial.absolute_grid(v)
-        loss = (v*m).sum()
+        loss = (v*m).mean()
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -216,7 +218,7 @@ class MembraneLoss(TransformationLoss):
 
     def call(self, v):
         m = spatial.membrane_grid(v)
-        loss = (v*m).sum()
+        loss = (v*m).mean()
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -228,7 +230,7 @@ class BendingLoss(TransformationLoss):
 
     def call(self, v):
         m = spatial.bending_grid(v)
-        loss = (v*m).sum()
+        loss = (v*m).mean()
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -243,12 +245,12 @@ class LinearElasticLoss(TransformationLoss):
         loss = 0
         if factor[0]:
             m = spatial.lame_div(v)
-            loss += (v*m).sum()
+            loss += (v*m).mean()
             if self.factor[0] != 1:
                 loss = loss * self.factor[0]
         if factor[1]:
             m = spatial.lame_shear(v)
-            loss += (v*m).sum()
+            loss += (v*m).mean()
             if self.factor[1] != 1:
                 loss = loss * self.factor[1]
         return loss
@@ -265,6 +267,11 @@ class Transformation(Base):
     output = True                   # Path to output file
     losses: list = []               # List of losses on that transformation
     ext: str = None                 # Default extension for that transform
+    pyramid: int = None             # Pyramid level
+
+    def update(self):
+        if hasattr(self, 'optdat'):
+            self.dat = self.optdat
 
 
 class NonLinear(Transformation):
@@ -306,6 +313,10 @@ class Linear(Transformation):
         if not self.freeable():
             return
         nb_prm = len(self.optdat) if hasattr(self, 'optdat') else 0
+        self.dat = self.dat.detach()
+        if hasattr(self, 'optdat'):
+            self.optdat = self.optdat.detach()
+            self.dat = torch.cat([self.optdat.detach(), self.dat[nb_prm:]])
         if nb_prm == 0:
             print('Free translations')
             self.optdat = torch.nn.Parameter(self.dat[:3], requires_grad=True)
@@ -318,9 +329,20 @@ class Linear(Transformation):
             print('Free isotropic scaling')
             self.optdat = torch.nn.Parameter(self.dat[:7], requires_grad=True)
             self.dat = torch.cat([self.optdat, self.dat[7:]])
-        elif nb_prm == 12:
+        elif nb_prm == 7:
             print('Free full affine')
             self.optdat = torch.nn.Parameter(self.dat[:12], requires_grad=True)
+            self.dat = self.optdat
+
+    def update(self):
+        nb_prm = len(self.optdat) if hasattr(self, 'optdat') else 0
+        if nb_prm == 3:
+            self.dat = torch.cat([self.optdat, self.dat[3:]])
+        elif nb_prm == 6:
+            self.dat = torch.cat([self.optdat, self.dat[6:]])
+        elif nb_prm == 7:
+            self.dat = torch.cat([self.optdat, self.dat[7:]])
+        elif nb_prm != 0:
             self.dat = self.optdat
 
 
@@ -382,6 +404,7 @@ class Defaults(Base):
     lr: int = 0.1
     stop: float = 1e-4
     ls: int = 0
+    pyramid: list = [1]
 
 
 class AutoReg(Base):
@@ -394,7 +417,7 @@ class AutoReg(Base):
     defaults: Defaults = Defaults()     # All defaults that propagate everywhere
     device: str = 'cpu'                 # Device on which to run
     progressive: bool = False           # Progressive freeing of parameters
-    pyramid: list = [1]                 # Pyramid levels to build
+    verbose: int = 1                    # Verbosity level
 
     def propagate_defaults(self):
         """Propagate defaults from root to leaves"""

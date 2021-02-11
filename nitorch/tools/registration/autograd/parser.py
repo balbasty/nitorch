@@ -59,7 +59,7 @@ usage:
         -adam, --adam               ADAM (default)
         -gd,   --gradient-descent   Gradient descent
 
-    Generic options:
+    Generic options (within group `-all`):
         -inter, --interpolation      Interpolation order (1)
         -bnd,   --bound              Boundary conditions (dct2)
         -ex,    --extrapolate        Extrapolate out-of-bounds data (no)
@@ -70,6 +70,7 @@ usage:
         -lr,    --learning-rate      Initial learning rate (0.1)
         -stop,  --stop               Minimum LR value -> early stopping (lr*1e-4)
         -ls,    --line-search        Maximum number of backtracking line searches (0)
+        -pyr, --pyramid *LEVELS      Pyramid levels. Can be a range [start]:stop[:step] (1)
     If these tags are present within a <LOSS>/<TRF>/<OPT> group, they only 
     apply to this group. If they are present within a `-all` group, they 
     apply to all <LOSS>/<TRF>/<OPT> groups that did not specify them in 
@@ -81,7 +82,7 @@ usage:
     Other options
         -cpu, -gpu                   Device to use (cpu)
         -prg, --progressive          Progressively increase degrees of freedom (no)
-        -pyr, --pyramid *LEVELS      Pyramid levels. Can be a range [start]:stop[:step] (1)
+        -v, --verbose [LVL]          Level of verbosity (1)
 
 examples:
     # rigid registration between two images
@@ -451,6 +452,12 @@ def parse_defaults(args, options):
         elif tag in ('-o', '--output'):
             check_next_isvalue(args, tag)
             opt.output, *args = args
+        elif tag in ('-pyr', '--pyramid'):
+            args, levels = parse_pyramid(args)
+            if levels:
+                opt.pyramid = levels
+            else:
+                opt.pyramid = [1]
         else:
             args = [tag, *args]
             break
@@ -488,6 +495,11 @@ def parse(args):
         # Parse remaining top-level tags
         elif tag in ('-prg', '--progressive'):
             options.progressive = True
+        elif tag in ('-v', '--verbose'):
+            options.verbose = 2
+            if next_isvalue(args):
+                options.verbose, *args,  = args
+                options.verbose = int(options.verbose)
         elif tag in ('-cpu', '--cpu'):
             options.device = 'cpu'
         elif tag in ('-gpu', '--gpu'):
@@ -495,12 +507,6 @@ def parse(args):
             if next_isvalue(args):
                 gpu, *args = args
                 options.device = 'cuda:{:d}'.format(int(gpu))
-        elif tag in ('-pyr', '--pyramid'):
-            args, levels = parse_pyramid(args)
-            if levels:
-                options.pyramid = levels
-            else:
-                options.pyramid = [1]
 
         # Something went wrong
         else:
