@@ -2,7 +2,8 @@ import torch
 from nitorch import core, spatial
 from ._options import GREEQOptions
 from ._preproc import preproc, postproc
-from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul, hessian_sym_solve,
+from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul,
+                     hessian_sym_solve, hessian_sym_inv, rls_maj,
                      smart_grid, smart_pull, smart_push)
 from nitorch.tools.qmri.param import ParameterMap
 
@@ -105,11 +106,10 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     if isinstance(lam, dict):
         lam = [lam.get('pd', 0), lam.get('r1', 0),
                lam.get('r2s', 0), lam.get('mt', 0)]
-    lam = core.utils.make_list(lam, 4)  # PD, R1, R2*, MT
+    lam = core.utils.make_vector(lam, 4, **backend)  # PD, R1, R2*, MT
 
     # --- initialize weights (RLS) ---
-    if (not opt.penalty.norm or opt.penalty.norm.lower() == 'none' or
-            all(l == 0 for l in lam)):
+    if str(opt.penalty.norm).lower() == 'none' or all(lam == 0):
         opt.penalty.norm = ''
     opt.penalty.norm = opt.penalty.norm.lower()
     mean_shape = maps[0].shape
@@ -119,7 +119,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         rls_shape = mean_shape
         if opt.penalty.norm == 'tv':
             rls_shape = (len(maps),) + rls_shape
-        rls = ParameterMap(rls_shape, fill=1, **backend).volume
+        rls = torch.ones(rls_shape, **backend)
+        sumrls = 0.5 * core.pyutils.prod(rls_shape)
 
     if opt.penalty.norm:
         print(f'With {opt.penalty.norm.upper()} penalty:')
@@ -129,7 +130,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         if has_mt:
             print(f'    - MT:  {lam[3]:.3g}')
     else:
-        print('Without penalty:')
+        print('Without penalty')
 
     if opt.penalty.norm not in ('tv', 'jtv'):
         # no reweighting -> do more gauss-newton updates instead
@@ -145,13 +146,19 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
 
     shape0 = shape = maps.shape[1:]
     aff0 = aff = maps.affine
+    vx0 = vx = spatial.voxel_size(aff0)
+    vol0 = vx0.prod()
+    vol = vx.prod() / vol0
     for level in range(opt.optim.nb_levels, 0, -1):
         printer.level = level
 
         if opt.optim.nb_levels > 1:
             aff, shape = _get_level(level, aff0, shape0)
+            vx = spatial.voxel_size(aff)
+            vol = vx.prod() / vol0
             maps, rls = _resize(maps, rls, aff, shape)
-            sumrls = rls.sum(dtype=torch.double)
+            if opt.penalty.norm in ('tv', 'jtv'):
+                sumrls = 0.5 * vol * rls.reciprocal().sum(dtype=torch.double)
         
         # --- compute derivatives ---
         nb_prm = len(maps)
@@ -162,7 +169,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         ll_rls = []
         ll_max = core.constants.ninf
 
-        max_iter_rls = opt.optim.max_iter_rls // level
+        max_iter_rls = max(opt.optim.max_iter_rls // level, 1)
         for n_iter_rls in range(max_iter_rls):
             # --- Reweighted least-squares loop ---
             printer.rls = n_iter_rls
@@ -200,6 +207,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                         grad += g1
                         hess += h1
                         crit += crit1
+                    
+                    del g1, h1
 
                 # --- penalty ---
                 reg = 0.
@@ -207,23 +216,30 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     for i, (map, weight, l) in enumerate(zip(maps, multi_rls, lam)):
                         if not l:
                             continue
-                        reg1, g1 = _nonlin_reg(map.fdata(**backend), vx, weight, l)
+                        reg1, g1 = _nonlin_reg(map.fdata(**backend), vx, weight, l * vol)
                         reg += reg1
                         grad[i] += g1
-
-                # --- load diagonal of the Hessian ---
-                hess = hessian_sym_loaddiag(hess)
+                        del g1
 
                 # --- gauss-newton ---
+                if not hess.isfinite().all():
+                    print('WARNING: NaNs in hess')
+                if not grad.isfinite().all():
+                    print('WARNING: NaNs in hess')
                 if opt.penalty.norm:
-                    deltas = _nonlin_solve(hess, grad, multi_rls, lam, vx, opt)
+                    hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)
+                    deltas = _nonlin_solve(hess, grad, multi_rls, lam * vol, vx, opt)
                 else:
+                    hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
                     deltas = hessian_sym_solve(hess, grad)
+                if not deltas.isfinite().all():
+                    print('WARNING: NaNs in delta')
 
                 for map, delta in zip(maps, deltas):
                     map.volume -= delta
                     if map.min is not None or map.max is not None:
                         map.volume.clamp_(map.min, map.max)
+                del deltas
 
                 # --- Compute gain ---
                 ll = crit + reg + sumrls
@@ -233,12 +249,14 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 ll_gn.append(ll)
                 printer.print_crit(crit, reg, sumrls, gain)
                 if gain < opt.optim.tolerance_gn:
+                    print('GN converged: ', ll_prev.item(), '->', ll.item())
                     break
 
             # --- Update RLS weights ---
             if opt.penalty.norm in ('tv', 'jtv'):
+                del multi_rls
                 rls = _nonlin_rls(maps, lam, opt.penalty.norm)
-                sumrls = 0.5 * rls.sum(dtype=torch.double)
+                sumrls = (0.5 * vol) * rls.sum(dtype=torch.double)
                 eps = core.constants.eps(rls.dtype)
                 rls = rls.clamp_min_(eps).reciprocal_()
 
@@ -250,11 +268,32 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 ll_rls.append(ll_gn)
                 gain = (ll_prev - ll) / (ll_max - ll_prev)
                 if abs(gain) < opt.optim.tolerance_rls:
-                    print(f'Converged ({gain:7.2g})')
+                    print(f'RLS converged ({gain:7.2g})')
                     break
 
+    del grad
+    if opt.uncertainty:
+        multi_rls = rls if opt.penalty.norm == 'tv' else [rls] * len(maps)
+        uncertainty = _nonlin_uncertainty(hess, multi_rls, lam * vol, vx, opt)
+        maps.pd.uncertainty = uncertainty[0]
+        maps.r1.uncertainty = uncertainty[1]
+        maps.r2s.uncertainty = uncertainty[2]
+        if hasattr(maps, 'mt'):
+            maps.mt.uncertainty = uncertainty[3]
+    
     # --- Prepare output ---
     return postproc(maps)
+
+
+def _nonlin_uncertainty(hess, rls, lam, vx, opt):
+    """Diagonal posterior uncertainty"""
+    uncertainty = hess.clone()
+    if opt.penalty:
+        smo = torch.as_tensor(vx).square().reciprocal().sum().item()
+        for i, (weight, l) in enumerate(zip(rls, lam)):
+            uncertainty[i] += l * (rls_maj(weight, vx) if weight is not None
+                                   else 4 * smo)
+    return hessian_sym_inv(uncertainty, diag=True)
 
 
 class CritPrinter:
@@ -333,7 +372,7 @@ class CritPrinter:
             crit = fit
             pattern += ' + {:12.6g}'
             args.append(reg)
-            crit = crit + fit
+            crit = crit + reg
             if self.penalty in ('tv', 'jtv'):
                 pattern += ' + {:12.6g}'
                 args.append(rls)
@@ -426,6 +465,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         maps = maps[:-1]
     dmaps = torch.stack([map.fdata(**backend) for map in maps])
     dmaps = smart_pull(dmaps, grid)
+    grid = None if grid is None else True
     pd, r1, r2s, *mt = dmaps
     mt = mt[0] if mt else None
     has_mt = mt is not None
@@ -438,19 +478,19 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
 
     # pull field maps to observed space
     if receive is not None:
-        aff = core.linalg.lmdiv(receive.affine, contrast.affine)
-        aff = aff.to(**backend)
-        grid1 = smart_grid(aff, obs_shape, receive.shape)
-        b1m = smart_pull(receive.fdata(**backend)[None, ...], grid1)[0]
+        aff1 = core.linalg.lmdiv(receive.affine, contrast.affine)
+        aff1 = aff1.to(**backend)
+        grid1 = smart_grid(aff1, obs_shape, receive.shape)
+        b1m = smart_pull(receive.fdata(**backend)[None], grid1)[0]
         if receive.unit in ('%', 'pct', 'p.u.'):
             b1m = b1m.div(100.) if grid1 is None else b1m.div_(100.)
         del grid1
 
     if transmit is not None:
-        aff = core.linalg.lmdiv(transmit.affine, contrast.affine)
-        aff = aff.to(**backend)
-        grid1 = smart_grid(aff, obs_shape, transmit.shape)
-        b1p = smart_pull(transmit.fdata(**backend)[None, ...], grid1)[0]
+        aff1 = core.linalg.lmdiv(transmit.affine, contrast.affine)
+        aff1 = aff1.to(**backend)
+        grid1 = smart_grid(aff1, obs_shape, transmit.shape)
+        b1p = smart_pull(transmit.fdata(**backend)[None], grid1)[0]
         if grid1 is None:
             b1p = b1p.clone()
         if transmit.unit in ('%', 'pct', 'p.u.'):
@@ -465,9 +505,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         # mt is encoded by a sigmoid:
         # > mt = 1 / (1 + exp(-prm))
         mt = mt.neg() if grid is None else mt.neg_()
-        mt = mt.exp_()
-        mt += 1
-        mt = mt.reciprocal_()
+        mt = mt.exp_().add_(1).reciprocal_()
 
     # precompute intercept
     #                             (1 - mt) * (1 - exp(-r1*tr))
@@ -480,6 +518,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     if transmit:
         b1p *= fa
         fa = b1p
+        del b1p
     else:
         fa = torch.as_tensor(fa, **backend)
     fit0 *= fa.sin()
@@ -489,12 +528,15 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     e1 = e1.exp_()
     fit0 *= (1 - e1)
     if has_mt:
-        omt = mt.neg_()
-        omt += 1
+        omt = mt.neg_().add_(1)
+        omt_x_cosfa = cosfa.mul(omt)
         fit0 *= omt
-        fit0 /= (1 - cosfa * omt * e1)
+        del mt
     else:
-        fit0 /= (1 - cosfa * e1)
+        omt = None
+        omt_x_cosfa = cosfa
+    fit0 /= (1 - omt_x_cosfa * e1)
+    del cosfa
 
     crit = 0
     grad = torch.zeros((nb_prm,) + obs_shape, **backend) if do_grad else None
@@ -503,7 +545,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     for echo in contrast:
 
         # compute residuals
-        dat = echo.fdata(**backend, rand=True, cache=False)  # observed
+        dat = echo.fdata(**backend)                          # observed
         fit = fit0 * (-echo.te * r2s).exp_()                 # fitted
         msk = fit.isfinite() & dat.isfinite() & (dat > 0)    # mask of observed
         dat[~msk] = 0
@@ -520,51 +562,52 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             # PD / R1 / R2* / MT
             grad1 = torch.empty_like(grad)
 
-            # compute gradient of the signal term
-            # (grad_crit = grad_signal * residuals)
-            grad1[0] = fit
-            grad1[2] = -echo.te * r2s * fit
-            if has_mt:
-                grad1[3] = fit
-                grad1[3] *= (omt - 1) / (1 - omt * cosfa * e1)
-                omt_x_cosfa = omt * cosfa
-            else:
-                omt_x_cosfa = cosfa
-            grad1[1] = -tr * r1 * fit * (omt_x_cosfa - 1) * e1
-            grad1[1] /= (1 - e1) * (1 - omt_x_cosfa * e1)
+            # grad_crit = grad_signal * residuals
+            # hess_crit = grad_signal^2 + hess_signal * residuals
+            
+            # grad_signal: compute gradient of the signal term
+            #   all gradients are multiplied by fit at some point
+            #   so we initialize them with fit
+            grad1[...] = fit[None].expand((3+has_mt, *fit.shape))
 
-            # compute diagonal of the hessian of the signal term 
-            # (hess_crit = grad_signal^2 + hess_signal * residuals)
-            hess0 = torch.empty_like(grad)
-            hess0[0] = grad1[0]
-            hess0[2] = grad1[2]
-            hess0[2] *= (1 - echo.te * r2s)
+            grad1[1] *= -tr * r1 * (omt_x_cosfa - 1) * e1
+            grad1[1] /= (1 - e1) * (1 - omt_x_cosfa * e1)
+            grad1[2] *= -echo.te * r2s
             if has_mt:
-                omt_x_cosfa = omt * cosfa
-                hess0[3] = (omt - 1) * omt_x_cosfa * e1 
-                hess0[3] /= 1 - omt_x_cosfa * e1
-                hess0[3] += omt 
-                hess0[3] -= 0.5
-                hess0[3] *= 2
-                hess0[3] = grad1[3]
-            else:
-                omt_x_cosfa = cosfa
+                grad1[3] *= (omt - 1) / (1 - omt_x_cosfa * e1)
+            
+            # hess_signal: compute diagonal of the hessian of the signal term 
+            hess0 = torch.empty_like(grad)
+            
+            hess0[0] = grad1[0]
             hess0[1] = - tr * r1 
             hess0[1] *= (1 + omt_x_cosfa * e1) 
             hess0[1] /= (1 - omt_x_cosfa * e1)
             hess0[1] += 1
             hess0[1] *= grad1[1]
+            hess0[2] = r2s
+            hess0[2] *= -echo.te
+            hess0[2] += 1
+            hess0[2] *= grad1[2]
+            if has_mt:
+                hess0[3] = (omt - 1) * omt_x_cosfa * e1 
+                hess0[3] /= 1 - omt_x_cosfa * e1
+                hess0[3] += omt 
+                hess0[3] -= 0.5
+                hess0[3] *= 2
+                hess0[3] *= grad1[3]
             
+            # hess_signal: multiply by residuals
             hess0 *= res
             hess0 = hess0.abs_()
             
-            # increment hessian
+            # hess_crit: add grad_signal^2 to hess_signal
             hess1 = torch.empty_like(hess)
-            hess1[0] = grad1[0].square() + hess0[0]
-            hess1[1] = grad1[1].square() + hess0[1]
-            hess1[2] = grad1[2].square() + hess0[2]
+            hess1[0] = grad1[0].square().add_(hess0[0])
+            hess1[1] = grad1[1].square().add_(hess0[1])
+            hess1[2] = grad1[2].square().add_(hess0[2])
             if has_mt:
-                hess1[3] = grad1[3].square() + hess0[3]
+                hess1[3] = grad1[3].square().add_(hess0[3])
                 del hess0
                 hess1[4] = grad1[0] * grad1[1]
                 hess1[5] = grad1[0] * grad1[2]
@@ -579,17 +622,24 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
                 hess1[5] = grad1[1] * grad1[2]
             hess1 *= lam
             hess1[:, ~msk] = 0
+            diag = hess1[:(3+has_mt)]
+            diag[~torch.isfinite(diag)] = 1e-3
+            offdiag = hess1[(3+has_mt):]
+            offdiag[~torch.isfinite(offdiag)] = 0
             hess += hess1
             del hess1
 
-            # increment gradient
+            # grad_crit: multiply by residuals
             grad1 *= res
             grad1 *= lam
+            grad1[~torch.isfinite(grad1)] = 0
             grad += grad1
             del grad1
 
+    del r1, r2s, omt, e1, fit0, omt_x_cosfa
     if do_grad:
         # push gradient and Hessian to recon space
+        grid = smart_grid(aff, obs_shape, recon_shape)
         grad = smart_push(grad, grid, recon_shape)
         hess = smart_push(hess, grid, recon_shape)
         return crit, grad, hess
@@ -681,16 +731,12 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
     # and L to the regularizer. Note that, L = D'WD where D is the
     # gradient operator, D' the divergence and W a diagonal matrix
     # that contains the RLS weights.
-    # We use (H + W*diag(D'D)) as a preconditioner because it is easy to
-    # invert. I think that it works because D'D has a nice form where
-    # its rows sum to zero. Otherwise, we'd need to add a bit of
-    # something on the diagonal of the preconditioner.
-    # Furthermore, diag(D'D) = d*I, where d is the central weight in
-    # the corresponding convolution
+    # We use (H + diag(|D'D|w)) as a preconditioner because it is 
+    # easy to invert and majorises the true Hessian.
     hessp = hess.clone()
-    smo = 2 * torch.as_tensor(vx).square().reciprocal().sum().item()
+    smo = torch.as_tensor(vx).square().reciprocal().sum().item()
     for i, (weight, l) in enumerate(zip(rls, lam)):
-        hessp[i] += l * smo * (weight if weight is not None else 1)
+        hessp[i] += l * (rls_maj(weight, vx) if weight is not None else 4*smo)
 
     def precond(x):
         return hessian_sym_solve(hessp, x)
@@ -733,7 +779,7 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
 
         grad = grad_fwd.square_().sum(-1)
         grad += grad_bwd.square_().sum(-1)
-        grad *= lam / 2.   # average across directions (3) and side (2)
+        grad *= lam / 2.   # average across sides (2)
         return grad
 
     # multiple maps
@@ -744,6 +790,7 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
             rls1 = _nonlin_rls(map, l, '__internal__')
             rls1 = rls1.sqrt_()
             rls.append(rls1)
+        return torch.stack(rls, dim=0)
     else:
         assert norm == 'jtv'
         rls = 0

@@ -75,7 +75,7 @@ def meanm(mats, max_iter=1024, tol=1e-20):
         # Compute sum-of-squares in tangent space (should be zero at optimum)
         sos = mean_log_mat.square().sum()
         # Exponentiate to original space
-        mean_mat = torch.matmul(mean_mat, expm(mean_log_mat), out=mean_mat)
+        mean_mat = torch.matmul(mean_mat, expm(mean_log_mat))
         if sos <= tol:
             break
 
@@ -313,6 +313,11 @@ def is_orthonormal(basis, return_matrix=False):
 def sym_to_full(mat):
     """Transform a symmetric matrix into a full matrix
 
+    Notes
+    -----
+    Backpropagation works at least for torch >= 1.6
+    It should be checked on earlier versions.
+
     Parameters
     ----------
     mat : (..., M * (M+1) // 2) tensor
@@ -374,45 +379,41 @@ def sym_matvec(mat, vec):
         The matrix-vector product
 
     """
-    # make the vector dimension first so that the code is less ugly
     mat, vec = utils.to_max_backend(mat, vec)
+
+    nb_prm = vec.shape[-1]
+    if nb_prm == 1:
+        return mat * vec
+
+    # make the vector dimension first so that the code is less ugly
     mat = utils.movedim(mat, -1, 0)
     vec = utils.movedim(vec, -1, 0)
 
-    nb_prm = len(vec)
-    if nb_prm == 1:
-        mm = mat * vec
-    elif nb_prm == 2:
-        mm = torch.empty_like(vec)
-        mm[0] = mat[0] * vec[0] + mat[2] * vec[1]
-        mm[1] = mat[1] * vec[1] + mat[2] * vec[0]
+    if nb_prm == 2:
+        mm = mat[:nb_prm] * vec
+        mm[0].add_(mat[2] * vec[1])
+        mm[1].add_(mat[2] * vec[0])
     elif nb_prm == 3:
-        mm = torch.empty_like(vec)
-        mm[0] = mat[0] * vec[0] + mat[3] * vec[1] + mat[4] * vec[2]
-        mm[1] = mat[1] * vec[1] + mat[3] * vec[0] + mat[5] * vec[2]
-        mm[2] = mat[2] * vec[2] + mat[4] * vec[0] + mat[5] * vec[1]
+        mm = mat[:nb_prm] * vec
+        mm[0].add_(mat[3] * vec[1]).add_(mat[4] * vec[2])
+        mm[1].add_(mat[3] * vec[0]).add_(mat[5] * vec[2])
+        mm[2].add_(mat[4] * vec[0]).add_(mat[5] * vec[1])
     elif nb_prm == 4:
-        mm = torch.empty_like(vec)
-        mm[0] = mat[0] * vec[0]
-        mm[0] += mat[4] * vec[1]
-        mm[0] += mat[5] * vec[2]
-        mm[0] += mat[6] * vec[3]
-        mm[1] = mat[1] * vec[1]
-        mm[1] += mat[4] * vec[0]
-        mm[1] += mat[7] * vec[2]
-        mm[1] += mat[8] * vec[3]
-        mm[2] = mat[2] * vec[2]
-        mm[2] += mat[5] * vec[0]
-        mm[2] += mat[7] * vec[1]
-        mm[2] += mat[9] * vec[3]
-        mm[3] = mat[3] * vec[3]
-        mm[3] += mat[6] * vec[0]
-        mm[3] += mat[8] * vec[1]
-        mm[3] += mat[9] * vec[2]
+        mm = mat[:nb_prm] * vec
+        mm[0] += (mat[4] * vec[1])
+        mm[0] += (mat[5] * vec[2])
+        mm[0] += (mat[6] * vec[3])
+        mm[1] += (mat[4] * vec[0])
+        mm[1] += (mat[7] * vec[2])
+        mm[1] += (mat[8] * vec[3])
+        mm[2] += (mat[5] * vec[0])
+        mm[2] += (mat[7] * vec[1])
+        mm[2] += (mat[9] * vec[3])
+        mm[3] += (mat[6] * vec[0])
+        mm[3] += (mat[8] * vec[1])
+        mm[3] += (mat[9] * vec[2])
     else:
-        mm = torch.empty_like(vec)
-        for i in range(nb_prm):
-            mm[i] = mat[i] * vec[i]
+        mm = mat[:nb_prm] * vec
         c = nb_prm
         for i in range(nb_prm):
             for j in range(i+1, nb_prm):
@@ -457,19 +458,21 @@ def sym_solve(mat, vec, eps=None):
 
     Notes
     -----
-    `mat` contains only the diagonal and upper part of the matrix, in
-    a flattened array. Elements are ordered as:
-     `[(i, i) for i in range(P)] +
-      [(i, j) for i in range(P) for j in range(i+1, P)]
-
-    Orders up to 4 are implemented in closed-form.
-    Orders > 4 use torch's batched implementation but require
-    building the full matrices.
+    .. Orders up to 4 are implemented in closed-form.
+    .. Orders > 4 use torch's batched implementation but require
+       building the full matrices.
+    .. Backpropagation works at least for torch >= 1.6
+       It should be checked on earlier versions.
 
     Parameters
     ----------
     mat : (..., M*(M+1)//2) tensor
+        A symmetric matrix that is stored in a sparse way.
+        Its elements along the last (flat) dimension are the
+        diagonal elements followed by the flattened upper-half elements.
+        E.g., [a00, a11, aa22, a01, a02, a12]
     vec : (..., M) tensor
+        A vector
     eps : float or (M,) sequence[float], optional
         Smoothing term added to the diagonal of `mat`
 
@@ -484,6 +487,9 @@ def sym_solve(mat, vec, eps=None):
     mat = utils.movedim(mat, -1, 0)
     vec = utils.movedim(vec, -1, 0)
     nb_prm = len(vec)
+
+    shape = utils.expanded_shape(mat.shape[1:], vec.shape[1:])
+    shape = (vec.shape[0], *shape)
 
     diag = mat[:nb_prm]  # diagonal
     uppr = mat[nb_prm:]  # upper triangular part
@@ -501,7 +507,7 @@ def sym_solve(mat, vec, eps=None):
     elif nb_prm == 2:
         det = uppr[0].square().neg_()
         det += diag[0] * diag[1]
-        res = torch.empty_like(vec)
+        res = vec.new_empty(shape)
         res[0] = diag[1] * vec[0] - uppr[0] * vec[1]
         res[1] = diag[0] * vec[1] - uppr[0] * vec[0]
         res /= det
@@ -511,7 +517,7 @@ def sym_solve(mat, vec, eps=None):
             - (diag[0] * uppr[2].square() +
                diag[2] * uppr[0].square() +
                diag[1] * uppr[1].square())
-        res = torch.empty_like(vec)
+        res = vec.new_empty(shape)
         res[0] = (diag[1] * diag[2] - uppr[2].square()) * vec[0] \
                + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[1] \
                + (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[2]
@@ -577,7 +583,7 @@ def sym_solve(mat, vec, eps=None):
                  + uppr[5] * uppr[0].square()
                  - uppr[0] * uppr[1] * uppr[4]
                  - uppr[0] * uppr[2] * uppr[3])
-        res = torch.empty_like(vec)
+        res = vec.new_empty(shape)
         res[0] = (diag[1] * diag[2] * diag[3]
                   - diag[1] * uppr[5].square()
                   - diag[2] * uppr[4].square()
@@ -618,3 +624,45 @@ def sym_solve(mat, vec, eps=None):
         mat = sym_to_full(mat)
         return torch.solve(vec, mat)
 
+
+def sym_inv(mat, diag=False):
+    """Matrix inversion for sparse symmetric matrices.
+
+    Notes
+    -----
+    .. Backpropagation works at least for torch >= 1.6
+       It should be checked on earlier versions.
+
+    Parameters
+    ----------
+    mat : (..., M*(M+1)//2) tensor
+        A symmetric matrix that is stored in a sparse way.
+        Its elements along the last (flat) dimension are the
+        diagonal elements followed by the flattened upper-half elements.
+        E.g., [a00, a11, aa22, a01, a02, a12]
+    diag : bool, default=False
+        If True, only return the diagonal of the inverse
+
+    Returns
+    -------
+    imat : (..., M or M*(M+1)//2) tensor
+
+    """
+    mat = torch.as_tensor(mat)
+    nb_prm = int((math.sqrt(1 + 8 * mat.shape[-1]) - 1) // 2)
+    if diag:
+        imat = mat.new_empty([*mat.shape[:-1], nb_prm])
+    else:
+        imat = torch.empty_like(mat)
+
+    cnt = nb_prm
+    for i in range(nb_prm):
+        e = mat.new_zeros(nb_prm)
+        e[i] = 1
+        vec = sym_solve(mat, e)
+        imat[..., i] = vec[..., i]
+        if not diag:
+            for j in range(i+1, nb_prm):
+                imat[..., cnt] = vec[..., j]
+                cnt += 1
+    return imat

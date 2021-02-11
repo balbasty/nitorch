@@ -675,6 +675,51 @@ def max_shape(*shapes, side='left'):
     return max_shape
 
 
+def expanded_shape(*shapes, side='left'):
+    """Expand input shapes according to broadcasting rules
+
+    Parameters
+    ----------
+    *shapes : sequence[int]
+        Input shapes
+    side : {'left', 'right'}, default='left'
+        Side to add singleton dimensions.
+
+    Returns
+    -------
+    shape : tuple[int]
+        Output shape
+
+    Raises
+    ------
+    ValueError
+        If shapes are not compatible for broadcast.
+
+    """
+    def error(s0, s1):
+        raise ValueError('Incompatible shapes for broadcasting: {} and {}.'
+                         .format(s0, s1))
+
+    # 1. nb dimensions
+    nb_dim = 0
+    for shape in shapes:
+        nb_dim = max(nb_dim, len(shape))
+
+    # 2. enumerate
+    shape = [1] * nb_dim
+    for i, shape1 in enumerate(shapes):
+        pad_size = nb_dim - len(shape1)
+        ones = [1] * pad_size
+        if side == 'left':
+            shape1 = [*ones, *shape1]
+        else:
+            shape1 = [*shape1, *ones]
+        shape = [max(s0, s1) if s0 == 1 or s1 == 1 or s0 == s1
+                 else error(s0, s1) for s0, s1 in zip(shape, shape1)]
+
+    return tuple(shape)
+
+
 def expand(*tensors, side='left', dry_run=False, **kwargs):
     """Broadcast to a given shape.
 
@@ -694,10 +739,15 @@ def expand(*tensors, side='left', dry_run=False, **kwargs):
     -------
     *tensors : tensors 'reshaped' to shape.
 
+    Raises
+    ------
+    ValueError
+        If shapes are not compatible for broadcast.
+
     .. warning::
         This function makes use of zero strides, so more than
         one output values can point to the same memory location.
-        It is advised not too write in these tensors.
+        It is advised not to write in these tensors.
 
     """
     if 'shape' in kwargs:
@@ -706,36 +756,11 @@ def expand(*tensors, side='left', dry_run=False, **kwargs):
         *tensors, shape = tensors
     tensors = [torch.as_tensor(tensor) for tensor in tensors]
 
-    def error(s0, s1):
-        raise ValueError('Incompatible shapes for broadcasting: {} and {}.'
-                         .format(s0, s1))
-
     # -------------
     # Compute shape
     # -------------
-
-    # 1. nb dimensions
+    shape = expanded_shape(shape, *(t.shape for t in tensors), side=side)
     nb_dim = len(shape)
-    for tensor in tensors:
-        nb_dim = max(nb_dim, len(tensor.shape))
-
-    # 2. pad with singleton dimensions
-    pad_size = nb_dim - len(shape)
-    ones = [1] * pad_size
-    if side == 'left':
-        shape = [*ones, *shape]
-    else:
-        shape = [*shape, *ones]
-    for i, tensor in enumerate(tensors):
-        shape1 = tensor.shape
-        pad_size = nb_dim - len(shape1)
-        ones = [1] * pad_size
-        if side == 'left':
-            shape1 = [*ones, *shape1]
-        else:
-            shape1 = [*shape1, *ones]
-        shape = [max(s0, s1) if s0 == 1 or s1 == 1 or s0 == s1
-                 else error(s0, s1) for s0, s1 in zip(shape, shape1)]
 
     if dry_run:
         return tuple(shape)
@@ -1020,7 +1045,7 @@ def isin(tensor, labels):
     return mask
 
 
-def ceil_pow(t, p=2.0, l=2.0):
+def ceil_pow(t, p=2.0, l=2.0, mx=None):
     """Ceils each element in vector t to the
     closest n that satisfies: l*p**n.
 
@@ -1032,6 +1057,7 @@ def ceil_pow(t, p=2.0, l=2.0):
     t : (d, ), tensor
     p : float, default=2.0
     l : float, default=2.0
+    mx : float, optional
 
     Returns
     ----------
@@ -1043,6 +1069,7 @@ def ceil_pow(t, p=2.0, l=2.0):
     dtype0 = ct.dtype
     dtype = torch.float32
     dim = torch.as_tensor(ct, dtype=dtype, device=device)
+    ct.clamp_max_(mx)
     d = len(ct)
     # Build array of l*p**[0, ..., N]
     N = 32

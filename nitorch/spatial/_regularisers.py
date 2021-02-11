@@ -1,9 +1,10 @@
 import torch
 from nitorch import core
-from nitorch.core.utils import movedim, make_vector
+from nitorch.core.utils import movedim, make_vector, unsqueeze
 from nitorch.core.pyutils import make_list
 from nitorch.core.linalg import sym_matvec, sym_solve
 from ._finite_differences import diff, div, diff1d, div1d
+from ._conv import spconv
 import itertools
 
 
@@ -12,8 +13,8 @@ def absolute(field, weight=None):
 
     Parameters
     ----------
-    field : tensor
-    weight : tensor, optional
+    field : (..., *spatial) tensor
+    weight : (..., *spatial) tensor, optional
 
     Returns
     -------
@@ -83,6 +84,7 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weight=None):
         backend = dict(dtype=field.dtype, device=field.device)
         weight = torch.as_tensor(weight, **backend)
         field = field * weight[..., None]
+    dims = list(range(field.dim()-1-dim, field.dim()-1))
     field = div(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
     return field
 
@@ -420,6 +422,9 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
         wb = weight.get('bending', None)
     else:
         wa = wm = wb = weight
+    wa = core.utils.unsqueeze(wa, 0, max(0, dim+1-wa.dim()))
+    wm = core.utils.unsqueeze(wm, 0, max(0, dim+1-wa.dim()))
+    wb = core.utils.unsqueeze(wb, 0, max(0, dim+1-wa.dim()))
 
     y = 0
     if any(absolute):
@@ -452,7 +457,7 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     voxel_size : (sequence of) float, default=1
     bound : str, default='dct2'
     dim : int, default=`gradient.dim()-1`
-    weight : [dict of] (..., *spatial, 1|K) tensor, optional
+    weight : [dict of] (..., 1|K, *spatial) tensor, optional
         If a dict: keys must be in {'absolute', 'membrane', 'bending'}
         Else: the same weight map is shared across penalties.
 
@@ -460,12 +465,13 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     hessian, gradient = core.utils.to_max_backend(hessian, gradient)
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = dim or gradient.dim() - 1
-    channel2last = lambda x: (movedim(x, -(dim + 1), -1)
-                              if x is not None else x)
-    last2channel = lambda x: (movedim(x, -1, -(dim + 1))
-                              if x is not None else x)
-    hessian = channel2last(hessian)
-    gradient = channel2last(gradient)
+    ch2last = lambda x: (movedim(unsqueeze(x, 0, max(0, dim+1-x.dim())),
+                                 -(dim + 1), -1)
+                         if x is not None else x)
+    last2ch = lambda x: (movedim(x, -1, -(dim + 1))
+                         if x is not None else x)
+    hessian = ch2last(hessian)
+    gradient = ch2last(gradient)
     nb_prm = gradient.shape[-1]
     voxel_size = make_vector(voxel_size, dim, **backend)
     is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
@@ -484,39 +490,32 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         wb = weight.get('bending', None)
     else:
         wa = wm = wb = weight
+    if wa is not None:
+        wa = unsqueeze(wa, 0, max(0, dim+1-wa.dim()))
+    if wm is not None:
+        wm = unsqueeze(wm, 0, max(0, dim+1-wm.dim()))
+    if wb is not None:
+        wb = unsqueeze(wb, 0, max(0, dim+1-wb.dim()))
 
     def regulariser(x):
-        x = last2channel(x)
+        x = last2ch(x)
         y = 0
         if any(absolute):
-            y += channel2last(_absolute(x, weight=last2channel(wa))) * absolute
+            y += ch2last(_absolute(x, weight=wa)) * absolute
         if any(membrane):
-            y += channel2last(_membrane(x, weight=last2channel(wm), **fdopt)) * membrane
+            y += ch2last(_membrane(x, weight=wm, **fdopt)) * membrane
         if any(bending):
-            y += channel2last(_bending(x, weight=last2channel(wb), **fdopt)) * bending
+            y += ch2last(_bending(x, weight=wb, **fdopt)) * bending
         return y
 
     # diagonal of the regulariser
     smo = 0
     if any(absolute):
-        if wa is not None:
-            smo += absolute * wa
-        else:
-            smo += absolute
+        smo += absolute * ch2last(absolute_diag(weight=wa))
     if any(membrane):
-        ivx2 = voxel_size.square().reciprocal().sum()
-        if wm is not None:
-            smo += smo + 2 * membrane * ivx2 * wm
-        else:
-            smo += smo + 2 * membrane * ivx2
+        smo += membrane * ch2last(membrane_diag(weight=wm, **fdopt))
     if any(bending):
-        ivx4 = voxel_size.square().square().reciprocal().sum()
-        ivx2 = torch.combinations(voxel_size.square().reciprocal(), r=2)
-        ivx2 = ivx2.prod(dim=-1).sum()
-        if wb is not None:
-            smo = smo + bending * (8 * ivx2 + 6 * ivx4) * wb
-        else:
-            smo = smo + bending * (8 * ivx2 + 6 * ivx4)
+        smo += membrane * ch2last(bending_diag(weight=wb, **fdopt))
 
     if is_diag:
         hessian_smo = hessian + smo
@@ -533,7 +532,7 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     else:
         result = core.optim.cg(forward, gradient, precond=precond,
                                max_iter=100)
-    return last2channel(result)
+    return last2ch(result)
 
 
 def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
@@ -632,3 +631,573 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                                max_iter=100)
     return result
 
+
+# ---- WORK IN PROGRESS ----
+
+
+def absolute_diag(weight=None):
+    """Diagonal of the membrane regulariser.
+
+    Parameters
+    ----------
+    weight : (..., *spatial) tensor
+        Weights from the reweighted least squares scheme
+
+    Returns
+    -------
+    diag : () or (..., *spatial) tensor
+        Convolved weight map if provided.
+        Else, central convolution weight.
+
+    """
+    if weight is None:
+        return 1
+    else:
+        return weight
+
+
+def membrane_weights(field, lam=1, voxel_size=1, bound='dct2',
+                     dim=None, joint=True, return_sum=False):
+    """Update the (L1) weights of the membrane energy.
+
+    Parameters
+    ----------
+    field : (..., K, *spatial) tensor
+        Field
+    lam : float or (K,) sequence[float], default=1
+        Regularisation factor
+    voxel_size : float or sequence[float], default=1
+        Voxel size
+    bound : str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions
+    joint : bool, default=False
+        Joint norm across channels.
+    return_sum : bool, default=False
+
+    Returns
+    -------
+    weight : (..., 1 or K, *spatial) tensor
+        Weights for the reweighted least squares scheme
+    """
+    field = torch.as_tensor(field)
+    dim = dim or field.dim() - 1
+    nb_prm = field.shape[-dim-1]
+    voxel_size = make_vector(voxel_size, dim)
+    lam = make_vector(lam, nb_prm)
+    lam = core.utils.unsqueeze(lam, -1, dim+1)
+    if joint:
+        lam = lam * nb_prm
+    dims = list(range(field.dim()-dim, field.dim()))
+    field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
+    field.square_().mul_(lam)
+    dims = [-1] + ([-dim-2] if joint else [])
+    field = field.sum(dim=dims, keepdims=True)[..., 0].sqrt_()
+    if return_sum:
+        ll = field.sum()
+        return field.clamp_min_(1e-5).reciprocal_(), ll
+    else:
+        return field.clamp_min_(1e-5).reciprocal_()
+
+
+def bending_weights(field, lam=1, voxel_size=1, bound='dct2',
+                     dim=None, joint=True, return_sum=False):
+    """Update the (L1) weights of the membrane energy.
+
+    Parameters
+    ----------
+    field : (..., K, *spatial) tensor
+        Field
+    lam : [(K,) sequence of] float, default=1
+        Regularisation factor
+    voxel_size : [(dim,) sequence of] float, default=1
+        Voxel size
+    bound : [(dim,) sequence of] str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions
+    joint : bool, default=False
+        Joint norm across channels.
+    return_sum : bool, default=False
+
+    Returns
+    -------
+    weight : (..., 1 or K, *spatial) tensor
+        Weights for the reweighted least squares scheme
+    """
+    field = torch.as_tensor(field)
+    dim = dim or field.dim() - 1
+    field = unsqueeze(field, 0, max(0, dim+1-field.dim()))
+    nb_prm = field.shape[-dim-1]
+    voxel_size = make_vector(voxel_size, dim)
+    bound = make_list(bound, dim)
+    lam = make_vector(lam, nb_prm)
+    lam = core.utils.unsqueeze(lam, -1, dim)
+    if joint:
+        lam = lam * nb_prm
+    dims = list(range(field.dim()-dim, field.dim()))
+
+    diffs = []
+    for i in range(dim):
+        for side_i in ('f', 'b'):
+            opti = dict(dim=dims[i], bound=bound[i], side=side_i,
+                        voxel_size=voxel_size[i])
+            di = diff1d(field, **opti)
+            for j in range(i, dim):
+                for side_j in ('f', 'b'):
+                    optj = dict(dim=dims[j], bound=bound[j], side=side_j,
+                                voxel_size=voxel_size[j])
+                    dj = diff1d(di, **optj).square_()
+                    # normalize by number of sides
+                    # + off diagonal -> x2  (upper + lower element)
+                    dj /= (2. if i != j else 4.)
+                    diffs.append(dj)
+    field = sum(diffs).mul_(lam)
+    if joint:
+        field = field.sum(dim=-dim-1, keepdims=True)
+    field = field.sqrt_()
+    if return_sum:
+        ll = field.sum()
+        return field.clamp_min_(1e-5).reciprocal_(), ll
+    else:
+        return field.clamp_min_(1e-5).reciprocal_()
+
+
+def membrane_diag(voxel_size=1, bound='dct2', dim=None, weight=None):
+    """Diagonal of the membrane regulariser.
+
+    If no weight map is provided, the diagonal of the membrane regulariser
+    is a scaled identity with scale `2 * alpha`, where
+    `alpha = vx.reciprocal().square().sum()`
+    However, is a weight map is provided, the diagonal of the regulariser
+    is a convolved version of the weight map. In 2D, the convolution kernel
+    has a first order "diamond" shape:
+                                    b0
+                                b1  a   b1
+                                    b0
+
+    Parameters
+    ----------
+    weight : (..., *spatial) tensor
+        Weights from the reweighted least squares scheme
+    voxel_size : float or sequence[float], default=1
+        Voxel size
+    bound : str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions.
+        Default: from voxel_size
+
+    Returns
+    -------
+    diag : () or (..., *spatial) tensor
+        Convolved weight map if provided.
+        Else, central convolution weight.
+
+    """
+    vx = core.utils.make_vector(voxel_size)
+    if dim is None:
+        dim = len(vx)
+    vx = core.utils.make_vector(vx, dim)
+    if weight is not None:
+        weight = torch.as_tensor(weight)
+        backend = dict(dtype=weight.dtype, device=weight.device)
+        # move spatial dimensions to the front
+        spdim = list(range(weight.dim()-dim, weight.dim()))
+        weight = core.utils.movedim(weight, spdim, list(range(dim)))
+    else:
+        backend = dict(dtype=vx.dtype, device=vx.device)
+    vx = vx.to(**backend)
+    vx = vx.square().reciprocal()
+
+    if weight is None:
+        return 2 * vx.sum()
+
+    from ._finite_differences import _window1d, _lincomb
+    values = [[weight]]
+    dims = [None] + [d for d in range(dim) for _ in range(2)]
+    kernel = [2 * vx.sum()]
+    for d in range(dim):
+        values.extend(_window1d(weight, d, [-1, 1], bound=bound))
+        kernel += [vx[d], vx[d]]
+    weight = _lincomb(values, kernel, dims, ref=weight)
+
+    # send spatial dimensions to the back
+    weight = core.utils.movedim(weight, list(range(dim)), spdim)
+    return weight
+
+
+def membrane_diag_alt(voxel_size=1, bound='dct2', dim=None, weight=None):
+    """Diagonal of the membane regulariser.
+
+    This is an alternate implementation of `membrane_diag` that uses the
+    sparse convolution code, which relies on linear combinations of views
+    into the input tensor. It seems to be a fair bit slower than the
+    implementation that relies on moving windows (maybe because it
+    does a bit more indexing?).
+    For higher orders, we don't have a choice and must use the sparse
+    conv code.
+
+    If no weight map is provided, the diagonal of the membrane regulariser
+    is a scaled identity with scale `2 * alpha`, where
+    `alpha = vx.reciprocal().square().sum()`
+    However, is a weight map is provided, the diagonal of the regulariser
+    is a convolved version of the weight map. In 2D, the convolution kernel
+    has a first order "diamond" shape:
+                                    b0
+                                b1  a   b1
+                                    b0
+    Parameters
+    ----------
+    weight : (..., *spatial) tensor
+        Weights from the reweighted least squares scheme
+    voxel_size : float or sequence[float], default=1
+        Voxel size
+    bound : str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions.
+        Default: from voxel_size
+
+    Returns
+    -------
+    diag : () or (..., *spatial) tensor
+        Convolved weight map if provided.
+        Else, central convolution weight.
+
+    """
+    vx = make_vector(voxel_size)
+    if dim is None:
+        dim = len(vx)
+    vx = make_vector(vx, dim)
+    if weight is not None:
+        weight = torch.as_tensor(weight)
+        backend = dict(dtype=weight.dtype, device=weight.device)
+    else:
+        backend = dict(dtype=vx.dtype, device=vx.device)
+    vx = vx.to(**backend)
+    vx = vx.square().reciprocal()
+
+    if weight is None:
+        return 2 * vx.sum()
+
+    # build sparse kernel
+    kernel = [2 * vx.sum()]
+    center_index = [1] * dim
+    indices = [list(center_index)]
+    for d in range(dim):
+        # cross
+        kernel += [vx[d], vx[d]]
+        index = list(center_index)
+        index[d] = 0
+        indices.append(index)
+        index = list(center_index)
+        index[d] = 2
+        indices.append(index)
+    indices = torch.as_tensor(indices, dtype=torch.long, device=backend['device'])
+    kernel = torch.as_tensor(kernel, **backend)
+    kernel = torch.sparse_coo_tensor(indices.t(), kernel, [3] * dim)
+
+    weight = spconv(weight, kernel, bound=bound, dim=dim)
+    return weight
+
+
+def bending_diag(voxel_size=1, bound='dct2', dim=None, weight=None):
+    """Diagonal of the bending regulariser.
+
+    If no weight map is provided, the diagonal of the bending regulariser
+    is a scaled identity with scale `6 * alpha + 8 * beta`, where
+        - `alpha = vx.reciprocal().square().sum()`
+        - `beta = vx.combinations(r=2).prod(-1).sum()`
+    However, is a weight map is provided, the diagonal of the regulariser
+    is a convolved version of the weight map. In 2D, the convolution kernel
+    has a second order "diamond" shape:
+                                    c1
+                                d   b0  d
+                            c1  b1  a   b1  c1
+                                d   b0  d
+                                    c0
+
+    Parameters
+    ----------
+    weight : (..., *spatial) tensor
+        Weights from the reweighted least squares scheme
+    voxel_size : float or sequence[float], default=1
+        Voxel size
+    bound : str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions.
+        Default: from voxel_size
+
+    Returns
+    -------
+    diag : () or (..., *spatial) tensor
+        Convolved weight map if provided.
+        Else, central convolution weight.
+
+    """
+    vx = make_vector(voxel_size)
+    if dim is None:
+        dim = len(vx)
+    vx = make_vector(vx, dim)
+    if weight is not None:
+        weight = torch.as_tensor(weight)
+        backend = dict(dtype=weight.dtype, device=weight.device)
+    else:
+        backend = dict(dtype=vx.dtype, device=vx.device)
+    vx = vx.to(**backend)
+    vx = vx.square().reciprocal()
+    cvx = torch.combinations(vx, r=2).prod(dim=-1)
+    ivx = torch.combinations(torch.arange(dim), r=2)
+
+    if weight is None:
+        return 6 * vx.sum() + 8 * cvx.sum()
+
+    # build sparse kernel
+    kernel = [10 * vx.sum() + 8 * cvx.sum()]
+    center_index = [2] * dim
+    indices = [list(center_index)]
+    for d in range(dim):
+        # cross
+        subcvx = sum(cvx1 for cvx1, ivx1 in zip(cvx, ivx) if d in ivx1)
+        w1 = 6 * vx[d].square() + 4 * subcvx
+        w2 = vx[d].square()
+        kernel += [w1, w1, w2, w2]
+        index = list(center_index)
+        index[d] = 1
+        indices.append(index)
+        index = list(center_index)
+        index[d] = 3
+        indices.append(index)
+        index = list(center_index)
+        index[d] = 0
+        indices.append(index)
+        index = list(center_index)
+        index[d] = 4
+        indices.append(index)
+        # corners
+        for dd in range(d+1, dim):
+            subcvx = [cvx1 for cvx1, ivx1 in zip(cvx, ivx)
+                      if ivx1[0] == d and ivx1[1] == dd][0]
+            kernel += [subcvx] * 4
+            index = list(center_index)
+            index[d] = 1
+            index[dd] = 1
+            indices.append(index)
+            index = list(center_index)
+            index[d] = 1
+            index[dd] = 3
+            indices.append(index)
+            index = list(center_index)
+            index[d] = 3
+            index[dd] = 1
+            indices.append(index)
+            index = list(center_index)
+            index[d] = 3
+            index[dd] = 3
+            indices.append(index)
+    indices = torch.as_tensor(indices, dtype=torch.long, device=backend['device'])
+    kernel = torch.as_tensor(kernel, **backend)
+    kernel = torch.sparse_coo_tensor(indices.t(), kernel, [5] * dim)
+
+    weight = spconv(weight, kernel, bound=bound, dim=dim)
+    return weight
+
+
+def membrane_diag_old(voxel_size=1, bound='dct2', dim=None, weight=None):
+    """Diagonal of the membrane regulariser.
+
+    This is an old implementation that hapeens to be slower than
+    a simpler/more generic one.
+
+    Parameters
+    ----------
+    weight : (..., *spatial) tensor
+        Weights from the reweighted least squares scheme
+    voxel_size : float or sequence[float], default=1
+        Voxel size
+    bound : str, default='dct2'
+        Boundary condition.
+    dim : int, optional
+        Number of spatial dimensions.
+        Default: from voxel_size
+
+    Returns
+    -------
+    diag : () or (..., *spatial) tensor
+        Convolved weight map if provided.
+        Else, central convolution weight.
+
+    """
+    vx = core.utils.make_vector(voxel_size)
+    if dim is None:
+        dim = len(vx)
+    vx = core.utils.make_vector(vx, dim)
+    if weight is not None:
+        weight = torch.as_tensor(weight)
+        backend = dict(dtype=weight.dtype, device=weight.device)
+        # move spatial dimensions to the front
+        spdim = list(range(weight.dim() - dim, weight.dim()))
+        weight = core.utils.movedim(weight, spdim, list(range(dim)))
+    else:
+        backend = dict(dtype=vx.dtype, device=vx.device)
+    vx = vx.to(**backend)
+    vx = vx.square().reciprocal()
+
+    if weight is None:
+        return 2 * vx.sum()
+
+    w = weight  # alias for readability
+    out = (2 * vx.sum()) * w
+
+    # define out-of-bound coordinate on the left and right
+    # and the eventual value transformer depending on the
+    # boundary condition
+    f = (1 if bound == 'dct1' else -1 if bound == 'dft' else 0)
+    l = (-2 if bound == 'dct1' else 0 if bound == 'dft' else -1)
+    m = ((lambda w: -w) if bound == 'dst2' else
+         (lambda w: 0) if bound in ('dst1', 'zero') else
+         (lambda w: w))
+
+    if dim == 3:
+        # center
+        out[1:-1, 1:-1, 1:-1] += (
+                (w[:-2, 1:-1, 1:-1] + w[2:, 1:-1, 1:-1]) * vx[0] +
+                (w[1:-1, :-2, 1:-1] + w[1:-1, 2:, 1:-1]) * vx[1] +
+                (w[1:-1, 1:-1, :-2] + w[1:-1, 1:-1, 2:]) * vx[2])
+        # sides
+        out[0, 1:-1, 1:-1] += (
+                (m(w[f, 1:-1, 1:-1]) + w[1, 1:-1, 1:-1]) * vx[0] +
+                (w[0, :-2, 1:-1] + w[0, 2:, 1:-1]) * vx[1] +
+                (w[0, 1:-1, :-2] + w[0, 1:-1, 2:]) * vx[2])
+        out[-1, 1:-1, 1:-1] += (
+                (w[-2, 1:-1, 1:-1] + m(w[l, 1:-1, 1:-1])) * vx[0] +
+                (w[-1, :-2, 1:-1] + w[-1, 2:, 1:-1]) * vx[1] +
+                (w[-1, 1:-1, :-2] + w[-1, 1:-1, 2:]) * vx[2])
+        out[1:-1, 0, 1:-1] += (
+                (w[:-2, 0, 1:-1] + w[2:, 0, 1:-1]) * vx[0] +
+                (m(w[1:-1, f, 1:-1]) + w[1:-1, 1, 1:-1]) * vx[1] +
+                (w[1:-1, 0, :-2] + w[1:-1, 0, 2:]) * vx[2])
+        out[1:-1, -1, 1:-1] += (
+                (w[:-2, -1, 1:-1] + w[2:, -1, 1:-1]) * vx[0] +
+                (w[1:-1, -2, 1:-1] + m(w[1:-1, l, 1:-1])) * vx[1] +
+                (w[1:-1, -1, :-2] + w[1:-1, -1, 2:]) * vx[2])
+        out[1:-1, 1:-1, 0] += (
+                (w[:-2, 1:-1, 0] + w[2:, 1:-1, 0]) * vx[0] +
+                (w[1:-1, :-2, 0] + w[1:-1, 2:, 0]) * vx[1] +
+                (m(w[1:-1, 1:-1, f]) + w[1:-1, 1:-1, 1]) * vx[2])
+        out[1:-1, 1:-1, -1] += (
+                (w[:-2, 1:-1, -1] + w[2:, 1:-1, -1]) * vx[0] +
+                (w[1:-1, :-2, -1] + w[1:-1, 2:, -1]) * vx[1] +
+                (w[1:-1, 1:-1, -2] + m(w[1:-1, 1:-1, l])) * vx[2])
+        # edges
+        out[0, 0, 1:-1] += (
+                (m(w[f, 0, 1:-1]) + w[1, 0, 1:-1]) * vx[0] +
+                (m(w[0, f, 1:-1]) + w[0, 1, 1:-1]) * vx[1] +
+                (w[0, 0, :-2] + w[0, 0, 2:]) * vx[2])
+        out[0, -1, 1:-1] += (
+                (m(w[f, -1, 1:-1]) + w[1, -1, 1:-1]) * vx[0] +
+                (w[0, -2, 1:-1] + m(w[0, l, 1:-1])) * vx[1] +
+                (w[0, -1, :-2] + w[0, -1, 2:]) * vx[2])
+        out[-1, 0, 1:-1] += (
+                (w[-1, 0, 1:-1] + m(w[l, 0, 1:-1])) * vx[0] +
+                (m(w[-1, f, 1:-1]) + w[-1, 1, 1:-1]) * vx[1] +
+                (w[-1, 0, :-2] + w[-1, 0, 2:]) * vx[2])
+        out[-1, -1, 1:-1] += (
+                (w[-2, -1, 1:-1] + m(w[l, -1, 1:-1])) * vx[0] +
+                (w[-1, -2, 1:-1] + m(w[-1, l, 1:-1])) * vx[1] +
+                (w[-1, -1, :-2] + w[-1, -1, 2:]) * vx[2])
+        out[0, 1:-1, 0] += (
+                (m(w[f, 1:-1, 0]) + w[1, 1:-1, 0]) * vx[0] +
+                (w[0, :-2, 0] + w[0, 2:, 0]) * vx[1] +
+                (m(w[0, 1:-1, f]) + w[0, 1:-1, 1]) * vx[2])
+        out[0, 1:-1, -1] += (
+                (m(w[f, 1:-1, -1]) + w[1, 1:-1, -1]) * vx[0] +
+                (w[0, :-2, -1] + w[0, 2:, -1]) * vx[1] +
+                (w[0, 1:-1, -2] + m(w[0, 1:-1, l])) * vx[2])
+        out[-1, 1:-1, 0] += (
+                (w[-2, 1:-1, 0] + w[l, 1:-1, 0]) * vx[0] +
+                (w[-1, :-2, 0] + w[-1, 2:, 0]) * vx[1] +
+                (w[-1, 1:-1, f] + w[-1, 1:-1, -1]) * vx[2])
+        out[-1, 1:-1, -1] += (
+                (w[-2, 1:-1, -1] + m(w[l, 1:-1, -1])) * vx[0] +
+                (w[-1, :-2, -1] + w[-1, 2:, -1]) * vx[1] +
+                (w[-1, 1:-1, -2] + m(w[-1, 1:-1, l])) * vx[2])
+        out[1:-1, 0, 0] += (
+                (w[:-2, 0, 0] + w[2:, 0, 0]) * vx[0] +
+                (w[1:-1, f, 0] + w[1:-1, 1, 0]) * vx[1] +
+                (w[1:-1, 0, f] + w[1:-1, 0, 1]) * vx[2])
+        out[1:-1, 0, -1] += (
+                (w[:-2, 0, -1] + w[2:, 0, -1]) * vx[0] +
+                (w[1:-1, f, -1] + w[1:-1, 1, -1]) * vx[1] +
+                (w[1:-1, 0, -2] + w[1:-1, 0, l]) * vx[2])
+        out[1:-1, -1, 0] += (
+                (w[:-2, 0, 0] + w[2:, -1, 0]) * vx[0] +
+                (w[1:-1, -2, 0] + w[1:-1, l, 0]) * vx[1] +
+                (w[1:-1, 0, f] + w[1:-1, -1, 1]) * vx[2])
+        out[1:-1, -1, -1] += (
+                (w[:-2, -1, -1] + w[2:, -1, -1]) * vx[0] +
+                (w[1:-1, -2, -1] + m(w[1:-1, l, -1])) * vx[1] +
+                (w[1:-1, -1, -2] + m(w[1:-1, -1, l])) * vx[2])
+
+        # corners
+        out[0, 0, 0] += ((m(w[f, 0, 0]) + w[1, 0, 0]) * vx[0] +
+                         (m(w[0, f, 0]) + w[0, 1, 0]) * vx[1] +
+                         (m(w[0, 0, f]) + w[0, 0, 1]) * vx[2])
+        out[0, 0, -1] += ((m(w[f, 0, -1]) + w[1, 0, -1]) * vx[0] +
+                          (m(w[0, f, -1]) + w[0, 1, -1]) * vx[1] +
+                          (w[0, 0, -2] + m(w[0, 0, l])) * vx[2])
+        out[0, -1, 0] += ((m(w[f, -1, 0]) + w[1, -1, 0]) * vx[0] +
+                          (w[0, -2, 0] + m(w[0, l, 0])) * vx[1] +
+                          (m(w[0, -1, f]) + w[0, -1, 1]) * vx[2])
+        out[0, -1, -1] += ((m(w[f, -1, -1]) + w[1, -1, -1]) * vx[0] +
+                           (w[0, -2, -1] + m(w[0, l, -1])) * vx[1] +
+                           (w[0, -1, -2] + m(w[0, -1, l])) * vx[2])
+        out[-1, 0, 0] += ((w[-2, 0, 0] + w[l, 0, 0]) * vx[0] +
+                          (m(w[-1, f, 0]) + w[-1, 1, 0]) * vx[1] +
+                          (m(w[-1, 0, f]) + w[-1, 0, 1]) * vx[2])
+        out[-1, 0, -1] += ((w[-2, 0, -1] + m(w[l, 0, -1])) * vx[0] +
+                           (m(w[-1, f, -1]) + w[-1, 1, -1]) * vx[1] +
+                           (w[-1, 0, -2] + m(w[-1, 0, l])) * vx[2])
+        out[-1, -1, 0] += ((w[-2, -1, 0] + m(w[l, -1, 0])) * vx[0] +
+                           (w[-1, -2, 0] + m(w[-1, l, 0])) * vx[1] +
+                           (m(w[-1, -1, f]) + w[-1, -1, 1]) * vx[2])
+        out[-1, -1, -1] += ((w[-2, -1, -1] + m(w[l, -1, -1])) * vx[0] +
+                            (w[-1, -2, -1] + m(w[-1, l, -1])) * vx[1] +
+                            (w[-1, -1, -2] + m(w[-1, -1, l])) * vx[2])
+    elif dim == 2:
+        # center
+        out[1:-1, 1:-1] += ((w[:-2, 1:-1] + w[2:, 1:-1]) * vx[0] +
+                            (w[1:-1, :-2] + w[1:-1, 2:]) * vx[1])
+        # edges
+        out[0, 1:-1] += ((m(w[f, 1:-1]) + w[1, 1:-1]) * vx[0] +
+                         (w[0, :-2] + w[0, 2:]) * vx[1])
+        out[-1, 1:-1] += ((w[-2, 1:-1] + m(w[l, 1:-1])) * vx[0] +
+                          (w[-1, :-2] + w[-1, 2:]) * vx[1])
+        out[1:-1, 0] += ((w[:-2, 0] + w[2:, 0]) * vx[0] +
+                         (m(w[1:-1, f]) + w[1:-1, 1]) * vx[1])
+        out[1:-1, -1] += ((w[:-2, -1] + w[2:, -1]) * vx[0] +
+                          (w[1:-1, -2] + m(w[1:-1, l])) * vx[1])
+        # corners
+        out[0, 0] += ((m(w[f, 0]) + w[1, 0]) * vx[0] +
+                      (m(w[0, f]) + w[0, 1]) * vx[1])
+        out[0, -1] += ((m(w[f, -1]) + w[1, -1]) * vx[0] +
+                       (w[0, -2] + m(w[0, l])) * vx[1])
+        out[-1, 0] += ((w[-1, 0] + m(w[l, 0])) * vx[0] +
+                       (m(w[-1, f]) + w[-1, 1]) * vx[1])
+        out[-1, -1] += ((w[-2, -1] + m(w[l, -1])) * vx[0] +
+                        (w[-1, -2] + w[-1, l]) * vx[1])
+    elif dim == 1:
+        # center
+        out[1:-1] += (w[:-2] + w[2:]) * vx[0]
+        # corners
+        out[0] += (m(w[f]) + w[1]) * vx[0]
+        out[-1] += (w[-2] + m(w[l])) * vx[0]
+    else:
+        raise NotImplementedError
+
+    # send spatial dimensions to the back
+    out = core.utils.movedim(out, list(range(dim)), spdim)
+    return out

@@ -1,6 +1,7 @@
 """Tools to ease model training (like torch.ignite)"""
 
 import torch
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from nitorch.core.utils import benchmark
 from nitorch.core.pyutils import make_tuple
 from nitorch.nn.modules import Module
@@ -17,14 +18,14 @@ except ImportError:
         raise ImportError('Optional dependency TensorBoard not found')
 
 
-def split_train_val_test(data, split=[0.5, 0.25, 0.25], shuffle=False):
+def split_train_val_test(data, split=[0.6, 0.1, 0.3], shuffle=False):
     """Split sequence of data into train, validation and test.
 
     Parameters
     ----------
     data : [N,] list
         Input data.
-    split : [3,] list, default=[0.5, 0.25, 0.25]
+    split : [3,] list, default=[0.6, 0.2, 0.2]
         Train, validation, test fractions.
     suffle : bool, default=False
         Randomly shuffle input data (with seed for reproducibility)
@@ -141,7 +142,8 @@ class ModelTrainer:
                  load_model=None,
                  load_optimizer=None,
                  show_losses=True,
-                 show_metrics=False):
+                 show_metrics=False,
+                 scheduler=ReduceLROnPlateau):
         """
 
         Parameters
@@ -167,6 +169,7 @@ class ModelTrainer:
             implemented), its length is used. Else, the training set
             is assumed to be infinite and the default number of steps
             is 100.
+        scheduler : Scheduler, default=ReduceLROnPlateau
 
         Other Parameters
         ----------------
@@ -231,6 +234,9 @@ class ModelTrainer:
         self.device = device or 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = torch.device(self.device)
         self.dtype = dtype or torch.get_default_dtype()
+        self.scheduler = scheduler
+        if self.scheduler is not None:
+            self.scheduler = self.scheduler(self.optimizer)
 
         if self.load_model:
             self.model.load_state_dict(torch.load(self.load_model))
@@ -320,8 +326,8 @@ class ModelTrainer:
             # forward pass
             batch = make_tuple(batch)
             batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
-            batch = tuple(b.to(dtype=self.dtype) 
-                          if b.dtype in (torch.half, torch.float, torch.double) 
+            batch = tuple(b.to(dtype=self.dtype)
+                          if b.dtype in (torch.half, torch.float, torch.double)
                           else b for b in batch)
             nb_batches += batch[0].shape[0]
             self.optimizer.zero_grad()
@@ -360,6 +366,8 @@ class ModelTrainer:
                 for func in self._tensorboard_callbacks['train']['epoch']:
                     func(self.tensorboard, epoch, loss, losses, metrics)
 
+        return epoch_loss
+
     def _eval(self, epoch=0):
         """Evaluate once"""
         if self.eval_set is None:
@@ -378,8 +386,8 @@ class ModelTrainer:
                 # forward pass
                 batch = make_tuple(batch)
                 batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
-                batch = tuple(b.to(dtype=self.dtype) 
-                              if b.dtype in (torch.half, torch.float, torch.double) 
+                batch = tuple(b.to(dtype=self.dtype)
+                              if b.dtype in (torch.half, torch.float, torch.double)
                               else b for b in batch)
                 nb_batches += batch[0].shape[0]
                 self.optimizer.zero_grad()
@@ -412,6 +420,9 @@ class ModelTrainer:
                 self.model.board(self.tensorboard, batch, output)
                 for func in self._tensorboard_callbacks['eval']['epoch']:
                     func(self.tensorboard, epoch, loss, losses, metrics)
+
+        return epoch_loss
+
 
     def _print(self, mode, n_epoch, n_batch, nb_steps, loss,
                losses=None, metrics=None, last=False):
@@ -563,10 +574,18 @@ class ModelTrainer:
                 self._eval(self.epoch)
                 self._save(self.epoch)
                 for self.epoch in range(self.epoch+1, self.nb_epoch+1):
-                    self._train(self.epoch)
-                    self._eval(self.epoch)
+                    train_loss = self._train(self.epoch)
+                    val_loss = self._eval(self.epoch)
                     self._save(self.epoch)
-
+                    # incorporate learning rate scheduler
+                    if self.scheduler is not None:
+                        sched_loss = val_loss
+                        if sched_loss is None:
+                            sched_loss = train_loss
+                        if isinstance(self.scheduler, ReduceLROnPlateau):
+                            self.scheduler.step(sched_loss)
+                        else:
+                            self.scheduler.step()
     def eval(self):
         """Launch evaluation"""
         self._hello('eval')
@@ -611,4 +630,3 @@ class ModelTrainer:
             self._eval(self.epoch)
             self._save(self.epoch)
             self.save_random_state()
-

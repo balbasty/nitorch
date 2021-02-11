@@ -74,7 +74,7 @@ class BaseND:
     -------
     detach_position()                       Detach scanner position (-> None)
     detach_position_()                      > Same but in-place
-    fdata(cache=True)                       Load data to memory
+    fdata(cache=False)                      Load data to memory
     discard()                               Delete cached data
 
     """
@@ -290,7 +290,7 @@ class BaseND:
             self._fdata[item] = value
         return self
 
-    def fdata(self, dtype=None, device=None, rand=True, cache=True, **kwargs):
+    def fdata(self, dtype=None, device=None, rand=True, cache=False, **kwargs):
         """Get scaled floating-point data.
 
         Parameters
@@ -299,7 +299,7 @@ class BaseND:
         device : torch.device, default='cpu'
         rand : bool, default=True
             Add random noise if raw data is integer
-        cache : bool, default=True
+        cache : bool, default=False
             Cache the data in memory so that it does not need to be
             loaded again next time
 

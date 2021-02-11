@@ -74,6 +74,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
     tr = make_list(tr)
     fa = make_list(fa)
     mtpulse = make_list(mtpulse)
+    mtpulse = [bool(p) for p in mtpulse]
     sigma = make_list(sigma)
     transmit = make_list(transmit or [])
     receive = make_list(receive or [])
@@ -114,6 +115,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
         r2s = ParameterMap(r2s)
     if has_mt and not isinstance(mt, ParameterMap):
         mt = ParameterMap(mt)
+        mt.unit = '%'
 
     # 4) ensure all fields are `PrecomputedFieldMap`s
     for n in range(nb_contrasts):
@@ -159,7 +161,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
     # 7) generate noise-free signal
     contrasts = []
     for n in range(nb_contrasts):
-
+        
         shape1 = shape[n]
         if shape1 is None:
             shape1 = pd.shape
@@ -177,21 +179,29 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
 
         if aff1 is not None:
             mat = core.linalg.lmdiv(pd.affine.to(**backend), aff1)
-            grid = smart_grid(mat, shape1, pd.shape)
+            grid = smart_grid(mat, shape1, pd.shape, force=True)
             prm1 = smart_pull(logprm, grid)
-            del grid
+            inplace = grid is not None
             f1pd, f1r1, f1r2s, f1mt = unstack_maps(prm1, has_r2s, has_mt)
-            f1pd, f1r1, f1r2s, f1mt = exp_maps_(f1pd, f1r1, f1r2s, f1mt)
+            f1pd, f1r1, f1r2s, f1mt = exp_maps(f1pd, f1r1, f1r2s, f1mt, inplace=inplace)
         else:
             f1pd, f1r1, f1r2s, f1mt = (fpd, fr1, fr2s, fmt)
-            f1pd = f1pd.clone()  # clone it so that we can work in-place later
+            # clone it so that we can work in-place later
+            f1pd = f1pd.clone()
+            f1r1 = f1r1.clone()
+            if f1r2s is not None:
+                f1r2s = f1r2s.clone()
+            if f1mt is not None:
+                f1mt = f1mt.clone()
 
         if transmit1 is not None:
+            unit = transmit1.unit
+            taff1 = transmit1.affine.to(**backend)
             transmit1 = transmit1.fdata(**backend)
-            if transmit1.unit in ('%', 'pct', 'p.u'):
+            if unit in ('%', 'pct', 'p.u'):
                 transmit1 = transmit1 / 100.
             if aff1 is not None:
-                mat = core.linalg.lmdiv(transmit1.affine.to(**backend), aff1)
+                mat = core.linalg.lmdiv(taff1, aff1)
                 grid = smart_grid(mat, shape1, transmit1.shape)
                 transmit1 = smart_pull(transmit1[None], grid)[0]
                 del grid
@@ -199,17 +209,19 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
             del transmit1
 
         if receive1 is not None:
+            unit = receive1.unit
+            raff1 = receive1.affine.to(**backend)
             receive1 = receive1.fdata(**backend)
-            if receive1.unit in ('%', 'pct', 'p.u'):
+            if unit in ('%', 'pct', 'p.u'):
                 receive1 = receive1 / 100.
             if aff1 is not None:
-                mat = core.linalg.lmdiv(receive1.affine.to(**backend), aff1)
+                mat = core.linalg.lmdiv(raff1, aff1)
                 grid = smart_grid(mat, shape1, receive1.shape)
                 receive1 = smart_pull(receive1[None], grid)[0]
                 del grid
             f1pd = f1pd * receive1
             del receive1
-
+            
         # generate signal
         flash = f1pd
         flash *= fa1.sin()
@@ -238,7 +250,7 @@ def gre(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
                                  'an R2* must be provided.')
             te1 = te1.reshape([-1] + [1] * f1r2s.dim())
             flash = flash * (-te1 * f1r2s).exp_()
-            del r2s
+            del f1r2s
 
         # sample noise
         if sigma1:

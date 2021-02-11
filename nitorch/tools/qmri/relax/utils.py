@@ -69,7 +69,7 @@ def hessian_sym_matmul(hess, grad):
         return mm
 
 
-def hessian_sym_loaddiag(hess, eps=None):
+def hessian_sym_loaddiag(hess, eps=None, eps2=None):
     """Load the diagonal of the (symmetric) Hessian
 
     `hess` contains only the diagonal and upper part of the matrix, in
@@ -94,8 +94,53 @@ def hessian_sym_loaddiag(hess, eps=None):
     weight = hess[:nb_prm].max(dim=0, keepdim=True).values
     weight.clamp_min_(eps)
     weight *= eps
+    if eps2:
+        weight += eps2
     hess[:nb_prm] += weight
     return hess
+
+
+def hessian_sym_inv(hess, diag=False):
+    """Matrix inversion for sparse symmetric hessians.
+
+    `hess` contains only the diagonal and upper part of the matrix, in
+    a flattened array. Elements are ordered as:
+     `[(i, i) for i in range(P)] +
+      [(i, j) for i in range(P) for j in range(i+1, P)]
+
+    Orders up to 4 are implemented in closed-form.
+    Orders > 4 use torch's batched implementation but require
+    building the full matrices.
+
+    Parameters
+    ----------
+    hess : (P*(P+1)//2, ...) tensor
+        Sparse symmetric matrix
+    diag : bool, default=False
+        If True, only return the diagonal of the inverse
+
+    Returns
+    -------
+    result : (P*(P+1)//2, ...) tensor
+
+    """
+    nb_prm = int((math.sqrt(1 + 8 * len(hess)) - 1)//2)
+    if diag:
+        out = hess.new_empty([nb_prm, *hess.shape[1:]])
+    else:
+        out = torch.empty_like(hess)
+
+    cnt = nb_prm
+    for i in range(nb_prm):
+        e = hess.new_zeros(nb_prm)
+        e[i] = 1
+        vec = hessian_sym_solve(hess, e)
+        out[i] = vec[i]
+        if not diag:
+            for j in range(i+1, nb_prm):
+                out[cnt] = vec[j]
+                cnt += 1
+    return out
 
 
 def hessian_sym_solve(hess, grad, lam=None):
@@ -128,6 +173,12 @@ def hessian_sym_solve(hess, grad, lam=None):
     backend = dict(dtype=hess.dtype, device=hess.device)
     nb_prm = len(grad)
 
+    grad_shape = grad.shape[1:]
+    hess_shape = hess.shape[1:]
+    grad_shape = (1,) * max(0, len(hess_shape) - len(grad_shape)) + grad_shape
+    hess_shape = (1,) * max(0, len(grad_shape) - len(hess_shape)) + hess_shape
+    res_shape = tuple([max(g, h) for g, h in zip(grad_shape, hess_shape)])
+    
     diag = hess[:nb_prm]  # diagonal
     uppr = hess[nb_prm:]  # upper triangular part
 
@@ -143,7 +194,7 @@ def hessian_sym_solve(hess, grad, lam=None):
     elif nb_prm == 2:
         det = uppr[0].square().neg_()
         det += diag[0] * diag[1]
-        res = torch.empty_like(grad)
+        res = grad.new_empty([nb_prm, *res_shape])
         res[0] = diag[1] * grad[0] - uppr[0] * grad[1]
         res[1] = diag[0] * grad[1] - uppr[0] * grad[0]
         res /= det
@@ -153,7 +204,7 @@ def hessian_sym_solve(hess, grad, lam=None):
             - (diag[0] * uppr[2].square() +
                diag[2] * uppr[0].square() +
                diag[1] * uppr[1].square())
-        res = torch.empty_like(grad)
+        res = grad.new_empty([nb_prm, *res_shape])
         res[0] = (diag[1] * diag[2] - uppr[2].square()) * grad[0] \
                + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * grad[1] \
                + (uppr[0] * uppr[2] - diag[1] * uppr[1]) * grad[2]
@@ -219,7 +270,7 @@ def hessian_sym_solve(hess, grad, lam=None):
                  + uppr[5] * uppr[0].square()
                  - uppr[0] * uppr[1] * uppr[4]
                  - uppr[0] * uppr[2] * uppr[3])
-        res = torch.empty_like(grad)
+        res = grad.new_empty([nb_prm, *res_shape])
         res[0] = (diag[1] * diag[2] * diag[3]
                   - diag[1] * uppr[5].square()
                   - diag[2] * uppr[4].square()
@@ -258,7 +309,7 @@ def hessian_sym_solve(hess, grad, lam=None):
         raise NotImplemented
 
 
-def smart_grid(aff, shape, inshape=None):
+def smart_grid(aff, shape, inshape=None, force=False):
     """Generate a sampling grid iff it is not the identity.
 
     Parameters
@@ -279,7 +330,7 @@ def smart_grid(aff, shape, inshape=None):
     backend = dict(dtype=aff.dtype, device=aff.device)
     identity = torch.eye(aff.shape[-1], **backend)
     inshape = inshape or shape
-    if torch.allclose(aff, identity) and shape == inshape:
+    if not force and torch.allclose(aff, identity) and shape == inshape:
         return None
     return spatial.affine_grid(aff, shape)
 
@@ -327,3 +378,230 @@ def smart_push(tensor, grid, shape=None):
         return tensor
     return spatial.grid_push(tensor[None, ...], grid[None, ...], shape)[0]
 
+
+def reg(tensor, vx=1., rls=None, lam=1., do_grad=True):
+    """Compute the gradient of the regularisation term.
+
+    The regularisation term has the form:
+    `0.5 * lam * sum(w[i] * (g+[i]**2 + g-[i]**2) / 2)`
+    where `i` indexes a voxel, `lam` is the regularisation factor,
+    `w[i]` is the RLS weight, `g+` and `g-` are the forward and
+    backward spatial gradients of the parameter map.
+
+    Parameters
+    ----------
+    tensor : (K, *shape) tensor
+        Parameter map
+    vx : float or sequence[float], default=1
+        Voxel size
+    rls : (K|1, *shape) tensor, optional
+        Weights from the reweighted least squares scheme
+    lam : float or sequence[float], default=1
+        Regularisation factor
+    do_grad : bool, default=True
+        Return both the criterion and gradient
+
+    Returns
+    -------
+    reg : () tensor[double]
+        Regularisation term
+    grad : (K, *shape) tensor
+        Gradient with respect to the parameter map
+
+    """
+    nb_prm = tensor.shape[0]
+    backend = dict(dtype=tensor.dtype, device=tensor.device)
+    vx = core.utils.make_vector(vx, 3, **backend)
+    lam = core.utils.make_vector(lam, nb_prm, **backend)
+    
+    grad_fwd = spatial.diff(tensor, dim=[1, 2, 3], voxel_size=vx, side='f')
+    grad_bwd = spatial.diff(tensor, dim=[1, 2, 3], voxel_size=vx, side='b')
+    if rls is not None:
+        grad_fwd *= rls[..., None]
+        grad_bwd *= rls[..., None]
+    grad_fwd = spatial.div(grad_fwd, dim=[1, 2, 3], voxel_size=vx, side='f')
+    grad_bwd = spatial.div(grad_bwd, dim=[1, 2, 3], voxel_size=vx, side='b')
+
+    grad = grad_fwd
+    grad += grad_bwd
+    grad *= lam.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) / 2.
+    # ^ average across side
+
+    if do_grad:
+        reg = (tensor * grad).sum(dtype=torch.double)
+        return 0.5 * reg, grad
+    else:
+        grad *= tensor
+        return 0.5 * grad.sum(dtype=torch.double)
+    
+
+def reg1(tensor, vx=1., rls=None, lam=1., do_grad=True):
+    """Compute the gradient of the regularisation term.
+
+    The regularisation term has the form:
+    `0.5 * lam * sum(w[i] * (g+[i]**2 + g-[i]**2) / 2)`
+    where `i` indexes a voxel, `lam` is the regularisation factor,
+    `w[i]` is the RLS weight, `g+` and `g-` are the forward and
+    backward spatial gradients of the parameter map.
+
+    Parameters
+    ----------
+    tensor : (*shape) tensor
+        Parameter map
+    vx : float or sequence[float], default=1
+        Voxel size
+    rls : (*shape) tensor, optional
+        Weights from the reweighted least squares scheme
+    lam : float, default=1
+        Regularisation factor
+    do_grad : bool, default=True
+        Return both the criterion and gradient
+
+    Returns
+    -------
+    reg : () tensor[double]
+        Regularisation term
+    grad : (*shape) tensor
+        Gradient with respect to the parameter map
+
+    """
+
+    grad_fwd = spatial.diff(tensor, dim=[0, 1, 2], voxel_size=vx, side='f')
+    grad_bwd = spatial.diff(tensor, dim=[0, 1, 2], voxel_size=vx, side='b')
+    if rls is not None:
+        grad_fwd *= rls[..., None]
+        grad_bwd *= rls[..., None]
+    grad_fwd = spatial.div(grad_fwd, dim=[0, 1, 2], voxel_size=vx, side='f')
+    grad_bwd = spatial.div(grad_bwd, dim=[0, 1, 2], voxel_size=vx, side='b')
+
+    grad = grad_fwd
+    grad += grad_bwd
+    grad *= lam / 2.   # average across directions (3) and side (2)
+
+    if do_grad:
+        reg = (tensor * grad).sum(dtype=torch.double)
+        return 0.5 * reg, grad
+    else:
+        grad *= tensor
+        return 0.5 * grad.sum(dtype=torch.double)
+
+def rls_maj(rls, vx=1., lam=1.):
+    """Diagonal majoriser of the RLS regulariser.
+    
+    Parameters
+    ----------
+    rls : (..., *shape) tensor
+        Weights from the reweighted least squares scheme
+    vx : float or sequence[float], default=1
+        Voxel size
+    lam : float or sequence[float], default=1
+        Regularisation factor
+
+    Returns
+    -------
+    rls : (*shape) tensor
+        Convolved weights
+
+    """
+    
+    nb_prm = rls.shape[0] if rls.dim() > 3 else 1
+    backend = dict(dtype=rls.dtype, device=rls.device)
+    vx = core.utils.make_vector(vx, 3, **backend)
+    lam = core.utils.make_vector(lam, nb_prm, **backend)
+    vx = vx.square().reciprocal()
+    
+    if rls.dim() > 3:
+        rls = core.utils.movedim(rls, 0, -1)
+    
+    out = (2*vx.sum())*rls
+    # center
+    out[1:-1, 1:-1, 1:-1] += ((rls[ :-2, 1:-1, 1:-1] + rls[2:  , 1:-1, 1:-1])*vx[0] + 
+                              (rls[1:-1,  :-2, 1:-1] + rls[1:-1, 2:,   1:-1])*vx[1] + 
+                              (rls[1:-1, 1:-1,  :-2] + rls[1:-1, 1:-1, 2:  ])*vx[2])
+    # sides
+    out[0, 1:-1, 1:-1]  += ((rls[   0, 1:-1, 1:-1] + rls[   1, 1:-1, 1:-1])*vx[0] + 
+                            (rls[   0,  :-2, 1:-1] + rls[   0, 2:  , 1:-1])*vx[1] + 
+                            (rls[   0, 1:-1,  :-2] + rls[   0, 1:-1, 2:  ])*vx[2])
+    out[-1, 1:-1, 1:-1] += ((rls[  -2, 1:-1, 1:-1] + rls[  -1, 1:-1, 1:-1])*vx[0] + 
+                            (rls[  -1,  :-2, 1:-1] + rls[  -1, 2:  , 1:-1])*vx[1] + 
+                            (rls[  -1, 1:-1,  :-2] + rls[  -1, 1:-1, 2:  ])*vx[2])
+    out[1:-1, 0, 1:-1]  += ((rls[ :-2,    0, 1:-1] + rls[2:  ,    0, 1:-1])*vx[0] + 
+                            (rls[1:-1,    0, 1:-1] + rls[1:-1,    1, 1:-1])*vx[1] + 
+                            (rls[1:-1,    0,  :-2] + rls[1:-1,    0, 2:  ])*vx[2])
+    out[1:-1, -1, 1:-1] += ((rls[ :-2,   -1, 1:-1] + rls[2:  ,   -1, 1:-1])*vx[0] + 
+                            (rls[1:-1,   -2, 1:-1] + rls[1:-1,   -1, 1:-1])*vx[1] + 
+                            (rls[1:-1,   -1,  :-2] + rls[1:-1,   -1, 2:  ])*vx[2])
+    out[1:-1, 1:-1, 0]  += ((rls[ :-2, 1:-1,    0] + rls[2:  , 1:-1,    0])*vx[0] + 
+                            (rls[1:-1,  :-2,    0] + rls[1:-1, 2:  ,    0])*vx[1] + 
+                            (rls[1:-1, 1:-1,    0] + rls[1:-1, 1:-1,    1])*vx[2])
+    out[1:-1, 1:-1, -1] += ((rls[ :-2, 1:-1,   -1] + rls[2:  , 1:-1,   -1])*vx[0] + 
+                            (rls[1:-1,  :-2,   -1] + rls[1:-1, 2:  ,   -1])*vx[1] + 
+                            (rls[1:-1, 1:-1,   -2] + rls[1:-1, 1:-1,   -1])*vx[2])
+    # edges
+    out[0, 0, 1:-1]   += ((rls[   0,    0, 1:-1] + rls[   1,    0, 1:-1])*vx[0] + 
+                          (rls[   0,    0, 1:-1] + rls[   0,    1, 1:-1])*vx[1] + 
+                          (rls[   0,    0,  :-2] + rls[   0,    0, 2:  ])*vx[2])
+    out[0, -1, 1:-1]  += ((rls[   0,   -1, 1:-1] + rls[   1,   -1, 1:-1])*vx[0] + 
+                          (rls[   0,   -2, 1:-1] + rls[   0,   -1, 1:-1])*vx[1] + 
+                          (rls[   0,   -1,  :-2] + rls[   0,   -1, 2:  ])*vx[2])
+    out[-1, 0, 1:-1]  += ((rls[  -1,    0, 1:-1] + rls[  -1,    0, 1:-1])*vx[0] + 
+                          (rls[  -1,    0, 1:-1] + rls[  -1,    1, 1:-1])*vx[1] + 
+                          (rls[  -1,    0,  :-2] + rls[  -1,    0, 2:  ])*vx[2])
+    out[-1, -1, 1:-1] += ((rls[  -2,   -1, 1:-1] + rls[  -1,   -1, 1:-1])*vx[0] + 
+                          (rls[  -1,   -2, 1:-1] + rls[  -1,   -1, 1:-1])*vx[1] + 
+                          (rls[  -1,   -1,  :-2] + rls[  -1,   -1, 2:  ])*vx[2])
+    out[0, 1:-1, 0]   += ((rls[   0, 1:-1,    0] + rls[   1, 1:-1,    0])*vx[0] + 
+                          (rls[   0,  :-2,    0] + rls[   0, 2:  ,    0])*vx[1] + 
+                          (rls[   0, 1:-1,    0] + rls[   0, 1:-1,    1])*vx[2])
+    out[0, 1:-1, -1]  += ((rls[   0, 1:-1,   -1] + rls[   1, 1:-1,   -1])*vx[0] + 
+                          (rls[   0,  :-2,   -1] + rls[   0, 2: ,    -1])*vx[1] + 
+                          (rls[   0, 1:-1,   -2] + rls[   0, 1:-1,   -1])*vx[2])
+    out[-1, 1:-1, 0]  += ((rls[  -2, 1:-1,    0] + rls[  -1, 1:-1,    0])*vx[0] + 
+                          (rls[  -1,  :-2,    0] + rls[  -1, 2:  ,    0])*vx[1] + 
+                          (rls[  -1, 1:-1,    0] + rls[  -1, 1:-1,   -1])*vx[2])
+    out[-1, 1:-1, -1] += ((rls[  -2, 1:-1,   -1] + rls[  -1, 1:-1,   -1])*vx[0] + 
+                          (rls[  -1,  :-2,   -1] + rls[  -1, 2:  ,   -1])*vx[1] + 
+                          (rls[  -1, 1:-1,   -2] + rls[  -1, 1:-1,   -1])*vx[2])
+    out[1:-1, 0, 0]   += ((rls[ :-2,    0,    0] + rls[2:  ,    0,    0])*vx[0] + 
+                          (rls[1:-1,    0,    0] + rls[1:-1,    1,    0])*vx[1] + 
+                          (rls[1:-1,    0,    0] + rls[1:-1,    0,    1])*vx[2])
+    out[1:-1, 0, -1]  += ((rls[ :-2,    0,   -1] + rls[2:  ,    0,   -1])*vx[0] + 
+                          (rls[1:-1,    0,   -1] + rls[1:-1,    1,   -1])*vx[1] + 
+                          (rls[1:-1,    0,   -2] + rls[1:-1,    0,   -1])*vx[2])
+    out[1:-1, -1, 0]  += ((rls[ :-2,    0,    0] + rls[2:  ,   -1,    0])*vx[0] + 
+                          (rls[1:-1,   -2,    0] + rls[1:-1,   -1,    0])*vx[1] + 
+                          (rls[1:-1,    0,    0] + rls[1:-1,   -1,    1])*vx[2])
+    out[1:-1, -1, -1] += ((rls[ :-2,   -1,   -1] + rls[2:  ,   -1,   -1])*vx[0] + 
+                          (rls[1:-1,   -2,   -1] + rls[1:-1,   -1,   -1])*vx[1] + 
+                          (rls[1:-1,   -1,   -2] + rls[1:-1,   -1,   -1])*vx[2])
+    
+    # corners
+    out[0, 0, 0]    += ((rls[ 0,  0,  0] + rls[ 1,  0,  0])*vx[0] + 
+                        (rls[ 0,  0,  0] + rls[ 0,  1,  0])*vx[1] + 
+                        (rls[ 0,  0,  0] + rls[ 0,  0,  1])*vx[2])
+    out[0, 0, -1]   += ((rls[ 0,  0, -1] + rls[ 1,  0, -1])*vx[0] + 
+                        (rls[ 0,  0, -1] + rls[ 0,  1, -1])*vx[1] + 
+                        (rls[ 0,  0, -2] + rls[ 0,  0, -1])*vx[2])
+    out[0, -1, 0]   += ((rls[ 0, -1,  0] + rls[ 1, -1,  0])*vx[0] + 
+                        (rls[ 0, -2,  0] + rls[ 0, -1,  0])*vx[1] + 
+                        (rls[ 0, -1,  0] + rls[ 0, -1,  1])*vx[2])
+    out[0, -1, -1]  += ((rls[ 0, -1, -1] + rls[ 1, -1, -1])*vx[0] + 
+                        (rls[ 0, -2, -1] + rls[ 0, -1, -1])*vx[1] + 
+                        (rls[ 0, -1, -2] + rls[ 0, -1, -1])*vx[2])
+    out[-1, 0, 0]   += ((rls[-2,  0,  0] + rls[-1,  0,  0])*vx[0] + 
+                        (rls[-1,  0,  0] + rls[-1,  1,  0])*vx[1] + 
+                        (rls[-1,  0,  0] + rls[-1,  0,  1])*vx[2])
+    out[-1, 0, -1]  += ((rls[-2,  0, -1] + rls[-1,  0, -1])*vx[0] + 
+                        (rls[-1,  0, -1] + rls[-1,  1, -1])*vx[1] + 
+                        (rls[-1,  0, -2] + rls[-1,  0, -1])*vx[2])
+    out[-1, -1, 0]  += ((rls[-2, -1,  0] + rls[-1, -1,  0])*vx[0] + 
+                        (rls[-1, -2,  0] + rls[-1, -1,  0])*vx[1] + 
+                        (rls[-1, -1,  0] + rls[-1, -1,  1])*vx[2])
+    out[-1, -1, -1] += ((rls[-2, -1, -1] + rls[-1, -1, -1])*vx[0] + 
+                        (rls[-1, -2, -1] + rls[-1, -1, -1])*vx[1] + 
+                        (rls[-1, -1, -2] + rls[-1, -1, -1])*vx[2])
+    
+    out *= lam
+    if out.dim() > 3:
+        out = core.utils.movedim(-1, 0)
+    return out

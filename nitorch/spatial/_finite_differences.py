@@ -611,39 +611,51 @@ def _lincomb(slices, weights, dim, ref=None):
         Second level contains chunks.
     weights : sequence[number]
         Linear weights
-    dim : int
+    dim : int or sequence[int]
         Dimension along which the tensor was chunked.
+    ref : tensor, optional
+        Tensor whose data we do not want to overwrite.
+        If provided, and some slices point to the same underlying data
+        as `ref`, the slice is not written into inplace.
 
     Returns
     -------
     lincomb : tensor
 
     """
+    slices = make_list(slices)
+    dims = make_list(dim, len(slices))
 
     result = None
-    for chunks, weight in zip(slices, weights):
+    for chunks, weight, dim in zip(slices, weights, dims):
 
         # multiply chunk with weight
+        chunks = make_list(chunks)
+        if chunks:
+            weight = torch.as_tensor(weight, dtype=chunks[0].dtype,
+                                     device=chunks[0].device)
         new_chunks = []
         for chunk in chunks:
             if chunk.numel() == 0:
                 continue
-            if weight == 0:
-                new_chunks.append(chunk.new_zeros([]).expand(chunk.shape))
-                continue
-            if weight == 1:
-                new_chunks.append(chunk)
-                continue
-            if weight == -1:
-                if ref is not None and not same_storage(ref, chunk):
-                    if any(s == 0 for s in chunk.stride()):
-                        chunk = -chunk
+            if not weight.requires_grad:
+                # save computations when possible
+                if weight == 0:
+                    new_chunks.append(chunk.new_zeros([]).expand(chunk.shape))
+                    continue
+                if weight == 1:
+                    new_chunks.append(chunk)
+                    continue
+                if weight == -1:
+                    if ref is not None and not same_storage(ref, chunk):
+                        if any(s == 0 for s in chunk.stride()):
+                            chunk = -chunk
+                        else:
+                            chunk = chunk.neg_()
                     else:
-                        chunk = chunk.neg_()
-                else:
-                    chunk = -chunk
-                new_chunks.append(chunk)
-                continue
+                        chunk = -chunk
+                    new_chunks.append(chunk)
+                    continue
             if ref is not None and not same_storage(ref, chunk):
                 if any(s == 0 for s in chunk.stride()):
                     chunk = chunk * weight
@@ -655,7 +667,10 @@ def _lincomb(slices, weights, dim, ref=None):
 
         # accumulate
         if result is None:
-            result = torch.cat(new_chunks, dim)
+            if len(new_chunks) == 1:
+                result = new_chunks[0]
+            else:
+                result = torch.cat(new_chunks, dim)
         else:
             offset = 0
             for chunk in new_chunks:
@@ -678,7 +693,7 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
         Input tensor
     dim : int
         Dimension along which to extract offsets
-    offsets : sequence[int]
+    offsets : [sequence of] int
         Offsets to extract, with respect to each voxel.
         To extract a centered window of length 3, use `offsets=[-1, 0, 1]`.
     bound : bound_like, default='dct2'
@@ -688,16 +703,20 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
 
     Returns
     -------
-    win : tuple[tuple[tensor]]
-        The first level corresponds to offsets.
+    win : [tuple of] tuple[tensor]
+        If a sequence of offsets was provided, the first level
+        corresponds to offsets.
         The second levels are tensors that could be concatenated along
         `dim` to generate the input tensor shifted by `offset`. However,
         to avoid unnecessary allocations, a list of (eventually empty)
         chunks is returned instead of the full shifted tensor.
-        Some of these tensors can be views into the input tensor.
+        Some (hopefully most) of these tensors can be views into the
+        input tensor.
 
     """
-    offsets = list(offsets)
+    return_list = isinstance(offsets, (list, tuple))
+    offsets = make_list(offsets)
+    return_list = return_list or len(offsets) > 1
     x = torch.as_tensor(x)
     backend = dict(dtype=x.dtype, device=x.device)
     length = x.shape[dim]
@@ -719,19 +738,19 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             pre = torch.flip(pre, [dim])
             post = slice_tensor(x, slice(length-nb_post, None), dim)
             post = torch.flip(post, [dim])
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'dct1':
             pre = slice_tensor(x, slice(1, nb_pre+1), dim)
             pre = torch.flip(pre, [dim])
             post = slice_tensor(x, slice(length-nb_post-1, -1), dim)
             post = torch.flip(post, [dim])
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'dst2':
             pre = slice_tensor(x, slice(None, nb_pre), dim)
             pre = -torch.flip(pre, [dim])
             post = slice_tensor(x, slice(-nb_post, None), dim)
             post = -torch.flip(post, [dim])
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'dst1':
             pre = slice_tensor(x, slice(None, nb_pre-1), dim)
             pre = -torch.flip(pre, [dim])
@@ -740,11 +759,11 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             shape1 = list(x.shape)
             shape1[dim] = 1
             zero = torch.zeros([], **backend).expand(shape1)
-            slices.append([pre, zero, central, zero, post])
+            slices.append(tuple([pre, zero, central, zero, post]))
         elif bound == 'dft':
             pre = slice_tensor(x, slice(length-nb_pre, None), dim)
             post = slice_tensor(x, slice(None, nb_post), dim)
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'replicate':
             shape_pre = list(x.shape)
             shape_pre[dim] = nb_pre
@@ -752,7 +771,7 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             shape_post[dim] = nb_post
             pre = slice_tensor(x, slice(None, 1), dim).expand(shape_pre)
             post = slice_tensor(x, slice(-1, None), dim).expand(shape_post)
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'zero':
             shape_pre = list(x.shape)
             shape_pre[dim] = nb_pre
@@ -760,7 +779,7 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             shape_post[dim] = nb_post
             pre = torch.zeros([], **backend).expand(shape_pre)
             post = torch.zeros([], **backend).expand(shape_post)
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
         elif bound == 'constant':
             shape_pre = list(x.shape)
             shape_pre[dim] = nb_pre
@@ -768,7 +787,11 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
             shape_post[dim] = nb_post
             pre = torch.full([], value, **backend).expand(shape_pre)
             post = torch.full([], value, **backend).expand(shape_post)
-            slices.append([pre, central, post])
+            slices.append(tuple([pre, central, post]))
+
+    slices = tuple(slices)
+    if not return_list:
+        slices = slices[0]
     return slices
 
 
