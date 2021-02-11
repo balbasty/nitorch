@@ -1,3 +1,7 @@
+"""This file implements all options in a format that mimics the
+commandline arguments. It is then used as a big data holder during
+optimization."""
+
 from copy import copy
 import os
 from nitorch import io, spatial

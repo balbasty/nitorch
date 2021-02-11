@@ -3,8 +3,8 @@ from torch import nn
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from nitorch import core, spatial
 from nitorch import nn as nni
-from._utils import (affine_group_converter, prepare, get_backend,
-                    BacktrackingLineSearch)
+from ._utils import (affine_group_converter, prepare, get_backend,
+                     BacktrackingLineSearch)
 
 
 def diffeo(source, target, group='SE', origin='center',

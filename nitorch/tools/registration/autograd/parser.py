@@ -1,3 +1,5 @@
+"""This file parses the commandline arguments"""
+
 from . import struct
 
 help = r"""[AutoReg] AUTOgrad REGistration tool

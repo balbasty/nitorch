@@ -1,3 +1,4 @@
+"""This file implements the entry points as well as the fitting functions."""
 import sys
 import torch
 from nitorch import io, spatial
@@ -6,12 +7,16 @@ from nitorch.spatial import (
     mean_space, affine_conv, affine_resize, affine_matmul, affine_lmdiv,
     affine_grid, affine_matvec, grid_inv, affine_inv)
 from .parser import parse
-from .helpers import ffd_exp, samespace, smalldef, pull_grid, pull
+from .helpers import (ffd_exp, samespace, smalldef, pull_grid, pull,
+                      BacktrackingLineSearch)
 from . import struct
-from ._utils import BacktrackingLineSearch
 
 
 def autoreg(argv=None):
+    """Autograd Registration
+
+    This is a command-line utility.
+    """
 
     # parse arguments
     argv = argv or list(sys.argv)
@@ -472,8 +477,9 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
             g = None
 
     for file, ofname in zip(moving.files, fname):
-        print(f'Registered: {file.fname}\n'
-              f'         -> {ofname}')
+        if verbose:
+            print(f'Registered: {file.fname}\n'
+                  f'         -> {ofname}')
         dat = io.volumes.loadf(file.fname, rand=True, device=device)
         dat = dat.reshape([*file.shape, file.channels])
         if g is not None:
@@ -484,7 +490,8 @@ def update(moving, fname, inv=False, lin=None, nonlin=None,
 
 
 def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
-           interpolation=1, bound='dct2', extrapolate=False, device=None):
+           interpolation=1, bound='dct2', extrapolate=False, device=None,
+           verbose=True):
     """Apply the linear and non-linear components of the transform and
     reslice the image to the target space.
 
@@ -576,8 +583,9 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
             g = affine_grid(g, like.shape)
 
     for file, ofname in zip(moving.files, fname):
-        print(f'Resliced:   {file.fname}\n'
-              f'         -> {ofname}')
+        if verbose:
+            print(f'Resliced:   {file.fname}\n'
+                  f'         -> {ofname}')
         dat = io.volumes.loadf(file.fname, rand=True, device=device)
         dat = dat.reshape([*file.shape, file.channels])
         if g is not None:
@@ -635,7 +643,8 @@ def write_data(options):
         prm = dict(interpolation=moving.interpolation,
                    bound=moving.bound,
                    extrapolate=moving.extrapolate,
-                   device=device)
+                   device=device,
+                   verbose=options.verbose)
         nonlin = dict(disp=d, affine=d_aff)
         if moving.updated:
             update(moving, moving.updated, lin=lin, nonlin=nonlin, **prm)
@@ -646,7 +655,8 @@ def write_data(options):
         prm = dict(interpolation=fixed.interpolation,
                    bound=fixed.bound,
                    extrapolate=fixed.extrapolate,
-                   device=device)
+                   device=device,
+                   verbose=options.verbose)
         nonlin = dict(disp=id, affine=d_aff)
         if fixed.updated:
             update(fixed, fixed.updated, inv=True, lin=lin, nonlin=nonlin, **prm)
