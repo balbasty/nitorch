@@ -545,7 +545,7 @@ setup(
     cmdclass={'build_ext': build_ext},
     entry_points={
         'console_scripts': [
-            'autoreg=nitorch.tools.registration.autograd.autoreg:autoreg',
+            'autoreg=nitorch.tools.registration.autoreg.main:autoreg',
         ],
     }
 )
