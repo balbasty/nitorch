@@ -626,7 +626,7 @@ class MRFNet(Module):
 
         return num_filters
 
-    def apply(self, resp, is_train):
+    def apply(self, ll, is_train):
         """Apply MRFNet.
 
         For training, one forward pass through the MRFNet is performed
@@ -635,8 +635,8 @@ class MRFNet(Module):
 
         Parameters
         ----------
-        resp : (batch, input_channels, *spatial) tensor
-            Input image, the log-likelihood term.
+        ll : (batch, input_channels, *spatial) tensor
+            Log-likelihood term.
         is_train : bool
             Is model training?
 
@@ -646,10 +646,10 @@ class MRFNet(Module):
             VB optimal tissue posterior, under the given MRF assumption.
 
         """
-        p = torch.zeros_like(resp)
+        p = torch.zeros_like(ll)
         for i in range(self.num_iter):
             op = p.clone()
-            p = (resp + self.mrf(p)).softmax(dim=1)
+            p = (ll + self.mrf(p)).softmax(dim=1)
             p = self.w * p + (1 - self.w) * op
 
         return p
