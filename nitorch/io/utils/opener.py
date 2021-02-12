@@ -270,6 +270,7 @@ class TransformedOpener(Opener):
         mode : str
         """
         self._name = None
+        self.fileobj = None
 
         if not _is_fileobj(opener):
             raise TypeError('Expected a file-like object')
