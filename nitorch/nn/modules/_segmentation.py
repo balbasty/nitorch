@@ -626,6 +626,30 @@ class MRFNet(Module):
 
         return num_filters
 
+    def get_num_iter(self, is_train):
+        """Returns number of VB iterations.
+
+        Parameters
+        ----------
+        is_train : bool
+            Is model in training or testing mode?
+
+        Returns
+        ----------
+        num_iter : int
+            Number of VB iterations.
+
+        """
+        if is_train:
+            rng = 0.5
+            mn = rng*self.num_iter
+            mx = (1 + rng) * self.num_iter
+            num_iter = torch.FloatTensor(1).uniform_(mn, mx + 1).int()
+        else:
+            num_iter = self.num_iter
+
+        return num_iter
+
     def apply(self, ll, is_train):
         """Apply MRFNet.
 
