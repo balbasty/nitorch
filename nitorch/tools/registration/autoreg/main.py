@@ -1,18 +1,30 @@
 """This file implements the entry points as well as the fitting functions."""
 import sys
 import torch
+from warnings import warn
 from nitorch import io, spatial
 from nitorch.core import utils, linalg
 from nitorch.spatial import (
     mean_space, affine_conv, affine_resize, affine_matmul, affine_lmdiv,
     affine_grid, affine_matvec, grid_inv, affine_inv)
-from .parser import parse
-from .helpers import (ffd_exp, samespace, smalldef, pull_grid, pull,
-                      BacktrackingLineSearch)
+from .parser import parse, ParseError, help
+from nitorch.tools.registration.helpers import (ffd_exp, samespace, smalldef, pull_grid, pull,
+                                                BacktrackingLineSearch)
 from . import struct
 
 
 def autoreg(argv=None):
+
+    try:
+        _autoreg(argv)
+    except ParseError as e:
+        print(help)
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
+
+
+def _autoreg(argv=None):
     """Autograd Registration
 
     This is a command-line utility.
@@ -57,7 +69,7 @@ def load_data(s):
 
     device = torch.device(s.device)
 
-    def load(files, is_label):
+    def load(files, is_label=False):
         """Load one multi-channel multi-file volume.
         Returns a (channels, *spatial) tensor
         """
@@ -70,9 +82,26 @@ def load_data(s):
                 dat = io.volumes.loadf(file.fname, rand=True,
                                        dtype=torch.float32, device=device)
             dat = dat.reshape([*file.shape, file.channels])
+            dat = dat[..., file.subchannels]
             dat = utils.movedim(dat, -1, 0)
             dats.append(dat)
-        return torch.cat(dats, dim=0)
+            del dat
+        dats = torch.cat(dats, dim=0)
+        if is_label and len(dats) > 1:
+            warn('Multi-channel label images are not accepted. '
+                 'Using only the first channel')
+            dats = dats[:1]
+        return dats
+
+    def split(dat, labels):
+        # transforming labels into probabilities
+        if not labels:
+            labels = torch.unique(dat, sorted=True)
+            labels = labels[labels != 0].tolist()
+        out = dat.new_empty(dtype=torch.float32)
+        for i, l in enumerate(labels):
+            out[labels == l] = 1
+        return out, labels
 
     def pyramid(dat, affine, levels):
         """Compute an image pyramid using mean pooling.
@@ -93,6 +122,8 @@ def load_data(s):
             continue
         loss.fixed.dat = load(loss.fixed.files, loss.fixed.type == 'labels')
         loss.moving.dat = load(loss.moving.files, loss.moving.type == 'labels')
+        if loss.moving.type == 'labels':
+            loss.moving.dat, loss.labels = split(loss.moving.dat, loss.labels)
         lvl = (list(sorted(set(loss.fixed.pyramid)))
                if loss.fixed.type != 'labels' else 1)
         loss.fixed.dat = pyramid(loss.fixed.dat,
@@ -129,6 +160,8 @@ def load_transforms(s):
         return dat
 
     for trf in s.transformations:
+        for reg in trf.losses:
+            reg.factor = reg.factor * trf.factor
         if isinstance(trf, struct.Linear):
             # Affine
             if isinstance(trf.init, str):
@@ -334,7 +367,7 @@ def optimize(options):
 
     # optimization loop
     for optimizer in options.optimizers:
-        for n_iter in range(1, optimizer.max_iter):
+        for n_iter in range(1, optimizer.max_iter+1):
             loss = optimizer.step(forward)
             current_lr = optimizer.current_lr()
             if options.verbose:
@@ -582,6 +615,8 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
             g = affine_lmdiv(mov2nlin, fixed_affine)
             g = affine_grid(g, like.shape)
 
+    if moving.type == 'labels':
+        prm['interpolation'] = 0
     for file, ofname in zip(moving.files, fname):
         if verbose:
             print(f'Resliced:   {file.fname}\n'

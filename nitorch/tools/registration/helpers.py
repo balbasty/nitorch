@@ -67,7 +67,7 @@ def ffd_exp(prm, shape, order=3, bound='dft', returns='disp'):
         return grid
 
 
-def pull_grid(gridin, grid):
+def pull_grid(gridin, grid, interpolation=1, bound='dft', extrapolate=True):
     """Sample a displacement field.
 
     Parameters
@@ -82,7 +82,10 @@ def pull_grid(gridin, grid):
     """
     gridin = movedim(gridin, -1, 0)[None]
     grid = grid[None]
-    gridout = grid_pull(gridin, grid, bound='dft', extrapolate=True)
+    gridout = grid_pull(gridin, grid,
+                        interpolation=interpolation,
+                        bound=bound,
+                        extrapolate=extrapolate)
     gridout = movedim(gridout[0], 0, -1)
     return gridout
 

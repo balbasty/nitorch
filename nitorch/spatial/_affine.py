@@ -1665,7 +1665,7 @@ def affine_resize(affine, shape, factor, anchor='c'):
     # read parameters
     affine = torch.as_tensor(affine)
     nb_dim = affine.shape[-1] - 1
-    factor = utils.make_list(factor, nb_dim)
+    factor = utils.make_vector(factor, nb_dim).tolist()
     anchor = [a[0].lower() for a in utils.make_list(anchor, nb_dim)]
     info = {'dtype': affine.dtype, 'device': affine.device}
 

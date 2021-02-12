@@ -143,6 +143,7 @@ class LTAStruct:
         affine = []
         affine_shape = (1, 4, 4)
         for line in f:
+            line = line.decode()
             line = line.split('\r\n')[0]  # remove eol (windows)
             line = line.split('\n')[0]    # remove eol (unix)
             line = line.split('#')[0]     # remove hanging comments

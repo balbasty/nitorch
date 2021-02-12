@@ -10,8 +10,7 @@ usage:
             <*TRF> [FACTOR] [-init PATH] [-lr LRNRATE] [-o FILE] [-pyr LVL] 
                    <*REG> [FACTOR]
             <*OPT> [-nit MAXITER] [-lr LRNRATE] [-stop LIMIT] [-ls [MAXLS]]
-            [+mov *FILE [-inter N] [-bnd BND] [-ex] [-o *FILE] [-r *FILE]]
-            [-all ...] [-prg] [-pyr *LVL] [-gpu|-cpu] [-h]
+            [-all ...] [-prg] [-gpu|-cpu] [-v] [-h]
 
     <LOSS> can take values (with additional options): 
         -mi,  --mutual-info         Normalized Mutual Information
@@ -24,8 +23,8 @@ usage:
         -jtv,  --total-variation    Normalized Joint Total Variation 
                                     (edge-based, for strong intensity non-uniformity)
         -dice, --dice               Dice coefficients (for soft/hard segments)
-            -l, --labels                Labels to use (default: all except 0)
-            -w, ---weights *WEIGHTS     Label-wise weights 
+            -l, --labels *LABELS        Labels to use (default: all except 0)
+            -w, ---weights *WEIGHTS     Label-wise weights (default: False)
         -cat,  --categorical        Categorical cross-entropy (for soft segments)
         -oth, --other               Not a loss -> other images to warp at the end.
     Note that the -fix and -mov tags must be placed directly after their 
@@ -112,6 +111,10 @@ examples:
             -oth -mov segment.nii -inter 0
 """
 
+
+class ParseError(RuntimeError):
+    pass
+
 # --------------------
 #   DEFINE MAIN TAGS
 # --------------------
@@ -176,8 +179,8 @@ def next_isvalue(args):
 
 def check_next_isvalue(args, group):
     if not next_isvalue(args):
-        raise RuntimeError(f'Expected a value for tag {group} '
-                           f'but found nothing.')
+        raise ParseError(f'Expected a value for tag {group} '
+                         f'but found nothing.')
 
 
 def parse_pyramid(args):
@@ -292,6 +295,18 @@ def parse_moving_and_target(args, opt):
             check_next_isvalue(args, tag)
             opt.bins, *args = args
             opt.bins = int(opt.bins)
+        elif isinstance(opt, struct.DiceLoss) and tag in ('-w', '--weights'):
+            opt.weights = True
+            while next_isvalue(args):
+                val, *args = args
+                if isinstance(opt.weights, bool):
+                    opt.weights = []
+                    opt.weights.append(float(val))
+        elif isinstance(opt, struct.DiceLoss) and tag in ('-l', '--labels'):
+            opt.labels = []
+            while next_isvalue(args):
+                val, *args = args
+                opt.labels.append(int(val))
         else:
             args = [tag, *args]
             break
@@ -325,6 +340,11 @@ def parse_transform(args, options):
            struct.Diffeo if trf in diffeo else
            None)
     opt = opt()
+
+    if next_isvalue(args):
+        opt.factor, *args = args
+        opt.factor = float(opt.factor)
+
     while args:
         if not next_istag(args):
             break
@@ -476,8 +496,9 @@ def parse(args):
 
     _, *args = args  # remove script name from list
     while args:
-        if not next_istag(args):
-            break
+        if next_isvalue(args):
+            raise ParseError(f'Argument {args[0]} does not seem to '
+                             f'belong to a group')
         tag, *args = args
         # Parse groups
         if tag in match_losses:
@@ -512,7 +533,7 @@ def parse(args):
 
         # Something went wrong
         else:
-            raise RuntimeError(f'Argument {tag} does not seem to '
-                               f'belong to a group')
+            raise ParseError(f'Argument {tag} does not seem to '
+                             f'belong to a group')
 
     return options

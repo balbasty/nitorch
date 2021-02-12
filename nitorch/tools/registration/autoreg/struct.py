@@ -88,6 +88,7 @@ class FileWithInfo(Base):
     base: str = None                # Base name (without extension)
     ext: str = None                 # Extension
     channels: int = None            # Number of channels
+    subchannels: list = []          # List of channels to load
     float: bool = True              # Is raw dtype floating point
 
 
@@ -132,12 +133,13 @@ class NoLoss(MatchingLoss):
 class DiceLoss(MatchingLoss):
     """Dice"""
     name = 'dice'
-    labels: list = []               # Labels to keep
-    weights: list = []              # Weight per label
+    labels: list = None              # Labels to keep
+    weights: bool or list = False   # Weight per label
 
     def call(self, x, y):
-        fn = nn.DiceLoss(discard_background=True, weighted=self.weights)
-        loss = fn(x[None], y[None])
+        fn = nn.DiceLoss(one_hot_map=self.labels, weighted=self.weights,
+                         discard_background=True)
+        loss = 1 + fn(x[None], y[None])
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -154,11 +156,15 @@ class MILoss(MatchingLoss):
         xs = x.unbind(0)
         ys = y.unbind(0)
         loss = 0
-        nb_channels = len(xs)
+        nb_channels = max(len(xs), len(ys))
+        # if len(xs) == 1:
+        #     xs = [xs[0]] * nb_channels
+        # if len(ys) == 1:
+        #     ys = [ys[0]] * nb_channels
         for x, y in zip(xs, ys):
             x = x[None, None]
             y = y[None, None]
-            loss += nn.MutualInfoLoss(patch_size=self.patch)(x, y) / nb_channels
+            loss += (1 + nn.MutualInfoLoss(patch_size=self.patch)(x, y)) / nb_channels
         # I take the average of MI across channels to be consistent
         # with how MSE works.
         if self.factor != 1:
@@ -170,7 +176,7 @@ class CatLoss(MatchingLoss):
     """Categorical cross-entropy"""
     name = 'cat'
 
-    def call(self,x, y):
+    def call(self, x, y):
         fn = nn.CategoricalLoss(log=False, implicit=True)
         loss = fn(x[None], y[None])
         if self.factor != 1:
@@ -488,13 +494,16 @@ class AutoReg(Base):
             file = FileWithInfo()
 
             file.fname = fname
-            file.dir = os.path.dirname(fname)
-            file.base = os.path.basename(fname)
+            file.fname, *file.subchannels = file.fname.split(',')
+            file.subchannels = [int(c)-1 for c in file.subchannels]
+            file.dir = os.path.dirname(file.fname)
+            file.dir = file.dir or '.'
+            file.base = os.path.basename(file.fname)
             file.base, file.ext = os.path.splitext(file.base)
             if file.ext in ('.gz', '.bz2'):
                 file.base, ext = os.path.splitext(file.base)
                 file.ext = ext + file.ext
-            f = io.volumes.map(fname)
+            f = io.volumes.map(file.fname)
             file.float = nitype(f.dtype).is_floating_point
             file.shape = tuple(f.shape[:3])
             file.affine = f.affine.float()
@@ -513,12 +522,15 @@ class AutoReg(Base):
                 file.channels = f.shape[-1]
             else:
                 file.channels = 1
+            file.subchannels = file.subchannels or list(range(file.channels))
+            file.subchannels = [c for c in file.subchannels
+                                if c < file.channels]
             return file
 
         def read_info1(image, loss):
             """Read info from one image"""
             image.files = [info(fname) for fname in image.files]
-            image.channels = sum(file.channels for file in image.files)
+            image.channels = sum(sum(file.subchannels) for file in image.files)
             if not allsame(file.shape for file in image.files):
                 raise RuntimeError('All files should have the same (spatial) '
                                    'shape for multi-file inputs.')

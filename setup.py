@@ -546,6 +546,7 @@ setup(
     entry_points={
         'console_scripts': [
             'autoreg=nitorch.tools.registration.autoreg.main:autoreg',
+            'nireslice=nitorch.tools.registration.reslice.main:reslice',
         ],
     }
 )
