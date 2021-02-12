@@ -234,7 +234,7 @@ class SegMRFNet(Module):
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.1), batch_norm_seg=True,
-                 num_iter=10, w=0.5, num_extra=0, only_unet=False):
+                 num_iter=20, w=0.5, num_extra=0, only_unet=False):
         """
 
         Parameters
@@ -505,7 +505,7 @@ class MRFNet(Module):
     IPMI. Springer, Cham, 2019.
 
     """
-    def __init__(self, dim, num_classes, num_iter=10, num_extra=0, w=0.5,
+    def __init__(self, dim, num_classes, num_iter=20, num_extra=0, w=0.5,
                  activation=tnn.LeakyReLU(0.1)):
         """
 
@@ -703,7 +703,7 @@ class MRFNet(Module):
 
         """
         p = torch.zeros_like(ll)
-        for i in range(self.num_iter):
+        for i in range(self.get_num_iter(is_train)):
             op = p.clone()
             p = (ll + self.mrf(p)).softmax(dim=1)
             p = self.w * p + (1 - self.w) * op
