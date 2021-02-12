@@ -345,6 +345,9 @@ class SegMRFNet(Module):
         else:
             p = p - logsumexp(p, dim=1, keepdim=True)
             p = self.mrf.apply(p, is_train)
+            # hook to zero gradients of central filter weights
+            self.mrf.parameters().__next__() \
+                .register_hook(self.mrf.zero_grad_centre)
 
         # compute loss and metrics
         if ref is not None:
@@ -600,6 +603,10 @@ class MRFNet(Module):
         # MRF
         p = self.apply(resp, is_train)
 
+        # hook to zero gradients of central filter weights
+        self.mrf.parameters().__next__() \
+            .register_hook(self.mrf.zero_grad_centre)
+
         # compute loss and metrics
         if is_train:
             # sanity checks
@@ -609,6 +616,31 @@ class MRFNet(Module):
             self.compute(_loss, _metric, mrf=[p, ref])
 
         return p
+
+    def zero_grad_centre(self, grad):
+        """Hook to zero gradients of central filter weights.
+
+        Parameters
+        ----------
+        grad : tensor
+            Input gradients.
+
+        Returns
+        -------
+        grad_clone : tensor
+            Output gradients.
+
+        """
+        k = grad.shape[2:]
+        grad_clone = grad.clone()
+        if self.dim == 3:
+            grad_clone[:, :, k[0] // 2, k[1] // 2, k[2] // 2] = 0
+        elif self.dim == 2:
+            grad_clone[:, :, k[0] // 2, k[1] // 2] = 0
+        else:
+            grad_clone[:, :, k[0] // 2] = 0
+
+        return grad_clone
 
     def get_num_filters(self):
         """Returns number of MRF filters. We simply use

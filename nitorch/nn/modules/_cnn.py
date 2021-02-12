@@ -3,7 +3,7 @@
 import torch
 from torch import nn as tnn
 from ._base import nitorchmodule, Module
-from ._conv import (Conv, ConvZeroCentre)
+from ._conv import Conv
 from ._reduction import reductions, Reduction
 from nitorch.core.pyutils import make_list
 from collections import OrderedDict
@@ -361,9 +361,16 @@ class MRF(tnn.Sequential):
         # make layers
         modules = []
         p = ((kernel_size - 1) // 2,)*self.dim  # for 'same' convolution in first layer
-        module = ConvZeroCentre(dim, in_channels=num_classes, out_channels=num_filters,
-                               kernel_size=kernel_size, activation=activation,
-                               batch_norm=batch_norm, bias=bias, padding=p)
+        module = Conv(dim, in_channels=num_classes, out_channels=num_filters,
+                      kernel_size=kernel_size, activation=activation,
+                      batch_norm=batch_norm, bias=bias, padding=p)
+        # zero-centre
+        if self.dim == 3:
+            module.conv.weight.data[:, :, kernel_size // 2, kernel_size // 2, kernel_size // 2] = 0
+        elif self.dim == 2:
+            module.conv.weight.data[:, :, kernel_size // 2, kernel_size // 2] = 0
+        else:
+            module.conv.weight.data[:, :, kernel_size // 2] = 0
         modules.append(('mrf', module))
         for i in range(num_extra):
             module = Conv(dim, in_channels=num_filters, out_channels=num_filters,
