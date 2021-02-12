@@ -363,7 +363,7 @@ class SegNet(Module):
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.2), batch_norm=True,
-                 implicit=True, inc_final_activation=True):
+                 implicit=True, skip_final_activation=False):
         """
 
         Parameters
@@ -391,7 +391,7 @@ class SegNet(Module):
             Only return `output_classes` probabilities (the last one
             is implicit as probabilities must sum to 1).
             Else, return `output_classes + 1` probabilities.
-        inc_final_activation : bool, default=True
+        skip_final_activation : bool, default=False
            Append final activation function.
 
         """
@@ -400,7 +400,7 @@ class SegNet(Module):
         self.implicit = implicit
         self.output_classes = output_classes
         final_activation = None
-        if inc_final_activation:
+        if not skip_final_activation:
             if implicit and output_classes == 1:
                 final_activation = tnn.Sigmoid
             else:
