@@ -5,6 +5,7 @@ from ..modules._cnn import (UNet, MRF)
 from ..modules._spatial import (GridPull, GridPushCount)
 from ...spatial import (affine_grid, identity_grid, voxel_size)
 from ...core.constants import eps
+from ...core.utils import logsumexp
 from .. import check
 
 
@@ -283,7 +284,8 @@ class SegMRFNet(Module):
                            kernel_size=kernel_size,
                            activation=activation,
                            batch_norm=batch_norm_seg,
-                           implicit=False)
+                           implicit=False,
+                           skip_final_activation=True)
 
         if not only_unet:
             self.mrf = MRFNet(dim,
@@ -338,7 +340,10 @@ class SegMRFNet(Module):
         # unet
         p = self.unet(image)
 
-        if not self.only_unet:
+        if self.only_unet:
+            p = p.softmax(dim=1)
+        else:
+            p = p - logsumexp(p, dim=1, keepdim=True)
             p = self.mrf.apply(p, is_train)
 
         # compute loss and metrics
@@ -641,7 +646,6 @@ class MRFNet(Module):
             VB optimal tissue posterior, under the given MRF assumption.
 
         """
-        resp = (resp + eps()).log()
         p = torch.zeros_like(resp)
         for i in range(self.num_iter):
             op = p.clone()
