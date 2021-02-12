@@ -10,6 +10,32 @@ from .dtypes import as_torch as dtype_astorch
 import numbers
 
 
+def logsumexp(input, dim, keepdim=False):
+    """Numerically stabilised log-sum-exp (lse).
+
+    Parameters
+    ----------
+    input : tensor
+        Input tensor.
+    dim : int
+        The dimension or dimensions to reduce.
+    keepdim : bool, default=False
+        Whether the output tensor has dim retained or not.
+
+    Returns
+    -------
+    lse : tensor
+        Output tensor.
+
+    """
+    lse = input.max(dim=dim, keepdim=True)[0]
+    lse = lse + (input - lse).exp().sum(dim=dim, keepdim=True).log()
+    if not keepdim:
+        lse = lse.squeeze(dim=dim)
+
+    return lse
+
+
 def as_tensor(input, dtype=None, device=None):
     """Convert object to tensor.
 
