@@ -201,22 +201,15 @@ keyword attributes.
 
 """
 
-from . import indexing
 from . import loadsave
-from . import mapping
+from . import volumes
 from . import metadata
 from . import optionals
 from . import readers
-from . import volutils
+from . import transforms
+from . import utils
 from . import writers
 
-from .mapping import MappedArray, CatArray, cat, stack, AccessType
+from .volumes import MappedArray, CatArray, cat, stack
+from .transforms import MappedAffine
 from .loadsave import map, load, loadf, save, savef
-
-if optionals.nibabel:
-    from . import babel
-    from .babel import BabelArray
-
-if optionals.tifffile:
-    from . import tiff
-    from .tiff import TiffArray

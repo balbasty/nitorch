@@ -1,15 +1,21 @@
-from ..mapping import MappedArray, AccessType
-from ..indexing import is_fullslice, split_operation, slicer_sub2ind, invert_slice
-from .. import volutils
-from ..readers import reader_classes
-from .metadata import ome_zooms, parse_unit
-from nitorch.spatial import affine_default
-from nitorch.core import pyutils, dtypes
-from tifffile import TiffFile
+# python
 from contextlib import contextmanager
+from warnings import warn
 import torch
 import numpy as np
-from warnings import warn
+# nitorch
+from nitorch.spatial import affine_default
+from nitorch.core import pyutils, dtypes
+# io
+from nitorch.io.mapping import AccessType
+from nitorch.io.utils.indexing import (is_fullslice, split_operation,
+                                       slicer_sub2ind, invert_slice)
+from nitorch.io.utils import volutils
+from nitorch.io.volumes.mapping import MappedArray
+from nitorch.io.volumes.readers import reader_classes
+# tiff
+from tifffile import TiffFile
+from .metadata import ome_zooms, parse_unit
 
 
 class TiffArray(MappedArray):
@@ -17,20 +23,21 @@ class TiffArray(MappedArray):
     MappedArray that uses `tifffile` under the hood.
     """
 
-    def __init__(self, file_like, permission='r', keep_file_open=True, **hints):
+    def __init__(self, file_like, mode='r', keep_open=False, **hints):
         """
 
         Parameters
         ----------
         file_like : str or file object
-        keep_file_open : bool, default=True
+        mode : {'r'}, default='r'
+        keep_open : bool, default=True
             Whether to keep the file handle open
         hints : keyword of the form `is_<format>=<True|False>`
             Tells the Tiff reader that a file is or isn't of a specific
             subformat. If not provided, it it guessed by the Tiff reader.
         """
         self._tiff = TiffFile(file_like, **hints)
-        if not keep_file_open:
+        if not keep_open:
             self._tiff.close()
 
         self._series = 0

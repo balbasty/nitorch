@@ -108,7 +108,7 @@ class MutualInfoLoss(Loss):
         mask = overload.get('mask', self.mask)
 
         # reshape
-        if patch_size is not None:
+        if patch_size:
             # extract patches about each voxel
             patch_size = make_list(patch_size, nb_dim)
             patch_size = [pch or dim for pch, dim in zip(patch_size, shape)]

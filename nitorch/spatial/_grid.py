@@ -4,7 +4,7 @@
 import torch
 import torch.nn.functional as _F
 from nitorch.core import kernels, utils, linalg
-from nitorch.core.utils import expand
+from nitorch.core.utils import expand, make_vector
 from nitorch.core.pyutils import make_list, prod
 from nitorch._C import spatial as _Cspatial
 from nitorch._C.spatial import BoundType, InterpolationType
@@ -757,7 +757,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     nb_dim = image.dim() - 2
     inshape = image.shape[2:]
     info = {'dtype': image.dtype, 'device': image.device}
-    factor = make_list(factor, nb_dim)
+    factor = make_vector(factor, nb_dim).tolist()
     outshape = make_list(shape, nb_dim)
     anchor = [a[0].lower() for a in make_list(anchor, nb_dim)]
     return_trf = kwargs.pop('_return_trf', False)  # hidden option
@@ -996,7 +996,7 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
         Inverse transformation (or displacement) grid
     
     """
-    # get shape components
+    # get shape components
     grid = torch.as_tensor(grid)
     dim = grid.shape[-1]
     shape = grid.shape[-(dim+1):-1]
@@ -1012,7 +1012,7 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
         disp = grid
         grid = disp + identity
     
-    # push displacement
+    # push displacement
     push_opt = dict(bound=bound, extrapolate=extrapolate)
     disp = utils.movedim(disp, -1, 1)
     disp = grid_push(disp, grid, **push_opt)

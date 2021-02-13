@@ -1,5 +1,5 @@
 import torch
-from nitorch.core.optionals import numpy as np
+from ..optionals import numpy as np
 from nitorch.core import pyutils
 import itertools
 

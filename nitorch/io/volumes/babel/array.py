@@ -17,7 +17,6 @@ still believe that my MappedArray API is cleaner.
 # python imports
 import os
 import sys
-from warnings import warn
 from contextlib import contextmanager
 from threading import RLock
 # external imports
@@ -25,7 +24,6 @@ import torch
 import numpy as np
 import nibabel as nib
 # nibabel imports
-from nibabel import openers
 from nibabel.spatialimages import SpatialImage
 from nibabel.imageclasses import all_image_classes
 from nibabel.volumeutils import _is_compressed_fobj as is_compressed_fobj, \
@@ -34,15 +32,16 @@ from nibabel.fileslice import fileslice
 from nibabel.filebasedimages import ImageFileError
 # nitorch imports
 from nitorch.core import pyutils, dtypes
-# local imports
-from ..mapping import MappedArray, AccessType
-from ..readers import reader_classes
-from ..writers import writer_classes
-from ..loadsave import map as map_array
-from ..indexing import invert_permutation, is_newaxis, is_sliceaxis, \
-                      is_droppedaxis, is_fullslice, split_operation
-from .. import volutils
-from ..metadata import keys as metadata_keys
+# io imports
+from nitorch.io.mapping import AccessType
+from nitorch.io.volumes.mapping import MappedArray
+from nitorch.io.volumes.readers import reader_classes
+from nitorch.io.volumes.writers import writer_classes
+from nitorch.io.volumes.loadsave import map as map_array
+from nitorch.io.utils.indexing import is_fullslice, split_operation
+from nitorch.io.utils.opener import open, Opener, transform_opener, gz
+from nitorch.io.utils import volutils
+from nitorch.io.metadata import keys as metadata_keys
 from .metadata import header_to_metadata, metadata_to_header
 from .utils import writeslice
 
@@ -58,17 +57,20 @@ nib.Nifti1Header.quaternion_threshold = -1e-6
 class BabelArray(MappedArray):
     """MappedArray that relies on NiBabel."""
 
-    def __init__(self, file_like, perm='r+', keep_open=True):
+    # register gzip opener for mgz files
+    Opener.ext_map['.mgz'] = gz
+
+    def __init__(self, file_like, mode='r', keep_open=True):
         """
 
         Parameters
         ----------
         file_like : str or fileobj
             Input file.
-        perm : {'r', 'r+', 'w'}, default='r+'
-            Permission
+        mode : {'r', 'r+'}, default='r'
+            File permission
         keep_open : bool, default=True
-            Keep file open.
+            Keep file descriptor open.
         """
 
         if nib is None:
@@ -77,21 +79,17 @@ class BabelArray(MappedArray):
         if isinstance(file_like, SpatialImage):
             self._image = file_like
         else:
-            self._image = nib.load(file_like, mmap=False,
-                                   keep_file_open=keep_open)
+            self._image = nib.load(file_like, mmap=False, keep_file_open=False)
 
         # deal with file openers
-        self._mode = perm
-        self._keep_open = dict()
-        self._keep_opener = dict()
-        self._opener = dict()
-        self._lock = dict()
-        for key, val in self._image.file_map.items():
-            self._keep_open[key], self._keep_opener[key] \
-                = self._image.dataobj._should_keep_file_open(val.file_like, keep_open)
-            self._lock[key] = RLock()
+        if not mode in ('r', 'r+'):
+            raise ValueError(f"Mode expected in ('r', 'r+'). Got {mode}.")
+        self.mode = mode            # Decides if the user lets us write
+        self.keep_open = keep_open  # Keep file descriptor open (user value)?
+        self._prepare_openers()
 
         super().__init__()
+
 
     @classmethod
     def possible_extensions(cls):
@@ -127,8 +125,8 @@ class BabelArray(MappedArray):
 
     def is_compressed(self, key='image'):
         with self.fileobj(key) as f:
-            if isinstance(f, nib.openers.Opener):
-                f = f.fobj
+            if isinstance(f, Opener):
+                f = f.fileobj
             iscomp = is_compressed_fobj(f)
         return iscomp
 
@@ -168,7 +166,7 @@ class BabelArray(MappedArray):
 
         if fileobj is None:
             # Create our own context
-            with self.fileobj('image') as fileobj:
+            with self.fileobj('image', 'r+') as fileobj:
                 return self._write_data_raw_partial(dat, slicer, fileobj)
 
         # sanity checks for developers
@@ -178,9 +176,9 @@ class BabelArray(MappedArray):
         assert not self.is_compressed('image'), "Data cannot be compressed"
         assert not all(is_fullslice(slicer, self._shape)), "No need for partial writing"
 
-        if not fileobj.fobj.readable():
+        if not fileobj.readable():
             raise RuntimeError('File object not readable')
-        if not fileobj.fobj.writable():
+        if not fileobj.writable():
             raise RuntimeError('File object not writable')
 
         # write data chunk
@@ -201,7 +199,7 @@ class BabelArray(MappedArray):
 
         if fileobj is None:
             # Create our own context
-            with self.fileobj('image') as fileobj:
+            with self.fileobj('image', 'a') as fileobj:
                 return self._write_data_raw_full(dat, fileobj)
 
         # sanity checks for developers
@@ -209,7 +207,7 @@ class BabelArray(MappedArray):
         assert isinstance(dat, np.ndarray), "Data should already be numpy"
         assert dat.dtype == self.dtype, "Data should already have correct type"
 
-        if not fileobj.fobj.writable():
+        if not fileobj.writable():
             raise RuntimeError('File object not writable')
 
         array_to_file(dat, fileobj, self.dtype,
@@ -231,7 +229,7 @@ class BabelArray(MappedArray):
 
         """
         if fileobj is None:
-            with self.fileobj('image') as fileobj:
+            with self.fileobj('image', 'r') as fileobj:
                 return self._read_data_raw_partial(slicer, fileobj, lock)
 
         if lock is None:
@@ -258,7 +256,7 @@ class BabelArray(MappedArray):
 
         """
         if fileobj is None:
-            with self.fileobj('image') as fileobj:
+            with self.fileobj('image', 'r') as fileobj:
                 return self._read_data_raw_full(fileobj, lock)
 
         if lock is None:
@@ -294,10 +292,6 @@ class BabelArray(MappedArray):
 
         """
 
-        if fileobj is None:
-            with self.fileobj('image', 'r') as f:
-                return self._read_data_raw(fileobj=f)
-
         # load sub-array
         if slicer is None or all(is_fullslice(slicer, self._shape)):
             dat = self._read_data_raw_full(fileobj, mmap=mmap)
@@ -318,8 +312,10 @@ class BabelArray(MappedArray):
         ----------
         header : nibabel.Header, default=`self._image.dataobj._header`
             Header object from nibabel.
-        fileobj : nibabel.Opener, default=`self.fileobj('header')`
+        fileobj : Opener, default=`self.fileobj('header')`
             File object., with `seek` and `write`.
+            By default, a file object open in mode 'w' (and therefore
+            truncated)
 
         Returns
         -------
@@ -327,7 +323,7 @@ class BabelArray(MappedArray):
 
         """
         if fileobj is None:
-            with self.fileobj('header') as f:
+            with self.fileobj('header', 'w') as f:
                 return self._set_header_raw(header, f)
         if header is None:
             header = self._image.dataobj._header
@@ -352,6 +348,7 @@ class BabelArray(MappedArray):
         ----------
         header : Header
         fileobj : Opener
+            By default, a file object open in mode 'a'
 
         Returns
         -------
@@ -359,7 +356,7 @@ class BabelArray(MappedArray):
 
         """
         if fileobj is None:
-            with self.fileobj('footer') as f:
+            with self.fileobj('footer', 'a') as f:
                 return self._set_footer_raw(header, f)
         if header is None:
             header = self._image.dataobj._header
@@ -376,6 +373,11 @@ class BabelArray(MappedArray):
     # (that's why there's no doc, it's at the MappedArray level)
 
     def set_data(self, dat, casting='unsafe'):
+
+        if '+' not in self.mode:
+            raise RuntimeError('Cannot write into read-only volume. '
+                               'Re-map in mode "r+" to allow in-place '
+                               'writing.')
 
         # --- convert to numpy ---
         if torch.is_tensor(dat):
@@ -475,6 +477,11 @@ class BabelArray(MappedArray):
         return meta
 
     def set_metadata(self, **meta):
+        if '+' not in self.mode:
+            raise RuntimeError('Cannot write into read-only volume. '
+                               'Re-map in mode "r+" to allow in-place '
+                               'writing.')
+
         header = self._image.dataobj._header
         if meta:
             header = metadata_to_header(header, meta)
@@ -664,9 +671,37 @@ class BabelArray(MappedArray):
             key = 'image'
         return self._image.file_map[key]
 
+    def _prepare_openers(self):
+        # Saved openers
+        self._opener = dict()
+        # Locks (still unsure why I need that)
+        self._lock = dict()
+
+        for key, val in self._image.file_map.items():
+            mode = self.mode + 'b'  # everything is binary in nibabel (?)
+            file_like = val.file_like
+            self._lock[key] = RLock()
+            if hasattr(file_like, 'read') and hasattr(file_like, 'seek'):
+                # file object -> keep stuff irrelevant
+                if not file_like.readable() or not file_like.seekable():
+                    raise ValueError('File must be readable and seekable')
+                if '+' in self.mode and not file_like.writable():
+                    raise ValueError('File must be writable in mode "r+"')
+                self._opener[(key, self.mode)] = file_like
+                continue
+            if self.keep_open:
+                try:
+                    self._opener[(key, mode)] = open(file_like, mode, keep_open=True)
+                except ValueError:
+                    self._opener[(key, mode)] = open(file_like, 'rb', keep_open=True)
+            else:
+                self._opener[(key, 'r')] = open(file_like, 'rb', keep_open=False)
+                if not self._opener[(key, 'r')].is_indexed:
+                    del self._opener[(key, 'r')]
+
     @contextmanager
-    def fileobj(self, key='image', permission='', seek=None):
-        """Return a `nibabel.openers.Opener`.
+    def fileobj(self, key='image', mode='', seek=None):
+        """Return an `Opener`.
 
         It can be used with:
         >> nii = BabelArray('/path/to/file')
@@ -674,44 +709,65 @@ class BabelArray(MappedArray):
         >>    f.seek(pos)
         >>    ...
 
+        Parameters
+        ----------
+        key : str, default='image'
+            Key of the file to open
+        mode : {'r', 'r+', 'w', 'w+', 'a', 'a+'}, default='r'
+            Opening mode. The file type ('b' or 't') should be omitted.
+        seek : int, optional
+            Position to seek.
+
         """
         if key not in self._image.file_map:
             key = 'image'
-        file_map = self._image.file_map[key]
-        keep_open = self._keep_open[key]
-        mode = (permission or self._mode) + 'b'
-        if self._keep_opener[key]:
-            if key in self._opener:
-                # check that the permission fits what we want
-                f = self._opener[key].fobj
-                mode_ok = ((not mode.startswith('r') or f.readable()) and
-                           (not mode.startswith(('w', 'r+')) or f.writable()))
-                if not mode_ok:
-                    if not self._opener[key].closed:
-                        self._opener[key].close_if_mine()
-                    del self._opener[key]
-            if not key in self._opener or self._opener[key].closed:
-                self._opener[key] = file_map.get_prepare_fileobj(
-                    keep_open=keep_open,
-                    mode=mode)
-            if seek is not None:
-                # check that the cursor position is correct
+        if not mode:
+            mode = 'r'
+        opener = None
+        # check if we have the right opener
+        if (key, mode) in self._opener:
+            opener = self._opener[(key, mode)]
+        # otherwise, check if we have one with more permissions than needed
+        if opener is None and (key, mode + '+') in self._opener:
+            opener = self._opener[(key, mode + '+')]
+        # otherwise, check if we can hack a liberal one
+        # (e.g., 'r+' -> 'w(+)' or 'a(+)')
+        if opener is None:
+            for (key0, mode0), opener0 in self._opener.items():
+                if key0 != key:
+                    continue
                 try:
-                    self._opener[key].seek(seek)
-                except OSError:
-                    # we're in a gzipped file and trying to perform
-                    # a negative seek. Better to close and reopen.
-                    self._opener[key].close_if_mine()
-                    self._opener[key] = file_map.get_prepare_fileobj(
-                        keep_open=keep_open,
-                        mode=mode)
-                    self._opener[key].seek(seek)
-            yield self._opener[key]
-        else:
-            with file_map.get_prepare_fileobj(keep_open=False, mode=mode) as f:
+                    opener = transform_opener(opener0, mode)
+                    break
+                except ValueError:
+                    pass
+        # we found one -> perform a few sanity checks
+        if opener is not None:
+            check = True
+            if 'r' in mode or '+' in mode:
+                check = check and opener.readable()
+            if 'w' in mode or 'a' in mode:
+                check = check and opener.writable()
+            if check:
                 if seek is not None:
-                    f.seek(seek)
-                yield f
+                    opener.seek(seek)
+                yield opener
+                return
+        # everything failed -> create one from scratch
+        file_map = self._image.file_map[key]
+        with open(file_map.file_like, mode=mode, keep_open=False) as opener:
+            check = True
+            if 'r' in mode or '+' in mode:
+                check = check and opener.readable()
+            if 'w' in mode or 'a' in mode:
+                check = check and opener.writable()
+            if check:
+                if seek is not None:
+                    opener.seek(seek)
+                yield opener
+                return
+
+        raise RuntimeError('Could not yield an appropriate file object')
 
     def __del__(self):
         """If this ``ArrayProxy`` was created with ``keep_file_open=True``,
