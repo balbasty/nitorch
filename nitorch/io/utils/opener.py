@@ -5,7 +5,7 @@ https://github.com/nipy/nibabel/blob/master/nibabel/openers.py
 """
 
 from bz2 import BZ2File
-from gzip import GzipFile
+from gzip import GzipFile, READ as gzip_r, WRITE as gzip_w
 from distutils.version import StrictVersion
 from warnings import warn
 from os.path import splitext
@@ -36,6 +36,13 @@ def _gzip_open(filename, mode='rt', compresslevel=9, keep_open=False):
     else:
         gzip_file = GzipFile(filename, mode, compresslevel)
     return gzip_file
+
+
+def _mode(fileobj):
+    if isinstance(fileobj, GzipFile):
+        return 'rb' if fileobj.mode == gzip_r else 'wb'
+    else:
+        return fileobj.mode
 
 
 def _is_fileobj(obj):
@@ -196,7 +203,7 @@ class Opener:
                                        isinstance(self.fileobj, IndexedGzipFile))
     is_owned = property(lambda self: self._name is not None)
     closed = property(lambda self: self.fileobj.closed)
-    mode = property(lambda self: self.fileobj.mode)
+    mode = property(lambda self: _mode(self.fileobj))
     readable = lambda self: self.fileobj.readable()
     writable = lambda self: self.fileobj.writable()
     seekable = lambda self: self.fileobj.seekable()
@@ -311,6 +318,8 @@ class TransformedOpener(Opener):
         return self.name or self.fileobj
 
     def __repr__(self):
+        if not self.fileobj:
+            return "TransformedOpener(None)"
         return f"TransformedOpener('{self.name or self.fileobj}', " \
                f"'{self.fileobj.mode}' -> '{self.mode}')"
 
