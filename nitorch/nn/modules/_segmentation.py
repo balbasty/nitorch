@@ -702,7 +702,8 @@ class MRFNet(Module):
             VB optimal tissue posterior, under the given MRF assumption.
 
         """
-        p = torch.zeros_like(ll)
+        K = ll.shape[1]
+        p = torch.ones_like(ll)/K
         for i in range(self.get_num_iter(is_train)):
             op = p.clone()
             p = (ll + self.mrf(p)).softmax(dim=1)
