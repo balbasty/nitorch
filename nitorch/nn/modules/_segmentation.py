@@ -233,7 +233,7 @@ class SegMRFNet(Module):
     """
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.1), batch_norm_seg=True,
+                 activation=tnn.LeakyReLU(0.2), batch_norm_seg=True,
                  num_iter=20, w=1.0, num_extra=0, only_unet=False):
         """
 
@@ -506,7 +506,7 @@ class MRFNet(Module):
 
     """
     def __init__(self, dim, num_classes, num_iter=20, num_extra=0, w=1.0,
-                 activation=tnn.LeakyReLU(0.1)):
+                 activation=tnn.LeakyReLU(0.2)):
         """
 
         Parameters
