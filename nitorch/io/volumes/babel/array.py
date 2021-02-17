@@ -471,7 +471,7 @@ class BabelArray(MappedArray):
         return dat
 
     def metadata(self, keys=None):
-        if keys is None:
+        if not keys:
             keys = metadata_keys
         meta = header_to_metadata(self._image.dataobj._header, keys)
         return meta

@@ -1504,14 +1504,15 @@ def affine_matvec(affine, vector):
     """
     affine = affine_del_homogeneous(affine)
     vector = torch.as_tensor(vector)
-    info = dict(dtype=vector.dtype, device=vector.device)
+    backend = dict(dtype=vector.dtype, device=vector.device)
+    affine = affine.to(**backend)
     ndims_in = affine.shape[-1] - 1
     is_h = vector.shape[-1] == ndims_in + 1
     zoom = affine[..., :, :-1]
     translation = affine[..., :, -1]
     out = linalg.matvec(zoom, vector[..., :ndims_in]) + translation
     if is_h:
-        one = torch.ones(out.shape[:-1] + (1,), **info)
+        one = torch.ones(out.shape[:-1] + (1,), **backend)
         out = torch.cat((out, one), dim=-1)
         out = as_homogeneous(out)
     else:
@@ -1538,6 +1539,7 @@ def affine_matmul(a, b):
     is_h = is_homogeneous(a)
     a = affine_del_homogeneous(a)
     b = affine_del_homogeneous(b)
+    a, b = utils.to_max_backend(a, b)
     Za = a[..., :, :-1]
     Ta = a[..., :, -1]
     Zb = b[..., :, :-1]

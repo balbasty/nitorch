@@ -9,7 +9,7 @@ from nitorch.spatial import voxel_size
 from nitorch.core import dtypes
 
 
-def set_affine(header, affine):
+def set_affine(header, affine, shape=None):
     if torch.is_tensor(affine):
         affine = affine.detach().cpu()
     affine = np.asanyarray(affine)
@@ -44,7 +44,7 @@ def set_affine(header, affine):
     return header
     
 
-def set_voxel_size(header, vx):
+def set_voxel_size(header, vx, shape=None):
     vx0 = header.get_zooms()
     nb_dim = max(len(vx0), len(vx))
     vx = [vx[i] if i < len(vx) else vx0[i] for i in range(nb_dim)]
@@ -53,7 +53,7 @@ def set_voxel_size(header, vx):
     vx = torch.as_tensor(vx, dtype=aff.dtype, device=aff.device)
     vx0 = voxel_size(aff)
     aff[:-1,:] *= vx[:, None] / vx0[:, None]
-    header = set_affine(header, aff)
+    header = set_affine(header, aff, shape)
     return header
     
 
@@ -81,10 +81,10 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
     # --- generic fields ---
 
     if metadata.get('voxel_size', None) is not None:
-        header = set_voxel_size(header, metadata['voxel_size'])
+        header = set_voxel_size(header, metadata['voxel_size'], shape)
 
     if metadata.get('affine', None) is not None:
-        header = set_affine(header, metadata['affine'])
+        header = set_affine(header, metadata['affine'], shape)
 
     if (metadata.get('slope', None) is not None or
         metadata.get('inter', None) is not None):
