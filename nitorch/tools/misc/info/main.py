@@ -4,7 +4,7 @@ import torch
 import os
 
 
-def info(inp, meta=None):
+def info(inp, meta=None, stat=False):
     """Print information on a volume.
 
     Parameters
@@ -16,6 +16,8 @@ def info(inp, meta=None):
     meta : sequence of str
         List of fields to print.
         By default, a list of common fields is used.
+    stat : bool, default=False
+        Compute intensity statistics
 
     """
 
@@ -25,9 +27,16 @@ def info(inp, meta=None):
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.fdata(), f.affine)
+        if stat:
+            inp = (f.fdata(), f.affine)
+        else:
+            inp = (f.shape, f.affine)
         metadata = f.metadata(meta)
     dat, aff = inp
+    if torch.is_tensor(dat):
+        shape = dat.shape
+    else:
+        shape = dat
 
     pad = max([len(m) for m in metadata.keys()])
     if not meta:
@@ -38,26 +47,27 @@ def info(inp, meta=None):
     if not meta:
         if is_file:
             print(f'{title("filename")} : {fname}')
-        print(f'{title("shape")} : {list(dat.shape)}')
+        print(f'{title("shape")} : {tuple(shape)}')
         layout = spatial.affine_to_layout(aff)
         layout = spatial.volume_layout_to_name(layout)
         print(f'{title("layout")} : {layout}')
-        center = torch.as_tensor(dat.shape[:3], dtype=torch.float)/2
+        center = torch.as_tensor(shape[:3], dtype=torch.float)/2
         center = spatial.affine_matvec(aff, center)
-        print(f'{title("center")} : {center.tolist()} mm (RAS)')
-        chandim = list(range(3, dat.ndim))
-        if not chandim:
-            vmin = dat.min().tolist()
-            vmax = dat.max().tolist()
-            vmean = dat.mean().tolist()
-        else:
-            dat1 = dat.reshape([-1, *chandim])
-            vmin = dat1.min(dim=0).values.tolist()
-            vmax = dat1.max(dim=0).values.tolist()
-            vmean = dat1.mean(dim=0).tolist()
-        print(f'{title("min")} : {vmin}')
-        print(f'{title("max")} : {vmax}')
-        print(f'{title("mean")} : {vmean}')
+        print(f'{title("center")} : {tuple(center.tolist())} mm (RAS)')
+        if stat and torch.is_tensor(dat):
+            chandim = list(range(3, dat.ndim))
+            if not chandim:
+                vmin = dat.min().tolist()
+                vmax = dat.max().tolist()
+                vmean = dat.mean().tolist()
+            else:
+                dat1 = dat.reshape([-1, *chandim])
+                vmin = dat1.min(dim=0).values.tolist()
+                vmax = dat1.max(dim=0).values.tolist()
+                vmean = dat1.mean(dim=0).tolist()
+            print(f'{title("min")} : {vmin}')
+            print(f'{title("max")} : {vmax}')
+            print(f'{title("mean")} : {vmean}')
 
     for key, value in metadata.items():
         if value is None and not meta:
