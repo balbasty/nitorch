@@ -25,7 +25,7 @@ def info(inp, meta=None):
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.data(), f.affine)
+        inp = (f.fdata(), f.affine)
         metadata = f.metadata(meta)
     dat, aff = inp
 
