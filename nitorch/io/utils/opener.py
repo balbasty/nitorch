@@ -126,6 +126,8 @@ class Opener:
             Additional opener-specific arguments,
         """
         self._name = None
+        self.fileobj = None
+        self.open = None
 
         if isinstance(file_like, Opener):
             if file_like.closed:
@@ -222,8 +224,8 @@ class Opener:
     tell = lambda self, *a, **k: self.fileobj.tell(*a, **k)
     truncate = lambda self, *a, **k: self.fileobj.truncate(*a, **k) # NOT IN GZIP
     isatty = lambda self, *a, **k: self.fileobj.isatty(*a, **k)
-    close = lambda self, *a, **k: self.fileobj.close(*a, **k)
-    close_if_mine = lambda self: self.fileobj.close() if self.is_owned else None
+    close = lambda self, *a, **k: self.fileobj.close(*a, **k) if self.fileobj else None
+    close_if_mine = lambda self: self.close() if self.is_owned else None
     __iter__ = lambda self: iter(self.fileobj)
     __enter__ = lambda self: self
     __exit__ = lambda self, *a, **k: self.close_if_mine()
