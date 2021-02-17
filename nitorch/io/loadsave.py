@@ -23,7 +23,7 @@ def _unroll(seq):
     return out
 
 
-def map(file_like, permission='r+', keep_open=True, reader_classes=None):
+def map(file_like, permission='r', keep_open=True, reader_classes=None):
     """Map a data file
 
     Parameters
