@@ -1,6 +1,6 @@
 from copy import copy
 import torch
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 from nitorch.core import dtypes
 from nitorch.spatial import affine_sub, affine_permute, voxel_size as affvx
 from nitorch.io.utils.indexing import (expand_index, guess_shape, compose_index, neg2pos,

@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as _F
 from nitorch.core import kernels, utils, linalg
 from nitorch.core.utils import expand, make_vector
-from nitorch.core.pyutils import make_list, prod
+from nitorch.core.py import make_list, prod
 from nitorch._C import spatial as _Cspatial
 from nitorch._C.spatial import BoundType, InterpolationType
 from ._affine import affine_resize, affine_lmdiv

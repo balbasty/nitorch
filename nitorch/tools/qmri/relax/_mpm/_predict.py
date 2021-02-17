@@ -1,5 +1,5 @@
 from nitorch import core
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 from nitorch.tools.qmri.param import ParameterMap
 from nitorch.tools.qmri.io import PrecomputedFieldMap, GradientEchoMulti
 from ..utils import smart_grid, smart_pull

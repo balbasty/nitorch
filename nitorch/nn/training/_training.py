@@ -3,7 +3,7 @@
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from nitorch.core.utils import benchmark
-from nitorch.core.pyutils import make_tuple
+from nitorch.core.py import make_tuple
 from nitorch.nn.modules import Module
 import string
 import math

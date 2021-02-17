@@ -5,7 +5,7 @@ from ..modules._cnn import UNet
 from ..modules._spatial import GridPull, GridPush, GridExp, VoxelMorph
 from nitorch import spatial
 from nitorch.core.utils import expand
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 
 
 class VoxelMorphSymmetric(Module):

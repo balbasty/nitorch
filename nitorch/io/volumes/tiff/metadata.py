@@ -1,5 +1,5 @@
 from xml.etree import ElementTree as etree
-from nitorch.core import pyutils
+from nitorch.core import py
 
 
 def parse_unit(unit):
@@ -88,7 +88,7 @@ def ome_zooms(omexml, series=None):
     single_series = False
     if series is not None:
         single_series = isinstance(series, int)
-        series = pyutils.make_list(series)
+        series = py.make_list(series)
 
     all_zooms = []
     all_units = []

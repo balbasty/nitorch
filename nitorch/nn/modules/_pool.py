@@ -4,7 +4,7 @@ import torch.nn as tnn
 import torch
 from ._base import Module
 from ._reduction import reductions
-from ...core.pyutils import make_list
+from ...core.py import make_list
 from copy import copy
 
 

@@ -7,5 +7,5 @@ from . import linalg       # linear algebra
 from . import math         # generic math
 from . import optim        # numerical optimization
 from . import optionals    # optional dependencies (numpy, scipy, etc)
-from . import pyutils      # python utilities
+from . import py      # python utilities
 from . import utils        # pytorch utilities

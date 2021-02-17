@@ -4,7 +4,7 @@ import torch
 from torch.nn import functional as F
 from nitorch import core
 from nitorch.core.utils import to_max_backend, unsqueeze, movedim
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 
 
 def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
@@ -168,6 +168,7 @@ def spconv(input, kernel, bound='dct2', dim=None):
     -----
     .. This convolution does not support strides, padding, dilation.
     .. The output spatial shape is the same as the input spatial shape.
+    .. The output batch shape is the same as the input batch shape.
     .. Data outside the field-of-view is extrapolated according to `bound`
     .. It is implemented as a linear combination of views into the input
        tensor and should therefore be relatively memory-efficient.
@@ -176,14 +177,27 @@ def spconv(input, kernel, bound='dct2', dim=None):
     ----------
     input : (..., [channel_in], *spatial) tensor
         Input tensor, to convolve.
-    kernel : (..., [channel_in, [channel_out]], *kernel_size) sparse tensor
+    kernel : ([channel_in, [channel_out]], *kernel_size) sparse tensor
         Convolution kernel.
     bound : [sequence of] str, default='dct2'
+        Boundary condition (per spatial dimension).
     dim : int, default=kernel.dim()
+        Number of spatial dimensions.
 
     Returns
     -------
-    output : (..., [channel_out], *spatial) tensor
+    output : (..., [channel_out or channel_in], *spatial) tensor
+
+        * If the kernel shape is (channel_in, channel_out, *kernel_size),
+          the output shape is (..., channel_out, *spatial) and cross-channel
+          convolution happens:
+            out[co] = \sum_{ci} conv(inp[ci], ker[ci, co])
+        * If the kernel_shape is (channel_in, *kernel_size), independent
+          single-channel convolutions are applied to each channels::
+            out[c] = conv(inp[c], ker[c])
+        * If the kernel shape is (*kernel_size), the same convolution
+          is applied to all input channels:
+            out[c] = conv(inp[c], ker)
 
     """
     # get kernel dimensions
@@ -209,12 +223,14 @@ def spconv(input, kernel, bound='dct2', dim=None):
         batch_shape = input.shape[:-dim-1]
         output_shape = tuple([*batch_shape, channel_out, *spatial_shape])
     else:
+        # add a fake channel dimension
         spatial_shape = input.shape[-dim:]
-        batch_shape = input.shape[:-dim-1]
+        batch_shape = input.shape[:-dim]
+        input = input.reshape([*batch_shape, 1, *spatial_shape])
         output_shape = input.shape
     output = input.new_zeros(output_shape)
 
-    # move spatial dimensions to the front
+    # move channel + spatial dimensions to the front
     spdim = list(range(input.dim()-dim-1, input.dim()))
     input = movedim(input, spdim, list(range(dim+1)))
     output = movedim(output, spdim, list(range(dim+1)))
@@ -232,16 +248,6 @@ def spconv(input, kernel, bound='dct2', dim=None):
         else:
             ci = co = 0
         idx = idx - shift
-
-        # def zpadl(x, d):
-        #     pad = [0] * x.dim()
-        #     pad[d] = 1
-        #     return core.utils.pad(x, pad, side='left')
-        #
-        # def zpadr(x, d):
-        #     pad = [0] * x.dim()
-        #     pad[d] = 1
-        #     return core.utils.pad(x, pad, side='right')
 
         inp = input[ci]
         out = output[co]
@@ -348,6 +354,10 @@ def spconv(input, kernel, bound='dct2', dim=None):
 
     # move spatial dimensions to the back
     output = movedim(output, list(range(dim+1)), spdim)
+    # remove fake channels
+    if channel_in is None:
+        output = output.squeeze(len(batch_shape))
+    # remove added dimensions
     for _ in range(added_dims):
         output = output.squeeze(-dim-1)
     return output

@@ -6,7 +6,7 @@ import torch
 import torch.nn as tnn
 import math
 from ._base import Loss
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 from nitorch.core.utils import unsqueeze, channel2last, last2channel
 from nitorch.core.constants import eps, nan, inf, pi
 from nitorch.core.math import nanmin, nanmax, nansum

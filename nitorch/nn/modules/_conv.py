@@ -5,7 +5,7 @@ from torch import nn as tnn
 from ._base import nitorchmodule
 from ._norm import BatchNorm
 from ..activations import _map_activations
-from ...core.pyutils import make_tuple, rep_sequence, getargs
+from ...core.py import make_tuple, rep_sequence, getargs
 from copy import copy
 import math
 import inspect

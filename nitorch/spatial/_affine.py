@@ -13,7 +13,7 @@ from ast import literal_eval
 from warnings import warn
 from nitorch import core
 from nitorch.core import utils
-from nitorch.core import pyutils
+from nitorch.core import py
 from nitorch.core import itertools
 from nitorch.core import linalg
 from nitorch.core import constants
@@ -731,7 +731,7 @@ def _build_affine_basis(basis, dim=None, dtype=None, device=None):
             raise ValueError('Unknown basis name {}.'.format(basename))
 
     # make list
-    basis = pyutils.make_list(basis)
+    basis = py.make_list(basis)
     built_bases = [b for b in basis if not isinstance(b, str)]
 
     # check dimension
@@ -830,7 +830,7 @@ def affine_matrix(prm, *basis, dim=None):
     if basis and (isinstance(basis[-1], int) or basis[-1] is None):
         *basis, dim = basis
     basis = build_affine_basis(*basis, dim, **info)
-    basis = pyutils.make_list(basis)
+    basis = py.make_list(basis)
 
     # Check length
     nb_basis = sum([len(b) for b in basis])
@@ -1098,7 +1098,7 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
 
     # Format basis
     basis = build_affine_basis(*basis, dim)
-    basis = pyutils.make_list(basis)
+    basis = py.make_list(basis)
     nb_basis = sum([len(b) for b in basis])
 
     def gauss_newton():
@@ -1956,11 +1956,11 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     if len(shape) != ndim:
         raise ValueError('Affine and shape not consistant. Found dim '
                          '{} and {}.'.format(ndim, len(shape)))
-    kernel_size = pyutils.make_list(kernel_size, ndim)
-    stride = pyutils.make_list(stride, ndim)
-    padding = pyutils.make_list(padding, ndim)
-    output_padding = pyutils.make_list(output_padding, ndim)
-    dilation = pyutils.make_list(dilation, ndim)
+    kernel_size = py.make_list(kernel_size, ndim)
+    stride = py.make_list(stride, ndim)
+    padding = py.make_list(padding, ndim)
+    output_padding = py.make_list(output_padding, ndim)
+    dilation = py.make_list(dilation, ndim)
 
     # compute new shape and scale/offset that transform the
     # new lattice into the old lattice
@@ -1988,7 +1988,8 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     return affine, tuple(oshape)
 
 
-def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
+def affine_default(shape, voxel_size=1., layout=None, center=0.,
+                   dtype=None, device=None):
     """Generate an orientation matrix with the origin in the center of the FOV.
 
     Parameters
@@ -1999,6 +2000,8 @@ def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
         Lattice voxel size
     layout : str or layout_like, default='RAS'
         Lattice layout (see `volume_layout`).
+    center : sequence[float], default=0
+        World-coordinate of the center of the field-of-view.
     dtype : dtype, optional
     device : device, optional
 
@@ -2008,15 +2011,13 @@ def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
         Orientation matrix
 
     """
-    shape = list(shape)
+    backend = dict(dtype=dtype or utils.max_dtype(voxel_size, center),
+                   device=device or utils.max_device(voxel_size, center))
+    shape = utils.make_vector(shape)
     nb_dim = len(shape)
-    voxel_size = pyutils.make_list(voxel_size, nb_dim)
-
-    # build affine matrix
-    voxel_size = torch.as_tensor(voxel_size, dtype=dtype, device=device)
-    dtype = voxel_size.dtype
-    device = voxel_size.device
-    shape = torch.as_tensor(shape, dtype=dtype, device=device)
+    voxel_size = utils.make_vector(voxel_size, nb_dim, **backend)
+    center = utils.make_vector(center, nb_dim, **backend)
+    shape = shape.to(**backend)
 
     # build layout
     if layout is None:
@@ -2028,7 +2029,7 @@ def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
 
     # compute shift
     lin = layout[:nb_dim, :nb_dim]
-    shift = -linalg.matvec(lin, shape/2.)
+    shift = center - linalg.matvec(lin, shape/2.)
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
     return affine_make_homogeneous(as_euclidean(affine))
@@ -2298,7 +2299,7 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     # (we must make layouts hashable so that they can be counted)
     if layout is None:
         all_layouts = [hashable_layout(affine_to_layout(mat)) for mat in mats]
-        layout = pyutils.majority(all_layouts)
+        layout = py.majority(all_layouts)
         # print('Output layout: {}'.format(volume_layout_to_name(layout)))
     else:
         layout = volume_layout(layout)

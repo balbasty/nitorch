@@ -8,7 +8,7 @@ import torch
 from nitorch.spatial import (affine_grid, affine_basis, affine_matrix_classic,
                              grid_pull, voxel_size)
 from nitorch.io import map, savef
-from nitorch.core.pyutils import file_mod
+from nitorch.core.py import file_mod
 from nitorch.core.constants import pi
 from nitorch.core.linalg import (meanm, _expm)
 

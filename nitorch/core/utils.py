@@ -3,7 +3,7 @@
 
 import torch
 import torch.nn.functional as F
-from .pyutils import make_list, make_tuple
+from .py import make_list, make_tuple
 from .constants import inf
 # from ._dtypes import astorch as dtype_astorch
 from .dtypes import as_torch as dtype_astorch
@@ -364,6 +364,21 @@ def to_max_device(*args):
     else:
         return tuple(torch.as_tensor(arg, device=device)
                      for arg in args)
+
+
+def backend(x):
+    """Return the backend (dtype and device) of a tensor
+
+    Parameters
+    ----------
+    x : tensor
+
+    Returns
+    -------
+    dict with keys 'dtype' and 'device'
+
+    """
+    return dict(dtype=x.dtype, device=x.device)
 
 
 def max_backend(*args):

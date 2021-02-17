@@ -120,7 +120,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         if opt.penalty.norm == 'tv':
             rls_shape = (len(maps),) + rls_shape
         rls = torch.ones(rls_shape, **backend)
-        sumrls = 0.5 * core.pyutils.prod(rls_shape)
+        sumrls = 0.5 * core.py.prod(rls_shape)
 
     if opt.penalty.norm:
         print(f'With {opt.penalty.norm.upper()} penalty:')

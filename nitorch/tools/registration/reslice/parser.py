@@ -36,7 +36,6 @@ usage:
         nireslice mov.nii -il affine.lta -v velocity.nii -t fix.nii
     - reslicing fix to mov:
         nireslice fix.nii -iv velocity.nii -l affine.lta -t mov.nii
-    
 """
 
 

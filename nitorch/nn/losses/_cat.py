@@ -4,7 +4,7 @@ import torch
 from ._base import Loss
 from nitorch.core.math import nansum
 from nitorch.core.utils import isin
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 
 
 def _pad_zero(x, implicit=False):

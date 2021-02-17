@@ -31,7 +31,7 @@ from nibabel.volumeutils import _is_compressed_fobj as is_compressed_fobj, \
 from nibabel.fileslice import fileslice
 from nibabel.filebasedimages import ImageFileError
 # nitorch imports
-from nitorch.core import pyutils, dtypes
+from nitorch.core import py, dtypes
 # io imports
 from nitorch.io.mapping import AccessType
 from nitorch.io.volumes.mapping import MappedArray
@@ -436,7 +436,7 @@ class BabelArray(MappedArray):
                             .format(dtype))
 
         # --- check that view is not empty ---
-        if pyutils.prod(self.shape) == 0:
+        if py.prod(self.shape) == 0:
             if numpy:
                 return np.zeros(self.shape, dtype=dtype.numpy)
             else:

@@ -547,6 +547,9 @@ setup(
         'console_scripts': [
             'autoreg=nitorch.tools.registration.autoreg.main:autoreg',
             'nireslice=nitorch.tools.registration.reslice.main:reslice',
+            'nireorient=nitorch.tools.registration.reorient.cli:cli',
+            'niorient=nitorch.tools.registration.orient.cli:cli',
+            'niunstack=nitorch.tools.misc.unstack.cli:cli',
         ],
     }
 )

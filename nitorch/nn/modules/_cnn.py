@@ -5,7 +5,7 @@ from torch import nn as tnn
 from ._base import nitorchmodule, Module
 from ._conv import Conv
 from ._reduction import reductions, Reduction
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 from collections import OrderedDict
 import inspect
 import math

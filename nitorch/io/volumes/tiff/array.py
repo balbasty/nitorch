@@ -5,7 +5,7 @@ import torch
 import numpy as np
 # nitorch
 from nitorch.spatial import affine_default
-from nitorch.core import pyutils, dtypes
+from nitorch.core import py, dtypes
 # io
 from nitorch.io.mapping import AccessType
 from nitorch.io.utils.indexing import (is_fullslice, split_operation,
@@ -107,7 +107,7 @@ class TiffArray(MappedArray):
                 self._cache['_affine'] = aff
             elif ('ModelTiepointTag' in geotags):
                 # copied from tifffile
-                sx, sy, sz = pyutils.make_list(zooms, n=3)
+                sx, sy, sz = py.make_list(zooms, n=3)
                 tiepoints = torch.as_tensor(geotags['ModelTiepointTag'])
                 affines = []
                 for tiepoint in tiepoints:
@@ -122,7 +122,7 @@ class TiffArray(MappedArray):
                     affines = affines[0]
                     self._cache['_affine'] = affines
             else:
-                zooms = pyutils.make_list(zooms, n=len(axes))
+                zooms = py.make_list(zooms, n=len(axes))
                 ax2zoom = {ax: zoom for ax, zoom in zip(axes, zooms)}
                 axes = [ax for ax in self._axes if ax in 'XYZ']
                 shape = [shp for shp, msk in zip(self._shape, self._spatial)
@@ -213,7 +213,7 @@ class TiffArray(MappedArray):
                             .format(dtype))
 
         # --- check that view is not empty ---
-        if pyutils.prod(self.shape) == 0:
+        if py.prod(self.shape) == 0:
             if numpy:
                 return np.zeros(self.shape, dtype=dtype.numpy)
             else:
@@ -412,7 +412,7 @@ class TiffArray(MappedArray):
                 return False
             offset, count = page.is_contiguous
             if (
-                count != pyutils.prod(page.shape) * page.bitspersample // 8
+                count != py.prod(page.shape) * page.bitspersample // 8
                 or offset + count * images > self.filehandle.size
             ):
                 raise ValueError()
@@ -442,11 +442,11 @@ class TiffArray(MappedArray):
         if slices > 1:
             shape.append(slices)
             axes.append('Z')
-        if channels > 1 and (pyutils.prod(shape) if shape else 1) != images:
+        if channels > 1 and (py.prod(shape) if shape else 1) != images:
             shape.append(channels)
             axes.append('C')
 
-        remain = images // (pyutils.prod(shape) if shape else 1)
+        remain = images // (py.prod(shape) if shape else 1)
         if remain > 1:
             shape.append(remain)
             axes.append('I')
