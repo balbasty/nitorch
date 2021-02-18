@@ -913,6 +913,9 @@ _bounds = {
     'reflect1': _bound_reflect1,
     'reflect2': _bound_reflect2,
     }
+_bounds['dft'] = _bounds['circular']
+_bounds['dct2'] = _bounds['reflect2']
+_bounds['dct1'] = _bounds['reflect1']
 
 
 _modifiers = {
@@ -922,32 +925,29 @@ _modifiers = {
     'reflect1': lambda x, i, n: x,
     'reflect2': lambda x, i, n: x,
     }
+_modifiers['dft'] = _modifiers['circular']
+_modifiers['dct2'] = _modifiers['reflect2']
+_modifiers['dct1'] = _modifiers['reflect1']
 
 
 def pad(inp, padsize, mode='constant', value=0, side=None):
-    # type: (torch.Pad, tuple[int], str, any, str) -> torch.Tensor
     """Pad a tensor.
 
     This function is a bit more generic than torch's native pad, but probably
     a bit slower:
-        . works with any input type
-        . works with arbitrarily large padding size
-        . crops the tensor for negative padding values
-        . implements additional padding modes
+        - works with any input type
+        - works with arbitrarily large padding size
+        - crops the tensor for negative padding values
+        - implements additional padding modes
     When used with defaults parameters (side=None), it behaves
     exactly like `torch.nn.functional.pad`
 
     Boundary modes are:
-        . 'circular'
-            -> corresponds to the boundary condition of an FFT
-        . 'reflect' or 'reflect1'
-            -> corresponds to the boundary condition of a DCT-I
-        . 'reflect2'
-            -> corresponds to the boundary condition of a DCT-II
-        . 'replicate'
-            -> replicates border values
-        . 'constant'
-            -> pads with a constant value (defaults to 0)
+        - 'circular' or 'dft'
+        - 'reflect' or 'reflect1' or 'dct1'
+        - 'reflect2' or 'dct2'
+        - 'replicate'
+        - 'constant'
 
     Side modes are 'pre', 'post', 'both' or None. If side is not None,
     inp.dim() values (or less) should be provided. If side is None,
@@ -955,20 +955,24 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     for the 'pre' and 'post' sides. If the number of padding values is less
     than the dimension of the input tensor, zeros are prepended.
 
-    Args:
-        inp (tensor): Input tensor.
-        padsize (sequence): Amount of padding in each dimension.
-        mode (string,optional): 'constant', 'replicate', 'reflect1',
-            'reflect2', 'circular'.
-            Defaults to 'constant'.
-        value (optional): Value to pad with in mode 'constant'.
-            Defaults to 0.
-        side: Use padsize to pad on left side ('pre'), right side ('post') or
-            both sides ('both'). If None, the padding side for the left and
-            right sides should be provided in alternate order.
-            Defaults to None.
+    Parameters
+    ----------
+    inp : tensor_like
+        Input tensor
+    padsize : [sequence of] int
+        Amount of padding in each dimension.
+    mode : {'constant', 'replicate', 'reflect1', 'reflect2', 'circular'}, default='constant'
+        Padding mode
+    value : scalar, default=0
+        Value to pad with in mode 'constant'.
+    side : {'left', 'right', 'both', None}, default=None
+        Use padsize to pad on left side ('pre'), right side ('post') or
+        both sides ('both'). If None, the padding side for the left and
+        right sides should be provided in alternate order.
 
-    Returns:
+    Returns
+    -------
+    tensor
         Padded tensor.
 
     """
