@@ -33,6 +33,7 @@ import numpy as np
 import os
 import torch
 from nitorch.spatial import affine_matmul
+from nitorch.core.struct import Structure
 from nitorch.io.mapping import AccessType
 from nitorch.io.utils.volutils import cast
 from nitorch.io.loadsave import map as map_affine
@@ -96,7 +97,7 @@ def nested_update(old_dict, new_dict):
             old_dict[key] = value
 
 
-class LTAStruct:
+class LTAStruct(Structure):
     """Structure encoding an LTA file.
 
     This representation mimics the representation on dist and is not
@@ -109,7 +110,7 @@ class LTAStruct:
     sigma: float = None                         # ?
     affine: np.ndarray = None                   # Affine(s)
 
-    class VolumeInfo:
+    class VolumeInfo(Structure):
         valid: bool = 1                         #
         filename: str = None                    # Filename of the volume
         volume: tuple = None                    # 3D shape
@@ -193,7 +194,10 @@ class LTAStruct:
         for attr in attributes:
             val = getattr(self, attr)
             if val is not None:
-                yield write_key(attr, val)
+                row = write_key(attr, val)
+                if attr == 'type':
+                    row = row + '  # ' + Constants(val).name
+                yield row
         # affine
         if self.affine is not None:
             yield write_values(self.affine.shape)
@@ -580,7 +584,7 @@ class LinearTransformArray(MappedAffine):
                         conv = known_subkeys[subkey]
                         setattr(sup, subkey, conv(subval))
 
-    def set_metadata(self, **meta):
+    def set_metadata(self, dict_like=None, **meta):
         """Set additional metadata
 
         Parameters
@@ -611,7 +615,9 @@ class LinearTransformArray(MappedAffine):
         self
 
         """
-        self._set_metadata(self._struct, **meta)
+        dict_like = dict_like or {}
+        dict_like.update(meta)
+        self._set_metadata(self._struct, **dict_like)
         return self
 
     def save(self, file_like=None, *args, **meta):

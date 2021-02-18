@@ -3,6 +3,7 @@ from warnings import warn
 import os
 import torch
 from .fsutils import read_values, write_values
+from nitorch.core.struct import Structure
 from nitorch.io.transforms.mapping import MappedAffine
 from nitorch.io.mapping import AccessType
 from nitorch.io.loadsave import map as map_affine
@@ -12,7 +13,7 @@ from ..readers import reader_classes
 from ..writers import writer_classes
 
 
-class RegisterDatStruct:
+class RegisterDatStruct(Structure):
     """Structure encoding a register.dat file
 
     This representation mimics the representation on dist and is not
