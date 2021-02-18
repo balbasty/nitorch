@@ -22,7 +22,7 @@ def samespace(aff, inshape, outshape):
 
     """
     eye = torch.eye(4, dtype=aff.dtype, device=aff.device)
-    return inshape == outshape and (aff - eye).allclose()
+    return inshape == outshape and aff.allclose(eye)
 
 
 def ffd_exp(prm, shape, order=3, bound='dft', returns='disp'):
