@@ -125,11 +125,11 @@ def load_data(s):
         if loss.moving.type == 'labels':
             loss.moving.dat, loss.labels = split(loss.moving.dat, loss.labels)
         if isinstance(loss, struct.JTVLoss):
-            med = loss.fixed.dat.reshape([loss.fixed.dat[0], -1]).median(dim=-1).values
+            med = loss.fixed.dat.reshape([loss.fixed.dat.shape[0], -1]).median(dim=-1).values
             med = utils.unsqueeze(med, -1, 3)
             loss.fixed.dat /= 0.5*med
             loss.fixed.dat = spatial.diff(loss.fixed.dat, dim=[1, 2, 3]).square().sum(-1)
-            med = loss.moving.dat.reshape([loss.moving.dat[0], -1]).median(dim=-1).values
+            med = loss.moving.dat.reshape([loss.moving.dat.shape[0], -1]).median(dim=-1).values
             med = utils.unsqueeze(med, -1, 3)
             loss.moving.dat /= 0.5*med
             loss.moving.dat = spatial.diff(loss.moving.dat, dim=[1, 2, 3]).square().sum(-1)
