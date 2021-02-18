@@ -426,9 +426,9 @@ def write_transforms(options):
         q = affine.dat
         B = affine.basis
         lin = linalg.expm(q, B)
-        if torch.is_tensor(trf.shift):
+        if torch.is_tensor(affine.shift):
             # include shift
-            shift = trf.shift.to(dtype=lin.dtype, device=lin.device)
+            shift = affine.shift.to(dtype=lin.dtype, device=lin.device)
             eye = torch.eye(3, dtype=lin.dtype, device=lin.device)
             lin[:-1, -1] += torch.matmul(lin[:-1, :-1] - eye, shift)
         io.transforms.savef(lin.cpu(), affine.output, type=2)
