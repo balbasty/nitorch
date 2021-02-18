@@ -189,7 +189,9 @@ class JTVLoss(MatchingLoss):
     name = 'jtv'
 
     def call(self, x, y):
-        raise NotImplementedError
+        x = spatial.diff(x, dim=[1, 2, 3]).square().sum(-1).sum(0)
+        y = spatial.diff(y, dim=[1, 2, 3]).square().sum(-1).sum(0)
+        return (x+y).sqrt().mean()
 
 
 class MSELoss(MatchingLoss):
