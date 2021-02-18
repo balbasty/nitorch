@@ -8,7 +8,7 @@ class ParseError(RuntimeError):
 
 
 def istag(arg):
-    """Return true if the argument starts with a dash ('-')
+    """Return true if the argument starts with a dash ('-') and is not a number
 
     Parameters
     ----------
@@ -19,7 +19,7 @@ def istag(arg):
     bool
 
     """
-    return arg.startswith('-')
+    return arg.startswith('-') and len(arg) > 1 and arg[1] not in '0123456789'
 
 
 def isvalue(arg):
