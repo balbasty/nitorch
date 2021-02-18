@@ -73,7 +73,7 @@ def crop(inp, size=None, center=None, space='vx', like=None,
     dir = ''
     base = ''
     ext = ''
-    fname = ''
+    fname = None
     transform_in = False
 
     # --- Open input ---
@@ -166,6 +166,9 @@ def crop(inp, size=None, center=None, space='vx', like=None,
         trf = io.transforms.LinearTransformArray(transform, 'w')
         trf.set_source_space(aff0, shape0)
         trf.set_destination_space(aff, shape)
+        trf.set_metadata({'src': {'filename': fname},
+                          'dst': {'filename': output},
+                          'type': 1})  # RAS_TO_RAS
         trf.set_fdata(torch.eye(4))
         trf.save()
 
