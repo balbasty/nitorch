@@ -1,3 +1,4 @@
+from nitorch.core.py import make_list
 from .main import unstack
 from .parser import parse, help, ParseError
 import sys
@@ -28,5 +29,7 @@ def _cli(args):
     if not options:
         return
 
-    unstack(options.file, options.dim, options.output,
-            transform=options.transform)
+    options.output = make_list(options.output, len(options.files))
+    options.transform = make_list(options.transform, len(options.files))
+    for fname, ofname, tfname in zip(options.files, options.output, options.transform):
+        unstack(fname, options.dim, ofname, transform=tfname)
