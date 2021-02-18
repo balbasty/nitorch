@@ -172,6 +172,7 @@ def load_transforms(s):
         all_shapes.append(loss.moving.shape)
         all_affines.append(loss.moving.affine)
     affine0, shape0 = mean_space(all_affines, all_shapes)
+    backend = dict(dtype=affine0.dtype, device=affine0.device)
 
     for trf in s.transformations:
         for reg in trf.losses:
@@ -185,7 +186,7 @@ def load_transforms(s):
                 trf.dat = torch.zeros(trf.nb_prm(3), dtype=torch.float32,
                                       device=device)
             if trf.shift:
-                shift = torch.as_tensor(shape0, dtype=torch.float) * 0.5
+                shift = torch.as_tensor(shape0, **backend) * 0.5
                 trf.shift = -spatial.affine_matvec(affine0, shift)
             else:
                 trf.shift = 0.
