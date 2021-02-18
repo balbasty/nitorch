@@ -6,9 +6,11 @@ from ._spatial import (DiffeoSample, DeformedSample)
 from ...spatial import grid_pull
 
 
-def seg_augmentation(tag, image, ground_truth, vx=None):
+def seg_augmentation(tag, image, ground_truth=None, vx=None):
     """Augmentation methods for segmentation network, with parameters that
     should, hopefully, work well by default.
+
+    OBS: Grount truth input only required when doing warping augmentation.
 
     Parameters
     -------
@@ -47,6 +49,8 @@ def seg_augmentation(tag, image, ground_truth, vx=None):
     # Augmentation method
     if 'warp' in tag:
         # Nonlinear warp
+        if ground_truth is None:
+            raise AttributeError('ground_truth input required for warp augmentation')
         # Parameters
         amplitude = 1.0
         fwhm = (3.0, ) * ndim
@@ -96,7 +100,10 @@ def seg_augmentation(tag, image, ground_truth, vx=None):
     else:
         raise ValueError('Undefined tag {:}'.format(tag))
 
-    return image, ground_truth
+    if ground_truth is None:
+        return image
+    else:
+        return image, ground_truth
 
 
 def warp_img(img, grid):
