@@ -2230,7 +2230,9 @@ def affine_mean(mats, shapes):
     # We look for the matrix that can be encoded without shears
     # that is the closest to the original matrix (in terms of the
     # Frobenius norm of the residual matrix)
-    _, M = affine_parameters(mat, 'R', 'Z')
+    # _, M = affine_parameters(mat, 'R', 'Z') ## not robust enough
+    prm = affine_parameters_classic(mat, return_stacked=False)
+    M = affine_matrix_classic(rotations=prm[1], zooms=prm[2])
     mat[:dim, :dim] = M[:dim, :dim]
 
     return mat
