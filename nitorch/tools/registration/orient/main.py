@@ -66,17 +66,25 @@ def orient(inp, layout=None, voxel_size=None, center=None, like=None, output=Non
     else:
         shape_like, aff_like = (shape, aff0)
 
-    if voxel_size is None:
+    if voxel_size in (None, 'like') or len(voxel_size) == 0:
         voxel_size = spatial.voxel_size(aff_like)
+    elif voxel_size == 'self':
+        voxel_size = spatial.voxel_size(aff0)
     voxel_size = utils.make_vector(voxel_size, dim)
 
-    if not layout:
+    if not layout or layout == 'like':
         layout = spatial.affine_to_layout(aff_like)
+    elif layout == 'self':
+        layout = spatial.affine_to_layout(aff0)
     layout = spatial.volume_layout(layout)
 
-    if not center:
+    if center in (None, 'like') or len(voxel_size) == 0:
         center = torch.as_tensor(shape_like, dtype=torch.float) * 0.5
         center = spatial.affine_matvec(aff_like, center)
+    elif center == 'self':
+        center = torch.as_tensor(shape, dtype=torch.float) * 0.5
+        center = spatial.affine_matvec(aff0, center)
+
     center = utils.make_vector(center, dim)
 
     aff = spatial.affine_default(shape, voxel_size=voxel_size, layout=layout,

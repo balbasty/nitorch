@@ -29,13 +29,17 @@ letters:
 usage:
     niorient *FILES [-l LAYOUT] [-v *VX] [-c *CTR] [-k FILE] [-o *FILES]
 
-    -l, --layout LAYOUT    Target orientation (default: preserved)
-    -v, --voxel-size *VX   Target voxel size (default: preserved)
-    -c, --center *CTR      Target coordinates of the FOV center (default: preserved)
-    -k, --like FILE        File from which to copy the orientation matrix (default: self)
+    -l, --layout LAYOUT    Target orientation (default: like)
+    -v, --voxel-size *VX   Target voxel size (default: like)
+    -c, --center *CTR      Target coordinates of the FOV center (default: like)
+    -k, --like FILE        Reference file from which to copy parameters (default: self)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.{layout}{ext})
 
-    To overrites the affine with a default RAS orientation and a voxel 
+    Options l/v/c can either receive a value, or one of {self, like}.
+    - If 'self', the value of the input file is preserved.
+    - If 'like', the value of the reference file is used.
+
+    To overwrite the affine with a default RAS orientation and a voxel 
     size of [2, 2, 2], use:
         niorient broken_file.nii.gz -l RAS -c 0 -o 2
 """
@@ -72,11 +76,17 @@ def parse(args):
             struct.voxel_size = []
             while cli.next_isvalue(args):
                 val, *args = args
+                if val.lower() in ('self', 'like'):
+                    struct.voxel_size = val
+                    break
                 struct.voxel_size.append(float(val))
         elif tag in ('-c', '--center'):
             struct.center = []
             while cli.next_isvalue(args):
                 val, *args = args
+                if val.lower() in ('self', 'like'):
+                    struct.center = val
+                    break
                 struct.center.append(float(val))
         elif tag in ('-k', '--like'):
             struct.like, *args = args
