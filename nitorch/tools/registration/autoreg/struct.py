@@ -189,7 +189,8 @@ class JTVLoss(MatchingLoss):
     name = 'jtv'
 
     def call(self, x, y):
-        return (x+y).sum(0).sqrt().mean()
+        nch = float(max(x.shape[0], y.shape[0]))  # nb of channels
+        return (x+y).sum(0).sqrt().mean() * nch - (x.sqrt() + y.sqrt()).sum(0).mean()
 
 
 class MSELoss(MatchingLoss):
