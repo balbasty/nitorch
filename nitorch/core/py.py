@@ -30,19 +30,48 @@ def file_mod(s, nam='', prefix='', suffix='', odir='', ext=''):
         Modified file path.
 
     """
-    odir0, nam0 = os.path.split(s)
+    # Deprecated -> should use `file_replace`
+    return file_replace(s, base=nam, prefix=prefix, suffix=suffix,
+                        dir=odir, ext=ext)
+
+
+def file_replace(fname, base=None, prefix='', dir=None, suffix='', ext=None):
+    """Modify a file path.
+
+    Parameters
+    ----------
+    fname : str
+        Input file path.
+    base : str, optional
+        New basename (without extension). Default: same as input.
+    prefix : str, default=''
+        New basename prefix.
+    suffix : str, default=''
+        New basename suffix.
+    dir : str, optional
+        Output directory. Default: same as input.
+    ext : str, optional
+        New extension (with leading dot). Default: same as input.
+
+    Returns
+    ----------
+    s : str
+        Modified file path.
+
+    """
+    odir0, nam0 = os.path.split(fname)
     parts = nam0.split('.')
     nam0 = parts[0]
     ext0 = '.' + '.'.join(parts[1:])
-    if not odir:
-        odir = odir0
-    odir = os.path.abspath(odir)  # Get absolute path
-    if not nam:
-        nam = nam0
-    if not ext:
+    if dir is None:
+        dir = odir0
+    dir = os.path.abspath(dir)  # Get absolute path
+    if base is None:
+        base = nam0
+    if ext is None:
         ext = ext0
 
-    return os.path.join(odir, prefix + nam + suffix + ext)
+    return os.path.join(dir, prefix + base + suffix + ext)
 
 
 def fileparts(fname):
