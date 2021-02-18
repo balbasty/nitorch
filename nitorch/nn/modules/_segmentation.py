@@ -233,8 +233,8 @@ class SegMRFNet(Module):
     """
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.1), batch_norm_seg=True,
-                 num_iter=20, w=0.5, num_extra=0, only_unet=False):
+                 activation=tnn.LeakyReLU(0.2), batch_norm_seg=True,
+                 num_iter=10, w=1.0, num_extra=0, only_unet=False):
         """
 
         Parameters
@@ -258,9 +258,9 @@ class SegMRFNet(Module):
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
             function).
-        num_iter : int, default=20
+        num_iter : int, default=10
             Number of mean-field iterations.
-        w : float, default=0.5
+        w : float, default=1.0
             Weight between new and old prediction [0, 1].
         num_extra : int, default=0
             Number of extra layers between MRF layer and final layer.
@@ -505,8 +505,8 @@ class MRFNet(Module):
     IPMI. Springer, Cham, 2019.
 
     """
-    def __init__(self, dim, num_classes, num_iter=20, num_extra=0, w=0.5,
-                 activation=tnn.LeakyReLU(0.1)):
+    def __init__(self, dim, num_classes, num_iter=10, num_extra=0, w=1.0,
+                 activation=tnn.LeakyReLU(0.2)):
         """
 
         Parameters
@@ -515,11 +515,11 @@ class MRFNet(Module):
             Dimension.
         num_classes : int
             Number of input classes.
-        num_iter : int, default=20
+        num_iter : int, default=10
             Number of mean-field iterations.
         num_extra : int, default=0
             Number of extra layers between MRF layer and final layer.
-        w : float, default=0.5
+        w : float, default=1.0
             Weight between new and old prediction [0, 1].
         activation : str or type or callable, default='tnn.LeakyReLU(0.2)'
             Activation function.
@@ -702,7 +702,8 @@ class MRFNet(Module):
             VB optimal tissue posterior, under the given MRF assumption.
 
         """
-        p = torch.zeros_like(ll)
+        K = ll.shape[1]
+        p = torch.ones_like(ll)/K
         for i in range(self.get_num_iter(is_train)):
             op = p.clone()
             p = (ll + self.mrf(p)).softmax(dim=1)

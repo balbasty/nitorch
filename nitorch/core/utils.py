@@ -6,6 +6,25 @@ from .py import make_list, make_tuple
 from .constants import inf
 from .dtypes import as_torch as dtype_astorch
 import numbers
+import os
+import numpy as np
+
+
+def reproducible(seed=1234):
+    """Ensure reproducible results.
+
+    Parameters
+    ----------
+    seed : int, default=1234
+        Seed for random number generators.
+
+    """
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
 
 
 def logsumexp(input, dim, keepdim=False):
