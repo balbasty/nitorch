@@ -41,7 +41,7 @@ from nitorch.io.utils.opener import open
 from ..readers import reader_classes
 from ..writers import writer_classes
 from .fsutils import (read_key, read_values, write_key, write_values,
-                      fs_to_affine)
+                      fs_to_affine, affine_to_fs)
 
 
 class Constants(IntEnum):
@@ -244,7 +244,7 @@ class LinearTransformArray(MappedAffine):
     def possible_extensions(cls):
         return ('.lta',)
 
-    def __init__(self, file_like, mode='r', keep_open=False):
+    def __init__(self, file_like=None, mode='r', keep_open=False):
         """
 
         Parameters
@@ -257,15 +257,19 @@ class LinearTransformArray(MappedAffine):
         keep_open : bool, default=False
             Does nothing.
         """
-        if isinstance(file_like, LTAStruct):
-            self._struct = file_like
-        elif isinstance(file_like, str):
-            self.filename = file_like
-            self._struct = LTAStruct.from_filename(file_like)
-        else:
-            self.file_like = file_like
-            self._struct = LTAStruct.from_lines(file_like)
+        self.filename = None
         self.mode = mode
+        if file_like is None:
+            self._struct = LTAStruct()
+        elif isinstance(file_like, LTAStruct):
+            self._struct = file_like
+        if 'r' in mode:
+            if isinstance(file_like, str):
+                self.filename = file_like
+                self._struct = LTAStruct.from_filename(file_like)
+            else:
+                self.file_like = file_like
+                self._struct = LTAStruct.from_lines(file_like)
 
     @property
     def shape(self):
@@ -309,6 +313,16 @@ class LinearTransformArray(MappedAffine):
                      dtype=None, device=None, numpy=False):
         """Return the space (affine + shape) of the source image
 
+        Parameters
+        ----------
+        source : {'voxel', 'physical', 'ras'}, default='voxel'
+            Source space of the affine
+        dest : {'voxel', 'physical', 'ras'}, default='ras'
+            Destination space of the affine
+        dtype : torch.dtype, optional
+        device : torch.device, optional
+        numpy : bool, default=False
+
         Returns
         -------
         affine : (4, 4) tensor
@@ -339,6 +353,16 @@ class LinearTransformArray(MappedAffine):
                           dtype=None, device=None, numpy=False):
         """Return the space (affine + shape) of the destination image
 
+        Parameters
+        ----------
+        source : {'voxel', 'physical', 'ras'}, default='voxel'
+            Source space of the affine
+        dest : {'voxel', 'physical', 'ras'}, default='ras'
+            Destination space of the affine
+        dtype : torch.dtype, optional
+        device : torch.device, optional
+        numpy : bool, default=False
+
         Returns
         -------
         affine : (4, 4) tensor
@@ -364,6 +388,63 @@ class LinearTransformArray(MappedAffine):
                 affine = torch.as_tensor(affine, dtype=dtype, device=device)
             return affine, shape
         return None, None
+
+    def set_source_space(self, affine, shape, source='voxel', dest='ras'):
+        """Set the source space of the transform
+
+        Parameters
+        ----------
+        affine : (4, 4) tensor
+            Affine matrix
+        shape : sequence of int
+            Volume shape
+        source : {'voxel', 'physical', 'ras'}, default='voxel'
+            Source space of the affine
+        dest : {'voxel', 'physical', 'ras'}, default='ras'
+            Destination space of the affine
+
+        Returns
+        -------
+        self
+
+        """
+        vx, x, y, z, c = affine_to_fs(affine, shape, source, dest)
+        self._struct.src.volume = tuple(shape)
+        self._struct.src.voxelsize = vx
+        self._struct.src.xras = x
+        self._struct.src.yras = y
+        self._struct.src.zras = z
+        self._struct.src.cras = c
+        return self
+
+    def set_destination_space(self, affine, shape, source='voxel', dest='ras'):
+        """Set the destination space of the transform
+
+        Parameters
+        ----------
+        affine : (4, 4) tensor
+            Affine matrix
+        shape : sequence of int
+            Volume shape
+        source : {'voxel', 'physical', 'ras'}, default='voxel'
+            Source space of the affine
+        dest : {'voxel', 'physical', 'ras'}, default='ras'
+            Destination space of the affine
+
+        Returns
+        -------
+        self
+
+        """
+        vx, x, y, z, c = affine_to_fs(affine, shape, source, dest)
+        self._struct.dst.volume = tuple(shape)
+        self._struct.dst.voxelsize = vx
+        self._struct.dst.xras = x
+        self._struct.dst.yras = y
+        self._struct.dst.zras = z
+        self._struct.dst.cras = c
+        return self
+
 
     def type(self):
         if self._struct.type == Constants.LINEAR_VOX_TO_VOX:

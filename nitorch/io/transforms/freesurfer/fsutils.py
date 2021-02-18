@@ -2,8 +2,8 @@ import re
 from warnings import warn
 import torch
 from nitorch.core import utils
-from nitorch.spatial import affine_matmul, affine_inv, layout_matrix
-from nitorch.io.transforms.conversions import Orientation, XYZC
+from nitorch.spatial import affine_matmul, affine_inv, layout_matrix, voxel_size
+from nitorch.io.transforms.conversions import Orientation, XYZC, HomogeneousAffineMatrix
 
 
 # Regex patterns for different value types
@@ -130,7 +130,7 @@ def write_values(value):
 
 def fs_to_affine(shape, voxel_size=1., x=None, y=None, z=None, c=0.,
                  source='voxel', dest='ras'):
-    """Transform FreeSurfer orientation parameter into an affine matrix.
+    """Transform FreeSurfer orientation parameters into an affine matrix.
 
     The returned matrix is effectively a "<source> to <dest>" transform.
 
@@ -142,8 +142,8 @@ def fs_to_affine(shape, voxel_size=1., x=None, y=None, z=None, c=0.,
     y: [sequence of] float, default=[0, 1, 0]
     z: [sequence of] float, default=[0, 0, 1]
     c: [sequence of] float, default=0
-    source : {'voxel', 'physical', 'ras', ...}, default='voxel'
-    dest : {'voxel', 'physical', 'ras', ...}, default='ras'
+    source : {'voxel', 'physical', 'ras'}, default='voxel'
+    dest : {'voxel', 'physical', 'ras'}, default='ras'
 
     Returns
     -------
@@ -221,4 +221,56 @@ def fs_to_affine(shape, voxel_size=1., x=None, y=None, z=None, c=0.,
         print(aff, affine)
         affine = affine_matmul(aff, affine)
     return affine
+
+
+def affine_to_fs(affine, shape, source='voxel', dest='ras'):
+    """Convert an affine matrix into FS parameters (vx/cosine/shift)
+
+    Parameters
+    ----------
+    affine : (4, 4) tensor
+    shape : (int, int, int)
+    source : {'voxel', 'physical', 'ras'}, default='voxel'
+    dest : {'voxel', 'physical', 'ras'}, default='ras'
+
+    Returns
+    -------
+    voxel_size : (float, float, float)
+    x : (float, float, float)
+    y : (float, float, float)
+    z: (float, float, float)
+    c : (float, float, float)
+
+    """
+
+    affine = torch.as_tensor(affine)
+    backend = dict(dtype=affine.dtype, device=affine.device)
+    vx = voxel_size(affine)
+    shape = torch.as_tensor(shape, **backend)
+    source = source.lower()[0]
+    dest = dest.lower()[0]
+
+    shift = shape / 2.
+    shift = -shift * voxel_size
+    vox2phys = Orientation(shift, vx).affine()
+
+    if (source, dest) in (('v', 'p'), ('p', 'v')):
+        phys2ras = torch.eye(4, **backend)
+
+    elif (source, dest) in (('v', 'r'), ('r', 'v')):
+        if source == 'r':
+            affine = affine_inv(affine)
+        phys2vox = affine_inv(vox2phys)
+        phys2ras = affine_matmul(affine, phys2vox)
+
+    else:
+        assert (source, dest) in (('p', 'r'), ('r', 'p'))
+        if source == 'r':
+            affine = affine_inv(affine)
+        phys2ras = affine
+
+    phys2ras = HomogeneousAffineMatrix(phys2ras)
+    return (vx.tolist, phys2ras.xras().tolist(), phys2ras.yras().tolist(),
+            phys2ras.zras().tolist(), phys2ras.cras().tolist())
+
 
