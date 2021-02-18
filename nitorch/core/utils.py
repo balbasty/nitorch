@@ -1,11 +1,9 @@
 """PyTorch utilities."""
 
-
 import torch
 import torch.nn.functional as F
 from .py import make_list, make_tuple
 from .constants import inf
-# from ._dtypes import astorch as dtype_astorch
 from .dtypes import as_torch as dtype_astorch
 import numbers
 
@@ -28,6 +26,7 @@ def logsumexp(input, dim, keepdim=False):
         Output tensor.
 
     """
+    input = torch.as_tensor(input)
     lse = input.max(dim=dim, keepdim=True)[0]
     lse = lse + (input - lse).exp().sum(dim=dim, keepdim=True).log()
     if not keepdim:
