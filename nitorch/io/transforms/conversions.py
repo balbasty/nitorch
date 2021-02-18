@@ -102,6 +102,9 @@ class HomogeneousAffineMatrix(Affine):
             raise ValueError('Expected square matrix')
         self.matrix = matrix
 
+    def homogenous(self):
+        return self.matrix
+
 
 class CompactAffineMatrix(Affine):
     """ Dx(D+1) compact affine matrix"""

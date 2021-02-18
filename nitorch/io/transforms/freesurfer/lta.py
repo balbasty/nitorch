@@ -110,8 +110,8 @@ class LTAStruct:
     affine: np.ndarray = None                   # Affine(s)
 
     class VolumeInfo:
-        valid: bool = True                      #
-        filename: str = None                    # Filename of thevolume
+        valid: bool = 1                         #
+        filename: str = None                    # Filename of the volume
         volume: tuple = None                    # 3D shape
         voxelsize: tuple = None                 # Voxel size
         xras: tuple = None                      # Columns of the xform
@@ -263,13 +263,15 @@ class LinearTransformArray(MappedAffine):
             self._struct = LTAStruct()
         elif isinstance(file_like, LTAStruct):
             self._struct = file_like
-        if 'r' in mode:
-            if isinstance(file_like, str):
-                self.filename = file_like
-                self._struct = LTAStruct.from_filename(file_like)
+        else:
+            self.filename = file_like
+            if 'r' in mode:
+                if isinstance(file_like, str):
+                    self._struct = LTAStruct.from_filename(file_like)
+                else:
+                    self._struct = LTAStruct.from_lines(file_like)
             else:
-                self.file_like = file_like
-                self._struct = LTAStruct.from_lines(file_like)
+                self._struct = LTAStruct()
 
     @property
     def shape(self):
@@ -408,6 +410,10 @@ class LinearTransformArray(MappedAffine):
         self
 
         """
+        if not self._struct.src:
+            self._struct.src = self._struct.VolumeInfo()
+        if not self._struct.dst:
+            self._struct.dst = self._struct.VolumeInfo()
         vx, x, y, z, c = affine_to_fs(affine, shape, source, dest)
         self._struct.src.volume = tuple(shape)
         self._struct.src.voxelsize = vx
@@ -609,7 +615,7 @@ class LinearTransformArray(MappedAffine):
         return self
 
     def save(self, file_like=None, *args, **meta):
-        if '+' not in self.mode:
+        if '+' not in self.mode and 'w' not in self.mode:
             raise RuntimeError('Cannot write into read-only volume. '
                                'Re-map in mode "r+" to allow in-place '
                                'writing.')

@@ -81,7 +81,7 @@ def crop(inp, size=None, center=None, space='vx', like=None,
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.data(), f.affine)
+        inp = (f.data(numpy=True), f.affine)
         if output is None:
             output = '{dir}{sep}{base}.crop{ext}'
         dir, base, ext = py.fileparts(fname)
@@ -117,7 +117,7 @@ def crop(inp, size=None, center=None, space='vx', like=None,
 
     # --- use center of the FOV ---
     if not torch.is_tensor(center) and not center:
-        center = torch.as_tensor(dat.shape[:dim], dtype=torch.float) * 0.5
+        center = torch.as_tensor(shape0[:dim], dtype=torch.float) * 0.5
 
     # --- convert size/center to voxels ---
     size = utils.make_vector(size, dim, dtype=torch.long)
@@ -128,22 +128,24 @@ def crop(inp, size=None, center=None, space='vx', like=None,
     if space_size.lower() == 'ras':
         perm = spatial.affine_to_layout(aff0)[:, 0]
         size = size[perm.long()]
+        size = size / spatial.voxel_size(aff0)
 
     # --- compute first/last ---
     center = center.float()
-    size = size.long()
-    first = (center - size.float()/2).round().long().tolist()
+    size = size.ceil().long()
+    first = (center - size.float()/2).round().long()
     last = (first + size).tolist()
-    first = [max(f, 0) for f in first]
-    last = [min(l, s) for l, s in zip(last, dat.shape[:dim])]
+    first = [max(f, 0) for f in first.tolist()]
+    last = [min(l, s) for l, s in zip(last, shape0[:dim])]
     verb = 'Cropping patch ['
-    verb += '.'.join([f'{f}:{l}' for f, l in zip(first, last)])
-    verb += f'] from volume with shape {dat.shape[:dim]}'
+    verb += ', '.join([f'{f}:{l}' for f, l in zip(first, last)])
+    verb += f'] from volume with shape {shape0[:dim]}'
+    print(verb)
     slicer = tuple(slice(f, l) for f, l in zip(first, last))
 
     # --- do crop ---
     dat = dat[slicer]
-    aff, _ = spatial.affine_sub(aff0, dat.shape[:dim], slicer)
+    aff, _ = spatial.affine_sub(aff0, shape0[:dim], slicer)
     shape = dat.shape[:dim]
 
     if output:

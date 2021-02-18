@@ -2,7 +2,8 @@ import re
 from warnings import warn
 import torch
 from nitorch.core import utils
-from nitorch.spatial import affine_matmul, affine_inv, layout_matrix, voxel_size
+from nitorch.spatial import affine_matmul, affine_inv, layout_matrix
+from nitorch.spatial import voxel_size as get_voxel_size
 from nitorch.io.transforms.conversions import Orientation, XYZC, HomogeneousAffineMatrix
 
 
@@ -218,7 +219,6 @@ def fs_to_affine(shape, voxel_size=1., x=None, y=None, z=None, c=0.,
 
     affine, *affines = affines
     for aff in affines:
-        print(aff, affine)
         affine = affine_matmul(aff, affine)
     return affine
 
@@ -245,13 +245,13 @@ def affine_to_fs(affine, shape, source='voxel', dest='ras'):
 
     affine = torch.as_tensor(affine)
     backend = dict(dtype=affine.dtype, device=affine.device)
-    vx = voxel_size(affine)
+    vx = get_voxel_size(affine)
     shape = torch.as_tensor(shape, **backend)
     source = source.lower()[0]
     dest = dest.lower()[0]
 
     shift = shape / 2.
-    shift = -shift * voxel_size
+    shift = -shift * vx
     vox2phys = Orientation(shift, vx).affine()
 
     if (source, dest) in (('v', 'p'), ('p', 'v')):
@@ -270,7 +270,7 @@ def affine_to_fs(affine, shape, source='voxel', dest='ras'):
         phys2ras = affine
 
     phys2ras = HomogeneousAffineMatrix(phys2ras)
-    return (vx.tolist, phys2ras.xras().tolist(), phys2ras.yras().tolist(),
+    return (vx.tolist(), phys2ras.xras().tolist(), phys2ras.yras().tolist(),
             phys2ras.zras().tolist(), phys2ras.cras().tolist())
 
 

@@ -551,6 +551,8 @@ setup(
             'niorient=nitorch.tools.registration.orient.cli:cli',
             'niunstack=nitorch.tools.misc.unstack.cli:cli',
             'niinfo=nitorch.tools.misc.info.cli:cli',
+            'nipool=nitorch.tools.misc.pool.cli:cli',
+            'nicrop=nitorch.tools.misc.crop.cli:cli',
         ],
     }
 )

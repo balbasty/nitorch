@@ -187,7 +187,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, padding=0, bound='zero',
         pool_fn = lambda *a, **k: _pool(*a, **k, function=function)
 
     tensor = pool_fn(tensor, kernel_size, stride=stride)
-    spatial_out = tensor.shape[:(-dim)]
+    spatial_out = tensor.shape[-dim:]
     tensor = tensor.reshape([*batch, *spatial_out])
 
     if affine is not None:
@@ -216,8 +216,8 @@ def _pool(x, kernel_size, stride, function):
     """
     for d, (sz, st) in enumerate(zip(kernel_size, stride)):
         x = x.unfold(dimension=d + 1, size=sz, step=st)
-    x = x.reshape((x.shape[0], -1, *kernel_size))
-    x = utils.movedim(x, 1, -1)
+    dim = len(kernel_size)
+    x = x.reshape((*x.shape[:dim+1], -1))
     x = function(x)
     return x
 

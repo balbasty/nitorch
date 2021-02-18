@@ -29,7 +29,9 @@ def _cli(args):
     if not options:
         return
 
+    options.output = make_list(options.output, len(options.files))
     options.transform = make_list(options.transform, len(options.files))
-    crop(options.file, size=options.size, center=options.center,
-         space=(options.size_space, options.center_space), like=options.like,
-         output=options.output, transform=options.transform)
+    for fname, ofname, tfname in zip(options.files, options.output, options.transform):
+        crop(fname, size=options.size, center=options.center,
+             space=(options.size_space, options.center_space), like=options.like,
+             output=ofname, transform=tfname)

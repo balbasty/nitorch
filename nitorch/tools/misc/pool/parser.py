@@ -10,6 +10,7 @@ class Pool(cli.ParsedStructure):
     method: str = 'mean'
     dim: int = 3
     output: list = '{dir}{sep}{base}.pool{ext}'
+    device: str = 'cpu'
 
 
 help = r"""[nitorch] Window-pooling of a volume
