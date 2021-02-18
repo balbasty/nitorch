@@ -1,7 +1,7 @@
 from warnings import warn
-from nitorch.core import utils, pyutils, dtypes
+from nitorch.core import utils, py, dtypes
 import torch
-from .optionals import numpy as np
+from ..optionals import numpy as np
 
 
 def astype(dat, dtype, casting='unsafe'):
@@ -29,6 +29,7 @@ def astype(dat, dtype, casting='unsafe'):
     if torch.is_tensor(dat):
         return _torch_astype(dat, dtype, casting=casting)
     else:
+        dtype = dtypes.dtype(dtype).numpy
         return dat.astype(dtype, casting=casting)
 
 
@@ -166,7 +167,7 @@ def cast(dat, dtype, casting='unsafe', with_scale=False):
 
     # unsafe cast
     if indtype != outdtype:
-        dat = astype(dat, dtype, casting=casting)
+        dat = astype(dat, outdtype, casting=casting)
 
     return (dat, scale) if with_scale else dat
 
@@ -191,7 +192,7 @@ def cutoff(dat, cutoff, dim=None):
     """
     if cutoff is None:
         return dat
-    cutoff = sorted([100 * val for val in pyutils.make_sequence(cutoff)])
+    cutoff = sorted([100 * val for val in py.make_sequence(cutoff)])
     if len(cutoff) > 2:
         raise ValueError('Maximum to percentiles (min, max) should'
                          ' be provided. Got {}.'.format(len(cutoff)))

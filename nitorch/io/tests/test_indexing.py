@@ -1,4 +1,4 @@
-from .. import indexing as idx
+from ..utils import indexing as idx
 
 
 def test_neg2pos():

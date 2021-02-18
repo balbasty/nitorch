@@ -4,7 +4,7 @@ import torch
 from ._base import Loss
 from nitorch.core.math import nansum
 from nitorch.core.utils import isin
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 
 
 def _pad_zero(x, implicit=False):
@@ -278,7 +278,7 @@ class DiceLoss(Loss):
 
         else:
             # hard labels
-            if one_hot_map is None:
+            if not one_hot_map:
                 one_hot_map = list(range(predicted.shape[1]))
             one_hot_map = list(map(make_list, one_hot_map))
 

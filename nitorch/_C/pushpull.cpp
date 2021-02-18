@@ -38,14 +38,14 @@ namespace ni {
 #define PUSHPULL_CHECK_OPT_SAME_DEVICE(value1, value2)                 \
     TORCH_CHECK(                                                       \
     value1.device() == value2.device(),                                \
-    "(): expected " #value2 " and " #value2 " to be on same device, "  \
-    "but " #value2 " is on ", value1.device(), " and " #value2         \
+    "(): expected " #value1 " and " #value2 " to be on same device, "  \
+    "but " #value1 " is on ", value1.device(), " and " #value2         \
     " is on ", value2.device());
 #define PUSHPULL_CHECK_OPT_SAME_DTYPE(value1, value2)                  \
     TORCH_CHECK(                                                       \
     value1.dtype() == value2.dtype(),                                  \
-    "(): expected " #value2 " and " #value2 " to have the same dtype," \
-    " but " #value2 " has ", value1.dtype(), " and " #value2 " has ",  \
+    "(): expected " #value1 " and " #value2 " to have the same dtype," \
+    " but " #value1 " has ", value1.dtype(), " and " #value2 " has ",  \
     value2.dtype());
 #define PUSHPULL_CHECK_NOT_EMPTY(value)                                \
   for (int64_t i = 2; i < value.dim(); i++) {                          \

@@ -3,7 +3,7 @@
 import torch
 from ..core import utils
 from ..core.utils import expand, slice_tensor, same_storage, make_vector
-from ..core.pyutils import make_list
+from ..core.py import make_list
 
 
 __all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',

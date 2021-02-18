@@ -1,6 +1,6 @@
 import torch
-from nitorch.core.optionals import numpy as np
-from nitorch.core import pyutils
+from ..optionals import numpy as np
+from nitorch.core import py
 import itertools
 
 
@@ -428,7 +428,7 @@ def expand_index(index, shape):
         * If a scalar index falls out-of-bound
 
     """
-    index = pyutils.make_list(index)
+    index = py.make_list(index)
     shape = list(shape)
     nb_dim = len(shape)
 
@@ -868,19 +868,19 @@ def slicer_sub2ind(slicer, shape):
                     new_shape = [shp] + shape
                 break
 
-    new_slicer = pyutils.make_list(new_slicer)
-    new_shape = pyutils.make_list(new_shape)
+    new_slicer = py.make_list(new_slicer)
+    new_shape = py.make_list(new_shape)
 
-    assert pyutils.prod(shape0) == pyutils.prod(new_shape), \
-           "Oops: lost something: {} vs {}".format(pyutils.prod(shape0),
-                                                   pyutils.prod(new_shape))
+    assert py.prod(shape0) == py.prod(new_shape), \
+           "Oops: lost something: {} vs {}".format(py.prod(shape0),
+                                                   py.prod(new_shape))
 
     # 2) If we have a unique index, we can stop here
     if len(new_slicer) == 1:
         return new_slicer[0]
 
     # 3) Extract linear indices
-    strides = [1] + list(pyutils.cumprod(new_shape[1:]))
+    strides = [1] + list(py.cumprod(new_shape[1:]))
     new_index = []
     for idx, shp, stride in zip(new_slicer, new_shape, strides):
         if isinstance(idx, slice):
@@ -897,9 +897,9 @@ def slicer_sub2ind(slicer, shape):
         else:
             new_index = idx
 
-    assert len(new_index) == pyutils.prod(shape_out), \
+    assert len(new_index) == py.prod(shape_out), \
            "Oops: lost something: {} vs {}".format(len(new_index),
-                                                   pyutils.prod(shape_out))
+                                                   py.prod(shape_out))
 
     return new_index
 

@@ -1,7 +1,7 @@
 import torch
 from nitorch import core
 from nitorch.core.utils import movedim, make_vector, unsqueeze
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 from nitorch.core.linalg import sym_matvec, sym_solve
 from ._finite_differences import diff, div, diff1d, div1d
 from ._conv import spconv
@@ -30,12 +30,12 @@ def absolute(field, weight=None):
         return field
 
 
-def absolute_grid(field, voxel_size=1, weight=None):
+def absolute_grid(grid, voxel_size=1, weight=None):
     """Precision matrix for the Absolute energy of a deformation grid
 
     Parameters
     ----------
-    field : (..., *spatial, dim) tensor
+    grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     weight : (..., *spatial) tensor, optional
 
@@ -44,15 +44,15 @@ def absolute_grid(field, voxel_size=1, weight=None):
     field : (..., *spatial, dim) tensor
 
     """
-    field = torch.as_tensor(field)
-    dim = field.shape[-1]
+    grid = torch.as_tensor(grid)
+    dim = grid.shape[-1]
     voxel_size = make_vector(voxel_size, dim)
-    field = field * voxel_size.square()
+    grid = grid * voxel_size.square()
     if weight is not None:
-        backend = dict(dtype=field.dtype, device=field.device)
+        backend = dict(dtype=grid.dtype, device=grid.device)
         weight = torch.as_tensor(weight, **backend)
-        field = field * weight[..., None]
-    return field
+        grid = grid * weight[..., None]
+    return grid
 
 
 def membrane(field, voxel_size=1, bound='dct2', dim=None, weight=None):
@@ -89,12 +89,59 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weight=None):
     return field
 
 
-def membrane_grid(field, voxel_size=1, bound='dft', weight=None):
+def _membrane_l2(field, voxel_size=1, bound='dct2', dim=None):
+    """Precision matrix for the Membrane energy
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's membrane energy
+
+    Parameters
+    ----------
+    field : (..., *spatial) tensor
+    voxel_size : float or sequence[float], default=1
+    bound : str, default='dct2'
+    dim : int, default=field.dim()
+
+    Returns
+    -------
+    field : (..., *spatial) tensor
+
+    """
+    field = torch.as_tensor(field)
+    backend = core.utils.backend(field)
+    dim = dim or field.dim()
+    voxel_size = make_vector(voxel_size, dim, **backend)
+    vx = voxel_size.square().reciprocal()
+
+    # build sparse kernel
+    kernel = [2 * vx.sum()]
+    center_index = [1] * dim
+    indices = [list(center_index)]
+    for d in range(dim):
+        # cross
+        kernel += [-vx[d]] * 2
+        index = list(center_index)
+        index[d] = 0
+        indices.append(index)
+        index = list(center_index)
+        index[d] = 2
+        indices.append(index)
+    indices = torch.as_tensor(indices, dtype=torch.long, device=field.device)
+    kernel = torch.as_tensor(kernel, **backend)
+    kernel = torch.sparse_coo_tensor(indices.t(), kernel, [3] * dim)
+
+    # perform convolution
+    return spconv(field, kernel, bound=bound, dim=dim)
+
+
+def membrane_grid(grid, voxel_size=1, bound='dft', weight=None):
     """Precision matrix for the Membrane energy of a deformation grid
 
     Parameters
     ----------
-    field : (..., *spatial, dim) tensor
+    grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
     weight : (..., *spatial) tensor, optional
@@ -104,13 +151,17 @@ def membrane_grid(field, voxel_size=1, bound='dft', weight=None):
     field : (..., *spatial, dim) tensor
 
     """
-    field = torch.as_tensor(field)
-    dim = field.shape[-1]
-    field = movedim(field, -1, -(dim + 1))
-    field = membrane(field, weight=weight, voxel_size=voxel_size,
-                     bound=bound, dim=dim)
-    field = movedim(field, -(dim + 1), -1)
-    return field
+    grid = torch.as_tensor(grid)
+    backend = dict(dtype=grid.dtype, device=grid.device)
+    dim = grid.shape[-1]
+    voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
+    if (voxel_size != 1).any():
+        grid = grid * voxel_size
+    grid = movedim(grid, -1, -(dim + 1))
+    grid = membrane(grid, weight=weight, voxel_size=voxel_size,
+                    bound=bound, dim=dim)
+    grid = movedim(grid, -(dim + 1), -1)
+    return grid
 
 
 def bending(field, voxel_size=1, bound='dct2', dim=None, weight=None):
@@ -165,12 +216,12 @@ def bending(field, voxel_size=1, bound='dct2', dim=None, weight=None):
     return mom
 
 
-def bending_grid(field, voxel_size=1, bound='dft', weight=None):
+def bending_grid(grid, voxel_size=1, bound='dft', weight=None):
     """Precision matrix for the Bending energy of a deformation grid
 
     Parameters
     ----------
-    field : (..., *spatial, dim) tensor
+    grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
     weight : (..., *spatial) tensor, optional
@@ -180,16 +231,20 @@ def bending_grid(field, voxel_size=1, bound='dft', weight=None):
     field : (..., *spatial, dim) tensor
 
     """
-    field = torch.as_tensor(field)
-    dim = field.shape[-1]
-    field = movedim(field, -1, -(dim + 1))
-    field = bending(field, weight=weight, voxel_size=voxel_size,
-                    bound=bound, dim=dim)
-    field = movedim(field, -(dim + 1), -1)
-    return field
+    grid = torch.as_tensor(grid)
+    backend = dict(dtype=grid.dtype, device=grid.device)
+    dim = grid.shape[-1]
+    voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
+    if (voxel_size != 1).any():
+        grid = grid * voxel_size
+    grid = movedim(grid, -1, -(dim + 1))
+    grid = bending(grid, weight=weight, voxel_size=voxel_size,
+                   bound=bound, dim=dim)
+    grid = movedim(grid, -(dim + 1), -1)
+    return grid
 
 
-def lame_shear(field, voxel_size=1, bound='dft', weight=None):
+def lame_shear(grid, voxel_size=1, bound='dft', weight=None):
     """Precision matrix for the Shear component of the Linear-Elastic energy.
 
     Notes
@@ -205,7 +260,7 @@ def lame_shear(field, voxel_size=1, bound='dft', weight=None):
 
     Parameters
     ----------
-    field : (..., *spatial, dim) tensor
+    grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
     weight : (..., *spatial) tensor, optional
@@ -215,19 +270,22 @@ def lame_shear(field, voxel_size=1, bound='dft', weight=None):
     field : (..., *spatial, dim) tensor
 
     """
-    field = torch.as_tensor(field)
-    dim = field.shape[-1]
-    voxel_size = make_vector(voxel_size, dim)
+    grid = torch.as_tensor(grid)
+    backend = dict(dtype=grid.dtype, device=grid.device)
+    dim = grid.shape[-1]
+    voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
+    if (voxel_size != 1).any():
+        grid = grid * voxel_size
     bound = make_list(bound, dim)
-    dims = list(range(field.dim()-1-dim, field.dim()-1))
+    dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
     if weight is not None:
-        backend = dict(dtype=field.dtype, device=field.device)
+        backend = dict(dtype=grid.dtype, device=grid.device)
         weight = torch.as_tensor(weight, **backend)
 
     mom = [0] * dim
     for i in range(dim):
         # symmetric part
-        x_i = field[..., i]
+        x_i = grid[..., i]
         for j in range(dim):
             for side_i in ('f', 'b'):
                 opt_ij = dict(dim=dims[j], side=side_i, bound=bound[j],
@@ -239,7 +297,7 @@ def lame_shear(field, voxel_size=1, bound='dft', weight=None):
                     mom[i] += 2 ** (dim-1) * div1d(diff_ij_w, **opt_ij)
                 else:
                     # off diagonal elements
-                    x_j = field[..., j]
+                    x_j = grid[..., j]
                     for side_j in ('f', 'b'):
                         opt_ji = dict(dim=dims[i], side=side_j, bound=bound[i],
                                       voxel_size=voxel_size[i])
@@ -251,14 +309,14 @@ def lame_shear(field, voxel_size=1, bound='dft', weight=None):
                         mom[i] += div1d(diff_ji, **opt_ij)
                     del x_j
         del x_i
-    del field
+    del grid
 
     mom = torch.stack(mom, dim=-1)
     mom = mom / float(2 ** (dim-1))  # weight sides combinations
     return mom
 
 
-def lame_div(field, voxel_size=1, bound='dft', weight=None):
+def lame_div(grid, voxel_size=1, bound='dft', weight=None):
     """Precision matrix for the Divergence component of the Linear-Elastic energy.
 
     Notes
@@ -272,7 +330,7 @@ def lame_div(field, voxel_size=1, bound='dft', weight=None):
 
     Parameters
     ----------
-    field : (..., *spatial, dim) tensor
+    grid : (..., *spatial, dim) tensor
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
     weight : (..., *spatial) tensor, optional
@@ -282,20 +340,23 @@ def lame_div(field, voxel_size=1, bound='dft', weight=None):
     field : (..., *spatial, dim) tensor
 
     """
-    field = torch.as_tensor(field)
-    dim = field.shape[-1]
-    voxel_size = make_vector(voxel_size, dim)
+    grid = torch.as_tensor(grid)
+    backend = dict(dtype=grid.dtype, device=grid.device)
+    dim = grid.shape[-1]
+    voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
+    if (voxel_size != 1).any():
+        grid = grid * voxel_size
     bound = make_list(bound, dim)
-    dims = list(range(field.dim()-1-dim, field.dim()-1))
+    dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
     if weight is not None:
-        backend = dict(dtype=field.dtype, device=field.device)
+        backend = dict(dtype=grid.dtype, device=grid.device)
         weight = torch.as_tensor(weight, **backend)
 
     # precompute gradients
     grad = [dict(f={}, b={}) for _ in range(dim)]
     opt = [dict(f={}, b={}) for _ in range(dim)]
     for i in range(dim):
-        x_i = field[..., i]
+        x_i = grid[..., i]
         for side in ('f', 'b'):
             opt_i = dict(dim=dims[i], side=side, bound=bound[i],
                          voxel_size=voxel_size[i])

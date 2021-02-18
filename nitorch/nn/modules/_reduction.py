@@ -3,7 +3,7 @@
 import torch
 import torch.nn as tnn
 from ._base import nitorchmodule, Module
-from ...core.pyutils import make_list
+from ...core.py import make_list
 from ...core import math
 
 

@@ -13,7 +13,7 @@ from ast import literal_eval
 from warnings import warn
 from nitorch import core
 from nitorch.core import utils
-from nitorch.core import pyutils
+from nitorch.core import py
 from nitorch.core import itertools
 from nitorch.core import linalg
 from nitorch.core import constants
@@ -309,10 +309,10 @@ def layout_matrix(layout, voxel_size=1., shape=0., dtype=None, device=None):
     layout : str or (ndim, 2) tensor_like[long]
         See `affine.layout`
 
-    voxel_size : (ndim, 1) tensor_like, default=1
+    voxel_size : (ndim,) tensor_like, default=1
         Voxel size of the lattice
 
-    shape : (ndim, 1) tensor_like, default=0
+    shape : (ndim,) tensor_like, default=0
         Shape of the lattice
 
     dtype : torch.dtype, optional
@@ -358,8 +358,8 @@ def layout_matrix(layout, voxel_size=1., shape=0., dtype=None, device=None):
     mflip = torch.diag(mflip)
     shift = torch.where(flip, shape[perm], zero)
     mflip = torch.cat((mflip, shift[:, None]), dim=1)
-    mat = affine_matmul(mflip, mat)
-    mat = affine_make_square(mat)
+    mat = affine_matmul(as_euclidean(mflip), as_euclidean(mat))
+    mat = affine_make_homogeneous(mat)
 
     return mat
 
@@ -731,7 +731,7 @@ def _build_affine_basis(basis, dim=None, dtype=None, device=None):
             raise ValueError('Unknown basis name {}.'.format(basename))
 
     # make list
-    basis = pyutils.make_list(basis)
+    basis = py.make_list(basis)
     built_bases = [b for b in basis if not isinstance(b, str)]
 
     # check dimension
@@ -830,7 +830,7 @@ def affine_matrix(prm, *basis, dim=None):
     if basis and (isinstance(basis[-1], int) or basis[-1] is None):
         *basis, dim = basis
     basis = build_affine_basis(*basis, dim, **info)
-    basis = pyutils.make_list(basis)
+    basis = py.make_list(basis)
 
     # Check length
     nb_basis = sum([len(b) for b in basis])
@@ -854,7 +854,7 @@ def affine_matrix(prm, *basis, dim=None):
 
     # Matrix product
     if len(mats) > 1:
-        affine = torch.chain_matmul(mats)
+        affine = torch.chain_matmul(*mats)
     else:
         affine = mats[0]
     return affine
@@ -1049,7 +1049,7 @@ def affine_matrix_classic(prm=None, dim=3, *,
 
 
 def affine_parameters(mat, *basis, max_iter=10000, tol=None,
-                      max_line_search=6):
+                      max_line_search=8):
     """Compute the parameters of an affine matrix in a basis of the algebra.
 
     This function finds the matrix closest to ``mat`` (in the least squares
@@ -1098,7 +1098,7 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
 
     # Format basis
     basis = build_affine_basis(*basis, dim)
-    basis = pyutils.make_list(basis)
+    basis = py.make_list(basis)
     nb_basis = sum([len(b) for b in basis])
 
     def gauss_newton():
@@ -1132,11 +1132,11 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             # * dM/dBi = mprod(M[:i, ...]) @ dMi/dBi @ mprod(M[i+1:, ...])
             for n_mat, dM in enumerate(dMs):
                 if n_mat > 0:
-                    pre = torch.chain_matmul(*M[:n_mat, ...])
-                    dM = pre.mm(dM)
-                if n_mat < M.shape[0]-1:
-                    post = torch.chain_matmul(*M[(n_mat+1):, ...])
-                    dM = dM.mm(post)
+                    pre = torch.chain_matmul(*M[:n_mat])
+                    dM = torch.matmul(pre, dM)
+                if n_mat < len(M)-1:
+                    post = torch.chain_matmul(*M[(n_mat+1):])
+                    dM = torch.matmul(dM, post)
                 dMs[n_mat] = dM
             dM = torch.cat(dMs)
             M = torch.chain_matmul(*M)
@@ -1147,6 +1147,7 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             dM = dM.reshape((nb_basis, -1))
             gradient = linalg.matvec(dM, diff)
             hessian = torch.matmul(dM, dM.t())
+            hessian.diagonal().mul_(1 + 1e-3)
             delta_prm = hessian.inverse().matmul(gradient)
 
             crit = delta_prm.square().sum() / norm
@@ -1163,7 +1164,7 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
                 M0 = M
                 armijo = 1
                 success = False
-                for _ in range(max_line_search):
+                for lsit in range(max_line_search):
                     prm = prm0 - armijo * delta_prm
                     M = affine_matrix(prm, *basis)
                     sos = ((M - mat) ** 2).sum()
@@ -1342,22 +1343,9 @@ def affine_is_rect(affine):
     return affine.shape[-1] == affine.shape[-2] + 1
 
 
-def affine_is_homogeneous(affine, sym=False):
+def is_homogeneous(affine):
     """Return true is the last row is [*zeros, 1]"""
-    if getattr(affine, 'is_homogeneous', False):
-        return True
-    if not getattr(affine, 'is_homogeneous', True):
-        return False
-    if sym:
-        return affine_is_square(affine)
-    with torch.no_grad():
-        affine = torch.as_tensor(affine)
-        info = dict(dtype=affine.dtype, device=affine.device)
-        last_row = affine[..., -1, :]
-        template_row = torch.zeros(last_row.shape[-1], **info)
-        template_row[-1] = 1
-        check = (last_row == template_row).all().item()
-    return check
+    return getattr(affine, 'is_homogeneous', True)
 
 
 def affine_make_square(affine):
@@ -1405,7 +1393,7 @@ def affine_make_rect(affine):
     return affine[..., :ndims, :]
 
 
-def affine_make_homogeneous(affine, sym=False, force=False):
+def affine_make_homogeneous(affine):
     """Ensure that the last row of the matrix is (*zeros, 1).
 
     This function is more generic than `make_square` because it
@@ -1415,34 +1403,29 @@ def affine_make_homogeneous(affine, sym=False, force=False):
     Parameters
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
-        Input affine matrix
-    sym : bool, default=False
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+        Input affine matrix.
+
+        To inform this function that the input matrix is not homogeneous,
+        `as_euclidean` should be called on it beforehand, e.g.,
+        `affine_make_homogeneous(as_euclidean(mat))`.
 
     Returns
     -------
     affine : (..., ndim_out+1, ndim_in+1) tensor
 
     """
-    if sym:
-        return as_homogeneous(affine_make_square(affine))
-
+    if is_homogeneous(affine):
+        return affine
     affine = torch.as_tensor(affine)
-    if force or not affine_is_homogeneous(affine):
-        info = dict(dtype=affine.dtype, device=affine.device)
-        ndims_in = affine.shape[-1] - 1
-        bottom_row = torch.cat((torch.zeros(ndims_in, **info),
-                                torch.ones(1, **info)), dim=0)
-        bottom_row = bottom_row.unsqueeze(0)
-        bottom_row = bottom_row.expand(affine.shape[:-2] + bottom_row.shape)
-        affine = torch.cat((affine, bottom_row), dim=-2)
-    return as_homogeneous(affine)
+    new_shape = list(affine.shape)
+    new_shape[-2] += 1
+    new_affine = affine.new_zeros(new_shape)
+    new_affine[..., :-1, :] = affine
+    new_affine[..., -1, -1] = 1
+    return as_homogeneous(new_affine)
 
 
-def affine_del_homogeneous(affine, sym=False, force=False):
+def affine_del_homogeneous(affine):
     """Ensure that the last row of the matrix is _not_ (*zeros, 1).
 
     This function is more generic than `make_rect` because it
@@ -1453,37 +1436,35 @@ def affine_del_homogeneous(affine, sym=False, force=False):
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
         Input affine matrix
-    sym : bool, default=False
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+
+        To inform this function that the input matrix is not homogeneous,
+        `as_euclidean` should be called on it beforehand, e.g.,
+        `affine_make_homogeneous(as_euclidean(mat))`.
 
     Returns
     -------
     affine : (..., ndim_out, ndim_in+1) tensor
 
     """
-    if sym:
-        return as_euclidean(affine_make_rect(affine))
+    if not is_homogeneous(affine):
+        return affine
     affine = torch.as_tensor(affine)
-    if force or affine_is_homogeneous(affine):
-        affine = affine[..., :-1, :]
+    affine = affine[..., :-1, :]
     return as_euclidean(affine)
 
 
-def voxel_size(mat, sym=True):
+def voxel_size(mat):
     """ Compute voxel sizes from affine matrices.
 
     Parameters
     ----------
     mat :  (..., ndim_out[+1], ndim_in+1) tensor
-        Affine matrix
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+        Affine matrix.
+
+        If the matrix is not homogeneous (i.e., the last row [*zeros, 1]
+        is omitted), it must have the attribute `is_homogeneous = False`.
+        This attribute can be set on the input tensor by calling
+        `as_euclidean` on it.
 
     Returns
     -------
@@ -1492,28 +1473,28 @@ def voxel_size(mat, sym=True):
 
     """
     mat = torch.as_tensor(mat)
-    dim = mat.shape[-1] - 1
-    if sym:
-        mat = mat[..., :dim, :dim]
-    elif affine_is_homogeneous(mat):
+    if is_homogeneous(mat):
         mat = mat[..., :-1, :-1]
     else:
         mat = mat[..., :, :-1]
     return as_euclidean(mat.square().sum(-2).sqrt())
 
 
-def affine_matvec(affine, vector, sym=True):
+def affine_matvec(affine, vector):
     """Matrix-vector product of an affine and a (possibly homogeneous) vector.
 
     Parameters
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
+        Affine matrix.
+        If the matrix is not homogeneous (i.e., the last row [*zeros, 1]
+        is omitted), it must have the attribute `is_homogeneous = False`.
+        This attribute can be set on the input tensor by calling
+        `as_euclidean` on it.
     vector : (..., ndim_in[+1]) tensor
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
+        The vector can be homogeneous or not (it is detected
+        automatically). The output will be of the same type
+        (homogeneous or euclidean) as `vector`.
 
     Returns
     -------
@@ -1521,16 +1502,17 @@ def affine_matvec(affine, vector, sym=True):
         The returned vector is homogeneous iff `vector` is too.
 
     """
-    affine = affine_del_homogeneous(affine, sym)
+    affine = affine_del_homogeneous(affine)
     vector = torch.as_tensor(vector)
-    info = dict(dtype=vector.dtype, device=vector.device)
+    backend = dict(dtype=vector.dtype, device=vector.device)
+    affine = affine.to(**backend)
     ndims_in = affine.shape[-1] - 1
     is_h = vector.shape[-1] == ndims_in + 1
     zoom = affine[..., :, :-1]
     translation = affine[..., :, -1]
     out = linalg.matvec(zoom, vector[..., :ndims_in]) + translation
     if is_h:
-        one = torch.ones(out.shape[:-1] + (1,), **info)
+        one = torch.ones(out.shape[:-1] + (1,), **backend)
         out = torch.cat((out, one), dim=-1)
         out = as_homogeneous(out)
     else:
@@ -1538,7 +1520,7 @@ def affine_matvec(affine, vector, sym=True):
     return out
 
 
-def affine_matmul(a, b, sym=False, symb=None):
+def affine_matmul(a, b):
     """Matrix-matrix product of affine matrices.
 
     Parameters
@@ -1547,13 +1529,6 @@ def affine_matmul(a, b, sym=False, symb=None):
         Affine matrix
     b : (..., ndim_inter[+1], ndim_in+1) tensor
         Affine matrix
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
-    symb : bool, default=sym
-        Same, but for `b`.
 
     Returns
     -------
@@ -1561,10 +1536,10 @@ def affine_matmul(a, b, sym=False, symb=None):
         The returned matrix is homogeneous iff `a` is too.
 
     """
-    symb = sym if symb is None else symb
-    is_h = affine_is_homogeneous(a, sym)
-    a = affine_del_homogeneous(a, sym)
-    b = affine_del_homogeneous(b, symb)
+    is_h = is_homogeneous(a)
+    a = affine_del_homogeneous(a)
+    b = affine_del_homogeneous(b)
+    a, b = utils.to_max_backend(a, b)
     Za = a[..., :, :-1]
     Ta = a[..., :, -1]
     Zb = b[..., :, :-1]
@@ -1572,14 +1547,13 @@ def affine_matmul(a, b, sym=False, symb=None):
     Z = torch.matmul(Za, Zb)
     T = linalg.matvec(Za, Tb) + Ta
     out = torch.cat((Z, T[..., None]), dim=-1)
+    out = as_euclidean(out)
     if is_h:
-        out = affine_make_homogeneous(out, force=True)
-    else:
-        out = as_euclidean(out)
+        out = affine_make_homogeneous(out)
     return out
 
 
-def affine_inv(affine, sym=True):
+def affine_inv(affine):
     """Inverse of an affine matrix.
 
     If the input matrix is not symmetric with respect to its input
@@ -1589,11 +1563,6 @@ def affine_inv(affine, sym=True):
     ----------
     affine : (..., ndim_out[+1], ndim_in+1) tensor
         Input affine
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
 
     Returns
     -------
@@ -1601,22 +1570,21 @@ def affine_inv(affine, sym=True):
         The returned matrix is homogeneous iff `affine` is too.
 
     """
-    is_h = affine_is_homogeneous(affine, sym)
-    affine = affine_del_homogeneous(affine, sym)
+    is_h = is_homogeneous(affine)
+    affine = affine_del_homogeneous(affine)
     ndims_in = affine.shape[-1] - 1
     ndims_out = affine.shape[-2]
     inverse = torch.inverse if ndims_in == ndims_out else torch.pinverse
     zoom = inverse(affine[..., :, :-1])
     translation = -linalg.matvec(zoom, affine[..., :, -1])
     out = torch.cat((zoom, translation[..., None]), dim=-1)
+    out = as_euclidean(out)
     if is_h:
-        out = affine_make_homogeneous(out, force=True)
-    else:
-        out = as_euclidean(out)
+        out = affine_make_homogeneous(out)
     return out
 
 
-def affine_lmdiv(a, b, sym=True):
+def affine_lmdiv(a, b):
     """Left matrix division of affine matrices: inv(a) @ b
 
     Parameters
@@ -1626,11 +1594,6 @@ def affine_lmdiv(a, b, sym=True):
         A peudo-inverse is used if `ndim_inter != ndim_out`
     b : (..., ndim_inter[+1], ndim_in+1) tensor
         Affine matrix.
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
 
     Returns
     -------
@@ -1638,10 +1601,10 @@ def affine_lmdiv(a, b, sym=True):
         The returned matrix is homogeneous iff `a` is too.
 
     """
-    return affine_matmul(affine_inv(a, sym), b, sym)
+    return affine_matmul(affine_inv(a), b)
 
 
-def affine_rmdiv(a, b, sym=True):
+def affine_rmdiv(a, b):
     """Right matrix division of affine matrices: a @ inv(b)
 
     Parameters
@@ -1651,11 +1614,6 @@ def affine_rmdiv(a, b, sym=True):
     b : (..., ndim_in[+1], ndim_inter+1) tensor
         Affine matrix that will be inverted.
         A peudo-inverse is used if `ndim_inter != ndim_in`
-    sym : bool, default=True
-        Assume that the affine is symmetric with respect to the
-        input and output space dimensions, _i.e._, it maps from
-        ND coordinates to ND coordinates (`ndim_out == ndim_in`).
-        Knowing this allows the function to be more efficient.
 
     Returns
     -------
@@ -1663,7 +1621,7 @@ def affine_rmdiv(a, b, sym=True):
         The returned matrix is homogeneous iff `a` is too.
 
     """
-    return affine_matmul(a, affine_inv(b, sym), sym)
+    return affine_matmul(a, affine_inv(b))
 
 
 def affine_resize(affine, shape, factor, anchor='c'):
@@ -1709,7 +1667,7 @@ def affine_resize(affine, shape, factor, anchor='c'):
     # read parameters
     affine = torch.as_tensor(affine)
     nb_dim = affine.shape[-1] - 1
-    factor = utils.make_list(factor, nb_dim)
+    factor = utils.make_vector(factor, nb_dim).tolist()
     anchor = [a[0].lower() for a in utils.make_list(anchor, nb_dim)]
     info = {'dtype': affine.dtype, 'device': affine.device}
 
@@ -1921,7 +1879,9 @@ def affine_permute(affine, perm=None, shape=None):
     if len(perm) != nb_dim:
         raise ValueError('Expected perm to have {} elements. Got {}.'
                          .format(nb_dim, len(perm)))
+    is_h = is_homogeneous(affine)
     affine = affine[..., :, perm + [-1]]
+    affine = as_euclidean(affine) if is_h else as_homogeneous(affine)
     if shape is not None:
         shape = tuple(shape[p] for p in perm)
         return affine, shape
@@ -1998,11 +1958,11 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     if len(shape) != ndim:
         raise ValueError('Affine and shape not consistant. Found dim '
                          '{} and {}.'.format(ndim, len(shape)))
-    kernel_size = pyutils.make_list(kernel_size, ndim)
-    stride = pyutils.make_list(stride, ndim)
-    padding = pyutils.make_list(padding, ndim)
-    output_padding = pyutils.make_list(output_padding, ndim)
-    dilation = pyutils.make_list(dilation, ndim)
+    kernel_size = py.make_list(kernel_size, ndim)
+    stride = py.make_list(stride, ndim)
+    padding = py.make_list(padding, ndim)
+    output_padding = py.make_list(output_padding, ndim)
+    dilation = py.make_list(dilation, ndim)
 
     # compute new shape and scale/offset that transform the
     # new lattice into the old lattice
@@ -2030,7 +1990,8 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     return affine, tuple(oshape)
 
 
-def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
+def affine_default(shape, voxel_size=1., layout=None, center=0.,
+                   dtype=None, device=None):
     """Generate an orientation matrix with the origin in the center of the FOV.
 
     Parameters
@@ -2041,6 +2002,8 @@ def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
         Lattice voxel size
     layout : str or layout_like, default='RAS'
         Lattice layout (see `volume_layout`).
+    center : sequence[float], default=0
+        World-coordinate of the center of the field-of-view.
     dtype : dtype, optional
     device : device, optional
 
@@ -2050,15 +2013,13 @@ def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
         Orientation matrix
 
     """
-    shape = list(shape)
+    backend = dict(dtype=dtype or utils.max_dtype(voxel_size, center),
+                   device=device or utils.max_device(voxel_size, center))
+    shape = utils.make_vector(shape)
     nb_dim = len(shape)
-    voxel_size = pyutils.make_list(voxel_size, nb_dim)
-
-    # build affine matrix
-    voxel_size = torch.as_tensor(voxel_size, dtype=dtype, device=device)
-    dtype = voxel_size.dtype
-    device = voxel_size.device
-    shape = torch.as_tensor(shape, dtype=dtype, device=device)
+    voxel_size = utils.make_vector(voxel_size, nb_dim, **backend)
+    center = utils.make_vector(center, nb_dim, **backend)
+    shape = shape.to(**backend)
 
     # build layout
     if layout is None:
@@ -2070,7 +2031,7 @@ def affine_default(shape, voxel_size=1., layout=None, dtype=None, device=None):
 
     # compute shift
     lin = layout[:nb_dim, :nb_dim]
-    shift = -linalg.matvec(lin, shape/2.)
+    shift = center - linalg.matvec(lin, shape/2.)
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
     return affine_make_homogeneous(as_euclidean(affine))
@@ -2269,7 +2230,7 @@ def affine_mean(mats, shapes):
     # We look for the matrix that can be encoded without shears
     # that is the closest to the original matrix (in terms of the
     # Frobenius norm of the residual matrix)
-    _, M = affine_parameters(mat, ['R', 'Z'])
+    _, M = affine_parameters(mat, 'R', 'Z')
     mat[:dim, :dim] = M[:dim, :dim]
 
     return mat
@@ -2278,7 +2239,7 @@ def affine_mean(mats, shapes):
 _voxel_size = voxel_size  # little alias to avoid the function being shadowed
 
 
-def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
+def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     """Compute a mean space from a set of spaces (= affine + shape).
 
     Gradient *do not* propagate through this function.
@@ -2294,13 +2255,13 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
         Uses the mean voxel size of all input matrices by default.
     layout : str or (dim+1, dim+1) array_like, default=None
         Output layout.
-        Uses the majority layout of all input matrices by default
-    fov : {'bb'}, default='bb'
+        Uses the majority layout of all input matrices by default.
+    fov : {'max'}, default='max'
         Method for determining the output field-of-view:
-            * 'bb': Bounding box of all input field-of-views, minus
-              some optional cropping.
-    crop : [0..1], default=0
-        Amount of cropping applied to the field-of-view.
+            * 'max': Bounding box of all input field-of-views, plus/minus
+              some optional padding/cropping.
+    **fovopt :
+        Additional options for the FOV function.
 
     Returns
     -------
@@ -2331,8 +2292,7 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
     device = utils.max_device(mats, shapes)
     shapes = utils.as_tensor(shapes, device=device).detach()
     mats = utils.as_tensor(mats, device=device).detach()
-    info = dict(dtype=mats.dtype, device=mats.device)
-    dim = mats.shape[-1] - 1
+    backend = dict(dtype=mats.dtype, device=mats.device)
 
     # Compute mean affine
     mat = affine_mean(mats, shapes)
@@ -2341,46 +2301,81 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='bb', crop=0):
     # (we must make layouts hashable so that they can be counted)
     if layout is None:
         all_layouts = [hashable_layout(affine_to_layout(mat)) for mat in mats]
-        layout = pyutils.majority(all_layouts)
+        layout = py.majority(all_layouts)
         # print('Output layout: {}'.format(volume_layout_to_name(layout)))
     else:
         layout = volume_layout(layout)
 
     # Switch layout
-    layout = layout_matrix(layout, **info)
-    mat = torch.matmul(mat, layout)
+    layout = layout_matrix(layout, **backend)
+    mat = affine_matmul(mat, layout)
 
     # Voxel size
     if voxel_size is not None:
-        vs0 = torch.as_tensor(voxel_size, **info)
+        vs0 = torch.as_tensor(voxel_size, **backend)
         voxel_size = _voxel_size(mat)
         vs0[~torch.isfinite(vs0)] = voxel_size[~torch.isfinite(vs0)]
-        one = torch.ones([1], **info)
+        one = torch.ones([1], **backend)
         mat = mat * torch.diag(torch.cat((vs0 / voxel_size, one)))
 
     # Field of view
-    if fov == 'bb':
-        mn = torch.full([dim], constants.inf, **info)
-        mx = torch.full([dim], constants.ninf, **info)
-        for a_mat, a_shape in zip(mats, shapes):
-            corners = itertools.product([False, True], r=dim)
-            corners = [[a_shape[i] if top else 1 for i, top in enumerate(c)] + [1]
-                       for c in corners]
-            corners = torch.as_tensor(corners, **info).T
-            M = linalg.lmdiv(mat, a_mat)
-            corners = torch.matmul(M[:dim, :], corners)
-            mx = torch.max(mx, torch.max(corners, dim=1).values)
-            mn = torch.min(mn, torch.min(corners, dim=1).values)
-        mx = torch.ceil(mx).long()
-        mn = torch.floor(mn).long()
-        offset = -crop * (mx - mn)
-        shape = (mx - mn + 2*offset + 1)
-        M = mn - (offset + 1)
-        M = torch.cat((torch.eye(dim, **info), M[:, None]), dim=1)
-        pad = torch.as_tensor([[0] * dim + [1]], **info)
-        M = torch.cat((M, pad), dim=0)
-        mat = torch.matmul(mat, M)
+    if fov == 'max':
+        mat, shape = fov_max(mat, mats, shapes, **fovopt)
     else:
         raise NotImplementedError('method {} not implemented'.format(fov))
+
+    return mat, shape
+
+
+def fov_max(mat, affines, shapes, pad=0, pad_unit='%'):
+    """Return a space (orientation + shape) that englobes all spaces.
+
+    Parameters
+    ----------
+    mat : (D+1, D+1) tensor_like
+        Output orientation matrix (up to a shift)
+    affines : (N, D+1, D+1), tensor_like
+        Input orientation matrices
+    shapes : (N, D) tensor_like[int]
+        Input shapes
+    pad : [sequence of] float, default=0
+        Amount of padding (or cropping) to add to the bounding box.
+    pad_unit : [sequence of] {'mm', '%'}, default='%'
+        Unit of the padding/cropping.
+
+    Returns
+    -------
+    mat : (4, 4) tensor
+    shape : (D,) tuple
+
+    """
+    mat = torch.as_tensor(mat)
+    backend = dict(device=mat.device, dtype=mat.dtype)
+    affines = torch.as_tensor(affines, **backend)
+    shapes = torch.as_tensor(shapes, **backend)
+    dim = mat.shape[-1] - 1
+
+    mn = torch.full([dim], constants.inf, **backend)
+    mx = torch.full([dim], constants.ninf, **backend)
+    for a_mat, a_shape in zip(affines, shapes):
+        corners = itertools.product([False, True], r=dim)
+        corners = [[a_shape[i] if top else 1 for i, top in enumerate(c)] + [1]
+                   for c in corners]
+        corners = torch.as_tensor(corners, **backend).T
+        M = linalg.lmdiv(mat, a_mat)
+        corners = torch.matmul(M[:dim, :], corners)
+        mx = torch.max(mx, torch.max(corners, dim=1)[0])
+        mn = torch.min(mn, torch.min(corners, dim=1)[0])
+    pad = utils.make_vector(pad, dim, **backend)
+    if pad_unit == '%':
+        pad = pad * (mx - mn) / 2.
+    mx = torch.ceil(mx + pad)
+    mn = torch.floor(mn - pad)
+    offset = -(mx - mn)
+    shape = (mx - mn + 1).long()
+    M = mn - 1
+    M = torch.cat((torch.eye(dim, **backend), M[:, None]), dim=1)
+    M = affine_make_homogeneous(as_euclidean(M))
+    mat = torch.matmul(mat, M)
 
     return mat, tuple(shape.tolist())

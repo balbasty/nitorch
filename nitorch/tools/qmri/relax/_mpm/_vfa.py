@@ -65,11 +65,11 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
 
-    data = core.pyutils.make_list(data)
+    data = core.py.make_list(data)
     if len(data) < 2:
         raise ValueError('Expected at least two input images')
-    transmit = core.pyutils.make_list(transmit or [])
-    receive = core.pyutils.make_list(receive or [])
+    transmit = core.py.make_list(transmit or [])
+    receive = core.py.make_list(receive or [])
 
     # --- Copy instances to avoid modifying the inputs ---
     data = list(map(lambda x: x.copy(), data))
@@ -106,8 +106,8 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
             vol.affine = torch.matmul(aff.inverse(), vol.affine)
 
     # --- repeat fields if not enough ---
-    transmit = core.pyutils.make_list(transmit or [None], len(data))
-    receive = core.pyutils.make_list(receive or [None], len(data))
+    transmit = core.py.make_list(transmit or [None], len(data))
+    receive = core.py.make_list(receive or [None], len(data))
 
     # --- compute recon space ---
     affines = [contrast.affine for contrast in data]

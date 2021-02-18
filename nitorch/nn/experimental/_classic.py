@@ -416,7 +416,7 @@ def ffd(source, target, grid_shape=10, group='SE',
     else:
         affine_parameters = torch.zeros([batch, nb_prm], **backend)
     affine_parameters = nn.Parameter(affine_parameters, requires_grad=optim_affine)
-    grid_shape = core.pyutils.make_list(grid_shape, dim)
+    grid_shape = core.py.make_list(grid_shape, dim)
     grid_parameters = torch.zeros([batch, *grid_shape, dim], **backend)
     grid_parameters = nn.Parameter(grid_parameters, requires_grad=True)
 

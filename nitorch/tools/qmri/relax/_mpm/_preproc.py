@@ -172,11 +172,11 @@ def preproc(data, transmit=None, receive=None, opt=None):
 
     # --- repeat fields if not enough ---
     if transmit:
-        transmit = core.pyutils.make_list(transmit, len(data))
+        transmit = core.py.make_list(transmit, len(data))
     else:
         transmit = [None] * len(data)
     if receive:
-        receive = core.pyutils.make_list(receive, len(data))
+        receive = core.py.make_list(receive, len(data))
     else:
         receive = [None] * len(data)
     

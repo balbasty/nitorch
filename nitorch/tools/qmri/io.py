@@ -516,7 +516,7 @@ class GradientEchoMulti(GradientEcho):
         return GradientEcho.from_mapped(volume, **attributes)
 
     def __getitem__(self, item):
-        item = ni.core.pyutils.make_tuple(item)
+        item = ni.core.py.make_tuple(item)
         if (not item) or item[0] in (slice(None), Ellipsis):
             return super().__getitem__(item)
         elif item[0] is None:

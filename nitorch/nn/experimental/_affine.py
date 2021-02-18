@@ -9,7 +9,7 @@ from .. import check
 from nitorch import spatial
 from nitorch.core.linalg import matvec
 from nitorch.core.utils import unsqueeze, channel2last, last2channel
-from nitorch.core.pyutils import make_list
+from nitorch.core.py import make_list
 
 
 class AffineMorph(Module):

@@ -1,8 +1,8 @@
 """Functional API to load and save arrays."""
 import os
-from .mapping import MappedArray
-from .readers import reader_classes
-from .writers import writer_classes
+from .mapping import MappedFile
+from .readers import reader_classes as all_reader_classes
+from .writers import writer_classes as all_writer_classes
 
 _DEBUG = False
 
@@ -12,7 +12,18 @@ def _trace(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def map(file_like, permission='r+', keep_open=True):
+def _unroll(seq):
+    """Unroll nested sequences of stuff and return a flattened list"""
+    out = []
+    if isinstance(seq, (list, tuple)):
+        for elem in seq:
+            out.extend(_unroll(elem))
+    else:
+        out.append(seq)
+    return out
+
+
+def map(file_like, permission='r', keep_open=True, reader_classes=None):
     """Map a data file
 
     Parameters
@@ -25,41 +36,64 @@ def map(file_like, permission='r+', keep_open=True):
     keep_open : bool, default=True
         Keep file open. Can be more efficient if multiple reads (or
         writes) are expected.
+    reader_classes : sequence of MappedFile, optional
+        MappedFile classes that can be used to map the file.
 
     Returns
     -------
-    dat : MappedArray
-        A `MappedArray` instance. Data can then be loaded in memory
+    dat : MappedFile
+        A `MappedFile` instance. Data can then be loaded in memory
         by calling `dat.data()` or `dat.fdata()`.
 
     """
-    remaining_classes = []
+    reader_classes = reader_classes or all_reader_classes
+    reader_classes = _unroll(reader_classes)
+    untried_classes = []
+    unchecked_classes = []
 
-    if isinstance(file_like, MappedArray):
+    if isinstance(file_like, MappedFile):
         # nothing to do
         return file_like
 
     if isinstance(file_like, (str, os.PathLike)):
         # first guess based on file extension
+        # -> if check fails, cancel the read and retry later if needed
         base, ext = os.path.splitext(file_like)
         if ext.lower() == '.gz':
             base, ext = os.path.splitext(base)
 
         for klass in reader_classes:
             if ext.lower() in klass.possible_extensions():
-                try:
-                    _trace('try', klass.__name__, end=' ')
-                    out = klass(file_like, permission, keep_open)
-                    _trace('-> success')
-                    return out
-                except klass.FailedReadError:
-                    _trace('-> failed')
-                    pass
+                if klass.sniff(file_like):
+                    try:
+                        _trace('try', klass.__name__, end=' ')
+                        out = klass(file_like, permission, keep_open)
+                        _trace('-> success')
+                        return out
+                    except klass.FailedReadError:
+                        _trace('-> failed')
+                        pass
+                else:
+                    untried_classes.append(klass)
             else:
-                remaining_classes.append(klass)
+                unchecked_classes.append(klass)
 
-    # second guess
-    for klass in remaining_classes:
+    # second guess based on checks
+    for klass in unchecked_classes:
+        if klass.sniff(file_like):
+            try:
+                _trace('try', klass.__name__, end=' ')
+                out = klass(file_like, permission, keep_open)
+                _trace('-> success')
+                return out
+            except klass.FailedReadError:
+                _trace('-> failed')
+                pass
+        else:
+            untried_classes.append(klass)
+
+    # third guess: all remaining classes
+    for klass in untried_classes:
         try:
             _trace('try', klass.__name__, end=' ')
             out = klass(file_like, permission, keep_open)
@@ -72,7 +106,7 @@ def map(file_like, permission='r+', keep_open=True):
     raise ValueError('Could not read {}'.format(file_like))
 
 
-def load(file_like, *args, attributes=None, **kwargs):
+def load(file_like, *args, attributes=None, reader_classes=None, **kwargs):
     """Read a data file and load it in memory.
 
     Parameters
@@ -120,7 +154,9 @@ def load(file_like, *args, attributes=None, **kwargs):
         Return a numpy array rather than a torch tensor.
     attributes : list[str]
         List of attributes to return as well.
-        See `MappedArray` for the possible attributes.
+        See `MappedFile` for the possible attributes.
+    reader_classes : sequence of MappedFile, optional
+        MappedFile classes that can be used to map the file.
 
     Returns
     -------
@@ -130,7 +166,8 @@ def load(file_like, *args, attributes=None, **kwargs):
         Dictionary of attributes loaded as well
 
     """
-    file = map(file_like, permission='r', keep_open=False)
+    file = map(file_like, permission='r', keep_open=False,
+               reader_classes=reader_classes)
     dat = file.data(*args, **kwargs)
     if attributes:
         attributes = {getattr(file, key) for key in attributes}
@@ -139,7 +176,7 @@ def load(file_like, *args, attributes=None, **kwargs):
         return dat
 
 
-def loadf(file_like, *args, attributes=None, **kwargs):
+def loadf(file_like, *args, attributes=None, reader_classes=None, **kwargs):
     """Read a data file and load it -- scaled -- in memory.
 
     This function differs from `read` in several ways:
@@ -170,7 +207,9 @@ def loadf(file_like, *args, attributes=None, **kwargs):
         Return a numpy array rather than a torch tensor.
     attributes : list[str]
         List of attributes to return as well.
-        See `MappedArray` for the possible attributes.
+        See `MappedFile` for the possible attributes.
+    reader_classes : sequence of MappedFile, optional
+        MappedFile classes that can be used to map the file.
 
     Returns
     -------
@@ -180,7 +219,8 @@ def loadf(file_like, *args, attributes=None, **kwargs):
         Dictionary of attributes loaded as well
 
     """
-    file = map(file_like, permission='r', keep_open=False)
+    file = map(file_like, permission='r', keep_open=False,
+               reader_classes=reader_classes)
     dat = file.fdata(*args, **kwargs)
     if attributes:
         attributes = {getattr(file, key) for key in attributes}
@@ -189,7 +229,8 @@ def loadf(file_like, *args, attributes=None, **kwargs):
         return dat
 
 
-def save(dat, file_like, like=None, casting='unsafe', **metadata):
+def save(dat, file_like, like=None, casting='unsafe', writer_classes=None,
+         **metadata):
     """Write an array to disk.
 
     This function makes educated choices for the file format and
@@ -198,21 +239,23 @@ def save(dat, file_like, like=None, casting='unsafe', **metadata):
 
     Parameters
     ----------
-    dat : tensor or array or MappedArray
+    dat : tensor or array or MappedFile
         Data to write
     file_like : str or file object
         Path to file or file object (with methods `seek`, `read`).
         If the extension is known, it gets priority over `like` when
         choosing the output format.
-    like : file or MappedArray
+    like : file or MappedFile
         An array on-disk that should be used as a template for the new
         file. Its metadata/layout/etc will be mimicked as much as possible.
     casting : {'no', 'equiv', 'safe', 'same_kind', 'unsafe', 'rescale'}, default='unsafe'
         Controls what kind of data casting may occur.
-        See `MappedArray.set_data`
+        See `MappedFile.set_data`
     metadata : dict
         Metadata to store on disk. Values provided there will have
         priority over `like`.
+    writer_classes : sequence of MappedFile, optional
+        MappedFile classes that can be used to write the file.
 
     Returns
     -------
@@ -222,9 +265,11 @@ def save(dat, file_like, like=None, casting='unsafe', **metadata):
         Dictionary of attributes loaded as well
 
     """
-    if like is not None and not isinstance(like, MappedArray):
+    if like is not None and not isinstance(like, MappedFile):
         like = map(like)
 
+    writer_classes = writer_classes or all_writer_classes
+    writer_classes = _unroll(writer_classes)
     remaining_classes = []
 
     if isinstance(file_like, (str, os.PathLike)):
@@ -262,7 +307,7 @@ def save(dat, file_like, like=None, casting='unsafe', **metadata):
     raise ValueError('Could not write {}'.format(file_like))
 
 
-def savef(dat, file_like, like=None, **metadata):
+def savef(dat, file_like, like=None, writer_classes=None, **metadata):
     """Write a scaled array to disk.
 
     This function makes educated choices for the file format and
@@ -273,18 +318,20 @@ def savef(dat, file_like, like=None, **metadata):
 
     Parameters
     ----------
-    dat : tensor or array or MappedArray
+    dat : tensor or array or MappedFile
         Data to write
     file_like : str or file object
         Path to file or file object (with methods `seek`, `read`).
         If the extension is known, it gets priority over `like` when
         choosing the output format.
-    like : file or MappedArray
+    like : file or MappedFile
         An array on-disk that should be used as a template for the new
         file. Its metadata/layout/etc will be mimicked as much as possible.
     metadata : dict
         Metadata to store on disk. Values provided there will have
         priority over `like`.
+    writer_classes : sequence of MappedFile, optional
+        MappedFile classes that can be used to write the file.
 
     Returns
     -------
@@ -294,8 +341,11 @@ def savef(dat, file_like, like=None, **metadata):
         Dictionary of attributes loaded as well
 
     """
-    if like is not None and not isinstance(like, MappedArray):
+    if like is not None and not isinstance(like, MappedFile):
         like = map(like)
+
+    writer_classes = writer_classes or all_writer_classes
+    writer_classes = _unroll(writer_classes)
     remaining_classes = []
 
     if isinstance(file_like, (str, os.PathLike)):

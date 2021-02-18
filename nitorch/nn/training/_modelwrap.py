@@ -1,4 +1,4 @@
-from nitorch.core.pyutils import make_tuple, make_list
+from nitorch.core.py import make_tuple, make_list
 from nitorch.nn.modules import Module, nitorchmodule
 
 

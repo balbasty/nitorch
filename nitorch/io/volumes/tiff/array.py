@@ -1,15 +1,21 @@
-from ..mapping import MappedArray, AccessType
-from ..indexing import is_fullslice, split_operation, slicer_sub2ind, invert_slice
-from .. import volutils
-from ..readers import reader_classes
-from .metadata import ome_zooms, parse_unit
-from nitorch.spatial import affine_default
-from nitorch.core import pyutils, dtypes
-from tifffile import TiffFile
+# python
 from contextlib import contextmanager
+from warnings import warn
 import torch
 import numpy as np
-from warnings import warn
+# nitorch
+from nitorch.spatial import affine_default
+from nitorch.core import py, dtypes
+# io
+from nitorch.io.mapping import AccessType
+from nitorch.io.utils.indexing import (is_fullslice, split_operation,
+                                       slicer_sub2ind, invert_slice)
+from nitorch.io.utils import volutils
+from nitorch.io.volumes.mapping import MappedArray
+from nitorch.io.volumes.readers import reader_classes
+# tiff
+from tifffile import TiffFile
+from .metadata import ome_zooms, parse_unit
 
 
 class TiffArray(MappedArray):
@@ -17,20 +23,21 @@ class TiffArray(MappedArray):
     MappedArray that uses `tifffile` under the hood.
     """
 
-    def __init__(self, file_like, permission='r', keep_file_open=True, **hints):
+    def __init__(self, file_like, mode='r', keep_open=False, **hints):
         """
 
         Parameters
         ----------
         file_like : str or file object
-        keep_file_open : bool, default=True
+        mode : {'r'}, default='r'
+        keep_open : bool, default=True
             Whether to keep the file handle open
         hints : keyword of the form `is_<format>=<True|False>`
             Tells the Tiff reader that a file is or isn't of a specific
             subformat. If not provided, it it guessed by the Tiff reader.
         """
         self._tiff = TiffFile(file_like, **hints)
-        if not keep_file_open:
+        if not keep_open:
             self._tiff.close()
 
         self._series = 0
@@ -100,7 +107,7 @@ class TiffArray(MappedArray):
                 self._cache['_affine'] = aff
             elif ('ModelTiepointTag' in geotags):
                 # copied from tifffile
-                sx, sy, sz = pyutils.make_list(zooms, n=3)
+                sx, sy, sz = py.make_list(zooms, n=3)
                 tiepoints = torch.as_tensor(geotags['ModelTiepointTag'])
                 affines = []
                 for tiepoint in tiepoints:
@@ -115,7 +122,7 @@ class TiffArray(MappedArray):
                     affines = affines[0]
                     self._cache['_affine'] = affines
             else:
-                zooms = pyutils.make_list(zooms, n=len(axes))
+                zooms = py.make_list(zooms, n=len(axes))
                 ax2zoom = {ax: zoom for ax, zoom in zip(axes, zooms)}
                 axes = [ax for ax in self._axes if ax in 'XYZ']
                 shape = [shp for shp, msk in zip(self._shape, self._spatial)
@@ -206,7 +213,7 @@ class TiffArray(MappedArray):
                             .format(dtype))
 
         # --- check that view is not empty ---
-        if pyutils.prod(self.shape) == 0:
+        if py.prod(self.shape) == 0:
             if numpy:
                 return np.zeros(self.shape, dtype=dtype.numpy)
             else:
@@ -405,7 +412,7 @@ class TiffArray(MappedArray):
                 return False
             offset, count = page.is_contiguous
             if (
-                count != pyutils.prod(page.shape) * page.bitspersample // 8
+                count != py.prod(page.shape) * page.bitspersample // 8
                 or offset + count * images > self.filehandle.size
             ):
                 raise ValueError()
@@ -435,11 +442,11 @@ class TiffArray(MappedArray):
         if slices > 1:
             shape.append(slices)
             axes.append('Z')
-        if channels > 1 and (pyutils.prod(shape) if shape else 1) != images:
+        if channels > 1 and (py.prod(shape) if shape else 1) != images:
             shape.append(channels)
             axes.append('C')
 
-        remain = images // (pyutils.prod(shape) if shape else 1)
+        remain = images // (py.prod(shape) if shape else 1)
         if remain > 1:
             shape.append(remain)
             axes.append('I')
