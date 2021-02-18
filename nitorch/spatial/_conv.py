@@ -3,8 +3,10 @@ import itertools
 import torch
 from torch.nn import functional as F
 from nitorch import core
+from nitorch.core import utils
 from nitorch.core.utils import to_max_backend, unsqueeze, movedim
 from nitorch.core.py import make_list
+from ._affine import affine_conv
 
 
 def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
@@ -97,6 +99,132 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
 conv1d = lambda *args, **kwargs: conv(1, *args, **kwargs)
 conv2d = lambda *args, **kwargs: conv(2, *args, **kwargs)
 conv3d = lambda *args, **kwargs: conv(3, *args, **kwargs)
+
+
+def pool(dim, tensor, kernel_size=3, stride=None, padding=0, bound='zero',
+         function='mean', affine=None):
+    """Perform a pooling
+
+    Parameters
+    ----------
+    dim : {1, 2, 3}
+        Number of spatial dimensions
+    tensor : (*batch, *spatial_in) tensor
+        Input tensor
+    kernel_size : int or sequence[int], default=3
+        Size of the pooling window
+    stride : int or sequence[int], default=None
+        Strides between output elements. If None, same as `kernel_size`.
+    padding : 'auto' or int or sequence[int], default=0
+        Padding performed before the convolution.
+        If 'auto', the padding is chosen such that the shape of the
+        output tensor is `spatial_in // stride`.
+    bound : str, default='zero'
+        Boundary conditions used in the padding.
+    function : {'mean', 'max', 'min', 'median', 'sum'} or callable, default='mean'
+        Function to apply to the elements in a window.
+
+    Returns
+    -------
+    pooled : (*batch, *spatial_out)
+
+    """
+    # move everything to the same dtype/device
+    tensor = torch.as_tensor(tensor)
+
+    # sanity checks + reshape for torch's conv
+    batch = tensor.shape[:-dim]
+    spatial_in = tensor.shape[-dim:]
+    tensor = tensor.reshape([-1, *spatial_in])
+
+    # Perform padding
+    kernel_size = make_list(kernel_size, dim)
+    stride = make_list(stride or None, dim)
+    stride = [st or ks for st, ks in zip(stride, kernel_size)]
+    padding = make_list(padding, dim)
+    padding0 = padding  # save it to update the affine
+    for i in range(dim):
+        if isinstance(padding[i], str) and padding[i].lower() == 'auto':
+            if kernel_size[i] % 2 == 0:
+                raise ValueError('Cannot compute automatic padding '
+                                 'for even-sized kernels.')
+            padding[i] = kernel_size[i] // 2
+
+    pool_fn = None
+    if function in ('mean', 'avg'):
+        pool_fn = (F.avg_pool1d if dim == 1 else
+                   F.avg_pool2d if dim == 2 else
+                   F.avg_pool3d if dim == 3 else None)
+        if pool_fn:
+            pool_fn0 = pool_fn
+            pool_fn = lambda x, *a, **k: pool_fn0(x[:, None], *a, **k,
+                                                  padding=padding)[:, 0]
+    elif function == 'max':
+        pool_fn = (F.max_pool1d if dim == 1 else
+                   F.max_pool2d if dim == 2 else
+                   F.max_pool3d if dim == 3 else None)
+        if pool_fn:
+            pool_fn0 = pool_fn
+            pool_fn = lambda x, *a, **k: pool_fn0(x[:, None], *a, **k,
+                                                  padding=padding)[:, 0]
+
+    if pool_fn and bound != 'zero' and sum(padding) > 0:
+        # torch implementation -> handles zero-padding
+        tensor = utils.pad(tensor, padding, bound, side='both')
+        padding = [0] * dim
+
+    if not pool_fn:
+        if function == 'mean':
+            function = lambda x: torch.mean(x, dim=-1)
+        elif function == 'sum':
+            function = lambda x: torch.sum(x, dim=-1)
+        elif function == 'min':
+            function = lambda x: torch.min(x, dim=-1).values
+        elif function == 'max':
+            function = lambda x: torch.max(x, dim=-1).values
+        elif function == 'median':
+            function = lambda x: torch.median(x, dim=-1).values
+        pool_fn = lambda *a, **k: _pool(*a, **k, function=function)
+
+    tensor = pool_fn(tensor, kernel_size, stride=stride)
+    spatial_out = tensor.shape[:(-dim)]
+    tensor = tensor.reshape([*batch, *spatial_out])
+
+    if affine is not None:
+        affine, _ = affine_conv(affine, spatial_in, kernel_size, stride,
+                                padding0)
+        return tensor, affine
+    else:
+        return tensor
+
+
+def _pool(x, kernel_size, stride, function):
+    """
+
+    Parameters
+    ----------
+    x : (batch, *spatial)
+    kernel_size : (dim,) int
+    stride : (dim,) int
+    function : callable
+        This function should collapse the last dimension of a tensor
+        (..., K) tensor -> (...)
+
+    Returns
+    -------
+
+    """
+    for d, (sz, st) in enumerate(zip(kernel_size, stride)):
+        x = x.unfold(dimension=d + 1, size=sz, step=st)
+    x = x.reshape((x.shape[0], -1, *kernel_size))
+    x = utils.movedim(x, 1, -1)
+    x = function(x)
+    return x
+
+
+pool1d = lambda *args, **kwargs: pool(1, *args, **kwargs)
+pool2d = lambda *args, **kwargs: pool(2, *args, **kwargs)
+pool3d = lambda *args, **kwargs: pool(3, *args, **kwargs)
 
 
 def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
