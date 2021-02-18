@@ -55,7 +55,6 @@ def orient(inp, layout=None, voxel_size=None, center=None, like=None, output=Non
 
     like_is_file = isinstance(like, str) and like
     if like_is_file:
-        fname = inp
         f = io.volumes.map(like)
         dim = f.affine.shape[-1] - 1
         like = (f.shape[:dim], f.affine)
