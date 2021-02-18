@@ -1,3 +1,4 @@
+from nitorch.core.py import make_list
 from .main import orient
 from .parser import parse, help, ParseError
 import sys
@@ -28,6 +29,7 @@ def _cli(args):
     if not options:
         return
 
-    for fname in options.files:
+    options.output = make_list(options.output, len(options.files))
+    for fname, ofname in zip(options.files, options.output):
         orient(fname, layout=options.layout, voxel_size=options.voxel_size,
-               center=options.center, like=options.like, output=options.output)
+               center=options.center, like=options.like, output=ofname)

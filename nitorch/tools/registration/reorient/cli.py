@@ -29,6 +29,7 @@ def _cli(args):
     if not options:
         return
 
-    for fname in options.files:
-        reorient(fname, options.layout, options.output,
+    options.output = make_list(options.output, len(options.files))
+    for fname, ofname in zip(options.files, options.output):
+        reorient(fname, options.layout, ofname,
                  transform=options.transform)
