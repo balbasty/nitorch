@@ -351,11 +351,10 @@ def parse_transform(args, options):
             break
         tag, *args = args
         if tag in regularizations:
-            reg, *args = args
-            optreg = (struct.AbsoluteLoss if reg in absolute else
-                      struct.MembraneLoss if reg in membrane else
-                      struct.BendingLoss if reg in bending else
-                      struct.LinearElasticLoss if reg in linelastic else
+            optreg = (struct.AbsoluteLoss if tag in absolute else
+                      struct.MembraneLoss if tag in membrane else
+                      struct.BendingLoss if tag in bending else
+                      struct.LinearElasticLoss if tag in linelastic else
                       None)
             islinelastic = isinstance(optreg, struct.LinearElasticLoss)
             optreg = optreg()
