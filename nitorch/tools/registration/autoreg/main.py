@@ -299,7 +299,7 @@ def optimize(options):
                 if torch.is_tensor(trf.shift):
                     # include shift
                     shift = trf.shift.to(**backend)
-                    eye = torch.eye(3)
+                    eye = torch.eye(3, **backend)
                     A[:-1, -1] += torch.matmul(A[:-1, :-1] - eye, shift)
                 for loss1 in trf.losses:
                     loss += loss1.call(q)
@@ -429,7 +429,7 @@ def write_transforms(options):
         if torch.is_tensor(trf.shift):
             # include shift
             shift = trf.shift.to(dtype=lin.dtype, device=lin.device)
-            eye = torch.eye(3)
+            eye = torch.eye(3, dtype=lin.dtype, device=lin.device)
             lin[:-1, -1] += torch.matmul(lin[:-1, :-1] - eye, shift)
         io.transforms.savef(lin.cpu(), affine.output, type=2)
 
@@ -671,7 +671,7 @@ def write_data(options):
             if torch.is_tensor(trf.shift):
                 # include shift
                 shift = trf.shift.to(**backend)
-                eye = torch.eye(3)
+                eye = torch.eye(3, **backend)
                 lin[:-1, -1] += torch.matmul(lin[:-1, :-1] - eye, shift)
             break
 
