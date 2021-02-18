@@ -159,6 +159,20 @@ def load_transforms(s):
             dat = utils.movedim(dat, -1, 0)
         return dat
 
+    # compute mean space
+    #   it is used to define the space of the nonlinear transform, but
+    #   also to shift the center of rotation of the linear transform.
+    all_affines = []
+    all_shapes = []
+    for loss in s.losses:
+        if isinstance(loss, struct.NoLoss):
+            continue
+        all_shapes.append(loss.fixed.shape)
+        all_affines.append(loss.fixed.affine)
+        all_shapes.append(loss.moving.shape)
+        all_affines.append(loss.moving.affine)
+    affine0, shape0 = mean_space(all_affines, all_shapes)
+
     for trf in s.transformations:
         for reg in trf.losses:
             reg.factor = reg.factor * trf.factor
@@ -170,18 +184,13 @@ def load_transforms(s):
             else:
                 trf.dat = torch.zeros(trf.nb_prm(3), dtype=torch.float32,
                                       device=device)
+            if trf.shift:
+                shift = torch.as_tensor(shape0, dtype=torch.float) * 0.5
+                trf.shift = -spatial.affine_matvec(affine0, shift)
+            else:
+                trf.shift = 0.
         else:
-            # compute mean space
-            all_affines = []
-            all_shapes = []
-            for loss in s.losses:
-                if isinstance(loss, struct.NoLoss):
-                    continue
-                all_shapes.append(loss.fixed.shape)
-                all_affines.append(loss.fixed.affine)
-                all_shapes.append(loss.moving.shape)
-                all_affines.append(loss.moving.affine)
-            affine, shape = mean_space(all_affines, all_shapes)
+            affine, shape = (affine0, shape0)
             if trf.pyramid > 1:
                 factor = 1/(2**(trf.pyramid-1))
                 affine, shape = affine_resize(affine, shape, factor)
@@ -286,6 +295,11 @@ def optimize(options):
                 q = trf.dat.to(**backend)
                 B = trf.basis.to(**backend)
                 A = linalg.expm(q, B)
+                if torch.is_tensor(trf.shift):
+                    # include shift
+                    shift = trf.shift.to(**backend)
+                    eye = torch.eye(3)
+                    A[:-1, -1] += torch.matmul(A[:-1, :-1] - eye, shift)
                 for loss1 in trf.losses:
                     loss += loss1.call(q)
                 break
@@ -411,6 +425,11 @@ def write_transforms(options):
         q = affine.dat
         B = affine.basis
         lin = linalg.expm(q, B)
+        if torch.is_tensor(trf.shift):
+            # include shift
+            shift = trf.shift.to(dtype=lin.dtype, device=lin.device)
+            eye = torch.eye(3)
+            lin[:-1, -1] += torch.matmul(lin[:-1, :-1] - eye, shift)
         io.transforms.savef(lin.cpu(), affine.output, type=2)
 
     if nonlin:
@@ -648,6 +667,11 @@ def write_data(options):
             q = trf.dat.to(**backend)
             B = trf.basis.to(**backend)
             lin = linalg.expm(q, B)
+            if torch.is_tensor(trf.shift):
+                # include shift
+                shift = trf.shift.to(**backend)
+                eye = torch.eye(3)
+                lin[:-1, -1] += torch.matmul(lin[:-1, :-1] - eye, shift)
             break
 
     # non-linear displacement field

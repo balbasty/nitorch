@@ -312,7 +312,8 @@ class Diffeo(NonLinear):
 class Linear(Transformation):
     nb_prm: callable                # Number of parameters at a dim (2d/3d)
     basis = None                    # Lie basis set
-    ext: str = '.lta'
+    ext: str = '.lta'               # Extension of the transformation file
+    shift: bool = True              # Shift center of rotation to FOV center
 
     def freeable(self):
         """Are there parameters remaining to free?"""

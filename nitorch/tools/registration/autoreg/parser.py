@@ -40,6 +40,7 @@ usage:
         -rig, --rigid               Rigid (tr + rot)
         -sim, --similitude          Similitude (tr + rot + iso)
         -aff, --affine              Affine (tr + rot + zoom + shear)
+            -z, --zero 0|1              Move zero coord to center of FOV (True)
         -ffd, --free-form           Free-form deformation (cubic)
             -g, --grid *SIZE            Number of nodes (10)
         -dif, --diffeo              Diffeomorphic field
@@ -386,6 +387,16 @@ def parse_transform(args, options):
                 opt.pyramid = levels
             else:
                 opt.pyramid = [1]
+        elif isinstance(opt, struct.Linear) and tag in ('-z', '--zero'):
+            opt.shift = True
+            if next_isvalue(args):
+                val, *args = args
+                if val.lower().startswith('f'):
+                    opt.shift = False
+                elif val.lower().startswith('t'):
+                    opt.shift = True
+                else:
+                    opt.shift = bool(int(val))
         elif isinstance(opt, struct.FFD) and tag in ('-g', '--grid'):
             opt.grid = []
             while next_isvalue(args):
