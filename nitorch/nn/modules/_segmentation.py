@@ -234,7 +234,7 @@ class SegMRFNet(Module):
     def __init__(self, dim, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.2), batch_norm_seg=True,
-                 num_iter=20, w=1.0, num_extra=0, only_unet=False):
+                 num_iter=10, w=1.0, num_extra=0, only_unet=False):
         """
 
         Parameters
@@ -258,7 +258,7 @@ class SegMRFNet(Module):
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
             function).
-        num_iter : int, default=20
+        num_iter : int, default=10
             Number of mean-field iterations.
         w : float, default=1.0
             Weight between new and old prediction [0, 1].
@@ -505,7 +505,7 @@ class MRFNet(Module):
     IPMI. Springer, Cham, 2019.
 
     """
-    def __init__(self, dim, num_classes, num_iter=20, num_extra=0, w=1.0,
+    def __init__(self, dim, num_classes, num_iter=10, num_extra=0, w=1.0,
                  activation=tnn.LeakyReLU(0.2)):
         """
 
@@ -515,7 +515,7 @@ class MRFNet(Module):
             Dimension.
         num_classes : int
             Number of input classes.
-        num_iter : int, default=20
+        num_iter : int, default=10
             Number of mean-field iterations.
         num_extra : int, default=0
             Number of extra layers between MRF layer and final layer.
