@@ -553,6 +553,7 @@ setup(
             'niinfo=nitorch.tools.misc.info.cli:cli',
             'nipool=nitorch.tools.misc.pool.cli:cli',
             'nicrop=nitorch.tools.misc.crop.cli:cli',
+            'nichunk=nitorch.tools.misc.chunk.cli:cli',
         ],
     }
 )
