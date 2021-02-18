@@ -226,24 +226,24 @@ def init_optimizers(options):
         for param in params:
             params1.append({'params': param['params'],
                             'lr': param['lr'] * optim.lr})
-        optim_obj = optim.call(params1, lr=optim.lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim_obj)
+        optim.obj = optim.call(params1, lr=optim.lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim.obj)
         if optim.ls != 0:
             if optim.ls is True:
                 optim.ls = 6
-            optim_obj = BacktrackingLineSearch(optim_obj, max_iter=optim.ls)
+            optim.obj = BacktrackingLineSearch(optim.obj, max_iter=optim.ls)
 
         def optim_step(fwd):
-            optim_obj.zero_grad()
+            optim.obj.zero_grad()
             loss = fwd()
             loss.backward()
-            optim_obj.step()
+            optim.obj.step()
             scheduler.step(loss)
             return loss
 
         def current_lr():
             lr = []
-            for p0, p1 in zip(params, optim_obj.param_groups):
+            for p0, p1 in zip(params, optim.obj.param_groups):
                 lr.append(p1['lr'] / (p0['lr'] * optim.lr))
             return lr
 
@@ -388,6 +388,8 @@ def optimize(options):
             if options.verbose:
                 print(f'{n_iter:4d} | {loss.item():12.6f} | '
                       f'lr/lr0 = {sum(current_lr)/len(current_lr):7.3g}', end='\r')
+                if n_iter == 1:
+                    print('')
             if all(lr < optimizer.stop for lr in current_lr):
                 break
     if options.verbose:
