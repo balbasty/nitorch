@@ -56,12 +56,13 @@ def unstack(inp, dim=-1, output=None, transform=None):
     else:
         aff = []
         slicer = [slice(None) for _ in range(ndim)]
-        shape = aff.shape[:ndim]
+        shape = dat.shape[:ndim]
         for z in range(dat.shape[dim]):
-            slicer[dim] = z
+            slicer[dim] = slice(z,z+1)
             aff1, _ = spatial.affine_sub(aff0, shape, tuple(slicer))
             aff.append(aff1)
     dat = torch.unbind(dat, dim)
+    dat = [d.unsqueeze(dim) for d in dat]
     dat = list(zip(dat, aff))
 
     formatted_output = []
@@ -72,10 +73,10 @@ def unstack(inp, dim=-1, output=None, transform=None):
             if is_file:
                 out1 = out1.format(dir=dir or '.', base=base, ext=ext,
                                    sep=os.path.sep, i=i+1)
-                io.volumes.save(dat1, output, like=fname, affine=aff1)
+                io.volumes.save(dat1, out1, like=fname, affine=aff1)
             else:
                 out1 = out1.format(sep=os.path.sep, i=i+1)
-                io.volumes.save(dat1, output, affine=aff1)
+                io.volumes.save(dat1, out1, affine=aff1)
             formatted_output.append(out1)
 
     if transform:
