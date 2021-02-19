@@ -743,10 +743,11 @@ def membrane_weights(field, lam=1, voxel_size=1, bound='dct2',
         Weights for the reweighted least squares scheme
     """
     field = torch.as_tensor(field)
+    backend = core.utils.backend(field)
     dim = dim or field.dim() - 1
     nb_prm = field.shape[-dim-1]
-    voxel_size = make_vector(voxel_size, dim)
-    lam = make_vector(lam, nb_prm)
+    voxel_size = make_vector(voxel_size, dim, **backend)
+    lam = make_vector(lam, nb_prm, **backend)
     lam = core.utils.unsqueeze(lam, -1, dim+1)
     if joint:
         lam = lam * nb_prm
