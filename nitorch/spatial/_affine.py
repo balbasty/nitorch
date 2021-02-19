@@ -1159,35 +1159,41 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             hessian.diagonal().add_((hM * diff.abs()).sum(-1))
             hessian.diagonal().mul_(1 + 1e-3)
             delta_prm = hessian.inverse().matmul(gradient)
+            prm -= delta_prm
 
+            # check convergence
             crit = delta_prm.square().sum() / norm
             if crit < tol:
                 break
 
-            if max_line_search == 0:
-                # We trust the Gauss-Newton step
-                prm -= delta_prm
-            else:
-                # Line Search
-                sos0 = sos
-                prm0 = prm
-                M0 = M
-                armijo = 1
-                success = False
-                for lsit in range(max_line_search):
-                    prm = prm0 - armijo * delta_prm
-                    M = affine_matrix(prm, *basis)
-                    sos = ((M - mat) ** 2).sum()
-                    # print(n_iter, lsit, sos, sos < sos0)  ## DEBUG
-                    if sos < sos0:
-                        success = True
-                        break
-                    else:
-                        armijo /= 2
-                if not success:
-                    prm = prm0
-                    M = M0
-                    break
+            # ---
+            # we don't need a line search anymore
+            # TODO: remove commented part once new algo is well tested
+            # ---
+            # if max_line_search == 0:
+            #     # We trust the Gauss-Newton step
+            #     prm -= delta_prm
+            # else:
+            #     # Line Search
+            #     sos0 = sos
+            #     prm0 = prm
+            #     M0 = M
+            #     armijo = 1
+            #     success = False
+            #     for lsit in range(max_line_search):
+            #         prm = prm0 - armijo * delta_prm
+            #         M = affine_matrix(prm, *basis)
+            #         sos = ((M - mat) ** 2).sum()
+            #         # print(n_iter, lsit, sos, sos < sos0)  ## DEBUG
+            #         if sos < sos0:
+            #             success = True
+            #             break
+            #         else:
+            #             armijo /= 2
+            #     if not success:
+            #         prm = prm0
+            #         M = M0
+            #         break
 
         if crit >= tol:
             warn('Gauss-Newton optimisation did not converge: '
@@ -2083,7 +2089,7 @@ def max_bb(all_mat, all_dim, vx=None):
                                 [1, 1, 1, 1, 1, 1, 1, 1]],
                                device=device, dtype=dtype)
         M = all_mat[n, ...]
-        pos = M[:-1,:].mm(corners)
+        pos = M[:-1, :].mm(corners)
         mx[..., n] = torch.max(pos, dim=1)[0]
         mn[..., n] = torch.min(pos, dim=1)[0]
     # Get bounding box
