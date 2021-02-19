@@ -50,11 +50,11 @@ def split_train_val_test(data, split=[0.6, 0.1, 0.3], shuffle=False):
     # Do train/val/test split
     train, val, test = [], [], []
     for i, d in enumerate(data):
-        if i < split[0] * N:
+        if i < math.floor(split[0] * N):
             train.append(d)
-        elif i < sum(split[:2]) * N:
+        elif i < math.floor(sum(split[:2]) * N):
             val.append(d)
-        elif i < sum(split) * N:
+        elif i < math.floor(sum(split) * N):
             test.append(d)
 
     return train, val, test

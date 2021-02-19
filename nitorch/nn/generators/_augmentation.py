@@ -39,6 +39,10 @@ def seg_augmentation(tag, image, ground_truth=None, vx=None):
         Augmented ground truth segmentation.
 
     """
+    # sanity check
+    valid_tags = ['warp-img-img', 'warp-img-seg', 'warp-seg-img', 'warp-seg-seg', 'noise', 'inu']
+    if tag not in valid_tags:
+        raise ValueError('Undefined tag {:}, need to be one of {:}'.format(tag, valid_tags))
     nbatch = image.shape[0]
     nchan = image.shape[1]
     dim = tuple(image.shape[2:])
@@ -47,10 +51,8 @@ def seg_augmentation(tag, image, ground_truth=None, vx=None):
     if vx is None:
         vx = (1.0, ) * ndim
     # Augmentation method
-    if 'warp' in tag:
+    if 'warp' in tag and ground_truth is not None:
         # Nonlinear warp
-        if ground_truth is None:
-            raise AttributeError('ground_truth input required for warp augmentation')
         # Parameters
         amplitude = 1.0
         fwhm = (3.0, ) * ndim
@@ -97,13 +99,8 @@ def seg_augmentation(tag, image, ground_truth=None, vx=None):
                                  device=image.device, dtype=image.dtype)
         # Augment image
         image = aug(image)
-    else:
-        raise ValueError('Undefined tag {:}'.format(tag))
 
-    if ground_truth is None:
-        return image
-    else:
-        return image, ground_truth
+    return image, ground_truth
 
 
 def warp_img(img, grid):

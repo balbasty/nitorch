@@ -60,7 +60,7 @@ class MeanSpaceNet(Module):
         self.implicit = implicit
         self.output_classes = output_classes
         self.mean_mat = common_space[0].unsqueeze(0)
-        self.mean_dim = common_space[1]
+        self.mean_dim = tuple(common_space[1])
         self.coord_conv = coord_conv
         if implicit and output_classes == 1:
             final_activation = tnn.Sigmoid
@@ -79,7 +79,7 @@ class MeanSpaceNet(Module):
         self.push = GridPushCount(interpolation=interpolation,
                                   bound=bound, extrapolate=extrapolate)
         # Add channel to take into account count image
-        input_channels += 1
+        input_channels += input_channels
         if coord_conv:
             input_channels += dim
         # Add UNet
@@ -106,21 +106,22 @@ class MeanSpaceNet(Module):
     activation = property(lambda self: self.unet.activation)
 
     def forward(self, image, mat_native, ref=None, *, _loss=None, _metric=None):
-        """Forward pass.
+        """MeanSpaceNet forward pass.
 
         OBS: Supports only batch size one, because images can be of
         different dimensions.
 
         Parameters
         ----------
-        image : (1, input_channels, *spatial) tensor
-            Input image
-        mat_native : (1, dim + 1, dim + 1) tensor
-            Input image's affine matrix.
-        ref : (1, output_classes[+1], *spatial) tensor, optional
-            Ground truth segmentation, used by the loss function.
-            Its data type should be integer if it contains hard labels,
-            and floating point if it contains soft segmentations.
+        image : [tensor, ...], [(1, 1, *spatial_1), (1, 1, *spatial_2), ...]
+            List of n_channels input images.
+        mat_native : (n_channels, dim + 1, dim + 1)
+            Input images' affine matrices.
+        ref : [tensor, int], (1, output_classes[+1], *spatial_ix), optional
+            List of ground truth segmentation, used by the loss function, and
+            index that maps image channel to the ground truth.
+            the ground truth segmentation's data type should be integer if
+            it contains hard labels, and floating point if it contains soft segmentations.
         _loss : dict, optional
             Dictionary of losses that will be modified in place.
             If provided along with `ref`, all registered loss
@@ -139,26 +140,33 @@ class MeanSpaceNet(Module):
             If `implicit` is True, the background class is not returned.
 
         """
-        image = torch.as_tensor(image)
-
-        if image.shape[0] != 1:
-            raise NotImplementedError('Only batch size 1 supported, got {:}'.format(image.shape[0]))
-
-        # sanity check
-        check.dim(self.dim, image)
-        check.shape(self.mean_mat, mat_native)
+        # parameters
+        img_ix_ref = ref[1]  # index that maps image channel to reference
+        ref = ref[0]  # reference segmentation
+        n_channels = len(image)  # number of channels
 
         # augment (taking voxel size into account)
-        vx = voxel_size(mat_native).squeeze().tolist()
-        image, ref = augment(image, ref, self.augmenters, vx)
+        if ref is not None:
+            for n in range(n_channels):
+                vx = voxel_size(mat_native[n, ...]).squeeze().tolist()
+                if n == img_ix_ref:
+                    # channel with reference image, allow for warping augmentation
+                    image[n], ref = augment(self.augmenters, image[n], ref=ref, vx=vx)
+                else:
+                    image[n] = augment(self.augmenters, image[n], vx=vx)[0]
 
-        # Compute grid
-        dim_native = image.shape[2:]
-        grid = self.compute_grid(mat_native, dim_native)
-
-        # Push image into common space
-        image_pushed, count = self.push(image, grid, shape=self.mean_dim)
-        image_pushed = torch.cat((image_pushed, count), dim=1)  # add count image as channel
+        # Create common space input
+        inputs = torch.zeros(((1, 2*n_channels,) +  self.mean_dim),
+            device=image[0].device, dtype=image[0].dtype)
+        # for loop index, so that pull image's grid is retained for later use
+        ix = [x for x in range(n_channels) if x != img_ix_ref]
+        ix.append(img_ix_ref)
+        for n in ix:
+            # Compute grid
+            grid = self.compute_grid(mat_native[n, ...], image[n].shape[2:])
+            # Push image into common space
+            inputs[:, n, ...], inputs[:, n_channels + n, ...] = \
+                self.push(image[n], grid, shape=self.mean_dim) # add count image as channel
 
         if self.coord_conv:
             # Append mean space coordinate grid to UNet input
@@ -170,10 +178,10 @@ class MeanSpaceNet(Module):
             else:
                 id = id.permute((0, 3, 1, 2))
                 id = id.repeat(image_pushed.shape[0], 1, 1, 1)
-            image_pushed = torch.cat((image_pushed, id), dim=1)
+            inputs = torch.cat((inputs, id), dim=1)
 
         # Apply UNet
-        pred = self.unet(image_pushed)
+        pred = self.unet(inputs)
 
         # Remove last class, if implicit
         if self.implicit and pred.shape[1] > self.output_classes:
@@ -182,16 +190,16 @@ class MeanSpaceNet(Module):
         # Pull prediction into native space (whilst in log space)
         pred = self.pull(pred, grid)
 
-        # compute loss and metrics (in native, log space)
+        # softmax
+        pred = pred.softmax(dim=1)
+
+        # compute loss and metrics (in native space)
         if ref is not None:
             # sanity checks
             check.dim(self.dim, ref)
             dims = [0] + list(range(2, self.dim + 2))
             check.shape(pred, ref, dims=dims)
             self.compute(_loss, _metric, native=[pred, ref])
-
-        # softmax
-        pred = pred.softmax(dim=1)
 
         return pred
 
@@ -334,8 +342,9 @@ class SegMRFNet(Module):
         # sanity check
         check.dim(self.dim, image)
 
-        # augment
-        image, ref = augment(image, ref, self.augmenters)        
+        if ref is not None:
+            # augment
+            image, ref = augment(self.augmenters, image, ref=ref)
 
         # unet
         p = self.unet(image)
@@ -473,8 +482,9 @@ class SegNet(Module):
         # sanity check
         check.dim(self.dim, image)
 
-        # augment
-        image, ref = augment(image, ref, self.augmenters)
+        if ref is not None:
+            # augment
+            image, ref = augment(self.augmenters, image, ref=ref)
 
         # unet
         prob = self.unet(image)
@@ -597,8 +607,9 @@ class MRFNet(Module):
         # sanity check
         check.dim(self.dim, resp)
 
-        # augment
-        resp, ref = augment(resp, ref, self.augmenters)
+        if ref is not None:
+            # augment
+            resp, ref = augment(self.augmenters, resp, ref=ref)
 
         # MRF
         p = self.apply(resp, is_train)
@@ -712,8 +723,8 @@ class MRFNet(Module):
         return p
 
 
-def augment(image, ref, augmenters, vx=None):
-    """Apply augmentation (only if reference is given, i.e., not at test-time).
+def augment(augmenters, image, ref=None, vx=None):
+    """Applies various augmentation techniques.
 
     Parameters
     ----------
@@ -734,9 +745,8 @@ def augment(image, ref, augmenters, vx=None):
         Augmented reference segmentation.
 
     """
-    if ref is not None:
-        for augmenter in augmenters:
-            image, ref = augmenter(image, ref, vx)
+    for augmenter in augmenters:
+        image, ref = augmenter(image, ref, vx)
                 
     return image, ref
 
