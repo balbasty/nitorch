@@ -164,7 +164,7 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
     weights = dat.new_ones([1, *dat.shape[1:]])
 
     ll_w = weights.sum(dtype=torch.double)
-    ll_x = spatial.membrane(dat, voxel_size=voxel_size, weights=weights)
+    ll_x = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
     ll_x = (ll_x * dat).sum(dtype=torch.double)
     if verbose > 0:
         print(f'{0:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
@@ -175,11 +175,11 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
         ll_x0 = ll_x
         ll_w0 = ll_w
 
-        grad = spatial.membrane(dat, voxel_size=voxel_size, weights=weights)
+        grad = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
         grad = grad[mask]
 
         def precond(x):
-            p = spatial.membrane_diag(voxel_size=voxel_size, weights=weights)
+            p = spatial.membrane_diag(dim=3, voxel_size=voxel_size, weights=weights)
             p = p.expand_as(dat)[mask]
             p = p + 1e-3
             return x/p
@@ -187,7 +187,7 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
         def forward(x):
             m = torch.zeros_like(dat)
             m[mask] = x
-            m = spatial.membrane(m, voxel_size=voxel_size, weights=weights)
+            m = spatial.membrane(m, dim=3, voxel_size=voxel_size, weights=weights)
             m = m[mask]
             return m
 
@@ -195,8 +195,8 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
                               max_iter=max_iter_cg, tolerance=tol_cg,
                               verbose=verbose > 1, stop='norm')
 
-        weights, ll_w = spatial.membrane_weights(dat, voxel_size=voxel_size, return_sum=True)
-        ll_x = spatial.membrane(dat, voxel_size=voxel_size, weights=weights)
+        weights, ll_w = spatial.membrane_weights(dat, dim=3, voxel_size=voxel_size, return_sum=True)
+        ll_x = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
         ll_x = (ll_x * dat).sum(dtype=torch.double)
         if verbose > 0:
             print(f'{n_iter_rls:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
