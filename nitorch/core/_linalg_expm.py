@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from . import utils
 
 
-def _expm(X, basis=None, grad_X=False, grad_basis=False,
+def _expm(X, basis=None, grad_X=False, grad_basis=False, hess_X=False,
           max_order=10000, tol=1e-32):
     """Matrix exponential (and its derivatives).
 
@@ -69,6 +69,9 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
         parameters in the basis set
     dB : (..., F, D, D, D, D) tensor, if `grad_basis is True`
         Derivative of the matrix exponential with respect to the basis.
+    hX : (..., F, F, D, D) tensor, if `hess_X is True`
+        Second derivative of the matrix exponential with respect to the
+        parameters in the basis set
 
     """
 
@@ -135,15 +138,24 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
     I = torch.eye(dim, **backend)
     E = I + X                            # expm(X)
     En = X.clone()                       # n-th Taylor coefficient of expm
-    if grad_X:
+    if grad_X or hess_X:
         dE = basis.clone()               # dexpm(X)/dx
         dEn = basis.clone()              # n-th Taylor coefficient of dexpm/dx
     if grad_basis:
         dB = basis_basis.clone()         # dexpm(X)/dB
         dBn = basis_basis.clone()        # n-th Taylor coefficient of dexpm/dB
+    if hess_X:
+        hE = E.new_zeros([*XB_batch_shape, nb_feat, nb_feat, dim, dim])
+        hEn = hE.clone()
 
     for n_order in range(2, max_order+1):
         # Compute coefficients at order `n_order`, and accumulate
+        if hess_X:
+            dEB = torch.matmul(dEn, basis[..., None, :, :])
+            hEn = torch.matmul(hEn, X) + dEB + dEB.transpose(-3, -4)
+            hEn /= n_order
+            hE = smart_incr(hE, hEn)
+            del dEB
         if grad_X:
             dEn = torch.matmul(dEn, X) + torch.matmul(En, basis)
             dEn /= n_order
@@ -163,14 +175,15 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False,
     E = E[..., 0, :, :]
     if grad_basis:
         dB = dB.reshape(XB_batch_shape + (nb_feat, dim, dim, dim, dim))
-        if grad_X:
-            return E, dE, dB
-        else:
-            return E, dB
-    elif grad_X:
-        return E, dE
-    else:
-        return E
+
+    out = [E]
+    if grad_X:
+        out.append(dE)
+    if grad_basis:
+        out.append(dB)
+    if hess_X:
+        out.append(hE)
+    return out[0] if len(out) == 1 else out
 
 
 class _ExpM(torch.autograd.Function):

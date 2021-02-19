@@ -1117,36 +1117,46 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             # * dMi/dBi
             Ms = []
             dMs = []
+            hMs = []
             n_basis = 0
             for a_basis in basis:
                 nb_a_basis = a_basis.shape[0]
                 a_prm = prm[n_basis:(n_basis+nb_a_basis)]
-                M, dM = linalg._expm(a_prm, a_basis, grad_X=True)
+                M, dM, hM = linalg._expm(a_prm, a_basis, grad_X=True, hess_X=True)
+                # hM = hM.abs().sum(-3)  # diagonal majoriser
                 Ms.append(M)
                 dMs.append(dM)
+                hMs.append(hM)
                 n_basis += nb_a_basis
             M = torch.stack(Ms)
 
             # Compute derivative of the full matrix with respect to each basis
             # * M = mprod(M[:, ...])
             # * dM/dBi = mprod(M[:i, ...]) @ dMi/dBi @ mprod(M[i+1:, ...])
-            for n_mat, dM in enumerate(dMs):
+            for n_mat, (dM, hM) in enumerate(zip(dMs, hMs)):
                 if n_mat > 0:
                     pre = torch.chain_matmul(*M[:n_mat])
                     dM = torch.matmul(pre, dM)
+                    hM = torch.matmul(pre, hM)
                 if n_mat < len(M)-1:
                     post = torch.chain_matmul(*M[(n_mat+1):])
                     dM = torch.matmul(dM, post)
+                    hM = torch.matmul(hM, post)
                 dMs[n_mat] = dM
+                hMs[n_mat] = hM
             dM = torch.cat(dMs)
+            hM = torch.cat(hMs)
+            hM = hM.abs().sum(-3)   # diagonal majoriser (see Fessler)
             M = torch.chain_matmul(*M)
 
             # Compute gradient/Hessian of the loss (squared residuals)
             diff = M - mat
             diff = diff.flatten()
             dM = dM.reshape((nb_basis, -1))
-            gradient = linalg.matvec(dM, diff)
+            hM = hM.reshape((nb_basis, -1))
+            gradient = (dM*diff).sum(-1)
             hessian = torch.matmul(dM, dM.t())
+            hessian.diagonal().add_((hM * diff.abs()).sum(-1))
             hessian.diagonal().mul_(1 + 1e-3)
             delta_prm = hessian.inverse().matmul(gradient)
 
@@ -1168,6 +1178,7 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
                     prm = prm0 - armijo * delta_prm
                     M = affine_matrix(prm, *basis)
                     sos = ((M - mat) ** 2).sum()
+                    # print(n_iter, lsit, sos, sos < sos0)  ## DEBUG
                     if sos < sos0:
                         success = True
                         break
@@ -2230,9 +2241,9 @@ def affine_mean(mats, shapes):
     # We look for the matrix that can be encoded without shears
     # that is the closest to the original matrix (in terms of the
     # Frobenius norm of the residual matrix)
-    # _, M = affine_parameters(mat, 'R', 'Z') ## not robust enough
-    prm = affine_parameters_classic(mat, return_stacked=False)
-    M = affine_matrix_classic(rotations=prm[1], zooms=prm[2])
+    _, M = affine_parameters(mat, 'R', 'Z')
+    # prm = affine_parameters_classic(mat, return_stacked=False)
+    # M = affine_matrix_classic(rotations=prm[1], zooms=prm[2])
     mat[:dim, :dim] = M[:dim, :dim]
 
     return mat
