@@ -79,15 +79,23 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     dim = dim or field.dim()
     voxel_size = make_vector(voxel_size, dim)
     dims = list(range(field.dim()-dim, field.dim()))
-    field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
+    fieldf = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
     if weights is not None:
-        backend = dict(dtype=field.dtype, device=field.device)
+        backend = dict(dtype=fieldf.dtype, device=fieldf.device)
         weights = torch.as_tensor(weights, **backend)
-        field = field * weights[..., None]
-    dims = list(range(field.dim()-1-dim, field.dim()-1))
-    field = div(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
+        fieldf = fieldf * weights[..., None]
+        # backward gradients (not needed in l2 case)
+        fieldb = diff(field, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
+        fieldb = fieldb * weights[..., None]
+        dims = list(range(fieldb.dim() - 1 - dim, fieldb.dim() - 1))
+        fieldb = div(fieldb, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
+    dims = list(range(fieldf.dim()-1-dim, fieldf.dim()-1))
+    field = div(fieldf, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
+    del fieldf
+    if weights is not None:
+        field += fieldb
+        field = field * 0.5
     return field
-
 
 def _membrane_l2(field, voxel_size=1, bound='dct2', dim=None):
     """Precision matrix for the Membrane energy
@@ -752,8 +760,11 @@ def membrane_weights(field, lam=1, voxel_size=1, bound='dct2',
     if joint:
         lam = lam * nb_prm
     dims = list(range(field.dim()-dim, field.dim()))
+    fieldb = diff(field, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
     field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
     field.square_().mul_(lam)
+    field += fieldb.square_().mul_(lam)
+    field /= 2.
     dims = [-1] + ([-dim-2] if joint else [])
     field = field.sum(dim=dims, keepdims=True)[..., 0].sqrt_()
     if return_sum:
