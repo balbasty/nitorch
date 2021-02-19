@@ -1,0 +1,198 @@
+from nitorch import spatial, io
+from nitorch.core import py, utils, optim
+from nitorch.core.constants import nan
+import os
+import torch
+
+
+def ensure_4d(f):
+    while len(f.shape) > 4:
+        for d in reversed(range(len(f.shape))):
+            if f.shape[d] == 1:
+                f.squeeze(d)
+                continue
+        raise ValueError('Too many channel dimensions')
+    while len(f.shape) < 4:
+        f = f.unsqueeze(-1)
+    return f
+
+
+def inpaint(*inputs, missing='nan', output=None, device=None):
+    """Inpaint missing values by minimizing Joint Total Variation.
+
+    Parameters
+    ----------
+    *inputs : str or tensor or (tensor, tensor)
+        Either a path to a volume file or a tuple `(dat, affine)`, where
+        the first element contains the volume data and the second contains
+        the orientation matrix.
+    missing : 'nan' or scalar or callable, default='nan'
+        Mask of the missing data. If a scalar, all voxels with that value
+        are considered missing. If a function, it should return the mask
+        of missing values when applied to the multi-channel data. Else,
+        non-finite values are assumed missing.
+    output : [sequence of] str, optional
+        Output filename(s).
+        If the input is not a path, the unstacked data is not written
+        on disk by default.
+        If the input is a path, the default output filename is
+        '{dir}/{base}.pool{ext}', where `dir`, `base` and `ext`
+        are the directory, base name and extension of the input file,
+        `i` is the coordinate (starting at 1) of the slice.
+    device : torch.device, optional
+
+    Returns
+    -------
+    *output : str or (tensor, tensor)
+        If the input is a path, the output path is returned.
+        Else, the pooled data and orientation matrix are returned.
+
+    """
+    # Preprocess
+    dirs = []
+    bases = []
+    exts = []
+    fnames = []
+    nchannels = []
+    dat = []
+    aff = None
+    for i, inp in enumerate(inputs):
+        is_file = isinstance(inp, str)
+        if is_file:
+            fname = inp
+            dir, base, ext = py.fileparts(fname)
+            fnames.append(inp)
+            dirs.append(dir)
+            bases.append(base)
+            exts.append(ext)
+
+            f = io.volumes.map(fname)
+            if aff is None:
+                aff = f.affine
+            f = ensure_4d(f)
+            dat.append(f.fdata(device=device))
+
+        else:
+            fnames.append(None)
+            dirs.append('')
+            bases.append(f'{i+1}')
+            exts.append('.nii.gz')
+            if isinstance(inp, (list, tuple)):
+                if aff is None:
+                    dat1, aff = inp
+                else:
+                    dat1, _ = inp
+            else:
+                dat1 = inp
+            dat.append(torch.as_tensor(dat1, device=device))
+            del dat1
+        nchannels.append(dat[-1].shape[-1])
+    dat = utils.to(*dat, dtype=torch.float, device=utils.max_device(dat))
+    dat = torch.cat(dat, dim=-1)
+    dat = utils.movedim(dat, -1, 0)  # (channels, *spatial)
+
+    # Set missing data
+    if missing != 'nan':
+        if not callable(missing):
+            missingval = utils.make_vector(missing, dtype=dat.dtype, device=dat.device)
+            missing = lambda x: utils.isin(x, missingval)
+        dat[missing(dat)] = nan
+    dat[~torch.isfinite(dat)] = nan
+
+    # Do it
+    if aff is not None:
+        vx = spatial.voxel_size(aff)
+    else:
+        vx = 1
+    dat = do_inpaint(dat, voxel_size=vx)
+
+    # Postprocess
+    dat = utils.movedim(dat, 0, -1)
+    dat = dat.split(nchannels, dim=-1)
+    output = py.make_list(output, len(dat))
+    for i in range(len(dat)):
+        if fnames[i] and not output[i]:
+            output[i] = '{dir}{sep}{base}.inpaint{ext}'
+        if output[i]:
+            if fnames[i]:
+                output[i] = output[i].format(dir=dirs[i] or '.', base=bases[i],
+                                             ext=exts[i], sep=os.path.sep)
+                io.volumes.save(dat[i], output[i], like=fnames[i], affine=aff)
+            else:
+                output[i] = output[i].format(sep=os.path.sep)
+                io.volumes.save(dat[i], output[i], affine=aff)
+
+    dat = [output[i] if fnames[i] else
+           (dat[i], aff) if aff is not None
+           else dat[i] for i in range(len(dat))]
+    if len(dat) == 1:
+        dat = dat[0]
+    return dat
+
+
+def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
+               tol_rls=1e-5, tol_cg=1e-5):
+    """Perform inpainting
+
+    Parameters
+    ----------
+    dat : (channels, *spatial) tensor
+        Tensor with missing data marked as NaN
+
+    Returns
+    -------
+    dat : (channels, *spatial) tensor
+
+    """
+    dat = torch.as_tensor(dat)
+    backend = utils.backend(dat)
+    voxel_size = utils.make_vector(voxel_size, dat.dim()-1, **backend)
+    voxel_size = voxel_size / voxel_size.prod()
+
+    # initialize
+    mask = torch.isnan(dat)
+    for channel in dat:
+        channel[torch.isnan(channel)] = channel[~torch.isnan(channel)].median()
+    weights = dat.new_ones([1, *dat.shape[1:]])
+
+    ll_w = weights.sum(dtype=torch.double)
+    ll_x = spatial.membrane(dat, voxel_size=voxel_size, weights=weights)
+    ll_x = (ll_x * dat).sum(dtype=torch.double)
+    print(f'{0:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
+
+    # Reweighted least squares loop
+    for n_iter_rls in range(1, max_iter_rls+1):
+
+        ll_x0 = ll_x
+        ll_w0 = ll_w
+
+        grad = spatial.membrane(dat, voxel_size=voxel_size, weights=weights)
+        grad = grad[mask]
+
+        def precond(x):
+            p = spatial.membrane_diag(voxel_size=voxel_size, weights=weights)
+            p = p.expand_as(dat)[mask]
+            p = p + 1e-3
+            return x/p
+
+        def forward(x):
+            m = torch.zeros_like(dat)
+            m[mask] = x
+            m = spatial.membrane(m, voxel_size=voxel_size, weights=weights)
+            m = m[mask]
+            return m
+
+        dat[mask] -= optim.cg(forward, grad, precond=precond,
+                              max_iter=max_iter_cg, tolerance=tol_cg,
+                              verbose=True, stop='norm')
+
+        weights, ll_w = spatial.membrane_weights(dat, voxel_size=voxel_size, return_sum=True)
+        ll_x = spatial.membrane(dat, voxel_size=voxel_size, weights=weights)
+        ll_x = (ll_x * dat).sum(dtype=torch.double)
+        print(f'{n_iter_rls:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
+
+        if abs(((ll_x0-ll_w0) - (ll_x+ll_w))/(ll_x0-ll_w0)) < tol_rls:
+            print('Converged')
+            break
+
+    return dat
