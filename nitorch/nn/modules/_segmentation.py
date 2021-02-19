@@ -334,8 +334,9 @@ class SegMRFNet(Module):
         # sanity check
         check.dim(self.dim, image)
 
-        # augment
-        image, ref = augment(image, ref, self.augmenters)        
+        if ref is not None:
+            # augment
+            image, ref = augment(self.augmenters, image, ref=ref)
 
         # unet
         p = self.unet(image)
@@ -473,8 +474,9 @@ class SegNet(Module):
         # sanity check
         check.dim(self.dim, image)
 
-        # augment
-        image, ref = augment(image, ref, self.augmenters)
+        if ref is not None:
+            # augment
+            image, ref = augment(self.augmenters, image, ref=ref)
 
         # unet
         prob = self.unet(image)
@@ -597,8 +599,9 @@ class MRFNet(Module):
         # sanity check
         check.dim(self.dim, resp)
 
-        # augment
-        resp, ref = augment(resp, ref, self.augmenters)
+        if ref is not None:
+            # augment
+            resp, ref = augment(self.augmenters, resp, ref=ref)
 
         # MRF
         p = self.apply(resp, is_train)
@@ -712,8 +715,8 @@ class MRFNet(Module):
         return p
 
 
-def augment(image, ref, augmenters, vx=None):
-    """Apply augmentation (only if reference is given, i.e., not at test-time).
+def augment(augmenters, image, ref=None, vx=None):
+    """Applies various augmentation techniques.
 
     Parameters
     ----------
@@ -734,9 +737,8 @@ def augment(image, ref, augmenters, vx=None):
         Augmented reference segmentation.
 
     """
-    if ref is not None:
-        for augmenter in augmenters:
-            image, ref = augmenter(image, ref, vx)
+    for augmenter in augmenters:
+        image, ref = augmenter(image, ref, vx)
                 
     return image, ref
 
