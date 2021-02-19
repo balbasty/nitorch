@@ -4,6 +4,7 @@ import torch
 from warnings import warn
 from nitorch import io, spatial
 from nitorch.core import utils, linalg
+from nitorch.tools.cli import commands
 from nitorch.spatial import (
     mean_space, affine_conv, affine_resize, affine_matmul, affine_lmdiv,
     affine_grid, affine_matvec, grid_inv, affine_inv)
@@ -15,6 +16,8 @@ from . import struct
 
 def autoreg(argv=None):
 
+    argv = argv or sys.argv[1:]
+
     try:
         _autoreg(argv)
     except ParseError as e:
@@ -22,6 +25,9 @@ def autoreg(argv=None):
         print(f'[ERROR] {str(e)}', file=sys.stderr)
     except Exception as e:
         print(f'[ERROR] {str(e)}', file=sys.stderr)
+
+
+commands['autoreg'] = autoreg
 
 
 def _autoreg(argv=None):

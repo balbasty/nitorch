@@ -3,7 +3,7 @@ from nitorch.core.cli import ParseError
 
 
 class Info(cli.ParsedStructure):
-    """Structure that holds parameters of the `nireorient` command"""
+    """Structure that holds parameters of the `info` command"""
     files: list = []
     meta: list = []
     stat: bool = False
@@ -12,7 +12,7 @@ class Info(cli.ParsedStructure):
 help = r"""[nitorch] Print volume information
 
 usage:
-    niinfo *FILES [-m *FIELDS] [-s]
+    nitorch info *FILES [-m *FIELDS] [-s]
 
     -m, --meta             Specific fields that must be printed.
     -s, --stat             Compute intensity statistics (default: False)

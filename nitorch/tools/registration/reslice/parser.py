@@ -3,8 +3,8 @@ from . import struct
 help = r"""[nitorch] Reslice volumes
 
 usage:
-    nireslice *FILES <*TRF> FILE [-t FILE] [-o *FILE] 
-              [-inter ORDER] [-bnd BND] [-ex] [-cpu|gpu]
+    nitorch reslice *FILES <*TRF> FILE [-t FILE] [-o *FILE] 
+                    [-inter ORDER] [-bnd BND] [-ex] [-cpu|gpu]
     
     <TRF> can take values (with additional options):
     -l, --linear            Linear transform (i.e., affine matrix)
@@ -116,8 +116,6 @@ def parse(args):
 
     # This is the object that we will populate
     options = struct.Reslicer()
-
-    _, *args = args  # remove script name from list
 
     # Get input files
     while next_isvalue(args):

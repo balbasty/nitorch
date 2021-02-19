@@ -27,7 +27,7 @@ letters:
     - S (inferior to Superior) or I (superior to Inferior)
     
 usage:
-    niorient *FILES [-l LAYOUT] [-v *VX] [-c *CTR] [-k FILE] [-o *FILES]
+    nitorch orient *FILES [-l LAYOUT] [-v *VX] [-c *CTR] [-k FILE] [-o *FILES]
 
     -l, --layout LAYOUT    Target orientation (default: like)
     -v, --voxel-size *VX   Target voxel size (default: like)

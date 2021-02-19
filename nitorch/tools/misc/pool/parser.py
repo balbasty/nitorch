@@ -3,7 +3,7 @@ from nitorch.core.cli import ParseError
 
 
 class Pool(cli.ParsedStructure):
-    """Structure that holds parameters of the `nipool` command"""
+    """Structure that holds parameters of the `pool` command"""
     files: list = []
     window: list = 3
     stride: list = []
@@ -16,7 +16,7 @@ class Pool(cli.ParsedStructure):
 help = r"""[nitorch] Window-pooling of a volume
 
 usage:
-    nipool *FILES [-w *WIN] [-s *STRD] [-m METHOD] [-d DIM] [-o *FILES] [-cpu|gpu]
+    nitorch pool *FILES [-w *WIN] [-s *STRD] [-m METHOD] [-d DIM] [-o *FILES] [-cpu|gpu]
 
     -w, --window *WIN      Window size per dimension (default: 3)
     -s, --stride *STRD     Stride between output elements (default: *WIN)

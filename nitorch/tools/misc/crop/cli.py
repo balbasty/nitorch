@@ -1,4 +1,5 @@
 from nitorch.core.py import make_list
+from nitorch.tools.cli import commands
 from .main import crop
 from .parser import parse, help, ParseError
 import sys
@@ -35,3 +36,6 @@ def _cli(args):
         crop(fname, size=options.size, center=options.center,
              space=(options.size_space, options.center_space), like=options.like,
              output=ofname, transform=tfname)
+
+
+commands['crop'] = cli

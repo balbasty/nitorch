@@ -2,15 +2,15 @@
 
 from . import struct
 
-help = r"""[AutoReg] AUTOgrad REGistration tool
+help = r"""[nitorch] AUTOgrad REGistration tool
 
 usage: 
-    autoreg <*LOSS> [FACTOR] -fix *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
-                             -mov *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
-            <*TRF> [FACTOR] [-init PATH] [-lr LRNRATE] [-o FILE] [-pyr LVL] 
-                   <*REG> [FACTOR]
-            <*OPT> [-nit MAXITER] [-lr LRNRATE] [-stop LIMIT] [-ls [MAXLS]]
-            [-all ...] [-prg] [-gpu|-cpu] [-v] [-h]
+    nitorch autoreg <*LOSS> [FACTOR] -fix *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
+                                     -mov *FILE [-o *FILE] [-r *FILE] [-pyr *LVL] ...
+                    <*TRF> [FACTOR] [-init PATH] [-lr LRNRATE] [-o FILE] [-pyr LVL] 
+                           <*REG> [FACTOR]
+                    <*OPT> [-nit MAXITER] [-lr LRNRATE] [-stop LIMIT] [-ls [MAXLS]]
+                    [-all ...] [-prg] [-gpu|-cpu] [-v] [-h]
 
     <LOSS> can take values (with additional options): 
         -mi,  --mutual-info         Normalized Mutual Information
@@ -504,7 +504,6 @@ def parse(args):
     # This is the object that we will populate
     options = struct.AutoReg()
 
-    _, *args = args  # remove script name from list
     while args:
         if next_isvalue(args):
             raise ParseError(f'Argument {args[0]} does not seem to '

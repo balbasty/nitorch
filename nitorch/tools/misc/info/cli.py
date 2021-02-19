@@ -1,3 +1,4 @@
+from nitorch.tools.cli import commands
 from .main import info
 from .parser import parse, help, ParseError
 import sys
@@ -30,3 +31,6 @@ def _cli(args):
 
     for file in options.files:
         info(file, meta=options.meta)
+
+
+commands['info'] = cli

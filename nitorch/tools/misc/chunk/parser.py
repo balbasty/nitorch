@@ -2,8 +2,8 @@ from nitorch.core import cli
 from nitorch.core.cli import ParseError
 
 
-class Unstack(cli.ParsedStructure):
-    """Structure that holds parameters of the `nireorient` command"""
+class Chunk(cli.ParsedStructure):
+    """Structure that holds parameters of the `chunk` command"""
     files: list = []
     chunk: int = 1
     dim: int = -1
@@ -14,7 +14,7 @@ class Unstack(cli.ParsedStructure):
 help = r"""[nitorch] Split a volume into chunks
 
 usage:
-    nichunk *FILES -n SIZE [-d DIM] [-o *FILES] [-t *FILES] 
+    nitorch chunk *FILES -n SIZE [-d DIM] [-o *FILES] [-t *FILES] 
 
     -n, --chunk            Size of each chunk (default: 1)
     -d, --dimension DIM    Dimension to unstack (default: -1 = last)
@@ -35,7 +35,7 @@ def parse(args):
 
     """
 
-    struct = Unstack()
+    struct = Chunk()
 
     struct.files = []
     while cli.next_isvalue(args):

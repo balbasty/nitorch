@@ -1,4 +1,5 @@
 from nitorch.core.py import make_list
+from nitorch.tools.cli import commands
 from .main import reorient
 from .parser import parse, help, ParseError
 import sys
@@ -33,3 +34,6 @@ def _cli(args):
     for fname, ofname in zip(options.files, options.output):
         reorient(fname, options.layout, ofname,
                  transform=options.transform)
+
+
+commands['reorient'] = cli

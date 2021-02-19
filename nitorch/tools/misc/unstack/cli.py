@@ -1,4 +1,5 @@
 from nitorch.core.py import make_list
+from nitorch.tools.cli import commands
 from .main import unstack
 from .parser import parse, help, ParseError
 import sys
@@ -33,3 +34,6 @@ def _cli(args):
     options.transform = make_list(options.transform, len(options.files))
     for fname, ofname, tfname in zip(options.files, options.output, options.transform):
         unstack(fname, options.dim, ofname, transform=tfname)
+
+
+commands['unstack'] = cli
