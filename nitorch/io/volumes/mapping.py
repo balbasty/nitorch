@@ -691,7 +691,7 @@ class MappedArray(MappedFile):
         """
         index = [slice(None)] * self.dim
         if dim < 0:
-            dim = self.dim + dim
+            dim = self.dim + dim + 1
         index = index[:dim] + [None] + index[dim:]
         return self[tuple(index)]
 
