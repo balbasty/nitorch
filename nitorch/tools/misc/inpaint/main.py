@@ -94,7 +94,8 @@ def inpaint(*inputs, missing='nan', output=None, device=None, verbose=1,
             del dat1
         nchannels.append(dat[-1].shape[-1])
     dat = utils.to(*dat, dtype=torch.float, device=utils.max_device(dat))
-    dat = torch.cat(dat, dim=-1)
+    if not torch.is_tensor(dat):
+        dat = torch.cat(dat, dim=-1)
     dat = utils.movedim(dat, -1, 0)  # (channels, *spatial)
 
     # Set missing data
@@ -155,7 +156,8 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
     dat = torch.as_tensor(dat)
     backend = utils.backend(dat)
     voxel_size = utils.make_vector(voxel_size, dat.dim()-1, **backend)
-    voxel_size = voxel_size / voxel_size.prod()
+    voxel_size = voxel_size / voxel_size.mean()
+    print(voxel_size.tolist())
 
     # initialize
     mask = torch.isnan(dat)
