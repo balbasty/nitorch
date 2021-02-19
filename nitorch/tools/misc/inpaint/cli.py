@@ -18,8 +18,8 @@ def cli(args=None):
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
-    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+    except Exception as e:
+        print(f'[ERROR] {str(e)}', file=sys.stderr)
 
 
 commands['inpaint'] = cli
@@ -35,7 +35,9 @@ def _cli(args):
 
     options.output = make_list(options.output, len(options.files))
     inpaint(*options.files, missing=options.missing, output=options.output,
-            device=options.device)
+            device=options.device, verbose=options.verbose,
+            max_iter_rls=options.max_rls, max_iter_cg=options.max_cg,
+            tol_rls=options.tol_rls, tol_cg=options.tol_cg)
 
 
 

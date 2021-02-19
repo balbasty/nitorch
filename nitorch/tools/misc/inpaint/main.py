@@ -17,7 +17,8 @@ def ensure_4d(f):
     return f
 
 
-def inpaint(*inputs, missing='nan', output=None, device=None):
+def inpaint(*inputs, missing='nan', output=None, device=None, verbose=1,
+            max_iter_rls=10, max_iter_cg=32, tol_rls=1e-5, tol_cg=1e-5):
     """Inpaint missing values by minimizing Joint Total Variation.
 
     Parameters
@@ -39,7 +40,12 @@ def inpaint(*inputs, missing='nan', output=None, device=None):
         '{dir}/{base}.pool{ext}', where `dir`, `base` and `ext`
         are the directory, base name and extension of the input file,
         `i` is the coordinate (starting at 1) of the slice.
+    verbose : int, default=1
     device : torch.device, optional
+    max_iter_rls : int, default=10
+    max_iter_cg : int, default=32
+    tol_rls : float, default=1e-5
+    tol_cg : float, default=1e-5
 
     Returns
     -------
@@ -104,7 +110,9 @@ def inpaint(*inputs, missing='nan', output=None, device=None):
         vx = spatial.voxel_size(aff)
     else:
         vx = 1
-    dat = do_inpaint(dat, voxel_size=vx)
+    dat = do_inpaint(dat, voxel_size=vx, verbose=verbose,
+                     max_iter_rls=max_iter_rls, tol_rls=tol_rls,
+                     max_iter_cg=max_iter_cg, tol_cg=tol_cg)
 
     # Postprocess
     dat = utils.movedim(dat, 0, -1)
@@ -131,7 +139,7 @@ def inpaint(*inputs, missing='nan', output=None, device=None):
 
 
 def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
-               tol_rls=1e-5, tol_cg=1e-5):
+               tol_rls=1e-5, tol_cg=1e-5, verbose=1):
     """Perform inpainting
 
     Parameters
@@ -158,7 +166,8 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
     ll_w = weights.sum(dtype=torch.double)
     ll_x = spatial.membrane(dat, voxel_size=voxel_size, weights=weights)
     ll_x = (ll_x * dat).sum(dtype=torch.double)
-    print(f'{0:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
+    if verbose > 0:
+        print(f'{0:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
 
     # Reweighted least squares loop
     for n_iter_rls in range(1, max_iter_rls+1):
@@ -184,15 +193,17 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
 
         dat[mask] -= optim.cg(forward, grad, precond=precond,
                               max_iter=max_iter_cg, tolerance=tol_cg,
-                              verbose=True, stop='norm')
+                              verbose=verbose > 1, stop='norm')
 
         weights, ll_w = spatial.membrane_weights(dat, voxel_size=voxel_size, return_sum=True)
         ll_x = spatial.membrane(dat, voxel_size=voxel_size, weights=weights)
         ll_x = (ll_x * dat).sum(dtype=torch.double)
-        print(f'{n_iter_rls:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
+        if verbose > 0:
+            print(f'{n_iter_rls:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
 
         if abs(((ll_x0-ll_w0) - (ll_x+ll_w))/(ll_x0-ll_w0)) < tol_rls:
-            print('Converged')
+            if verbose > 0:
+                print('Converged')
             break
 
     return dat
