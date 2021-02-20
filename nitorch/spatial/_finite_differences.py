@@ -66,7 +66,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
                 (torch.is_tensor(y) and y.requires_grad)):
             return out.copy_(y).add_(x)
         else:
-            return addto(x, y, out=out)
+            return torch.add(x, y, out=out)
 
     def div_(x, y):
         """Smart in-place division"""
@@ -337,7 +337,7 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
                 (torch.is_tensor(y) and y.requires_grad)):
             return out.copy_(y).add_(x)
         else:
-            return addto(x, y, out=out)
+            return torch.add(x, y, out=out)
 
     def div_(x, y):
         """Smart in-place division"""
