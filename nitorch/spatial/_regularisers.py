@@ -75,6 +75,14 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     field : (..., *spatial) tensor
 
     """
+    def mul_(x, y):
+        """Smart in-place multiplication"""
+        if ((torch.is_tensor(x) and x.requires_grad) or
+                (torch.is_tensor(y) and y.requires_grad)):
+            return x * y
+        else:
+            return x.mul_(y)
+
     field = torch.as_tensor(field)
     dim = dim or field.dim()
     voxel_size = make_vector(voxel_size, dim)
@@ -83,10 +91,10 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     if weights is not None:
         backend = dict(dtype=fieldf.dtype, device=fieldf.device)
         weights = torch.as_tensor(weights, **backend)
-        fieldf = fieldf * weights[..., None]
+        fieldf = mul_(fieldf, weights[..., None])
         # backward gradients (not needed in l2 case)
         fieldb = diff(field, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
-        fieldb = fieldb * weights[..., None]
+        fieldb = mul_(fieldb, weights[..., None])
         dims = list(range(fieldb.dim() - 1 - dim, fieldb.dim() - 1))
         fieldb = div(fieldb, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
     dims = list(range(fieldf.dim()-1-dim, fieldf.dim()-1))
@@ -96,6 +104,7 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
         field += fieldb
         field = field * 0.5
     return field
+
 
 def _membrane_l2(field, voxel_size=1, bound='dct2', dim=None):
     """Precision matrix for the Membrane energy
