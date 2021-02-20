@@ -157,7 +157,6 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
     backend = utils.backend(dat)
     voxel_size = utils.make_vector(voxel_size, dat.dim()-1, **backend)
     voxel_size = voxel_size / voxel_size.mean()
-    print(voxel_size.tolist())
 
     # initialize
     mask = torch.isnan(dat)
@@ -172,30 +171,32 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
         print(f'{0:3d} | {ll_x} + {ll_w} = {ll_x + ll_w}')
 
     # Reweighted least squares loop
+    zeros = torch.zeros_like(dat)
     for n_iter_rls in range(1, max_iter_rls+1):
 
         ll_x0 = ll_x
         ll_w0 = ll_w
 
         grad = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
-        grad = grad[mask]
+        grad = grad.masked_select(mask)
 
         def precond(x):
             p = spatial.membrane_diag(dim=3, voxel_size=voxel_size, weights=weights)
-            p = p.expand_as(dat)[mask]
-            p = p + 1e-3
+            p = p.expand_as(dat).masked_select(mask)
+            p = p
             return x/p
 
         def forward(x):
-            m = torch.zeros_like(dat)
-            m[mask] = x
+            m = zeros
+            m.masked_scatter_(mask, x)
             m = spatial.membrane(m, dim=3, voxel_size=voxel_size, weights=weights)
-            m = m[mask]
+            m = m.masked_select(mask)
             return m
 
-        dat[mask] -= optim.cg(forward, grad, precond=precond,
-                              max_iter=max_iter_cg, tolerance=tol_cg,
-                              verbose=verbose > 1, stop='norm')
+        delta = optim.cg(forward, grad, precond=precond,
+                         max_iter=max_iter_cg, tolerance=tol_cg,
+                         verbose=verbose > 1, stop='norm')
+        dat.masked_scatter_(mask, dat.masked_select(mask) - delta)
 
         weights, ll_w = spatial.membrane_weights(dat, dim=3, voxel_size=voxel_size, return_sum=True)
         ll_x = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
