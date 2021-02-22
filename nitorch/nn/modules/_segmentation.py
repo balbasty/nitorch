@@ -945,9 +945,6 @@ def board(dim, tb, inputs, outputs, implicit=False):
             slice_target = (slice_target.argmax(dim=0, keepdim=False)) / (K1 - 1)
         return to_grid(slice_input, slice_target, slice_prediction)[None, ...]
 
-    # from nitorch.plot import show_slices
-    # show_slices(get_image('z', inputs, outputs, dim, implicit).squeeze())
-
     # Add to TensorBoard
     title = 'Image-Target-Prediction_'
     tb.add_image(title + 'z', get_image('z', inputs, outputs, dim, implicit))
