@@ -26,6 +26,7 @@ def set_affine(header, affine, shape=None):
                              'Got {}'.format(affine.shape))
         else:
             Mdc = affine[:3, :3] / vx
+            shape = shape[:3]
             c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
 
             # Assign after we've had a chance to raise exceptions

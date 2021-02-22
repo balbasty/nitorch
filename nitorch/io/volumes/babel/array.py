@@ -484,7 +484,7 @@ class BabelArray(MappedArray):
 
         header = self._image.dataobj._header
         if meta:
-            header = metadata_to_header(header, meta)
+            header = metadata_to_header(header, meta, shape=self.shape)
 
         if self.is_compressed('header'):
             # read-and-write
@@ -584,7 +584,7 @@ class BabelArray(MappedArray):
                 metadata = like_metadata
         # set shape now so that we can set zooms/etc
         header.set_data_shape(dat.shape)
-        header = metadata_to_header(header, metadata)
+        header = metadata_to_header(header, metadata, shape=dat.shape)
         
         # check endianness
         disk_byteorder = header.endianness
