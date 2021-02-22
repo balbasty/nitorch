@@ -7,6 +7,7 @@ from nibabel.freesurfer.mghformat import MGHHeader
 from nibabel import (Nifti1Header, Spm99AnalyzeHeader, AnalyzeHeader)
 from nitorch.spatial import voxel_size
 from nitorch.core import dtypes
+from nitorch.core.utils import make_vector
 
 
 def set_affine(header, affine, shape=None):
@@ -26,7 +27,7 @@ def set_affine(header, affine, shape=None):
                              'Got {}'.format(affine.shape))
         else:
             Mdc = affine[:3, :3] / vx
-            shape = shape[:3]
+            shape = np.asarray(shape[:3])
             c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
 
             # Assign after we've had a chance to raise exceptions
