@@ -4,6 +4,7 @@ from ._spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax
 from nitorch.nn import check
 from nitorch.core import py, utils
+from nitorch import spatial
 import torch
 
 
@@ -157,3 +158,32 @@ class SegMorphUNet(Module):
         self.compute(_loss, _metric, **tensors)
 
         return target_seg_pred, source_seg_pred, deformed_source, velocity
+
+    def exp(self, velocity, displacement=False):
+        """Generate a deformation grid from tangent parameters.
+
+        Parameters
+        ----------
+        velocity : (batch, *spatial, nb_dim)
+            Stationary velocity field
+        displacement : bool, default=False
+            Return a displacement field (voxel to shift) rather than
+            a transformation field (voxel to voxel).
+
+        Returns
+        -------
+        grid : (batch, *spatial, nb_dim)
+            Deformation grid (transformation or displacement).
+
+        """
+        backend = dict(dtype=velocity.dtype, device=velocity.device)
+
+        # generate grid
+        shape = velocity.shape[1:-1]
+        velocity_small = self.resize(velocity, type='displacement')
+        grid = self.velexp(velocity_small)
+        grid = self.resize(grid, shape=shape, type='grid')
+
+        if displacement:
+            grid = grid - spatial.identity_grid(grid.shape[1:-1], **backend)
+        return grid
