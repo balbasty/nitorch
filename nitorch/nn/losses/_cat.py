@@ -2,9 +2,10 @@
 
 import torch
 from ._base import Loss
+from nitorch.core import math
 from nitorch.core.math import nansum
 from nitorch.core.utils import isin
-from nitorch.core.py import make_list
+from nitorch.core.py import make_list, flatten
 
 
 def _pad_zero(x, implicit=False):
@@ -157,7 +158,7 @@ class CategoricalLoss(Loss):
                 logprior1 = logprior[:, soft, ...][:, None, ...]
                 if hard is None:
                     # implicit class
-                    all_labels = [l for l in one_hot_map if l is not None]
+                    all_labels = flatten([l for l in one_hot_map if l is not None])
                     obs1 = ~isin(obs, all_labels)
                 else:
                     obs1 = isin(obs, hard)
@@ -288,8 +289,8 @@ class DiceLoss(Loss):
                 pred1 = predicted[:, soft, ...][:, None, ...]
                 ref1 = isin(reference, hard)
 
-                inter = nansum(pred1 * ref1, dim=spatial_dims)
-                union = nansum(pred1 + ref1, dim=spatial_dims)
+                inter = math.sum(pred1 * ref1, dim=spatial_dims)
+                union = math.sum(pred1 + ref1, dim=spatial_dims)
                 loss1 = -2 * inter / union
                 if weighted:
                     if isinstance(weighted, bool):
