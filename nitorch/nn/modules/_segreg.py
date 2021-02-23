@@ -128,6 +128,8 @@ class SegMorphUNet(Module):
 
         # unet
         source_and_target = torch.cat((source, target), dim=1)
+        if (~torch.isfinite(source_and_target)).any():
+            raise RuntimeError('UNet input NaNs')
         velocity_and_seg = self.unet(source_and_target)
         if (~torch.isfinite(velocity_and_seg)).any():
             raise RuntimeError('UNet output NaNs')
@@ -165,7 +167,7 @@ class SegMorphUNet(Module):
             tensors['target'] = [target_seg_pred, target_seg]
         self.compute(_loss, _metric, **tensors)
 
-        return target_seg_pred, source_seg_pred, deformed_source, velocity
+        return source_seg_pred, target_seg_pred, deformed_source, velocity
 
     def exp(self, velocity, displacement=False):
         """Generate a deformation grid from tangent parameters.
@@ -195,3 +197,78 @@ class SegMorphUNet(Module):
         if displacement:
             grid = grid - spatial.identity_grid(grid.shape[1:-1], **backend)
         return grid
+
+    def board(self, tb, inputs, outputs):
+        """TensorBoard visualisation of a segmentation model's inputs and outputs.
+
+        Parameters
+        ----------
+        tb : torch.utils.tensorboard.writer.SummaryWriter
+            TensorBoard writer object.
+        inputs : (tensor, tensor, [tensor], [tensor])
+            Input source and target images (N, C, *spatial) their
+            ground truth segmentations (N, K|1, *spatial).
+        outputs : (tensor, tensor, tensor, tensor)
+            Predicted source and target segmentations (N, K[-1], *spatial),
+            deformed source image (N, C, *spatial) and velocity field
+            (N, *spatial, dim).
+        """
+        dim = self.dim
+        implicit = self.implicit
+
+        def get_slice(plane, vol):
+            if plane == 'z':
+                z = round(0.5 * vol.shape[-1])
+                slice = vol[..., z]
+            elif plane == 'y':
+                y = round(0.5 * vol.shape[-2])
+                slice = vol[..., y, :]
+            elif plane == 'x':
+                x = round(0.5 * vol.shape[-3])
+                slice = vol[..., x, :, :]
+            else:
+                assert False
+            return slice.squeeze()
+
+        def get_image(plane, vol):
+            vol = get_slice(plane, vol)
+            vol = vol / (0.5*vol.median())
+            return vol
+
+        def get_label(plane, vol):
+            vol = get_slice(plane, vol)
+            if vol.shape[0] == 1:
+                vol = vol.float()
+            else:
+                if implicit:
+                    background = vol.sum(dim=0, keepdim=True).neg().add(1)
+                    vol = torch.cat((vol, background), dim=0)
+                vol = vol.argmax(dim=0).float()
+            vol /= vol.max()
+            return vol
+
+        # unpack
+        source, target, *seg = inputs
+        source_seg = target_seg = None
+        if seg:
+            source_seg, *seg = inputs
+        if seg:
+            target_seg, *seg = inputs
+        source_pred, target_pred, source_warped, velocity = outputs
+
+        planes = 'z' + ('yx' if dim == 3 else '')
+        title = 'Image-Target-Prediction_'
+        for plane in planes:
+            slices = []
+            slices += [get_image(plane, source)]
+            if source_seg is not None:
+                slices += [get_label(plane, source_seg)]
+            slices += [get_label(plane, source_pred)]
+            slices += [get_image(plane, target)]
+            if target_seg is not None:
+                slices += [get_label(plane, target_seg)]
+            slices += [target_pred(plane, source_pred)]
+            slices += [get_image(source_warped, source)]
+            slices = torch.cat(slices, dim=1)
+            tb.add_image(title + plane, slices)
+        tb.flush()
