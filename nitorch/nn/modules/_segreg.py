@@ -131,7 +131,7 @@ class SegMorphUNet(Module):
         velocity_and_seg = self.unet(source_and_target)
         del source_and_target
         velocity = velocity_and_seg[:, :self.dim]
-        output_classes = self.output_classes + self.implicit[0]
+        output_classes = self.output_classes + (not self.implicit[0])
         target_seg_pred = velocity_and_seg[:, self.dim:self.dim + output_classes]
         source_seg_pred = velocity_and_seg[:, self.dim + output_classes:]
         del velocity_and_seg
