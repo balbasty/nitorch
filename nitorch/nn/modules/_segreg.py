@@ -136,8 +136,8 @@ class SegMorphUNet(Module):
         del velocity_and_seg
 
         # sigmoid
-        target_seg_pred = self.softmax(target_seg_pred, self.implicit)
-        source_seg_pred = self.softmax(source_seg_pred, self.implicit)
+        target_seg_pred = self.softmax(target_seg_pred)
+        source_seg_pred = self.softmax(source_seg_pred)
 
         # deformation
         velocity = utils.channel2last(velocity)
