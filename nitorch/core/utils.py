@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn.functional as F
+from . import py
 from .py import make_list, make_tuple
 from .constants import inf
 from .dtypes import as_torch as dtype_astorch
@@ -25,33 +26,6 @@ def reproducible(seed=1234):
     np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     torch.backends.cudnn.deterministic = True
-
-
-def logsumexp(input, dim, keepdim=False):
-    """Numerically stabilised log-sum-exp (lse).
-
-    Parameters
-    ----------
-    input : tensor
-        Input tensor.
-    dim : int
-        The dimension or dimensions to reduce.
-    keepdim : bool, default=False
-        Whether the output tensor has dim retained or not.
-
-    Returns
-    -------
-    lse : tensor
-        Output tensor.
-
-    """
-    input = torch.as_tensor(input)
-    lse = input.max(dim=dim, keepdim=True)[0]
-    lse = lse + (input - lse).exp().sum(dim=dim, keepdim=True).log()
-    if not keepdim:
-        lse = lse.squeeze(dim=dim)
-
-    return lse
 
 
 def as_tensor(input, dtype=None, device=None):
@@ -263,10 +237,6 @@ def movedim(input, source, destination):
     original order and appear at the positions not specified in
     destination.
 
-    Note
-    ----
-    This function uses `torch.movedim` when PyTorch version is >= 1.7
-
     Parameters
     ----------
     input : tensor
@@ -274,7 +244,13 @@ def movedim(input, source, destination):
     source : int or sequence[int]
         Initial positions of the dimensions
     destination : int or sequence[int]
-        Output positions of the dimensions
+        Output positions of the dimensions.
+
+        If a single destination is provided:
+        - if it is negative, the last source dimension is moved to
+          `destination` and all other source dimensions are moved to its left.
+        - if it is positive, the first source dimension is moved to
+          `destination` and all other source dimensions are moved to its right.
 
     Returns
     -------
@@ -286,6 +262,14 @@ def movedim(input, source, destination):
     dim = input.dim()
     source = make_list(source)
     destination = make_list(destination)
+    if len(destination) == 1:
+        # we assume that the user wishes to keep moved dimensions
+        # in the order they were provided
+        destination = destination[0]
+        if destination >= 0:
+            destination = list(range(destination, destination+len(source)))
+        else:
+            destination = list(range(destination+1-len(source), destination+1))
     if len(source) != len(destination):
         raise ValueError('Expected as many source as destination positions.')
     source = [dim + src if src < 0 else src for src in source]
@@ -1156,8 +1140,80 @@ def ceil_pow(t, p=2.0, l=2.0, mx=None):
 
     return ct
 
+
+def sub2ind(subs, shape, out=None):
+    """Convert sub indices (i, j, k) into linear indices.
+
+    The rightmost dimension is the most rapidly changing one
+    -> if shape == [D, H, W], the strides are therefore [H*W, W, 1]
+
+    Parameters
+    ----------
+    subs : (D, ...) tensor_like
+        List of sub-indices. The first dimension is the number of dimension.
+        Each element should have the same number of elements and shape.
+    shape : (D,) vector_like
+        Size of each dimension. Its length should be the same as the
+        first dimension of ``subs``.
+    out : tensor, optional
+        Output placeholder
+
+    Returns
+    -------
+    ind : (...) tensor
+        Linear indices
+    """
+    *subs, ind = subs
+    if out is None:
+        ind = torch.as_tensor(ind).clone()
+    else:
+        out.reshape(ind.shape).copy_(ind)
+        ind = out
+    bck = backend(ind)
+    stride = py.cumprod(shape[1:], reverse=True)
+    for i, s in zip(subs, stride):
+        ind += torch.as_tensor(i, **bck) * torch.as_tensor(s, **bck)
+    return ind
+
+
+def ind2sub(ind, shape, out=None):
+    """Convert linear indices into sub indices (i, j, k).
+
+    The rightmost dimension is the most rapidly changing one
+    -> if shape == [D, H, W], the strides are therefore [H*W, W, 1]
+
+    Parameters
+    ----------
+    ind : tensor_like
+        Linear indices
+    shape : (D,) vector_like
+        Size of each dimension.
+    out : tensor, optional
+        Output placeholder
+
+    Returns
+    -------
+    subs : (D, ...) tensor
+        Sub-indices.
+    """
+    ind = torch.as_tensor(ind)
+    bck = backend(ind)
+    stride = py.cumprod(shape, reverse=True, exclusive=True)
+    stride = torch.as_tensor(stride, **bck)
+    if out is None:
+        sub = ind.new_empty([len(shape), *ind.shape])
+    else:
+        sub = out.reshape([len(shape), *ind.shape])
+    sub[:, ...] = ind
+    for d in range(len(shape)):
+        if d > 0:
+            torch.remainder(sub[d], torch.as_tensor(stride[d-1], **bck), out=sub[d])
+        torch.floor_divide(sub[d], stride[d], out=sub[d])
+    return sub
+
+
 class benchmark:
-    """Context manager for the voncolution benchar;inking utility
+    """Context manager for the convolution benchmarking utility
     from pytorch.
 
     When the benchmark value is True, each time a convolution is called

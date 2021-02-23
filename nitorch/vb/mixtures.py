@@ -141,7 +141,7 @@ class Mixture:
                 Z[:, k] = torch.log(self.mp[k]) + self._log_likelihood(X, k)
 
             # Get responsibilities
-            Z, dlb = softmax(Z, W=W, get_ll=True)
+            Z, dlb = softmax(Z, lse=True, weights=W)
 
             # Objective function and convergence related
             lb[n_iter] = dlb

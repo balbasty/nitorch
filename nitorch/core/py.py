@@ -389,28 +389,77 @@ def prod(sequence, inplace=False):
     return accumulate
 
 
-def cumprod(sequence):
+def cumprod(sequence, reverse=False, exclusive=False):
     """Perform the cumulative product of a sequence of elements.
 
     Parameters
     ----------
     sequence : any object that implements `__iter__`
         Sequence of elements for which the `__mul__` operator is defined.
+    reverse : bool, default=False
+        Compute cumulative product from right-to-left:
+        `cumprod([a, b, c], reverse=True) -> [a*b*c, b*c, c]`
+    exclusive : bool, default=False
+        Exclude self from the cumulative product:
+        `cumprod([a, b, c], exclusive=True) -> [1, a, a*b]`
 
     Returns
     -------
-    product :
+    product : list
         Product of the elements in the sequence.
 
     """
+    if reverse:
+        sequence = reversed(sequence)
     accumulate = None
-    seq = []
+    seq = [1] if exclusive else []
     for elem in sequence:
         if accumulate is None:
             accumulate = elem
         else:
             accumulate = accumulate * elem
         seq.append(accumulate)
+    if exclusive:
+        seq = seq[:-1]
+    if reverse:
+        seq = list(reversed(seq))
+    return seq
+
+
+def cumsum(sequence, reverse=False, exclusive=False):
+    """Perform the cumulative sum of a sequence of elements.
+
+    Parameters
+    ----------
+    sequence : any object that implements `__iter__`
+        Sequence of elements for which the `__sum__` operator is defined.
+    reverse : bool, default=False
+        Compute cumulative product from right-to-left:
+        `cumprod([a, b, c], reverse=True) -> [a+b+c, b+c, c]`
+    exclusive : bool, default=False
+        Exclude self from the cumulative product:
+        `cumprod([a, b, c], exclusive=True) -> [0, a, a+b]`
+
+    Returns
+    -------
+    sum : list
+        Sum of the elements in the sequence.
+
+    """
+    if reverse:
+        sequence = reversed(sequence)
+    accumulate = None
+    seq = [0] if exclusive else []
+    for elem in sequence:
+        if accumulate is None:
+            accumulate = elem
+        else:
+            accumulate = accumulate + elem
+        seq.append(accumulate)
+    if exclusive:
+        seq = seq[:-1]
+    if reverse:
+        seq = list(reversed(seq))
     return seq
 
 
@@ -462,3 +511,30 @@ def majority(x):
     """
     count = Counter(x)
     return count.most_common(1)[0][0]
+
+
+def flatten(x):
+    """Flatten nested sequences
+
+    Parameters
+    ----------
+    x : tuple or list
+        Nested sequence
+
+    Returns
+    -------
+    x : tuple or list
+        Flattened sequence
+
+    """
+    def _flatten(y):
+        if isinstance(y, (list, tuple)):
+            out = []
+            for e in y:
+                out.extend(_flatten(e))
+            return out
+        else:
+            return [y]
+
+    input_type = type(x)
+    return input_type(_flatten(x))
