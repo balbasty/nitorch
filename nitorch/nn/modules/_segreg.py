@@ -166,7 +166,7 @@ class SegMorphUNet(Module):
         if target_seg is not None:
             tensors['target'] = [target_seg_pred, target_seg]
         self.compute(_loss, _metric, **tensors)
-
+        
         return source_seg_pred, target_seg_pred, deformed_source, velocity
 
     def exp(self, velocity, displacement=False):
@@ -214,7 +214,7 @@ class SegMorphUNet(Module):
             (N, *spatial, dim).
         """
         dim = self.dim
-        implicit = self.implicit
+        implicit = self.implicit[1]
 
         def get_slice(plane, vol):
             if plane == 'z':
@@ -228,35 +228,40 @@ class SegMorphUNet(Module):
                 slice = vol[..., x, :, :]
             else:
                 assert False
-            return slice.squeeze()
+            slice = slice.squeeze()
+            return slice
 
         def get_image(plane, vol):
             vol = get_slice(plane, vol)
-            vol = vol / (0.5*vol.median())
             return vol
 
         def get_label(plane, vol):
             vol = get_slice(plane, vol)
-            if vol.shape[0] == 1:
+            if vol.dim() == 2:
                 vol = vol.float()
+                vol /= vol.max()
             else:
+                nb_classes = vol.shape[0]
                 if implicit:
                     background = vol.sum(dim=0, keepdim=True).neg().add(1)
                     vol = torch.cat((vol, background), dim=0)
-                vol = vol.argmax(dim=0).float()
-            vol /= vol.max()
+                vol = vol.argmax(dim=0)
+                vol += 1
+                vol[vol == nb_classes] = 0
+                vol = vol.float()
+                vol /= float(nb_classes-1)
             return vol
 
         # unpack
         source, target, *seg = inputs
         source_seg = target_seg = None
         if seg:
-            source_seg, *seg = inputs
+            source_seg, *seg = seg
         if seg:
-            target_seg, *seg = inputs
+            target_seg, *seg = seg
         source_pred, target_pred, source_warped, velocity = outputs
 
-        planes = 'z' + ('yx' if dim == 3 else '')
+        planes = ['z'] + (['y', 'x'] if dim == 3 else [])
         title = 'Image-Target-Prediction_'
         for plane in planes:
             slices = []
@@ -267,8 +272,8 @@ class SegMorphUNet(Module):
             slices += [get_image(plane, target)]
             if target_seg is not None:
                 slices += [get_label(plane, target_seg)]
-            slices += [target_pred(plane, source_pred)]
-            slices += [get_image(source_warped, source)]
+            slices += [get_label(plane, target_pred)]
+            slices += [get_image(plane, source_warped)]
             slices = torch.cat(slices, dim=1)
-            tb.add_image(title + plane, slices)
+            tb.add_image(title + plane, slices[None])
         tb.flush()
