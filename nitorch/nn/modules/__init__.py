@@ -7,3 +7,4 @@ from ._norm import *
 from ._pool import *
 from ._spatial import *
 from ._segmentation import *
+from ._segreg import *
