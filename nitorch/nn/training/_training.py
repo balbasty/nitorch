@@ -348,10 +348,13 @@ class ModelTrainer:
                                 loss, losses, metrics)
                 # tb callback
                 if self.tensorboard:
-                    self.model.board(self.tensorboard, batch, output)
+                    tbopt = dict(inputs=batch, outputs=output,
+                                 epoch=epoch, minibatch=n_batch,
+                                 loss=loss, losses=losses, metrics=metrics)
+                    self.model.board(self.tensorboard, **tbopt)
                     for func in self._tensorboard_callbacks['train']['step']:
-                        func(self.tensorboard, epoch, n_batch,
-                             batch, output, loss, losses, metrics)
+                        func(self.tensorboard, **tbopt)
+                    del tbopt
         # print summary
         with torch.no_grad():
             epoch_loss /= nb_batches
@@ -362,9 +365,11 @@ class ModelTrainer:
             self._board('train', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
-                self.model.board(self.tensorboard, batch, output)
+                tbopt = dict(epoch=epoch, loss=epoch_loss,
+                             losses=epoch_losses, metrics=epoch_metrics)
+                self.model.board(self.tensorboard, **tbopt)
                 for func in self._tensorboard_callbacks['train']['epoch']:
-                    func(self.tensorboard, epoch, loss, losses, metrics)
+                    func(self.tensorboard, **tbopt)
 
         return epoch_loss
 
@@ -404,10 +409,13 @@ class ModelTrainer:
                                 loss, losses, metrics)
                 # tb callback
                 if self.tensorboard:
-                    self.model.board(self.tensorboard, batch, output)
+                    tbopt = dict(inputs=batch, outputs=output,
+                                 epoch=epoch, minibatch=n_batch,
+                                 loss=loss, losses=losses, metrics=metrics)
+                    self.model.board(self.tensorboard, **tbopt)
                     for func in self._tensorboard_callbacks['eval']['step']:
-                        func(self.tensorboard, epoch, n_batch,
-                             batch, output, loss, losses, metrics)
+                        func(self.tensorboard, **tbopt)
+
             # print summary
             epoch_loss /= nb_batches
             normalize_loss_dict(epoch_losses, nb_batches)
@@ -417,12 +425,13 @@ class ModelTrainer:
             self._board('eval', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
-                self.model.board(self.tensorboard, batch, output)
+                tbopt = dict(epoch=epoch, loss=epoch_loss,
+                             losses=epoch_losses, metrics=epoch_metrics)
+                self.model.board(self.tensorboard, **tbopt)
                 for func in self._tensorboard_callbacks['eval']['epoch']:
-                    func(self.tensorboard, epoch, loss, losses, metrics)
+                    func(self.tensorboard, **tbopt)
 
         return epoch_loss
-
 
     def _print(self, mode, n_epoch, n_batch, nb_steps, loss,
                losses=None, metrics=None, last=False):
@@ -495,7 +504,7 @@ class ModelTrainer:
         ----------
         func : callable
             If trigger 'step', with signature
-                `(tb, epoch, step, input, output, loss, losses, metrics)`
+                `(tb, input, output, epoch, step, loss, losses, metrics)`
             If trigger 'epoch', with signature:
                 `(tb, epoch, loss, losses, metrics)`
         mode : {'train', 'eval'}

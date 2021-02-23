@@ -198,7 +198,7 @@ class SegMorphUNet(Module):
             grid = grid - spatial.identity_grid(grid.shape[1:-1], **backend)
         return grid
 
-    def board(self, tb, inputs, outputs):
+    def board(self, tb, inputs, outputs, epoch=None, minibatch=None, **k):
         """TensorBoard visualisation of a segmentation model's inputs and outputs.
 
         Parameters
@@ -213,6 +213,9 @@ class SegMorphUNet(Module):
             deformed source image (N, C, *spatial) and velocity field
             (N, *spatial, dim).
         """
+        if minibatch != 0:
+            return
+
         dim = self.dim
         implicit = self.implicit[1]
 
@@ -247,9 +250,9 @@ class SegMorphUNet(Module):
                     vol = torch.cat((vol, background), dim=0)
                 vol = vol.argmax(dim=0)
                 vol += 1
-                vol[vol == nb_classes] = 0
+                vol[vol == nb_classes+1] = 0
                 vol = vol.float()
-                vol /= float(nb_classes-1)
+                vol /= float(nb_classes)
             return vol
 
         # unpack
@@ -275,5 +278,5 @@ class SegMorphUNet(Module):
             slices += [get_label(plane, target_pred)]
             slices += [get_image(plane, source_warped)]
             slices = torch.cat(slices, dim=1)
-            tb.add_image(title + plane, slices[None])
+            tb.add_image(title + plane, slices[None], global_step=epoch)
         tb.flush()

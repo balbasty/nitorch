@@ -260,8 +260,8 @@ class Module(tnn.Module):
             metrics = self.compute_metric(**tag_args)
             self.update_dict(_metric, metrics)
 
-
-    def board(self, tb, inputs, outputs):
+    def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None,
+              loss=None, losses=None, metrics=None, *args, **kwargs):
         """Defines model-specific tensorboard callback.
 
         Parameters
@@ -272,6 +272,16 @@ class Module(tnn.Module):
             Model inputs.
         outputs : tuple
             Model outputs.
+        epoch : int
+            Epoch index
+        minibatch : int
+            Minibatch index
+        loss : tensor
+            Loss of the current minibatch
+        losses : dict
+            Loss components of the current minibatch
+        metrics : dict
+            Metrics the current minibatch
 
         """
         pass
