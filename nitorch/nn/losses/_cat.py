@@ -204,7 +204,7 @@ class DiceLoss(Loss):
         self.discard_background = discard_background
         self.weighted = weighted
 
-    def forward(self, predicted, reference, **overridden):
+    def forward(self, predicted, reference, **overload):
         """
 
         Parameters
@@ -221,7 +221,7 @@ class DiceLoss(Loss):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
-        overridden : dict
+        overload : dict
             All parameters defined at build time can be overridden
             at call time.
 
@@ -233,10 +233,10 @@ class DiceLoss(Loss):
 
         """
 
-        log = overridden.get('log', self.log)
-        implicit = overridden.get('implicit', self.implicit)
-        weighted = overridden.get('weighted', self.weighted)
-        one_hot_map = overridden.get('one_hot_map', self.one_hot_map)
+        log = overload.get('log', self.log)
+        implicit = overload.get('implicit', self.implicit)
+        weighted = overload.get('weighted', self.weighted)
+        one_hot_map = overload.get('one_hot_map', self.one_hot_map)
 
         predicted = torch.as_tensor(predicted)
         reference = torch.as_tensor(reference, device=predicted.device)
@@ -305,4 +305,5 @@ class DiceLoss(Loss):
                 weights = sum(weights)
                 loss = loss / weights
 
-        return super().forward(loss, **overridden)
+        loss += 1
+        return super().forward(loss, **overload)
