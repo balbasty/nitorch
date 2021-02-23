@@ -5,7 +5,7 @@ from ..modules._cnn import (UNet, MRF)
 from ..modules._spatial import (GridPull, GridPushCount)
 from ...spatial import (affine_grid, identity_grid, voxel_size)
 from ...core.constants import eps
-from ...core.utils import logsumexp
+from ...core.math import logsumexp
 from .. import check
 
 
