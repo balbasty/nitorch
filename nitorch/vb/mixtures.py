@@ -9,7 +9,7 @@ TODO:
 import math
 from timeit import default_timer as timer
 from ..core.optim import get_gain, plot_convergence
-from ..core.math import besseli, softmax
+from ..core.math import besseli, softmax_lse
 from ..plot import plot_mixture_fit
 import torch
 
@@ -141,7 +141,7 @@ class Mixture:
                 Z[:, k] = torch.log(self.mp[k]) + self._log_likelihood(X, k)
 
             # Get responsibilities
-            Z, dlb = softmax(Z, lse=True, weights=W)
+            Z, dlb = softmax_lse(Z, lse=True, weights=W)
 
             # Objective function and convergence related
             lb[n_iter] = dlb
