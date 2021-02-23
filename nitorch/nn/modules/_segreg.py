@@ -198,7 +198,7 @@ class SegMorphUNet(Module):
             grid = grid - spatial.identity_grid(grid.shape[1:-1], **backend)
         return grid
 
-    def board(self, tb, inputs, outputs, epoch=None, minibatch=None, **k):
+    def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None, **k):
         """TensorBoard visualisation of a segmentation model's inputs and outputs.
 
         Parameters
