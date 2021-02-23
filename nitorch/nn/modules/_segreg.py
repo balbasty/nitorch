@@ -129,6 +129,8 @@ class SegMorphUNet(Module):
         # unet
         source_and_target = torch.cat((source, target), dim=1)
         velocity_and_seg = self.unet(source_and_target)
+        if (~torch.isfinite(velocity_and_seg)).any():
+            raise RuntimeError('UNet output NaNs')
         del source_and_target
         velocity = velocity_and_seg[:, :self.dim]
         output_classes = self.output_classes + (not self.implicit[0])
@@ -138,11 +140,17 @@ class SegMorphUNet(Module):
 
         # sigmoid
         target_seg_pred = self.softmax(target_seg_pred)
+        if (~torch.isfinite(target_seg_pred)).any():
+            raise RuntimeError('Softmax (target) output NaNs')
         source_seg_pred = self.softmax(source_seg_pred)
+        if (~torch.isfinite(source_seg_pred)).any():
+            raise RuntimeError('Softmax (source) output NaNs')
 
         # deformation
         velocity = utils.channel2last(velocity)
         grid = self.exp(velocity)
+        if (~torch.isfinite(grid)).any():
+            raise RuntimeError('Exp (vel) output NaNs')
         deformed_source = self.pull(source, grid)
         deformed_source_seg_pred = self.pull(source_seg_pred, grid)
 
