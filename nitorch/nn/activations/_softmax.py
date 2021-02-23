@@ -1,5 +1,5 @@
 from nitorch.core.math import softmax
-from nitorch.nn import Module
+from nitorch.nn.modules import Module
 from nitorch.core import py
 
 
