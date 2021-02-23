@@ -550,7 +550,7 @@ class ModelTrainer:
                 os.makedirs(dir_optimizer, exist_ok=True)
             torch.save(self.optimizer.state_dict(), save_optimizer)
 
-    @ staticmethod
+    @staticmethod
     def _formatfile(file, epoch):
         """Format filename for an epoch"""
         keys = [tup[1] for tup in string.Formatter().parse(file)
@@ -577,15 +577,13 @@ class ModelTrainer:
                     train_loss = self._train(self.epoch)
                     val_loss = self._eval(self.epoch)
                     self._save(self.epoch)
-                    # incorporate learning rate scheduler
-                    if self.scheduler is not None:
-                        sched_loss = val_loss
-                        if sched_loss is None:
-                            sched_loss = train_loss
-                        if isinstance(self.scheduler, ReduceLROnPlateau):
-                            self.scheduler.step(sched_loss)
-                        else:
-                            self.scheduler.step()
+                    # scheduler
+                    if isinstance(self.scheduler, ReduceLROnPlateau):
+                        sched_loss = val_loss or train_loss
+                        self.scheduler.step(sched_loss)
+                    elif self.scheduler:
+                        self.scheduler.step()
+
     def eval(self):
         """Launch evaluation"""
         self._hello('eval')
