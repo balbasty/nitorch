@@ -1,9 +1,9 @@
 from nitorch.core.math import softmax
-from nitorch.nn.modules import Module
 from nitorch.core import py
+from torch import nn
 
 
-class SoftMax(Module):
+class SoftMax(nn.Module):
 
     def __init__(self, dim=1, implicit=False):
         """
