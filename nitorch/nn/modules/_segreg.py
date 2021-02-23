@@ -58,7 +58,7 @@ class SegMorphUNet(Module):
 
         self.implicit = py.make_list(implicit, 2)
         self.output_classes = output_classes
-        if not implicit[0]:
+        if not self.implicit[0]:
             output_classes = output_classes + 1
         self.softmax = SoftMax(implicit=implicit)
 
@@ -136,8 +136,8 @@ class SegMorphUNet(Module):
         del velocity_and_seg
 
         # sigmoid
-        target_seg_pred = self.softmax(target_seg_pred)
-        source_seg_pred = self.softmax(source_seg_pred)
+        target_seg_pred = self.softmax(target_seg_pred, self.implicit)
+        source_seg_pred = self.softmax(source_seg_pred, self.implicit)
 
         # deformation
         velocity = utils.channel2last(velocity)
