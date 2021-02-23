@@ -715,6 +715,12 @@ def softmax(input, dim=-1, lse=False, weights=None, implicit=False):
         Soft-maxed tensor with values.
 
     """
+    def sumto(x, *a, out=None, **k):
+        if out is None or x.requires_grad:
+            return torch.sum(x, *a, **k)
+        else:
+            return torch.sum(x, *a, **k, out=out)
+
     implicit_in, implicit_out = py.make_list(implicit, 2)
 
     maxval, _ = torch.max(input, dim=dim, keepdim=True)
@@ -723,8 +729,8 @@ def softmax(input, dim=-1, lse=False, weights=None, implicit=False):
 
     input -= maxval
     input = (input-maxval).exp()
-    sumval = torch.sum(input, dim=dim, keepdim=True,
-                       out=maxval if not lse else None)
+    sumval = sumto(input, dim=dim, keepdim=True,
+                   out=maxval if not lse else None)
     if implicit_in:
         sumval += maxval.neg().exp()  # don't forget the class full of zeros
     input = input / sumval
