@@ -349,7 +349,7 @@ class ModelTrainer:
                 # tb callback
                 if self.tensorboard:
                     tbopt = dict(inputs=batch, outputs=output,
-                                 epoch=epoch, minibatch=n_batch,
+                                 epoch=epoch, minibatch=n_batch, mode='train',
                                  loss=loss, losses=losses, metrics=metrics)
                     self.model.board(self.tensorboard, **tbopt)
                     for func in self._tensorboard_callbacks['train']['step']:
@@ -365,7 +365,7 @@ class ModelTrainer:
             self._board('train', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
-                tbopt = dict(epoch=epoch, loss=epoch_loss,
+                tbopt = dict(epoch=epoch, loss=epoch_loss, mode='train',
                              losses=epoch_losses, metrics=epoch_metrics)
                 self.model.board(self.tensorboard, **tbopt)
                 for func in self._tensorboard_callbacks['train']['epoch']:
@@ -410,7 +410,7 @@ class ModelTrainer:
                 # tb callback
                 if self.tensorboard:
                     tbopt = dict(inputs=batch, outputs=output,
-                                 epoch=epoch, minibatch=n_batch,
+                                 epoch=epoch, minibatch=n_batch, mode='eval',
                                  loss=loss, losses=losses, metrics=metrics)
                     self.model.board(self.tensorboard, **tbopt)
                     for func in self._tensorboard_callbacks['eval']['step']:
@@ -425,7 +425,7 @@ class ModelTrainer:
             self._board('eval', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
-                tbopt = dict(epoch=epoch, loss=epoch_loss,
+                tbopt = dict(epoch=epoch, loss=epoch_loss, mode='eval',
                              losses=epoch_losses, metrics=epoch_metrics)
                 self.model.board(self.tensorboard, **tbopt)
                 for func in self._tensorboard_callbacks['eval']['epoch']:

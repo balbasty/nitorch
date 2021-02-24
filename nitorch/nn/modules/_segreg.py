@@ -219,7 +219,8 @@ class SegMorphUNet(BaseMorph):
         
         return source_seg_pred, target_seg_pred, deformed_source, velocity
 
-    def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None, **k):
+    def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None,
+              mode=None, **k):
         """TensorBoard visualisation of a segmentation model's inputs and outputs.
 
         Parameters
@@ -234,7 +235,9 @@ class SegMorphUNet(BaseMorph):
             deformed source image (N, C, *spatial) and velocity field
             (N, *spatial, dim).
         """
-        if minibatch != 0:
+        if minibatch is None:
+            return
+        if mode == 'train' and minibatch != 0:
             return
 
         dim = self.dim
@@ -291,7 +294,7 @@ class SegMorphUNet(BaseMorph):
         source_pred, target_pred, source_warped, velocity = outputs
         
         planes = ['z'] + (['y', 'x'] if dim == 3 else [])
-        title = 'Image-Target-Prediction'
+        title = f'{mode}/Image-Target-Prediction'
         
         def plot_slices():
             import matplotlib.pyplot as plt
@@ -333,24 +336,12 @@ class SegMorphUNet(BaseMorph):
                     ax.imshow(get_velocity(plane, velocity, b))
             fig.subplots_adjust(wspace=0, hspace=0)
             return fig
-            
-            
-        tb.add_figure(title, plot_slices(), global_step=epoch)
-        
-#         for plane in planes:
-#             slices = []
-#             slices += [get_image(plane, source)]
-#             if source_seg is not None:
-#                 slices += [get_label(plane, source_seg)]
-#             slices += [get_label(plane, source_pred)]
-#             slices += [get_image(plane, target)]
-#             if target_seg is not None:
-#                 slices += [get_label(plane, target_seg)]
-#             slices += [get_label(plane, target_pred)]
-#             slices += [get_image(plane, source_warped)]
-#             slices = torch.cat(slices, dim=1)
-#             tb.add_image(title + plane, slices[None], global_step=epoch)
-#         tb.flush()
+
+        if not hasattr(self, 'tbstep'):
+            self.tbstep = dict()
+        self.tbstep.setdefault(mode, 0)
+        self.tbstep[mode] += 1
+        tb.add_figure(title, plot_slices(), global_step=self.tbstep[mode])
 
 
 class SegMorphWNet(BaseMorph):

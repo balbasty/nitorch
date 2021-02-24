@@ -261,7 +261,7 @@ class Module(tnn.Module):
             self.update_dict(_metric, metrics)
 
     def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None,
-              loss=None, losses=None, metrics=None, *args, **kwargs):
+              mode=None, loss=None, losses=None, metrics=None, *args, **kwargs):
         """Defines model-specific tensorboard callback.
 
         Parameters
@@ -276,6 +276,8 @@ class Module(tnn.Module):
             Epoch index
         minibatch : int
             Minibatch index
+        mode : {'train', 'eval'}
+            Type of dataset processed
         loss : tensor
             Loss of the current minibatch
         losses : dict
