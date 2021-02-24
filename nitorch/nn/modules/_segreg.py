@@ -8,12 +8,13 @@ from nitorch import spatial
 import torch
 
 
-class BaseMorph:
+class BaseMorph(Module):
     """Secondary base class for model that implement a morph component"""
 
     def __init__(self, dim, interpolation='linear', grid_bound='dft',
                  image_bound='dct2', downsample_velocity=2, ):
-
+        super().__init__()
+        
         resize_factor = py.make_list(downsample_velocity, dim)
         resize_factor = [1/f for f in resize_factor]
 
@@ -56,7 +57,7 @@ class BaseMorph:
         return grid
 
 
-class SegMorphUNet(Module, BaseMorph):
+class SegMorphUNet(BaseMorph):
     """
     Joint segmentation and registration using a dual-branch UNet.
 
@@ -101,7 +102,13 @@ class SegMorphUNet(Module, BaseMorph):
             Using `implicit=True` extends the behaviour of a Sigmoid
             activation to the multi-class case.
         """
-        super(Module, self).__init__()
+        super().__init__(
+            dim,
+            interpolation,
+            grid_bound,
+            image_bound,
+            downsample_velocity,
+        )
 
         self.only_seg = only_seg
         self.implicit = py.make_list(implicit, 2)
@@ -129,15 +136,7 @@ class SegMorphUNet(Module, BaseMorph):
                          activation=activation,
                          final_activation=None,
                          batch_norm=batch_norm)
-
-        super(BaseMorph, self).__init__(
-            dim,
-            interpolation,
-            grid_bound,
-            image_bound,
-            downsample_velocity,
-        )
-
+        
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
 
@@ -197,13 +196,21 @@ class SegMorphUNet(Module, BaseMorph):
         velocity = utils.channel2last(velocity)
         grid = self.exp(velocity)
         deformed_source = self.pull(source, grid)
-        deformed_source_seg_pred = self.pull(source_seg_pred, grid)
-
+        
+        if source_seg is not None:
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = self.pull(source_seg_pred, grid)
+        if target_seg is None:
+            target_seg_for_deformed = target_seg_pred
+        else:
+            target_seg_for_deformed = target_seg
+            
         # compute loss and metrics
         tensors = dict(
              image=[deformed_source, target],
              velocity=[velocity],
-             segmentation=[deformed_source_seg_pred, target_seg_pred])
+             segmentation=[deformed_source_seg, target_seg_for_deformed])
         if source_seg is not None:
             tensors['source'] = [source_seg_pred, source_seg]
         if target_seg is not None:
@@ -245,28 +252,33 @@ class SegMorphUNet(Module, BaseMorph):
                 slice = vol[..., x, :, :]
             else:
                 assert False
-            slice = slice.squeeze()
+            slice = slice.squeeze().detach().cpu()
             return slice
 
-        def get_image(plane, vol):
-            vol = get_slice(plane, vol)
+        def get_image(plane, vol, batch=0):
+            vol = get_slice(plane, vol[batch])
             return vol
 
-        def get_label(plane, vol):
-            vol = get_slice(plane, vol)
+        def get_velocity(plane, vol, batch=0):
+            vol = vol.square().sum(-1).sqrt()
+            vol = get_slice(plane, vol[batch])
+            return vol
+
+        def get_label(plane, vol, batch=0):
+            vol = get_slice(plane, vol[batch])
             if vol.dim() == 2:
                 vol = vol.float()
                 vol /= vol.max()
             else:
                 nb_classes = vol.shape[0]
                 if implicit:
-                    background = vol.sum(dim=0, keepdim=True).neg().add(1)
+                    background = 1 - vol.sum(dim=0, keepdim=True)
                     vol = torch.cat((vol, background), dim=0)
                 vol = vol.argmax(dim=0)
                 vol += 1
-                vol[vol == nb_classes+1] = 0
+                vol[vol == nb_classes] = 0
                 vol = vol.float()
-                vol /= float(nb_classes)
+                vol /= float(nb_classes-1)
             return vol
 
         # unpack
@@ -277,26 +289,71 @@ class SegMorphUNet(Module, BaseMorph):
         if seg:
             target_seg, *seg = seg
         source_pred, target_pred, source_warped, velocity = outputs
-
+        
         planes = ['z'] + (['y', 'x'] if dim == 3 else [])
-        title = 'Image-Target-Prediction_'
-        for plane in planes:
-            slices = []
-            slices += [get_image(plane, source)]
-            if source_seg is not None:
-                slices += [get_label(plane, source_seg)]
-            slices += [get_label(plane, source_pred)]
-            slices += [get_image(plane, target)]
-            if target_seg is not None:
-                slices += [get_label(plane, target_seg)]
-            slices += [get_label(plane, target_pred)]
-            slices += [get_image(plane, source_warped)]
-            slices = torch.cat(slices, dim=1)
-            tb.add_image(title + plane, slices[None], global_step=epoch)
-        tb.flush()
+        title = 'Image-Target-Prediction'
+        
+        def plot_slices():
+            import matplotlib.pyplot as plt
+            nplanes = len(planes)
+            nbatch = len(source)
+            nrow = nplanes * nbatch
+            ncol = 6 + int(source_seg is not None) + int(target_seg is not None)
+            fig = plt.figure(figsize=(2*ncol, 2*nrow), 
+                             tight_layout={'w_pad': 0, 'h_pad': 0, 'pad': 0})
+            idx = 0
+            prm = dict(xticks=[], yticks=[], xticklabels=[], yticklabels=[])
+            for b in range(nbatch):
+                for p, plane in enumerate(planes):
+                    idx += 1
+                    ax = fig.add_subplot(nrow, ncol, idx, **prm)
+                    ax.imshow(get_image(plane, source, b))
+                    if source_seg is not None:
+                        idx += 1
+                        ax = fig.add_subplot(nrow, ncol, idx, **prm)
+                        ax.imshow(get_label(plane, source_seg, b))
+                    idx += 1
+                    ax = fig.add_subplot(nrow, ncol, idx, **prm)
+                    ax.imshow(get_label(plane, source_pred, b))
+                    idx += 1
+                    ax = fig.add_subplot(nrow, ncol, idx, **prm)
+                    ax.imshow(get_image(plane, target, b))
+                    if target_seg is not None:
+                        idx += 1
+                        ax = fig.add_subplot(nrow, ncol, idx, **prm)
+                        ax.imshow(get_label(plane, target_seg, b))
+                    idx += 1
+                    ax = fig.add_subplot(nrow, ncol, idx, **prm)
+                    ax.imshow(get_label(plane, target_pred, b))
+                    idx += 1
+                    ax = fig.add_subplot(nrow, ncol, idx, **prm)
+                    ax.imshow(get_image(plane, source_warped, b))
+                    idx += 1
+                    ax = fig.add_subplot(nrow, ncol, idx, **prm)
+                    ax.imshow(get_velocity(plane, velocity, b))
+            fig.subplots_adjust(wspace=0, hspace=0)
+            return fig
+            
+            
+        tb.add_figure(title, plot_slices(), global_step=epoch)
+        
+#         for plane in planes:
+#             slices = []
+#             slices += [get_image(plane, source)]
+#             if source_seg is not None:
+#                 slices += [get_label(plane, source_seg)]
+#             slices += [get_label(plane, source_pred)]
+#             slices += [get_image(plane, target)]
+#             if target_seg is not None:
+#                 slices += [get_label(plane, target_seg)]
+#             slices += [get_label(plane, target_pred)]
+#             slices += [get_image(plane, source_warped)]
+#             slices = torch.cat(slices, dim=1)
+#             tb.add_image(title + plane, slices[None], global_step=epoch)
+#         tb.flush()
 
 
-class SegMorphWNet(Module, BaseMorph):
+class SegMorphWNet(BaseMorph):
     """
     Joint segmentation and registration using a WNet.
 
@@ -340,7 +397,13 @@ class SegMorphWNet(Module, BaseMorph):
             Using `implicit=True` extends the behaviour of a Sigmoid
             activation to the multi-class case.
         """
-        super(Module, self).__init__()
+        super().__init__(
+            dim,
+            interpolation,
+            grid_bound,
+            image_bound,
+            downsample_velocity,
+        )
 
         self.implicit = py.make_list(implicit, 2)
         self.output_classes = output_classes
@@ -357,14 +420,6 @@ class SegMorphWNet(Module, BaseMorph):
                          activation=activation,
                          final_activation=None,
                          batch_norm=batch_norm)
-
-        super(BaseMorph, self).__init__(
-            dim,
-            interpolation,
-            grid_bound,
-            image_bound,
-            downsample_velocity,
-        )
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
