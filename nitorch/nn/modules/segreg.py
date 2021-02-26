@@ -110,10 +110,10 @@ class BaseMorph(Module):
                 vol = vol.float()
                 vol /= vol.max()
             else:
-                nb_classes = vol.shape[0]
                 if implicit:
                     background = 1 - vol.sum(dim=0, keepdim=True)
                     vol = torch.cat((vol, background), dim=0)
+                nb_classes = vol.shape[0]
                 vol = vol.argmax(dim=0)
                 vol += 1
                 vol[vol == nb_classes] = 0
@@ -180,6 +180,10 @@ class BaseMorph(Module):
         self.tbstep[mode] += 1
         tb.add_figure(title, plot_slices(), global_step=self.tbstep[mode])
 
+        
+def _is_bn(layer):
+    return isinstance(layer, torch.nn.modules.batchnorm._BatchNorm)
+
 
 class SegMorphWNet(BaseMorph):
     """
@@ -238,13 +242,12 @@ class SegMorphWNet(BaseMorph):
         self.unet_inputs = unet_inputs
         self.implicit = py.make_list(implicit, 2)
         self.output_classes = output_classes
-        if not self.implicit[0]:
-            output_classes = output_classes + 1
         self.softmax = SoftMax(implicit=implicit)
 
+        output_channels = output_classes + int(not self.implicit[0])
         self.segnet = UNet(dim,
                            input_channels=1,
-                           output_channels=output_classes,
+                           output_channels=output_channels,
                            encoder=encoder,
                            decoder=decoder,
                            kernel_size=kernel_size,
@@ -252,8 +255,11 @@ class SegMorphWNet(BaseMorph):
                            final_activation=self.softmax,
                            batch_norm=batch_norm)
 
+        input_channels = int('image' in unet_inputs) \
+                        + int('seg' in unet_inputs) \
+                        * (output_classes + int(not self.implicit[1]))
         self.unet = UNet(dim,
-                         input_channels=(output_classes + int(not only_seg))*2,
+                         input_channels=input_channels * 2,
                          output_channels=dim,
                          encoder=encoder,
                          decoder=decoder,
@@ -262,9 +268,31 @@ class SegMorphWNet(BaseMorph):
                          final_activation=None,
                          batch_norm=batch_norm)
         
+#         self.bn_source = self.get_bn()
+#         self.bn_target = self.get_bn()
+        
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
 
+    def set_bn(self, values, backtrack=False):
+        bnlayers = [child for child in self.segnet.modules() if _is_bn(child)]
+        for layer, mean, var, mom in zip(bnlayers, values['mean'], values['var'], values['momentum']):
+            layer.running_mean = mean.to(device=layer.running_mean.device)
+            layer.running_var = var.to(device=layer.running_var.device)
+            layer.momentum = mom
+            if backtrack:
+                layer.num_batches_tracked -= 1
+    
+    def get_bn(self):
+        values = dict(mean=[], var=[], momentum=[])
+        bnlayers = [child for child in self.segnet.modules() if _is_bn(child)]
+        for layer in bnlayers:
+            values['mean'].append(layer.running_mean)
+            values['var'].append(layer.running_var)
+            values['momentum'].append(layer.momentum)
+        return values
+        
+        
     def forward(self, source, target, source_seg=None, target_seg=None,
                 *, _loss=None, _metric=None):
         """
@@ -307,8 +335,15 @@ class SegMorphWNet(BaseMorph):
         check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
         # segnet
-        source_seg_pred = self.softmax(self.segnet(source))
-        target_seg_pred = self.softmax(self.segnet(target))
+        source_seg_pred = self.segnet(source)
+        target_seg_pred = self.segnet(target)
+
+#         self.set_bn(self.bn_source)
+#         source_seg_pred = self.softmax(self.segnet(source))
+#         self.bn_source = self.get_bn()
+#         self.set_bn(self.bn_target, backtrack=True)
+#         target_seg_pred = self.softmax(self.segnet(target))
+#         self.bn_target = self.get_bn()
 
         # unet
         inputs = []

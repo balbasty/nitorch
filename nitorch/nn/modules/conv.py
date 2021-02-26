@@ -277,10 +277,11 @@ class Conv(Module):
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
-            output_padding=output_padding,
             padding_mode=padding_mode,
             dilation=dilation,
             bias=bias)
+        if transposed:
+            opt_conv['output_padding'] = output_padding,
 
         if len(in_channels) == 1:
             ConvKlass = _get_conv_class(dim, transposed)
@@ -382,6 +383,55 @@ class Conv(Module):
             x = activation(x)
         return x
 
+    @property
+    def stride(self):
+        return self.conv.stride
+
+    @stride.setter
+    def stride(self, value):
+        self.conv.stride = make_tuple(value, self.dim)
+
+    @property
+    def padding(self):
+        return self.conv.padding
+
+    @padding.setter
+    def padding(self, value):
+        self.conv.padding = make_tuple(value, self.dim)
+        self.conv._padding_repeated_twice = rep_sequence(value, 2, interleaved=True)
+
+    @property
+    def output_padding(self):
+        return self.conv.output_padding
+
+    @output_padding.setter
+    def output_padding(self, value):
+        self.conv.output_padding = make_tuple(value, self.dim)
+
+    @property
+    def dilation(self):
+        return self.conv.dilation
+
+    @dilation.setter
+    def dilation(self, value):
+        layer.self.conv = make_tuple(value, self.dim)
+
+    @property
+    def padding_mode(self):
+        return self.conv.padding_mode
+
+    @padding_mode.setter
+    def padding_mode(self, value):
+        self.conv.padding_mode = value
+
+    @property
+    def groups(self):
+        return self.conv.groups
+
+    @groups.setter
+    def groups(self, value):
+        self.conv.groups = value
+            
     def shape(self, x, **overload):
         """Compute output shape of the equivalent ``forward`` call.
 
