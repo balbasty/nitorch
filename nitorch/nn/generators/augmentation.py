@@ -1,8 +1,8 @@
 """Task-specific augmentation.
 """
 import torch
-from ._field import (BiasFieldTransform, RandomFieldSample)
-from ._spatial import (DiffeoSample, DeformedSample)
+from .field import (BiasFieldTransform, RandomFieldSample)
+from .spatial import (DiffeoSample, DeformedSample)
 from ...spatial import grid_pull
 
 

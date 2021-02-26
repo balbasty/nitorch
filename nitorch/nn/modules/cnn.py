@@ -2,13 +2,87 @@
 
 import torch
 from torch import nn as tnn
-from ._base import nitorchmodule
-from ._conv import Conv
-from ._pool import Pool
-from ._reduction import reductions, Reduction
+from .base import nitorchmodule, Module
+from .conv import Conv
+from .pool import Pool
+from .reduction import reductions, Reduction
 from nitorch.core.py import make_list, flatten
+from nitorch.core.linalg import matvec
+from nitorch.core.utils import movedim
 from collections import OrderedDict
 import inspect
+import math
+
+
+def interleaved_cat(tensors, dim=0, groups=1):
+    if groups == 1:
+        return torch.cat(tensors, dim=dim)
+    tensors = [t.chunk(groups, dim) for t in tensors]
+    tensors = [chunk for chunks in zip(*tensors) for chunk in chunks]
+    return torch.cat(tensors, dim=dim)
+
+
+class Stitch(Module):
+    """Stitch tensors together using a learnt linear combination.
+
+    This operation can be been as a 1D convolution, where weights are
+    shared across some channels.
+
+    References
+    ----------
+    ..[1] "Cross-stitch Networks for Multi-task Learning"
+          Ishan Misra, Abhinav Shrivastava, Abhinav Gupta, Martial Hebert
+          CVPR 2016
+    """
+
+    def __init__(self, input_groups=2, output_groups=2):
+        """
+
+        Parameters
+        ----------
+        input_groups : int, default=2
+            Number of input groups
+        output_groups : int, default=2
+            Number of output groups
+        """
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.Tensor(input_groups, output_groups))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        torch.nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+
+    def forward(self, input):
+        """
+
+        Parameters
+        ----------
+        input : (B, channels_in, *spatial) tensor
+            Input tensor
+            `channels_in` must be divisible by `input_groups`.
+
+        Returns
+        -------
+        output : (B, channel_out, *spatial) tensor
+            Output stitched tensor
+            `channel_out = (channels_in//input_groups)*output_groups`
+
+        """
+        # shapes
+        batch = input.shape[0]
+        nb_channels = input.shape[1]
+        spatial = input.shape[2:]
+        input_groups = self.weight.shape[0]
+        output_groups = self.weight.shape[1]
+        input_split = nb_channels//input_groups
+        out_channels = input_split * output_groups
+
+        # linear combination
+        input = input.unfold(1, input_split, input_split).transpose(1, -1)
+        input = matvec(self.weight.t(), input)
+        input = movedim(input, -1, 1).reshape([batch, out_channels, *spatial])
+
+        return input
 
 
 @nitorchmodule
@@ -50,10 +124,22 @@ class Encoder(tnn.ModuleList):
 
     """
 
-    def __init__(self, dim, input_channels, output_channels,
-                 kernel_size=3, stride=2, pool=None, skip=False,
-                 activation=tnn.ReLU, final_activation='same',
-                 batch_norm=False):
+    def __init__(
+            self,
+            dim,
+            input_channels,
+            output_channels,
+            kernel_size=3,
+            stride=2,
+            pool=None,
+            skip=False,
+            activation=tnn.ReLU,
+            final_activation='same',
+            batch_norm=False,
+            groups=None,
+            final_group='same',
+            stitch=1,
+            final_stitch='same'):
         """
 
         Parameters
@@ -84,40 +170,63 @@ class Encoder(tnn.ModuleList):
         pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
             Pooling used to change resolution.
             If None, use strided convolutions.
+        groups : int or sequence[int], default=`stitch`
+            Number of groups per layer. If > 1, a grouped convolution
+            is performed, which is equivalent to `groups` independent
+            layers.
+        final_group : int, default='same'
+            Final number of groups
+        stitch : int or sequence[int], default=1
+            Number of stitched tasks per layer.
+        final_stitch : int, default='same'
+            Final stitch operation.
 
         """
         self.dim = dim
         self.skip = skip
+        stitch = make_list(stitch, len(output_channels))
+        stitch = [stch or 1 for stch in stitch]
+        groups = make_list(groups, len(output_channels))
+        groups = [group or stch for group, stch in zip(groups, stitch)]
         output_channels = [make_list(l) for l in output_channels]
         input_channels = [input_channels] + [c[-1] for c in output_channels[:-1]]
 
         final_activation = (activation if final_activation == 'same'
                             else final_activation)
+        final_group = groups[-1] if final_group == 'same' else final_group
+        final_stitch = groups[-1] if final_stitch == 'same' else final_stitch
         conv_activation = activation
         conv_last_activation = None if pool else activation
         conv_last_stride = 1 if pool else stride
         pool_activation = activation
         modules = []
-        for d, (i, o) in enumerate(zip(input_channels, output_channels)):
+        all_shapes = zip(input_channels, output_channels, groups, stitch)
+        for d, (i, o, g, s) in enumerate(all_shapes):
             if d == len(output_channels) - 1:
                 conv_last_activation = None if pool else final_activation
                 pool_activation = final_activation
+                s = final_stitch or 1
+                g = final_group or s
             if len(o) > 1:
                 modules.append(StackedConv(
                     dim, i, o, kernel_size,
                     stride=conv_last_stride,
                     activation=conv_activation,
                     final_activation=conv_last_activation,
-                    batch_norm=batch_norm))
+                    batch_norm=batch_norm,
+                    groups=g))
             else:
                 modules.append(Conv(
                     dim, i, o[0], kernel_size,
                     stride=conv_last_stride,
                     activation=conv_last_activation,
-                    batch_norm=batch_norm))
+                    batch_norm=batch_norm,
+                    groups=g))
             if pool:
                 modules.append(Pool(dim, kernel_size, stride=stride,
                                     activation=pool_activation))
+            if s > 1:
+                modules.append(Stitch(stitch, stitch))
 
         super().__init__(modules)
 
@@ -177,9 +286,20 @@ class Decoder(tnn.ModuleList):
                  -> Cat(c)                -> (B, 4)
     """
 
-    def __init__(self, dim, input_channels, output_channels,
-                 kernel_size=3, stride=2, activation=tnn.ReLU,
-                 final_activation='same', batch_norm=False):
+    def __init__(
+            self,
+            dim,
+            input_channels,
+            output_channels,
+            kernel_size=3,
+            stride=2,
+            activation=tnn.ReLU,
+            final_activation='same',
+            batch_norm=False,
+            groups=None,
+            final_group='same',
+            stitch=1,
+            final_stitch='same'):
         """
 
         Parameters
@@ -203,6 +323,10 @@ class Decoder(tnn.ModuleList):
             Batch normalization before each convolution.
         """
         self.dim = dim
+        stitch = make_list(stitch, len(output_channels))
+        stitch = [stch or 1 for stch in stitch]
+        groups = make_list(groups, len(output_channels))
+        groups = [group or stch for group, stch in zip(groups, stitch)]
         output_channels = [make_list(l) for l in output_channels]
         nb_layers = len(output_channels)
         self.skip = len(make_list(input_channels)) > 1
@@ -210,21 +334,30 @@ class Decoder(tnn.ModuleList):
         for i in range(1, len(input_channels)):
             input_channels[i] += output_channels[i-1][-1]
 
-        modules = []
         final_activation = (activation if final_activation == 'same'
                             else final_activation)
-        for layer, (i, o) in enumerate(zip(input_channels, output_channels)):
+        final_group = groups[-1] if final_group == 'same' else final_group
+        final_stitch = groups[-1] if final_stitch == 'same' else final_stitch
+
+        modules = []
+        all_shapes = zip(input_channels, output_channels, groups, stitch)
+        for layer, (i, o, g, s) in enumerate(all_shapes):
             ConvClass = Conv if len(o) == 1 else StackedConv
             o = o[0] if len(o) == 1 else o
             if layer == len(input_channels) - 1:
                 activation = final_activation
+                s = final_stitch or 1
+                g = final_group or s
             modules.append(ConvClass(
                 dim, i, o,
                 kernel_size=kernel_size,
                 stride=stride,
                 transposed=True,
                 activation=activation,
-                batch_norm=batch_norm))
+                batch_norm=batch_norm,
+                groups=g))
+            if s > 1:
+                modules.append(Stitch(s, s))
         super().__init__(modules)
 
     def forward(self, x):
@@ -248,13 +381,14 @@ class Decoder(tnn.ModuleList):
         postproc = list(self.children())[len(inputs):]
 
         # Decoder
-        for layer in decoder:
+        for i, layer in enumerate(decoder):
             y = inputs.pop(0)
             oshape = layer.shape(x, stride=2, output_padding=0)[2:]
             yshape = y.shape[2:]
             pad = [i-o for o, i in zip(oshape, yshape)]
             x = layer(x, stride=2, output_padding=pad)
-            x = torch.cat((x, y), dim=1)
+            groups = decoder[i+1].groups if len(decoder) > i+1 else 1
+            x = interleaved_cat((x, y), dim=1, groups=groups)
 
         # Post-processing (convolutions without upsampling)
         for layer in postproc:
@@ -269,10 +403,21 @@ class Decoder(tnn.ModuleList):
 class StackedConv(tnn.Sequential):
     """Stacked convolutions, without up/down-sampling."""
 
-    def __init__(self, dim, input_channels, output_channels,
-                 kernel_size=3, stride=1, transposed=False,
-                 activation=tnn.ReLU, final_activation='same',
-                 batch_norm=False):
+    def __init__(
+            self,
+            dim,
+            input_channels,
+            output_channels,
+            kernel_size=3,
+            stride=1,
+            transposed=False,
+            activation=tnn.ReLU,
+            final_activation='same',
+            batch_norm=False,
+            groups=None,
+            final_group='same',
+            stitch=1,
+            final_stitch='same'):
         """
 
         Parameters
@@ -295,24 +440,43 @@ class StackedConv(tnn.Sequential):
             Batch normalization before each convolution.
         """
         self.dim = dim
+
+        stitch = make_list(stitch, len(output_channels))
+        stitch = [stch or 1 for stch in stitch]
+        groups = make_list(groups, len(output_channels))
+        groups = [group or stch for group, stch in zip(groups, stitch)]
         output_channels = list(output_channels)
         input_channels = [input_channels] + output_channels[:-1]
 
         modules = []
         kernel_size = make_list(kernel_size, dim)
         nb_module = len(input_channels)
+
         final_stride, stride = (stride, 1)
         final_transposed, transposed = (transposed, False)
-        for l, (i, o) in enumerate(zip(input_channels, output_channels)):
+        final_group = groups[-1] if final_group == 'same' else final_group
+        final_stitch = groups[-1] if final_stitch == 'same' else final_stitch
+
+        all_shapes = zip(input_channels, output_channels, groups, stitch)
+        for l, (i, o, g, s) in enumerate(all_shapes):
             pad = [(k-1)//2 for k in kernel_size]
             if l == nb_module-1:
                 if final_activation != 'same':
                     activation = final_activation
                 stride = final_stride
                 transposed = final_transposed
-            modules.append(Conv(dim, i, o, kernel_size, padding=pad,
-                                stride=stride, activation=activation,
-                                batch_norm=batch_norm, transposed=transposed))
+                s = final_stitch or 1
+                g = final_group or s
+            modules.append(Conv(dim, i, o,
+                                kernel_size=kernel_size,
+                                padding=pad,
+                                stride=stride,
+                                activation=activation,
+                                batch_norm=batch_norm,
+                                transposed=transposed,
+                                groups=g))
+            if s != 1:
+                modules.append(Stitch(s, s))
         super().__init__(*modules)
 
 

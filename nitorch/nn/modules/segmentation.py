@@ -1,8 +1,8 @@
 import torch
 import torch.nn as tnn
-from ..modules._base import Module
-from ..modules._cnn import (UNet, MRF)
-from ..modules._spatial import (GridPull, GridPushCount)
+from ..modules.base import Module
+from ..modules.cnn import (UNet, MRF)
+from ..modules.spatial import (GridPull, GridPushCount)
 from ...spatial import (affine_grid, identity_grid, voxel_size)
 from ...core.constants import eps
 from ...core.math import logsumexp

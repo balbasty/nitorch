@@ -2,10 +2,11 @@
 
 import torch
 from torch import nn as tnn
-from ._base import nitorchmodule
-from ._norm import BatchNorm
+from .base import nitorchmodule, Module
+from .norm import BatchNorm
 from ..activations import _map_activations
-from ...core.py import make_tuple, rep_sequence, getargs
+from nitorch.core.py import make_tuple, rep_sequence, getargs, make_list
+from nitorch.core import py
 from copy import copy
 import math
 import inspect
@@ -27,24 +28,47 @@ import inspect
 # https://discuss.pytorch.org/t/why-do-we-use-constants-or-final/70331/4
 
 
+def _get_conv_class(dim, transposed=False):
+    """Return the appropriate torch Conv class"""
+    if transposed:
+        if dim == 1:
+            ConvKlass = nitorchmodule(tnn.ConvTranspose1d)
+        elif dim == 2:
+            ConvKlass = nitorchmodule(tnn.ConvTranspose2d)
+        elif dim == 3:
+            ConvKlass = nitorchmodule(tnn.ConvTranspose3d)
+        else:
+            raise NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
+    else:
+        if dim == 1:
+            ConvKlass = nitorchmodule(tnn.Conv1d)
+        elif dim == 2:
+            ConvKlass = nitorchmodule(tnn.Conv2d)
+        elif dim == 3:
+            ConvKlass = nitorchmodule(tnn.Conv3d)
+        else:
+            raise NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
+    return ConvKlass
+
+
 @nitorchmodule
-class Conv(tnn.Module):
-    """Convolution layer (with activation).
-
-    Applies a convolution over an input signal.
-    Optionally: apply an activation function to the output.
-
+class GroupedConv(tnn.ModuleList):
+    """Simple imbalanced grouped convolution
+       (without activation, batch norm, etc.)
     """
-    def __init__(self, dim, *args, **kwargs):
+
+    def __init__(self, dim, in_channels, out_channels, *args, transposed=False,
+                 **kwargs):
         """
+
         Parameters
         ----------
         dim : {1, 2, 3}
-            Dimension of the convolving kernel
-        in_channels : int
-            Number of channels in the input image
-        out_channels : int
-            Number of channels produced by the convolution
+            Number of spatial dimensions.
+        in_channels : sequence[int]
+            Number of channels in the input image.
+        out_channels : sequence[int]
+            Number of channels produced by the convolution.
         kernel_size : int or tuple[int]
             Size of the convolution kernel
         stride : int or tuple[int], default=1:
@@ -54,14 +78,160 @@ class Conv(tnn.Module):
         output_padding : int or tuple[int], default=0
             Additional size added to (the bottom/right) side of each
             dimension in the output shape. Only used if `transposed is True`.
-      ``(out_padT, out_padH, out_padW)``. Default: 0
+        padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
+            Padding mode.
+        dilation : int or tuple[int], default=1
+            Spacing between kernel elements.
+        bias : bool, default=True
+            If ``True``, adds a learnable bias to the output.
+        transposed : bool, default=False:
+            Transposed convolution.
+        """
+        in_channels = py.make_list(in_channels)
+        out_channels = py.make_list(out_channels)
+        if len(in_channels) != len(out_channels):
+            raise ValueError(f'The number of input and output groups '
+                             f'must be the same: {len(in_channels)} vs '
+                             f'{len(out_channels)}')
+
+        klass = _get_conv_class(dim, transposed)
+        modules = [klass(i, o, *args, **kwargs)
+                   for i, o in zip(in_channels, out_channels)]
+        super().__init__(modules)
+        self.in_channels = len(in_channels)
+        self.out_channels = len(out_channels)
+
+    def forward(self, input):
+        """Perform a grouped convolution with imbalanced channels.
+
+        Parameters
+        ----------
+        input : (B, sum(in_channels), *in_spatial) tensor
+
+        Returns
+        -------
+        output : (B, sum(out_channels), *out_spatial) tensor
+
+        """
+        out_shape = (input.shape[0], self.out_channels, *input.shape[2:])
+        output = input.new_empty(out_shape)
+        input = input.split([c.in_channels for c in self], dim=1)
+        output = output.split([c.out_channels for c in self], dim=1)
+        for layer, inp, out in zip(self, input, output):
+            out[...] = layer(inp)
+        return output
+
+    @property
+    def dim(self):
+        for layer in self:
+            return len(layer.kernel_size)
+
+    @property
+    def stride(self):
+        for layer in self:
+            return layer.stride
+
+    @stride.setter
+    def stride(self, value):
+        for layer in self:
+            layer.stride = make_tuple(value, self.dim)
+
+    @property
+    def padding(self):
+        for layer in self:
+            return layer.padding
+
+    @padding.setter
+    def padding(self, value):
+        for layer in self:
+            layer.padding = make_tuple(value, self.dim)
+            layer._padding_repeated_twice = rep_sequence(value, 2, interleaved=True)
+
+    @property
+    def output_padding(self):
+        for layer in self:
+            return layer.output_padding
+
+    @output_padding.setter
+    def output_padding(self, value):
+        for layer in self:
+            layer.output_padding = make_tuple(value, self.dim)
+
+    @property
+    def dilation(self):
+        for layer in self:
+            return layer.dilation
+
+    @dilation.setter
+    def dilation(self, value):
+        for layer in self:
+            layer.dilation = make_tuple(value, self.dim)
+
+    @property
+    def padding_mode(self):
+        for layer in self:
+            return layer.padding_mode
+
+    @padding_mode.setter
+    def padding_mode(self, value):
+        for layer in self:
+            layer.padding_mode = value
+
+
+class Conv(Module):
+    """Convolution layer (with activation).
+
+    Applies a convolution over an input signal.
+    Optionally: apply an activation function to the output.
+
+    """
+    def __init__(self,
+                 dim,
+                 in_channels,
+                 out_channels,
+                 kernel_size,
+                 stride=1,
+                 padding=0,
+                 output_padding=0,
+                 padding_mode='zeros',
+                 dilation=1,
+                 groups=1,
+                 bias=True,
+                 transposed=False,
+                 activation=None,
+                 batch_norm=False,
+                 inplace=True):
+        """
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Number of spatial dimensions.
+        in_channels : int or sequence[int]
+            Number of channels in the input image.
+            If a sequence, grouped convolutions are used.
+        out_channels : int or sequence[int]
+            Number of channels produced by the convolution.
+            If a sequence, grouped convolutions are used.
+        kernel_size : int or tuple[int]
+            Size of the convolution kernel
+        stride : int or tuple[int], default=1:
+            Stride of the convolution.
+        padding : int or tuple[int], default=0
+            Zero-padding added to all three sides of the input.
+        output_padding : int or tuple[int], default=0
+            Additional size added to (the bottom/right) side of each
+            dimension in the output shape. Only used if `transposed is True`.
         padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
             Padding mode.
         dilation : int or tuple[int], default=1
             Spacing between kernel elements.
         groups : int, default=1
             Number of blocked connections from input channels to
-            output channels.
+            output channels. Using this parameter is an alternative to
+            the use of 'sequence' input/output channels. In that case,
+            the number of input and output channels in each group is
+            found by dividing the `input_channels` and `output_channels`
+            with `groups`.
         bias : bool, default=True
             If ``True``, adds a learnable bias to the output.
         transposed : bool, default=False:
@@ -80,44 +250,45 @@ class Conv(tnn.Module):
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
             function).
-        try_inplace : bool, default=True
+        inplace : bool, default=True
             Apply activation inplace if possible
-            (i.e., not (is_leaf and requires_grad).
+            (i.e., not `is_leaf and requires_grad`).
 
         """
         super().__init__()
 
-        # Get additional arguments that are not present in torch's conv
-        transposed, activation, batch_norm, try_inplace = getargs(
-            [('transposed', 10, False),
-             ('activation', 11, None),
-             ('batch_norm', 12, None),
-             ('try_inplace', 13, True)],
-            args, kwargs, consume=True)
-
         # Store dimension
         self.dim = dim
-        self.try_inplace = try_inplace
+        self.inplace = inplace
 
-        # Select Conv
-        if transposed:
-            if dim == 1:
-                conv = nitorchmodule(tnn.ConvTranspose1d)(*args, **kwargs)
-            elif dim == 2:
-                conv = nitorchmodule(tnn.ConvTranspose2d)(*args, **kwargs)
-            elif dim == 3:
-                conv = nitorchmodule(tnn.ConvTranspose3d)(*args, **kwargs)
-            else:
-                NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
+        # Check if "manual" grouped conv are required
+        in_channels = py.make_list(in_channels)
+        out_channels = py.make_list(out_channels)
+        if len(in_channels) != len(out_channels):
+            raise ValueError(f'The number of input and output groups '
+                             f'must be the same: {len(in_channels)} vs '
+                             f'{len(out_channels)}')
+        if len(in_channels) > 1 and groups > 1:
+            raise ValueError('Cannot use both `groups` and multiple '
+                             'input channels, as both define grouped '
+                             'convolutions.')
+
+        opt_conv = dict(
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            output_padding=output_padding,
+            padding_mode=padding_mode,
+            dilation=dilation,
+            bias=bias)
+
+        if len(in_channels) == 1:
+            ConvKlass = _get_conv_class(dim, transposed)
+            conv = ConvKlass(in_channels[0], out_channels[0],
+                                  **opt_conv, groups=groups)
         else:
-            if dim == 1:
-                conv = nitorchmodule(tnn.Conv1d)(*args, **kwargs)
-            elif dim == 2:
-                conv = nitorchmodule(tnn.Conv2d)(*args, **kwargs)
-            elif dim == 3:
-                conv = nitorchmodule(tnn.Conv3d)(*args, **kwargs)
-            else:
-                NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
+            conv = GroupedConv(dim, in_channels, out_channels,
+                                    **opt_conv, transposed=transposed)
 
         # Select batch norm
         if isinstance(batch_norm, bool) and batch_norm:
@@ -152,9 +323,9 @@ class Conv(tnn.Module):
         x : (batch, in_channel, *in_spatial) tensor
             Input tensor
         overload : dict
-            All parameters defined at build time can be overridden
-            at call time, except `dim`, `in_channels`, `out_channels`
-            and `kernel_size`.
+            Some parameters defined at build time can be overridden
+            at call time: ['stride', 'padding', 'output_padding',
+            'dilation', 'padding_mode']
 
         Returns
         -------
@@ -198,7 +369,7 @@ class Conv(tnn.Module):
                      else activation if callable(activation)        \
                      else None
 
-        if self.try_inplace \
+        if self.inplace \
                 and hasattr(activation, 'inplace') \
                 and not (x.is_leaf and x.requires_grad):
             activation.inplace = True

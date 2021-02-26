@@ -1,4 +1,4 @@
-from ..modules._base import Module
+from ..modules.base import Module
 import torch
 
 

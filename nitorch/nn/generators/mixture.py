@@ -1,7 +1,7 @@
 import torch
-from ..modules._base import Module
+from ..modules.base import Module
 from ...core.utils import expand, unsqueeze, channel2last
-from ._distribution import RandomDistribution
+from .distribution import RandomDistribution
 
 
 class CategoricalSample(Module):

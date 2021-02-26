@@ -4,7 +4,7 @@ from ...core import utils
 from ...core.utils import channel2last, unsqueeze
 from ...core.py import make_list
 from ...core.linalg import matvec
-from ._field import RandomFieldSample
+from .field import RandomFieldSample
 from ...spatial import affine_matrix_classic, affine_matmul, affine_lmdiv
 import torch.distributions as td
 import math

@@ -1,6 +1,6 @@
-from ._base import Module
-from ._cnn import UNet
-from ._spatial import GridResize, GridExp, GridPull
+from .base import Module
+from .cnn import UNet
+from .spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax
 from nitorch.nn import check
 from nitorch.core import py, utils
