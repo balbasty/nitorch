@@ -4,7 +4,7 @@ import inspect
 from nitorch.core.py import make_list
 from nitorch.spatial import pool
 from nitorch.nn.activations import _map_activations
-from ._base import Module
+from .base import Module
 
 
 class Pool(Module):

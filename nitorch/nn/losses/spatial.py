@@ -8,7 +8,7 @@ import torch.nn as tnn
 from nitorch.core.py import make_list, prod
 from nitorch.core.utils import slice_tensor
 from nitorch.spatial import diff1d
-from ._base import Loss
+from .base import Loss
 
 
 class LocalFeatures(tnn.Module):

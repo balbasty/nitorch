@@ -1,6 +1,7 @@
 """Modules (Networks or Layers)."""
 
 from .activations import *
+from .metrics import *
 from .modules import *
 from .losses import *
 from .generators import *

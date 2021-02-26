@@ -1,6 +1,6 @@
 """Batch norm layer"""
 from torch import nn as tnn
-from ._base import Module, nitorchmodule
+from .base import Module, nitorchmodule
 
 
 class BatchNorm(Module):

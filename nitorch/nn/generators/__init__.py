@@ -1,7 +1,13 @@
 """Random sampling (mainly aimed at augmentation)"""
 
-from ._distribution import *
-from ._field import *
-from ._mixture import *
-from ._spatial import *
-from ._augmentation import *
+from . import distribution
+from . import field
+from . import mixture
+from . import spatial
+from . import augmentation
+
+from .distribution import *
+from .field import *
+from .mixture import *
+from .spatial import *
+from .augmentation import *

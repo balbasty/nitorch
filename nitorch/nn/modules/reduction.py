@@ -1,6 +1,6 @@
 """Various reduction layers."""
 
-from ._base import Module
+from .base import Module
 from nitorch.core import math
 
 
