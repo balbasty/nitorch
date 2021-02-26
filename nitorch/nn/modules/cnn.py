@@ -146,8 +146,9 @@ class Encoder(tnn.ModuleList):
         ----------
         dim : {1, 2, 3}
             Dimension.
-        input_channels : int
+        input_channels : int or sequence[int]
             Number of input channels.
+            If a sequence, the first convolution is a grouped convolution.
         output_channels : sequence[int]
             Number of output channels in each encoding layer.
             Elements can be integers or nested sequences.
@@ -321,6 +322,16 @@ class Decoder(tnn.ModuleList):
             Final activation function. If 'same', same as `activation`.
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
+        groups : int or sequence[int], default=`stitch`
+            Number of groups per layer. If > 1, a grouped convolution
+            is performed, which is equivalent to `groups` independent
+            layers.
+        final_group : int, default='same'
+            Final number of groups
+        stitch : int or sequence[int], default=1
+            Number of stitched tasks per layer.
+        final_stitch : int, default='same'
+            Final stitch operation.
         """
         self.dim = dim
         stitch = make_list(stitch, len(output_channels))
@@ -438,6 +449,16 @@ class StackedConv(tnn.Sequential):
             Final activation function. If 'same', same as `activation`.
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
+        groups : int or sequence[int], default=`stitch`
+            Number of groups per layer. If > 1, a grouped convolution
+            is performed, which is equivalent to `groups` independent
+            layers.
+        final_group : int, default='same'
+            Final number of groups
+        stitch : int or sequence[int], default=1
+            Number of stitched tasks per layer.
+        final_stitch : int, default='same'
+            Final stitch operation.
         """
         self.dim = dim
 
@@ -484,20 +505,33 @@ class StackedConv(tnn.Sequential):
 class UNet(tnn.Sequential):
     """Fully-convolutional U-net."""
 
-    def __init__(self, dim, input_channels, output_channels,
-                 encoder=None, decoder=None, kernel_size=3, stride=2,
-                 activation=tnn.ReLU, final_activation='same', pool=None,
-                 batch_norm=False):
+    def __init__(
+            self,
+            dim,
+            input_channels,
+            output_channels,
+            encoder=None,
+            decoder=None,
+            kernel_size=3,
+            stride=2,
+            activation=tnn.ReLU,
+            final_activation='same',
+            pool=None,
+            batch_norm=False,
+            groups=None,
+            stitch=1):
         """
 
         Parameters
         ----------
         dim : {1, 2, 3}
             Dimension.
-        input_channels : int
+        input_channels : int or sequence[int]
             Number of input channels.
-        output_channels : int
+            If a sequence, the first convolution is a grouped convolution.
+        output_channels : int or sequence [int]
             Number of output channels.
+            If a sequence, the last convolution is a grouped convolution.
         encoder : sequence[int], default=[16, 32, 32, 32]
             Number of channels in each encoding layer.
         decoder : sequence[int], default=[32, 32, 32, 32, 32, 16, 16]
@@ -522,21 +556,47 @@ class UNet(tnn.Sequential):
             Pooling to use in the encoder. If None, use strided convolutions.
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
+        groups : int or sequence[int], default=`stitch`
+            Number of groups per layer. If > 1, a grouped convolution
+            is performed, which is equivalent to `groups` independent
+            layers.
+        stitch : int or sequence[int], default=1
+            Number of stitched tasks per layer.
         """
         self.dim = dim
 
+        input_channels = make_list(input_channels)
+        output_channels = make_list(output_channels)
+
+        # defaults
         encoder = list(encoder or [16, 32, 32, 32])
         decoder = list(decoder or [32, 32, 32, 32, 32, 16, 16])
-        if len(decoder) < len(encoder):
-            # we need as many upsampling steps as downsampling steps
-            decoder = make_list(decoder, len(encoder))
-        encoder = [make_list(l) for l in encoder]
-        encoder_out = [l[-1] for l in reversed(encoder)] + [input_channels]
-        decoder = [make_list(l) for l in decoder]
+
+        # ensure as many upsampling steps as downsampling steps
+        decoder = make_list(decoder, len(encoder), crop=False)
+        encoder = list(map(make_list, encoder))
+        encoder_out = list(map(lambda x: x[-1], reversed(encoder)))
+        encoder_out.append(sum(input_channels))
+        decoder = list(map(make_list, decoder))
         decoder[-1].append(output_channels)
         stack = flatten(decoder[len(encoder):])
         decoder = decoder[:len(encoder)]
-        last_decoder = decoder[-1][-1] + input_channels
+        last_decoder = decoder[-1][-1] + sum(input_channels)
+
+        nb_layers = len(encoder) + len(decoder) + len(stack)
+        stitch = make_list(stitch, nb_layers-1)
+        stitch = list(map(lambda x: x or 1, stitch))
+        stitch.append(1)  # do not stitch last layer
+        groups = make_list(groups, nb_layers-1)
+        groups = list(map(lambda x: x[0] or x[1], zip(groups, stitch)))
+        groups = [1] + groups  # do not group first layer
+
+        stitch_encoder = stitch[:len(encoder)]
+        stitch_decoder = stitch[len(encoder):len(encoder) + len(decoder)]
+        stitch_stack = stitch[:len(encoder) + len(decoder):]
+        groups_encoder = groups[:len(encoder)]
+        groups_decoder = groups[len(encoder):len(encoder) + len(decoder)]
+        groups_stack = groups[:len(encoder) + len(decoder):]
 
         modules = []
         enc = Encoder(dim,
@@ -547,7 +607,9 @@ class UNet(tnn.Sequential):
                       skip=True,
                       activation=activation,
                       batch_norm=batch_norm,
-                      pool=pool)
+                      pool=pool,
+                      groups=groups_encoder,
+                      stitch=stitch_encoder)
         modules.append(('encoder', enc))
 
         dec = Decoder(dim,
@@ -556,7 +618,9 @@ class UNet(tnn.Sequential):
                       kernel_size=kernel_size,
                       stride=stride,
                       activation=activation,
-                      batch_norm=batch_norm)
+                      batch_norm=batch_norm,
+                      groups=groups_decoder,
+                      stitch=stitch_decoder)
         modules.append(('decoder', dec))
 
         stk = StackedConv(dim,
@@ -565,7 +629,9 @@ class UNet(tnn.Sequential):
                           kernel_size=kernel_size,
                           activation=activation,
                           final_activation=final_activation,
-                          batch_norm=batch_norm)
+                          batch_norm=batch_norm,
+                          groups=groups_stack,
+                          stitch=stitch_stack)
         modules.append(('stack', stk))
 
         super().__init__(OrderedDict(modules))
