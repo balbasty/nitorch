@@ -4,7 +4,7 @@ import torch
 from .base import Loss
 from nitorch.core import math
 from nitorch.core.math import nansum, softmax
-from nitorch.core.utils import isin, unsqueeze
+from nitorch.core.utils import isin, unsqueeze, make_vector
 from nitorch.core.py import make_list, flatten
 
 
@@ -138,7 +138,7 @@ class CategoricalLoss(Loss):
         self.log = log
         self.implicit = implicit
 
-    def forward(self, prior, obs, **overridden):
+    def forward(self, prior, obs, **overload):
         """
 
         Parameters
@@ -155,7 +155,7 @@ class CategoricalLoss(Loss):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
-        overridden : dict
+        overload : dict
             All parameters defined at build time can be overridden
             at call time.
 
@@ -166,8 +166,8 @@ class CategoricalLoss(Loss):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
-        log = overridden.get('log', self.log)
-        implicit = overridden.get('implicit', self.implicit)
+        log = overload.get('log', self.log)
+        implicit = overload.get('implicit', self.implicit)
 
         prior = torch.as_tensor(prior)
         obs = torch.as_tensor(obs, device=prior.device)
@@ -190,7 +190,7 @@ class CategoricalLoss(Loss):
             if obs.shape[1] != 1:
                 raise ValueError('Hard label maps cannot be multi-channel.')
             obs = obs[:, None]
-            one_hot_map = overridden.get('one_hot_map', self.one_hot_map)
+            one_hot_map = overload.get('one_hot_map', self.one_hot_map)
             one_hot_map = get_one_hot_map(one_hot_map, nb_classes)
 
             loss = torch.empty_like(logprior)
@@ -207,7 +207,7 @@ class CategoricalLoss(Loss):
         loss = -loss
 
         # reduction
-        return super().forward(loss, **overridden)
+        return super().forward(loss, **overload)
 
 
 class JointCategoricalLoss(Loss):
@@ -334,11 +334,38 @@ class JointCategoricalLoss(Loss):
 
 
 class DiceLoss(Loss):
-    """Negative Dice/F1 score."""
+    """1 - SoftDice.
+
+    Examples
+    --------
+    ```python
+    >> # Predictions are soft probabilities
+    >> loss = Dice()
+    >>
+    >> # Predictions are soft probabilities, with an implicit background
+    >> loss = Dice(implicit=True)
+    >>
+    >> # Dice are pre-softmax log-probabilities
+    >> loss = Dict(log=True)
+    >>
+    >> # Weight Dice of each class by the reference volume
+    >> loss = Dice(weighted=True)
+    >>
+    >> # Predictions are soft probabilities with 5 classes
+    >> # References are hard labels
+    >> # We want the background to be in the last soft class
+    >> loss = Dice(one_hot_map=[1, 2, 3, 4, 0])
+    >>
+    >> # Predictions are soft probabilities with 4 classes
+    >> # References are hard labels with many more classes
+    >> # We want a subset of labels to map to the 3 non-background soft
+    >> # classes and all other labels to map to the background class.
+    >> loss = Dice(one_hot_map=[(1, 3), 5, (10, 12), None])
+    ```
+    """
 
     def __init__(self, one_hot_map=None, log=False, implicit=False,
-                 discard_background=False, weighted=False,
-                 *args, **kwargs):
+                 weighted=False, *args, **kwargs):
         """
 
         Parameters
@@ -347,12 +374,9 @@ class DiceLoss(Loss):
             Mapping from one-hot to hard index.
             By default: identity mapping.
         log : bool, default=False
-            If True, priors are log-probabilities.
-            Else, they are probabilities and we take their log in the
-            forward pass.
+            If True, predictions are (pre-softmax) log-probabilities.
         implicit : bool, default=False
-            If True, the one-hot tensors only use K-1 channels to encode
-            K classes.
+            If True, the background class is implicit in the one-hot tensors.
         weighted : bool or list[float], default=False
             If True, weight the Dice of each class by its size in the
             reference. If a list, use these weights for each class.
@@ -363,7 +387,6 @@ class DiceLoss(Loss):
         self.one_hot_map = one_hot_map
         self.log = log
         self.implicit = implicit
-        self.discard_background = discard_background
         self.weighted = weighted
 
     def forward(self, predicted, reference, **overload):
@@ -394,11 +417,9 @@ class DiceLoss(Loss):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
-
         log = overload.get('log', self.log)
         implicit = overload.get('implicit', self.implicit)
         weighted = overload.get('weighted', self.weighted)
-        one_hot_map = overload.get('one_hot_map', self.one_hot_map)
 
         predicted = torch.as_tensor(predicted)
         reference = torch.as_tensor(reference, device=predicted.device)
@@ -408,21 +429,24 @@ class DiceLoss(Loss):
         implicit = implicit or (predicted.shape[1] == 1)
 
         # take softmax if needed
-        if log:
-            predicted = _softmax(predicted, implicit=implicit)
-        else:
-            predicted = _pad_norm(predicted, implicit=implicit)
+        predicted = get_prob_explicit(predicted, log=log, implicit=implicit)
 
         nb_classes = predicted.shape[1]
         spatial_dims = list(range(2, predicted.dim()))
+
+        # prepare weights
+        if not torch.is_tensor(weighted) and not weighted:
+            weighted = False
+        if not isinstance(weighted, bool):
+            weighted = make_vector(weighted, nb_classes, **backend)[None]
 
         # preprocess reference
         if reference.dtype in (torch.half, torch.float, torch.double):
             # one-hot labels
             reference = reference.to(predicted.dtype)
-            if reference.shape[1] == nb_classes - 1:
-                reference = _pad_norm(reference, implicit=True)
-            elif reference.shape[1] != nb_classes:
+            implicit_ref = reference.shape[1] == nb_classes-1
+            reference = get_prob_explicit(reference, implicit=implicit_ref)
+            if reference.shape[1] != nb_classes:
                 raise ValueError('Number of classes not consistent. '
                                  'Expected {} or {} but got {}.'.format(
                                  nb_classes, nb_classes-1, reference.shape[1]))
@@ -430,31 +454,36 @@ class DiceLoss(Loss):
             inter = nansum(predicted * reference, dim=spatial_dims)
             union = nansum(predicted + reference, dim=spatial_dims)
             loss = -2 * inter / union
-            if weighted:
-                if isinstance(weighted, bool):
+            if weighted is not False:
+                if weighted is True:
                     weights = nansum(reference, dim=spatial_dims)
                     weights = weights / weights.sum(dim=1, keepdim=True)
                 else:
-                    weights = torch.as_tensor(weighted, **backend)[None, :]
+                    weights = weighted
                 loss = loss * weights
 
         else:
             # hard labels
-            if not one_hot_map:
-                one_hot_map = list(range(predicted.shape[1]))
-            one_hot_map = list(map(make_list, one_hot_map))
+            one_hot_map = overload.get('one_hot_map', self.one_hot_map)
+            one_hot_map = get_one_hot_map(one_hot_map, nb_classes)
 
             loss = []
             weights = []
             for soft, hard in enumerate(one_hot_map):
-                pred1 = predicted[:, soft, ...][:, None, ...]
-                ref1 = isin(reference, hard)
+                pred1 = predicted[:, None, soft, ...]
+
+                if hard is None:
+                    # implicit class
+                    all_labels = filter(lambda x: x is not None, one_hot_map)
+                    ref1 = ~isin(reference, flatten(list(all_labels)))
+                else:
+                    ref1 = isin(reference, hard)
 
                 inter = math.sum(pred1 * ref1, dim=spatial_dims)
                 union = math.sum(pred1 + ref1, dim=spatial_dims)
                 loss1 = -2 * inter / union
-                if weighted:
-                    if isinstance(weighted, bool):
+                if weighted is not False:
+                    if weighted is True:
                         weight1 = ref1.sum()
                     else:
                         weight1 = float(weighted[soft])
@@ -463,7 +492,7 @@ class DiceLoss(Loss):
                 loss.append(loss1)
 
             loss = torch.cat(loss, dim=1)
-            if weighted and isinstance(weighted, bool):
+            if weighted is True:
                 weights = sum(weights)
                 loss = loss / weights
 
