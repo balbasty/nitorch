@@ -90,10 +90,10 @@ def get_log_confusion(confusion, nb_classes_pred, nb_classes_ref, dim, **backend
     """Return a well formed (log) confusion matrix"""
     if confusion is None:
         confusion = torch.eye(nb_classes_pred, nb_classes_ref,
-                              **backend)
+                              **backend).exp()
     confusion = unsqueeze(confusion, -1, dim)  # spatial shape
     if confusion.dim() < dim + 3:
-        confusion = unsqueeze(confusion, 0, dim)  # batch shape
+        confusion = unsqueeze(confusion, 0, 1)  # batch shape
     confusion = confusion / confusion.sum(dim=[-1, -2], keepdim=True)
     confusion = confusion.clamp(min=1e-7, max=1-1e-7).log()
     return confusion
@@ -197,7 +197,7 @@ class CategoricalLoss(Loss):
             for soft, hard in enumerate(one_hot_map):
                 if hard is None:
                     # implicit class
-                    all_labels = filter(lambda x: x is not None, one_hot_map)
+                    all_labels = list(filter(lambda x: x is not None, one_hot_map))
                     obs1 = ~isin(obs, flatten(all_labels))
                 else:
                     obs1 = isin(obs, hard)
@@ -313,12 +313,14 @@ class JointCategoricalLoss(Loss):
             one_hot_map = overload.get('one_hot_map', self.one_hot_map)
             one_hot_map = get_one_hot_map(one_hot_map, nb_classes_ref)
 
+            confusion = get_log_confusion(confusion, nb_classes_pred, nb_classes_ref,
+                                          dim, **backend)
             predicted = (predicted[:, :, None] * confusion).sum(dim=1)
             loss = 0
             for soft, hard in enumerate(one_hot_map):
                 if hard is None:
                     # implicit class
-                    all_labels = filter(lambda x: x is not None, one_hot_map)
+                    all_labels = list(filter(lambda x: x is not None, one_hot_map))
                     obs1 = ~isin(reference, flatten(all_labels))
                 else:
                     obs1 = isin(reference, hard)
