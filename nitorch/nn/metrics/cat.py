@@ -8,6 +8,7 @@ from nitorch.core import py, utils, math
 
 
 def _pad_zero(x, implicit=False):
+    """Add a zero-channels if the input has an implicit background class"""
     if not implicit:
         return x
     zero_shape = [x.shape[0], 1, *x.shape[2:]]
@@ -17,6 +18,8 @@ def _pad_zero(x, implicit=False):
 
 
 def _pad_norm(x, implicit=False):
+    """Add a channel that ensures that prob sum to one if the input has
+    an implicit background class. Else, ensures that prob sum to one."""
     if not implicit:
         return x / x.sum(dim=1, keepdim=True)
     x = torch.cat((x, 1 - x.sum(dim=1, keepdim=True)), dim=1)
@@ -24,23 +27,87 @@ def _pad_norm(x, implicit=False):
 
 
 def _softmax(x, implicit=False):
-    """Safe softmax (with implicit class)"""
-    if implicit:
-        x = _pad_zero(x, implicit=implicit)
-    x = torch.softmax(x, dim=1)
+    """Add a zero-channels if the input has an implicit background class.
+    Then, take the softmax."""
+    x = math.softmax(x, implicit=(implicit, False))
     return x
 
 
 def _logsoftmax(x, implicit=False):
-    """Log(softmax(x)) (with implicit class)"""
+    """Add a zero-channels if the input has an implicit background class.
+    Then, take the softmax then its log."""
     x = _pad_zero(x, implicit=implicit)
     return torch.log_softmax(x, dim=1)
 
 
 def _log(x, implicit=False):
-    """Log (with implicit class)"""
+    """Add a channel that ensures that prob sum to one if the input has
+    an implicit background class. Else, ensures that prob sum to one.
+    Then, take the log."""
     x = _pad_norm(x, implicit=implicit)
     return x.clamp(min=1e-7, max=1-1e-7).log()
+
+
+def get_prob_explicit(x, log=False, implicit=False):
+    """Return a tensor of probabilities with all classes explicit"""
+    if log:
+        return _softmax(x, implicit=implicit)
+    else:
+        return _pad_norm(x, implicit=implicit)
+
+
+def get_logprob_explicit(x, log=False, implicit=False):
+    """Return a tensor of log-probabilities with all classes explicit"""
+    if log:
+        return _logsoftmax(x, implicit=implicit)
+    else:
+        return _log(x, implicit=implicit)
+
+
+def get_one_hot_map(one_hot_map, nb_classes):
+    """Return a well-formed one-hot map"""
+    one_hot_map = make_list(one_hot_map or [])
+    if not one_hot_map:
+        one_hot_map = list(range(nb_classes))
+    if len(one_hot_map) == nb_classes - 1:
+        one_hot_map = [*one_hot_map, None]
+    if len(one_hot_map) != nb_classes:
+        raise ValueError('Number of classes in prior and map '
+                         'do not match: {} and {}.'
+                         .format(nb_classes, len(one_hot_map)))
+    one_hot_map = list(map(lambda x: make_list(x) if x is not None else x,
+                           one_hot_map))
+    if sum(elem is None for elem in one_hot_map) > 1:
+        raise ValueError('Cannot have more than one implicit class')
+    return one_hot_map
+
+
+def get_hard_labels(x, one_hot_map, implicit=False):
+    """Get MAP labels
+
+    Parameters
+    ----------
+    x : (B, C[-1] | 1, *spatial) tensor
+    one_hot_map : list[list[int] or None]
+    implicit : bool, default=False
+
+    Returns
+    -------
+    x : (B, 1, *spatial) tensor[int]
+
+    """
+    if x.dtype in (torch.half, torch.float, torch.double):
+        x = _pad_norm(x, implicit)
+        x = x.argmax(dim=1)
+    else:
+        new_x = torch.zeros_like(x)
+        for soft, hard in enumerate(one_hot_map):
+            if hard is None:
+                # implicit class
+                hard = flatten([l for l in one_hot_map if l is not None])
+            new_x[isin(x, hard)] = soft
+        x = new_x
+    return x
 
 
 class Accuracy(Metric):
@@ -106,59 +173,23 @@ class Accuracy(Metric):
         predicted = torch.as_tensor(predicted)
         reference = torch.as_tensor(reference, device=predicted.device)
         nb_classes = max(predicted.shape[1], reference.shape[1]) + implicit
-        dtype = None
+        dtype = utils.max_dtype(predicted, reference, force_float=True)
 
         # hard labels
         one_hot_map = overload.get('one_hot_map', self.one_hot_map)
-        if one_hot_map is None:
-            one_hot_map = list(range(nb_classes))
-        if len(one_hot_map) == nb_classes - 1:
-            one_hot_map = [*one_hot_map, None]
-        if len(one_hot_map) != nb_classes:
-            raise ValueError('Number of classes in tensor and map '
-                             'do not match: {} and {}.'
-                             .format(nb_classes, len(one_hot_map)))
-        one_hot_map = list(map(lambda x: make_list(x) if x is not None else x,
-                               one_hot_map))
+        one_hot_map = get_one_hot_map(one_hot_map, nb_classes)
 
-        # preprocess prediction
-        if predicted.dtype in (torch.half, torch.float, torch.double):
-            predicted = _pad_norm(predicted, implicit)
-            predicted = predicted.argmax(dim=1)
-            dtype = predicted.dtype
-        else:
-            new_pred = torch.zeros_like(predicted)
-            for soft, hard in enumerate(one_hot_map):
-                if hard is None:
-                    # implicit class
-                    hard = flatten([l for l in one_hot_map if l is not None])
-                new_pred[isin(predicted, hard)] = soft
-            predicted = new_pred
+        # preprocess
+        predicted = get_hard_labels(predicted, one_hot_map, implicit)
+        reference = get_hard_labels(reference, one_hot_map, implicit)
 
-        # preprocess observed
-        if reference.dtype in (torch.half, torch.float, torch.double):
-            reference = _pad_norm(reference, implicit)
-            reference = reference.argmax(dim=1)
-            dtype = utils.max_dtype(dtype, reference.dtype)
-        else:
-            new_obs = torch.zeros_like(reference)
-            for soft, hard in enumerate(one_hot_map):
-                if hard is None:
-                    # implicit class
-                    hard = flatten([l for l in one_hot_map if l is not None])
-                new_obs[isin(reference, hard)] = soft
-            reference = new_obs
-
-        # accuracy + reduction
-        dtype = utils.max_dtype(dtype, force_float=True)
         return super().forward((reference == predicted).to(dtype), **overload)
 
 
 class Dice(Metric):
     """Dice/F1 score."""
 
-    def __init__(self, one_hot_map=None, implicit=False,
-                 discard_background=False, weighted=False,
+    def __init__(self, one_hot_map=None, implicit=False, weighted=False,
                  *args, **kwargs):
         """
 
@@ -179,7 +210,6 @@ class Dice(Metric):
         super().__init__(*args, **kwargs)
         self.one_hot_map = one_hot_map
         self.implicit = implicit
-        self.discard_background = discard_background
         self.weighted = weighted
 
     def forward(self, predicted, reference, **overload):
@@ -210,78 +240,47 @@ class Dice(Metric):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
-
-        log = overload.get('log', self.log)
         implicit = overload.get('implicit', self.implicit)
         weighted = overload.get('weighted', self.weighted)
-        one_hot_map = overload.get('one_hot_map', self.one_hot_map)
 
         predicted = torch.as_tensor(predicted)
         reference = torch.as_tensor(reference, device=predicted.device)
-        backend = dict(dtype=predicted.dtype, device=predicted.device)
+        nb_classes = max(predicted.shape[1], reference.shape[1]) + implicit
+        dtype = utils.max_dtype(predicted, reference, force_float=True)
 
-        # if only one predicted class -> must be implicit
-        implicit = implicit or (predicted.shape[1] == 1)
+        # hard labels
+        one_hot_map = overload.get('one_hot_map', self.one_hot_map)
+        one_hot_map = get_one_hot_map(one_hot_map, nb_classes)
 
-        # take softmax if needed
-        if log:
-            predicted = _softmax(predicted, implicit=implicit)
-        else:
-            predicted = _pad_norm(predicted, implicit=implicit)
+        # preprocess
+        predicted = get_hard_labels(predicted, one_hot_map, implicit)
+        reference = get_hard_labels(reference, one_hot_map, implicit)
 
-        nb_classes = predicted.shape[1]
+        # dice
         spatial_dims = list(range(2, predicted.dim()))
 
-        # preprocess reference
-        if reference.dtype in (torch.half, torch.float, torch.double):
-            # one-hot labels
-            reference = reference.to(predicted.dtype)
-            if reference.shape[1] == nb_classes - 1:
-                reference = _pad_norm(reference, implicit=True)
-            elif reference.shape[1] != nb_classes:
-                raise ValueError('Number of classes not consistent. '
-                                 'Expected {} or {} but got {}.'.format(
-                                 nb_classes, nb_classes-1, reference.shape[1]))
-
-            inter = nansum(predicted * reference, dim=spatial_dims)
-            union = nansum(predicted + reference, dim=spatial_dims)
-            loss = -2 * inter / union
-            if weighted:
-                if isinstance(weighted, bool):
-                    weights = nansum(reference, dim=spatial_dims)
-                    weights = weights / weights.sum(dim=1, keepdim=True)
+        loss = []
+        weights = []
+        for label in len(one_hot_map):
+            prd1 = predicted == label
+            ref1 = reference == label
+            inter = math.sum(prd1 * ref1, dim=spatial_dims, dtype=dtype)
+            prd1 = math.sum(prd1, dim=spatial_dims, dtype=dtype)
+            ref1 = math.sum(ref1, dim=spatial_dims, dtype=dtype)
+            union = prd1 + ref1
+            loss1 = 2 * inter / union
+            if weighted is not False:
+                if weighted is True:
+                    weight1 = ref1
                 else:
-                    weights = torch.as_tensor(weighted, **backend)[None, :]
-                loss = loss * weights
+                    weight1 = float(weighted[label])
+                loss1 = loss1 * weight1
+                weights.append(weight1)
+            loss.append(loss1)
 
-        else:
-            # hard labels
-            if not one_hot_map:
-                one_hot_map = list(range(predicted.shape[1]))
-            one_hot_map = list(map(make_list, one_hot_map))
+        loss = torch.cat(loss, dim=1)
+        if weighted is True:
+            weights = sum(weights)
+            loss = loss / weights
 
-            loss = []
-            weights = []
-            for soft, hard in enumerate(one_hot_map):
-                pred1 = predicted[:, soft, ...][:, None, ...]
-                ref1 = isin(reference, hard)
-
-                inter = math.sum(pred1 * ref1, dim=spatial_dims)
-                union = math.sum(pred1 + ref1, dim=spatial_dims)
-                loss1 = -2 * inter / union
-                if weighted:
-                    if isinstance(weighted, bool):
-                        weight1 = ref1.sum()
-                    else:
-                        weight1 = float(weighted[soft])
-                    loss1 = loss1 * weight1
-                    weights.append(weight1)
-                loss.append(loss1)
-
-            loss = torch.cat(loss, dim=1)
-            if weighted and isinstance(weighted, bool):
-                weights = sum(weights)
-                loss = loss / weights
-
-        loss += 1
         return super().forward(loss, **overload)
