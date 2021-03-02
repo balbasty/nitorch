@@ -166,7 +166,7 @@ class SimpleConv(Module):
             post_pading = 0
             output_padding = {'output_padding': output_padding}
         self._pre_padding = pre_padding
-        self._pre_padding_mode = pre_padding_mode
+        self._padding_mode = pre_padding_mode
         self._post_padding = post_padding
             
         # instantiate underlying conv class
@@ -181,44 +181,6 @@ class SimpleConv(Module):
                           bias=bias,
                           **output_padding)
     
-    def forward(self, x, **overload):
-        
-        clone = copy(self)
-        
-        stride = overload.get('stride', clone.stride)
-        padding = overload.get('padding', clone.padding)
-        padding_mode = overload.get('padding_mode', clone.padding_mode)
-        output_padding = overload.get('output_padding', clone.output_padding)
-        dilation = overload.get('dilation', clone.dilation)
-        
-        kernel_size = make_tuple(clone.kernel_size, self.dim)
-        stride = make_tuple(stride, self.dim)
-        output_padding = make_tuple(output_padding, self.dim)
-        dilation = make_tuple(dilation, self.dim)
-
-        if padding == 'auto':
-            pad = [((k-1)*d)//2 for k, d in zip(kernel_size, dilation)]
-        padding = make_tuple(padding, self.dim)
-        
-        # perform pre-padding
-        if padding_mode not in _native_padding_mode:
-            x = utils.pad(x, padding, mode=padding_mode, side='both')
-            padding = 0
-        
-        # call native convolution
-        clone.stride = stride
-        clone.padding = padding
-        clone.padding_mode = padding_mode
-        clone.output_padding = output_padding
-        clone.dilation = dilation
-        x = clone.conv(x)
-        
-        # perform post-padding
-        if not clone.transposed and output_padding:
-            x = utils.pad(x, output_padding, side='right')
-            
-        return x
-
     def _set_padding(self, padding, padding_mode):
         if padding != 'auto' and padding_mode in _native_padding_mode:
             self.conv.padding_mode = padding_mode
@@ -229,7 +191,11 @@ class SimpleConv(Module):
             self._pre_padding = padding
             self._padding_mode = padding_mode
             self.conv.padding = 0
-        
+    
+    @property
+    def kernel_size(self):
+        return self.conv.kernel_size
+
     @property
     def stride(self):
         return self.conv.stride
@@ -291,6 +257,47 @@ class SimpleConv(Module):
     @groups.setter
     def groups(self, value):
         self.conv.groups = value
+    
+    def forward(self, x, **overload):
+        
+        conv1 = self.conv
+        clone = copy(self)
+        clone.conv = copy(conv1)
+        
+        stride = overload.get('stride', clone.stride)
+        padding = overload.get('padding', clone.padding)
+        padding_mode = overload.get('padding_mode', clone.padding_mode)
+        output_padding = overload.get('output_padding', clone.output_padding)
+        dilation = overload.get('dilation', clone.dilation)
+        
+        kernel_size = make_tuple(clone.kernel_size, self.dim)
+        stride = make_tuple(stride, self.dim)
+        output_padding = make_tuple(output_padding, self.dim)
+        dilation = make_tuple(dilation, self.dim)
+
+        if padding == 'auto':
+            padding = [((k-1)*d)//2 for k, d in zip(kernel_size, dilation)]
+        padding = make_tuple(padding, self.dim)
+        
+        # perform pre-padding
+        if padding_mode not in _native_padding_mode:
+            x = utils.pad(x, padding, mode=padding_mode, side='both')
+            padding = 0
+        
+        # call native convolution
+        clone.stride = stride
+        clone.padding = padding
+        clone.padding_mode = padding_mode
+        clone.output_padding = output_padding
+        clone.dilation = dilation
+        x = clone.conv(x)
+        
+        # perform post-padding
+        if not clone.transposed and output_padding:
+            x = utils.pad(x, output_padding, side='right')
+        
+        self.conv = conv1
+        return x
             
     def shape(self, x, **overload):
         """Compute output shape of the equivalent ``forward`` call.
@@ -340,6 +347,15 @@ class SimpleConv(Module):
         shape = list(shape)
         shape[1] = self.out_channels
         return tuple(shape)
+    
+    def __str__(self):
+        s = [f'{self.in_channels}', f'{self.out_channels}']
+        if self.groups > 1:
+            s += [f'groups={self.groups}']
+        s = ', '.join(s)
+        return f'SimpleConv({s})'
+    
+    __repr__ = __str__
 
 
 @nitorchmodule
@@ -349,7 +365,12 @@ class GroupedConv(tnn.ModuleList):
     Same as SimpleConv, but allows to have groups with non-equal number of channels.
     """
 
-    def __init__(self, dim, in_channels, out_channels, *args, **kwargs):
+    # TODO:
+    #    Maybe keep the `groups` option and simply let in_channels and 
+    #    out_channels be lists *optionnally* if the user wants imbalanced
+    #    groups
+    
+    def __init__(self, dim, in_channels, out_channels, *args, groups=None, **kwargs):
         """
 
         Parameters
@@ -381,6 +402,10 @@ class GroupedConv(tnn.ModuleList):
         dilation : int or sequence[int], default=1
             Spacing between kernel elements.
             
+        groups : int, default=None
+            Number of groups. Default is the maximum of the lengths 
+            of ``in_channels`` and ``out_channels``.
+            
         bias : bool, default=True
             If ``True``, adds a learnable bias to the output.
             
@@ -392,20 +417,22 @@ class GroupedConv(tnn.ModuleList):
             dimension in the output shape. Only used if ``transposed is True``.
         """
         in_channels = py.make_list(in_channels)
-        nb_groups = len(in_channels)
         out_channels = py.make_list(out_channels)
+        nb_groups = groups or max(len(in_channels), len(out_channels))
+        if len(in_channels) == 1:
+            in_channels = [in_channels[0]//nb_groups] * nb_groups
         if len(out_channels) == 1:
             out_channels = [out_channels[0]//nb_groups] * nb_groups
-        if len(in_channels) != len(out_channels):
+        if len(in_channels) != nb_groups or len(out_channels) != nb_groups:
             raise ValueError(f'The number of input and output groups '
                              f'must be the same: {len(in_channels)} vs '
                              f'{len(out_channels)}')
 
-        modules = [SimpleConv(i, o, *args, **kwargs)
+        modules = [SimpleConv(dim, i, o, *args, **kwargs)
                    for i, o in zip(in_channels, out_channels)]
         super().__init__(modules)
-        self.in_channels = len(in_channels)
-        self.out_channels = len(out_channels)
+        self.in_channels = sum(in_channels)
+        self.out_channels = sum(out_channels)
 
     def forward(self, input, **overload):
         """Perform a grouped convolution with imbalanced channels.
@@ -422,9 +449,11 @@ class GroupedConv(tnn.ModuleList):
         out_shape = (input.shape[0], self.out_channels, *input.shape[2:])
         output = input.new_empty(out_shape)
         input = input.split([c.in_channels for c in self], dim=1)
-        output = output.split([c.out_channels for c in self], dim=1)
-        for layer, inp, out in zip(self, input, output):
-            out[...] = layer(inp, **overload)
+        out_channels = [c.out_channels for c in self]
+        for d, (layer, inp) in enumerate(zip(self, input)):
+            slicer = [slice(None)] * (self.dim + 2)
+            slicer[1] = slice(sum(out_channels[:d]), sum(out_channels[:d+1]))
+            output[slicer] = layer(inp, **overload)
         return output
 
     @property
@@ -436,6 +465,10 @@ class GroupedConv(tnn.ModuleList):
     def transposed(self):
         for layer in self:
             return layer.transposed
+        
+    @property
+    def groups(self):
+        return len(self.children())
 
     @property
     def stride(self):
@@ -445,7 +478,7 @@ class GroupedConv(tnn.ModuleList):
     @stride.setter
     def stride(self, value):
         for layer in self:
-            layer.stride = make_tuple(value, self.dim)
+            layer.stride = value
 
     @property
     def padding(self):
@@ -455,7 +488,7 @@ class GroupedConv(tnn.ModuleList):
     @padding.setter
     def padding(self, value):
         for layer in self:
-            layer.padding = make_tuple(value, self.dim)
+            layer.padding = value
 
     @property
     def output_padding(self):
@@ -465,7 +498,7 @@ class GroupedConv(tnn.ModuleList):
     @output_padding.setter
     def output_padding(self, value):
         for layer in self:
-            layer.output_padding = make_tuple(value, self.dim)
+            layer.output_padding = value
 
     @property
     def dilation(self):
@@ -475,7 +508,7 @@ class GroupedConv(tnn.ModuleList):
     @dilation.setter
     def dilation(self, value):
         for layer in self:
-            layer.dilation = make_tuple(value, self.dim)
+            layer.dilation = value
 
     @property
     def padding_mode(self):
@@ -506,34 +539,20 @@ class GroupedConv(tnn.ModuleList):
             Output shape
 
         """
-        if torch.is_tensor(x):
-            inshape = tuple(x.shape)
-        else:
-            inshape = x
         
-        stride = overload.get('stride', self.stride)
-        padding = overload.get('padding', self.padding)
-        output_padding = overload.get('output_padding', self.output_padding)
-        dilation = overload.get('dilation', self.dilation)
-        transposed = self.transposed
-        kernel_size = self.kernel_size
-
-        stride = make_tuple(stride, self.dim)
-        padding = make_tuple(padding, self.dim)
-        output_padding = make_tuple(output_padding, self.dim)
-        dilation = make_tuple(dilation, self.dim)
-
-        shape = _guess_output_shape(
-            inshape, self.dim,
-            kernel_size=kernel_size,
-            stride=stride,
-            dilation=dilation,
-            padding=padding,
-            output_padding=output_padding,
-            transposed=transposed)
+        for layer in self:
+            shape = layer.shape(x, **overload)
+            break
         shape = list(shape)
         shape[1] = self.out_channels
         return tuple(shape)
+    
+    def __str__(self):
+        in_channels = [l.in_channels for l in self]
+        out_channels = [l.out_channels for l in self]
+        return f'GroupedConv({in_channels}, {out_channels})'
+    
+    __repr__ = __str__
 
 
 class Conv(Module):
@@ -649,20 +668,22 @@ class Conv(Module):
             transposed=transposed,
             output_padding=output_padding,
             bias=bias)
-        if len(in_channels) == 1:
+        if len(in_channels) == 1 and len(out_channels) == 1:
             ConvKlass = SimpleConv
             in_channels = in_channels[0]
             out_channels = out_channels[0]
             opt_conv['groups'] = groups
         else:
             ConvKlass = GroupedConv
+            opt_conv['groups'] = max(len(in_channels), len(out_channels))
 
         conv = ConvKlass(dim, in_channels, out_channels, **opt_conv)
 
         # Add batch norm
         if isinstance(batch_norm, bool) and batch_norm:
-                batch_norm = BatchNorm(self.dim, conv.in_channels)
-        self.batch_norm = (batch_norm() if inspect.isclass(batch_norm)
+            batch_norm = BatchNorm(dim, conv.in_channels)
+        self.batch_norm = (batch_norm(dim, conv.in_channels) 
+                           if inspect.isclass(batch_norm)
                            else batch_norm if callable(batch_norm)
                            else None)
 
@@ -683,7 +704,71 @@ class Conv(Module):
         self.activation = (activation() if inspect.isclass(activation)
                            else activation if callable(activation)
                            else None)
+        
+    @property
+    def dim(self):
+        return self.conv.dim
 
+    @property
+    def in_channels(self):
+        return self.conv.in_channels
+
+    @property
+    def out_channels(self):
+        return self.conv.out_channels
+
+    @property
+    def transposed(self):
+        return self.conv.transposed
+    
+    @property
+    def stride(self):
+        return self.conv.stride
+
+    @stride.setter
+    def stride(self, value):
+        self.conv.stride = value
+
+    @property
+    def padding(self):
+        return self.conv.padding
+
+    @padding.setter
+    def padding(self, value):
+        self.conv.padding = value
+
+    @property
+    def output_padding(self):
+        return self.conv.output_padding
+
+    @output_padding.setter
+    def output_padding(self, value):
+        self.conv.output_padding = value
+
+    @property
+    def dilation(self):
+        return self.conv.dilation
+
+    @dilation.setter
+    def dilation(self, value):
+        self.conv.dilation = value
+
+    @property
+    def padding_mode(self):
+        return self.conv.padding_mode
+
+    @padding_mode.setter
+    def padding_mode(self, value):
+        self.conv.padding_mode = value
+
+    @property
+    def groups(self):
+        return self.conv.groups
+
+    @groups.setter
+    def groups(self, value):
+        self.conv.groups = value
+            
     def forward(self, x, **overload):
         """Forward pass.
 
@@ -707,10 +792,10 @@ class Conv(Module):
         method `shape`.
 
         """
-
         # Batch norm
         batch_norm = overload.pop('batch_norm', self.batch_norm)
-        batch_norm = (batch_norm() if inspect.isclass(batch_norm)
+        batch_norm = (batch_norm(self.dim, self.in_channels) 
+                      if inspect.isclass(batch_norm)
                       else batch_norm if callable(batch_norm)
                       else None)
 
@@ -723,11 +808,11 @@ class Conv(Module):
                       else None)
         activation = copy(activation)
 
-        if (self.inplace and hasattr(activation, 'inplace')
-                and not (x.is_leaf and x.requires_grad)):
+        
+        if (activation and self.inplace and 
+                hasattr(activation, 'inplace') and
+                not (x.is_leaf and x.requires_grad)):
             activation.inplace = True
-        else:
-            activation.inplace = False
 
         # BatchNorm + Convolution + Activation
         if batch_norm:
@@ -737,69 +822,6 @@ class Conv(Module):
             x = activation(x)
         return x
 
-    @property
-    def dim(self):
-        return self.conv.dim
-
-    @property
-    def in_channels(self):
-        return self.conv.in_channels
-
-    @property
-    def out_channels(self):
-        return self.conv.out_channels
-
-    @property
-    def transposed(self):
-        return self.conv.transposed
-    
-    @property
-    def stride(self):
-        return self.conv.stride
-
-    @stride.setter
-    def stride(self, value):
-        self.conv.stride = make_tuple(value, self.dim)
-
-    @property
-    def padding(self):
-        return self.conv.padding
-
-    @padding.setter
-    def padding(self, value):
-        self.conv.padding = make_tuple(value, self.dim)
-
-    @property
-    def output_padding(self):
-        return self.conv.output_padding
-
-    @output_padding.setter
-    def output_padding(self, value):
-        self.conv.output_padding = make_tuple(value, self.dim)
-
-    @property
-    def dilation(self):
-        return self.conv.dilation
-
-    @dilation.setter
-    def dilation(self, value):
-        self.conv.dilation = make_tuple(value, self.dim)
-
-    @property
-    def padding_mode(self):
-        return self.conv.padding_mode
-
-    @padding_mode.setter
-    def padding_mode(self, value):
-        self.conv.padding_mode = value
-
-    @property
-    def groups(self):
-        return self.conv.groups
-
-    @groups.setter
-    def groups(self, value):
-        self.conv.groups = value
             
     def shape(self, x, **overload):
         """Compute output shape of the equivalent ``forward`` call.

@@ -252,7 +252,7 @@ class StackedConv(tnn.ModuleList):
     def shape(self, x):
         if torch.is_tensor(x):
             x = tuple(x.shape)
-        for layer in self:
+        for layer in reversed(self):
             if isinstance(layer, (Conv, Pool)):
                 x = layer.shape(x)
         return x
@@ -336,6 +336,7 @@ class DecodingLayer(StackedConv):
             batch_norm=batch_norm,
             groups=groups,
             stitch=stitch,
+            transposed=True,
         )
     
         
@@ -512,7 +513,6 @@ class Decoder(tnn.ModuleList):
             input_channels,
             output_channels,
             skip_channels=None,
-            skip_groups=1,
             kernel_size=3,
             stride=2,
             activation=tnn.ReLU,
@@ -537,9 +537,6 @@ class Decoder(tnn.ModuleList):
         skip_channels : sequence[int or sequence[int]]
             Number of skipped channels per layer,
             If an element is a sequence, it comes from a grouped conv.
-            
-        skip_groups : sequence[int]
-            Number of groups per input skipped connections.
             
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
@@ -573,16 +570,13 @@ class Decoder(tnn.ModuleList):
         batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
 
         # deal with skipped connections (what a nightmare...)
-        skip_groups = make_list(skip_groups or [1], len(output_channels))
         skip_channels = make_list(skip_channels or [])
         self.skip = len(skip_channels) > 0
-        self.skip_repeat = []
         self.skip_groups = []
         for i in range(len(skip_channels)):
-            self.skip_repeat.append(max(groups[i] // skip_groups[i], 1))
             self.skip_groups.append(groups[i])
             if len(input_channels) > i+1:
-                input_channels[i+1] += skip_channels[i] * self.skip_repeat[-1]
+                input_channels[i+1] += skip_channels[i]
 
         all_shapes = zip(
             input_channels, 
@@ -628,15 +622,10 @@ class Decoder(tnn.ModuleList):
         postproc = list(self.children())[len(inputs):]
 
         # Layers with skipped connections
-        repeat = list(self.skip_repeat)
         groups = list(self.skip_groups)
         for i, layer in enumerate(decoder):
-            rep1 = repeat.pop(0)
             grp1 = groups.pop(0)
             inp1 = inputs.pop(0)
-            
-            if rep1 > 1:
-                inp1 = torch.cat([inp1]*rep1, dim=1)
             oshape = layer.shape(x)[2:]
             ishape = inp1.shape[2:]
             pad = [i-o for o, i in zip(oshape, ishape)]
@@ -827,7 +816,7 @@ class UNet(tnn.Sequential):
         decoder = list(map(make_list, decoder))
         stack = flatten(decoder[len(encoder):])
         decoder = decoder[:len(encoder)]
-        last_decoder = decoder[-1][-1] + sum(input_channels)
+        last_decoder = decoder[-1][-1]
 
         nb_layers = len(encoder) + len(decoder) + len(stack)
         
@@ -836,8 +825,8 @@ class UNet(tnn.Sequential):
         stitch[-1] = 1  # do not stitch last layer
         groups = expand_list(make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
-        groups[0] = 1   # do not group first layer
-        groups[-1] = 1  # do not group lasy layer
+        groups[0] = len(input_channels)    # first layer
+        groups[-1] = len(output_channels)  # last layer
         activation = expand_list(make_list(activation), nb_layers, default='relu')
         batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
 
@@ -874,12 +863,17 @@ class UNet(tnn.Sequential):
                       stitch=stitch_encoder)
         modules.append(('encoder', enc))
 
-        skip_groups = list(reversed(groups_encoder[1:-1])) + [len(input_channels)]
+        e_groups = reversed(groups_encoder)
+        d_groups = groups_decoder[1:] + groups_stack[:1]
+        skip_repeat = [max(1, gd // ge) for ge, gd in 
+                       zip(e_groups, d_groups)]
+        skip_channels = [e * r for e, r in zip(encoder_out[1:], skip_repeat)]
+        self.skip_repeat = [1] + skip_repeat
+        
         dec = Decoder(dim,
                       input_channels=encoder_out[0],
                       output_channels=decoder,
-                      skip_channels=encoder_out[1:],
-                      skip_groups=skip_groups,
+                      skip_channels=skip_channels,
                       kernel_size=kernel_size,
                       stride=stride,
                       activation=activation_decoder,
@@ -888,6 +882,7 @@ class UNet(tnn.Sequential):
                       stitch=stitch_decoder)
         modules.append(('decoder', dec))
 
+        last_decoder = last_decoder + skip_channels[-1]
         stk = StackedConv(dim,
                           input_channels=last_decoder,
                           output_channels=stack,
@@ -898,10 +893,14 @@ class UNet(tnn.Sequential):
                           stitch=stitch_stack)
         modules.append(('stack', stk))
 
+        input_final = make_list(input_final)
+        if len(input_final) == 1:
+            input_final = [input_final[0]//len(output_channels)] * len(output_channels)
         stk = Conv(dim, input_final, output_channels,
                    kernel_size=kernel_size,
                    activation=activation_final,
-                   batch_norm=batch_norm_final)
+                   batch_norm=batch_norm_final,
+                   padding='auto')
         modules.append(('final', stk))
 
         super().__init__(OrderedDict(modules))
@@ -913,8 +912,11 @@ class UNet(tnn.Sequential):
         for layer in self.encoder:
             x = layer(x)
             encoder_out.append(x)
-        # decoder
+        # repeat skipped values if decoder has split
         x = list(reversed(encoder_out))
+        x = [x1.repeat([1, r] + [1]*self.dim) if r > 1. else x1
+             for x1, r in zip(x, self.skip_repeat)]
+        # decoder
         x = self.decoder(x)
         x = self.stack(x)
         x = self.final(x)

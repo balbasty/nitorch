@@ -983,20 +983,24 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
         raise ValueError('Padding mode should be one of {}. Got {}.'
                          .format(tuple(_bounds.keys()) + ('constant',), mode))
     padsize = tuple(padsize)
-    if side == 'both':
-        padpre = padsize
-        padpost = padsize
-    elif side == 'pre':
-        padpre = padsize
-        padpost = (0,) * len(padpre)
-    elif side == 'post':
-        padpost = padsize
-        padpre = (0,) * len(padpost)
-    else:
+    if not side:
         if len(padsize) % 2:
             raise ValueError('Padding length must be divisible by 2')
         padpre = padsize[::2]
         padpost = padsize[1::2]
+    else:
+        side = side.lower()
+        if side == 'both':
+            padpre = padsize
+            padpost = padsize
+        elif side in ('pre', 'left'):
+            padpre = padsize
+            padpost = (0,) * len(padpre)
+        elif side in ('post', 'right'):
+            padpost = padsize
+            padpre = (0,) * len(padpost)
+        else:
+            raise ValueError(f'Unknown side `{side}`')
     padpre = (0,) * max(0, inp.dim()-len(padpre)) + padpre
     padpost = (0,) * max(0, inp.dim()-len(padpost)) + padpost
     if inp.dim() != len(padpre) or inp.dim() != len(padpost):
