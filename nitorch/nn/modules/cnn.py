@@ -15,6 +15,26 @@ import math
 
 
 def interleaved_cat(tensors, dim=0, groups=1):
+    """Split tensors into `groups` chunks and concatenate them
+    in an interleaved manner.
+
+    If the input is [x, y, z] and `groups=2`, they are chunked into
+    (x1, x2), (y1, y2), (z1, z2) and concatenated as [x1, y1, z1, x2,y2, z2]
+
+    Parameters
+    ----------
+    tensors : sequence[tensor]
+        Input tensors
+    dim : int, default=0
+        Dimension along which to split/concatenate
+    groups : int, default=1
+        Tensors are split into that many chunks
+
+    Returns
+    -------
+    tensor
+
+    """
     if groups == 1:
         return torch.cat(tensors, dim=dim)
     tensors = [t.chunk(groups, dim) for t in tensors]
@@ -23,7 +43,10 @@ def interleaved_cat(tensors, dim=0, groups=1):
 
 
 def expand_list(x, n, crop=False, default=None):
-    """
+    """Expand ellipsis in a list by substituting it with the value
+    on its left, repeated as many times as necessary. By default,
+    a "virtual" ellipsis is present at the end of the list.
+
     expand_list([1, 2, 3],       5)            -> [1, 2, 3, 3, 3]
     expand_list([1, 2, ..., 3],  5)            -> [1, 2, 2, 2, 3]
     expand_list([1, 2, 3, 4, 5], 3, crop=True) -> [1, 2, 3]
@@ -40,6 +63,8 @@ def expand_list(x, n, crop=False, default=None):
     x = (x[:idx_ellipsis] + 
          [fill_value] * max(0, n-k) + 
          x[idx_ellipsis+1:])
+    if crop:
+        x = x[:n]
     return x
 
 
@@ -111,7 +136,10 @@ class StackedConv(tnn.ModuleList):
     """Multiple convolutions at the same resolution followed by 
     a up- or down- sampling, using either a strided convolution or 
     a pooling operation.
-    
+
+    By default, padding is used so that convolutions with stride 1
+    preserve spatial dimensions.
+
     (BatchNorm? > [Grouped]Conv > Activation? > Stitch?)* > 
     (BatchNorm? > [Grouped](StridedConv|Conv > Pool) > Activation? > Stitch?)
     """
@@ -129,7 +157,8 @@ class StackedConv(tnn.ModuleList):
             batch_norm=False,
             groups=None,
             stitch=1,
-            output_padding=0):
+            output_padding=0,
+            bias=True):
         """
 
         Parameters
@@ -172,10 +201,12 @@ class StackedConv(tnn.ModuleList):
         stitch : [sequence of] int, default=1
             Number of stitched tasks per convolution.
 
+        bias : [sequence of] int, default=True
+            Include a bias term in the convolution.
+
         """
         self.dim = dim
-        
-        
+
         output_channels = make_list(output_channels)
         input_channels = [input_channels] + output_channels[:-1]
         nb_layers = len(output_channels)
@@ -186,6 +217,7 @@ class StackedConv(tnn.ModuleList):
         groups = [g or s for g, s in zip(groups, stitch)]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
         batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
+        bias = expand_list(make_list(bias), nb_layers, default=True)
         
         if pool and transposed:
             raise ValueError('Cannot have both `pool` and `transposed`.')
@@ -196,32 +228,35 @@ class StackedConv(tnn.ModuleList):
             activation,
             batch_norm,
             groups, 
-            stitch)
+            stitch,
+            bias)
         *all_shapes, final_shape = all_shapes
         
         # stacked conv (without strides)
         modules = []
-        for d, (i, o, a, b, g, s) in enumerate(all_shapes):
+        for d, (i, o, a, bn, g, s, b) in enumerate(all_shapes):
             modules.append(Conv(
                 dim, i, o, kernel_size,
-                activation=activation,
-                batch_norm=batch_norm,
+                activation=a,
+                batch_norm=bn,
                 padding='auto',
-                groups=g))
+                groups=g,
+                bias=b))
             if s > 1:
                 modules.append(Stitch(s, s))
         
         # last conv (strided if not pool)
-        i, o, a, b, g, s = final_shape
+        i, o, a, bn, g, s, b = final_shape
         modules.append(Conv(
             dim, i, o, kernel_size,
             transposed=transposed,
             activation=None if pool else a,
-            batch_norm=b,
+            batch_norm=bn,
             stride=1 if pool else stride,
             padding='auto',
             groups=g,
-            output_padding=output_padding))
+            output_padding=output_padding,
+            bias=b))
         
         # pooling
         if pool:
@@ -276,8 +311,7 @@ class EncodingLayer(StackedConv):
     (BatchNorm? > [Grouped]Conv > Activation? > Stitch?)* > 
     (BatchNorm? > [Grouped](StridedConv|(Conv > Pool)) > Activation? > Stitch?)
     """
-    
-    
+
     def __init__(
             self,
             dim,
@@ -353,13 +387,14 @@ class Encoder(tnn.ModuleList):
        can be different from the other ones.
     .. If batch normalization is activated, it is performed before each
        convolution.
+    .. Grouped convolutions and stitching units can be used at each layer.
 
     Examples
     --------
     Encoder(dim, 2, [8, 16])
         (B, 2) -> Conv(stride=2) + ReLU -> (B, 8)
                -> Conv(stride=2) + ReLU -> (B, 16)
-    Encoder(dim, 2, [[8, 8], [16, 16], [32, 32]], final_activation=None)
+    Encoder(dim, 2, [[8, 8], [16, 16], [32, 32]], activation=[..., None])
         (B, 2) -> Conv(stride=1) + ReLU -> (B, 8)
                -> Conv(stride=2) + ReLU -> (B, 8)
                -> Conv(stride=1) + ReLU -> (B, 16)
@@ -482,9 +517,10 @@ class Decoder(tnn.ModuleList):
        can be different from the other ones.
     .. If batch normalization is activated, it is performed before each
        convolution.
-    .. The `skip` option can be used so that the the input is a list of
-       tensors that are concatenated after each transposed convolution.
-       Padding is used to ensure that tensors can be concatenated.
+    .. The `skip_channels` option can be used so that the the input is a
+       list of tensors that are concatenated after each transposed
+       convolution. Padding is used to ensure that tensors can be
+       concatenated.
 
 
     Examples
@@ -492,7 +528,7 @@ class Decoder(tnn.ModuleList):
     Decoder(dim, 16, [8, 2])
         (B, 16) -> ConvT(stride=2) + ReLU -> (B, 8)
                 -> ConvT(stride=2) + ReLU -> (B, 2)
-    Decoder(dim, 32, [[16, 16], [8,8], 2], final_activation=None)
+    Decoder(dim, 32, [[16, 16], [8,8], 2], activation=[..., None])
         (B, 32) -> Conv(stride=2) + ReLU -> (B, 16)
                 -> Conv(stride=1) + ReLU -> (B, 16)
                 -> Conv(stride=2) + ReLU -> (B, 8)
@@ -639,97 +675,6 @@ class Decoder(tnn.ModuleList):
         return x
 
 
-# @nitorchmodule
-# class StackedConv(tnn.Sequential):
-#     """Stacked convolutions, without up/down-sampling."""
-
-#     def __init__(
-#             self,
-#             dim,
-#             input_channels,
-#             output_channels,
-#             kernel_size=3,
-#             stride=1,
-#             transposed=False,
-#             activation=tnn.ReLU,
-#             final_activation='same',
-#             batch_norm=False,
-#             groups=None,
-#             final_group='same',
-#             stitch=1,
-#             final_stitch='same'):
-#         """
-
-#         Parameters
-#         ----------
-#         dim : {1, 2, 3}
-#             Dimension.
-#         input_channels : int
-#             Number of input channels.
-#         output_channels : sequence[int]
-#             Number of output channels in each convolutional layer.
-#         kernel_size : int or sequence[int], default=3
-#             Kernel size per dimension.
-#         stride : int or sequence[int], default=1
-#             Stride in the final convolution.
-#         activation : str or type or callable, default='relu'
-#             Activation function.
-#         final_activation : str or type or callable, default='same'
-#             Final activation function. If 'same', same as `activation`.
-#         batch_norm : bool or type or callable, default=False
-#             Batch normalization before each convolution.
-#         groups : int or sequence[int], default=`stitch`
-#             Number of groups per layer. If > 1, a grouped convolution
-#             is performed, which is equivalent to `groups` independent
-#             layers.
-#         final_group : int, default='same'
-#             Final number of groups
-#         stitch : int or sequence[int], default=1
-#             Number of stitched tasks per layer.
-#         final_stitch : int, default='same'
-#             Final stitch operation.
-#         """
-#         self.dim = dim
-
-#         stitch = make_list(stitch, len(output_channels))
-#         stitch = [stch or 1 for stch in stitch]
-#         groups = make_list(groups, len(output_channels))
-#         groups = [group or stch for group, stch in zip(groups, stitch)]
-#         output_channels = list(output_channels)
-#         input_channels = [input_channels] + output_channels[:-1]
-
-#         modules = []
-#         kernel_size = make_list(kernel_size, dim)
-#         nb_module = len(input_channels)
-
-#         final_stride, stride = (stride, 1)
-#         final_transposed, transposed = (transposed, False)
-#         final_group = groups[-1] if final_group == 'same' else final_group
-#         final_stitch = groups[-1] if final_stitch == 'same' else final_stitch
-
-#         all_shapes = zip(input_channels, output_channels, groups, stitch)
-#         for l, (i, o, g, s) in enumerate(all_shapes):
-#             pad = [(k-1)//2 for k in kernel_size]
-#             if l == nb_module-1:
-#                 if final_activation != 'same':
-#                     activation = final_activation
-#                 stride = final_stride
-#                 transposed = final_transposed
-#                 s = final_stitch or 1
-#                 g = final_group or s
-#             modules.append(Conv(dim, i, o,
-#                                 kernel_size=kernel_size,
-#                                 padding=pad,
-#                                 stride=stride,
-#                                 activation=activation,
-#                                 batch_norm=batch_norm,
-#                                 transposed=transposed,
-#                                 groups=g))
-#             if s != 1:
-#                 modules.append(Stitch(s, s))
-#         super().__init__(*modules)
-
-
 @nitorchmodule
 class UNet(tnn.Sequential):
     """Fully-convolutional U-net."""
@@ -775,7 +720,7 @@ class UNet(tnn.Sequential):
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
             
-        activation : str or type or callable or None, default='relu'
+        activation : [sequence of] str or type or callable or None, default='relu'
             Activation function. An activation can be a class
             (typically a Module), which is then instantiated, or a
             callable (an already instantiated class or a more simple
@@ -788,15 +733,15 @@ class UNet(tnn.Sequential):
         pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
             Pooling to use in the encoder. If None, use strided convolutions.
             
-        batch_norm : bool or type or callable, default=False
+        batch_norm : [sequence of] bool or type or callable, default=False
             Batch normalization before each convolution.
             
-        groups : int or sequence[int], default=`stitch`
+        groups : [sequence of] int, default=`stitch`
             Number of groups per layer. If > 1, a grouped convolution
             is performed, which is equivalent to `groups` independent
             layers.
             
-        stitch : int or sequence[int], default=1
+        stitch : [sequence of] int, default=1
             Number of stitched tasks per layer.
         """
         self.dim = dim
@@ -940,36 +885,55 @@ class CNN(tnn.Sequential):
 
     """
 
-    def __init__(self, dim, input_channels, output_channels, encoder=None,
-                 stack=None, kernel_size=3, stride=2, pool=None, reduction='max',
-                 activation='relu', final_activation='same', batch_norm=False):
+    def __init__(
+            self,
+            dim,
+            input_channels,
+            output_channels,
+            encoder=None,
+            stack=None,
+            kernel_size=3,
+            stride=2,
+            pool=None,
+            reduction='max',
+            activation='relu',
+            batch_norm=False):
         """
 
         Parameters
         ----------
         dim : {1, 2, 3}
             Number of spatial dimensions.
+
         input_channels : int
             Number of input channels.
+
         output_channels : int
             Number of output channels.
+
         encoder : sequence[int or sequence[int]], default=[16, 32, 32, 32]
             Number of output channels in each encoding layer.
             If a nested list, multiple convolutions are performed at each
             resolution.
+
         stack : sequence[int], default=[32, 16, 16]
             Number of output channels in each fully-connected layer.
+
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
+
         stride : int or sequence[int], default=2
             Stride of the encoder (the dimensions are divided by this
             number after each encoding layer).
+
         pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
             Type of pooling performed in the encoder.
             If None, strided convolutions are used.
+
         reduction : {'max', 'min', 'median', 'mean', 'sum'} or type or callable, default='max'
             Reduction function, that transitions between the encoding
             layers and fully connected layers.
+
         activation : str or type or callable, default='relu'
             Activation function. An activation can be a class
             (typically a Module), which is then instantiated, or a
@@ -979,8 +943,7 @@ class CNN(tnn.Sequential):
                 * have a learnable activation specific to this module
                 * have a learnable activation shared with other modules
                 * have a non-learnable activation
-        final_activation : str or type or callable, default='same'
-            Final activation function. If 'same', same as `activation`.
+
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
         """
@@ -998,6 +961,11 @@ class CNN(tnn.Sequential):
         if not isinstance(reduction, Reduction):
             raise TypeError('reduction must be a `Reduction` module.')
 
+        nb_layers = len(encoder) + len(stack)
+        activation = expand_list(make_list(activation), nb_layers, default='relu')
+        activation_encoder = activation[:len(encoder)]
+        activation_stack = activation[len(encoder):]
+
         modules = []
         enc = Encoder(dim,
                       input_channels=input_channels,
@@ -1005,7 +973,7 @@ class CNN(tnn.Sequential):
                       kernel_size=kernel_size,
                       stride=stride,
                       pool=pool,
-                      activation=activation,
+                      activation=activation_encoder,
                       batch_norm=batch_norm)
         modules.append(('encoder', enc))
 
@@ -1015,8 +983,7 @@ class CNN(tnn.Sequential):
                           input_channels=last_encoder,
                           output_channels=stack,
                           kernel_size=1,
-                          activation=activation,
-                          final_activation=final_activation)
+                          activation=activation_stack)
         modules.append(('stack', stk))
 
         super().__init__(OrderedDict(modules))
@@ -1044,7 +1011,7 @@ class MRF(tnn.Sequential):
 
     def __init__(self, dim, num_classes, num_filters=16, num_extra=1,
                  kernel_size=3, activation=tnn.LeakyReLU(0.2),
-                 batch_norm=False, final_activation='same', bias=False):
+                 batch_norm=False, bias=False):
         """
 
         Parameters
@@ -1059,39 +1026,58 @@ class MRF(tnn.Sequential):
             Number of conv filters in first, MRF layer.
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
-        activation : str or type or callable, default='tnn.LeakyReLU(0.2)'
+        activation : [sequence of] str or type or callable, default=`LeakyReLU(0.2)`
             Activation function.
-        batch_norm : bool or type or callable, default=False
+        batch_norm : [sequence of] bool or type or callable, default=False
             Batch normalization before each convolution.
-        final_activation : str or type or callable, default='same'
-            Final activation function. If 'same', same as `activation`.
-        bias : bool, default=False
+        bias : [sequence of] bool, default=False
             Adds learnable bias to the output.
         """
         self.dim = dim
 
+        # preprocess parameters
+
+        kernel_size = make_list(kernel_size, dim)
+        if not all(k % 2 for k in kernel_size):
+            raise ValueError(f'MRF kernel size must be odd. Got {kernel_size}.')
+
+        activation = expand_list(make_list(activation), 2 + num_extra,
+                                 default=tnn.LeakyReLU(0.2))
+        mrf_activation, *activation = activation
+
+        batch_norm = expand_list(make_list(batch_norm), 2 + num_extra,
+                                 default=False)
+        mrf_batch_norm, *batch_norm = batch_norm
+
+        bias = expand_list(make_list(bias), 2 + num_extra, default=False)
+        mrf_bias, *bias = bias
+
         # make layers
         modules = []
-        p = ((kernel_size - 1) // 2,)*self.dim  # for 'same' convolution in first layer
-        module = Conv(dim, in_channels=num_classes, out_channels=num_filters,
-                      kernel_size=kernel_size, activation=activation,
-                      batch_norm=batch_norm, bias=bias, padding=p)
-        # zero-centre
-        if self.dim == 3:
-            module.conv.weight.data[:, :, kernel_size // 2, kernel_size // 2, kernel_size // 2] = 0
-        elif self.dim == 2:
-            module.conv.weight.data[:, :, kernel_size // 2, kernel_size // 2] = 0
-        else:
-            module.conv.weight.data[:, :, kernel_size // 2] = 0
+
+        module = Conv(dim,
+                      in_channels=num_classes,
+                      out_channels=num_filters,
+                      kernel_size=kernel_size,
+                      activation=mrf_activation,
+                      batch_norm=mrf_batch_norm,
+                      bias=mrf_bias,
+                      padding='auto')
+
+        center = tuple(k//2 for k in kernel_size)
+        center = (slice(None),) * 2 + center
+        module.weight.data[center] = 0            # zero-centre
         modules.append(('mrf', module))
-        for i in range(num_extra):
-            module = Conv(dim, in_channels=num_filters, out_channels=num_filters,
-                         kernel_size=1, activation=activation, batch_norm=batch_norm,
-                         bias=bias)
-            modules.append(('extra', module))
-        module = Conv(dim, in_channels=num_filters, out_channels=num_classes,
-                     kernel_size=1, activation=final_activation, batch_norm=batch_norm,
-                     bias=bias)
-        modules.append(('final', module))
+
+        module = StackedConv(
+            dim,
+            input_channels=num_filters,
+            output_channels=[num_filters] * num_extra + [num_classes],
+            kernel_size=1,
+            activation=activation,
+            batch_norm=batch_norm,
+            bias=bias)
+        modules.append(('extra', module))
+
         # build model
         super().__init__(OrderedDict(modules))

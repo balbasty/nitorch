@@ -538,3 +538,44 @@ def flatten(x):
 
     input_type = type(x)
     return input_type(_flatten(x))
+
+
+def expand_list(x, n, crop=False, default=None):
+    """Expand ellipsis in a list by substituting it with the value
+    on its left, repeated as many times as necessary. By default,
+    a "virtual" ellipsis is present at the end of the list.
+
+    expand_list([1, 2, 3],       5)            -> [1, 2, 3, 3, 3]
+    expand_list([1, 2, ..., 3],  5)            -> [1, 2, 2, 2, 3]
+    expand_list([1, 2, 3, 4, 5], 3, crop=True) -> [1, 2, 3]
+
+    Parameters
+    ----------
+    x : sequence
+    n : int
+        Target length
+    crop : bool, default=False
+        Whether to crop the list if it is longer than the target length
+    default : optional
+        default value to use if the ellipsis is the first element of the list
+
+    Returns
+    -------
+    x : list
+        List of length `n` (or `>= n`)
+    """
+    x = list(x)
+    if Ellipsis not in x:
+        x.append(Ellipsis)
+    idx_ellipsis = x.index(Ellipsis)
+    if idx_ellipsis == 0:
+        fill_value = default
+    else:
+        fill_value = x[idx_ellipsis-1]
+    k = len(x) - 1
+    x = (x[:idx_ellipsis] +
+         [fill_value] * max(0, n-k) +
+         x[idx_ellipsis+1:])
+    if crop:
+        x = x[:n]
+    return x

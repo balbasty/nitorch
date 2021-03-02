@@ -1,12 +1,12 @@
 import torch
 import torch.nn as tnn
-from ..modules.base import Module
-from ..modules.cnn import (UNet, MRF)
-from ..modules.spatial import (GridPull, GridPushCount)
-from ...spatial import (affine_grid, identity_grid, voxel_size)
-from ...core.constants import eps
-from ...core.math import logsumexp
+from nitorch.spatial import affine_grid, identity_grid, voxel_size
+from nitorch.core.math import logsumexp
+from nitorch.core import py
 from .. import check
+from .base import Module
+from .cnn import UNet, MRF
+from .spatial import GridPull, GridPushCount
 
 
 class MeanSpaceNet(Module):
@@ -83,14 +83,14 @@ class MeanSpaceNet(Module):
         if coord_conv:
             input_channels += dim
         # Add UNet
+        #   no final activation so that pull is performed in log-space
         self.unet = UNet(dim,
                          input_channels=input_channels,
                          output_channels=output_classes,
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
-                         activation=activation,
-                         final_activation=None,  # so that pull is performed in log-space
+                         activation=[activation, ..., None],
                          batch_norm=batch_norm)
         # Add pull operators
         self.pull = GridPull(interpolation=interpolation,
@@ -239,10 +239,20 @@ class SegMRFNet(Module):
     parameters.
 
     """
-    def __init__(self, dim, output_classes=1, input_channels=1,
-                 encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.2), batch_norm_seg=True,
-                 num_iter=10, w=1.0, num_extra=0, only_unet=False):
+    def __init__(
+            self,
+            dim,
+            output_classes=1,
+            input_channels=1,
+            encoder=None,
+            decoder=None,
+            kernel_size=3,
+            activation=tnn.LeakyReLU(0.2),
+            batch_norm_seg=True,
+            num_iter=10,
+            w=1.0,
+            num_extra=0,
+            only_unet=False):
         """
 
         Parameters
@@ -290,7 +300,7 @@ class SegMRFNet(Module):
                            encoder=encoder,
                            decoder=decoder,
                            kernel_size=kernel_size,
-                           activation=activation,
+                           activation=[activation, ..., None],
                            batch_norm=batch_norm_seg,
                            implicit=False,
                            skip_final_activation=True)
@@ -377,10 +387,18 @@ class SegNet(Module):
     Batch normalization is used by default.
 
     """
-    def __init__(self, dim, output_classes=1, input_channels=1,
-                 encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.2), batch_norm=True,
-                 implicit=True, skip_final_activation=False):
+    def __init__(
+            self,
+            dim,
+            output_classes=1,
+            input_channels=1,
+            encoder=None,
+            decoder=None,
+            kernel_size=3,
+            activation=tnn.LeakyReLU(0.2),
+            batch_norm=True,
+            implicit=True,
+            skip_final_activation=False):
         """
 
         Parameters
@@ -408,8 +426,6 @@ class SegNet(Module):
             Only return `output_classes` probabilities (the last one
             is implicit as probabilities must sum to 1).
             Else, return `output_classes + 1` probabilities.
-        skip_final_activation : bool, default=False
-           Append final activation function.
 
         """
         super().__init__()
@@ -428,15 +444,15 @@ class SegNet(Module):
         self.board = lambda tb, inputs, outputs: board(
             dim, tb, inputs, outputs, implicit=implicit)
 
-        self.unet = UNet(dim,
-                         input_channels=input_channels,
-                         output_channels=output_classes,
-                         encoder=encoder,
-                         decoder=decoder,
-                         kernel_size=kernel_size,
-                         activation=activation,
-                         final_activation=final_activation,
-                         batch_norm=batch_norm)
+        self.unet = UNet(
+            dim,
+            input_channels=input_channels,
+            output_channels=output_classes,
+            encoder=encoder,
+            decoder=decoder,
+            kernel_size=kernel_size,
+            activation=[activation, ..., final_activation],
+            batch_norm=batch_norm)
 
         # register loss tag
         self.tags = ['segmentation']
@@ -562,10 +578,9 @@ class MRFNet(Module):
                        num_filters=num_filters,
                        num_extra=num_extra,
                        kernel_size=kernel_size,
-                       activation=activation,
+                       activation=[activation, ..., final_activation],
                        batch_norm=False,
-                       bias=True,
-                       final_activation=final_activation)
+                       bias=True)
         # register loss tag
         self.tags = ['mrf']
 
@@ -642,15 +657,11 @@ class MRFNet(Module):
             Output gradients.
 
         """
-        k = grad.shape[2:]
+        kernel_size = grad.shape[2:]
+        center = tuple(k//2 for k in kernel_size)
+        center = (slice(None),) * 2 + center
         grad_clone = grad.clone()
-        if self.dim == 3:
-            grad_clone[:, :, k[0] // 2, k[1] // 2, k[2] // 2] = 0
-        elif self.dim == 2:
-            grad_clone[:, :, k[0] // 2, k[1] // 2] = 0
-        else:
-            grad_clone[:, :, k[0] // 2] = 0
-
+        grad_clone[center] = 0
         return grad_clone
 
     def get_num_filters(self):

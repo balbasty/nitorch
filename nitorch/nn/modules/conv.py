@@ -191,7 +191,15 @@ class SimpleConv(Module):
             self._pre_padding = padding
             self._padding_mode = padding_mode
             self.conv.padding = 0
-    
+
+    @property
+    def weight(self):
+        return self.conv.weight
+
+    @property
+    def bias(self):
+        return self.conv.bias
+
     @property
     def kernel_size(self):
         return self.conv.kernel_size
@@ -457,6 +465,14 @@ class GroupedConv(tnn.ModuleList):
         return output
 
     @property
+    def weight(self):
+        return [layer.conv.weight for layer in self]
+
+    @property
+    def bias(self):
+        return [layer.conv.bias for layer in self]
+
+    @property
     def dim(self):
         for layer in self:
             return layer.dim
@@ -592,19 +608,19 @@ class Conv(Module):
             Number of channels produced by the convolution.
             If a sequence, grouped convolutions are used.
             
-        kernel_size : int or tuple[int]
+        kernel_size : int or sequence[int]
             Size of the convolution kernel.
             
-        stride : int or tuple[int], default=1:
+        stride : int or sequence[int], default=1:
             Stride of the convolution.
             
-        padding : int or tuple[int], default=0
+        padding : int or sequence[int] or 'auto', default=0
             Zero-padding added to all three sides of the input.
             
         padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
             Padding mode.
             
-        dilation : int or tuple[int], default=1
+        dilation : int or sequence[int], default=1
             Spacing between kernel elements.
             
         groups : int, default=1
@@ -621,7 +637,7 @@ class Conv(Module):
         transposed : bool, default=False:
             Transposed convolution.
             
-        output_padding : int or tuple[int], default=0
+        output_padding : int or sequence[int], default=0
             Additional size added to (the bottom/right) side of each
             dimension in the output shape. Only used if `transposed is True`.
             
@@ -704,7 +720,15 @@ class Conv(Module):
         self.activation = (activation() if inspect.isclass(activation)
                            else activation if callable(activation)
                            else None)
-        
+
+    @property
+    def weight(self):
+        return self.conv.weight
+
+    @property
+    def bias(self):
+        return self.conv.bias
+
     @property
     def dim(self):
         return self.conv.dim
