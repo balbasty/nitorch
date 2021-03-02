@@ -251,8 +251,7 @@ class SegMorphWNet(BaseMorph):
                            encoder=encoder,
                            decoder=decoder,
                            kernel_size=kernel_size,
-                           activation=activation,
-                           final_activation=self.softmax,
+                           activation=[activation, ..., self.softmax],
                            batch_norm=batch_norm)
 
         input_channels = int('image' in unet_inputs) \
@@ -264,8 +263,7 @@ class SegMorphWNet(BaseMorph):
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
-                         activation=activation,
-                         final_activation=None,
+                         activation=[activation, ..., None],
                          batch_norm=batch_norm)
         
 #         self.bn_source = self.get_bn()
@@ -337,14 +335,7 @@ class SegMorphWNet(BaseMorph):
         # segnet
         source_seg_pred = self.segnet(source)
         target_seg_pred = self.segnet(target)
-
-#         self.set_bn(self.bn_source)
-#         source_seg_pred = self.softmax(self.segnet(source))
-#         self.bn_source = self.get_bn()
-#         self.set_bn(self.bn_target, backtrack=True)
-#         target_seg_pred = self.softmax(self.segnet(target))
-#         self.bn_target = self.get_bn()
-
+        
         # unet
         inputs = []
         if 'seg' in self.unet_inputs:
@@ -397,7 +388,8 @@ class SegMorphUNet(BaseMorph):
     def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
                  kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
                  interpolation='linear', grid_bound='dft', image_bound='dct2',
-                 downsample_velocity=2, batch_norm=True, implicit=True):
+                 downsample_velocity=2, batch_norm=True, implicit=True,
+                 groups=None, stitch=1):
         """
 
         Parameters
@@ -440,15 +432,23 @@ class SegMorphUNet(BaseMorph):
             output_classes = output_classes + 1
         self.softmax = SoftMax(implicit=implicit)
 
+        
+        groups = py.make_list(groups)
+        stitch = py.make_list(stitch)
+        if (groups[-1] or stitch[-1]) == 2:
+            output_channels = [output_classes * 2, dim]
+        else:
+            output_channels = output_classes * 2 + dim
         self.unet = UNet(dim,
                          input_channels=2,
-                         output_channels=output_classes * 2 + dim,
+                         output_channels=output_channels,
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
-                         activation=activation,
-                         final_activation=None,
-                         batch_norm=batch_norm)
+                         activation=[activation, ..., None],
+                         batch_norm=batch_norm,
+                         groups=groups,
+                         stitch=stitch)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']

@@ -1006,6 +1006,8 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     padpost = torch.as_tensor(padpost)
 
     # Pad
+    if mode == 'zeros':
+        mode, value = ('constant', 0)
     if mode == 'constant':
         return _pad_constant(inp, padpre, padpost, value)
     else:

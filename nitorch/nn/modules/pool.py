@@ -7,6 +7,27 @@ from nitorch.nn.activations import _map_activations
 from .base import Module
 
 
+def _guess_output_shape(inshape, dim, kernel_size, stride=1, dilation=1,
+                        padding=0, output_padding=0, transposed=False):
+    """Guess the output shape of a convolution"""
+    kernel_size = make_tuple(kernel_size, self.dim)
+    stride = make_tuple(stride, self.dim)
+    padding = make_tuple(padding, self.dim)
+    output_padding = make_tuple(output_padding, self.dim)
+    dilation = make_tuple(dilation, self.dim)
+
+    N = inshape[0]
+    C = self.conv.out_channels
+    shape = [N, C]
+    for L, S, Pi, D, K, Po in zip(inshape[2:], stride, padding,
+                                  dilation, kernel_size, output_padding):
+        if transposed:
+            shape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
+        else:
+            shape += [math.floor((L + 2 * Pi - D * (K - 1) - 1) / S + 1)]
+    return tuple(shape)
+
+
 class Pool(Module):
     """Generic Pooling layer."""
 
@@ -61,6 +82,44 @@ class Pool(Module):
         self.activation = (activation() if inspect.isclass(activation)
                            else activation if callable(activation)
                            else None)
+            
+    def shape(self, x, **overload):
+        """Compute output shape of the equivalent ``forward`` call.
+
+        Parameters
+        ----------
+        x : tuple or (batch, in_channel, *in_spatial) tensor
+            Input tensor or its shape
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time, except `dim`, `in_channels`, `out_channels`
+            and `kernel_size`.
+
+        Returns
+        -------
+        shape : tuple[int]
+            Output shape
+
+        """
+        if torch.is_tensor(x):
+            inshape = tuple(x.shape)
+        else:
+            inshape = x
+        
+        stride = overload.get('stride', self.stride)
+        padding = overload.get('padding', self.padding)
+        dilation = overload.get('dilation', self.dilation)
+        transposed = self.transposed
+        kernel_size = self.kernel_size
+
+        stride = make_tuple(stride, self.dim)
+        padding = make_tuple(padding, self.dim)
+        output_padding = make_tuple(output_padding, self.dim)
+        dilation = make_tuple(dilation, self.dim)
+
+        return _guess_output_shape(inshape, dim, kernel_size, 
+                                   stride=stride, dilation=dilation, padding=padding,)
+
 
     def forward(self, x, **overload):
         """
@@ -97,7 +156,7 @@ class Pool(Module):
 
         x = pool(dim, x, kernel_size=kernel_size, stride=stride,
                  dilation=dilation, padding=padding, reduction=reduction)
-        if activation is not None:
+        if activation:
             x = activation(x)
         return x
 
