@@ -34,14 +34,14 @@ _native_padding_mode = ('zeros', 'reflect', 'replicate', 'circular')
 def _guess_output_shape(inshape, dim, kernel_size, stride=1, dilation=1,
                         padding=0, output_padding=0, transposed=False):
     """Guess the output shape of a convolution"""
-    kernel_size = make_tuple(kernel_size, self.dim)
-    stride = make_tuple(stride, self.dim)
-    padding = make_tuple(padding, self.dim)
-    output_padding = make_tuple(output_padding, self.dim)
-    dilation = make_tuple(dilation, self.dim)
+    kernel_size = make_tuple(kernel_size, dim)
+    stride = make_tuple(stride, dim)
+    padding = make_tuple(padding, dim)
+    output_padding = make_tuple(output_padding, dim)
+    dilation = make_tuple(dilation, dim)
 
     N = inshape[0]
-    C = self.conv.out_channels
+    C = inshape[1]
     shape = [N, C]
     for L, S, Pi, D, K, Po in zip(inshape[2:], stride, padding,
                                   dilation, kernel_size, output_padding):
@@ -191,7 +191,7 @@ class SimpleConv(Module):
         output_padding = overload.get('output_padding', clone.output_padding)
         dilation = overload.get('dilation', clone.dilation)
         
-        kernel_size = make_tuple(clone.kernel_size, dim)
+        kernel_size = make_tuple(clone.kernel_size, self.dim)
         stride = make_tuple(stride, self.dim)
         output_padding = make_tuple(output_padding, self.dim)
         dilation = make_tuple(dilation, self.dim)
@@ -218,8 +218,7 @@ class SimpleConv(Module):
             x = utils.pad(x, output_padding, side='right')
             
         return x
-        
-    
+
     def _set_padding(self, padding, padding_mode):
         if padding != 'auto' and padding_mode in _native_padding_mode:
             self.conv.padding_mode = padding_mode
@@ -264,7 +263,7 @@ class SimpleConv(Module):
 
     @dilation.setter
     def dilation(self, value):
-        layer.self.conv = make_tuple(value, self.dim)
+        self.conv.dilation = make_tuple(value, self.dim)
 
     @property
     def groups(self):
@@ -272,7 +271,7 @@ class SimpleConv(Module):
 
     @groups.setter
     def groups(self, value):
-        layer.self.conv = value
+        self.conv.groups = value
 
     @property
     def padding_mode(self):
@@ -320,23 +319,27 @@ class SimpleConv(Module):
         output_padding = overload.get('output_padding', self.output_padding)
         dilation = overload.get('dilation', self.dilation)
         transposed = self.transposed
-        kernel_size = make_tuple(self.kernel_size, dim)
+        kernel_size = make_tuple(self.kernel_size, self.dim)
 
         stride = make_tuple(stride, self.dim)
         output_padding = make_tuple(output_padding, self.dim)
         dilation = make_tuple(dilation, self.dim)
 
         if padding == 'auto':
-            pad = [((k-1)*d)//2 for k, d in zip(kernel_size, dilation)]
+            padding = [((k-1)*d)//2 for k, d in zip(kernel_size, dilation)]
         padding = make_tuple(padding, self.dim)
-        
-        return _guess_output_shape(inshape, dim, 
-                                   kernel_size=kernel_size, 
-                                   stride=stride, 
-                                   dilation=dilation,
-                                   padding=padding, 
-                                   output_padding=output_padding, 
-                                   transposed=transposed)
+
+        shape = _guess_output_shape(
+            inshape, self.dim,
+            kernel_size=kernel_size,
+            stride=stride,
+            dilation=dilation,
+            padding=padding,
+            output_padding=output_padding,
+            transposed=transposed)
+        shape = list(shape)
+        shape[1] = self.out_channels
+        return tuple(shape)
 
 
 @nitorchmodule
@@ -520,9 +523,17 @@ class GroupedConv(tnn.ModuleList):
         output_padding = make_tuple(output_padding, self.dim)
         dilation = make_tuple(dilation, self.dim)
 
-        return _guess_output_shape(
-            inshape, dim, kernel_size, stride, dilation,
-            padding, output_padding, transposed)
+        shape = _guess_output_shape(
+            inshape, self.dim,
+            kernel_size=kernel_size,
+            stride=stride,
+            dilation=dilation,
+            padding=padding,
+            output_padding=output_padding,
+            transposed=transposed)
+        shape = list(shape)
+        shape[1] = self.out_channels
+        return tuple(shape)
 
 
 class Conv(Module):
@@ -619,7 +630,6 @@ class Conv(Module):
         super().__init__()
 
         # Store dimension
-        self.dim = dim
         self.inplace = inplace
 
         # Check if "manual" grouped conv are required
@@ -728,6 +738,18 @@ class Conv(Module):
         return x
 
     @property
+    def dim(self):
+        return self.conv.dim
+
+    @property
+    def in_channels(self):
+        return self.conv.in_channels
+
+    @property
+    def out_channels(self):
+        return self.conv.out_channels
+
+    @property
     def transposed(self):
         return self.conv.transposed
     
@@ -761,7 +783,7 @@ class Conv(Module):
 
     @dilation.setter
     def dilation(self, value):
-        layer.self.conv = make_tuple(value, self.dim)
+        self.conv.dilation = make_tuple(value, self.dim)
 
     @property
     def padding_mode(self):
@@ -797,23 +819,4 @@ class Conv(Module):
             Output shape
 
         """
-        if torch.is_tensor(x):
-            inshape = tuple(x.shape)
-        else:
-            inshape = x
-        
-        stride = overload.get('stride', self.stride)
-        padding = overload.get('padding', self.padding)
-        output_padding = overload.get('output_padding', self.output_padding)
-        dilation = overload.get('dilation', self.dilation)
-        transposed = self.transposed
-        kernel_size = self.kernel_size
-
-        stride = make_tuple(stride, self.dim)
-        padding = make_tuple(padding, self.dim)
-        output_padding = make_tuple(output_padding, self.dim)
-        dilation = make_tuple(dilation, self.dim)
-
-        return _guess_output_shape(
-            inshape, dim, kernel_size, stride, dilation,
-            padding, output_padding, transposed)
+        return self.conv.shape(x, **overload)

@@ -641,7 +641,7 @@ class Decoder(tnn.ModuleList):
             ishape = inp1.shape[2:]
             pad = [i-o for o, i in zip(oshape, ishape)]
             x = layer(x, output_padding=pad)
-            x = interleaved_cat((x, y), dim=1, groups=grp1)
+            x = interleaved_cat((x, inp1), dim=1, groups=grp1)
 
         # Post-processing (convolutions without skipped connections)
         for layer in postproc:
