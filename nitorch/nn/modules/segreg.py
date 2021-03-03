@@ -750,3 +750,201 @@ class SegMorphRUNet(BaseMorph):
         self.compute(_loss, _metric, **tensors)
 
         return source_seg_pred, target_seg_pred, deformed_source, velocity
+
+
+class SegMorphRWNet(BaseMorph):
+    """
+    Joint segmentation and registration using a recurrent WNet.
+
+    A first UNet is applied to both input images and outputs a native space
+    segmentation for each (with a loss that tries to make them as accurate
+    as possible).
+    The second UNet is applied to all input images and predicted segmentations,
+    with a loss function acts on the warped moving segmentation and tries to
+    make it match the fixed-space segmentation.
+    """
+
+    def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
+                 kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
+                 interpolation='linear', grid_bound='dft', image_bound='dct2',
+                 downsample_velocity=2, batch_norm=True, implicit=True,
+                 unet_inputs='image+seg', nb_iter=5):
+        """
+
+        Parameters
+        ----------
+        dim : int
+            Number of spatial dimensions
+        output_classes : int
+            Number of classes in the segmentation (excluding background)
+        encoder : sequence[int]
+            Number of output channels in each encoding layer
+        decoder : sequence[int]
+            Number of output channels in each decoding layer
+        kernel_size : int, default=3
+        activation : callable, default=LeakyReLU(0.2)
+        interpolation : str, default='linear'
+        grid_bound : str, default='dft'
+        image_bound : str, default='dct2'
+        downsample_velocity : int, default=2
+        batch_norm : bool, default=True
+        implicit : bool or (bool, bool), default=True
+            If the first element is True, the UNet only outputs `output_classes`
+            channels (i.e., it does not model the background). The missing
+            channels is assumed all zero when performing the softmax.
+            If the second element is True, the network only outputs
+            `output_classes` channels (i.e., the background is implicit).
+            Using `implicit=True` extends the behaviour of a Sigmoid
+            activation to the multi-class case.
+        unet_inputs : {'seg', 'image', 'image+seg'}, default='image+seg'
+        """
+        super().__init__(
+            dim,
+            interpolation,
+            grid_bound,
+            image_bound,
+            downsample_velocity,
+        )
+
+        self.nb_iter = nb_iter
+        self.unet_inputs = unet_inputs
+        self.implicit = py.make_list(implicit, 2)
+        self.output_classes = output_classes
+        self.softmax = SoftMax(implicit=implicit)
+
+        output_channels = output_classes + int(not self.implicit[0])
+        self.segnet = UNet(dim,
+                           input_channels=1 + output_channels,
+                           output_channels=output_channels,
+                           encoder=encoder,
+                           decoder=decoder,
+                           kernel_size=kernel_size,
+                           activation=[activation, ..., self.softmax],
+                           batch_norm=batch_norm)
+
+        input_channels = int('image' in unet_inputs) \
+                         + int('seg' in unet_inputs) \
+                         * (output_classes + int(not self.implicit[1]))
+        self.unet = UNet(dim,
+                         input_channels=input_channels * 2,
+                         output_channels=dim,
+                         encoder=encoder,
+                         decoder=decoder,
+                         kernel_size=kernel_size,
+                         activation=[activation, ..., None],
+                         batch_norm=batch_norm)
+
+        # register losses/metrics
+        self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
+
+    def sample_iter(self):
+        with torch.no_grad():
+            return torch.randint(low=1, high=self.nb_iter*2, size=[]).item()
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
+        """
+
+        Parameters
+        ----------
+        source : tensor (batch, channel, *spatial)
+            Source/moving image
+        target : tensor (batch, channel, *spatial)
+            Target/fixed image
+        source_seg : tensor (batch, classes, *spatial), optional
+            Source/moving segmentation
+        target_seg : tensor (batch, classes, *spatial), optional
+            Target/fixed segmentation
+
+        Other Parameters
+        ----------------
+        _loss : dict, optional
+            If provided, all registered losses are computed and appended.
+        _metric : dict, optional
+            If provided, all registered metrics are computed and appended.
+
+        Returns
+        -------
+        target_seg_pred : tensor (batch, classes, *spatial), optional
+            Predicted target segmentation
+        source_seg_pred : tensor (batch, classes, *spatial), optional
+            Predicted source segmentation
+        deformed_source : tensor (batch, channel, *spatial)
+            Deformed source image
+        velocity : tensor (batch,, *spatial, len(spatial))
+            Velocity field
+
+        """
+        nb_iter = self.sample_iter() if self.training else self.nb_iter
+
+        # sanity checks
+        check.dim(self.dim, source, target)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim + 2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
+
+        backend = utils.backend(source)
+        batch = source.shape[0]
+        spshape = source.shape[2:]
+
+        output_classes = self.output_classes
+        target_seg_pred_deformed = torch.full([batch, output_classes, *spshape],
+                                              1/(output_classes+1), **backend)
+        source_seg_pred_deformed = torch.full([batch, output_classes, *spshape],
+                                              1/(output_classes+1), **backend)
+
+        for n_iter in range(nb_iter):
+
+            if target_seg_pred_deformed.shape[1] > output_classes:
+                target_seg_pred_deformed = target_seg_pred_deformed[:, :-1]
+                source_seg_pred_deformed = source_seg_pred_deformed[:, :-1]
+
+            # segnet
+            source_seg_pred = self.segnet(torch.cat([source, target_seg_pred_deformed], dim=1))
+            target_seg_pred = self.segnet(torch.cat([target, source_seg_pred_deformed], dim=1))
+            del target_seg_pred_deformed, source_seg_pred_deformed
+
+            # unet
+            inputs = []
+            if 'seg' in self.unet_inputs:
+                inputs += [source_seg_pred, target_seg_pred]
+            if 'image' in self.unet_inputs:
+                inputs += [source, target]
+            inputs = torch.cat(inputs, dim=1)
+
+            # deformation
+            velocity = self.unet(inputs)
+            del inputs
+            velocity = utils.channel2last(velocity)
+
+            igrid = self.exp(-velocity)
+            target_seg_pred_deformed = self.pull(target_seg_pred, igrid)
+            del igrid
+            grid = self.exp(velocity)
+            source_seg_pred_deformed = self.pull(source_seg_pred, grid)
+
+        del target_seg_pred_deformed, source_seg_pred_deformed
+
+        deformed_source = self.pull(source, grid)
+        if source_seg is not None:
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = self.pull(source_seg_pred, grid)
+        if target_seg is None:
+            target_seg_for_deformed = target_seg_pred
+        else:
+            target_seg_for_deformed = target_seg
+
+        # compute loss and metrics
+        tensors = dict(
+            image=[deformed_source, target],
+            velocity=[velocity],
+            segmentation=[deformed_source_seg, target_seg_for_deformed])
+        if source_seg is not None:
+            tensors['source'] = [source_seg_pred, source_seg]
+        if target_seg is not None:
+            tensors['target'] = [target_seg_pred, target_seg]
+        self.compute(_loss, _metric, **tensors)
+
+        return source_seg_pred, target_seg_pred, deformed_source, velocity
