@@ -142,6 +142,8 @@ class Module(tnn.Module):
             loss[key] = val if weight == 1 else weight * val
 
         for tag, losses in self.losses.items():
+            if tag not in tag_args:
+                continue
             args = tag_args[tag]
             for key, loss_fn in losses.items():
                 if not key:
@@ -223,6 +225,8 @@ class Module(tnn.Module):
                 metric[key] = fn(*args)
 
         for tag, metrics in self.metrics.items():
+            if tag not in tag_args:
+                continue
             args = tag_args[tag]
             for key, metric_fn in metrics.items():
                 if not key:
