@@ -720,10 +720,6 @@ class SegMorphRUNet(BaseMorph):
                 source_seg_pred = velocity_and_seg[:, self.dim + output_classes:]
             del velocity_and_seg
 
-        # sigmoid
-        target_seg_pred = self.softmax(target_seg_pred)
-        source_seg_pred = self.softmax(source_seg_pred)
-
         # deformation
         velocity = utils.channel2last(velocity)
         grid = self.exp(velocity)
@@ -733,6 +729,10 @@ class SegMorphRUNet(BaseMorph):
             deformed_source_seg = self.pull(source_seg, grid)
         else:
             deformed_source_seg = self.pull(source_seg_pred, grid)
+            deformed_source_seg = self.softmax(deformed_source_seg)
+        # sigmoid
+        target_seg_pred = self.softmax(target_seg_pred)
+        source_seg_pred = self.softmax(source_seg_pred)
         if target_seg is None:
             target_seg_for_deformed = target_seg_pred
         else:
@@ -819,7 +819,7 @@ class SegMorphRWNet(BaseMorph):
                            encoder=encoder,
                            decoder=decoder,
                            kernel_size=kernel_size,
-                           activation=[activation, ..., self.softmax],
+                           activation=[activation, ..., None],
                            batch_norm=batch_norm)
 
         input_channels = int('image' in unet_inputs) \
@@ -835,7 +835,8 @@ class SegMorphRWNet(BaseMorph):
                          batch_norm=batch_norm)
 
         # register losses/metrics
-        self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
+        self.tags = ['image', 'velocity', 'segmentation', 'source', 'target',
+                     'images', 'velocities', 'segmentations', 'sources', 'targets']
 
     def sample_iter(self):
         with torch.no_grad():
@@ -894,6 +895,11 @@ class SegMorphRWNet(BaseMorph):
         source_seg_pred_deformed = torch.full([batch, output_classes, *spshape],
                                               1/(output_classes+1), **backend)
 
+        if _loss is not None:
+            types = ['velocities', 'segmentations', 'sources', 'targets']
+            for type in types:
+                for tag in self.losses[type].keys():
+                    _loss[f'{type}/{tag}'] = 0
         for n_iter in range(nb_iter):
 
             if target_seg_pred_deformed.shape[1] > output_classes:
@@ -918,21 +924,56 @@ class SegMorphRWNet(BaseMorph):
             del inputs
             velocity = utils.channel2last(velocity)
 
+            if _loss is not None:
+                for tag, fn in self.losses['velocities'].items():
+                    _loss[f'velocities/{tag}'] += fn(velocity)
+
             igrid = self.exp(-velocity)
             target_seg_pred_deformed = self.pull(target_seg_pred, igrid)
+            target_seg_pred_deformed = self.softmax(target_seg_pred_deformed)
             del igrid
             grid = self.exp(velocity)
             source_seg_pred_deformed = self.pull(source_seg_pred, grid)
+            source_seg_pred_deformed = self.softmax(source_seg_pred_deformed)
+
+            if _loss is not None:
+
+                deformed_source = self.pull(source, grid)
+                if source_seg is not None:
+                    deformed_source_seg = self.pull(source_seg, grid)
+                else:
+                    deformed_source_seg = self.pull(source_seg_pred, grid)
+                    source_seg_pred = self.softmax(source_seg_pred)
+                if target_seg is None:
+                    target_seg_for_deformed = self.softmax(target_seg_pred)
+                else:
+                    target_seg_for_deformed = target_seg
+
+                for tag, fn in self.losses['images'].items():
+                    _loss[f'velocities/{tag}'] += fn(deformed_source, target)
+                for tag, fn in self.losses['segmentations'].items():
+                    _loss[f'velocities/{tag}'] += fn(deformed_source_seg, target_seg_for_deformed)
+                for tag, fn in self.losses['sources'].items():
+                    _loss[f'velocities/{tag}'] += fn(self.softmax(source_seg_pred), source_seg)
+                for tag, fn in self.losses['targets'].items():
+                    _loss[f'velocities/{tag}'] += fn(self.softmax(target_seg_pred), target_seg)
 
         del target_seg_pred_deformed, source_seg_pred_deformed
+
+        if _loss is not None:
+            types = ['velocities', 'segmentations', 'sources', 'targets']
+            for type in types:
+                for tag in self.losses[type].keys():
+                    _loss[f'{type}/{tag}'] = _loss[f'{type}/{tag}'] / nb_iter
 
         deformed_source = self.pull(source, grid)
         if source_seg is not None:
             deformed_source_seg = self.pull(source_seg, grid)
         else:
             deformed_source_seg = self.pull(source_seg_pred, grid)
+            source_seg_pred = self.softmax(source_seg_pred)
         if target_seg is None:
-            target_seg_for_deformed = target_seg_pred
+            target_seg_for_deformed = self.softmax(target_seg_pred)
         else:
             target_seg_for_deformed = target_seg
 
@@ -942,9 +983,9 @@ class SegMorphRWNet(BaseMorph):
             velocity=[velocity],
             segmentation=[deformed_source_seg, target_seg_for_deformed])
         if source_seg is not None:
-            tensors['source'] = [source_seg_pred, source_seg]
+            tensors['source'] = [self.softmax(source_seg_pred), source_seg]
         if target_seg is not None:
-            tensors['target'] = [target_seg_pred, target_seg]
+            tensors['target'] = [self.softmax(target_seg_pred), target_seg]
         self.compute(_loss, _metric, **tensors)
 
         return source_seg_pred, target_seg_pred, deformed_source, velocity
