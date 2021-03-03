@@ -683,7 +683,7 @@ class SegMorphRUNet(BaseMorph):
         spshape = source.shape[2:]
 
         # initial guess
-        velocity = torch.zeros([batch, *spshape, self.dim], **backend)
+        velocity = torch.zeros([batch, self.dim, *spshape], **backend)
         target_seg_pred = torch.zeros([batch, output_classes, *spshape], **backend)
         source_seg_pred = torch.zeros([batch, output_classes, *spshape], **backend)
 
@@ -708,7 +708,7 @@ class SegMorphRUNet(BaseMorph):
             velocity_and_seg = self.unet(inputs)
             del inputs
 
-            if self.residuals:
+            if self.residual:
                 target_seg_pred = target_seg_pred0
                 source_seg_pred = source_seg_pred0
                 velocity += velocity_and_seg[:, :self.dim]
@@ -726,7 +726,6 @@ class SegMorphRUNet(BaseMorph):
 
         # deformation
         velocity = utils.channel2last(velocity)
-
         grid = self.exp(velocity)
         deformed_source = self.pull(source, grid)
 
