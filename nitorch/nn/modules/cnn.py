@@ -990,7 +990,7 @@ class UNet(tnn.Sequential):
         pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
             Pooling to use in the encoder. If None, use strided convolutions.
             
-        batch_norm : [sequence of] bool or type or callable, default=False
+        batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
             
         groups : [sequence of] int, default=`stitch`
@@ -1018,7 +1018,6 @@ class UNet(tnn.Sequential):
         decoder = list(map(make_list, decoder))
         stack = flatten(decoder[len(encoder):])
         decoder = decoder[:len(encoder)]
-        last_decoder = decoder[-1][-1]
 
         nb_layers = len(encoder) + len(decoder) + len(stack)
         
@@ -1030,7 +1029,6 @@ class UNet(tnn.Sequential):
         groups[0] = len(input_channels)    # first layer
         groups[-1] = len(output_channels)  # last layer
         activation = expand_list(make_list(activation), nb_layers, default='relu')
-        batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
 
         range_e = slice(len(encoder))
         range_d = slice(len(encoder), len(encoder) + len(decoder))
@@ -1044,13 +1042,8 @@ class UNet(tnn.Sequential):
         activation_encoder = activation[range_e]
         activation_decoder = activation[range_d]
         activation_stack = activation[range_s]
-        batch_norm_encoder = batch_norm[range_e]
-        batch_norm_decoder = batch_norm[range_d]
-        batch_norm_stack = batch_norm[range_s]
-        
-        activation_final = activation[-1]
-        batch_norm_final = batch_norm[-1]
-        input_final = stack[-1]            
+
+        activation_final = activation[-1]   
         
         modules = []
         enc = Encoder(dim,
@@ -1059,14 +1052,14 @@ class UNet(tnn.Sequential):
                       kernel_size=kernel_size,
                       stride=stride,
                       activation=activation_encoder,
-                      batch_norm=batch_norm_encoder,
+                      batch_norm=batch_norm,
                       pool=pool,
                       groups=groups_encoder,
                       stitch=stitch_encoder)
         modules.append(('encoder', enc))
 
         e_groups = reversed(groups_encoder)
-        d_groups = groups_decoder[1:] + groups_stack[:1]
+        d_groups = groups_decoder[1:] + (groups_stack[:1] or [len(output_channels)])
         skip_repeat = [max(1, gd // ge) for ge, gd in 
                        zip(e_groups, d_groups)]
         skip_channels = [e * r for e, r in zip(encoder_out[1:], skip_repeat)]
@@ -1079,29 +1072,33 @@ class UNet(tnn.Sequential):
                       kernel_size=kernel_size,
                       stride=stride,
                       activation=activation_decoder,
-                      batch_norm=batch_norm_decoder,
+                      batch_norm=batch_norm,
                       groups=groups_decoder,
                       stitch=stitch_decoder)
         modules.append(('decoder', dec))
 
-        last_decoder = last_decoder + skip_channels[-1]
-        stk = StackedConv(dim,
-                          input_channels=last_decoder,
-                          output_channels=stack,
-                          kernel_size=kernel_size,
-                          activation=activation_stack,
-                          batch_norm=batch_norm_stack,
-                          groups=groups_stack,
-                          stitch=stitch_stack)
+        last_decoder = decoder[-1][-1] + skip_channels[-1]
+        if stack:
+            stk = StackedConv(dim,
+                              input_channels=last_decoder,
+                              output_channels=stack,
+                              kernel_size=kernel_size,
+                              activation=activation_stack,
+                              batch_norm=batch_norm,
+                              groups=groups_stack,
+                              stitch=stitch_stack)
+        else:
+            stk = Cat()
         modules.append(('stack', stk))
 
+        input_final = stack[-1] if stack else last_decoder   
         input_final = make_list(input_final)
         if len(input_final) == 1:
             input_final = [input_final[0]//len(output_channels)] * len(output_channels)
         stk = Conv(dim, input_final, output_channels,
                    kernel_size=kernel_size,
                    activation=activation_final,
-                   batch_norm=batch_norm_final,
+                   batch_norm=batch_norm,
                    padding='auto')
         modules.append(('final', stk))
 
@@ -1348,6 +1345,207 @@ class Cat(Module):
         x = torch.cat(x, 1) if len(x) > 1 else x[0]
         return (x, last) if return_last else x
 
+    
+@nitorchmodule
+class UNet2(tnn.Sequential):
+    """U-Net."""
+
+    def __init__(
+            self,
+            dim,
+            input_channels,
+            output_channels,
+            encoder=None,
+            decoder=None,
+            conv_per_layer=1,
+            kernel_size=3,
+            stride=2,
+            activation=tnn.ReLU,
+            batch_norm=False,
+            nb_iter=1):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+
+        input_channels : int or sequence[int]
+            Number of input channels.
+
+        output_channels : int or sequence [int]
+            Number of output channels.
+
+        encoder : sequence[int], default=[16, 32, 32, 32]
+            Number of channels in each encoding layer.
+
+        decoder : sequence[int], optional
+            Number of channels in each decoding layer.
+            Default: symmetric of encoder
+
+        conv_per_layer : int, default=2
+            Number of convolutions per layer.
+
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+
+        activation : [sequence of] str or type or callable or None, default='relu'
+            Activation function.
+
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
+
+        residual : bool, default=False
+            Use residual skipped connections
+        """
+        self.dim = dim
+        self.residual = residual
+        self.nb_iter = nb_iter
+
+        input_channels = make_list(input_channels)
+        output_channels = make_list(output_channels)
+
+        # defaults
+        conv_per_layer = max(1, conv_per_layer)
+        encoder = list(encoder or [16, 32, 32, 32])
+        decoder = make_list(decoder or list(reversed(encoder[:-1])),
+                            n=len(encoder)-1)
+        stack = decoder[len(encoder)-1:]
+        decoder = encoder[-1:] + decoder[:len(encoder)]
+        activation, final_activation = make_list(activation, 2)
+
+        modules = []
+        first = Conv(dim,
+                     in_channels=input_channels,
+                     out_channels=encoder[0],
+                     kernel_size=kernel_size,
+                     activation=activation,
+                     batch_norm=batch_norm,
+                     padding='auto')
+        modules.append(('first', first))
+
+        modules_encoder = []
+        for n in range(len(encoder)-1):
+            cin = encoder[n]
+            cout = encoder[n+1]
+            cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
+            modules_encoder.append(EncodingLayer(
+                dim,
+                input_channels=cin,
+                output_channels=cout,
+                kernel_size=kernel_size,
+                stride=stride,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+        enc = tnn.ModuleList(modules_encoder)
+        modules.append(('encoder', enc))
+
+        cin = decoder[0]
+        cout = decoder[1]
+        cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
+        btk = DecodingLayer(
+            dim,
+            input_channels=cin,
+            output_channels=cout,
+            kernel_size=kernel_size,
+            stride=stride,
+            activation=activation,
+            batch_norm=batch_norm,
+        )
+        modules.append(('bottleneck', btk))
+
+        _, *decoder = decoder
+        *encoder, _ = encoder
+
+        modules_decoder = []
+        for n in range(len(decoder)-1):
+            cin = decoder[n] + encoder[-n-1]
+            cout = decoder[n+1]
+            cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
+            modules_decoder.append(DecodingLayer(
+                dim,
+                input_channels=cin,
+                output_channels=cout,
+                kernel_size=kernel_size,
+                stride=stride,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+        if conv_per_layer > 1:
+            cin = decoder[-1] + encoder[0]
+            cout = [decoder[-1]] * (conv_per_layer - 1)
+            modules_decoder.append(StackedConv(
+                dim,
+                input_channels=cin,
+                output_channels=cout,
+                kernel_size=kernel_size,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+            last_decoder = decoder[-1]
+        else:
+            modules_decoder.append(Cat())
+            last_decoder = decoder[-1] + encoder[0]
+        dec = tnn.ModuleList(modules_decoder)
+        modules.append(('decoder', dec))
+
+        if stack:
+            stk = StackedConv(dim,
+                              input_channels=last_decoder,
+                              output_channels=stack,
+                              kernel_size=kernel_size,
+                              activation=activation,
+                              batch_norm=batch_norm)
+            modules.append(('stack', stk))
+            last_stack = stack[-1]
+        else:
+            modules.append(('stack', Cat()))
+            last_stack = last_decoder
+
+        final = Conv(dim, last_stack, output_channels,
+                     kernel_size=kernel_size,
+                     activation=final_activation,
+                     padding='auto')
+        modules.append(('final', final))
+
+        super().__init__(OrderedDict(modules))
+
+    def forward_once(self, x):
+
+        x = self.first(x)
+
+        # encoder
+        buffers = []
+        for d, layer in enumerate(self.encoder):
+            buffer_shape = list(x.shape)
+            buffer_shape[1] = layer.in_channels - buffer_shape[1]
+            buffer = x.new_zeros(buffer_shape)
+            x, buffer = layer(x, buffer, return_last=True)
+            buffers.append(buffer)
+
+        pad = self.get_padding(buffers[-1].shape, x.shape, self.bottleneck)
+        x = self.bottleneck(x, output_padding=pad)
+
+        # decoder
+        for d, layer in enumerate(self.decoder):
+            buffer = buffers[-d-1]
+            if d < len(self.decoder) - 1:
+                pad = self.get_padding(buffers[-d-2].shape, x.shape, layer)
+            else:
+                pad = 0
+            x = layer(x, buffer, output_padding=pad)
+
+        x = self.stack(x)
+        x = self.final(x)
+        return x
+
+    def get_padding(self, outshape, inshape, layer):
+        outshape = outshape[2:]
+        shape = layer.shape(inshape)[2:]
+        padding = [o - i for o, i in zip(outshape, shape)]
+        return padding
+
 
 @nitorchmodule
 class UUNet(tnn.Sequential):
@@ -1559,38 +1757,42 @@ class UUNet(tnn.Sequential):
         buffers_encoder = [None] * len(self.encoder)
         buffers_decoder = [None] * len(self.decoder)
 
-        x = self.first(x)
+        x0 = self.first(x)
+        for n_iter in range(nb_iter):
+        
+            x = x0
+        
+            # encoder
+            for d, layer in enumerate(self.encoder):
+                buffer = buffers_decoder[-d-1]
+                if buffer is None:
+                    buffer_shape = list(x.shape)
+                    buffer_shape[1] = layer.in_channels - buffer_shape[1]
+                    buffer = x.new_zeros(buffer_shape)
+                    buffers_decoder[-d-1] = buffer
+                x, buffer = layer(x, buffer, return_last=True)
+                if buffers_encoder[d] is None or not self.residual:
+                    buffers_encoder[d] = buffer
+                else:
+                    buffers_encoder[d] = buffers_encoder[d] + buffer
 
-        # encoder
-        for d, layer in enumerate(self.encoder):
-            buffer = buffers_decoder[-d-1]
-            if buffer is None:
-                buffer_shape = list(x.shape)
-                buffer_shape[1] = layer.in_channels - buffer_shape[1]
-                buffer = x.new_zeros(buffer_shape)
-                buffers_decoder[-d-1] = buffer
-            x, buffer = layer(x, buffer, return_last=True)
-            if buffers_encoder[d] is None or not self.residual:
-                buffers_encoder[d] = buffer
-            else:
-                buffers_encoder[d] = buffers_encoder[d] + buffer
+            pad = self.get_padding(buffers_encoder[-1].shape, x.shape, self.bottleneck)
+            x = self.bottleneck(x, output_padding=pad)
 
-        pad = self.get_padding(buffers_encoder[-1].shape, x.shape, self.bottleneck)
-        x = self.bottleneck(x, output_padding=pad)
-
-        # decoder
-        for d, layer in enumerate(self.decoder):
-            buffer = buffers_encoder[-d-1]
-            if d < len(self.decoder) - 1:
-                pad = self.get_padding(buffers_encoder[-d-2].shape, x.shape, layer)
-            else:
-                pad = 0
-            x, buffer = layer(x, buffer, return_last=True, output_padding=pad)
-            if buffers_decoder[d] is None or not self.residual:
-                buffers_decoder[d] = buffer
-            else:
-                buffers_decoder[d] = buffers_decoder[d] + buffer
-
+            # decoder
+            for d, layer in enumerate(self.decoder):
+                buffer = buffers_encoder[-d-1]
+                if d < len(self.decoder) - 1:
+                    pad = self.get_padding(buffers_encoder[-d-2].shape, x.shape, layer)
+                else:
+                    pad = 0
+                x, buffer = layer(x, buffer, return_last=True, output_padding=pad)
+                if buffers_decoder[d] is None or not self.residual:
+                    buffers_decoder[d] = buffer
+                else:
+                    buffers_decoder[d] = buffers_decoder[d] + buffer
+        
+        del x0
         x = self.stack(x)
         x = self.final(x)
         return x
