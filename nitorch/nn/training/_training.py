@@ -128,7 +128,7 @@ class ModelTrainer:
     random_state = []
 
     def __init__(self, model, train_set, eval_set=None,
-                 optimizer=torch.optim.Adam,
+                 optimizer=None,
                  nb_epoch=100,
                  nb_steps=None,
                  *, # the remaining parameters *must be* keywords
@@ -215,7 +215,9 @@ class ModelTrainer:
         self.model = model
         self.train_set = train_set
         self.eval_set = eval_set
-        self.optimizer = optimizer(model.parameters())
+        if optimizer is None:
+            optimizer = torch.optim.Adam(model.parameters())
+        self.optimizer = optimizer
         self.log_interval = log_interval
         self.benchmark = benchmark
         self.seed = seed
