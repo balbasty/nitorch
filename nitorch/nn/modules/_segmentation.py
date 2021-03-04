@@ -21,7 +21,8 @@ class MeanSpaceNet(Module):
     def __init__(self, dim, common_space, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.2), batch_norm=True,
-                 implicit=True, coord_conv=False, warp_augmentation=False):
+                 implicit=True, coord_conv=False, warp_augmentation=False,
+                 bg_class=0):
         """
 
         Parameters
@@ -56,10 +57,13 @@ class MeanSpaceNet(Module):
             Use mean space coordinate grid as input to the UNet.
         warp_augmentation : bool, default=False
             Use warping augmentation.
+        bg_class : int, default=0
+            Index of background class in reference segmentation.
 
         """
         super().__init__()
 
+        self.bg_class = bg_class
         self.implicit = implicit
         self.output_classes = output_classes
         self.mean_mat = common_space[0]
@@ -197,8 +201,20 @@ class MeanSpaceNet(Module):
         # Pull prediction into native space (whilst in log space)
         pred = self.pull(pred, grid)
 
+        with torch.no_grad():
+            # deal with background voxels
+            bg = (pred.sum(dim=1, keepdim=False) == 0).type(pred.dtype)
+            bg[bg == 1] = bg[bg == 1] + pred.max()
+        pred[:, self.bg_class, ...] = pred[:, self.bg_class, ...] + bg
+
         # softmax
         pred = pred.softmax(dim=1)
+
+        # i = 0
+        # for i in range(2*n_channels):
+        #     debug_view(inputs, ix_channel=i, fig_num=i)
+        # debug_view(ref[ix_ref], one_hot=True, fig_num=i + 1)
+        # debug_view(pred, one_hot=True, fig_num=i + 2)
 
         # compute loss and metrics (in native space)
         if ref is not None:
