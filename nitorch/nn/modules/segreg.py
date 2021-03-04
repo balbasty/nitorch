@@ -1,5 +1,5 @@
 from .base import Module
-from .cnn import UNet
+from .cnn import UNet, UUNet
 from .spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax
 from nitorch.nn import check
@@ -610,7 +610,6 @@ class SegMorphRUNet(BaseMorph):
             downsample_velocity,
         )
 
-        self.residual = residual
         self.nb_iter = nb_iter
         self.random = random or ''
         self.implicit = py.make_list(implicit, 2)
@@ -620,14 +619,16 @@ class SegMorphRUNet(BaseMorph):
         self.softmax = SoftMax(implicit=implicit)
 
         output_channels = output_classes * 2 + dim
-        self.unet = UNet(dim,
-                         input_channels=2 + output_channels,
-                         output_channels=output_channels,
-                         encoder=encoder,
-                         decoder=decoder,
-                         kernel_size=kernel_size,
-                         activation=[activation, ..., None],
-                         batch_norm=batch_norm)
+        self.unet = UUNet(dim,
+                          input_channels=2 + output_channels,
+                          output_channels=output_channels,
+                          encoder=encoder,
+                          decoder=decoder,
+                          kernel_size=kernel_size,
+                          activation=[activation, None],
+                          batch_norm=batch_norm,
+                          nb_iter=self.nb_iter,
+                          residual=self.residual)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
@@ -691,43 +692,16 @@ class SegMorphRUNet(BaseMorph):
         batch = source.shape[0]
         spshape = source.shape[2:]
 
-        # initial guess
-        velocity = torch.zeros([batch, self.dim, *spshape], **backend)
-        target_seg_pred = torch.zeros([batch, output_classes, *spshape], **backend)
-        source_seg_pred = torch.zeros([batch, output_classes, *spshape], **backend)
-
-        for n_iter in range(nb_iter):
-
-            if self.residual:
-                target_seg_pred0 = target_seg_pred
-                source_seg_pred0 = source_seg_pred
-
-            # sigmoid
-            target_seg_pred = self.softmax(target_seg_pred)
-            source_seg_pred = self.softmax(source_seg_pred)
-
-            if target_seg_pred.shape[1] > output_classes:
-                target_seg_pred = target_seg_pred[:, :-1]
-                source_seg_pred = source_seg_pred[:, :-1]
-
-            # unet
-            inputs = (source, target, source_seg_pred, target_seg_pred, velocity)
-            del target_seg_pred, source_seg_pred
-            inputs = torch.cat(inputs, dim=1)
-            velocity_and_seg = self.unet(inputs)
-            del inputs
-
-            if self.residual:
-                target_seg_pred = target_seg_pred0
-                source_seg_pred = source_seg_pred0
-                velocity += velocity_and_seg[:, :self.dim]
-                target_seg_pred += velocity_and_seg[:, self.dim:self.dim + output_classes]
-                source_seg_pred += velocity_and_seg[:, self.dim + output_classes:]
-            else:
-                velocity = velocity_and_seg[:, :self.dim]
-                target_seg_pred = velocity_and_seg[:, self.dim:self.dim + output_classes]
-                source_seg_pred = velocity_and_seg[:, self.dim + output_classes:]
-            del velocity_and_seg
+        # unet
+        source_and_target = torch.cat((source, target), dim=1)
+        velocity_and_seg = self.unet(source_and_target, nb_iter=nb_iter)
+        del source_and_target
+        velocity = velocity_and_seg[:, :self.dim]
+        output_classes = self.output_classes + (not self.implicit[0])
+        target_seg_pred = velocity_and_seg[:,
+                          self.dim:self.dim + output_classes]
+        source_seg_pred = velocity_and_seg[:, self.dim + output_classes:]
+        del velocity_and_seg
 
         # deformation
         velocity = utils.channel2last(velocity)
