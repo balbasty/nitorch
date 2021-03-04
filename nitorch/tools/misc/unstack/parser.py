@@ -3,7 +3,7 @@ from nitorch.core.cli import ParseError
 
 
 class Unstack(cli.ParsedStructure):
-    """Structure that holds parameters of the `nireorient` command"""
+    """Structure that holds parameters of the `unstack` command"""
     files: list = []
     dim: int = -1
     output: list = '{dir}{sep}{base}.{i}{ext}'
@@ -13,7 +13,7 @@ class Unstack(cli.ParsedStructure):
 help = r"""[nitorch] Unstack a volume
 
 usage:
-    niunstack *FILES [-d DIM] [-o *FILES] [-t *FILES] 
+    nitorch unstack *FILES [-d DIM] [-o *FILES] [-t *FILES] 
 
     -d, --dimension DIM    Dimension to unstack (default: -1 = last)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.{i}{ext})

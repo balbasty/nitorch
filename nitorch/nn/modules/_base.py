@@ -219,7 +219,8 @@ class Module(tnn.Module):
             key = '{}/{}'.format(type, key)
             if prepend:
                 key = '{}/{}'.format(self.__class__.__name__, key)
-            metric[key] = fn(*args)
+            with torch.no_grad():
+                metric[key] = fn(*args)
 
         for tag, metrics in self.metrics.items():
             args = tag_args[tag]

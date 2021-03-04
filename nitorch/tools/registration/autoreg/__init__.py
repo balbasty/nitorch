@@ -2,3 +2,4 @@
 
 The implementation is a giant mess.
 """
+from . import main as _

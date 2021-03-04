@@ -3,7 +3,7 @@ from nitorch.core.cli import ParseError
 
 
 class Crop(cli.ParsedStructure):
-    """Structure that holds parameters of the `nicrop` command"""
+    """Structure that holds parameters of the `crop` command"""
     files: list = []
     size: list = []
     center: list = []
@@ -17,8 +17,8 @@ class Crop(cli.ParsedStructure):
 help = r"""[nitorch] Crop a volume
 
 usage:
-    nicrop *FILES [-s *SIZE [SPACE]] [-c *CENTER [UNIT] [SPACE]]
-                  [-k FILE] [-o *FILES] [-t *FILES] 
+    nitorch crop *FILES [-s *SIZE [SPACE]] [-c *CENTER [UNIT] [SPACE]]
+                        [-k FILE] [-o *FILES] [-t *FILES] 
 
     -s, --size *SIZE [SPACE]     Size of the cropped region.
                                  Space in {vox (default), ras}

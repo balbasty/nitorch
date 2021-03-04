@@ -2,6 +2,7 @@ import sys
 import os
 import torch
 from nitorch import io, spatial
+from nitorch.tools.cli import commands
 from nitorch.core import utils
 from nitorch.core.dtypes import dtype as nitype
 from . import struct
@@ -16,7 +17,7 @@ def reslice(argv=None):
     """
 
     try:
-        argv = argv or list(sys.argv)
+        argv = argv or sys.argv[1:]
         options = parse(list(argv))
         if not options:
             return
@@ -30,6 +31,9 @@ def reslice(argv=None):
         print(f'[ERROR] {str(e)}', file=sys.stderr)
     except Exception as e:
         print(f'[ERROR] {str(e)}', file=sys.stderr)
+
+
+commands['reslice'] = reslice
 
 
 def squeeze_to_nd(dat, dim=3, channels=1):

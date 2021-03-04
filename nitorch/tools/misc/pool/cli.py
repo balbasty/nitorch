@@ -1,4 +1,5 @@
 from nitorch.core.py import make_list
+from nitorch.tools.cli import commands
 from .main import pool
 from .parser import parse, help, ParseError
 import sys
@@ -34,3 +35,6 @@ def _cli(args):
         pool(fname, window=options.window, stride=options.stride,
              method=options.method, dim=options.dim, output=ofname,
              device=options.device)
+
+
+commands['pool'] = cli

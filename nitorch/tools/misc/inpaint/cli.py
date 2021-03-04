@@ -1,12 +1,12 @@
 from nitorch.core.py import make_list
 from nitorch.tools.cli import commands
-from .main import chunk
+from .main import inpaint
 from .parser import parse, help, ParseError
 import sys
 
 
 def cli(args=None):
-    f"""Command-line interface for `nichunk`
+    f"""Command-line interface for `nipaint`
     
     {help}
     
@@ -22,8 +22,11 @@ def cli(args=None):
         print(f'[ERROR] {str(e)}', file=sys.stderr)
 
 
+commands['inpaint'] = cli
+
+
 def _cli(args):
-    """Command-line interface for `nichunk` without exception handling"""
+    """Command-line interface for `nipaint` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parse(args)
@@ -31,9 +34,20 @@ def _cli(args):
         return
 
     options.output = make_list(options.output, len(options.files))
-    options.transform = make_list(options.transform, len(options.files))
-    for fname, ofname, tfname in zip(options.files, options.output, options.transform):
-        chunk(fname, options.chunk, options.dim, ofname, transform=tfname)
+    inpaint(*options.files, missing=options.missing, output=options.output,
+            device=options.device, verbose=options.verbose,
+            max_iter_rls=options.max_rls, max_iter_cg=options.max_cg,
+            tol_rls=options.tol_rls, tol_cg=options.tol_cg)
 
 
-commands['chunk'] = cli
+
+def parse_missing(missing):
+
+    import ast
+
+    if 'x' in missing:
+        missing = 'lambda x: (' + missing + ')'
+        missing = ast.parse(missing, mode='eval')
+
+
+

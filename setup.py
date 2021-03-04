@@ -543,17 +543,5 @@ setup(
     ext_package='nitorch',
     ext_modules=build_extensions,
     cmdclass={'build_ext': build_ext},
-    entry_points={
-        'console_scripts': [
-            'autoreg=nitorch.tools.registration.autoreg.main:autoreg',
-            'nireslice=nitorch.tools.registration.reslice.main:reslice',
-            'nireorient=nitorch.tools.registration.reorient.cli:cli',
-            'niorient=nitorch.tools.registration.orient.cli:cli',
-            'niunstack=nitorch.tools.misc.unstack.cli:cli',
-            'niinfo=nitorch.tools.misc.info.cli:cli',
-            'nipool=nitorch.tools.misc.pool.cli:cli',
-            'nicrop=nitorch.tools.misc.crop.cli:cli',
-            'nichunk=nitorch.tools.misc.chunk.cli:cli',
-        ],
-    }
+    entry_points={'console_scripts': ['nitorch=nitorch.tools.cli:cli']}
 )

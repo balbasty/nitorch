@@ -26,7 +26,7 @@ letters:
 !! input data layout, use `niorient` instead.                            !!
 
 usage:
-    nireorient *FILES [-l LAYOUT] [-o *FILES] [-t *FILES] 
+    nitorch reorient *FILES [-l LAYOUT] [-o *FILES] [-t *FILES] 
 
     -l, --layout LAYOUT    Target orientation (default: RAS)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.{layout}{ext})

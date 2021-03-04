@@ -1,6 +1,7 @@
 """High level tools for processing medical imaging data."""
 
 from . import affine_reg
+from . import misc
 from . import qmri
 from . import registration
 

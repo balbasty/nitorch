@@ -45,7 +45,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         What stopping criteria to use.
         The squared residuals ('residuals') are not motonically decreasing,
         whilst the norm induced by the A-weighted scalar product ('norm') is.
-        If monotinicity is important then select 'norm'. However, this requires
+        If monotonicity is important then select 'norm'. However, this requires
         an additional evaluation of A.
 
     Returns
@@ -110,7 +110,6 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
     z = precond(r)  # Preconditioned residual
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
     p = z.clone()  # Initial conjugate directions p
-    beta = torch.tensor(0, dtype=dtype, device=device)  # Initial step size
     
     if tolerance or verbose:
         if stop == 'residuals':
@@ -126,9 +125,6 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
 
     # Run algorithm
     for n_iter in range(1, max_iter+1):
-        # Calculate conjugate directions P (descent direction)
-        p *= beta
-        p += z
         # Find the step size of the conj. gradient descent
         Ap = A(p)
         alpha = rz / torch.sum(p * Ap, dtype=sum_dtype)
@@ -154,6 +150,135 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
             gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
             if verbose:
                 s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g} | gain = {:12.6g}'
+                print(s.format(n_iter, stop, obj[n_iter], gain))
+            if gain.abs() < tolerance:
+                break
+
+        # Calculate conjugate directions P (descent direction)
+        p *= beta
+        p += z
+
+    return x
+
+
+def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
+           tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
+           inplace=True, stop='residuals'):
+    """Solve `A*x = b` by the Jacobi method.
+
+    The Jacobi method solves linear systems of the form `A*x = b`,
+    where A is diagonal dominant.
+
+    The Jacobi method performs updates of the form `x += D\(b - A*x)`,
+    where `D` is the diagonal of `A`.
+
+    Parameters
+    ----------
+    A : tensor or callable
+        Linear operator.
+        If a function: should take a tensor with the same shape as `b` and
+        return a tensor with the same shape as `b`.
+    b : tensor
+        Right hand side 'vector'.
+    x : tensor, optional, default=0
+        Initial guess.
+    precond : tensor or callable, default=identity
+        Inverse of the diagonal of `A`.
+        If a function, should take a tensor with the same shape as `b` and
+        divide it by the diagonal of `A`.
+    max_iter : int, default=len(b)*10
+        Maximum number of iteration.
+    tolerance : float, default=1e-5
+        Tolerance for early-stopping.
+    verbose : bool, default = False
+        Write something at each iteration.
+    sum_dtype : torch.dtype, default=float64
+        Choose `float32` for speed or `float64` for precision.
+    inplace : bool, default=True
+        Perform computations inplace (saves performance but overrides
+        `x` and may break the computational graph).
+    stop : {'residuals', 'norm'}, default='residuals'
+        What stopping criteria to use.
+        The squared residuals ('residuals') are not motonically decreasing,
+        whilst the norm induced by the A-weighted scalar product ('norm') is.
+        If monotonicity is important then select 'norm'. However, this requires
+        an additional evaluation of A.
+
+    Returns
+    -------
+    x : tensor
+        Solution of the linear system.
+
+    Note
+    ----
+    In practice, if A is provided as a function, b and x do not need
+    to be vector-shaped.
+    ```
+
+    """
+    # Format arguments
+    device = b.device
+    dtype = b.dtype
+    if max_iter is None:
+        max_iter = len(b) * 10
+    if x is None:
+        x = torch.zeros_like(b)
+    elif not inplace:
+        x = x.clone()
+
+    # Create functor if A is a tensor
+    if isinstance(A, torch.Tensor):
+        A_tensor = A
+
+        def A_function(x):
+            return A_tensor.mm(x)
+
+        A = A_function
+
+    # Create functor if D is a tensor
+    if isinstance(precond, torch.Tensor):
+        D_tensor = precond
+
+        def D_function(x):
+            return x * D_tensor
+
+        precond = D_function
+
+    # Initialisation
+    r = A(x).neg_().add_(b)    # Residual: b - A*x
+    z = precond(r)             # Preconditioned residual
+
+    if tolerance or verbose:
+        if stop == 'residuals':
+            obj0 = torch.sqrt(z.square().sum(dtype=dtype))
+        else:
+            obj0 = A(x).sub_(2 * b).mul_(x)
+            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+        if verbose:
+            s = '{:' + str(len(str(max_iter + 1))) + '} | {} = {:12.6g}'
+            print(s.format(0, stop, obj0))
+        obj = torch.zeros(max_iter + 1, dtype=sum_dtype, device=device)
+        obj[0] = obj0
+
+    # Run algorithm
+    for n_iter in range(1, max_iter + 1):
+
+        x += z
+        r = A(x).neg_().add_(b)
+        z = precond(r)
+
+        # Check convergence
+        if tolerance or verbose:
+            if stop == 'residuals':
+                obj1 = torch.sqrt(z.square().sum(dtype=dtype))
+            else:
+                obj1 = A(x).sub_(2 * b).mul_(x)
+                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
+            obj[n_iter] = obj1
+            gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
+            if verbose:
+                width = str(len(str(max_iter + 1)))
+                s = '{:' + width + '} | {} = {:12.6g} | gain = {:12.6g}'
                 print(s.format(n_iter, stop, obj[n_iter], gain))
             if gain.abs() < tolerance:
                 break
