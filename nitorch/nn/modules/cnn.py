@@ -1374,10 +1374,10 @@ class UUNet(tnn.Sequential):
         dim : {1, 2, 3}
             Dimension.
 
-        input_channels : int or sequence[int]
+        input_channels : int
             Number of input channels.
 
-        output_channels : int or sequence [int]
+        output_channels : int
             Number of output channels.
 
         encoder : sequence[int], default=[16, 32, 32, 32]
@@ -1394,7 +1394,9 @@ class UUNet(tnn.Sequential):
             Kernel size per dimension.
 
         activation : [sequence of] str or type or callable or None, default='relu'
-            Activation function.
+            Either one or two activation function.
+            If two functions are provided, the second one is the final
+            activation function, and the first is used in all previous layers.
 
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
