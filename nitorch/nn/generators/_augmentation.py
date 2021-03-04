@@ -9,8 +9,8 @@ from ...plot import show_slices
 
 
 # Parameters for various augmentation techniques
-augment_params = {'inu': {'amplitude': 0.25, 'fwhm': 20.0},
-                  'warp': {'amplitude': 2.0, 'fwhm': 10.0},
+augment_params = {'inu': {'amplitude': 0.25, 'fwhm': 15.0},
+                  'warp': {'amplitude': 2.0, 'fwhm': 15.0},
                   'noise': {'std_prct': 0.025}}
 
 def seg_augmentation(tag, image, ground_truth=None, vx=None):
@@ -55,10 +55,13 @@ def seg_augmentation(tag, image, ground_truth=None, vx=None):
     dim = tuple(image.shape[2:])
     ndim = len(dim)
     nvox = int(torch.as_tensor(image.shape[2:]).prod())
+    # voxel size
     if vx is None:
         vx = (1.0, ) * ndim
+    vx = torch.as_tensor(vx, device=image.device, dtype=image.dtype)
+    vx = vx.clamp_min(1.0)
     # Augmentation method
-    if 'warp' in tag and ground_truth is not None:
+    if 'warp' in tag:
         # Nonlinear warp
         # Parameters
         amplitude = augment_params['warp']['amplitude']
@@ -72,16 +75,20 @@ def seg_augmentation(tag, image, ground_truth=None, vx=None):
         # Warp
         if tag == 'warp-img-img':
             image = warp_img(image, grid)
-            ground_truth = warp_img(ground_truth, grid)
+            if ground_truth is not None:
+                ground_truth = warp_img(ground_truth, grid)
         elif tag == 'warp-img-seg':
             image = warp_img(image, grid)
-            ground_truth = warp_seg(ground_truth, grid)
+            if ground_truth is not None:
+                ground_truth = warp_seg(ground_truth, grid)
         elif tag == 'warp-seg-img':
             image = warp_seg(image, grid)
-            ground_truth = warp_img(ground_truth, grid)
+            if ground_truth is not None:
+                ground_truth = warp_img(ground_truth, grid)
         elif tag == 'warp-seg-seg':
             image = warp_seg(image, grid)
-            ground_truth = warp_seg(ground_truth, grid)
+            if ground_truth is not None:
+                ground_truth = warp_seg(ground_truth, grid)
         else:
             raise ValueError('')
     elif tag == 'noise':
