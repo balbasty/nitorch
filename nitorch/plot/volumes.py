@@ -15,7 +15,7 @@ make_axes_locatable = try_import(
 
 
 def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
-                fig_num=1, colorbar=False):
+                fig_num=1, colorbar=False, figsize=None):
     """ Display a multi-channel 2D or 3D image.
 
     Allows for real-time plotting if giving returned fig_ax objects as input.
@@ -28,6 +28,7 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
         flip (bool, optional): Flip channels and anatomical axis, defaults to False.
         fig_num (int, optional): matplotlib figure number, defaults to 1.
         colorbar (bool, optional): Show colorbar, defaults to False.
+        figsize (tuple, optional): Figure size, given as (width, height)
 
     Returns:
         fig_ax ([matplotlib.figure, matplotlib.axes])
@@ -48,14 +49,14 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
         # Make figure object
         if is_3d:  # 3D
             if flip:
-                fig, ax = plt.subplots(num_chan, 3, num=fig_num)
+                fig, ax = plt.subplots(num_chan, 3, num=fig_num, figsize=figsize)
             else:
-                fig, ax = plt.subplots(3, num_chan, num=fig_num)
+                fig, ax = plt.subplots(3, num_chan, num=fig_num, figsize=figsize)
         else:  # 2D
             if flip:
-                fig, ax = plt.subplots(num_chan, 1, num=fig_num)
+                fig, ax = plt.subplots(num_chan, 1, num=fig_num, figsize=figsize)
             else:
-                fig, ax = plt.subplots(1, num_chan, num=fig_num)
+                fig, ax = plt.subplots(1, num_chan, num=fig_num, figsize=figsize)
         fig_ax = [fig, ax]
         plt.ion()
         fig.show()
