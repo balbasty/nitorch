@@ -572,7 +572,8 @@ class SegMorphRUNet(BaseMorph):
             batch_norm=True,
             implicit=True,
             residual=True,
-            nb_iter=5):
+            nb_iter=5,
+            random='train'):
         """
 
         Parameters
@@ -611,6 +612,7 @@ class SegMorphRUNet(BaseMorph):
 
         self.residual = residual
         self.nb_iter = nb_iter
+        self.random = random or ''
         self.implicit = py.make_list(implicit, 2)
         self.output_classes = output_classes
         if not self.implicit[0]:
@@ -630,9 +632,16 @@ class SegMorphRUNet(BaseMorph):
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
 
-    def sample_iter(self):
-        with torch.no_grad():
-            return torch.randint(low=1, high=self.nb_iter*2, size=[]).item()
+
+    def get_nb_iter(self):
+        train_random = 'train' in self.random
+        test_random = ('eval' in self.random) or ('test' in self.random)
+        if ((self.training and train_random) or 
+                (not self.training and test_random)):
+            with torch.no_grad():
+                return torch.randint(low=1, high=self.nb_iter*2, size=[]).item()
+        else:
+            return self.nb_iter
 
     def forward(self, source, target, source_seg=None, target_seg=None,
                 *, _loss=None, _metric=None):
@@ -668,7 +677,7 @@ class SegMorphRUNet(BaseMorph):
             Velocity field
 
         """
-        nb_iter = self.sample_iter() if self.training else self.nb_iter
+        nb_iter = self.get_nb_iter()
         output_classes = self.output_classes + (not self.implicit[0])
 
         # sanity checks
@@ -768,7 +777,7 @@ class SegMorphRWNet(BaseMorph):
                  kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
                  interpolation='linear', grid_bound='dft', image_bound='dct2',
                  downsample_velocity=2, batch_norm=True, implicit=True,
-                 unet_inputs='image+seg', nb_iter=5):
+                 unet_inputs='image+seg', nb_iter=5, random='train'):
         """
 
         Parameters
@@ -807,6 +816,7 @@ class SegMorphRWNet(BaseMorph):
         )
 
         self.nb_iter = nb_iter
+        self.random = random or ''
         self.unet_inputs = unet_inputs
         self.implicit = py.make_list(implicit, 2)
         self.output_classes = output_classes
@@ -838,9 +848,15 @@ class SegMorphRWNet(BaseMorph):
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target',
                      'images', 'velocities', 'segmentations', 'sources', 'targets']
 
-    def sample_iter(self):
-        with torch.no_grad():
-            return torch.randint(low=1, high=self.nb_iter*2, size=[]).item()
+    def get_nb_iter(self):
+        train_random = 'train' in self.random
+        test_random = ('eval' in self.random) or ('test' in self.random)
+        if ((self.training and train_random) or 
+                (not self.training and test_random)):
+            with torch.no_grad():
+                return torch.randint(low=1, high=self.nb_iter*2, size=[]).item()
+        else:
+            return self.nb_iter
 
     def forward(self, source, target, source_seg=None, target_seg=None,
                 *, _loss=None, _metric=None):
@@ -876,7 +892,7 @@ class SegMorphRWNet(BaseMorph):
             Velocity field
 
         """
-        nb_iter = self.sample_iter() if self.training else self.nb_iter
+        nb_iter = self.get_nb_iter()
 
         # sanity checks
         check.dim(self.dim, source, target)
@@ -899,7 +915,8 @@ class SegMorphRWNet(BaseMorph):
             types = ['velocities', 'segmentations', 'sources', 'targets']
             for type in types:
                 for tag in self.losses[type].keys():
-                    _loss[f'{type}/{tag}'] = 0
+                    if tag:
+                        _loss[f'{type}/{tag}'] = 0
         for n_iter in range(nb_iter):
 
             if target_seg_pred_deformed.shape[1] > output_classes:
@@ -925,9 +942,12 @@ class SegMorphRWNet(BaseMorph):
             velocity = utils.channel2last(velocity)
 
             if _loss is not None:
-                for tag, fn in self.losses['velocities'].items():
-                    _loss[f'velocities/{tag}'] += fn(velocity)
-
+                for tag, fn in self.losses.get('velocities', {}).items():
+                    if not tag:
+                        continue
+                    fn, w = py.make_tuple(fn, 2, default=1)
+                    _loss[f'velocities/{tag}'] += fn(velocity) * w
+                        
             igrid = self.exp(-velocity)
             target_seg_pred_deformed = self.pull(target_seg_pred, igrid)
             target_seg_pred_deformed = self.softmax(target_seg_pred_deformed)
@@ -949,14 +969,26 @@ class SegMorphRWNet(BaseMorph):
                 else:
                     target_seg_for_deformed = target_seg
 
-                for tag, fn in self.losses['images'].items():
-                    _loss[f'velocities/{tag}'] += fn(deformed_source, target)
-                for tag, fn in self.losses['segmentations'].items():
-                    _loss[f'velocities/{tag}'] += fn(deformed_source_seg, target_seg_for_deformed)
-                for tag, fn in self.losses['sources'].items():
-                    _loss[f'velocities/{tag}'] += fn(self.softmax(source_seg_pred), source_seg)
-                for tag, fn in self.losses['targets'].items():
-                    _loss[f'velocities/{tag}'] += fn(self.softmax(target_seg_pred), target_seg)
+                for tag, fn in self.losses.get('images', {}).items():
+                    if not tag:
+                        continue
+                    fn, w = py.make_tuple(fn, 2, default=1)
+                    _loss[f'images/{tag}'] += fn(deformed_source, target) * w
+                for tag, fn in self.losses.get('segmentations', {}).items():
+                    if not tag:
+                        continue
+                    fn, w = py.make_tuple(fn, 2, default=1)
+                    _loss[f'segmentations/{tag}'] += fn(deformed_source_seg, target_seg_for_deformed) * w
+                for tag, fn in self.losses.get('sources', {}).items():
+                    if not tag:
+                        continue
+                    fn, w = py.make_tuple(fn, 2, default=1)
+                    _loss[f'sources/{tag}'] += fn(self.softmax(source_seg_pred), source_seg) * w
+                for tag, fn in self.losses.get('targets', {}).items():
+                    if not tag:
+                        continue
+                    fn, w = py.make_tuple(fn, 2, default=1)
+                    _loss[f'targets/{tag}'] += fn(self.softmax(target_seg_pred), target_seg) * w
 
         del target_seg_pred_deformed, source_seg_pred_deformed
 
@@ -964,7 +996,8 @@ class SegMorphRWNet(BaseMorph):
             types = ['velocities', 'segmentations', 'sources', 'targets']
             for type in types:
                 for tag in self.losses[type].keys():
-                    _loss[f'{type}/{tag}'] = _loss[f'{type}/{tag}'] / nb_iter
+                    if tag:
+                        _loss[f'{type}/{tag}'] = _loss[f'{type}/{tag}'] / nb_iter
 
         deformed_source = self.pull(source, grid)
         if source_seg is not None:
