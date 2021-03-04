@@ -58,3 +58,18 @@ class BatchNorm(Module):
 
         """
         return self.batchnorm(x)
+
+    def __str__(self):
+        s = [f'{self.batchnorm.num_features}']
+        if self.batchnorm.eps != 1e-5:
+            s += [f'eps={eps}']
+        if self.batchnorm.momentum != 0.1:
+            s += [f'momentum={momentum}']
+        if not self.batchnorm.affine:
+            s += [f'affine=False']
+        if not self.batchnorm.track_running_stats:
+            s += [f'track_running_stats=False']
+        s = ', '.join(s)
+        return f'BatchNorm({s})'
+    
+    __repr__ = __str__

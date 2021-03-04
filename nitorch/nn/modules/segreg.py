@@ -573,6 +573,7 @@ class SegMorphRUNet(BaseMorph):
             implicit=True,
             residual=True,
             nb_iter=5,
+            conv_per_layer=1,
             random='train'):
         """
 
@@ -620,15 +621,16 @@ class SegMorphRUNet(BaseMorph):
 
         output_channels = output_classes * 2 + dim
         self.unet = UUNet(dim,
-                          input_channels=2 + output_channels,
+                          input_channels=2,
                           output_channels=output_channels,
                           encoder=encoder,
                           decoder=decoder,
                           kernel_size=kernel_size,
+                          conv_per_layer=conv_per_layer,
                           activation=[activation, None],
                           batch_norm=batch_norm,
-                          nb_iter=self.nb_iter,
-                          residual=self.residual)
+                          nb_iter=nb_iter,
+                          residual=residual)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
@@ -703,6 +705,10 @@ class SegMorphRUNet(BaseMorph):
         source_seg_pred = velocity_and_seg[:, self.dim + output_classes:]
         del velocity_and_seg
 
+        # sigmoid
+        target_seg_pred = self.softmax(target_seg_pred)
+        source_seg_pred = self.softmax(source_seg_pred)
+
         # deformation
         velocity = utils.channel2last(velocity)
         grid = self.exp(velocity)
@@ -712,10 +718,6 @@ class SegMorphRUNet(BaseMorph):
             deformed_source_seg = self.pull(source_seg, grid)
         else:
             deformed_source_seg = self.pull(source_seg_pred, grid)
-            deformed_source_seg = self.softmax(deformed_source_seg)
-        # sigmoid
-        target_seg_pred = self.softmax(target_seg_pred)
-        source_seg_pred = self.softmax(source_seg_pred)
         if target_seg is None:
             target_seg_for_deformed = target_seg_pred
         else:

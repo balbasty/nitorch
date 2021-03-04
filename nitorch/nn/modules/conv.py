@@ -358,6 +358,7 @@ class SimpleConv(Module):
     
     def __str__(self):
         s = [f'{self.in_channels}', f'{self.out_channels}']
+        s += [f'kernel_size={self.kernel_size}']
         if self.transposed:
             s += [f'transposed=True']
         if any(s > 1 for s in self.stride):
@@ -572,7 +573,20 @@ class GroupedConv(tnn.ModuleList):
     def __str__(self):
         in_channels = [l.in_channels for l in self]
         out_channels = [l.out_channels for l in self]
-        return f'GroupedConv({in_channels}, {out_channels})'
+        in_channels = ', '.join(in_channels)
+        out_channels = ', '.join(out_channels)
+        s = [f'[{self.in_channels}]', f'[{self.out_channels}]']
+        s += [f'kernel_size={self.kernel_size}']
+        if self.transposed:
+            s += [f'transposed=True']
+        if any(s > 1 for s in self.stride):
+            s += [f'stride={self.stride}']
+        if any(s > 1 for s in self.dilation):
+            s += [f'dilation={self.dilation}']
+        if self.groups > 1:
+            s += [f'groups={self.groups}']
+        s = ', '.join(s)
+        return f'SimpleConv({s})'
     
     __repr__ = __str__
 
