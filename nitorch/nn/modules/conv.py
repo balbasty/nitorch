@@ -358,6 +358,12 @@ class SimpleConv(Module):
     
     def __str__(self):
         s = [f'{self.in_channels}', f'{self.out_channels}']
+        if self.transposed:
+            s += [f'transposed=True']
+        if any(s > 1 for s in self.stride):
+            s += [f'stride={self.stride}']
+        if any(s > 1 for s in self.dilation):
+            s += [f'dilation={self.dilation}']
         if self.groups > 1:
             s += [f'groups={self.groups}']
         s = ', '.join(s)

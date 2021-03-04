@@ -3,7 +3,7 @@ import itertools
 import torch
 from torch.nn import functional as F
 from nitorch import core
-from nitorch.core import utils
+from nitorch.core import utils, math
 from nitorch.core.utils import to_max_backend, unsqueeze, movedim
 from nitorch.core.py import make_list
 from ._affine import affine_conv
@@ -102,7 +102,7 @@ conv3d = lambda *args, **kwargs: conv(3, *args, **kwargs)
 
 
 def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
-         bound='zero', reduction='mean', affine=None):
+         bound='zero', reduction='mean', return_indices=False, affine=None):
     """Perform a pooling
 
     Parameters
@@ -125,10 +125,17 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         Boundary conditions used in the padding.
     reduction : {'mean', 'max', 'min', 'median', 'sum'} or callable, default='mean'
         Function to apply to the elements in a window.
+    return_indices : bool, default=False
+        Return input index of the min/max/median element.
+        For other types of reduction, return None.
+    affine : (..., D+1, D+1) tensor, optional
+        Input orientation matrix
 
     Returns
     -------
-    pooled : (*batch, *spatial_out)
+    pooled : (*batch, *spatial_out) tensor
+    indices : (*batch, *spatial_out, dim) tensor, if `return_indices`
+    affine : (..., D+1, D+1) tensor, if `affine`
 
     """
     # move everything to the same dtype/device
@@ -161,8 +168,12 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         tensor = utils.pad(tensor, padding, bound, side='both')
         padding = [0] * dim
 
-    pool_fn = None
+    return_indices0 = False
+    pool_fn = reduction if callable(reduction) else None
+
     if reduction in ('mean', 'avg'):
+        return_indices0 = True
+        return_indices = False
         pool_fn = (F.avg_pool1d if dim == 1 else
                    F.avg_pool2d if dim == 2 else
                    F.avg_pool3d if dim == 3 else None)
@@ -182,32 +193,48 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
                                                   dilation=dilation)[:, 0]
 
     if not pool_fn:
+        if reduction not in ('min', 'max', 'median'):
+            return_indices0 = True
+            return_indices = False
         if reduction == 'mean':
-            reduction = lambda x: torch.mean(x, dim=-1)
+            reduction = lambda x: math.mean(x, dim=-1)
         elif reduction == 'sum':
-            reduction = lambda x: torch.sum(x, dim=-1)
+            reduction = lambda x: math.sum(x, dim=-1)
         elif reduction == 'min':
-            reduction = lambda x: torch.min(x, dim=-1).values
+            reduction = lambda x: math.min(x, dim=-1)
         elif reduction == 'max':
-            reduction = lambda x: torch.max(x, dim=-1).values
+            reduction = lambda x: math.max(x, dim=-1)
         elif reduction == 'median':
-            reduction = lambda x: torch.median(x, dim=-1).values
+            reduction = lambda x: math.median(x, dim=-1)
+        elif not callable(reduction):
+            raise ValueError(f'Unknown reduction {reduction}')
         pool_fn = lambda *a, **k: _pool(*a, **k, reduction=reduction)
 
-    tensor = pool_fn(tensor, kernel_size, stride=stride)
+    outputs = []
+    if return_indices:
+        tensor, ind = pool_fn(tensor, kernel_size, stride=stride)
+        ind = utils.ind2sub(ind, stride)
+        ind = utils.movedim(ind, 0, -1)
+        outputs.append(ind)
+    else:
+        tensor = pool_fn(tensor, kernel_size, stride=stride)
+        if return_indices0:
+            outputs.append(None)
+
     spatial_out = tensor.shape[-dim:]
     tensor = tensor.reshape([*batch, *spatial_out])
+    outputs = [tensor, *outputs]
 
     if affine is not None:
         affine, _ = affine_conv(affine, spatial_in,
                                 kernel_size=kernel_size, stride=stride,
                                 padding=padding0, dilation=dilation)
-        return tensor, affine
-    else:
-        return tensor
+        outputs.append(affine)
+
+    return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
 
-def _pool(x, kernel_size, stride, dilation, reduction):
+def _pool(x, kernel_size, stride, dilation, reduction, return_indices=False):
     """Implement pooling by "manually" extracting patches using `unfold`
 
     Parameters
@@ -219,6 +246,7 @@ def _pool(x, kernel_size, stride, dilation, reduction):
     reduction : callable
         This function should collapse the last dimension of a tensor
         (..., K) tensor -> (...)
+    return_indices : bool
 
     Returns
     -------
@@ -231,9 +259,14 @@ def _pool(x, kernel_size, stride, dilation, reduction):
         if dl != 1:
             x = x[..., ::dl]
     dim = len(kernel_size)
+    patch_shape = x.shape[dim+1:]
     x = x.reshape((*x.shape[:dim+1], -1))
-    x = reduction(x)
-    return x
+    if return_indices:
+        x, ind = reduction(x, return_indices=True)
+        return x, ind
+    else:
+        x = reduction(x)
+        return x
 
 
 pool1d = lambda *args, **kwargs: pool(1, **kwargs)

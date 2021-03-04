@@ -1,7 +1,9 @@
 """Pooling layers"""
 
 import inspect
-from nitorch.core.py import make_list
+import math
+import torch
+from nitorch.core.py import make_list, make_tuple
 from nitorch.spatial import pool
 from nitorch.nn.activations import _map_activations
 from .base import Module
@@ -10,14 +12,14 @@ from .base import Module
 def _guess_output_shape(inshape, dim, kernel_size, stride=1, dilation=1,
                         padding=0, output_padding=0, transposed=False):
     """Guess the output shape of a convolution"""
-    kernel_size = make_tuple(kernel_size, self.dim)
-    stride = make_tuple(stride, self.dim)
-    padding = make_tuple(padding, self.dim)
-    output_padding = make_tuple(output_padding, self.dim)
-    dilation = make_tuple(dilation, self.dim)
+    kernel_size = make_tuple(kernel_size, dim)
+    stride = make_tuple(stride, dim)
+    padding = make_tuple(padding, dim)
+    output_padding = make_tuple(output_padding, dim)
+    dilation = make_tuple(dilation, dim)
 
     N = inshape[0]
-    C = self.conv.out_channels
+    C = inshape[1]
     shape = [N, C]
     for L, S, Pi, D, K, Po in zip(inshape[2:], stride, padding,
                                   dilation, kernel_size, output_padding):
@@ -34,20 +36,21 @@ class Pool(Module):
     reduction = 'max'
 
     def __init__(self, dim, kernel_size=3, stride=None, padding=0,
-                 dilation=1, reduction=None, activation=None):
+                 dilation=1, reduction=None, activation=None,
+                 return_indices=False):
         """
 
         Parameters
         ----------
         dim : int
             Dimensionality
-        kernel_size : int or list[int], default=3
+        kernel_size : int or sequence[int], default=3
             Kernel/Window size
-        stride : int or list[int], default=kernel_size
+        stride : int or sequence[int], default=kernel_size
             Step/stride
-        padding : int, default=0
+        padding : int or sequence[int], default=0
             Zero-padding
-        dilation : int, default=1
+        dilation : int or sequence[int], default=1
             Dilation
         reduction : {'min', 'max', 'mean', 'sum', 'median'}, default='max'
             Pooling type
@@ -60,6 +63,8 @@ class Pool(Module):
                 * have a learnable activation specific to this module
                 * have a learnable activation shared with other modules
                 * have a non-learnable activation
+        return_indices : bool, default=False
+            Return indices of the min/max/median elements.
         """
         super().__init__()
         self.dim = dim
@@ -68,6 +73,7 @@ class Pool(Module):
         self.padding = padding
         self.dilation = dilation
         self.reduction = reduction or self.reduction
+        self.return_indices = return_indices
 
         # Add activation
         #   an activation can be a class (typically a Module), which is
@@ -109,17 +115,16 @@ class Pool(Module):
         stride = overload.get('stride', self.stride)
         padding = overload.get('padding', self.padding)
         dilation = overload.get('dilation', self.dilation)
-        transposed = self.transposed
-        kernel_size = self.kernel_size
+        kernel_size = overload.get('kernel_size', self.kernel_size)
 
         stride = make_tuple(stride, self.dim)
         padding = make_tuple(padding, self.dim)
-        output_padding = make_tuple(output_padding, self.dim)
+        kernel_size = make_tuple(kernel_size, self.dim)
         dilation = make_tuple(dilation, self.dim)
 
-        return _guess_output_shape(inshape, dim, kernel_size, 
-                                   stride=stride, dilation=dilation, padding=padding,)
-
+        return _guess_output_shape(
+            inshape, self.dim, kernel_size,
+            stride=stride, dilation=dilation, padding=padding)
 
     def forward(self, x, **overload):
         """
@@ -134,8 +139,10 @@ class Pool(Module):
 
         Returns
         -------
-        x : (batch, channel, *spatial_out)
+        x : (batch, channel, *spatial_out) tensor
             Pooled tensor
+        indices : (batch, channel, *spatial_out, dim) tensor, if `return_indices`
+            Indices of input elements.
 
         """
 
@@ -145,6 +152,7 @@ class Pool(Module):
         padding = make_list(overload.get('padding', self.padding), dim)
         dilation = make_list(overload.get('dilation', self.dilation), dim)
         reduction = overload.get('reduction', self.reduction)
+        return_indices = overload.get('return_indices', self.return_indices)
 
         # Activation
         activation = overload.get('activation', self.activation)
@@ -154,8 +162,14 @@ class Pool(Module):
                       else activation if callable(activation)
                       else None)
 
-        x = pool(dim, x, kernel_size=kernel_size, stride=stride,
-                 dilation=dilation, padding=padding, reduction=reduction)
+        x = pool(dim, x,
+                 kernel_size=kernel_size,
+                 stride=stride,
+                 dilation=dilation,
+                 padding=padding,
+                 reduction=reduction,
+                 return_indices=return_indices)
+
         if activation:
             x = activation(x)
         return x

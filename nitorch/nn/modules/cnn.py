@@ -130,7 +130,174 @@ class Stitch(Module):
 
         return input
 
-    
+
+@nitorchmodule
+class Down(tnn.ModuleList):
+
+    def __init__(
+            self,
+            dim,
+            input_channels=None,
+            output_channels=None,
+            stride=2,
+            kernel_size=None,
+            pool=None,
+            activation=tnn.ReLU,
+            batch_norm=False,
+            groups=None,
+            stitch=1,
+            bias=True):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Number of spatial dimensions.
+
+        input_channels : int, optional if `pool`
+            Number of input channels (if strided conv).
+
+        output_channels : int, optional if `pool`
+            Number of output channels (if strided conv).
+
+        stride : int or sequence[int], default=2
+            Up/Downsampling factor.
+
+        kernel_size : int or sequence[int], default=`stride`
+            Kernel size per dimension (if strided conv).
+
+        activation : [sequence of] str or type or callable, default='relu'
+            Activation function (if strided conv).
+
+        batch_norm : [sequence of] bool, default=False
+            Batch normalization before each convolution (if strided conv).
+
+        pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
+            Pooling used to change resolution.
+            If None, use a strided convolution.
+
+        groups : [sequence of] int, default=`stitch`
+            Number of groups per convolution. If > 1, a grouped convolution
+            is performed, which is equivalent to `groups` independent
+            layers.
+
+        stitch : int, default=1
+            Number of stitched tasks.
+
+        bias : bool, default=True
+            Include a bias term in the convolution.
+
+        """
+        if not pool and (not input_channels or not output_channels):
+            raise ValueError('Number of channels mandatory for strided conv')
+        stitch = stitch or 1
+        groups = groups or stitch
+        stride = make_list(stride, dim)
+        kernel_size = make_list(kernel_size, dim)
+        kernel_size = [k or s for k, s in zip(kernel_size, stride)]
+
+        if pool:
+            module = Pool(dim,
+                          kernel_size=kernel_size,
+                          stride=stride,
+                          activation=activation)
+        else:
+            module = Conv(dim,
+                          input_channels, output_channels,
+                          kernel_size=kernel_size,
+                          stride=stride,
+                          activation=activation,
+                          groups=groups,
+                          bias=bias,
+                          batch_norm=batch_norm)
+        modules = [module]
+        if stitch:
+            modules.append(Stitch(stitch, stitch))
+        super().__init__(modules)
+
+
+@nitorchmodule
+class Up(tnn.ModuleList):
+
+    def __init__(
+            self,
+            dim,
+            input_channels,
+            output_channels,
+            stride=2,
+            kernel_size=None,
+            output_padding=None,
+            activation=tnn.ReLU,
+            batch_norm=False,
+            groups=None,
+            stitch=1,
+            bias=True):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Number of spatial dimensions.
+
+        input_channels : int
+            Number of input channels.
+
+        output_channels : int
+            Number of output channels.
+
+        stride : int or sequence[int], default=2
+            Up/Downsampling factor.
+
+        kernel_size : int or sequence[int], default=`stride`
+            Kernel size per dimension.
+
+        output_padding : int or sequence[int], default=0
+            Padding to add to the output.
+
+        activation : [sequence of] str or type or callable, default='relu'
+            Activation function (if strided conv).
+
+        batch_norm : [sequence of] bool, default=False
+            Batch normalization before each convolution (if strided conv).
+
+        pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
+            Pooling used to change resolution.
+            If None, use a strided convolution.
+
+        groups : [sequence of] int, default=`stitch`
+            Number of groups per convolution. If > 1, a grouped convolution
+            is performed, which is equivalent to `groups` independent
+            layers.
+
+        stitch : int, default=1
+            Number of stitched tasks.
+
+        bias : bool, default=True
+            Include a bias term in the convolution.
+
+        """
+        stitch = stitch or 1
+        groups = groups or stitch
+        stride = make_list(stride, dim)
+        kernel_size = make_list(kernel_size, dim)
+        kernel_size = [k or s for k, s in zip(kernel_size, stride)]
+
+        module = Conv(dim,
+                      input_channels, output_channels,
+                      transposed=True,
+                      kernel_size=kernel_size,
+                      stride=stride,
+                      activation=activation,
+                      groups=groups,
+                      bias=bias,
+                      batch_norm=batch_norm,
+                      output_padding=output_padding)
+        modules = [module]
+        if stitch:
+            modules.append(Stitch(stitch, stitch))
+        super().__init__([module])
+
+
 @nitorchmodule
 class StackedConv(tnn.ModuleList):
     """Multiple convolutions at the same resolution followed by 
@@ -158,7 +325,9 @@ class StackedConv(tnn.ModuleList):
             groups=None,
             stitch=1,
             output_padding=0,
-            bias=True):
+            bias=True,
+            residual=False,
+            return_last=False):
         """
 
         Parameters
@@ -204,8 +373,20 @@ class StackedConv(tnn.ModuleList):
         bias : [sequence of] int, default=True
             Include a bias term in the convolution.
 
+        residual : bool, default=False
+            Add residual connections between convolutions.
+            This has no effect if only one convolution is performed.
+            No residual connection is applied to the output of the last
+            layer (strided conv or pool).
+
+        return_last : bool, default=False
+            Return the last output before up/downsampling on top of the
+            real output (useful for skip connections).
+
         """
         self.dim = dim
+        self.residual = residual
+        self.return_last = return_last
 
         output_channels = make_list(output_channels)
         input_channels = [input_channels] + output_channels[:-1]
@@ -283,7 +464,19 @@ class StackedConv(tnn.ModuleList):
             if isinstance(self, Conv):
                 return layer.output_padding
         return 0
-            
+
+    @property
+    def in_channels(self):
+        for layer in self:
+            if isinstance(layer, Conv):
+                return layer.in_channels
+
+    @property
+    def out_channels(self):
+        for layer in reversed(self):
+            if isinstance(layer, Conv):
+                return layer.out_channels
+
     def shape(self, x):
         if torch.is_tensor(x):
             x = tuple(x.shape)
@@ -292,15 +485,55 @@ class StackedConv(tnn.ModuleList):
                 x = layer.shape(x)
         return x
     
-    def forward(self, x, **kwargs):
-        output_padding = kwargs.get('output_padding', self.output_padding)
-        
+    def forward(self, *x, **overload):
+        """
+
+        Parameters
+        ----------
+        x : (B, Ci, *spatial_in) tensor
+
+        Other parameters
+        ----------------
+        output_padding : int or sequence[int], optional
+        residual : bool, optional
+        return_last : bool, optional
+
+        Returns
+        -------
+        output : (B, Co, *spatial_out) tensor
+            Convolved tensor
+        last : (B, C2, *spatial_in) tensor, if `return_last`
+            Last output before the final up/downsampling
+
+        """
+        def is_last(layer):
+            if isinstance(layer, Pool):
+                return True
+            if isinstance(layer, Conv):
+                if not all(s == 1 for s in make_list(layer.stride)):
+                    return True
+            return False
+
+        output_padding = overload.get('output_padding', self.output_padding)
+        residual = overload.get('residual', self.residual)
+        return_last = overload.get('return_last', self.return_last)
+
+        last = x[0]
+        x = torch.cat(x, 1) if len(x) > 1 else x[0]
         for layer in self:
             if isinstance(layer, Conv) and layer.transposed:
-                x = layer(x, output_padding=output_padding)
+                kwargs = dict(output_padding=output_padding)
             else:
-                x = layer(x)
-        return x
+                kwargs = {}
+
+            if residual:
+                x = x + layer(x, **kwargs)
+            else:
+                x = layer(x, **kwargs)
+            if not is_last(layer):
+                last = x
+
+        return (x, last) if return_last else x
     
         
 class EncodingLayer(StackedConv):
@@ -323,7 +556,10 @@ class EncodingLayer(StackedConv):
             activation=tnn.ReLU,
             batch_norm=False,
             groups=None,
-            stitch=1):
+            stitch=1,
+            bias=True,
+            residual=False,
+            return_last=False):
         
         super().__init__(
             dim, 
@@ -336,6 +572,9 @@ class EncodingLayer(StackedConv):
             batch_norm=batch_norm,
             groups=groups,
             stitch=stitch,
+            bias=bias,
+            residual=residual,
+            return_last=return_last,
         )
 
         
@@ -358,22 +597,30 @@ class DecodingLayer(StackedConv):
             activation=tnn.ReLU,
             batch_norm=False,
             groups=None,
-            stitch=1):
+            stitch=1,
+            output_padding=0,
+            bias=True,
+            residual=False,
+            return_last=False):
         
         super().__init__(
             dim, 
             input_channels, 
             output_channels,
+            transposed=True,
             kernel_size=kernel_size,
             stride=stride,
             activation=activation,
             batch_norm=batch_norm,
             groups=groups,
             stitch=stitch,
-            transposed=True,
+            bias=bias,
+            residual=residual,
+            return_last=return_last,
+            output_padding=output_padding,
         )
-    
-        
+
+
 @nitorchmodule
 class Encoder(tnn.ModuleList):
     """Encoder network (for U-nets, VAEs, etc.).
@@ -417,6 +664,7 @@ class Encoder(tnn.ModuleList):
             dim,
             input_channels,
             output_channels,
+            skip_channels=None,
             kernel_size=3,
             stride=2,
             pool=None,
@@ -478,6 +726,15 @@ class Encoder(tnn.ModuleList):
         groups = [g or s for g, s in zip(groups, stitch)]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
         batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
+
+        # deal with skipped connections (what a nightmare...)
+        skip_channels = make_list(skip_channels or [])
+        self.skip = len(skip_channels) > 0
+        self.skip_groups = []
+        for i in range(len(skip_channels)):
+            self.skip_groups.append(groups[i])
+            if len(input_channels) > i+1:
+                input_channels[i] += skip_channels[i]
 
         all_shapes = zip(
             input_channels, 
@@ -853,10 +1110,11 @@ class UNet(tnn.Sequential):
     def forward(self, x):
         
         # encoder
-        encoder_out = [x]
+        encoder_out = []
         for layer in self.encoder:
-            x = layer(x)
-            encoder_out.append(x)
+            x, y = layer(x, return_last=True)
+            encoder_out.append(y)
+        encoder_out.append(x)
         # repeat skipped values if decoder has split
         x = list(reversed(encoder_out))
         x = [x1.repeat([1, r] + [1]*self.dim) if r > 1. else x1
@@ -1081,3 +1339,258 @@ class MRF(tnn.Sequential):
 
         # build model
         super().__init__(OrderedDict(modules))
+
+
+class Cat(Module):
+
+    def forward(self, *x, return_last=False, **k):
+        last = x[0]
+        x = torch.cat(x, 1) if len(x) > 1 else x[0]
+        return (x, last) if return_last else x
+
+
+@nitorchmodule
+class UUNet(tnn.Sequential):
+    """Iterative U-Net with two-way skip connections."""
+
+    def __init__(
+            self,
+            dim,
+            input_channels,
+            output_channels,
+            encoder=None,
+            decoder=None,
+            conv_per_layer=1,
+            kernel_size=3,
+            stride=2,
+            activation=tnn.ReLU,
+            batch_norm=False,
+            residual=False,
+            nb_iter=1):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+
+        input_channels : int or sequence[int]
+            Number of input channels.
+
+        output_channels : int or sequence [int]
+            Number of output channels.
+
+        encoder : sequence[int], default=[16, 32, 32, 32]
+            Number of channels in each encoding layer.
+
+        decoder : sequence[int], optional
+            Number of channels in each decoding layer.
+            Default: symmetric of encoder
+
+        conv_per_layer : int, default=2
+            Number of convolutions per layer.
+
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+
+        activation : [sequence of] str or type or callable or None, default='relu'
+            Activation function.
+
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
+
+        residual : bool, default=False
+            Use residual skipped connections
+        """
+        self.dim = dim
+        self.residual = residual
+        self.nb_iter = nb_iter
+
+        input_channels = make_list(input_channels)
+        output_channels = make_list(output_channels)
+
+        # defaults
+        conv_per_layer = max(1, conv_per_layer)
+        encoder = list(encoder or [16, 32, 32, 32])
+        decoder = make_list(decoder or list(reversed(encoder[:-1])),
+                            n=len(encoder)-1)
+        stack = decoder[len(encoder)-1:]
+        decoder = encoder[-1:] + decoder[:len(encoder)]
+        activation, final_activation = make_list(activation, 2)
+
+        modules = []
+        first = Conv(dim,
+                     in_channels=input_channels,
+                     out_channels=encoder[0],
+                     kernel_size=kernel_size,
+                     activation=activation,
+                     batch_norm=batch_norm,
+                     padding='auto')
+        modules.append(('first', first))
+
+        modules_encoder = []
+        for n in range(len(encoder)-1):
+            cin = encoder[n] + decoder[-n-1]
+            cout = encoder[n+1]
+            cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
+            modules_encoder.append(EncodingLayer(
+                dim,
+                input_channels=cin,
+                output_channels=cout,
+                kernel_size=kernel_size,
+                stride=stride,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+        enc = tnn.ModuleList(modules_encoder)
+        modules.append(('encoder', enc))
+
+        cin = decoder[0]
+        cout = decoder[1]
+        cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
+        btk = DecodingLayer(
+            dim,
+            input_channels=cin,
+            output_channels=cout,
+            kernel_size=kernel_size,
+            stride=stride,
+            activation=activation,
+            batch_norm=batch_norm,
+        )
+        modules.append(('bottleneck', btk))
+
+        _, *decoder = decoder
+        *encoder, _ = encoder
+
+        modules_decoder = []
+        for n in range(len(decoder)-1):
+            cin = decoder[n] + encoder[-n-1]
+            cout = decoder[n+1]
+            cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
+            modules_decoder.append(DecodingLayer(
+                dim,
+                input_channels=cin,
+                output_channels=cout,
+                kernel_size=kernel_size,
+                stride=stride,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+        if conv_per_layer > 1:
+            cin = decoder[-1] + encoder[0]
+            cout = [decoder[-1]] * (conv_per_layer - 1)
+            modules_decoder.append(StackedConv(
+                dim,
+                input_channels=cin,
+                output_channels=cout,
+                kernel_size=kernel_size,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+            last_decoder = decoder[-1]
+        else:
+            modules_decoder.append(Cat())
+            last_decoder = decoder[-1] + encoder[0]
+        dec = tnn.ModuleList(modules_decoder)
+        modules.append(('decoder', dec))
+
+        if stack:
+            stk = StackedConv(dim,
+                              input_channels=last_decoder,
+                              output_channels=stack,
+                              kernel_size=kernel_size,
+                              activation=activation,
+                              batch_norm=batch_norm)
+            modules.append(('stack', stk))
+            last_stack = stack[-1]
+        else:
+            modules.append(('stack', Cat()))
+            last_stack = last_decoder
+
+        final = Conv(dim, last_stack, output_channels,
+                     kernel_size=kernel_size,
+                     activation=final_activation,
+                     padding='auto')
+        modules.append(('final', final))
+
+        super().__init__(OrderedDict(modules))
+
+    def forward_once(self, x):
+
+        x = self.first(x)
+
+        # encoder
+        buffers = []
+        for d, layer in enumerate(self.encoder):
+            buffer_shape = list(x.shape)
+            buffer_shape[1] = layer.in_channels - buffer_shape[1]
+            buffer = x.new_zeros(buffer_shape)
+            x, buffer = layer(x, buffer, return_last=True)
+            buffers.append(buffer)
+
+        pad = self.get_padding(buffers[-1].shape, x.shape, self.bottleneck)
+        x = self.bottleneck(x, output_padding=pad)
+
+        # decoder
+        for d, layer in enumerate(self.decoder):
+            buffer = buffers[-d-1]
+            if d < len(self.decoder) - 1:
+                pad = self.get_padding(buffers[-d-2].shape, x.shape, layer)
+            else:
+                pad = 0
+            x = layer(x, buffer, output_padding=pad)
+
+        x = self.stack(x)
+        x = self.final(x)
+        return x
+
+    def get_padding(self, outshape, inshape, layer):
+        outshape = outshape[2:]
+        shape = layer.shape(inshape)[2:]
+        padding = [o - i for o, i in zip(outshape, shape)]
+        return padding
+
+    def forward(self, x, **overload):
+
+        nb_iter = overload.get('nb_iter', self.nb_iter)
+        if nb_iter == 1:
+            return self.forward_once(x)
+
+        buffers_encoder = [None] * len(self.encoder)
+        buffers_decoder = [None] * len(self.decoder)
+
+        x = self.first(x)
+
+        # encoder
+        for d, layer in enumerate(self.encoder):
+            buffer = buffers_decoder[-d-1]
+            if buffer is None:
+                buffer_shape = list(x.shape)
+                buffer_shape[1] = layer.in_channels - buffer_shape[1]
+                buffer = x.new_zeros(buffer_shape)
+                buffers_decoder[-d-1] = buffer
+            x, buffer = layer(x, buffer, return_last=True)
+            if buffers_encoder[d] is None or not self.residual:
+                buffers_encoder[d] = buffer
+            else:
+                buffers_encoder[d] = buffers_encoder[d] + buffer
+
+        pad = self.get_padding(buffers_encoder[-1].shape, x.shape, self.bottleneck)
+        x = self.bottleneck(x, output_padding=pad)
+
+        # decoder
+        for d, layer in enumerate(self.decoder):
+            buffer = buffers_encoder[-d-1]
+            if d < len(self.decoder) - 1:
+                pad = self.get_padding(buffers_encoder[-d-2].shape, x.shape, layer)
+            else:
+                pad = 0
+            x, buffer = layer(x, buffer, return_last=True, output_padding=pad)
+            if buffers_decoder[d] is None or not self.residual:
+                buffers_decoder[d] = buffer
+            else:
+                buffers_decoder[d] = buffers_decoder[d] + buffer
+
+        x = self.stack(x)
+        x = self.final(x)
+        return x
