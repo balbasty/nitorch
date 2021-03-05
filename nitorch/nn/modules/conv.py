@@ -181,6 +181,49 @@ class SimpleConv(Module):
                           bias=bias,
                           **output_padding)
     
+    def reset_parameters(self, method='kaiming', a=None, dist='uniform'):
+        """Initialize the values of the weights and bias
+        
+        Parameters
+        ----------
+        method : {'kaiming', 'xavier', None}, default='kaiming'
+            Initialization method.
+        a : float, default=sqrt(5)
+            If method is 'kaiming', negative slope of the activation function 
+            (0 for ReLU, some non-zero value for leaky ReLU)
+            If method is 'xavier', gain.
+            If method is None, FWHM of the distribution.
+        dist : {'uniform', 'normal'}, default='uniform'
+            Distribution to sample.
+        """
+        method = (method or '').lower()
+        if method.startswith('k'):
+            a = math.sqrt(5) if a is None else a
+        else:
+            a = 1. if a is None else a
+            
+        if method.startswith('k') and dist.startswith('u'):
+            fn = tnn.init.kaiming_uniform_
+        elif method.startswith('k') and dist.startswith('n'):
+            fn = tnn.init.kaiming_normal_
+        elif method.startswith('x') and dist.startswith('u'):
+            fn = tnn.init.xavier_uniform_
+        elif method.startswith('x') and dist.startswith('n'):
+            fn = tnn.init.xavier_normal_
+        elif not method and dist.startswith('u'):
+            fn = lambda x, a: tnn.init.uniform_(x, a=-b/2, b=a/2)
+        elif not method and dist.startswith('n'):
+            fn = lambda x, a: tnn.init.normal_(x, std=a/2.355)
+            
+        fn(self.conv.weight, a=a)
+        if self.bias is not None:
+            fan_in, _ = tnn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in)
+            if dist.startswith('u'):
+                tnn.init.uniform_(self.bias, -bound, bound)
+            else:
+                tnn.init.normal_(self.bias, std=2*bound/2.355)
+    
     def _set_padding(self, padding, padding_mode):
         if padding != 'auto' and padding_mode in _native_padding_mode:
             self.conv.padding_mode = padding_mode
@@ -471,6 +514,11 @@ class GroupedConv(tnn.ModuleList):
             output[slicer] = layer(inp, **overload)
         return output
 
+    
+    def reset_parameters(self, *args, **kwargs):
+        for layer in self:
+            layer.reset_parameters(*args, **kwargs)
+    
     @property
     def weight(self):
         return [layer.conv.weight for layer in self]
@@ -740,6 +788,11 @@ class Conv(Module):
         self.activation = (activation() if inspect.isclass(activation)
                            else activation if callable(activation)
                            else None)
+        
+        if isinstance(activation, tnn.ReLU):
+            self.conv.reset_parameters(a=0)
+        elif isinstance(activation, tnn.LeakyReLU):
+            self.conv.reset_parameters(a=activation.negative_slope)
 
     @property
     def weight(self):

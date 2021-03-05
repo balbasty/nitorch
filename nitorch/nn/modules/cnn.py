@@ -1751,8 +1751,8 @@ class UUNet(tnn.Sequential):
     def forward(self, x, **overload):
 
         nb_iter = overload.get('nb_iter', self.nb_iter)
-        if nb_iter == 1:
-            return self.forward_once(x)
+#         if nb_iter == 1:
+#             return self.forward_once(x)
 
         buffers_encoder = [None] * len(self.encoder)
         buffers_decoder = [None] * len(self.decoder)
@@ -1768,7 +1768,7 @@ class UUNet(tnn.Sequential):
                 if buffer is None:
                     buffer_shape = list(x.shape)
                     buffer_shape[1] = layer.in_channels - buffer_shape[1]
-                    buffer = x.new_zeros(buffer_shape)
+                    buffer = x.new_empty(buffer_shape).normal_(std=1/2.355)
                     buffers_decoder[-d-1] = buffer
                 x, buffer = layer(x, buffer, return_last=True)
                 if buffers_encoder[d] is None or not self.residual:
