@@ -61,7 +61,7 @@ def denoise_mri(dat_x, lam_scl=4.0, lr=1e1, max_iter=10000, tolerance=1e-8, verb
     max_iter : int, default=10000
         Maximum number of fitting iterations
     tolerance : float, default=1e-8
-        Convergence threshold when to stop iterating
+        Convergence threshold (when to stop iterating)
     verbose : bool, default=True
         Print to screen?
 
@@ -99,7 +99,7 @@ def denoise_mri(dat_x, lam_scl=4.0, lr=1e1, max_iter=10000, tolerance=1e-8, verb
         optim.zero_grad()
         # compute reconstruction loss
         loss_val = _loss_ssqd_jtv(dat_x, dat_y_hat, tau, lam)
-        # differentiate reconstruction loss w.r.t. y_hat
+        # differentiate reconstruction loss w.r.t. dat_y_hat
         loss_val.backward()
         # store loss
         loss_vals[n_iter] = loss_val.item()
