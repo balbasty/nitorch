@@ -23,8 +23,8 @@ def autoreg(argv=None):
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    except Exception as e:
-        print(f'[ERROR] {str(e)}', file=sys.stderr)
+    # except Exception as e:
+    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
 
 
 commands['autoreg'] = autoreg
@@ -58,6 +58,18 @@ def _autoreg(argv=None):
 
     load_data(options)
     load_transforms(options)
+
+    print('Losses:')
+    for loss in options.losses:
+        print(f' - {loss.name}')
+        for f, m in zip(loss.fixed.dat, loss.moving.dat):
+            print(f'   -| {list(m[0].shape)}, {spatial.voxel_size(m[1]).tolist()}')
+            print(f'   -> {list(f[0].shape)}, {spatial.voxel_size(f[1]).tolist()}')
+    print('Transforms')
+    for trf in options.transformations:
+        print(f' - {trf.name}')
+        if isinstance(trf, struct.NonLinear):
+            print(f'   - {list(trf.dat.shape)}, {spatial.voxel_size(trf.affine).tolist()}')
 
     while not all_optimized(options):
         add_freedom(options)
@@ -138,11 +150,11 @@ def load_data(s):
         if loss.moving.type == 'labels':
             loss.moving.dat, loss.labels = split(loss.moving.dat, loss.labels)
         lvl = (list(sorted(set(loss.fixed.pyramid)))
-               if loss.fixed.type != 'labels' else 1)
+               if loss.fixed.type != 'labels' else [1])
         loss.fixed.dat = pyramid(loss.fixed.dat,
                                  loss.fixed.affine.to(device), lvl)
         lvl = (list(sorted(set(loss.moving.pyramid)))
-               if loss.moving.type != 'labels' else 1)
+               if loss.moving.type != 'labels' else [1])
         loss.moving.dat = pyramid(loss.moving.dat,
                                   loss.moving.affine.to(device), lvl)
         if isinstance(loss, struct.JTVLoss):

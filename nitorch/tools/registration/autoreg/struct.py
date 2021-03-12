@@ -137,9 +137,8 @@ class DiceLoss(MatchingLoss):
     weights: bool or list = False   # Weight per label
 
     def call(self, x, y):
-        fn = nn.DiceLoss(one_hot_map=self.labels, weighted=self.weights,
-                         discard_background=True)
-        loss = 1 + fn(x[None], y[None])
+        fn = nn.DiceLoss(one_hot_map=self.labels, weighted=self.weights)
+        loss = fn(x[None], y[None])
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -164,7 +163,7 @@ class MILoss(MatchingLoss):
         for x, y in zip(xs, ys):
             x = x[None, None]
             y = y[None, None]
-            loss += (1 + nn.MutualInfoLoss(patch_size=self.patch)(x, y)) / nb_channels
+            loss += nn.MutualInfoLoss(patch_size=self.patch)(x, y) / nb_channels
         # I take the average of MI across channels to be consistent
         # with how MSE works.
         if self.factor != 1:

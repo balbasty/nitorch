@@ -222,6 +222,7 @@ class MutualInfoLoss(Loss):
                         torch.max if normalize == 'max' else \
                         normalize
             mi = mi / normalize(h_x, h_y)
+            mi += 1
 
         # reduce
         return super().forward(mi)
