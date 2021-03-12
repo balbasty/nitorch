@@ -757,7 +757,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     nb_dim = image.dim() - 2
     inshape = image.shape[2:]
     info = {'dtype': image.dtype, 'device': image.device}
-    factor = make_vector(factor, nb_dim).tolist()
+    factor = make_vector(factor or 0., nb_dim).tolist()
     outshape = make_list(shape, nb_dim)
     anchor = [a[0].lower() for a in make_list(anchor, nb_dim)]
     return_trf = kwargs.pop('_return_trf', False)  # hidden option
@@ -765,6 +765,9 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     # compute output shape
     outshape = [int(inshp*f) if outshp is None else outshp
                 for inshp, outshp, f in zip(inshape, outshape, factor)]
+    if any(not s for s in outshape):
+        raise ValueError('Either factor or shape must be set in '
+                         'all dimensions')
 
     # compute transformation grid
     # there is an affine relationship between the input and output grid:

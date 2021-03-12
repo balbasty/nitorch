@@ -312,7 +312,6 @@ class NonLinear(Transformation):
             self.dat = self.optdat
 
 
-
 class FFD(NonLinear):
     name = 'ffd'
     grid: list or int = 10          # Number of nodes in the FFD grid
