@@ -220,9 +220,10 @@ def load_transforms(s):
                 trf.shift = 0.
         else:
             affine, shape = (affine0, shape0)
-            if trf.pyramid > 1:
-                factor = 1/(2**(trf.pyramid-1))
-                affine, shape = affine_resize(affine, shape, factor)
+            trf.pyramid = list(sorted(trf.pyramid))
+            max_level = max(trf.pyramid)
+            factor = 1/(2**(max_level-1))
+            affine, shape = affine_resize(affine, shape, factor)
 
             # FFD/Diffeo
             if isinstance(trf.init, str):

@@ -290,15 +290,27 @@ class NonLinear(Transformation):
 
     def freeable(self):
         """Are there parameters remaining to free?"""
-        return not hasattr(self, 'optdat')
+        return not hasattr(self, 'optdat') or len(self.pyramid) > 1
 
     def free(self):
         """Free the next batch/ladder of parameters"""
         if not self.freeable():
             return
         print('Free nonlin')
-        self.optdat = torch.nn.Parameter(self.dat, requires_grad=True)
-        self.dat = self.optdat
+        if not hasattr(self, 'optdat'):
+            self.optdat = torch.nn.Parameter(self.dat, requires_grad=True)
+            self.dat = self.optdat
+        else:
+            *self.pyramid, pre_level = self.pyramid
+            self.dat = self.dat.detach()
+            factor = pre_level - self.pyramid[-1]
+            new_shape = [s*(2**factor) for s in self.dat.shape[:-1]]
+            self.dat, self.affine = spatial.resize_grid(
+                self.dat, shape=new_shape, type='displacement',
+                affine=self.affine)
+            self.optdat = torch.nn.Parameter(self.dat, requires_grad=True)
+            self.dat = self.optdat
+
 
 
 class FFD(NonLinear):
@@ -473,8 +485,6 @@ class AutoReg(Base):
             set_default(trf, 'init')
             set_default(trf, 'output')
             set_default(trf, 'pyramid')
-            if isinstance(trf.pyramid, (list, tuple)):
-                trf.pyramid = list(sorted(trf.pyramid))[0]
             if isinstance(trf.output, bool) and trf.output:
                 trf.output = self.defaults.output
 
