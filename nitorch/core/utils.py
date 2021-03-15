@@ -9,6 +9,7 @@ from .dtypes import as_torch as dtype_astorch
 import numbers
 import os
 import numpy as np
+import random
 
 
 def reproducible(seed=1234):
@@ -19,11 +20,11 @@ def reproducible(seed=1234):
     seed : int, default=1234
         Seed for random number generators.
 
-    """
+    """	
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
     torch.backends.cudnn.deterministic = True
 

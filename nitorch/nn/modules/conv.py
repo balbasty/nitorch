@@ -5,7 +5,7 @@ from torch import nn as tnn
 from .base import nitorchmodule, Module
 from .norm import BatchNorm
 from ..activations import _map_activations
-from nitorch.core.py import make_tuple, rep_sequence, getargs, make_list
+from nitorch.core.py import make_tuple
 from nitorch.core import py, utils
 from copy import copy
 import math
@@ -211,7 +211,7 @@ class SimpleConv(Module):
         elif method.startswith('x') and dist.startswith('n'):
             fn = tnn.init.xavier_normal_
         elif not method and dist.startswith('u'):
-            fn = lambda x, a: tnn.init.uniform_(x, a=-b/2, b=a/2)
+            fn = lambda x, a: tnn.init.uniform_(x, a=-a/2, b=a/2)
         elif not method and dist.startswith('n'):
             fn = lambda x, a: tnn.init.normal_(x, std=a/2.355)
             

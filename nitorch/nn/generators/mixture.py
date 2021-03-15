@@ -1,6 +1,6 @@
 import torch
+from nitorch.core.utils import expand, channel2last
 from ..modules.base import Module
-from ...core.utils import expand, unsqueeze, channel2last
 from .distribution import RandomDistribution
 
 

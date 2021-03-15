@@ -1,12 +1,12 @@
 import torch
 import torch.nn as tnn
-from nitorch.spatial import affine_grid, identity_grid, voxel_size
-from nitorch.core.math import logsumexp
-from nitorch.core import py
+from nitorch import spatial
+from nitorch.core import utils
 from .. import check
 from .base import Module
 from .cnn import UNet, MRF
 from .spatial import GridPull, GridPushCount
+from ..generators import (DiffeoSample, augment_params, warp_img, warp_seg)
 
 
 class MeanSpaceNet(Module):
@@ -20,7 +20,8 @@ class MeanSpaceNet(Module):
     def __init__(self, dim, common_space, output_classes=1, input_channels=1,
                  encoder=None, decoder=None, kernel_size=3,
                  activation=tnn.LeakyReLU(0.2), batch_norm=True,
-                 implicit=True, coord_conv=False):
+                 implicit=True, coord_conv=False, warp_augmentation=False,
+                 bg_class=0):
         """
 
         Parameters
@@ -53,15 +54,22 @@ class MeanSpaceNet(Module):
             Else, return `output_classes + 1` probabilities.
         coord_conv : bool, default=False
             Use mean space coordinate grid as input to the UNet.
+        warp_augmentation : bool, default=False
+            Use warping augmentation.
+        bg_class : int, default=0
+            Index of background class in reference segmentation.
 
         """
         super().__init__()
 
+        self.bg_class = bg_class
         self.implicit = implicit
         self.output_classes = output_classes
-        self.mean_mat = common_space[0].unsqueeze(0)
+        self.mean_mat = common_space[0]
+        self.vx = spatial.voxel_size(common_space[0])
         self.mean_dim = tuple(common_space[1])
         self.coord_conv = coord_conv
+        self.warp_augmentation = warp_augmentation
         if implicit and output_classes == 1:
             final_activation = tnn.Sigmoid
         else:
@@ -105,7 +113,7 @@ class MeanSpaceNet(Module):
     kernel_size = property(lambda self: self.unet.kernel_size)
     activation = property(lambda self: self.unet.activation)
 
-    def forward(self, image, mat_native, ref=None, *, _loss=None, _metric=None):
+    def forward(self, image, mat_native, ix_ref, ref=None, *, _loss=None, _metric=None):
         """MeanSpaceNet forward pass.
 
         OBS: Supports only batch size one, because images can be of
@@ -113,14 +121,16 @@ class MeanSpaceNet(Module):
 
         Parameters
         ----------
-        image : [tensor, ...], [(1, 1, *spatial_1), (1, 1, *spatial_2), ...]
+        image : [tensor, ...]
             List of n_channels input images.
         mat_native : (n_channels, dim + 1, dim + 1)
             Input images' affine matrices.
-        ref : [tensor, int], (1, output_classes[+1], *spatial_ix), optional
-            List of ground truth segmentation, used by the loss function, and
-            index that maps image channel to the ground truth.
-            the ground truth segmentation's data type should be integer if
+        ix_ref : int
+            Index of which image the reference maps to,
+        ref : [tensor, ...]
+            List of ground truth segmentation, used by the loss function.
+            None is used for images with no segmentation.
+            The ground truth segmentation's data type should be integer if
             it contains hard labels, and floating point if it contains soft segmentations.
         _loss : dict, optional
             Dictionary of losses that will be modified in place.
@@ -141,43 +151,43 @@ class MeanSpaceNet(Module):
 
         """
         # parameters
-        img_ix_ref = ref[1]  # index that maps image channel to reference
-        ref = ref[0]  # reference segmentation
         n_channels = len(image)  # number of channels
+        self.mean_mat = self.mean_mat.type(mat_native.dtype)
 
-        # augment (taking voxel size into account)
+        # augment (takes voxel size into account)
         if ref is not None:
+            # warping-based (defined deformation in mean-space)
+            if self.warp_augmentation:
+                image, ref = \
+                    self.warping_augmentation(image, ref, mat_native, ix_ref)
+            # intensity-based
             for n in range(n_channels):
-                vx = voxel_size(mat_native[n, ...]).squeeze().tolist()
-                if n == img_ix_ref:
-                    # channel with reference image, allow for warping augmentation
-                    image[n], ref = augment(self.augmenters, image[n], ref=ref, vx=vx)
-                else:
-                    image[n] = augment(self.augmenters, image[n], vx=vx)[0]
+                vx = spatial.voxel_size(mat_native[n, ...])
+                image[n], ref[n] = augment(self.augmenters, image[n], ref=ref[n], vx=vx)
 
         # Create common space input
         inputs = torch.zeros(((1, 2*n_channels,) +  self.mean_dim),
             device=image[0].device, dtype=image[0].dtype)
         # for loop index, so that pull image's grid is retained for later use
-        ix = [x for x in range(n_channels) if x != img_ix_ref]
-        ix.append(img_ix_ref)
-        for n in ix:
+        nix = [x for x in range(n_channels) if x != ix_ref]
+        nix.append(ix_ref)
+        for n in nix:
             # Compute grid
-            grid = self.compute_grid(mat_native[n, ...], image[n].shape[2:])
+            grid = self.compute_grid(mat_native[n, ...], image[n].shape[2:])[None]
             # Push image into common space
             inputs[:, n, ...], inputs[:, n_channels + n, ...] = \
                 self.push(image[n], grid, shape=self.mean_dim) # add count image as channel
 
         if self.coord_conv:
             # Append mean space coordinate grid to UNet input
-            id = identity_grid(self.mean_dim, dtype=image_pushed.dtype, device=image_pushed.device)
+            id = spatial.identity_grid(self.mean_dim, dtype=inputs.dtype, device=inputs.device)
             id = id.unsqueeze(0)
             if self.dim == 3:
                 id = id.permute((0, 4, 1, 2, 3))
-                id = id.repeat(image_pushed.shape[0], 1, 1, 1, 1)
+                id = id.repeat(inputs.shape[0], 1, 1, 1, 1)
             else:
                 id = id.permute((0, 3, 1, 2))
-                id = id.repeat(image_pushed.shape[0], 1, 1, 1)
+                id = id.repeat(inputs.shape[0], 1, 1, 1)
             inputs = torch.cat((inputs, id), dim=1)
 
         # Apply UNet
@@ -190,18 +200,78 @@ class MeanSpaceNet(Module):
         # Pull prediction into native space (whilst in log space)
         pred = self.pull(pred, grid)
 
+        with torch.no_grad():
+            # deal with background voxels
+            bg = (pred.sum(dim=1, keepdim=False) == 0).type(pred.dtype)
+            bg[bg == 1] = bg[bg == 1] + pred.max()
+        pred[:, self.bg_class, ...] = pred[:, self.bg_class, ...] + bg
+
         # softmax
         pred = pred.softmax(dim=1)
+
+        # i = 0
+        # for i in range(2*n_channels):
+        #     debug_view(inputs, ix_channel=i, fig_num=i)
+        # debug_view(ref[ix_ref], one_hot=True, fig_num=i + 1)
+        # debug_view(pred, one_hot=True, fig_num=i + 2)
 
         # compute loss and metrics (in native space)
         if ref is not None:
             # sanity checks
-            check.dim(self.dim, ref)
+            check.dim(self.dim, ref[ix_ref])
             dims = [0] + list(range(2, self.dim + 2))
-            check.shape(pred, ref, dims=dims)
-            self.compute(_loss, _metric, native=[pred, ref])
+            check.shape(pred, ref[ix_ref], dims=dims)
+            self.compute(_loss, _metric, native=[pred, ref[ix_ref]])
 
         return pred
+
+    def warping_augmentation(self, image, ref, mats, ix_ref):
+        """Applies a random nonlinear deformation to images and reference.
+        The deformation is defined in the mean-space, and then composed to each
+        image's native space by: inv_mat_image(mat_aff(diffeo(mat_mean))), here,
+        the random affine matrix (mat_aff) is identity.
+
+        Parameters
+        ----------
+        image : [tensor, ...]
+            List of n_channels input images.
+        ref : [tensor, ...]
+            List of ground truth segmentation, used by the loss function.
+            None is used for images with no segmentation.
+        mats : (n_channels, dim + 1, dim + 1)
+            Input images' affine matrices.
+        ix_ref : int
+            Index of which image the reference maps to,
+
+        Returns
+        ----------
+        image : [tensor, ...]
+            List of n_channels input images, with augmentation applied.
+        ref : [tensor, ...]
+            List of ground truth segmentation, used by the loss function,
+            with augmentation applied.
+
+        """
+        # augmentation parameters
+        amplitude = augment_params['warp']['amplitude']
+        fwhm = (augment_params['warp']['fwhm'],) * self.dim
+        fwhm = [f / v for f, v in zip(fwhm, self.vx)]  # modulate FWHM with voxel size
+        # instantiate augmenter
+        aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
+            device=image[0].device, dtype=image[0].dtype)
+        # get random grid in mean space
+        grid0 = aug(batch=1, shape=self.mean_dim, dim=self.dim)[0, ...]
+        # loop over images
+        for n in range(len(image)):
+            # do composition to native space
+            dm = image[n].shape[2:]
+            grid = self.compose(mats[n, ...], grid0, self.mean_mat, shape_out=dm)[None]
+            # apply deformation
+            image[n] = warp_img(image[n], grid)
+            if n == ix_ref:
+                ref[n] = warp_seg(ref[n], grid)
+
+        return image, ref
 
     def compute_grid(self, mat_native, dim_native):
         """Computes resampling grid for pulling/pushing from/to common space.
@@ -221,7 +291,7 @@ class MeanSpaceNet(Module):
         """
         self.mean_mat = self.mean_mat.type(mat_native.dtype).to(mat_native.device)
         mat = mat_native.solve(self.mean_mat)[0]
-        grid = affine_grid(mat, dim_native)
+        grid = spatial.affine_grid(mat, dim_native)
 
         return grid
 
@@ -229,6 +299,70 @@ class MeanSpaceNet(Module):
         """Removes affine matrix from inputs before calling board.
         """
         board(dim, tb, (inputs[0], inputs[2]), outputs, implicit=implicit)
+
+    def compose(self, orient_in, deformation, orient_mean, affine=None, orient_out=None, shape_out=None):
+        """Composes a deformation defined in a mean space to an image space.
+
+        Parameters
+        ----------
+        orient_in : (4, 4) tensor
+            Orientation of the input image
+        deformation : (*shape_mean, 3) tensor
+            Random deformation
+        orient_mean : (4, 4) tensor
+            Orientation of the mean space (where the deformation is)
+        affine : (4, 4) tensor, default=identity
+            Random affine
+        orient_out : (4, 4) tensor, default=orient_in
+            Orientation of the output image
+        shape_out : sequence[int], default=shape_mean
+            Shape of the output image
+
+        Returns
+        -------
+        grid : (*shape_out, 3)
+            Voxel-to-voxel transform
+
+        """
+        if orient_out is None:
+            orient_out = orient_in
+        if shape_out is None:
+            shape_out = deformation.shape[:-1]
+        if affine is None:
+            affine = torch.eye(4, 4,
+                device=orient_in.device, dtype=orient_in.dtype)
+        shape_mean = deformation.shape[:-1]
+
+        orient_in, affine, deformation, orient_mean, orient_out \
+            = utils.to_max_backend(orient_in, affine, deformation, orient_mean, orient_out)
+        backend = utils.backend(deformation)
+        eye = torch.eye(4, **backend)
+
+        # Compose deformation on the right
+        right_affine = spatial.affine_lmdiv(orient_mean, orient_out)
+        if not (shape_mean == shape_out and right_affine.all_close(eye)):
+            # the mean space and native space are not the same
+            # we must compose the diffeo with a dense affine transform
+            # we write the diffeo as an identity plus a displacement
+            # (id + disp)(aff) = aff + disp(aff)
+            # -------
+            # to displacement
+            deformation = deformation - spatial.identity_grid(deformation.shape[:-1], **backend)
+            trf = spatial.affine_grid(right_affine, shape_out)
+            deformation = spatial.grid_pull(utils.movedim(deformation, -1, 0)[None], trf[None],
+                                    bound='dft', extrapolate=True)
+            deformation = utils.movedim(deformation[0], 0, -1)
+            trf = trf + deformation  # add displacement
+
+        # Compose deformation on the left
+        #   the output of the diffeo(right) are mean_space voxels
+        #   we must compose on the left with `in\(aff(mean))`
+        # -------
+        left_affine = spatial.affine_matmul(spatial.affine_inv(orient_in), affine)
+        left_affine = spatial.affine_matmul(left_affine, orient_mean)
+        trf = spatial.affine_matvec(left_affine, trf)
+
+        return trf
 
 
 class SegMRFNet(Module):
@@ -362,7 +496,7 @@ class SegMRFNet(Module):
         if self.only_unet:
             p = p.softmax(dim=1)
         else:
-            p = p - logsumexp(p, dim=1, keepdim=True)
+            p = p - utils.logsumexp(p, dim=1, keepdim=True)
             p = self.mrf.apply(p, is_train)
             # hook to zero gradients of central filter weights
             self.mrf.parameters().__next__() \
@@ -837,9 +971,6 @@ def board(dim, tb, inputs, outputs, implicit=False):
             slice_target = (slice_target.argmax(dim=0, keepdim=False)) / (K1 - 1)
         return to_grid(slice_input, slice_target, slice_prediction)[None, ...]
 
-    # from nitorch.plot import show_slices
-    # show_slices(get_image('z', inputs, outputs, dim, implicit).squeeze())
-
     # Add to TensorBoard
     title = 'Image-Target-Prediction_'
     tb.add_image(title + 'z', get_image('z', inputs, outputs, dim, implicit))
@@ -847,3 +978,14 @@ def board(dim, tb, inputs, outputs, implicit=False):
         tb.add_image(title + 'y', get_image('y', inputs, outputs, dim, implicit))
         tb.add_image(title + 'x', get_image('x', inputs, outputs, dim, implicit))
     tb.flush()
+
+
+def debug_view(dat, ix_batch=0, ix_channel=0, one_hot=False, fig_num=1):
+    """A simple viewer for inspecting network inputs/outputs.
+    """
+    from nitorch.plot import show_slices
+    if one_hot:
+        show_slices(dat[ix_batch, ...].argmax(dim=0, keepdim=False), fig_num=fig_num)
+    else:
+        show_slices(dat[ix_batch, ix_channel, ...], fig_num=fig_num)
+

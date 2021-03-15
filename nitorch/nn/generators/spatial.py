@@ -1,13 +1,13 @@
-import torch
-from ..modules import Module, GridExp, GridPull
-from ...core import utils
-from ...core.utils import channel2last, unsqueeze
-from ...core.py import make_list
-from ...core.linalg import matvec
-from .field import RandomFieldSample
-from ...spatial import affine_matrix_classic, affine_matmul, affine_lmdiv
-import torch.distributions as td
 import math
+import torch
+import torch.distributions as td
+from nitorch.core import utils
+from nitorch.core.utils import channel2last, unsqueeze
+from nitorch.core.py import make_list
+from nitorch.core.linalg import matvec
+from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv
+from ..modules import Module, GridExp, GridPull
+from .field import RandomFieldSample
 
 
 class VelocitySample(Module):

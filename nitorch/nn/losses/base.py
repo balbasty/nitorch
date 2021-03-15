@@ -5,7 +5,7 @@ Reduction mecanisms are implemented here.
 """
 
 import torch.nn as tnn
-from ...core.math import nansum, nanmean
+from nitorch.core.math import nansum, nanmean
 
 
 class Loss(tnn.Module):

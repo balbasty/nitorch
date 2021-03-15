@@ -4,7 +4,7 @@ import torch
 from torch import nn as tnn
 from nitorch import core, spatial
 from nitorch.core.py import make_list
-from .cnn import UNet, CNN
+from .cnn import UNet
 from .base import Module
 from .. import check
 

@@ -1,17 +1,17 @@
 """Convolutional neural networks (UNet, VAE, etc.)."""
 
+import inspect
+import math
+from collections import OrderedDict
 import torch
 from torch import nn as tnn
+from nitorch.core.py import make_list, flatten
+from nitorch.core.linalg import matvec
+from nitorch.core.utils import movedim
 from .base import nitorchmodule, Module
 from .conv import Conv
 from .pool import Pool
 from .reduction import reductions, Reduction
-from nitorch.core.py import make_list, flatten
-from nitorch.core.linalg import matvec
-from nitorch.core.utils import movedim
-from collections import OrderedDict
-import inspect
-import math
 
 
 def interleaved_cat(tensors, dim=0, groups=1):

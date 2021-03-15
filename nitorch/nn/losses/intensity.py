@@ -3,7 +3,6 @@ Losses for intensity (continuous) data.
 """
 
 import torch
-import torch.nn as tnn
 import math
 from .base import Loss
 from nitorch.core.py import make_list

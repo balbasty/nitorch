@@ -1,9 +1,17 @@
 """Task-specific augmentation.
 """
 import torch
-from .field import (BiasFieldTransform, RandomFieldSample)
-from .spatial import (DiffeoSample, DeformedSample)
-from ...spatial import grid_pull
+from nitorch.spatial import grid_pull
+from nitorch.core.constants import eps
+from nitorch.plot import show_slices
+from .field import BiasFieldTransform
+from .spatial import DiffeoSample
+
+
+# Parameters for various augmentation techniques
+augment_params = {'inu': {'amplitude': 0.25, 'fwhm': 15.0},
+                  'warp': {'amplitude': 2.0, 'fwhm': 15.0},
+                  'noise': {'std_prct': 0.025}}
 
 
 def seg_augmentation(tag, image, ground_truth=None, vx=None):
@@ -48,14 +56,17 @@ def seg_augmentation(tag, image, ground_truth=None, vx=None):
     dim = tuple(image.shape[2:])
     ndim = len(dim)
     nvox = int(torch.as_tensor(image.shape[2:]).prod())
+    # voxel size
     if vx is None:
         vx = (1.0, ) * ndim
+    vx = torch.as_tensor(vx, device=image.device, dtype=image.dtype)
+    vx = vx.clamp_min(1.0)
     # Augmentation method
-    if 'warp' in tag and ground_truth is not None:
+    if 'warp' in tag:
         # Nonlinear warp
         # Parameters
-        amplitude = 1.0
-        fwhm = (3.0, ) * ndim
+        amplitude = augment_params['warp']['amplitude']
+        fwhm = (augment_params['warp']['fwhm'], ) * ndim
         fwhm = [f / v for f, v in zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
         aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
@@ -65,34 +76,38 @@ def seg_augmentation(tag, image, ground_truth=None, vx=None):
         # Warp
         if tag == 'warp-img-img':
             image = warp_img(image, grid)
-            ground_truth = warp_img(ground_truth, grid)
+            if ground_truth is not None:
+                ground_truth = warp_img(ground_truth, grid)
         elif tag == 'warp-img-seg':
             image = warp_img(image, grid)
-            ground_truth = warp_seg(ground_truth, grid)
+            if ground_truth is not None:
+                ground_truth = warp_seg(ground_truth, grid)
         elif tag == 'warp-seg-img':
             image = warp_seg(image, grid)
-            ground_truth = warp_img(ground_truth, grid)
+            if ground_truth is not None:
+                ground_truth = warp_img(ground_truth, grid)
         elif tag == 'warp-seg-seg':
             image = warp_seg(image, grid)
-            ground_truth = warp_seg(ground_truth, grid)
+            if ground_truth is not None:
+                ground_truth = warp_seg(ground_truth, grid)
         else:
             raise ValueError('')
     elif tag == 'noise':
         # Additive gaussian noise to image
         # Parameter
-        sd_prct = 0.02  # percentage of max intensity of batch and channel
+        std_prct = augment_params['noise']['std_prct']  # percentage of max intensity of batch and channel
         # Get max intensity in for each batch and channel
         mx = image.reshape((nbatch, nchan, nvox)).max(dim=-1, keepdim=True)[0]
         # Add 'lost' dimensions
         for d in range(ndim - 1):
             mx = mx.unsqueeze(-1)
         # Add noise to image
-        image += sd_prct*mx*torch.randn_like(image)        
+        image += std_prct*mx*torch.randn_like(image)
     elif tag == 'inu':
         # Multiplicative intensity non-uniformity (INU) to image
         # Parameters
-        amplitude = 0.25
-        fwhm = (20.0,) * ndim
+        amplitude = augment_params['inu']['amplitude']
+        fwhm = (augment_params['inu']['fwhm'],) * ndim
         fwhm = [f/v for f, v in zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
         aug = BiasFieldTransform(amplitude=amplitude, fwhm=fwhm, mean=0.0,
@@ -106,7 +121,7 @@ def seg_augmentation(tag, image, ground_truth=None, vx=None):
 def warp_img(img, grid):
     """Warp image according to grid.
     """
-    img = grid_pull(img, grid, bound='zero', extrapolate=False,
+    img = grid_pull(img, grid, bound='dct2', extrapolate=True,
                     interpolation=1)
 
     return img
@@ -128,13 +143,13 @@ def warp_seg(seg, grid):
             seg = seg.permute((0, 4, 2, 3, 1))
         seg = seg.squeeze(-1)
     # warp
-    seg = grid_pull(seg, grid, bound='zero', extrapolate=True,
+    seg = grid_pull(seg, grid, bound='dct2', extrapolate=True,
                     interpolation=1)
     if dtype_seg not in (torch.half, torch.float, torch.double):
         # one-hot labels to hard labels
         seg = seg.argmax(dim=1, keepdim=True).type(dtype_seg)
     else:
         # normalise one-hot labels
-        seg = seg / seg.sum(dim=1, keepdim=True)
+        seg = seg / (seg.sum(dim=1, keepdim=True) + eps())
 
     return seg
