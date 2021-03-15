@@ -306,8 +306,10 @@ class NonLinear(Transformation):
             factor = pre_level - self.pyramid[-1]
             new_shape = [s*(2**factor) for s in self.dat.shape[:-1]]
             self.dat, self.affine = spatial.resize_grid(
-                self.dat, shape=new_shape, type='displacement',
-                affine=self.affine)
+                self.dat[None], shape=new_shape, type='displacement',
+                affine=self.affine[None])
+            self.dat = self.dat[0]
+            self.affine = self.affine[0]
             self.optdat = torch.nn.Parameter(self.dat, requires_grad=True)
             self.dat = self.optdat
 
