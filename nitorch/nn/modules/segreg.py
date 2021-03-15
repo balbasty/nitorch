@@ -244,22 +244,22 @@ class SegMorphWNet(BaseMorph):
         self.output_classes = output_classes
         self.softmax = SoftMax(implicit=implicit)
 
-        output_channels = output_classes + int(not self.implicit[0])
+        out_channels = output_classes + int(not self.implicit[0])
         self.segnet = UNet(dim,
-                           input_channels=1,
-                           output_channels=output_channels,
+                           in_channels=1,
+                           out_channels=out_channels,
                            encoder=encoder,
                            decoder=decoder,
                            kernel_size=kernel_size,
                            activation=[activation, ..., self.softmax],
                            batch_norm=batch_norm)
 
-        input_channels = int('image' in unet_inputs) \
+        in_channels = int('image' in unet_inputs) \
                         + int('seg' in unet_inputs) \
                         * (output_classes + int(not self.implicit[1]))
         self.unet = UNet(dim,
-                         input_channels=input_channels * 2,
-                         output_channels=dim,
+                         in_channels=in_channels * 2,
+                         out_channels=dim,
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
@@ -435,12 +435,12 @@ class SegMorphUNet(BaseMorph):
         groups = py.make_list(groups)
         stitch = py.make_list(stitch)
         if (groups[-1] or stitch[-1]) == 2:
-            output_channels = [output_classes * 2, dim]
+            out_channels = [output_classes * 2, dim]
         else:
-            output_channels = output_classes * 2 + dim
+            out_channels = output_classes * 2 + dim
         self.unet = UNet(dim,
-                         input_channels=2,
-                         output_channels=output_channels,
+                         in_channels=2,
+                         out_channels=out_channels,
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
@@ -619,10 +619,10 @@ class SegMorphRUNet(BaseMorph):
             output_classes = output_classes + 1
         self.softmax = SoftMax(implicit=implicit)
 
-        output_channels = output_classes * 2 + dim
+        out_channels = output_classes * 2 + dim
         self.unet = UUNet(dim,
-                          input_channels=2,
-                          output_channels=output_channels,
+                          in_channels=2,
+                          out_channels=out_channels,
                           encoder=encoder,
                           decoder=decoder,
                           kernel_size=kernel_size,
@@ -681,7 +681,6 @@ class SegMorphRUNet(BaseMorph):
 
         """
         nb_iter = self.get_nb_iter()
-        output_classes = self.output_classes + (not self.implicit[0])
 
         # sanity checks
         check.dim(self.dim, source, target)
@@ -689,10 +688,6 @@ class SegMorphRUNet(BaseMorph):
         check.shape(target, source, dims=range(2, self.dim + 2))
         check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
         check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
-
-        backend = utils.backend(source)
-        batch = source.shape[0]
-        spshape = source.shape[2:]
 
         # unet
         source_and_target = torch.cat((source, target), dim=1)
@@ -798,22 +793,22 @@ class SegMorphRWNet(BaseMorph):
         self.output_classes = output_classes
         self.softmax = SoftMax(implicit=implicit)
 
-        output_channels = output_classes + int(not self.implicit[0])
+        out_channels = output_classes + int(not self.implicit[0])
         self.segnet = UNet(dim,
-                           input_channels=1 + output_channels,
-                           output_channels=output_channels,
+                           in_channels=1 + out_channels,
+                           out_channels=out_channels,
                            encoder=encoder,
                            decoder=decoder,
                            kernel_size=kernel_size,
                            activation=[activation, ..., None],
                            batch_norm=batch_norm)
 
-        input_channels = int('image' in unet_inputs) \
+        in_channels = int('image' in unet_inputs) \
                          + int('seg' in unet_inputs) \
                          * (output_classes + int(not self.implicit[1]))
         self.unet = UNet(dim,
-                         input_channels=input_channels * 2,
-                         output_channels=dim,
+                         in_channels=in_channels * 2,
+                         out_channels=dim,
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
