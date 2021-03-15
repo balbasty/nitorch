@@ -53,7 +53,7 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.data(numpy=True), f.affine)
+        inp = (f.fdata(device=device), f.affine)
         if output is None:
             output = '{dir}{sep}{base}.vexp{ext}'
         dir, base, ext = py.fileparts(fname)
