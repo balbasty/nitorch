@@ -9,7 +9,6 @@ from .spatial import GridPull, GridPushCount
 from ..generators import (BiasFieldTransform, DiffeoSample)
 import torch
 from ...core.constants import eps
-from ...plot import show_slices
 
 
 # Default parameters for various augmentation techniques
@@ -100,8 +99,7 @@ class MeanSpaceNet(Module):
         if implicit:
             output_classes += 1
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: self.board_custom(
-            dim, tb, inputs, outputs, implicit=implicit)
+        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, implicit=implicit, dim=dim)
         # Push/pull settings
         interpolation = 'linear'
         bound = 'dct2'  # symmetric
@@ -459,8 +457,7 @@ class SegMRFNet(Module):
         augmentation = ['warp-img-lab' if a == 'warp' else a for a in augmentation]
         self.augmentation = augmentation
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: board(
-            dim, tb, inputs, outputs)
+        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, dim=dim)
 
         self.unet = SegNet(dim,
                            input_channels=input_channels,
@@ -619,8 +616,7 @@ class SegNet(Module):
         if implicit:
             output_classes += 1
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: board(
-            dim, tb, inputs, outputs, implicit=implicit)
+        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, implicit=implicit, dim=dim)
 
         self.unet = UNet(
             dim,
@@ -758,8 +754,7 @@ class MRFNet(Module):
         kernel_size = 3
         num_filters = self.get_num_filters()
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: board(
-            dim, tb, inputs, outputs)
+        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, dim=dim)
         # Build MRF net
         self.mrf = MRF(dim,
                        num_classes=num_classes,
@@ -921,7 +916,8 @@ class MRFNet(Module):
         return p
 
 
-def board(dim, tb, inputs, outputs, implicit=False):
+def board(tb, inputs=None, outputs=None, epoch=None, minibatch=None,
+          mode=None, loss=None, losses=None, metrics=None, implicit=False, dim=3):
     """TensorBoard visualisation of a segmentation model's inputs and outputs.
 
     Parameters
@@ -996,6 +992,8 @@ def board(dim, tb, inputs, outputs, implicit=False):
             slice_target = (slice_target.argmax(dim=0, keepdim=False)) / (K1 - 1)
         return to_grid(slice_input, slice_target, slice_prediction)[None, ...]
 
+    if inputs is None or outputs is None:
+        return
     # Add to TensorBoard
     title = 'Image-Target-Prediction_'
     tb.add_image(title + 'z', get_image('z', inputs, outputs, dim, implicit))
