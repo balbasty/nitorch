@@ -1,9 +1,9 @@
 import math
-from ...core.constants import eps
-from ...core.optim import get_gain
-from ...io import map
-from ...spatial import diff
-from ...tools.img_statistics import estimate_noise
+from nitorch.core.constants import eps
+from nitorch.core.optim import get_gain
+from nitorch.io import map
+from nitorch.spatial import diff
+from nitorch.tools.img_statistics import estimate_noise
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau

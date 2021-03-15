@@ -1,8 +1,8 @@
 import torch
 import torch.nn as tnn
-from ..modules._base import Module
-from ..modules._cnn import UNet
-from ..modules._spatial import GridPull, GridPush, GridExp, VoxelMorph
+from ..modules.base import Module
+from ..modules.cnn import UNet
+from ..modules.spatial import GridPull, GridPush, GridExp, VoxelMorph
 from nitorch import spatial
 from nitorch.core.utils import expand
 from nitorch.core.py import make_list

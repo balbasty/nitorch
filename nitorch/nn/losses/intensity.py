@@ -3,9 +3,8 @@ Losses for intensity (continuous) data.
 """
 
 import torch
-import torch.nn as tnn
 import math
-from ._base import Loss
+from .base import Loss
 from nitorch.core.py import make_list
 from nitorch.core.utils import unsqueeze, channel2last, last2channel
 from nitorch.core.constants import eps, nan, inf, pi
@@ -222,6 +221,7 @@ class MutualInfoLoss(Loss):
                         torch.max if normalize == 'max' else \
                         normalize
             mi = mi / normalize(h_x, h_y)
+            mi += 1
 
         # reduce
         return super().forward(mi)

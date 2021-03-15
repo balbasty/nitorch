@@ -1,17 +1,18 @@
 """Task-specific augmentation.
 """
 import torch
-from ._field import BiasFieldTransform
-from ._spatial import DiffeoSample
-from ...spatial import grid_pull
-from ...core.constants import eps
-from ...plot import show_slices
+from nitorch.spatial import grid_pull
+from nitorch.core.constants import eps
+from nitorch.plot import show_slices
+from .field import BiasFieldTransform
+from .spatial import DiffeoSample
 
 
 # Parameters for various augmentation techniques
 augment_params = {'inu': {'amplitude': 0.25, 'fwhm': 15.0},
                   'warp': {'amplitude': 2.0, 'fwhm': 15.0},
                   'noise': {'std_prct': 0.025}}
+
 
 def seg_augmentation(tag, image, ground_truth=None, vx=None):
     """Augmentation methods for segmentation network, with parameters that

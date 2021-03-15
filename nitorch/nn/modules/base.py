@@ -142,6 +142,8 @@ class Module(tnn.Module):
             loss[key] = val if weight == 1 else weight * val
 
         for tag, losses in self.losses.items():
+            if tag not in tag_args:
+                continue
             args = tag_args[tag]
             for key, loss_fn in losses.items():
                 if not key:
@@ -223,6 +225,8 @@ class Module(tnn.Module):
                 metric[key] = fn(*args)
 
         for tag, metrics in self.metrics.items():
+            if tag not in tag_args:
+                continue
             args = tag_args[tag]
             for key, metric_fn in metrics.items():
                 if not key:
@@ -260,8 +264,8 @@ class Module(tnn.Module):
             metrics = self.compute_metric(**tag_args)
             self.update_dict(_metric, metrics)
 
-
-    def board(self, tb, inputs, outputs):
+    def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None,
+              mode=None, loss=None, losses=None, metrics=None, *args, **kwargs):
         """Defines model-specific tensorboard callback.
 
         Parameters
@@ -272,6 +276,18 @@ class Module(tnn.Module):
             Model inputs.
         outputs : tuple
             Model outputs.
+        epoch : int
+            Epoch index
+        minibatch : int
+            Minibatch index
+        mode : {'train', 'eval'}
+            Type of dataset processed
+        loss : tensor
+            Loss of the current minibatch
+        losses : dict
+            Loss components of the current minibatch
+        metrics : dict
+            Metrics the current minibatch
 
         """
         pass
