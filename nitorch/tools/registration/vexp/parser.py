@@ -10,6 +10,7 @@ class Vexp(cli.ParsedStructure):
     bound: str = 'dft'
     inv: bool = False
     nb_steps: int = 8
+    device: str = 'cpu'
     output: list = '{dir}{sep}{base}.vexp{ext}'
 
 
@@ -24,6 +25,7 @@ usage:
     -n,   --nb-steps STEPS  Number of scaling and squaring steps (default: 8)
     -b,   --bound BND       {dft, dct1, dct2, dst1, dst2, zero}, default=dft
     -o,   --output *FILES   Output filenames (default: {dir}/{base}.vexp{ext})
+    -cpu, -gpu              Backend device (default: cpu)
     
 """
 
@@ -44,17 +46,17 @@ def parse(args):
         if tag in ('-t', '--type'):
             cli.check_next_isvalue(args, tag)
             struct.type, *args = args
-        if tag in ('-u', '--unit'):
+        elif tag in ('-u', '--unit'):
             cli.check_next_isvalue(args, tag)
             struct.unit, *args = args
-        if tag in ('-b', '--bound'):
+        elif tag in ('-b', '--bound'):
             cli.check_next_isvalue(args, tag)
             struct.bound, *args = args
-        if tag in ('-n', '--nb-steps'):
+        elif tag in ('-n', '--nb-steps'):
             cli.check_next_isvalue(args, tag)
             struct.nb_steps, *args = args
             struct.nb_steps = int(struct.nb_steps)
-        if tag in ('-inv', '--inverse'):
+        elif tag in ('-inv', '--inverse'):
             val = False
             if cli.next_isvalue(args):
                 val, *args = args
@@ -70,6 +72,13 @@ def parse(args):
             while cli.next_isvalue(args):
                 val, *args = args
                 struct.output.append(val)
+        elif tag in ('-cpu', '--cpu'):
+            struct.device = 'cpu'
+        elif tag in ('-gpu', '--gpu'):
+            struct.device = 'cuda'
+            if cli.next_isvalue(args):
+                gpu, *args = args
+                struct.device = 'cuda:{:d}'.format(int(gpu))
         elif tag in ('-h', '--help'):
             print(help)
             return None

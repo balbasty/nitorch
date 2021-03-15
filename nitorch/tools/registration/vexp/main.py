@@ -5,7 +5,7 @@ import os
 
 
 def vexp(inp, type='displacement', unit='voxel', inverse=False,
-         bound='dft', steps=8, output=None):
+         bound='dft', steps=8, device=None, output=None):
     """Exponentiate a stationary velocity fields.
 
     Parameters
@@ -26,6 +26,8 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
         Boundary conditions.
     steps : int, default=8
         Number of scaling and squaring steps.
+    device : str, optional
+        Device to use.
     output : str, optional
         Output filename(s).
         If the input is not a path, the unstacked data is not written
@@ -59,6 +61,7 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
         if torch.is_tensor(inp):
             inp = (inp.clone(), spatial.affine_default(shape=inp.shape[:3]))
     dat, aff = inp
+    dat = dat.to(device=device)
 
     # exponentiate
     dat = spatial.exp(dat[None], inverse=inverse, steps=steps, bound=bound,

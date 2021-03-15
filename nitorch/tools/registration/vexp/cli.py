@@ -33,7 +33,8 @@ def _cli(args):
     options.output = make_list(options.output, len(options.files))
     for fname, ofname in zip(options.files, options.output):
         vexp(fname, type=options.type, unit=options.unit, inverse=False,
-             bound=options.bound, steps=options.nb_steps, output=ofname)
+             bound=options.bound, steps=options.nb_steps, output=ofname,
+             device=options.device)
 
 
 commands['vexp'] = cli
