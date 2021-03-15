@@ -93,8 +93,8 @@ class MeanSpaceNet(Module):
         # Add UNet
         #   no final activation so that pull is performed in log-space
         self.unet = UNet(dim,
-                         input_channels=input_channels,
-                         output_channels=output_classes,
+                         in_channels=input_channels,
+                         out_channels=output_classes,
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
@@ -580,8 +580,8 @@ class SegNet(Module):
 
         self.unet = UNet(
             dim,
-            input_channels=input_channels,
-            output_channels=output_classes,
+            in_channels=input_channels,
+            out_channels=output_classes,
             encoder=encoder,
             decoder=decoder,
             kernel_size=kernel_size,
