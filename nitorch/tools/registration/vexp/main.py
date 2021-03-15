@@ -62,6 +62,7 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
             inp = (inp.clone(), spatial.affine_default(shape=inp.shape[:3]))
     dat, aff = inp
     dat = dat.to(device=device)
+    aff = aff.to(device=device)
 
     # exponentiate
     dat = spatial.exp(dat[None], inverse=inverse, steps=steps, bound=bound,
@@ -77,10 +78,10 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
         if is_file:
             output = output.format(dir=dir or '.', base=base, ext=ext,
                                    sep=os.path.sep)
-            io.volumes.save(dat, output, like=fname, affine=aff)
+            io.volumes.save(dat, output, like=fname, affine=aff.cpu())
         else:
             output = output.format(sep=os.path.sep)
-            io.volumes.save(dat, output, affine=aff)
+            io.volumes.save(dat, output, affine=aff.cpu())
 
     if is_file:
         return output
