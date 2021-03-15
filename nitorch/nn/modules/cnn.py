@@ -137,8 +137,8 @@ class Down(tnn.ModuleList):
     def __init__(
             self,
             dim,
-            input_channels=None,
-            output_channels=None,
+            in_channels=None,
+            out_channels=None,
             stride=2,
             kernel_size=None,
             pool=None,
@@ -154,10 +154,10 @@ class Down(tnn.ModuleList):
         dim : {1, 2, 3}
             Number of spatial dimensions.
 
-        input_channels : int, optional if `pool`
+        in_channels : int, optional if `pool`
             Number of input channels (if strided conv).
 
-        output_channels : int, optional if `pool`
+        out_channels : int, optional if `pool`
             Number of output channels (if strided conv).
 
         stride : int or sequence[int], default=2
@@ -188,7 +188,7 @@ class Down(tnn.ModuleList):
             Include a bias term in the convolution.
 
         """
-        if not pool and (not input_channels or not output_channels):
+        if not pool and (not in_channels or not out_channels):
             raise ValueError('Number of channels mandatory for strided conv')
         stitch = stitch or 1
         groups = groups or stitch
@@ -203,7 +203,7 @@ class Down(tnn.ModuleList):
                           activation=activation)
         else:
             module = Conv(dim,
-                          input_channels, output_channels,
+                          in_channels, out_channels,
                           kernel_size=kernel_size,
                           stride=stride,
                           activation=activation,
@@ -222,8 +222,8 @@ class Up(tnn.ModuleList):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             stride=2,
             kernel_size=None,
             output_padding=None,
@@ -239,10 +239,10 @@ class Up(tnn.ModuleList):
         dim : {1, 2, 3}
             Number of spatial dimensions.
 
-        input_channels : int
+        in_channels : int
             Number of input channels.
 
-        output_channels : int
+        out_channels : int
             Number of output channels.
 
         stride : int or sequence[int], default=2
@@ -283,7 +283,7 @@ class Up(tnn.ModuleList):
         kernel_size = [k or s for k, s in zip(kernel_size, stride)]
 
         module = Conv(dim,
-                      input_channels, output_channels,
+                      in_channels, out_channels,
                       transposed=True,
                       kernel_size=kernel_size,
                       stride=stride,
@@ -314,8 +314,8 @@ class StackedConv(tnn.ModuleList):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             kernel_size=3,
             stride=1,
             transposed=False,
@@ -335,10 +335,10 @@ class StackedConv(tnn.ModuleList):
         dim : {1, 2, 3}
             Number of spatial dimensions.
             
-        input_channels : int
+        in_channels : int
             Number of input channels.
             
-        output_channels : int or sequence[int]
+        out_channels : int or sequence[int]
             Number of output channels in each convolution.
             If a sequence, multiple convolutions are performed.
             
@@ -388,9 +388,9 @@ class StackedConv(tnn.ModuleList):
         self.residual = residual
         self.return_last = return_last
 
-        output_channels = make_list(output_channels)
-        input_channels = [input_channels] + output_channels[:-1]
-        nb_layers = len(output_channels)
+        out_channels = make_list(out_channels)
+        in_channels = [in_channels] + out_channels[:-1]
+        nb_layers = len(out_channels)
         
         stitch = map(lambda x: x or 1, make_list(stitch))
         stitch = expand_list(stitch, nb_layers, default=1)
@@ -404,8 +404,8 @@ class StackedConv(tnn.ModuleList):
             raise ValueError('Cannot have both `pool` and `transposed`.')
       
         all_shapes = zip(
-            input_channels, 
-            output_channels, 
+            in_channels, 
+            out_channels, 
             activation,
             batch_norm,
             groups, 
@@ -548,8 +548,8 @@ class EncodingLayer(StackedConv):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             kernel_size=3,
             stride=2,
             pool=None,
@@ -563,8 +563,8 @@ class EncodingLayer(StackedConv):
         
         super().__init__(
             dim, 
-            input_channels, 
-            output_channels,
+            in_channels, 
+            out_channels,
             kernel_size=kernel_size,
             stride=stride,
             pool=pool,
@@ -590,8 +590,8 @@ class DecodingLayer(StackedConv):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             kernel_size=3,
             stride=2,
             activation=tnn.ReLU,
@@ -605,8 +605,8 @@ class DecodingLayer(StackedConv):
         
         super().__init__(
             dim, 
-            input_channels, 
-            output_channels,
+            in_channels, 
+            out_channels,
             transposed=True,
             kernel_size=kernel_size,
             stride=stride,
@@ -662,8 +662,8 @@ class Encoder(tnn.ModuleList):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             skip_channels=None,
             kernel_size=3,
             stride=2,
@@ -679,11 +679,11 @@ class Encoder(tnn.ModuleList):
         dim : {1, 2, 3}
             Dimension.
             
-        input_channels : int or sequence[int]
+        in_channels : int or sequence[int]
             Number of input channels.
             If a sequence, the first convolution is a grouped convolution.
             
-        output_channels : sequence[int]
+        out_channels : sequence[int]
             Number of output channels in each encoding layer.
             Elements can be integers or nested sequences.
             If nested sequences, multiple convolutions are performed at the
@@ -716,9 +716,9 @@ class Encoder(tnn.ModuleList):
         """
         self.dim = dim
                 
-        output_channels = list(map(make_list, output_channels))
-        input_channels = [input_channels] + [c[-1] for c in output_channels[:-1]]
-        nb_layers = len(output_channels)
+        out_channels = list(map(make_list, out_channels))
+        in_channels = [in_channels] + [c[-1] for c in out_channels[:-1]]
+        nb_layers = len(out_channels)
         
         stitch = map(lambda x: x or 1, make_list(stitch))
         stitch = expand_list(stitch, nb_layers, default=1)
@@ -733,12 +733,12 @@ class Encoder(tnn.ModuleList):
         self.skip_groups = []
         for i in range(len(skip_channels)):
             self.skip_groups.append(groups[i])
-            if len(input_channels) > i+1:
-                input_channels[i] += skip_channels[i]
+            if len(in_channels) > i+1:
+                in_channels[i] += skip_channels[i]
 
         all_shapes = zip(
-            input_channels, 
-            output_channels, 
+            in_channels, 
+            out_channels, 
             activation,
             batch_norm,
             groups, 
@@ -803,8 +803,8 @@ class Decoder(tnn.ModuleList):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             skip_channels=None,
             kernel_size=3,
             stride=2,
@@ -819,11 +819,11 @@ class Decoder(tnn.ModuleList):
         dim : {1, 2, 3}
             Dimension.
             
-        input_channels : int or sequence[int]
+        in_channels : int or sequence[int]
             Number of input channels.
             If a sequence, the first convolution is a grouped convolution.
             
-        output_channels : sequence[int or sequence[int]]
+        out_channels : sequence[int or sequence[int]]
             Number of channels in each decoding layer.
             There will be len(channels) layers.
             
@@ -850,10 +850,10 @@ class Decoder(tnn.ModuleList):
         """                     
         self.dim = dim
                 
-        output_channels = list(map(make_list, output_channels))
-        input_channels = [input_channels]
-        input_channels += [c[-1] for c in output_channels[:-1]]
-        nb_layers = len(output_channels)
+        out_channels = list(map(make_list, out_channels))
+        in_channels = [in_channels]
+        in_channels += [c[-1] for c in out_channels[:-1]]
+        nb_layers = len(out_channels)
         
         stitch = map(lambda x: x or 1, make_list(stitch))
         stitch = expand_list(stitch, nb_layers, default=1)
@@ -868,12 +868,12 @@ class Decoder(tnn.ModuleList):
         self.skip_groups = []
         for i in range(len(skip_channels)):
             self.skip_groups.append(groups[i])
-            if len(input_channels) > i+1:
-                input_channels[i+1] += skip_channels[i]
+            if len(in_channels) > i+1:
+                in_channels[i+1] += skip_channels[i]
 
         all_shapes = zip(
-            input_channels, 
-            output_channels, 
+            in_channels, 
+            out_channels, 
             activation,
             batch_norm,
             groups, 
@@ -939,8 +939,8 @@ class UNet(tnn.Sequential):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             encoder=None,
             decoder=None,
             kernel_size=3,
@@ -957,11 +957,11 @@ class UNet(tnn.Sequential):
         dim : {1, 2, 3}
             Dimension.
             
-        input_channels : int or sequence[int]
+        in_channels : int or sequence[int]
             Number of input channels.
             If a sequence, the first convolution is a grouped convolution.
             
-        output_channels : int or sequence [int]
+        out_channels : int or sequence [int]
             Number of output channels.
             If a sequence, the last convolution is a grouped convolution.
             
@@ -1003,8 +1003,8 @@ class UNet(tnn.Sequential):
         """
         self.dim = dim
 
-        input_channels = make_list(input_channels)
-        output_channels = make_list(output_channels)
+        in_channels = make_list(in_channels)
+        out_channels = make_list(out_channels)
 
         # defaults
         encoder = list(encoder or [16, 32, 32, 32])
@@ -1014,7 +1014,7 @@ class UNet(tnn.Sequential):
         decoder = expand_list(decoder, len(encoder), crop=False)
         encoder = list(map(make_list, encoder))
         encoder_out = list(map(lambda x: x[-1], reversed(encoder)))
-        encoder_out.append(sum(input_channels))
+        encoder_out.append(sum(in_channels))
         decoder = list(map(make_list, decoder))
         stack = flatten(decoder[len(encoder):])
         decoder = decoder[:len(encoder)]
@@ -1026,8 +1026,8 @@ class UNet(tnn.Sequential):
         stitch[-1] = 1  # do not stitch last layer
         groups = expand_list(make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
-        groups[0] = len(input_channels)    # first layer
-        groups[-1] = len(output_channels)  # last layer
+        groups[0] = len(in_channels)    # first layer
+        groups[-1] = len(out_channels)  # last layer
         activation = expand_list(make_list(activation), nb_layers, default='relu')
 
         range_e = slice(len(encoder))
@@ -1047,8 +1047,8 @@ class UNet(tnn.Sequential):
         
         modules = []
         enc = Encoder(dim,
-                      input_channels=input_channels,
-                      output_channels=encoder,
+                      in_channels=in_channels,
+                      out_channels=encoder,
                       kernel_size=kernel_size,
                       stride=stride,
                       activation=activation_encoder,
@@ -1059,15 +1059,15 @@ class UNet(tnn.Sequential):
         modules.append(('encoder', enc))
 
         e_groups = reversed(groups_encoder)
-        d_groups = groups_decoder[1:] + (groups_stack[:1] or [len(output_channels)])
+        d_groups = groups_decoder[1:] + (groups_stack[:1] or [len(out_channels)])
         skip_repeat = [max(1, gd // ge) for ge, gd in 
                        zip(e_groups, d_groups)]
         skip_channels = [e * r for e, r in zip(encoder_out[1:], skip_repeat)]
         self.skip_repeat = [1] + skip_repeat
         
         dec = Decoder(dim,
-                      input_channels=encoder_out[0],
-                      output_channels=decoder,
+                      in_channels=encoder_out[0],
+                      out_channels=decoder,
                       skip_channels=skip_channels,
                       kernel_size=kernel_size,
                       stride=stride,
@@ -1080,8 +1080,8 @@ class UNet(tnn.Sequential):
         last_decoder = decoder[-1][-1] + skip_channels[-1]
         if stack:
             stk = StackedConv(dim,
-                              input_channels=last_decoder,
-                              output_channels=stack,
+                              in_channels=last_decoder,
+                              out_channels=stack,
                               kernel_size=kernel_size,
                               activation=activation_stack,
                               batch_norm=batch_norm,
@@ -1094,8 +1094,8 @@ class UNet(tnn.Sequential):
         input_final = stack[-1] if stack else last_decoder   
         input_final = make_list(input_final)
         if len(input_final) == 1:
-            input_final = [input_final[0]//len(output_channels)] * len(output_channels)
-        stk = Conv(dim, input_final, output_channels,
+            input_final = [input_final[0]//len(out_channels)] * len(out_channels)
+        stk = Conv(dim, input_final, out_channels,
                    kernel_size=kernel_size,
                    activation=activation_final,
                    batch_norm=batch_norm,
@@ -1143,8 +1143,8 @@ class CNN(tnn.Sequential):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             encoder=None,
             stack=None,
             kernel_size=3,
@@ -1160,10 +1160,10 @@ class CNN(tnn.Sequential):
         dim : {1, 2, 3}
             Number of spatial dimensions.
 
-        input_channels : int
+        in_channels : int
             Number of input channels.
 
-        output_channels : int
+        out_channels : int
             Number of output channels.
 
         encoder : sequence[int or sequence[int]], default=[16, 32, 32, 32]
@@ -1207,7 +1207,7 @@ class CNN(tnn.Sequential):
         encoder = list(encoder or [16, 32, 32, 32])
         stack = list(stack or [32, 16, 16])
         last_encoder = make_list(encoder[-1])[-1]
-        stack = stack + [output_channels]
+        stack = stack + [out_channels]
         if isinstance(reduction, str):
             reduction = reductions.get(reduction, None)
         reduction = reduction(keepdim=True) if inspect.isclass(reduction) \
@@ -1223,8 +1223,8 @@ class CNN(tnn.Sequential):
 
         modules = []
         enc = Encoder(dim,
-                      input_channels=input_channels,
-                      output_channels=encoder,
+                      in_channels=in_channels,
+                      out_channels=encoder,
                       kernel_size=kernel_size,
                       stride=stride,
                       pool=pool,
@@ -1235,8 +1235,8 @@ class CNN(tnn.Sequential):
         modules.append(('reduction', reduction))
 
         stk = StackedConv(dim,
-                          input_channels=last_encoder,
-                          output_channels=stack,
+                          in_channels=last_encoder,
+                          out_channels=stack,
                           kernel_size=1,
                           activation=activation_stack)
         modules.append(('stack', stk))
@@ -1248,11 +1248,11 @@ class CNN(tnn.Sequential):
 
         Parameters
         ----------
-        input : (batch, input_channels, *spatial) tensor
+        input : (batch, in_channels, *spatial) tensor
 
         Returns
         -------
-        output : (batch, output_channels) tensor
+        output : (batch, out_channels) tensor
 
         """
         input = super().forward(input)
@@ -1326,8 +1326,8 @@ class MRF(tnn.Sequential):
 
         module = StackedConv(
             dim,
-            input_channels=num_filters,
-            output_channels=[num_filters] * num_extra + [num_classes],
+            in_channels=num_filters,
+            out_channels=[num_filters] * num_extra + [num_classes],
             kernel_size=1,
             activation=activation,
             batch_norm=batch_norm,
@@ -1353,8 +1353,8 @@ class UNet2(tnn.Sequential):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             encoder=None,
             decoder=None,
             conv_per_layer=1,
@@ -1370,10 +1370,10 @@ class UNet2(tnn.Sequential):
         dim : {1, 2, 3}
             Dimension.
 
-        input_channels : int
+        in_channels : int
             Number of input channels.
 
-        output_channels : int
+        out_channels : int
             Number of output channels.
 
         encoder : sequence[int], default=[16, 32, 32, 32]
@@ -1396,16 +1396,12 @@ class UNet2(tnn.Sequential):
 
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
-
-        residual : bool, default=False
-            Use residual skipped connections
         """
         self.dim = dim
-        self.residual = residual
         self.nb_iter = nb_iter
 
-        input_channels = make_list(input_channels)
-        output_channels = make_list(output_channels)
+        in_channels = make_list(in_channels)
+        out_channels = make_list(out_channels)
 
         # defaults
         conv_per_layer = max(1, conv_per_layer)
@@ -1418,7 +1414,7 @@ class UNet2(tnn.Sequential):
 
         modules = []
         first = Conv(dim,
-                     in_channels=input_channels,
+                     in_channels=in_channels,
                      out_channels=encoder[0],
                      kernel_size=kernel_size,
                      activation=activation,
@@ -1433,8 +1429,8 @@ class UNet2(tnn.Sequential):
             cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
             modules_encoder.append(EncodingLayer(
                 dim,
-                input_channels=cin,
-                output_channels=cout,
+                in_channels=cin,
+                out_channels=cout,
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
@@ -1448,8 +1444,8 @@ class UNet2(tnn.Sequential):
         cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
         btk = DecodingLayer(
             dim,
-            input_channels=cin,
-            output_channels=cout,
+            in_channels=cin,
+            out_channels=cout,
             kernel_size=kernel_size,
             stride=stride,
             activation=activation,
@@ -1467,8 +1463,8 @@ class UNet2(tnn.Sequential):
             cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
             modules_decoder.append(DecodingLayer(
                 dim,
-                input_channels=cin,
-                output_channels=cout,
+                in_channels=cin,
+                out_channels=cout,
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
@@ -1479,8 +1475,8 @@ class UNet2(tnn.Sequential):
             cout = [decoder[-1]] * (conv_per_layer - 1)
             modules_decoder.append(StackedConv(
                 dim,
-                input_channels=cin,
-                output_channels=cout,
+                in_channels=cin,
+                out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
                 batch_norm=batch_norm,
@@ -1494,8 +1490,8 @@ class UNet2(tnn.Sequential):
 
         if stack:
             stk = StackedConv(dim,
-                              input_channels=last_decoder,
-                              output_channels=stack,
+                              in_channels=last_decoder,
+                              out_channels=stack,
                               kernel_size=kernel_size,
                               activation=activation,
                               batch_norm=batch_norm)
@@ -1505,7 +1501,7 @@ class UNet2(tnn.Sequential):
             modules.append(('stack', Cat()))
             last_stack = last_decoder
 
-        final = Conv(dim, last_stack, output_channels,
+        final = Conv(dim, last_stack, out_channels,
                      kernel_size=kernel_size,
                      activation=final_activation,
                      padding='auto')
@@ -1513,7 +1509,7 @@ class UNet2(tnn.Sequential):
 
         super().__init__(OrderedDict(modules))
 
-    def forward_once(self, x):
+    def forward(self, x):
 
         x = self.first(x)
 
@@ -1556,8 +1552,8 @@ class UUNet(tnn.Sequential):
     def __init__(
             self,
             dim,
-            input_channels,
-            output_channels,
+            in_channels,
+            out_channels,
             encoder=None,
             decoder=None,
             conv_per_layer=1,
@@ -1574,10 +1570,10 @@ class UUNet(tnn.Sequential):
         dim : {1, 2, 3}
             Dimension.
 
-        input_channels : int or sequence[int]
+        in_channels : int
             Number of input channels.
 
-        output_channels : int or sequence [int]
+        out_channels : int
             Number of output channels.
 
         encoder : sequence[int], default=[16, 32, 32, 32]
@@ -1606,9 +1602,6 @@ class UUNet(tnn.Sequential):
         self.residual = residual
         self.nb_iter = nb_iter
 
-        input_channels = make_list(input_channels)
-        output_channels = make_list(output_channels)
-
         # defaults
         conv_per_layer = max(1, conv_per_layer)
         encoder = list(encoder or [16, 32, 32, 32])
@@ -1620,7 +1613,7 @@ class UUNet(tnn.Sequential):
 
         modules = []
         first = Conv(dim,
-                     in_channels=input_channels,
+                     in_channels=in_channels,
                      out_channels=encoder[0],
                      kernel_size=kernel_size,
                      activation=activation,
@@ -1635,8 +1628,8 @@ class UUNet(tnn.Sequential):
             cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
             modules_encoder.append(EncodingLayer(
                 dim,
-                input_channels=cin,
-                output_channels=cout,
+                in_channels=cin,
+                out_channels=cout,
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
@@ -1650,8 +1643,8 @@ class UUNet(tnn.Sequential):
         cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
         btk = DecodingLayer(
             dim,
-            input_channels=cin,
-            output_channels=cout,
+            in_channels=cin,
+            out_channels=cout,
             kernel_size=kernel_size,
             stride=stride,
             activation=activation,
@@ -1669,8 +1662,8 @@ class UUNet(tnn.Sequential):
             cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
             modules_decoder.append(DecodingLayer(
                 dim,
-                input_channels=cin,
-                output_channels=cout,
+                in_channels=cin,
+                out_channels=cout,
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
@@ -1681,8 +1674,8 @@ class UUNet(tnn.Sequential):
             cout = [decoder[-1]] * (conv_per_layer - 1)
             modules_decoder.append(StackedConv(
                 dim,
-                input_channels=cin,
-                output_channels=cout,
+                in_channels=cin,
+                out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
                 batch_norm=batch_norm,
@@ -1696,8 +1689,8 @@ class UUNet(tnn.Sequential):
 
         if stack:
             stk = StackedConv(dim,
-                              input_channels=last_decoder,
-                              output_channels=stack,
+                              in_channels=last_decoder,
+                              out_channels=stack,
                               kernel_size=kernel_size,
                               activation=activation,
                               batch_norm=batch_norm)
@@ -1707,7 +1700,7 @@ class UUNet(tnn.Sequential):
             modules.append(('stack', Cat()))
             last_stack = last_decoder
 
-        final = Conv(dim, last_stack, output_channels,
+        final = Conv(dim, last_stack, out_channels,
                      kernel_size=kernel_size,
                      activation=final_activation,
                      padding='auto')
@@ -1798,3 +1791,348 @@ class UUNet(tnn.Sequential):
         x = self.stack(x)
         x = self.final(x)
         return x
+
+
+@nitorchmodule
+class WNet(tnn.Sequential):
+    """W-net (= cascaded U-Net) with skip connections between the nets."""
+
+    def __init__(
+            self,
+            dim,
+            in_channels,
+            out_channels,
+            encoder=None,
+            decoder=None,
+            encoder2=None,
+            decoder2=None,
+            conv_per_layer=1,
+            kernel_size=3,
+            stride=2,
+            activation=tnn.ReLU,
+            batch_norm=False,
+            skip=True):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+
+        in_channels : int
+            Number of input channels.
+
+        out_channels : int
+            Number of output channels.
+
+        encoder : sequence[int], default=[16, 32, 32, 32]
+            Number of channels in each encoding layer of the first U-Net.
+            The length of `encoder` defines the number of resolution levels.
+            The first value is the number of features after an initial
+            (stride 1) convolution at the top level. Subsequence values
+            are the number of features after each downsampling step.
+            The last value is the number of features in the bottleneck.
+
+        decoder : sequence[int], optional
+            Number of channels in each decoding layer of the first U-Net.
+            Default: symmetric of encoder (e.g., [32, 32, 16]).
+            If more than `len(encoder)-1` values are provided,
+            additional (stride 1) convolutions are performed at the final
+            level.
+
+        encoder2 : sequence[int], optional
+            Number of channels in each encoding layer of the second U-Net.
+            The length of `encoder2` defines the number of resolution levels.
+            Default: same as encoder, without the top level (e.g., [32, 32, 32])
+
+        decoder2 : sequence[int], optional
+            Number of channels in each encoding layer of the second U-Net.
+            The length of `encoder2` defines the number of resolution levels.
+            Default: symmetric of encoder2, plus the top level
+            (e.g., [32, 32, 16])
+
+        conv_per_layer : int, default=2
+            Number of convolutions per layer.
+
+        kernel_size : int or sequence[int], default=3
+            Kernel size per dimension.
+
+        activation : [sequence of] str or type or callable or None, default='relu'
+            Activation function.
+
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
+
+        skip : bool, default=True
+            Add skip connections between the two U-Nets.
+        """
+        self.dim = dim
+
+        # defaults
+        conv_per_layer = max(1, conv_per_layer)
+        default_encoder = [16, 32, 32, 32]
+        encoder = list(encoder or default_encoder)
+        default_decoder = list(reversed(encoder[:-1]))
+        decoder = make_list(decoder or default_decoder, n=len(encoder) - 1)
+        default_encoder2 = encoder[1:]
+        encoder2 = list(encoder2 or default_encoder2)
+        default_decoder2 = list(reversed(encoder2[:-1])) + encoder[:1]
+        decoder2 = make_list(decoder2 or default_decoder2, n=len(encoder2))
+
+        stack = decoder[len(encoder) - 1:]
+        decoder = encoder[-1:] + decoder[:len(encoder2)]
+        stack2 = decoder2[len(encoder2):]
+        decoder2 = encoder2[-1:] + decoder2[:len(encoder2)]
+        activation, final_activation = make_list(activation, 2)
+
+        modules = OrderedDict()
+
+        # --- inital feature extraction --------------------------------
+        modules['first'] = Conv(
+            dim,
+            in_channels=in_channels,
+            out_channels=encoder[0],
+            kernel_size=kernel_size,
+            activation=activation,
+            batch_norm=batch_norm,
+            padding='auto')
+
+        # --- first unet -----------------------------------------------
+        modules_encoder = []
+        for n in range(len(encoder)-1):
+            cin = encoder[n]
+            cout = encoder[n+1]
+            cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
+            modules_encoder.append(EncodingLayer(
+                dim,
+                in_channels=cin,
+                out_channels=cout,
+                kernel_size=kernel_size,
+                stride=stride,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+        modules['encoder1'] = tnn.ModuleList(modules_encoder)
+
+        cin = decoder[0]
+        cout = decoder[1]
+        cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
+        modules['bottleneck1'] = DecodingLayer(
+            dim,
+            in_channels=cin,
+            out_channels=cout,
+            kernel_size=kernel_size,
+            stride=stride,
+            activation=activation,
+            batch_norm=batch_norm,
+        )
+
+        _, *decoder = decoder
+        *encoder, _ = encoder
+
+        modules_decoder = []
+        for n in range(len(decoder)-1):
+            cin = decoder[n] + encoder[-n-1]
+            cout = decoder[n+1]
+            cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
+            modules_decoder.append(DecodingLayer(
+                dim,
+                in_channels=cin,
+                out_channels=cout,
+                kernel_size=kernel_size,
+                stride=stride,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+        modules['decoder1'] = tnn.ModuleList(modules_decoder)
+
+        # --- second unet ----------------------------------------------
+        modules_encoder = []
+        # first level -> connects first unet
+        cin = modules['decoder1'][-1].out_channels + encoder[0]
+        cout = stack + encoder2[0]
+        modules_encoder.append(EncodingLayer(
+            dim,
+            in_channels=cin,
+            out_channels=cout,
+            kernel_size=kernel_size,
+            stride=stride,
+            activation=activation,
+            batch_norm=batch_norm,
+        ))
+        # next levels -> skip connections
+        for n in range(1, len(encoder2) - 1):
+            cin = (modules_encoder[-1].out_channels +
+                   (decoder[-n - 1].out_channels if skip else 0))
+            cout = encoder2[n + 1]
+            cout = [encoder2[n]] * (conv_per_layer - 1) + [cout]
+            modules_encoder.append(EncodingLayer(
+                dim,
+                in_channels=cin,
+                out_channels=cout,
+                kernel_size=kernel_size,
+                stride=stride,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+        modules['encoder2'] = tnn.ModuleList(modules_encoder)
+
+        cin = (modules['encoder2'][-1].out_channels +
+               modules['encoder1'][-1].out_channels if skip else 0)
+        cout = decoder2[1]
+        cout = [decoder2[0]] * (conv_per_layer - 1) + [cout]
+        modules['bottleneck2'] = DecodingLayer(
+            dim,
+            in_channels=cin,
+            out_channels=cout,
+            kernel_size=kernel_size,
+            stride=stride,
+            activation=activation,
+            batch_norm=batch_norm,
+        )
+
+        _, *decoder2 = decoder2
+        *encoder2, _ = encoder2
+
+        modules_decoder = []
+        for n in range(len(decoder2) - 1):
+            cin = decoder2[n] + encoder2[-n - 1]
+            cout = decoder2[n + 1]
+            cout = [decoder2[n]] * (conv_per_layer - 1) + [cout]
+            modules_decoder.append(DecodingLayer(
+                dim,
+                in_channels=cin,
+                out_channels=cout,
+                kernel_size=kernel_size,
+                stride=stride,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+        if conv_per_layer > 1:
+            cin = decoder2[-1] + decoder[-1]
+            cout = [decoder[-1]] * (conv_per_layer - 1)
+            modules_decoder.append(StackedConv(
+                dim,
+                in_channels=cin,
+                out_channels=cout,
+                kernel_size=kernel_size,
+                activation=activation,
+                batch_norm=batch_norm,
+            ))
+            last_decoder = decoder2[-1]
+        else:
+            modules_decoder.append(Cat())
+            last_decoder = decoder2[-1] + decoder[-1]
+        modules['decoder2'] = tnn.ModuleList(modules_decoder)
+
+        if stack2:
+            modules['stack2'] = StackedConv(
+                dim,
+                in_channels=last_decoder,
+                out_channels=stack2,
+                kernel_size=kernel_size,
+                activation=activation,
+                batch_norm=batch_norm)
+            last_stack = stack2[-1]
+        else:
+            modules['stack2'] = Cat()
+            last_stack = last_decoder
+
+        # --- final layer ----------------------------------------------
+        modules['final'] = Conv(
+            dim, last_stack, out_channels,
+            kernel_size=kernel_size,
+            activation=final_activation,
+            padding='auto')
+
+        super().__init__(modules)
+
+    def forward_skip(self, x):
+
+        x = self.first(x)
+
+        # encoder1
+        buffers = []
+        for d, layer in enumerate(self.encoder):
+            buffer_shape = list(x.shape)
+            buffer_shape[1] = layer.in_channels - buffer_shape[1]
+            buffer = x.new_zeros(buffer_shape)
+            x, buffer = layer(x, buffer, return_last=True)
+            buffers.append(buffer)
+
+        pad = self.get_padding(buffers[-1].shape, x.shape, self.bottleneck)
+        x, buffer = self.bottleneck(x, output_padding=pad, return_last=True)
+        buffers2 = [buffer]
+
+        # decoder1
+        for d, layer in enumerate(self.decoder):
+            buffer = buffers.pop()
+            pad = self.get_padding(buffers[-d - 2].shape, x.shape, layer)
+            x, buffer = layer(x, buffer, output_padding=pad, return_last=True)
+            buffers2.append(buffer)
+
+        # encoder2
+
+
+        x = self.stack(x)
+        x = self.final(x)
+        return x
+
+    def get_padding(self, outshape, inshape, layer):
+        outshape = outshape[2:]
+        shape = layer.shape(inshape)[2:]
+        padding = [o - i for o, i in zip(outshape, shape)]
+        return padding
+
+    def forward(self, x, **overload):
+
+        nb_iter = overload.get('nb_iter', self.nb_iter)
+        #         if nb_iter == 1:
+        #             return self.forward_once(x)
+
+        buffers_encoder = [None] * len(self.encoder)
+        buffers_decoder = [None] * len(self.decoder)
+
+        x0 = self.first(x)
+        for n_iter in range(nb_iter):
+
+            x = x0
+
+            # encoder
+            for d, layer in enumerate(self.encoder):
+                buffer = buffers_decoder[-d - 1]
+                if buffer is None:
+                    buffer_shape = list(x.shape)
+                    buffer_shape[1] = layer.in_channels - buffer_shape[1]
+                    buffer = x.new_empty(buffer_shape).normal_(std=1 / 2.355)
+                    buffers_decoder[-d - 1] = buffer
+                x, buffer = layer(x, buffer, return_last=True)
+                if buffers_encoder[d] is None or not self.residual:
+                    buffers_encoder[d] = buffer
+                else:
+                    buffers_encoder[d] = buffers_encoder[d] + buffer
+
+            pad = self.get_padding(buffers_encoder[-1].shape, x.shape,
+                                   self.bottleneck)
+            x = self.bottleneck(x, output_padding=pad)
+
+            # decoder
+            for d, layer in enumerate(self.decoder):
+                buffer = buffers_encoder[-d - 1]
+                if d < len(self.decoder) - 1:
+                    pad = self.get_padding(buffers_encoder[-d - 2].shape,
+                                           x.shape, layer)
+                else:
+                    pad = 0
+                x, buffer = layer(x, buffer, return_last=True,
+                                  output_padding=pad)
+                if buffers_decoder[d] is None or not self.residual:
+                    buffers_decoder[d] = buffer
+                else:
+                    buffers_decoder[d] = buffers_decoder[d] + buffer
+
+        del x0
+        x = self.stack(x)
+        x = self.final(x)
+        return x
+
