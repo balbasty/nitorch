@@ -1808,6 +1808,7 @@ class WNet(tnn.Sequential):
             dim,
             in_channels,
             out_channels,
+            mid_channels=None,
             encoder=None,
             decoder=None,
             encoder2=None,
@@ -1830,6 +1831,9 @@ class WNet(tnn.Sequential):
 
         out_channels : int
             Number of output channels.
+
+        mid_channels : int, optional
+            Number of output channels after the first U-Net.
 
         encoder : sequence[int], default=[16, 32, 32, 32]
             Number of channels in each encoding layer of the first U-Net.
@@ -2049,6 +2053,14 @@ class WNet(tnn.Sequential):
             activation=final_activation,
             padding='auto')
 
+        # --- middle output --------------------------------------------
+        if mid_channels:
+            modules['middle'] = Conv(
+                dim, modules['encoder2'][0].out_channels_last, mid_channels,
+                kernel_size=final_kernel_size,
+                activation=final_activation,
+                padding='auto')
+
         super().__init__(modules)
 
     def get_padding(self, outshape, inshape, layer):
@@ -2088,9 +2100,12 @@ class WNet(tnn.Sequential):
         # encoder2
         buffers_decoder = buffers_decoder + buffers_encoder
         buffers_encoder = []
+        buffer_middle = None
         for layer in self.encoder2:
             buffer = [buffers_decoder.pop()] if buffers_decoder else []
             x, buffer = layer(x, *buffer, return_last=True)
+            if buffer_middle is None and hasattr(self, 'middle'):
+                buffer_middle = self.middle(buffer)
             buffers_encoder.append(buffer)
 
         # bottleneck 2
@@ -2111,5 +2126,5 @@ class WNet(tnn.Sequential):
 
         x = self.stack2(x, *buffers_encoder)
         x = self.final(x)
-        return x
+        return x if buffer_middle is None else x, buffer_middle
 
