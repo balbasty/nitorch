@@ -30,7 +30,7 @@ def _cli(args):
         return
 
     for file in options.files:
-        info(file, meta=options.meta)
+        info(file, meta=options.meta, stat=options.stat)
 
 
 commands['info'] = cli
