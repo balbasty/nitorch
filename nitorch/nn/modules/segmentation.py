@@ -6,7 +6,15 @@ from .. import check
 from .base import Module
 from .cnn import UNet, MRF
 from .spatial import GridPull, GridPushCount
-from ..generators import (DiffeoSample, augment_params, warp_img, warp_seg)
+from ..generators import (BiasFieldTransform, DiffeoSample)
+import torch
+from ...core.constants import eps
+
+
+# Default parameters for various augmentation techniques
+augment_params = {'inu': {'amplitude': 0.25, 'fwhm': 15.0},
+                  'warp': {'amplitude': 2.0, 'fwhm': 15.0},
+                  'noise': {'std_prct': 0.025}}
 
 
 class MeanSpaceNet(Module):
@@ -17,11 +25,20 @@ class MeanSpaceNet(Module):
     that the input data is aligned in the common space.
 
     """
-    def __init__(self, dim, common_space, output_classes=1, input_channels=1,
-                 encoder=None, decoder=None, kernel_size=3,
-                 activation=tnn.LeakyReLU(0.2), batch_norm=True,
-                 implicit=True, coord_conv=False, warp_augmentation=False,
-                 bg_class=0):
+    def __init__(self,
+                 dim,
+                 common_space,
+                 output_classes=1,
+                 input_channels=1,
+                 encoder=None,
+                 decoder=None,
+                 kernel_size=3,
+                 activation=tnn.LeakyReLU(0.2),
+                 batch_norm=True,
+                 implicit=True,
+                 coord_conv=False,
+                 bg_class=0,
+                 augmentation=None):
         """
 
         Parameters
@@ -54,22 +71,27 @@ class MeanSpaceNet(Module):
             Else, return `output_classes + 1` probabilities.
         coord_conv : bool, default=False
             Use mean space coordinate grid as input to the UNet.
-        warp_augmentation : bool, default=False
-            Use warping augmentation.
         bg_class : int, default=0
             Index of background class in reference segmentation.
+        augmentation : str or sequence[str], default=None
+            Apply various augmentation techniques, available methods are:
+            * 'warp' : Nonlinear warp of input image and target label
+            * 'noise' : Additive gaussian noise to image
+            * 'inu' : Multiplicative intensity non-uniformity (INU) to image
 
         """
         super().__init__()
 
         self.bg_class = bg_class
+        if not isinstance(augmentation, (list, tuple)):  augmentation = [augmentation]
+        augmentation = ['warp-img-lab' if a == 'warp' else a for a in augmentation]
+        self.augmentation = augmentation
         self.implicit = implicit
         self.output_classes = output_classes
         self.mean_mat = common_space[0]
         self.vx = spatial.voxel_size(common_space[0])
         self.mean_dim = tuple(common_space[1])
         self.coord_conv = coord_conv
-        self.warp_augmentation = warp_augmentation
         if implicit and output_classes == 1:
             final_activation = tnn.Sigmoid
         else:
@@ -77,8 +99,7 @@ class MeanSpaceNet(Module):
         if implicit:
             output_classes += 1
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: self.board_custom(
-            dim, tb, inputs, outputs, implicit=implicit)
+        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, implicit=implicit, dim=dim)
         # Push/pull settings
         interpolation = 'linear'
         bound = 'dct2'  # symmetric
@@ -93,8 +114,8 @@ class MeanSpaceNet(Module):
         # Add UNet
         #   no final activation so that pull is performed in log-space
         self.unet = UNet(dim,
-                         input_channels=input_channels,
-                         output_channels=output_classes,
+                         in_channels=input_channels,
+                         out_channels=output_classes,
                          encoder=encoder,
                          decoder=decoder,
                          kernel_size=kernel_size,
@@ -156,14 +177,16 @@ class MeanSpaceNet(Module):
 
         # augment (takes voxel size into account)
         if ref is not None:
-            # warping-based (defined deformation in mean-space)
-            if self.warp_augmentation:
+            if 'warp' in self.augmentation:
+                # warping deformation defined in mean-space
                 image, ref = \
                     self.warping_augmentation(image, ref, mat_native, ix_ref)
             # intensity-based
             for n in range(n_channels):
                 vx = spatial.voxel_size(mat_native[n, ...])
-                image[n], ref[n] = augment(self.augmenters, image[n], ref=ref[n], vx=vx)
+                for aug_method in self.augmentation:
+                    if aug_method == 'warp':  continue
+                    image[n], ref[n] = augment(aug_method, image[n], ref[n], vx=vx)
 
         # Create common space input
         inputs = torch.zeros(((1, 2*n_channels,) +  self.mean_dim),
@@ -267,9 +290,9 @@ class MeanSpaceNet(Module):
             dm = image[n].shape[2:]
             grid = self.compose(mats[n, ...], grid0, self.mean_mat, shape_out=dm)[None]
             # apply deformation
-            image[n] = warp_img(image[n], grid)
+            image[n] = warp_image(image[n], grid)
             if n == ix_ref:
-                ref[n] = warp_seg(ref[n], grid)
+                ref[n] = warp_label(ref[n], grid)
 
         return image, ref
 
@@ -386,7 +409,8 @@ class SegMRFNet(Module):
             num_iter=10,
             w=1.0,
             num_extra=0,
-            only_unet=False):
+            only_unet=False,
+            augmentation=None):
         """
 
         Parameters
@@ -419,14 +443,21 @@ class SegMRFNet(Module):
         only_unet : bool, default=False
             This allows for fitting just the UNet, without the MRF part.
             This is good for testing and comparing the two methods.
+        augmentation : str or sequence[str], default=None
+            Apply various augmentation techniques, available methods are:
+            * 'warp' : Nonlinear warp of input image and target label
+            * 'noise' : Additive gaussian noise to image
+            * 'inu' : Multiplicative intensity non-uniformity (INU) to image
 
         """
         super().__init__()
 
         self.only_unet = only_unet
+        if not isinstance(augmentation, (list, tuple)):  augmentation = [augmentation]
+        augmentation = ['warp-img-lab' if a == 'warp' else a for a in augmentation]
+        self.augmentation = augmentation
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: board(
-            dim, tb, inputs, outputs)
+        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, dim=dim)
 
         self.unet = SegNet(dim,
                            input_channels=input_channels,
@@ -488,7 +519,8 @@ class SegMRFNet(Module):
 
         if ref is not None:
             # augment
-            image, ref = augment(self.augmenters, image, ref=ref)
+            for aug_method in self.augmentation:
+                image, ref = augment(aug_method, image, ref)
 
         # unet
         p = self.unet(image)
@@ -532,6 +564,7 @@ class SegNet(Module):
             activation=tnn.LeakyReLU(0.2),
             batch_norm=True,
             implicit=True,
+            augmentation=None,
             skip_final_activation=False):
         """
 
@@ -556,6 +589,11 @@ class SegNet(Module):
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
             function).
+        augmentation : str or sequence[str], default=None
+            Apply various augmentation techniques, available methods are:
+            * 'warp' : Nonlinear warp of input image and target label
+            * 'noise' : Additive gaussian noise to image
+            * 'inu' : Multiplicative intensity non-uniformity (INU) to image
         implicit : bool, default=True
             Only return `output_classes` probabilities (the last one
             is implicit as probabilities must sum to 1).
@@ -566,6 +604,9 @@ class SegNet(Module):
 
         self.implicit = implicit
         self.output_classes = output_classes
+        if not isinstance(augmentation, (list, tuple)):  augmentation = [augmentation]
+        augmentation = ['warp-img-lab' if a == 'warp' else a for a in augmentation]
+        self.augmentation = augmentation
         final_activation = None
         if not skip_final_activation:
             if implicit and output_classes == 1:
@@ -575,13 +616,12 @@ class SegNet(Module):
         if implicit:
             output_classes += 1
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: board(
-            dim, tb, inputs, outputs, implicit=implicit)
+        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, implicit=implicit, dim=dim)
 
         self.unet = UNet(
             dim,
-            input_channels=input_channels,
-            output_channels=output_classes,
+            in_channels=input_channels,
+            out_channels=output_classes,
             encoder=encoder,
             decoder=decoder,
             kernel_size=kernel_size,
@@ -634,7 +674,8 @@ class SegNet(Module):
 
         if ref is not None:
             # augment
-            image, ref = augment(self.augmenters, image, ref=ref)
+            for aug_method in self.augmentation:
+                image, ref = augment(aug_method, image, ref)
 
         # unet
         prob = self.unet(image)
@@ -665,8 +706,14 @@ class MRFNet(Module):
     IPMI. Springer, Cham, 2019.
 
     """
-    def __init__(self, dim, num_classes, num_iter=10, num_extra=0, w=1.0,
-                 activation=tnn.LeakyReLU(0.2)):
+    def __init__(self,
+                 dim,
+                 num_classes,
+                 num_iter=10,
+                 num_extra=0,
+                 w=1.0,
+                 activation=tnn.LeakyReLU(0.2),
+                 augmentation=False):
         """
 
         Parameters
@@ -683,11 +730,14 @@ class MRFNet(Module):
             Weight between new and old prediction [0, 1].
         activation : str or type or callable, default='tnn.LeakyReLU(0.2)'
             Activation function.
+        augmentation : bool, default=False
+            Nonlinear warp of input label and target label.
 
         """
         super().__init__()
 
         self.num_classes = num_classes
+        self.augmentation = augmentation
         if num_iter < 1:
             raise ValueError(
                 'Parameter num_iter should be greater than 0 , got {:}'.format(
@@ -704,8 +754,7 @@ class MRFNet(Module):
         kernel_size = 3
         num_filters = self.get_num_filters()
         # Add tensorboard callback
-        self.board = lambda tb, inputs, outputs: board(
-            dim, tb, inputs, outputs)
+        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, dim=dim)
         # Build MRF net
         self.mrf = MRF(dim,
                        num_classes=num_classes,
@@ -756,9 +805,8 @@ class MRFNet(Module):
         # sanity check
         check.dim(self.dim, resp)
 
-        if ref is not None:
-            # augment
-            resp, ref = augment(self.augmenters, resp, ref=ref)
+        if ref is not None and self.augmentation:
+            image, ref = augment('warp-lab-lab', image, ref)
 
         # MRF
         p = self.apply(resp, is_train)
@@ -868,35 +916,8 @@ class MRFNet(Module):
         return p
 
 
-def augment(augmenters, image, ref=None, vx=None):
-    """Applies various augmentation techniques.
-
-    Parameters
-    ----------
-    image : (batch, input_channels, *spatial) tensor
-        Input image.
-    ref : (batch, output_classes[+1], *spatial) tensor, optional
-        Reference segmentation.
-    augmenters : list
-        List of augmentation functions (defined in nn.seg_augmentation).
-    vx : [ndim, ] sequence, optional
-        Image voxel size (in mm), defaults to 1 mm isotropic.
-
-    Returns
-    ----------
-    image : (batch, input_channels, *spatial) tensor
-        Augmented input image.
-    ref : (batch, output_classes[+1], *spatial) tensor, optional
-        Augmented reference segmentation.
-
-    """
-    for augmenter in augmenters:
-        image, ref = augmenter(image, ref, vx)
-                
-    return image, ref
-
-
-def board(dim, tb, inputs, outputs, implicit=False):
+def board(tb, inputs=None, outputs=None, epoch=None, minibatch=None,
+          mode=None, loss=None, losses=None, metrics=None, implicit=False, dim=3):
     """TensorBoard visualisation of a segmentation model's inputs and outputs.
 
     Parameters
@@ -971,6 +992,8 @@ def board(dim, tb, inputs, outputs, implicit=False):
             slice_target = (slice_target.argmax(dim=0, keepdim=False)) / (K1 - 1)
         return to_grid(slice_input, slice_target, slice_prediction)[None, ...]
 
+    if inputs is None or outputs is None:
+        return
     # Add to TensorBoard
     title = 'Image-Target-Prediction_'
     tb.add_image(title + 'z', get_image('z', inputs, outputs, dim, implicit))
@@ -989,3 +1012,144 @@ def debug_view(dat, ix_batch=0, ix_channel=0, one_hot=False, fig_num=1):
     else:
         show_slices(dat[ix_batch, ix_channel, ...], fig_num=fig_num)
 
+
+def augment(method, image, label=None, vx=None):
+    """Augmentation methods for segmentation network, with parameters that
+    should, hopefully, work well by default.
+
+    OBS: Grount truth input only required when doing warping augmentation.
+
+    Parameters
+    -------
+    method : str
+        Augmentation method:
+        'warp-img-img' : Nonlinear warp of input image and target image
+        'warp-img-lab' : Nonlinear warp of input image and target label
+        'warp-lab-img' : Nonlinear warp of input label and target image
+        'warp-lab-lab' : Nonlinear warp of input label and target label
+        'noise-gauss' : Additive gaussian noise to image
+        'inu' : Multiplicative intensity non-uniformity (INU) to image
+    image : (batch, input_channels, *spatial) tensor
+        Input image
+    label : (batch, output_classes[+1], *spatial) tensor, optional
+        Ground truth segmentation, used by the loss function.
+        Its data type should be integer if it contains hard labels,
+        and floating point if it contains soft segmentations.
+    vx : [ndim, ] sequence, optional
+        Image voxel size (in mm), defaults to 1 mm isotropic.
+
+    Returns
+    -------
+    image : (batch, input_channels, *spatial) tensor
+        Augmented input image.
+    label : (batch, output_classes[+1], *spatial) tensor, optional
+        Augmented ground truth segmentation.
+
+    """
+    # sanity check
+    valid_methods = ['warp-img-img', 'warp-img-lab', 'warp-lab-img',
+                  'warp-lab-lab', 'noise-gauss', 'inu']
+    if method not in valid_methods:
+        raise ValueError('Undefined method {:}, need to be one of {:}'.format(method, valid_methods))
+    nbatch = image.shape[0]
+    nchan = image.shape[1]
+    dim = tuple(image.shape[2:])
+    ndim = len(dim)
+    nvox = int(torch.as_tensor(image.shape[2:]).prod())
+    # voxel size
+    if vx is None:
+        vx = (1.0, ) * ndim
+    vx = torch.as_tensor(vx, device=image.device, dtype=image.dtype)
+    vx = vx.clamp_min(1.0)
+    # Augmentation method
+    if 'warp' in method:
+        # Nonlinear warp
+        # Parameters
+        amplitude = augment_params['warp']['amplitude']
+        fwhm = (augment_params['warp']['fwhm'], ) * ndim
+        fwhm = [f / v for f, v in zip(fwhm, vx)]  # modulate FWHM with voxel size
+        # Instantiate augmenter
+        aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
+                           device=image.device, dtype=image.dtype)
+        # Get random grid
+        grid = aug(batch=nbatch, shape=dim, dim=ndim)
+        # Warp
+        if method == 'warp-img-img':
+            image = warp_image(image, grid)
+            if label is not None:
+                label = warp_image(label, grid)
+        elif method == 'warp-img-lab':
+            image = warp_image(image, grid)
+            if label is not None:
+                label = warp_label(label, grid)
+        elif method == 'warp-lab-img':
+            image = warp_label(image, grid)
+            if label is not None:
+                label = warp_image(label, grid)
+        elif method == 'warp-lab-lab':
+            image = warp_label(image, grid)
+            if label is not None:
+                label = warp_label(label, grid)
+        else:
+            raise ValueError('')
+    elif method == 'noise-gauss':
+        # Additive gaussian noise to image
+        # Parameter
+        std_prct = augment_params['noise']['std_prct']  # percentage of max intensity of batch and channel
+        # Get max intensity in for each batch and channel
+        mx = image.reshape((nbatch, nchan, nvox)).max(dim=-1, keepdim=True)[0]
+        # Add 'lost' dimensions
+        for d in range(ndim - 1):
+            mx = mx.unsqueeze(-1)
+        # Add noise to image
+        image += std_prct*mx*torch.randn_like(image)
+    elif method == 'inu':
+        # Multiplicative intensity non-uniformity (INU) to image
+        # Parameters
+        amplitude = augment_params['inu']['amplitude']
+        fwhm = (augment_params['inu']['fwhm'],) * ndim
+        fwhm = [f/v for f, v in zip(fwhm, vx)]  # modulate FWHM with voxel size
+        # Instantiate augmenter
+        aug = BiasFieldTransform(amplitude=amplitude, fwhm=fwhm, mean=0.0,
+                                 device=image.device, dtype=image.dtype)
+        # Augment image
+        image = aug(image)
+
+    return image, label
+
+
+def warp_image(image, grid):
+    """Warp image according to grid.
+    """
+    image = spatial.grid_pull(image, grid,
+        bound='dct2', extrapolate=True, interpolation=1)
+
+    return image
+
+
+def warp_label(label, grid):
+    """Warp label image according to grid.
+    """
+    ndim = len(label.shape[2:])
+    dtype_seg = label.dtype
+    if dtype_seg not in (torch.half, torch.float, torch.double):
+        # hard labels to one-hot labels
+        M = torch.eye(len(label.unique()), device=label.device,
+                      dtype=torch.float32)
+        label = M[label.type(torch.int64)]
+        if ndim == 3:
+            label = label.permute((0, 5, 2, 3, 4, 1))
+        else:
+            label = label.permute((0, 4, 2, 3, 1))
+        label = label.squeeze(-1)
+    # warp
+    label = spatial.grid_pull(label, grid,
+        bound='dct2', extrapolate=True, interpolation=1)
+    if dtype_seg not in (torch.half, torch.float, torch.double):
+        # one-hot labels to hard labels
+        label = label.argmax(dim=1, keepdim=True).type(dtype_seg)
+    else:
+        # normalise one-hot labels
+        label = label / (label.sum(dim=1, keepdim=True) + eps())
+
+    return label
