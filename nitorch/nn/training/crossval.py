@@ -1,4 +1,4 @@
-from ._training import ModelTrainer
+from .training import ModelTrainer
 
 
 def multitrainer(trainers, keep_on_gpu=False):

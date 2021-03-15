@@ -1,10 +1,10 @@
+import math
 import torch
 import torch.distributions as td
-from ..modules._base import Module
-from ...core.utils import expand, unsqueeze, ensure_shape, max_backend
-from ...core.constants import pi
-from ...core.kernels import smooth
-import math
+from nitorch.core.utils import unsqueeze, ensure_shape
+from nitorch.core.constants import pi
+from nitorch.core.kernels import smooth
+from ..modules.base import Module
 
 
 class RandomFieldSample(Module):

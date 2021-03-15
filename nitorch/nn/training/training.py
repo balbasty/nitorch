@@ -352,10 +352,13 @@ class ModelTrainer:
                                 loss, losses, metrics)
                 # tb callback
                 if self.tensorboard:
-                    self.model.board(self.tensorboard, batch, output)
+                    tbopt = dict(inputs=batch, outputs=output,
+                                 epoch=epoch, minibatch=n_batch, mode='train',
+                                 loss=loss, losses=losses, metrics=metrics)
+                    self.model.board(self.tensorboard, **tbopt)
                     for func in self._tensorboard_callbacks['train']['step']:
-                        func(self.tensorboard, epoch, n_batch,
-                             batch, output, loss, losses, metrics)
+                        func(self.tensorboard, **tbopt)
+                    del tbopt
         # print summary
         with torch.no_grad():
             epoch_loss /= nb_batches
@@ -366,9 +369,11 @@ class ModelTrainer:
             self._board('train', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
-                self.model.board(self.tensorboard, batch, output)
+                tbopt = dict(epoch=epoch, loss=epoch_loss, mode='train',
+                             losses=epoch_losses, metrics=epoch_metrics)
+                self.model.board(self.tensorboard, **tbopt)
                 for func in self._tensorboard_callbacks['train']['epoch']:
-                    func(self.tensorboard, epoch, loss, losses, metrics)
+                    func(self.tensorboard, **tbopt)
 
         return epoch_loss
 
@@ -408,10 +413,13 @@ class ModelTrainer:
                                 loss, losses, metrics)
                 # tb callback
                 if self.tensorboard:
-                    self.model.board(self.tensorboard, batch, output)
+                    tbopt = dict(inputs=batch, outputs=output,
+                                 epoch=epoch, minibatch=n_batch, mode='eval',
+                                 loss=loss, losses=losses, metrics=metrics)
+                    self.model.board(self.tensorboard, **tbopt)
                     for func in self._tensorboard_callbacks['eval']['step']:
-                        func(self.tensorboard, epoch, n_batch,
-                             batch, output, loss, losses, metrics)
+                        func(self.tensorboard, **tbopt)
+
             # print summary
             epoch_loss /= nb_batches
             normalize_loss_dict(epoch_losses, nb_batches)
@@ -421,12 +429,13 @@ class ModelTrainer:
             self._board('eval', epoch, epoch_loss, epoch_metrics)
             # tb callback
             if self.tensorboard:
-                self.model.board(self.tensorboard, batch, output)
+                tbopt = dict(epoch=epoch, loss=epoch_loss, mode='eval',
+                             losses=epoch_losses, metrics=epoch_metrics)
+                self.model.board(self.tensorboard, **tbopt)
                 for func in self._tensorboard_callbacks['eval']['epoch']:
-                    func(self.tensorboard, epoch, loss, losses, metrics)
+                    func(self.tensorboard, **tbopt)
 
         return epoch_loss
-
 
     def _print(self, mode, n_epoch, n_batch, nb_steps, loss,
                losses=None, metrics=None, last=False):
@@ -499,7 +508,7 @@ class ModelTrainer:
         ----------
         func : callable
             If trigger 'step', with signature
-                `(tb, epoch, step, input, output, loss, losses, metrics)`
+                `(tb, input, output, epoch, step, loss, losses, metrics)`
             If trigger 'epoch', with signature:
                 `(tb, epoch, loss, losses, metrics)`
         mode : {'train', 'eval'}
@@ -554,7 +563,7 @@ class ModelTrainer:
                 os.makedirs(dir_optimizer, exist_ok=True)
             torch.save(self.optimizer.state_dict(), save_optimizer)
 
-    @ staticmethod
+    @staticmethod
     def _formatfile(file, epoch):
         """Format filename for an epoch"""
         keys = [tup[1] for tup in string.Formatter().parse(file)
@@ -581,15 +590,13 @@ class ModelTrainer:
                     train_loss = self._train(self.epoch)
                     val_loss = self._eval(self.epoch)
                     self._save(self.epoch)
-                    # incorporate learning rate scheduler
-                    if self.scheduler is not None:
-                        sched_loss = val_loss
-                        if sched_loss is None:
-                            sched_loss = train_loss
-                        if isinstance(self.scheduler, ReduceLROnPlateau):
-                            self.scheduler.step(sched_loss)
-                        else:
-                            self.scheduler.step()
+                    # scheduler
+                    if isinstance(self.scheduler, ReduceLROnPlateau):
+                        sched_loss = val_loss or train_loss
+                        self.scheduler.step(sched_loss)
+                    elif self.scheduler:
+                        self.scheduler.step()
+
     def eval(self):
         """Launch evaluation"""
         self._hello('eval')

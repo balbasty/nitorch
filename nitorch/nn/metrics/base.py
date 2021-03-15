@@ -1,15 +1,15 @@
 """
-Base class for losses.
+Base class for metrics.
 
-Reduction mecanisms are implemented here.
+Reduction mechanisms are implemented here.
 """
 
 import torch.nn as tnn
-from ...core.math import nansum, nanmean
+from nitorch.core.math import nansum, nanmean
 
 
-class Loss(tnn.Module):
-    """Base class for losses."""
+class Metric(tnn.Module):
+    """Base class for metrics."""
 
     def __init__(self, reduction='mean', *args, **kwargs):
         """

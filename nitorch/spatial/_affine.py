@@ -1947,16 +1947,16 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
         Input affine matrix.
     shape : (ndim,) sequence[int]
         Input shape.
-    kernel_size : int or list[int]
+    kernel_size : int or sequence[int]
         Kernel size
-    stride : int or list[int], default=1
+    stride : int or sequence[int], default=1
         Strides (= step size when moving the kernel)
-    padding : int or list[int], default=0
+    padding : int or sequence[int], default=0
         Amount of padding added to (both sides of) the input
-    output_padding : int or list[int], default=0
+    output_padding : int or sequence[int], default=0
         Additional size added to (the bottom/right) side of each
         dimension in the output shape. Only used if `transposed is True`.
-    dilation : int or list[int], default=1
+    dilation : int or sequence[int], default=1
         Dilation (= step size between elements of the kernel)
     transposed : bool, default=False
         Transposed convolution.

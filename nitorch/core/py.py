@@ -389,28 +389,77 @@ def prod(sequence, inplace=False):
     return accumulate
 
 
-def cumprod(sequence):
+def cumprod(sequence, reverse=False, exclusive=False):
     """Perform the cumulative product of a sequence of elements.
 
     Parameters
     ----------
     sequence : any object that implements `__iter__`
         Sequence of elements for which the `__mul__` operator is defined.
+    reverse : bool, default=False
+        Compute cumulative product from right-to-left:
+        `cumprod([a, b, c], reverse=True) -> [a*b*c, b*c, c]`
+    exclusive : bool, default=False
+        Exclude self from the cumulative product:
+        `cumprod([a, b, c], exclusive=True) -> [1, a, a*b]`
 
     Returns
     -------
-    product :
+    product : list
         Product of the elements in the sequence.
 
     """
+    if reverse:
+        sequence = reversed(sequence)
     accumulate = None
-    seq = []
+    seq = [1] if exclusive else []
     for elem in sequence:
         if accumulate is None:
             accumulate = elem
         else:
             accumulate = accumulate * elem
         seq.append(accumulate)
+    if exclusive:
+        seq = seq[:-1]
+    if reverse:
+        seq = list(reversed(seq))
+    return seq
+
+
+def cumsum(sequence, reverse=False, exclusive=False):
+    """Perform the cumulative sum of a sequence of elements.
+
+    Parameters
+    ----------
+    sequence : any object that implements `__iter__`
+        Sequence of elements for which the `__sum__` operator is defined.
+    reverse : bool, default=False
+        Compute cumulative product from right-to-left:
+        `cumprod([a, b, c], reverse=True) -> [a+b+c, b+c, c]`
+    exclusive : bool, default=False
+        Exclude self from the cumulative product:
+        `cumprod([a, b, c], exclusive=True) -> [0, a, a+b]`
+
+    Returns
+    -------
+    sum : list
+        Sum of the elements in the sequence.
+
+    """
+    if reverse:
+        sequence = reversed(sequence)
+    accumulate = None
+    seq = [0] if exclusive else []
+    for elem in sequence:
+        if accumulate is None:
+            accumulate = elem
+        else:
+            accumulate = accumulate + elem
+        seq.append(accumulate)
+    if exclusive:
+        seq = seq[:-1]
+    if reverse:
+        seq = list(reversed(seq))
     return seq
 
 
@@ -462,3 +511,71 @@ def majority(x):
     """
     count = Counter(x)
     return count.most_common(1)[0][0]
+
+
+def flatten(x):
+    """Flatten nested sequences
+
+    Parameters
+    ----------
+    x : tuple or list
+        Nested sequence
+
+    Returns
+    -------
+    x : tuple or list
+        Flattened sequence
+
+    """
+    def _flatten(y):
+        if isinstance(y, (list, tuple)):
+            out = []
+            for e in y:
+                out.extend(_flatten(e))
+            return out
+        else:
+            return [y]
+
+    input_type = type(x)
+    return input_type(_flatten(x))
+
+
+def expand_list(x, n, crop=False, default=None):
+    """Expand ellipsis in a list by substituting it with the value
+    on its left, repeated as many times as necessary. By default,
+    a "virtual" ellipsis is present at the end of the list.
+
+    expand_list([1, 2, 3],       5)            -> [1, 2, 3, 3, 3]
+    expand_list([1, 2, ..., 3],  5)            -> [1, 2, 2, 2, 3]
+    expand_list([1, 2, 3, 4, 5], 3, crop=True) -> [1, 2, 3]
+
+    Parameters
+    ----------
+    x : sequence
+    n : int
+        Target length
+    crop : bool, default=False
+        Whether to crop the list if it is longer than the target length
+    default : optional
+        default value to use if the ellipsis is the first element of the list
+
+    Returns
+    -------
+    x : list
+        List of length `n` (or `>= n`)
+    """
+    x = list(x)
+    if Ellipsis not in x:
+        x.append(Ellipsis)
+    idx_ellipsis = x.index(Ellipsis)
+    if idx_ellipsis == 0:
+        fill_value = default
+    else:
+        fill_value = x[idx_ellipsis-1]
+    k = len(x) - 1
+    x = (x[:idx_ellipsis] +
+         [fill_value] * max(0, n-k) +
+         x[idx_ellipsis+1:])
+    if crop:
+        x = x[:n]
+    return x

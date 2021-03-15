@@ -3,7 +3,7 @@ import itertools
 import torch
 from torch.nn import functional as F
 from nitorch import core
-from nitorch.core import utils
+from nitorch.core import utils, math
 from nitorch.core.utils import to_max_backend, unsqueeze, movedim
 from nitorch.core.py import make_list
 from ._affine import affine_conv
@@ -101,8 +101,8 @@ conv2d = lambda *args, **kwargs: conv(2, *args, **kwargs)
 conv3d = lambda *args, **kwargs: conv(3, *args, **kwargs)
 
 
-def pool(dim, tensor, kernel_size=3, stride=None, padding=0, bound='zero',
-         function='mean', affine=None):
+def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
+         bound='zero', reduction='mean', return_indices=False, affine=None):
     """Perform a pooling
 
     Parameters
@@ -113,20 +113,29 @@ def pool(dim, tensor, kernel_size=3, stride=None, padding=0, bound='zero',
         Input tensor
     kernel_size : int or sequence[int], default=3
         Size of the pooling window
-    stride : int or sequence[int], default=None
-        Strides between output elements. If None, same as `kernel_size`.
+    stride : int or sequence[int], default=`kernel_size`
+        Strides between output elements.
+    dilation : int or sequece[int], default=1
+        Strides between elements of the kernel.
     padding : 'auto' or int or sequence[int], default=0
         Padding performed before the convolution.
         If 'auto', the padding is chosen such that the shape of the
         output tensor is `spatial_in // stride`.
     bound : str, default='zero'
         Boundary conditions used in the padding.
-    function : {'mean', 'max', 'min', 'median', 'sum'} or callable, default='mean'
+    reduction : {'mean', 'max', 'min', 'median', 'sum'} or callable, default='mean'
         Function to apply to the elements in a window.
+    return_indices : bool, default=False
+        Return input index of the min/max/median element.
+        For other types of reduction, return None.
+    affine : (..., D+1, D+1) tensor, optional
+        Input orientation matrix
 
     Returns
     -------
-    pooled : (*batch, *spatial_out)
+    pooled : (*batch, *spatial_out) tensor
+    indices : (*batch, *spatial_out, dim) tensor, if `return_indices`
+    affine : (..., D+1, D+1) tensor, if `affine`
 
     """
     # move everything to the same dtype/device
@@ -141,6 +150,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, padding=0, bound='zero',
     kernel_size = make_list(kernel_size, dim)
     stride = make_list(stride or None, dim)
     stride = [st or ks for st, ks in zip(stride, kernel_size)]
+    dilation = make_list(dilation or 1, dim)
     padding = make_list(padding, dim)
     padding0 = padding  # save it to update the affine
     for i in range(dim):
@@ -148,83 +158,120 @@ def pool(dim, tensor, kernel_size=3, stride=None, padding=0, bound='zero',
             if kernel_size[i] % 2 == 0:
                 raise ValueError('Cannot compute automatic padding '
                                  'for even-sized kernels.')
-            padding[i] = kernel_size[i] // 2
+            padding[i] = ((kernel_size[i]-1) * dilation[i] + 1) // 2
 
-    pool_fn = None
-    if function in ('mean', 'avg'):
+    use_torch = reduction in ('mean', 'avg', 'max') and dim in (1, 2, 3)
+
+    if (not use_torch) or bound != 'zero' and sum(padding) > 0:
+        # torch implementation -> handles zero-padding
+        # our implementation -> needs explicit padding
+        tensor = utils.pad(tensor, padding, bound, side='both')
+        padding = [0] * dim
+
+    return_indices0 = False
+    pool_fn = reduction if callable(reduction) else None
+
+    if reduction in ('mean', 'avg'):
+        return_indices0 = True
+        return_indices = False
         pool_fn = (F.avg_pool1d if dim == 1 else
                    F.avg_pool2d if dim == 2 else
                    F.avg_pool3d if dim == 3 else None)
         if pool_fn:
             pool_fn0 = pool_fn
             pool_fn = lambda x, *a, **k: pool_fn0(x[:, None], *a, **k,
-                                                  padding=padding)[:, 0]
-    elif function == 'max':
+                                                  padding=padding,
+                                                  dilation=dilation)[:, 0]
+    elif reduction == 'max':
         pool_fn = (F.max_pool1d if dim == 1 else
                    F.max_pool2d if dim == 2 else
                    F.max_pool3d if dim == 3 else None)
         if pool_fn:
             pool_fn0 = pool_fn
             pool_fn = lambda x, *a, **k: pool_fn0(x[:, None], *a, **k,
-                                                  padding=padding)[:, 0]
-
-    if pool_fn and bound != 'zero' and sum(padding) > 0:
-        # torch implementation -> handles zero-padding
-        tensor = utils.pad(tensor, padding, bound, side='both')
-        padding = [0] * dim
+                                                  padding=padding,
+                                                  dilation=dilation)[:, 0]
 
     if not pool_fn:
-        if function == 'mean':
-            function = lambda x: torch.mean(x, dim=-1)
-        elif function == 'sum':
-            function = lambda x: torch.sum(x, dim=-1)
-        elif function == 'min':
-            function = lambda x: torch.min(x, dim=-1).values
-        elif function == 'max':
-            function = lambda x: torch.max(x, dim=-1).values
-        elif function == 'median':
-            function = lambda x: torch.median(x, dim=-1).values
-        pool_fn = lambda *a, **k: _pool(*a, **k, function=function)
+        if reduction not in ('min', 'max', 'median'):
+            return_indices0 = True
+            return_indices = False
+        if reduction == 'mean':
+            reduction = lambda x: math.mean(x, dim=-1)
+        elif reduction == 'sum':
+            reduction = lambda x: math.sum(x, dim=-1)
+        elif reduction == 'min':
+            reduction = lambda x: math.min(x, dim=-1)
+        elif reduction == 'max':
+            reduction = lambda x: math.max(x, dim=-1)
+        elif reduction == 'median':
+            reduction = lambda x: math.median(x, dim=-1)
+        elif not callable(reduction):
+            raise ValueError(f'Unknown reduction {reduction}')
+        pool_fn = lambda *a, **k: _pool(*a, **k, reduction=reduction)
 
-    tensor = pool_fn(tensor, kernel_size, stride=stride)
+    outputs = []
+    if return_indices:
+        tensor, ind = pool_fn(tensor, kernel_size, stride=stride)
+        ind = utils.ind2sub(ind, stride)
+        ind = utils.movedim(ind, 0, -1)
+        outputs.append(ind)
+    else:
+        tensor = pool_fn(tensor, kernel_size, stride=stride)
+        if return_indices0:
+            outputs.append(None)
+
     spatial_out = tensor.shape[-dim:]
     tensor = tensor.reshape([*batch, *spatial_out])
+    outputs = [tensor, *outputs]
 
     if affine is not None:
-        affine, _ = affine_conv(affine, spatial_in, kernel_size, stride,
-                                padding0)
-        return tensor, affine
-    else:
-        return tensor
+        affine, _ = affine_conv(affine, spatial_in,
+                                kernel_size=kernel_size, stride=stride,
+                                padding=padding0, dilation=dilation)
+        outputs.append(affine)
+
+    return outputs[0] if len(outputs) == 1 else tuple(outputs)
 
 
-def _pool(x, kernel_size, stride, function):
-    """
+def _pool(x, kernel_size, stride, dilation, reduction, return_indices=False):
+    """Implement pooling by "manually" extracting patches using `unfold`
 
     Parameters
     ----------
     x : (batch, *spatial)
     kernel_size : (dim,) int
     stride : (dim,) int
-    function : callable
+    dilation : (dim,) int
+    reduction : callable
         This function should collapse the last dimension of a tensor
         (..., K) tensor -> (...)
+    return_indices : bool
 
     Returns
     -------
+    x : (batch, *spatial_out)
 
     """
-    for d, (sz, st) in enumerate(zip(kernel_size, stride)):
+    kernel_size = [(sz-1)*dl + 1 for sz, dl in zip(kernel_size, dilation)]
+    for d, (sz, st, dl) in enumerate(zip(kernel_size, stride, dilation)):
         x = x.unfold(dimension=d + 1, size=sz, step=st)
+        if dl != 1:
+            x = x[..., ::dl]
     dim = len(kernel_size)
+    patch_shape = x.shape[dim+1:]
     x = x.reshape((*x.shape[:dim+1], -1))
-    x = function(x)
-    return x
+    if return_indices:
+        x, ind = reduction(x, return_indices=True)
+        return x, ind
+    else:
+        x = reduction(x)
+        return x
 
 
-pool1d = lambda *args, **kwargs: pool(1, *args, **kwargs)
-pool2d = lambda *args, **kwargs: pool(2, *args, **kwargs)
-pool3d = lambda *args, **kwargs: pool(3, *args, **kwargs)
+pool1d = lambda *args, **kwargs: pool(1, **kwargs)
+pool2d = lambda *args, **kwargs: pool(2, **kwargs)
+pool3d = lambda *args, **kwargs: pool(3, **kwargs)
 
 
 def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
