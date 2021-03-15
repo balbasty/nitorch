@@ -768,6 +768,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     if any(not s for s in outshape):
         raise ValueError('Either factor or shape must be set in '
                          'all dimensions')
+    factor = [o/i for o, i in zip(outshape, inshape)]
 
     # compute transformation grid
     # there is an affine relationship between the input and output grid:
