@@ -1331,7 +1331,7 @@ class SegMorphWNet4(BaseMorph):
                  kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
                  interpolation='linear', grid_bound='dft', image_bound='dct2',
                  downsample_velocity=2, batch_norm=True, implicit=True,
-                 unet_inputs='image+seg'):
+                 unet_inputs='image+feat'):
         """
 
         Parameters
@@ -1384,9 +1384,11 @@ class SegMorphWNet4(BaseMorph):
                             activation=[activation, ..., self.softmax],
                             batch_norm=batch_norm)
 
+        nb_feat = self.segnet.last.in_channels
         in_channels = int('image' in unet_inputs) \
                       + int('seg' in unet_inputs) \
-                      * (output_classes + int(not self.implicit[1]))
+                      * (output_classes + int(not self.implicit[1])) \
+                      + int('feat' in unet_inputs) * nb_feat
         self.unet = UNet2(dim,
                           in_channels=in_channels * 2,
                           out_channels=dim,
@@ -1396,30 +1398,8 @@ class SegMorphWNet4(BaseMorph):
                           activation=[activation, ..., None],
                           batch_norm=batch_norm)
 
-        #         self.bn_source = self.get_bn()
-        #         self.bn_target = self.get_bn()
-
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
-
-    def set_bn(self, values, backtrack=False):
-        bnlayers = [child for child in self.segnet.modules() if _is_bn(child)]
-        for layer, mean, var, mom in zip(bnlayers, values['mean'],
-                                         values['var'], values['momentum']):
-            layer.running_mean = mean.to(device=layer.running_mean.device)
-            layer.running_var = var.to(device=layer.running_var.device)
-            layer.momentum = mom
-            if backtrack:
-                layer.num_batches_tracked -= 1
-
-    def get_bn(self):
-        values = dict(mean=[], var=[], momentum=[])
-        bnlayers = [child for child in self.segnet.modules() if _is_bn(child)]
-        for layer in bnlayers:
-            values['mean'].append(layer.running_mean)
-            values['var'].append(layer.running_var)
-            values['momentum'].append(layer.momentum)
-        return values
 
     def forward(self, source, target, source_seg=None, target_seg=None,
                 *, _loss=None, _metric=None):
@@ -1463,19 +1443,23 @@ class SegMorphWNet4(BaseMorph):
         check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
 
         # segnet
-        source_seg_pred = self.segnet(source)
-        target_seg_pred = self.segnet(target)
+        source_seg_pred, source_feat = self.segnet(source, return_feat=True)
+        target_seg_pred, target_feat = self.segnet(target, return_feat=True)
 
         # unet
         inputs = []
+        if 'feat' in self.unet_inputs:
+            inputs += [source_feat, target_feat]
         if 'seg' in self.unet_inputs:
             inputs += [source_seg_pred, target_seg_pred]
         if 'image' in self.unet_inputs:
             inputs += [source, target]
+        del source_feat, target_feat
         inputs = torch.cat(inputs, dim=1)
 
         # deformation
         velocity = self.unet(inputs)
+        del inputs
         velocity = utils.channel2last(velocity)
         grid = self.exp(velocity)
         deformed_source = self.pull(source, grid)

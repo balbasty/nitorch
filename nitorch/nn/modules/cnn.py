@@ -2122,10 +2122,12 @@ class WNet(tnn.Sequential):
         buffer_middle = None
         for layer in self.encoder2:
             buffer = [buffers_decoder.pop()] if buffers_decoder else []
-            x, buffer, inmiddle = layer(x, *buffer, return_last='single+cat')
             if buffer_middle is None and hasattr(self, 'middle'):
+                x, buffer, inmiddle = layer(x, *buffer, return_last='single+cat')
                 buffer_middle = self.middle(inmiddle)
-            del inmiddle
+                del inmiddle
+            else:
+                x, buffer = layer(x, *buffer, return_last=True)
             buffers_encoder.append(buffer)
 
         # bottleneck 2
