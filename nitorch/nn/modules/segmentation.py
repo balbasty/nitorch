@@ -99,7 +99,7 @@ class MeanSpaceNet(Module):
         if implicit:
             output_classes += 1
         # Add tensorboard callback
-        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, implicit=implicit, dim=dim)
+        self.board = lambda tb, *args, **kwargs: self.board_custom(tb, *args, **kwargs, implicit=implicit, dim=dim)
         # Push/pull settings
         interpolation = 'linear'
         bound = 'dct2'  # symmetric
@@ -318,10 +318,13 @@ class MeanSpaceNet(Module):
 
         return grid
 
-    def board_custom(self, dim, tb, inputs, outputs, implicit=False):
+    def board_custom(self, tb, inputs, outputs, *args, **kwargs):
         """Removes affine matrix from inputs before calling board.
         """
-        board(dim, tb, (inputs[0], inputs[2]), outputs, implicit=implicit)
+        ix_ref = inputs[2]
+        image = inputs[0][ix_ref]
+        label = outputs[ix_ref]
+        board(tb, (image, label), *args, **kwargs)
 
     def compose(self, orient_in, deformation, orient_mean, affine=None, orient_out=None, shape_out=None):
         """Composes a deformation defined in a mean space to an image space.
