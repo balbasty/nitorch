@@ -379,9 +379,15 @@ class StackedConv(tnn.ModuleList):
             No residual connection is applied to the output of the last
             layer (strided conv or pool).
 
-        return_last : bool, default=False
+        return_last : {'single', 'cat', 'single+cat'} or bool, default=False
             Return the last output before up/downsampling on top of the
             real output (useful for skip connections).
+
+            'single' and 'cat' are useful when the stacked convolution contains
+            a single strided convolution and takes as input a skipped
+            connection. 'single' only returns the first input argument
+            whereas 'cat' returns all concatenated input arguments.
+            `True` is equivalent to 'single'.
 
         """
         self.dim = dim
@@ -502,7 +508,7 @@ class StackedConv(tnn.ModuleList):
         ----------------
         output_padding : int or sequence[int], optional
         residual : bool, optional
-        return_last : bool, optional
+        return_last : [sequence of] bool or str, optional
 
         Returns
         -------
@@ -523,9 +529,15 @@ class StackedConv(tnn.ModuleList):
         output_padding = overload.get('output_padding', self.output_padding)
         residual = overload.get('residual', self.residual)
         return_last = overload.get('return_last', self.return_last)
+        if not isinstance(return_last, str):
+            return_last = 'single' if return_last else ''
 
-        last = x[0]
+        last = []
+        if 'single' in return_last:
+            last.append(x[0])
         x = torch.cat(x, 1) if len(x) > 1 else x[0]
+        if 'cat' in return_last:
+            last.append(x)
         for layer in self:
             if isinstance(layer, Conv) and layer.transposed:
                 kwargs = dict(output_padding=output_padding)
@@ -536,10 +548,12 @@ class StackedConv(tnn.ModuleList):
                 x = x + layer(x, **kwargs)
             else:
                 x = layer(x, **kwargs)
-            if not is_last(layer):
-                last = x
+            if return_last and not is_last(layer):
+                last = [x]
+                if 'single' in return_last and 'cat' in return_last:
+                    last = last * 2
 
-        return (x, last) if return_last else x
+        return (x, *last) if return_last else x
     
         
 class EncodingLayer(StackedConv):
@@ -2103,9 +2117,10 @@ class WNet(tnn.Sequential):
         buffer_middle = None
         for layer in self.encoder2:
             buffer = [buffers_decoder.pop()] if buffers_decoder else []
-            x, buffer = layer(x, *buffer, return_last=True)
+            x, buffer, inmiddle = layer(x, *buffer, return_last='single+cat')
             if buffer_middle is None and hasattr(self, 'middle'):
-                buffer_middle = self.middle(buffer)
+                buffer_middle = self.middle(inmiddle)
+            del inmiddle
             buffers_encoder.append(buffer)
 
         # bottleneck 2
