@@ -1916,11 +1916,13 @@ class WNet(tnn.Sequential):
                              n=len(encoder2), crop=False)
 
         stack1 = decoder1[len(encoder1) - 1:]
-        decoder1 = decoder1[:len(encoder1)]
+        decoder1 = decoder1[:len(encoder1) - 1]
         stack2 = decoder2[len(encoder2):]
         decoder2 = decoder2[:len(encoder2)]
         activation, final_activation = make_list(activation, 2)
         kernel_size, final_kernel_size = make_list(kernel_size, 2)
+
+        print(encoder1, decoder1, stack1, encoder2, decoder2, stack2)
 
         modules = OrderedDict()
 
