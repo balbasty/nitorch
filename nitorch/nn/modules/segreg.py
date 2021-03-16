@@ -1,5 +1,5 @@
 from .base import Module
-from .cnn import UNet, UUNet, WNet
+from .cnn import UNet, UUNet, WNet, UNet2
 from .spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax
 from nitorch.nn import check
@@ -245,7 +245,7 @@ class SegMorphWNet(BaseMorph):
         self.softmax = SoftMax(implicit=implicit)
 
         out_channels = output_classes + int(not self.implicit[0])
-        self.segnet = UNet(dim,
+        self.segnet = UNet2(dim,
                            in_channels=1,
                            out_channels=out_channels,
                            encoder=encoder,
@@ -257,7 +257,7 @@ class SegMorphWNet(BaseMorph):
         in_channels = int('image' in unet_inputs) \
                         + int('seg' in unet_inputs) \
                         * (output_classes + int(not self.implicit[1]))
-        self.unet = UNet(dim,
+        self.unet = UNet2(dim,
                          in_channels=in_channels * 2,
                          out_channels=dim,
                          encoder=encoder,
