@@ -1368,7 +1368,22 @@ class Cat(Module):
     
 @nitorchmodule
 class UNet2(tnn.Sequential):
-    """U-Net."""
+    """Alternative U-Net.
+
+    x -*1-> ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~> *1 -> y
+            -*2-> -*1-> ~~~~~~~~~~~~~~~> *1 -> -*2^
+                        -*2-> -*1-> -*2^
+
+    The difference with the `UNet` class are:
+    - There is always at least one non-strided convolution at the top level
+      (at the next levels, there can be only strided conv, like in `UNet`)
+    - There are `len(encoder)` resolution levels and therefore
+      `len(encoder) - 1` strided convolutions (instead of
+      `len(encoder) + 1` levels and `len(encoder)` strided conv in `UNet`).
+    - There is an option to perform multiple "convolution + activation"
+      at each level.
+    - There are a lot less fancy options (groups, stitches, pooling, etc).
+    """
 
     def __init__(
             self,
@@ -1381,8 +1396,7 @@ class UNet2(tnn.Sequential):
             kernel_size=3,
             stride=2,
             activation=tnn.ReLU,
-            batch_norm=False,
-            nb_iter=1):
+            batch_norm=False):
         """
 
         Parameters
@@ -1418,7 +1432,6 @@ class UNet2(tnn.Sequential):
             Batch normalization before each convolution.
         """
         self.dim = dim
-        self.nb_iter = nb_iter
 
         in_channels = make_list(in_channels)
         out_channels = make_list(out_channels)
@@ -1529,7 +1542,24 @@ class UNet2(tnn.Sequential):
 
         super().__init__(OrderedDict(modules))
 
-    def forward(self, x):
+    def forward(self, x, return_feat=False):
+        """
+
+        Parameters
+        ----------
+        x : (batch, in_channels, *spatial) tensor
+            Input tensor
+        return_feat : bool, default=False
+            Return the last features before the final convolution.
+
+        Returns
+        -------
+        x : (batch, out_channels, *spatial) tensor
+            Output tensor
+        f : (batch, decoder[-1], *spatial) tensor, if `return_feat`
+            Output features
+
+        """
 
         x = self.first(x)
 
@@ -1555,8 +1585,9 @@ class UNet2(tnn.Sequential):
             x = layer(x, buffer, output_padding=pad)
 
         x = self.stack(x)
+        f = x if return_feat else None
         x = self.final(x)
-        return x
+        return (x, f) if return_feat else x
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
