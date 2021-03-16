@@ -102,10 +102,11 @@ class BaseMorph(Module):
         def get_velocity(plane, vol, batch=0):
             vol = utils.movedim(vol, -1, 1)
             vol = get_slice(plane, vol[batch])
-            vol = vol + vol.min()
-            vol = vol / vol.max()
-            vol = vol.clip_(0, 1)
             vol = utils.movedim(vol, 0, -1)
+            bound = vol.reshape(-1, self.dim).abs().max(dim=0).values
+            vol = vol - bound
+            vol = vol / (2*bound)
+            vol = vol.clip_(0, 1)
             return vol
 
         def get_label(plane, vol, batch=0):

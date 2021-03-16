@@ -1702,36 +1702,27 @@ class UUNet(tnn.Sequential):
                 activation=activation,
                 batch_norm=batch_norm,
             ))
-        if conv_per_layer > 1:
-            cin = decoder[-1] + encoder[0]
-            cout = [decoder[-1]] * (conv_per_layer - 1)
-            modules_decoder.append(StackedConv(
+        dec = tnn.ModuleList(modules_decoder)
+        modules.append(('decoder', dec))
+
+        cin = decoder[-1] + encoder[0]
+        cout = [decoder[-1]] * (conv_per_layer - 1)
+        for s in stack:
+            cout += [s] * conv_per_layer
+        if cout:
+            stk = StackedConv(
                 dim,
                 in_channels=cin,
                 out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
                 batch_norm=batch_norm,
-            ))
-            last_decoder = decoder[-1]
-        else:
-            modules_decoder.append(Cat())
-            last_decoder = decoder[-1] + encoder[0]
-        dec = tnn.ModuleList(modules_decoder)
-        modules.append(('decoder', dec))
-
-        if stack:
-            stk = StackedConv(dim,
-                              in_channels=last_decoder,
-                              out_channels=stack,
-                              kernel_size=kernel_size,
-                              activation=activation,
-                              batch_norm=batch_norm)
+            )
             modules.append(('stack', stk))
-            last_stack = stack[-1]
+            last_stack = cout[-1]
         else:
             modules.append(('stack', Cat()))
-            last_stack = last_decoder
+            last_stack = cin
 
         final = Conv(dim, last_stack, out_channels,
                      kernel_size=kernel_size,
@@ -1758,15 +1749,12 @@ class UUNet(tnn.Sequential):
         x = self.bottleneck(x, output_padding=pad)
 
         # decoder
-        for d, layer in enumerate(self.decoder):
-            buffer = buffers[-d-1]
-            if d < len(self.decoder) - 1:
-                pad = self.get_padding(buffers[-d-2].shape, x.shape, layer)
-            else:
-                pad = 0
+        for layer in self.decoder:
+            buffer = buffers.pop()
+            pad = self.get_padding(buffers[-1].shape, x.shape, layer)
             x = layer(x, buffer, output_padding=pad)
 
-        x = self.stack(x)
+        x = self.stack(x, buffers.pop())
         x = self.final(x)
         return x
 
@@ -1810,18 +1798,20 @@ class UUNet(tnn.Sequential):
             # decoder
             for d, layer in enumerate(self.decoder):
                 buffer = buffers_encoder[-d-1]
-                if d < len(self.decoder) - 1:
-                    pad = self.get_padding(buffers_encoder[-d-2].shape, x.shape, layer)
-                else:
-                    pad = 0
+                pad = self.get_padding(buffers_encoder[-d-2].shape, x.shape, layer)
                 x, buffer = layer(x, buffer, return_last=True, output_padding=pad)
                 if buffers_decoder[d] is None or not self.residual:
                     buffers_decoder[d] = buffer
                 else:
                     buffers_decoder[d] = buffers_decoder[d] + buffer
-        
+
+            x = self.stack(x, buffers_encoder[0])
+            if buffers_decoder[-1] is None or not self.residual:
+                buffers_decoder[-1] = x
+            else:
+                buffers_decoder[-1] = buffers_decoder[-1] + x
+
         del x0
-        x = self.stack(x)
         x = self.final(x)
         return x
 
