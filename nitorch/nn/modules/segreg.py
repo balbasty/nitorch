@@ -102,7 +102,9 @@ class BaseMorph(Module):
         def get_velocity(plane, vol, batch=0):
             vol = utils.movedim(vol, -1, 1)
             vol = get_slice(plane, vol[batch])
+            vol = vol + vol.min()
             vol = vol / vol.max()
+            vol = vol.clip_(0, 1)
             vol = utils.movedim(vol, 0, -1)
             return vol
 
@@ -203,7 +205,7 @@ class SegMorphWNet(BaseMorph):
                  kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
                  interpolation='linear', grid_bound='dft', image_bound='dct2',
                  downsample_velocity=2, batch_norm=True, implicit=True,
-                 unet_inputs='image+seg'):
+                 unet_inputs='image+seg', variant=1):
         """
 
         Parameters
@@ -246,8 +248,10 @@ class SegMorphWNet(BaseMorph):
         self.output_classes = output_classes
         self.softmax = SoftMax(implicit=implicit)
 
+        Klass = UNet2 if variant == 2 else UNet
+        
         out_channels = output_classes + int(not self.implicit[0])
-        self.segnet = UNet2(dim,
+        self.segnet = Klass(dim,
                            in_channels=1,
                            out_channels=out_channels,
                            encoder=encoder,
@@ -259,7 +263,7 @@ class SegMorphWNet(BaseMorph):
         in_channels = int('image' in unet_inputs) \
                         + int('seg' in unet_inputs) \
                         * (output_classes + int(not self.implicit[1]))
-        self.unet = UNet2(dim,
+        self.unet = Klass(dim,
                          in_channels=in_channels * 2,
                          out_channels=dim,
                          encoder=encoder,
