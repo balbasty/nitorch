@@ -1049,6 +1049,8 @@ def augment(method, image, label=None, vx=None):
         Augmented ground truth segmentation.
 
     """
+    if method is None:
+        return image, label
     # sanity check
     valid_methods = ['warp-img-img', 'warp-img-lab', 'warp-lab-img',
                   'warp-lab-lab', 'noise-gauss', 'inu']
@@ -1137,22 +1139,23 @@ def warp_label(label, grid):
     dtype_seg = label.dtype
     if dtype_seg not in (torch.half, torch.float, torch.double):
         # hard labels to one-hot labels
-        M = torch.eye(len(label.unique()), device=label.device,
-                      dtype=torch.float32)
-        label = M[label.type(torch.int64)]
-        if ndim == 3:
-            label = label.permute((0, 5, 2, 3, 4, 1))
-        else:
-            label = label.permute((0, 4, 2, 3, 1))
-        label = label.squeeze(-1)
+        n_batch = label.shape[0]
+        u_labels = label.unique()
+        n_labels = len(u_labels)
+        label_w = torch.zeros((n_batch, n_labels, ) + tuple(label.shape[2:]),
+            device=x.device, dtype=torch.float32)
+        for i, l in enumerate(u_labels):
+            label_w[..., i, ...] = label == l
+    else:
+        label_w = label
     # warp
-    label = spatial.grid_pull(label, grid,
+    label_w = spatial.grid_pull(label_w, grid,
         bound='dct2', extrapolate=True, interpolation=1)
     if dtype_seg not in (torch.half, torch.float, torch.double):
         # one-hot labels to hard labels
-        label = label.argmax(dim=1, keepdim=True).type(dtype_seg)
+        label_w = label_w.argmax(dim=1, keepdim=True).type(dtype_seg)
     else:
         # normalise one-hot labels
-        label = label / (label.sum(dim=1, keepdim=True) + eps())
+        label_w = label_w / (label_w.sum(dim=1, keepdim=True) + eps())
 
-    return label
+    return label_w
