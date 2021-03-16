@@ -1006,7 +1006,9 @@ class SegMorphWNet2(BaseMorph):
     """
     Joint segmentation and registration using a dual branch WNet.
 
-    The UNet outputs both a velocity field and two native-space segmentations.
+    Image A + Image B -> Unet -> Unet -> Seg A + Seg B + Velocity
+
+    The WNet outputs both a velocity field and two native-space segmentations.
     One loss function acts on the native-space segmentations and tries to
     make them as accurate as possible (in the supervised case) and another
     loss function acts on the warped moving segmentation and tries to
@@ -1163,14 +1165,16 @@ class SegMorphWNet2(BaseMorph):
 
 class SegMorphWNet3(BaseMorph):
     """
-    Joint segmentation and registration using a dual branch WNet.
+    Joint segmentation and registration using a WNet.
 
-    The UNet outputs both a velocity field and two native-space segmentations.
-    One loss function acts on the native-space segmentations and tries to
-    make them as accurate as possible (in the supervised case) and another
-    loss function acts on the warped moving segmentation and tries to
-    make it match the fixed-space segmentation (in the supervised or
-    semi-supervised case).
+    Image A + Image B -> Unet -|-> Unet -> Velocity
+                               |-> Seg A + Seg B
+
+    A first UNet outputs both segmentations (with a segmentation loss).
+    The last *features* (before the final conv) are fed to a second UNet
+    along with the input images, which outputs a velocity (with a
+    registration loss).
+    Optionally, skip connections exist between the two UNets.
     """
 
     def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
