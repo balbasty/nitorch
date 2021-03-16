@@ -2141,5 +2141,5 @@ class WNet(tnn.Sequential):
 
         x = self.stack2(x, *buffers_encoder)
         x = self.final(x)
-        return x if buffer_middle is None else x, buffer_middle
+        return x if buffer_middle is None else (x, buffer_middle)
 
