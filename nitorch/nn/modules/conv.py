@@ -231,7 +231,7 @@ class SimpleConv(Module):
             with torch.no_grad():
                 center = tuple(k//2 for k in self.conv.weight.shape[2:])
                 center = self.conv.weight[(slice(None), slice(None), *center)]
-                nfilters = max(center.shape[0], center.shape[1])
+                nfilters = min(center.shape[0], center.shape[1])
                 cin = list(range(center.shape[0]))
                 random.shuffle(cin)
                 cin = cin[:nfilters]
