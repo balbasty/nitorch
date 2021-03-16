@@ -1,7 +1,7 @@
 import torch
 import torch.nn as tnn
 from nitorch import spatial
-from nitorch.core import utils
+from nitorch.core import utils, math
 from .. import check
 from .base import Module
 from .cnn import UNet, MRF
@@ -531,7 +531,7 @@ class SegMRFNet(Module):
         if self.only_unet:
             p = p.softmax(dim=1)
         else:
-            p = p - utils.logsumexp(p, dim=1, keepdim=True)
+            p = p - math.logsumexp(p, dim=1, keepdim=True)
             p = self.mrf.apply(p, is_train)
             # hook to zero gradients of central filter weights
             self.mrf.parameters().__next__() \

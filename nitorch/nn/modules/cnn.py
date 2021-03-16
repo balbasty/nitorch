@@ -477,6 +477,12 @@ class StackedConv(tnn.ModuleList):
             if isinstance(layer, Conv):
                 return layer.out_channels
 
+    @property
+    def out_channels_last(self):
+        for layer in reversed(self):
+            if isinstance(layer, Conv):
+                return layer.in_channels
+
     def shape(self, x):
         if torch.is_tensor(x):
             x = tuple(x.shape)
@@ -1802,6 +1808,7 @@ class WNet(tnn.Sequential):
             dim,
             in_channels,
             out_channels,
+            mid_channels=None,
             encoder=None,
             decoder=None,
             encoder2=None,
@@ -1824,6 +1831,9 @@ class WNet(tnn.Sequential):
 
         out_channels : int
             Number of output channels.
+
+        mid_channels : int, optional
+            Number of output channels after the first U-Net.
 
         encoder : sequence[int], default=[16, 32, 32, 32]
             Number of channels in each encoding layer of the first U-Net.
@@ -1854,11 +1864,15 @@ class WNet(tnn.Sequential):
         conv_per_layer : int, default=2
             Number of convolutions per layer.
 
-        kernel_size : int or sequence[int], default=3
-            Kernel size per dimension.
+        kernel_size : int, default=3
+            Kernel size (in all dimensions).
+            If a list/tuple of two elements, the second element is
+            the final kernel size.
 
-        activation : [sequence of] str or type or callable or None, default='relu'
+        activation : str or type or callable or None, default='relu'
             Activation function.
+            If a list/tuple of two elements, the second element is
+            the final activation.
 
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
@@ -1867,31 +1881,35 @@ class WNet(tnn.Sequential):
             Add skip connections between the two U-Nets.
         """
         self.dim = dim
+        self.skip = skip
+        encoder1 = encoder
+        decoder1 = decoder
 
         # defaults
         conv_per_layer = max(1, conv_per_layer)
         default_encoder = [16, 32, 32, 32]
-        encoder = list(encoder or default_encoder)
-        default_decoder = list(reversed(encoder[:-1]))
-        decoder = make_list(decoder or default_decoder, n=len(encoder) - 1)
-        default_encoder2 = encoder[1:]
+        encoder1 = list(encoder1 or default_encoder)
+        default_decoder = list(reversed(encoder1[:-1]))
+        decoder1 = make_list(decoder1 or default_decoder, n=len(encoder1) - 1)
+        default_encoder2 = encoder1[1:]
         encoder2 = list(encoder2 or default_encoder2)
-        default_decoder2 = list(reversed(encoder2[:-1])) + encoder[:1]
+        default_decoder2 = list(reversed(encoder2[:-1])) + [encoder1[0]]
         decoder2 = make_list(decoder2 or default_decoder2, n=len(encoder2))
 
-        stack = decoder[len(encoder) - 1:]
-        decoder = encoder[-1:] + decoder[:len(encoder2)]
+        stack1 = decoder1[len(encoder1) - 1:]
+        decoder1 = decoder1[:len(encoder1)]
         stack2 = decoder2[len(encoder2):]
-        decoder2 = encoder2[-1:] + decoder2[:len(encoder2)]
+        decoder2 = decoder2[:len(encoder2)]
         activation, final_activation = make_list(activation, 2)
+        kernel_size, final_kernel_size = make_list(kernel_size, 2)
 
         modules = OrderedDict()
 
-        # --- inital feature extraction --------------------------------
+        # --- initial feature extraction --------------------------------
         modules['first'] = Conv(
             dim,
             in_channels=in_channels,
-            out_channels=encoder[0],
+            out_channels=encoder1[0],
             kernel_size=kernel_size,
             activation=activation,
             batch_norm=batch_norm,
@@ -1899,10 +1917,10 @@ class WNet(tnn.Sequential):
 
         # --- first unet -----------------------------------------------
         modules_encoder = []
-        for n in range(len(encoder)-1):
-            cin = encoder[n]
-            cout = encoder[n+1]
-            cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
+        for n in range(len(encoder1) - 1):
+            cin = encoder1[n]
+            cout = encoder1[n + 1]
+            cout = [encoder1[n]] * (conv_per_layer - 1) + [cout]
             modules_encoder.append(EncodingLayer(
                 dim,
                 in_channels=cin,
@@ -1914,9 +1932,9 @@ class WNet(tnn.Sequential):
             ))
         modules['encoder1'] = tnn.ModuleList(modules_encoder)
 
-        cin = decoder[0]
-        cout = decoder[1]
-        cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
+        cin = encoder1[-1]
+        cout = decoder1[0]
+        cout = [encoder1[-1]] * (conv_per_layer - 1) + [cout]
         modules['bottleneck1'] = DecodingLayer(
             dim,
             in_channels=cin,
@@ -1927,14 +1945,12 @@ class WNet(tnn.Sequential):
             batch_norm=batch_norm,
         )
 
-        _, *decoder = decoder
-        *encoder, _ = encoder
-
         modules_decoder = []
-        for n in range(len(decoder)-1):
-            cin = decoder[n] + encoder[-n-1]
-            cout = decoder[n+1]
-            cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
+        *encoder1, bottleneck1 = encoder1
+        for n in range(len(decoder1) - 1):
+            cin = decoder1[n] + encoder1[-n - 1]
+            cout = decoder1[n + 1]
+            cout = [decoder1[n]] * (conv_per_layer - 1) + [cout]
             modules_decoder.append(DecodingLayer(
                 dim,
                 in_channels=cin,
@@ -1949,8 +1965,11 @@ class WNet(tnn.Sequential):
         # --- second unet ----------------------------------------------
         modules_encoder = []
         # first level -> connects first unet
-        cin = modules['decoder1'][-1].out_channels + encoder[0]
-        cout = stack + encoder2[0]
+        cin = decoder1[-1] + encoder1[0]
+        cout = [decoder1[-1]] * (conv_per_layer - 1)
+        for s in stack1:
+            cout += [s] * conv_per_layer
+        cout += [encoder2[0]]
         modules_encoder.append(EncodingLayer(
             dim,
             in_channels=cin,
@@ -1961,9 +1980,10 @@ class WNet(tnn.Sequential):
             batch_norm=batch_norm,
         ))
         # next levels -> skip connections
-        for n in range(1, len(encoder2) - 1):
-            cin = (modules_encoder[-1].out_channels +
-                   (decoder[-n - 1].out_channels if skip else 0))
+        for n in range(len(encoder2) - 1):
+            skip_channels = decoder1[-n-2]
+            in_channels = modules_encoder[-1].out_channels
+            cin = in_channels + (skip_channels if skip else 0)
             cout = encoder2[n + 1]
             cout = [encoder2[n]] * (conv_per_layer - 1) + [cout]
             modules_encoder.append(EncodingLayer(
@@ -1977,10 +1997,9 @@ class WNet(tnn.Sequential):
             ))
         modules['encoder2'] = tnn.ModuleList(modules_encoder)
 
-        cin = (modules['encoder2'][-1].out_channels +
-               modules['encoder1'][-1].out_channels if skip else 0)
-        cout = decoder2[1]
-        cout = [decoder2[0]] * (conv_per_layer - 1) + [cout]
+        cin = encoder2[-1] + (bottleneck1 if skip else 0)
+        cout = decoder2[0]
+        cout = [encoder2[-1]] * (conv_per_layer - 1) + [cout]
         modules['bottleneck2'] = DecodingLayer(
             dim,
             in_channels=cin,
@@ -1991,10 +2010,8 @@ class WNet(tnn.Sequential):
             batch_norm=batch_norm,
         )
 
-        _, *decoder2 = decoder2
-        *encoder2, _ = encoder2
-
         modules_decoder = []
+        *encoder2, bottleneck2 = encoder2
         for n in range(len(decoder2) - 1):
             cin = decoder2[n] + encoder2[-n - 1]
             cout = decoder2[n + 1]
@@ -2008,75 +2025,43 @@ class WNet(tnn.Sequential):
                 activation=activation,
                 batch_norm=batch_norm,
             ))
-        if conv_per_layer > 1:
-            cin = decoder2[-1] + decoder[-1]
-            cout = [decoder[-1]] * (conv_per_layer - 1)
-            modules_decoder.append(StackedConv(
+        modules['decoder2'] = tnn.ModuleList(modules_decoder)
+
+        # stack -> connects
+        cin = decoder2[-1] + (stack1[-1] if stack1 else decoder1[-1])
+        cout = [decoder2[-1]] * (conv_per_layer - 1)
+        for s in stack2:
+            cout += [s] * conv_per_layer
+        if cout:
+            modules['stack2'] = StackedConv(
                 dim,
                 in_channels=cin,
                 out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
                 batch_norm=batch_norm,
-            ))
-            last_decoder = decoder2[-1]
-        else:
-            modules_decoder.append(Cat())
-            last_decoder = decoder2[-1] + decoder[-1]
-        modules['decoder2'] = tnn.ModuleList(modules_decoder)
-
-        if stack2:
-            modules['stack2'] = StackedConv(
-                dim,
-                in_channels=last_decoder,
-                out_channels=stack2,
-                kernel_size=kernel_size,
-                activation=activation,
-                batch_norm=batch_norm)
-            last_stack = stack2[-1]
+            )
+            last_stack = cout[-1]
         else:
             modules['stack2'] = Cat()
-            last_stack = last_decoder
+            last_stack = cin
 
         # --- final layer ----------------------------------------------
         modules['final'] = Conv(
             dim, last_stack, out_channels,
-            kernel_size=kernel_size,
+            kernel_size=final_kernel_size,
             activation=final_activation,
             padding='auto')
 
+        # --- middle output --------------------------------------------
+        if mid_channels:
+            modules['middle'] = Conv(
+                dim, modules['encoder2'][0].out_channels_last, mid_channels,
+                kernel_size=final_kernel_size,
+                activation=final_activation,
+                padding='auto')
+
         super().__init__(modules)
-
-    def forward_skip(self, x):
-
-        x = self.first(x)
-
-        # encoder1
-        buffers = []
-        for d, layer in enumerate(self.encoder):
-            buffer_shape = list(x.shape)
-            buffer_shape[1] = layer.in_channels - buffer_shape[1]
-            buffer = x.new_zeros(buffer_shape)
-            x, buffer = layer(x, buffer, return_last=True)
-            buffers.append(buffer)
-
-        pad = self.get_padding(buffers[-1].shape, x.shape, self.bottleneck)
-        x, buffer = self.bottleneck(x, output_padding=pad, return_last=True)
-        buffers2 = [buffer]
-
-        # decoder1
-        for d, layer in enumerate(self.decoder):
-            buffer = buffers.pop()
-            pad = self.get_padding(buffers[-d - 2].shape, x.shape, layer)
-            x, buffer = layer(x, buffer, output_padding=pad, return_last=True)
-            buffers2.append(buffer)
-
-        # encoder2
-
-
-        x = self.stack(x)
-        x = self.final(x)
-        return x
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
@@ -2086,53 +2071,60 @@ class WNet(tnn.Sequential):
 
     def forward(self, x, **overload):
 
-        nb_iter = overload.get('nb_iter', self.nb_iter)
-        #         if nb_iter == 1:
-        #             return self.forward_once(x)
+        x = self.first(x)
 
-        buffers_encoder = [None] * len(self.encoder)
-        buffers_decoder = [None] * len(self.decoder)
+        # encoder1
+        buffers_encoder = []
+        for layer in self.encoder1:
+            x, buffer = layer(x, return_last=True)
+            buffers_encoder.append(buffer)
 
-        x0 = self.first(x)
-        for n_iter in range(nb_iter):
+        # bottleneck 1
+        pad = self.get_padding(buffers_encoder[-1].shape, x.shape,
+                               self.bottleneck1)
+        x, buffer = self.bottleneck1(x, return_last=True, output_padding=pad)
 
-            x = x0
+        # decoder1
+        buffers_decoder = [buffer] if self.skip else []
+        for layer in self.decoder2:
+            buffer = buffers_encoder.pop()
+            if buffers_encoder:
+                pad = self.get_padding(buffers_encoder[-1].shape,
+                                       x.shape, layer)
+            else:
+                pad = 0
+            x, buffer = layer(x, buffer, return_last=True, output_padding=pad)
+            if self.skip:
+                buffers_decoder.append(buffer)
 
-            # encoder
-            for d, layer in enumerate(self.encoder):
-                buffer = buffers_decoder[-d - 1]
-                if buffer is None:
-                    buffer_shape = list(x.shape)
-                    buffer_shape[1] = layer.in_channels - buffer_shape[1]
-                    buffer = x.new_empty(buffer_shape).normal_(std=1 / 2.355)
-                    buffers_decoder[-d - 1] = buffer
-                x, buffer = layer(x, buffer, return_last=True)
-                if buffers_encoder[d] is None or not self.residual:
-                    buffers_encoder[d] = buffer
-                else:
-                    buffers_encoder[d] = buffers_encoder[d] + buffer
+        # encoder2
+        buffers_decoder = buffers_decoder + buffers_encoder
+        buffers_encoder = []
+        buffer_middle = None
+        for layer in self.encoder2:
+            buffer = [buffers_decoder.pop()] if buffers_decoder else []
+            x, buffer = layer(x, *buffer, return_last=True)
+            if buffer_middle is None and hasattr(self, 'middle'):
+                buffer_middle = self.middle(buffer)
+            buffers_encoder.append(buffer)
 
-            pad = self.get_padding(buffers_encoder[-1].shape, x.shape,
-                                   self.bottleneck)
-            x = self.bottleneck(x, output_padding=pad)
+        # bottleneck 2
+        buffer = [buffers_decoder.pop()] if buffers_decoder else []
+        pad = self.get_padding(buffers_encoder[-1].shape, x.shape,
+                               self.bottleneck2)
+        x = self.bottleneck2(x, *buffer, output_padding=pad)
 
-            # decoder
-            for d, layer in enumerate(self.decoder):
-                buffer = buffers_encoder[-d - 1]
-                if d < len(self.decoder) - 1:
-                    pad = self.get_padding(buffers_encoder[-d - 2].shape,
-                                           x.shape, layer)
-                else:
-                    pad = 0
-                x, buffer = layer(x, buffer, return_last=True,
-                                  output_padding=pad)
-                if buffers_decoder[d] is None or not self.residual:
-                    buffers_decoder[d] = buffer
-                else:
-                    buffers_decoder[d] = buffers_decoder[d] + buffer
+        # decoder2
+        for layer in self.decoder2:
+            buffer = buffers_encoder.pop()
+            if buffers_encoder:
+                pad = self.get_padding(buffers_encoder[-1].shape,
+                                       x.shape, layer)
+            else:
+                pad = 0
+            x = layer(x, buffer, output_padding=pad)
 
-        del x0
-        x = self.stack(x)
+        x = self.stack2(x, *buffers_encoder)
         x = self.final(x)
-        return x
+        return x if buffer_middle is None else x, buffer_middle
 
