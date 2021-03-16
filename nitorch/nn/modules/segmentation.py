@@ -99,7 +99,7 @@ class MeanSpaceNet(Module):
         if implicit:
             output_classes += 1
         # Add tensorboard callback
-        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, implicit=implicit, dim=dim)
+        self.board = lambda tb, *args, **kwargs: self.board_custom(tb, *args, **kwargs, implicit=implicit, dim=dim)
         # Push/pull settings
         interpolation = 'linear'
         bound = 'dct2'  # symmetric
@@ -318,10 +318,13 @@ class MeanSpaceNet(Module):
 
         return grid
 
-    def board_custom(self, dim, tb, inputs, outputs, implicit=False):
+    def board_custom(self, tb, inputs, outputs, *args, **kwargs):
         """Removes affine matrix from inputs before calling board.
         """
-        board(dim, tb, (inputs[0], inputs[2]), outputs, implicit=implicit)
+        ix_ref = inputs[2]
+        image = inputs[0][ix_ref]
+        label = outputs[ix_ref]
+        board(tb, (image, label), *args, **kwargs)
 
     def compose(self, orient_in, deformation, orient_mean, affine=None, orient_out=None, shape_out=None):
         """Composes a deformation defined in a mean space to an image space.
@@ -1046,6 +1049,8 @@ def augment(method, image, label=None, vx=None):
         Augmented ground truth segmentation.
 
     """
+    if method is None:
+        return image, label
     # sanity check
     valid_methods = ['warp-img-img', 'warp-img-lab', 'warp-lab-img',
                   'warp-lab-lab', 'noise-gauss', 'inu']
@@ -1134,22 +1139,23 @@ def warp_label(label, grid):
     dtype_seg = label.dtype
     if dtype_seg not in (torch.half, torch.float, torch.double):
         # hard labels to one-hot labels
-        M = torch.eye(len(label.unique()), device=label.device,
-                      dtype=torch.float32)
-        label = M[label.type(torch.int64)]
-        if ndim == 3:
-            label = label.permute((0, 5, 2, 3, 4, 1))
-        else:
-            label = label.permute((0, 4, 2, 3, 1))
-        label = label.squeeze(-1)
+        n_batch = label.shape[0]
+        u_labels = label.unique()
+        n_labels = len(u_labels)
+        label_w = torch.zeros((n_batch, n_labels, ) + tuple(label.shape[2:]),
+            device=x.device, dtype=torch.float32)
+        for i, l in enumerate(u_labels):
+            label_w[..., i, ...] = label == l
+    else:
+        label_w = label
     # warp
-    label = spatial.grid_pull(label, grid,
+    label_w = spatial.grid_pull(label_w, grid,
         bound='dct2', extrapolate=True, interpolation=1)
     if dtype_seg not in (torch.half, torch.float, torch.double):
         # one-hot labels to hard labels
-        label = label.argmax(dim=1, keepdim=True).type(dtype_seg)
+        label_w = label_w.argmax(dim=1, keepdim=True).type(dtype_seg)
     else:
         # normalise one-hot labels
-        label = label / (label.sum(dim=1, keepdim=True) + eps())
+        label_w = label_w / (label_w.sum(dim=1, keepdim=True) + eps())
 
-    return label
+    return label_w
