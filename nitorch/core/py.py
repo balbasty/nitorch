@@ -175,6 +175,8 @@ def make_list(*args, **kwargs) -> list:
         Input argument(s).
     n : int, optional
         Target length.
+    crop : bool, default=True
+        Crop input sequence if longer than `n`.
     default : optional
         Default value to pad with.
         If not provided, replicate the last value.
@@ -197,6 +199,8 @@ def make_tuple(*args, **kwargs) -> tuple:
         Input argument(s).
     n : int, optional
         Target length.
+    crop : bool, default=True
+        Crop input sequence if longer than `n`.
     default : optional
         Default value to pad with.
         If not provided, replicate the last value.
