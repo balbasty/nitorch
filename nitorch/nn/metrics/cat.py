@@ -261,7 +261,7 @@ class Dice(Metric):
 
         loss = []
         weights = []
-        for label in len(one_hot_map):
+        for label in range(len(one_hot_map)):
             prd1 = predicted == label
             ref1 = reference == label
             inter = math.sum(prd1 * ref1, dim=spatial_dims, dtype=dtype)
