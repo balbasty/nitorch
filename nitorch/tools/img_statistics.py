@@ -134,7 +134,7 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     W = torch.histc(dat, bins=bins).double()
     x = torch.linspace(mn, mx, steps=bins, device=device).double()
 
-    # mn = -1
+    # fit mixture model
     if mn < 0:  # Make GMM model
         model = GMM(num_class=num_class)
     else:  # Make RMM model
