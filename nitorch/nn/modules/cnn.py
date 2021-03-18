@@ -379,9 +379,15 @@ class StackedConv(tnn.ModuleList):
             No residual connection is applied to the output of the last
             layer (strided conv or pool).
 
-        return_last : bool, default=False
+        return_last : {'single', 'cat', 'single+cat'} or bool, default=False
             Return the last output before up/downsampling on top of the
             real output (useful for skip connections).
+
+            'single' and 'cat' are useful when the stacked convolution contains
+            a single strided convolution and takes as input a skipped
+            connection. 'single' only returns the first input argument
+            whereas 'cat' returns all concatenated input arguments.
+            `True` is equivalent to 'single'.
 
         """
         self.dim = dim
@@ -502,7 +508,7 @@ class StackedConv(tnn.ModuleList):
         ----------------
         output_padding : int or sequence[int], optional
         residual : bool, optional
-        return_last : bool, optional
+        return_last : [sequence of] bool or str, optional
 
         Returns
         -------
@@ -523,9 +529,15 @@ class StackedConv(tnn.ModuleList):
         output_padding = overload.get('output_padding', self.output_padding)
         residual = overload.get('residual', self.residual)
         return_last = overload.get('return_last', self.return_last)
+        if not isinstance(return_last, str):
+            return_last = 'single' if return_last else ''
 
-        last = x[0]
+        last = []
+        if 'single' in return_last:
+            last.append(x[0])
         x = torch.cat(x, 1) if len(x) > 1 else x[0]
+        if 'cat' in return_last:
+            last.append(x)
         for layer in self:
             if isinstance(layer, Conv) and layer.transposed:
                 kwargs = dict(output_padding=output_padding)
@@ -536,10 +548,12 @@ class StackedConv(tnn.ModuleList):
                 x = x + layer(x, **kwargs)
             else:
                 x = layer(x, **kwargs)
-            if not is_last(layer):
-                last = x
+            if return_last and not is_last(layer):
+                last = [x]
+                if 'single' in return_last and 'cat' in return_last:
+                    last = last * 2
 
-        return (x, last) if return_last else x
+        return (x, *last) if return_last else x
     
         
 class EncodingLayer(StackedConv):
@@ -1354,7 +1368,22 @@ class Cat(Module):
     
 @nitorchmodule
 class UNet2(tnn.Sequential):
-    """U-Net."""
+    """Alternative U-Net.
+
+    x -*1-> ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~> *1 -> y
+            -*2-> -*1-> ~~~~~~~~~~~~~~~> *1 -> -*2^
+                        -*2-> -*1-> -*2^
+
+    The difference with the `UNet` class are:
+    - There is always at least one non-strided convolution at the top level
+      (at the next levels, there can be only strided conv, like in `UNet`)
+    - There are `len(encoder)` resolution levels and therefore
+      `len(encoder) - 1` strided convolutions (instead of
+      `len(encoder) + 1` levels and `len(encoder)` strided conv in `UNet`).
+    - There is an option to perform multiple "convolution + activation"
+      at each level.
+    - There are a lot less fancy options (groups, stitches, pooling, etc).
+    """
 
     def __init__(
             self,
@@ -1367,8 +1396,7 @@ class UNet2(tnn.Sequential):
             kernel_size=3,
             stride=2,
             activation=tnn.ReLU,
-            batch_norm=False,
-            nb_iter=1):
+            batch_norm=False):
         """
 
         Parameters
@@ -1404,18 +1432,14 @@ class UNet2(tnn.Sequential):
             Batch normalization before each convolution.
         """
         self.dim = dim
-        self.nb_iter = nb_iter
-
-        in_channels = make_list(in_channels)
-        out_channels = make_list(out_channels)
 
         # defaults
         conv_per_layer = max(1, conv_per_layer)
         encoder = list(encoder or [16, 32, 32, 32])
         decoder = make_list(decoder or list(reversed(encoder[:-1])),
-                            n=len(encoder)-1)
+                            n=len(encoder)-1, crop=False)
         stack = decoder[len(encoder)-1:]
-        decoder = encoder[-1:] + decoder[:len(encoder)]
+        decoder = encoder[-1:] + decoder[:len(encoder)-1]
         activation, final_activation = make_list(activation, 2)
 
         modules = []
@@ -1476,36 +1500,27 @@ class UNet2(tnn.Sequential):
                 activation=activation,
                 batch_norm=batch_norm,
             ))
-        if conv_per_layer > 1:
-            cin = decoder[-1] + encoder[0]
-            cout = [decoder[-1]] * (conv_per_layer - 1)
-            modules_decoder.append(StackedConv(
+        dec = tnn.ModuleList(modules_decoder)
+        modules.append(('decoder', dec))
+
+        cin = decoder[-1] + encoder[0]
+        cout = [decoder[-1]] * (conv_per_layer - 1)
+        for s in stack:
+            cout += [s] * conv_per_layer
+        if cout:
+            stk = StackedConv(
                 dim,
                 in_channels=cin,
                 out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
                 batch_norm=batch_norm,
-            ))
-            last_decoder = decoder[-1]
-        else:
-            modules_decoder.append(Cat())
-            last_decoder = decoder[-1] + encoder[0]
-        dec = tnn.ModuleList(modules_decoder)
-        modules.append(('decoder', dec))
-
-        if stack:
-            stk = StackedConv(dim,
-                              in_channels=last_decoder,
-                              out_channels=stack,
-                              kernel_size=kernel_size,
-                              activation=activation,
-                              batch_norm=batch_norm)
+            )
             modules.append(('stack', stk))
-            last_stack = stack[-1]
+            last_stack = cout[-1]
         else:
             modules.append(('stack', Cat()))
-            last_stack = last_decoder
+            last_stack = cin
 
         final = Conv(dim, last_stack, out_channels,
                      kernel_size=kernel_size,
@@ -1515,34 +1530,46 @@ class UNet2(tnn.Sequential):
 
         super().__init__(OrderedDict(modules))
 
-    def forward(self, x):
+    def forward(self, x, return_feat=False):
+        """
+
+        Parameters
+        ----------
+        x : (batch, in_channels, *spatial) tensor
+            Input tensor
+        return_feat : bool, default=False
+            Return the last features before the final convolution.
+
+        Returns
+        -------
+        x : (batch, out_channels, *spatial) tensor
+            Output tensor
+        f : (batch, decoder[-1], *spatial) tensor, if `return_feat`
+            Output features
+
+        """
 
         x = self.first(x)
 
         # encoder
         buffers = []
-        for d, layer in enumerate(self.encoder):
-            buffer_shape = list(x.shape)
-            buffer_shape[1] = layer.in_channels - buffer_shape[1]
-            buffer = x.new_zeros(buffer_shape)
-            x, buffer = layer(x, buffer, return_last=True)
+        for layer in self.encoder:
+            x, buffer = layer(x, return_last=True)
             buffers.append(buffer)
 
         pad = self.get_padding(buffers[-1].shape, x.shape, self.bottleneck)
         x = self.bottleneck(x, output_padding=pad)
 
         # decoder
-        for d, layer in enumerate(self.decoder):
-            buffer = buffers[-d-1]
-            if d < len(self.decoder) - 1:
-                pad = self.get_padding(buffers[-d-2].shape, x.shape, layer)
-            else:
-                pad = 0
+        for layer in self.decoder:
+            buffer = buffers.pop()
+            pad = self.get_padding(buffers[-1].shape, x.shape, layer)
             x = layer(x, buffer, output_padding=pad)
 
-        x = self.stack(x)
+        x = self.stack(x, buffers.pop())
+        f = x if return_feat else None
         x = self.final(x)
-        return x
+        return (x, f) if return_feat else x
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
@@ -1612,7 +1639,7 @@ class UUNet(tnn.Sequential):
         conv_per_layer = max(1, conv_per_layer)
         encoder = list(encoder or [16, 32, 32, 32])
         decoder = make_list(decoder or list(reversed(encoder[:-1])),
-                            n=len(encoder)-1)
+                            n=len(encoder)-1, crop=False)
         stack = decoder[len(encoder)-1:]
         decoder = encoder[-1:] + decoder[:len(encoder)]
         activation, final_activation = make_list(activation, 2)
@@ -1675,36 +1702,27 @@ class UUNet(tnn.Sequential):
                 activation=activation,
                 batch_norm=batch_norm,
             ))
-        if conv_per_layer > 1:
-            cin = decoder[-1] + encoder[0]
-            cout = [decoder[-1]] * (conv_per_layer - 1)
-            modules_decoder.append(StackedConv(
+        dec = tnn.ModuleList(modules_decoder)
+        modules.append(('decoder', dec))
+
+        cin = decoder[-1] + encoder[0]
+        cout = [decoder[-1]] * (conv_per_layer - 1)
+        for s in stack:
+            cout += [s] * conv_per_layer
+        if cout:
+            stk = StackedConv(
                 dim,
                 in_channels=cin,
                 out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
                 batch_norm=batch_norm,
-            ))
-            last_decoder = decoder[-1]
-        else:
-            modules_decoder.append(Cat())
-            last_decoder = decoder[-1] + encoder[0]
-        dec = tnn.ModuleList(modules_decoder)
-        modules.append(('decoder', dec))
-
-        if stack:
-            stk = StackedConv(dim,
-                              in_channels=last_decoder,
-                              out_channels=stack,
-                              kernel_size=kernel_size,
-                              activation=activation,
-                              batch_norm=batch_norm)
+            )
             modules.append(('stack', stk))
-            last_stack = stack[-1]
+            last_stack = cout[-1]
         else:
             modules.append(('stack', Cat()))
-            last_stack = last_decoder
+            last_stack = cin
 
         final = Conv(dim, last_stack, out_channels,
                      kernel_size=kernel_size,
@@ -1731,15 +1749,12 @@ class UUNet(tnn.Sequential):
         x = self.bottleneck(x, output_padding=pad)
 
         # decoder
-        for d, layer in enumerate(self.decoder):
-            buffer = buffers[-d-1]
-            if d < len(self.decoder) - 1:
-                pad = self.get_padding(buffers[-d-2].shape, x.shape, layer)
-            else:
-                pad = 0
+        for layer in self.decoder:
+            buffer = buffers.pop()
+            pad = self.get_padding(buffers[-1].shape, x.shape, layer)
             x = layer(x, buffer, output_padding=pad)
 
-        x = self.stack(x)
+        x = self.stack(x, buffers.pop())
         x = self.final(x)
         return x
 
@@ -1783,18 +1798,20 @@ class UUNet(tnn.Sequential):
             # decoder
             for d, layer in enumerate(self.decoder):
                 buffer = buffers_encoder[-d-1]
-                if d < len(self.decoder) - 1:
-                    pad = self.get_padding(buffers_encoder[-d-2].shape, x.shape, layer)
-                else:
-                    pad = 0
+                pad = self.get_padding(buffers_encoder[-d-2].shape, x.shape, layer)
                 x, buffer = layer(x, buffer, return_last=True, output_padding=pad)
                 if buffers_decoder[d] is None or not self.residual:
                     buffers_decoder[d] = buffer
                 else:
                     buffers_decoder[d] = buffers_decoder[d] + buffer
-        
+
+            x = self.stack(x, buffers_encoder[0])
+            if buffers_decoder[-1] is None or not self.residual:
+                buffers_decoder[-1] = x
+            else:
+                buffers_decoder[-1] = buffers_decoder[-1] + x
+
         del x0
-        x = self.stack(x)
         x = self.final(x)
         return x
 
@@ -1890,18 +1907,22 @@ class WNet(tnn.Sequential):
         default_encoder = [16, 32, 32, 32]
         encoder1 = list(encoder1 or default_encoder)
         default_decoder = list(reversed(encoder1[:-1]))
-        decoder1 = make_list(decoder1 or default_decoder, n=len(encoder1) - 1)
+        decoder1 = make_list(decoder1 or default_decoder, 
+                             n=len(encoder1) - 1, crop=False)
         default_encoder2 = encoder1[1:]
         encoder2 = list(encoder2 or default_encoder2)
         default_decoder2 = list(reversed(encoder2[:-1])) + [encoder1[0]]
-        decoder2 = make_list(decoder2 or default_decoder2, n=len(encoder2))
+        decoder2 = make_list(decoder2 or default_decoder2, 
+                             n=len(encoder2), crop=False)
 
         stack1 = decoder1[len(encoder1) - 1:]
-        decoder1 = decoder1[:len(encoder1)]
+        decoder1 = decoder1[:len(encoder1) - 1]
         stack2 = decoder2[len(encoder2):]
         decoder2 = decoder2[:len(encoder2)]
         activation, final_activation = make_list(activation, 2)
         kernel_size, final_kernel_size = make_list(kernel_size, 2)
+
+        print(encoder1, decoder1, stack1, encoder2, decoder2, stack2)
 
         modules = OrderedDict()
 
@@ -2103,9 +2124,12 @@ class WNet(tnn.Sequential):
         buffer_middle = None
         for layer in self.encoder2:
             buffer = [buffers_decoder.pop()] if buffers_decoder else []
-            x, buffer = layer(x, *buffer, return_last=True)
             if buffer_middle is None and hasattr(self, 'middle'):
-                buffer_middle = self.middle(buffer)
+                x, buffer, inmiddle = layer(x, *buffer, return_last='single+cat')
+                buffer_middle = self.middle(inmiddle)
+                del inmiddle
+            else:
+                x, buffer = layer(x, *buffer, return_last=True)
             buffers_encoder.append(buffer)
 
         # bottleneck 2
@@ -2126,5 +2150,5 @@ class WNet(tnn.Sequential):
 
         x = self.stack2(x, *buffers_encoder)
         x = self.final(x)
-        return x if buffer_middle is None else x, buffer_middle
+        return x if buffer_middle is None else (x, buffer_middle)
 

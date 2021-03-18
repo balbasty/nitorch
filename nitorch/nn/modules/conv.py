@@ -1,15 +1,16 @@
 """Convolution layers."""
 
-import torch
-from torch import nn as tnn
-from .base import nitorchmodule, Module
-from .norm import BatchNorm
-from ..activations import _map_activations
-from nitorch.core.py import make_tuple
-from nitorch.core import py, utils
 from copy import copy
 import math
 import inspect
+import random
+import torch
+from torch import nn as tnn
+from nitorch.core.py import make_tuple
+from nitorch.core import py, utils
+from .base import nitorchmodule, Module
+from .norm import BatchNorm
+from ..activations import _map_activations
 
 # NOTE:
 # My version of Conv allows parameters to be overridden at eval time.
@@ -163,7 +164,6 @@ class SimpleConv(Module):
             post_padding = output_padding
             output_padding = {}
         else:
-            post_pading = 0
             output_padding = {'output_padding': output_padding}
         self._pre_padding = pre_padding
         self._padding_mode = pre_padding_mode
@@ -181,7 +181,8 @@ class SimpleConv(Module):
                           bias=bias,
                           **output_padding)
     
-    def reset_parameters(self, method='kaiming', a=None, dist='uniform'):
+    def reset_parameters(self, method='kaiming', a=None, dist='uniform',
+                         johnshift=True):
         """Initialize the values of the weights and bias
         
         Parameters
@@ -195,6 +196,9 @@ class SimpleConv(Module):
             If method is None, FWHM of the distribution.
         dist : {'uniform', 'normal'}, default='uniform'
             Distribution to sample.
+        johnshift : bool, default=True
+            Each filter has one of its central input weights centered
+            about one instead of zeros, making them close to an identity.
         """
         method = (method or '').lower()
         if method.startswith('k'):
@@ -214,8 +218,28 @@ class SimpleConv(Module):
             fn = lambda x, a: tnn.init.uniform_(x, a=-a/2, b=a/2)
         elif not method and dist.startswith('n'):
             fn = lambda x, a: tnn.init.normal_(x, std=a/2.355)
-            
+        else:
+            raise ValueError(f'Unknown method {method} or dist {dist}.')
+
         fn(self.conv.weight, a=a)
+
+        if johnshift:
+            # we make filters closer to an identity transform by
+            # "opening" a path for each channel (i.e., initializing
+            # a weight with a value close to one, instead of zero).
+            # This trick was found by John Ashburner.
+            with torch.no_grad():
+                center = tuple(k//2 for k in self.conv.weight.shape[2:])
+                center = self.conv.weight[(slice(None), slice(None), *center)]
+                nfilters = min(center.shape[0], center.shape[1])
+                cin = list(range(center.shape[0]))
+                random.shuffle(cin)
+                cin = cin[:nfilters]
+                cout = list(range(center.shape[1]))
+                random.shuffle(cout)
+                cout = cout[:nfilters]
+                center[cin, cout] += 1
+
         if self.bias is not None:
             fan_in, _ = tnn.init._calculate_fan_in_and_fan_out(self.weight)
             bound = 1 / math.sqrt(fan_in)
@@ -590,8 +614,7 @@ class GroupedConv(tnn.ModuleList):
     def padding_mode(self, value):
         for layer in self:
             layer.padding_mode = value
-            
-            
+
     def shape(self, x, **overload):
         """Compute output shape of the equivalent ``forward`` call.
 
@@ -793,6 +816,8 @@ class Conv(Module):
             self.conv.reset_parameters(a=0)
         elif isinstance(activation, tnn.LeakyReLU):
             self.conv.reset_parameters(a=activation.negative_slope)
+        else:
+            self.conv.reset_parameters()
 
     @property
     def weight(self):
