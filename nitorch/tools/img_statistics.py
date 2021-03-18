@@ -123,15 +123,15 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     dat = dat.double()
 
     # Mask and get min/max
-    dat = dat[(dat != 0) & (torch.isfinite(dat))]
     mn = torch.min(dat).round()
+    dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != dat.max())]
     mx = torch.max(dat).round()
-    bins = (mx - mn).int()
+    bins = (mx - mn).round().int()
     if bins < 1024:
         bins = 1024
 
     # Histogram bin data
-    W = torch.histc(dat, bins=bins).double()
+    W = torch.histc(dat, bins=bins, min=mn, max=mx).double()
     x = torch.linspace(mn, mx, steps=bins, device=device).double()
 
     # fit mixture model
