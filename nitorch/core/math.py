@@ -950,7 +950,7 @@ def logm(M):
     return M
 
 
-def besseli(X, order=0, Nk=50):
+def besseli(X, order=0, Nk=64):
     """ Approximates the modified Bessel function of the first kind,
         of either order zero or one.
 
