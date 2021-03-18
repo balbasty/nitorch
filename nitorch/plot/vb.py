@@ -78,7 +78,7 @@ def plot_mixture_fit(X, log_pdf, mu, var, mp, fig_num=1, W=None, title=''):
     plt.figure(fig_num).clear()  # Clear figure
     fig, ax = plt.subplots(num_row, num_col,
                            num=fig_num)  # Make figure and axes
-    fig.show()
+    #fig.show()
     # For each channel, plot the data and the marginal density
     c = 0  # channel counter
     for row in range(num_row):  # Loop over subplot rows
