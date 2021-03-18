@@ -869,7 +869,6 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
     if implicit_in:
         maxval.clamp_min_(0)  # don't forget the class full of zeros
 
-    input -= maxval
     input = (input-maxval).exp()
     sumval = sumto(input, dim=dim, keepdim=True,
                    out=maxval if not lse else None)
