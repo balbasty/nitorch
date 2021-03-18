@@ -11,10 +11,8 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 def _add_rician_noise(dat, noise_prct=0.1):
     """Adds rician noise to a tensor as:
-    dat_rice = dat + n_real + i*n_img, where n_real, n_img ~ N(0, std_rice**2)
-    dat_rice = magnitude(dat_rice)
-
-    OBS: Done using Numpy, as torch only recently got support for complex numbers (1.7)
+    dat = dat + n_real + i*n_img, where n_real, n_img ~ N(0, std**2)
+    dat = magnitude(dat)
 
     Parameters
     ----------
@@ -27,18 +25,14 @@ def _add_rician_noise(dat, noise_prct=0.1):
     ----------
     dat : tensor
         Noisy data
+	std : float
+		Noise standard deviation
 
     """
-    device = dat.device
-    dtype = dat.dtype
-    shape = dat.shape
-    dat_rice = dat.detach().cpu().numpy()
-    std_rice = noise_prct * np.percentile(dat_rice.squeeze(), 99.99)
-    dat_rice = dat_rice + np.random.normal(0, std_rice, shape) + 1j * np.random.normal(0, std_rice, shape)
-    dat_rice = np.absolute(dat_rice)
-    dat_rice = torch.from_numpy(dat_rice).type(dtype).to(device)
+    std = noise_prct * dat.max()
+    dat = ((dat + std*torch.randn_like(dat))**2 + (std*torch.randn_like(dat))**2).sqrt()
 
-    return dat_rice, std_rice
+    return dat, std
 
 
 def denoise_mri(dat_x, lam_scl=4.0, lr=1e1, max_iter=10000, tolerance=1e-8, verbose=True):
