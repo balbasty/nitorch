@@ -7,7 +7,7 @@ from .py import make_list, make_tuple
 from .constants import inf, eps
 from .dtypes import as_torch as dtype_astorch
 from . import dtypes
-from nitorch._C.grid import GridCount  # for hist
+from nitorch._C.grid import GridCount, GridPull
 import numbers
 import os
 import numpy as np
@@ -1504,7 +1504,6 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
     ----------
     x : (..., 2) tensor_like
         Input tensor.
-        Must be broadcastable together.
     n : int or (int, int), default=64
         Number of bins.
     min : float or tensor_like, optional
@@ -1592,6 +1591,109 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
         oshape = [*batch, *n]
     h = h.reshape(oshape)
     return h
+
+
+def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
+    """Compute quantiles.
+
+    Parameters
+    ----------
+    input : tensor_like
+        Input Tensor.
+    q : float or (K,) tensor_like
+        Values in [0, 1]: quantiles to computes
+    dim : [sequence of] int, default=all
+        Dimensions to reduce
+    keepdim : bool, default=False
+        Whether to squeeze reduced dimensions.
+    bins : int, optional
+        Number of histogram bins to use for fast quantile computation.
+        By default: exact (but slow) computation using sorting.
+    out : tensor, optional
+        Output placeholder.
+
+    Returns
+    -------
+    quant : (..., [K]) tensor
+        Quantiles
+
+    """
+    def torch_is_recent():
+        version = torch.__version__.split('.')
+        version = (int(version[0]), int(version[1]))
+        return version[0] > 2 or (version[0] == 1 and version[1] >= 7)
+
+    input, q = to_max_backend(input, q)
+    dim = py.make_list(dim or [])
+    if torch_is_recent() and len(dim) < 2 and not bins:
+        dim = dim[0] if dim else None
+        return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
+
+    # ------------------
+    # our implementation
+    # ------------------
+
+    # reshape as (batch, pool)
+    inshape = input.shape
+    if dim is None:
+        input = input.reshape([1, -1])
+        batch = []
+    else:
+        dim = py.make_list(dim)
+        odim = list(range(-len(dim), 0))
+        input = movedim(input, dim, odim)
+        batch = input.shape[:-len(dim)]
+        pool = input.shape[-len(dim):]
+        input = input.reshape([-1, py.prod(pool)])
+
+    q_scalar = q.dim() == 0
+    q = q.reshape([-1]).clone()
+    if not bins:
+        # sort and sample
+        input, _ = input.sort(-1)
+        q = q.mul_(input.shape[-1]-1)
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
+    else:
+        # compute cumulative histogram
+        min = input.min(-1).values
+        max = input.max(-1).values
+        bin_width = (max-min)/bins
+        hist = histc(input, bins, dim=-1, min=min, max=max)
+        del max, input
+        hist += eps(hist.dtype)  # ensures monotonicity
+        hist = hist.cumsum(-1) / hist.sum(-1, keepdim=True)
+        hist[..., -1] = 1  # avoid rounding errors
+        # compute the distance between discrete quantiles and target quantile
+        hist = hist[:, None, :] - q[None, :, None]
+        # find discrete quantile nearest to target quantile
+        tmp = hist.clone()
+        tmp[tmp < 0] = inf  # approach from below
+        delta1, binq = tmp.min(dim=-1)
+        # compute left weight (this is super ugly)
+        delta0 = hist.neg().gather(-1, (binq-1).clamp_min_(0)[..., None])[..., 0]
+        delta0[binq == 0] = q.expand(delta0.shape)[binq == 0]
+        del hist
+        # compute interpolation weights
+        delta0, delta1 = (delta1/(delta0 + delta1), delta0/(delta0 + delta1))
+        # interpolate value
+        q = min[:, None]
+        q = q + (delta0 * binq + delta1 * (binq + 1)) * bin_width[:, None]
+
+    # reshape
+    if keepdim:
+        oshape = list(inshape)
+        for d in dim:
+            oshape[d] = 1
+        oshape += [q.shape[-1]]
+    else:
+        oshape = [*batch, q.shape[-1]]
+    q = q.reshape(oshape)
+    if q_scalar:
+        q = q.squeeze(-1)
+
+    if out:
+        out.reshape(q.shape).copy_(q)
+    return q
 
 
 class benchmark:
