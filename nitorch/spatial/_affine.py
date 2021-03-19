@@ -2139,9 +2139,9 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
         shape_or_tensor = torch.as_tensor(shape_or_tensor)
         if shape_or_tensor.dim() > 1:
             tensor = shape_or_tensor
-            shape = torch.as_tensor(tensor.shape[-dim:])
+            shape = tensor.shape[-dim:]
         else:
-            shape = shape_or_tensor
+            shape = tuple(shape_or_tensor)
 
     # find current layout and target layout
     #   layouts are (dim, 2) tensors where
@@ -2166,10 +2166,18 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
     current_to_target = current_to_ras[ras_to_target]
 
     # apply permutation and flips
-    mat, shape = affine_permute(mat, current_to_target, shape)
+    if shape:
+        mat, shape = affine_permute(mat, current_to_target, shape)
+    else:
+        mat = affine_permute(mat, current_to_target)
     index = tuple(slice(None, None, -1) if flip else slice(None)
                   for flip in target_flips)
-    mat, _ = affine_sub(mat, shape, index)
+    if shape:
+        mat, _ = affine_sub(mat, shape, index)
+    else:
+        for d, flip in enumerate(target_flips):
+            if flip:
+                mat[:, d].neg_()
 
     if tensor is not None:
         # we need to append stuff to take into account batch dimensions
@@ -2181,10 +2189,10 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
         tensor = tensor[index]
         return mat, tensor
     else:
-        return mat, shape
+        return (mat, tuple(shape)) if shape else mat
 
 
-def affine_mean(mats, shapes):
+def affine_mean(mats, shapes=None):
     """Compute a mean orientation matrix.
 
     Gradient *do not* propagate through this function.
@@ -2193,13 +2201,14 @@ def affine_mean(mats, shapes):
     ----------
     mats : (N, dim+1, dim+1) tensor_like
         Input orientation matrices
-    shapes : (N, dim) tensor_like
+    shapes : (N, dim) tensor_like, optional
         Input shape
 
     Returns
     -------
     mat : (dim+1, dim+1) np.ndarray
         Mean orientation matrix, with an RAS layout
+        If shapes were not provided, translations may not make sense.
 
     """
 
@@ -2217,8 +2226,11 @@ def affine_mean(mats, shapes):
 
     # Convert to (N, D+1, D+1) tensor
     device = utils.max_device(mats, shapes)
-    shapes = torch.as_tensor(shapes, device=device).detach().clone()
     mats = torch.as_tensor(mats, device=device).detach().clone()
+    if shapes is not None:
+        shapes = torch.as_tensor(shapes, device=device).detach().clone()
+    else:
+        shapes = [None] * len(mats)
     dim = mats.shape[-1] - 1
 
     # STEP 1: Reorient to RAS layout
@@ -2231,9 +2243,12 @@ def affine_mean(mats, shapes):
     # We choose RAS as the common layout, as it makes further steps
     # easier and matches the world space orientation.
     for mat, shape in zip(mats, shapes):
-        mat1, shape1 = affine_reorient(mat, shape)
+        if shape:
+            mat1, shape1 = affine_reorient(mat, shape)
+            shape[:] = torch.as_tensor(shape1)
+        else:
+            mat1 = affine_reorient(mat)
         mat[:, :] = torch.as_tensor(mat1)
-        shape[:] = torch.as_tensor(shape1)
 
     # STEP 2: Compute exponential barycentre
     # ------
@@ -2346,6 +2361,55 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     return mat, shape
 
 
+def compute_fov(mat, affines, shapes, pad=0, pad_unit='%'):
+    """Compute the bounding box of spaces when projected in a target space.
+
+    Parameters
+    ----------
+    mat : (D+1, D+1) tensor_like
+        Output orientation matrix (up to a shift)
+    affines : (N, D+1, D+1), tensor_like
+        Input orientation matrices
+    shapes : (N, D) tensor_like[int]
+        Input shapes
+    pad : [sequence of] float, default=0
+        Amount of padding (or cropping) to add to the bounding box.
+    pad_unit : [sequence of] {'mm', '%'}, default='%'
+        Unit of the padding/cropping.
+
+    Returns
+    -------
+    mn : (D,) tensor
+        Minimum coordinates, in voxels (without floor/ceil)
+    mx : (D,) tensor
+        Maximum coordinates, in voxels (without floor/ceil)
+
+    """
+    mat = torch.as_tensor(mat)
+    backend = dict(device=mat.device, dtype=mat.dtype)
+    affines = torch.as_tensor(affines, **backend)
+    shapes = torch.as_tensor(shapes, **backend)
+    dim = mat.shape[-1] - 1
+
+    mn = torch.full([dim], constants.inf, **backend)
+    mx = torch.full([dim], constants.ninf, **backend)
+    for a_mat, a_shape in zip(affines, shapes):
+        corners = itertools.product([False, True], r=dim)
+        corners = [[a_shape[i] if top else 1 for i, top in enumerate(c)] + [1]
+                   for c in corners]
+        corners = torch.as_tensor(corners, **backend).T
+        M = linalg.lmdiv(mat, a_mat)
+        corners = torch.matmul(M[:dim, :], corners)
+        mx = torch.max(mx, torch.max(corners, dim=1)[0])
+        mn = torch.min(mn, torch.min(corners, dim=1)[0])
+    pad = utils.make_vector(pad, dim, **backend)
+    if pad_unit == '%':
+        pad = pad * (mx - mn) / 2.
+    mx = mx + pad
+    mn = mn - pad
+    return mn, mx
+
+
 def fov_max(mat, affines, shapes, pad=0, pad_unit='%'):
     """Return a space (orientation + shape) that englobes all spaces.
 
@@ -2370,27 +2434,14 @@ def fov_max(mat, affines, shapes, pad=0, pad_unit='%'):
     """
     mat = torch.as_tensor(mat)
     backend = dict(device=mat.device, dtype=mat.dtype)
-    affines = torch.as_tensor(affines, **backend)
-    shapes = torch.as_tensor(shapes, **backend)
     dim = mat.shape[-1] - 1
 
-    mn = torch.full([dim], constants.inf, **backend)
-    mx = torch.full([dim], constants.ninf, **backend)
-    for a_mat, a_shape in zip(affines, shapes):
-        corners = itertools.product([False, True], r=dim)
-        corners = [[a_shape[i] if top else 1 for i, top in enumerate(c)] + [1]
-                   for c in corners]
-        corners = torch.as_tensor(corners, **backend).T
-        M = linalg.lmdiv(mat, a_mat)
-        corners = torch.matmul(M[:dim, :], corners)
-        mx = torch.max(mx, torch.max(corners, dim=1)[0])
-        mn = torch.min(mn, torch.min(corners, dim=1)[0])
-    pad = utils.make_vector(pad, dim, **backend)
-    if pad_unit == '%':
-        pad = pad * (mx - mn) / 2.
-    mx = torch.ceil(mx + pad)
-    mn = torch.floor(mn - pad)
-    offset = -(mx - mn)
+    # compute non-integer bounding box
+    mn, mx = compute_fov(mat, affines, shapes, pad=pad, pad_unit=pad_unit)
+
+    # make it integer and adapt orientation matrix
+    mx = torch.ceil(mx)
+    mn = torch.floor(mn)
     shape = (mx - mn + 1).long()
     M = mn - 1
     M = torch.cat((torch.eye(dim, **backend), M[:, None]), dim=1)

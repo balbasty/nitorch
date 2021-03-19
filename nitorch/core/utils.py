@@ -4,9 +4,10 @@ import torch
 import torch.nn.functional as F
 from . import py
 from .py import make_list, make_tuple
-from .constants import inf
+from .constants import inf, eps
 from .dtypes import as_torch as dtype_astorch
 from . import dtypes
+from nitorch._C.grid import GridCount  # for hist
 import numbers
 import os
 import numpy as np
@@ -1401,6 +1402,196 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
     out = ensure_shape(out, [*batch_shape, *shape], side='right')
 
     return out
+
+
+def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
+          order=1, bound='replicate', extrapolate=False, dtype=None):
+    """Batched + differentiable histogram computation
+
+    Parameters
+    ----------
+    x : tensor_like
+        Input tensor.
+    n : int, default=64
+        Number of bins.
+    min : float or tensor_like, optional
+        Left edge of the histogram.
+        Must be broadcastable to the input batch shape.
+    max : float or tensor_like, optional
+        Right edge of the histogram.
+        Must be broadcastable to the input batch shape.
+    dim : [sequence of] int, default=all
+        Dimensions along which to compute the histogram
+    keepdim : bool, default=False
+        Keep singleton dimensions.
+    order : {0..7}, default=1
+        B-spline order encoding the histogram
+    bound : bound_like, default='replicate'
+        Boundary condition (only used when order > 1 or extrapolate is True)
+    extrapolate : bool, default=False
+        If False, discard data points that fall outside of [min, max]
+        If True, use `bound` to assign them to a bin.
+    dtype : torch.dtype, optional
+        Output data type.
+        Default: same as x unless it is not a floating point type, then
+        `torch.get_default_dtype()`
+
+    Returns
+    -------
+    h : (..., n) tensor
+        Count histogram
+
+    """
+    # reshape as [batch, pool]]
+    x = torch.as_tensor(x)
+    if dim is None:
+        x = x.reshape([1, -1])
+        batch = []
+    else:
+        dim = py.make_list(dim)
+        odim = list(range(-len(dim), 0))
+        inshape = x.shape
+        x = movedim(x, dim, odim)
+        batch = x.shape[:-len(dim)]
+        pool = x.shape[-len(dim):]
+        x = x.reshape([-1, py.prod(pool)])
+
+    # compute limits
+    if min is None:
+        min = x.min(dim=-1, keepdim=True).values
+    else:
+        min = torch.as_tensor(min)
+        min = min.expand(batch).reshape([-1, 1])
+    if max is None:
+        max = x.max(dim=-1, keepdim=True).values
+    else:
+        max = torch.as_tensor(max)
+        max = max.expand(batch).reshape([-1, 1])
+
+    # convert intensities to coordinates
+    # (min -> -0.5  // max -> n-0.5)
+    if not dtypes.dtype(x.dtype).is_floating_point:
+        ftype = torch.get_default_dtype()
+        x = x.to(ftype)
+    x = x.clone()
+    x = x.mul_(n / (max - min)).add_(n / (1 - max / min)).sub_(0.5)
+
+    # push data into the histogram
+    if not extrapolate:
+        # hidden feature: tell pullpush to use +/- 0.5 tolerance when
+        # deciding if a coordinate is inbounds.
+        extrapolate = 2
+    h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
+
+    # reshape
+    h = h.to(dtype)
+    if keepdim:
+        oshape = list(inshape)
+        for d in dim:
+            oshape[d] = 1
+        oshape += [n]
+    else:
+        oshape = [*batch, n]
+    h = h.reshape(oshape)
+    return h
+
+
+def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
+           order=1, bound='replicate', extrapolate=False, dtype=None):
+    """Batched + differentiable joint histogram computation
+
+    Parameters
+    ----------
+    x : (..., 2) tensor_like
+        Input tensor.
+        Must be broadcastable together.
+    n : int or (int, int), default=64
+        Number of bins.
+    min : float or tensor_like, optional
+        Left edge of the histogram.
+        Must be broadcastable to (*batch, 2).
+    max : float or tensor_like, optional
+        Right edge of the histogram.
+        Must be broadcastable to (*batch, 2).
+    dim : [sequence of] int, default=all
+        Dimensions along which to compute the histogram
+    keepdim : bool, default=False
+        Keep singleton dimensions.
+    order : {0..7}, default=1
+        B-spline order encoding the histogram
+    bound : bound_like, default='replicate'
+        Boundary condition (only used when order > 1 or extrapolate is True)
+    extrapolate : bool, default=False
+        If False, discard data points that fall outside of [min, max]
+        If True, use `bound` to assign them to a bin.
+    dtype : torch.dtype, optional
+        Output data type.
+        Default: same as x unless it is not a floating point type, then
+        `torch.get_default_dtype()`
+
+    Returns
+    -------
+    h : (..., n) tensor
+        Count histogram
+
+    """
+    n = py.make_list(n, 2)
+
+    # reshape as [batch, pool, 2]]
+    x = torch.as_tensor(x)
+    if dim is None:
+        x = x.reshape([1, -1, 2])
+        batch = []
+    else:
+        dim = py.make_list(dim)
+        if -1 in dim or (x.dim()-1) in dim:
+            raise ValueError('Cannot pool along last dimension')
+        odim = list(range(-len(dim)-1, -1))
+        inshape = x.shape
+        x = movedim(x, dim, odim)
+        batch = x.shape[:-len(dim)-1]
+        pool = x.shape[-len(dim)-1:-1]
+        x = x.reshape([-1, py.prod(pool), 2])
+
+    # compute limits
+    if min is None:
+        min = x.min(dim=-2, keepdim=True).values
+    else:
+        min = torch.as_tensor(min)
+        min = min.expand([*batch, 2]).reshape([-1, 1, 2])
+    if max is None:
+        max = x.max(dim=-2, keepdim=True).values
+    else:
+        max = torch.as_tensor(max)
+        max = max.expand([*batch, 2]).reshape([-1, 1, 2])
+
+    # convert intensities to coordinates
+    # (min -> -0.5  // max -> n-0.5)
+    if not dtypes.dtype(x.dtype).is_floating_point:
+        ftype = torch.get_default_dtype()
+        x = x.to(ftype)
+    x = x.clone()
+    nn = torch.as_tensor(n, dtype=x.dtype, device=x.device)
+    x = x.mul_(nn / (max - min)).add_(nn / (1 - max / min)).sub_(0.5)
+
+    # push data into the histogram
+    if not extrapolate:
+        # hidden feature: tell pullpush to use +/- 0.5 tolerance when
+        # deciding if a coordinate is inbounds.
+        extrapolate = 2
+    h = GridCount.apply(x[:, None], n, order, bound, extrapolate)[:, 0]
+
+    # reshape
+    h = h.to(dtype)
+    if keepdim:
+        oshape = list(inshape)
+        for d in dim:
+            oshape[d] = 1
+        oshape += n
+    else:
+        oshape = [*batch, *n]
+    h = h.reshape(oshape)
+    return h
 
 
 class benchmark:

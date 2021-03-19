@@ -76,7 +76,7 @@ namespace ni {
 Tensor grid_pull(const Tensor& input, const Tensor& grid,
                  const std::vector<BoundType> & bound_mode, 
                  const std::vector<InterpolationType> & interpolation_mode, 
-                 bool extrapolate)  {
+                 int extrapolate)  {
 
   PUSHPULL_CHECK_DEFINED(input)
   PUSHPULL_CHECK_DEFINED(grid)
@@ -108,7 +108,7 @@ std::deque<Tensor>
 grid_pull_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
                    const std::vector<BoundType> & bound_mode, 
                    const std::vector<InterpolationType> & interpolation_mode, 
-                   bool extrapolate)
+                   int extrapolate)
 {
   if (input.is_cuda()) {
     return cudapushpull(input, grid, grad,
@@ -130,7 +130,7 @@ Tensor grid_push(const Tensor& input, const Tensor& grid,
                  IntArrayRef source_size,
                  const std::vector<BoundType> & bound_mode, 
                  const std::vector<InterpolationType> & interpolation_mode, 
-                 bool extrapolate) {
+                 int extrapolate) {
 
   PUSHPULL_CHECK_DEFINED(input)
   PUSHPULL_CHECK_DEFINED(grid)
@@ -182,7 +182,7 @@ std::deque<Tensor>
 grid_push_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
                    const std::vector<BoundType> & bound_mode, 
                    const std::vector<InterpolationType> & interpolation_mode, 
-                   bool extrapolate)
+                   int extrapolate)
 {
   if (input.is_cuda()) {
     return cudapushpull(grad, grid, input,
@@ -202,7 +202,7 @@ Tensor grid_count(const Tensor& grid,
                  IntArrayRef source_size,
                  const std::vector<BoundType> & bound_mode, 
                  const std::vector<InterpolationType> & interpolation_mode, 
-                 bool extrapolate) {
+                 int extrapolate) {
 
   PUSHPULL_CHECK_DEFINED(grid)
   auto grid_opt  = grid.options();
@@ -246,7 +246,7 @@ Tensor
 grid_count_backward(const Tensor& grad, const Tensor& grid,
                     const std::vector<BoundType> & bound_mode, 
                     const std::vector<InterpolationType> & interpolation_mode, 
-                    bool extrapolate)
+                    int extrapolate)
 {
   if (grid.is_cuda()) {
     return cudapushpull(grad, grid,
@@ -264,7 +264,7 @@ grid_count_backward(const Tensor& grad, const Tensor& grid,
 Tensor grid_grad(const Tensor& input, const Tensor& grid,
                  const std::vector<BoundType> & bound_mode, 
                  const std::vector<InterpolationType> & interpolation_mode, 
-                 bool extrapolate)  {
+                 int extrapolate)  {
 
   PUSHPULL_CHECK_DEFINED(input)
   PUSHPULL_CHECK_DEFINED(grid)
@@ -296,7 +296,7 @@ std::deque<Tensor>
 grid_grad_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
                    const std::vector<BoundType> & bound_mode, 
                    const std::vector<InterpolationType> & interpolation_mode, 
-                   bool extrapolate)
+                   int extrapolate)
 {
   if (input.is_cuda()) {
     return cudapushpull(input, grid, grad,
