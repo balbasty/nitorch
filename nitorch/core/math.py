@@ -81,7 +81,7 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
 
     # compute shapes
     scalar_dim = torch.as_tensor(dim).dim() == 0
-    dim = [d if d > 0 else input.dim() - d for d in py.make_list(dim)]
+    dim = [d if d > 0 else input.dim() + d for d in py.make_list(dim)]
     shape = input.shape
     subshape = [s for d, s in enumerate(shape) if d not in dim]
     keptshape = [s if d not in dim else 1 for d, s in enumerate(shape)]
