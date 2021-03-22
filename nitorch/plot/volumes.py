@@ -408,7 +408,7 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
     if fig is None or isinstance(fig, int):
         fig = plt.figure(fig)
     if isinstance(fig, plt.Figure):
-        if grid is None:
+        if gs is None:
             gs = gridspec.GridSpec(*grid, **grid_prm)
         else:
             gs = gridspec.GridSpecFromSubplotSpec(*grid, **grid_prm,
