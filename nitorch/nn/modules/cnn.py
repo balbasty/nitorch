@@ -642,7 +642,7 @@ class DecodingLayer(StackedConv):
 
 
 @nitorchmodule
-class Encoder(tnn.ModuleList):
+class Encoder(tnn.Sequential):
     """Encoder network (for U-nets, VAEs, etc.).
 
     Notes
