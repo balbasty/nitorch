@@ -66,7 +66,6 @@ class Reduction(Module):
             step = dim.step if dim.step is not None else 1
             dim = list(range(start, stop, step))
 
-        print(reduction)
         return reduction(x, dim, keepdim=keepdim, omitnan=omitnan)
 
 
