@@ -12,6 +12,9 @@ plt = try_import('matplotlib.pyplot', _as=True)
 gridspec = try_import('matplotlib.gridspec', _as=True)
 
 
+__all__ = ['ImageViewer']
+
+
 def ordered_set(*values):
     return tuple({v: None for v in values}.keys())
 
