@@ -194,8 +194,75 @@ class ImageArtist:
 
 
 class ImageViewer:
+    """Interactive viewer for volumetric images.
+
+    Attributes
+    ----------
+    auto_redraw : bool, default=False
+        Automatically update the viewer when an attribute changes.
+    dpi : int, default=72
+        Resolution of the viewer (pixels per inch)
+    size : (width: float, height: float),
+        Size of the figure
+    aspect : float
+        Width/Height
+    fig : int or plt.Figure
+        Figure object
+    images : tuple[str or (tensor, tensor) or ImageArtist]
+        List of filenames or (data, affine).
+        At assignment, they are converted to ImageArtist objects.
+    grid : (nrow: int or None, ncol: int or None) or None, default=None
+        Grid shape used to display images.
+        If None, an optimal shape is found based on the figure size,
+        image layout and number of images.
+    space : (4, 4) tensor
+        Orientation matrix of the visualisation space.
+        By default, stadard RAS space
+    index : tuple[float]
+        Cursor position in millimetric visualisation space.
+    fov : (min: tuple[float], max: tuple[float])
+        Minimum and maximum coordinates of the field of view in
+        millimetric visualisation space.
+        If None, use the maximum bounding box of all images.
+    fov_size : float or tuple[float]
+        Size of the field of view.
+        If None, use the maximum bounding box of all images.
+        After assignment, the center of th eFOv is the current
+        cursor position.
+    layout : {'row', 'col', 'orth'}, default='orth'
+        Layout of the three views.
+    show_cursor : bool, default=True
+        Show cross-hair.
+    equalize : float or {'lin', 'quad', 'log'}, default=None
+        Histogram equalization method.
+    interpolation : int, default=1
+        Interpolation order.
+    colormap : str or (N, 3) tensor
+        Mapping from intensity to color.
+    mmap : bool, default=False
+        If True, do not keep the full images in memory but reload
+        them each time the figure is redrawn. Slower but saves memory.
+    scroll_step : float, default=100
+        Amount of zoom corresponding to one scroll unit.
+    draw_freq : float, default=1/25
+        Minimum amount of time, in sec, between two calls to `redraw`.
+        If `redraw` is called more than twice within `draw_freq` sec, only
+        the first call is executed.
+
+    """
 
     def __init__(self, images, **kwargs):
+        """
+
+        Parameters
+        ----------
+        images : list[str or (tensor, tensor)]
+            Inputs images.
+
+        Other Parameters
+        ----------------
+        All attributes can be set on build.
+        """
 
         if plt is None:
             raise ImportError('Matplotlib not available')
