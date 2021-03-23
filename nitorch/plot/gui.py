@@ -102,7 +102,7 @@ class ImageArtist:
 
     def load(self):
         if self.fdata is None and self.map is not None:
-            self._fdata = self.map.fdata()
+            self._fdata = self.map.fdata(device=self.device)
         return self.fdata
 
     def clear(self):
@@ -118,6 +118,18 @@ class ImageArtist:
         self._mmap = bool(value)
         if self.mmap and self._fdata is not None:
             self._fdata = None
+
+    @property
+    def device(self):
+        return getattr(self, '_device', None)
+
+    @device.setter
+    def device(self, value):
+        if isinstance(value, int):
+            value = f'cuda:{value}'
+        self._device = torch.device(value)
+        if self._fdata is not None:
+            self._fdata = self._fdata.to(self.device)
 
     def set_show_cursor(self, value, all=False):
         self.show_cursor = value
@@ -153,6 +165,11 @@ class ImageArtist:
         self.layout = value
         if all:
             self.propagate('layout')
+
+    def set_device(self, value, all=False):
+        self.device = value
+        if all:
+            self.propagate('device')
 
     def propagate(self, key):
         for image in getattr(self.parent, 'images', []):
@@ -190,7 +207,6 @@ class ImageViewer:
         if isinstance(fig, int):
             fig = plt.figure(fig)
         self.fig = fig
-        self.fig.show()
 
         self.images = images
         self.grid = kwargs.pop('grid', None)
@@ -208,6 +224,12 @@ class ImageViewer:
         fig.canvas.mpl_connect('scroll_event', self.on_scroll)
         fig.canvas.mpl_connect('resize_event', self.on_resize)
         self.redraw(show=True)
+
+    def __setattr__(self, key, value):
+        do_redraw = key[0] != '_' and self.auto_redraw
+        super().__setattr__(key, value)
+        if do_redraw:
+            self.redraw()
 
     def _image_from_ax(self, ax):
         for image in self.images:
@@ -244,15 +266,31 @@ class ImageViewer:
         self.redraw(show=True)
 
     def on_scroll(self, event):
+        auto, self.auto_redraw = (self.auto_redraw, False)
+        index0 = self.index
+        if event.inaxes:
+            x, y = (event.xdata, event.ydata)
+            image, n_ax = self._image_from_ax(event.inaxes)
+            if image:
+                self._index_from_cursor(x, y, image, n_ax)
         steps = event.step
-        step_size = self.scroll_step ** abs(steps)
-        fov_size = self.fov_size
-        if steps > 0:
-            fov_size = [f/step_size for f in fov_size]
-        else:
-            fov_size = [f*step_size for f in fov_size]
-        self.fov_size = fov_size
+        step_size = self.scroll_step ** (-steps)
+        min, max = self.fov
+        new_min = [i - step_size * (i - mn0) for i, mn0 in zip(self.index, min)]
+        new_max = [mn + step_size * (mx0 - mn0)
+                   for i, mn, mn0, mx0 in zip(self.index, new_min, min, max)]
+        self.fov = (new_min, new_max)
+        self.index = index0
         self.redraw(show=True)
+        self.auto_redraw = auto
+
+    @property
+    def auto_redraw(self):
+        return getattr(self, '_auto_redraw', False)
+
+    @auto_redraw.setter
+    def auto_redraw(self, value):
+        self._auto_redraw = bool(value)
 
     @property
     def dpi(self):
@@ -331,6 +369,16 @@ class ImageViewer:
     def mmap(self, value):
         for image in self.images:
             image.mmap = bool(value)
+
+    @property
+    def device(self):
+        device = [image.device for image in self.images]
+        return ordered_set(*device)[0]
+
+    @device.setter
+    def device(self, value):
+        for image in self.images:
+            image.device = value
 
     @property
     def layout(self):

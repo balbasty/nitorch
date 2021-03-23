@@ -370,6 +370,7 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
         return
 
     # get slices
+    image = image.detach()
     slices, index, mat = get_orthogonal_oriented_slices(
         image, index=index, affine=affine, interpolation=interpolation,
         return_index=True, return_mat=True,
@@ -406,9 +407,9 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
             [2, 2])
     grid_prm = {}
     if layout.startswith('row'):
-        grid_prm['width_ratios'] = [1/size[0], 1/size[1], 1/size[2]]
+        grid_prm['width_ratios'] = [1/size[0], 1/size[1], size[2]]
     elif layout.startswith('col'):
-        grid_prm['height_ratios'] = [size[0], size[1], size[2]]
+        grid_prm['height_ratios'] = [size[0], size[1], 1/size[2]]
     elif layout.startswith('orth'):
         grid_prm['width_ratios'] = [1/size[0], size[2]]
         grid_prm['height_ratios'] = [size[0], size[1]]
@@ -440,29 +441,29 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
     if layout.startswith('ort'):
         # orthogonal views
         ax = [ax[0], ax[2], ax[1]]
-        ax[0].imshow(transpose(slices[0]), aspect=vx[1]/vx[0], origin='lower')
+        ax[0].imshow(transpose(slices[0]).cpu(), aspect=vx[1]/vx[0], origin='lower')
         ax[0].set_axis_off()
         if show_cursor:
             show_curs(ax[0], index[0], show_cursor)
-        ax[1].imshow(transpose(slices[1]), aspect=vx[2]/vx[0], origin='lower')
+        ax[1].imshow(transpose(slices[1]).cpu(), aspect=vx[2]/vx[0], origin='lower')
         ax[1].set_axis_off()
         if show_cursor:
             show_curs(ax[1], index[1], show_cursor)
-        ax[2].imshow(transpose(slices[2]), aspect=vx[2]/vx[1], origin='lower')
+        ax[2].imshow(transpose(slices[2]).cpu(), aspect=vx[2]/vx[1], origin='lower')
         ax[2].set_axis_off()
         if show_cursor:
             show_curs(ax[2], index[2], show_cursor)
     else:
         # aligned row or col views
-        ax[0].imshow(transpose(slices[0]), aspect=vx[1]/vx[0], origin='lower')
+        ax[0].imshow(transpose(slices[0]).cpu(), aspect=vx[1]/vx[0], origin='lower')
         ax[0].set_axis_off()
         if show_cursor:
             show_curs(ax[0], index[0], show_cursor)
-        ax[1].imshow(transpose(slices[1]), aspect=vx[2]/vx[0], origin='lower')
+        ax[1].imshow(transpose(slices[1]).cpu(), aspect=vx[2]/vx[0], origin='lower')
         ax[1].set_axis_off()
         if show_cursor:
             show_curs(ax[1], index[1], show_cursor)
-        ax[2].imshow(transpose(slices[2]), aspect=vx[1]/vx[2], origin='lower')
+        ax[2].imshow(transpose(slices[2]).cpu(), aspect=vx[1]/vx[2], origin='lower')
         ax[2].set_axis_off()
         if show_cursor:
             show_curs(ax[2], index[2], show_cursor)
