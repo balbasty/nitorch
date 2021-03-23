@@ -137,7 +137,8 @@ def _get_default_space(affines, shapes, space=None, bbox=None):
 
 def get_oriented_slice(image, dim=-1, index=None, affine=None,
                        space=None, bbox=None, interpolation=1,
-                       orientation='neuro', return_index=False):
+                       transpose_sagittal=False, return_index=False,
+                       return_mat=False):
     """Sample a slice in a RAS system
 
     Parameters
@@ -158,11 +159,6 @@ def get_oriented_slice(image, dim=-1, index=None, affine=None,
         visualisation space). Default: bounding box of the input image.
     interpolation : {0, 1}, default=1
         Interpolation order.
-    orientation : {'anat', 'neuro'}, default='neuro'
-        Left-right orientation:
-            'neuro': left of image is left of brain (seen from top/behind)
-            'anat': left of image is right of brain (seen from below/front)
-        Not used if `dim=-3`.
 
     Returns
     -------
@@ -216,7 +212,7 @@ def get_oriented_slice(image, dim=-1, index=None, affine=None,
         index = (index[0] - mn[0] + 1, index[2] - mn[2] + 1)
     elif dim == -3:
         # sagittal
-        if orientation[0] == 'n':
+        if not transpose_sagittal:
             shift = [[0, 0, 1, - mn[2] + 1],
                      [0, 1, 0, - mn[1] + 1],
                      [1, 0, 0, - index[0]],
@@ -225,7 +221,7 @@ def get_oriented_slice(image, dim=-1, index=None, affine=None,
             shape = (shape[2], shape[1])
             index = (index[2] - mn[2] + 1, index[1] - mn[1] + 1)
         else:
-            shift = [[0, -1, 0, + mx[1] + 1],
+            shift = [[0, -1, 0,   mx[1] + 1],
                      [0,  0, 1, - mn[2] + 1],
                      [1,  0, 0, - index[0]],
                      [0,  0, 0, 1]]
@@ -236,8 +232,8 @@ def get_oriented_slice(image, dim=-1, index=None, affine=None,
         raise ValueError(f'Unknown dimension {dim}')
 
     # sample
+    space = spatial.affine_rmdiv(space, shift)
     affine = spatial.affine_lmdiv(affine, space)
-    affine = spatial.affine_rmdiv(affine, shift)
     affine = affine.to(**backend)
     grid = spatial.affine_grid(affine, [*shape, 1])
     *channel, s0, s1, s2 = image.shape
@@ -246,12 +242,15 @@ def get_oriented_slice(image, dim=-1, index=None, affine=None,
     image = spatial.grid_pull(image, grid[None], interpolation=interpolation,
                               bound='dct2', extrapolate=False)
     image = image.reshape([*channel, *shape])
-    return (image, index) if return_index else image
+    return ((image, index, space) if return_index and return_mat else
+            (image, index) if return_index else
+            (image, space) if return_mat else image)
 
 
 def get_orthogonal_oriented_slices(image, index=None, affine=None,
                                    space=None, bbox=None, interpolation=1,
-                                   orientation='neuro', return_index=False):
+                                   transpose_sagittal=False, return_index=False,
+                                   return_mat=False):
     """Sample orthogonal slices in a RAS system
 
     Parameters
@@ -270,11 +269,6 @@ def get_orthogonal_oriented_slices(image, index=None, affine=None,
         visualisation space). Default: bounding box of the input image.
     interpolation : {0, 1}, default=1
         Interpolation order.
-    orientation : {'anat', 'neuro'}, default='neuro'
-        Left-right orientation:
-            'neuro': left of image is left of brain (seen from top/behind)
-            'anat': left of image is right of brain (seen from below/front)
-        Not used if `dim=-3`.
 
     Returns
     -------
@@ -295,19 +289,32 @@ def get_orthogonal_oriented_slices(image, index=None, affine=None,
     mn *= voxel_size
     mx *= voxel_size
 
-    prm = dict(index=index, affine=affine, space=space,
-               bbox=[mn, mx], interpolation=interpolation,
-               orientation=orientation, return_index=return_index)
+    prm = {
+        'index': index,
+        'affine': affine,
+        'space': space,
+        'bbox': [mn, mx],
+        'interpolation': interpolation,
+        'transpose_sagittal': transpose_sagittal,
+        'return_index': return_index,
+        'return_mat': return_mat
+    }
     slices = tuple(get_oriented_slice(image, dim=d, **prm) for d in (-1, -2, -3))
-    if return_index:
-        return tuple(sl[0] for sl in slices), tuple(sl[1] for sl in slices)
+    if return_index and return_mat:
+        return (tuple(sl[0] for sl in slices),
+                tuple(sl[1] for sl in slices),
+                tuple(sl[2] for sl in slices))
+    elif return_index or return_mat:
+        return (tuple(sl[0] for sl in slices),
+                tuple(sl[1] for sl in slices))
     else:
         return slices
 
 
 def show_orthogonal_slices(image, index=None, affine=None, fig=None,
                            colormap=None, layout='row', mode='intensity',
-                           interpolation=1, eq=None, show_cursor=False):
+                           interpolation=1, eq=None, show_cursor=False,
+                           return_mat=False, **kwargs):
     """Show three orthogonal slices
 
     Parameters
@@ -340,6 +347,8 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
     Returns
     -------
     fig : plt.Figure
+    ax : list[plt.Axes]
+    mats : list[tensor], optional
 
     """
     def transpose(x):
@@ -360,9 +369,13 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
     if not plt:
         return
 
-    slices, index = get_orthogonal_oriented_slices(
+    # get slices
+    slices, index, mat = get_orthogonal_oriented_slices(
         image, index=index, affine=affine, interpolation=interpolation,
-        return_index=True)
+        return_index=True, return_mat=True,
+        transpose_sagittal=not layout.startswith('orth'), **kwargs)
+
+    # process intensities
     if mode == 'intensity':
         slices = cmap.intensity_preproc(*slices, eq=eq)
         slices = [cmap.intensity_to_rgb(slice, min=0, max=1, colormap=colormap)
@@ -401,7 +414,7 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
         grid_prm['height_ratios'] = [size[0], size[1]]
 
     if (isinstance(fig, (list, tuple)) and
-            (isinstance(fig[0], plt.Figure) or isinstance(fig, int))):
+            isinstance(fig[0], (plt.Figure, int, type(None)))):
         fig, gs = fig
     else:
         gs = None
@@ -426,18 +439,19 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
 
     if layout.startswith('ort'):
         # orthogonal views
+        ax = [ax[0], ax[2], ax[1]]
         ax[0].imshow(transpose(slices[0]), aspect=vx[1]/vx[0], origin='lower')
         ax[0].set_axis_off()
         if show_cursor:
             show_curs(ax[0], index[0], show_cursor)
-        ax[1].imshow(transpose(slices[2]), aspect=vx[2]/vx[1], origin='lower')
+        ax[1].imshow(transpose(slices[1]), aspect=vx[2]/vx[0], origin='lower')
         ax[1].set_axis_off()
         if show_cursor:
-            show_curs(ax[1], index[2], show_cursor)
-        ax[2].imshow(transpose(slices[1]), aspect=vx[2]/vx[0], origin='lower')
+            show_curs(ax[1], index[1], show_cursor)
+        ax[2].imshow(transpose(slices[2]), aspect=vx[2]/vx[1], origin='lower')
         ax[2].set_axis_off()
         if show_cursor:
-            show_curs(ax[2], index[1], show_cursor)
+            show_curs(ax[2], index[2], show_cursor)
     else:
         # aligned row or col views
         ax[0].imshow(transpose(slices[0]), aspect=vx[1]/vx[0], origin='lower')
@@ -448,13 +462,14 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
         ax[1].set_axis_off()
         if show_cursor:
             show_curs(ax[1], index[1], show_cursor)
-        ax[2].imshow(slices[2], aspect=vx[1]/vx[2], origin='lower')
+        ax[2].imshow(transpose(slices[2]), aspect=vx[1]/vx[2], origin='lower')
         ax[2].set_axis_off()
         if show_cursor:
-            show_curs(ax[2], index[2][::-1], show_cursor)
+            show_curs(ax[2], index[2], show_cursor)
     fig.tight_layout()
     fig.show()
-    return fig
+
+    return (fig, ax, mat) if return_mat else (fig, ax)
 
 
 def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
