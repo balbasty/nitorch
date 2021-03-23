@@ -778,7 +778,7 @@ class Encoder(tnn.Sequential):
             # layer are grouped. However, I only stitch once 
             # (at the end of the encoding layer)
 
-        super().__init__(modules)
+        super().__init__(*modules)
 
                                
 @nitorchmodule
