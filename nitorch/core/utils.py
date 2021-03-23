@@ -278,9 +278,11 @@ def movedim(input, source, destination):
     source = [dim + src if src < 0 else src for src in source]
     destination = [dim + dst if dst < 0 else dst for dst in destination]
     if len(set(source)) != len(source):
-        raise ValueError('Expected source positions to be unique')
+        raise ValueError(f'Expected source positions to be unique but got '
+                         f'{source}')
     if len(set(destination)) != len(destination):
-        raise ValueError('Expected destination positions to be unique')
+        raise ValueError(f'Expected destination positions to be unique but got '
+                         f'{destination}')
 
     # compute permutation
     positions_in = list(range(dim))
@@ -1593,6 +1595,43 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
     return h
 
 
+def _hist_to_quantile(hist, q):
+    """Compute quantiles from a cumulative histogram.
+
+    Parameters
+    ----------
+    hist : (B, K) tensor
+        Strictly monotonic cumulative histogram.
+        B = batch size, K = number of bins
+    q : (Q,) tensor
+        Quantiles to compute.
+        Q = number of quantiles.
+
+    Returns
+    -------
+    values : (B, Q) tensor
+        Quantile values, expressed in bins.
+        They can be converted to values by `vmin + values * bin_width`.
+
+    """
+    hist, q = to_max_backend(hist, q, force_float=True)
+    # compute the distance between discrete quantiles and target quantile
+    hist = hist[:, None, :] - q[None, :, None]
+    # find discrete quantile nearest to target quantile
+    tmp = hist.clone()
+    tmp[tmp < 0] = inf  # approach from below
+    delta1, binq = tmp.min(dim=-1)
+    # compute left weight (this is super ugly)
+    delta0 = hist.neg().gather(-1, (binq - 1).clamp_min_(0)[..., None])[..., 0]
+    delta0[binq == 0] = q.expand(delta0.shape)[binq == 0]
+    del hist
+    # compute interpolation weights
+    delta0, delta1 = (delta1 / (delta0 + delta1), delta0 / (delta0 + delta1))
+    # interpolate value
+    q = delta0 * binq + delta1 * (binq + 1)
+    return q
+
+
 def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
     """Compute quantiles.
 
@@ -1663,21 +1702,9 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
         hist += eps(hist.dtype)  # ensures monotonicity
         hist = hist.cumsum(-1) / hist.sum(-1, keepdim=True)
         hist[..., -1] = 1  # avoid rounding errors
-        # compute the distance between discrete quantiles and target quantile
-        hist = hist[:, None, :] - q[None, :, None]
-        # find discrete quantile nearest to target quantile
-        tmp = hist.clone()
-        tmp[tmp < 0] = inf  # approach from below
-        delta1, binq = tmp.min(dim=-1)
-        # compute left weight (this is super ugly)
-        delta0 = hist.neg().gather(-1, (binq-1).clamp_min_(0)[..., None])[..., 0]
-        delta0[binq == 0] = q.expand(delta0.shape)[binq == 0]
-        del hist
-        # compute interpolation weights
-        delta0, delta1 = (delta1/(delta0 + delta1), delta0/(delta0 + delta1))
-        # interpolate value
-        q = min[:, None]
-        q = q + (delta0 * binq + delta1 * (binq + 1)) * bin_width[:, None]
+        # interpolate quantile value
+        q = _hist_to_quantile(hist, q)
+        q = min[:, None] + q * bin_width[:, None]
 
     # reshape
     if keepdim:
