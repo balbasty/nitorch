@@ -48,7 +48,7 @@ _doc_bound = \
     """
 
 
-def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=True):
+def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=False):
     """Sample an image with respect to a deformation field.
 
     Notes
@@ -73,7 +73,7 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
         Interpolation order.
     bound : BoundType or sequence[BoundType], default='zero'
         Boundary conditions.
-    extrapolate : bool, default=True
+    extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
 
     Returns
@@ -106,7 +106,7 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
 
 
 def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
-              extrapolate=True):
+              extrapolate=False):
     """Splat an image with respect to a deformation field (pull adjoint).
 
     Notes
@@ -127,7 +127,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
         Interpolation order.
     bound : BoundType, or sequence[BoundType], default='zero'
         Boundary conditions.
-    extrapolate : bool, default=True
+    extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
 
     Returns
@@ -153,7 +153,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
 
 
 def grid_count(grid, shape=None, interpolation='linear', bound='zero',
-               extrapolate=True):
+               extrapolate=False):
     """Splatting weights with respect to a deformation field (pull adjoint).
 
     Notes
@@ -172,7 +172,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
         Interpolation order.
     bound : BoundType, or sequence[BoundType], default='zero'
         Boundary conditions.
-    extrapolate : bool, default=True
+    extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
 
     Returns
@@ -187,7 +187,8 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
     return GridCount.apply(grid, shape, interpolation, bound, extrapolate)
 
 
-def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=True):
+def grid_grad(input, grid, interpolation='linear', bound='zero',
+              extrapolate=False):
     """Sample spatial gradients of an image with respect to a deformation field.
     
     Notes
@@ -208,7 +209,7 @@ def grid_grad(input, grid, interpolation='linear', bound='zero', extrapolate=Tru
         Interpolation order.
     bound : BoundType, or sequence[BoundType], default='zero'
         Boundary conditions.
-    extrapolate : bool, default=True
+    extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
 
     Returns
