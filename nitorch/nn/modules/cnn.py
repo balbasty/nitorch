@@ -489,12 +489,12 @@ class StackedConv(tnn.ModuleList):
             if isinstance(layer, Conv):
                 return layer.in_channels
 
-    def shape(self, x):
+    def shape(self, x, **k):
         if torch.is_tensor(x):
             x = tuple(x.shape)
-        for layer in reversed(self):
+        for layer in self:
             if isinstance(layer, (Conv, Pool)):
-                x = layer.shape(x)
+                x = layer.shape(x, **k)
         return x
     
     def forward(self, *x, **overload):
@@ -1576,7 +1576,7 @@ class UNet2(tnn.Sequential):
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
-        shape = layer.shape(inshape)[2:]
+        shape = layer.shape(inshape, output_padding=0)[2:]
         padding = [o - i for o, i in zip(outshape, shape)]
         return padding
 
@@ -1763,7 +1763,7 @@ class UUNet(tnn.Sequential):
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
-        shape = layer.shape(inshape)[2:]
+        shape = layer.shape(inshape, output_padding=0)[2:]
         padding = [o - i for o, i in zip(outshape, shape)]
         return padding
 
@@ -2087,7 +2087,7 @@ class WNet(tnn.Sequential):
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
-        shape = layer.shape(inshape)[2:]
+        shape = layer.shape(inshape, output_padding=0)[2:]
         padding = [o - i for o, i in zip(outshape, shape)]
         return padding
 

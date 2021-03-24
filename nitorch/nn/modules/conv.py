@@ -335,17 +335,13 @@ class SimpleConv(Module):
     
     def forward(self, x, **overload):
         
-        conv1 = self.conv
-        clone = copy(self)
-        clone.conv = copy(conv1)
+        stride = overload.get('stride', self.stride)
+        padding = overload.get('padding', self.padding)
+        padding_mode = overload.get('padding_mode', self.padding_mode)
+        output_padding = overload.get('output_padding', self.output_padding)
+        dilation = overload.get('dilation', self.dilation)
         
-        stride = overload.get('stride', clone.stride)
-        padding = overload.get('padding', clone.padding)
-        padding_mode = overload.get('padding_mode', clone.padding_mode)
-        output_padding = overload.get('output_padding', clone.output_padding)
-        dilation = overload.get('dilation', clone.dilation)
-        
-        kernel_size = make_tuple(clone.kernel_size, self.dim)
+        kernel_size = make_tuple(self.kernel_size, self.dim)
         stride = make_tuple(stride, self.dim)
         output_padding = make_tuple(output_padding, self.dim)
         dilation = make_tuple(dilation, self.dim)
@@ -360,18 +356,24 @@ class SimpleConv(Module):
             padding = 0
         
         # call native convolution
-        clone.stride = stride
-        clone.padding = padding
-        clone.padding_mode = padding_mode
-        clone.output_padding = output_padding
-        clone.dilation = dilation
-        x = clone.conv(x)
+        self.stride, stride0 = (stride, self.stride)
+        self.padding, padding0 = (padding, self.padding)
+        self.padding_mode, padding_mode0 = (padding_mode, self.padding_mode)
+        self.output_padding, output_padding0 = (output_padding, self.output_padding)
+        self.dilation, dilation0 = (dilation, self.dilation)
+        
+        x = self.conv(x)
+        
+        self.stride = stride0
+        self.padding = padding0
+        self.padding_mode = padding_mode0
+        self.output_padding = output_padding0
+        self.dilation = dilation0
         
         # perform post-padding
-        if not clone.transposed and output_padding:
+        if not self.transposed and output_padding:
             x = utils.pad(x, output_padding, side='right')
         
-        self.conv = conv1
         return x
             
     def shape(self, x, **overload):
@@ -421,6 +423,7 @@ class SimpleConv(Module):
             transposed=transposed)
         shape = list(shape)
         shape[1] = self.out_channels
+        
         return tuple(shape)
     
     def __str__(self):
