@@ -85,7 +85,8 @@ def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
 
 
 def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
-                   mu_noise=None, max_iter=10000, verbose=0):
+                   mu_noise=None, max_iter=10000, verbose=0,
+                   bins=1024):
     """Estimate noise from a nifti image by fitting either a GMM or an RMM 
     to the image's intensity histogram.
 
@@ -105,6 +106,7 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
             1: Print summary when finished.
             2: 1 + Log-likelihood plot.
             3: 1 + 2 + print convergence.
+        bins (int, optional): Number of histogram bins, default=1024.
 
     Returns:
         sd_noise (torch.Tensor): Standard deviation of background class.
@@ -126,9 +128,6 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     mn = torch.min(dat).round()
     dat = dat[(dat != 0) & (torch.isfinite(dat)) & (dat != dat.max())]
     mx = torch.max(dat).round()
-    bins = (mx - mn).round().int()
-    if bins < 1024:
-        bins = 1024
 
     # Histogram bin data
     W = torch.histc(dat, bins=bins, min=mn, max=mx).double()
