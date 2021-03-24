@@ -54,11 +54,11 @@ jobs:
         include:
         - pytorch-version: '1.7'
           cuda-version: '11.0'
-        - pytorch-version: '1.8'
-          cuda-version: '11.1'
-        - pytorch-version: '1.7'
+          os: 'ubuntu-18.04'
           python-version: '3.9'
         - pytorch-version: '1.8'
+          cuda-version: '11.1'
+          os: 'ubuntu-18.04'
           python-version: '3.9'
         exclude:
         # incompatible python versions
