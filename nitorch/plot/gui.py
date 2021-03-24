@@ -6,6 +6,7 @@ from nitorch import spatial
 from nitorch.core import utils, py
 from nitorch.core.optionals import try_import
 from .volumes import show_orthogonal_slices
+# from .menu import Menu, MenuItem
 
 # optional imports
 plt = try_import('matplotlib.pyplot', _as=True)
@@ -131,6 +132,18 @@ class ImageArtist:
         if self._fdata is not None:
             self._fdata = self._fdata.to(self.device)
 
+    @property
+    def clim(self):
+        return getattr(self, '_cmin', None), getattr(self, '_cmax', None)
+
+    @clim.setter
+    def clim(self, value):
+        if torch.is_tensor(value):
+            value = value.flatten().unbind()
+        cmin, cmax = py.make_list(value, 2)
+        self._cmin = cmin
+        self._cmax = cmax
+
     def set_show_cursor(self, value, all=False):
         self.show_cursor = value
         if all:
@@ -171,6 +184,11 @@ class ImageArtist:
         if all:
             self.propagate('device')
 
+    def set_clim(self, value, all=False):
+        self.clim = value
+        if all:
+            self.propagate('clim')
+
     def propagate(self, key):
         for image in getattr(self.parent, 'images', []):
             if image is not self:
@@ -187,6 +205,7 @@ class ImageArtist:
             interpolation=self.interpolation,
             colormap=self.colormap,
             eq=self.equalize,
+            clim=self.clim,
             show_cursor=self.show_cursor,
             space=space,
             bbox=fov,
@@ -292,6 +311,13 @@ class ImageViewer:
         fig.canvas.mpl_connect('resize_event', self.on_resize)
         self.redraw(show=True)
 
+        # self.menu = Menu(self.fig,
+        #                  [MenuItem(self.fig, 'field of view'),
+        #                   MenuItem(self.fig, 'show cursor'),
+        #                   MenuItem(self.fig, 'equalize'),
+        #                   MenuItem(self.fig, 'interpolation'),])
+        # self.fig.add_artist(self.menu)
+
     def __setattr__(self, key, value):
         do_redraw = key[0] != '_' and self.auto_redraw
         super().__setattr__(key, value)
@@ -311,15 +337,17 @@ class ImageViewer:
         self.index = spatial.affine_matvec(mat, p)
 
     def on_release(self, event):
-        self._is_pressed = False
+        if event.button == 1:  # LEFT
+            self._is_pressed = False
 
     def on_press(self, event):
-        self._is_pressed = True
-        if event.inaxes:
-            x, y = (event.xdata, event.ydata)
-            image, n_ax = self._image_from_ax(event.inaxes)
-            self._index_from_cursor(x, y, image, n_ax)
-            self.redraw(show=True)
+        if event.button == 1:  # LEFT
+            self._is_pressed = True
+            if event.inaxes:
+                x, y = (event.xdata, event.ydata)
+                image, n_ax = self._image_from_ax(event.inaxes)
+                self._index_from_cursor(x, y, image, n_ax)
+                self.redraw(show=True)
 
     def on_move(self, event):
         is_pressed = getattr(self, '_is_pressed', False)
@@ -492,6 +520,17 @@ class ImageViewer:
             image.equalize = value
 
     @property
+    def clim(self):
+        clim = [image.clim for image in self.images]
+        return (ordered_set(*[c[0] for c in clim])[0],
+                ordered_set(*[c[1] for c in clim])[0])
+
+    @clim.setter
+    def clim(self, value):
+        for image in self.images:
+            image.clim = value
+
+    @property
     def mode(self):
         mode = [image.mode for image in self.images]
         return ordered_set(*mode)[0]
@@ -533,8 +572,6 @@ class ImageViewer:
     def colormap(self, value):
         if not isinstance(value, str):
             value = torch.as_tensor(value)
-        else:
-            value = value.lower()
         for image in self.images:
             image.colormap = value
 
