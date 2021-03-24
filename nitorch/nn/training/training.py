@@ -135,7 +135,7 @@ class ModelTrainer:
                  device=None,
                  dtype=None,
                  initial_epoch=0,
-                 log_interval=10,
+                 log_interval=None,
                  benchmark=False,
                  seed=None,
                  tensorboard=None,
@@ -182,7 +182,7 @@ class ModelTrainer:
             Data type to use. By default use `torch.get_default_dtype`.
         initial_epoch : int, default=0
             First epoch
-        log_interval : int, default=10
+        log_interval : int, optional
             Number of steps between screen updates.
         benchmark : bool, default=False
             Use the cudnn benchmarking utility that uses the first forward
@@ -324,6 +324,7 @@ class ModelTrainer:
         epoch_metrics = {}
         nb_batches = 0
         nb_steps = len(self.train_set)
+        log_interval = self.log_interval or max(nb_steps // 200, 1)
         for n_batch, batch in enumerate(self.train_set):
             losses = {}
             metrics = {}
@@ -347,7 +348,7 @@ class ModelTrainer:
                 update_loss_dict(epoch_losses, losses, weight)
                 update_loss_dict(epoch_metrics, metrics, weight)
                 # print
-                if n_batch % self.log_interval == 0:
+                if n_batch % log_interval == 0:
                     self._print('train', epoch, n_batch+1, nb_steps,
                                 loss, losses, metrics)
                 # tb callback
@@ -389,6 +390,7 @@ class ModelTrainer:
             epoch_metrics = {}
             nb_batches = 0
             nb_steps = len(self.eval_set)
+            log_interval = self.log_interval or max(nb_steps // 200, 1)
             for n_batch, batch in enumerate(self.eval_set):
                 losses = {}
                 metrics = {}
@@ -408,7 +410,7 @@ class ModelTrainer:
                 update_loss_dict(epoch_losses, losses, weight)
                 update_loss_dict(epoch_metrics, metrics, weight)
                 # print
-                if n_batch % self.log_interval == 0:
+                if n_batch % log_interval == 0:
                     self._print('eval', epoch, n_batch + 1, nb_steps,
                                 loss, losses, metrics)
                 # tb callback

@@ -213,10 +213,10 @@ def intensity_preproc(*images, min=None, max=None, eq=None):
         All batch shapes should be broadcastable together.
     min : tensor_like, optional
         Minimum value. Should be broadcastable to batch.
-        Default: min of image for each batch element.
+        Default: 5th percentile of each batch element.
     max : tensor_like, optional
         Maximum value. Should be broadcastable to batch.
-        Default: max of image for each batch element.
+        Default: 95th percentile of each batch element.
     eq : {'linear', 'quadratic', 'log', None} or float, default=None
         Apply histogram equalization.
         If 'quadratic' or 'log', the histogram of the transformed signal
@@ -241,16 +241,24 @@ def intensity_preproc(*images, min=None, max=None, eq=None):
     # rescale min/max
     min = py.make_list(min, len(images))
     max = py.make_list(max, len(images))
-    min = [math.min(image, dim=[-1, -2], keepdim=True) if mn is None else
-           torch.as_tensor(mn, **backend)[None, None]
+    min = [utils.quantile(image, 0.05, bins=2048, dim=[-1, -2], keepdim=True)
+           if mn is None else torch.as_tensor(mn, **backend)[None, None]
            for image, mn in zip(images, min)]
-    max = [math.max(image, dim=[-1, -2], keepdim=True) if mx is None else
-           torch.as_tensor(mx, **backend)[None, None]
+    min, *othermin = min
+    for mn in othermin:
+        min = torch.min(min, mn)
+    del othermin
+    max = [utils.quantile(image, 0.95, bins=2048, dim=[-1, -2], keepdim=True)
+           if mx is None else torch.as_tensor(mx, **backend)[None, None]
            for image, mx in zip(images, max)]
-    images = [torch.max(torch.min(image, mx), mn)
-              for image, mn, mx in zip(images, min, max)]
-    images = [image.mul_(1 / (mx - mn + eps)).add_(1 / (1 - mx / mn))
-              for image, mn, mx in zip(images, min, max)]
+    max, *othermax = max
+    for mx in othermax:
+        max = torch.max(max, mx)
+    del othermax
+    images = [torch.max(torch.min(image, max), min)
+              for image in images]
+    images = [image.mul_(1 / (max - min + eps)).add_(1 / (1 - max / min))
+              for image in images]
 
     if not eq:
         return tuple(images) if len(images) > 1 else images[0]

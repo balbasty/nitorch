@@ -236,7 +236,7 @@ grid_grad.__doc__ = grid_grad.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
 
 
-def identity_grid(shape, dtype=None, device=None):
+def identity_grid(shape, dtype=None, device=None, jitter=False):
     """Returns an identity deformation field.
 
     Parameters
@@ -247,6 +247,8 @@ def identity_grid(shape, dtype=None, device=None):
         Data type.
     device torch.device, optional
         Device.
+    jitter : bool or 'reproducible', default=False
+        Jitter identity grid.
 
     Returns
     -------
@@ -258,10 +260,18 @@ def identity_grid(shape, dtype=None, device=None):
               for s in shape]
     grid = torch.meshgrid(*mesh1d)
     grid = torch.stack(grid, dim=-1)
+    if jitter:
+        reproducible = jitter == 'reproducible'
+        device_ids = [grid.device.index] if grid.device.type == 'cuda' else None
+        with torch.random.fork_rng(device_ids, enabled=reproducible):
+            if reproducible:
+                torch.manual_seed(0)
+            grid += torch.rand_like(grid)
+            grid -= 0.5
     return grid
 
 
-def affine_grid(mat, shape):
+def affine_grid(mat, shape, jitter=False):
     """Create a dense transformation grid from an affine matrix.
 
     Parameters
@@ -270,6 +280,8 @@ def affine_grid(mat, shape):
         Affine matrix (or matrices).
     shape : (D,) sequence[int]
         Shape of the grid, with length D.
+    jitter : bool or 'reproducible', default=False
+        Jitter identity grid.
 
     Returns
     -------
@@ -288,7 +300,7 @@ def affine_grid(mat, shape):
                          '(..., {0}, {1}) or (..., {1], {1}) but got {2}.'
                          .format(nb_dim, nb_dim+1, mat.shape))
     batch_shape = mat.shape[:-2]
-    grid = identity_grid(shape, mat.dtype, mat.device)
+    grid = identity_grid(shape, mat.dtype, mat.device, jitter=jitter)
     grid = utils.unsqueeze(grid, dim=0, ndim=len(batch_shape))
     mat = utils.unsqueeze(mat, dim=-3, ndim=nb_dim)
     lin = mat[..., :nb_dim, :nb_dim]

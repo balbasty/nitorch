@@ -320,7 +320,7 @@ def to(*args, dtype=None, device=None):
         return torch.as_tensor(args[0], dtype=dtype, device=device)
     else:
         return tuple(torch.as_tensor(arg, dtype=dtype, device=device)
-                     for arg in args)
+                     if arg is not None else arg for arg in args)
 
 
 def to_max_backend(*args, force_float=False):
@@ -346,7 +346,7 @@ def to_max_backend(*args, force_float=False):
         return torch.as_tensor(args[0], dtype=dtype, device=device)
     else:
         return tuple(torch.as_tensor(arg, dtype=dtype, device=device)
-                     for arg in args)
+                     if arg is not None else arg for arg in args)
 
 
 def to_max_device(*args):
