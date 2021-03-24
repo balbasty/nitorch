@@ -90,7 +90,7 @@ public:
   NI_HOST
   PushPullAllocator(int dim, BoundVectorRef bound,
                     InterpolationVectorRef interpolation,
-                    bool extrapolate, bool do_pull, bool do_push,
+                    int extrapolate, bool do_pull, bool do_push,
                     bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound.size() > 0 ? bound[0] : BoundType::Replicate),
@@ -124,7 +124,7 @@ public:
 
   NI_HOST
   PushPullAllocator(int dim, BoundType bound, InterpolationVectorRef interpolation,
-                    bool extrapolate, bool do_pull, bool do_push,
+                    int extrapolate, bool do_pull, bool do_push,
                     bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound),
@@ -152,7 +152,7 @@ public:
 
   NI_HOST
   PushPullAllocator(int dim, BoundVectorRef bound, InterpolationType interpolation,
-                    bool extrapolate, bool do_pull, bool do_push,
+                    int extrapolate, bool do_pull, bool do_push,
                     bool do_count, bool do_grad, bool do_sgrad):
      dim(dim),
      bound0(bound.size() > 0 ? bound[0] : BoundType::Replicate),
@@ -177,7 +177,7 @@ public:
 
   NI_HOST
   PushPullAllocator(int dim, BoundType bound, InterpolationType interpolation,
-                    bool extrapolate, bool do_pull, bool do_push,
+                    int extrapolate, bool do_pull, bool do_push,
                     bool do_count, bool do_grad, bool do_sgrad):
     dim(dim),
     bound0(bound),
@@ -319,7 +319,7 @@ private:
   InterpolationType interpolation1; // interpolation order // y|H
   InterpolationType interpolation2; // interpolation order // z|D
   bool              iso;            // isotropic interpolation?
-  bool              extrapolate;    // compute out-of-bound values
+  int               extrapolate;    // compute out-of-bound values (0 no | 1 yes | 2 different threshold)
   bool              do_pull;        // sample a volume
   bool              do_push;        // splat a volume
   bool              do_count;       // splatting weights (= jacobian determinant)
@@ -742,7 +742,7 @@ private:
   InterpolationType interpolation1; // interpolation order // y|H
   InterpolationType interpolation2; // interpolation order // z|D
   bool              iso;            // isotropic interpolation?
-  bool              extrapolate;    // compute out-of-bound values
+  int               extrapolate;    // compute out-of-bound values
   bool              do_pull;        // sample a volume
   bool              do_push;        // splat a volume
   bool              do_count;       // splatting weights (= jacobian determinant)
@@ -894,6 +894,31 @@ void PushPullImpl<scalar_t,offset_t>::loop() const
 //                        CHECK OUT-OF-BOUND
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+template <typename scalar_t, typename offset_t> NI_DEVICE
+bool inbounds3d(scalar_t x, scalar_t y, scalar_t z,
+                offset_t w, offset_t h, offset_t d,
+                int edge)
+{
+    scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
+    return inbounds(x, w, tol) && inbounds(y, h, tol) && inbounds(z, d, tol);
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+bool inbounds2d(scalar_t x, scalar_t y,
+                offset_t w, offset_t h,
+                int edge)
+{
+    scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
+    return inbounds(x, w, tol) && inbounds(y, h, tol);
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+bool inbounds1d(scalar_t x, offset_t w, int edge)
+{
+    scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
+    return inbounds(x, w, tol);
+}
+
 // Here, we:
 // 1) read the [x,y,z] source coordinate for the current target voxel
 // 3) check if the source coordinate is in bounds 
@@ -911,9 +936,8 @@ void PushPullImpl<scalar_t,offset_t>
   scalar_t z = grid_ptr_NXYZ[grid_sC*2];
 
   // Check if out-of-bound
-  if (!(extrapolate || (inbounds(x, src_X, static_cast<scalar_t>(TINY))
-                        && inbounds(y, src_Y, static_cast<scalar_t>(TINY))
-                        && inbounds(z, src_Z, static_cast<scalar_t>(TINY))))) {
+  if (!(extrapolate & 1 ||
+        inbounds3d(x, y, z, src_X, src_Y, src_Z, extrapolate & 2))) {
     if (do_pull || do_sgrad) {
       scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX
                                         + h * out_sY + d * out_sZ;
@@ -963,8 +987,8 @@ void PushPullImpl<scalar_t,offset_t>
   scalar_t y = grid_ptr_NXY[grid_sC];
 
   // Check if out-of-bound
-  if (!(extrapolate || (inbounds(x, src_X, static_cast<scalar_t>(TINY))
-                        && inbounds(y, src_Y, static_cast<scalar_t>(TINY))))) {
+  if (!(extrapolate & 1 ||
+        inbounds2d(x, y, src_X, src_Y, extrapolate & 2))) {
     if (do_pull || do_sgrad) {
       scalar_t *out_ptr_NCXY = out_ptr + n * out_sN
                                        + w * out_sX
@@ -1012,7 +1036,7 @@ void PushPullImpl<scalar_t,offset_t>
   scalar_t x = *grid_ptr_NX;
 
   // Check if out-of-bound
-  if (!(extrapolate || inbounds(x, src_X, static_cast<scalar_t>(TINY)))) {
+  if (!(extrapolate & 1 || inbounds1d(x, src_X, extrapolate & 2))) {
     if (do_pull || do_sgrad) {
       scalar_t *out_ptr_NCX = out_ptr + n * out_sN
                                       + w * out_sX;
@@ -2486,10 +2510,10 @@ __global__ void pushpull_kernel(PushPullImpl<scalar_t,offset_t> f) {
 #define PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, SourceType0) \
   template std::deque<Tensor> pushpull( \
     const SourceType0 &, const Tensor&, const Tensor&, \
-    BoundType0, InterpolationType0, bool, bool, bool, bool, bool, bool); \
+    BoundType0, InterpolationType0, int, bool, bool, bool, bool, bool); \
   template std::deque<Tensor> pushpull( \
     const SourceType0&, const Tensor&, \
-    BoundType0, InterpolationType0, bool, bool, bool, bool, bool, bool)
+    BoundType0, InterpolationType0, int, bool, bool, bool, bool, bool)
 #define PUSHPULL_INSTANTIATE2(BoundType0, InterpolationType0) \
   PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, IntArrayRef); \
   PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, Tensor)
@@ -2510,7 +2534,7 @@ template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType& source, const Tensor& grid, 
-  BoundType bound, InterpolationType interpolation, bool extrapolate, 
+  BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
@@ -2542,7 +2566,7 @@ template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
-  BoundType bound, InterpolationType interpolation, bool extrapolate, 
+  BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
@@ -2577,7 +2601,7 @@ template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType& source, const Tensor& grid, 
-  BoundType bound, InterpolationType interpolation, bool extrapolate, 
+  BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
@@ -2598,7 +2622,7 @@ template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
-  BoundType bound, InterpolationType interpolation, bool extrapolate, 
+  BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
@@ -2626,7 +2650,7 @@ template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType& source, const Tensor& grid, 
-  BoundType bound, InterpolationType interpolation, bool extrapolate, 
+  BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   throw std::logic_error("Function not implemented for this device.");
@@ -2636,7 +2660,7 @@ template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
-  BoundType bound, InterpolationType interpolation, bool extrapolate, 
+  BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
 {
   throw std::logic_error("Function not implemented for this device.");

@@ -642,7 +642,7 @@ class DecodingLayer(StackedConv):
 
 
 @nitorchmodule
-class Encoder(tnn.ModuleList):
+class Encoder(tnn.Sequential):
     """Encoder network (for U-nets, VAEs, etc.).
 
     Notes
@@ -778,7 +778,7 @@ class Encoder(tnn.ModuleList):
             # layer are grouped. However, I only stitch once 
             # (at the end of the encoding layer)
 
-        super().__init__(modules)
+        super().__init__(*modules)
 
                                
 @nitorchmodule

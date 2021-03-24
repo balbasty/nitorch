@@ -33,7 +33,7 @@ class Mixture:
         self.dt = ''  # PyTorch data type
 
     # Functions
-    def fit(self, X, verbose=1, max_iter=10000, tol=1e-6, fig_num=1, W=None,
+    def fit(self, X, verbose=1, max_iter=10000, tol=1e-8, fig_num=1, W=None,
             show_fit=False):
         """ Fit mixture model.
 
@@ -48,7 +48,7 @@ class Mixture:
                 3: 1 + 2 + Log-likelihood plot.
             max_iter (int, optional) Maxmimum number of algorithm iterations.
                 Defaults to 10000.
-            tol (int, optional): Convergence threshold. Defaults to 1e-6.
+            tol (int, optional): Convergence threshold. Defaults to 1e-8.
             fig_num (int, optional): Defaults to 1.
             W (torch.tensor, optional): Observation weights (N, 1). Defaults to no weights.
             show_fit (bool, optional): Plot mixture fit, defaults to False.
@@ -329,15 +329,15 @@ class Mixture:
 
 class GMM(Mixture):
     # Multivariate Gaussian Mixture Model (GMM).
-    def __init__(self, num_class=2):
+    def __init__(self, num_class=2, mu=None, Cov=None):
         """
         mu (torch.tensor): GMM means (C, K).
         Cov (torch.tensor): GMM covariances (C, C, K).
 
         """
         super(GMM, self).__init__(num_class=num_class)
-        self.mu = []
-        self.Cov = []
+        self.mu = mu
+        self.Cov = Cov
 
     def get_means_variances(self):
         """
@@ -401,21 +401,23 @@ class GMM(Mixture):
 
         # Init mixing prop
         self._init_mp(dtype)
-
-        # means
-        self.mu = torch.zeros((C, K), dtype=dtype, device=self.dev)
-        # covariance
-        self.Cov = torch.zeros((C, C, K), dtype=dtype, device=self.dev)
-        for c in range(C):
-            # rng = torch.linspace(start=mn[c], end=mx[c], steps=K, dtype=dtype, device=self.dev)
-            # num_neg = sum(rng < 0)
-            # num_pos = sum(rng > 0)
-            # rng = torch.arange(-num_neg, num_pos, dtype=dtype, device=self.dev)
-            # self.mu[c, :] = torch.reshape((rng * (mx[c] - mn[c]))/(K + 1), (1, K))
-            self.mu[c, :] = torch.reshape(torch.linspace(mn[c], mx[c], K, dtype=dtype, device=self.dev), (1, K))
-            self.Cov[c, c, :] = \
-                torch.reshape(torch.ones(K, dtype=dtype, device=self.dev)
-                              * ((mx[c] - mn[c])/(K))**2, (1, 1, K))
+    
+        if self.mu is None:
+            # means
+            self.mu = torch.zeros((C, K), dtype=dtype, device=self.dev)
+        if self.Cov is None:
+            # covariance
+            self.Cov = torch.zeros((C, C, K), dtype=dtype, device=self.dev)
+            for c in range(C):
+                # rng = torch.linspace(start=mn[c], end=mx[c], steps=K, dtype=dtype, device=self.dev)
+                # num_neg = sum(rng < 0)
+                # num_pos = sum(rng > 0)
+                # rng = torch.arange(-num_neg, num_pos, dtype=dtype, device=self.dev)
+                # self.mu[c, :] = torch.reshape((rng * (mx[c] - mn[c]))/(K + 1), (1, K))
+                self.mu[c, :] = torch.reshape(torch.linspace(mn[c], mx[c], K, dtype=dtype, device=self.dev), (1, K))
+                self.Cov[c, c, :] = \
+                    torch.reshape(torch.ones(K, dtype=dtype, device=self.dev)
+                                  * ((mx[c] - mn[c])/(K))**2, (1, 1, K))
 
     def _update(self, ss0, ss1, ss2):
         """ Update GMM means and variances
@@ -441,15 +443,15 @@ class GMM(Mixture):
 
 class RMM(Mixture):
     # Univariate Rician Mixture Model (RMM).
-    def __init__(self, num_class=2):
+    def __init__(self, num_class=2, nu=None, sig=None):
         """
         nu (torch.tensor): "mean" parameter of each Rician (K).
         sig (torch.tensor): "standard deviation" parameter of each Rician (K).
 
         """
         super(RMM, self).__init__(num_class=num_class)
-        self.nu = []
-        self.sig = []
+        self.nu = nu
+        self.sig = sig
 
     def get_means_variances(self):
         """ Return means and variances.
@@ -539,8 +541,10 @@ class RMM(Mixture):
         self._init_mp(dtype)
 
         # RMM specific
-        self.nu = (torch.arange(K, dtype=dtype, device=self.dev)*mx)/(K + 1)
-        self.sig = torch.ones(K, dtype=dtype, device=self.dev)*((mx - mn)/(K*10))
+        if self.nu is None:
+            self.nu = (torch.arange(K, dtype=dtype, device=self.dev)*mx)/(K + 1)
+        if self.sig is None:
+            self.sig = torch.ones(K, dtype=dtype, device=self.dev)*((mx - mn)/(K*10))
 
     def _update(self, ss0, ss1, ss2):
         """ Update RMM parameters.

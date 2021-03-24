@@ -77,11 +77,11 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
     input = torch.as_tensor(input)
     if dim is None:
         # If min across the entire tensor -> call torch
-        return input.max(input)
+        return fn(input)
 
     # compute shapes
     scalar_dim = torch.as_tensor(dim).dim() == 0
-    dim = [d if d > 0 else input.dim() - d for d in py.make_list(dim)]
+    dim = [d if d >= 0 else input.dim() + d for d in py.make_list(dim)]
     shape = input.shape
     subshape = [s for d, s in enumerate(shape) if d not in dim]
     keptshape = [s if d not in dim else 1 for d, s in enumerate(shape)]
@@ -869,7 +869,6 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
     if implicit_in:
         maxval.clamp_min_(0)  # don't forget the class full of zeros
 
-    input -= maxval
     input = (input-maxval).exp()
     sumval = sumto(input, dim=dim, keepdim=True,
                    out=maxval if not lse else None)
@@ -951,7 +950,7 @@ def logm(M):
     return M
 
 
-def besseli(X, order=0, Nk=50):
+def besseli(X, order=0, Nk=64):
     """ Approximates the modified Bessel function of the first kind,
         of either order zero or one.
 

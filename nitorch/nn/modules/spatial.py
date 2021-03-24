@@ -44,15 +44,15 @@ _bound_doc = \
 
 
 class GridPull(Module):
-    __doc__ = """
+    __doc__ = f"""
     Pull/Sample an image according to a deformation.
 
     This module has no learnable parameters.
 
-    {interpolation}
+    {_interpolation_doc}
 
-    {bound}
-    """.format(interpolation=_interpolation_doc, bound=_bound_doc)
+    {_bound_doc}
+    """
 
     def __init__(self, interpolation='linear', bound='dct2', extrapolate=True):
         """
