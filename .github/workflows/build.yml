@@ -42,13 +42,11 @@ jobs:
 
   build:
 
-    runs-on: ubuntu-18.04
-#    runs-on: ubuntu-latest   ## pin 18.04 until we fix latest==20.04
-#    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: ${{ github.event.inputs.fail-fast == 'true' }}
       matrix:
-#        os: [ ubuntu-latest ]
+        os: [ ubuntu-18.04 ]  # pin 18.04 until 20.04 is fixed
         # os: [ ubuntu-latest, macos-latest, windows-latest ]
         python-version: [ '3.6', '3.8' ]  # '3.7' fails for some weird reason
         pytorch-version: [ '1.3', '1.4', '1.5', '1.6', '1.7' ]
