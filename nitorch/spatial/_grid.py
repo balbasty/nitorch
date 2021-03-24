@@ -247,7 +247,7 @@ def identity_grid(shape, dtype=None, device=None, jitter=False):
         Data type.
     device torch.device, optional
         Device.
-    jitter : bool, default=False
+    jitter : bool or 'reproducible', default=False
         Jitter identity grid.
 
     Returns
@@ -261,8 +261,13 @@ def identity_grid(shape, dtype=None, device=None, jitter=False):
     grid = torch.meshgrid(*mesh1d)
     grid = torch.stack(grid, dim=-1)
     if jitter:
-        torch.manual_seed(0)
-        grid = grid + torch.rand_like(grid)
+        reproducible = jitter == 'reproducible'
+        device_ids = [grid.device.index] if grid.device.type == 'cuda' else None
+        with torch.random.fork_rng(device_ids, enabled=reproducible):
+            if reproducible:
+                torch.manual_seed(0)
+            grid += torch.rand_like(grid)
+            grid -= 0.5
     return grid
 
 
@@ -275,7 +280,7 @@ def affine_grid(mat, shape, jitter=False):
         Affine matrix (or matrices).
     shape : (D,) sequence[int]
         Shape of the grid, with length D.
-    jitter : bool, default=False
+    jitter : bool or 'reproducible', default=False
         Jitter identity grid.
 
     Returns
