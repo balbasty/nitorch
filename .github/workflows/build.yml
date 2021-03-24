@@ -42,7 +42,7 @@ jobs:
 
   build:
 
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-18.04
     strategy:
       fail-fast: ${{ github.event.inputs.fail-fast == 'true' }}
       matrix:
