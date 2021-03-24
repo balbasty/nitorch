@@ -131,10 +131,6 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     msk &= dat != dat.max()
     dat, msk = dat[msk], None
     mx = torch.max(dat).round()
-    bins = 1024
-    # bins = (mx - mn).round().int()
-    # if bins < 1024:
-    #     bins = 1024
 
     # Histogram bin data
     W, dat = torch.histc(dat, bins=bins, min=mn, max=mx).double(), None
