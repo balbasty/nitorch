@@ -313,7 +313,7 @@ def get_orthogonal_oriented_slices(image, index=None, affine=None,
 
 def show_orthogonal_slices(image, index=None, affine=None, fig=None,
                            colormap=None, layout='row', mode='intensity',
-                           interpolation=1, eq=None, show_cursor=False,
+                           interpolation=1, eq=None, clim=None, show_cursor=False,
                            return_mat=False, **kwargs):
     """Show three orthogonal slices
 
@@ -378,7 +378,8 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
 
     # process intensities
     if mode == 'intensity':
-        slices = cmap.intensity_preproc(*slices, eq=eq)
+        cmin, cmax = py.make_list(clim, 2)
+        slices = cmap.intensity_preproc(*slices, eq=eq, min=cmin, max=cmax)
         slices = [cmap.intensity_to_rgb(slice, min=0, max=1, colormap=colormap)
                   for slice in slices]
     elif mode.startswith('cat'):
