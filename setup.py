@@ -518,12 +518,13 @@ build_extensions += [NiTorchLibrary]
 nitorch_libext = [NiTorchLibrary]
 nitorch_lib = ['nitorch']
 # ~~~ setup extensions
+python_library_dirs = [os.path.join(sys.exec_prefix, 'lib')]
 SpatialExtension = Extension(
     name='_C.spatial',
     sources=abspathC(ext_spatial_sources),
     depends=nitorch_libext + abspathC(ext_spatial_headers),
     libraries=torch_libraries(use_cuda) + nitorch_lib,
-    library_dirs=torch_library_dirs(use_cuda, use_cudnn),
+    library_dirs=torch_library_dirs(use_cuda, use_cudnn) + python_library_dirs,
     include_dirs=torch_include_dirs(use_cuda, use_cudnn),
     extra_compile_args=common_flags() + torch_flags() + torch_extension_flags('spatial'),
     runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]

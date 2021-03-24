@@ -6,7 +6,7 @@ on:
       os:
         description: 'Operating system'
         required: false
-        default: 'ubuntu-latest'
+        default: 'ubuntu-18.04'
       python-version:
         description: 'Version of python'
         required: false
