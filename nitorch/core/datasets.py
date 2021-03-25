@@ -19,9 +19,8 @@ data['atlas_t2_mni'] = ['https://ndownloader.figshare.com/files/25438343', 'mb_m
 data['atlas_pd_mni'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_mni_avg218PD.nii.gz']
 
 
-def fetch_data(name, speak=False):
+def fetch_data(name, dir_download=None, speak=False):
     '''Get nitorch package data.
-
     Parameters
     ----------
     name : str
@@ -32,35 +31,36 @@ def fetch_data(name, speak=False):
         * atlas_t1_mni: MRI T1w intensity atlas, in MNI space, 1 mm resolution.
         * atlas_t2_mni: MRI T2w intensity atlas, in MNI space, 1 mm resolution.
         * atlas_pd_mni: MRI PDw intensity atlas, in MNI space, 1 mm resolution.
+    dir_download : str, optional
+        Directory where to download data. Uses OS cache folder by default.
     speak : bool, default=False
         Print download progress.
-
     Returns
     ----------
     pth_data : str
         Absolute path to requested nitorch data.
-
     '''
-    pth_data = os.path.join(dir_os_cache, data[name][1])
-    if not os.path.exists(pth_data):
-        _downloader(name, speak=speak)
+    if dir_download is None:
+        dir_download = dir_os_cache
+    fname = data[name][1]
+    pth_data = os.path.join(dir_download, fname)
+    if not os.path.exists(pth_data):        
+        if not os.path.exists(dir_download):
+            os.makedirs(dir_download, exist_ok=True)        
+        url = data[name][0]        
+        pth_data = download_url(url, pth_download=pth_data, speak=speak)
 
     return pth_data
 
 
-def _downloader(name, speak):
-    '''Download NITorch data.
+def download_url(url, pth_download=None, speak=False):
+    '''Download data from URL.
     '''
-    if not os.path.exists(dir_os_cache):
-        os.makedirs(dir_os_cache, exist_ok=True)
-    # Get download options
-    url = data[name][0]
-    fname = data[name][1]
-    pth_data = os.path.join(dir_os_cache, fname)
     bar = None
     if speak:
         def bar(current, total, width=80):
-            print("Downloading %s to %s. Progress: %d%% (%d/%d bytes)" % (fname, dir_os_cache, current / total * 100, current, total))
-    if not os.path.exists(pth_data):
-        # Download data
-        wget.download(url, pth_data, bar=bar)
+            print("Downloading %s to %s | Progress: %d%% (%d/%d bytes)" 
+                  % (url, pth_download, current / total * 100, current, total))
+    pth_data = wget.download(url, pth_download, bar=bar)
+    
+    return pth_data
