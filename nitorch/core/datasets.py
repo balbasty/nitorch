@@ -21,7 +21,6 @@ data['atlas_pd_mni'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_m
 
 def fetch_data(name, dir_download=None, speak=False):
     '''Get nitorch package data.
-
     Parameters
     ----------
     name : str
@@ -36,35 +35,30 @@ def fetch_data(name, dir_download=None, speak=False):
         Directory where to download data. Uses OS cache folder by default.
     speak : bool, default=False
         Print download progress.
-
     Returns
     ----------
     pth_data : str
         Absolute path to requested nitorch data.
-
     '''
     if dir_download is None:
         dir_download = dir_os_cache
-    pth_data = os.path.join(dir_download, data[name][1])
-    if not os.path.exists(pth_data):
-        _downloader(name, dir_download=dir_download, speak=speak)
+    fname = data[name][1]
+    pth_data = os.path.join(dir_download, fname)
+    if not os.path.exists(pth_data):        
+        if not os.path.exists(dir_download):
+            os.makedirs(dir_download, exist_ok=True)        
+        url = data[name][0]        
+        download_url(url, pth_download=pth_data, speak=speak)
 
     return pth_data
 
 
-def _downloader(name, dir_download=None, speak=False):
-    '''Download NITorch data.
+def download_url(url, pth_download=None, speak=False):
+    '''Download data from URL.
     '''
-    if not os.path.exists(dir_download):
-        os.makedirs(dir_download, exist_ok=True)
-    # Get download options
-    url = data[name][0]
-    fname = data[name][1]
-    pth_data = os.path.join(dir_download, fname)
     bar = None
     if speak:
         def bar(current, total, width=80):
-            print("Downloading %s to %s. Progress: %d%% (%d/%d bytes)" % (fname, dir_download, current / total * 100, current, total))
-    if not os.path.exists(pth_data):
-        # Download data
-        wget.download(url, pth_data, bar=bar)
+            print("Downloading %s to %s | Progress: %d%% (%d/%d bytes)" 
+                  % (url, pth_download, current / total * 100, current, total))
+    wget.download(url, pth_download, bar=bar)
