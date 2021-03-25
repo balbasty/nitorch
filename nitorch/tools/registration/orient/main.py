@@ -135,7 +135,7 @@ def orient(inp, affine=None, layout=None, voxel_size=None, center=None,
             io.volumes.save(dat, output, affine=affine)
 
     if output_transform:
-        transform = spatial.affine_matmul(affine, aff0)
+        transform = spatial.affine_rmdiv(affine, aff0)
         output_transform = output_transform.format(
             dir=dir or '.', base=base, sep=os.path.sep, layout=layout)
         io.transforms.savef(transform.cpu(), output_transform, type=2)
