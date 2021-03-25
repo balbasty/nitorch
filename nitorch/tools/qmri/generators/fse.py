@@ -1,5 +1,5 @@
 import torch
-from nitorch.core import utils, constants
+from nitorch.core import utils
 from .noise import add_noise
 
 
@@ -40,7 +40,7 @@ def fse(pd, r1, r2=None, receive=None, gfactor=None,
     Returns
     -------
     sim : tensor
-        Simulated series of multi-echo GRE images
+        Simulated FSE image
 
     """
 

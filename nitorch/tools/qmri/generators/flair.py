@@ -1,5 +1,5 @@
 import torch
-from nitorch.core import utils, constants
+from nitorch.core import utils
 from .noise import add_noise
 
 
@@ -42,10 +42,9 @@ def flair(pd, r1, r2=None, receive=None, gfactor=None,
     Returns
     -------
     sim : tensor
-        Simulated series of multi-echo GRE images
+        Simulated FLAIR image
 
     """
-
     pd, r1, r2, receive, gfactor \
         = utils.to_max_backend(pd, r1, r2, receive, gfactor)
     pd, r1, r2, receive, gfactor \
