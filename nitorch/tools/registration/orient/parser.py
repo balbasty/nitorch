@@ -10,6 +10,7 @@ class Orient(cli.ParsedStructure):
     center: list = []
     like: str = None
     output: list = '{dir}{sep}{base}.{layout}{ext}'
+    transform: list = '{dir}{sep}{base}_to_{layout}.lta'
 
 
 help = r"""[nitorch] Orient volumes
@@ -29,15 +30,22 @@ letters:
 usage:
     nitorch orient *FILES [-l LAYOUT] [-v *VX] [-c *CTR] [-k FILE] [-o *FILES]
 
+    -a, --affine *AFF      Target affine matrix (default: like)
     -l, --layout LAYOUT    Target orientation (default: like)
     -v, --voxel-size *VX   Target voxel size (default: like)
     -c, --center *CTR      Target coordinates of the FOV center (default: like)
     -k, --like FILE        Reference file from which to copy parameters (default: self)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.{layout}{ext})
+    -t, --transform FILE   Output transformation file (default: {dir}/{base}_to_{layout}.lta)
 
-    Options l/v/c can either receive a value, or one of {self, like}.
+    Options a/l/v/c can either receive a value, or one of {self, like}.
     - If 'self', the value of the input file is preserved.
     - If 'like', the value of the reference file is used.
+    - If 'standard', a standard value is used:
+        affine      -> 1 0 0 0  0 1 0 0  0 0 1 0
+        layout      -> RAS
+        voxel-size  -> 1
+        center      -> 0
 
     To overwrite the affine with a default RAS orientation and a voxel 
     size of [2, 2, 2], use:
@@ -72,11 +80,19 @@ def parse(args):
         if tag in ('-l', '--layout'):
             cli.check_next_isvalue(args, tag)
             struct.layout, *args = args
+        elif tag in ('-a', '--affine'):
+            struct.affine = []
+            while cli.next_isvalue(args):
+                val, *args = args
+                if val.lower() in ('self', 'like', 'standard'):
+                    struct.affine = val
+                    break
+                struct.affine.append(float(val))
         elif tag in ('-v', '--voxel-size'):
             struct.voxel_size = []
             while cli.next_isvalue(args):
                 val, *args = args
-                if val.lower() in ('self', 'like'):
+                if val.lower() in ('self', 'like', 'standard'):
                     struct.voxel_size = val
                     break
                 struct.voxel_size.append(float(val))
@@ -84,7 +100,7 @@ def parse(args):
             struct.center = []
             while cli.next_isvalue(args):
                 val, *args = args
-                if val.lower() in ('self', 'like'):
+                if val.lower() in ('self', 'like', 'standard'):
                     struct.center = val
                     break
                 struct.center.append(float(val))
@@ -95,6 +111,11 @@ def parse(args):
             while cli.next_isvalue(args):
                 val, *args = args
                 struct.output.append(val)
+        elif tag in ('-t', '--transform'):
+            struct.transform = []
+            while cli.next_isvalue(args):
+                val, *args = args
+                struct.transform.append(val)
         elif tag in ('-h', '--help'):
             print(help)
             return None

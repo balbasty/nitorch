@@ -1497,6 +1497,9 @@ def voxel_size(mat):
     return as_euclidean(mat.square().sum(-2).sqrt())
 
 
+_voxel_size = voxel_size   # useful alias to avoid shadowing
+
+
 def affine_matvec(affine, vector):
     """Matrix-vector product of an affine and a (possibly homogeneous) vector.
 
@@ -1898,7 +1901,7 @@ def affine_permute(affine, perm=None, shape=None):
                          .format(nb_dim, len(perm)))
     is_h = is_homogeneous(affine)
     affine = affine[..., :, perm + [-1]]
-    affine = as_euclidean(affine) if is_h else as_homogeneous(affine)
+    affine = as_homogeneous(affine) if is_h else as_euclidean(affine)
     if shape is not None:
         shape = tuple(shape[p] for p in perm)
         return affine, shape
@@ -2052,6 +2055,57 @@ def affine_default(shape, voxel_size=1., layout=None, center=0.,
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
     return affine_make_homogeneous(as_euclidean(affine))
+
+
+def affine_modify(affine, shape, voxel_size=None, layout=None, center=None):
+    """Modifies features from an affine (voxel size, center, layout).
+
+    Parameters
+    ----------
+    affine : (ndim+1, ndim+1) tensor_like
+        Orientation matrix.
+    shape : sequence[int]
+        Lattice shape.
+    voxel_size : sequence[float], optional
+        Lattice voxel size
+    layout : str or layout_like, optional
+        Lattice layout (see `volume_layout`).
+    center : sequence[float], optional
+        World-coordinate of the center of the field-of-view.
+
+    Returns
+    -------
+    affine : (ndim+1, ndim+1) tensor
+        Orientation matrix
+
+    """
+    affine = torch.as_tensor(affine).clone()
+    backend = utils.backend(affine)
+    nb_dim = affine.shape[-1] - 1
+    shape = utils.make_vector(shape, nb_dim, **backend)
+
+    if center is None:
+        # preserve center
+        center = shape * 0.5
+        center = affine_matvec(affine, center)
+
+    # set correct layout
+    if layout is not None:
+        affine, _ = affine_reorient(affine, shape.tolist(), layout)
+
+    # set correct voxel size
+    if voxel_size is not None:
+        voxel_size = utils.make_vector(voxel_size, nb_dim, **backend)
+        old_voxel_size = _voxel_size(affine)
+        affine[:-1, :-1] *= voxel_size[None] / old_voxel_size[None]
+
+    # set correct center
+    center = utils.make_vector(center, nb_dim, **backend)
+    vox_center = shape * 0.5
+    old_center = affine_matvec(affine, vox_center)
+    affine[:-1, -1] += center - old_center
+
+    return affine
 
 
 def max_bb(all_mat, all_dim, vx=None):

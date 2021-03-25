@@ -31,9 +31,18 @@ def _cli(args):
         return
 
     options.output = make_list(options.output, len(options.files))
-    for fname, ofname in zip(options.files, options.output):
-        orient(fname, layout=options.layout, voxel_size=options.voxel_size,
-               center=options.center, like=options.like, output=ofname)
+    options.transform = make_list(options.transform, len(options.files))
+    for fname, ofname, otname in zip(options.files,
+                                     options.output,
+                                     options.transform):
+        orient(fname,
+               affine=options.affine,
+               layout=options.layout,
+               voxel_size=options.voxel_size,
+               center=options.center,
+               like=options.like,
+               output=ofname,
+               output_transform=otname)
 
 
 commands['orient'] = cli
