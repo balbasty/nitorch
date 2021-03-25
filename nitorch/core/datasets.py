@@ -48,7 +48,7 @@ def fetch_data(name, dir_download=None, speak=False):
         if not os.path.exists(dir_download):
             os.makedirs(dir_download, exist_ok=True)        
         url = data[name][0]        
-        download_url(url, pth_download=pth_data, speak=speak)
+        pth_data = download_url(url, pth_download=pth_data, speak=speak)
 
     return pth_data
 
@@ -61,4 +61,6 @@ def download_url(url, pth_download=None, speak=False):
         def bar(current, total, width=80):
             print("Downloading %s to %s | Progress: %d%% (%d/%d bytes)" 
                   % (url, pth_download, current / total * 100, current, total))
-    wget.download(url, pth_download, bar=bar)
+    pth_data = wget.download(url, pth_download, bar=bar)
+    
+    return pth_data
