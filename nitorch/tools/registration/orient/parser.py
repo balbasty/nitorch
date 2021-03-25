@@ -5,9 +5,10 @@ from nitorch.core.cli import ParseError
 class Orient(cli.ParsedStructure):
     """Structure that holds parameters of the `nireorient` command"""
     files: list = []
-    layout: str = 'RAS'
-    voxel_size: list = []
-    center: list = []
+    affine: list = 'like'
+    layout: str = 'like'
+    voxel_size: list = 'like'
+    center: list = 'like'
     like: str = None
     output: list = '{dir}{sep}{base}.{layout}{ext}'
     transform: list = '{dir}{sep}{base}_to_{layout}.lta'
