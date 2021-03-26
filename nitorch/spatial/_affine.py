@@ -2461,6 +2461,7 @@ def compute_fov(mat, affines, shapes, pad=0, pad_unit='%'):
         mn = torch.min(mn, torch.min(corners, dim=1)[0])
     pad = utils.make_vector(pad, dim, **backend)
     if pad_unit == '%':
+        pad = pad / 100.
         pad = pad * (mx - mn) / 2.
     mx = mx + pad
     mn = mn - pad
