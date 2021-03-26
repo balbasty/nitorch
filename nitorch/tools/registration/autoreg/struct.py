@@ -442,7 +442,9 @@ class AutoReg(Base):
     # other parameters
     defaults: Defaults = Defaults()     # All defaults that propagate everywhere
     device: str = 'cpu'                 # Device on which to run
-    progressive: bool = False           # Progressive freeing of parameters
+    progressive: bool = True            # Progressive freeing of parameters
+    pad: float = 0                      # Padding of mean space
+    pad_unit: str = '%'                 # Padding unit
     verbose: int = 1                    # Verbosity level
 
     def propagate_defaults(self):

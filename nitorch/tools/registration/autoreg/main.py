@@ -201,7 +201,8 @@ def load_transforms(s):
         all_affines.append(loss.fixed.affine)
         all_shapes.append(loss.moving.shape)
         all_affines.append(loss.moving.affine)
-    affine0, shape0 = mean_space(all_affines, all_shapes)
+    affine0, shape0 = mean_space(all_affines, all_shapes,
+                                 pad=s.pad, pad_unit=s.pad_unit)
     backend = dict(dtype=affine0.dtype, device=affine0.device)
 
     for trf in s.transformations:

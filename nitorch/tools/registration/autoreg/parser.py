@@ -83,7 +83,8 @@ usage:
 
     Other options
         -cpu, -gpu                   Device to use (cpu)
-        -prg, --progressive          Progressively increase degrees of freedom (no)
+        -prg, --progressive          Progressively increase degrees of freedom (true)
+        -pad, --padding PAD [UNIT]   Padding of mean (nonlin) space (0 %)
         -v, --verbose [LVL]          Level of verbosity (1)
 
 examples:
@@ -537,6 +538,20 @@ def parse(args):
         # Parse remaining top-level tags
         elif tag in ('-prg', '--progressive'):
             options.progressive = True
+            if next_isvalue(args):
+                options.progressive, *args = args
+                if options.progressive[0] in ('t', 'y'):
+                    options.progressive = True
+                elif options.progressive[0] in ('f', 'n'):
+                    options.progressive = False
+                else:
+                    options.progressive = bool(int(options.progressive))
+        elif tag in ('-pad', '--padding'):
+            check_next_isvalue(args, tag)
+            options.pad, *args = args
+            options.pad = float(options.pad)
+            if next_isvalue(args):
+                options.pad_unit, *args,  = args
         elif tag in ('-v', '--verbose'):
             options.verbose = 2
             if next_isvalue(args):
