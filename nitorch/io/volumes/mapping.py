@@ -712,6 +712,8 @@ class MappedArray(MappedFile):
         if dim is None:
             dim = [d for d in range(self.dim) if self.shape[d] == 1]
         dim = make_list(dim)
+        ndim = len(self.shape)
+        dim = [ndim + d if d < 0 else d for d in dim]
         if any(self.shape[d] != 1 for d in dim):
             raise ValueError('Impossible to squeeze non-singleton dimensions.')
         index = [slice(None) if d not in dim else 0 for d in range(self.dim)]

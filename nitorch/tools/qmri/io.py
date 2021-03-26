@@ -396,7 +396,7 @@ class GradientEcho(BaseND):
     def from_mapped(cls, mapped, **attributes):
         missing = [key for key in ['te', 'tr', 'ti', 'fa', 'mt']
                   if key not in attributes ]
-        meta = mapped.metadata(missing)
+        meta = mapped.metadata(missing) if missing else {}
         if not isinstance(meta, dict):
             meta = meta[0]
         meta = {key: val for key, val in meta.items() if val is not None}

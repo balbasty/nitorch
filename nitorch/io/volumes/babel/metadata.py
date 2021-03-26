@@ -166,7 +166,10 @@ def header_to_metadata(header, metadata):
         zooms = header.get_zooms()
         time_step = zooms[3] if len(zooms) > 3 else None
         time_step = time_step or None
-        if hasattr(header, 'get_xyzt_units'):
+        if isinstance(header, MGHHeader):
+            time_step = float(header['tr']) or None
+            time_unit = 'ms'
+        elif hasattr(header, 'get_xyzt_units'):
             _, time_unit = header.get_xyzt_units()
         else:
             time_unit = 'ms' if isinstance(header, MGHHeader) else 'sec'

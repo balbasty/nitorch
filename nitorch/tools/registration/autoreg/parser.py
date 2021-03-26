@@ -283,6 +283,16 @@ def parse_moving_and_target(args, opt):
                 opt.pyramid = levels
             else:
                 opt.pyramid = [1]
+        elif tag in ('-exc', '--exclude'):
+            opt.exclude = True
+            if next_isvalue(args):
+                opt.exclude, *args = args
+                if opt.exclude[0].lower() == 't':
+                    opt.exclude = True
+                elif opt.exclude[0].lower() == 'f':
+                    opt.exclude = False
+                else:
+                    opt.exclude = bool(int(opt.exclude))
         elif isinstance(opt, struct.MILoss) and tag in ('-p', '--patch'):
             opt.patch = list()
             while next_isvalue(args):

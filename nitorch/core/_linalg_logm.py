@@ -68,12 +68,13 @@ class _LogM(torch.autograd.Function):
     @staticmethod
     def forward(ctx, mat):
         from scipy.linalg import logm
+        logm_nowarn = lambda x: logm(x, disp=False)[0]
         if mat.requires_grad:
             ctx.save_for_backward(mat)
         device = mat.device
         input_complex = mat.is_complex()
         mat = mat.cpu().numpy()
-        mat = logm(mat)
+        mat = logm_nowarn(mat)
         mat = torch.as_tensor(mat, device=device)
         if not input_complex and mat.is_complex():
             mat = mat.real
@@ -82,12 +83,13 @@ class _LogM(torch.autograd.Function):
     @staticmethod
     def backward(ctx, output_grad):
         from scipy.linalg import logm
+        logm_nowarn = lambda x: logm(x, disp=False)[0]
         mat, = ctx.saved_tensors
         device = output_grad.device
         input_complex = output_grad.is_complex()
         mat = mat.cpu().numpy()
         output_grad = output_grad.cpu().numpy()
-        grad = matrix_chain_rule(mat, output_grad, logm)
+        grad = matrix_chain_rule(mat, output_grad, logm_nowarn)
         grad = torch.as_tensor(grad, device=device)
         if not input_complex and grad.is_complex():
             grad = grad.real

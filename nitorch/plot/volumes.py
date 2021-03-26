@@ -392,7 +392,7 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
     if affine is not None:
         vx = spatial.voxel_size(affine)
     else:
-        vx = [1, 1, 1]
+        vx = torch.ones(3, dtype=torch.float32)
 
     # compute the size, in pseudo-mm, of each image
     size = [slices[0].shape[1]*vx[1]/(slices[0].shape[0]*vx[0]),

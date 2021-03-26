@@ -1,5 +1,5 @@
 import torch
-from nitorch.core import utils
+from nitorch.core import utils, constants
 from .noise import add_noise
 
 
@@ -54,6 +54,7 @@ def spgr(pd, r1, r2s=None, mt=None, transmit=None, receive=None, gfactor=None,
         = utils.to(pd, r1, r2s, mt, transmit, receive, gfactor, device=device)
     backend = utils.backend(pd)
 
+    fa = fa * constants.pi / 180.
     if transmit is not None:
         fa = fa * transmit
     del transmit

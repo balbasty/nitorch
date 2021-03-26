@@ -489,12 +489,12 @@ class StackedConv(tnn.ModuleList):
             if isinstance(layer, Conv):
                 return layer.in_channels
 
-    def shape(self, x):
+    def shape(self, x, **k):
         if torch.is_tensor(x):
             x = tuple(x.shape)
-        for layer in reversed(self):
+        for layer in self:
             if isinstance(layer, (Conv, Pool)):
-                x = layer.shape(x)
+                x = layer.shape(x, **k)
         return x
     
     def forward(self, *x, **overload):
@@ -1417,7 +1417,7 @@ class UNet2(tnn.Sequential):
             Number of channels in each decoding layer.
             Default: symmetric of encoder
 
-        conv_per_layer : int, default=2
+        conv_per_layer : int, default=1
             Number of convolutions per layer.
 
         kernel_size : int or sequence[int], default=3
@@ -1433,10 +1433,13 @@ class UNet2(tnn.Sequential):
         """
         self.dim = dim
 
+        default_encoder = [16, 32, 32, 32]
+        default_decoder = [32, 32, 32, 16, 16, 16]
+        
         # defaults
         conv_per_layer = max(1, conv_per_layer)
-        encoder = list(encoder or [16, 32, 32, 32])
-        decoder = make_list(decoder or list(reversed(encoder[:-1])),
+        encoder = list(encoder or default_encoder)
+        decoder = make_list(decoder or default_decoder,
                             n=len(encoder)-1, crop=False)
         stack = decoder[len(encoder)-1:]
         decoder = encoder[-1:] + decoder[:len(encoder)-1]
@@ -1573,7 +1576,7 @@ class UNet2(tnn.Sequential):
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
-        shape = layer.shape(inshape)[2:]
+        shape = layer.shape(inshape, output_padding=0)[2:]
         padding = [o - i for o, i in zip(outshape, shape)]
         return padding
 
@@ -1760,7 +1763,7 @@ class UUNet(tnn.Sequential):
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
-        shape = layer.shape(inshape)[2:]
+        shape = layer.shape(inshape, output_padding=0)[2:]
         padding = [o - i for o, i in zip(outshape, shape)]
         return padding
 
@@ -1911,7 +1914,7 @@ class WNet(tnn.Sequential):
                              n=len(encoder1) - 1, crop=False)
         default_encoder2 = encoder1[1:]
         encoder2 = list(encoder2 or default_encoder2)
-        default_decoder2 = list(reversed(encoder2[:-1])) + [encoder1[0]]
+        default_decoder2 = decoder1
         decoder2 = make_list(decoder2 or default_decoder2, 
                              n=len(encoder2), crop=False)
 
@@ -1921,8 +1924,6 @@ class WNet(tnn.Sequential):
         decoder2 = decoder2[:len(encoder2)]
         activation, final_activation = make_list(activation, 2)
         kernel_size, final_kernel_size = make_list(kernel_size, 2)
-
-        print(encoder1, decoder1, stack1, encoder2, decoder2, stack2)
 
         modules = OrderedDict()
 
@@ -2086,7 +2087,7 @@ class WNet(tnn.Sequential):
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
-        shape = layer.shape(inshape)[2:]
+        shape = layer.shape(inshape, output_padding=0)[2:]
         padding = [o - i for o, i in zip(outshape, shape)]
         return padding
 

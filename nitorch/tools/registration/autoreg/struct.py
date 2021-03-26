@@ -123,6 +123,7 @@ class MatchingLoss(Base):
     bound: str = None               # Bound order         (default for f+m)
     extrapolate: bool = None        # Extrapolate order   (default for f+m)
     pyramid: list = None            # Pyramid levels      (default for f+m)
+    exclude: bool = False           # Exclude form mean space
 
 
 class NoLoss(MatchingLoss):

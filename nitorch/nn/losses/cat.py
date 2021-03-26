@@ -365,7 +365,7 @@ class DiceLoss(Loss):
     """
 
     def __init__(self, one_hot_map=None, log=False, implicit=False,
-                 weighted=False, *args, **kwargs):
+                 weighted=False, exclude_background=False, *args, **kwargs):
         """
 
         Parameters
@@ -388,6 +388,7 @@ class DiceLoss(Loss):
         self.log = log
         self.implicit = implicit
         self.weighted = weighted
+        self.exclude_background = exclude_background
 
     def forward(self, predicted, reference, **overload):
         """
@@ -420,6 +421,7 @@ class DiceLoss(Loss):
         log = overload.get('log', self.log)
         implicit = overload.get('implicit', self.implicit)
         weighted = overload.get('weighted', self.weighted)
+        exclude_background = overload.get('exclude_background', self.exclude_background)
 
         predicted = torch.as_tensor(predicted)
         reference = torch.as_tensor(reference, device=predicted.device)
@@ -443,6 +445,7 @@ class DiceLoss(Loss):
         # preprocess reference
         if reference.dtype in (torch.half, torch.float, torch.double):
             # one-hot labels
+            
             reference = reference.to(predicted.dtype)
             implicit_ref = reference.shape[1] == nb_classes-1
             reference = get_prob_explicit(reference, implicit=implicit_ref)
@@ -451,6 +454,9 @@ class DiceLoss(Loss):
                                  'Expected {} or {} but got {}.'.format(
                                  nb_classes, nb_classes-1, reference.shape[1]))
 
+            if exclude_background:
+                predicted = predicted[:, :-1]
+                reference = reference[:, :-1]
             inter = nansum(predicted * reference, dim=spatial_dims)
             union = nansum(predicted + reference, dim=spatial_dims)
             loss = -2 * inter / union
@@ -470,6 +476,8 @@ class DiceLoss(Loss):
             loss = []
             weights = []
             for soft, hard in enumerate(one_hot_map):
+                if exclude_background and soft == predicted.shape[-1] - 1:
+                    continue
                 pred1 = predicted[:, None, soft, ...]
 
                 if hard is None:

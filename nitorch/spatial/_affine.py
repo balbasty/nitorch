@@ -2297,7 +2297,7 @@ def affine_mean(mats, shapes=None):
     # We choose RAS as the common layout, as it makes further steps
     # easier and matches the world space orientation.
     for mat, shape in zip(mats, shapes):
-        if shape:
+        if shape is not None:
             mat1, shape1 = affine_reorient(mat, shape)
             shape[:] = torch.as_tensor(shape1)
         else:
