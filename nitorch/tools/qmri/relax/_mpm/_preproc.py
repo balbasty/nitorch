@@ -97,7 +97,6 @@ def preproc(data, transmit=None, receive=None, opt=None):
     if opt.verbose:
         print('')
 
-        
     print('Estimating maps from volumes:')
     for i in range(len(data)):
         print(f'    - Contrast {i:d}: ', end='')

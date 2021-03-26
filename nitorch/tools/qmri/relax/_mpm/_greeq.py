@@ -98,7 +98,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
 
     # --- estimate noise / register / initialize maps ---
     data, transmit, receive, maps = preproc(data, transmit, receive, opt)
-    vx = spatial.voxel_size(maps.affine)
     has_mt = hasattr(maps, 'mt')
 
     # --- prepare penalty factor ---
