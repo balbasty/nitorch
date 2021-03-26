@@ -195,6 +195,8 @@ def load_transforms(s):
     for loss in s.losses:
         if isinstance(loss, struct.NoLoss):
             continue
+        if getattr(loss, 'exclude', False):
+            continue
         all_shapes.append(loss.fixed.shape)
         all_affines.append(loss.fixed.affine)
         all_shapes.append(loss.moving.shape)
