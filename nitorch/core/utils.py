@@ -1540,6 +1540,7 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
 
     # reshape as [batch, pool, 2]]
     x = torch.as_tensor(x)
+    bck = backend(x)
     if dim is None:
         x = x.reshape([1, -1, 2])
         batch = []
@@ -1558,12 +1559,12 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
     if min is None:
         min = x.min(dim=-2, keepdim=True).values
     else:
-        min = torch.as_tensor(min)
+        min = torch.as_tensor(min, **bck)
         min = min.expand([*batch, 2]).reshape([-1, 1, 2])
     if max is None:
         max = x.max(dim=-2, keepdim=True).values
     else:
-        max = torch.as_tensor(max)
+        max = torch.as_tensor(max, **bck)
         max = max.expand([*batch, 2]).reshape([-1, 1, 2])
 
     # convert intensities to coordinates
