@@ -151,8 +151,8 @@ def denoise_mri(dat_x, affine_x=None, lam_scl=5.0, lr=1e1, max_iter=10000,
             else:
                 scheduler.step()
     if do_write:
+        # write output to disk
         for i in range(dat_y_hat.shape[0]):
-            # write output to disk
             fname = file_replace(nii.fname, prefix='den_', dir=dir_out, suffix='_' + str(i))
             savef(dat_y_hat[i, ...], fname, like=nii)
 
