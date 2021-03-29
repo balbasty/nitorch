@@ -122,12 +122,12 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
         dat = torch.tensor(nii.get_fdata())
         dat = dat.flatten()
     device = dat.device
+    dat[~torch.isfinite(dat)] = 0
     dat = dat.double()
 
     # Mask and get min/max
     mn = dat.min().round()
     msk = (dat != 0)
-    msk &= torch.isfinite(dat)
     msk &= dat != dat.max()
     dat, msk = dat[msk], None
     mx = torch.max(dat).round()
