@@ -44,7 +44,6 @@ def compute_ir(mss, pd, ex, ep, ed, c1, c2, s1, s2, m, eff):
 def compute_mp2rage(mi1, mi2):
     # type: (Tensor, Tensor) -> Tensor
     m = (mi1 * mi2) / (mi1.pow(2) + mi2.pow(2))
-    m = torch.where(torch.isfinite(m).bitwise_not(), m.new_zeros([1]), m)
     return m
 
 
@@ -321,10 +320,11 @@ def mp2rage(pd, r1, r2s=None, transmit=None, receive=None, gfactor=None,
     td = tr - ti2 - tr2/2           # Recovery time
 
     if return_combined and not sigma:
-        # m = (mi1*mi2) / (mi1.square() + mi2.square())
-        # m = torch.where(~torch.isfinite(m), m.new_zeros([]), m)
-        return mp2rage_nonoise(pd, r1, tx, tp, tw, td, tr,
-                               fa1, fa2, n, eff, transmit)
+        m = mp2rage_nonoise(pd, r1, tx, tp, tw, td, tr,
+                            fa1, fa2, n, eff, transmit)
+
+        m = torch.where(~torch.isfinite(m), m.new_zeros([1]), m)
+        return m
 
     mi1, mi2 = mp2rage_uncombined(pd, r1, r2s, tx, tp, tw, td, tr,
                                   te, fa1, fa2, n, eff, transmit, receive)
@@ -334,10 +334,9 @@ def mp2rage(pd, r1, r2s=None, transmit=None, receive=None, gfactor=None,
     mi2 = add_noise(mi2, std=sigma, gfactor=gfactor)
 
     if return_combined:
-        # m = (mi1*mi2) / (mi1.square() + mi2.square())
-        # m = torch.where(~torch.isfinite(m), m.new_zeros([]), m)
-        # return m
-        return mp2rage_from_ir(mi1, mi2)
+        m = mp2rage_from_ir(mi1, mi2)
+        m = torch.where(~torch.isfinite(m), m.new_zeros([1]), m)
+        return m
     else:
         mi1 = torch.where(~torch.isfinite(mi1), mi1.new_zeros([]), mi1)
         mi2 = torch.where(~torch.isfinite(mi2), mi2.new_zeros([]), mi2)
