@@ -65,14 +65,14 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
     aff = aff.to(device=device)
 
     # exponentiate
+    get_disp = (type.lower()[0] == 'd') and (unit != 'mm')
     dat = spatial.exp(dat[None], inverse=inverse, steps=steps, bound=bound,
-                      inplace=True, displacement=(type.lower()[0] == 'd'))[0]
+                      inplace=True, displacement=get_disp)[0]
     if unit == 'mm':
-        if type.lower()[0] == 'd':
-            vx = spatial.voxel_size(aff)
-            dat *= vx
-        else:
-            dat = spatial.affine_matvec(aff, dat)
+        dat = spatial.affine_matvec(aff, dat)
+        if type.lower()[0] != 'd':
+            id = spatial.identity_grid(dat.shape[-3:])
+            dat -= id
 
     if output:
         if is_file:
