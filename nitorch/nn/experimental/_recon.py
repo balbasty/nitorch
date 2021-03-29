@@ -1,8 +1,9 @@
 import math
 from nitorch.core.constants import eps
 from nitorch.core.optim import get_gain
-from nitorch.io import map
-from nitorch.spatial import diff
+from nitorch.core.py import file_replace
+from nitorch.io import (map, savef)
+from nitorch.spatial import (diff, voxel_size)
 from nitorch.tools.img_statistics import estimate_noise
 import numpy as np
 import torch
@@ -35,10 +36,17 @@ def _add_rician_noise(dat, noise_prct=0.1):
     return dat, std
 
 
-def denoise_mri(dat_x, lam_scl=4.0, lr=1e1, max_iter=10000, tolerance=1e-8, verbose=True):
+def denoise_mri(dat_x, affine_x=None, lam_scl=5.0, lr=1e1, max_iter=10000,
+                tolerance=1e-8, verbose=True, device='cuda', do_write=True,
+                dir_out=None):
     """Denoises a multi-channel MR image by solving:
+
     dat_y_hat = 0.5*sum_c(tau_c*sum_i((dat_x_ci - dat_y_ci)^2)) + jtv(dat_y_1, ..., dat_y_C; lam)
+
     using PyTorch's auto-diff.
+
+    If input is given as paths to files, outputs prefixed 'den_' is written based on options
+    'dir_out' and 'do_write'.
 
     Reference:
     Brudfors, Mikael, et al. "MRI super-resolution using multi-channel total variation."
@@ -46,9 +54,11 @@ def denoise_mri(dat_x, lam_scl=4.0, lr=1e1, max_iter=10000, tolerance=1e-8, verb
 
     Parameters
     ----------
-    dat_x : (dmx, dmy, dmz, nchannels) tensor
+    dat_x : (nchannels, dmx, dmy, dmz) tensor or sequence[str]
         Input noisy image data
-    lam_scl : float, default=4.0
+    affine_x : (4, 4) tensor, optional
+        Input images' affine matrix. If not given, assumes identity.
+    lam_scl : float, default=5.0
         Scaling of regularisation values
     lr : float, default=1e1
         Optimiser learning rate
@@ -58,25 +68,44 @@ def denoise_mri(dat_x, lam_scl=4.0, lr=1e1, max_iter=10000, tolerance=1e-8, verb
         Convergence threshold (when to stop iterating)
     verbose : bool, default=True
         Print to screen?
+    device : torch.device, default='cuda'
+        Torch device
+    do_write : bool, default=True
+        If input is given as paths to files, output is written to disk,
+        prefixed 'den_' to 'dir_out'
+    dir_out : str, optional
+        Directory where to write output, default is same as input.
 
     Returns
     ----------
-    dat_y_hat : (dmx, dmy, dmz, nchannels) tensor
+    dat_y_hat : (nchannels, dmx, dmy, dmz) tensor
         Denoised image data
 
     """
+    # read data from disk
+    if isinstance(dat_x,(list, tuple)) and \
+        sum(isinstance(dat_x[i],str) for i in range(len(dat_x))) == len(dat_x):
+        dat_x, affine_x, nii = _get_image_data(dat_x, device=device)
+    else:
+        do_write = False  # input is tensor, do not write to disk
+    # backend
     device = dat_x.device
     dtype = dat_x.dtype
     # estimate hyper-parameters
-    tau = torch.zeros(dat_x.shape[-1], device=device, dtype=dtype)
-    lam = torch.zeros(dat_x.shape[-1], device=device, dtype=dtype)
-    for i in range(dat_x.shape[-1]):
-        sd_bg, _, _, mean_fg = estimate_noise(dat_x[..., i])
+    tau = torch.zeros(dat_x.shape[0], device=device, dtype=dtype)
+    lam = torch.zeros(dat_x.shape[0], device=device, dtype=dtype)
+    for i in range(dat_x.shape[0]):
+        sd_bg, _, _, mean_fg = estimate_noise(dat_x[i, ...], show_fit=False)
         tau[i] = 1 / sd_bg.float() ** 2
-        lam[i] = math.sqrt(1 / dat_x.shape[-1]) / mean_fg.float()  # modulates with number of channels (as in JTV reg)
+        lam[i] = math.sqrt(1 / dat_x.shape[0]) / mean_fg.float()  # modulates with number of channels (as in JTV reg)
     if verbose:
         print("tau={:}".format(tau))
         print("lam={:}".format(lam))
+    # affine matrices
+    if affine_x is None:
+        affine_x = torch.eye(4, device=device, dtype=dtype)
+    # voxel size
+    vx = voxel_size(affine_x)
     # scale regularisation
     lam = lam_scl * lam
     # initial estimate of reconstruction
@@ -88,11 +117,12 @@ def denoise_mri(dat_x, lam_scl=4.0, lr=1e1, max_iter=10000, tolerance=1e-8, verb
     scheduler = ReduceLROnPlateau(optim)
     # optimisation loop
     loss_vals = torch.zeros(max_iter + 1, dtype=torch.float64)
+    cnt_conv = 0
     for n_iter in range(1, max_iter + 1):
         # set gradients to zero (PyTorch accumulates the gradients on subsequent backward passes)
         optim.zero_grad()
         # compute reconstruction loss
-        loss_val = _loss_ssqd_jtv(dat_x, dat_y_hat, tau, lam)
+        loss_val = _loss_ssqd_jtv(dat_x, dat_y_hat, tau, lam, vx=vx)
         # differentiate reconstruction loss w.r.t. dat_y_hat
         loss_val.backward()
         # store loss
@@ -101,20 +131,30 @@ def denoise_mri(dat_x, lam_scl=4.0, lr=1e1, max_iter=10000, tolerance=1e-8, verb
         optim.step()
         # compute gain
         gain = get_gain(loss_vals[:n_iter + 1], monotonicity='decreasing')
-        if n_iter > 10 and gain < tolerance:
-            # finished
-            break
+        if verbose:
+            # print to screen
+            with torch.no_grad():
+                if n_iter % 10 == 0:
+                    print('n_iter={:4d}, loss={:12.6f}, gain={:0.10}, lr={:g}'. \
+                        format(n_iter, loss_val.item(), gain, optim.param_groups[0]['lr']), end='\r')  # end='\r'
+        if n_iter > 10 and gain.abs() < tolerance:
+            cnt_conv += 1
+            if cnt_conv == 5:
+                # finished
+                break
+        else:
+            cnt_conv = 0
         # incorporate scheduler
         if scheduler is not None and n_iter % 10 == 0:
             if isinstance(scheduler, ReduceLROnPlateau):
                 scheduler.step(loss_val)
             else:
                 scheduler.step()
-        if verbose:
-            # print to screen
-            with torch.no_grad():
-                if n_iter % 100 == 0:
-                    print('n_iter={:4d}, loss={:12.6f}, gain={:0.10}, lr={:g}'.format(n_iter, loss_val.item(), gain, optim.param_groups[0]['lr']), end='\r')
+    if do_write:
+        for i in range(dat_y_hat.shape[0]):
+            # write output to disk
+            fname = file_replace(nii.fname, prefix='den_', dir=dir_out, suffix='_' + str(i))
+            savef(dat_y_hat[i, ...], fname, like=nii)
 
     return dat_y_hat
 
@@ -135,8 +175,12 @@ def _get_image_data(pths, device=None, dtype=None):
 
     Returns
     ----------
-    dat : (dmx, dmy, dmz, nchannels) tensor
+    dat : (nchannels, dmx, dmy, dmz) tensor
         Image tensor
+    affine : (4, 4) tensor
+        Affine matrix (assumed the same across channels)
+    nii : nitorch.BabelArray
+        BabelArray object.
 
     """
     for i, p in enumerate(pths):
@@ -144,14 +188,15 @@ def _get_image_data(pths, device=None, dtype=None):
         nii = map(p)
         # get data
         if i == 0:
-            dat = nii.fdata(dtype=dtype, device=device, rand=False)[..., None]
+            dat = nii.fdata(dtype=dtype, device=device, rand=False)[None]
+            affine = nii.affine.type(dat.dtype).to(dat.device)
         else:
-            dat = torch.cat((dat, nii.fdata(dtype=dtype, device=device, rand=False)[..., None]), dim=-1)
+            dat = torch.cat((dat, nii.fdata(dtype=dtype, device=device, rand=False)[None]), dim=0)
 
-    return dat
+    return dat, affine, nii
 
 
-def _loss_ssqd_jtv(dat_x, dat_y, tau, lam, voxel_size=1, side='f', bound='dct2'):
+def _loss_ssqd_jtv(dat_x, dat_y, tau, lam, vx=1, side='f', bound='dct2'):
     """Computes an image denoising loss function, where:
     * fidelity term: sum-of-squared differences (SSQD)
     * regularisation term: joint total variation (JTV)
@@ -159,15 +204,15 @@ def _loss_ssqd_jtv(dat_x, dat_y, tau, lam, voxel_size=1, side='f', bound='dct2')
 
     Parameters
     ----------
-    dat_x : (dmx, dmy, dmz, nchannels) tensor
+    dat_x : (nchannels, dmx, dmy, dmz) tensor
         Input image
-    dat_y : (dmx, dmy, dmz, nchannels) tensor
+    dat_y : (nchannels, dmx, dmy, dmz) tensor
         Reconstruction image
     tau : (nchannels) tensor
         Channel-specific noise precisions
     lam : (nchannels) tensor
         Channel-specific regularisation values
-    voxel_size : float or sequence[float], default=1
+    vx : float or sequence[float], default=1
         Unit size used in the denominator of the gradient.
     side : {'c', 'f', 'b'}, default='f'
         * 'c': central finite differences
@@ -182,15 +227,17 @@ def _loss_ssqd_jtv(dat_x, dat_y, tau, lam, voxel_size=1, side='f', bound='dct2')
         Loss function value (negative log-posterior)
 
     """
+    # exponentiate
+    # dat_y = dat_y.exp()
     # compute negative log-likelihood (SSQD fidelity term)
-    nll_xy = 0.5 * torch.sum(tau * torch.sum((dat_x - dat_y) ** 2, dim=(0, 1, 2)))
+    nll_xy = 0.5 * torch.sum(tau * torch.sum((dat_x - dat_y) ** 2, dim=(1, 2, 3)))
     # compute gradients of reconstruction, shape=(dmx, dmy, dmz, nchannels, dmgr)
-    nll_y = diff(dat_y, order=1, dim=(0, 1, 2), voxel_size=voxel_size, side=side, bound=bound)
+    nll_y = diff(dat_y, order=1, dim=(1, 2, 3), voxel_size=vx, side=side, bound=bound)
     # modulate channels with regularisation
-    nll_y = lam[None, None, None, :, None] * nll_y
+    nll_y = lam[..., None, None, None, None] * nll_y
     # compute negative log-prior (JTV regularisation term)
     nll_y = torch.sum(nll_y ** 2 + eps(), dim=-1)  # to gradient magnitudes (sum over gradient directions)
-    nll_y = torch.sum(nll_y, dim=-1)  # sum over reconstruction channels
+    nll_y = torch.sum(nll_y, dim=0)  # sum over reconstruction channels
     nll_y = torch.sqrt(nll_y)
     nll_y = torch.sum(nll_y)  # sum over voxels
     # compute negative log-posterior (loss function)
