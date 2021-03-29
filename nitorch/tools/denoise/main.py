@@ -194,7 +194,10 @@ def _get_image_data(pths, device=None, dtype=None):
         if i == 0:
             dat = nii.fdata(dtype=dtype, device=device, rand=False)[None]
             affine = nii.affine.type(dat.dtype).to(dat.device)
+            shape = nii.shape
         else:
+            if not torch.equal(torch.as_tensor(shape), torch.as_tensor(nii.shape)):
+                raise ValueError('All images must have same dimensions!')
             dat = torch.cat((dat, nii.fdata(dtype=dtype, device=device, rand=False)[None]), dim=0)
 
     return dat, affine, nii
