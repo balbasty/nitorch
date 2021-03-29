@@ -8,37 +8,14 @@ from nitorch.tools.img_statistics import estimate_noise
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from .parser import DenoiseMRI
+import os
 
 
-def _add_rician_noise(dat, noise_prct=0.1):
-    """Adds rician noise to a tensor as:
-    dat = dat + n_real + i*n_img, where n_real, n_img ~ N(0, std**2)
-    dat = magnitude(dat)
-
-    Parameters
-    ----------
-    dat : tensor
-        Input data
-    noise_prct : float, default=0.1
-        Amount of noise to add, as a percentage of input max value
-
-    Returns
-    ----------
-    dat : tensor
-        Noisy data
-	std : float
-		Noise standard deviation
-
-    """
-    std = noise_prct * dat.max()
-    dat = ((dat + std*torch.randn_like(dat))**2 + (std*torch.randn_like(dat))**2).sqrt()
-
-    return dat, std
-
-
-def denoise_mri(dat_x, affine_x=None, lam_scl=5.0, lr=1e1, max_iter=10000,
-                tolerance=1e-8, verbose=True, device='cuda', do_write=True,
-                dir_out=None):
+def denoise_mri(*dat_x, affine_x=None, lam_scl=DenoiseMRI.lam_scl, learning_rate=DenoiseMRI.learning_rate,
+                max_iter=DenoiseMRI.max_iter, tolerance=DenoiseMRI.tolerance,
+                verbose=DenoiseMRI.verbose, device=DenoiseMRI.device,
+                do_write=DenoiseMRI.do_write, dir_out=DenoiseMRI.dir_out):
     """Denoises a multi-channel MR image by solving:
 
     dat_y_hat = 0.5*sum_c(tau_c*sum_i((dat_x_ci - dat_y_ci)^2)) + jtv(dat_y_1, ..., dat_y_C; lam)
@@ -58,16 +35,16 @@ def denoise_mri(dat_x, affine_x=None, lam_scl=5.0, lr=1e1, max_iter=10000,
         Input noisy image data
     affine_x : (4, 4) tensor, optional
         Input images' affine matrix. If not given, assumes identity.
-    lam_scl : float, default=5.0
+    lam_scl : float, default=10.0
         Scaling of regularisation values
-    lr : float, default=1e1
+    learning_rate : float, default=1e1
         Optimiser learning rate
     max_iter : int, default=10000
         Maximum number of fitting iterations
     tolerance : float, default=1e-8
         Convergence threshold (when to stop iterating)
     verbose : bool, default=True
-        Print to screen?
+        Print to terminal?
     device : torch.device, default='cuda'
         Torch device
     do_write : bool, default=True
@@ -98,9 +75,8 @@ def denoise_mri(dat_x, affine_x=None, lam_scl=5.0, lr=1e1, max_iter=10000,
         sd_bg, _, _, mean_fg = estimate_noise(dat_x[i, ...], show_fit=False)
         tau[i] = 1 / sd_bg.float() ** 2
         lam[i] = math.sqrt(1 / dat_x.shape[0]) / mean_fg.float()  # modulates with number of channels (as in JTV reg)
-    if verbose:
-        print("tau={:}".format(tau))
-        print("lam={:}".format(lam))
+    # print("tau={:}".format(tau))
+    # print("lam={:}".format(lam))
     # affine matrices
     if affine_x is None:
         affine_x = torch.eye(4, device=device, dtype=dtype)
@@ -112,8 +88,8 @@ def denoise_mri(dat_x, affine_x=None, lam_scl=5.0, lr=1e1, max_iter=10000,
     dat_y_hat = torch.zeros_like(dat_x)
     dat_y_hat = torch.nn.Parameter(dat_y_hat, requires_grad=True)
     # prepare optimiser and scheduler
-    optim = torch.optim.Adam([dat_y_hat], lr=lr)  # Adam
-    # optim = torch.optim.SGD([dat_y_hat], lr=lr, momentum=0.9)  # SGD
+    optim = torch.optim.Adam([dat_y_hat], lr=learning_rate)  # Adam
+    # optim = torch.optim.SGD([dat_y_hat], lr=learning_rate, momentum=0.9)  # SGD
     scheduler = ReduceLROnPlateau(optim)
     # optimisation loop
     loss_vals = torch.zeros(max_iter + 1, dtype=torch.float64)
@@ -135,7 +111,7 @@ def denoise_mri(dat_x, affine_x=None, lam_scl=5.0, lr=1e1, max_iter=10000,
             # print to screen
             with torch.no_grad():
                 if n_iter % 10 == 0:
-                    print('n_iter={:4d}, loss={:12.6f}, gain={:0.10}, lr={:g}'. \
+                    print('n_iter={:4d}, loss={:12.6f}, gain={:0.10}, learning_rate={:g}'. \
                         format(n_iter, loss_val.item(), gain, optim.param_groups[0]['lr']), end='\r')  # end='\r'
         if n_iter > 10 and gain.abs() < tolerance:
             cnt_conv += 1
@@ -152,11 +128,39 @@ def denoise_mri(dat_x, affine_x=None, lam_scl=5.0, lr=1e1, max_iter=10000,
                 scheduler.step()
     if do_write:
         # write output to disk
+        if dir_out is not None:
+            os.makedirs(dir_out, exist_ok=True)
         for i in range(dat_y_hat.shape[0]):
             fname = file_replace(nii.fname, prefix='den_', dir=dir_out, suffix='_' + str(i))
             savef(dat_y_hat[i, ...], fname, like=nii)
 
     return dat_y_hat
+
+
+def _add_rician_noise(dat, noise_prct=0.1):
+    """Adds rician noise to a tensor as:
+    dat = dat + n_real + i*n_img, where n_real, n_img ~ N(0, std**2)
+    dat = magnitude(dat)
+
+    Parameters
+    ----------
+    dat : tensor
+        Input data
+    noise_prct : float, default=0.1
+        Amount of noise to add, as a percentage of input max value
+
+    Returns
+    ----------
+    dat : tensor
+        Noisy data
+	std : float
+		Noise standard deviation
+
+    """
+    std = noise_prct * dat.max()
+    dat = ((dat + std*torch.randn_like(dat))**2 + (std*torch.randn_like(dat))**2).sqrt()
+
+    return dat, std
 
 
 def _get_image_data(pths, device=None, dtype=None):
