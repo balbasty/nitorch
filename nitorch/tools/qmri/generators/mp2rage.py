@@ -44,7 +44,7 @@ def compute_ir(mss, pd, ex, ep, ed, c1, c2, s1, s2, m, eff):
 def compute_mp2rage(mi1, mi2):
     # type: (Tensor, Tensor) -> Tensor
     m = (mi1 * mi2) / (mi1.pow(2) + mi2.pow(2))
-    m = torch.where(~torch.isfinite(m), m.new_zeros([1]), m)
+    m = torch.where(torch.isfinite(m).bitwise_not(), m.new_zeros([1]), m)
     return m
 
 
