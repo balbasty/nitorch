@@ -265,7 +265,7 @@ def mp2rage(pd, r1, r2s=None, transmit=None, receive=None, gfactor=None,
     tx : float, default=te*2 or 5.8e-3
         Excitation repetition time, in sec.
         (Time between two excitation pulses within the echo train)
-    te : float, default=minitr/2
+    te : float, default=tx/2
         Echo time, in sec.
     fa : float or (float, float), default=(4, 5)
         Flip angle of the first and second acquisition block, in deg
