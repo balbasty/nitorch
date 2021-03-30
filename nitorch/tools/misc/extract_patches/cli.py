@@ -30,8 +30,6 @@ def _cli(args):
     if not options:
         return
 
-    options.output = make_list(options.output, len(options.files))
-    options.transform = make_list(options.transform, len(options.files))
     extract_patches(options.file, options.size, options.stride,
                     output=options.output, transform=options.transform)
 
