@@ -27,7 +27,7 @@ usage:
                                  (default: center of the FOV)
     -k, --like FILE              Path to a pre-cropped volume to use as reference.
     -b, --bounding-box [THRESH]  Crop at the bounding box of `input > THRESH`.
-    -o, --output *FILES          Output filenames (default: {dir}/{base}.{i}{ext})
+    -o, --output *FILES          Output filenames (default: {dir}/{base}.crop{ext})
     -t, --transform              Input or output transformation filename (default: none)
                                     Input if none of s/c/l/k options are used.
                                     Output otherwise.
@@ -86,6 +86,9 @@ def parse(args):
             struct.bbox = True
             if cli.next_isvalue(args):
                 struct.bbox = float(args.pop(0))
+        elif tag in ('-k', '--like'):
+            cli.check_next_isvalue(args, tag)
+            struct.like = args.pop(0)
         elif tag in ('-o', '--output'):
             struct.output = []
             while cli.next_isvalue(args):

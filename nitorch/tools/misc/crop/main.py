@@ -118,13 +118,13 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
         maxs = []
         for d in range(dim):
             n = dat.shape[d]
-            idx = utils.movedim(dat, d, 0).reshape([n, -1]).any(-1).nonzero()
+            idx = utils.movedim(dat, d, 0).reshape([n, -1]).any(-1).nonzero(as_tuple=False)
             mins.append(idx.min())
             maxs.append(idx.max())
         mins = utils.as_tensor(mins)
         maxs = utils.as_tensor(maxs)
         size = maxs + 1 - mins
-        center = (maxs + 1 + mins)/2
+        center = (maxs + 1 + mins).float()/2
         space = 'vox'
 
     # --- Open transformation file and compute size/center ---
@@ -156,7 +156,7 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
 
     # --- compute first/last ---
     center = center.float()
-    size = size.ceil().long()
+    size = (size.ceil() if size.dtype.is_floating_point else size).long()
     first = (center - size.float()/2).round().long()
     last = (first + size).tolist()
     first = [max(f, 0) for f in first.tolist()]
