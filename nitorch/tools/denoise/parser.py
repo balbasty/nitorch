@@ -14,18 +14,19 @@ class DenoiseMRI(cli.ParsedStructure):
     do_write: bool = True
     dir_out: str = None
 
-help = r"""[nitorch] Total variation denoising of magnetic resonance images (MRIs)
+help = r"""[nitorch] Total variation denoising of magnetic resonance images (MRIs). For multi-
+sequence denoising, requires all images to have the same dimensions.
 
 usage:
     nitorch denoise_mri *FILES <*OPT>
 
     <OPT> can take values:
-        -s,   --lam_scl        Scaling of regularisation values (10.0)
-        -lr,  --learning_rate  Optimiser learning rate (1e1)
-        -n,   --max_iter N     Maximum number of fitting iterations (1e5)
-        -t,   --tolerance TOL  Convergence threshold (when to stop iterating) (1e-8)
-        -v,   --verbose        Print to terminal? (default: True)
-        -o,   --dir_out        Directory where to write output, default is same as input   
+        -s,   --lam_scl        Scaling of regularisation values ({:})
+        -lr,  --learning_rate  Optimiser learning rate ({:})
+        -n,   --max_iter N     Maximum number of fitting iterations ({:})
+        -t,   --tolerance TOL  Convergence threshold (when to stop iterating) ({:})
+        -v,   --verbose        Print to terminal? ({:})
+        -o,   --dir_out        Directory where to write output (default is same as input)   
         -cpu, -gpu             Device to use (default: gpu)
         
 examples:
@@ -35,7 +36,8 @@ examples:
     # multi-channel MR image denoising
     nitorch denoise_mri T1w.nii T2w.nii -o './output'
                 
-"""
+""".format(DenoiseMRI.lam_scl, DenoiseMRI.learning_rate, DenoiseMRI.max_iter, DenoiseMRI.tolerance,
+           DenoiseMRI.verbose)
 
 
 def parse(args):

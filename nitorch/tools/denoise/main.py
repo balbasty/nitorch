@@ -8,14 +8,13 @@ from nitorch.tools.img_statistics import estimate_noise
 import numpy as np
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from .parser import DenoiseMRI
+from .parser import DenoiseMRI as opt
 import os
 
 
-def denoise_mri(*dat_x, affine_x=None, lam_scl=DenoiseMRI.lam_scl, learning_rate=DenoiseMRI.learning_rate,
-                max_iter=DenoiseMRI.max_iter, tolerance=DenoiseMRI.tolerance,
-                verbose=DenoiseMRI.verbose, device=DenoiseMRI.device,
-                do_write=DenoiseMRI.do_write, dir_out=DenoiseMRI.dir_out):
+def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate,
+                max_iter=opt.max_iter, tolerance=opt.tolerance, verbose=opt.verbose,
+                device=opt.device, do_write=opt.do_write, dir_out=opt.dir_out):
     """Denoises a multi-channel MR image by solving:
 
     dat_y_hat = 0.5*sum_c(tau_c*sum_i((dat_x_ci - dat_y_ci)^2)) + jtv(dat_y_1, ..., dat_y_C; lam)
@@ -37,7 +36,7 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=DenoiseMRI.lam_scl, learning_rate
         Input images' affine matrix. If not given, assumes identity.
     lam_scl : float, default=10.0
         Scaling of regularisation values
-    learning_rate : float, default=1e1
+    lr : float, default=1e1
         Optimiser learning rate
     max_iter : int, default=10000
         Maximum number of fitting iterations
@@ -88,8 +87,8 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=DenoiseMRI.lam_scl, learning_rate
     dat_y_hat = torch.zeros_like(dat_x)
     dat_y_hat = torch.nn.Parameter(dat_y_hat, requires_grad=True)
     # prepare optimiser and scheduler
-    optim = torch.optim.Adam([dat_y_hat], lr=learning_rate)  # Adam
-    # optim = torch.optim.SGD([dat_y_hat], lr=learning_rate, momentum=0.9)  # SGD
+    optim = torch.optim.Adam([dat_y_hat], lr=lr)  # Adam
+    # optim = torch.optim.SGD([dat_y_hat], lr=lr, momentum=0.9)  # SGD
     scheduler = ReduceLROnPlateau(optim)
     # optimisation loop
     loss_vals = torch.zeros(max_iter + 1, dtype=torch.float64)
@@ -111,7 +110,7 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=DenoiseMRI.lam_scl, learning_rate
             # print to screen
             with torch.no_grad():
                 if n_iter % 10 == 0:
-                    print('n_iter={:4d}, loss={:12.6f}, gain={:0.10}, learning_rate={:g}'. \
+                    print('n_iter={:4d}, loss={:12.6f}, gain={:0.10}, lr={:g}'. \
                         format(n_iter, loss_val.item(), gain, optim.param_groups[0]['lr']), end='\r')  # end='\r'
         if n_iter > 10 and gain.abs() < tolerance:
             cnt_conv += 1

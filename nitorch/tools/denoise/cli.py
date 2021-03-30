@@ -33,6 +33,6 @@ def _cli(args):
     if not options:
         return
 
-    denoise_mri(*options.files, lam_scl=options.lam_scl, learning_rate=options.learning_rate,
+    denoise_mri(*options.files, lam_scl=options.lam_scl, lr=options.learning_rate,
                 max_iter=options.max_iter, tolerance=options.tolerance, verbose=options.verbose,
                 device=options.device, do_write=options.do_write, dir_out=options.dir_out)
