@@ -109,9 +109,9 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
         if verbose:
             # print to screen
             with torch.no_grad():
-                if n_iter % 10 == 0:
+                if n_iter % 25 == 0:
                     print('n_iter={:4d}, loss={:12.6f}, gain={:0.10}, lr={:g}'. \
-                        format(n_iter, loss_val.item(), gain, optim.param_groups[0]['lr']), end='\r')  # end='\r'
+                        format(n_iter, loss_val.item(), gain, optim.param_groups[0]['lr']), end='\n')  # end='\r'
         if n_iter > 10 and gain.abs() < tolerance:
             cnt_conv += 1
             if cnt_conv == 5:
