@@ -158,6 +158,11 @@ def write_data(options):
             trf.shape = squeeze_to_nd(f.shape, 3, 1)
             trf.dat = f.fdata(**backend).reshape(trf.shape)
             trf.shape = trf.shape[:3]
+            if trf.unit == 'mm':
+                # convert mm displacement to vox displacement
+                trf.dat = spatial.affine_lmdiv(trf.affine, trf.dat[..., None])
+                trf.dat = trf.dat[..., 0]
+                trf.unit = 'vox'
 
     # 2) If the first transform is linear, compose it with the input
     #    orientation matrix

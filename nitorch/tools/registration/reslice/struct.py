@@ -92,6 +92,7 @@ class Linear(Transform):
 
 class Displacement(Transform):
     order: int = 1
+    unit: str = 'vox'
 
 
 class Velocity(Transform):

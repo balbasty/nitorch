@@ -10,11 +10,12 @@ usage:
     -l, --linear            Linear transform (i.e., affine matrix)
     -d, --displacement      Dense or free-form displacement field
         -n, --order             Order of the encoding splines (1)
+        -u, --unit              Unit/Space of the displacement (mm or [vox])
     -v, --velocity          Diffeomorphic velocity field
    
     Each of these transforms can be inverted by prepending 'i' in the
     short form or appending '-inverse' in the long form:
-    -il, --linear-inverse            Inverse of a L=linear transform
+    -il, --linear-inverse            Inverse of a linear transform
     -id, --displacement-inverse      Inverse of a dense or ffd displacement field
     -iv, --velocity-inverse          Inverse of a diffeomorphic velocity field
    
@@ -72,6 +73,7 @@ def check_next_isvalue(args, group):
         raise RuntimeError(f'Expected a value for tag {group} '
                            f'but found nothing.')
 
+
 # --- TRF PARSER -------------------------------------------------------
 def parse_transform(args, options):
 
@@ -101,6 +103,9 @@ def parse_transform(args, options):
             check_next_isvalue(args, tag)
             opt.order, *args = args
             opt.order = int(opt.order)
+        if isinstance(opt, struct.Displacement) and tag in ('-u', '--unit'):
+            check_next_isvalue(args, tag)
+            opt.unit, *args = args
         else:
             args = [tag, *args]
             break
