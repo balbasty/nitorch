@@ -1,12 +1,12 @@
 from nitorch.core.py import make_list
 from nitorch.tools.cli import commands
-from .main import denoise_mri
+from .main import view
 from .parser import parse, help, ParseError
 import sys
 
 
 def cli(args=None):
-    f"""Command-line interface for `denoise_mri`
+    f"""Command-line interface for `view`
     
     {help}
     
@@ -22,7 +22,7 @@ def cli(args=None):
         print(f'[ERROR] {str(e)}', file=sys.stderr)
 
 
-commands['denoise_mri'] = cli
+commands['view'] = cli
 
 
 def _cli(args):
@@ -33,6 +33,4 @@ def _cli(args):
     if not options:
         return
 
-    denoise_mri(*options.files, lam_scl=options.lam_scl, lr=options.learning_rate,
-                max_iter=options.max_iter, tolerance=options.tolerance, verbose=options.verbose,
-                device=options.device, do_write=options.do_write, dir_out=options.dir_out)
+    view(options.files)
