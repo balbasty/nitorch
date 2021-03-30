@@ -1,4 +1,4 @@
-from .gui import ImageViewer
+from nitorch.plot import ImageViewer
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
 
