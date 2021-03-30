@@ -24,7 +24,7 @@ def _crop_to_param(aff0, aff, shape):
     return size, center, unit, layout
 
 
-def crop(inp, size=None, center=None, space='vx', like=None,
+def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
          output=None, transform=None):
     """Crop a ND volume, while preserving the orientation matrices.
 
@@ -43,6 +43,10 @@ def crop(inp, size=None, center=None, space='vx', like=None,
         By default, the center of the FOV is used.
     space : [sequence of] {'vox', 'ras'}, default='vox'
         The space in which the `size` and `center` parameters are expressed.
+    bbox : bool or float, default=False
+        Crop at the bounding box of `inp > threshold`.
+            If `bbox` is a float, it is the threshold to use.
+            If `bbox` is `True`, the threshold is 0.
     like : str or (tensor, tensor), optional
         Reference patch.
         Either a path to a volume file or a tuple `(dat, affine)`, where
@@ -75,13 +79,14 @@ def crop(inp, size=None, center=None, space='vx', like=None,
     ext = ''
     fname = None
     transform_in = False
+    use_bbox = bool(bbox or isinstance(bbox, float))
 
     # --- Open input ---
     is_file = isinstance(inp, str)
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.data(numpy=True), f.affine)
+        inp = (f.fdata() if use_bbox else f.data(numpy=True), f.affine)
         if output is None:
             output = '{dir}{sep}{base}.crop{ext}'
         dir, base, ext = py.fileparts(fname)
@@ -89,8 +94,8 @@ def crop(inp, size=None, center=None, space='vx', like=None,
     dim = aff0.shape[-1] - 1
     shape0 = dat.shape[:dim]
 
-    if size and like:
-        raise ValueError('Cannot use both `size` and `like`.')
+    if bool(size) + bool(like) + bool(bbox or isinstance(bbox, float)) > 1:
+        raise ValueError('Can only use one of `size`, `like` and `bbox`.')
 
     # --- Open reference and compute size/center ---
     if like:
@@ -102,6 +107,25 @@ def crop(inp, size=None, center=None, space='vx', like=None,
         if torch.is_tensor(like_shape):
             like_shape = like_shape.shape
         size, center, unit, layout = _crop_to_param(aff0, like_aff, like_shape)
+
+    elif bbox or isinstance(bbox, float):
+        if bbox is True:
+            bbox = 0.
+        dat = dat > bbox
+        while dat.dim() > 3:
+            dat = dat.any(dim=-1)
+        mins = []
+        maxs = []
+        for d in range(dim):
+            n = dat.shape[d]
+            idx = utils.movedim(dat, d, 0).reshape([n, -1]).any(-1).nonzero()
+            mins.append(idx.min())
+            maxs.append(idx.max())
+        mins = utils.as_tensor(mins)
+        maxs = utils.as_tensor(maxs)
+        size = maxs + 1 - mins
+        center = (maxs + 1 + mins)/2
+        space = 'vox'
 
     # --- Open transformation file and compute size/center ---
     elif not size:
@@ -144,6 +168,8 @@ def crop(inp, size=None, center=None, space='vx', like=None,
     slicer = tuple(slice(f, l) for f, l in zip(first, last))
 
     # --- do crop ---
+    if use_bbox:
+        dat = io.volumes.load(fname, numpy=True)
     dat = dat[slicer]
     aff, _ = spatial.affine_sub(aff0, shape0[:dim], slicer)
     shape = dat.shape[:dim]

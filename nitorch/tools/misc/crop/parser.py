@@ -9,6 +9,7 @@ class Crop(cli.ParsedStructure):
     center: list = []
     size_space: str = 'vox'
     center_space: str = 'vox'
+    bbox: float or bool = False
     like: str = None
     output: list = '{dir}{sep}{base}.crop{ext}'
     transform: list = None
@@ -25,10 +26,14 @@ usage:
     -c, --center *SHIFT [SPACE]  Coordinate of the center of the cropped region 
                                  (default: center of the FOV)
     -k, --like FILE              Path to a pre-cropped volume to use as reference.
+    -b, --bounding-box [THRESH]  Crop at the bounding box of `input > THRESH`.
     -o, --output *FILES          Output filenames (default: {dir}/{base}.{i}{ext})
     -t, --transform              Input or output transformation filename (default: none)
                                     Input if none of s/c/l/k options are used.
                                     Output otherwise.
+    
+notes:
+    Only one of --size, --like or --bounding-box can be used.
     
 examples:
     # extract a patch of 10x10x10 voxels in the center of the FOV
@@ -77,6 +82,10 @@ def parse(args):
                     struct.center_space = val
                 else:
                     struct.center.append(float(val))
+        elif tag in ('-b', '--bounding-box'):
+            struct.bbox = True
+            if cli.next_isvalue(args):
+                struct.bbox = float(args.pop(0))
         elif tag in ('-o', '--output'):
             struct.output = []
             while cli.next_isvalue(args):

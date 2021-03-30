@@ -34,7 +34,8 @@ def _cli(args):
     options.transform = make_list(options.transform, len(options.files))
     for fname, ofname, tfname in zip(options.files, options.output, options.transform):
         crop(fname, size=options.size, center=options.center,
-             space=(options.size_space, options.center_space), like=options.like,
+             space=(options.size_space, options.center_space),
+             like=options.like, bbox=options.bbox,
              output=ofname, transform=tfname)
 
 
