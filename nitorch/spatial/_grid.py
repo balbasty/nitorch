@@ -301,8 +301,9 @@ def affine_grid(mat, shape, jitter=False):
                          .format(nb_dim, nb_dim+1, mat.shape))
     batch_shape = mat.shape[:-2]
     grid = identity_grid(shape, mat.dtype, mat.device, jitter=jitter)
-    grid = utils.unsqueeze(grid, dim=0, ndim=len(batch_shape))
-    mat = utils.unsqueeze(mat, dim=-3, ndim=nb_dim)
+    if batch_shape:
+        grid = utils.unsqueeze(grid, dim=0, ndim=len(batch_shape))
+        mat = utils.unsqueeze(mat, dim=-3, ndim=nb_dim)
     lin = mat[..., :nb_dim, :nb_dim]
     off = mat[..., :nb_dim, -1]
     grid = linalg.matvec(lin, grid) + off

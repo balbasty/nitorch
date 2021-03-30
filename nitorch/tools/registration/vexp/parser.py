@@ -60,12 +60,12 @@ def parse(args):
             val = False
             if cli.next_isvalue(args):
                 val, *args = args
-            if val[0] == 'f':
-                val = False
-            elif val[0] == 't':
-                val = True
-            else:
-                val = bool(int(val))
+                if val[0] == 'f':
+                    val = False
+                elif val[0] == 't':
+                    val = True
+                else:
+                    val = bool(int(val))
             struct.inv = val
         elif tag in ('-o', '--output'):
             struct.output = []
