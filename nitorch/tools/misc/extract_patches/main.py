@@ -48,7 +48,7 @@ def extract_patches(inp, size=64, stride=None, output=None, transform=None):
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.data(), f.affine)
+        inp = (f.fdata(), f.affine)
         if output is None:
             output = '{dir}{sep}{base}.{i}_{j}_{k}{ext}'
         dir, base, ext = py.fileparts(fname)
@@ -84,11 +84,11 @@ def extract_patches(inp, size=64, stride=None, output=None, transform=None):
                     if is_file:
                         out1 = out1.format(dir=dir or '.', base=base, ext=ext,
                                            sep=os.path.sep, i=i+1, j=j+1, k=k+1)
-                        io.volumes.save(dat[i, j, k], out1, like=fname,
-                                        affine=aff[i, j, k])
+                        io.volumes.savef(dat[i, j, k], out1, like=fname,
+                                         affine=aff[i, j, k])
                     else:
                         out1 = out1.format(sep=os.path.sep, i=i, j=j, k=k)
-                        io.volumes.save(dat[i, j, k], out1, affine=aff[i, j, k])
+                        io.volumes.savef(dat[i, j, k], out1, affine=aff[i, j, k])
                     formatted_output.append(out1)
 
     if transform:
