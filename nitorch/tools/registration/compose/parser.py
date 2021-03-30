@@ -145,10 +145,11 @@ def parse(args):
             cli.check_next_isvalue(args, tag)
             options.target, *args = args
         elif tag in ('-o', '--output'):
-            options.output = []
-            while cli.next_isvalue(args):
-                val, *args = args
-                options.output.append(val)
+            cli.check_next_isvalue(args, tag)
+            options.output, *args = args
+        elif tag in ('-ou', '--output-unit'):
+            cli.check_next_isvalue(args, tag)
+            options.output_unit, *args = args
         elif tag in ('-cpu', '--cpu'):
             options.device = 'cpu'
         elif tag in ('-gpu', '--gpu'):

@@ -176,7 +176,7 @@ def write_data(options):
         grid = build_from_target(options.target)
         oaffine = options.target.affine
         if options.output_unit[0] == 'v':
-            grid = spatial.affine_lmdiv(oaffine, grid)
+            grid = spatial.affine_matvec(spatial.affine_inv(oaffine), grid)
             grid = grid - spatial.identity_grid(grid.shape[:-1],
                                                 **utils.backend(grid))
         else:
