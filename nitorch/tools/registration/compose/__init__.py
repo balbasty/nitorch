@@ -1,2 +1,2 @@
-from .main import vexp
+from .main import compose
 from . import cli as _
