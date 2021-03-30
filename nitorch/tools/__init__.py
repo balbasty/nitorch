@@ -5,7 +5,7 @@ from . import misc
 from . import qmri
 from . import registration
 from . import denoise
-
+from . import viewer
 
 from .preproc import *
 from ._preproc_fov import *
