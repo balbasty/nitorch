@@ -752,6 +752,7 @@ class Resize(Module):
         outshape = self.shape(image, **overload)
         kwargs = {
             'shape': outshape[2:],
+            'factor': overload.get('factor', self.factor),
             'anchor': overload.get('anchor', self.anchor),
             'interpolation': overload.get('interpolation', self.interpolation),
             'bound': overload.get('bound', self.bound),
