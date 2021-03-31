@@ -12,6 +12,7 @@ from .base import nitorchmodule, Module
 from .conv import Conv
 from .pool import Pool
 from .reduction import reductions, Reduction
+from .spatial import Resize
 
 
 def interleaved_cat(tensors, dim=0, groups=1):
@@ -358,9 +359,15 @@ class StackedConv(tnn.ModuleList):
         transposed : bool, default=False
             Make the strided convolution a transposed convolution.
             
-        pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
-            Pooling used to change resolution.
-            If None, the final convolution is a strided convolution.
+        pool : {'max', 'min', 'median', 'mean', 'sum', 'up', 'down', 'conv', None}, default=None
+            Pooling used to change resolution:
+                - 'max', 'min', 'median', 'mean', 'sum' : pooling
+                - 'up' : bilinear upsmapling
+                - 'down' : strided downsampling
+                - 'conv' : learnable convolution with kernel size `stride`
+                        and as many output as input channels.
+                - None : the final convolution is a strided convolution
+                    with kernel size `kernel_size`.
             
         groups : [sequence of] int, default=`stitch`
             Number of groups per convolution. If > 1, a grouped convolution
@@ -406,7 +413,7 @@ class StackedConv(tnn.ModuleList):
         batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
         bias = expand_list(make_list(bias), nb_layers, default=True)
         
-        if pool and transposed:
+        if pool not in (None, 'up', 'conv') and transposed:
             raise ValueError('Cannot have both `pool` and `transposed`.')
       
         all_shapes = zip(
@@ -436,8 +443,8 @@ class StackedConv(tnn.ModuleList):
         i, o, a, bn, g, s, b = final_shape
         modules.append(Conv(
             dim, i, o, kernel_size,
-            transposed=transposed,
-            activation=None if pool else a,
+            transposed=transposed and not pool,
+            activation=a,
             batch_norm=bn,
             stride=1 if pool else stride,
             padding='auto',
@@ -447,10 +454,27 @@ class StackedConv(tnn.ModuleList):
         
         # pooling
         if pool:
-            modules.append(Pool(
-                dim, kernel_size, 
-                stride=stride,
-                activation=a))
+            if pool == 'up':
+                modules.append(Resize(factor=stride, anchor='f'))
+            elif pool == 'down':
+                stride = [1/s for s in make_list(stride)]
+                modules.append(Resize(factor=stride, anchor='f', interpolation=0))
+            elif pool == 'conv':
+                modules.append(Conv(
+                    dim, o, o, stride,
+                    transposed=transposed,
+                    activation=None,
+                    batch_norm=bn,
+                    stride=stride,
+                    padding='auto',
+                    groups=g,
+                    output_padding=output_padding,
+                    bias=False))
+            else:
+                modules.append(Pool(
+                    dim, stride,
+                    stride=stride,
+                    activation=None))
 
         # final stitch
         if s > 1:
@@ -493,7 +517,7 @@ class StackedConv(tnn.ModuleList):
         if torch.is_tensor(x):
             x = tuple(x.shape)
         for layer in self:
-            if isinstance(layer, (Conv, Pool)):
+            if isinstance(layer, (Conv, Pool, Resize)):
                 x = layer.shape(x, **k)
         return x
     
@@ -519,7 +543,7 @@ class StackedConv(tnn.ModuleList):
 
         """
         def is_last(layer):
-            if isinstance(layer, Pool):
+            if isinstance(layer, (Pool, Resize)):
                 return True
             if isinstance(layer, Conv):
                 if not all(s == 1 for s in make_list(layer.stride)):
@@ -540,6 +564,8 @@ class StackedConv(tnn.ModuleList):
             last.append(x)
         for layer in self:
             if isinstance(layer, Conv) and layer.transposed:
+                kwargs = dict(output_padding=output_padding)
+            elif isinstance(layer, Resize):
                 kwargs = dict(output_padding=output_padding)
             else:
                 kwargs = {}
@@ -614,6 +640,7 @@ class DecodingLayer(StackedConv):
             out_channels,
             kernel_size=3,
             stride=2,
+            unpool=None,
             activation=tnn.ReLU,
             batch_norm=False,
             groups=None,
@@ -630,6 +657,7 @@ class DecodingLayer(StackedConv):
             transposed=True,
             kernel_size=kernel_size,
             stride=stride,
+            pool=unpool,
             activation=activation,
             batch_norm=batch_norm,
             groups=groups,
@@ -828,6 +856,7 @@ class Decoder(tnn.ModuleList):
             skip_channels=None,
             kernel_size=3,
             stride=2,
+            unpool=None,
             activation=tnn.ReLU,
             batch_norm=False,
             groups=None,
@@ -853,7 +882,15 @@ class Decoder(tnn.ModuleList):
             
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
-            
+
+        stride : int or sequence[int], default=2
+            Stride per dimension.
+
+        unpool : {'up', 'conv', None}, default=None
+            - 'up': Linear upsampling
+            - 'conv': strided convolution with kernel size `stride`
+            - None: strided convolution with bias, act and `kernel size`
+
         activation : [sequence of] str or type or callable, default='relu'
             Activation function.
             
@@ -904,6 +941,7 @@ class Decoder(tnn.ModuleList):
             modules.append(DecodingLayer(
                 dim, i, o, kernel_size,
                 stride=stride,
+                unpool=unpool,
                 activation=a,
                 batch_norm=b,
                 groups=g,
@@ -967,6 +1005,7 @@ class UNet(tnn.Sequential):
             stride=2,
             activation=tnn.ReLU,
             pool=None,
+            unpool=None,
             batch_norm=False,
             groups=None,
             stitch=1):
@@ -1007,9 +1046,15 @@ class UNet(tnn.Sequential):
                 * have a learnable activation shared with other modules
                 * have a non-learnable activation
                 
-        pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
-            Pooling to use in the encoder. If None, use strided convolutions.
-            
+        pool : {'max', 'min', 'median', 'mean', 'sum', 'down', None}, default=None
+            Pooling to use in the encoder.
+            If 'down', use strided convolution with same kernel size as stride.
+            If None, use strided convolutions with same kernel size as other conv.
+
+        unpool : {'up', None}, default=None
+            If 'down', use strided convolution with same kernel size as stride.
+            If None, use strided convolutions with same kernel size as other conv.
+
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
             
@@ -1091,6 +1136,7 @@ class UNet(tnn.Sequential):
                       skip_channels=skip_channels,
                       kernel_size=kernel_size,
                       stride=stride,
+                      unpool=unpool,
                       activation=activation_decoder,
                       batch_norm=batch_norm,
                       groups=groups_decoder,
@@ -1395,6 +1441,8 @@ class UNet2(tnn.Sequential):
             conv_per_layer=1,
             kernel_size=3,
             stride=2,
+            pool=None,
+            unpool=None,
             activation=tnn.ReLU,
             batch_norm=False):
         """
@@ -1423,6 +1471,15 @@ class UNet2(tnn.Sequential):
         kernel_size : int or sequence[int], default=3
             Kernel size per dimension.
 
+        stride : int or sequence[int], default=2
+            Stride per dimension.
+
+        pool : {'max, 'down', 'conv', None}, default=None
+            Downsampling method.
+
+        unpool : {'up', 'conv', None}, default=None
+            Upsampling method.
+
         activation : [sequence of] str or type or callable or None, default='relu'
             Either one or two activation function.
             If two functions are provided, the second one is the final
@@ -1446,41 +1503,59 @@ class UNet2(tnn.Sequential):
         activation, final_activation = make_list(activation, 2)
 
         modules = []
-        first = Conv(dim,
-                     in_channels=in_channels,
-                     out_channels=encoder[0],
-                     kernel_size=kernel_size,
-                     activation=activation,
-                     batch_norm=batch_norm,
-                     padding='auto')
-        modules.append(('first', first))
+        if not pool:
+            first = Conv(dim,
+                         in_channels=in_channels,
+                         out_channels=encoder[0],
+                         kernel_size=kernel_size,
+                         activation=activation,
+                         batch_norm=batch_norm,
+                         padding='auto')
+            modules.append(('first', first))
 
         modules_encoder = []
         for n in range(len(encoder)-1):
-            cin = encoder[n]
-            cout = encoder[n+1]
-            cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
+            if pool:
+                cin = encoder[n-1] if n > 0 else in_channels
+                cout = [encoder[n]] * conv_per_layer
+            else:
+                cin = encoder[n]
+                cout = encoder[n+1]
+                cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
             modules_encoder.append(EncodingLayer(
                 dim,
                 in_channels=cin,
                 out_channels=cout,
                 kernel_size=kernel_size,
                 stride=stride,
+                pool=pool,
                 activation=activation,
                 batch_norm=batch_norm,
             ))
         enc = tnn.ModuleList(modules_encoder)
         modules.append(('encoder', enc))
 
-        cin = decoder[0]
-        cout = decoder[1]
-        cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
+        if pool and unpool:
+            cin = encoder[-2]
+            cout = [decoder[0]] * conv_per_layer
+        elif pool:
+            cin = encoder[-2]
+            cout = decoder[1]
+            cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
+        elif unpool:
+            cin = decoder[0]
+            cout = [decoder[0]] * conv_per_layer
+        else:
+            cin = decoder[0]
+            cout = decoder[1]
+            cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
         btk = DecodingLayer(
             dim,
             in_channels=cin,
             out_channels=cout,
             kernel_size=kernel_size,
             stride=stride,
+            unpool=unpool,
             activation=activation,
             batch_norm=batch_norm,
         )
@@ -1491,23 +1566,34 @@ class UNet2(tnn.Sequential):
 
         modules_decoder = []
         for n in range(len(decoder)-1):
-            cin = decoder[n] + encoder[-n-1]
-            cout = decoder[n+1]
-            cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
+            if unpool:
+                cin = decoder[n-1] if n > 0 else cout[-1]
+                cout = [decoder[n]] * conv_per_layer
+            else:
+                cin = decoder[n]
+                cout = decoder[n+1]
+                cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
+            cin += encoder[-n-1]
             modules_decoder.append(DecodingLayer(
                 dim,
                 in_channels=cin,
                 out_channels=cout,
                 kernel_size=kernel_size,
                 stride=stride,
+                unpool=unpool,
                 activation=activation,
                 batch_norm=batch_norm,
             ))
         dec = tnn.ModuleList(modules_decoder)
         modules.append(('decoder', dec))
 
-        cin = decoder[-1] + encoder[0]
-        cout = [decoder[-1]] * (conv_per_layer - 1)
+        if unpool:
+            cin = decoder[-2]
+            cout = [decoder[-1]] * conv_per_layer
+        else:
+            cin = decoder[-1]
+            cout = [decoder[-1]] * (conv_per_layer - 1)
+        cin += encoder[0]
         for s in stack:
             cout += [s] * conv_per_layer
         if cout:
@@ -1552,7 +1638,8 @@ class UNet2(tnn.Sequential):
 
         """
 
-        x = self.first(x)
+        if hasattr(self, 'first'):
+            x = self.first(x)
 
         # encoder
         buffers = []
