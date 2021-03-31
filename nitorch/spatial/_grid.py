@@ -376,7 +376,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     inshape = image.shape[2:]
     info = {'dtype': image.dtype, 'device': image.device}
     factor = make_vector(factor or 0., nb_dim).tolist()
-    outshape = make_list(shape, nb_dim)
+    outshape = make_list(shape or [None], nb_dim)
     anchor = [a[0].lower() for a in make_list(anchor, nb_dim)]
     return_trf = kwargs.pop('_return_trf', False)  # hidden option
 
