@@ -381,12 +381,11 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     return_trf = kwargs.pop('_return_trf', False)  # hidden option
 
     # compute output shape
-    outshape = [int(inshp*f) if outshp is None else outshp
-                for inshp, outshp, f in zip(inshape, outshape, factor)]
+    outshape = [o or int(i*f) for i, o, f in zip(inshape, outshape, factor)]
     if any(not s for s in outshape):
         raise ValueError('Either factor or shape must be set in '
                          'all dimensions')
-    factor = [o/i for o, i in zip(outshape, inshape)]
+    factor = [f or o/i for o, i, f in zip(outshape, inshape, factor)]
 
     # compute transformation grid
     # there is an affine relationship between the input and output grid:
