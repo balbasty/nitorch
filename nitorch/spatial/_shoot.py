@@ -48,7 +48,8 @@ def greens(shape, absolute=0, membrane=0, bending=0, lame=0,
     shape = py.make_tuple(shape)
     dim = len(shape)
     lame1, lame2 = py.make_list(lame, 2)
-    # absolute = max(absolute, max(membrane, bending, lame1, lame2)*1e-3)
+    if not absolute:
+        absolute = max(absolute, max(membrane, bending, lame1, lame2)*1e-3)
     prm = dict(
         absolute=absolute,
         membrane=membrane,
@@ -220,6 +221,7 @@ def shoot(vel, greens=None, absolute=0, membrane=0, bending=0, lame=0,
     lame : float or (float, float), default=0
         Linear elastic penalty.
     voxel_size : [sequence of] float, default=1
+        Needed when greens is provided if lame == 0.
     return_inverse : bool, default=False
         Return the inverse on top of the forward transform.
     displacement : bool, default=False
@@ -295,8 +297,8 @@ def shoot(vel, greens=None, absolute=0, membrane=0, bending=0, lame=0,
         # Convolve with Greens function of L
         # v_t \gets L^g u_t
         vel = greens_apply(mom, greens, voxel_size=voxel_size).div_(steps)
-        print(f'{0.5*steps*(vel*mom).sum().item()/py.prod(spatial):6f}',
-              end=' ', flush=True)
+        # print(f'{0.5*steps*(vel*mom).sum().item()/py.prod(spatial):6f}',
+        #       end=' ', flush=True)
 
         # $\psi \gets \psi \circ (id - \tfrac{1}{T} v)$
         # JA: I found that simply using
