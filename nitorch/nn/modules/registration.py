@@ -1,10 +1,10 @@
 import torch
 from torch import nn as tnn
 from nitorch import core, spatial
-from nitorch.core.py import make_list
-from .cnn import UNet
+from nitorch.core import py, utils
+from .cnn import UNet2
 from .base import Module
-from .spatial import GridPull, GridResize, GridExp
+from .spatial import GridPull, GridResize, GridExp, GridShoot
 from .. import check
 
 
@@ -35,48 +35,89 @@ class VoxelMorph(Module):
         MedIA: Medial Image Analysis. 2019. eprint arXiv:1903.03545
     """
 
-    def __init__(self, dim, encoder=None, decoder=None, kernel_size=3,
-                 interpolation='linear', grid_bound='dft', image_bound='dct2',
-                 downsample_velocity=2, *, _input_channels=2):
+    def __init__(self, dim, unet=None, pull=None, exp=None,
+                 *, in_channels=2):
         """
 
         Parameters
         ----------
         dim : int
-            Dimensionalityy of the input (1|2|3)
-        encoder : list[int], optional
-            Number of channels after each encoding layer of the UNet.
-        decoder : list[int], optional
-            Number of channels after each decoding layer of the Unet.
-        kernel_size : int or list[int], default=3
-            Kernel size of the UNet.
-        interpolation : int, default=1
-            Interpolation order.
-        grid_bound : bound_type, default='dft'
-            Boundary conditions of the velocity field.
-        image_bound : bound_type, default='dct2'
-            Boundary conditions of the image.
-        downsample_velocity : float, default=2
-            Downsample the velocity field by a factor when exponentiating.
+            Dimensionality of the input (1|2|3)
+        unet : dict
+            Dictionary of U-Net parameters with fields:
+                encoder : sequence[int], default=[16, 32, 32, 32]
+                decoder : sequence[int], default=[32, 32, 32, 32, 32, 16, 16]
+                conv_per_layer : int, default=1
+                kernel_size : int, default=3
+                activation : str or callable, default=LeakyReLU(0.2)
+                pool : {'max', 'conv', 'down', None}, default='max'
+                unpool : {'conv', 'up', None}, default='up'
+        pull : dict
+            Dictionary of Transformer parameters with fields:
+                interpolation : {0..7}, default=1
+                bound : str, default='dct2'
+                extrapolate : bool, default=False
+        exp : dict
+            Dictionary of Exponentiation parameters with fields:
+                interpolation : {0..7}, default=1
+                bound : str, default='dft'
+                steps : int, default=8
+                shoot : bool, default=False
+                downsample : float, default=2
+            If shoot is True, these fields are also present:
+                absolute : float, default=0.0001
+                membrane : float, default=0.001
+                bending : float, default=0.2
+                lame : (float, float), default=(0.05, 0.2)
         """
-        resize_factor = make_list(downsample_velocity, dim)
-        resize_factor = [1/f for f in resize_factor]
+        # default parameters
+        unet = dict(unet or {})
+        unet.setdefault('encoder', [16, 32, 32, 32])
+        unet.setdefault('decoder', [16, 32, 32, 32])
+        unet.setdefault('kernel_size', 3)
+        unet.setdefault('pool', 'max')
+        unet.setdefault('unpool', 'up')
+        unet.setdefault('activation', tnn.LeakyReLU(0.2))
+        pull = dict(pull or {})
+        pull.setdefault('interpolation', 1)
+        pull.setdefault('bound', 'dct2')
+        pull.setdefault('extrapolate', False)
+        exp = dict(exp or {})
+        exp.setdefault('interpolation', 1)
+        exp.setdefault('bound', 'dft')
+        exp.setdefault('steps', 8)
+        exp.setdefault('shoot', False)
+        exp.setdefault('downsample', 2)
+        exp.setdefault('absolute', 0.0001)
+        exp.setdefault('membrane', 0.001)
+        exp.setdefault('bending', 0.2)
+        exp.setdefault('lame', (0.05, 0.2))
+        do_shoot = exp.pop('shoot')
+        downsample_vel = utils.make_vector(exp.pop('downsample'), dim).tolist()
+        vel_inter = exp['interpolation']
+        vel_bound = exp['bound']
+        if do_shoot:
+            exp.pop('interpolation')
+            exp.pop('bound')
+            exp.pop('voxel_size', downsample_vel)
+            vol = py.prod(downsample_vel)
+            exp['absolute'] *= vol
+            exp['membrane'] *= vol
+            exp['bending'] *= vol
+            exp['lame'] = [l * vol for l in py.make_list(exp['lame'])]
+        else:
+            exp.pop('absolute')
+            exp.pop('membrane')
+            exp.pop('bending')
+            exp.pop('lame')
 
+        # prepare layers
         super().__init__()
-        self.unet = UNet(dim,
-                         input_channels=_input_channels,
-                         output_channels=dim,
-                         encoder=encoder,
-                         decoder=decoder,
-                         kernel_size=kernel_size,
-                         activation=tnn.LeakyReLU(0.2))
-        self.resize = GridResize(interpolation=interpolation,
-                                 bound=grid_bound,
-                                 factor=resize_factor)
-        self.velexp = GridExp(interpolation=interpolation,
-                              bound=grid_bound)
-        self.pull = GridPull(interpolation=interpolation,
-                             bound=image_bound)
+        self.unet = UNet2(dim, in_channels, dim, **unet,)
+        self.resize = GridResize(interpolation=vel_inter, bound=vel_bound,
+                                 factor=[1/f for f in downsample_vel])
+        self.velexp = GridShoot(**exp) if do_shoot else GridExp(**exp)
+        self.pull = GridPull(**pull)
         self.dim = dim
 
         # register losses/metrics
@@ -99,16 +140,12 @@ class VoxelMorph(Module):
             Deformation grid (transformation or displacement).
 
         """
-        backend = dict(dtype=velocity.dtype, device=velocity.device)
-
         # generate grid
         shape = velocity.shape[1:-1]
         velocity_small = self.resize(velocity, type='displacement')
-        grid = self.velexp(velocity_small)
-        grid = self.resize(grid, shape=shape, type='grid')
-
-        if displacement:
-            grid = grid - spatial.identity_grid(grid.shape[1:-1], **backend)
+        grid = self.velexp(velocity_small, displacement=displacement)
+        grid = self.resize(grid, shape=shape,
+                           type='disp' if displacement else 'grid')
         return grid
 
     def forward(self, source, target, source_seg=None, target_seg=None,

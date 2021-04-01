@@ -265,17 +265,19 @@ class GridExp(Module):
 
         Parameters
         ----------
-        velocity (tensor) : velocity field with shape (batch, *spatial, dim).
-        **kwargs : all parameters of the module can be overridden at call time.
+        velocity :(batch, *spatial, dim) tensor
+            Stationary velocity field.
+        **overload : dict
+            all parameters of the module can be overridden at call time.
 
         Returns
         -------
-        forward (tensor, if `forward is True`) : forward displacement
-            (if `displacement is True`) or transformation (if `displacement
-            is False`) field, with shape (batch, *spatial, dim)
-        inverse (tensor, if `inverse is True`) : forward displacement
-            (if `displacement is True`) or transformation (if `displacement
-            is False`) field, with shape (batch, *spatial, dim)
+        forward : (batch, *spatial, dim) tensor, if `forward is True`
+            Forward displacement (if `displacement is True`) or
+            transformation (if `displacement is False`) field.
+        inverse : (batch, *spatial, dim) tensor, if `inverse is True`
+            Inverse displacement (if `displacement is True`) or
+            transformation (if `displacement is False`) field.
 
         """
         fwd = kwargs.get('fwd', self.forward)
@@ -304,8 +306,8 @@ class GridShoot(Module):
     """Exponentiate an initial velocity field by Geodesic Shooting."""
 
     def __init__(self, fwd=True, inv=False, steps=8,
-                 absolute=0, membrane=0, bending=0, lame=0, voxel_size=1,
-                 displacement=False, cache_greens=False):
+                 absolute=0.0001, membrane=0.001, bending=0.2, lame=(0.05, 0.2),
+                 voxel_size=1, displacement=False, cache_greens=False):
         """
 
         Parameters
@@ -316,15 +318,15 @@ class GridShoot(Module):
             Return the inverse deformation.
         steps : int, default=8
             Number of integration steps.
-        absolute : float, default=0
+        absolute : float, default=0.0001
             Penalty on absolute values
-        membrane : float, default=0
+        membrane : float, default=0.001
             Penalty on membrane energy
-        bending : float, default=0
+        bending : float, default=0.2
             Penalty on bending energy
-        lame : float or (float, float), default=0
+        lame : float or (float, float), default=(0.05, 0.2)
             Penalty on linear-elastic energy
-        voxel_size : [sequence of[ float, default=1
+        voxel_size : [sequence of] float, default=1
             Voxel size
         displacement : bool, default=False
             Return a displacement field rather than a transformation field.
@@ -347,36 +349,38 @@ class GridShoot(Module):
         self.displacement = displacement
         self.cache_greens = cache_greens
 
-    def forward(self, velocity, **kwargs):
+    def forward(self, velocity, **overload):
         """
 
         Parameters
         ----------
-        velocity (tensor) : velocity field with shape (batch, *spatial, dim).
-        **kwargs : all parameters of the module can be overridden at call time.
+        velocity :(batch, *spatial, dim) tensor
+            Initial velocity field.
+        **overload : dict
+            all parameters of the module can be overridden at call time.
 
         Returns
         -------
-        forward (tensor, if `forward is True`) : forward displacement
-            (if `displacement is True`) or transformation (if `displacement
-            is False`) field, with shape (batch, *spatial, dim)
-        inverse (tensor, if `inverse is True`) : forward displacement
-            (if `displacement is True`) or transformation (if `displacement
-            is False`) field, with shape (batch, *spatial, dim)
+        forward : (batch, *spatial, dim) tensor, if `forward is True`
+            Forward displacement (if `displacement is True`) or
+            transformation (if `displacement is False`) field.
+        inverse : (batch, *spatial, dim) tensor, if `inverse is True`
+            Inverse displacement (if `displacement is True`) or
+            transformation (if `displacement is False`) field.
 
         """
-        fwd = kwargs.get('fwd', self.forward)
-        inv = kwargs.get('inverse', self.inv)
-        absolute = kwargs.get('absolute', self.absolute)
-        membrane = kwargs.get('membrane', self.membrane)
-        bending = kwargs.get('bending', self.bending)
-        lame = kwargs.get('lame', self.lame)
+        fwd = overload.get('fwd', self.forward)
+        inv = overload.get('inverse', self.inv)
+        absolute = overload.get('absolute', self.absolute)
+        membrane = overload.get('membrane', self.membrane)
+        bending = overload.get('bending', self.bending)
+        lame = overload.get('lame', self.lame)
         lame = make_list(lame, 2)
-        voxel_size = kwargs.get('voxel_size', self.voxel_size)
+        voxel_size = overload.get('voxel_size', self.voxel_size)
 
         shoot_opt = {
-            'steps': kwargs.get('steps', self.steps),
-            'displacement': kwargs.get('displacement', self.displacement),
+            'steps': overload.get('steps', self.steps),
+            'displacement': overload.get('displacement', self.displacement),
             'voxel_size': voxel_size,
             'absolute': absolute,
             'membrane': membrane,
