@@ -227,11 +227,10 @@ class GridPushCount(Module):
 
 
 class GridExp(Module):
-    """Exponentiate an inifinitesimal deformation field (velocity)."""
+    """Exponentiate a stationary velocity field."""
 
     def __init__(self, fwd=True, inv=False, steps=None,
-                 interpolation='linear', bound='dft', displacement=False,
-                 inplace=True):
+                 interpolation='linear', bound='dft', displacement=False):
         """
 
         Parameters
@@ -251,8 +250,6 @@ class GridExp(Module):
             Boundary conditions.
         displacement : bool, default=False
             Return a displacement field rather than a transformation field.
-        inplace : bool, default=True
-            Perform the integration inplace if possible.
         """
         super().__init__()
 
@@ -262,7 +259,6 @@ class GridExp(Module):
         self.interpolation = interpolation
         self.bound = bound
         self.displacement = displacement
-        self.inplace = inplace
 
     def forward(self, velocity, **kwargs):
         """
@@ -289,7 +285,6 @@ class GridExp(Module):
             'interpolation': kwargs.get('interpolation', self.interpolation),
             'bound': kwargs.get('bound', self.bound),
             'displacement': kwargs.get('displacement', self.displacement),
-            'inplace': False,  # kwargs.get('inplace', self.inplace)
         }
 
         output = []
@@ -299,6 +294,123 @@ class GridExp(Module):
         if inv:
             iy = spatial.exp(velocity, inverse=True, **opt)
             output.append(iy)
+
+        return output if len(output) > 1 else \
+               output[0] if len(output) == 1 else \
+               None
+
+
+class GridShoot(Module):
+    """Exponentiate an initial velocity field by Geodesic Shooting."""
+
+    def __init__(self, fwd=True, inv=False, steps=8,
+                 absolute=0, membrane=0, bending=0, lame=0, voxel_size=1,
+                 displacement=False, cache_greens=False):
+        """
+
+        Parameters
+        ----------
+        fwd : bool, default=True
+            Return the forward deformation.
+        inv : bool, default=False
+            Return the inverse deformation.
+        steps : int, default=8
+            Number of integration steps.
+        absolute : float, default=0
+            Penalty on absolute values
+        membrane : float, default=0
+            Penalty on membrane energy
+        bending : float, default=0
+            Penalty on bending energy
+        lame : float or (float, float), default=0
+            Penalty on linear-elastic energy
+        voxel_size : [sequence of[ float, default=1
+            Voxel size
+        displacement : bool, default=False
+            Return a displacement field rather than a transformation field.
+        cache_greens: bool, default=False
+            Precompute and cache the Greens function.
+            The greens function depends on the penalty parameters and
+            on the image shape. If any of these change between batches,
+            it is better to not cache it.
+        """
+        super().__init__()
+
+        self.fwd = fwd
+        self.inv = inv
+        self.steps = steps
+        self.absolute = absolute
+        self.membrane = membrane
+        self.bending = bending
+        self.lame = lame
+        self.voxel_size = voxel_size
+        self.displacement = displacement
+        self.cache_greens = cache_greens
+
+    def forward(self, velocity, **kwargs):
+        """
+
+        Parameters
+        ----------
+        velocity (tensor) : velocity field with shape (batch, *spatial, dim).
+        **kwargs : all parameters of the module can be overridden at call time.
+
+        Returns
+        -------
+        forward (tensor, if `forward is True`) : forward displacement
+            (if `displacement is True`) or transformation (if `displacement
+            is False`) field, with shape (batch, *spatial, dim)
+        inverse (tensor, if `inverse is True`) : forward displacement
+            (if `displacement is True`) or transformation (if `displacement
+            is False`) field, with shape (batch, *spatial, dim)
+
+        """
+        fwd = kwargs.get('fwd', self.forward)
+        inv = kwargs.get('inverse', self.inv)
+        absolute = kwargs.get('absolute', self.absolute)
+        membrane = kwargs.get('membrane', self.membrane)
+        bending = kwargs.get('bending', self.bending)
+        lame = kwargs.get('lame', self.lame)
+        lame = make_list(lame, 2)
+        voxel_size = kwargs.get('voxel_size', self.voxel_size)
+
+        shoot_opt = {
+            'steps': kwargs.get('steps', self.steps),
+            'displacement': kwargs.get('displacement', self.displacement),
+            'voxel_size': voxel_size,
+            'absolute': absolute,
+            'membrane': membrane,
+            'bending': bending,
+            'lame': lame,
+        }
+        greens_prm = {
+            'absolute': absolute,
+            'membrane': membrane,
+            'bending': bending,
+            'lame': lame,
+            'voxel_size': voxel_size,
+            'shape': velocity.shape[1:-1],
+        }
+
+        if self.cache_greens:
+            if getattr(self, '_greens_prm', None) == greens_prm:
+                greens = self._greens.to(**utils.backend(velocity))
+            else:
+                greens = spatial.greens(**greens_prm, **utils.backend(velocity))
+                self._greens = greens
+                self._greens_prm = greens_prm
+        else:
+            greens = spatial.greens(**greens_prm, **utils.backend(velocity))
+
+        output = []
+        if inv:
+            y, iy = spatial.shoot(velocity, greens, return_inverse=True, **shoot_opt)
+            if fwd:
+                output.append(y)
+            output.append(iy)
+        elif fwd:
+            y = spatial.shoot(velocity, greens, **shoot_opt)
+            output.append(y)
 
         return output if len(output) > 1 else \
                output[0] if len(output) == 1 else \

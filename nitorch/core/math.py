@@ -69,7 +69,7 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
         # of nans and give it a pointer to ourselves so that it can call us
         # back
         def self(inp):
-            return _reduce_index(inp, dim=dim, keepdim=keepdim, omitnan=False,
+            return _reduce_index(fn, inp, dim=dim, keepdim=keepdim, omitnan=False,
                                  inplace=False, return_indices=return_indices,
                                  out=out)
         return nanfn(self, input, inplace)

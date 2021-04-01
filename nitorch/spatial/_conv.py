@@ -1,4 +1,4 @@
-import math
+import math as pymath
 import itertools
 import torch
 from torch.nn import functional as F
@@ -388,6 +388,20 @@ def spconv(input, kernel, bound='dct2', dim=None):
     else:
         raise ValueError('Incompatible kernel shape: too many dimensions')
 
+    import functools
+    def lambda_flip(x, d):
+        if x.shape[d] > 1:
+            x = x.flip(d)
+        return x
+
+    def lambda_iflip(x, d):
+        if x.shape[d] > 1:
+            x = x.flip(d)
+            return x.flip(d).neg()
+
+    def get_lambda_flip(d): return functools.partial(lambda_flip, d=d)
+    def get_lambda_iflip(d): return functools.partial(lambda_iflip, d=d)
+
     # check input dimensions
     added_dims = max(0, dim + 1 - input.dim())
     input = unsqueeze(input, 0, added_dims)
@@ -412,7 +426,7 @@ def spconv(input, kernel, bound='dct2', dim=None):
 
     # prepare other stuff
     bound = make_list(bound, dim)
-    shift = torch.LongTensor([int(math.floor(k/2)) for k in kernel_size])
+    shift = torch.LongTensor([int(pymath.floor(k/2)) for k in kernel_size])
 
     for idx, weight in zip(kernel._indices().t(), kernel._values()):
         if kernel.dim() == dim + 2:
@@ -437,70 +451,70 @@ def spconv(input, kernel, bound='dct2', dim=None):
                     if i < -1:
                         output_side_slice.append(slice(i+1, None))
                         input_side_slice.append(slice(None, -i-1))
-                        transfo_side.append(lambda x: x.flip(d).neg())
+                        transfo_side.append(get_lambda_iflip(d))
                     else:
                         output_side_slice.append(None)
                         input_side_slice.append(None)
-                        transfo_side.append(lambda x: None)
+                        transfo_side.append(None)
                     continue
-                output_side_slice.append(slice(i, None))
+                output_side_slice.append(slice(None, -i))
                 if b == 'dct1':
                     input_side_slice.append(slice(1, -i+1))
-                    transfo_side.append(lambda x: x.flip(d))
+                    transfo_side.append(get_lambda_flip(d))
                 elif b == 'dft':
                     input_side_slice.append(slice(i, None))
-                    transfo_side.append(lambda x: x)
+                    transfo_side.append(None)
                 elif b == 'replicate':
                     input_side_slice.append(slice(None, 1))
-                    transfo_side.append(lambda x: x)
+                    transfo_side.append(None)
                 elif b == 'zeros':
                     input_side_slice.append(None)
-                    transfo_side.append(lambda x: None)
+                    transfo_side.append(None)
                 else:
                     input_side_slice.append(slice(None, -i))
                     if b == 'dct2':
-                        transfo_side.append(lambda x: x.flip(d))
+                        transfo_side.append(get_lambda_flip(d))
                     elif b == 'dst2':
-                        transfo_side.append(lambda x: x.flip(d).neg())
+                        transfo_side.append(get_lambda_iflip(d))
             elif i > 0:
                 if b == 'dst1':
                     if i > 1:
                         output_side_slice.append(slice(None, i-1))
                         input_side_slice.append(slice(-i+1, None))
-                        transfo_side.append(lambda x: x.flip(d).neg())
+                        transfo_side.append(get_lambda_iflip(d))
                     else:
                         output_side_slice.append(None)
                         input_side_slice.append(None)
-                        transfo_side.append(lambda x: None)
+                        transfo_side.append(None)
                     continue
-                output_side_slice.append(slice(None, i))
+                output_side_slice.append(slice(-i, None))
                 if b == 'dct1':
                     input_side_slice.append(slice(-i-1, -1))
-                    transfo_side.append(lambda x: x.flip(d))
+                    transfo_side.append(get_lambda_flip(d))
                 elif b == 'dft':
                     input_side_slice.append(slice(None, i))
-                    transfo_side.append(lambda x: x)
+                    transfo_side.append(None)
                 elif b == 'replicate':
                     input_side_slice.append(slice(-1, None))
-                    transfo_side.append(lambda x: x)
+                    transfo_side.append(None)
                 elif b == 'zeros':
                     input_side_slice.append(None)
-                    transfo_side.append(lambda x: None)
+                    transfo_side.append(None)
                 else:
                     input_side_slice.append(slice(-i, None))
                     if b == 'dct2':
-                        transfo_side.append(lambda x: x.flip(d))
+                        transfo_side.append(get_lambda_flip(d))
                     elif b == 'dst2':
-                        transfo_side.append(lambda x: x.flip(d).neg())
+                        transfo_side.append(get_lambda_iflip(d))
             else:
                 output_side_slice.append(None)
                 input_side_slice.append(None)
                 transfo_side.append(None)
 
         # Prepare slicers for the in-bound bits
-        input_center_slice = [slice(max(0, -i), min(s - i, s))
+        input_center_slice = [slice(max(0, i), min(s + i, s))
                               for s, i in zip(spatial_shape, idx)]
-        output_center_slice = [slice(max(0, i), min(s + i, s))
+        output_center_slice = [slice(max(0, -i), min(s - i, s))
                                for s, i in zip(spatial_shape, idx)]
 
         # Iterate all combinations of in/out of bounds
@@ -512,7 +526,7 @@ def spconv(input, kernel, bound='dct2', dim=None):
             output_slicer = [output_center_slice[d] if inside
                              else output_side_slice[d]
                              for d, inside in enumerate(side)]
-            transfo = [(lambda x: x) if inside else transfo_side[d]
+            transfo = [None if inside else transfo_side[d]
                        for d, inside in enumerate(side)]
 
             if any(sl is None for sl in input_slicer):
@@ -521,11 +535,12 @@ def spconv(input, kernel, bound='dct2', dim=None):
             # slice + apply boundary condition + accumulate
             dat = inp[input_slicer]
             for trf in transfo:
-                if dat is not None and trf is not None:
+                if trf:
                     dat = trf(dat)
+                if dat is None:
+                    break
             if dat is not None:
-                out[output_slicer] += weight * dat
-            del dat
+                out[output_slicer].addcmul_(dat, weight)
 
     # move spatial dimensions to the back
     output = movedim(output, list(range(dim+1)), spdim)

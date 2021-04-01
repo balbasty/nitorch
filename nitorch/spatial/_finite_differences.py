@@ -1,9 +1,10 @@
 """Finite-differences operators (gradient, divergence, ...)."""
 
 import torch
-from ..core import utils
-from ..core.utils import expand, slice_tensor, same_storage, make_vector
-from ..core.py import make_list
+from nitorch.core import utils
+from nitorch.core.utils import expand, slice_tensor, same_storage, make_vector
+from nitorch.core.py import make_list
+from ._conv import smooth
 
 
 __all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',
@@ -51,7 +52,6 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
         Tensor of finite differences, with same shape as the input tensor.
 
     """
-
     def subto(x, y, out):
         """Smart sub"""
         if ((torch.is_tensor(x) and x.requires_grad) or
@@ -581,6 +581,162 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
     return div
 
 
+def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
+           dim=None, bound='replicate', return_scale=False, verbose=False):
+    """Frangi (vessel detector) filter.
+
+    Notes
+    -----
+    .. This function does not support autograd through x.
+
+    Parameters
+    ----------
+    x : (*batch_shape, *spatial_shape) tensor_like
+        Input (batched) tensor.
+    a : float, default=0.5
+        First Frangi vesselness constant (deviation from line)
+        Only used in 3D.
+    b : float, default=0.5
+        Second Frangi vesselness constant (deviation from blob-like)
+    c : float, default=500
+        Third Second Frangi vesselness constant (signal to noise)
+    inv_contrast : bool, default=False
+        If True, detect white ridges (black background).
+        Else, detect bloack ridges (white background).
+    fwhm : [sequence of] float, default=[1, 3, 5, 7]
+        Full width half max of Gaussian filters.
+    dim : int
+        Length of `spatial_shape`.
+    bound : bound_like, default='replicate'
+        Boundary condition.
+    return_scale : bool, default=False
+    verbose : bool, default=False
+
+    Returns
+    -------
+    vessels : (*batch_shape, *spatial_shape) tensor
+        Volume of vesselness.
+    scale : (*batch_shape, *spatial_shape) tensor[int], if return_scale
+        Index of scale at which each pixel was detected.
+
+    """
+    x = torch.as_tensor(x)
+    dim = dim or x.dim()
+    if not dim in (2, 3):
+        raise ValueError('Frangi filter is only implemented in 2D or 3D')
+
+    a = 2*(a**2)
+    b = 2*(b**2)
+    c = 2*(c**2)
+
+    # allocate buffers
+    h = x.new_empty([*x.shape, dim, dim])   # hessian
+    v = x.new_empty([*x.shape, dim])        # eigenvalues
+    buf1 = torch.empty_like(x)
+    buf2 = torch.empty_like(x)
+    buf3 = torch.empty_like(x)
+
+    def _frangi(x, f):
+        """Frangi filter at one scale. Input must be pre-filtered."""
+        x = smooth(x, fwhm=f, dim=dim, bound=bound) if f else x
+
+        # Hessian
+        if verbose:
+            print('Hessian...')
+        for d in range(dim):
+            # diagonal elements
+            fwd = diff1d(x, order=1, dim=-d-1, side='f', bound=bound, out=buf1)
+            bwd = diff1d(x, order=1, dim=-d-1, side='b', bound=bound, out=buf2)
+            torch.sub(fwd, bwd, out=h[..., d, d])  # central 2nd order
+            for dd in range(d+1, dim):
+                hh = h[..., d, d]
+                diff1d(fwd, order=1, dim=-dd - 1, side='f', bound=bound, out=hh)
+                hh += diff1d(fwd, order=1, dim=-dd - 1, side='b', bound=bound, out=buf3)
+                hh += diff1d(bwd, order=1, dim=-dd - 1, side='b', bound=bound, out=buf3)
+                hh += diff1d(bwd, order=1, dim=-dd - 1, side='f', bound=bound, out=buf3)
+                hh /= 4.
+
+        # Correct for scale
+        if f:
+            sig2 = (f / 2.355)**2
+            h.mul_(sig2)
+
+        # Eigenvalues
+        if verbose:
+            print('Eigen...')
+        torch.symeig(h, out=(v, torch.empty([])))
+
+        if verbose:
+            print('Frangi...')
+
+        if dim == 2:
+            msk = v[..., 0] < 0
+            if inv_contrast:
+                msk.bitwise_not_()
+        else:
+            if inv_contrast:
+                msk = v[..., 1] > 0
+                msk.bitwise_or_(v[..., 2] > 0)
+            else:
+                msk = v[..., 1] < 0
+                msk.bitwise_or_(v[..., 2] < 0)
+
+        v.abs_()
+
+        if dim == 2:
+            torch.div(v[..., 1], v[..., 0], out=buf2)       # < Rb
+            buf2.square_()
+            v.square_()
+            torch.sum(v, dim=-1, out=buf3)                  # < S
+
+            buf2.div_(-b).exp_()                            # < expRb
+            buf3.div_(-c).exp_().neg_().add_(1)             # < expS
+
+            buf2.mul_(buf3)
+
+            buf2[msk] = 0
+            return buf2
+
+        elif dim == 3:
+            torch.div(v[..., 1], v[..., 2], out=buf1)       # < Ra
+            torch.mul(v[..., 1], v[..., 2], out=buf2)
+            buf2.sqrt_()
+            torch.div(v[..., 0], buf2, out=buf2)            # < Rb
+            v.square_()
+            torch.sum(v, dim=-1, out=buf3)                  # < S
+
+            buf1.square_().div_(-a).exp_().neg_().add_(1)   # < expRa
+            buf2.square_().div_(-b).exp_()                  # < expRb
+            buf3.div_(-c).exp_().neg_().add_(1)             # < expS
+
+            buf1.mul_(buf2).mul_(buf3)
+
+            buf1[msk] = 0
+            return buf1
+
+    v0 = None
+    scale = None
+    for i, f in enumerate(make_vector(fwhm)):
+
+        if verbose:
+            print('fwhm:', f.item())
+
+        v1 = _frangi(x, f)
+        v1[~torch.isfinite(v1)] = 0
+
+        # combine scales
+        if v0 is None:
+            v0 = v1.clone()
+            if return_scale:
+                scale = torch.zeros_like(v, dtype=torch.int)
+        else:
+            if return_scale:
+                scale[v1 > v0] = i
+            v0 = torch.max(v0, v1, out=v0)
+
+    return (v0, scale) if return_scale else v0
+
+
 def sobel(x, dim=None, bound='replicate', value=0):
     """Sobel (edge detector) filter.
 
@@ -592,9 +748,9 @@ def sobel(x, dim=None, bound='replicate', value=0):
         Input (batched) tensor.
     dim : int
         Length of `spatial_shape`.
-    bound : bound_like, default='dct2'
+    bound : bound_like, default='replicate'
         Boundary condition.
-    value : number, defualt=0
+    value : number, default=0
         Out-of-bounds value if `bound='constant'`.
 
     Returns
