@@ -91,7 +91,7 @@ def greens(shape, absolute=0, membrane=0, bending=0, lame=0,
 
     dtype = kernel.dtype
     kernel = kernel.double()
-    if utils.torch_version('>=', (1, 8)):
+    if utils.torch_version('>=', (1, 7)):
         kernel = utils.movedim(kernel, [-2, -1], [0, 1])
         kernel = torch.fft.fftn(kernel, dim=dim).real()
         kernel = utils.movedim(kernel, [0, 1], [-2, -1])
@@ -152,7 +152,7 @@ def greens_apply(mom, greens, voxel_size=1):
 
     # fourier transform
     mom = utils.movedim(mom, -1, 0)
-    if utils.torch_version('>=', (1, 8)):
+    if utils.torch_version('>=', (1, 7)):
         mom = torch.fft.fftn(mom, dim=dim)
     else:
         if torch.backends.mkl.is_available:
@@ -168,12 +168,12 @@ def greens_apply(mom, greens, voxel_size=1):
     if greens.dim() == dim:
         voxel_size = utils.make_vector(voxel_size, dim, **utils.backend(mom))
         voxel_size = voxel_size.square()
-        if utils.torch_version('<', (1, 8)):
+        if utils.torch_version('<', (1, 7)):
             greens = greens[..., None, None]
         mom = mom * greens
         mom = mom / voxel_size
     else:
-        if utils.torch_version('<', (1, 8)):
+        if utils.torch_version('<', (1, 7)):
             mom[..., 0, :] = linalg.matvec(greens, mom[..., 0, :])
             mom[..., 1, :] = linalg.matvec(greens, mom[..., 1, :])
         else:
@@ -181,7 +181,7 @@ def greens_apply(mom, greens, voxel_size=1):
 
     # inverse fourier transform
     mom = utils.movedim(mom, -1, 0)
-    if utils.torch_version('>=', (1, 8)):
+    if utils.torch_version('>=', (1, 7)):
         mom = torch.fft.ifftn(mom, dim=dim).real()
     else:
         mom = torch.ifft(mom, dim)[..., 0]
