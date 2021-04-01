@@ -500,9 +500,9 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
         wb = weights.get('bending', None)
     else:
         wa = wm = wb = weights
-    wa = core.utils.unsqueeze(wa, 0, max(0, dim+1-wa.dim()))
-    wm = core.utils.unsqueeze(wm, 0, max(0, dim+1-wa.dim()))
-    wb = core.utils.unsqueeze(wb, 0, max(0, dim+1-wa.dim()))
+    # wa = core.utils.unsqueeze(wa, 0, max(0, dim+1-wa.dim()))
+    # wm = core.utils.unsqueeze(wm, 0, max(0, dim+1-wa.dim()))
+    # wb = core.utils.unsqueeze(wb, 0, max(0, dim+1-wa.dim()))
 
     y = 0
     if any(absolute):

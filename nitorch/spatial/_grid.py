@@ -65,9 +65,9 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Fal
 
     Parameters
     ----------
-    input : (batch, channel, *inshape) tensor
+    input : ([batch], [channel], *inshape) tensor
         Input image.
-    grid : (batch, *outshape, dim) tensor
+    grid : ([batch], *outshape, dim) tensor
         Transformation field.
     interpolation : int or sequence[int], default=1
         Interpolation order.
@@ -78,11 +78,21 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Fal
 
     Returns
     -------
-    output : (batch, channel, *outshape) tensor
+    output : ([batch], [channel], *outshape) tensor
         Deformed image.
 
     """
     # Broadcast
+    dim = grid.shape[-1]
+    input_no_batch = input.dim() < dim + 2
+    input_no_channel = input.dim() == dim
+    grid_no_batch = grid.dim() == dim + 1
+    if input_no_channel:
+        input = input[None, None]
+    elif input_no_batch:
+        input = input[None]
+    if grid_no_batch:
+        grid = grid[None]
     batch = max(input.shape[0], grid.shape[0])
     channel = input.shape[1]
     input = expand(input, [batch, *input.shape[1:]])
@@ -99,10 +109,14 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Fal
             soft = GridPull.apply(soft, grid, interpolation, bound, extrapolate)
             out[soft > pmax] = label
             pmax = torch.max(pmax, soft)
-        return out
     else:
         input = expand(input, [batch, *input.shape[1:]])
-        return GridPull.apply(input, grid, interpolation, bound, extrapolate)
+        out = GridPull.apply(input, grid, interpolation, bound, extrapolate)
+    if input_no_channel:
+        out = out[:, 0]
+    if input_no_batch and grid_no_batch:
+        out = out[0]
+    return out
 
 
 def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
@@ -117,9 +131,9 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
 
     Parameters
     ----------
-    input : (batch, channel, *inshape) tensor
+    input : ([batch], [channel], *inshape) tensor
         Input image.
-    grid : (batch, *inshape, dim) tensor
+    grid : ([batch], *inshape, dim) tensor
         Transformation field.
     shape : sequence[int], default=inshape
         Output shape
@@ -132,11 +146,21 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
 
     Returns
     -------
-    output : (batch, channel, *shape) tensor
+    output : ([batch], [channel], *shape) tensor
         Spatted image.
 
     """
     # Broadcast
+    dim = grid.shape[-1]
+    input_no_batch = input.dim() == dim + 1
+    input_no_channel = input.dim() == dim
+    grid_no_batch = grid.dim() == dim + 1
+    if input_no_channel:
+        input = input[None, None]
+    elif input_no_batch:
+        input = input[None]
+    if grid_no_batch:
+        grid = grid[None]
     batch = max(input.shape[0], grid.shape[0])
     channel = input.shape[1]
     ndims = grid.shape[-1]
@@ -149,7 +173,12 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
     if shape is None:
         shape = tuple(input.shape[2:])
 
-    return GridPush.apply(input, grid, shape, interpolation, bound, extrapolate)
+    out = GridPush.apply(input, grid, shape, interpolation, bound, extrapolate)
+    if input_no_channel:
+        out = out[:, 0]
+    if input_no_batch and grid_no_batch:
+        out = out[0]
+    return out
 
 
 def grid_count(grid, shape=None, interpolation='linear', bound='zero',
@@ -164,7 +193,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
 
     Parameters
     ----------
-    grid : (batch, *inshape, dim) tensor
+    grid : ([batch], *inshape, dim) tensor
         Transformation field.
     shape : sequence[int], default=inshape
         Output shape
@@ -177,14 +206,21 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
 
     Returns
     -------
-    output : (batch, channel, *shape) tensor
+    output : ([batch], 1, *shape) tensor
         Spatting weights.
 
     """
+    dim = grid.shape[-1]
+    grid_no_batch = grid.dim() == dim + 1
+    if grid_no_batch:
+        grid = grid[None]
     if shape is None:
         shape = tuple(grid.shape[1:-1])
 
-    return GridCount.apply(grid, shape, interpolation, bound, extrapolate)
+    out = GridCount.apply(grid, shape, interpolation, bound, extrapolate)
+    if grid_no_batch:
+        out = out[0]
+    return out
 
 
 def grid_grad(input, grid, interpolation='linear', bound='zero',
@@ -199,9 +235,9 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
 
     Parameters
     ----------
-    input : (batch, channel, *inshape) tensor
+    input : ([batch], [channel], *inshape) tensor
         Input image.
-    grid : (batch, *inshape, dim) tensor
+    grid : ([batch], *inshape, dim) tensor
         Transformation field.
     shape : sequence[int], default=inshape
         Output shape
@@ -214,16 +250,31 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
 
     Returns
     -------
-    output : (batch, channel, *shape, dim) tensor
+    output : ([batch], [channel], *shape, dim) tensor
         Sampled gradients.
 
     """
     # Broadcast
+    dim = grid.shape[-1]
+    input_no_batch = input.dim() == dim + 1
+    input_no_channel = input.dim() == dim
+    grid_no_batch = grid.dim() == dim + 1
+    if input_no_channel:
+        input = input[None, None]
+    elif input_no_batch:
+        input = input[None]
+    if grid_no_batch:
+        grid = grid[None]
     batch = max(input.shape[0], grid.shape[0])
     input = expand(input, [batch, *input.shape[1:]])
     grid = expand(grid, [batch, *grid.shape[1:]])
 
-    return GridGrad.apply(input, grid, interpolation, bound, extrapolate)
+    out = GridGrad.apply(input, grid, interpolation, bound, extrapolate)
+    if input_no_channel:
+        out = out[:, 0]
+    if input_no_batch and grid_no_batch:
+        out = out[0]
+    return out
 
 
 grid_pull.__doc__ = grid_pull.__doc__.format(
@@ -234,6 +285,11 @@ grid_count.__doc__ = grid_count.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
 grid_grad.__doc__ = grid_grad.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
+
+# aliases
+pull = grid_pull
+push = grid_push
+count = grid_count
 
 
 def identity_grid(shape, dtype=None, device=None, jitter=False):
