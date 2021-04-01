@@ -8,7 +8,89 @@ import torch.nn as tnn
 from nitorch.core.py import make_list, prod
 from nitorch.core.utils import slice_tensor
 from nitorch.spatial import diff1d
+from nitorch import spatial
 from .base import Loss
+
+
+class GridLoss(Loss):
+    """SPM-like loss for velocities.
+
+    References
+    ----------
+    ..[1] "A fast diffeomorphic image registration algorithm."
+        Ashburner, John. Neuroimage 38, no. 1 (2007): 95-113.
+
+    """
+
+    def __init__(self, bound='dft', voxel_size=1, factor=1, absolute=0.0001,
+                 membrane=0.001, bending=0.2, lame=(0.05, 0.2), **kwargs):
+        """
+
+        Parameters
+        ----------
+        bound : str, default='dft'
+            Boundary conditions
+        voxel_size : [sequence of] float, default=1
+            Voxel size
+        factor : float, default=1
+            General multiplicative factor
+        absolute : float, default=0.0001
+            Penalty on absolute displacements
+        membrane : float, default=0.001
+            Penalty on membrane energy (first derivatives)
+        bending : float, default=0.2
+            Penalty on bending energy (second derivatives)
+        lame : (float, float), default=(0.05, 0.2)
+            Penalty on linear-elastic energy (divergence and shears)
+        reduction : {'mean', 'sum'} or callable, default='mean'
+            Type of reduction to apply.
+        """
+        super().__init__(**kwargs)
+        self.bound = bound
+        self.absolute = absolute
+        self.membrane = membrane
+        self.bending = bending
+        self.lame = lame
+        self.voxel_size = voxel_size
+        self.factor = factor
+
+    def forward(self, x, **overload):
+        """
+
+        Parameters
+        ----------
+        x : (batch, *spatial, dim) tensor
+        overload : dict
+
+        Returns
+        -------
+        loss : tensor
+
+        """
+        bound = overload.get('bound', self.bound)
+        absolute = overload.get('absolute', self.absolute)
+        membrane = overload.get('membrane', self.membrane)
+        bending = overload.get('bending', self.bending)
+        lame = overload.get('lame', self.lame)
+        lame1, lame2 = make_list(lame, 2)
+        voxel_size = overload.get('voxel_size', self.voxel_size)
+        factor = overload.get('factor', self.factor)
+
+        prm = dict(voxel_size=voxel_size, bound=bound)
+
+        loss = 0
+        if absolute:
+            loss += absolute * spatial.absolute_grid(x, voxel_size).mul(x).sum(-1)
+        if membrane:
+            loss += membrane * spatial.membrane(x, **prm).mul(x).sum(-1)
+        if bending:
+            loss += bending * spatial.bending(x, **prm).mul(x).sum(-1)
+        if lame1:
+            loss += membrane * spatial.lame_div(x, **prm).mul(x).sum(-1)
+        if lame2:
+            loss += membrane * spatial.lame_shear(x, **prm).mul(x).sum(-1)
+        loss = super().forward(loss) * factor
+        return loss
 
 
 class LocalFeatures(tnn.Module):
