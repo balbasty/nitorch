@@ -809,12 +809,13 @@ def bending_weights(field, lam=1, voxel_size=1, bound='dct2',
         Weights for the reweighted least squares scheme
     """
     field = torch.as_tensor(field)
+    backend = dict(dtype=field.dtype, device=field.device)
     dim = dim or field.dim() - 1
     field = unsqueeze(field, 0, max(0, dim+1-field.dim()))
     nb_prm = field.shape[-dim-1]
-    voxel_size = make_vector(voxel_size, dim)
+    voxel_size = make_vector(voxel_size, dim, **backend)
     bound = make_list(bound, dim)
-    lam = make_vector(lam, nb_prm)
+    lam = make_vector(lam, nb_prm, **backend)
     lam = core.utils.unsqueeze(lam, -1, dim)
     if joint:
         lam = lam * nb_prm
