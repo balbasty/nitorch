@@ -45,8 +45,9 @@ def absolute_grid(grid, voxel_size=1, weights=None):
 
     """
     grid = torch.as_tensor(grid)
+    backend = dict(dtype=grid.dtype, device=grid.device)
     dim = grid.shape[-1]
-    voxel_size = make_vector(voxel_size, dim)
+    voxel_size = make_vector(voxel_size, dim, **backend)
     grid = grid * voxel_size.square()
     if weights is not None:
         backend = dict(dtype=grid.dtype, device=grid.device)
@@ -84,8 +85,9 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
             return x.mul_(y)
 
     field = torch.as_tensor(field)
+    backend = dict(dtype=field.dtype, device=field.device)
     dim = dim or field.dim()
-    voxel_size = make_vector(voxel_size, dim)
+    voxel_size = make_vector(voxel_size, dim, **backend)
     dims = list(range(field.dim()-dim, field.dim()))
     fieldf = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
     if weights is not None:
@@ -202,8 +204,9 @@ def bending(field, voxel_size=1, bound='dct2', dim=None, weights=None):
 
     """
     field = torch.as_tensor(field)
+    backend = dict(dtype=field.dtype, device=field.device)
     dim = dim or field.dim()
-    voxel_size = make_vector(voxel_size, dim)
+    voxel_size = make_vector(voxel_size, dim, **backend)
     bound = make_list(bound, dim)
     dims = list(range(field.dim()-dim, field.dim()))
     if weights is not None:
