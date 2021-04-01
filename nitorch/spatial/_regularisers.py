@@ -407,7 +407,7 @@ _bending = bending
 
 
 def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
-                     voxel_size=1, bound='dft', weights=None):
+                     factor=1, voxel_size=1, bound='dft', weights=None):
     """Precision matrix for a mixture of energies for a deformation grid.
 
     Parameters
@@ -417,6 +417,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     membrane : float, default=0
     bending : float, default=0
     lame : (float, float), default=0
+    factor : float, default=1
     voxel_size : [sequence of] float, default=1
     bound : str, default='dft'
     weights : [dict of] (..., *spatial) tensor, optional
@@ -433,7 +434,11 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     dim = v.shape[-1]
 
     voxel_size = make_vector(voxel_size, dim, **backend)
+    absolute = absolute * factor
+    membrane = membrane * factor
+    bending = bending * factor
     lame = make_vector(lame, 2, **backend)
+    lame = [l*factor for l in lame]
     fdopt = dict(bound=bound, voxel_size=voxel_size)
     if isinstance(weights, dict):
         wa = weights.get('absolute', None)

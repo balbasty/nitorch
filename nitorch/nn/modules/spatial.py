@@ -307,7 +307,7 @@ class GridShoot(Module):
 
     def __init__(self, fwd=True, inv=False, steps=8,
                  absolute=0.0001, membrane=0.001, bending=0.2, lame=(0.05, 0.2),
-                 voxel_size=1, displacement=False, cache_greens=False):
+                 factor=1, voxel_size=1, displacement=False, cache_greens=False):
         """
 
         Parameters
@@ -326,6 +326,8 @@ class GridShoot(Module):
             Penalty on bending energy
         lame : float or (float, float), default=(0.05, 0.2)
             Penalty on linear-elastic energy
+        factor : float, default=1
+            Common multiplicative factor for the penalties.
         voxel_size : [sequence of] float, default=1
             Voxel size
         displacement : bool, default=False
@@ -345,6 +347,7 @@ class GridShoot(Module):
         self.membrane = membrane
         self.bending = bending
         self.lame = lame
+        self.factor = factor
         self.voxel_size = voxel_size
         self.displacement = displacement
         self.cache_greens = cache_greens
@@ -376,6 +379,7 @@ class GridShoot(Module):
         bending = overload.get('bending', self.bending)
         lame = overload.get('lame', self.lame)
         lame = make_list(lame, 2)
+        factor = overload.get('factor', self.factor)
         voxel_size = overload.get('voxel_size', self.voxel_size)
 
         shoot_opt = {
@@ -386,12 +390,14 @@ class GridShoot(Module):
             'membrane': membrane,
             'bending': bending,
             'lame': lame,
+            'factor': factor,
         }
         greens_prm = {
             'absolute': absolute,
             'membrane': membrane,
             'bending': bending,
             'lame': lame,
+            'factor': factor,
             'voxel_size': voxel_size,
             'shape': velocity.shape[1:-1],
         }

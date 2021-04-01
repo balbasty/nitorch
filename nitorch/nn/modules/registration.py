@@ -100,11 +100,7 @@ class VoxelMorph(Module):
             exp.pop('interpolation')
             exp.pop('bound')
             exp.pop('voxel_size', downsample_vel)
-            vol = py.prod(downsample_vel)
-            exp['absolute'] *= vol
-            exp['membrane'] *= vol
-            exp['bending'] *= vol
-            exp['lame'] = [l * vol for l in py.make_list(exp['lame'])]
+            exp['factor'] = py.prod(downsample_vel)
         else:
             exp.pop('absolute')
             exp.pop('membrane')
