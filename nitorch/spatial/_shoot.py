@@ -13,7 +13,7 @@ _default_lame = (0.05, 0.2)
 
 
 def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
-           bending=_default_bending, lame=_default_lame,
+           bending=_default_bending, lame=_default_lame, factor=1,
            voxel_size=1, dtype=None, device=None):
     """Generate the Greens function of a regulariser in Fourier space.
 
@@ -60,6 +60,7 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
         absolute=absolute,
         membrane=membrane,
         bending=bending,
+        factor=factor,
         voxel_size=voxel_size,
         bound='dft')
     if lame1 or lame2:
@@ -198,7 +199,7 @@ def greens_apply(mom, greens, voxel_size=1):
 
 def shoot(vel, greens=None,
           absolute=_default_absolute, membrane=_default_membrane,
-          bending=_default_bending, lame=_default_lame,
+          bending=_default_bending, lame=_default_lame, factor=1,
           voxel_size=1, return_inverse=False, displacement=False, steps=8,
           fast=True, verbose=False):
     """Exponentiate a velocity field by geodesic shooting.
@@ -267,7 +268,7 @@ def shoot(vel, greens=None,
     spatial = vel.shape[-dim-1:-1]
 
     prm = dict(absolute=absolute, membrane=membrane, bending=bending,
-               lame=lame, voxel_size=voxel_size)
+               lame=lame, voxel_size=voxel_size, factor=factor)
     pull_prm = dict(bound='dft', interpolation=1, extrapolate=True)
     if greens is None:
         greens = _greens(spatial, **prm, **backend)
