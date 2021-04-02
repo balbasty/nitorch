@@ -104,7 +104,7 @@ class BaseMorph(Module):
             vol = get_slice(plane, vol[batch])
             vol = utils.movedim(vol, 0, -1)
             bound = vol.reshape(-1, self.dim).abs().max(dim=0).values
-            vol = vol - bound
+            vol = vol + bound
             vol = vol / (2*bound)
             vol = vol.clip_(0, 1)
             return vol
@@ -1388,7 +1388,7 @@ class SegMorphWNet4(BaseMorph):
                             activation=[activation, ..., self.softmax],
                             batch_norm=batch_norm)
 
-        nb_feat = self.segnet.last.in_channels
+        nb_feat = self.segnet.final.in_channels
         in_channels = int('image' in unet_inputs) \
                       + int('seg' in unet_inputs) \
                       * (output_classes + int(not self.implicit[1])) \

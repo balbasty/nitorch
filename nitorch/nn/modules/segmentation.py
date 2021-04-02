@@ -4,7 +4,7 @@ from nitorch import spatial
 from nitorch.core import utils, math
 from .. import check
 from .base import Module
-from .cnn import UNet, MRF
+from .cnn import UNet, MRF, UNet2
 from .spatial import GridPull, GridPushCount
 from ..generators import (BiasFieldTransform, DiffeoSample)
 import torch
@@ -563,7 +563,10 @@ class SegNet(Module):
             input_channels=1,
             encoder=None,
             decoder=None,
+            conv_per_layer=1,
             kernel_size=3,
+            pool=None,
+            unpool=None,
             activation=tnn.LeakyReLU(0.2),
             batch_norm=True,
             implicit=True,
@@ -583,6 +586,8 @@ class SegNet(Module):
             Number of features per encoding layer
         decoder : sequence[int], optional
             Number of features per decoding layer
+        conv_per_layer : int, default=1
+            Number of convolution per scale
         kernel_size : int or sequence[int], default=3
             Kernel size
         activation : str or callable, default=LeakyReLU(0.2)
@@ -608,27 +613,27 @@ class SegNet(Module):
         self.implicit = implicit
         self.output_classes = output_classes
         if not isinstance(augmentation, (list, tuple)):  augmentation = [augmentation]
-        augmentation = ['warp-img-lab' if a == 'warp' else a for a in augmentation]
-        self.augmentation = augmentation
+        augmentation = ['warp-img-lab' if a == 'warp' else a for a in augmentation if a]
+        self.augmentation = [(lambda *x: augment(a, *x)) for a in augmentation]
         final_activation = None
         if not skip_final_activation:
             if implicit and output_classes == 1:
                 final_activation = tnn.Sigmoid
             else:
                 final_activation = tnn.Softmax(dim=1)
-        if implicit:
-            output_classes += 1
-        # Add tensorboard callback
-        self.board = lambda tb, *args, **kwargs: board(tb, *args, **kwargs, implicit=implicit, dim=dim)
+                output_classes += 1
 
-        self.unet = UNet(
+        self.unet = UNet2(
             dim,
             in_channels=input_channels,
             out_channels=output_classes,
             encoder=encoder,
             decoder=decoder,
+            conv_per_layer=conv_per_layer,
             kernel_size=kernel_size,
-            activation=[activation, ..., final_activation],
+            pool=pool,
+            unpool=unpool,
+            activation=[activation, final_activation],
             batch_norm=batch_norm)
 
         # register loss tag
@@ -641,6 +646,9 @@ class SegNet(Module):
     kernel_size = property(lambda self: self.unet.kernel_size)
     activation = property(lambda self: self.unet.activation)
 
+    def board(self, tb, **k):
+        return board2(self, tb, **k, implicit=self.implicit)
+    
     def forward(self, image, ref=None, *, _loss=None, _metric=None):
         """
 
@@ -675,15 +683,15 @@ class SegNet(Module):
         # sanity check
         check.dim(self.dim, image)
 
-        if ref is not None:
+        if self.training and ref is not None:
             # augment
             for aug_method in self.augmentation:
-                image, ref = augment(aug_method, image, ref)
+                image, ref = aug_method(image, ref)
 
         # unet
         prob = self.unet(image)
         if self.implicit and prob.shape[1] > self.output_classes:
-            prob = prob[:, :-1, ...]
+            prob = prob[:, :-1]
 
         # compute loss and metrics
         if ref is not None:
@@ -918,6 +926,93 @@ class MRFNet(Module):
 
         return p
 
+
+def board2(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None, mode=None, 
+           implicit=False, do_eval=True, do_train=True, **kwargs):
+    if not do_eval and mode == 'eval':
+        return
+    if not do_train and mode == 'train':
+        return
+    if inputs is None:
+        return
+    from nitorch.plot import get_orthogonal_slices, get_slice
+    from nitorch.plot.colormaps import prob_to_rgb, intensity_to_rgb
+    import matplotlib.pyplot as plt
+    
+    image, ref = inputs
+    pred = outputs
+    fig = plt.figure()
+    
+    if image.dim()-2 == 2:
+        image = get_slice(image[0, 0])
+        image = intensity_to_rgb(image)
+        nk = pred.shape[1] + implicit
+        pred = get_slice(pred[0])
+        pred = prob_to_rgb(pred, implicit=implicit)
+        if ref.dtype in (torch.float, torch.double):
+            ref = get_slice(ref[0])
+        else:
+            ref = get_slice(ref[0, 0])
+            ref = torch.stack([ref == i for i in range(1, ref.max().item()+1)]).float()
+        ref = prob_to_rgb(ref, implicit=ref.shape[1] < pred.nk)
+        plt.subplot(1, 3, 1)
+        plt.imshow(image.detach().cpu())
+        plt.axis('off')
+        plt.subplot(1, 3, 2)
+        plt.imshow(pred.detach().cpu())
+        plt.axis('off')
+        plt.subplot(1, 3, 3)
+        plt.imshow(ref.detach().cpu())
+        plt.axis('off')
+    else:
+        images = get_orthogonal_slices(image[0, 0])
+        images = [intensity_to_rgb(image) for image in images]
+        nk = pred.shape[1] + implicit
+        preds = get_orthogonal_slices(pred[0])
+        preds = [prob_to_rgb(pred, implicit=implicit) for pred in preds]
+        if ref.dtype in (torch.float, torch.double):
+            refs = get_orthogonal_slices(ref[0])
+        else:
+            refs = get_orthogonal_slices(ref[0, 0])
+            refs = [torch.stack([ref == i for i in range(1, ref.max().item()+1)]).float()
+                    for ref in refs]
+        refs = [prob_to_rgb(ref, implicit=ref.shape[0] < nk) for ref in refs]
+        plt.subplot(3, 3, 1)
+        plt.imshow(images[0].detach().cpu())
+        plt.axis('off')
+        plt.subplot(3, 3, 4)
+        plt.imshow(images[1].detach().cpu())
+        plt.axis('off')
+        plt.subplot(3, 3, 7)
+        plt.imshow(images[2].detach().cpu())
+        plt.axis('off')
+        plt.subplot(3, 3, 2)
+        plt.imshow(preds[0].detach().cpu())
+        plt.axis('off')
+        plt.subplot(3, 3, 5)
+        plt.imshow(preds[1].detach().cpu())
+        plt.axis('off')
+        plt.subplot(3, 3, 8)
+        plt.imshow(preds[2].detach().cpu())
+        plt.axis('off')
+        plt.subplot(3, 3, 3)
+        plt.imshow(refs[0].detach().cpu())
+        plt.axis('off')
+        plt.subplot(3, 3, 6)
+        plt.imshow(refs[1].detach().cpu())
+        plt.axis('off')
+        plt.subplot(3, 3, 9)
+        plt.imshow(refs[2].detach().cpu())
+        plt.axis('off')
+        
+    
+    if not hasattr(self, 'tbstep'):
+        self.tbstep = dict()
+    self.tbstep.setdefault(mode, 0)
+    self.tbstep[mode] += 1
+    tb.add_figure(f'prediction/{mode}', fig, global_step=self.tbstep[mode])
+    
+    
 
 def board(tb, inputs=None, outputs=None, epoch=None, minibatch=None,
           mode=None, loss=None, losses=None, metrics=None, implicit=False, dim=3):
