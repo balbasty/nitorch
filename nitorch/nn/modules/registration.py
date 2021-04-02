@@ -15,9 +15,36 @@ class VoxelMorph(Module):
     (diffeomorphic) spatial transformer. The loss is made of two terms:
     an image similarity loss and a velocity regularisation loss.
 
-    The UNet used here is slightly different from the original one (we
-    use a fully convolutional network -- based on strided convolutions --
-    instead of maxpooling and upsampling).
+    The original U-Net structure used by VoxelMorph is described in [2].
+    It works at 5 different resolutions, with the number of features at 
+    each encoding scale being [16, 32, 32, 32, 32]. The first number 
+    corresponds to feature extraction at the initial resolution, and 
+    the last number is the number of output features at the coarsest 
+    resolution (the bottleneck). In the decoder, the number of features
+    at each scale is [32, 32, 32, 32], each of these feature map is 
+    concatenated with the output from the decoder at the same scale.
+    Finally, two convolutions with 16 output features are applied 
+    (without change of scale) followed by a final convolution with 
+    3 output features (the three components of the displacement or
+    velocity field). Note that all encoding and decoding convolutions
+    have kernel size 3 and stride 2 -- therefore no max-pooling or
+    linear upsampling is used. All convolutions are followed by a 
+    leaky ReLU activation sith slope 0.2. The default parameters of 
+    out implementation follow this architecture.
+    
+    Note that a slighlty different architecture was proposed in [1], 
+    where two convolutions were applied at the second-to-last scale.
+    This module does not implement this architecture. However, 
+    our U-Net is highly parameterised, and alternative pooling and 
+    upsampling methods, activation functions and number of convolutions
+    per scale can be used.
+    
+    A scaling and squaring layer is used to integrate the output 
+    velocity field and generate a diffeomorphic transformation, 
+    as in [3, 4]. If the number of integration steps is set at 0, 
+    a small deformation model (without integration) is used. 
+    Alternatively, a novel geodesic shooting layer can be used 
+    by setting `shoot=True` in the exponentiation structure.
 
     References
     ----------
@@ -26,13 +53,13 @@ class VoxelMorph(Module):
         CVPR 2018. eprint arXiv:1802.02604
     .. [2] "VoxelMorph: A Learning Framework for Deformable Medical Image Registration"
         Guha Balakrishnan, Amy Zhao, Mert R. Sabuncu, John Guttag, Adrian V. Dalca
-        IEEE TMI: Transactions on Medical Imaging. 2019. eprint arXiv:1809.05231
+        IEEE TMI 2019. eprint arXiv:1809.05231
     .. [3] "Unsupervised Learning for Fast Probabilistic Diffeomorphic Registration"
         Adrian V. Dalca, Guha Balakrishnan, John Guttag, Mert R. Sabuncu
         MICCAI 2018. eprint arXiv:1805.04605
     .. [4] "Unsupervised Learning of Probabilistic Diffeomorphic Registration for Images and Surfaces"
         Adrian V. Dalca, Guha Balakrishnan, John Guttag, Mert R. Sabuncu
-        MedIA: Medial Image Analysis. 2019. eprint arXiv:1903.03545
+        MedIA 2019. eprint arXiv:1903.03545
     """
 
     def __init__(self, dim, unet=None, pull=None, exp=None,
@@ -45,13 +72,20 @@ class VoxelMorph(Module):
             Dimensionality of the input (1|2|3)
         unet : dict
             Dictionary of U-Net parameters with fields:
-                encoder : sequence[int], default=[16, 32, 32, 32]
-                decoder : sequence[int], default=[32, 32, 32, 32, 32, 16, 16]
+                encoder : sequence[int], default=[16, 32, 32, 32, 32]
+                decoder : sequence[int], default=[32, 32, 32, 32, 16, 16]
                 conv_per_layer : int, default=1
                 kernel_size : int, default=3
                 activation : str or callable, default=LeakyReLU(0.2)
-                pool : {'max', 'conv', 'down', None}, default='max'
-                unpool : {'conv', 'up', None}, default='up'
+                pool : {'max', 'conv', 'down', None}, default=None
+                    'max'  -> 2x2x2 max-pooling
+                    'conv' -> 2x2x2 strided convolution (no bias, no activation)
+                    'down' -> downsampling
+                     None  -> use strided convolutions in the encoder
+                unpool : {'conv', 'up', None}, default=None
+                    'conv' -> 2x2x2 strided convolution (no bias, no activation)
+                    'up'   -> linear upsampling
+                     None  -> use strided convolutions in the decoder
         pull : dict
             Dictionary of Transformer parameters with fields:
                 interpolation : {0..7}, default=1
@@ -72,11 +106,11 @@ class VoxelMorph(Module):
         """
         # default parameters
         unet = dict(unet or {})
-        unet.setdefault('encoder', [16, 32, 32, 32])
-        unet.setdefault('decoder', [16, 32, 32, 32])
+        unet.setdefault('encoder', [16, 32, 32, 32, 32])
+        unet.setdefault('decoder', [32, 32, 32, 32, 16, 16])
         unet.setdefault('kernel_size', 3)
-        unet.setdefault('pool', 'max')
-        unet.setdefault('unpool', 'up')
+        unet.setdefault('pool', None)
+        unet.setdefault('unpool', None)
         unet.setdefault('activation', tnn.LeakyReLU(0.2))
         pull = dict(pull or {})
         pull.setdefault('interpolation', 1)
@@ -92,6 +126,7 @@ class VoxelMorph(Module):
         exp.setdefault('membrane', 0.001)
         exp.setdefault('bending', 0.2)
         exp.setdefault('lame', (0.05, 0.2))
+        exp.setdefault('factor', 1)
         do_shoot = exp.pop('shoot')
         downsample_vel = utils.make_vector(exp.pop('downsample'), dim).tolist()
         vel_inter = exp['interpolation']
@@ -100,12 +135,13 @@ class VoxelMorph(Module):
             exp.pop('interpolation')
             exp.pop('bound')
             exp.pop('voxel_size', downsample_vel)
-            exp['factor'] = py.prod(downsample_vel)
+            exp['factor'] *= py.prod(downsample_vel)
         else:
             exp.pop('absolute')
             exp.pop('membrane')
             exp.pop('bending')
             exp.pop('lame')
+            exp.pop('factor')
 
         # prepare layers
         super().__init__()
@@ -140,7 +176,7 @@ class VoxelMorph(Module):
         shape = velocity.shape[1:-1]
         velocity_small = self.resize(velocity, type='displacement')
         grid = self.velexp(velocity_small, displacement=displacement)
-        grid = self.resize(grid, shape=shape,
+        grid = self.resize(grid, shape=shape, factor=None,
                            type='disp' if displacement else 'grid')
         return grid
 
@@ -367,6 +403,7 @@ def registration_board(
                 plt.subplot(nrow, ncol, 6 + i*ncol)
                 plt.imshow(target_seg[i].detach().cpu())
                 plt.axis('off')
+    plt.tight_layout()
 
     if not hasattr(self, 'tbstep'):
         self.tbstep = dict()
@@ -376,17 +413,28 @@ def registration_board(
 
     fig = plt.figure()
     if is2d:
-        vel = get_slice(vel[0])
+        vel = get_slice(utils.movedim(vel[0], -1, 0))
         vel = disp_to_rgb(vel, amplitude='saturation')
-        plt.imshow(vel)
+        plt.imshow(vel.detach().cpu())
+        plt.axis('off')
     else:
-        vel = get_orthogonal_slices(vel[0])
-        vel = [disp_to_rgb(v, amplitude='saturation') for v in vel]
-        plt.subplot(1, 3, 1)
-        plt.imshow(vel[0])
-        plt.subplot(1, 3, 2)
-        plt.imshow(vel[1])
-        plt.subplot(1, 3, 3)
-        plt.imshow(vel[2])
+        vel = get_orthogonal_slices(utils.movedim(vel[0], -1, 0))
+#         vel = [disp_to_rgb(v, amplitude='saturation') for v in vel]
+#         plt.subplot(1, 3, 1)
+#         plt.imshow(vel[0].detach().cpu())
+#         plt.axis('off')
+#         plt.subplot(1, 3, 2)
+#         plt.imshow(vel[1].detach().cpu())
+#         plt.axis('off')
+#         plt.subplot(1, 3, 3)
+#         plt.imshow(vel[2].detach().cpu())
+#         plt.axis('off')
+        for i in range(3):
+            for j in range(3):
+                plt.subplot(3, 3, 1+j+i*3)
+                plt.imshow(vel[j][i].detach().cpu())
+                plt.colorbar()
+                plt.axis('off')
+    plt.tight_layout()
 
     tb.add_figure(f'vel/{mode}', fig, global_step=self.tbstep[mode])

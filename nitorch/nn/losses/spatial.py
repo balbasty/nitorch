@@ -82,9 +82,9 @@ class GridLoss(Loss):
         if absolute:
             loss += absolute * spatial.absolute_grid(x, voxel_size).mul(x).sum(-1)
         if membrane:
-            loss += membrane * spatial.membrane(x, **prm).mul(x).sum(-1)
+            loss += membrane * spatial.membrane_grid(x, **prm).mul(x).sum(-1)
         if bending:
-            loss += bending * spatial.bending(x, **prm).mul(x).sum(-1)
+            loss += bending * spatial.bending_grid(x, **prm).mul(x).sum(-1)
         if lame1:
             loss += membrane * spatial.lame_div(x, **prm).mul(x).sum(-1)
         if lame2:

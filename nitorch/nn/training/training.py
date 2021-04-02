@@ -240,7 +240,7 @@ class ModelTrainer:
         self.dtype = dtype or torch.get_default_dtype()
         self.scheduler = scheduler
         if self.scheduler is not None:
-            self.scheduler = self.scheduler(self.optimizer)
+            self.scheduler = self.scheduler(self.optimizer, verbose=True)
 
         if self.load_model:
             self.model.load_state_dict(torch.load(self.load_model))
