@@ -207,3 +207,186 @@ class VoxelMorph(Module):
             return deformed_source, velocity
         else:
             return deformed_source, deformed_source_seg, velocity
+
+    def board(self, tb, **k):
+        """Tensorboard visualization function"""
+        implicit = getattr(self, 'implicit', False)
+        return registration_board(self, tb, **k, implicit=implicit)
+
+
+def registration_board(
+        self, tb,
+        inputs=None, outputs=None, epoch=None, minibatch=None, mode=None,
+        implicit=False, do_eval=True, do_train=True, **kwargs):
+    """Plug-and-play tensorboard method for registration networks
+
+    Parameters
+    ----------
+    self : Module
+    tb : SummaryWriter
+    inputs : tuple of tensor
+        (source, target, [source_seg, target_seg])
+    outputs : tuple of tensor
+        (deformed_source, [deformed_source_seg], velocity)
+    epoch : int
+        Index of current epoch
+    minibatch : int
+        Index of current minibatch
+    mode : {'train', 'eval'}
+    implicit : bool, default=False
+        Does the deformed segmentation have an implicit class?
+    do_eval : bool, default=True
+    do_train : bool, default=True
+    kwargs : dict
+
+    """
+    if torch.is_grad_enabled():
+        # run without gradients
+        with torch.no_grad():
+            return registration_board(self, tb, inputs, outputs, epoch,
+                                      minibatch, mode, implicit, do_eval,
+                                      do_train, **kwargs)
+
+    if ((not do_eval and mode == 'eval') or
+        (not do_train and mode == 'train') or
+        inputs is None):
+        return
+
+    from nitorch.plot import get_orthogonal_slices, get_slice
+    from nitorch.plot.colormaps import prob_to_rgb, intensity_to_rgb, disp_to_rgb
+    import matplotlib.pyplot as plt
+
+    def get_slice_seg(x):
+        """Get slice + convert to probabilities (one-hot) if needed."""
+        if x.dtype in (torch.float, torch.double):
+            x = get_slice(x)
+        else:
+            x = get_slice(x[0])
+            x = torch.stack([x == i for i in range(1, x.max().item() + 1)])
+            x = x.float()
+        return x
+
+    def get_orthogonal_slices_seg(x):
+        """Get slices + convert to probabilities (one-hot) if needed."""
+        if x.dtype in (torch.float, torch.double):
+            xs = get_orthogonal_slices(x)
+        else:
+            xs = get_orthogonal_slices(x[0])
+            xs = [torch.stack([x == i for i in range(1, x.max().item() + 1)])
+                  for x in xs]
+            xs = [x.float() for x in xs]
+        return xs
+
+    source, target, *seg = inputs
+    *warps, vel = outputs
+    if seg:
+        has_seg = True
+        source_seg, target_seg = seg
+        warped_source, warped_seg = warps
+    else:
+        has_seg = False
+        warped_source, = warps
+    del seg, warps, inputs, outputs
+    is2d = source.dim() - 2 == 2
+
+    fig = plt.figure()
+    if is2d:  # 2D
+        nrow = 3
+        ncol = 1 + has_seg
+        # images
+        source = get_slice(source[0, 0])
+        source = intensity_to_rgb(source)
+        warped_source = get_slice(warped_source[0, 0])
+        warped_source = intensity_to_rgb(warped_source)
+        target = get_slice(target[0, 0])
+        target = intensity_to_rgb(target)
+        plt.subplot(nrow, ncol, 1)
+        plt.imshow(source.detach().cpu())
+        plt.axis('off')
+        plt.subplot(nrow, ncol, 2)
+        plt.imshow(warped_source.detach().cpu())
+        plt.axis('off')
+        plt.subplot(nrow, ncol, 3)
+        plt.imshow(target.detach().cpu())
+        plt.axis('off')
+        # segmentations
+        if has_seg:
+            nk = warped_seg.shape[1] + implicit
+            source_seg = get_slice(source_seg[0])
+            source_seg = prob_to_rgb(source_seg, implicit=source_seg.shape[0] < nk)
+            warped_seg = get_slice(warped_seg[0])
+            warped_seg = prob_to_rgb(warped_seg, implicit=warped_seg.shape[0] < nk)
+            target_seg = get_slice_seg(target_seg[0])
+            target_seg = prob_to_rgb(target_seg, implicit=target_seg.shape[0] < nk)
+            plt.subplot(nrow, ncol, 4)
+            plt.imshow(source_seg.detach().cpu())
+            plt.axis('off')
+            plt.subplot(nrow, ncol, 5)
+            plt.imshow(warped_seg.detach().cpu())
+            plt.axis('off')
+            plt.subplot(nrow, ncol, 6)
+            plt.imshow(target_seg.detach().cpu())
+            plt.axis('off')
+
+    else:  # 3D
+        nrow = 3
+        ncol = 3*(1 + has_seg)
+        # images
+        source = get_orthogonal_slices(source[0, 0])
+        source = [intensity_to_rgb(x) for x in source]
+        warped_source = get_orthogonal_slices(warped_source[0, 0])
+        warped_source = [intensity_to_rgb(x) for x in warped_source]
+        target = get_orthogonal_slices(target[0, 0])
+        target = [intensity_to_rgb(x) for x in target]
+        for i in range(3):
+            plt.subplot(nrow, ncol, 1 + i*ncol)
+            plt.imshow(source[i].detach().cpu())
+            plt.axis('off')
+            plt.subplot(nrow, ncol, 2 + i*ncol)
+            plt.imshow(warped_source[i].detach().cpu())
+            plt.axis('off')
+            plt.subplot(nrow, ncol, 3 + i*ncol)
+            plt.imshow(target[i].detach().cpu())
+            plt.axis('off')
+        # segmentations
+        if has_seg:
+            nk = warped_seg.shape[1] + implicit
+            source_seg = get_orthogonal_slices(source_seg[0])
+            source_seg = [prob_to_rgb(x, implicit=x.shape[0] < nk) for x in source_seg]
+            warped_seg = get_orthogonal_slices(warped_seg[0])
+            warped_seg = [prob_to_rgb(x, implicit=x.shape[0] < nk) for x in warped_seg]
+            target_seg = get_orthogonal_slices_seg(target_seg[0])
+            target_seg = [prob_to_rgb(x, implicit=x.shape[0] < nk) for x in target_seg]
+            for i in range(3):
+                plt.subplot(nrow, ncol, 4 + i*ncol)
+                plt.imshow(source_seg[i].detach().cpu())
+                plt.axis('off')
+                plt.subplot(nrow, ncol, 5 + i*ncol)
+                plt.imshow(warped_seg[i].detach().cpu())
+                plt.axis('off')
+                plt.subplot(nrow, ncol, 6 + i*ncol)
+                plt.imshow(target_seg[i].detach().cpu())
+                plt.axis('off')
+
+    if not hasattr(self, 'tbstep'):
+        self.tbstep = dict()
+    self.tbstep.setdefault(mode, 0)
+    self.tbstep[mode] += 1
+    tb.add_figure(f'warps/{mode}', fig, global_step=self.tbstep[mode])
+
+    fig = plt.figure()
+    if is2d:
+        vel = get_slice(vel[0])
+        vel = disp_to_rgb(vel, amplitude='saturation')
+        plt.imshow(vel)
+    else:
+        vel = get_orthogonal_slices(vel[0])
+        vel = [disp_to_rgb(v, amplitude='saturation') for v in vel]
+        plt.subplot(1, 3, 1)
+        plt.imshow(vel[0])
+        plt.subplot(1, 3, 2)
+        plt.imshow(vel[1])
+        plt.subplot(1, 3, 3)
+        plt.imshow(vel[2])
+
+    tb.add_figure(f'vel/{mode}', fig, global_step=self.tbstep[mode])
