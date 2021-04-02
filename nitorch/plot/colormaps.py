@@ -44,6 +44,7 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
     """
 
     image = torch.as_tensor(image).detach()
+    backend = utils.backend(image)
     *batch, dim, height, width = image.shape
     shape = (height, width)
 
@@ -58,10 +59,10 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
     hue_neg = torch.as_tensor(hue_neg, dtype=image.dtype, device=image.device)
 
     # rescale intensities
-    scale = utils.make_vector(scale, dim)[..., None, None]
+    scale = utils.make_vector(scale, dim, **backend)[..., None, None]
     image = image * scale
     vmax = vmax or math.max(image.square().sum(-3).sqrt(), dim=[-1, -2])
-    vmax = torch.as_tensor(vmax, dtype=image.dtype, device=image.device)
+    vmax = torch.as_tensor(vmax, **backend)
     image = image / vmax[..., None, None, None]
 
     # convert
@@ -71,9 +72,8 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
         cimage += (image[..., d, :, :, :] > 0) * image[..., d, :, :, :].abs() * hue_pos[d]
         cimage += (image[..., d, :, :, :] < 0) * image[..., d, :, :, :].abs() * hue_neg[d]
     if amplitude[0] == 's':
-        cimage += (1 - image)
+        cimage += (1 - cimage)
 
-    cimage = utils.movedim(cimage, -1, -3)
     return cimage
 
 
