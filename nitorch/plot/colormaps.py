@@ -34,6 +34,7 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
     amplitude : {'value', 'saturation'}, default='value'
         Whether to use the value or saturation component of the HSV
         color space to map amplitudes.
+        If 'value', 0 maps to black // If 'saturation', 0 maps to white
 
     Returns
     -------
