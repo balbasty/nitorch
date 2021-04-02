@@ -53,6 +53,14 @@ class RandomFieldSample(Module):
             dtype = torch.get_default_dtype()
         self.dtype = dtype
 
+    def to(self, *args, **kwargs):
+        device, dtype, non_blocking, convert_to_format \
+            = torch._C._nn._parse_to(*args, **kwargs)
+
+        self.dtype = dtype or self.dtype
+        self.device = device or self.device
+        super().to(*args, **kwargs)
+
     def forward(self, batch=1, **overload):
         """
 
@@ -184,6 +192,10 @@ class BiasFieldTransform(Module):
     @staticmethod
     def default_fwhm(*b):
         return td.Normal(math.log(5.), math.log(2)/3).sample(*b).exp()
+
+    def to(self, *args, **kwargs):
+        self.field.to(*args, **kwargs)
+        super().to(*args, **kwargs)
 
     def forward(self, image, **overload):
         """
