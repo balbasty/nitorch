@@ -77,6 +77,15 @@ def torch_cudnn_version(astuple=True):
 
 
 def torch_parallel_backend():
+    # check if set by user
+    valid_backends = ('AT_PARALLEL_OPENMP', 'AT_PARALLEL_NATIVE', 'AT_PARALLEL_NATIVE_TBB')
+    backend = os.environ.get('NI_PARALLEL_BACKEND', None)
+    if backend:
+        if backend not in valid_backends:
+            backend = None
+        return backend
+
+    # else, find backend used by pytorch
     match = re.search('^ATen parallel backend: (?P<backend>.*)$',
                       torch._C._parallel_info(), re.MULTILINE)
     if match is None:
