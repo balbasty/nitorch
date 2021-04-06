@@ -250,6 +250,268 @@ class VoxelMorph(Module):
         return registration_board(self, tb, **k, implicit=implicit)
 
 
+class AtlasMorph(Module):
+    """AtlasMorph learns an atlas *and* learns to warp it to data.
+
+    Instead of being fixed, as in VoxelMorph, the moving image is here
+    learnable. In a classic LDDMM framework, an unbiased atlas can be
+    obtained by ensuring that all velocity fields sum to zero.
+    In a stochastic optimization framework, the model does not see
+    all images at the same time. Instead, a running mean of velocity
+    fields is computed and its deviation from zero is penalized.
+
+    References
+    ----------
+    .. [1] "Unsupervised Learning for Fast Probabilistic Diffeomorphic Registration"
+        Adrian V. Dalca, Guha Balakrishnan, John Guttag, Mert R. Sabuncu
+        MICCAI 2018. eprint arXiv:1805.04605
+    .. [2] "Learning Conditional Deformable Templates with Convolutional Networks"
+        A.V. Dalca, M. Rakic, J. Guttag, M.R. Sabuncu.
+        NeurIPS 2019. eprint arXiv:1908.02738
+    """
+
+    # TODO:
+    #   - categorical templates
+    #   - GMM loss
+    #   - Graph template (like samseg)?
+
+    def __init__(self, dim, unet=None, pull=None, exp=None, template=None,
+                 *, in_channels=2):
+        """
+
+        Parameters
+        ----------
+        dim : int
+            Dimensionality of the input (1|2|3)
+        unet : dict
+            Dictionary of U-Net parameters with fields:
+                encoder : sequence[int], default=[16, 32, 32, 32, 32]
+                decoder : sequence[int], default=[32, 32, 32, 32, 16, 16]
+                conv_per_layer : int, default=1
+                kernel_size : int, default=3
+                activation : str or callable, default=LeakyReLU(0.2)
+                pool : {'max', 'conv', 'down', None}, default=None
+                    'max'  -> 2x2x2 max-pooling
+                    'conv' -> 2x2x2 strided convolution (no bias, no activation)
+                    'down' -> downsampling
+                     None  -> use strided convolutions in the encoder
+                unpool : {'conv', 'up', None}, default=None
+                    'conv' -> 2x2x2 strided convolution (no bias, no activation)
+                    'up'   -> linear upsampling
+                     None  -> use strided convolutions in the decoder
+        pull : dict
+            Dictionary of Transformer parameters with fields:
+                interpolation : {0..7}, default=1
+                bound : str, default='dct2'
+                extrapolate : bool, default=False
+        exp : dict
+            Dictionary of Exponentiation parameters with fields:
+                interpolation : {0..7}, default=1
+                bound : str, default='dft'
+                steps : int, default=8
+                shoot : bool, default=False
+                downsample : float, default=2
+            If shoot is True, these fields are also present:
+                absolute : float, default=0.0001
+                membrane : float, default=0.001
+                bending : float, default=0.2
+                lame : (float, float), default=(0.05, 0.2)
+        template : dict
+            Dictionary of Template parameters with fields:
+                shape : tuple[int], default=(192,) * dim
+                mom : float, default=0.1
+                    Momentum of the running mean.
+                    The mean is updated according to:
+                        `new_mean = (1-mom) * old_mean + mom * new_sample`
+                    If None, use cumulative average:
+                        `new_mean = (old_n * old_mean + new_sample) / (n + 1)`
+                        `new_n = old_n + 1`
+        """
+        # default parameters
+        unet = dict(unet or {})
+        unet.setdefault('encoder', [16, 32, 32, 32, 32])
+        unet.setdefault('decoder', [32, 32, 32, 32, 16, 16])
+        unet.setdefault('kernel_size', 3)
+        unet.setdefault('pool', None)
+        unet.setdefault('unpool', None)
+        unet.setdefault('activation', tnn.LeakyReLU(0.2))
+        pull = dict(pull or {})
+        pull.setdefault('interpolation', 1)
+        pull.setdefault('bound', 'dct2')
+        pull.setdefault('extrapolate', False)
+        exp = dict(exp or {})
+        exp.setdefault('interpolation', 1)
+        exp.setdefault('bound', 'dft')
+        exp.setdefault('steps', 8)
+        exp.setdefault('shoot', False)
+        exp.setdefault('downsample', 2)
+        exp.setdefault('absolute', 0.0001)
+        exp.setdefault('membrane', 0.001)
+        exp.setdefault('bending', 0.2)
+        exp.setdefault('lame', (0.05, 0.2))
+        exp.setdefault('factor', 1)
+        do_shoot = exp.pop('shoot')
+        downsample_vel = utils.make_vector(exp.pop('downsample'), dim).tolist()
+        vel_inter = exp['interpolation']
+        vel_bound = exp['bound']
+        if do_shoot:
+            exp.pop('interpolation')
+            exp.pop('bound')
+            exp.pop('voxel_size', downsample_vel)
+            exp['factor'] *= py.prod(downsample_vel)
+        else:
+            exp.pop('absolute')
+            exp.pop('membrane')
+            exp.pop('bending')
+            exp.pop('lame')
+            exp.pop('factor')
+        template = dict(template or {})
+        template.setdefault('shape', (192,)*dim)
+        template.setdefault('mom', 0.1)
+
+        # prepare layers
+        super().__init__()
+        self.template = tnn.Parameter(torch.zeros([1, *template['shape']]))
+        self.unet = UNet2(dim, in_channels, dim, **unet, )
+        self.resize = GridResize(interpolation=vel_inter, bound=vel_bound,
+                                 factor=[1 / f for f in downsample_vel])
+        self.velexp = GridShoot(**exp) if do_shoot else GridExp(**exp)
+        self.pull = GridPull(**pull)
+        self.dim = dim
+        self.mom = template['mom']
+
+        # register losses/metrics
+        self.tags = ['image', 'velocity', 'segmentation', 'template', 'mean']
+
+    def init_template(self, images):
+        """Initialize template with the average of a series of images
+
+        Parameters
+        ----------
+        images : sequence of (b, 1, *shape) tensor
+
+        """
+        with torch.no_grad():
+            self.template.zero_()
+            n = 0
+            for image in images:
+                n += image.shape[0]
+                self.template += image.sum(0)[0]
+            self.template /= n
+
+    def exp(self, velocity, displacement=False):
+        """Generate a deformation grid from tangent parameters.
+
+        Parameters
+        ----------
+        velocity : (batch, *spatial, nb_dim)
+            Stationary velocity field
+        displacement : bool, default=False
+            Return a displacement field (voxel to shift) rather than
+            a transformation field (voxel to voxel).
+
+        Returns
+        -------
+        grid : (batch, *spatial, nb_dim)
+            Deformation grid (transformation or displacement).
+
+        """
+        # generate grid
+        shape = velocity.shape[1:-1]
+        velocity_small = self.resize(velocity, type='displacement')
+        grid = self.velexp(velocity_small, displacement=displacement)
+        grid = self.resize(grid, shape=shape, factor=None,
+                           type='disp' if displacement else 'grid')
+        return grid
+
+    def forward(self, target, target_seg=None,
+                *, _loss=None, _metric=None):
+        """
+
+        Parameters
+        ----------
+        target : tensor (batch, 1, *spatial)
+            Target/fixed image
+        # target_seg : tensor (batch, classes, *spatial), optional
+        #     Target/fixed segmentation
+
+        Other Parameters
+        ----------------
+        _loss : dict, optional
+            If provided, all registered losses are computed and appended.
+        _metric : dict, optional
+            If provided, all registered metrics are computed and appended.
+
+        Returns
+        -------
+        deformed_template : tensor (batch, 1|classes, *spatial)
+            Deformed template
+        velocity : tensor (batch, *spatial, len(spatial))
+            Velocity field
+        mean : tensor (*spatial, len(spatial))
+            Running mean of velocity field
+
+        """
+        # sanity checks
+        check.dim(self.dim, self.template[None, None], target)
+        check.shape(target, self.template[None, None], dims=[0], broadcast_ok=True)
+        check.shape(target, self.template[None, None], dims=range(2, self.dim + 2))
+        # check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        # check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
+
+        # chain operations
+        batch = target.shape[0]
+        template = self.template.expand([batch, 1, *self.template.shape])
+        source_and_target = torch.cat((template, target), dim=1)
+        velocity = self.unet(source_and_target)
+        velocity = core.utils.channel2last(velocity)
+        grid = self.exp(velocity)
+        deformed_source = self.pull(template, grid)
+
+        # running mean
+        if not hasattr(self, 'mean'):
+            self.mean = velocity.mean(0)
+            self.tracked = batch
+        else:
+            if self.mom:
+                self.mean *= (1 - self.mom)
+                self.mean += self.mom * velocity.mean(0)
+            else:
+                self.mean *= self.tracked / (self.tracked + batch)
+                self.mean += velocity.sum(0) / (self.tracked + batch)
+                self.tracked += batch
+
+        # if source_seg is not None:
+        #     if source_seg.shape[2:] != source.shape[2:]:
+        #         grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
+        #     deformed_source_seg = self.pull(source_seg, grid)
+        # else:
+        #     deformed_source_seg = None
+
+        # compute loss and metrics
+        self.compute(_loss, _metric,
+                     image=[deformed_source, target],
+                     velocity=[velocity],
+                     mean=[self.mean],
+                     template=[self.template])
+                     # segmentation=[deformed_source_seg, target_seg])
+
+        return deformed_source, velocity, self.mean
+        # if source_seg is None:
+        #     return deformed_source, velocity
+        # else:
+        #     return deformed_source, deformed_source_seg, velocity
+
+    def board(self, tb, **k):
+        """Tensorboard visualization function"""
+        implicit = getattr(self, 'implicit', False)
+        if k.get('input', None):
+            batch = k['input'][0].shape[0]
+            template = self.template.expand([batch, 1, *self.template.shape])
+            k['input'] = (template, *k['input'])
+        return registration_board(self, tb, **k, implicit=implicit)
+
+
 def registration_board(
         self, tb,
         inputs=None, outputs=None, epoch=None, minibatch=None, mode=None,
