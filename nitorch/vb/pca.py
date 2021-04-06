@@ -350,14 +350,12 @@ def _ppca_tensor(x, k, mu, max_iter, tol, returns, verbose=False, rca=None):
         v, s, w = torch.svd(torch.matmul(t(vsz), vsu))
         w *= s[..., None, :]
 
-        # eu = get_diag(vu).abs().max(-1).values[..., None]
-        # su = torch.max(su, eu * 1e-3)
-        # vu /= su[..., None, :]
-        vu = t(vsu.inverse())
-        # ez = get_diag(vz).abs().max(-1).values[..., None]
-        # sz = torch.max(sz, ez * 1e-3)
-        # vz /= sz[..., None, :]
-        vz = t(vsz.inverse())
+        eu = get_diag(vu).abs().max(-1).values[..., None]
+        su = torch.max(su, eu * 1e-3)
+        vu /= su[..., None, :]
+        ez = get_diag(vz).abs().max(-1).values[..., None]
+        sz = torch.max(sz, ez * 1e-3)
+        vz /= sz[..., None, :]
 
         q = vz.matmul(v)
         iq = t(w).matmul(t(vu))
@@ -601,14 +599,12 @@ def _ppca_callable(x, k, mu, max_iter, tol, returns, verbose=False, rca=None):
         v, s, w = torch.svd(torch.matmul(t(vsz), vsu))
         w *= s[..., None, :]
 
-        # eu = get_diag(vu).abs().max(-1).values[..., None]
-        # su = torch.max(su, eu * 1e-3)
-        # vu /= su[..., None, :]
-        vu = t(vsu.inverse())
-        # ez = get_diag(vz).abs().max(-1).values[..., None]
-        # sz = torch.max(sz, ez * 1e-3)
-        # vz /= sz[..., None, :]
-        vz = t(vsz.inverse())
+        eu = get_diag(vu).abs().max(-1).values[..., None]
+        su = torch.max(su, eu * 1e-3)
+        vu /= su[..., None, :]
+        ez = get_diag(vz).abs().max(-1).values[..., None]
+        sz = torch.max(sz, ez * 1e-3)
+        vz /= sz[..., None, :]
 
         q = vz.matmul(v)
         iq = t(w).matmul(t(vu))
