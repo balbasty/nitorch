@@ -88,8 +88,7 @@ namespace ni {
 # else // AT_PARALLEL_NATIVE
     // Implemented in c++ 11+ for integral types
     // Implemented in c++ 20+ for floating types
-    enum { value = !std::is_floating_point<float>::value
-                   || has_fetch_add<std::atomic<scalar_t> >::value };
+    enum { value = has_fetch_add<std::atomic<scalar_t> >::value };
 # endif
   };
 
