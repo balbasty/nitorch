@@ -319,13 +319,17 @@ class AtlasMorph(Module):
         template : dict
             Dictionary of Template parameters with fields:
                 shape : tuple[int], default=(192,) * dim
-                mom : float, default=0.1
-                    Momentum of the running mean.
+                mom : float or int, default=100
+                    If in (0, 1), momentum of the running mean.
                     The mean is updated according to:
                         `new_mean = (1-mom) * old_mean + mom * new_sample`
-                    If None, use cumulative average:
-                        `new_mean = (old_n * old_mean + new_sample) / (n + 1)`
+                    If 0, use cumulative average:
                         `new_n = old_n + 1`
+                        `mom = 1/new_n`
+                    If > 1, cap the weight of a new sample in the average:
+                        `new_n = min(cap, old_n + 1)`
+                        `mom = 1/new_n`
+
         """
         # default parameters
         unet = dict(unet or {})
@@ -367,7 +371,7 @@ class AtlasMorph(Module):
             exp.pop('factor')
         template = dict(template or {})
         template.setdefault('shape', (192,)*dim)
-        template.setdefault('mom', 0.1)
+        template.setdefault('mom', 100)
 
         # prepare layers
         super().__init__()
@@ -424,6 +428,26 @@ class AtlasMorph(Module):
                            type='disp' if displacement else 'grid')
         return grid
 
+    def update_mean(self, velocity):
+        """Update running mean with a new sample."""
+        batch = velocity.shape[0]
+        if not hasattr(self, 'mean'):
+            self.mean = velocity.mean(0)
+            self.tracked = batch
+        else:
+            self.tracked += batch
+            if not self.mom:
+                mom = 1/self.tracked
+                velocity = velocity.sum(0)
+            elif self.mom > 1:
+                mom = 1/min(self.mom, self.tracked)
+                velocity = velocity.sum(0)
+            else:
+                mom = self.mom
+                velocity = velocity.mean(0)
+            self.mean *= (1 - mom)
+            self.mean += mom * velocity
+
     def forward(self, target, target_seg=None,
                 *, _loss=None, _metric=None):
         """
@@ -469,17 +493,7 @@ class AtlasMorph(Module):
         deformed_source = self.pull(template, grid)
 
         # running mean
-        if not hasattr(self, 'mean'):
-            self.mean = velocity.mean(0)
-            self.tracked = batch
-        else:
-            if self.mom:
-                self.mean *= (1 - self.mom)
-                self.mean += self.mom * velocity.mean(0)
-            else:
-                self.mean *= self.tracked / (self.tracked + batch)
-                self.mean += velocity.sum(0) / (self.tracked + batch)
-                self.tracked += batch
+        self.update_mean(velocity)
 
         # if source_seg is not None:
         #     if source_seg.shape[2:] != source.shape[2:]:
