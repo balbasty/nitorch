@@ -5,6 +5,7 @@ from nitorch.core import py, utils
 from .cnn import UNet2
 from .base import Module
 from .spatial import GridPull, GridResize, GridExp, GridShoot
+from ..activations import SoftMax
 from .. import check
 
 
@@ -271,12 +272,10 @@ class AtlasMorph(Module):
     """
 
     # TODO:
-    #   - categorical templates
     #   - GMM loss
     #   - Graph template (like samseg)?
 
-    def __init__(self, dim, unet=None, pull=None, exp=None, template=None,
-                 *, in_channels=2):
+    def __init__(self, dim, unet=None, pull=None, exp=None, template=None):
         """
 
         Parameters
@@ -329,6 +328,10 @@ class AtlasMorph(Module):
                     If > 1, cap the weight of a new sample in the average:
                         `new_n = min(cap, old_n + 1)`
                         `mom = 1/new_n`
+                cat : bool or int, default=False
+                    Build a categorical template.
+                implicit : bool, default=True
+                    Whether the template has an implicit background class.
 
         """
         # default parameters
@@ -372,11 +375,20 @@ class AtlasMorph(Module):
         template = dict(template or {})
         template.setdefault('shape', (192,)*dim)
         template.setdefault('mom', 100)
+        template.setdefault('cat', False)
+        template.setdefault('implicit', True)
+
+        self.cat = template['cat']
+        self.implicit = template['implicit']
 
         # prepare layers
         super().__init__()
         self.template = tnn.Parameter(torch.zeros([1, *template['shape']]))
-        self.unet = UNet2(dim, in_channels, dim, **unet, )
+        if self.cat:
+            in_channels = 1 + self.cat + (not self.implicit)
+        else:
+            in_channels = 2
+        self.unet = UNet2(dim, in_channels, dim, **unet)
         self.resize = GridResize(interpolation=vel_inter, bound=vel_bound,
                                  factor=[1 / f for f in downsample_vel])
         self.velexp = GridShoot(**exp) if do_shoot else GridExp(**exp)
@@ -387,29 +399,78 @@ class AtlasMorph(Module):
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'template', 'mean']
 
-    def init_template(self, images):
+    def init_template(self, images, one_hot_map=None):
         """Initialize template with the average of a series of images
 
         Parameters
         ----------
         images : sequence of (b, 1, *shape) tensor
+        one_hot_map : sequence[int], default=identity
+            Mapping from hard label to soft class.
 
         """
         with torch.no_grad():
-            self.template.data.zero_()
-            n = 0
-            for i, image in enumerate(images):
-                image = image.to(device=self.template.device, 
-                                 dtype=self.template.dtype)
-                if self.template.shape[1:] != image.shape[2:]:
-                    if i == 0:
-                        shape = image.shape[2:]
-                        self.template = tnn.Parameter(torch.zeros([1, *shape]))
+            if self.cat:
+                self._init_template_cat(images, one_hot_map)
+            else:
+                self._init_template_mse(images)
+
+    def _init_template_cat(self, images, implicit, one_hot_map):
+        self.template.data.zero_()
+        n = 0
+        for i, image in enumerate(images):
+            image = image.to(self.template.device)
+            # check shape
+            shape = image.shape[2:]
+            if self.template.shape[1:] != shape:
+                if i == 0:
+                    shape = [self.cat + (not implicit), *shape]
+                    self.template = tnn.Parameter(torch.zeros(shape))
+                else:
+                    raise ValueError('All images must have the same shape')
+            # mean probabilities
+            if image.dtype.is_floating_point:
+                image = image.to(self.template.dtype)
+                self.template.data[:self.cat] += image[:, :self.cat].sum(0)
+            else:
+                if not one_hot_map:
+                    one_hot_map = list(range(1, self.cat+1))
+                for soft, label in enumerate(one_hot_map):
+                    label = py.make_list(label)
+                    if len(label) == 1:
+                        self.template.data[soft] += (image == label).sum(0)[0]
                     else:
-                        raise ValueError('All images must have the same shape')
-                n += image.shape[0]
-                self.template.data += image.sum(0)[0]
-            self.template.data /= n
+                        self.template.data[soft] += utils.isin(image, label).sum(0)[0]
+            n += image.shape[0]
+
+        k = self.cat
+        self.template.data /= n
+        norm = self.template.data[:k].sum(0).neg_().add_(1)
+        norm += 1e-5
+        self.template.data[:k] /= norm
+        norm = self.template.data[:k].sum(0).neg_().add_(1)
+        if not self.implicit:
+            self.template.data[-1] = norm
+            self.template.data.clamp_min_(1e-5).log_()
+        else:
+            self.template.data.clamp_min_(1e-5).log_()
+            self.template.data -= norm.log_()
+
+    def _init_template_mse(self, images):
+        self.template.data.zero_()
+        n = 0
+        for i, image in enumerate(images):
+            image = image.to(device=self.template.device,
+                             dtype=self.template.dtype)
+            if self.template.shape[1:] != image.shape[2:]:
+                if i == 0:
+                    shape = image.shape[2:]
+                    self.template = tnn.Parameter(torch.zeros([1, *shape]))
+                else:
+                    raise ValueError('All images must have the same shape')
+            n += image.shape[0]
+            self.template.data += image.sum(0)[0]
+        self.template.data /= n
 
     def exp(self, velocity, displacement=False):
         """Generate a deformation grid from tangent parameters.
@@ -468,8 +529,9 @@ class AtlasMorph(Module):
         ----------
         target : tensor (batch, 1, *spatial)
             Target/fixed image
-        # target_seg : tensor (batch, classes, *spatial), optional
-        #     Target/fixed segmentation
+        target_seg : tensor (batch, classes, *spatial), optional
+            Target/fixed segmentation
+            Mandatory if module is run in categotical mode.
 
         Other Parameters
         ----------------
@@ -488,10 +550,8 @@ class AtlasMorph(Module):
         """
         # sanity checks
         check.dim(self.dim, self.template[None], target)
-        check.shape(target, self.template[None], dims=[0], broadcast_ok=True)
         check.shape(target, self.template[None], dims=range(2, self.dim + 2))
-        # check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
-        # check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
+        check.shape(target_seg, self.template[None], dims=range(2, self.dim + 2))
 
         # chain operations
         batch = target.shape[0]
@@ -500,31 +560,24 @@ class AtlasMorph(Module):
         velocity = self.unet(source_and_target)
         velocity = core.utils.channel2last(velocity)
         grid = self.exp(velocity)
-        deformed_source = self.pull(template, grid)
+        deformed_template = self.pull(template, grid)
+        if self.cat:
+            deformed_template = SoftMax(implicit=self.implicit)(deformed_template)
 
         # running mean
         self.update_mean(velocity)
 
-        # if source_seg is not None:
-        #     if source_seg.shape[2:] != source.shape[2:]:
-        #         grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
-        #     deformed_source_seg = self.pull(source_seg, grid)
-        # else:
-        #     deformed_source_seg = None
-
         # compute loss and metrics
-        self.compute(_loss, _metric,
-                     image=[deformed_source, target],
-                     velocity=[velocity],
-                     mean=[self.mean],
-                     template=[self.template])
-                     # segmentation=[deformed_source_seg, target_seg])
+        losses = dict(velocity=[velocity],
+                      mean=[self.mean],
+                      template=[self.template])
+        if self.cat:
+            losses['segmentation'] = [deformed_template, target_seg]
+        else:
+            losses['images'] = [deformed_template, target]
+        self.compute(_loss, _metric, **losses)
 
-        return deformed_source, velocity
-        # if source_seg is None:
-        #     return deformed_source, velocity
-        # else:
-        #     return deformed_source, deformed_source_seg, velocity
+        return deformed_template, velocity
 
     def board(self, tb, **k):
         """Tensorboard visualization function"""
@@ -532,6 +585,8 @@ class AtlasMorph(Module):
         if k.get('inputs', None):
             batch = k['inputs'][0].shape[0]
             template = self.template.expand([batch, *self.template.shape])
+            if self.cat:
+                template = SoftMax(implicit=self.implicit)(template)
             k['inputs'] = (template, *k['inputs'])
         return registration_board(self, tb, **k, implicit=implicit)
 
@@ -599,95 +654,47 @@ def registration_board(
             xs = [x.float() for x in xs]
         return xs
 
-    source, target, *seg = inputs
-    *warps, vel = outputs
-    if seg:
-        has_seg = True
-        source_seg, target_seg = seg
-        warped_source, warped_seg = warps
-    else:
-        has_seg = False
-        warped_source, = warps
-    del seg, warps, inputs, outputs
-    is2d = source.dim() - 2 == 2
+    def prepare(x):
+        is_seg = x.shape[1] > 1
+        if x.dim() - 2 == 2:  # 2d
+            if is_seg:
+                nk = x.shape[1] + implicit
+                x = get_slice_seg(x[0])
+                x = prob_to_rgb(x, implicit=x.shape[0] < nk)
+            else:
+                x = get_slice(x[0, 0])
+                x = intensity_to_rgb(x)
+        else:  # 3d
+            if is_seg:
+                nk = x.shape[1] + implicit
+                x = get_orthogonal_slices_seg(x[0])
+                x = [prob_to_rgb(y, implicit=y.shape[0] < nk) for y in x]
+            else:
+                x = get_orthogonal_slices(x[0, 0])
+                x = [intensity_to_rgb(y) for y in x]
+        return x
+
+    *outputs, vel = outputs
+    images = [*inputs, *outputs]
+    is2d = inputs[0].dim() - 2 == 2
 
     fig = plt.figure()
     if is2d:  # 2D
-        nrow = 3
-        ncol = 1 + has_seg
-        # images
-        source = get_slice(source[0, 0])
-        source = intensity_to_rgb(source)
-        warped_source = get_slice(warped_source[0, 0])
-        warped_source = intensity_to_rgb(warped_source)
-        target = get_slice(target[0, 0])
-        target = intensity_to_rgb(target)
-        plt.subplot(nrow, ncol, 1)
-        plt.imshow(source.detach().cpu())
-        plt.axis('off')
-        plt.subplot(nrow, ncol, 2)
-        plt.imshow(warped_source.detach().cpu())
-        plt.axis('off')
-        plt.subplot(nrow, ncol, 3)
-        plt.imshow(target.detach().cpu())
-        plt.axis('off')
-        # segmentations
-        if has_seg:
-            nk = warped_seg.shape[1] + implicit
-            source_seg = get_slice(source_seg[0])
-            source_seg = prob_to_rgb(source_seg, implicit=source_seg.shape[0] < nk)
-            warped_seg = get_slice(warped_seg[0])
-            warped_seg = prob_to_rgb(warped_seg, implicit=warped_seg.shape[0] < nk)
-            target_seg = get_slice_seg(target_seg[0])
-            target_seg = prob_to_rgb(target_seg, implicit=target_seg.shape[0] < nk)
-            plt.subplot(nrow, ncol, 4)
-            plt.imshow(source_seg.detach().cpu())
+        nrow = len(images)
+        ncol = 1
+        for i, image in enumerate(images):
+            image = prepare(image)
+            plt.subplot(nrow, ncol, i+1)
+            plt.imshow(image.detach().cpu())
             plt.axis('off')
-            plt.subplot(nrow, ncol, 5)
-            plt.imshow(warped_seg.detach().cpu())
-            plt.axis('off')
-            plt.subplot(nrow, ncol, 6)
-            plt.imshow(target_seg.detach().cpu())
-            plt.axis('off')
-
     else:  # 3D
-        nrow = 3
-        ncol = 3*(1 + has_seg)
-        # images
-        source = get_orthogonal_slices(source[0, 0])
-        source = [intensity_to_rgb(x) for x in source]
-        warped_source = get_orthogonal_slices(warped_source[0, 0])
-        warped_source = [intensity_to_rgb(x) for x in warped_source]
-        target = get_orthogonal_slices(target[0, 0])
-        target = [intensity_to_rgb(x) for x in target]
-        for i in range(3):
-            plt.subplot(nrow, ncol, 1 + i*ncol)
-            plt.imshow(source[i].detach().cpu())
-            plt.axis('off')
-            plt.subplot(nrow, ncol, 2 + i*ncol)
-            plt.imshow(warped_source[i].detach().cpu())
-            plt.axis('off')
-            plt.subplot(nrow, ncol, 3 + i*ncol)
-            plt.imshow(target[i].detach().cpu())
-            plt.axis('off')
-        # segmentations
-        if has_seg:
-            nk = warped_seg.shape[1] + implicit
-            source_seg = get_orthogonal_slices(source_seg[0])
-            source_seg = [prob_to_rgb(x, implicit=x.shape[0] < nk) for x in source_seg]
-            warped_seg = get_orthogonal_slices(warped_seg[0])
-            warped_seg = [prob_to_rgb(x, implicit=x.shape[0] < nk) for x in warped_seg]
-            target_seg = get_orthogonal_slices_seg(target_seg[0])
-            target_seg = [prob_to_rgb(x, implicit=x.shape[0] < nk) for x in target_seg]
-            for i in range(3):
-                plt.subplot(nrow, ncol, 4 + i*ncol)
-                plt.imshow(source_seg[i].detach().cpu())
-                plt.axis('off')
-                plt.subplot(nrow, ncol, 5 + i*ncol)
-                plt.imshow(warped_seg[i].detach().cpu())
-                plt.axis('off')
-                plt.subplot(nrow, ncol, 6 + i*ncol)
-                plt.imshow(target_seg[i].detach().cpu())
+        nrow = len(images)
+        ncol = 3
+        for i, image in enumerate(images):
+            image = prepare(image)
+            for j in range(3):
+                plt.subplot(nrow, ncol, i + j*ncol)
+                plt.imshow(image[j].detach().cpu())
                 plt.axis('off')
     plt.tight_layout()
 
