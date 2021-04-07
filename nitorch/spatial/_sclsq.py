@@ -91,6 +91,6 @@ def _pull_vel(vel, grid, *args, **kwargs):
         grid = grid[None]
     vel = grid_pull(vel, grid, *args, **kwargs)
     vel = utils.movedim(vel, -dim-1, -1)
-    if vel_no_batch:
+    if vel_no_batch and grid_no_batch:
         vel = vel[0]
     return vel
