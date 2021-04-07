@@ -396,12 +396,20 @@ class AtlasMorph(Module):
 
         """
         with torch.no_grad():
-            self.template.zero_()
+            self.template.data.zero_()
             n = 0
-            for image in images:
+            for i, image in enumerate(images):
+                image = image.to(device=self.template.device, 
+                                 dtype=self.template.dtype)
+                if self.template.shape[1:] != image.shape[2:]:
+                    if i == 0:
+                        shape = image.shape[2:]
+                        self.template = tnn.Parameter(torch.zeros([1, *shape]))
+                    else:
+                        raise ValueError('All images must have the same shape')
                 n += image.shape[0]
-                self.template += image.sum(0)[0]
-            self.template /= n
+                self.template.data += image.sum(0)[0]
+            self.template.data /= n
 
     def exp(self, velocity, displacement=False):
         """Generate a deformation grid from tangent parameters.
@@ -432,7 +440,7 @@ class AtlasMorph(Module):
         """Update running mean with a new sample."""
         batch = velocity.shape[0]
         if not hasattr(self, 'mean'):
-            self.mean = velocity.mean(0)
+            self.register_buffer('mean', velocity.mean(0))
             self.tracked = batch
         else:
             self.tracked += batch
@@ -445,6 +453,10 @@ class AtlasMorph(Module):
             else:
                 mom = self.mom
                 velocity = velocity.mean(0)
+            # we need to detach the previous mean so that gradients do
+            # not propagate through the previous iterations (we only 
+            # want to penalize the latest velocity)
+            self.mean = self.mean.detach()
             self.mean *= (1 - mom)
             self.mean += mom * velocity
 
@@ -475,15 +487,15 @@ class AtlasMorph(Module):
 
         """
         # sanity checks
-        check.dim(self.dim, self.template[None, None], target)
-        check.shape(target, self.template[None, None], dims=[0], broadcast_ok=True)
-        check.shape(target, self.template[None, None], dims=range(2, self.dim + 2))
+        check.dim(self.dim, self.template[None], target)
+        check.shape(target, self.template[None], dims=[0], broadcast_ok=True)
+        check.shape(target, self.template[None], dims=range(2, self.dim + 2))
         # check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
         # check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
 
         # chain operations
         batch = target.shape[0]
-        template = self.template.expand([batch, 1, *self.template.shape])
+        template = self.template.expand([batch, *self.template.shape])
         source_and_target = torch.cat((template, target), dim=1)
         velocity = self.unet(source_and_target)
         velocity = core.utils.channel2last(velocity)
@@ -517,10 +529,10 @@ class AtlasMorph(Module):
     def board(self, tb, **k):
         """Tensorboard visualization function"""
         implicit = getattr(self, 'implicit', False)
-        if k.get('input', None):
-            batch = k['input'][0].shape[0]
-            template = self.template.expand([batch, 1, *self.template.shape])
-            k['input'] = (template, *k['input'])
+        if k.get('inputs', None):
+            batch = k['inputs'][0].shape[0]
+            template = self.template.expand([batch, *self.template.shape])
+            k['inputs'] = (template, *k['inputs'])
         return registration_board(self, tb, **k, implicit=implicit)
 
 
