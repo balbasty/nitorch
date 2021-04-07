@@ -229,7 +229,7 @@ class GridPushCount(Module):
 class GridExp(Module):
     """Exponentiate a stationary velocity field."""
 
-    def __init__(self, fwd=True, inv=False, steps=None,
+    def __init__(self, fwd=True, inv=False, steps=8,
                  interpolation='linear', bound='dft', displacement=False):
         """
 
@@ -239,7 +239,7 @@ class GridExp(Module):
             Return the forward deformation.
         inv : bool, default=False
             Return the inverse deformation.
-        steps : int, optional
+        steps : int, default=8
             Number of integration steps.
             Use `1` to use a small displacements model instead of a
             diffeomorphic one. Default is an educated guess based on the
