@@ -472,8 +472,6 @@ class AtlasMorph(Module):
             Deformed template
         velocity : tensor (batch, *spatial, len(spatial))
             Velocity field
-        mean : tensor (*spatial, len(spatial))
-            Running mean of velocity field
 
         """
         # sanity checks
@@ -510,7 +508,7 @@ class AtlasMorph(Module):
                      template=[self.template])
                      # segmentation=[deformed_source_seg, target_seg])
 
-        return deformed_source, velocity, self.mean
+        return deformed_source, velocity
         # if source_seg is None:
         #     return deformed_source, velocity
         # else:
