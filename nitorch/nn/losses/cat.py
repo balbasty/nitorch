@@ -204,6 +204,7 @@ class CategoricalLoss(Loss):
                 loss[:, soft] = logprior[:, soft] * obs1
 
         # negate
+        loss = loss.sum(dim=1, keepdim=True)
         loss = -loss
 
         # reduction
