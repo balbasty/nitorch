@@ -366,6 +366,8 @@ class AtlasMorph(Module):
             exp.pop('bound')
             exp.pop('voxel_size', downsample_vel)
             exp['factor'] *= py.prod(downsample_vel)
+            if do_shoot == 'approx':
+                exp['approx'] = True
         else:
             exp.pop('absolute')
             exp.pop('membrane')
@@ -383,12 +385,9 @@ class AtlasMorph(Module):
 
         # prepare layers
         super().__init__()
-        self.template = tnn.Parameter(torch.zeros([1, *template['shape']]))
-        if self.cat:
-            in_channels = 1 + self.cat + (not self.implicit)
-        else:
-            in_channels = 2
-        self.unet = UNet2(dim, in_channels, dim, **unet)
+        template_channels = (self.cat + (not self.implicit)) if self.cat else 1
+        self.template = tnn.Parameter(torch.zeros([template_channels, *template['shape']]))
+        self.unet = UNet2(dim, template_channels + 1, dim, **unet)
         self.resize = GridResize(interpolation=vel_inter, bound=vel_bound,
                                  factor=[1 / f for f in downsample_vel])
         self.velexp = GridShoot(**exp) if do_shoot else GridExp(**exp)
@@ -415,7 +414,7 @@ class AtlasMorph(Module):
             else:
                 self._init_template_mse(images)
 
-    def _init_template_cat(self, images, implicit, one_hot_map):
+    def _init_template_cat(self, images, one_hot_map):
         self.template.data.zero_()
         n = 0
         for i, image in enumerate(images):
@@ -424,7 +423,7 @@ class AtlasMorph(Module):
             shape = image.shape[2:]
             if self.template.shape[1:] != shape:
                 if i == 0:
-                    shape = [self.cat + (not implicit), *shape]
+                    shape = [self.cat + (not self.implicit), *shape]
                     self.template = tnn.Parameter(torch.zeros(shape))
                 else:
                     raise ValueError('All images must have the same shape')
@@ -445,16 +444,15 @@ class AtlasMorph(Module):
 
         k = self.cat
         self.template.data /= n
-        norm = self.template.data[:k].sum(0).neg_().add_(1)
-        norm += 1e-5
-        self.template.data[:k] /= norm
+        self.template.data[:k] += 1e-5
+        self.template.data[:k] /= 1+1e-5
         norm = self.template.data[:k].sum(0).neg_().add_(1)
         if not self.implicit:
             self.template.data[-1] = norm
             self.template.data.clamp_min_(1e-5).log_()
         else:
             self.template.data.clamp_min_(1e-5).log_()
-            self.template.data -= norm.log_()
+            self.template.data -= norm.clamp_min_(1e-5).log_()
 
     def _init_template_mse(self, images):
         self.template.data.zero_()
@@ -555,22 +553,36 @@ class AtlasMorph(Module):
 
         # chain operations
         batch = target.shape[0]
-        template = self.template.expand([batch, *self.template.shape])
+        template = SoftMax(implicit=self.implicit)(self.template)
+        template = template.expand([batch, *self.template.shape])
         source_and_target = torch.cat((template, target), dim=1)
+        del template
         velocity = self.unet(source_and_target)
+        del source_and_target
         velocity = core.utils.channel2last(velocity)
         grid = self.exp(velocity)
-        deformed_template = self.pull(template, grid)
+        deformed_template = self.pull(self.template, grid)
         if self.cat:
+            if not self.pull.extrapolate:
+                msk = (deformed_template == 0).all(dim=1, keepdim=True)
             deformed_template = SoftMax(implicit=self.implicit)(deformed_template)
+            if not self.pull.extrapolate:
+                # we can't just let out-of-bound values to be just zero, as
+                # it makes the probability be equi-probable. Instead, We want 
+                # the background class to have probability one.
+                deformed_template[:self.cat][msk] = 1e-5
+                if not self.implicit:
+                    deformed_template[self.cat:][msk] = 1 - (self.cat*1e-5)
 
         # running mean
-        self.update_mean(velocity)
+        if self.training:
+            self.update_mean(velocity)
 
         # compute loss and metrics
-        losses = dict(velocity=[velocity],
-                      mean=[self.mean],
-                      template=[self.template])
+        losses = dict(velocity=[velocity])
+        if self.training:
+            losses['mean'] = [self.mean]
+            losses['template'] = [self.template]
         if self.cat:
             losses['segmentation'] = [deformed_template, target_seg]
         else:
@@ -664,6 +676,7 @@ def registration_board(
             else:
                 x = get_slice(x[0, 0])
                 x = intensity_to_rgb(x)
+            x = x.clip(0, 1)
         else:  # 3d
             if is_seg:
                 nk = x.shape[1] + implicit
@@ -672,6 +685,7 @@ def registration_board(
             else:
                 x = get_orthogonal_slices(x[0, 0])
                 x = [intensity_to_rgb(y) for y in x]
+            x = [y.clip(0, 1) for y in x]
         return x
 
     *outputs, vel = outputs
@@ -680,20 +694,20 @@ def registration_board(
 
     fig = plt.figure()
     if is2d:  # 2D
-        nrow = len(images)
-        ncol = 1
+        ncol = len(images)
+        nrow = 1
         for i, image in enumerate(images):
             image = prepare(image)
             plt.subplot(nrow, ncol, i+1)
             plt.imshow(image.detach().cpu())
             plt.axis('off')
     else:  # 3D
-        nrow = len(images)
-        ncol = 3
+        ncol = len(images)
+        nrow = 3
         for i, image in enumerate(images):
             image = prepare(image)
             for j in range(3):
-                plt.subplot(nrow, ncol, i + j*ncol)
+                plt.subplot(nrow, ncol, i + j*ncol + 1)
                 plt.imshow(image[j].detach().cpu())
                 plt.axis('off')
     plt.tight_layout()
