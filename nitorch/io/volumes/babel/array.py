@@ -689,15 +689,18 @@ class BabelArray(MappedArray):
                     raise ValueError('File must be writable in mode "r+"')
                 self._opener[(key, self.mode)] = file_like
                 continue
-            if self.keep_open:
-                try:
-                    self._opener[(key, mode)] = open(file_like, mode, keep_open=True)
-                except ValueError:
-                    self._opener[(key, mode)] = open(file_like, 'rb', keep_open=True)
-            else:
-                self._opener[(key, 'r')] = open(file_like, 'rb', keep_open=False)
-                if not self._opener[(key, 'r')].is_indexed:
-                    del self._opener[(key, 'r')]
+            try:
+                if self.keep_open:
+                    try:
+                        self._opener[(key, mode)] = open(file_like, mode, keep_open=True)
+                    except ValueError:
+                        self._opener[(key, mode)] = open(file_like, 'rb', keep_open=True)
+                else:
+                    self._opener[(key, 'r')] = open(file_like, 'rb', keep_open=False)
+                    if not self._opener[(key, 'r')].is_indexed:
+                        del self._opener[(key, 'r')]
+            except FileNotFoundError:
+                continue
 
     @contextmanager
     def fileobj(self, key='image', mode='', seek=None):
