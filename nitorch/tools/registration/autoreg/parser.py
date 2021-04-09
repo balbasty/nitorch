@@ -18,6 +18,7 @@ usage:
             -p, --patch *SIZE           Patch size for local MI (0 = global mi)
             -b, --bin BINS              Number of bins in the histogram (32)
             -f, --fwhm WIDTH            Full-width half-max of the bins (1)
+            -t, --threshold VAL     Values under this threshold (in fixed) are excluded.
         -mse, --mean-squared-error  Mean Squared Error
                                     (for images with the same contrast)
         -jtv,  --total-variation    Normalized Joint Total Variation 
@@ -72,7 +73,8 @@ usage:
         -lr,    --learning-rate      Initial learning rate (0.1)
         -stop,  --stop               Minimum LR value -> early stopping (lr*1e-4)
         -ls,    --line-search        Maximum number of backtracking line searches (0)
-        -pyr, --pyramid *LEVELS      Pyramid levels. Can be a range [start]:stop[:step] (1)
+        -pyr,   --pyramid *LEVELS    Pyramid levels. Can be a range [start]:stop[:step] (1)
+        -exc,   --exclude            Exclude a file from mean space computation.
     If these tags are present within a <LOSS>/<TRF>/<OPT> group, they only 
     apply to this group. If they are present within a `-all` group, they 
     apply to all <LOSS>/<TRF>/<OPT> groups that did not specify them in 
@@ -307,6 +309,10 @@ def parse_moving_and_target(args, opt):
             check_next_isvalue(args, tag)
             opt.bins, *args = args
             opt.bins = int(opt.bins)
+        elif isinstance(opt, struct.MILoss) and tag in ('-t', '--threshold'):
+            check_next_isvalue(args, tag)
+            opt.threshold, *args = args
+            opt.threshold = float(opt.threshold)
         elif isinstance(opt, struct.DiceLoss) and tag in ('-w', '--weights'):
             opt.weights = True
             while next_isvalue(args):
@@ -367,8 +373,8 @@ def parse_transform(args, options):
                       struct.BendingLoss if tag in bending else
                       struct.LinearElasticLoss if tag in linelastic else
                       None)
-            islinelastic = isinstance(optreg, struct.LinearElasticLoss)
             optreg = optreg()
+            islinelastic = isinstance(optreg, struct.LinearElasticLoss)
             factor = []
             while next_isvalue(args):
                 val, *args = args

@@ -207,7 +207,10 @@ def load_transforms(s):
 
     for trf in s.transformations:
         for reg in trf.losses:
-            reg.factor = reg.factor * trf.factor
+            if isinstance(reg.factor, (list, tuple)):
+                reg.factor = [f * trf.factor for f in reg.factor]
+            else:
+                reg.factor = reg.factor * trf.factor
         if isinstance(trf, struct.Linear):
             # Affine
             if isinstance(trf.init, str):

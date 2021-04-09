@@ -151,6 +151,7 @@ class MILoss(MatchingLoss):
     patch: list = []                # Patch size for local MI
     bins: int = 32                  # Number of bins
     fwhm: float = 1.                # Full-width half-max of each bin
+    threshold : float = None        # Mask threshold
 
     def call(self, x, y):
         xs = x.unbind(0)
@@ -164,7 +165,8 @@ class MILoss(MatchingLoss):
         for x, y in zip(xs, ys):
             x = x[None, None]
             y = y[None, None]
-            loss += nn.MutualInfoLoss(patch_size=self.patch)(x, y) / nb_channels
+            mi = nn.MutualInfoLoss(patch_size=self.patch, mask=[None, self.threshold])
+            loss += mi(x, y) / nb_channels
         # I take the average of MI across channels to be consistent
         # with how MSE works.
         if self.factor != 1:
@@ -258,13 +260,13 @@ class LinearElasticLoss(TransformationLoss):
         if factor[0]:
             m = spatial.lame_div(v)
             loss += (v*m).mean()
-            if self.factor[0] != 1:
-                loss = loss * self.factor[0]
+            if factor[0] != 1:
+                loss = loss * factor[0]
         if factor[1]:
             m = spatial.lame_shear(v)
             loss += (v*m).mean()
-            if self.factor[1] != 1:
-                loss = loss * self.factor[1]
+            if factor[1] != 1:
+                loss = loss * factor[1]
         return loss
 
 
