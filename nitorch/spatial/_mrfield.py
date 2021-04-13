@@ -1,5 +1,4 @@
 import torch
-import itertools
 from nitorch.core import utils, py, linalg
 from ._finite_differences import diff1d, diff
 from ._shoot import greens
@@ -33,6 +32,14 @@ def mrfield(ds, zdim=-1, dim=None, b0=1, s0=4e-7, s1=-9.5e-6, vx=1):
     -------
     field : tensor
         MR field map.
+
+    References
+    ----------
+    ..[1] "Perturbation Method for Magnetic Field Calculations of
+           Nonconductive Objects"
+          Mark Jenkinson, James L. Wilson, and Peter Jezzard
+          MRM, 2004
+          https://onlinelibrary.wiley.com/doi/epdf/10.1002/mrm.20194
 
     """
     ds = torch.as_tensor(ds)
@@ -134,7 +141,7 @@ def susceptibility_phantom(shape, radius=None, dtype=None, device=None):
     return f
 
 
-def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
+def shim(fmap, max_order=2, mask=None, isocenter=None, dim=None,
          returns='corrected'):
     """Subtract a linear combination of spherical harmonics that minimize gradients
 
@@ -142,8 +149,6 @@ def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
     ----------
     fmap : (..., *spatial) tensor
         Field map
-    zdim : int, default=-1
-        Dimension of the main magnetic field.
     max_order : int, default=2
         Maximum order of the spherical harmonics
     mask : tensor
@@ -171,14 +176,9 @@ def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
     batch = fmap.shape[:-dim]
     backend = utils.backend(fmap)
     dims = list(range(-dim, 0))
-    zdim = (fmap.dim() + zdim) if zdim < 0 else zdim
-    zdim = zdim - fmap.dim()  # number from the end
 
     if mask is not None:
         mask = ~mask  # make it a mask of background voxels
-    if isocenter is None:
-        isocenter = [s/2 for s in shape]
-    isocenter = utils.make_vector(isocenter, **backend)
 
     # compute gradients
     gmap = diff(fmap, dim=dims, side='f', bound='dct2')
@@ -189,7 +189,7 @@ def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
     # compute basis of spherical harmonics
     basis = []
     for i in range(1, max_order+1):
-        b = spherical_harmonics(shape, i, **backend)
+        b = spherical_harmonics(shape, i, isocenter, **backend)
         b = utils.movedim(b, -1, 0)
         b = diff(b, dim=dims, side='f', bound='dct2')
         if mask is not None:
@@ -206,7 +206,7 @@ def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
     # rebuild basis (without taking gradients)
     basis = []
     for i in range(1, max_order+1):
-        b = spherical_harmonics(shape, i, **backend)
+        b = spherical_harmonics(shape, i, isocenter, **backend)
         b = utils.movedim(b, -1, 0)
         b = b.reshape([b.shape[0], *batch, *shape])
         basis.append(b)
@@ -230,7 +230,7 @@ def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
     return out[0] if len(out) == 1 else tuple(out)
 
 
-def spherical_harmonics(shape, order=2, **backend):
+def spherical_harmonics(shape, order=2, isocenter=None, **backend):
     """Generate a basis of spherical harmonics on a lattice
 
     Notes
@@ -245,6 +245,7 @@ def spherical_harmonics(shape, order=2, **backend):
     ----------
     shape : sequence of int
     order : {1, 2}, default=2
+    isocenter : [sequence of] int, default=shape/2
     dtype : torch.dtype, optional
     device : torch.device, optional
 
@@ -261,9 +262,13 @@ def spherical_harmonics(shape, order=2, **backend):
     if order not in (1, 2):
         raise ValueError('Order must be 1 or 2')
 
+    if isocenter is None:
+        isocenter = [s/2 for s in shape]
+    isocenter = utils.make_vector(isocenter, **backend)
+
     ramps = identity_grid(shape, **backend)
     for i, ramp in enumerate(ramps.unbind(-1)):
-        ramp -= shape[i] / 2
+        ramp -= isocenter[i]
         ramp /= shape[i] / 2
 
     if order == 1:
