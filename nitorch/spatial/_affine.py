@@ -2029,7 +2029,7 @@ def affine_default(shape, voxel_size=1., layout=None, center=0.,
 
     Returns
     -------
-    affine : (ndim, ndim+1) tensor
+    affine : (ndim+1, ndim+1) tensor
         Orientation matrix
 
     """
