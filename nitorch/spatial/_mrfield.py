@@ -201,7 +201,6 @@ def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
 
     # solve system
     prm = linalg.lmdiv(basis, gmap[..., None], method='pinv')[..., 0]
-    print(prm)
     # > (*batch, k)
 
     # rebuild basis (without taking gradients)
@@ -209,8 +208,6 @@ def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
     for i in range(1, max_order+1):
         b = spherical_harmonics(shape, i, **backend)
         b = utils.movedim(b, -1, 0)
-        if mask is not None:
-            b[..., mask, :] = 0
         b = b.reshape([b.shape[0], *batch, *shape])
         basis.append(b)
     basis = torch.cat(basis, 0)
@@ -220,7 +217,7 @@ def shim(fmap, zdim=-1, max_order=2, mask=None, isocenter=None, dim=None,
                          utils.unsqueeze(prm, -2, dim))
     comb = comb[..., 0]
     fmap = fmap - comb
-
+    
     returns = returns.split('+')
     out = []
     for ret in returns:
