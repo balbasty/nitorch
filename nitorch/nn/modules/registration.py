@@ -555,7 +555,7 @@ class AtlasMorph(Module):
         batch = target.shape[0]
         template = self.template
         if self.cat:
-            template = SoftMax(implicit=self.implicit, dim=0)(self.template)
+            template = SoftMax(implicit=self.implicit, dim=0)(template)
         template = template.expand([batch, *self.template.shape])
         source_and_target = torch.cat((template, target), dim=1)
         del template
