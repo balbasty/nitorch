@@ -5,13 +5,59 @@ from ._shoot import greens
 from ._grid import identity_grid
 
 
-def mrfield(ds, zdim=-1, dim=None, b0=1, s0=4e-7, s1=-9.5e-6, vx=1):
+"""
+Absolute MR susceptibility values.
+
+/!\ the `mrfield` function takes *delta* susceptibility values, with 
+respect to the air susceptibility. The susceptibility of the air should 
+thererfore be subtracted from these values before being passed to 
+`mrfield`.
+
+All values are expressed in ppm (parts per million). 
+They get multiplied by 1e-6 in `mrfield`
+
+References
+----------
+..[1] "Perturbation Method for Magnetic Field Calculations of
+       Nonconductive Objects"
+      Mark Jenkinson, James L. Wilson, and Peter Jezzard
+      MRM, 2004
+      https://onlinelibrary.wiley.com/doi/epdf/10.1002/mrm.20194
+..[2] "Susceptibility mapping of air, bone, and calcium in the head"
+      Sagar Buch, Saifeng Liu, Yongquan Ye, Yu‐Chung Norman Cheng, 
+      Jaladhar Neelavalli, and E. Mark Haacke
+      MRM, 2014
+..[3] "Whole-brain susceptibility mapping at high field: A comparison 
+       of multiple- and single-orientation methods"
+      Sam Wharton, and Richard Bowtell
+      NeuroImage, 2010
+..[4] "Quantitative susceptibility mapping of human brain reflects 
+       spatial variation in tissue composition"
+      Wei Li, Bing Wua, and Chunlei Liu
+      NeuroImage 2011
+..[5] "Human brain atlas for automated region of interest selection in 
+       quantitative susceptibility mapping: Application to determine iron 
+       content in deep gray matter structures"
+      Issel Anne L.Lim, Andreia V. Faria, Xu Li, Johnny T.C.Hsu, 
+      Raag D.Airan, Susumu Mori, Peter C.M. van Zijl
+      NeuroImage, 2013
+"""
+mr_chi = {
+    'air': 0.4,         # Jenkinson (Buch: 0.35)
+    'water': -9.1,      # Jenkinson (Buch: -9.05)
+    'bone': -11.3,      # Buch
+    'teeth': -12.5,     # Buch
+}
+
+
+def mrfield(ds, zdim=-1, dim=None, b0=1, s0=mr_chi['air'],
+            s1=mr_chi['water']-mr_chi['air'], vx=1):
     """Generate a MR fieldmap from a MR susceptibility map.
 
     Parameters
     ----------
     ds : (..., *spatial) tensor
-        Susceptibility delta map (delta from air susceptibility).
+        Susceptibility delta map (delta from air susceptibility) in ppm.
         If bool, `s1` will be used to set the value inside the mask.
         If float, should contain quantitative delta values in ppm.
     zdim : int, default=-1
@@ -20,9 +66,9 @@ def mrfield(ds, zdim=-1, dim=None, b0=1, s0=4e-7, s1=-9.5e-6, vx=1):
         Number of spatial dimensions.
     b0 : float, default=1
         Value of the main magnetic field
-    s0 : float, default=4e-7
+    s0 : float, default=0.4
         Susceptibility of air (ppm)
-    s1 : float, default=-9.5e-6
+    s1 : float, default=-9.5
         Susceptibility of tissue minus susceptiblity of air (ppm)
         (only used if `ds` is a boolean mask)
     vx : [sequence of] float
@@ -56,6 +102,8 @@ def mrfield(ds, zdim=-1, dim=None, b0=1, s0=4e-7, s1=-9.5e-6, vx=1):
 
     if ds.dtype is torch.bool:
         ds = ds.to(**backend) * s1
+    ds = ds * 1e-6
+    s0 = s0 * 1e-6
 
     # compute second order finite differences across z
     f = diff1d(ds, order=2, side='c', bound='dft', dim=zdim, voxel_size=vxz)
@@ -68,7 +116,7 @@ def mrfield(ds, zdim=-1, dim=None, b0=1, s0=4e-7, s1=-9.5e-6, vx=1):
     f = mrfield_greens_apply(f, g)
 
     # apply rest of the equation
-    f = b0 * (f + ds / (3. + s0))
+    f = b0 * (ds / (3. + s0) - f / (1. + s0))
     return f
 
 
@@ -151,7 +199,7 @@ def shim(fmap, max_order=2, mask=None, isocenter=None, dim=None,
         Field map
     max_order : int, default=2
         Maximum order of the spherical harmonics
-    mask : tensor
+    mask : tensor, optional
         Mask of voxels to include (typically brain mask)
     isocenter : [sequence of] float, default=shape/2
         Coordinate of isocenter, in voxels
@@ -286,3 +334,50 @@ def spherical_harmonics(shape, order=2, isocenter=None, **backend):
                  ramps[..., 0].square() - ramps[..., 1].square()]
         return torch.stack(basis, -1)
 
+
+# --- values from the literature
+
+# Wharton and Bowtell, NI, 2010
+# These are relative susceptibility with respect to surrounding tissue
+# (which I assume we can consider as white matter?)
+wharton_chi_delta_water = {
+    'sn': 0.17,         # substantia nigra
+    'rn': 0.14,         # red nucleus
+    'ic': -0.01,        # internal capsule
+    'gp': 0.19,         # globus pallidus
+    'pu': 0.10,         # putamen
+    'cn': 0.09,         # caudate nucleus
+    'th': 0.045,        # thalamus
+    'gm_ppl': 0.043,    # posterior parietal lobe
+    'gm_apl': 0.053,    # anterior parietal lobe
+    'gm_fl': 0.04,      # frontal lobe
+}
+
+# Li et al, NI, 2011
+# These are susceptibility relative to CSF
+li_chi_delta_water = {
+    'sn': 0.053,        # substantia nigra
+    'rn': 0.032,        # red nucleus
+    'ic': -0.068,       # internal capsule
+    'gp': 0.087,        # globus pallidus
+    'pu': 0.043,        # putamen
+    'cn': 0.019,        # caudate nucleus
+    'dn': 0.064,        # dentate nucleus
+    'gcc': -0.033,      # genu of corpus callosum
+    'scc': -0.038,      # splenium of corpus collosum
+    'ss': -0.075,       # sagittal stratum
+}
+
+# Buch et al, MRM, 2014
+buch_chi_delta_water = {
+    'air': 9.2,
+    'bone': -2.1,
+    'teeth': -3.3,
+}
+
+# Jenkinson et al, MRM, 2004
+# Absolute susceptibilities
+jenkinson_chi = {
+    'air': 0.4,
+    'parenchyma': -9.1,
+}
