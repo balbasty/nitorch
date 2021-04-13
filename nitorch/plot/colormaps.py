@@ -144,13 +144,13 @@ def prob_to_rgb(image, implicit=False, colormap=None):
         elif nb_classes <= 20:
             colormap = plt.get_cmap('tab20')
         else:
-            warn('More than 20 classes: multiple classes will share'
+            warn('More than 20 classes: multiple classes will share '
                  'the same color.')
             colormap = plt.get_cmap('tab20')
     elif isinstance(colormap, str):
         colormap = plt.get_cmap(colormap)
     if isinstance(colormap, mcolors.Colormap):
-        colormap = [colormap(i)[:3] for i in range(nb_classes)]
+        colormap = [colormap(i)[:3] for i in range(colormap.N)]
     colormap = torch.as_tensor(colormap, dtype=image.dtype, device=image.device)
 
     cimage = image.new_zeros([*batch, *shape, 3])
