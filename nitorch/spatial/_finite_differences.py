@@ -54,29 +54,18 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     """
     def subto(x, y, out):
         """Smart sub"""
-        if ((torch.is_tensor(x) and x.requires_grad) or
-                (torch.is_tensor(y) and y.requires_grad)):
-            return out.copy_(y).neg_().add_(x)
+        if (getattr(x, 'requires_grad', False) or
+                getattr(y, 'requires_grad', False)):
+            return out.copy_(x).sub_(y)
         else:
             return torch.sub(x, y, out=out)
 
     def addto(x, y, out):
-        """Smart add"""
-        if ((torch.is_tensor(x) and x.requires_grad) or
-                (torch.is_tensor(y) and y.requires_grad)):
-            return out.copy_(y).add_(x)
+        if (getattr(x, 'requires_grad', False) or
+                getattr(y, 'requires_grad', False)):
+            return out.copy_(x).add_(y)
         else:
             return torch.add(x, y, out=out)
-
-    def div_(x, y):
-        """Smart in-place division"""
-        # It seems that in-place divisions do not break gradients...
-        return x.div_(y)
-        # if ((torch.is_tensor(x) and x.requires_grad) or
-        #         (torch.is_tensor(y) and y.requires_grad)):
-        #     return x / y
-        # else:
-        #     return x.div_(y)
 
     # TODO:
     #   - check high order central
@@ -127,7 +116,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
                 assert bound == 'dft'
                 # x[end+1] = x[0] => diff[end] = x[0] - x[end]
                 subto(slice_tensor(x, 0, dim), slice_tensor(x, -1, dim),
-                          out=slice_tensor(diff, -1, dim))
+                      out=slice_tensor(diff, -1, dim))
 
         elif side == 'b':  # backward -> diff[i] = x[i] - x[i-1]
             pre = slice_tensor(x, slice(None, -1), dim)
@@ -192,11 +181,11 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
                       out=slice_tensor(diff, -1, dim))
         if side == 'c':
             if voxel_size != 1:
-                diff = div_(diff, voxel_size * 2)
+                diff = diff.div_(voxel_size * 2)
             else:
-                diff = div_(diff, 2.)
+                diff = diff.div_(2.)
         elif voxel_size != 1:
-            diff = div_(diff, voxel_size)
+            diff = diff.div_(voxel_size)
 
     elif side == 'c':
         # we must deal with central differences differently:
@@ -213,7 +202,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
                          side='b', bound=bound)
             diff = fwd.sub_(bwd)
             if voxel_size != 1:
-                diff = div_(diff, voxel_size)
+                diff = diff.div_(voxel_size)
         else:
             diff = diff1d(x, order=2, dim=dim, voxel_size=voxel_size,
                           side=side, bound=bound)
