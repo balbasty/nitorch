@@ -1,6 +1,8 @@
 import torch
-from nitorch.core import utils, py, linalg
+from nitorch.core import utils, py, linalg, constants
+from nitorch.core.fft import ifftshift
 from ._finite_differences import diff1d, diff
+from ._regularisers import regulariser
 from ._shoot import greens
 from ._grid import identity_grid
 
@@ -51,7 +53,7 @@ mr_chi = {
 
 
 def mrfield(ds, zdim=-1, dim=None, b0=1, s0=mr_chi['air'],
-            s1=mr_chi['water']-mr_chi['air'], vx=1):
+            s1=mr_chi['water']-mr_chi['air'], vx=1, analytical=False):
     """Generate a MR fieldmap from a MR susceptibility map.
 
     Parameters
@@ -73,6 +75,9 @@ def mrfield(ds, zdim=-1, dim=None, b0=1, s0=mr_chi['air'],
         (only used if `ds` is a boolean mask)
     vx : [sequence of] float
         Voxel size
+    analytical : bool, default=False
+        If True, use Mark Jenkinson's analytical greens function.
+        More accurate but slower.
 
     Returns
     -------
@@ -100,24 +105,213 @@ def mrfield(ds, zdim=-1, dim=None, b0=1, s0=mr_chi['air'],
     vx = utils.make_vector(vx, 3, dtype=torch.float).tolist()
     vxz = vx[zdim]
 
+    analytical = analytical and (dim == 3)  # anal. form only imp. in 3d
+
     if ds.dtype is torch.bool:
-        ds = ds.to(**backend) * s1
-    ds = ds * 1e-6
+        ds = ds.to(**backend)
+    else:
+        s1 = ds.abs().max()
+        ds = ds / s1
+    s1 = s1 * 1e-6
     s0 = s0 * 1e-6
 
-    # compute second order finite differences across z
-    f = diff1d(ds, order=2, side='c', bound='dft', dim=zdim, voxel_size=vxz)
+    if analytical:
+        # Analytical implementation following Jenkinson et al.
+        # Should be slighlty more precise
+        g = mrfield_greens2(shape, zdim, voxel_size=vx, **backend)
+        f = mrfield_greens_apply(ds, g)
+    else:
+        # Finite-difference based
+        # We get the greens function by inversion in Fourier domain
+        # which requires regularizing it slightly.
 
-    # compute greens function
-    prm = dict(absolute=0, membrane=1, bending=0, lame=0)
-    g = greens(shape, **prm, voxel_size=vx, **backend)
+        # compute second order finite differences across z
+        f = diff1d(ds, order=2, side='c', bound='dft', dim=zdim, voxel_size=vxz)
+        f.neg_()  # That's really important! Did I make a mistake in diff?
 
-    # apply greens function to ds
-    f = mrfield_greens_apply(f, g)
+        # compute greens function
+        prm = dict(absolute=0, membrane=1, bending=0)
+        g = mrfield_greens(shape, **prm, voxel_size=vx, **backend)
+
+        # apply greens function to curvature of ds
+        f = mrfield_greens_apply(f, g)
 
     # apply rest of the equation
-    f = b0 * (ds / (3. + s0) - f / (1. + s0))
-    return f
+    out = ds * ((1. + s0) / (3. + s0))
+    out -= f
+    out *= b0 * s1 / (1 + s0)
+    return out
+
+
+def mrfield_greens2(shape, zdim=-1, voxel_size=1, dtype=None, device=None):
+    """Semi-analytical second derivative of the Greens kernel.
+
+    This function implements exactly the solution from Jenkinson et al.
+    (Same as in the FSL source code), with the assumption that
+    no gradients are played and the main field is constant and has
+    no orthogonal components (Bz = B0, Bx = By = 0).
+
+    The Greens kernel and its second derivatives are derived analytically
+    and integrated numerically over a voxel.
+
+    The returned tensor has already been Fourier transformed and could
+    be cached if multiple field simulations with the same lattice size
+    must be performed in a row.
+
+    Parameters
+    ----------
+    shape : sequence of int
+        Lattice shape
+    zdim : int, defualt=-1
+        Dimension of the main magnetic field
+    voxel_size : [sequence of] int
+        Voxel size
+    dtype : torch.dtype, optional
+    device : torch.device, optional
+
+    Returns
+    -------
+    kernel : (*shape) tensor
+        Fourier transform of the (second derivatives of the) Greens kernel.
+
+    """
+    import itertools
+
+    def atan(num, den):
+        return torch.where(den.abs() > 1e-8, torch.atan_(num/den),
+                                             torch.atan2(num, den))
+
+    dim = len(py.make_list(shape))
+    g0 = identity_grid(shape, dtype=dtype, device=device)
+    voxel_size = utils.make_vector(voxel_size, dim, dtype=torch.double).tolist()
+
+    if dim == 3:
+        if zdim in (-1, 2):
+            odims = [-3, -2]
+        elif zdim in (-2, 1):
+            odims = [-3, -1]
+        elif zdim in (-3, 0):
+            odims = [-2, -1]
+    else:
+        raise NotImplementedError
+
+    def make_shifted(shift):
+        g = g0.clone()
+        for g1, s, v, t in zip(g.unbind(-1), shape, voxel_size, shift):
+            g1 -= s//2      # make center voxel zero
+            g1 += t         # apply shift
+            g1 *= v         # convert to mm
+        return g
+
+    g = 0
+    for shift in itertools.product([-0.5, 0.5], repeat=dim):
+        g1 = make_shifted(shift)
+        if dim == 3:
+            r = g1.square().sum(-1).sqrt_()
+            g1 = atan(g1[..., odims[0]] * g1[..., odims[1]],
+                      g1[..., zdim] * r)
+        else:
+            raise NotImplementedError
+        if py.prod(shift) < 0:
+            g -= g1
+        else:
+            g += g1
+
+    g /= 4. * constants.pi
+    g = ifftshift(g, range(dim))  # move center voxel to first voxel
+    
+    # fourier transform
+    #   symmetric kernel -> real coefficients
+
+    if utils.torch_version('>=', (1, 8)):
+        g = torch.fft.fftn(g, dim=dim).real()
+    else:
+        if torch.backends.mkl.is_available:
+            # use rfft
+            g = torch.rfft(g, dim, onesided=False)
+        else:
+            zero = g.new_zeros([]).expand(g.shape)
+            g = torch.stack([g, zero], dim=-1)
+            g = torch.fft(g, dim)
+        g = g[..., 0]  # should be real
+    return g
+
+
+def mrfield_greens(shape, absolute=0, membrane=0, bending=0, factor=1,
+                   voxel_size=1, dtype=None, device=None):
+    """Generate the Greens function of a regulariser in Fourier space.
+
+    Parameters
+    ----------
+    shape : tuple[int]
+        Output shape
+    absolute : float, default=0.0001
+        Penalty on absolute values
+    membrane : float, default=0.001
+        Penalty on membrane energy
+    bending : float, default=0.2
+        Penalty on bending energy
+    voxel_size : [sequence of[ float, default=1
+        Voxel size
+    dtype : torch.dtype, optional
+    device : torch.device, optional
+
+    Returns
+    -------
+    greens : (*shape, [dim, dim]) tensor
+
+    """
+    # Adapted from the geodesic shooting code
+
+    backend = dict(dtype=dtype, device=device)
+    shape = py.make_tuple(shape)
+    dim = len(shape)
+    if not absolute:
+        # we need some regularization to invert
+        absolute = max(absolute, max(membrane, bending)*1e-6)
+    prm = dict(
+        absolute=absolute,
+        membrane=membrane,
+        bending=bending,
+        factor=factor,
+        voxel_size=voxel_size,
+        bound='dft')
+
+    # allocate
+    kernel = torch.zeros(shape, **backend)
+
+    # only use center to generate kernel
+    if bending:
+        subkernel = kernel[tuple(slice(s//2-2, s//2+3) for s in shape)]
+        subsize = 5
+    else:
+        subkernel = kernel[tuple(slice(s//2-1, s//2+2) for s in shape)]
+        subsize = 3
+
+    # generate kernel
+    center = (subsize//2,)*dim
+    subkernel[center] = 1
+    subkernel[...] = regulariser(subkernel, **prm, dim=dim)
+
+    kernel = ifftshift(kernel, dim=range(dim))
+
+    # fourier transform
+    #   symmetric kernel -> real coefficients
+
+    if utils.torch_version('>=', (1, 8)):
+        kernel = torch.fft.fftn(kernel, dim=dim).real()
+    else:
+        if torch.backends.mkl.is_available:
+            # use rfft
+            kernel = torch.rfft(kernel, dim, onesided=False)
+        else:
+            zero = kernel.new_zeros([]).expand(kernel.shape)
+            kernel = torch.stack([kernel, zero], dim=-1)
+            kernel = torch.fft(kernel, dim)
+        kernel = kernel[..., 0]  # should be real
+
+    kernel = kernel.reciprocal_()
+    return kernel
 
 
 def mrfield_greens_apply(mom, greens):
@@ -185,7 +379,7 @@ def susceptibility_phantom(shape, radius=None, dtype=None, device=None):
     f = identity_grid(shape, dtype=dtype, device=device)
     for comp, s in zip(f.unbind(-1), shape):
         comp -= s/2
-    f = f.square().sum(-1).sqrt() < radius
+    f = f.square().sum(-1).sqrt() <= radius
     return f
 
 
