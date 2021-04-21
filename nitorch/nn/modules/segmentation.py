@@ -396,7 +396,11 @@ class SegMRFNet(Module):
 
     The idea is that a simple, explicit, spatial prior on the categorical data
     should improve generalisation to out-of-distribution data, and allow for less
-    parameters.
+    parameters. The idea is described in:
+
+    Brudfors, M., Balbastre, Y., Ashburner, J., Rees, G., Nachev, P., Ourselin, S., & Cardoso, M. J. 
+    "An MRF-UNet Product of Experts for Image Segmentation."
+    MIDL 2021.
 
     """
     def __init__(
@@ -706,7 +710,7 @@ class MRFNet(Module):
 
     Brudfors, Mikael, Yaël Balbastre, and John Ashburner.
     "Nonlinear markov random fields learned via backpropagation."
-    IPMI. Springer, Cham, 2019.
+    IPMI 2019.
 
     """
     def __init__(self,
