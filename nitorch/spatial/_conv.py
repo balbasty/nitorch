@@ -54,7 +54,7 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
     kernel_size = kernel.shape[(2*has_channels):]
     kernel = kernel.reshape([channels_in, channels_out, *kernel_size])
     batch = tensor.shape[:-(dim+has_channels)]
-    spatial_in = tensor.shape[:(-dim)]
+    spatial_in = tensor.shape[(-dim):]
     if has_channels and tensor.shape[-(dim+has_channels)] != channels_in:
         raise ValueError('Number of input channels not consistent: '
                          'Got {} (kernel) and {} (tensor).' .format(
@@ -90,7 +90,7 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
                                   'dimension 1, 2 or 3.')
     tensor = conv_fn(tensor, kernel, bias, stride=stride, padding=padding,
                      dilation=dilation, groups=groups)
-    spatial_out = tensor.shape[:(-dim)]
+    spatial_out = tensor.shape[(-dim):]
     channels_out = [channels_out] if has_channels else []
     tensor = tensor.reshape([*batch, *channels_out, *spatial_out])
     return tensor
