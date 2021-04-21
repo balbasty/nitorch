@@ -638,7 +638,8 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
             bwd = diff1d(x, order=1, dim=-d-1, side='b', bound=bound, out=buf2)
             torch.sub(fwd, bwd, out=h[..., d, d])  # central 2nd order
             for dd in range(d+1, dim):
-                hh = h[..., d, d]
+                # only fill upper part
+                hh = h[..., d, dd]
                 diff1d(fwd, order=1, dim=-dd - 1, side='f', bound=bound, out=hh)
                 hh += diff1d(fwd, order=1, dim=-dd - 1, side='b', bound=bound, out=buf3)
                 hh += diff1d(bwd, order=1, dim=-dd - 1, side='b', bound=bound, out=buf3)
@@ -654,32 +655,34 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         if verbose:
             print('Eigen...')
         torch.symeig(h, out=(v, torch.empty([])))
+        # torch.symeig returns eigenvalues in ascending order.
+        *lam3, lam2, lam1 = v.unbind(-1)
+        lam3 = lam3.pop() if lam3 else None
 
         if verbose:
             print('Frangi...')
 
         if dim == 2:
-            msk = v[..., 0] < 0
+            msk = lam1 > 0
             if inv_contrast:
                 msk.bitwise_not_()
         else:
             if inv_contrast:
-                msk = v[..., 1] > 0
-                msk.bitwise_or_(v[..., 2] > 0)
+                msk = lam2 < 0
+                msk.bitwise_or_(lam3 < 0)
             else:
-                msk = v[..., 1] < 0
-                msk.bitwise_or_(v[..., 2] < 0)
+                msk = lam2 > 0
+                msk.bitwise_or_(lam3 > 0)
 
         v.abs_()
-
         if dim == 2:
-            torch.div(v[..., 1], v[..., 0], out=buf2)       # < Rb
-            buf2.square_()
+            lam2.clamp_min_(1e-10)
             v.square_()
-            torch.sum(v, dim=-1, out=buf3)                  # < S
+            torch.div(lam2, lam1, out=buf2)                 # < Rb ** 2
+            torch.sum(v, dim=-1, out=buf3)                  # < S ** 2
 
-            buf2.div_(-b).exp_()                            # < expRb
-            buf3.div_(-c).exp_().neg_().add_(1)             # < expS
+            buf2.div_(-b).exp_()                            # < exp(Rb**2)
+            buf3.div_(-c).exp_().neg_().add_(1)             # < 1-exp(S**2)
 
             buf2.mul_(buf3)
 
@@ -687,16 +690,17 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
             return buf2
 
         elif dim == 3:
-            torch.div(v[..., 1], v[..., 2], out=buf1)       # < Ra
-            torch.mul(v[..., 1], v[..., 2], out=buf2)
-            buf2.sqrt_()
-            torch.div(v[..., 0], buf2, out=buf2)            # < Rb
-            v.square_()
-            torch.sum(v, dim=-1, out=buf3)                  # < S
+            lam3.clamp_min_(1e-10)
+            lam2.clamp_min_(1e-10)
+            torch.mul(lam2, lam3, out=buf2)                 # < lam2 * lam3
+            v.square_()                                     # < lam ** 2
+            torch.div(lam2, lam3, out=buf1)                 # < Ra ** 2
+            torch.div(lam1, buf2, out=buf2)                 # < Rb ** 2
+            torch.sum(v, dim=-1, out=buf3)                  # < S ** 2
 
-            buf1.square_().div_(-a).exp_().neg_().add_(1)   # < expRa
-            buf2.square_().div_(-b).exp_()                  # < expRb
-            buf3.div_(-c).exp_().neg_().add_(1)             # < expS
+            buf1.div_(-a).exp_().neg_().add_(1)             # < 1-exp(Ra**2)
+            buf2.div_(-b).exp_()                            # <   exp(Rb**2)
+            buf3.div_(-c).exp_().neg_().add_(1)             # < 1-exp(S**2)
 
             buf1.mul_(buf2).mul_(buf3)
 
