@@ -3,7 +3,6 @@ from nitorch.core import utils, py, linalg, constants
 from nitorch.core.fft import ifftshift
 from ._finite_differences import diff1d, diff
 from ._regularisers import regulariser
-from ._shoot import greens
 from ._grid import identity_grid
 
 
@@ -219,7 +218,7 @@ def mrfield_greens2(shape, zdim=-1, voxel_size=1, dtype=None, device=None):
 
     g /= 4. * constants.pi
     g = ifftshift(g, range(dim))  # move center voxel to first voxel
-    
+
     # fourier transform
     #   symmetric kernel -> real coefficients
 
