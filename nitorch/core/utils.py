@@ -373,7 +373,7 @@ def to(*args, dtype=None, device=None):
                      if arg is not None else arg for arg in args)
 
 
-def to_max_backend(*args, force_float=False):
+def to_max_backend(*args, force_float=False, dtype=None, device=None):
     """Move to a common dtype and device.
 
     See `max_dtype` and `max_device`.
@@ -390,8 +390,8 @@ def to_max_backend(*args, force_float=False):
     """
     if len(args) == 0:
         return
-    dtype = max_dtype(*args, force_float=force_float)
-    device = max_device(*args)
+    dtype = max_dtype(*args, dtype, force_float=force_float)
+    device = max_device(*args, device)
     if len(args) == 1:
         return torch.as_tensor(args[0], dtype=dtype, device=device)
     else:
@@ -438,7 +438,7 @@ def backend(x):
     return dict(dtype=x.dtype, device=x.device)
 
 
-def max_backend(*args):
+def max_backend(*args, dtype=None, device=None):
     """Get the (max) dtype and device.
 
     Parameters
@@ -450,7 +450,8 @@ def max_backend(*args):
     dict with keys 'dtype' and 'device'
 
     """
-    return dict(dtype=max_dtype(*args), device=max_device(*args))
+    return dict(dtype=max_dtype(*args, dtype),
+                device=max_device(*args, device))
 
 
 def max_device(*args):
