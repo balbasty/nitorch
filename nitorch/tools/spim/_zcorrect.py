@@ -34,7 +34,7 @@ def zcorrect(x, decay=None, sigma=None, lam=10,
     """
 
     x = torch.as_tensor(x)
-    if not x.dtype.is_floating_points:
+    if not x.dtype.is_floating_point:
         x = x.to(dtype=torch.get_default_dtype())
     backend = utils.backend(x)
     shape = x.shape
@@ -47,18 +47,23 @@ def zcorrect(x, decay=None, sigma=None, lam=10,
     z2 = 2*nz//3
     x1 = x[:, z1].median()
     x2 = x[:, z2].median()
-    b = b or (x1 * z1**2 - x2 * z2**2) / (x2 - x1)
-    y0 = x1 * (1 + b * z1**2)
+    z1 = float(z1)**2
+    z2 = float(z2)**2
+    b = b or (x2 - x1) / (x1 * z1 - x2 * z2) 
+    b = abs(b)
+    y0 = x1 * (1 + b * z1)
 
     y0 = y0.item()
     b = b.item() if torch.is_tensor(b) else b
 
     # noise educated guess: assume SNR=5 at z=1/2
-    sigma = sigma or (y0 / (1 + decay * (nz/2)**2))/5
+    sigma = sigma or (y0 / (1 + b * (nz/2)**2))/5
     lam = lam**2 * sigma**2
-    reg = lambda y: spatial.regulariser(y, membrane=lam, dim=1)
-    solve = lambda h, g: spatial.solve_field_sym(h, g, membrane=lam, dim=1)
+    reg = lambda y: spatial.regulariser(y[:, None], membrane=lam, dim=1)[:,0]
+    solve = lambda h, g: spatial.solve_field_sym(h[:, None], g[:, None], membrane=lam, dim=1)[:,0]
 
+    print(y0, b, sigma, lam)
+    
     # init
     z2 = torch.arange(nz, **backend).square_()
     logy = torch.full_like(x, y0).log_()
@@ -78,7 +83,7 @@ def zcorrect(x, decay=None, sigma=None, lam=10,
         ll = res.square().sum() + (logy * reg(logy)).sum()
         gain = (ll1 - ll) / ll0
         if verbose:
-            end = '\n' if verbose > 1 else '\n'
+            end = '\n' if verbose > 1 else '\r'
             print(f'{it:3d} | {ll:12.6g} | gain = {gain:12.6g}', end=end)
         if it > 0 and gain < tol:
             break
@@ -114,4 +119,7 @@ def zcorrect(x, decay=None, sigma=None, lam=10,
         logy -= solve(h, g)
 
     y = torch.exp(logy, out=y)
-    return y, b, x * (1 + b * z2)
+    y = y.reshape(shape)
+    x = x * (1 + b * z2)
+    x = x.reshape(shape)
+    return y, b, x
