@@ -4,6 +4,7 @@ from . import affine_reg
 from . import misc
 from . import qmri
 from . import registration
+from . import spim
 from . import denoise
 from . import viewer
 
