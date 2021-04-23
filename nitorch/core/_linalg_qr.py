@@ -796,9 +796,9 @@ def _qr_explicit_vectors_jit_(h, max_iter, tol, sym):
             h.diagonal(0, -1, -2).add_(sigma[..., None])
 
             # Extract lower-triangular point and compute its norm
-            b = torch.abs(h[..., -1, -2], out=buf).square_().sum()
-            a0 = torch.abs(h[..., -1, -1], out=buf).square_().sum()
-            a1 = torch.abs(h[..., -2, -2], out=buf).square_().sum()
+            b = torch.abs(h[..., -1, -2], out=buf).pow_(2).sum()
+            a0 = torch.abs(h[..., -1, -1], out=buf).pow_(2).sum()
+            a1 = torch.abs(h[..., -2, -2], out=buf).pow_(2).sum()
             sos_lower = b
             sos_diag = a0 + a1
             if sos_lower < tol * sos_diag:
@@ -834,9 +834,9 @@ def _qr_explicit_jit_(h, max_iter, tol, sym):
             h.diagonal(0, -1, -2).add_(sigma[..., None])
 
             # Extract lower-triangular point and compute its norm
-            b = torch.abs(h[..., -1, -2], out=buf).square_().sum()
-            a0 = torch.abs(h[..., -1, -1], out=buf).square_().sum()
-            a1 = torch.abs(h[..., -2, -2], out=buf).square_().sum()
+            b = torch.abs(h[..., -1, -2], out=buf).pow_(2).sum()
+            a0 = torch.abs(h[..., -1, -1], out=buf).pow_(2).sum()
+            a1 = torch.abs(h[..., -2, -2], out=buf).pow_(2).sum()
             sos_lower = b
             sos_diag = a0 + a1
             if sos_lower < tol * sos_diag:
