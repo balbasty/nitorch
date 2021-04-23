@@ -672,7 +672,7 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2
         if is_on_cpu:
             torch.symeig(h, out=(v, torch.empty([])))
         else:
-            v.copy_(linalg.eig_sym_(h))
+            linalg.eig_sym_(h).sort(-1, out=(v, torch.empty([])))[0]
         # torch.symeig returns eigenvalues in ascending order.
         *lam3, lam2, lam1 = v.unbind(-1)
         lam3 = lam3.pop() if lam3 else None
@@ -796,7 +796,7 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         if is_on_cpu:
             eig = torch.symeig(h, eigenvectors=True)[0]
         else:
-            eig = linalg.eig_sym_(h)
+            eig = linalg.eig_sym_(h).sort(-1)[0]
         eig = eig.clamp_min(1e-10)
 
         # torch.symeig returns eigenvalues in ascending order.
