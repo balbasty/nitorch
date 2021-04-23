@@ -885,6 +885,21 @@ def eig_sym(a, compute_u=False, upper=True, inplace=False,
     .. We use the explicit QR algorithm, which is probably less
        stable than the implicit QR algorithm used in Lapack.
 
+    To sort eigenvalues and eigenvectors according to some criterion:
+    ```python
+    >> s, u = eig_sym(x, compute_u=True)
+    >> _, i = crit(s).sort()
+    >> s = s.gather(-1, i)    # permute eigenvalues
+    >> i = i.unsqueeze(-2).expand(y.shape)
+    >> u = u.gather(-1, i)    # permute eigenvectors
+    ```
+    If the criterion is the value of the eigenvalues, it simplifies:
+    ```python
+    >> s, u = eig_sym(x, compute_u=True)
+    >> s, i = s.sort()
+    >> i = i.unsqueeze(-2).expand(y.shape)
+    >> u = u.gather(-1, i)    # permute eigenvectors
+    ```
 
     Parameters
     ----------
