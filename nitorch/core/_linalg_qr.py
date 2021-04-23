@@ -25,6 +25,10 @@ def smart_conj(x):
     """Take conjugate if complex (saves a copy when real)."""
     return x.conj() if x.is_complex() else x
 
+def smart_real(x):
+    """Take real part if complex (saves a copy when real)."""
+    return torch.real(x) if x.is_complex() else x
+
 
 def householder(x, basis=0, inplace=False, check_finite=True, return_alpha=False):
     """Compute the Householder reflector of a (batch of) vector(s).
@@ -357,7 +361,7 @@ def outer_sym(u, v):
     shape = [*shape, n, n]
     out = u.new_empty(shape)
     for i in range(n):
-        out[..., i, i] = torch.real(u[..., i] * smart_conj(v[..., i]))
+        out[..., i, i] = smart_real(u[..., i] * smart_conj(v[..., i]))
         out[..., i, i] *= 2
         for j in range(i+1, n):
             vjc = smart_conj(v[..., j])
@@ -780,6 +784,12 @@ def eig_sym(a, compute_u=False, upper=True, inplace=False, descending=False,
     if a.shape[-1] != a.shape[-2]:
         raise ValueError('Expected square matrix. Got ({}, {})'
                          .format(a.shape[-2], a.shape[-1]))
+    return eig_sym_(a, compute_u, upper, descending, max_iter, tol)
+
+
+def eig_sym_(a, compute_u=False, upper=True, descending=False, 
+             max_iter=1024, tol=1e-32):
+    """Inplace version of eig_sym, without checks."""
 
     # Initialization: reduction to symmetric tridiagonal form
     hessenberg_ = hessenberg_sym_upper_ if upper else hessenberg_sym_lower_
@@ -836,22 +846,26 @@ def _qr_explicit_vectors_jit_(h, max_iter, tol, sym):
 
     u0 = u
     h0 = h
+    sigma = h.new_empty(h.shape[:-2])
+    buf = h.new_empty(h.shape[:-2])
     for k in range(n-1, 0, -1):
         # QR Algorithm
         for it in range(max_iter):
 
             # Estimate eigenvalue
-            sigma = h[..., -1, -1].clone()
+            sigma.copy_(h[..., -1, -1])
 
             # Hessenberg QR decomposition
             h.diagonal(0, -1, -2).sub_(sigma[..., None])
-            h[...], u[...] = _rq_hessenberg_vectors_jit_(h, u, sym)
+            _rq_hessenberg_vectors_jit_(h, u, sym)
             h.diagonal(0, -1, -2).add_(sigma[..., None])
 
             # Extract lower-triangular point and compute its norm
-            sos_lower = h[..., -1, -2].abs().square().sum()
-            sos_diag = (h[..., -1, -1].abs().square().sum() +
-                        h[..., -2, -2].abs().square().sum())
+            b = torch.abs(h[..., -1, -2], out=buf).square_().sum()
+            a0 = torch.abs(h[..., -1, -1], out=buf).square_().sum()
+            a1 = torch.abs(h[..., -2, -2], out=buf).square_().sum()
+            sos_lower = b
+            sos_diag = a0 + a1
             if sos_lower < tol * sos_diag:
                 h[..., -1, :-1] = 0
                 break
@@ -869,22 +883,26 @@ def _qr_explicit_jit_(h, max_iter, tol, sym):
 
     n = h.shape[-1]
     h0 = h
+    sigma = h.new_empty(h.shape[:-2])
+    buf = h.new_empty(h.shape[:-2])
     for k in range(n-1, 0, -1):
         # QR Algorithm
         for it in range(max_iter):
 
             # Estimate eigenvalue
-            sigma = h[..., -1, -1].clone()
+            sigma.copy_(h[..., -1, -1])
 
             # Hessenberg QR decomposition
             h.diagonal(0, -1, -2).sub_(sigma[..., None])
-            h[...] = _rq_hessenberg_jit_(h, sym)
+            _rq_hessenberg_jit_(h, sym)
             h.diagonal(0, -1, -2).add_(sigma[..., None])
 
             # Extract lower-triangular point and compute its norm
-            sos_lower = h[..., -1, -2].abs().square().sum()
-            sos_diag = (h[..., -1, -1].abs().square().sum() +
-                        h[..., -2, -2].abs().square().sum())
+            b = torch.abs(h[..., -1, -2], out=buf).square_().sum()
+            a0 = torch.abs(h[..., -1, -1], out=buf).square_().sum()
+            a1 = torch.abs(h[..., -2, -2], out=buf).square_().sum()
+            sos_lower = b
+            sos_diag = a0 + a1
             if sos_lower < tol * sos_diag:
                 h[..., -1, :-1] = 0
                 break
