@@ -461,7 +461,7 @@ def hessenberg_sym_lower_(a, compute_u=False, fill=False):
 @torch.jit.script
 def _givens_jit(x, y):
     # type: (Tensor, Tensor) -> Tuple[Tensor, Tensor]
-    nrm = (x.square() + y.square()).sqrt_()
+    nrm = (x*x + y*y).sqrt_()
     x = x / nrm
     y = (y / nrm).neg_()
     msk = nrm == 0
