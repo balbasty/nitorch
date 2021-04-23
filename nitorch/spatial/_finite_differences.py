@@ -570,7 +570,7 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
     return div
 
 
-def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
+def frangi(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
            dim=None, bound='replicate', return_scale=False, verbose=False):
     """Frangi (vessel detector) filter.
 
@@ -585,9 +585,9 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         Second Frangi vesselness constant (deviation from blob-like)
     c : float or tensor, default=500
         Third Second Frangi vesselness constant (signal to noise)
-    inv_contrast : bool, default=False
+    white_ridges : bool, default=False
         If True, detect white ridges (black background).
-        Else, detect bloack ridges (white background).
+        Else, detect black ridges (white background).
     fwhm : [sequence of] float, default=[1, 3, 5, 7]
         Full width half max of Gaussian filters.
     dim : int
@@ -611,7 +611,7 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
           MICCAI (1998) https://doi.org/10.1007/BFb0056195
 
     """
-    prm = dict(inv_contrast=inv_contrast, fwhm=fwhm,
+    prm = dict(white_ridges=white_ridges, fwhm=fwhm,
                dim=dim, bound=bound, return_scale=return_scale,
                verbose=verbose)
     if any(map(lambda x: getattr(x, 'requires_grad', False), [x, a, b, c])):
@@ -620,7 +620,7 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         return frangi_nodiff(x, a, b, c, **prm)
 
 
-def frangi_nodiff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
+def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
            dim=None, bound='replicate', return_scale=False, verbose=False):
     """Non-differentiable Frangi filter."""
     x = torch.as_tensor(x)
@@ -672,20 +672,23 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2
         if is_on_cpu:
             torch.symeig(h, out=(v, torch.empty([])))
         else:
-            linalg.eig_sym_(h).sort(-1, out=(v, torch.empty([])))[0]
-        # torch.symeig returns eigenvalues in ascending order.
-        *lam3, lam2, lam1 = v.unbind(-1)
+            v.copy_(linalg.eig_sym_(h))
+        # we must order eigenvalues by increasing *magnitude*
+         _, perm = v.abs().sort()
+        v.copy_(v.gather(-1, perm))
+        lam1, lam2, *lam3 = v.unbind(-1)
         lam3 = lam3.pop() if lam3 else None
 
         if verbose:
             print('Frangi...')
 
         if dim == 2:
-            msk = lam1 > 0
-            if inv_contrast:
-                msk.bitwise_not_()
+            if white_ridges:
+                msk = lam2 < 0
+            else:
+                msk = lam2 > 0
         else:
-            if inv_contrast:
+            if white_ridges:
                 msk = lam2 < 0
                 msk.bitwise_or_(lam3 < 0)
             else:
@@ -696,7 +699,7 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2
         if dim == 2:
             lam2.clamp_min_(1e-10)
             v.square_()
-            torch.div(lam2, lam1, out=buf2)                 # < Rb ** 2
+            torch.div(lam1, lam2, out=buf2)                 # < Rb ** 2
             torch.sum(v, dim=-1, out=buf3)                  # < S ** 2
 
             buf2.div_(-b).exp_()                            # < exp(Rb**2)
@@ -704,7 +707,7 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2
 
             buf2.mul_(buf3)
 
-            buf2[msk] = 0
+            buf2.masked_fill_(msk, 0)
             return buf2
 
         elif dim == 3:
@@ -722,7 +725,7 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2
 
             buf1.mul_(buf2).mul_(buf3)
 
-            buf1[msk] = 0
+            buf1.masked_fill_(msk, 0)
             return buf1
 
     v0 = None
@@ -748,7 +751,7 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2
     return (v0, scale) if return_scale else v0
 
 
-def frangi_diff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
+def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
                 dim=None, bound='replicate', return_scale=False, verbose=False):
     """Differentiable Frangi filter."""
     x = torch.as_tensor(x)
@@ -797,21 +800,21 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
             eig = torch.symeig(h, eigenvectors=True)[0]
         else:
             eig = linalg.eig_sym_(h).sort(-1)[0]
-        eig = eig.clamp_min(1e-10)
-
-        # torch.symeig returns eigenvalues in ascending order.
-        *lam3, lam2, lam1 = eig.unbind(-1)
+         _, perm = eig.abs().sort()
+        eig = eig.gather(-1, perm)
+        lam1, lam2, *lam3 = eig.unbind(-1)
         lam3 = lam3.pop() if lam3 else None
 
         if verbose:
             print('Frangi...')
 
         if dim == 2:
-            msk = lam1 > 0
-            if inv_contrast:
-                msk.bitwise_not_()
+            if white_ridges:
+                msk = lam2 < 0
+            else:
+                msk = lam2 > 0
         else:
-            if inv_contrast:
+            if white_ridges:
                 msk = lam2 < 0
                 msk.bitwise_or_(lam3 < 0)
             else:
@@ -820,39 +823,39 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
 
         eig[msk, :] = 1
         eig.abs_()
-        *lam3, lam2, lam1 = eig.unbind(-1)
+        lam1, lam2, *lam3 = eig.unbind(-1)
         lam3 = lam3.pop() if lam3 else None
 
         if dim == 2:
             eig = eig.square()
-            lam2, lam1 = eig.unbind(-1)
-            buf2 = lam2/lam1                                # < Rb ** 2
-            buf3 = eig.sum(dim=-1)                          # < S ** 2
+            lam1, lam2 = eig.unbind(-1)
+            rb = lam1/lam2                                  # < Rb ** 2
+            s = eig.sum(dim=-1)                             # < S ** 2
 
-            buf2 = buf2.div_(-b).exp_()                     # < exp(Rb**2)
-            buf3 = buf3.div_(-c).exp_().neg().add_(1)       # < 1-exp(S**2)
+            rb = rb.div_(-b).exp_()                         # < exp(Rb**2)
+            s = s.div_(-c).exp_().neg().add_(1)             # < 1-exp(S**2)
 
-            buf2 = buf2.mul(buf3)
+            rb = rb.mul(s)
 
-            buf2.masked_fill_(msk, 0)
-            return buf2
+            rb.masked_fill_(msk, 0)
+            return rb
 
         elif dim == 3:
-            buf2 = lam2*lam3                                # < lam2 * lam3
+            rb = lam2*lam3                                  # < lam2 * lam3
             eig = eig.square()                              # < lam ** 2
-            lam3, lam2, lam1 = eig.unbind(-1)
-            buf1 = lam2/lam3                                # < Ra ** 2
-            buf2 = lam1/buf2                                # < Rb ** 2
-            buf3 = eig.sum(dim=-1)                          # < S ** 2
+            lam1, lam2, lam3 = eig.unbind(-1)
+            ra = lam2/lam3                                  # < Ra ** 2
+            rb = lam1/rb                                    # < Rb ** 2
+            s = eig.sum(dim=-1)                             # < S ** 2
 
-            buf1 = buf1.div_(-a).exp_().neg().add_(1)       # < 1-exp(Ra**2)
-            buf2 = buf2.div_(-b).exp_()                     # <   exp(Rb**2)
-            buf3 = buf3.div_(-c).exp_().neg().add_(1)       # < 1-exp(S**2)
+            ra = ra.div_(-a).exp_().neg().add_(1)           # < 1-exp(Ra**2)
+            rb = rb.div_(-b).exp_()                         # <   exp(Rb**2)
+            s = s.div_(-c).exp_().neg().add_(1)             # < 1-exp(S**2)
 
-            buf1 = buf1.mul_(buf2).mul_(buf3)
+            ra = ra.mul_(rb).mul_(s)
 
-            buf1 = buf1.masked_fill_(msk, 0)
-            return buf1
+            ra = ra.masked_fill_(msk, 0)
+            return ra
 
     v0 = None
     scale = None
