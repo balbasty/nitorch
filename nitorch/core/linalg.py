@@ -8,7 +8,7 @@ import math
 # Expose from private implementation
 from ._linalg_expm import expm, _expm
 from ._linalg_logm import logm
-from ._linalg_qr import eig_sym
+from ._linalg_qr import eig_sym, eig_sym_
 
 
 def meanm(mats, max_iter=1024, tol=1e-20):

@@ -1,14 +1,14 @@
 """Finite-differences operators (gradient, divergence, ...)."""
 
 import torch
-from nitorch.core import utils
+from nitorch.core import utils, linalg
 from nitorch.core.utils import expand, slice_tensor, same_storage, make_vector
 from nitorch.core.py import make_list
 from ._conv import smooth
 
 
 __all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',
-           'sobel']
+           'sobel', 'frangi']
 
 
 # Converts from nitorch.utils.pad boundary naming to
@@ -608,8 +608,15 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
     scale : (*batch_shape, *spatial_shape) tensor[int], if return_scale
         Index of scale at which each pixel was detected.
 
+    References
+    ----------
+    ..[1] "Multiscale vessel enhancement filtering"
+          Frangi, Niessen, Vincken, Viergever
+          MICCAI (1998) https://doi.org/10.1007/BFb0056195
+
     """
     x = torch.as_tensor(x)
+    is_on_cpu = x.device == torch.device('cpu')
     dim = dim or x.dim()
     if not dim in (2, 3):
         raise ValueError('Frangi filter is only implemented in 2D or 3D')
@@ -654,7 +661,10 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         # Eigenvalues
         if verbose:
             print('Eigen...')
-        torch.symeig(h, out=(v, torch.empty([])))
+        if is_on_cpu:
+            torch.symeig(h, out=(v, torch.empty([])))
+        else:
+            v.copy_(linalg.eig_sym_(h))
         # torch.symeig returns eigenvalues in ascending order.
         *lam3, lam2, lam1 = v.unbind(-1)
         lam3 = lam3.pop() if lam3 else None
