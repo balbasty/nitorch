@@ -79,13 +79,14 @@ def householder_(x, basis=0):
 
     # Compute unitary parameter
     rho = x[..., basis:basis+1].clone()
-    rho.div_(rho.abs()).neg_()
+    rho.sign_().neg_()
     rho[rho == 0] = 1
     rho *= x.norm(dim=-1, keepdim=True)
 
     # Compute Householder reflector
     x[..., basis:basis+1] -= rho
     x /= x.norm(dim=-1, keepdim=True)
+    x[torch.isfinite(x).bitwise_not_()] = 0
 
     return x, rho[..., 0]
 
@@ -454,10 +455,13 @@ def hessenberg_sym_lower_(a, compute_u=False, fill=False):
 
 @torch.jit.script
 def _givens_jit(x, y):
-    # type: (Tensor, Tensor) -> List[Tensor]
+    # type: (Tensor, Tensor) -> Tuple[Tensor, Tensor]
     nrm = (x.square() + y.square()).sqrt_()
     x = x / nrm
     y = (y / nrm).neg_()
+    msk = nrm == 0
+    x.masked_fill_(msk, 1.)
+    y.masked_fill_(msk, 0.)
     return x, y
 
 
@@ -871,6 +875,7 @@ def _qr_explicit_jit_(h, max_iter, tol, sym):
     h0 = h
     for k in range(n-1, 0, -1):
         # QR Algorithm
+        sos_prev = 0.
         for it in range(max_iter):
 
             # Estimate eigenvalue
@@ -888,6 +893,12 @@ def _qr_explicit_jit_(h, max_iter, tol, sym):
             if sos_lower < tol * sos_diag:
                 h[..., -1, :-1] = 0
                 break
+            sos_new = sos_lower/sos_diag
+            if sos_prev and abs((sos_prev - sos_new)/sos_prev) < tol * 1e-3:
+                # We're stuck -> better to return a shitty value now than
+                # be stuck forever
+                break
+            sos_prev = sos_new
         h = h[..., :-1, :-1]
 
     h = h0
