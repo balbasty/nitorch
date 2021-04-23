@@ -247,6 +247,6 @@ def zcorrect_exp(x, decay=None, sigma=None, lam=10,
 
     y = torch.exp(logy, out=y)
     y = y.reshape(shape)
-    x = x * (1 + b * z2)
+    x = x * (b * z).exp_()
     x = x.reshape(shape)
     return y, b, x
