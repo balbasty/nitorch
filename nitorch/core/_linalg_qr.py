@@ -749,7 +749,7 @@ def qr_explicit_(h, max_iter=1024, tol=None, compute_u=False, sym=False):
     """Explicit QR decomposition.
 
     This function is applied inplace and does not perform checks.
-    It uses the Hessenberg QR algorithm with Rayleigh quotient shift.
+    It uses the Hessenberg QR algorithm with Wilkinson shift.
     The input matrix ``h`` should be an upper Hessenberg matrix.
 
     If h is not tridiagonal symmetric, complex eigenvalues can exist
@@ -771,6 +771,21 @@ def qr_explicit_(h, max_iter=1024, tol=None, compute_u=False, sym=False):
 
 
 @torch.jit.script
+def wilkinson(h):
+    # type: (Tensor) -> Tensor
+    h0 = h[..., 0, 0]
+    h1 = h[..., 1, 1]
+    b2 = h[..., 1, 0]
+    b2 = b2*b2
+    d = (h0 - h1) / 2
+    s = d.sign()
+    s.masked_fill_(s == 0, 1)
+    d = d.abs() + (d*d + b2).sqrt()
+    d.masked_fill_(d == 0, 1)
+    return h1 - s * b2 / d
+
+
+@torch.jit.script
 def _qr_explicit_vectors_jit_(h, max_iter, tol, sym):
     # type: (Tensor, int, float, bool) -> Tuple[Tensor, Tensor]
 
@@ -788,7 +803,10 @@ def _qr_explicit_vectors_jit_(h, max_iter, tol, sym):
         for it in range(max_iter):
 
             # Estimate eigenvalue
-            sigma.copy_(h[..., -1, -1])
+            if sym:
+                sigma = wilkinson(h[..., -2:, -2:])
+            else:
+                sigma.copy_(h[..., -1, -1])  # Rayleigh
 
             # Hessenberg QR decomposition
             h.diagonal(0, -1, -2).sub_(sigma[..., None])
@@ -826,7 +844,10 @@ def _qr_explicit_jit_(h, max_iter, tol, sym):
         for it in range(max_iter):
 
             # Estimate eigenvalue
-            sigma.copy_(h[..., -1, -1])
+            if sym:
+                sigma = wilkinson(h[..., -2:, -2:])
+            else:
+                sigma.copy_(h[..., -1, -1])  # Rayleigh
 
             # Hessenberg QR decomposition
             h.diagonal(0, -1, -2).sub_(sigma[..., None])
@@ -858,7 +879,12 @@ def eig_sym(a, compute_u=False, upper=True, inplace=False,
             check_finite=True, max_iter=1024, tol=1e-32):
     """Compute the eigendecomposition of a Hermitian square matrix.
 
-    We use the explicit QR algorithm.
+    Notes
+    -----
+    .. Eigenvalues are *not* sorted
+    .. We use the explicit QR algorithm, which is probably less
+       stable than the implicit QR algorithm used in Lapack.
+
 
     Parameters
     ----------
@@ -882,7 +908,7 @@ def eig_sym(a, compute_u=False, upper=True, inplace=False,
     Returns
     -------
     s : (..., m) tensor
-        Eigenvalues, in ascending order.
+        Eigenvalues.
     u : (..., m, m) tensor, optional
         Corresponding eigenvectors.
 
@@ -919,7 +945,8 @@ def eig_sym_forward_(a, compute_u=False, upper=True, max_iter=1024, tol=1e-32):
         a, u = a
         householder_apply_(u, q, side='left', inverse=True)
     a = a.diagonal(0, -1, -2)
-    return a
+
+    return (a, u) if compute_u else a
 
 
 class EigSym(torch.autograd.Function):
@@ -937,7 +964,6 @@ class EigSym(torch.autograd.Function):
     @staticmethod
     def forward(ctx, a, compute_u, upper, max_iter, tol):
 
-        ctx.mark_dirty(a)  # we are going to work inplace
         if hasattr(ctx, 'set_materialize_grads'):
             # pytorch >= 1.7
             ctx.set_materialize_grads(False)
