@@ -25,6 +25,7 @@ def smart_conj(x):
     """Take conjugate if complex (saves a copy when real)."""
     return x.conj() if x.is_complex() else x
 
+
 def smart_real(x):
     """Take real part if complex (saves a copy when real)."""
     return torch.real(x) if x.is_complex() else x
@@ -744,76 +745,6 @@ def rq_hessenberg_(a, u=None, sym=False):
         return _rq_hessenberg_vectors_jit_(a, u, sym)
 
 
-def eig_sym(a, compute_u=False, upper=True, inplace=False, descending=False,
-            check_finite=True, max_iter=1024, tol=1e-32):
-    """Compute the eigendecomposition of a Hermitian square matrix.
-
-    We use the explicit QR algorithm.
-
-    Parameters
-    ----------
-    a : (..., m, m) tensor_like
-        Input hermitian matrix or field of matrices
-    compute_u : bool, default=False
-        Compute the eigenvectors. If False, only return ``s``.
-    upper : bool, default=True
-        Whether to use the upper or lower triangular component.
-    inplace : bool, default=False
-        If True, overwrite ``a``.
-    descending : bool, default=False
-        Return descending eigenvalues instead of ascending.
-    check_finite : bool, default=True
-        If True, checks that the input matrix does not contain any
-        non finite value. Disabling this may speed up the algorithm.
-    max_iter : int, default=1024
-        Maximum number of iterations.
-    tol : float, optional
-        Tolerance for early stopping.
-        Default: machine precision for ``a.dtype``.
-
-    Returns
-    -------
-    s : (..., m) tensor
-        Eigenvalues.
-    u : (..., m, m) tensor, optional
-        Eigenvectors.
-
-    """
-    # Check arguments
-    a = utils.as_tensor(a)
-    if check_finite and not torch.isfinite(a).all():
-        raise ValueError('Input has non finite values.')
-    if not inplace:
-        a = a.clone()
-    if a.shape[-1] != a.shape[-2]:
-        raise ValueError('Expected square matrix. Got ({}, {})'
-                         .format(a.shape[-2], a.shape[-1]))
-    return eig_sym_(a, compute_u, upper, descending, max_iter, tol)
-
-
-def eig_sym_(a, compute_u=False, upper=True, descending=False, 
-             max_iter=1024, tol=1e-32):
-    """Inplace version of eig_sym, without checks."""
-
-    # Initialization: reduction to symmetric tridiagonal form
-    hessenberg_ = hessenberg_sym_upper_ if upper else hessenberg_sym_lower_
-    a = hessenberg_(a, compute_u=compute_u, fill=True)
-    if compute_u:
-        a, q = a
-
-    # Main part
-    a = qr_explicit_(a, max_iter=max_iter, tol=tol, compute_u=compute_u, sym=True)
-    if compute_u:
-        a, u = a
-        householder_apply_(u, q, side='left', inverse=True)
-    a = a.diagonal(0, -1, -2)
-    a, ind = a.sort(dim=-1, descending=descending)
-    if compute_u:
-        u = u[..., :, ind][..., ind, :]
-        return a, u
-    return a
-
-
 def qr_explicit_(h, max_iter=1024, tol=None, compute_u=False, sym=False):
     """Explicit QR decomposition.
 
@@ -921,3 +852,124 @@ def _qr_explicit_jit_(h, max_iter, tol, sym):
 
     h = h0
     return h
+
+
+def eig_sym(a, compute_u=False, upper=True, inplace=False,
+            check_finite=True, max_iter=1024, tol=1e-32):
+    """Compute the eigendecomposition of a Hermitian square matrix.
+
+    We use the explicit QR algorithm.
+
+    Parameters
+    ----------
+    a : (..., m, m) tensor_like
+        Input hermitian matrix or field of matrices
+    compute_u : bool, default=False
+        Compute the eigenvectors. If False, only return ``s``.
+    upper : bool, default=True
+        Whether to use the upper or lower triangular component.
+    inplace : bool, default=False
+        If True, overwrite ``a``.
+    check_finite : bool, default=True
+        If True, checks that the input matrix does not contain any
+        non finite value. Disabling this may speed up the algorithm.
+    max_iter : int, default=1024
+        Maximum number of iterations.
+    tol : float, optional
+        Tolerance for early stopping.
+        Default: machine precision for ``a.dtype``.
+
+    Returns
+    -------
+    s : (..., m) tensor
+        Eigenvalues, in ascending order.
+    u : (..., m, m) tensor, optional
+        Corresponding eigenvectors.
+
+    """
+    # Check arguments
+    a = utils.as_tensor(a)
+    if check_finite and not torch.isfinite(a).all():
+        raise ValueError('Input has non finite values.')
+    if not inplace:
+        a = a.clone()
+    if a.shape[-1] != a.shape[-2]:
+        raise ValueError('Expected square matrix. Got ({}, {})'
+                         .format(a.shape[-2], a.shape[-1]))
+    return eig_sym_(a, compute_u, upper, max_iter, tol)
+
+
+def eig_sym_(a, compute_u=False, upper=True, max_iter=1024, tol=1e-32):
+    """Inplace version of eig_sym, without checks (autodiff)."""
+    return EigSym.apply(a, compute_u, upper, max_iter, tol)
+
+
+def eig_sym_forward_(a, compute_u=False, upper=True, max_iter=1024, tol=1e-32):
+    """Inplace version of eig_sym, without checks (forward)."""
+
+    # Initialization: reduction to symmetric tridiagonal form
+    hessenberg_ = hessenberg_sym_upper_ if upper else hessenberg_sym_lower_
+    a = hessenberg_(a, compute_u=compute_u, fill=True)
+    if compute_u:
+        a, q = a
+
+    # Main part
+    a = qr_explicit_(a, max_iter=max_iter, tol=tol, compute_u=compute_u, sym=True)
+    if compute_u:
+        a, u = a
+        householder_apply_(u, q, side='left', inverse=True)
+    a = a.diagonal(0, -1, -2)
+    return a
+
+
+class EigSym(torch.autograd.Function):
+    """Autodiff implementation of `eig_sym_`.
+
+    References
+    ----------
+    ..[1] "An extended collection of matrix derivative results for
+           forward and reverse mode algorithmic differentiation"
+          Mike Giles
+          Report 08/01 (2008), Oxford University Computing Laboratory
+          https://people.maths.ox.ac.uk/gilesm/files/NA-08-01.pdf
+    """
+
+    @staticmethod
+    def forward(ctx, a, compute_u, upper, max_iter, tol):
+
+        ctx.mark_dirty(a)  # we are going to work inplace
+        if hasattr(ctx, 'set_materialize_grads'):
+            # pytorch >= 1.7
+            ctx.set_materialize_grads(False)
+
+        compute_u_ = compute_u or a.requires_grad
+        val = eig_sym_forward_(a, compute_u_, upper, max_iter, tol)
+
+        if compute_u_:
+            val, vec = val
+            if a.requires_grad:
+                ctx.save_for_backward([vec, val])
+
+        return (val, vec) if compute_u else val
+
+    @staticmethod
+    def backward(ctx, *grad_outputs):
+        # notations form ref [1] are used
+
+        gD, *gU = grad_outputs
+        D, U = ctx.saved_tensors
+
+        if gD is None and (not gU or gU[0] is None):
+            return (None,)*5
+
+        if gU and gU[0] is not None:
+            gU = gU.pop()
+            F = D[..., :, None] - D[..., None, :]
+            F = F.reciprocal_()
+            F.diagonal(0, -1, -2).fill_(0)
+            F *= U.transpose(-1, -2).matmul(gU)
+            gD = F if gD is None else gD + F
+
+        gD = smart_conj(gD.matmul(U.transpose(-1, -2)))
+        gD = U.matmul(gD)
+        return (gD,) + (None,) * 4
