@@ -601,7 +601,7 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     if any(membrane):
         smo += membrane * ch2last(membrane_diag(weights=wm, **fdopt))
     if any(bending):
-        smo += membrane * ch2last(bending_diag(weights=wb, **fdopt))
+        smo += bending * ch2last(bending_diag(weights=wb, **fdopt))
 
     if is_diag:
         hessian_smo = hessian + smo
