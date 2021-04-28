@@ -250,3 +250,113 @@ def zcorrect_exp(x, decay=None, sigma=None, lam=10,
     x = x * (b * z).exp_()
     x = x.reshape(shape)
     return y, b, x
+
+
+def correct_smooth(x, sigma=None, lam=10, gamma=10,
+                   max_iter=128, tol=1e-6, verbose=False):
+    """Correct the intensity non-uniformity in a SPIM image.
+
+    The signal is modelled as: f = exp(s + b) + eps, with a penalty on
+    the (Squared) gradients of s and on the (squared) curvature of b.
+
+    Parameters
+    ----------
+    x : tensor
+        SPIM image with the z dimension last and the z=0 plane first
+    sigma : float, optional
+        Noise standard deviation. Default: educated guess.
+    lam : float, default=10
+        Regularisation on the signal.
+    gamma : float, default=10
+        Regularisation on the bias field.
+    max_iter : int, default=128
+    tol : float, default=1e-6
+    verbose : int or bool, default=False
+
+    Returns
+    -------
+    y : tensor
+        Fitted image
+    bias : float
+        Fitted bias
+    x : float
+        Corrected image
+
+    """
+
+    x = torch.as_tensor(x)
+    if not x.dtype.is_floating_point:
+        x = x.to(dtype=torch.get_default_dtype())
+    dim = x.dim()
+    shape = x.shape
+
+    # noise educated guess: assume SNR=5 at z=1/2
+    center = tuple(slice(s//3, 2*s//3) for s in shape)
+    sigma = sigma or x[center].median() / 5
+    lam = lam ** 2 * sigma ** 2
+    gamma = gamma ** 2 * sigma ** 2
+    regy = lambda y: spatial.regulariser(y[..., None], membrane=lam, dim=dim)[..., 0]
+    regb = lambda b: spatial.regulariser(b[..., None], bending=gamma, dim=dim)[..., 0]
+    solvey = lambda h, g: spatial.solve_field_sym(h[..., None], g[..., None], membrane=lam, dim=dim)[..., 0]
+    solveb = lambda h, g: spatial.solve_field_sym(h[..., None], g[..., None], bending=gamma, dim=dim)[..., 0]
+
+    # init
+    logb = torch.zeros_like(x)
+    logy = x.clamp_min(1e-3).log_()
+    y = logy.exp()
+    b = logb.exp()
+    ll0 = (y * b - x).square_().sum() \
+          + (logy * regy(logy)).sum() \
+          + (logb * regb(logb)).sum()
+    ll1 = ll0
+    for it in range(max_iter):
+
+        # exponentiate
+        y = torch.exp(logy, out=y)
+        fit = y * b
+        res = fit - x
+
+        # compute objective
+        ll = res.square().sum() \
+             + (logy * regy(logy)).sum() \
+             + (logb * regb(logb)).sum()
+        gain = (ll1 - ll) / ll0
+        if verbose:
+            end = '\n' if verbose > 1 else '\r'
+            print(f'{it:3d} | {ll:12.6g} | gain = {gain:12.6g}', end=end)
+        if it > 0 and gain < tol:
+            break
+        ll1 = ll
+
+        # update bias
+        g = h = fit
+        h = h.abs() * res.abs()
+        h += g.square()
+        g *= res
+        g += regb(logb)
+        logb -= solveb(h, g)
+        logb0 = logb.mean()
+        logb -= logb0
+        logy += logb0
+
+        # update fit
+        b = torch.exp(logb, out=b)
+        y = torch.exp(logy, out=y)
+        fit = y * b
+        res = fit - x
+
+        # ll = (fit - x).square().sum() + 1e3 * (logy[1:] - logy[:-1]).sum().square()
+        # gain = (ll1 - ll) / ll0
+        # print(f'{it} | {ll.item()} | {gain.item()}', end='\n')
+
+        # update y
+        g = h = fit
+        h = h.abs() * res.abs()
+        h += g.square()
+        g *= res
+        g += regy(logy)
+        logy -= solvey(h, g)
+
+    y = torch.exp(logy, out=y)
+    x = x / b
+    return y, b, x
