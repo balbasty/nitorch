@@ -174,7 +174,7 @@ class CategoricalLoss(Loss):
                     obs1 = ~isin(obs, flatten(all_labels))
                 else:
                     obs1 = isin(obs, hard)
-                loss[:, soft] = logprior[:, soft] * obs1
+                loss[:, soft] = logprior[:, soft] * obs1.squeeze()
 
         # negate
         loss = loss.sum(dim=1, keepdim=True)
