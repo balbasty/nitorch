@@ -684,16 +684,16 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2
 
         if dim == 2:
             if white_ridges:
-                msk = lam2 < 0
-            else:
                 msk = lam2 > 0
+            else:
+                msk = lam2 < 0
         else:
             if white_ridges:
-                msk = lam2 < 0
-                msk.bitwise_or_(lam3 < 0)
-            else:
                 msk = lam2 > 0
                 msk.bitwise_or_(lam3 > 0)
+            else:
+                msk = lam2 < 0
+                msk.bitwise_or_(lam3 < 0)
 
         v.abs_()
         if dim == 2:
@@ -742,7 +742,7 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2
         if v0 is None:
             v0 = v1.clone()
             if return_scale:
-                scale = torch.zeros_like(v, dtype=torch.int)
+                scale = torch.zeros_like(v1, dtype=torch.int)
         else:
             if return_scale:
                 scale[v1 > v0] = i
@@ -810,16 +810,16 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
 
         if dim == 2:
             if white_ridges:
-                msk = lam2 < 0
-            else:
                 msk = lam2 > 0
+            else:
+                msk = lam2 < 0
         else:
             if white_ridges:
-                msk = lam2 < 0
-                msk.bitwise_or_(lam3 < 0)
-            else:
                 msk = lam2 > 0
                 msk.bitwise_or_(lam3 > 0)
+            else:
+                msk = lam2 < 0
+                msk.bitwise_or_(lam3 < 0)
 
         eig[msk, :] = 1
         eig.abs_()
