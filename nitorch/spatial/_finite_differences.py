@@ -674,7 +674,7 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2
         else:
             v.copy_(linalg.eig_sym_(h))
         # we must order eigenvalues by increasing *magnitude*
-         _, perm = v.abs().sort()
+        _, perm = v.abs().sort()
         v.copy_(v.gather(-1, perm))
         lam1, lam2, *lam3 = v.unbind(-1)
         lam3 = lam3.pop() if lam3 else None
@@ -800,7 +800,7 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
             eig = torch.symeig(h, eigenvectors=True)[0]
         else:
             eig = linalg.eig_sym_(h).sort(-1)[0]
-         _, perm = eig.abs().sort()
+        _, perm = eig.abs().sort()
         eig = eig.gather(-1, perm)
         lam1, lam2, *lam3 = eig.unbind(-1)
         lam3 = lam3.pop() if lam3 else None
