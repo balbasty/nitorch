@@ -18,7 +18,7 @@ except ImportError:
         raise ImportError('Optional dependency TensorBoard not found')
 
 
-def split_train_val_test(data, split=[0.6, 0.1, 0.3], shuffle=False, seed=0):
+def split_train_val_test(data, split=(0.6, 0.1, 0.3), shuffle=False, seed=0):
     """Split sequence of data into train, validation and test.
 
     Parameters
@@ -331,8 +331,7 @@ class ModelTrainer:
             # forward pass
             batch = make_tuple(batch)
             batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
-            batch = tuple(b.to(dtype=self.dtype)
-                          if b.dtype in (torch.half, torch.float, torch.double)
+            batch = tuple(b.to(dtype=self.dtype) if b.dtype.is_floating_point
                           else b for b in batch)
             nb_batches += batch[0].shape[0]
             self.optimizer.zero_grad()

@@ -38,7 +38,7 @@ def info(inp, meta=None, stat=False):
     else:
         shape = dat
 
-    pad = max([len(m) for m in metadata.keys()])
+    pad = max([0] + [len(m) for m in metadata.keys()])
     if not meta:
         more_fields = ['shape', 'layout', 'filename']
         pad = max(pad, max(len(f) for f in more_fields))

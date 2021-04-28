@@ -1,14 +1,14 @@
 """Finite-differences operators (gradient, divergence, ...)."""
 
 import torch
-from nitorch.core import utils
+from nitorch.core import utils, linalg
 from nitorch.core.utils import expand, slice_tensor, same_storage, make_vector
 from nitorch.core.py import make_list
 from ._conv import smooth
 
 
 __all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',
-           'sobel']
+           'sobel', 'frangi']
 
 
 # Converts from nitorch.utils.pad boundary naming to
@@ -570,28 +570,24 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
     return div
 
 
-def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
+def frangi(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
            dim=None, bound='replicate', return_scale=False, verbose=False):
     """Frangi (vessel detector) filter.
-
-    Notes
-    -----
-    .. This function does not support autograd through x.
 
     Parameters
     ----------
     x : (*batch_shape, *spatial_shape) tensor_like
         Input (batched) tensor.
-    a : float, default=0.5
+    a : float or tensor, default=0.5
         First Frangi vesselness constant (deviation from line)
         Only used in 3D.
-    b : float, default=0.5
+    b : float or tensor, default=0.5
         Second Frangi vesselness constant (deviation from blob-like)
-    c : float, default=500
+    c : float or tensor, default=500
         Third Second Frangi vesselness constant (signal to noise)
-    inv_contrast : bool, default=False
+    white_ridges : bool, default=False
         If True, detect white ridges (black background).
-        Else, detect bloack ridges (white background).
+        Else, detect black ridges (white background).
     fwhm : [sequence of] float, default=[1, 3, 5, 7]
         Full width half max of Gaussian filters.
     dim : int
@@ -608,8 +604,27 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
     scale : (*batch_shape, *spatial_shape) tensor[int], if return_scale
         Index of scale at which each pixel was detected.
 
+    References
+    ----------
+    ..[1] "Multiscale vessel enhancement filtering"
+          Frangi, Niessen, Vincken, Viergever
+          MICCAI (1998) https://doi.org/10.1007/BFb0056195
+
     """
+    prm = dict(white_ridges=white_ridges, fwhm=fwhm,
+               dim=dim, bound=bound, return_scale=return_scale,
+               verbose=verbose)
+    if any(map(lambda x: getattr(x, 'requires_grad', False), [x, a, b, c])):
+        return frangi_diff(x, a, b, c, **prm)
+    else:
+        return frangi_nodiff(x, a, b, c, **prm)
+
+
+def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
+           dim=None, bound='replicate', return_scale=False, verbose=False):
+    """Non-differentiable Frangi filter."""
     x = torch.as_tensor(x)
+    is_on_cpu = x.device == torch.device('cpu')
     dim = dim or x.dim()
     if not dim in (2, 3):
         raise ValueError('Frangi filter is only implemented in 2D or 3D')
@@ -654,31 +669,37 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         # Eigenvalues
         if verbose:
             print('Eigen...')
-        torch.symeig(h, out=(v, torch.empty([])))
-        # torch.symeig returns eigenvalues in ascending order.
-        *lam3, lam2, lam1 = v.unbind(-1)
+        if is_on_cpu:
+            torch.symeig(h, out=(v, torch.empty([])))
+        else:
+            v.copy_(linalg.eig_sym_(h))
+        # we must order eigenvalues by increasing *magnitude*
+        _, perm = v.abs().sort()
+        v.copy_(v.gather(-1, perm))
+        lam1, lam2, *lam3 = v.unbind(-1)
         lam3 = lam3.pop() if lam3 else None
 
         if verbose:
             print('Frangi...')
 
         if dim == 2:
-            msk = lam1 > 0
-            if inv_contrast:
-                msk.bitwise_not_()
-        else:
-            if inv_contrast:
-                msk = lam2 < 0
-                msk.bitwise_or_(lam3 < 0)
+            if white_ridges:
+                msk = lam2 > 0
             else:
+                msk = lam2 < 0
+        else:
+            if white_ridges:
                 msk = lam2 > 0
                 msk.bitwise_or_(lam3 > 0)
+            else:
+                msk = lam2 < 0
+                msk.bitwise_or_(lam3 < 0)
 
         v.abs_()
         if dim == 2:
             lam2.clamp_min_(1e-10)
             v.square_()
-            torch.div(lam2, lam1, out=buf2)                 # < Rb ** 2
+            torch.div(lam1, lam2, out=buf2)                 # < Rb ** 2
             torch.sum(v, dim=-1, out=buf3)                  # < S ** 2
 
             buf2.div_(-b).exp_()                            # < exp(Rb**2)
@@ -686,7 +707,7 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
 
             buf2.mul_(buf3)
 
-            buf2[msk] = 0
+            buf2.masked_fill_(msk, 0)
             return buf2
 
         elif dim == 3:
@@ -704,7 +725,7 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
 
             buf1.mul_(buf2).mul_(buf3)
 
-            buf1[msk] = 0
+            buf1.masked_fill_(msk, 0)
             return buf1
 
     v0 = None
@@ -721,11 +742,140 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         if v0 is None:
             v0 = v1.clone()
             if return_scale:
-                scale = torch.zeros_like(v, dtype=torch.int)
+                scale = torch.zeros_like(v1, dtype=torch.int)
         else:
             if return_scale:
                 scale[v1 > v0] = i
             v0 = torch.max(v0, v1, out=v0)
+
+    return (v0, scale) if return_scale else v0
+
+
+def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
+                dim=None, bound='replicate', return_scale=False, verbose=False):
+    """Differentiable Frangi filter."""
+    x = torch.as_tensor(x)
+    is_on_cpu = x.device == torch.device('cpu')
+    dim = dim or x.dim()
+    if not dim in (2, 3):
+        raise ValueError('Frangi filter is only implemented in 2D or 3D')
+
+    a = 2*(a**2)
+    b = 2*(b**2)
+    c = 2*(c**2)
+
+    # allocate buffers
+
+    def _frangi(x, f):
+        """Frangi filter at one scale. Input must be pre-filtered."""
+        x = smooth(x, fwhm=f, dim=dim, bound=bound) if f else x
+
+        # Hessian
+        h = x.new_empty([*x.shape, dim, dim])   # hessian
+        if verbose:
+            print('Hessian...')
+        for d in range(dim):
+            # diagonal elements
+            fwd = diff1d(x, order=1, dim=-d-1, side='f', bound=bound)
+            bwd = diff1d(x, order=1, dim=-d-1, side='b', bound=bound)
+            h[..., d, d].copy_(fwd).sub_(bwd)
+            for dd in range(d+1, dim):
+                # only fill upper part
+                hh = h[..., d, dd]
+                diff1d(fwd, order=1, dim=-dd - 1, side='f', bound=bound, out=hh)
+                hh += diff1d(fwd, order=1, dim=-dd - 1, side='b', bound=bound)
+                hh += diff1d(bwd, order=1, dim=-dd - 1, side='b', bound=bound)
+                hh += diff1d(bwd, order=1, dim=-dd - 1, side='f', bound=bound)
+                hh /= 4.
+
+        # Correct for scale
+        if f:
+            sig2 = (f / 2.355)**2
+            h.mul_(sig2)
+
+        # Eigenvalues
+        if verbose:
+            print('Eigen...')
+        if is_on_cpu:
+            eig = torch.symeig(h, eigenvectors=True)[0]
+        else:
+            eig = linalg.eig_sym_(h).sort(-1)[0]
+        _, perm = eig.abs().sort()
+        eig = eig.gather(-1, perm)
+        lam1, lam2, *lam3 = eig.unbind(-1)
+        lam3 = lam3.pop() if lam3 else None
+
+        if verbose:
+            print('Frangi...')
+
+        if dim == 2:
+            if white_ridges:
+                msk = lam2 > 0
+            else:
+                msk = lam2 < 0
+        else:
+            if white_ridges:
+                msk = lam2 > 0
+                msk.bitwise_or_(lam3 > 0)
+            else:
+                msk = lam2 < 0
+                msk.bitwise_or_(lam3 < 0)
+
+        eig[msk, :] = 1
+        eig.abs_()
+        lam1, lam2, *lam3 = eig.unbind(-1)
+        lam3 = lam3.pop() if lam3 else None
+
+        if dim == 2:
+            eig = eig.square()
+            lam1, lam2 = eig.unbind(-1)
+            rb = lam1/lam2                                  # < Rb ** 2
+            s = eig.sum(dim=-1)                             # < S ** 2
+
+            rb = rb.div_(-b).exp_()                         # < exp(Rb**2)
+            s = s.div_(-c).exp_().neg().add_(1)             # < 1-exp(S**2)
+
+            rb = rb.mul(s)
+
+            rb.masked_fill_(msk, 0)
+            return rb
+
+        elif dim == 3:
+            rb = lam2*lam3                                  # < lam2 * lam3
+            eig = eig.square()                              # < lam ** 2
+            lam1, lam2, lam3 = eig.unbind(-1)
+            ra = lam2/lam3                                  # < Ra ** 2
+            rb = lam1/rb                                    # < Rb ** 2
+            s = eig.sum(dim=-1)                             # < S ** 2
+
+            ra = ra.div_(-a).exp_().neg().add_(1)           # < 1-exp(Ra**2)
+            rb = rb.div_(-b).exp_()                         # <   exp(Rb**2)
+            s = s.div_(-c).exp_().neg().add_(1)             # < 1-exp(S**2)
+
+            ra = ra.mul_(rb).mul_(s)
+
+            ra = ra.masked_fill_(msk, 0)
+            return ra
+
+    v0 = None
+    scale = None
+    for i, f in enumerate(make_vector(fwhm)):
+
+        if verbose:
+            print('fwhm:', f.item())
+
+        v1 = _frangi(x, f)
+        v1.masked_fill_(torch.isfinite(v1).bitwise_not_(), 0)
+
+        # combine scales
+        if v0 is None:
+            v0 = v1.clone()
+            if return_scale:
+                scale = torch.zeros_like(v0, dtype=torch.int)
+        else:
+            if return_scale:
+                scale.masked_fill_(v1 > v0, i)
+            v0 = torch.max(v0, v1)
 
     return (v0, scale) if return_scale else v0
 

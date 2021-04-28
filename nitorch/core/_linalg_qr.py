@@ -26,6 +26,11 @@ def smart_conj(x):
     return x.conj() if x.is_complex() else x
 
 
+def smart_real(x):
+    """Take real part if complex (saves a copy when real)."""
+    return torch.real(x) if x.is_complex() else x
+
+
 def householder(x, basis=0, inplace=False, check_finite=True, return_alpha=False):
     """Compute the Householder reflector of a (batch of) vector(s).
 
@@ -79,13 +84,14 @@ def householder_(x, basis=0):
 
     # Compute unitary parameter
     rho = x[..., basis:basis+1].clone()
-    rho.div_(rho.abs()).neg_()
+    rho.sign_().neg_()
     rho[rho == 0] = 1
     rho *= x.norm(dim=-1, keepdim=True)
 
     # Compute Householder reflector
     x[..., basis:basis+1] -= rho
     x /= x.norm(dim=-1, keepdim=True)
+    x[torch.isfinite(x).bitwise_not_()] = 0
 
     return x, rho[..., 0]
 
@@ -357,7 +363,7 @@ def outer_sym(u, v):
     shape = [*shape, n, n]
     out = u.new_empty(shape)
     for i in range(n):
-        out[..., i, i] = torch.real(u[..., i] * smart_conj(v[..., i]))
+        out[..., i, i] = smart_real(u[..., i] * smart_conj(v[..., i]))
         out[..., i, i] *= 2
         for j in range(i+1, n):
             vjc = smart_conj(v[..., j])
@@ -454,10 +460,13 @@ def hessenberg_sym_lower_(a, compute_u=False, fill=False):
 
 @torch.jit.script
 def _givens_jit(x, y):
-    # type: (Tensor, Tensor) -> List[Tensor]
-    nrm = (x.square() + y.square()).sqrt_()
+    # type: (Tensor, Tensor) -> Tuple[Tensor, Tensor]
+    nrm = (x*x + y*y).sqrt_()
     x = x / nrm
     y = (y / nrm).neg_()
+    msk = nrm == 0
+    x.masked_fill_(msk, 1.)
+    y.masked_fill_(msk, 0.)
     return x, y
 
 
@@ -736,75 +745,11 @@ def rq_hessenberg_(a, u=None, sym=False):
         return _rq_hessenberg_vectors_jit_(a, u, sym)
 
 
-def eig_sym(a, compute_u=False, upper=True, inplace=False, descending=False,
-            check_finite=True, max_iter=1024, tol=1e-32):
-    """Compute the eigendecomposition of a Hermitian square matrix.
-
-    We use the explicit QR algorithm.
-
-    Parameters
-    ----------
-    a : (..., m, m) tensor_like
-        Input hermitian matrix or field of matrices
-    compute_u : bool, default=False
-        Compute the eigenvectors. If False, only return ``s``.
-    upper : bool, default=True
-        Whether to use the upper or lower triangular component.
-    inplace : bool, default=False
-        If True, overwrite ``a``.
-    descending : bool, default=False
-        Return descending eigenvalues instead of ascending.
-    check_finite : bool, default=True
-        If True, checks that the input matrix does not contain any
-        non finite value. Disabling this may speed up the algorithm.
-    max_iter : int, default=1024
-        Maximum number of iterations.
-    tol : float, optional
-        Tolerance for early stopping.
-        Default: machine precision for ``a.dtype``.
-
-    Returns
-    -------
-    s : (..., m) tensor
-        Eigenvalues.
-    u : (..., m, m) tensor, optional
-        Eigenvectors.
-
-    """
-    # Check arguments
-    a = utils.as_tensor(a)
-    if check_finite and not torch.isfinite(a).all():
-        raise ValueError('Input has non finite values.')
-    if not inplace:
-        a = a.clone()
-    if a.shape[-1] != a.shape[-2]:
-        raise ValueError('Expected square matrix. Got ({}, {})'
-                         .format(a.shape[-2], a.shape[-1]))
-
-    # Initialization: reduction to symmetric tridiagonal form
-    hessenberg_ = hessenberg_sym_upper_ if upper else hessenberg_sym_lower_
-    a = hessenberg_(a, compute_u=compute_u, fill=True)
-    if compute_u:
-        a, q = a
-
-    # Main part
-    a = qr_explicit_(a, max_iter=max_iter, tol=tol, compute_u=compute_u, sym=True)
-    if compute_u:
-        a, u = a
-        householder_apply_(u, q, side='left', inverse=True)
-    a = a.diagonal(0, -1, -2)
-    a, ind = a.sort(dim=-1, descending=descending)
-    if compute_u:
-        u = u[..., :, ind][..., ind, :]
-        return a, u
-    return a
-
-
 def qr_explicit_(h, max_iter=1024, tol=None, compute_u=False, sym=False):
     """Explicit QR decomposition.
 
     This function is applied inplace and does not perform checks.
-    It uses the Hessenberg QR algorithm with Rayleigh quotient shift.
+    It uses the Hessenberg QR algorithm with Wilkinson shift.
     The input matrix ``h`` should be an upper Hessenberg matrix.
 
     If h is not tridiagonal symmetric, complex eigenvalues can exist
@@ -826,6 +771,21 @@ def qr_explicit_(h, max_iter=1024, tol=None, compute_u=False, sym=False):
 
 
 @torch.jit.script
+def wilkinson(h):
+    # type: (Tensor) -> Tensor
+    h0 = h[..., 0, 0]
+    h1 = h[..., 1, 1]
+    b2 = h[..., 1, 0]
+    b2 = b2*b2
+    d = (h0 - h1) / 2
+    s = d.sign()
+    s.masked_fill_(s == 0, 1)
+    d = d.abs() + (d*d + b2).sqrt()
+    d.masked_fill_(d == 0, 1)
+    return h1 - s * b2 / d
+
+
+@torch.jit.script
 def _qr_explicit_vectors_jit_(h, max_iter, tol, sym):
     # type: (Tensor, int, float, bool) -> Tuple[Tensor, Tensor]
 
@@ -836,22 +796,29 @@ def _qr_explicit_vectors_jit_(h, max_iter, tol, sym):
 
     u0 = u
     h0 = h
+    sigma = h.new_empty(h.shape[:-2])
+    buf = h.new_empty(h.shape[:-2])
     for k in range(n-1, 0, -1):
         # QR Algorithm
         for it in range(max_iter):
 
             # Estimate eigenvalue
-            sigma = h[..., -1, -1].clone()
+            if sym:
+                sigma = wilkinson(h[..., -2:, -2:])
+            else:
+                sigma.copy_(h[..., -1, -1])  # Rayleigh
 
             # Hessenberg QR decomposition
             h.diagonal(0, -1, -2).sub_(sigma[..., None])
-            h[...], u[...] = _rq_hessenberg_vectors_jit_(h, u, sym)
+            _rq_hessenberg_vectors_jit_(h, u, sym)
             h.diagonal(0, -1, -2).add_(sigma[..., None])
 
             # Extract lower-triangular point and compute its norm
-            sos_lower = h[..., -1, -2].abs().square().sum()
-            sos_diag = (h[..., -1, -1].abs().square().sum() +
-                        h[..., -2, -2].abs().square().sum())
+            b = torch.abs(h[..., -1, -2], out=buf).pow_(2).sum()
+            a0 = torch.abs(h[..., -1, -1], out=buf).pow_(2).sum()
+            a1 = torch.abs(h[..., -2, -2], out=buf).pow_(2).sum()
+            sos_lower = b
+            sos_diag = a0 + a1
             if sos_lower < tol * sos_diag:
                 h[..., -1, :-1] = 0
                 break
@@ -869,26 +836,181 @@ def _qr_explicit_jit_(h, max_iter, tol, sym):
 
     n = h.shape[-1]
     h0 = h
+    sigma = h.new_empty(h.shape[:-2])
+    buf = h.new_empty(h.shape[:-2])
     for k in range(n-1, 0, -1):
         # QR Algorithm
+        sos_prev = 0.
         for it in range(max_iter):
 
             # Estimate eigenvalue
-            sigma = h[..., -1, -1].clone()
+            if sym:
+                sigma = wilkinson(h[..., -2:, -2:])
+            else:
+                sigma.copy_(h[..., -1, -1])  # Rayleigh
 
             # Hessenberg QR decomposition
             h.diagonal(0, -1, -2).sub_(sigma[..., None])
-            h[...] = _rq_hessenberg_jit_(h, sym)
+            _rq_hessenberg_jit_(h, sym)
             h.diagonal(0, -1, -2).add_(sigma[..., None])
 
             # Extract lower-triangular point and compute its norm
-            sos_lower = h[..., -1, -2].abs().square().sum()
-            sos_diag = (h[..., -1, -1].abs().square().sum() +
-                        h[..., -2, -2].abs().square().sum())
+            b = torch.abs(h[..., -1, -2], out=buf).pow_(2).sum()
+            a0 = torch.abs(h[..., -1, -1], out=buf).pow_(2).sum()
+            a1 = torch.abs(h[..., -2, -2], out=buf).pow_(2).sum()
+            sos_lower = b
+            sos_diag = a0 + a1
             if sos_lower < tol * sos_diag:
                 h[..., -1, :-1] = 0
                 break
+            sos_new = sos_lower/sos_diag
+            if sos_prev and abs((sos_prev - sos_new)/sos_prev) < tol * 1e-3:
+                # We're stuck -> better to return a shitty value now than
+                # be stuck forever
+                break
+            sos_prev = sos_new
         h = h[..., :-1, :-1]
 
     h = h0
     return h
+
+
+def eig_sym(a, compute_u=False, upper=True, inplace=False,
+            check_finite=True, max_iter=1024, tol=1e-32):
+    """Compute the eigendecomposition of a Hermitian square matrix.
+
+    Notes
+    -----
+    .. Eigenvalues are *not* sorted
+    .. We use the explicit QR algorithm, which is probably less
+       stable than the implicit QR algorithm used in Lapack.
+
+    To sort eigenvalues and eigenvectors according to some criterion:
+    ```python
+    >> s, u = eig_sym(x, compute_u=True)
+    >> _, i = crit(s).sort()
+    >> s = s.gather(-1, i)    # permute eigenvalues
+    >> i = i.unsqueeze(-2).expand(y.shape)
+    >> u = u.gather(-1, i)    # permute eigenvectors
+    ```
+    If the criterion is the value of the eigenvalues, it simplifies:
+    ```python
+    >> s, u = eig_sym(x, compute_u=True)
+    >> s, i = s.sort()
+    >> i = i.unsqueeze(-2).expand(y.shape)
+    >> u = u.gather(-1, i)    # permute eigenvectors
+    ```
+
+    Parameters
+    ----------
+    a : (..., m, m) tensor_like
+        Input hermitian matrix or field of matrices
+    compute_u : bool, default=False
+        Compute the eigenvectors. If False, only return ``s``.
+    upper : bool, default=True
+        Whether to use the upper or lower triangular component.
+    inplace : bool, default=False
+        If True, overwrite ``a``.
+    check_finite : bool, default=True
+        If True, checks that the input matrix does not contain any
+        non finite value. Disabling this may speed up the algorithm.
+    max_iter : int, default=1024
+        Maximum number of iterations.
+    tol : float, optional
+        Tolerance for early stopping.
+        Default: machine precision for ``a.dtype``.
+
+    Returns
+    -------
+    s : (..., m) tensor
+        Eigenvalues.
+    u : (..., m, m) tensor, optional
+        Corresponding eigenvectors.
+
+    """
+    # Check arguments
+    a = utils.as_tensor(a)
+    if check_finite and not torch.isfinite(a).all():
+        raise ValueError('Input has non finite values.')
+    if not inplace:
+        a = a.clone()
+    if a.shape[-1] != a.shape[-2]:
+        raise ValueError('Expected square matrix. Got ({}, {})'
+                         .format(a.shape[-2], a.shape[-1]))
+    return eig_sym_(a, compute_u, upper, max_iter, tol)
+
+
+def eig_sym_(a, compute_u=False, upper=True, max_iter=1024, tol=1e-32):
+    """Inplace version of eig_sym, without checks (autodiff)."""
+    return EigSym.apply(a, compute_u, upper, max_iter, tol)
+
+
+def eig_sym_forward_(a, compute_u=False, upper=True, max_iter=1024, tol=1e-32):
+    """Inplace version of eig_sym, without checks (forward)."""
+
+    # Initialization: reduction to symmetric tridiagonal form
+    hessenberg_ = hessenberg_sym_upper_ if upper else hessenberg_sym_lower_
+    a = hessenberg_(a, compute_u=compute_u, fill=True)
+    if compute_u:
+        a, q = a
+
+    # Main part
+    a = qr_explicit_(a, max_iter=max_iter, tol=tol, compute_u=compute_u, sym=True)
+    if compute_u:
+        a, u = a
+        householder_apply_(u, q, side='left', inverse=True)
+    a = a.diagonal(0, -1, -2)
+
+    return (a, u) if compute_u else a
+
+
+class EigSym(torch.autograd.Function):
+    """Autodiff implementation of `eig_sym_`.
+
+    References
+    ----------
+    ..[1] "An extended collection of matrix derivative results for
+           forward and reverse mode algorithmic differentiation"
+          Mike Giles
+          Report 08/01 (2008), Oxford University Computing Laboratory
+          https://people.maths.ox.ac.uk/gilesm/files/NA-08-01.pdf
+    """
+
+    @staticmethod
+    def forward(ctx, a, compute_u, upper, max_iter, tol):
+
+        if hasattr(ctx, 'set_materialize_grads'):
+            # pytorch >= 1.7
+            ctx.set_materialize_grads(False)
+
+        compute_u_ = compute_u or a.requires_grad
+        val = eig_sym_forward_(a, compute_u_, upper, max_iter, tol)
+
+        if compute_u_:
+            val, vec = val
+            if a.requires_grad:
+                ctx.save_for_backward([vec, val])
+
+        return (val, vec) if compute_u else val
+
+    @staticmethod
+    def backward(ctx, *grad_outputs):
+        # notations form ref [1] are used
+
+        gD, *gU = grad_outputs
+        D, U = ctx.saved_tensors
+
+        if gD is None and (not gU or gU[0] is None):
+            return (None,)*5
+
+        if gU and gU[0] is not None:
+            gU = gU.pop()
+            F = D[..., :, None] - D[..., None, :]
+            F = F.reciprocal_()
+            F.diagonal(0, -1, -2).fill_(0)
+            F *= U.transpose(-1, -2).matmul(gU)
+            gD = F if gD is None else gD + F
+
+        gD = smart_conj(gD.matmul(U.transpose(-1, -2)))
+        gD = U.matmul(gD)
+        return (gD,) + (None,) * 4
