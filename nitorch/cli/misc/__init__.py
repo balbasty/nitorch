@@ -1,4 +1,5 @@
 from . import chunk
+from . import convert
 from . import crop
 from . import extract_patches
 from . import info

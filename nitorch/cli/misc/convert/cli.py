@@ -1,11 +1,12 @@
 from nitorch.cli.cli import commands
-from .main import info
+from nitorch.core.py import make_list
+from .main import convert
 from .parser import parse, help, ParseError
 import sys
 
 
 def cli(args=None):
-    f"""Command-line interface for `niinfo`
+    f"""Command-line interface for `convert`
     
     {help}
     
@@ -17,8 +18,8 @@ def cli(args=None):
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    except Exception as e:
-        print(f'[ERROR] {str(e)}', file=sys.stderr)
+    # except Exception as e:
+    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
 
 
 def _cli(args):
@@ -29,8 +30,10 @@ def _cli(args):
     if not options:
         return
 
-    for file in options.files:
-        info(file, meta=options.meta, stat=options.stat)
+    options.output = make_list(options.output, len(options.files))
+    for file, ofile in zip(options.files, options.output):
+        convert(file, meta=options.meta, dtype=options.dtype,
+                casting=options.cast, format=options.format, output=ofile)
 
 
-commands['info'] = cli
+commands['convert'] = cli

@@ -1,82 +1,55 @@
 from nitorch import spatial, io
-from nitorch.core import py
+from nitorch.core import py, dtypes
 import torch
 import os
 
 
-def info(inp, meta=None, stat=False):
-    """Print information on a volume.
+def convert(inp, meta=None, dtype=None, casting='unsafe', format=None, output=None):
+    """Convert a volume.
 
     Parameters
     ----------
-    inp : str or (tensor, tensor)
-        Either a path to a volume file or a tuple `(dat, affine)`, where
-        the first element contains the volume data and the second contains
-        the orientation matrix.
-    meta : sequence of str
-        List of fields to print.
-        By default, a list of common fields is used.
-    stat : bool, default=False
-        Compute intensity statistics
+    inp : str
+        A path to a volume file.
+    meta : sequence of (key, value)
+        List of metadata fields to set.
+    dtype : str or dtype, optional
+        Output data type
+    casting : {'unsafe', 'rescale', 'rescale_zero'}, default='unsafe'
+        Casting method
+    format : {'nii', 'nii.gz', 'mgh', 'mgz'}, optional
+        Output format
 
     """
 
-    meta = meta or []
-    metadata = {}
-    is_file = isinstance(inp, str)
-    if is_file:
-        fname = inp
-        f = io.volumes.map(inp)
-        if stat:
-            inp = (f.fdata(), f.affine)
-        else:
-            inp = (f.shape, f.affine)
-        metadata = f.metadata(meta)
-        metadata['dtype'] = f.dtype
-    dat, aff = inp
-    if not is_file:
-        metadata['dtype'] = dat.dtype
-    if torch.is_tensor(dat):
-        shape = dat.shape
-    else:
-        shape = dat
+    meta = dict(meta or {})
+    if dtype:
+        meta['dtype'] = dtype
+    fname = inp
+    f = io.volumes.map(fname)
+    d = f.data(numpy=True)
 
-    pad = max([0] + [len(m) for m in metadata.keys()])
-    if not meta:
-        more_fields = ['shape', 'layout', 'filename']
-        pad = max(pad, max(len(f) for f in more_fields))
-    title = lambda tag: ('{tag:' + str(pad) + 's}').format(tag=tag)
+    dir, base, ext = py.fileparts(fname)
+    if format:
+        ext = format
+        if ext == 'nifti':
+            ext = 'nii'
+        if ext[0] != '.':
+            ext = '.' + ext
+    output = output or '{dir}{sep}{base}{ext}'
+    output = output.format(dir=dir or '.', sep=os.sep, base=base, ext=ext)
 
-    if not meta:
-        if is_file:
-            print(f'{title("filename")} : {fname}')
-        print(f'{title("shape")} : {tuple(shape)}')
-        layout = spatial.affine_to_layout(aff)
-        layout = spatial.volume_layout_to_name(layout)
-        print(f'{title("layout")} : {layout}')
-        center = torch.as_tensor(shape[:3], dtype=torch.float)/2
-        center = spatial.affine_matvec(aff, center)
-        print(f'{title("center")} : {tuple(center.tolist())} mm (RAS)')
-        if stat and torch.is_tensor(dat):
-            chandim = list(range(3, dat.ndim))
-            if not chandim:
-                vmin = dat.min().tolist()
-                vmax = dat.max().tolist()
-                vmean = dat.mean().tolist()
-            else:
-                dat1 = dat.reshape([-1, *chandim])
-                vmin = dat1.min(dim=0).values.tolist()
-                vmax = dat1.max(dim=0).values.tolist()
-                vmean = dat1.mean(dim=0).tolist()
-            print(f'{title("min")} : {vmin}')
-            print(f'{title("max")} : {vmax}')
-            print(f'{title("mean")} : {vmean}')
+    odtype = meta.get('dtype', None) or f.dtype
+    if ext in ('.mgh', '.mgz'):
+        from nibabel.freesurfer.mghformat import _dtdefs
+        odtype = dtypes.dtype(odtype)
+        mgh_dtypes = [dtypes.dtype(dt[2]) for dt in _dtdefs]
+        for mgh_dtype in mgh_dtypes:
+            if odtype <= mgh_dtype:
+                odtype = mgh_dtype
+                break
+        odtype = odtype.numpy
+        meta['dtype'] = odtype
 
-    for key, value in metadata.items():
-        if value is None and not meta:
-            continue
-        if torch.is_tensor(value):
-            value = str(value.numpy())
-            value = value.split('\n')
-            value = ('\n' + ' ' * (pad+3)).join(value)
-        print(f'{title(key)} : {value}')
+    io.save(d, output, like=f, casting=casting, **meta)
+
