@@ -3,7 +3,7 @@ Fit the depth decay model f(z) = s(z) / (1 + b * z**2) + eps
 """
 import torch
 from nitorch import spatial
-from nitorch.core import utils
+from nitorch.core import utils, py
 import math
 
 
@@ -252,8 +252,8 @@ def zcorrect_exp(x, decay=None, sigma=None, lam=10,
     return y, b, x
 
 
-def correct_smooth(x, sigma=None, lam=10, gamma=10,
-                   max_iter=128, tol=1e-6, verbose=False):
+def correct_smooth(x, sigma=None, lam=10, gamma=10, downsample=None,
+                   max_iter=16, max_rls=8, tol=1e-6, verbose=False, device=None):
     """Correct the intensity non-uniformity in a SPIM image.
 
     The signal is modelled as: f = exp(s + b) + eps, with a penalty on
@@ -269,9 +269,17 @@ def correct_smooth(x, sigma=None, lam=10, gamma=10,
         Regularisation on the signal.
     gamma : float, default=10
         Regularisation on the bias field.
-    max_iter : int, default=128
+    max_iter : int, default=16
+        Maximum number of Newton iterations.
+    max_rls : int, default=8
+        Maximum number of reweighting iterations.
+        If 1, this is effectively an l2 regularisation.
     tol : float, default=1e-6
+        Tolerance for early stopping.
     verbose : int or bool, default=False
+        Verbosity level
+    device : torch.device, default=x.device
+        Use this device during fitting.
 
     Returns
     -------
@@ -288,75 +296,108 @@ def correct_smooth(x, sigma=None, lam=10, gamma=10,
     if not x.dtype.is_floating_point:
         x = x.to(dtype=torch.get_default_dtype())
     dim = x.dim()
+    
+    # downsampling
+    if downsample:
+        x0 = x
+        shape0 = x.shape
+        downsample = py.make_list(downsample, dim)
+        x = spatial.pool(dim, x, downsample,)
     shape = x.shape
-
+    x = x.to(device)
+    
     # noise educated guess: assume SNR=5 at z=1/2
     center = tuple(slice(s//3, 2*s//3) for s in shape)
     sigma = sigma or x[center].median() / 5
     lam = lam ** 2 * sigma ** 2
     gamma = gamma ** 2 * sigma ** 2
-    regy = lambda y: spatial.regulariser(y[..., None], membrane=lam, dim=dim)[..., 0]
-    regb = lambda b: spatial.regulariser(b[..., None], bending=gamma, dim=dim)[..., 0]
-    solvey = lambda h, g: spatial.solve_field_sym(h[..., None], g[..., None], membrane=lam, dim=dim)[..., 0]
-    solveb = lambda h, g: spatial.solve_field_sym(h[..., None], g[..., None], bending=gamma, dim=dim)[..., 0]
+    regy = lambda y, w: spatial.regulariser(y[None], membrane=lam, dim=dim, 
+                                            weights=w)[0]
+    regb = lambda b: spatial.regulariser(b[None], bending=gamma, dim=dim)[0]
+    solvey = lambda h, g, w: spatial.solve_field_sym(h[None], g[None], membrane=lam, dim=dim, 
+                                                     weights=w)[0]
+    solveb = lambda h, g: spatial.solve_field_sym(h[None], g[None], bending=gamma, dim=dim)[0]
 
     # init
+    l1 = max_rls > 1
+    if l1:
+        w = torch.ones_like(x)[None]
+        llw = w.sum()
+        max_rls = 10
+    else:
+        w = None
+        llw = 0
+        max_rls = 1
     logb = torch.zeros_like(x)
     logy = x.clamp_min(1e-3).log_()
     y = logy.exp()
     b = logb.exp()
-    ll0 = (y * b - x).square_().sum() \
-          + (logy * regy(logy)).sum() \
-          + (logb * regb(logb)).sum()
+    fit = y * b
+    res = fit - x
+    llx = res.square().sum()
+    lly = (regy(logy, w).mul_(logy)).sum()
+    llb = (regb(logb).mul_(logb)).sum()
+    ll0 = llx + lly + llb + llw
     ll1 = ll0
-    for it in range(max_iter):
+    
+    for it_ls in range(max_rls):
+        for it in range(max_iter):
 
-        # exponentiate
+            # update bias
+            g = h = fit
+            h = (h*res).abs_()
+            h.addcmul_(g, g)
+            g *= res
+            g += regb(logb)
+            logb -= solveb(h, g)
+            logb0 = logb.mean()
+            logb -= logb0
+            logy += logb0
+
+            # update fit / ll
+            llb = (regb(logb).mul_(logb)).sum()
+            b = torch.exp(logb, out=b)
+            y = torch.exp(logy, out=y)
+            fit = y * b
+            res = fit - x
+
+            # update y
+            g = h = fit
+            h = (h*res).abs_()
+            h.addcmul_(g, g)
+            g *= res
+            g += regy(logy, w)
+            logy -= solvey(h, g, w)
+            
+            # update fit / ll
+            y = torch.exp(logy, out=y)
+            fit = y * b
+            res = fit - x
+            lly = (regy(logy, w).mul_(logy)).sum()
+            
+            # compute objective
+            llx = res.square().sum()
+            ll = llx + lly + llb + llw
+            gain = (ll1 - ll) / ll0
+            ll1 = ll
+            if verbose:
+                end = '\n' if verbose > 1 else '\r'
+                pre = f'{it_ls:3d} | ' if l1 else ''
+                print(pre + f'{it:3d} | {ll:12.6g} | gain = {gain:12.6g}', end=end)
+            if it > 0 and abs(gain) < tol:
+                break
+
+        if l1:
+            w, llw = spatial.membrane_weights(logy[None], lam, dim=dim, return_sum=True)
+            ll0 = ll
+    if verbose:
+        print('')
+    
+    if downsample:
+        b = spatial.resize(logb.to(x0.device)[None, None], downsample, shape=x0.shape, anchor='f')[0, 0].exp_()
+        y = spatial.resize(logy.to(x0.device)[None, None], downsample, shape=x0.shape, anchor='f')[0, 0].exp_()
+        x = x0
+    else:
         y = torch.exp(logy, out=y)
-        fit = y * b
-        res = fit - x
-
-        # compute objective
-        ll = res.square().sum() \
-             + (logy * regy(logy)).sum() \
-             + (logb * regb(logb)).sum()
-        gain = (ll1 - ll) / ll0
-        if verbose:
-            end = '\n' if verbose > 1 else '\r'
-            print(f'{it:3d} | {ll:12.6g} | gain = {gain:12.6g}', end=end)
-        if it > 0 and gain < tol:
-            break
-        ll1 = ll
-
-        # update bias
-        g = h = fit
-        h = h.abs() * res.abs()
-        h += g.square()
-        g *= res
-        g += regb(logb)
-        logb -= solveb(h, g)
-        logb0 = logb.mean()
-        logb -= logb0
-        logy += logb0
-
-        # update fit
-        b = torch.exp(logb, out=b)
-        y = torch.exp(logy, out=y)
-        fit = y * b
-        res = fit - x
-
-        # ll = (fit - x).square().sum() + 1e3 * (logy[1:] - logy[:-1]).sum().square()
-        # gain = (ll1 - ll) / ll0
-        # print(f'{it} | {ll.item()} | {gain.item()}', end='\n')
-
-        # update y
-        g = h = fit
-        h = h.abs() * res.abs()
-        h += g.square()
-        g *= res
-        g += regy(logy)
-        logy -= solvey(h, g)
-
-    y = torch.exp(logy, out=y)
     x = x / b
     return y, b, x
