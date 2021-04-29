@@ -111,7 +111,7 @@ def copy(dat):
         return np.copy(dat)
 
 
-def cast(dat, dtype, casting='unsafe', with_scale=False):
+def cast(dat, dtype, casting='unsafe', returns='dat'):
     """Cast an array to a given type.
 
     Parameters
@@ -121,22 +121,25 @@ def cast(dat, dtype, casting='unsafe', with_scale=False):
     dtype : dtype
         Output data type (should have the proper on-disk byte order)
     casting : {'no', 'equiv', 'safe', 'same_kind', 'unsafe',
-               'rescale', 'rescale_zero}, default='unsafe'
+               'rescale', 'rescale_zero'}, default='unsafe'
         Casting method:
         * 'rescale' makes sure that the dynamic range in the array
           matches the range of the output data type
         * 'rescale_zero' does the same, but keeps the mapping `0 -> 0`
           intact.
         * all other options are implemented in numpy. See `np.can_cast`.
-    with_scale : bool, default=False
-        Return the scaling applied, if any.
+    returns : [combination of] {'dat', 'scale', 'offset'}, default='dat'
+        Return the scaling/offset applied, if any.
 
     Returns
     -------
-    dat : tensor or ndarray
+    dat : tensor or ndarray, if 'dat' in `returns`
+    scale : float, if 'scale' in `returns`
+    scale : float, if 'offset' in `returns`
 
     """
     scale = 1.
+    offset = 0.
     indtype = dtypes.dtype(dat.dtype)
     outdtype = dtypes.dtype(dtype)
 
@@ -146,30 +149,43 @@ def cast(dat, dtype, casting='unsafe', with_scale=False):
         #       Maybe I can do things in a nicer / more robust way
         minval = astype(min(dat), dtypes.float64)
         maxval = astype(max(dat), dtypes.float64)
-        if not dtypes.equivalent(indtype, dtypes.float64):
-            dat = dat.astype(np.float64)
-        if not writeable(dat):
-            dat = copy(dat)
+        if 'dat' in returns:
+            if not dtypes.equivalent(indtype, dtypes.float64):
+                dat = dat.astype(np.float64)
+            if not writeable(dat):
+                dat = copy(dat)
         if casting == 'rescale':
             scale = (1 - minval / maxval) / (1 - outdtype.min / outdtype.max)
             offset = (outdtype.max - outdtype.min) / (maxval - minval)
-            dat *= scale
-            dat += offset
+            if 'dat' in returns:
+                dat *= scale
+                dat += offset
         else:
             assert casting == 'rescale_zero'
             if minval < 0 and not outdtype.is_signed:
                 warn("Converting negative values to an unsigned datatype")
             scale = min(abs(outdtype.max / maxval) if maxval else float('inf'),
                         abs(outdtype.min / minval) if minval else float('inf'))
-            dat *= scale
+            if 'dat' in returns:
+                dat *= scale
         indtype = dtypes.dtype(dat.dtype)
         casting = 'unsafe'
 
     # unsafe cast
-    if indtype != outdtype:
+    if 'dat' in returns and indtype != outdtype:
         dat = astype(dat, outdtype, casting=casting)
 
-    return (dat, scale) if with_scale else dat
+    output = []
+    for component in returns.split('+'):
+        if component == 'dat':
+            output.append(dat)
+        elif component == 'scale':
+            output.append(scale)
+        elif component == 'offset':
+            output.append(offset)
+        else:
+            output.append(None)
+    return tuple(output) if len(output) > 1 else output[0] if output else None
 
 
 def cutoff(dat, cutoff, dim=None):

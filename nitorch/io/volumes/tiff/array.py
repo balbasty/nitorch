@@ -13,6 +13,7 @@ from nitorch.io.utils.indexing import (is_fullslice, split_operation,
 from nitorch.io.utils import volutils
 from nitorch.io.volumes.mapping import MappedArray
 from nitorch.io.volumes.readers import reader_classes
+from nitorch.io.metadata import keys as metadata_keys
 # tiff
 from tifffile import TiffFile
 from .metadata import ome_zooms, parse_unit
@@ -134,7 +135,6 @@ class TiffArray(MappedArray):
                 self._cache['_affine'] = aff
         return self._cache['_affine']
 
-
     @property
     def dtype(self):
         if 'dtype' not in self._cache:
@@ -235,7 +235,7 @@ class TiffArray(MappedArray):
             tmpdtype = dtypes.float64
         else:
             tmpdtype = dtype
-        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
+        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, returns='dat+scale')
 
         # --- random sample ---
         # uniform noise in the uncertainty interval

@@ -455,7 +455,7 @@ class BabelArray(MappedArray):
         # --- cast + rescale ---
         rand = rand and not indtype.is_floating_point
         tmpdtype = dtypes.float64 if (rand and not dtype.is_floating_point) else dtype
-        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
+        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, returns='dat+scale')
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
@@ -596,14 +596,12 @@ class BabelArray(MappedArray):
         if disk_byteorder != data_byteorder:
             dtype = dtype.newbyteorder()
 
-        # set scale
-        if hasattr(header, 'set_slope_inter'):
-            slope, inter = header.get_slope_inter()
-            if slope is None:
-                slope = 1
-            if inter is None:
-                inter = 0
-            header.set_slope_inter(slope, inter)
+        # get scale
+        slope, inter = header.get_slope_inter()
+        if slope is None:
+            slope = 1
+        if inter is None:
+            inter = 0
 
         # unscale
         if _savef:
@@ -617,8 +615,14 @@ class BabelArray(MappedArray):
                 dat /= slope
 
         # cast + setdtype
-        dat = volutils.cast(dat, dtype, casting)
+        dat, s, o = volutils.cast(dat, dtype, casting, returns='dat+scale+offset')
         header.set_data_dtype(dat.dtype)
+
+        # set scale
+        if hasattr(header, 'set_slope_inter'):
+            slope = slope / s
+            inter = inter - slope * o
+            header.set_slope_inter(slope, inter)
 
         # create image object
         image = format(dat, affine=None, header=header)
