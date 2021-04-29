@@ -577,11 +577,11 @@ class BabelArray(MappedArray):
             header = format.header_class.from_header(like._image.dataobj._header)
         else:
             header = format.header_class()
-            if like is not None:
-                # copy generic metadata
-                like_metadata = like.metadata()
-                like_metadata.update(metadata)
-                metadata = like_metadata
+        if like is not None:
+            # copy generic metadata
+            like_metadata = like.metadata()
+            like_metadata.update(metadata)
+            metadata = like_metadata
         # set shape now so that we can set zooms/etc
         header.set_data_shape(dat.shape)
         header = metadata_to_header(header, metadata, shape=dat.shape)
