@@ -29,8 +29,9 @@ def _cli(args):
     if not options:
         return
 
-    for file in options.files:
+    for i, file in enumerate(options.files):
         info(file, meta=options.meta, stat=options.stat)
-
+        if i < len(options.files) - 1:
+            print('-' * 79)
 
 commands['info'] = cli
