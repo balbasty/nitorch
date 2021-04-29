@@ -553,5 +553,5 @@ setup(
     ext_package='nitorch',
     ext_modules=build_extensions,
     cmdclass={'build_ext': build_ext},
-    entry_points={'console_scripts': ['nitorch=nitorch.tools.cli:cli']}
+    entry_points={'console_scripts': ['nitorch=nitorch.cli:cli']}
 )
