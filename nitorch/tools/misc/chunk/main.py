@@ -1,5 +1,6 @@
 from nitorch import spatial, io
 from nitorch.core import py
+from nitorch.core.dtypes import dtype
 import torch
 import os
 import math
@@ -46,7 +47,7 @@ def chunk(inp, chunk_size=1, dim=-1, output=None, transform=None):
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.data(), f.affine)
+        inp = (f.data(dtype=dtype(f.dtype).torch_upcast), f.affine)
         if output is None:
             output = '{dir}{sep}{base}.{i}{ext}'
         dir, base, ext = py.fileparts(fname)
