@@ -5,6 +5,7 @@ import torch as _torch  # Necessary for linking extensions
 #   (see torchvision.extension)
 
 
+from . import cli
 from . import core
 from . import io
 from . import nn
