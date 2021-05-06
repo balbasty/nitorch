@@ -576,8 +576,16 @@ class ModelTrainer:
         return file
 
     def train(self):
-        """Launch training"""
+        """Launch training
+        
+        Returns
+        ----------
+        losses : dict
+            Loss dictionary with train ('train') and validation ('val') losses.
+            
+        """
         self._hello('train')
+        losses = {'train': [], 'val': []}
         with torch.random.fork_rng(enabled=self.seed is not None):
             if self.seed is not None:
                 torch.random.manual_seed(self.seed)
@@ -589,7 +597,10 @@ class ModelTrainer:
                 self._save(self.epoch)
                 for self.epoch in range(self.epoch+1, self.nb_epoch+1):
                     train_loss = self._train(self.epoch)
+                    losses['train'].append(float(train_loss.cpu()))
                     val_loss = self._eval(self.epoch)
+                    if val_loss is not None:
+                        losses['val'].append(float(val_loss.cpu()))
                     self._save(self.epoch)
                     # scheduler
                     if isinstance(self.scheduler, ReduceLROnPlateau):
@@ -597,6 +608,8 @@ class ModelTrainer:
                         self.scheduler.step(sched_loss)
                     elif self.scheduler:
                         self.scheduler.step()
+                        
+        return losses
 
     def eval(self):
         """Launch evaluation"""
