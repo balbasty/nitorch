@@ -102,9 +102,12 @@ def inpaint(*inputs, missing='nan', output=None, device=None, verbose=1,
     if missing != 'nan':
         if not callable(missing):
             missingval = utils.make_vector(missing, dtype=dat.dtype, device=dat.device)
-            missing = lambda x: utils.isin(x, missingval)
+            if missingval.numel() > 1:
+                missing = lambda x: utils.isin(x, missingval)
+            else:
+                missing = lambda x: x == missingval[0]
         dat[missing(dat)] = nan
-    dat[~torch.isfinite(dat)] = nan
+    dat[torch.isfinite(dat).bitwise_not_()] = nan
 
     # Do it
     if aff is not None:
@@ -172,31 +175,37 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
 
     # Reweighted least squares loop
     zeros = torch.zeros_like(dat)
+    nmask = mask.sum()
+    grad_buf = dat.new_zeros(nmask)
+    precond_buf = dat.new_zeros(nmask)
+    forward_buf = dat.new_zeros(nmask)
     for n_iter_rls in range(1, max_iter_rls+1):
 
         ll_x0 = ll_x
         ll_w0 = ll_w
 
         grad = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)
-        grad = grad.masked_select(mask)
+        grad = torch.masked_select(grad, mask, out=grad_buf)
 
         def precond(x):
             p = spatial.membrane_diag(dim=3, voxel_size=voxel_size, weights=weights)
-            p = p.expand_as(dat).masked_select(mask)
-            p = p
-            return x/p
+            p = torch.masked_select(p.expand_as(dat), mask, out=precond_buf)
+            p = torch.div(x, p, out=p)
+            return p
 
         def forward(x):
             m = zeros
             m.masked_scatter_(mask, x)
             m = spatial.membrane(m, dim=3, voxel_size=voxel_size, weights=weights)
-            m = m.masked_select(mask)
+            m = torch.masked_select(m, mask, out=forward_buf)
             return m
 
         delta = optim.cg(forward, grad, precond=precond,
                          max_iter=max_iter_cg, tolerance=tol_cg,
                          verbose=verbose > 1, stop='norm')
-        dat.masked_scatter_(mask, dat.masked_select(mask) - delta)
+        subdat = torch.masked_select(dat, mask, out=forward_buf)
+        subdat -= delta
+        dat.masked_scatter_(mask, subdat)
 
         weights, ll_w = spatial.membrane_weights(dat, dim=3, voxel_size=voxel_size, return_sum=True)
         ll_x = spatial.membrane(dat, dim=3, voxel_size=voxel_size, weights=weights)

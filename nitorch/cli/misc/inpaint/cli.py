@@ -41,13 +41,3 @@ def _cli(args):
 
 
 
-def parse_missing(missing):
-
-    import ast
-
-    if 'x' in missing:
-        missing = 'lambda x: (' + missing + ')'
-        missing = ast.parse(missing, mode='eval')
-
-
-
