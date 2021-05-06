@@ -56,7 +56,7 @@ def set_voxel_size(header, vx, shape=None):
     aff = torch.as_tensor(header.get_best_affine())
     vx = torch.as_tensor(vx, dtype=aff.dtype, device=aff.device)
     vx0 = voxel_size(aff)
-    aff[:-1,:] *= vx[:, None] / vx0[:, None]
+    aff[:-1,:] *= vx[:3, None] / vx0[:3, None]
     header = set_affine(header, aff, shape)
     return header
     

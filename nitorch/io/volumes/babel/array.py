@@ -606,7 +606,6 @@ class BabelArray(MappedArray):
         # unscale
         if _savef:
             assert dtypes.dtype(dat.dtype).is_floating_point
-            slope, inter = header.get_slope_inter()
             if inter not in (0, None) or slope not in (1, None):
                 dat = dat.copy()
             if inter not in (0, None):
