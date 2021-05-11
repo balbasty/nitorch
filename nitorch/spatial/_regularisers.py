@@ -104,7 +104,7 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     del fieldf
     if weights is not None:
         field += fieldb
-        field = field * 0.5
+        field *= 0.5
     return field
 
 
