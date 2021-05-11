@@ -1,5 +1,5 @@
 from .base import Module
-from .cnn import UNet, UUNet, WNet, UNet2
+from .cnn import UNet, UUNet, WNet, UNet2, SEWNet
 from .spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax
 from nitorch.nn import check
@@ -1385,7 +1385,7 @@ class SegMorphWNet4(BaseMorph):
                             encoder=encoder,
                             decoder=decoder,
                             kernel_size=kernel_size,
-                            activation=[activation, ..., self.softmax],
+                            activation=activation,
                             batch_norm=batch_norm)
 
         nb_feat = self.segnet.last.in_channels
@@ -1399,7 +1399,7 @@ class SegMorphWNet4(BaseMorph):
                           encoder=encoder,
                           decoder=decoder,
                           kernel_size=kernel_size,
-                          activation=[activation, ..., None],
+                          activation=activation,
                           batch_norm=batch_norm)
 
         # register losses/metrics
@@ -1447,8 +1447,10 @@ class SegMorphWNet4(BaseMorph):
         check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
 
         # segnet
-        source_seg_pred, source_feat = self.segnet(source, return_feat=True)
-        target_seg_pred, target_feat = self.segnet(target, return_feat=True)
+        source_feat = self.segnet(source)
+        target_feat = self.segnet(target)
+        source_seg_pred = self.softmax(source_feat)
+        target_seg_pred = self.softmax(target_feat)
 
         # unet
         inputs = []
@@ -1472,6 +1474,150 @@ class SegMorphWNet4(BaseMorph):
             deformed_source_seg = self.pull(source_seg, grid)
         else:
             deformed_source_seg = self.pull(source_seg_pred, grid)
+        if target_seg is None:
+            target_seg_for_deformed = target_seg_pred
+        else:
+            target_seg_for_deformed = target_seg
+
+        # compute loss and metrics
+        tensors = dict(
+            image=[deformed_source, target],
+            velocity=[velocity],
+            segmentation=[deformed_source_seg, target_seg_for_deformed])
+        if source_seg is not None:
+            tensors['source'] = [source_seg_pred, source_seg]
+        if target_seg is not None:
+            tensors['target'] = [target_seg_pred, target_seg]
+        self.compute(_loss, _metric, **tensors)
+
+        return source_seg_pred, target_seg_pred, deformed_source, velocity
+
+
+class SewMorph(BaseMorph):
+    """
+    Joint segmentation and registration using a SewNet.
+
+    Image A -> UNet -> Feat A [+ Image A] -> |
+                                             + -> UNet2 -> Velocity
+    Image B ->   "  -> Feat B [+ Image B] -> |
+    """
+
+    def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
+                 kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
+                 interpolation='linear', grid_bound='dft', image_bound='dct2',
+                 downsample_velocity=2, batch_norm=True, implicit=True):
+        """
+
+        Parameters
+        ----------
+        dim : int
+            Number of spatial dimensions
+        output_classes : int
+            Number of classes in the segmentation (excluding background)
+        encoder : sequence[int]
+            Number of output channels in each encoding layer
+        decoder : sequence[int]
+            Number of output channels in each decoding layer
+        kernel_size : int, default=3
+        activation : callable, default=LeakyReLU(0.2)
+        interpolation : str, default='linear'
+        grid_bound : str, default='dft'
+        image_bound : str, default='dct2'
+        downsample_velocity : int, default=2
+        batch_norm : bool, default=True
+        implicit : bool or (bool, bool), default=True
+            If the first element is True, the UNet only outputs `output_classes`
+            channels (i.e., it does not model the background). The missing
+            channels is assumed all zero when performing the softmax.
+            If the second element is True, the network only outputs
+            `output_classes` channels (i.e., the background is implicit).
+            Using `implicit=True` extends the behaviour of a Sigmoid
+            activation to the multi-class case.
+        """
+        super().__init__(
+            dim,
+            interpolation,
+            grid_bound,
+            image_bound,
+            downsample_velocity,
+        )
+
+        self.implicit = py.make_list(implicit, 2)
+        self.output_classes = output_classes
+        self.softmax = SoftMax(implicit=implicit)
+
+        mid_channels = output_classes + int(not self.implicit[0])
+        self.sewnet = SEWNet(dim,
+                             nb_twins=2,
+                             in_channels=1,
+                             mid_channels=mid_channels,
+                             out_channels=dim,
+                             encoder=encoder,
+                             decoder=decoder,
+                             kernel_size=kernel_size,
+                             activation=activation,
+                             batch_norm=batch_norm)
+
+        # register losses/metrics
+        self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
+
+    def forward(self, source, target, source_seg=None, target_seg=None,
+                *, _loss=None, _metric=None):
+        """
+
+        Parameters
+        ----------
+        source : tensor (batch, channel, *spatial)
+            Source/moving image
+        target : tensor (batch, channel, *spatial)
+            Target/fixed image
+        source_seg : tensor (batch, classes, *spatial), optional
+            Source/moving segmentation
+        target_seg : tensor (batch, classes, *spatial), optional
+            Target/fixed segmentation
+
+        Other Parameters
+        ----------------
+        _loss : dict, optional
+            If provided, all registered losses are computed and appended.
+        _metric : dict, optional
+            If provided, all registered metrics are computed and appended.
+
+        Returns
+        -------
+        target_seg_pred : tensor (batch, classes, *spatial), optional
+            Predicted target segmentation
+        source_seg_pred : tensor (batch, classes, *spatial), optional
+            Predicted source segmentation
+        deformed_source : tensor (batch, channel, *spatial)
+            Deformed source image
+        velocity : tensor (batch,, *spatial, len(spatial))
+            Velocity field
+
+        """
+        # sanity checks
+        check.dim(self.dim, source, target)
+        check.shape(target, source, dims=[0], broadcast_ok=True)
+        check.shape(target, source, dims=range(2, self.dim + 2))
+        check.shape(target_seg, source_seg, dims=[0], broadcast_ok=True)
+        check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
+
+        # apply net
+        velocity, seg = self.sewnet(source, target)
+        source_seg_pred, target_seg_pred = seg
+
+        # deformation
+        velocity = utils.channel2last(velocity)
+        grid = self.exp(velocity)
+        deformed_source = self.pull(source, grid)
+
+        if source_seg is not None:
+            deformed_source_seg = self.pull(source_seg, grid)
+        else:
+            deformed_source_seg = self.pull(source_seg_pred, grid)
+        deformed_source_seg = self.softmax(deformed_source_seg)
+        source_seg_pred = self.softmax(source_seg_pred)
+        target_seg_pred = self.softmax(target_seg_pred)
         if target_seg is None:
             target_seg_for_deformed = target_seg_pred
         else:

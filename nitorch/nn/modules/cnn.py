@@ -13,6 +13,7 @@ from .conv import Conv
 from .pool import Pool
 from .reduction import reductions, Reduction
 from .spatial import Resize
+from .. import check
 
 
 def interleaved_cat(tensors, dim=0, groups=1):
@@ -1416,9 +1417,9 @@ class Cat(Module):
 class UNet2(tnn.Sequential):
     """Alternative U-Net.
 
-    x -*1-> ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~> *1 -> y
-            -*2-> -*1-> ~~~~~~~~~~~~~~~> *1 -> -*2^
-                        -*2-> -*1-> -*2^
+     x -*1-> ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~> *1 -> y
+    (?) ~~~> -*2-> -*1-> ~~~~~~~~~~~~~~~> *1 -> -*2^
+    (?) ~~~~~~~~~~~~~~~> -*2-> -*1-> -*2^
 
     The difference with the `UNet` class are:
     - There is always at least one non-strided convolution at the top level
@@ -1429,6 +1430,7 @@ class UNet2(tnn.Sequential):
     - There is an option to perform multiple "convolution + activation"
       at each level.
     - There are a lot less fancy options (groups, stitches, pooling, etc).
+    - There can be one input per level.
     """
 
     def __init__(
@@ -1452,8 +1454,9 @@ class UNet2(tnn.Sequential):
         dim : {1, 2, 3}
             Dimension.
 
-        in_channels : int
+        in_channels : [sequence of] int
             Number of input channels.
+            If a sequence, inputs are provided at multiple scales.
 
         out_channels : int
             Number of output channels.
@@ -1480,10 +1483,8 @@ class UNet2(tnn.Sequential):
         unpool : {'up', 'conv', None}, default=None
             Upsampling method.
 
-        activation : [sequence of] str or type or callable or None, default='relu'
-            Either one or two activation function.
-            If two functions are provided, the second one is the final
-            activation function, and the first is used in all previous layers.
+        activation : str or type or callable or None, default='relu'
+            Activation function.
 
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
@@ -1496,16 +1497,18 @@ class UNet2(tnn.Sequential):
         # defaults
         conv_per_layer = max(1, conv_per_layer)
         encoder = list(encoder or default_encoder)
+        nb_scales = len(encoder)
         decoder = make_list(decoder or default_decoder,
-                            n=len(encoder)-1, crop=False)
+                            n=nb_scales-1, crop=False)
         stack = decoder[len(encoder)-1:]
         decoder = encoder[-1:] + decoder[:len(encoder)-1]
-        activation, final_activation = make_list(activation, 2)
+
+        in_channels = make_list(in_channels, n=nb_scales, default=0)
 
         modules = []
         if not pool:
             first = Conv(dim,
-                         in_channels=in_channels,
+                         in_channels=in_channels[0],
                          out_channels=encoder[0],
                          kernel_size=kernel_size,
                          activation=activation,
@@ -1514,14 +1517,16 @@ class UNet2(tnn.Sequential):
             modules.append(('first', first))
 
         modules_encoder = []
-        for n in range(len(encoder)-1):
+        for n in range(nb_scales-1):
             if pool:
-                cin = encoder[n-1] if n > 0 else in_channels
+                cin = encoder[n-1] if n > 0 else in_channels[0]
                 cout = [encoder[n]] * conv_per_layer
             else:
                 cin = encoder[n]
                 cout = encoder[n+1]
                 cout = [encoder[n]] * (conv_per_layer - 1) + [cout]
+            if n > 0 or pool:
+                cin += in_channels[n]
             modules_encoder.append(EncodingLayer(
                 dim,
                 in_channels=cin,
@@ -1549,6 +1554,7 @@ class UNet2(tnn.Sequential):
             cin = decoder[0]
             cout = decoder[1]
             cout = [decoder[0]] * (conv_per_layer - 1) + [cout]
+        cin += in_channels[-1]
         btk = DecodingLayer(
             dim,
             in_channels=cin,
@@ -1613,53 +1619,95 @@ class UNet2(tnn.Sequential):
 
         final = Conv(dim, last_stack, out_channels,
                      kernel_size=kernel_size,
-                     activation=final_activation,
                      padding='auto')
         modules.append(('final', final))
 
         super().__init__(OrderedDict(modules))
 
-    def forward(self, x, return_feat=False):
+    def forward(self, *x, return_all=False, verbose=False):
         """
 
         Parameters
         ----------
         x : (batch, in_channels, *spatial) tensor
             Input tensor
-        return_feat : bool, default=False
-            Return the last features before the final convolution.
+        return_all : bool, default=False
+            Return outputs at all scales
 
         Returns
         -------
-        x : (batch, out_channels, *spatial) tensor
+        x : [tuple of] (batch, out_channels, *spatial) tensor
             Output tensor
-        f : (batch, decoder[-1], *spatial) tensor, if `return_feat`
-            Output features
+            If `return_all`, tuple of tensors ordered from finest to
+            coarsest scale.
 
         """
-
+        all_x = list(x)
         if hasattr(self, 'first'):
+            x = all_x.pop(0)
+            if verbose:
+                print('first:', list(x.shape), end=' -> ', flush=True)
             x = self.first(x)
+            if verbose:
+                print(list(x.shape))
 
         # encoder
         buffers = []
-        for layer in self.encoder:
-            x, buffer = layer(x, return_last=True)
+        for n, layer in enumerate(self.encoder):
+            if all_x and not (hasattr(self, 'first') and n == 0):
+                x = [x, all_x.pop(0)]
+            else:
+                x = [x]
+            if verbose:
+                print('encoder:', *[list(xx.shape) for xx in x], end=' -> ', flush=True)
+            x, buffer = layer(*x, return_last=True)
+            if verbose:
+                print(list(x.shape))
             buffers.append(buffer)
 
         pad = self.get_padding(buffers[-1].shape, x.shape, self.bottleneck)
-        x = self.bottleneck(x, output_padding=pad)
+        x = [x, all_x.pop(0)] if all_x else [x]
+        if verbose:
+            print('bottleneck:', *[list(xx.shape) for xx in x], end=' -> ', flush=True)
+        x = self.bottleneck(*x, output_padding=pad, return_last=return_all)
+        if return_all:
+            x, tmp = x
+            if verbose:
+                print(list(x.shape))
+            buffers.insert(0, tmp)
+        elif verbose:
+            print(list(x.shape))
 
         # decoder
         for layer in self.decoder:
             buffer = buffers.pop()
             pad = self.get_padding(buffers[-1].shape, x.shape, layer)
-            x = layer(x, buffer, output_padding=pad)
+            if verbose:
+                print('decoder:', list(x.shape), list(buffer.shape), end=' -> ', flush=True)
+            x = layer(x, buffer, output_padding=pad, return_last=return_all)
+            if return_all:
+                x, tmp = x
+                if verbose:
+                    print(list(x.shape))
+                buffers.insert(0, tmp)
+            elif verbose:
+                print(list(x.shape))
 
-        x = self.stack(x, buffers.pop())
-        f = x if return_feat else None
+        buffer = buffers.pop()
+        if verbose:
+            print('stack:', list(x.shape), list(buffer.shape), end=' -> ', flush=True)
+        x = self.stack(x, buffer)
+        if verbose:
+            print(list(x.shape))
+        if verbose:
+            print('final:', list(x.shape), end=' -> ', flush=True)
         x = self.final(x)
-        return (x, f) if return_feat else x
+        if verbose:
+            print(list(x.shape))
+        if return_all:
+            buffers.insert(0, x)
+            return tuple(buffers)
+        return x
 
     def get_padding(self, outshape, inshape, layer):
         outshape = outshape[2:]
@@ -2239,4 +2287,186 @@ class WNet(tnn.Sequential):
         x = self.stack2(x, *buffers_encoder)
         x = self.final(x)
         return x if buffer_middle is None else (x, buffer_middle)
+
+
+class SEWNet(Module):
+    """SEW: Siamese-Encoder W-Net
+
+    A first (siamese) U-Net is used to extract "features" from grouped
+    inputs. The generated features are then concatenated and fed to a second
+    U-Net.
+
+    Optionally, skip-connections between the encoding U-Net and decoding
+    U-Net can be used.
+    """
+
+    def __init__(
+            self,
+            dim,
+            nb_twins,
+            in_channels,
+            out_channels,
+            mid_channels=None,
+            encoder=None,
+            decoder=None,
+            encoder2=None,
+            decoder2=None,
+            skip=False,
+            **kwargs):
+        """
+
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Dimension.
+
+        nb_twins : int
+            Number of repeats of the siamese network.
+
+        in_channels : int
+            Number of input channels.
+
+        out_channels : int
+            Number of output channels.
+
+        mid_channels : int, optional
+            Number of output channels after the first U-Net.
+
+        encoder : sequence[int], default=[16, 32, 32, 32]
+            Number of channels in each encoding layer of the first U-Net.
+            The length of `encoder` defines the number of resolution levels.
+            The first value is the number of features after an initial
+            (stride 1) convolution at the top level. Subsequence values
+            are the number of features after each downsampling step.
+            The last value is the number of features in the bottleneck.
+
+        decoder : sequence[int], optional
+            Number of channels in each decoding layer of the first U-Net.
+            Default: symmetric of encoder (e.g., [32, 32, 16]).
+            If more than `len(encoder)-1` values are provided,
+            additional (stride 1) convolutions are performed at the final
+            level.
+
+        encoder2 : sequence[int], optional
+            Number of channels in each encoding layer of the second U-Net.
+            The length of `encoder2` defines the number of resolution levels.
+            Default: same as encoder, without the top level (e.g., [32, 32, 32])
+
+        decoder2 : sequence[int], optional
+            Number of channels in each encoding layer of the second U-Net.
+            The length of `encoder2` defines the number of resolution levels.
+            Default: symmetric of encoder2, plus the top level
+            (e.g., [32, 32, 16])
+
+        skip : bool, default=True
+            Add skip connections between the two U-Nets.
+
+        Other Parameters
+        ----------------
+        conv_per_layer : int, default=2
+            Number of convolutions per layer.
+
+        kernel_size : int, default=3
+            Kernel size (in all dimensions).
+            If a list/tuple of two elements, the second element is
+            the final kernel size.
+
+        pool : {'max, 'down', 'conv', None}, default=None
+            Downsampling method (.
+
+        unpool : {'up', 'conv', None}, default=None
+            Upsampling method.
+
+        activation : str or type or callable or None, default='relu'
+            Activation function.
+
+        batch_norm : bool or type or callable, default=False
+            Batch normalization before each convolution.
+
+        """
+        super().__init__()
+
+        self.dim = dim
+        self.skip = skip
+        self.nb_twins = nb_twins
+
+        encoder1 = encoder
+        decoder1 = decoder
+
+        # defaults
+        default_encoder = [16, 32, 32, 32]
+        encoder1 = list(encoder1 or default_encoder)
+        default_decoder = list(reversed(encoder1[:-1]))
+        decoder1 = make_list(decoder1 or default_decoder,
+                             n=len(encoder1) - 1, crop=False)
+        default_encoder2 = encoder1[1:]
+        encoder2 = list(encoder2 or default_encoder2)
+        default_decoder2 = decoder1
+        decoder2 = make_list(decoder2 or default_decoder2,
+                             n=len(encoder2), crop=False)
+        if not mid_channels:
+            mid_channels = decoder1.pop()
+
+        # feature extraction
+        self.siamese = UNet2(dim, in_channels, mid_channels,
+                             encoder=encoder1, decoder=decoder1, **kwargs)
+
+        # compute number of input channels (per scale)
+        siamese_out = [mid_channels]
+        if skip:
+            siamese_out.insert(1, self.siamese.bottleneck.out_channels)
+            for layer in self.siamese.decoder[:-1]:
+                siamese_out.insert(1, layer.out_channels)
+        siamese_out = [n*nb_twins for n in siamese_out]
+
+        # feature fusion
+        self.fusion = UNet2(dim, siamese_out, out_channels,
+                            encoder=encoder2, decoder=decoder2, **kwargs)
+
+    def forward(self, *x, return_mid=False, verbose=False):
+        """
+
+        Parameters
+        ----------
+        *x : (batch, in_channels, *spatial) tensor
+            `nb_twins` input tensors.
+        return_mid : bool, default=False
+            Return output after the first unet
+
+        Returns
+        -------
+        out : (batch, out_channels, *spatial) tensor
+            Output tensor
+        mid : (batch, mid_channels, *spatial) tensor, if `mid_channels`
+            Middle tensor
+        """
+
+        # check inputs
+        for y in x[1:]:
+            check.shape(x[0], y)
+        if len(x) != self.nb_twins:
+            raise ValueError(f'Expected {self.nb_layers} inputs but got '
+                             f'{len(x)}.')
+
+        # treat repeats as batches
+        x = torch.cat(x)
+
+        # first unet
+        x = self.siamese(x, return_all=self.skip, verbose=verbose)
+        x = make_list(x)
+
+        print([list(xx.shape) for xx in x])
+
+        # convert batch to channels
+        x = [xx.chunk(self.nb_twins) for xx in x]
+        if return_mid:
+            mid = x[0]
+        x = [torch.cat(xx, dim=1) for xx in x]
+
+        # second unet
+        x = self.fusion(*x, verbose=verbose)
+
+        return x, mid if return_mid else x
+
+
 
