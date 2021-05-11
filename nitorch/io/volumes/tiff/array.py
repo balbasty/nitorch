@@ -15,7 +15,7 @@ from nitorch.io.volumes.mapping import MappedArray
 from nitorch.io.volumes.readers import reader_classes
 from nitorch.io.metadata import keys as metadata_keys
 # tiff
-from tifffile import TiffFile
+from tifffile import TiffFile, TiffFileError
 from .metadata import ome_zooms, parse_unit
 
 
@@ -23,6 +23,8 @@ class TiffArray(MappedArray):
     """
     MappedArray that uses `tifffile` under the hood.
     """
+
+    FailedReadError = TiffFileError
 
     def __init__(self, file_like, mode='r', keep_open=False, **hints):
         """
@@ -195,7 +197,8 @@ class TiffArray(MappedArray):
 
     def __del__(self):
         # make sure we close all file objects
-        self._tiff.close()
+        if hasattr(self, '_tiff') and hasattr(self._tiff, 'close'):
+            self._tiff.close()
 
     @property
     def filename(self):
