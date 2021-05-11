@@ -6,7 +6,7 @@ class Reorient(cli.ParsedStructure):
     """Structure that holds parameters of the `nireorient` command"""
     files: list = []
     layout: str = 'RAS'
-    output: list = '{dir}{sep}{base}.{orientation}{ext}'
+    output: list = '{dir}{sep}{base}.{layout}{ext}'
     transform: list = None
 
 

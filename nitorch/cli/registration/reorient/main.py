@@ -1,4 +1,5 @@
 from nitorch import spatial, io
+from nitorch.core import utils
 import torch
 import os
 
@@ -73,7 +74,10 @@ def reorient(inp, layout='RAS', output=None, transform=None):
         dir, base, ext = fileparts(fname)
 
     dat, aff0 = inp
-    dat, aff = spatial.affine_reorient(aff0, dat, layout)
+    dim = aff0.shape[-1] - 1
+    dat = utils.movedim(dat, range(dim, dat.dim()), 0)
+    aff, dat = spatial.affine_reorient(aff0, dat, layout)
+    dat = utils.movedim(dat, range(dat.dim()-dim), -1)
 
     if output:
         layout = spatial.volume_layout_to_name(layout)
