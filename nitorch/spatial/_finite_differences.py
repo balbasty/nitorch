@@ -221,7 +221,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     return diff
 
 
-def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
+def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     """Finite differences.
 
     Parameters
@@ -240,6 +240,8 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
         * 'b': backward finite differences
     bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'}, default='dct2'
         Boundary condition.
+    out : tensor, optional
+        Output placeholder
 
     Returns
     -------
@@ -259,7 +261,10 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     voxel_size = make_list(voxel_size, nb_dim)
 
     # compute diffs in each dimension
-    diffs = x.new_empty([nb_dim, *x.shape])
+    if out is not None:
+        diffs = out.view([nb_dim, *x.shape])
+    else:
+        diffs = x.new_empty([nb_dim, *x.shape])
     diffs = utils.movedim(diffs, 0, -1)
     # ^ ensures that sliced dim is the least rapidly changing one
     for i, (d, v) in enumerate(zip(dim, voxel_size)):
@@ -515,7 +520,7 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     return div
 
 
-def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
+def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', out=None):
     """Divergence.
 
     Parameters
@@ -536,6 +541,8 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
       [ * 'c': central finite differences ] => NotImplemented
     bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'}, default='dct2'
         Boundary condition.
+    out : tensor, optional
+        Output placeholder
 
     Returns
     -------
@@ -563,7 +570,7 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
         x = x[..., None]
 
     # compute divergence in each dimension
-    div = 0.
+    div = out.view(x.shape[:-1]).zero_() if out is not None else 0
     for diff, d, v in zip(x.unbind(-1), dim, voxel_size):
         div += div1d(diff, order, d, v, side, bound)
 
