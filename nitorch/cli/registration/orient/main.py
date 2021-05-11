@@ -106,7 +106,7 @@ def orient(inp, affine=None, layout=None, voxel_size=None, center=None,
 
     if affine in (None, 'like') or len(affine) == 0:
         affine = aff_like
-    elif center == 'self':
+    elif affine == 'self':
         affine = aff0
     elif affine == 'standard':
         affine = torch.eye(dim+1, dim+1)
