@@ -1077,16 +1077,14 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
 
 def _pad_constant(inp, padpre, padpost, value):
-    # Uses torch.nn.functional.pad
-    # Convert pre and post to a single list
     padpre = padpre.tolist()
     padpost = padpost.tolist()
-    padding = padpre * 2
-    padding[1::2] = padpost[::-1]
-    padding[::2] = padpre[::-1]
-    # Apply padding
-    inp = F.pad(inp, padding, mode='constant', value=value)
-    return inp
+    new_shape = [s + pre + post
+                 for s, pre, post in zip(inp.shape, padpre, padpost)]
+    out = inp.new_full(new_shape, value)
+    slicer = [slice(pre, pre + s) for pre, s in zip(padpre, inp.shape)]
+    out[tuple(slicer)] = inp
+    return out
 
 
 def _pad_bound(inp, padpre, padpost, bound, modifier):
@@ -1608,12 +1606,12 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
 
     # compute limits
     if min is None:
-        min = x.min(dim=-2, keepdim=True).values
+        min = x.detach().min(dim=-2, keepdim=True).values
     else:
         min = torch.as_tensor(min, **bck)
         min = min.expand([*batch, 2]).reshape([-1, 1, 2])
     if max is None:
-        max = x.max(dim=-2, keepdim=True).values
+        max = x.detach().max(dim=-2, keepdim=True).values
     else:
         max = torch.as_tensor(max, **bck)
         max = max.expand([*batch, 2]).reshape([-1, 1, 2])
