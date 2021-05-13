@@ -520,7 +520,7 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     if any(bending):
         y += channel2last(_bending(x, weights=wb, **fdopt)) * bending
 
-    if y == 0:
+    if y is 0:
         y = torch.zeros_like(x)
     else:
         y = last2channel(y)
