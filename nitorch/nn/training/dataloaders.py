@@ -366,8 +366,9 @@ class PairedDataset(Dataset):
                 pairs = [(i, j) for i in range(n) for j in range(i+1, n)]
                 state = random.getstate()
                 random.seed(1234)
-                pairs = random.shuffle(pairs)[:nmax]
+                random.shuffle(pairs)
                 random.setstate(state)
+                pairs = pairs[:nmax]
             self.pairs = pairs
             self.filenames = [filenames[i] for i, _ in pairs]
             self.refnames = [filenames[j] for _, j in pairs]
@@ -494,8 +495,9 @@ class PairedDatasetWithSeg(Dataset):
                 pairs = [(i, j) for i in range(n) for j in range(i+1, n)]
                 state = random.getstate()
                 random.seed(1234)
-                pairs = random.shuffle(pairs)[:nmax]
+                random.shuffle(pairs)
                 random.setstate(state)
+                pairs = pairs[:nmax]
             self.pairs = pairs
             self.filenames = [filenames[i] for i, _ in pairs]
             self.refnames = [filenames[j] for _, j in pairs]
