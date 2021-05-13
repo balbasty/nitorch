@@ -358,7 +358,7 @@ def layout_matrix(layout, voxel_size=1., shape=0., dtype=None, device=None):
     mflip = torch.diag(mflip)
     shift = torch.where(flip, shape[perm], zero)
     mflip = torch.cat((mflip, shift[:, None]), dim=1)
-    mat = affine_matmul(as_euclidean(mflip), as_euclidean(mat))
+    mat = affine_matmul(as_euclidean(mat), as_euclidean(mflip))
     mat = affine_make_homogeneous(mat)
 
     return mat
@@ -1864,6 +1864,66 @@ def affine_sub(affine, shape, indices):
                 new_lin.append(zero)
         lin = torch.stack(new_lin, dim=-1) if new_lin else []
     trl = torch.as_tensor(shifts, **info)[..., None]
+    trf = torch.cat((lin, trl), dim=1) if len(lin) else trl
+
+    # compose
+    affine = affine_matmul(affine, as_euclidean(trf))
+    return affine, tuple(shape_out)
+
+
+def affine_pad(affine, shape, padsize, side=None):
+    """Update an affine matrix according to a padding of the lattice.
+
+    Parameters
+    ----------
+    affine : (..., ndim_out[+1], ndim_in+1) tensor
+        Input affine matrix.
+    shape : (ndim_in,) sequence[int]
+        Input shape.
+    padsize : sequence of int
+        Padding size.
+    side : {'left', 'right', 'both', None}, defualt=None
+        Side to pad. If None, padding size for the left and right side
+        should be provided in alternate order.
+
+    Returns
+    -------
+    affine : (..., ndim_out[+1], ndim_new+1) tensor
+        Updated affine matrix.
+    shape : (ndim_new,) tuple[int]
+        Updated shape.
+
+    """
+
+    dim = affine.shape[-1] - 1
+    backend = utils.backend(affine)
+
+    padsize = py.make_list(padsize, dim, crop=False)
+    if side == 'left':
+        padsize = [val for pair in zip(padsize, [0]*len(padsize))
+                   for val in pair]
+    elif side == 'right':
+        padsize = [val for pair in zip([0]*len(padsize), padsize)
+                   for val in pair]
+    elif side == 'both':
+        padsize = [val for pair in zip(padsize, padsize)
+                   for val in pair]
+
+    if len(padsize) != 2*dim:
+        raise ValueError('Not enough padding values')
+    padsize = list(zip(padsize[::2], padsize[1::2]))
+
+    # Extract shift and scale in each dimension
+    shifts = []
+    shape_out = []
+    for d, (low, up) in enumerate(padsize):
+        # translation + scale
+            shifts.append(-low)
+            shape_out.append(shape[d] + low + up)
+
+    # build voxel-to-voxel transformation matrix
+    lin = torch.eye(dim, **backend)
+    trl = torch.as_tensor(shifts, **backend)[..., None]
     trf = torch.cat((lin, trl), dim=1) if len(lin) else trl
 
     # compose
