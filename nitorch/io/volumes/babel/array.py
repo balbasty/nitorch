@@ -559,7 +559,7 @@ class BabelArray(MappedArray):
                     base, ext = os.path.splitext(base)
                 ok_klasses = [klass for klass in all_image_classes
                               if ext in klass.valid_exts]
-                if len(ok_klasses) == 1:
+                if len(ok_klasses) > 0:
                     return ok_klasses[0]
             # 2) from like
                 if isinstance(like, BabelArray):
