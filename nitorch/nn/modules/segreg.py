@@ -1505,7 +1505,7 @@ class SewMorph(BaseMorph):
     def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
                  kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
                  interpolation='linear', grid_bound='dft', image_bound='dct2',
-                 downsample_velocity=2, batch_norm=True, implicit=True):
+                 downsample_velocity=2, batch_norm=True, implicit=True, skip=False):
         """
 
         Parameters
@@ -1556,7 +1556,8 @@ class SewMorph(BaseMorph):
                              decoder=decoder,
                              kernel_size=kernel_size,
                              activation=activation,
-                             batch_norm=batch_norm)
+                             batch_norm=batch_norm,
+                             skip=skip)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
