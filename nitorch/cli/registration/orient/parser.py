@@ -11,7 +11,7 @@ class Orient(cli.ParsedStructure):
     center: list = 'like'
     like: str = None
     output: list = '{dir}{sep}{base}.{layout}{ext}'
-    transform: list = '{dir}{sep}{base}_to_{layout}.lta'
+    transform: list = None
 
 
 help = r"""[nitorch] Orient volumes
