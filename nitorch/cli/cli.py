@@ -58,7 +58,7 @@ def cli(args=None):
                 return commands[args[0]](['-h'])
             else:
                 print(help)
-                print(f'[ERROR] Unknown command "{tag}"', file=sys.stderr)
+                print(f'[ERROR] Unknown command "{args[0]}"', file=sys.stderr)
                 return 1
         else:
             print(help())
