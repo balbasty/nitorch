@@ -461,7 +461,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     if lame[1]:
         y += lame_shear(v, weights=wl[1], **fdopt) * lame[1]
 
-    if y == 0:
+    if y is 0:
         y = torch.zeros_like(v)
     return y
 
