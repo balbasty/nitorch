@@ -45,7 +45,10 @@ def _autoreg(argv=None):
     # add a couple of defaults
     for trf in options.transformations:
         if isinstance(trf, struct.NonLinear) and not trf.losses:
-            trf.losses.append(struct.BendingLoss())
+            trf.losses.append(struct.AbsoluteLoss(factor=0.0001))
+            trf.losses.append(struct.MembraneLoss(factor=0.001))
+            trf.losses.append(struct.BendingLoss(factor=0.2))
+            trf.losses.append(struct.LinearElasticLoss(factor=(0.05, 0.2)))
     if not options.optimizers:
         options.optimizers.append(struct.Adam())
 
@@ -69,7 +72,12 @@ def _autoreg(argv=None):
     for trf in options.transformations:
         print(f' - {trf.name}')
         if isinstance(trf, struct.NonLinear):
-            print(f'   - {list(trf.dat.shape)}, {spatial.voxel_size(trf.affine).tolist()}')
+            pyramid0 = trf.pyramid[-1]
+            for pyramid in reversed(trf.pyramid):
+                factor = 2**(pyramid0 - pyramid)
+                shape = [s*factor for s in trf.dat.shape]
+                vx = spatial.voxel_size(trf.affine) / factor
+                print(f'   - {list(shape)}, {vx.tolist()}')
 
     while not all_optimized(options):
         add_freedom(options)
@@ -234,8 +242,8 @@ def load_transforms(s):
             affine, shape = (affine0, shape0)
             trf.pyramid = list(sorted(trf.pyramid))
             max_level = max(trf.pyramid)
-            factor = 1/(2**(max_level-1))
-            affine, shape = affine_resize(affine, shape, factor)
+            factor = 2**(max_level-1)
+            affine, shape = affine_resize(affine, shape, 1/factor)
 
             # FFD/Diffeo
             if isinstance(trf.init, str):
@@ -255,6 +263,22 @@ def load_transforms(s):
 
 def init_optimizers(options):
     """Initialize optimizers and their step function."""
+    def get_state(optim):
+        state = None
+        if not hasattr(optim, 'param_groups'):
+            return state
+        for group in optim.param_groups:
+            for p in group['params']:
+                if p.dim() > 1:
+                    return optim.state[p]
+        return group['params'], state
+
+    def get_shape(params):
+        for p in params:
+            if p['params'].dim() > 1:
+                return p['params'].shape[:-1]
+        return None
+
     params = []
     for trf in options.transformations:
         if hasattr(trf, 'optdat'):
@@ -262,24 +286,49 @@ def init_optimizers(options):
             params.append({'params': param, 'lr': trf.lr})
 
     for optim in options.optimizers:
-
         params1 = []
         for param in params:
             params1.append({'params': param['params'],
                             'lr': param['lr'] * optim.lr})
+        if hasattr(optim, 'obj') and isinstance(optim.obj, torch.optim.Adam):
+            state = get_state(optim)
+        else:
+            state = None
         optim.obj = optim.call(params1, lr=optim.lr)
+        # if state is not None:
+        #     p, new_shape = get_shape(params1)
+        #     state['step'] = 0
+        #     state['exp_avg'] = spatial.resize_grid(
+        #         state['exp_avg'][None], shape=new_shape, type='displacement')[0]
+        #     state['exp_avg_sq'] = spatial.resize_grid(
+        #         state['exp_avg_sq'][None], shape=new_shape, type='displacement')[0]
+        #     optim.state[p] = state
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim.obj)
         if optim.ls != 0:
             if optim.ls is True:
                 optim.ls = 6
             optim.obj = BacktrackingLineSearch(optim.obj, max_iter=optim.ls)
+        optim.first_iter = True
 
         def optim_step(fwd):
             optim.obj.zero_grad()
+            # for group in optim.obj.param_groups:
+            #     for param in group['params']:
+            #         print('param_in:', param.isfinite().all())
             loss = fwd()
+            # print(loss.item())
             loss.backward()
+            # for group in optim.obj.param_groups:
+            #     for param in group['params']:
+            #         print('grad:', param.grad.isfinite().all())
             optim.obj.step()
-            scheduler.step(loss)
+            # for group in optim.obj.param_groups:
+            #     for param in group['params']:
+            #         print('param_out:', param.isfinite().all())
+            if optim.first_iter:
+                optim.first_iter = False
+            else:
+                scheduler.step(loss)
             return loss
 
         def current_lr():
@@ -334,7 +383,8 @@ def optimize(options):
         for trf in options.transformations:
             trf.update()
             if isinstance(trf, struct.Linear):
-                q = trf.dat.to(**backend)
+                q = trf.optdat.to(**backend)
+                # print(q.tolist())
                 B = trf.basis.to(**backend)
                 A = linalg.expm(q, B)
                 if torch.is_tensor(trf.shift):
@@ -350,6 +400,8 @@ def optimize(options):
         d = None
         d_aff = None
         for trf in options.transformations:
+            if not trf.isfree():
+                continue
             if isinstance(trf, struct.FFD):
                 d = trf.dat.to(**backend)
                 d = ffd_exp(d, trf.shape, returns='disp')
@@ -359,9 +411,15 @@ def optimize(options):
                 break
             elif isinstance(trf, struct.Diffeo):
                 d = trf.dat.to(**backend)
-                for loss1 in trf.losses:
-                    loss += loss1.call(d)
+                if not trf.smalldef:
+                    # penalty on velocity fields
+                    for loss1 in trf.losses:
+                        loss += loss1.call(d)
                 d = spatial.exp(d[None], displacement=True)[0]
+                if trf.smalldef:
+                    # penalty on exponentiated transform
+                    for loss1 in trf.losses:
+                        loss += loss1.call(d)
                 d_aff = trf.affine.to(**backend)
                 break
 

@@ -1035,7 +1035,7 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
     """
     # Argument checking
-    if mode not in tuple(_bounds.keys()) + ('constant',):
+    if mode not in tuple(_bounds.keys()) + ('constant', 'zero', 'zeros'):
         raise ValueError('Padding mode should be one of {}. Got {}.'
                          .format(tuple(_bounds.keys()) + ('constant',), mode))
     padsize = tuple(padsize)
@@ -1066,7 +1066,7 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     padpost = torch.as_tensor(padpost)
 
     # Pad
-    if mode == 'zeros':
+    if mode in ('zero', 'zeros'):
         mode, value = ('constant', 0)
     if mode == 'constant':
         return _pad_constant(inp, padpre, padpost, value)

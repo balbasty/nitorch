@@ -19,6 +19,7 @@ usage:
             -b, --bin BINS              Number of bins in the histogram (32)
             -f, --fwhm WIDTH            Full-width half-max of the bins (1)
             -t, --threshold VAL     Values under this threshold (in fixed) are excluded.
+            -n, --order ORDER       Histogram spline order (3)
         -mse, --mean-squared-error  Mean Squared Error
                                     (for images with the same contrast)
         -jtv,  --total-variation    Normalized Joint Total Variation 
@@ -45,6 +46,7 @@ usage:
         -ffd, --free-form           Free-form deformation (cubic)
             -g, --grid *SIZE            Number of nodes (10)
         -dif, --diffeo              Diffeomorphic field
+            -sd --smalldef              Penalize the exponentiated transform (False)
     Only one of -tr, -rig, -sim, -aff can be used.
     Only one of -ffd and -diffeo can be used.
     The ffd and diffeomorphic fields always live in the (mean) space of the 
@@ -313,6 +315,11 @@ def parse_moving_and_target(args, opt):
             check_next_isvalue(args, tag)
             opt.threshold, *args = args
             opt.threshold = float(opt.threshold)
+        elif isinstance(opt, struct.MILoss) and tag in ('-n', '--order'):
+            check_next_isvalue(args, tag)
+            opt.order, *args = args
+            if opt.order != 'inf':
+                opt.order = int(opt.order)
         elif isinstance(opt, struct.DiceLoss) and tag in ('-w', '--weights'):
             opt.weights = True
             while next_isvalue(args):
@@ -397,6 +404,16 @@ def parse_transform(args, options):
             opt.output = True
             if next_isvalue(args):
                 opt.output, *args = args
+        elif isinstance(opt, struct.Diffeo) and tag in ('-sd', '--smalldef'):
+            opt.smalldef = True
+            if next_isvalue(args):
+                val, *args = args
+                if val.lower().startswith('f'):
+                    opt.smalldef = False
+                elif val.lower().startswith('t'):
+                    opt.smalldef = True
+                else:
+                    opt.smalldef = bool(int(val))
         elif tag in ('-pyr', '--pyramid'):
             args, levels = parse_pyramid(args)
             if levels:

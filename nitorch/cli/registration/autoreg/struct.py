@@ -151,7 +151,8 @@ class MILoss(MatchingLoss):
     patch: list = []                # Patch size for local MI
     bins: int = 32                  # Number of bins
     fwhm: float = 1.                # Full-width half-max of each bin
-    threshold : float = None        # Mask threshold
+    threshold: float = None         # Mask threshold
+    order: int or str = 3           # Histogram spline order
 
     def call(self, x, y):
         xs = x.unbind(0)
@@ -165,7 +166,11 @@ class MILoss(MatchingLoss):
         for x, y in zip(xs, ys):
             x = x[None, None]
             y = y[None, None]
-            mi = nn.MutualInfoLoss(patch_size=self.patch, mask=[None, self.threshold])
+            mi = nn.MutualInfoLoss(nb_bins=self.bins,
+                                   patch_size=self.patch,
+                                   mask=[None, self.threshold],
+                                   order=self.order,
+                                   fwhm=self.fwhm)
             loss += mi(x, y) / nb_channels
         # I take the average of MI across channels to be consistent
         # with how MSE works.
@@ -232,7 +237,7 @@ class MembraneLoss(TransformationLoss):
 
     def call(self, v):
         m = spatial.membrane_grid(v)
-        loss = (v*m).mean()
+        loss = (v*m).sum(-1).mean()
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -244,7 +249,7 @@ class BendingLoss(TransformationLoss):
 
     def call(self, v):
         m = spatial.bending_grid(v)
-        loss = (v*m).mean()
+        loss = (v*m).sum(-1).mean()
         if self.factor != 1:
             loss = loss * self.factor
         return loss
@@ -259,12 +264,12 @@ class LinearElasticLoss(TransformationLoss):
         loss = 0
         if factor[0]:
             m = spatial.lame_div(v)
-            loss += (v*m).mean()
+            loss += (v*m).sum(-1).mean()
             if factor[0] != 1:
                 loss = loss * factor[0]
         if factor[1]:
             m = spatial.lame_shear(v)
-            loss += (v*m).mean()
+            loss += (v*m).sum(-1).mean()
             if factor[1] != 1:
                 loss = loss * factor[1]
         return loss
@@ -282,6 +287,9 @@ class Transformation(Base):
     losses: list = []               # List of losses on that transformation
     ext: str = None                 # Default extension for that transform
     pyramid: int = None             # Pyramid level
+
+    def isfree(self):
+        return hasattr(self, 'optdat')
 
     def update(self):
         if hasattr(self, 'optdat'):
@@ -324,6 +332,7 @@ class FFD(NonLinear):
 
 class Diffeo(NonLinear):
     name = 'diffeo'
+    smalldef: bool = False
 
 
 class Linear(Transformation):
@@ -349,18 +358,25 @@ class Linear(Transformation):
             print('Free translations')
             self.optdat = torch.nn.Parameter(self.dat[:3], requires_grad=True)
             self.dat = torch.cat([self.optdat, self.dat[3:]])
+            self.basis = spatial.affine_basis('T', 3)
         elif nb_prm == 3:
             print('Free rotations')
             self.optdat = torch.nn.Parameter(self.dat[:6], requires_grad=True)
             self.dat = torch.cat([self.optdat, self.dat[6:]])
+            self.basis = spatial.affine_basis('SE', 3)
         elif nb_prm == 6:
             print('Free isotropic scaling')
             self.optdat = torch.nn.Parameter(self.dat[:7], requires_grad=True)
             self.dat = torch.cat([self.optdat, self.dat[7:]])
+            self.basis = spatial.affine_basis('CSO', 3)
         elif nb_prm == 7:
             print('Free full affine')
+            self.dat[7] /= 3**0.5
+            self.dat[7] = self.dat[6]
+            self.dat[8] = self.dat[6]
             self.optdat = torch.nn.Parameter(self.dat[:12], requires_grad=True)
             self.dat = self.optdat
+            self.basis = spatial.affine_basis('Aff+', 3)
 
     def update(self):
         nb_prm = len(self.optdat) if hasattr(self, 'optdat') else 0
