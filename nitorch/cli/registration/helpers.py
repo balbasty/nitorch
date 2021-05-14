@@ -21,7 +21,8 @@ def samespace(aff, inshape, outshape):
     bool
 
     """
-    eye = torch.eye(4, dtype=aff.dtype, device=aff.device)
+    dim = len(inshape)
+    eye = torch.eye(dim+1, dtype=aff.dtype, device=aff.device)
     return inshape == outshape and aff.allclose(eye)
 
 

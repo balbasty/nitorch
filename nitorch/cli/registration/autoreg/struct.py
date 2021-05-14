@@ -287,6 +287,7 @@ class Transformation(Base):
     losses: list = []               # List of losses on that transformation
     ext: str = None                 # Default extension for that transform
     pyramid: int = None             # Pyramid level
+    dim: int = 3                    # Number of spatial dimensions
 
     def isfree(self):
         return hasattr(self, 'optdat')
@@ -350,42 +351,47 @@ class Linear(Transformation):
         if not self.freeable():
             return
         nb_prm = len(self.optdat) if hasattr(self, 'optdat') else 0
+        nb_t = self.dim
+        nb_r = self.dim * (self.dim-1) // 2
+        nb_z = self.dim
         self.dat = self.dat.detach()
         if hasattr(self, 'optdat'):
             self.optdat = self.optdat.detach()
             self.dat = torch.cat([self.optdat.detach(), self.dat[nb_prm:]])
         if nb_prm == 0:
             print('Free translations')
-            self.optdat = torch.nn.Parameter(self.dat[:3], requires_grad=True)
-            self.dat = torch.cat([self.optdat, self.dat[3:]])
-            self.basis = spatial.affine_basis('T', 3)
-        elif nb_prm == 3:
+            self.optdat = torch.nn.Parameter(self.dat[:nb_t], requires_grad=True)
+            self.dat = torch.cat([self.optdat, self.dat[nb_t:]])
+            self.basis = spatial.affine_basis('T', self.dim)
+        elif nb_prm == nb_t:
             print('Free rotations')
-            self.optdat = torch.nn.Parameter(self.dat[:6], requires_grad=True)
-            self.dat = torch.cat([self.optdat, self.dat[6:]])
-            self.basis = spatial.affine_basis('SE', 3)
-        elif nb_prm == 6:
+            self.optdat = torch.nn.Parameter(self.dat[:nb_t+nb_r], requires_grad=True)
+            self.dat = torch.cat([self.optdat, self.dat[nb_t+nb_r:]])
+            self.basis = spatial.affine_basis('SE', self.dim)
+        elif nb_prm == nb_t + nb_r:
             print('Free isotropic scaling')
-            self.optdat = torch.nn.Parameter(self.dat[:7], requires_grad=True)
-            self.dat = torch.cat([self.optdat, self.dat[7:]])
-            self.basis = spatial.affine_basis('CSO', 3)
-        elif nb_prm == 7:
+            self.optdat = torch.nn.Parameter(self.dat[:nb_t+nb_r+1], requires_grad=True)
+            self.dat = torch.cat([self.optdat, self.dat[nb_t+nb_r+1:]])
+            self.basis = spatial.affine_basis('CSO', self.dim)
+        elif nb_prm == nb_t + nb_r + 1:
             print('Free full affine')
-            self.dat[7] /= 3**0.5
-            self.dat[7] = self.dat[6]
-            self.dat[8] = self.dat[6]
-            self.optdat = torch.nn.Parameter(self.dat[:12], requires_grad=True)
+            self.dat[nb_t+nb_r] /= nb_z**0.5
+            self.dat[nb_t+nb_r+1] = self.dat[nb_t+nb_r]
+            self.dat[nb_t+nb_r+2] = self.dat[nb_t+nb_r]
+            self.optdat = torch.nn.Parameter(self.dat, requires_grad=True)
             self.dat = self.optdat
-            self.basis = spatial.affine_basis('Aff+', 3)
+            self.basis = spatial.affine_basis('Aff+', self.dim)
 
     def update(self):
         nb_prm = len(self.optdat) if hasattr(self, 'optdat') else 0
-        if nb_prm == 3:
-            self.dat = torch.cat([self.optdat, self.dat[3:]])
-        elif nb_prm == 6:
-            self.dat = torch.cat([self.optdat, self.dat[6:]])
-        elif nb_prm == 7:
-            self.dat = torch.cat([self.optdat, self.dat[7:]])
+        nb_t = self.dim
+        nb_r = self.dim * (self.dim-1) // 2
+        if nb_prm == nb_t:
+            self.dat = torch.cat([self.optdat, self.dat[nb_t:]])
+        elif nb_prm == nb_t + nb_r:
+            self.dat = torch.cat([self.optdat, self.dat[nb_t + nb_r:]])
+        elif nb_prm == nb_t + nb_r + 1:
+            self.dat = torch.cat([self.optdat, self.dat[nb_t + nb_r + 1:]])
         elif nb_prm != 0:
             self.dat = self.optdat
 
@@ -464,6 +470,7 @@ class AutoReg(Base):
     pad: float = 0                      # Padding of mean space
     pad_unit: str = '%'                 # Padding unit
     verbose: int = 1                    # Verbosity level
+    dim: int = 3                        # Number of spatial dimensions
 
     def propagate_defaults(self):
         """Propagate defaults from root to leaves"""
@@ -507,6 +514,7 @@ class AutoReg(Base):
             set_default(trf, 'init')
             set_default(trf, 'output')
             set_default(trf, 'pyramid')
+            set_default(trf, 'dim', ref=self)
             if isinstance(trf.output, bool) and trf.output:
                 trf.output = self.defaults.output
 
@@ -539,20 +547,20 @@ class AutoReg(Base):
                 file.ext = ext + file.ext
             f = io.volumes.map(file.fname)
             file.float = nitype(f.dtype).is_floating_point
-            file.shape = tuple(f.shape[:3])
+            file.shape = tuple(f.shape[:self.dim])
             file.affine = f.affine.float()
-            while len(f.shape) > 3:
+            while len(f.shape) > self.dim:
                 if f.shape[-1] == 1:
                     f = f[..., 0]
                     continue
-                elif f.shape[3] == 1:
+                elif f.shape[self.dim] == 1:
                     f = f[:, :, :, 0, ...]
                     continue
                 else:
                     break
-            if len(f.shape) > 4:
+            if len(f.shape) > self.dim+1:
                 raise RuntimeError('Input has more than 1 channel dimensions.')
-            if len(f.shape) > 3:
+            if len(f.shape) > self.dim:
                 file.channels = f.shape[-1]
             else:
                 file.channels = 1
