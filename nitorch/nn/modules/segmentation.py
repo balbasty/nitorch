@@ -813,7 +813,7 @@ class MRFNet(Module):
         check.dim(self.dim, resp)
 
         if ref is not None and self.augmentation:
-            image, ref = augment('warp-lab-lab', image, ref)
+            resp, ref = augment('warp-lab-lab', resp, ref)
 
         # MRF
         p = self.apply(resp, is_train)
@@ -1081,7 +1081,7 @@ def augment(method, image, label=None, vx=None):
         aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
                            device=image.device, dtype=image.dtype)
         # Get random grid
-        grid = aug(batch=nbatch, shape=dim, dim=ndim)
+        grid = aug(batch=nbatch, shape=dim)
         # Warp
         if method == 'warp-img-img':
             image = warp_image(image, grid)
@@ -1147,7 +1147,7 @@ def warp_label(label, grid):
         u_labels = label.unique()
         n_labels = len(u_labels)
         label_w = torch.zeros((n_batch, n_labels, ) + tuple(label.shape[2:]),
-            device=x.device, dtype=torch.float32)
+            device=label.device, dtype=torch.float32)
         for i, l in enumerate(u_labels):
             label_w[..., i, ...] = label == l
     else:

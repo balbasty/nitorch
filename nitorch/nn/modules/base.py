@@ -9,6 +9,7 @@ compute losses on the fly along with the other (classical) outputs.
 import torch
 import torch.nn as tnn
 import inspect
+from collections import OrderedDict
 
 
 def nitorchmodule(klass):
@@ -45,7 +46,7 @@ def nitorchmodule(klass):
 
 
 @nitorchmodule
-class Module(tnn.Module):
+class Module(tnn.Module, object):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -53,6 +54,17 @@ class Module(tnn.Module):
         self.metrics = {}
         self.tags = []
         self.augmenters = []
+
+    def __getattr__(self, name):
+        # overload pytorch's getter to allow access to properties
+        # (pytorch only allows access to attributes stored in
+        # _parameters, _modules or _buffers)
+        if (name not in self._parameters and
+                name not in self._buffers and
+                name not in self._modules and
+                name in self.__class__.__dict__):
+            return getattr(self.__class__, name).fget(self)
+        return super().__getattr__(name)
 
     def add_augmenter(self, augmenter):
         """Add one or more augmenters.
