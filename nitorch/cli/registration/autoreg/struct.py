@@ -371,7 +371,7 @@ class Linear(Transformation):
             self.basis = spatial.affine_basis('CSO', 3)
         elif nb_prm == 7:
             print('Free full affine')
-            self.dat[7] /= 3**0.5
+            self.dat[6] /= 3**0.5
             self.dat[7] = self.dat[6]
             self.dat[8] = self.dat[6]
             self.optdat = torch.nn.Parameter(self.dat[:12], requires_grad=True)
