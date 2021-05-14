@@ -9,8 +9,8 @@ from nitorch.spatial import (
     mean_space, affine_conv, affine_resize, affine_matmul, affine_lmdiv,
     affine_grid, affine_matvec, grid_inv, affine_inv)
 from .parser import parse, ParseError, help
-from nitorch.cli.registration.helpers import (ffd_exp, samespace, smalldef, pull_grid, pull,
-                                              BacktrackingLineSearch)
+from nitorch.cli.registration.helpers import (
+    ffd_exp, samespace, smalldef, pull_grid, pull, BacktrackingLineSearch)
 from . import struct
 
 
@@ -174,22 +174,22 @@ def load_transforms(s):
     """Initialize transforms"""
     device = torch.device(s.device)
 
-    def reshape3d(dat, channels=None):
+    def reshape3d(dat, channels=None, dim=3):
         """Reshape as (*spatial) or (C, *spatial) or (*spatial, C).
         `channels` should be in ('first', 'last', None).
         """
-        while len(dat.shape) > 3:
+        while len(dat.shape) > dim:
             if dat.shape[-1] == 1:
                 dat = dat[..., 0]
                 continue
-            elif dat.shape[3] == 1:
+            elif dat.shape[dim] == 1:
                 dat = dat[:, :, :, 0, ...]
                 continue
             else:
                 break
-        if len(dat.shape) > 3 + bool(channels):
+        if len(dat.shape) > dim + bool(channels):
             raise ValueError('Too many channel dimensions')
-        if channels and len(dat.shape) == 3:
+        if channels and len(dat.shape) == dim:
             dat = dat[..., None]
         if channels == 'first':
             dat = utils.movedim(dat, -1, 0)
@@ -250,12 +250,12 @@ def load_transforms(s):
                 f = io.volumes.map(trf.init)
                 trf.dat = reshape3d(f.loadf(dtype=torch.float32, device=device),
                                     'last')
-                if len(trf.dat) != 3:
+                if len(trf.dat) != trf.dim:
                     raise ValueError('Field should have 3 channels')
                 factor = [int(s//g) for g, s in zip(trf.shape[:-1], shape)]
                 trf.affine, trf.shape = affine_resize(trf.affine, trf.shape[:-1], factor)
             else:
-                trf.dat = torch.zeros([*shape, 3], dtype=torch.float32,
+                trf.dat = torch.zeros([*shape, trf.dim], dtype=torch.float32,
                                       device=device)
                 trf.affine = affine
                 trf.shape = shape
@@ -390,7 +390,7 @@ def optimize(options):
                 if torch.is_tensor(trf.shift):
                     # include shift
                     shift = trf.shift.to(**backend)
-                    eye = torch.eye(3, **backend)
+                    eye = torch.eye(options.dim, **backend)
                     A[:-1, -1] += torch.matmul(A[:-1, :-1] - eye, shift)
                 for loss1 in trf.losses:
                     loss += loss1.call(q)

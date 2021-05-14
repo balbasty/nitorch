@@ -1,7 +1,179 @@
 import torch
 from nitorch.core.utils import expand, channel2last
+from nitorch.core import py, utils, math
 from ..modules.base import Module
 from .distribution import RandomDistribution
+from .field import RandomSplineSample
+
+
+class SmoothProbabilitySample(Module):
+    """Sample a smooth categorical prior"""
+
+    def __init__(self, shape=None, nb_classes=None, amplitude=5, fwhm=15,
+                 logits=False, implicit=False, device=None, dtype=None):
+        """
+
+        Parameters
+        ----------
+        shape : sequence[int], optional
+            Output shape
+        nb_classes : int, optional
+            Number of classes (excluding background)
+        amplitude : float or callable or list, default=5
+            Amplitude of the random field (per channel).
+        fwhm : float or callable or list, default=15
+            Full-width at half-maximum of the random field (per channel).
+        logits : bool, default=False
+            Input priors are log-odds instead of probabilities
+        implicit : bool, default=False
+            Input priors have an implicit K+1-th class.
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+        """
+
+        super().__init__()
+        self.logits = logits
+        self.implicit = implicit
+        shape = py.make_list(shape)
+        self.field = RandomSplineSample(shape=shape, channel=nb_classes,
+                                        amplitude=amplitude, fwhm=fwhm,
+                                        device=device, dtype=dtype)
+
+    nb_classes = property(lambda self: self.field.channel)
+    shape = property(lambda self: self.field.shape)
+    amplitude = property(lambda self: self.field.amplitude)
+    fwhm = property(lambda self: self.field.fwhm)
+    device = property(lambda self: self.field.device)
+    dtype = property(lambda self: self.field.dtype)
+
+    def to(self, *args, **kwargs):
+        self.field.to(*args, **kwargs)
+        super().to(*args, **kwargs)
+
+    def forward(self, batch=1, **overload):
+        """
+
+        Parameters
+        ----------
+        batch : int, default=1
+            Batch size
+        overload : dict
+            All parameters defined at build time can be overridden at call time
+
+        Returns
+        -------
+        prob : (batch, nb_classes[+1], *shape) tensor
+            Probabilities
+
+        """
+
+        # get arguments
+        opt = {
+            'shape': overload.get('shape', self.shape),
+            'channel': overload.get('nb_classes', self.nb_classes),
+            'amplitude': overload.get('amplitude', self.amplitude),
+            'fwhm': overload.get('fwhm', self.fwhm),
+            'dtype': overload.get('dtype', self.dtype),
+            'device': overload.get('device', self.device),
+        }
+        implicit = overload.get('implicit', self.implicit)
+        logits = overload.get('logits', self.logits)
+        if not implicit:
+            opt['channel'] = opt['channel'] + 1
+
+        # preprocess amplitude
+        # > RandomField broadcast amplitude to (channel, *shape), with
+        #   padding from the left, which means that a 1d amplitude would
+        #   be broadcasted to (1, ..., dim) instead of (dim, ..., 1)
+        # > We therefore reshape amplitude to avoid left-side padding
+        def preprocess(a):
+            a = torch.as_tensor(a)
+            a = utils.unsqueeze(a, dim=-1, ndim=opt['channel']+1-a.dim())
+            return a
+        amplitude = opt['amplitude']
+        if callable(amplitude):
+            amplitude_fn = amplitude
+            amplitude = lambda *args, **kwargs: preprocess(amplitude_fn(*args, **kwargs))
+        else:
+            amplitude = preprocess(amplitude)
+        opt['amplitude'] = amplitude
+
+        sample = self.field(batch, **opt)
+        if logits:
+            sample = math.log_softmax(sample, 1, implicit=implicit)
+        else:
+            sample = math.softmax(sample, 1, implicit=implicit)
+
+        return sample
+
+
+class SmoothCategoricalSample(Module):
+    """Sample a smooth (i.e., contiguous) label map.
+
+    This function first samples smooth log-probabilities from a
+    smooth random field and then returns the maximum-probability labels.
+    """
+
+    def __init__(self, shape=None, nb_classes=None, amplitude=5, fwhm=15,
+                 device=None, dtype=None):
+        """
+
+        Parameters
+        ----------
+        shape : sequence[int], optional
+            Output shape
+        nb_classes : int, optional
+            Number of classes (excluding background)
+        amplitude : float or callable or list, default=5
+            Amplitude of the random field (per channel).
+        fwhm : float or callable or list, default=15
+            Full-width at half-maximum of the random field (per channel).
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+        """
+
+        super().__init__()
+        self.prob = SmoothProbabilitySample(
+            shape=shape,
+            nb_classes=nb_classes,
+            amplitude=amplitude,
+            fwhm=fwhm,
+            device=device,
+            dtype=dtype)
+
+    nb_classes = property(lambda self: self.prob.nb_classes)
+    shape = property(lambda self: self.prob.shape)
+    amplitude = property(lambda self: self.prob.amplitude)
+    fwhm = property(lambda self: self.prob.fwhm)
+    device = property(lambda self: self.prob.device)
+    dtype = property(lambda self: self.prob.dtype)
+
+    def to(self, *args, **kwargs):
+        self.field.to(*args, **kwargs)
+        super().to(*args, **kwargs)
+
+    def forward(self, batch=1, **overload):
+        """
+
+        Parameters
+        ----------
+        batch : int, default=1
+            Batch size
+        overload : dict
+            All parameters defined at build time can be overridden at call time
+
+        Returns
+        -------
+        vel : (batch, 1, dim) tensor[long]
+            Labels
+
+        """
+        prob = self.prob(batch, **overload)
+        return prob.argmax(dim=1, keepdim=True)
 
 
 class CategoricalSample(Module):
@@ -37,6 +209,7 @@ class CategoricalSample(Module):
 
         Returns
         -------
+        sample : (batch, 1, *shape)
 
         """
 
