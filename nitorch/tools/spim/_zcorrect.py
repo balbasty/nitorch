@@ -300,9 +300,8 @@ def correct_smooth(x, sigma=None, lam=10, gamma=10, downsample=None,
     # downsampling
     if downsample:
         x0 = x
-        shape0 = x.shape
         downsample = py.make_list(downsample, dim)
-        x = spatial.pool(dim, x, downsample,)
+        x = spatial.pool(dim, x, downsample)
     shape = x.shape
     x = x.to(device)
     
