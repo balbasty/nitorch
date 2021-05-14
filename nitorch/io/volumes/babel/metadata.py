@@ -3,10 +3,12 @@ import torch
 from warnings import warn
 import numpy as np
 import re
+import ast
 from nibabel.freesurfer.mghformat import MGHHeader
 from nibabel import (Nifti1Header, Spm99AnalyzeHeader, AnalyzeHeader)
+from nibabel.spatialimages import HeaderDataError
 from nitorch.spatial import voxel_size
-from nitorch.core import dtypes
+from nitorch.core import dtypes, constants
 from nitorch.core.utils import make_vector
 
 
@@ -54,7 +56,7 @@ def set_voxel_size(header, vx, shape=None):
     aff = torch.as_tensor(header.get_best_affine())
     vx = torch.as_tensor(vx, dtype=aff.dtype, device=aff.device)
     vx0 = voxel_size(aff)
-    aff[:-1,:] *= vx[:, None] / vx0[:, None]
+    aff[:-1,:] *= vx[:3, None] / vx0[:3, None]
     header = set_affine(header, aff, shape)
     return header
     
@@ -83,39 +85,128 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
     # --- generic fields ---
 
     if metadata.get('voxel_size', None) is not None:
-        header = set_voxel_size(header, metadata['voxel_size'], shape)
+        val = metadata['voxel_size']
+        if isinstance(val, str):
+            val = ast.literal_eval(val)
+        header = set_voxel_size(header, val, shape)
 
     if metadata.get('affine', None) is not None:
-        header = set_affine(header, metadata['affine'], shape)
+        val = metadata['affine']
+        if isinstance(val, str):
+            val = ast.literal_eval(val)
+        header = set_affine(header, val, shape)
 
     if (metadata.get('slope', None) is not None or
         metadata.get('inter', None) is not None):
         slope = metadata.get('slope', 1.)
         inter = metadata.get('inter', None)
+        if isinstance(slope, str):
+            slope = float(ast.literal_eval(slope))
+        if isinstance(inter, str):
+            slope = float(ast.literal_eval(inter))
         if isinstance(header, (Spm99AnalyzeHeader, Nifti1Header)):
             header.set_slope_inter(slope, inter)
         else:
             if slope not in (1, None) or inter not in (0, None):
                 format_name = type(header).__name__.split('Header')[0]
                 warn('Format {} does not accept intensity transforms. '
-                     'It will be discarded.'.format(type(header).__name__),
+                     'It will be discarded.'.format(format_name),
                      RuntimeWarning)
 
     if (metadata.get('time_step', None) is not None or
         metadata.get('tr', None) is not None):
         time_step = metadata.get('time_step', None) or metadata['tr']
+        unit = None
+        if isinstance(time_step, str):
+            if time_step.endswith('sec'):
+                time_step = time_step[:-3]
+                unit = 'sec'
+            elif time_step.endswith('ms'):
+                time_step = time_step[:-2]
+                unit = 'ms'
+            elif time_step.endswith('s'):
+                time_step = time_step[:-1]
+                unit = 'sec'
+            time_step = float(ast.literal_eval(time_step))
+        unit = unit or metadata.get('te_unit', 'sec')
         if isinstance(header, (MGHHeader, Nifti1Header)):
+            if unit == 'sec':
+                time_step = time_step * 1e3  # TODO: unit for niftis?
             zooms = header.get_zooms()[:3]
             zooms = (*zooms, time_step)
-            header.set_zooms(zooms)
+            try:
+                # only possible if 4-th dimension is explicit
+                header.set_zooms(zooms)
+            except HeaderDataError:
+                if isinstance(header, MGHHeader):
+                    # set tr manually
+                    header['tr'] = time_step
+
         else:
             warn('Format {} does not accept time steps. '
                  'It will be discarded.'.format(type(header).__name__),
                  RuntimeWarning)
 
     # TODO: time offset / intent for nifti format
+
     # TODO: te/ti/fa for MGH format
     #       maybe also nifti from description field?
+    if metadata.get('te', None) is not None:
+        val = metadata['te']
+        unit = None
+        if isinstance(val, str):
+            if val.endswith('sec'):
+                val = val[:-3]
+                unit = 'sec'
+            elif val.endswith('ms'):
+                val = val[:-2]
+                unit = 'ms'
+            elif val.endswith('s'):
+                val = val[:-1]
+                unit = 'sec'
+            val = float(ast.literal_eval(val))
+        unit = unit or metadata.get('te_unit', 'sec')
+        if isinstance(header, MGHHeader):
+            if unit == 'sec':
+                val = val * 1e3
+            header['te'] = val
+
+    if metadata.get('ti', None) is not None:
+        val = metadata['ti']
+        unit = None
+        if isinstance(val, str):
+            if val.endswith('sec'):
+                val = val[:-3]
+                unit = 'sec'
+            elif val.endswith('ms'):
+                val = val[:-2]
+                unit = 'ms'
+            elif val.endswith('s'):
+                val = val[:-1]
+                unit = 'sec'
+            val = float(ast.literal_eval(val))
+        unit = unit or metadata.get('ti_unit', 'sec')
+        if isinstance(header, MGHHeader):
+            if unit == 'sec':
+                val = val * 1e3
+            header['ti'] = val
+
+    if metadata.get('fa', None) is not None:
+        val = metadata['fa']
+        unit = None
+        if isinstance(val, str):
+            if val.endswith('deg'):
+                val = val[:-3]
+                unit = 'deg'
+            elif val.endswith('rad'):
+                val = val[:-3]
+                unit = 'rad'
+            val = float(ast.literal_eval(val))
+        unit = unit or metadata.get('fa_unit', 'deg')
+        if isinstance(header, MGHHeader):
+            if unit == 'deg':
+                val = val * constants.pi / 180.
+            header['flip_angle'] = val
 
     if dtype is not None or metadata.get('dtype', None) is not None:
         dtype = dtype or metadata.get('dtype', None)
@@ -142,7 +233,6 @@ def header_to_metadata(header, metadata):
         Dictionary of metadata
 
     """
-
     if not isinstance(metadata, dict):
         metadata = {key: None for key in metadata}
 

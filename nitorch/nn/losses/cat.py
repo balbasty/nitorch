@@ -3,19 +3,9 @@
 import torch
 from .base import Loss
 from nitorch.core import math
-from nitorch.core.math import nansum, softmax
+from nitorch.core.math import nansum
 from nitorch.core.utils import isin, unsqueeze, make_vector
 from nitorch.core.py import make_list, flatten
-
-
-def _pad_zero(x, implicit=False):
-    """Add a zero-channels if the input has an implicit background class"""
-    if not implicit:
-        return x
-    zero_shape = [x.shape[0], 1, *x.shape[2:]]
-    zero = x.new_zeros([1]).expand(zero_shape)
-    x = torch.cat((x, zero), dim=1)
-    return x
 
 
 def _pad_norm(x, implicit=False):
@@ -25,23 +15,6 @@ def _pad_norm(x, implicit=False):
         return x / x.sum(dim=1, keepdim=True)
     x = torch.cat((x, 1 - x.sum(dim=1, keepdim=True)), dim=1)
     return x
-
-
-def _softmax(x, implicit=False):
-    """Add a zero-channels if the input has an implicit background class.
-    Then, take the softmax."""
-    # if implicit:
-    #     x = _pad_zero(x, implicit=implicit)
-    # x = torch.softmax(x, dim=1)
-    x = softmax(x, implicit=(implicit, False))
-    return x
-
-
-def _logsoftmax(x, implicit=False):
-    """Add a zero-channels if the input has an implicit background class.
-    Then, take the softmax then its log."""
-    x = _pad_zero(x, implicit=implicit)
-    return torch.log_softmax(x, dim=1)
 
 
 def _log(x, implicit=False):
@@ -55,7 +28,7 @@ def _log(x, implicit=False):
 def get_prob_explicit(x, log=False, implicit=False):
     """Return a tensor of probabilities with all classes explicit"""
     if log:
-        return _softmax(x, implicit=implicit)
+        return math.softmax(x, dim=1, implicit=[implicit, False])
     else:
         return _pad_norm(x, implicit=implicit)
 
@@ -63,7 +36,7 @@ def get_prob_explicit(x, log=False, implicit=False):
 def get_logprob_explicit(x, log=False, implicit=False):
     """Return a tensor of log-probabilities with all classes explicit"""
     if log:
-        return _logsoftmax(x, implicit=implicit)
+        return math.log_softmax(x, dim=1, implicit=[implicit, False])
     else:
         return _log(x, implicit=implicit)
 
@@ -201,10 +174,11 @@ class CategoricalLoss(Loss):
                     obs1 = ~isin(obs, flatten(all_labels))
                 else:
                     obs1 = isin(obs, hard)
-                loss[:, soft] = logprior[:, soft] * obs1
+                loss[:, soft] = logprior[:, soft] * obs1.squeeze()
 
         # negate
-        loss = -loss
+        loss = loss.sum(dim=1, keepdim=True)
+        loss = loss.neg_()
 
         # reduction
         return super().forward(loss, **overload)

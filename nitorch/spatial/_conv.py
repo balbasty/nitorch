@@ -54,7 +54,7 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
     kernel_size = kernel.shape[(2*has_channels):]
     kernel = kernel.reshape([channels_in, channels_out, *kernel_size])
     batch = tensor.shape[:-(dim+has_channels)]
-    spatial_in = tensor.shape[:(-dim)]
+    spatial_in = tensor.shape[(-dim):]
     if has_channels and tensor.shape[-(dim+has_channels)] != channels_in:
         raise ValueError('Number of input channels not consistent: '
                          'Got {} (kernel) and {} (tensor).' .format(
@@ -90,7 +90,7 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
                                   'dimension 1, 2 or 3.')
     tensor = conv_fn(tensor, kernel, bias, stride=stride, padding=padding,
                      dilation=dilation, groups=groups)
-    spatial_out = tensor.shape[:(-dim)]
+    spatial_out = tensor.shape[(-dim):]
     channels_out = [channels_out] if has_channels else []
     tensor = tensor.reshape([*batch, *channels_out, *spatial_out])
     return tensor
@@ -160,7 +160,9 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
                                  'for even-sized kernels.')
             padding[i] = ((kernel_size[i]-1) * dilation[i] + 1) // 2
 
-    use_torch = reduction in ('mean', 'avg', 'max') and dim in (1, 2, 3)
+    use_torch = (reduction in ('mean', 'avg', 'max') and 
+                 dim in (1, 2, 3) and
+                 dilation == [1] * dim)
 
     if (not use_torch) or bound != 'zero' and sum(padding) > 0:
         # torch implementation -> handles zero-padding
@@ -171,30 +173,29 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
     return_indices0 = False
     pool_fn = reduction if callable(reduction) else None
 
-    if reduction in ('mean', 'avg'):
-        return_indices0 = True
-        return_indices = False
-        pool_fn = (F.avg_pool1d if dim == 1 else
-                   F.avg_pool2d if dim == 2 else
-                   F.avg_pool3d if dim == 3 else None)
-        if pool_fn:
-            pool_fn0 = pool_fn
-            pool_fn = lambda x, *a, **k: pool_fn0(x[:, None], *a, **k,
-                                                  padding=padding,
-                                                  dilation=dilation)[:, 0]
-    elif reduction == 'max':
-        pool_fn = (F.max_pool1d if dim == 1 else
-                   F.max_pool2d if dim == 2 else
-                   F.max_pool3d if dim == 3 else None)
-        if pool_fn:
-            pool_fn0 = pool_fn
-            pool_fn = lambda x, *a, **k: pool_fn0(x[:, None], *a, **k,
-                                                  padding=padding,
-                                                  dilation=dilation)[:, 0]
+    if use_torch:
+        if reduction in ('mean', 'avg'):
+            return_indices0 = return_indices
+            return_indices = False
+            pool_fn = (F.avg_pool1d if dim == 1 else
+                       F.avg_pool2d if dim == 2 else
+                       F.avg_pool3d if dim == 3 else None)
+            if pool_fn:
+                pool_fn0 = pool_fn
+                pool_fn = lambda x, *a, **k: pool_fn0(x[:, None], *a, **k,
+                                                      padding=padding)[:, 0]
+        elif reduction == 'max':
+            pool_fn = (F.max_pool1d if dim == 1 else
+                       F.max_pool2d if dim == 2 else
+                       F.max_pool3d if dim == 3 else None)
+            if pool_fn:
+                pool_fn0 = pool_fn
+                pool_fn = lambda x, *a, **k: pool_fn0(x[:, None], *a, **k,
+                                                      padding=padding)[:, 0]
 
     if not pool_fn:
         if reduction not in ('min', 'max', 'median'):
-            return_indices0 = True
+            return_indices0 = return_indices
             return_indices = False
         if reduction == 'mean':
             reduction = lambda x: math.mean(x, dim=-1)
@@ -208,7 +209,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
             reduction = lambda x: math.median(x, dim=-1)
         elif not callable(reduction):
             raise ValueError(f'Unknown reduction {reduction}')
-        pool_fn = lambda *a, **k: _pool(*a, **k, reduction=reduction)
+        pool_fn = lambda *a, **k: _pool(*a, **k, dilation=dilation, reduction=reduction)
 
     outputs = []
     if return_indices:
@@ -269,9 +270,9 @@ def _pool(x, kernel_size, stride, dilation, reduction, return_indices=False):
         return x
 
 
-pool1d = lambda *args, **kwargs: pool(1, **kwargs)
-pool2d = lambda *args, **kwargs: pool(2, **kwargs)
-pool3d = lambda *args, **kwargs: pool(3, **kwargs)
+pool1d = lambda *args, **kwargs: pool(1, *args, **kwargs)
+pool2d = lambda *args, **kwargs: pool(2, *args, **kwargs)
+pool3d = lambda *args, **kwargs: pool(3, *args, **kwargs)
 
 
 def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):

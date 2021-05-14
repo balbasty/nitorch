@@ -455,7 +455,7 @@ class BabelArray(MappedArray):
         # --- cast + rescale ---
         rand = rand and not indtype.is_floating_point
         tmpdtype = dtypes.float64 if (rand and not dtype.is_floating_point) else dtype
-        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, with_scale=True)
+        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, returns='dat+scale')
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
@@ -559,7 +559,7 @@ class BabelArray(MappedArray):
                     base, ext = os.path.splitext(base)
                 ok_klasses = [klass for klass in all_image_classes
                               if ext in klass.valid_exts]
-                if len(ok_klasses) == 1:
+                if len(ok_klasses) > 0:
                     return ok_klasses[0]
             # 2) from like
                 if isinstance(like, BabelArray):
@@ -577,11 +577,11 @@ class BabelArray(MappedArray):
             header = format.header_class.from_header(like._image.dataobj._header)
         else:
             header = format.header_class()
-            if like is not None:
-                # copy generic metadata
-                like_metadata = like.metadata()
-                like_metadata.update(metadata)
-                metadata = like_metadata
+        if like is not None:
+            # copy generic metadata
+            like_metadata = like.metadata()
+            like_metadata.update(metadata)
+            metadata = like_metadata
         # set shape now so that we can set zooms/etc
         header.set_data_shape(dat.shape)
         header = metadata_to_header(header, metadata, shape=dat.shape)
@@ -596,19 +596,16 @@ class BabelArray(MappedArray):
         if disk_byteorder != data_byteorder:
             dtype = dtype.newbyteorder()
 
-        # set scale
-        if hasattr(header, 'set_slope_inter'):
-            slope, inter = header.get_slope_inter()
-            if slope is None:
-                slope = 1
-            if inter is None:
-                inter = 0
-            header.set_slope_inter(slope, inter)
+        # get scale
+        slope, inter = header.get_slope_inter()
+        if slope is None:
+            slope = 1
+        if inter is None:
+            inter = 0
 
         # unscale
         if _savef:
             assert dtypes.dtype(dat.dtype).is_floating_point
-            slope, inter = header.get_slope_inter()
             if inter not in (0, None) or slope not in (1, None):
                 dat = dat.copy()
             if inter not in (0, None):
@@ -617,8 +614,14 @@ class BabelArray(MappedArray):
                 dat /= slope
 
         # cast + setdtype
-        dat = volutils.cast(dat, dtype, casting)
+        dat, s, o = volutils.cast(dat, dtype, casting, returns='dat+scale+offset')
         header.set_data_dtype(dat.dtype)
+
+        # set scale
+        if hasattr(header, 'set_slope_inter'):
+            slope = slope / s
+            inter = inter - slope * o
+            header.set_slope_inter(slope, inter)
 
         # create image object
         image = format(dat, affine=None, header=header)
@@ -689,15 +692,18 @@ class BabelArray(MappedArray):
                     raise ValueError('File must be writable in mode "r+"')
                 self._opener[(key, self.mode)] = file_like
                 continue
-            if self.keep_open:
-                try:
-                    self._opener[(key, mode)] = open(file_like, mode, keep_open=True)
-                except ValueError:
-                    self._opener[(key, mode)] = open(file_like, 'rb', keep_open=True)
-            else:
-                self._opener[(key, 'r')] = open(file_like, 'rb', keep_open=False)
-                if not self._opener[(key, 'r')].is_indexed:
-                    del self._opener[(key, 'r')]
+            try:
+                if self.keep_open:
+                    try:
+                        self._opener[(key, mode)] = open(file_like, mode, keep_open=True)
+                    except ValueError:
+                        self._opener[(key, mode)] = open(file_like, 'rb', keep_open=True)
+                else:
+                    self._opener[(key, 'r')] = open(file_like, 'rb', keep_open=False)
+                    if not self._opener[(key, 'r')].is_indexed:
+                        del self._opener[(key, 'r')]
+            except FileNotFoundError:
+                continue
 
     @contextmanager
     def fileobj(self, key='image', mode='', seek=None):

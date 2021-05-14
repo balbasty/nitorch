@@ -104,7 +104,7 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     del fieldf
     if weights is not None:
         field += fieldb
-        field = field * 0.5
+        field *= 0.5
     return field
 
 
@@ -601,7 +601,7 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     if any(membrane):
         smo += membrane * ch2last(membrane_diag(weights=wm, **fdopt))
     if any(bending):
-        smo += membrane * ch2last(bending_diag(weights=wb, **fdopt))
+        smo += bending * ch2last(bending_diag(weights=wb, **fdopt))
 
     if is_diag:
         hessian_smo = hessian + smo

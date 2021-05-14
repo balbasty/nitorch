@@ -383,9 +383,11 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
         slices = [cmap.intensity_to_rgb(slice, min=0, max=1, colormap=colormap)
                   for slice in slices]
     elif mode.startswith('cat'):
-        slices = cmap.prob_to_rgb(image, colormap=colormap)
+        implicit = 'implicit' in mode
+        slices = [cmap.prob_to_rgb(slice, colormap=colormap, implicit=implicit)
+                  for slice in slices]
     elif mode.startswith('disp'):
-        slices = cmap.disp_to_rgb(slices)
+        slices = [cmap.disp_to_rgb(slice) for slice in slices]
     else:
         raise ValueError(f'Unknown mode {mode}')
 

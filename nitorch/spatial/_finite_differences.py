@@ -1,14 +1,14 @@
 """Finite-differences operators (gradient, divergence, ...)."""
 
 import torch
-from nitorch.core import utils
+from nitorch.core import utils, linalg
 from nitorch.core.utils import expand, slice_tensor, same_storage, make_vector
 from nitorch.core.py import make_list
 from ._conv import smooth
 
 
 __all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',
-           'sobel']
+           'sobel', 'frangi']
 
 
 # Converts from nitorch.utils.pad boundary naming to
@@ -54,29 +54,18 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     """
     def subto(x, y, out):
         """Smart sub"""
-        if ((torch.is_tensor(x) and x.requires_grad) or
-                (torch.is_tensor(y) and y.requires_grad)):
-            return out.copy_(y).neg_().add_(x)
+        if (getattr(x, 'requires_grad', False) or
+                getattr(y, 'requires_grad', False)):
+            return out.copy_(x).sub_(y)
         else:
             return torch.sub(x, y, out=out)
 
     def addto(x, y, out):
-        """Smart add"""
-        if ((torch.is_tensor(x) and x.requires_grad) or
-                (torch.is_tensor(y) and y.requires_grad)):
-            return out.copy_(y).add_(x)
+        if (getattr(x, 'requires_grad', False) or
+                getattr(y, 'requires_grad', False)):
+            return out.copy_(x).add_(y)
         else:
             return torch.add(x, y, out=out)
-
-    def div_(x, y):
-        """Smart in-place division"""
-        # It seems that in-place divisions do not break gradients...
-        return x.div_(y)
-        # if ((torch.is_tensor(x) and x.requires_grad) or
-        #         (torch.is_tensor(y) and y.requires_grad)):
-        #     return x / y
-        # else:
-        #     return x.div_(y)
 
     # TODO:
     #   - check high order central
@@ -127,7 +116,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
                 assert bound == 'dft'
                 # x[end+1] = x[0] => diff[end] = x[0] - x[end]
                 subto(slice_tensor(x, 0, dim), slice_tensor(x, -1, dim),
-                          out=slice_tensor(diff, -1, dim))
+                      out=slice_tensor(diff, -1, dim))
 
         elif side == 'b':  # backward -> diff[i] = x[i] - x[i-1]
             pre = slice_tensor(x, slice(None, -1), dim)
@@ -192,11 +181,11 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
                       out=slice_tensor(diff, -1, dim))
         if side == 'c':
             if voxel_size != 1:
-                diff = div_(diff, voxel_size * 2)
+                diff = diff.div_(voxel_size * 2)
             else:
-                diff = div_(diff, 2.)
+                diff = diff.div_(2.)
         elif voxel_size != 1:
-            diff = div_(diff, voxel_size)
+            diff = diff.div_(voxel_size)
 
     elif side == 'c':
         # we must deal with central differences differently:
@@ -213,7 +202,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
                          side='b', bound=bound)
             diff = fwd.sub_(bwd)
             if voxel_size != 1:
-                diff = div_(diff, voxel_size)
+                diff = diff.div_(voxel_size)
         else:
             diff = diff1d(x, order=2, dim=dim, voxel_size=voxel_size,
                           side=side, bound=bound)
@@ -232,7 +221,7 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     return diff
 
 
-def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
+def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     """Finite differences.
 
     Parameters
@@ -251,6 +240,8 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
         * 'b': backward finite differences
     bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'}, default='dct2'
         Boundary condition.
+    out : tensor, optional
+        Output placeholder
 
     Returns
     -------
@@ -270,7 +261,10 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2'):
     voxel_size = make_list(voxel_size, nb_dim)
 
     # compute diffs in each dimension
-    diffs = x.new_empty([nb_dim, *x.shape])
+    if out is not None:
+        diffs = out.view([nb_dim, *x.shape])
+    else:
+        diffs = x.new_empty([nb_dim, *x.shape])
     diffs = utils.movedim(diffs, 0, -1)
     # ^ ensures that sliced dim is the least rapidly changing one
     for i, (d, v) in enumerate(zip(dim, voxel_size)):
@@ -526,7 +520,7 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     return div
 
 
-def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
+def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', out=None):
     """Divergence.
 
     Parameters
@@ -547,6 +541,8 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
       [ * 'c': central finite differences ] => NotImplemented
     bound : {'dct2', 'dct1', 'dst2', 'dst1', 'dft', 'repeat', 'zero'}, default='dct2'
         Boundary condition.
+    out : tensor, optional
+        Output placeholder
 
     Returns
     -------
@@ -574,35 +570,31 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2'):
         x = x[..., None]
 
     # compute divergence in each dimension
-    div = 0.
+    div = out.view(x.shape[:-1]).zero_() if out is not None else 0
     for diff, d, v in zip(x.unbind(-1), dim, voxel_size):
         div += div1d(diff, order, d, v, side, bound)
 
     return div
 
 
-def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
+def frangi(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
            dim=None, bound='replicate', return_scale=False, verbose=False):
     """Frangi (vessel detector) filter.
-
-    Notes
-    -----
-    .. This function does not support autograd through x.
 
     Parameters
     ----------
     x : (*batch_shape, *spatial_shape) tensor_like
         Input (batched) tensor.
-    a : float, default=0.5
+    a : float or tensor, default=0.5
         First Frangi vesselness constant (deviation from line)
         Only used in 3D.
-    b : float, default=0.5
+    b : float or tensor, default=0.5
         Second Frangi vesselness constant (deviation from blob-like)
-    c : float, default=500
+    c : float or tensor, default=500
         Third Second Frangi vesselness constant (signal to noise)
-    inv_contrast : bool, default=False
+    white_ridges : bool, default=False
         If True, detect white ridges (black background).
-        Else, detect bloack ridges (white background).
+        Else, detect black ridges (white background).
     fwhm : [sequence of] float, default=[1, 3, 5, 7]
         Full width half max of Gaussian filters.
     dim : int
@@ -619,8 +611,27 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
     scale : (*batch_shape, *spatial_shape) tensor[int], if return_scale
         Index of scale at which each pixel was detected.
 
+    References
+    ----------
+    ..[1] "Multiscale vessel enhancement filtering"
+          Frangi, Niessen, Vincken, Viergever
+          MICCAI (1998) https://doi.org/10.1007/BFb0056195
+
     """
+    prm = dict(white_ridges=white_ridges, fwhm=fwhm,
+               dim=dim, bound=bound, return_scale=return_scale,
+               verbose=verbose)
+    if any(map(lambda x: getattr(x, 'requires_grad', False), [x, a, b, c])):
+        return frangi_diff(x, a, b, c, **prm)
+    else:
+        return frangi_nodiff(x, a, b, c, **prm)
+
+
+def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
+           dim=None, bound='replicate', return_scale=False, verbose=False):
+    """Non-differentiable Frangi filter."""
     x = torch.as_tensor(x)
+    is_on_cpu = x.device == torch.device('cpu')
     dim = dim or x.dim()
     if not dim in (2, 3):
         raise ValueError('Frangi filter is only implemented in 2D or 3D')
@@ -649,7 +660,8 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
             bwd = diff1d(x, order=1, dim=-d-1, side='b', bound=bound, out=buf2)
             torch.sub(fwd, bwd, out=h[..., d, d])  # central 2nd order
             for dd in range(d+1, dim):
-                hh = h[..., d, d]
+                # only fill upper part
+                hh = h[..., d, dd]
                 diff1d(fwd, order=1, dim=-dd - 1, side='f', bound=bound, out=hh)
                 hh += diff1d(fwd, order=1, dim=-dd - 1, side='b', bound=bound, out=buf3)
                 hh += diff1d(bwd, order=1, dim=-dd - 1, side='b', bound=bound, out=buf3)
@@ -664,54 +676,63 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         # Eigenvalues
         if verbose:
             print('Eigen...')
-        torch.symeig(h, out=(v, torch.empty([])))
+        if is_on_cpu:
+            torch.symeig(h, out=(v, torch.empty([])))
+        else:
+            v.copy_(linalg.eig_sym_(h))
+        # we must order eigenvalues by increasing *magnitude*
+        _, perm = v.abs().sort()
+        v.copy_(v.gather(-1, perm))
+        lam1, lam2, *lam3 = v.unbind(-1)
+        lam3 = lam3.pop() if lam3 else None
 
         if verbose:
             print('Frangi...')
 
         if dim == 2:
-            msk = v[..., 0] < 0
-            if inv_contrast:
-                msk.bitwise_not_()
-        else:
-            if inv_contrast:
-                msk = v[..., 1] > 0
-                msk.bitwise_or_(v[..., 2] > 0)
+            if white_ridges:
+                msk = lam2 > 0
             else:
-                msk = v[..., 1] < 0
-                msk.bitwise_or_(v[..., 2] < 0)
+                msk = lam2 < 0
+        else:
+            if white_ridges:
+                msk = lam2 > 0
+                msk.bitwise_or_(lam3 > 0)
+            else:
+                msk = lam2 < 0
+                msk.bitwise_or_(lam3 < 0)
 
         v.abs_()
-
         if dim == 2:
-            torch.div(v[..., 1], v[..., 0], out=buf2)       # < Rb
-            buf2.square_()
+            lam2.clamp_min_(1e-10)
             v.square_()
-            torch.sum(v, dim=-1, out=buf3)                  # < S
+            torch.div(lam1, lam2, out=buf2)                 # < Rb ** 2
+            torch.sum(v, dim=-1, out=buf3)                  # < S ** 2
 
-            buf2.div_(-b).exp_()                            # < expRb
-            buf3.div_(-c).exp_().neg_().add_(1)             # < expS
+            buf2.div_(-b).exp_()                            # < exp(Rb**2)
+            buf3.div_(-c).exp_().neg_().add_(1)             # < 1-exp(S**2)
 
             buf2.mul_(buf3)
 
-            buf2[msk] = 0
+            buf2.masked_fill_(msk, 0)
             return buf2
 
         elif dim == 3:
-            torch.div(v[..., 1], v[..., 2], out=buf1)       # < Ra
-            torch.mul(v[..., 1], v[..., 2], out=buf2)
-            buf2.sqrt_()
-            torch.div(v[..., 0], buf2, out=buf2)            # < Rb
-            v.square_()
-            torch.sum(v, dim=-1, out=buf3)                  # < S
+            lam3.clamp_min_(1e-10)
+            lam2.clamp_min_(1e-10)
+            torch.mul(lam2, lam3, out=buf2)                 # < lam2 * lam3
+            v.square_()                                     # < lam ** 2
+            torch.div(lam2, lam3, out=buf1)                 # < Ra ** 2
+            torch.div(lam1, buf2, out=buf2)                 # < Rb ** 2
+            torch.sum(v, dim=-1, out=buf3)                  # < S ** 2
 
-            buf1.square_().div_(-a).exp_().neg_().add_(1)   # < expRa
-            buf2.square_().div_(-b).exp_()                  # < expRb
-            buf3.div_(-c).exp_().neg_().add_(1)             # < expS
+            buf1.div_(-a).exp_().neg_().add_(1)             # < 1-exp(Ra**2)
+            buf2.div_(-b).exp_()                            # <   exp(Rb**2)
+            buf3.div_(-c).exp_().neg_().add_(1)             # < 1-exp(S**2)
 
             buf1.mul_(buf2).mul_(buf3)
 
-            buf1[msk] = 0
+            buf1.masked_fill_(msk, 0)
             return buf1
 
     v0 = None
@@ -728,11 +749,140 @@ def frangi(x, a=0.5, b=0.5, c=500, inv_contrast=False, fwhm=range(1, 8, 2),
         if v0 is None:
             v0 = v1.clone()
             if return_scale:
-                scale = torch.zeros_like(v, dtype=torch.int)
+                scale = torch.zeros_like(v1, dtype=torch.int)
         else:
             if return_scale:
                 scale[v1 > v0] = i
             v0 = torch.max(v0, v1, out=v0)
+
+    return (v0, scale) if return_scale else v0
+
+
+def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
+                dim=None, bound='replicate', return_scale=False, verbose=False):
+    """Differentiable Frangi filter."""
+    x = torch.as_tensor(x)
+    is_on_cpu = x.device == torch.device('cpu')
+    dim = dim or x.dim()
+    if not dim in (2, 3):
+        raise ValueError('Frangi filter is only implemented in 2D or 3D')
+
+    a = 2*(a**2)
+    b = 2*(b**2)
+    c = 2*(c**2)
+
+    # allocate buffers
+
+    def _frangi(x, f):
+        """Frangi filter at one scale. Input must be pre-filtered."""
+        x = smooth(x, fwhm=f, dim=dim, bound=bound) if f else x
+
+        # Hessian
+        h = x.new_empty([*x.shape, dim, dim])   # hessian
+        if verbose:
+            print('Hessian...')
+        for d in range(dim):
+            # diagonal elements
+            fwd = diff1d(x, order=1, dim=-d-1, side='f', bound=bound)
+            bwd = diff1d(x, order=1, dim=-d-1, side='b', bound=bound)
+            h[..., d, d].copy_(fwd).sub_(bwd)
+            for dd in range(d+1, dim):
+                # only fill upper part
+                hh = h[..., d, dd]
+                diff1d(fwd, order=1, dim=-dd - 1, side='f', bound=bound, out=hh)
+                hh += diff1d(fwd, order=1, dim=-dd - 1, side='b', bound=bound)
+                hh += diff1d(bwd, order=1, dim=-dd - 1, side='b', bound=bound)
+                hh += diff1d(bwd, order=1, dim=-dd - 1, side='f', bound=bound)
+                hh /= 4.
+
+        # Correct for scale
+        if f:
+            sig2 = (f / 2.355)**2
+            h.mul_(sig2)
+
+        # Eigenvalues
+        if verbose:
+            print('Eigen...')
+        if is_on_cpu:
+            eig = torch.symeig(h, eigenvectors=True)[0]
+        else:
+            eig = linalg.eig_sym_(h).sort(-1)[0]
+        _, perm = eig.abs().sort()
+        eig = eig.gather(-1, perm)
+        lam1, lam2, *lam3 = eig.unbind(-1)
+        lam3 = lam3.pop() if lam3 else None
+
+        if verbose:
+            print('Frangi...')
+
+        if dim == 2:
+            if white_ridges:
+                msk = lam2 > 0
+            else:
+                msk = lam2 < 0
+        else:
+            if white_ridges:
+                msk = lam2 > 0
+                msk.bitwise_or_(lam3 > 0)
+            else:
+                msk = lam2 < 0
+                msk.bitwise_or_(lam3 < 0)
+
+        eig[msk, :] = 1
+        eig.abs_()
+        lam1, lam2, *lam3 = eig.unbind(-1)
+        lam3 = lam3.pop() if lam3 else None
+
+        if dim == 2:
+            eig = eig.square()
+            lam1, lam2 = eig.unbind(-1)
+            rb = lam1/lam2                                  # < Rb ** 2
+            s = eig.sum(dim=-1)                             # < S ** 2
+
+            rb = rb.div_(-b).exp_()                         # < exp(Rb**2)
+            s = s.div_(-c).exp_().neg().add_(1)             # < 1-exp(S**2)
+
+            rb = rb.mul(s)
+
+            rb.masked_fill_(msk, 0)
+            return rb
+
+        elif dim == 3:
+            rb = lam2*lam3                                  # < lam2 * lam3
+            eig = eig.square()                              # < lam ** 2
+            lam1, lam2, lam3 = eig.unbind(-1)
+            ra = lam2/lam3                                  # < Ra ** 2
+            rb = lam1/rb                                    # < Rb ** 2
+            s = eig.sum(dim=-1)                             # < S ** 2
+
+            ra = ra.div_(-a).exp_().neg().add_(1)           # < 1-exp(Ra**2)
+            rb = rb.div_(-b).exp_()                         # <   exp(Rb**2)
+            s = s.div_(-c).exp_().neg().add_(1)             # < 1-exp(S**2)
+
+            ra = ra.mul_(rb).mul_(s)
+
+            ra = ra.masked_fill_(msk, 0)
+            return ra
+
+    v0 = None
+    scale = None
+    for i, f in enumerate(make_vector(fwhm)):
+
+        if verbose:
+            print('fwhm:', f.item())
+
+        v1 = _frangi(x, f)
+        v1.masked_fill_(torch.isfinite(v1).bitwise_not_(), 0)
+
+        # combine scales
+        if v0 is None:
+            v0 = v1.clone()
+            if return_scale:
+                scale = torch.zeros_like(v0, dtype=torch.int)
+        else:
+            if return_scale:
+                scale.masked_fill_(v1 > v0, i)
+            v0 = torch.max(v0, v1)
 
     return (v0, scale) if return_scale else v0
 

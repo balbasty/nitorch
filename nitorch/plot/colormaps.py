@@ -34,6 +34,7 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
     amplitude : {'value', 'saturation'}, default='value'
         Whether to use the value or saturation component of the HSV
         color space to map amplitudes.
+        If 'value', 0 maps to black // If 'saturation', 0 maps to white
 
     Returns
     -------
@@ -43,6 +44,7 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
     """
 
     image = torch.as_tensor(image).detach()
+    backend = utils.backend(image)
     *batch, dim, height, width = image.shape
     shape = (height, width)
 
@@ -57,10 +59,10 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
     hue_neg = torch.as_tensor(hue_neg, dtype=image.dtype, device=image.device)
 
     # rescale intensities
-    scale = utils.make_vector(scale, dim)[..., None, None]
+    scale = utils.make_vector(scale, dim, **backend)[..., None, None]
     image = image * scale
     vmax = vmax or math.max(image.square().sum(-3).sqrt(), dim=[-1, -2])
-    vmax = torch.as_tensor(vmax, dtype=image.dtype, device=image.device)
+    vmax = torch.as_tensor(vmax, **backend)
     image = image / vmax[..., None, None, None]
 
     # convert
@@ -70,9 +72,8 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
         cimage += (image[..., d, :, :, :] > 0) * image[..., d, :, :, :].abs() * hue_pos[d]
         cimage += (image[..., d, :, :, :] < 0) * image[..., d, :, :, :].abs() * hue_neg[d]
     if amplitude[0] == 's':
-        cimage += (1 - image)
+        cimage += (1 - cimage)
 
-    cimage = utils.movedim(cimage, -1, -3)
     return cimage
 
 
@@ -143,13 +144,13 @@ def prob_to_rgb(image, implicit=False, colormap=None):
         elif nb_classes <= 20:
             colormap = plt.get_cmap('tab20')
         else:
-            warn('More than 20 classes: multiple classes will share'
+            warn('More than 20 classes: multiple classes will share '
                  'the same color.')
             colormap = plt.get_cmap('tab20')
     elif isinstance(colormap, str):
         colormap = plt.get_cmap(colormap)
     if isinstance(colormap, mcolors.Colormap):
-        colormap = [colormap(i)[:3] for i in range(nb_classes)]
+        colormap = [colormap(i)[:3] for i in range(colormap.N)]
     colormap = torch.as_tensor(colormap, dtype=image.dtype, device=image.device)
 
     cimage = image.new_zeros([*batch, *shape, 3])

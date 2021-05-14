@@ -50,13 +50,13 @@ def joint_hist_gaussian(x, y, bins=64, min=None, max=None, fwhm=1, mask=None):
             min_fn = nanmin
             max_fn = nanmax
         else:
-            min_fn = torch.min
-            max_fn = torch.max
-        min = min_fn(x, dim=-1).values if min is None else min
+            min_fn = lambda *a, **k: torch.min(*a, **k).values
+            max_fn = lambda *a, **k: torch.max(*a, **k).values
+        min = min_fn(x, dim=-1) if min is None else min
         min = torch.as_tensor(min, **backend)
         min = unsqueeze(min, dim=2, ndim=4 - min.dim())
         # -> shape = [B, C, 1, 1]
-        max = max_fn(x, dim=-1).values if max is None else max
+        max = max_fn(x, dim=-1) if max is None else max
         max = torch.as_tensor(max, **backend)
         max = unsqueeze(max, dim=2, ndim=4 - max.dim())
         # -> shape = [B, C, 1, 1]
@@ -113,21 +113,39 @@ def joint_hist_spline(x, y, bins=64, min=None, max=None, order=3, mask=None):
     h : (batch, channel, bins, bins)
 
     """
+    backend = utils.backend(x)
+    if mask is not None:
+        # we set masked values to nan so that we can exclude them when
+        # computing min/max
+        val_nan = torch.as_tensor(nan, **backend)
+        x = torch.where(mask, val_nan, x)
+        y = torch.where(mask, val_nan, y)
+        min_fn = nanmin
+        max_fn = nanmax
+    else:
+        min_fn = lambda *a, **k: torch.min(*a, **k).values
+        max_fn = lambda *a, **k: torch.max(*a, **k).values
 
     # compute limits
     x_min, y_min = py.make_list(min, 2)
     x_max, y_max = py.make_list(max, 2)
     if x_min is None:
-        x_min = x.min(dim=-1, keepdim=True).values
+        x_min = min_fn(x.detach(), dim=-1)
     if y_min is None:
-        y_min = y.min(dim=-1, keepdim=True).values
+        y_min = min_fn(y.detach(), dim=-1)
     if x_max is None:
-        x_max = x.max(dim=-1, keepdim=True).values
+        x_max = max_fn(x.detach(), dim=-1)
     if y_max is None:
-        y_max = y.max(dim=-1, keepdim=True).values
-    min_val = [x_min, y_min]
-    max_val = [x_max, y_max]
+        y_max = max_fn(y.detach(), dim=-1)
+    x_min = torch.as_tensor(x_min, **backend)
+    x_max = torch.as_tensor(x_max, **backend)
+    y_min = torch.as_tensor(y_min, **backend)
+    y_max = torch.as_tensor(y_max, **backend)
+    min_val = torch.stack([x_min, y_min], -1)
+    max_val = torch.stack([x_max, y_max], -1)
 
+    # we transform our nans into inf so that they get zero-weight
+    # in the histogram
     if mask is not None:
         # set masked values outside of the [min, max] range
         val_inf = torch.as_tensor(inf, **utils.backend(x))
@@ -266,7 +284,7 @@ class MutualInfoLoss(Loss):
         def pnorm(x, dims=-1):
             """Normalize a tensor so that it's sum across `dims` is one."""
             dims = make_list(dims)
-            x = x.clamp(min=eps(x.dtype))
+            x = x.clamp_min_(eps(x.dtype))
             x = x / nansum(x, dim=dims, keepdim=True)
             return x
 
@@ -283,6 +301,7 @@ class MutualInfoLoss(Loss):
         # negative mutual information
         mi = h_xy - (h_x + h_y)
 
+
         # normalize
         if normalize not in (None, 'none'):
             normalize = (lambda a, b: (a+b)/2) if normalize == 'arithmetic' else \
@@ -290,7 +309,7 @@ class MutualInfoLoss(Loss):
                         torch.min if normalize == 'min' else \
                         torch.max if normalize == 'max' else \
                         normalize
-            mi = mi / normalize(h_x, h_y)
+            mi = mi / normalize(h_x, h_y).clamp_min_(eps(x.dtype))
             mi += 1
 
         # reduce
@@ -317,7 +336,7 @@ class GMMLoss(Loss):
 
         # first: estimate parameters without computing gradients
         with torch.no_grad():
-            means, precisions, proportions = self.fit(image, **opt)
+            means, precisions, proportions = self.fit(image.detach(), **opt)
 
         # second: compute log-likelihood
         resp, log_resp = self.responsibilities(image, means, precisions, proportions)
