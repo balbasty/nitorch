@@ -209,7 +209,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
             reduction = lambda x: math.median(x, dim=-1)
         elif not callable(reduction):
             raise ValueError(f'Unknown reduction {reduction}')
-        pool_fn = lambda *a, **k: _pool(*a, **k, reduction=reduction)
+        pool_fn = lambda *a, **k: _pool(*a, **k, dilation=dilation, reduction=reduction)
 
     outputs = []
     if return_indices:
