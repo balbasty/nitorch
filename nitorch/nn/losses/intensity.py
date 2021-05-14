@@ -139,8 +139,10 @@ def joint_hist_spline(x, y, bins=64, min=None, max=None, order=3, mask=None):
         y_max = max_fn(y.detach(), dim=-1)
     x_min = torch.as_tensor(x_min, **backend)
     x_max = torch.as_tensor(x_max, **backend)
+    x_max = torch.where(x_min == x_max, x_min + 1e-3, x_max)
     y_min = torch.as_tensor(y_min, **backend)
     y_max = torch.as_tensor(y_max, **backend)
+    y_max = torch.where(y_min == y_max, y_min + 1e-3, y_max)
     min_val = torch.stack([x_min, y_min], -1)
     max_val = torch.stack([x_max, y_max], -1)
 
