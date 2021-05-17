@@ -258,7 +258,7 @@ class MutualInfoLoss(Loss):
         if patch_size:
             # extract patches about each voxel
             patch_size = make_list(patch_size, nb_dim)
-            patch_size = [pch or dim for pch, dim in zip(patch_size, shape)]
+            patch_size = [min(pch or dim, dim) for pch, dim in zip(patch_size, shape)]
             x = utils.unfold(x[:, 0], patch_size, patch_stride, collapse=True)
             y = utils.unfold(y[:, 0], patch_size, patch_stride, collapse=True)
 
