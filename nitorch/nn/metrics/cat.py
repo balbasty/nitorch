@@ -68,7 +68,7 @@ def get_one_hot_map(one_hot_map, nb_classes):
     """Return a well-formed one-hot map"""
     one_hot_map = make_list(one_hot_map or [])
     if not one_hot_map:
-        one_hot_map = list(range(nb_classes))
+        one_hot_map = list(range(1, nb_classes))
     if len(one_hot_map) == nb_classes - 1:
         one_hot_map = [*one_hot_map, None]
     if len(one_hot_map) != nb_classes:

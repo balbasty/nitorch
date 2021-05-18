@@ -24,7 +24,7 @@ class Loss(tnn.Module):
         super().__init__(*args, **kwargs)
         self.reduction = reduction
 
-    def forward(self, x, **kwargs):
+    def reduce(self, x, **kwargs):
         reduction = kwargs.get('reduction', self.reduction)
         if reduction is None:
             return x
@@ -34,7 +34,7 @@ class Loss(tnn.Module):
                 return nanmean(x)
             elif reduction == 'sum':
                 return nansum(x)
-            elif reduction == 'none':
+            elif reduction in ('none', None):
                 return x
             else:
                 raise ValueError('Unknown reduction {}'.format(reduction))
@@ -44,3 +44,6 @@ class Loss(tnn.Module):
             raise TypeError("reduction should be a callable or in "
                             "('none', 'sum', 'mean'). Got {}."
                             .format(type(reduction)))
+
+    def forward(self, x, **kwargs):
+        return self.reduce(x, **kwargs)

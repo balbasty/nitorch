@@ -2,10 +2,8 @@
 
 import torch
 from .base import Loss
-from nitorch.core import math
-from nitorch.core.math import nansum
-from nitorch.core.utils import isin, unsqueeze, make_vector
-from nitorch.core.py import make_list, flatten
+from ..modules import Module
+from nitorch.core import py, utils, math
 
 
 def _pad_norm(x, implicit=False):
@@ -41,18 +39,27 @@ def get_logprob_explicit(x, log=False, implicit=False):
         return _log(x, implicit=implicit)
 
 
+def get_score_explicit(x, log=True, implicit=False):
+    """Return a tensor of "scores"" with all classes explicit"""
+    if not log:
+        x = x.log()
+    if implicit:
+        x = torch.cat((x, x.sum(dim=1, keepdim=True).neg()), dim=1)
+    return x
+
+
 def get_one_hot_map(one_hot_map, nb_classes):
     """Return a well-formed one-hot map"""
-    one_hot_map = make_list(one_hot_map or [])
+    one_hot_map = py.make_list(one_hot_map or [])
     if not one_hot_map:
-        one_hot_map = list(range(nb_classes))
+        one_hot_map = list(range(1, nb_classes))
     if len(one_hot_map) == nb_classes - 1:
         one_hot_map = [*one_hot_map, None]
     if len(one_hot_map) != nb_classes:
         raise ValueError('Number of classes in prior and map '
                          'do not match: {} and {}.'
                          .format(nb_classes, len(one_hot_map)))
-    one_hot_map = list(map(lambda x: make_list(x) if x is not None else x,
+    one_hot_map = list(map(lambda x: py.make_list(x) if x is not None else x,
                            one_hot_map))
     if sum(elem is None for elem in one_hot_map) > 1:
         raise ValueError('Cannot have more than one implicit class')
@@ -64,12 +71,132 @@ def get_log_confusion(confusion, nb_classes_pred, nb_classes_ref, dim, **backend
     if confusion is None:
         confusion = torch.eye(nb_classes_pred, nb_classes_ref,
                               **backend).exp()
-    confusion = unsqueeze(confusion, -1, dim)  # spatial shape
+    confusion = utils.unsqueeze(confusion, -1, dim)  # spatial shape
     if confusion.dim() < dim + 3:
-        confusion = unsqueeze(confusion, 0, 1)  # batch shape
+        confusion = utils.unsqueeze(confusion, 0, 1)  # batch shape
     confusion = confusion / confusion.sum(dim=[-1, -2], keepdim=True)
     confusion = confusion.clamp(min=1e-7, max=1-1e-7).log()
     return confusion
+
+
+class CatDotProduct(Module):
+    """"Dot product between a vector of (soft or hard) labels and a score.
+
+    Returns <phi(score), truth>
+
+    warning::
+        .. the background class (label 0) is assumed to be the last
+           (often implicit) "soft" class.
+
+    """
+
+    def __init__(self, weighted=False, one_hot_map=None, *args, **kwargs):
+        """
+
+        Parameters
+        ----------
+        weighted : bool or list[float], default=False
+            If True, weight by the inverse class frequency.
+            If a list of float, they are user-provided weights.
+        one_hot_map : list[int or list[int] or None], optional
+            Mapping from one-hot to hard index. Default: [1:n] + [None].
+            Each index of the list corresponds to a soft label.
+            Each soft label can be mapped to a hard label or a list of
+            hard labels. Up to one `None` can be used, in which case the
+            corresponding soft label will be considered a background class
+            and will be mapped to all remaining labels. If `len(one_hot_map)`
+            has one less element than the number of soft labels, such a
+            background class will be appended to the right.
+        reduction : {'mean', 'sum'} or callable, default='mean'
+            Type of reduction to apply.
+        """
+        super().__init__(*args, **kwargs)
+        self.weighted = weighted
+        self.one_hot_map = one_hot_map
+
+    def forward(self, score, truth, **overload):
+        """
+
+        Parameters
+        ----------
+        score : (nb_batch, nb_class, *spatial) tensor
+            Pre-transformed score vector.
+        truth : (nb_batch, nb_class[-1]|1, *spatial) tensor
+            Observed classes (or their expectation).
+                * If `obs` has a floating point data type (`half`,
+                  `float`, `double`) it is assumed to hold one-hot or
+                  soft labels, and its channel dimension should be
+                  `nb_class` or `nb_class - 1`.
+                * If `obs` has an integer or boolean data type, it is
+                  assumed to hold hard labels and its channel dimension
+                  should be 1. Eventually, `one_hot_map` is used to map
+                  one-hot labels to hard labels.
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time.
+
+        Returns
+        -------
+        loss : scalar or tensor
+            The output shape depends on the type of reduction used.
+            If 'mean' or 'sum', this function returns a scalar.
+
+        """
+
+        weighted = overload.get('weighted', self.weighted)
+
+        score = torch.as_tensor(score)
+        truth = torch.as_tensor(truth, device=score.device)
+        nb_classes = score.shape[1]  # (includes background)
+
+        if truth.dtype.is_floating_point:
+            # soft labels
+            truth = truth.to(score.dtype)
+            truth_implicit = truth.shape[1] == nb_classes-1
+            truth = get_prob_explicit(truth, implicit=truth_implicit)
+            if truth.shape[1] != nb_classes:
+                raise ValueError('Number of classes not consistent. '
+                                 'Expected {} or {} but got {}.'.format(
+                                 nb_classes, nb_classes-1, truth.shape[1]))
+            loss = score * truth
+            if weighted is True:
+                dim = truth.dim() - 2
+                weighted = truth.sum(dim=list(range(2, 2 + dim)), keepdim=True)
+                weighted = weighted / py.prod(truth.shape[2:])
+                loss = loss / weighted
+            elif weighted not in (None, False):
+                dim = truth.dim() - 2
+                weighted = utils.make_vector(**utils.backend(loss))
+                loss = loss * utils.unsqueeze(weighted, -1, dim)
+
+        else:
+            # hard labels
+            if truth.shape[1] != 1:
+                raise ValueError('Hard label maps cannot be multi-channel.')
+            one_hot_map = overload.get('one_hot_map', self.one_hot_map)
+            one_hot_map = get_one_hot_map(one_hot_map, nb_classes)
+
+            loss = torch.empty_like(score)
+            for soft, hard in enumerate(one_hot_map):
+                if hard is None:
+                    # implicit class
+                    all_labels = filter(lambda x: x is not None, one_hot_map)
+                    all_labels = py.flatten(list(all_labels))
+                    truth1 = ~utils.isin(truth, all_labels)
+                else:
+                    truth1 = utils.isin(truth, hard)
+                loss[:, soft] = score[:, soft] * truth1.squeeze()
+                if weighted is True:
+                    dim = truth1.dim() - 2
+                    nvox = py.prod(truth1.shape[2:]) or 1
+                    w = truth1.sum(dim=list(range(2, 2 + dim)), keepdim=True)
+                    w = w.float() / nvox
+                    loss[:, soft] = loss[:, soft] / w
+                elif weighted not in (None, False):
+                    w = utils.make_vector(weighted, **utils.backend(loss))
+                    loss[:, soft] = loss[:, soft] * w[soft]
+
+        return loss
 
 
 class CategoricalLoss(Loss):
@@ -81,14 +208,17 @@ class CategoricalLoss(Loss):
 
     """
 
-    def __init__(self, one_hot_map=None, log=True, implicit=False,
-                 *args, **kwargs):
+    def __init__(self, weighted=False, one_hot_map=None,
+                 log=True, implicit=False, *args, **kwargs):
         """
 
         Parameters
         ----------
+        weighted : bool or list[float], default=False
+            If True, weight by the inverse class frequency.
+            If a list of float, they are user-provided weights.
         one_hot_map : list[int or list[int] or None], optional
-            Mapping from one-hot to hard index. Default: identity mapping.
+            Mapping from one-hot to hard index. Default: [1:n] + [None].
             Each index of the list corresponds to a soft label.
             Each soft label can be mapped to a hard label or a list of
             hard labels. Up to one `None` can be used, in which case the
@@ -107,9 +237,15 @@ class CategoricalLoss(Loss):
             Type of reduction to apply.
         """
         super().__init__(*args, **kwargs)
+        self.dot = CatDotProduct(weighted, one_hot_map)
+        self.weighted = weighted
         self.one_hot_map = one_hot_map
         self.log = log
         self.implicit = implicit
+
+    def posterior(self, score, **overload):
+        implicit = overload.get('implicit', self.implicit)
+        return math.softmax(score, dim=1, implicit=implicit)
 
     def forward(self, prior, obs, **overload):
         """
@@ -139,171 +275,16 @@ class CategoricalLoss(Loss):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
-        log = overload.get('log', self.log)
-        implicit = overload.get('implicit', self.implicit)
+
+        log = overload.pop('log', self.log)
+        implicit = overload.pop('implicit', self.implicit)
 
         prior = torch.as_tensor(prior)
-        obs = torch.as_tensor(obs, device=prior.device)
+        prior = get_logprob_explicit(prior, log=log, implicit=implicit)
 
-        # take log if needed
-        logprior = get_logprob_explicit(prior, log=log, implicit=implicit)
-        nb_classes = logprior.shape[1]
+        loss = self.dot(prior, obs, **overload)
+        loss = loss.sum(dim=1, keepdim=True).neg_()
 
-        if obs.dtype in (torch.half, torch.float, torch.double):
-            # soft labels
-            obs = obs.to(prior.dtype)
-            obs = get_prob_explicit(obs, implicit=obs.shape[1] == nb_classes-1)
-            if obs.shape[1] != nb_classes:
-                raise ValueError('Number of classes not consistent. '
-                                 'Expected {} or {} but got {}.'.format(
-                                 nb_classes, nb_classes-1, obs.shape[1]))
-            loss = logprior * obs
-        else:
-            # hard labels
-            if obs.shape[1] != 1:
-                raise ValueError('Hard label maps cannot be multi-channel.')
-            obs = obs[:, None]
-            one_hot_map = overload.get('one_hot_map', self.one_hot_map)
-            one_hot_map = get_one_hot_map(one_hot_map, nb_classes)
-
-            loss = torch.empty_like(logprior)
-            for soft, hard in enumerate(one_hot_map):
-                if hard is None:
-                    # implicit class
-                    all_labels = list(filter(lambda x: x is not None, one_hot_map))
-                    obs1 = ~isin(obs, flatten(all_labels))
-                else:
-                    obs1 = isin(obs, hard)
-                loss[:, soft] = logprior[:, soft] * obs1.squeeze()
-
-        # negate
-        loss = loss.sum(dim=1, keepdim=True)
-        loss = loss.neg_()
-
-        # reduction
-        return super().forward(loss, **overload)
-
-
-class JointCategoricalLoss(Loss):
-    """(Expected) Negative log-likelihood of a joint Categorical distribution.
-
-    L = -trace(a @ log(pi) @ b.T)
-
-    The confusion matrix can be defined at build time or provided at
-    call time.
-
-    """
-
-    def __init__(self, confusion=None, one_hot_map=None, log=False,
-                 implicit=False, *args, **kwargs):
-        """
-
-        Parameters
-        ----------
-        confusion : (nb_class_pred, nb_class_ref) tensor_like, optional
-            Confusion matrix. By default, an identity matrix is used.
-        one_hot_map : list[int or list[int] or None], optional
-            Mapping from one-hot to hard index. Default: identity mapping.
-            Each index of the list corresponds to a soft label.
-            Each soft label can be mapped to a hard label or a list of
-            hard labels. Up to one `None` can be used, in which case the
-            corresponding soft label will be considered a background class
-            and will be mapped to all remaining labels. If `len(one_hot_map)`
-            has one less element than the number of soft labels, such a
-            background class will be appended to the right.
-        log : bool, default=False
-            If True, priors are log-probabilities (pre-softmax).
-            Else, they are probabilities and we take their log in the
-            forward pass.
-        implicit : bool, default=False
-            If True, the one-hot tensors only use K-1 channels to encode
-            K classes.
-        reduction : {'mean', 'sum'} or callable, default='mean'
-            Type of reduction to apply.
-        """
-        super().__init__(*args, **kwargs)
-        self.one_hot_map = one_hot_map
-        self.log = log
-        self.implicit = implicit
-        self.confusion = confusion
-
-    def forward(self, predicted, reference, **overload):
-        """
-
-        Parameters
-        ----------
-        predicted : (nb_batch, nb_class_pred[-1], *spatial) tensor
-            (Log)-prior probabilities
-        reference : (nb_batch, nb_class_ref[-1]|1, *spatial) tensor
-            Observed classes (or their expectation).
-                * If `reference` has a floating point data type (`half`,
-                  `float`, `double`) it is assumed to hold one-hot or
-                  soft labels, and its channel dimension should be
-                  `nb_class` or `nb_class - 1`.
-                * If `reference` has an integer or boolean data type, it is
-                  assumed to hold hard labels and its channel dimension
-                  should be 1. Eventually, `one_hot_map` is used to map
-                  one-hot labels to hard labels.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
-
-        Returns
-        -------
-        loss : scalar or tensor
-            The output shape depends on the type of reduction used.
-            If 'mean' or 'sum', this function returns a scalar.
-
-        """
-        log = overload.get('log', self.log)
-        implicit = overload.get('implicit', self.implicit)
-        confusion = overload.get('confusion', self.confusion)
-        implicit_pred, implicit_ref = make_list(implicit, 2)
-
-        predicted = torch.as_tensor(predicted)
-        reference = torch.as_tensor(reference, device=predicted.device)
-        backend = dict(dtype=predicted.dtype, device=predicted.device)
-
-        predicted = get_prob_explicit(predicted, log=log, implicit=implicit_pred)
-        nb_classes_pred = predicted.shape[1]
-        dim = predicted.dim() - 2
-
-        if reference.dtype in (torch.half, torch.float, torch.double):
-            # soft labels
-            reference = reference.to(predicted.dtype)
-            reference = get_prob_explicit(reference, log=log, implicit=implicit_ref)
-            nb_classes_ref = reference.shape[1]
-
-            confusion = get_log_confusion(confusion, nb_classes_pred, nb_classes_ref,
-                                          dim, **backend)
-            loss = (predicted[:, :, None] * confusion).sum(dim=1)
-            loss = (loss * reference).sum(dim=1)
-        else:
-            # hard labels
-            if reference.shape[1] != 1:
-                raise ValueError('Hard label maps cannot be multi-channel.')
-            reference = reference[:, None]
-            nb_classes_ref = nb_classes_pred
-            one_hot_map = overload.get('one_hot_map', self.one_hot_map)
-            one_hot_map = get_one_hot_map(one_hot_map, nb_classes_ref)
-
-            confusion = get_log_confusion(confusion, nb_classes_pred, nb_classes_ref,
-                                          dim, **backend)
-            predicted = (predicted[:, :, None] * confusion).sum(dim=1)
-            loss = 0
-            for soft, hard in enumerate(one_hot_map):
-                if hard is None:
-                    # implicit class
-                    all_labels = list(filter(lambda x: x is not None, one_hot_map))
-                    obs1 = ~isin(reference, flatten(all_labels))
-                else:
-                    obs1 = isin(reference, hard)
-                loss += predicted[:, soft] * obs1
-
-        # negate
-        loss = -loss
-
-        # reduction
         return super().forward(loss, **overload)
 
 
@@ -413,8 +394,8 @@ class DiceLoss(Loss):
         # prepare weights
         if not torch.is_tensor(weighted) and not weighted:
             weighted = False
-        if not isinstance(weighted, bool):
-            weighted = make_vector(weighted, nb_classes, **backend)[None]
+        if not utils.isinstance(weighted, bool):
+            weighted = utils.make_vector(weighted, nb_classes, **backend)[None]
 
         # preprocess reference
         if reference.dtype in (torch.half, torch.float, torch.double):
@@ -431,12 +412,12 @@ class DiceLoss(Loss):
             if exclude_background:
                 predicted = predicted[:, :-1]
                 reference = reference[:, :-1]
-            inter = nansum(predicted * reference, dim=spatial_dims)
-            union = nansum(predicted + reference, dim=spatial_dims)
+            inter = math.nansum(predicted * reference, dim=spatial_dims)
+            union = math.nansum(predicted + reference, dim=spatial_dims)
             loss = -2 * inter / union
             if weighted is not False:
                 if weighted is True:
-                    weights = nansum(reference, dim=spatial_dims)
+                    weights = math.nansum(reference, dim=spatial_dims)
                     weights = weights / weights.sum(dim=1, keepdim=True)
                 else:
                     weights = weighted
@@ -457,9 +438,10 @@ class DiceLoss(Loss):
                 if hard is None:
                     # implicit class
                     all_labels = filter(lambda x: x is not None, one_hot_map)
-                    ref1 = ~isin(reference, flatten(list(all_labels)))
+                    all_labels = py.flatten(list(all_labels))
+                    ref1 = ~utils.isin(reference, all_labels)
                 else:
-                    ref1 = isin(reference, hard)
+                    ref1 = utils.isin(reference, hard)
 
                 inter = math.sum(pred1 * ref1, dim=spatial_dims)
                 union = math.sum(pred1 + ref1, dim=spatial_dims)
@@ -479,4 +461,194 @@ class DiceLoss(Loss):
                 loss = loss / weights
 
         loss += 1
+        return super().forward(loss, **overload)
+
+
+class FocalLoss(Loss):
+    """Focal loss.
+
+    References
+    ----------
+    .. [1] "Focal Loss for Dense Object Detection"
+           Tsung-Yi Lin, Priya Goyal, Ross Girshick, Kaiming He, Piotr Dollar
+           ICCV (2017)
+           https://arxiv.org/abs/1708.02002
+    """
+
+    def __init__(self, gamma=2, weighted=False, log=False, implicit=False,
+                 one_hot_map=None, *args, **kwargs):
+        """
+
+        Parameters
+        ----------
+        gamma : float, defualt=2
+            Focal parameter (1 == CategoricalLoss)
+        weighted : bool or list[float], default=False
+            If True, weight by the inverse class frequency.
+            If a list of float, they are user-provided weights.
+        one_hot_map : list[int or list[int] or None], optional
+            Mapping from one-hot to hard index. Default: identity mapping.
+            Each index of the list corresponds to a soft label.
+            Each soft label can be mapped to a hard label or a list of
+            hard labels. Up to one `None` can be used, in which case the
+            corresponding soft label will be considered a background class
+            and will be mapped to all remaining labels. If `len(one_hot_map)`
+            has one less element than the number of soft labels, such a
+            background class will be appended to the right.
+        log : bool, default=True
+            If True, priors are log-probabilities (pre-softmax).
+            Else, they are probabilities and we take their log in the
+            forward pass.
+        implicit : bool, default=False
+            If True, the one-hot tensors only use K-1 channels to encode
+            K classes.
+        reduction : {'mean', 'sum'} or callable, default='mean'
+            Type of reduction to apply.
+        """
+        super().__init__(*args, **kwargs)
+        self.gamma = gamma
+        self.log = log
+        self.implicit = implicit
+        self.dot = CatDotProduct(weighted, one_hot_map)
+
+    def forward(self, prior, obs, **overload):
+        """
+
+        Parameters
+        ----------
+        prior : (nb_batch, nb_class[-1], *spatial) tensor
+            (Log)-prior probabilities
+        obs : (nb_batch, nb_class[-1]|1, *spatial) tensor
+            Observed classes (or their expectation).
+                * If `obs` has a floating point data type (`half`,
+                  `float`, `double`) it is assumed to hold one-hot or
+                  soft labels, and its channel dimension should be
+                  `nb_class` or `nb_class - 1`.
+                * If `obs` has an integer or boolean data type, it is
+                  assumed to hold hard labels and its channel dimension
+                  should be 1. Eventually, `one_hot_map` is used to map
+                  one-hot labels to hard labels.
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time.
+
+        Returns
+        -------
+        loss : scalar or tensor
+            The output shape depends on the type of reduction used.
+            If 'mean' or 'sum', this function returns a scalar.
+
+        """
+
+        gamma = overload.pop('gamma', self.gamma)
+        log = overload.pop('log', self.log)
+        implicit = overload.pop('implicit', self.implicit)
+
+        # take log if needed
+        prior = torch.as_tensor(prior)
+        logprior = get_logprob_explicit(prior, log=log, implicit=implicit)
+        prior = get_prob_explicit(prior, log=log, implicit=implicit)
+        prior = logprior * (1 - prior).pow(gamma)
+
+        loss = self.dot(prior, obs)
+        loss = loss.sum(dim=1, keepdim=True).neg_()
+        return super().forward(loss, **overload)
+
+
+class HingeLoss(Loss):
+    """Hinge loss.
+    """
+
+    def __init__(self, weighted=False, one_hot_map=None,
+                 log=True, implicit=False, mode='cs', *args, **kwargs):
+        """
+
+        Parameters
+        ----------
+        gamma : float, default=2
+            Focal parameter (1 == CategoricalLoss)
+        weighted : bool or list[float], default=False
+            If True, weight by the inverse class frequency.
+            If a list of float, they are user-provided weights.
+        one_hot_map : list[int or list[int] or None], optional
+            Mapping from one-hot to hard index. Default: identity mapping.
+            Each index of the list corresponds to a soft label.
+            Each soft label can be mapped to a hard label or a list of
+            hard labels. Up to one `None` can be used, in which case the
+            corresponding soft label will be considered a background class
+            and will be mapped to all remaining labels. If `len(one_hot_map)`
+            has one less element than the number of soft labels, such a
+            background class will be appended to the right.
+        log : bool, default=True
+            If True, priors are scores (pre-softmax).
+            Else, they are probabilities and we take their log in the
+            forward pass.
+        implicit : bool, default=False
+            If True, the one-hot tensors only use K-1 channels to encode
+            K classes.
+        mode : {'cs', 'ww', 'llw'}, default='llw'
+            Extension to multi-class:
+                'cw' : max_j max(0, 1 + fj - fk) (Crammer and Singer)
+                'ww' : sum_j max(0, 1 + fj - fk) (Weston and Watkins)
+                'llw' : sum_j max(0, 1 + fj) and sum(f) = 0 (Lee, Lin and Wahba)
+        reduction : {'mean', 'sum'} or callable, default='mean'
+            Type of reduction to apply.
+        """
+        super().__init__(*args, **kwargs)
+        self.mode = mode
+        self.log = log
+        self.implicit = implicit
+        self.dot = CatDotProduct(weighted, one_hot_map)
+
+    def forward(self, score, obs, **overload):
+        """
+
+        Parameters
+        ----------
+        score : (nb_batch, nb_class[-1], *spatial) tensor
+        obs : (nb_batch, nb_class[-1]|1, *spatial) tensor
+            Observed classes (or their expectation).
+                * If `obs` has a floating point data type (`half`,
+                  `float`, `double`) it is assumed to hold one-hot or
+                  soft labels, and its channel dimension should be
+                  `nb_class` or `nb_class - 1`.
+                * If `obs` has an integer or boolean data type, it is
+                  assumed to hold hard labels and its channel dimension
+                  should be 1. Eventually, `one_hot_map` is used to map
+                  one-hot labels to hard labels.
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time.
+
+        Returns
+        -------
+        loss : scalar or tensor
+            The output shape depends on the type of reduction used.
+            If 'mean' or 'sum', this function returns a scalar.
+
+        """
+
+        mode = overload.pop('mode', self.mode)
+        log = overload.pop('log', self.log)
+        implicit = overload.pop('implicit', self.implicit)
+
+        # product between score and target
+        score = get_score_explicit(score, log=log, implicit=implicit)
+
+        if mode == 'llw':
+            score = score.add_(1)
+            score = score.clamp_min_(0)
+            score = score.sum(dim=1, keepdim=True) - score
+        else:
+            score = score[:, :, None] - score[:, None, :]
+            score = score.div_(2).add_(1).clamp_min_(0)
+            score.diagonal(dim1=1, dim2=2).zero_()
+            if mode == 'cs':
+                score = score.max(dim=1).values
+            else:
+                assert mode == 'ww'
+                score = score.sum(dim=1)
+
+        loss = self.dot(score, obs, **overload)
+        loss = loss.sum(dim=1, keepdim=True)
         return super().forward(loss, **overload)
