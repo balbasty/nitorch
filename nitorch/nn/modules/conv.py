@@ -182,7 +182,7 @@ class SimpleConv(Module):
                           **output_padding)
     
     def reset_parameters(self, method='kaiming', a=None, dist='uniform',
-                         johnshift=True):
+                         johnshift=False):
         """Initialize the values of the weights and bias
         
         Parameters
