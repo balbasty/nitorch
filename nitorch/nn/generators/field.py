@@ -1,6 +1,8 @@
 import math
 import torch
 import torch.distributions as td
+from nitorch.core import py, utils
+from nitorch import spatial
 from nitorch.core.utils import unsqueeze, ensure_shape
 from nitorch.core.constants import pi
 from nitorch.core.kernels import smooth
@@ -109,13 +111,13 @@ class RandomFieldSample(Module):
         conv = torch.nn.functional.conv1d if nb_dim == 1 else \
                torch.nn.functional.conv2d if nb_dim == 2 else \
                torch.nn.functional.conv3d if nb_dim == 3 else None
-
+        
         # convert SE parameters to noise/kernel parameters
         sigma_se = fwhm / math.sqrt(8*math.log(2))
         sigma_se = unsqueeze(sigma_se.prod(dim=-1), dim=-1, ndim=nb_dim)
         amplitude = amplitude * (2*pi)**(nb_dim/4) * sigma_se.sqrt()
         fwhm = fwhm * math.sqrt(2)
-
+        
         # smooth
         samples_b = []
         for b in range(batch):
