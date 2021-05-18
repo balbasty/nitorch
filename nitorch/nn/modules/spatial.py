@@ -229,7 +229,7 @@ class GridPushCount(Module):
 class GridExp(Module):
     """Exponentiate a stationary velocity field."""
 
-    def __init__(self, fwd=True, inv=False, steps=None,
+    def __init__(self, fwd=True, inv=False, steps=8,
                  interpolation='linear', bound='dft', displacement=False):
         """
 
@@ -239,7 +239,7 @@ class GridExp(Module):
             Return the forward deformation.
         inv : bool, default=False
             Return the inverse deformation.
-        steps : int, optional
+        steps : int, default=8
             Number of integration steps.
             Use `1` to use a small displacements model instead of a
             diffeomorphic one. Default is an educated guess based on the
@@ -305,7 +305,7 @@ class GridExp(Module):
 class GridShoot(Module):
     """Exponentiate an initial velocity field by Geodesic Shooting."""
 
-    def __init__(self, fwd=True, inv=False, steps=8,
+    def __init__(self, fwd=True, inv=False, steps=8, approx=False,
                  absolute=0.0001, membrane=0.001, bending=0.2, lame=(0.05, 0.2),
                  factor=1, voxel_size=1, displacement=False, cache_greens=False):
         """
@@ -343,6 +343,7 @@ class GridShoot(Module):
         self.fwd = fwd
         self.inv = inv
         self.steps = steps
+        self.approx = approx
         self.absolute = absolute
         self.membrane = membrane
         self.bending = bending
@@ -374,6 +375,7 @@ class GridShoot(Module):
         """
         fwd = overload.get('fwd', self.forward)
         inv = overload.get('inverse', self.inv)
+        approx = overload.get('approx', self.approx)
         absolute = overload.get('absolute', self.absolute)
         membrane = overload.get('membrane', self.membrane)
         bending = overload.get('bending', self.bending)
@@ -412,14 +414,16 @@ class GridShoot(Module):
         else:
             greens = spatial.greens(**greens_prm, **utils.backend(velocity))
 
+        shoot_fn = spatial.shoot_approx if approx else spatial.shoot
+            
         output = []
         if inv:
-            y, iy = spatial.shoot(velocity, greens, return_inverse=True, **shoot_opt)
+            y, iy = shoot_fn(velocity, greens, return_inverse=True, **shoot_opt)
             if fwd:
                 output.append(y)
             output.append(iy)
         elif fwd:
-            y = spatial.shoot(velocity, greens, **shoot_opt)
+            y = shoot_fn(velocity, greens, **shoot_opt)
             output.append(y)
 
         return output if len(output) > 1 else \

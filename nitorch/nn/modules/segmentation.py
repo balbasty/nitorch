@@ -396,7 +396,11 @@ class SegMRFNet(Module):
 
     The idea is that a simple, explicit, spatial prior on the categorical data
     should improve generalisation to out-of-distribution data, and allow for less
-    parameters.
+    parameters. The idea is described in:
+
+    Brudfors, M., Balbastre, Y., Ashburner, J., Rees, G., Nachev, P., Ourselin, S., & Cardoso, M. J. 
+    "An MRF-UNet Product of Experts for Image Segmentation."
+    MIDL 2021.
 
     """
     def __init__(
@@ -714,7 +718,7 @@ class MRFNet(Module):
 
     Brudfors, Mikael, Yaël Balbastre, and John Ashburner.
     "Nonlinear markov random fields learned via backpropagation."
-    IPMI. Springer, Cham, 2019.
+    IPMI 2019.
 
     """
     def __init__(self,
@@ -817,7 +821,7 @@ class MRFNet(Module):
         check.dim(self.dim, resp)
 
         if ref is not None and self.augmentation:
-            image, ref = augment('warp-lab-lab', image, ref)
+            resp, ref = augment('warp-lab-lab', resp, ref)
 
         # MRF
         p = self.apply(resp, is_train)
@@ -1172,7 +1176,7 @@ def augment(method, image, label=None, vx=None):
         aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
                            device=image.device, dtype=image.dtype)
         # Get random grid
-        grid = aug(batch=nbatch, shape=dim, dim=ndim)
+        grid = aug(batch=nbatch, shape=dim)
         # Warp
         if method == 'warp-img-img':
             image = warp_image(image, grid)
@@ -1238,7 +1242,7 @@ def warp_label(label, grid):
         u_labels = label.unique()
         n_labels = len(u_labels)
         label_w = torch.zeros((n_batch, n_labels, ) + tuple(label.shape[2:]),
-            device=x.device, dtype=torch.float32)
+            device=label.device, dtype=torch.float32)
         for i, l in enumerate(u_labels):
             label_w[..., i, ...] = label == l
     else:

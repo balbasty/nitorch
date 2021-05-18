@@ -373,7 +373,7 @@ def to(*args, dtype=None, device=None):
                      if arg is not None else arg for arg in args)
 
 
-def to_max_backend(*args, force_float=False):
+def to_max_backend(*args, force_float=False, dtype=None, device=None):
     """Move to a common dtype and device.
 
     See `max_dtype` and `max_device`.
@@ -390,8 +390,8 @@ def to_max_backend(*args, force_float=False):
     """
     if len(args) == 0:
         return
-    dtype = max_dtype(*args, force_float=force_float)
-    device = max_device(*args)
+    dtype = max_dtype(*args, dtype, force_float=force_float)
+    device = max_device(*args, device)
     if len(args) == 1:
         return torch.as_tensor(args[0], dtype=dtype, device=device)
     else:
@@ -438,7 +438,7 @@ def backend(x):
     return dict(dtype=x.dtype, device=x.device)
 
 
-def max_backend(*args):
+def max_backend(*args, dtype=None, device=None):
     """Get the (max) dtype and device.
 
     Parameters
@@ -450,7 +450,8 @@ def max_backend(*args):
     dict with keys 'dtype' and 'device'
 
     """
-    return dict(dtype=max_dtype(*args), device=max_device(*args))
+    return dict(dtype=max_dtype(*args, dtype),
+                device=max_device(*args, device))
 
 
 def max_device(*args):
@@ -1034,7 +1035,7 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
     """
     # Argument checking
-    if mode not in tuple(_bounds.keys()) + ('constant',):
+    if mode not in tuple(_bounds.keys()) + ('constant', 'zero', 'zeros'):
         raise ValueError('Padding mode should be one of {}. Got {}.'
                          .format(tuple(_bounds.keys()) + ('constant',), mode))
     padsize = tuple(padsize)
@@ -1065,7 +1066,7 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     padpost = torch.as_tensor(padpost)
 
     # Pad
-    if mode == 'zeros':
+    if mode in ('zero', 'zeros'):
         mode, value = ('constant', 0)
     if mode == 'constant':
         return _pad_constant(inp, padpre, padpost, value)
@@ -1076,16 +1077,14 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
 
 def _pad_constant(inp, padpre, padpost, value):
-    # Uses torch.nn.functional.pad
-    # Convert pre and post to a single list
     padpre = padpre.tolist()
     padpost = padpost.tolist()
-    padding = padpre * 2
-    padding[1::2] = padpost[::-1]
-    padding[::2] = padpre[::-1]
-    # Apply padding
-    inp = F.pad(inp, padding, mode='constant', value=value)
-    return inp
+    new_shape = [s + pre + post
+                 for s, pre, post in zip(inp.shape, padpre, padpost)]
+    out = inp.new_full(new_shape, value)
+    slicer = [slice(pre, pre + s) for pre, s in zip(padpre, inp.shape)]
+    out[tuple(slicer)] = inp
+    return out
 
 
 def _pad_bound(inp, padpre, padpost, bound, modifier):
@@ -1607,12 +1606,12 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
 
     # compute limits
     if min is None:
-        min = x.min(dim=-2, keepdim=True).values
+        min = x.detach().min(dim=-2, keepdim=True).values
     else:
         min = torch.as_tensor(min, **bck)
         min = min.expand([*batch, 2]).reshape([-1, 1, 2])
     if max is None:
-        max = x.max(dim=-2, keepdim=True).values
+        max = x.detach().max(dim=-2, keepdim=True).values
     else:
         max = torch.as_tensor(max, **bck)
         max = max.expand([*batch, 2]).reshape([-1, 1, 2])

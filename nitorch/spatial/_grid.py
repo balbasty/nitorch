@@ -706,3 +706,42 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
         return identity - disp
     else:
         return -disp
+#
+#
+# def transform_points(points, grid, type='grid',
+#                      affine=None, points_unit='mm', grid_unit='voxels',
+#                      bound='zero', interpolation=1, extrapolate=0):
+#     """
+#
+#     Parameters
+#     ----------
+#     points : ([batch], collection, dim) tensor
+#         Collection of points (in
+#     grid : ([batch], *spatial, dim) tensor
+#         Transformation of displacement grid
+#     type : {'grid', 'displacement'}
+#     affine
+#     bound
+#     interpolation
+#     extrapolate
+#
+#     Returns
+#     -------
+#
+#     """
+#
+#     vertices = torch.as_tensor(vertices)
+#     disp = torch.as_tensor(disp)
+#     aff = torch.as_tensor(aff)
+#     # convert vertices to voxels to sample
+#     grid = ni.spatial.affine_matvec(ni.spatial.affine_inv(aff),
+#                                          vertices)
+#     grid = grid.reshape([1, 1, -1, 3])  # make 3d
+#     # sample displacement
+#     wdisp = ni.spatial.grid_pull(disp.movedim(-1, 0), grid,
+#                                       bound='zero', extrapolate=False)
+#     wdisp = wdisp.movedim(0, -1)
+#     grid = grid + wdisp
+#     grid = grid.reshape([-1, 3])
+#     # convert voxels to mm
+#     wvertices = ni.spatial.affine_matvec(aff, grid)

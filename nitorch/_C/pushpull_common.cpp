@@ -838,31 +838,29 @@ void PushPullImpl<scalar_t,offset_t>::loop(
 template <typename scalar_t, typename offset_t> NI_HOST
 void PushPullImpl<scalar_t,offset_t>::loop() const
 {
-# if !(AT_PARALLEL_OPENMP)
-    if (do_push)
-    {
-      // I do not have access to atomic operations so I cannot 
-      // parallelize across voxels.  
-      at::parallel_for(0, N, 0, [&](offset_t start, offset_t end) {
-        for (offset_t n = start; n < end; ++n) {
-          if (dim == 1) {
-            for (offset_t w=0; w<trgt_X; ++w)
-              check1d(w, n);
-          } else if (dim == 2) {
-            for (offset_t h=0; h<trgt_Y; ++h)
-            for (offset_t w=0; w<trgt_X; ++w)
-              check2d(w, h, n);
-          } else {
-            for (offset_t d=0; d<trgt_Z; ++d)
-            for (offset_t h=0; h<trgt_Y; ++h)
-            for (offset_t w=0; w<trgt_X; ++w)
-              check3d(w, h, d, n);
-          }
+  if (!has_atomic_add<scalar_t>::value && (do_push || do_count))
+  {
+    // I do not have access to atomic operations so I cannot
+    // parallelize across voxels.
+    at::parallel_for(0, N, 0, [&](offset_t start, offset_t end) {
+      for (offset_t n = start; n < end; ++n) {
+        if (dim == 1) {
+          for (offset_t w=0; w<trgt_X; ++w)
+            check1d(w, n);
+        } else if (dim == 2) {
+          for (offset_t h=0; h<trgt_Y; ++h)
+          for (offset_t w=0; w<trgt_X; ++w)
+            check2d(w, h, n);
+        } else {
+          for (offset_t d=0; d<trgt_Z; ++d)
+          for (offset_t h=0; h<trgt_Y; ++h)
+          for (offset_t w=0; w<trgt_X; ++w)
+            check3d(w, h, d, n);
         }
-      }); 
-      return
-    }
-#  endif
+      }
+    });
+    return;
+  }
 
   // Parallelize across voxels   
   offset_t trgt_NXYZ = trgt_Z * trgt_Y * trgt_X * N;
@@ -899,8 +897,8 @@ bool inbounds3d(scalar_t x, scalar_t y, scalar_t z,
                 offset_t w, offset_t h, offset_t d,
                 int edge)
 {
-    scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
-    return inbounds(x, w, tol) && inbounds(y, h, tol) && inbounds(z, d, tol);
+  scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
+  return inbounds(x, w, tol) && inbounds(y, h, tol) && inbounds(z, d, tol);
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
@@ -908,15 +906,15 @@ bool inbounds2d(scalar_t x, scalar_t y,
                 offset_t w, offset_t h,
                 int edge)
 {
-    scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
-    return inbounds(x, w, tol) && inbounds(y, h, tol);
+  scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
+  return inbounds(x, w, tol) && inbounds(y, h, tol);
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 bool inbounds1d(scalar_t x, offset_t w, int edge)
 {
-    scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
-    return inbounds(x, w, tol);
+  scalar_t tol = static_cast<scalar_t>(edge ? 0.5 + TINY : TINY);
+  return inbounds(x, w, tol);
 }
 
 // Here, we:

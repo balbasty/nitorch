@@ -18,7 +18,7 @@ except ImportError:
         raise ImportError('Optional dependency TensorBoard not found')
 
 
-def split_train_val_test(data, split=[0.6, 0.1, 0.3], shuffle=False, seed=0):
+def split_train_val_test(data, split=(0.6, 0.1, 0.3), shuffle=False, seed=0):
     """Split sequence of data into train, validation and test.
 
     Parameters
@@ -331,8 +331,7 @@ class ModelTrainer:
             # forward pass
             batch = make_tuple(batch)
             batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
-            batch = tuple(b.to(dtype=self.dtype)
-                          if b.dtype in (torch.half, torch.float, torch.double)
+            batch = tuple(b.to(dtype=self.dtype) if b.dtype.is_floating_point
                           else b for b in batch)
             nb_batches += batch[0].shape[0]
             self.optimizer.zero_grad()
@@ -577,8 +576,16 @@ class ModelTrainer:
         return file
 
     def train(self):
-        """Launch training"""
+        """Launch training
+        
+        Returns
+        ----------
+        losses : dict
+            Loss dictionary with train ('train') and validation ('val') losses.
+            
+        """
         self._hello('train')
+        losses = {'train': [], 'val': []}
         with torch.random.fork_rng(enabled=self.seed is not None):
             if self.seed is not None:
                 torch.random.manual_seed(self.seed)
@@ -590,7 +597,10 @@ class ModelTrainer:
                 self._save(self.epoch)
                 for self.epoch in range(self.epoch+1, self.nb_epoch+1):
                     train_loss = self._train(self.epoch)
+                    losses['train'].append(float(train_loss.cpu()))
                     val_loss = self._eval(self.epoch)
+                    if val_loss is not None:
+                        losses['val'].append(float(val_loss.cpu()))
                     self._save(self.epoch)
                     # scheduler
                     if isinstance(self.scheduler, ReduceLROnPlateau):
@@ -598,6 +608,8 @@ class ModelTrainer:
                         self.scheduler.step(sched_loss)
                     elif self.scheduler:
                         self.scheduler.step()
+                        
+        return losses
 
     def eval(self):
         """Launch evaluation"""

@@ -650,14 +650,14 @@ def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
     return input
 
 
-def logsumexp(input, dim, keepdim=False, implicit=False):
+def logsumexp(input, dim=-1, keepdim=False, implicit=False):
     """Numerically stabilised log-sum-exp (lse).
 
     Parameters
     ----------
     input : tensor
         Input tensor.
-    dim : int
+    dim : int, defualt=-1
         The dimension or dimensions to reduce.
     keepdim : bool, default=False
         Whether the output tensor has dim retained or not.
@@ -670,17 +670,17 @@ def logsumexp(input, dim, keepdim=False, implicit=False):
         Output tensor.
 
     """
-    input = torch.as_tensor(input)
+    input = torch.as_tensor(input).clone()
 
     lse = input.max(dim=dim, keepdim=True)[0]
     if implicit:
         zero = input.new_zeros([])
         lse = torch.max(lse, zero)
 
-    input = (input - lse).exp().sum(dim=dim, keepdim=True)
+    input = input.sub_(lse).exp_().sum(dim=dim, keepdim=True)
     if implicit:
-        input += lse.neg().exp()
-    lse += input.log()
+        input += lse.neg().exp_()
+    lse += input.log_()
 
     if not keepdim:
         lse = lse.squeeze(dim=dim)
@@ -828,6 +828,46 @@ def softmax(input, dim=-1, implicit=False):
     """
     input = torch.as_tensor(input)
     return _Softmax.apply(input, dim, implicit)
+
+
+def log_softmax(input, dim=-1, implicit=False):
+    """ Log(SoftMax).
+
+    Parameters
+    ----------
+    input : torch.tensor
+        Tensor with values.
+    dim : int, default=-1
+        Dimension to take softmax, defaults to last dimensions.
+    implicit : bool or (bool, bool), default=False
+        The first value relates to the input tensor and the second
+        relates to the output tensor.
+        - implicit[0] == True assumes that an additional (hidden) channel
+          with value zero exists.
+        - implicit[1] == True drops the last class from the
+          softmaxed tensor.
+
+    Returns
+    -------
+    Z : torch.tensor
+        Log-Soft-maxed tensor with values.
+
+    """
+    input = torch.as_tensor(input)
+    implicit = py.make_list(implicit, 2)
+    lse = logsumexp(input, dim=dim, implicit=implicit[0], keepdim=True)
+    if implicit[0] and not implicit[1]:
+        new_shape = list(input.shape)
+        new_shape[dim] += 1
+        output = input.new_zeros(new_shape)
+        explicit = utils.slice_tensor(output, slice(-1), dim)
+        explicit.copy_(input)
+        output -= lse
+    elif implicit[1] and not implicit[0]:
+        output = utils.slice_tensor(input, slice(-1), dim) - lse
+    else:
+        output = input - lse
+    return output
 
 
 def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):

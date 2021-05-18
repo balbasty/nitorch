@@ -6,6 +6,8 @@ from nitorch import spatial
 from nitorch.core.utils import unsqueeze, ensure_shape
 from nitorch.core.constants import pi
 from nitorch.core.kernels import smooth
+from nitorch.core import utils
+from nitorch import spatial
 from ..modules.base import Module
 
 
@@ -54,6 +56,14 @@ class RandomFieldSample(Module):
         if dtype is None or not dtype.is_floating_point:
             dtype = torch.get_default_dtype()
         self.dtype = dtype
+
+    def to(self, *args, **kwargs):
+        device, dtype, non_blocking, convert_to_format \
+            = torch._C._nn._parse_to(*args, **kwargs)
+
+        self.dtype = dtype or self.dtype
+        self.device = device or self.device
+        super().to(*args, **kwargs)
 
     def forward(self, batch=1, **overload):
         """
@@ -230,19 +240,19 @@ class RandomSplineSample(Module):
         nb_dim = len(shape)
         full_shape = [batch, channel, *shape]
         mean = mean.expand(full_shape)
-        amplitude = utils.make_vector(amplitude, self.channel)
+        amplitude = utils.make_vector(amplitude, channel)
         amplitude = utils.unsqueeze(amplitude, dim=-1, ndim=len(shape))
         fwhm = utils.make_vector(fwhm, nb_dim)
 
         # sample spline coefficients
         nodes = [(s/f).ceil().int().item() for s, f in zip(shape, fwhm)]
-        sample = torch.randn([batch, self.channel, *nodes], **backend) * amplitude
+        sample = torch.randn([batch, channel, *nodes], **backend) * amplitude
         sample = spatial.resize(sample, shape=shape, interpolation=basis, bound='dct2')
         sample += mean
 
         return sample
 
-    
+
 class BiasFieldTransform(Module):
     """Apply a random multiplicative bias field to an image."""
 
@@ -270,8 +280,8 @@ class BiasFieldTransform(Module):
         mean = mean if mean is not None else self.default_mean
         amplitude = amplitude if amplitude is not None else self.default_amplitude
         fwhm = fwhm if fwhm is not None else self.default_fwhm
-        self.field = RandomFieldSample(mean=mean, amplitude=amplitude,
-                                       fwhm=fwhm, device=device, dtype=dtype)
+        self.field = RandomSplineSample(mean=mean, amplitude=amplitude,
+                                        fwhm=fwhm, device=device, dtype=dtype)
 
     # defer properties
     mean = property(lambda self: self.field.mean)
@@ -288,6 +298,10 @@ class BiasFieldTransform(Module):
     @staticmethod
     def default_fwhm(*b):
         return td.Normal(math.log(5.), math.log(2)/3).sample(*b).exp()
+
+    def to(self, *args, **kwargs):
+        self.field.to(*args, **kwargs)
+        super().to(*args, **kwargs)
 
     def forward(self, image, **overload):
         """

@@ -157,8 +157,6 @@ def _reset_origin(dat, mat, interpolation):
         vx[0] = - vx[0]
     vx = vx.tolist()
     mat = affine_default(dat.shape, vx, dtype=torch.float64, device=device)
-    mat = torch.cat((mat, torch.tensor([0, 0, 0, 1],
-        dtype=mat.dtype, device=mat.device)[None, ...]))  # Add a row to make (4, 4)
 
     return dat, mat
 
