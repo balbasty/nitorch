@@ -248,6 +248,27 @@ def matvec(mat, vec, out=None):
     return mv
 
 
+def dot(a, b, out=None):
+    """(Batched) dot product
+
+    Parameters
+    ----------
+    a : (..., N) tensor
+    b : (..., N) tensor
+    out : tensor, optional
+
+    Returns
+    -------
+    ab : (...) tensor
+
+    """
+    a = a[..., None, :]
+    b = b[..., :, None]
+    ab = torch.matmul(a, b, out=out)
+    ab = ab[..., 0, 0]
+    return ab
+
+
 def mdot(a, b):
     """Compute the Frobenius inner product of two matrices
 
