@@ -423,6 +423,30 @@ def to_max_device(*args):
                      for arg in args)
 
 
+def to_max_dtype(*args):
+    """Move to a common data type.
+
+    See `max_dtype`.
+
+    Parameters
+    ----------
+    *args : tensor_like
+
+    Returns
+    -------
+    *args_to : tensor
+
+    """
+    if len(args) == 0:
+        return
+    dtype = max_dtype(*args)
+    if len(args) == 1:
+        return torch.as_tensor(args[0], dtype=dtype)
+    else:
+        return tuple(torch.as_tensor(arg, dtype=dtype)
+                     for arg in args)
+
+
 def backend(x):
     """Return the backend (dtype and device) of a tensor
 
