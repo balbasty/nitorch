@@ -17,17 +17,17 @@ def multitrainer(trainers, keep_on_gpu=False):
 
     if not keep_on_gpu:
         for trainer in trainers:
-            trainer.model = trainer.model.cpu()
+            trainer.to(device='cpu')
 
     for trainer in trainers:
         trainer.init()
         if not keep_on_gpu:
-            trainer.model = trainer.model.cpu()
+            trainer.model = trainer.to(device='cpu')
 
     for epoch in range(initial_epoch+1, nb_epoch+1):
         for trainer in trainers:
             if trainer.initial_epoch < epoch <= trainer.nb_epoch:
                 trainer.train1()
                 if not keep_on_gpu:
-                    trainer.model = trainer.model.cpu()
+                    trainer.model = trainer.to(device='cpu')
 

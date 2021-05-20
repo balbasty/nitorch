@@ -160,9 +160,15 @@ class ModelTrainer:
         eval_set : sequence[tensor or tuple[tensor]], optional
             Evaluation set.
             It should be a finite sequence of tensors or tuple of tensors.
-        optimizer : callable, default=Adam
-            A function that takes trainable parameters as inputs and
-            returns an Optimizer object.
+        optimizer : type or callable or instance, default=Adam
+            - If a type, it should be an Optimizer-like type, which will
+              be instantiated by `optimizer(model.parameters())`.
+            - If a function, it will be called with the model and should
+              return an Optimizer-like instance. It makes it possible to
+              instantiate optimizers in a more flexible way (e.g.,
+              using groups of parameters).
+            - If a (non-callable) instance, it should be an
+              Optimizer-like instance.
         nb_epoch : int, default=100
             Number of epochs.
         nb_steps : int, default=`len(train_set) or 100`
@@ -215,9 +221,6 @@ class ModelTrainer:
         self.model = model
         self.train_set = train_set
         self.eval_set = eval_set
-        if optimizer is None:
-            optimizer = torch.optim.Adam(model.parameters())
-        self.optimizer = optimizer
         self.log_interval = log_interval
         self.benchmark = benchmark
         self.seed = seed
@@ -239,13 +242,20 @@ class ModelTrainer:
         self.device = torch.device(self.device)
         self.dtype = dtype or torch.get_default_dtype()
         self.scheduler = scheduler
-        if self.scheduler is not None:
-            self.scheduler = self.scheduler(self.optimizer, verbose=True)
 
         if self.load_model:
             self.model.load_state_dict(torch.load(self.load_model))
+        if optimizer is None:
+            optimizer = torch.optim.Adam
+        if isinstance(optimizer, type):  # Optimizer class
+            optimizer = optimizer(model.parameters())
+        elif callable(optimizer):  # function (more flexible)
+            optimizer = optimizer(model)
+        self.optimizer = optimizer
         if self.load_optimizer:
             self.optimizer.load_state_dict(torch.load(self.load_optimizer))
+        if self.scheduler is not None:
+            self.scheduler = self.scheduler(self.optimizer, verbose=True)
 
     def _update_nb_steps(self):
         def len_or(x, default):
@@ -591,7 +601,7 @@ class ModelTrainer:
                 torch.random.manual_seed(self.seed)
             self.initial_seed = torch.random.initial_seed()
             with benchmark(self.benchmark):
-                self.model.to(dtype=self.dtype, device=self.device)
+                self.to(dtype=self.dtype, device=self.device)
                 self.epoch = self.initial_epoch
                 self._eval(self.epoch)
                 self._save(self.epoch)
@@ -623,11 +633,11 @@ class ModelTrainer:
             if self.seed is not None:
                 torch.random.manual_seed(self.seed)
             self.initial_seed = torch.random.initial_seed()
-            self.save_random_state()
             self.epoch = self.initial_epoch
-            self.model.to(dtype=self.dtype, device=self.device)
+            self.to(dtype=self.dtype, device=self.device)
             self._eval(self.epoch)
             self._save(self.epoch)
+            self.save_random_state()
 
     def set_random_state(self):
         """Populate the random state using a saved state."""
@@ -649,9 +659,42 @@ class ModelTrainer:
         """Train for one epoch."""
         with torch.random.fork_rng():
             self.set_random_state()
-            self.model.to(dtype=self.dtype, device=self.device)
+            self.to(dtype=self.dtype, device=self.device)
             self.epoch += 1
             self._train(self.epoch)
             self._eval(self.epoch)
             self._save(self.epoch)
             self.save_random_state()
+
+    def to(self, dtype=None, device=None):
+        # we need to track which parameters were optimized to reassign them
+        # to the optimizer after they have been moved
+        group_index = []
+        for group in self.optimizer.param_groups:
+            param_index = []
+            for param in group['params']:
+                found = False
+                for i, model_param in enumerate(self.model.parameters()):
+                    if param is model_param:
+                        found = True
+                        param_index.append(i)
+                        break
+                if not found:
+                    raise ValueError(f'Could not find parameter {param} in '
+                                     'the model.')
+            group_index.append(param_index)
+
+        # move model
+        self.model = self.model.to(dtype=dtype, device=device)
+
+        # update link to optimized parameters
+        model_param = list(self.model.parameters())
+        for group, index in zip(self.optimizer.param_groups, group_index):
+            param = [model_param[i] for i in index]
+            group['params'] = param
+
+        # move state to new dtype/device
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.to(dtype=dtype, device=device)
