@@ -7,61 +7,12 @@ from nitorch.core.py import make_list, flatten
 from nitorch.core import py, utils, math
 
 
-def _pad_zero(x, implicit=False):
-    """Add a zero-channels if the input has an implicit background class"""
-    if not implicit:
-        return x
-    zero_shape = [x.shape[0], 1, *x.shape[2:]]
-    zero = x.new_zeros([1]).expand(zero_shape)
-    x = torch.cat((x, zero), dim=1)
-    return x
-
-
 def _pad_norm(x, implicit=False):
     """Add a channel that ensures that prob sum to one if the input has
     an implicit background class. Else, ensures that prob sum to one."""
-    if not implicit:
-        return x / x.sum(dim=1, keepdim=True)
-    x = torch.cat((x, 1 - x.sum(dim=1, keepdim=True)), dim=1)
+    if implicit:
+        x = torch.cat((x, 1 - x.sum(dim=1, keepdim=True)), dim=1)
     return x
-
-
-def _softmax(x, implicit=False):
-    """Add a zero-channels if the input has an implicit background class.
-    Then, take the softmax."""
-    x = math.softmax(x, implicit=(implicit, False))
-    return x
-
-
-def _logsoftmax(x, implicit=False):
-    """Add a zero-channels if the input has an implicit background class.
-    Then, take the softmax then its log."""
-    x = _pad_zero(x, implicit=implicit)
-    return torch.log_softmax(x, dim=1)
-
-
-def _log(x, implicit=False):
-    """Add a channel that ensures that prob sum to one if the input has
-    an implicit background class. Else, ensures that prob sum to one.
-    Then, take the log."""
-    x = _pad_norm(x, implicit=implicit)
-    return x.clamp(min=1e-7, max=1-1e-7).log()
-
-
-def get_prob_explicit(x, log=False, implicit=False):
-    """Return a tensor of probabilities with all classes explicit"""
-    if log:
-        return _softmax(x, implicit=implicit)
-    else:
-        return _pad_norm(x, implicit=implicit)
-
-
-def get_logprob_explicit(x, log=False, implicit=False):
-    """Return a tensor of log-probabilities with all classes explicit"""
-    if log:
-        return _logsoftmax(x, implicit=implicit)
-    else:
-        return _log(x, implicit=implicit)
 
 
 def get_one_hot_map(one_hot_map, nb_classes):
@@ -190,7 +141,7 @@ class Dice(Metric):
     """Dice/F1 score."""
 
     def __init__(self, one_hot_map=None, implicit=False, weighted=False,
-                 *args, **kwargs):
+                 exclude_background=True, *args, **kwargs):
         """
 
         Parameters
@@ -211,6 +162,7 @@ class Dice(Metric):
         self.one_hot_map = one_hot_map
         self.implicit = implicit
         self.weighted = weighted
+        self.exclude_background = exclude_background
 
     def forward(self, predicted, reference, **overload):
         """
@@ -242,6 +194,7 @@ class Dice(Metric):
         """
         implicit = overload.get('implicit', self.implicit)
         weighted = overload.get('weighted', self.weighted)
+        exclude_background = overload.get('exclude_background', self.exclude_background)
 
         predicted = torch.as_tensor(predicted)
         reference = torch.as_tensor(reference, device=predicted.device)
@@ -258,6 +211,9 @@ class Dice(Metric):
 
         # dice
         spatial_dims = list(range(2, predicted.dim()))
+
+        if exclude_background:
+            one_hot_map = one_hot_map[:-1]
 
         loss = []
         weights = []

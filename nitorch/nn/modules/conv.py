@@ -665,6 +665,22 @@ class GroupedConv(tnn.ModuleList):
     __repr__ = __str__
 
 
+def _defer_property(prop, module, setter=False):
+    """Return a 'property' objet that links to a submodule property
+
+    prop (str) : property name
+    module (str): module name
+    setter (bool, default=False) : define a setter
+    returns (property) : property object
+
+    """
+    if setter:
+        return property(lambda self: getattr(getattr(self, module), prop),
+                        lambda self, val: setattr(getattr(self, module), prop, val))
+    else:
+        return property(lambda self: getattr(getattr(self, module), prop))
+
+
 class Conv(Module):
     """Convolution layer (with batch norm and activation).
 
@@ -687,6 +703,7 @@ class Conv(Module):
                  output_padding=0,
                  activation=None,
                  batch_norm=False,
+                 order='nca',
                  inplace=True):
         """
         Parameters
@@ -750,7 +767,11 @@ class Conv(Module):
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
             function).
-            
+
+        order : permutation of 'nca', default='nca'
+            Order in which to perform the normalization (n), convolution (c)
+            and activation (a).
+
         inplace : bool, default=True
             Apply activation inplace if possible
             (i.e., not ``is_leaf and requires_grad``).
@@ -760,15 +781,9 @@ class Conv(Module):
 
         # Store dimension
         self.inplace = inplace
+        self.order = self._fix_order(order)
 
-        # Check if "manual" grouped conv are required
-        in_channels = py.make_list(in_channels)
-        out_channels = py.make_list(out_channels)
-        if len(in_channels) > 1 and groups > 1:
-            raise ValueError('Cannot use both `groups` and multiple '
-                             'input channels, as both define grouped '
-                             'convolutions.')
-
+        # Build modules
         opt_conv = dict(
             kernel_size=kernel_size,
             stride=stride,
@@ -778,6 +793,52 @@ class Conv(Module):
             transposed=transposed,
             output_padding=output_padding,
             bias=bias)
+        conv = self._build_conv(dim, in_channels, out_channels, groups, **opt_conv)
+        batch_norm = self._build_batch_norm(batch_norm, conv, order)
+        activation = self._build_activation(activation)
+
+        # Assign submodules in order so that they are nicely
+        # ordered during pretty printing
+        for o in order:
+            if o == 'n':
+                self.batch_norm = batch_norm
+            elif o == 'c':
+                self.conv = conv
+            elif o == 'a':
+                self.activation = activation
+
+        # Use appropriate weight initialization when possible
+        self._init_weights(conv, activation)
+
+    @staticmethod
+    def _fix_order(order):
+        if 'n' not in order:
+            order = order + 'n'
+        if 'c' not in order:
+            order = order + 'c'
+        if 'a' not in order:
+            order = order + 'a'
+        return order
+
+    @staticmethod
+    def _init_weights(conv, activation):
+        if isinstance(activation, tnn.ReLU):
+            conv.reset_parameters(a=0)
+        elif isinstance(activation, tnn.LeakyReLU):
+            conv.reset_parameters(a=activation.negative_slope)
+        else:
+            conv.reset_parameters()
+
+    @staticmethod
+    def _build_conv(dim, in_channels, out_channels, groups, **opt_conv):
+
+        # Check if "manual" grouped conv are required
+        in_channels = py.make_list(in_channels)
+        out_channels = py.make_list(out_channels)
+        if len(in_channels) > 1 and groups > 1:
+            raise ValueError('Cannot use both `groups` and multiple '
+                             'input channels, as both define grouped '
+                             'convolutions.')
         if len(in_channels) == 1 and len(out_channels) == 1:
             ConvKlass = SimpleConv
             in_channels = in_channels[0]
@@ -788,20 +849,10 @@ class Conv(Module):
             opt_conv['groups'] = max(len(in_channels), len(out_channels))
 
         conv = ConvKlass(dim, in_channels, out_channels, **opt_conv)
+        return conv
 
-        # Add batch norm
-        if isinstance(batch_norm, bool) and batch_norm:
-            batch_norm = BatchNorm(dim, conv.in_channels)
-        self.batch_norm = (batch_norm(dim, conv.in_channels) 
-                           if inspect.isclass(batch_norm)
-                           else batch_norm if callable(batch_norm)
-                           else None)
-
-        # Set conv attribute after batch_norm so that they are nicely
-        # ordered during pretty printing
-        self.conv = conv
-
-        # Add activation
+    @staticmethod
+    def _build_activation(activation):
         #   an activation can be a class (typically a Module), which is
         #   then instantiated, or a callable (an already instantiated
         #   class or a more simple function).
@@ -811,88 +862,39 @@ class Conv(Module):
         #       * have a non-learnable activation
         if isinstance(activation, str):
             activation = _map_activations.get(activation.lower(), None)
-        self.activation = (activation() if inspect.isclass(activation)
-                           else activation if callable(activation)
-                           else None)
-        
-        if isinstance(activation, tnn.ReLU):
-            self.conv.reset_parameters(a=0)
-        elif isinstance(activation, tnn.LeakyReLU):
-            self.conv.reset_parameters(a=activation.negative_slope)
-        else:
-            self.conv.reset_parameters()
+        activation = (activation() if inspect.isclass(activation)
+                      else activation if callable(activation)
+                      else None)
+        return activation
 
-    @property
-    def weight(self):
-        return self.conv.weight
+    @staticmethod
+    def _build_batch_norm(batch_norm, conv, order):
+        #   an normalization can be a class (typically a Module), which is
+        #   then instantiated, or a callable (an already instantiated
+        #   class or a more simple function).
+        dim = conv.dim
+        in_channels = (conv.in_channels if order.index('n') < order.index('c')
+                       else conv.out_channels)
+        if isinstance(batch_norm, bool) and batch_norm:
+            batch_norm = BatchNorm(dim, in_channels)
+        batch_norm = (batch_norm(dim, in_channels)
+                      if inspect.isclass(batch_norm)
+                      else batch_norm if callable(batch_norm)
+                      else None)
+        return batch_norm
 
-    @property
-    def bias(self):
-        return self.conv.bias
-
-    @property
-    def dim(self):
-        return self.conv.dim
-
-    @property
-    def in_channels(self):
-        return self.conv.in_channels
-
-    @property
-    def out_channels(self):
-        return self.conv.out_channels
-
-    @property
-    def transposed(self):
-        return self.conv.transposed
-    
-    @property
-    def stride(self):
-        return self.conv.stride
-
-    @stride.setter
-    def stride(self, value):
-        self.conv.stride = value
-
-    @property
-    def padding(self):
-        return self.conv.padding
-
-    @padding.setter
-    def padding(self, value):
-        self.conv.padding = value
-
-    @property
-    def output_padding(self):
-        return self.conv.output_padding
-
-    @output_padding.setter
-    def output_padding(self, value):
-        self.conv.output_padding = value
-
-    @property
-    def dilation(self):
-        return self.conv.dilation
-
-    @dilation.setter
-    def dilation(self, value):
-        self.conv.dilation = value
-
-    @property
-    def padding_mode(self):
-        return self.conv.padding_mode
-
-    @padding_mode.setter
-    def padding_mode(self, value):
-        self.conv.padding_mode = value
-
-    @property
-    def groups(self):
-        return self.conv.groups
-
-    @groups.setter
-    def groups(self, value):
-        self.conv.groups = value
+    weight = _defer_property('weight', 'conv')
+    bias = _defer_property('bias', 'conv')
+    dim = _defer_property('dim', 'conv')
+    in_channels = _defer_property('in_channels', 'conv')
+    out_channels = _defer_property('out_channels', 'conv')
+    transposed = _defer_property('transposed', 'conv')
+    stride = _defer_property('stride', 'conv', setter=True)
+    padding = _defer_property('padding', 'conv', setter=True)
+    output_padding = _defer_property('output_padding', 'conv', setter=True)
+    dilation = _defer_property('dilation', 'conv', setter=True)
+    padding_mode = _defer_property('padding_mode', 'conv', setter=True)
+    groups = _defer_property('groups', 'conv', setter=True)
             
     def forward(self, x, **overload):
         """Forward pass.
@@ -917,37 +919,30 @@ class Conv(Module):
         method `shape`.
 
         """
-        # Batch norm
+        order = overload.pop('order', self.order)
+        order = self._fix_order(order)
         batch_norm = overload.pop('batch_norm', self.batch_norm)
-        batch_norm = (batch_norm(self.dim, self.in_channels) 
-                      if inspect.isclass(batch_norm)
-                      else batch_norm if callable(batch_norm)
-                      else None)
-
-        # Activation
+        batch_norm = self._build_batch_norm(batch_norm, self.conv, order)
         activation = overload.pop('activation', self.activation)
-        if isinstance(activation, str):
-            activation = _map_activations.get(activation.lower(), None)
-        activation = (activation() if inspect.isclass(activation)
-                      else activation if callable(activation)
-                      else None)
-        activation = copy(activation)
+        activation = self._build_activation(activation)
 
-        
+        # make sure we can use inplace
+        activation = copy(activation)
         if (activation and self.inplace and 
                 hasattr(activation, 'inplace') and
                 not (x.is_leaf and x.requires_grad)):
             activation.inplace = True
 
         # BatchNorm + Convolution + Activation
-        if batch_norm:
-            x = batch_norm(x)
-        x = self.conv(x, **overload)
-        if activation:
-            x = activation(x)
+        for o in order:
+            if o == 'n' and batch_norm:
+                x = batch_norm(x)
+            elif o == 'c':
+                x = self.conv(x, **overload)
+            elif o == 'a' and activation:
+                x = activation(x)
         return x
 
-            
     def shape(self, x, **overload):
         """Compute output shape of the equivalent ``forward`` call.
 
@@ -967,3 +962,266 @@ class Conv(Module):
 
         """
         return self.conv.shape(x, **overload)
+
+
+class ConvBlock(Module):
+    """A block of multiple convolutions with the same number of input
+    and output channels. Usually used inside a ResBlock."""
+
+    def __init__(self,
+                 dim,
+                 channels,
+                 nb_conv=2,
+                 recurrent=False,
+                 kernel_size=3,
+                 padding_mode='zeros',
+                 groups=1,
+                 bias=True,
+                 activation=tnn.ReLU,
+                 batch_norm=True,
+                 order='nac',
+                 inplace=True):
+        """
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Number of spatial dimensions.
+
+        channels : int or sequence[int]
+            Number of channels in the input image.
+            If a sequence, grouped convolutions are used.
+
+        nb_conv : int, default=2
+            Number of convolutions
+
+        recurrent : bool, default=False
+            Use recurrent convolutions (weights are shared between blocks)
+
+        kernel_size : int or sequence[int], default=3
+            Size of the convolution kernel.
+
+        padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
+            Padding mode.
+
+        groups : int, default=1
+            Number of blocked connections from input channels to
+            output channels. Using this parameter is an alternative to
+            the use of 'sequence' input/output channels. In that case,
+            the number of input and output channels in each group is
+            found by dividing the ``input_channels`` and ``output_channels``
+            with ``groups``.
+
+        bias : bool, default=True
+            If ``True``, adds a learnable bias to the output.
+
+        activation : str or type or callable, default=ReLU
+            Activation function. An activation can be a class
+            (typically a Module), which is then instantiated, or a
+            callable (an already instantiated class or a more simple
+            function). It is useful to accept both these cases as they
+            allow to either:
+                * have a learnable activation specific to this module
+                * have a learnable activation shared with other modules
+                * have a non-learnable activation
+
+        batch_norm : bool or type or callable, default=True
+            Batch normalization layer.
+            Can be a class (typically a Module), which is then instantiated,
+            or a callable (an already instantiated class or a more simple
+            function).
+
+        order : permutation of 'nca', default='nac'
+            Order in which to perform the normalization (n), convolution (c)
+            and activation (a).
+
+        inplace : bool, default=True
+            Apply activation inplace if possible
+            (i.e., not ``is_leaf and requires_grad``).
+
+        """
+        super().__init__()
+
+        conv_opt = dict(
+            dim=dim,
+            in_channels=channels,
+            out_channels=channels,
+            kernel_size=kernel_size,
+            padding='auto',
+            padding_mode=padding_mode,
+            groups=groups,
+            bias=bias,
+            activation=activation,
+            batch_norm=batch_norm,
+            order=order,
+            inplace=inplace,
+        )
+        nb_conv_inde = 1 if recurrent else nb_conv
+        convs = [Conv(**conv_opt) for _ in range(nb_conv_inde)]
+        self.convs = tnn.ModuleList(convs)
+        self.recurrent = recurrent
+        self.nb_conv = nb_conv
+
+    def forward(self, x, **overload):
+        """
+
+        Parameters
+        ----------
+        x : (batch, channels, *spatial) tensor
+            Input tensor
+        **overload : dict
+            Some parameters can be overloaded at call time
+
+        Returns
+        -------
+        x : (batch, channels, *spatial) tensor
+            Output tensor, with the same shape as the input tensor
+
+        """
+
+        nb_conv = overload.pop('nb_conv', self.nb_conv)
+        if nb_conv != len(self.convs) and not self.recurrent:
+            raise ValueError(f'Number of required convolutions and registered '
+                             f'convolutions not consistent: '
+                             f'{nb_conv} vs. {len(self.convs)}.')
+
+        if self.recurrent:
+            conv = self.convs[0]
+            for _ in range(nb_conv):
+                x = conv(x, **overload)
+        else:
+            for conv in self.convs:
+                x = conv(x, **overload)
+        return x
+
+
+class ResBlock(Module):
+    """Residual block"""
+
+    def __init__(self,
+                 dim,
+                 channels,
+                 nb_conv=2,
+                 nb_res=2,
+                 recurrent=False,
+                 kernel_size=3,
+                 padding_mode='zeros',
+                 groups=1,
+                 bias=True,
+                 activation=tnn.ReLU,
+                 batch_norm=True,
+                 order='nac',
+                 inplace=True):
+        """
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Number of spatial dimensions.
+
+        channels : int or sequence[int]
+            Number of channels in the input image.
+            If a sequence, grouped convolutions are used.
+
+        nb_conv : int, default=2
+            Number of convolutions
+
+        nb_res : int, default=2
+            Number of residual blocks
+
+        recurrent : {'conv', 'res', 'conv+res', None}, default=None
+            Use recurrent convolutions and/or recurrent residual blocks.
+
+        kernel_size : int or sequence[int], default=3
+            Size of the convolution kernel.
+
+        padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
+            Padding mode.
+
+        groups : int, default=1
+            Number of blocked connections from input channels to
+            output channels. Using this parameter is an alternative to
+            the use of 'sequence' input/output channels. In that case,
+            the number of input and output channels in each group is
+            found by dividing the ``input_channels`` and ``output_channels``
+            with ``groups``.
+
+        bias : bool, default=True
+            If ``True``, adds a learnable bias to the output.
+
+        activation : str or type or callable, default=ReLU
+            Activation function. An activation can be a class
+            (typically a Module), which is then instantiated, or a
+            callable (an already instantiated class or a more simple
+            function). It is useful to accept both these cases as they
+            allow to either:
+                * have a learnable activation specific to this module
+                * have a learnable activation shared with other modules
+                * have a non-learnable activation
+
+        batch_norm : bool or type or callable, default=True
+            Batch normalization layer.
+            Can be a class (typically a Module), which is then instantiated,
+            or a callable (an already instantiated class or a more simple
+            function).
+
+        order : permutation of 'nca', default='nac'
+            Order in which to perform the normalization (n), convolution (c)
+            and activation (a).
+
+        inplace : bool, default=True
+            Apply activation inplace if possible
+            (i.e., not ``is_leaf and requires_grad``).
+
+        """
+
+        super().__init__()
+
+        conv_opt = dict(
+            dim=dim,
+            channels=channels,
+            nb_conv=nb_conv,
+            recurrent='conv' in recurrent,
+            kernel_size=kernel_size,
+            padding_mode=padding_mode,
+            groups=groups,
+            bias=bias,
+            activation=activation,
+            batch_norm=batch_norm,
+            order=order,
+            inplace=inplace,
+        )
+        nb_res_inde = 1 if 'res' in recurrent else nb_res
+        blocks = [ConvBlock(**conv_opt) for _ in range(nb_res_inde)]
+        self.blocks = tnn.ModuleList(blocks)
+        self.recurrent = recurrent
+
+    def forward(self, x, **overload):
+        """
+
+        Parameters
+        ----------
+        x : (batch, channels, *spatial) tensor
+            Input tensor
+        **overload : dict
+            Some parameters can be overloaded at call time
+
+        Returns
+        -------
+        x : (batch, channels, *spatial) tensor
+            Output tensor, with the same shape as the input tensor
+
+        """
+        nb_res = overload.pop('nb_res', self.nb_res)
+        if nb_res != len(self.blocks) and not self.recurrent:
+            raise ValueError(
+                f'Number of required blocks and registered '
+                f'blocks not consistent: '
+                f'{nb_res} vs. {len(self.blocks)}.')
+
+        if self.recurrent:
+            block = self.blocks[0]
+            for _ in range(nb_res):
+                x += block(x, **overload)
+        else:
+            for block in self.blocks:
+                x += block(x, **overload)
+        return x
