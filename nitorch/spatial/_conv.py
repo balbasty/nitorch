@@ -9,6 +9,36 @@ from nitorch.core.py import make_list
 from ._affine import affine_conv
 
 
+def pad_auto(dim, tensor, kernel_size, dilation=1, bound='zero'):
+    """Applies a padding that preserves the input dimensions when
+    followed by a convolution-like (i.e. moving window) operation.
+
+    Parameters
+    ----------
+    dim : int
+    tensor : (..., *spatial) tensor
+    kernel_size : [sequence of] int
+    dilation : [sequence f] int, default=1
+    bound : {'zeros', 'dft', 'dct1', 'dct2'}, default='zeros'
+
+    Returns
+    -------
+    padded : (..., *spatial_out) tensor
+
+    """
+    kernel_size = make_list(kernel_size, dim)
+    dilation = make_list(dilation, dim)
+
+    padding = []
+    for i in range(dim):
+        if kernel_size[i] % 2 == 0:
+            raise ValueError('Cannot compute automatic padding '
+                             'for even-sized kernels.')
+        padding[i] = dilation[i] * (kernel_size[i] // 2)
+    padding = [0] * (tensor.dim() - dim) + padding
+    return utils.pad(tensor, padding, side='both', mode=bound)
+
+
 def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
          dilation=1, groups=1):
     """Perform a convolution
