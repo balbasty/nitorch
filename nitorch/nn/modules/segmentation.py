@@ -300,7 +300,7 @@ class SegNet(Module):
             self.from_feat = SimpleConv(
                 dim,
                 in_channels=unet.out_channels,
-                out_channels=output_classes + (not self.head.implicit),
+                out_channels=output_classes + (not head.implicit),
                 kernel_size=1)
         self.head = head
 

@@ -328,6 +328,7 @@ class ResEncodingBlock(tnn.Sequential):
             dim,
             in_channels,
             out_channels=None,
+            bottleneck=None,
             nb_conv=2,
             nb_res=2,
             recurrent=False,
@@ -377,6 +378,7 @@ class ResEncodingBlock(tnn.Sequential):
         res = ResBlock(
             dim=dim,
             channels=in_channels,
+            bottleneck=bottleneck,
             nb_conv=nb_conv,
             nb_res=nb_res,
             recurrent=recurrent,
@@ -409,6 +411,7 @@ class ResDecodingBlock(tnn.Sequential):
             dim,
             in_channels,
             out_channels=None,
+            bottleneck=None,
             nb_conv=2,
             nb_res=2,
             recurrent=False,
@@ -461,6 +464,7 @@ class ResDecodingBlock(tnn.Sequential):
         res = ResBlock(
             dim=dim,
             channels=in_channels,
+            bottleneck=bottleneck,
             nb_conv=nb_conv,
             nb_res=nb_res,
             recurrent=recurrent,
@@ -486,7 +490,7 @@ class ResDecodingBlock(tnn.Sequential):
 
 
 @nitorchmodule
-class UResBlock(tnn.ModuleList):
+class UResBlock(tnn.Sequential):
     """U-Net with residual blocks"""
 
     def __init__(
@@ -596,8 +600,8 @@ class UResBlock(tnn.ModuleList):
             **resopt
         )
 
-        super().__init__([*encoder, *decoder, final])
-
+        super().__init__(*encoder, *decoder, final)
+        
     def forward(self, *x, return_all=False):
         """
 
