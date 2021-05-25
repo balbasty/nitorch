@@ -1,14 +1,12 @@
 import math
 import torch
 import torch.distributions as td
-from nitorch.core import py, utils
-from nitorch import spatial
 from nitorch.core.utils import unsqueeze, ensure_shape
 from nitorch.core.constants import pi
 from nitorch.core.kernels import smooth
 from nitorch.core import utils
 from nitorch import spatial
-from ..modules.base import Module
+from nitorch.nn.base import Module
 
 
 class RandomFieldSample(Module):

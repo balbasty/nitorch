@@ -9,62 +9,14 @@ compute losses on the fly along with the other (classical) outputs.
 import torch
 import torch.nn as tnn
 import inspect
-from collections import OrderedDict
 
 
-def nitorchmodule(klass):
-    """Decorator for modules to make them understand 'forward with loss'"""
+class _ModuleWithMethods(tnn.Module):
+    """A class that defines methods to manipulate losses, metrics, etc.
 
-    # copy original __call__ method
-    call = klass.__call__
-
-    # define new call method
-    def __call__(self, *args, **kwargs):
-        if '_loss' in kwargs.keys():
-            if not '_loss' in inspect.signature(self.forward).parameters.keys():
-                kwargs.pop('_loss')
-        if '_metric' in kwargs.keys():
-            if not '_metric' in inspect.signature(self.forward).parameters.keys():
-                kwargs.pop('_metric')
-        return call(self, *args, **kwargs)
-
-    # define helper to store metrics
-    @staticmethod
-    def update_dict(old_dict, new_dict):
-        for key, val in new_dict.items():
-            if key in old_dict.keys():
-                i = 1
-                while '{}/{}'.format(key, i) in old_dict.keys():
-                    i += 1
-                key = '{}/{}'.format(key, i)
-            old_dict[key] = val
-
-    # assign new methods
-    klass.__call__ = __call__
-    klass.update_dict = update_dict
-    return klass
-
-
-@nitorchmodule
-class Module(tnn.Module, object):
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.losses = {}
-        self.metrics = {}
-        self.tags = []
-        self.augmenters = []
-
-    def __getattr__(self, name):
-        # overload pytorch's getter to allow access to properties
-        # (pytorch only allows access to attributes stored in
-        # _parameters, _modules or _buffers)
-        if (name not in self._parameters and
-                name not in self._buffers and
-                name not in self._modules and
-                name in self.__class__.__dict__):
-            return getattr(self.__class__, name).fget(self)
-        return super().__getattr__(name)
+    No class actually inherits it. It is only used to hold method
+    definitions that are assigned to other classes by a decorator.
+    """
 
     def add_augmenter(self, augmenter):
         """Add one or more augmenters.
@@ -99,7 +51,7 @@ class Module(tnn.Module, object):
         self.losses[tag][''] += list(loss_fn)
         self.losses[tag].update(dict(named_loss_fn))
 
-    def set_image_loss(self, tag, *loss_fn, **named_loss_fn):
+    def set_loss(self, tag, *loss_fn, **named_loss_fn):
         """Set one or more image loss functions.
 
         Parameters
@@ -113,7 +65,7 @@ class Module(tnn.Module, object):
         if tag not in self.tags:
             raise ValueError('Loss tag "{}" not registered. '
                              'Registered tags are {}.'
-                             .format(tag, self.tags))            
+                             .format(tag, self.tags))
         self.losses[tag] = dict(named_loss_fn)
         self.losses[tag][''] = list(loss_fn)
 
@@ -201,7 +153,7 @@ class Module(tnn.Module, object):
         if tag not in self.tags:
             raise ValueError('Metric tag "{}" not registered. '
                              'Registered tags are {}.'
-                             .format(tag, self.tags))            
+                             .format(tag, self.tags))
         self.metrics[tag] = dict(metric_fn)
 
     def compute_metric(self, *, prepend=False, **tag_args):
@@ -243,7 +195,7 @@ class Module(tnn.Module, object):
             for key, metric_fn in metrics.items():
                 if not key:
                     for key, metric_fn in enumerate(metric_fn):
-                        add_metric(tag, key, metric_fn, *args)                
+                        add_metric(tag, key, metric_fn, *args)
                 else:
                     add_metric(tag, key, metric_fn, *args)
 
@@ -303,3 +255,76 @@ class Module(tnn.Module, object):
 
         """
         pass
+
+
+def nitorchmodule(klass):
+    """Decorator for modules to make them understand 'forward with loss'"""
+
+    init = klass.__init__
+    def __init__(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        self.losses = {}
+        self.metrics = {}
+        self.tags = []
+        self.augmenters = []
+    klass.__init__ = __init__
+
+    call = klass.__call__
+    def __call__(self, *args, **kwargs):
+        if '_loss' in kwargs.keys():
+            if not '_loss' in inspect.signature(self.forward).parameters.keys():
+                kwargs.pop('_loss')
+        if '_metric' in kwargs.keys():
+            if not '_metric' in inspect.signature(self.forward).parameters.keys():
+                kwargs.pop('_metric')
+        return call(self, *args, **kwargs)
+    klass.__call__ = __call__
+
+    _getattr = klass.__getattr__
+    def __getattr__(self, name):
+        # overload pytorch's getter to allow access to properties
+        # (pytorch only allows access to attributes stored in
+        # _parameters, _modules or _buffers)
+        if (name not in self._parameters and
+                name not in self._buffers and
+                name not in self._modules and
+                name in self.__class__.__dict__):
+            return getattr(self.__class__, name).fget(self)
+        return _getattr(self, name)
+    klass.__getattr__ = __getattr__
+
+    # define helper to store metrics
+    @staticmethod
+    def update_dict(old_dict, new_dict):
+        for key, val in new_dict.items():
+            if key in old_dict.keys():
+                i = 1
+                while '{}/{}'.format(key, i) in old_dict.keys():
+                    i += 1
+                key = '{}/{}'.format(key, i)
+            old_dict[key] = val
+    klass.update_dict = update_dict
+
+    if issubclass(klass, tnn.Sequential):
+        if not hasattr(klass, 'in_channels'):
+            klass.in_channels = property(lambda self: self[0].in_channels)
+        if not hasattr(klass, 'out_channels'):
+            klass.out_channels = property(lambda self: self[-1].out_channels)
+        if not hasattr(klass, 'shape'):
+            def shape(self, x):
+                for layer in self:
+                    x = layer.shape(x)
+                return x
+            klass.shape = shape
+
+    for key, value in _ModuleWithMethods.__dict__.items():
+        if key[0] != '_':
+            setattr(klass, key, value)
+    return klass
+
+
+@nitorchmodule
+class Module(tnn.Module):
+    """Syntaxic sugar: allows to inherit from Module instead of calling
+    the decorator"""
+    pass

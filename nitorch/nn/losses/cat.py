@@ -2,7 +2,7 @@
 
 import torch
 from .base import Loss
-from ..modules.base import Module
+from nitorch.nn.base import Module
 from nitorch.core import py, utils, math
 
 

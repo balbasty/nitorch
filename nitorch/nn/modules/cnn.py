@@ -8,7 +8,7 @@ from torch import nn as tnn
 from nitorch.core.py import make_list, flatten
 from nitorch.core.linalg import matvec
 from nitorch.core.utils import movedim
-from .base import nitorchmodule, Module
+from nitorch.nn.base import nitorchmodule, Module
 from .conv import Conv
 from .pool import Pool
 from .reduction import reductions, Reduction

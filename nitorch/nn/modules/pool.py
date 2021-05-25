@@ -6,7 +6,7 @@ import torch
 from nitorch.core.py import make_list, make_tuple
 from nitorch.spatial import pool
 from nitorch.nn.activations import _map_activations
-from .base import Module
+from nitorch.nn.base import Module
 
 
 def _guess_output_shape(inshape, dim, kernel_size, stride=1, dilation=1,

@@ -8,9 +8,9 @@ import torch
 from torch import nn as tnn
 from nitorch.core.py import make_tuple
 from nitorch.core import py, utils
-from .base import nitorchmodule, Module
-from .norm import BatchNorm
+from ..base import nitorchmodule, Module
 from ..activations import _map_activations
+from .norm import BatchNorm
 
 # NOTE:
 # My version of Conv allows parameters to be overridden at eval time.
@@ -32,19 +32,24 @@ from ..activations import _map_activations
 _native_padding_mode = ('zeros', 'reflect', 'replicate', 'circular')
 
 
-def _guess_output_shape(inshape, dim, kernel_size, stride=1, dilation=1,
+def _guess_output_shape(inshape, kernel_size, stride=1, dilation=1,
                         padding=0, output_padding=0, transposed=False):
     """Guess the output shape of a convolution"""
+    inshape = make_tuple(inshape)
+    dim = len(inshape)
     kernel_size = make_tuple(kernel_size, dim)
     stride = make_tuple(stride, dim)
-    padding = make_tuple(padding, dim)
     output_padding = make_tuple(output_padding, dim)
     dilation = make_tuple(dilation, dim)
 
-    N = inshape[0]
-    C = inshape[1]
-    shape = [N, C]
-    for L, S, Pi, D, K, Po in zip(inshape[2:], stride, padding,
+    if padding == 'auto':
+        if any(k % 2 == 0 for k in kernel_size):
+            raise ValueError('Padding "auto" only available with odd kernels')
+        padding = [((k - 1) * d + 1) // 2 for k, d in zip(kernel_size, dilation)]
+    padding = make_tuple(padding, dim)
+
+    shape = []
+    for L, S, Pi, D, K, Po in zip(inshape, stride, padding,
                                   dilation, kernel_size, output_padding):
         if transposed:
             shape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
@@ -403,37 +408,27 @@ class SimpleConv(Module):
         output_padding = overload.get('output_padding', self.output_padding)
         dilation = overload.get('dilation', self.dilation)
         transposed = self.transposed
-        kernel_size = make_tuple(self.kernel_size, self.dim)
-
-        stride = make_tuple(stride, self.dim)
-        output_padding = make_tuple(output_padding, self.dim)
-        dilation = make_tuple(dilation, self.dim)
-
-        if padding == 'auto':
-            padding = [((k-1)*d)//2 for k, d in zip(kernel_size, dilation)]
-        padding = make_tuple(padding, self.dim)
+        kernel_size = self.kernel_size
 
         shape = _guess_output_shape(
-            inshape, self.dim,
+            inshape[2:],
             kernel_size=kernel_size,
             stride=stride,
             dilation=dilation,
             padding=padding,
             output_padding=output_padding,
             transposed=transposed)
-        shape = list(shape)
-        shape[1] = self.out_channels
-        
-        return tuple(shape)
+        shape = (inshape[0], self.out_channels, *shape)
+        return shape
     
     def __str__(self):
         s = [f'{self.in_channels}', f'{self.out_channels}']
         s += [f'kernel_size={self.kernel_size}']
         if self.transposed:
             s += [f'transposed=True']
-        if any(s > 1 for s in self.stride):
+        if any(x > 1 for x in self.stride):
             s += [f'stride={self.stride}']
-        if any(s > 1 for s in self.dilation):
+        if any(x > 1 for x in self.dilation):
             s += [f'dilation={self.dilation}']
         if self.groups > 1:
             s += [f'groups={self.groups}']
@@ -653,9 +648,9 @@ class GroupedConv(tnn.ModuleList):
         s += [f'kernel_size={self.kernel_size}']
         if self.transposed:
             s += [f'transposed=True']
-        if any(s > 1 for s in self.stride):
+        if any(x > 1 for x in self.stride):
             s += [f'stride={self.stride}']
-        if any(s > 1 for s in self.dilation):
+        if any(x > 1 for x in self.dilation):
             s += [f'dilation={self.dilation}']
         if self.groups > 1:
             s += [f'groups={self.groups}']
@@ -964,19 +959,22 @@ class Conv(Module):
         return self.conv.shape(x, **overload)
 
 
-class ConvBlock(Module):
+@nitorchmodule
+class ConvBlock(tnn.Sequential):
     """A block of multiple convolutions with the same number of input
     and output channels. Usually used inside a ResBlock."""
 
     def __init__(self,
                  dim,
                  channels,
+                 bottleneck=None,
                  nb_conv=2,
                  recurrent=False,
                  kernel_size=3,
                  padding_mode='zeros',
                  groups=1,
                  bias=True,
+                 dilation=1,
                  activation=tnn.ReLU,
                  batch_norm=True,
                  order='nac',
@@ -990,6 +988,13 @@ class ConvBlock(Module):
         channels : int or sequence[int]
             Number of channels in the input image.
             If a sequence, grouped convolutions are used.
+
+        bottleneck : int, optional
+            If provided, a bottleneck architecture is used, where
+            1d conv are used to project the input channels onto a
+            lower-dimensional space, where the spatial convolutions
+            are performed, before being mapped back to the original
+            number of dimensions.
 
         nb_conv : int, default=2
             Number of convolutions
@@ -1013,6 +1018,8 @@ class ConvBlock(Module):
 
         bias : bool, default=True
             If ``True``, adds a learnable bias to the output.
+
+        dilation : int, default=1
 
         activation : str or type or callable, default=ReLU
             Activation function. An activation can be a class
@@ -1050,6 +1057,7 @@ class ConvBlock(Module):
             padding_mode=padding_mode,
             groups=groups,
             bias=bias,
+            dilation=dilation,
             activation=activation,
             batch_norm=batch_norm,
             order=order,
@@ -1057,142 +1065,31 @@ class ConvBlock(Module):
         )
         nb_conv_inde = 1 if recurrent else nb_conv
         convs = [Conv(**conv_opt) for _ in range(nb_conv_inde)]
-        self.convs = tnn.ModuleList(convs)
+        if bottleneck:
+            conv_opt['kernel_size'] = 1
+            conv_opt['out_channels'] = bottleneck
+            pre_conv = Conv(**conv_opt)
+            conv_opt['out_channels'] = conv_opt['in_channels']
+            conv_opt['in_channels'] = bottleneck
+            post_conv = Conv(**conv_opt)
+            convs = [pre_conv, *convs, post_conv]
+        self.convs = super().__init__(*convs)
         self.recurrent = recurrent
         self.nb_conv = nb_conv
 
-    def forward(self, x, **overload):
-        """
+    in_channels = property(lambda self: self[0].in_channels)
+    out_channels = property(lambda self: self[-1].out_channels)
 
-        Parameters
-        ----------
-        x : (batch, channels, *spatial) tensor
-            Input tensor
-        **overload : dict
-            Some parameters can be overloaded at call time
-
-        Returns
-        -------
-        x : (batch, channels, *spatial) tensor
-            Output tensor, with the same shape as the input tensor
-
-        """
-
+    def shape(self, x, **overload):
         nb_conv = overload.pop('nb_conv', self.nb_conv)
-        if nb_conv != len(self.convs) and not self.recurrent:
-            raise ValueError(f'Number of required convolutions and registered '
-                             f'convolutions not consistent: '
-                             f'{nb_conv} vs. {len(self.convs)}.')
-
         if self.recurrent:
-            conv = self.convs[0]
             for _ in range(nb_conv):
-                x = conv(x, **overload)
+                for conv in self:
+                    x = conv.shape(x, **overload)
         else:
-            for conv in self.convs:
-                x = conv(x, **overload)
+            for conv in self:
+                x = conv.shape(x, **overload)
         return x
-
-
-class ResBlock(Module):
-    """Residual block"""
-
-    def __init__(self,
-                 dim,
-                 channels,
-                 nb_conv=2,
-                 nb_res=2,
-                 recurrent=False,
-                 kernel_size=3,
-                 padding_mode='zeros',
-                 groups=1,
-                 bias=True,
-                 activation=tnn.ReLU,
-                 batch_norm=True,
-                 order='nac',
-                 inplace=True):
-        """
-        Parameters
-        ----------
-        dim : {1, 2, 3}
-            Number of spatial dimensions.
-
-        channels : int or sequence[int]
-            Number of channels in the input image.
-            If a sequence, grouped convolutions are used.
-
-        nb_conv : int, default=2
-            Number of convolutions
-
-        nb_res : int, default=2
-            Number of residual blocks
-
-        recurrent : {'conv', 'res', 'conv+res', None}, default=None
-            Use recurrent convolutions and/or recurrent residual blocks.
-
-        kernel_size : int or sequence[int], default=3
-            Size of the convolution kernel.
-
-        padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
-            Padding mode.
-
-        groups : int, default=1
-            Number of blocked connections from input channels to
-            output channels. Using this parameter is an alternative to
-            the use of 'sequence' input/output channels. In that case,
-            the number of input and output channels in each group is
-            found by dividing the ``input_channels`` and ``output_channels``
-            with ``groups``.
-
-        bias : bool, default=True
-            If ``True``, adds a learnable bias to the output.
-
-        activation : str or type or callable, default=ReLU
-            Activation function. An activation can be a class
-            (typically a Module), which is then instantiated, or a
-            callable (an already instantiated class or a more simple
-            function). It is useful to accept both these cases as they
-            allow to either:
-                * have a learnable activation specific to this module
-                * have a learnable activation shared with other modules
-                * have a non-learnable activation
-
-        batch_norm : bool or type or callable, default=True
-            Batch normalization layer.
-            Can be a class (typically a Module), which is then instantiated,
-            or a callable (an already instantiated class or a more simple
-            function).
-
-        order : permutation of 'nca', default='nac'
-            Order in which to perform the normalization (n), convolution (c)
-            and activation (a).
-
-        inplace : bool, default=True
-            Apply activation inplace if possible
-            (i.e., not ``is_leaf and requires_grad``).
-
-        """
-
-        super().__init__()
-
-        conv_opt = dict(
-            dim=dim,
-            channels=channels,
-            nb_conv=nb_conv,
-            recurrent='conv' in recurrent,
-            kernel_size=kernel_size,
-            padding_mode=padding_mode,
-            groups=groups,
-            bias=bias,
-            activation=activation,
-            batch_norm=batch_norm,
-            order=order,
-            inplace=inplace,
-        )
-        nb_res_inde = 1 if 'res' in recurrent else nb_res
-        blocks = [ConvBlock(**conv_opt) for _ in range(nb_res_inde)]
-        self.blocks = tnn.ModuleList(blocks)
-        self.recurrent = recurrent
 
     def forward(self, x, **overload):
         """
@@ -1210,18 +1107,18 @@ class ResBlock(Module):
             Output tensor, with the same shape as the input tensor
 
         """
-        nb_res = overload.pop('nb_res', self.nb_res)
-        if nb_res != len(self.blocks) and not self.recurrent:
-            raise ValueError(
-                f'Number of required blocks and registered '
-                f'blocks not consistent: '
-                f'{nb_res} vs. {len(self.blocks)}.')
+
+        if 'nb_conv' in overload and not self.recurrent:
+            raise ValueError('Number of convolutions can only be changed '
+                             'at call time if block is recurrent')
+        nb_conv = overload.pop('nb_conv', self.nb_conv)
 
         if self.recurrent:
-            block = self.blocks[0]
-            for _ in range(nb_res):
-                x += block(x, **overload)
+            for _ in range(nb_conv):
+                for conv in self:
+                    x = conv(x, **overload)
         else:
-            for block in self.blocks:
-                x += block(x, **overload)
+            for conv in self:
+                x = conv(x, **overload)
         return x
+

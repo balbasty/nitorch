@@ -1,13 +1,23 @@
-import torch
+"""Dense (semantic) segmentation
+
+ClassificationHead : base class for heads adapted to different losses
+    LogisticHead
+    FocalHead
+    HingeHead
+    DiceHead
+ReweightingLayer : layer that reweights posterior probabilities
+SegNet : a generic segmentation network (maps images to posterior probabilities)
+"""
+
 import torch.nn as tnn
-from .. import check
-from ..losses import cat as catloss
-from ..activations import SoftMax
-from .base import Module
-from .cnn import UNet2
-from .conv import Conv
-from .seg_utils import board2
 import torch
+from .. import check
+from ..base import Module
+from ..activations import SoftMax
+from ..losses import cat as catloss
+from .cnn import UNet2
+from .conv import Conv, SimpleConv
+from .seg_utils import board2
 
 
 class ClassificationHead(Module):
@@ -17,7 +27,7 @@ class ClassificationHead(Module):
         - Computing implicit scores
         - Computing the maximum score labels
         - Computing (when possible) the true posterior
-          (The softmax of the score is returned when the trus posterior
+          (The softmax of the score is returned when the true posterior
            cannot be recovered. This is the case for e.g. the hinge loss)
     """
 
@@ -35,7 +45,7 @@ class ClassificationHead(Module):
 
         Returns:
         --------
-        score : (batch,, classes+1, *spatial
+        score : (batch,, classes+1, *spatial) tensor
 
         """
         implicit = overload.get('implicit', self.implicit)
@@ -184,7 +194,7 @@ class ReweightingLayer(Module):
             Number of input and output classes
         implicit : bool, default=False
             Whether there is an implicit class.
-            If True, aa bias term is added to the convolution.
+            If True, a bias term is added to the convolution.
         """
         super().__init__()
         self.conv = Conv(1, nb_classes, nb_classes, bias=implicit)
@@ -210,6 +220,9 @@ class SegNet(Module):
             dim,
             output_classes=1,
             input_channels=1,
+            head=LogisticHead,
+            unet=None,
+            *,
             encoder=None,
             decoder=None,
             conv_per_layer=1,
@@ -217,8 +230,7 @@ class SegNet(Module):
             pool=None,
             unpool=None,
             activation=tnn.LeakyReLU(0.2),
-            batch_norm=True,
-            head=LogisticHead):
+            batch_norm=True):
         """
 
         Parameters
@@ -229,6 +241,17 @@ class SegNet(Module):
             Number of classes, excluding background
         input_channels : int, default=1
             Number of input channels
+        head : ClassificationHead, default=LogisticHead
+            Either a type (which is then instantiated) or an instance.
+        unet : Module, optional
+            An instantiated network that maps from input feature to
+            output feature space. Additional linear layers will be
+            created to map from input channels to input features
+            and from output features to output classes.
+            If not provided, a default UNet is used.
+
+        Other Parameters (only if `unet is None`)
+        ----------------
         encoder : sequence[int], optional
             Number of features per encoding layer
         decoder : sequence[int], optional
@@ -237,8 +260,8 @@ class SegNet(Module):
             Number of convolution per scale
         kernel_size : int or sequence[int], default=3
             Kernel size
-        pool
-        unpool
+        pool : str, default=None
+        unpool : str, default=None
         activation : str or callable, default=LeakyReLU(0.2)
             Activation function in the UNet.
         batch_norm : bool or callable, default=True
@@ -250,30 +273,46 @@ class SegNet(Module):
         """
         super().__init__()
 
-        self.output_classes = output_classes
-        self.head = head if callable(head) else head()
-        self.unet = UNet2(
-            dim,
-            in_channels=input_channels,
-            out_channels=output_classes + (not self.head.implicit),
-            encoder=encoder,
-            decoder=decoder,
-            conv_per_layer=conv_per_layer,
-            kernel_size=kernel_size,
-            pool=pool,
-            unpool=unpool,
-            activation=activation,
-            batch_norm=batch_norm)
+        self.dim = dim
+        head = head if callable(head) else head()
+        if unet is None:
+            self.unet = UNet2(
+                dim,
+                in_channels=input_channels,
+                out_channels=output_classes + (not head.implicit),
+                encoder=encoder,
+                decoder=decoder,
+                conv_per_layer=conv_per_layer,
+                kernel_size=kernel_size,
+                pool=pool,
+                unpool=unpool,
+                activation=activation,
+                batch_norm=batch_norm)
+            self.to_feat = lambda x: x
+            self.from_feat = lambda x: x
+        else:
+            self.to_feat = SimpleConv(
+                dim,
+                in_channels=input_channels,
+                out_channels=unet.in_channels,
+                kernel_size=1)
+            self.unet = unet
+            self.from_feat = SimpleConv(
+                dim,
+                in_channels=unet.out_channels,
+                out_channels=output_classes + (not self.head.implicit),
+                kernel_size=1)
+        self.head = head
 
         # register loss tag
         self.tags = ['score', 'posterior']
 
     # defer properties
-    dim = property(lambda self: self.unet.dim)
-    encoder = property(lambda self: self.unet.encoder)
-    decoder = property(lambda self: self.unet.decoder)
-    kernel_size = property(lambda self: self.unet.kernel_size)
-    activation = property(lambda self: self.unet.activation)
+    # dim = property(lambda self: self.unet.dim)
+    # encoder = property(lambda self: self.unet.encoder)
+    # decoder = property(lambda self: self.unet.decoder)
+    # kernel_size = property(lambda self: self.unet.kernel_size)
+    # activation = property(lambda self: self.unet.activation)
 
     def board(self, tb, **k):
         return board2(self, tb, **k, implicit=True)
@@ -313,7 +352,7 @@ class SegNet(Module):
         check.dim(self.dim, image)
 
         # unet
-        score = self.unet(image)
+        score = self.from_feat(self.unet(self.to_feat(image)))
         prob = self.head.posterior(score)
         score = self.head.score(score)
 

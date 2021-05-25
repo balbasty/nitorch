@@ -1,6 +1,6 @@
 import torch
 import torch.nn as tnn
-from ..modules.base import Module
+from nitorch.nn.base import Module
 from ..modules.cnn import UNet, CNN
 from ..modules.spatial import GridPull, GridExp, GridResize, AffineGrid, \
     AffineExp, AffineLog, AffineClassic, \

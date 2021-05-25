@@ -1,7 +1,7 @@
 import torch
 from nitorch.core.utils import expand, channel2last
 from nitorch.core import py, utils, math
-from ..modules.base import Module
+from nitorch.nn.base import Module
 from .distribution import RandomDistribution
 from .field import RandomSplineSample
 

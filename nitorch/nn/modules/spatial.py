@@ -1,10 +1,24 @@
-"""Spatial transformation layers."""
+"""Spatial transformation layers.
+
+GridPull : resample according to a dense transformation
+GridPush : splat (adjoint of pull) according to a dense transformation
+GridPushCount : splat an image of ones
+GridExp : exponentiate a stationary velocity field
+GridShoot : exponentiate a velocity field by geodesic shooting
+AffineExp : exponentiate an affine matrix from its Lie algebra
+AffineLog : project an affine matrix on its Lie algebra
+AffineClassic : build affine by composing translations/rotations/etc.
+AffineClassicInverse : recover translations/rotations parameters
+AffineGrid : build a dense transformation from an affine matrix
+Resize : resize an image by a factor
+GridResize : resize a grid (transformation or displacement) by a factor
+"""
 
 import torch
 from nitorch import core, spatial
 from nitorch.core import utils
 from nitorch.core.py import make_list
-from .base import Module
+from nitorch.nn.base import Module
 
 
 _interpolation_doc = \

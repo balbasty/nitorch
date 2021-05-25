@@ -6,9 +6,9 @@ from nitorch.core.utils import channel2last, unsqueeze
 from nitorch.core.py import make_list
 from nitorch.core.linalg import matvec
 from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean
-from ..modules.base import Module
+from nitorch.nn.base import Module
 from ..modules.spatial import GridExp, GridPull
-from .field import RandomFieldSample, RandomSplineSample
+from .field import RandomSplineSample
 
 
 __all__ = ['VelocitySample', 'DiffeoSample', 'AffineSample', 'GridSample',

@@ -1,6 +1,17 @@
-"""Various reduction layers."""
+"""Various reduction layers.
 
-from .base import Module
+Reductions apply a function across one or several dimensions and collapse them.
+
+(Nan)MaxReduction
+(Nan)MinReduction
+(Nan)MedianReduction
+(Nan)SumReduction
+(Nan)MeanReduction
+(Nan)VarReduction
+(Nan)StdReduction
+"""
+
+from nitorch.nn.base import Module
 from nitorch.core import math
 
 

@@ -1,4 +1,6 @@
-from .base import Module
+"""Work In Progress: joint segmentation and registration"""
+
+from nitorch.nn.base import Module
 from .cnn import UNet, UUNet, WNet, UNet2, SEWNet
 from .spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax

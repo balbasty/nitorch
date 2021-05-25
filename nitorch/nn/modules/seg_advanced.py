@@ -1,9 +1,28 @@
+"""Advanced segmentation networks (by Mikael Brudfors)
+
+MeanSpaceNet : splat/pull images to/from a common space
+MRFNet : A recurrent head that refines segmentation by optimising a Markov Random Field
+SegMRFNet : A MRFNet plugged at the end of a SegNet
+
+References
+----------
+..[1] "An MRF-UNet Product of Experts for Image Segmentation"
+      Mikael Brudfors, Yaël Balbastre, John Ashburner, Geraint Rees,
+      Parashkev Nachev, Sébastien Ourselin, M. Jorge Cardoso
+      MIDL (2021)
+      https://arxiv.org/abs/2104.05495
+..[2] "A Splat Layer for Improved CNN Segmentation at Multiple Resolutions"
+      Mikael Brudfors, Yaël Balbastre, John Ashburner, Geraint Rees,
+      Parashkev Nachev, Sébastien Ourselin, M. Jorge Cardoso
+      In prep. (2021)
+"""
+
 import torch
 import torch.nn as tnn
 from nitorch import spatial
 from nitorch.core import utils, math
 from .. import check
-from .base import Module
+from nitorch.nn.base import Module
 from .cnn import UNet, MRF
 from .spatial import GridPull, GridPushCount
 from ..generators import DiffeoSample
