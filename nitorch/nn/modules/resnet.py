@@ -390,6 +390,7 @@ class ResEncodingBlock(tnn.Sequential):
             dim=dim,
             in_channels=in_channels,
             out_channels=out_channels,
+            batch_norm=batch_norm,
             pool=pool,
             stride=stride)
         super().__init__(res, down)
@@ -476,6 +477,7 @@ class ResDecodingBlock(tnn.Sequential):
             dim=dim,
             in_channels=in_channels,
             out_channels=out_channels,
+            batch_norm=batch_norm,
             unpool=unpool,
             stride=stride)
         super().__init__(res, down)
