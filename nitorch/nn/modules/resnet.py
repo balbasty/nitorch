@@ -507,7 +507,7 @@ class UResBlock(tnn.Sequential):
             stride=2,
             pool='conv',
             unpool='conv',
-            activation=tnn.ReLU,
+            activation=tnn.LeakyReLU(0.2),
             batch_norm=True):
         """
 
