@@ -325,6 +325,22 @@ class ModelTrainer:
         self._eval_set = val
         self._update_nb_steps()
 
+    def _batch_to(self, elem):
+        """Convert a minibatch to correct dtype and device"""
+        if torch.is_tensor(elem):
+            if elem.dtype.is_floating_point:
+                elem = elem.to(dtype=self.dtype, device=self.device)
+            else:
+                elem = elem.to(device=self.device)
+        return elem
+
+    def _get_batch_size(self, batch):
+        """Find a tensor in the batch tuple and return its length"""
+        for elem in batch:
+            if torch.is_tensor(elem):
+                return len(elem)
+        return 1
+
     def _train(self, epoch=0):
         """Train for one epoch"""
 
@@ -347,17 +363,8 @@ class ModelTrainer:
             losses = {}
             metrics = {}
             # load input
-            batch = make_tuple(batch)
-            batch = tuple(b.to(device=self.device) if torch.is_tensor(b)
-                          else b for b in batch)
-            batch = tuple(b.to(dtype=self.dtype)
-                          if torch.is_tensor(b) and b.dtype.is_floating_point
-                          else b for b in batch)
-            batch_size = 1
-            for elem in batch:
-                if torch.is_tensor(elem):
-                    batch_size = len(elem)
-                    break
+            batch = tuple(map(self._batch_to, make_tuple(batch)))
+            batch_size = self._get_batch_size(batch)
             nb_batches += batch_size
             # forward pass
             self.optimizer.zero_grad()
@@ -416,26 +423,17 @@ class ModelTrainer:
             nb_batches = 0
             nb_steps = len(self.eval_set)
             log_interval = self.log_interval or max(nb_steps // 200, 1)
-            if hasattr(self.train_set, 'iter'):
-                iterator = self.train_set.iter(device=self.device)
+            if hasattr(self.eval_set, 'iter'):
+                iterator = self.eval_set.iter(device=self.device)
             else:
-                iterator = self.train_set.__iter__()
+                iterator = self.eval_set.__iter__()
             for n_batch, batch in enumerate(iterator):
                 losses = {}
                 metrics = {}
-                # forward pass
-                batch = make_tuple(batch)
-                batch = tuple(b.to(device=self.device) if torch.is_tensor(b)
-                              else b for b in batch)
-                batch = tuple(b.to(dtype=self.dtype)
-                              if torch.is_tensor(b) and b.dtype.is_floating_point
-                              else b for b in batch)
-                batch_size = 1
-                for elem in batch:
-                    if torch.is_tensor(elem):
-                        batch_size = len(elem)
-                        break
+                batch = tuple(map(self._batch_to, make_tuple(batch)))
+                batch_size = self._get_batch_size(batch)
                 nb_batches += batch_size
+                # forward pass
                 self.optimizer.zero_grad()
                 output = self.model(*batch, _loss=losses, _metric=metrics)
                 loss = sum(losses.values())

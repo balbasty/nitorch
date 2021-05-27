@@ -9,7 +9,7 @@ from nitorch.core.py import make_list, flatten
 from nitorch.core.linalg import matvec
 from nitorch.core.utils import movedim
 from nitorch.nn.base import nitorchmodule, Module
-from .conv import Conv
+from .conv import ConvBlock
 from .pool import Pool
 from .reduction import reductions, Reduction
 from .spatial import Resize
@@ -204,14 +204,14 @@ class Down(tnn.ModuleList):
                           stride=stride,
                           activation=activation)
         else:
-            module = Conv(dim,
-                          in_channels, out_channels,
-                          kernel_size=kernel_size,
-                          stride=stride,
-                          activation=activation,
-                          groups=groups,
-                          bias=bias,
-                          batch_norm=batch_norm)
+            module = ConvBlock(dim,
+                               in_channels, out_channels,
+                               kernel_size=kernel_size,
+                               stride=stride,
+                               activation=activation,
+                               groups=groups,
+                               bias=bias,
+                               batch_norm=batch_norm)
         modules = [module]
         if stitch:
             modules.append(Stitch(stitch, stitch))
@@ -284,16 +284,16 @@ class Up(tnn.ModuleList):
         kernel_size = make_list(kernel_size, dim)
         kernel_size = [k or s for k, s in zip(kernel_size, stride)]
 
-        module = Conv(dim,
-                      in_channels, out_channels,
-                      transposed=True,
-                      kernel_size=kernel_size,
-                      stride=stride,
-                      activation=activation,
-                      groups=groups,
-                      bias=bias,
-                      batch_norm=batch_norm,
-                      output_padding=output_padding)
+        module = ConvBlock(dim,
+                           in_channels, out_channels,
+                           transposed=True,
+                           kernel_size=kernel_size,
+                           stride=stride,
+                           activation=activation,
+                           groups=groups,
+                           bias=bias,
+                           batch_norm=batch_norm,
+                           output_padding=output_padding)
         modules = [module]
         if stitch:
             modules.append(Stitch(stitch, stitch))
@@ -430,7 +430,7 @@ class StackedConv(tnn.ModuleList):
         # stacked conv (without strides)
         modules = []
         for d, (i, o, a, bn, g, s, b) in enumerate(all_shapes):
-            modules.append(Conv(
+            modules.append(ConvBlock(
                 dim, i, o, kernel_size,
                 activation=a,
                 batch_norm=bn,
@@ -442,7 +442,7 @@ class StackedConv(tnn.ModuleList):
         
         # last conv (strided if not pool)
         i, o, a, bn, g, s, b = final_shape
-        modules.append(Conv(
+        modules.append(ConvBlock(
             dim, i, o, kernel_size,
             transposed=transposed and not pool,
             activation=a,
@@ -461,7 +461,7 @@ class StackedConv(tnn.ModuleList):
                 stride = [1/s for s in make_list(stride)]
                 modules.append(Resize(factor=stride, anchor='f', interpolation=0))
             elif pool == 'conv':
-                modules.append(Conv(
+                modules.append(ConvBlock(
                     dim, o, o, stride,
                     transposed=transposed,
                     activation=None,
@@ -486,39 +486,39 @@ class StackedConv(tnn.ModuleList):
     @property
     def stride(self):
         for layer in reversed(self):
-            if isinstance(self, (Pool, Conv)):
+            if isinstance(self, (Pool, ConvBlock)):
                 return layer.stride
             
     @property
     def output_padding(self):
         for layer in reversed(self):
-            if isinstance(self, Conv):
+            if isinstance(self, ConvBlock):
                 return layer.output_padding
         return 0
 
     @property
     def in_channels(self):
         for layer in self:
-            if isinstance(layer, Conv):
+            if isinstance(layer, ConvBlock):
                 return layer.in_channels
 
     @property
     def out_channels(self):
         for layer in reversed(self):
-            if isinstance(layer, Conv):
+            if isinstance(layer, ConvBlock):
                 return layer.out_channels
 
     @property
     def out_channels_last(self):
         for layer in reversed(self):
-            if isinstance(layer, Conv):
+            if isinstance(layer, ConvBlock):
                 return layer.in_channels
 
     def shape(self, x, **k):
         if torch.is_tensor(x):
             x = tuple(x.shape)
         for layer in self:
-            if isinstance(layer, (Conv, Pool, Resize)):
+            if isinstance(layer, (ConvBlock, Pool, Resize)):
                 x = layer.shape(x, **k)
         return x
     
@@ -546,7 +546,7 @@ class StackedConv(tnn.ModuleList):
         def is_last(layer):
             if isinstance(layer, (Pool, Resize)):
                 return True
-            if isinstance(layer, Conv):
+            if isinstance(layer, ConvBlock):
                 if not all(s == 1 for s in make_list(layer.stride)):
                     return True
             return False
@@ -564,7 +564,7 @@ class StackedConv(tnn.ModuleList):
         if 'cat' in return_last:
             last.append(x)
         for layer in self:
-            if isinstance(layer, Conv) and layer.transposed:
+            if isinstance(layer, ConvBlock) and layer.transposed:
                 kwargs = dict(output_padding=output_padding)
             elif isinstance(layer, Resize):
                 kwargs = dict(output_padding=output_padding)
@@ -1162,11 +1162,11 @@ class UNet(tnn.Sequential):
         input_final = make_list(input_final)
         if len(input_final) == 1:
             input_final = [input_final[0]//len(out_channels)] * len(out_channels)
-        stk = Conv(dim, input_final, out_channels,
-                   kernel_size=kernel_size,
-                   activation=activation_final,
-                   batch_norm=batch_norm,
-                   padding='auto')
+        stk = ConvBlock(dim, input_final, out_channels,
+                        kernel_size=kernel_size,
+                        activation=activation_final,
+                        batch_norm=batch_norm,
+                        padding='auto')
         modules.append(('final', stk))
 
         super().__init__(OrderedDict(modules))
@@ -1377,14 +1377,14 @@ class MRF(tnn.Sequential):
         # make layers
         modules = []
 
-        module = Conv(dim,
-                      in_channels=num_classes,
-                      out_channels=num_filters,
-                      kernel_size=kernel_size,
-                      activation=mrf_activation,
-                      batch_norm=mrf_batch_norm,
-                      bias=mrf_bias,
-                      padding='auto')
+        module = ConvBlock(dim,
+                           in_channels=num_classes,
+                           out_channels=num_filters,
+                           kernel_size=kernel_size,
+                           activation=mrf_activation,
+                           batch_norm=mrf_batch_norm,
+                           bias=mrf_bias,
+                           padding='auto')
 
         center = tuple(k//2 for k in kernel_size)
         center = (slice(None),) * 2 + center
@@ -1507,13 +1507,13 @@ class UNet2(tnn.Sequential):
 
         modules = []
         if not pool:
-            first = Conv(dim,
-                         in_channels=in_channels[0],
-                         out_channels=encoder[0],
-                         kernel_size=kernel_size,
-                         activation=activation,
-                         batch_norm=batch_norm,
-                         padding='auto')
+            first = ConvBlock(dim,
+                              in_channels=in_channels[0],
+                              out_channels=encoder[0],
+                              kernel_size=kernel_size,
+                              activation=activation,
+                              batch_norm=batch_norm,
+                              padding='auto')
             modules.append(('first', first))
 
         modules_encoder = []
@@ -1617,9 +1617,9 @@ class UNet2(tnn.Sequential):
             modules.append(('stack', Cat()))
             last_stack = cin
 
-        final = Conv(dim, last_stack, out_channels,
-                     kernel_size=kernel_size,
-                     padding='auto')
+        final = ConvBlock(dim, last_stack, out_channels,
+                          kernel_size=kernel_size,
+                          padding='auto')
         modules.append(('final', final))
 
         super().__init__(OrderedDict(modules))
@@ -1783,13 +1783,13 @@ class UUNet(tnn.Sequential):
         activation, final_activation = make_list(activation, 2)
 
         modules = []
-        first = Conv(dim,
-                     in_channels=in_channels,
-                     out_channels=encoder[0],
-                     kernel_size=kernel_size,
-                     activation=activation,
-                     batch_norm=batch_norm,
-                     padding='auto')
+        first = ConvBlock(dim,
+                          in_channels=in_channels,
+                          out_channels=encoder[0],
+                          kernel_size=kernel_size,
+                          activation=activation,
+                          batch_norm=batch_norm,
+                          padding='auto')
         modules.append(('first', first))
 
         modules_encoder = []
@@ -1862,10 +1862,10 @@ class UUNet(tnn.Sequential):
             modules.append(('stack', Cat()))
             last_stack = cin
 
-        final = Conv(dim, last_stack, out_channels,
-                     kernel_size=kernel_size,
-                     activation=final_activation,
-                     padding='auto')
+        final = ConvBlock(dim, last_stack, out_channels,
+                          kernel_size=kernel_size,
+                          activation=final_activation,
+                          padding='auto')
         modules.append(('final', final))
 
         super().__init__(OrderedDict(modules))
@@ -2063,7 +2063,7 @@ class WNet(tnn.Sequential):
         modules = OrderedDict()
 
         # --- initial feature extraction --------------------------------
-        modules['first'] = Conv(
+        modules['first'] = ConvBlock(
             dim,
             in_channels=in_channels,
             out_channels=encoder1[0],
@@ -2204,7 +2204,7 @@ class WNet(tnn.Sequential):
             last_stack = cin
 
         # --- final layer ----------------------------------------------
-        modules['final'] = Conv(
+        modules['final'] = ConvBlock(
             dim, last_stack, out_channels,
             kernel_size=final_kernel_size,
             activation=final_activation,
@@ -2212,7 +2212,7 @@ class WNet(tnn.Sequential):
 
         # --- middle output --------------------------------------------
         if mid_channels:
-            modules['middle'] = Conv(
+            modules['middle'] = ConvBlock(
                 dim, modules['encoder2'][0].out_channels_last, mid_channels,
                 kernel_size=final_kernel_size,
                 activation=final_activation,

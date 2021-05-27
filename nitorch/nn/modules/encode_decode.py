@@ -4,8 +4,8 @@ import torch.nn as tnn
 import torch
 from nitorch.core import py, utils
 from ..base import Module, nitorchmodule
-from .pool import Pool
-from .conv import Conv
+from .pool import pool_map
+from .conv import ConvBlock
 from .spatial import Resize
 
 
@@ -157,7 +157,6 @@ class DownStep(tnn.Sequential):
     channel mapping is linear (no activation, no bias). Possible
     methods are:
     - Pooling + Channel-Conv
-    - Subsampling + Channel-Conv
     - Strided conv
 
     """
@@ -172,7 +171,8 @@ class DownStep(tnn.Sequential):
             activation=None,
             batch_norm=False,
             groups=1,
-            bias=False):
+            bias=False,
+            order='nac'):
         """
 
         Parameters
@@ -195,51 +195,45 @@ class DownStep(tnn.Sequential):
         batch_norm : [sequence of] bool, default=False
             Batch normalization before each convolution (if strided conv).
 
-        pool : {'max', 'median', 'mean', 'sum', 'conv', None}, default=None
+        pool : pool_like or int or None, default=None
             Pooling used to change resolution:
-            'max', 'median', 'mean', 'sum' : moving window + channel-conv
-            'conv' : strided convolution
-            None : subsampling + channel-conv
+            - pool_like ('max', 'mean', ...)' : moving window + channel-conv
+            - int : strided convolution with this kernel size
+            - None : strided convolution with same kernel size as stride size
 
         groups : [sequence of] int, default=1
             Number of groups per convolution. If > 1, a grouped convolution
             is performed, which is equivalent to `groups` independent
-            layers.
+            channels.
 
         bias : bool, default=True
             Include a bias term in the convolution.
+
+        order : permutation of 'nac', default='nac'
+            Order in which to perform the normalization ('n'),
+            activation ('a') and convolution ('c').
 
         """
         if not pool and (not in_channels or not out_channels):
             raise ValueError('Number of channels mandatory for strided conv')
         stride = py.make_list(stride, dim)
 
-        if pool in ('max', 'median', 'mean', 'sum'):
-            module = Pool(dim,
-                          kernel_size=stride,
-                          stride=stride)
-        elif pool == 'conv':
-            module = Conv(dim,
-                          in_channels, out_channels,
-                          kernel_size=stride,
-                          bias=bias,
-                          stride=stride,
-                          activation=activation,
-                          groups=groups,
-                          batch_norm=batch_norm)
+        opt = dict(dim=dim,
+                   in_channels=in_channels,
+                   out_channels=out_channels,
+                   bias=bias,
+                   activation=activation,
+                   groups=groups,
+                   batch_norm=batch_norm,
+                   order=order)
+
+        if pool in pool_map:
+            Pool = pool_map(pool)
+            modules = [Pool(dim, kernel_size=stride, stride=stride),
+                       ConvBlock(kernel_size=1, stride=1, **opt)]
         else:
-            module = Subsample(stride=stride)
-        modules = [module]
-
-        if pool != 'conv':
-            modules.append(Conv(dim,
-                                in_channels, out_channels,
-                                kernel_size=1,
-                                bias=bias,
-                                activation=activation,
-                                groups=groups,
-                                batch_norm=batch_norm))
-
+            pool = pool or stride
+            modules = [ConvBlock(kernel_size=pool, stride=stride, **opt)]
         super().__init__(*modules)
 
     def shape(self, x, **overload):
@@ -264,10 +258,9 @@ class DownStep(tnn.Sequential):
                 opt['kernel_size'] = opt['stride']
             x = conv(x, **overload, **opt)
         else:
-            # pool|sub + conv
+            # pool + conv
             pool, conv = self
-            if not isinstance(pool, Subsample) and 'stride' in opt:
-                opt['kernel_size'] = opt['stride']
+            opt['kernel_size'] = opt['stride']
             x = pool(x, **opt)
             x = conv(x, **overload)
         return x
@@ -299,7 +292,8 @@ class UpStep(tnn.Sequential):
             activation=None,
             batch_norm=False,
             groups=1,
-            bias=False):
+            bias=False,
+            order='nac'):
         """
 
         Parameters
@@ -324,11 +318,11 @@ class UpStep(tnn.Sequential):
         batch_norm : [sequence of] bool, default=False
             Batch normalization before each convolution (if strided conv).
 
-        unpool : {'conv', 'up', 0..7}, default=0
-            Unpooling used to change resolution:
-            'conv' : strided convolution
-            'up' : upsampling (without filling) + channel-conv
-            0..7 : upsampling (of a given order) + channel-conv
+        unpool : interpolation_like or int or None, default=None
+            Pooling used to change resolution:
+            - interpolation_like ('nearest', 'linear')' : upsampling + channel-conv
+            - int : strided convolution with this kernel size
+            - None : strided convolution with same kernel size as stride size
 
         groups : [sequence of] int, default=1
             Number of groups per convolution. If > 1, a grouped convolution
@@ -338,43 +332,36 @@ class UpStep(tnn.Sequential):
         bias : bool, default=True
             Include a bias term in the convolution.
 
+        order : permutation of 'nac', default='nac'
+            Order in which to perform the normalization ('n'),
+            activation ('a') and convolution ('c').
+
         """
         if not in_channels or not out_channels:
             raise ValueError('Number of channels mandatory')
         out_channels = out_channels or in_channels
         stride = py.make_list(stride, dim)
 
-        if unpool == 'conv':
-            module = Conv(dim,
-                          in_channels, out_channels,
-                          kernel_size=stride,
-                          bias=bias,
-                          stride=stride,
-                          transposed=True,
-                          activation=activation,
-                          groups=groups,
-                          batch_norm=batch_norm,
-                          output_padding=output_padding)
-        elif isinstance(unpool, int):
-            module = Resize(factor=stride,
-                            anchor='f',
-                            interpolation=unpool,
-                            bound='zero',
-                            extrapolate=False,
-                            output_padding=output_padding)
-        else:
-            module = Upsample(stride=stride,
-                              output_padding=output_padding)
-        modules = [module]
+        opt = dict(dim=dim,
+                   in_channels=in_channels,
+                   out_channels=out_channels,
+                   bias=bias,
+                   activation=activation,
+                   groups=groups,
+                   batch_norm=batch_norm,
+                   order=order)
 
-        if unpool != 'conv':
-            modules.append(Conv(dim,
-                                in_channels, out_channels,
-                                kernel_size=1,
-                                bias=bias,
-                                activation=activation,
-                                groups=groups,
-                                batch_norm=batch_norm))
+        if unpool in ('nearest', 'linear'):
+            modules = [Resize(factor=stride,
+                              anchor='f',
+                              interpolation=unpool,
+                              bound='zero',
+                              extrapolate=False,
+                              output_padding=output_padding),
+                       ConvBlock(kernel_size=1, stride=1, **opt)]
+        else:
+            unpool = unpool or stride
+            modules = [ConvBlock(kernel_size=unpool, stride=stride, **opt)]
 
         super().__init__(*modules)
 
@@ -417,11 +404,11 @@ class UpStep(tnn.Sequential):
                 opt['kernel_size'] = opt['stride']
             x = conv(x, **overload, **opt)
         else:
-            # pool|sub + conv
-            pool, conv = self
-            if not isinstance(pool, Upsample) and 'stride' in opt:
-                opt['kernel_size'] = opt['stride']
-            x = pool(x, **opt)
+            # resize + conv
+            resize, conv = self
+            opt['factor'] = [1/s for s in py.make_list(opt['stride'])]
+            opt.pop('stride')
+            x = resize(x, **opt)
             x = conv(x, **overload)
         return x
 

@@ -1,4 +1,5 @@
 """Batch norm layer"""
+import torch
 from torch import nn as tnn
 from nitorch.nn.base import Module, nitorchmodule
 
@@ -58,6 +59,15 @@ class BatchNorm(Module):
 
         """
         return self.batchnorm(x)
+
+    in_channels = property(lambda self: self.num_features)
+    out_channels = property(lambda self: self.num_features)
+
+    @staticmethod
+    def shape(x):
+        if torch.is_tensor(x):
+            return tuple(x.shape)
+        return tuple(x)
 
     def __str__(self):
         s = [f'{self.batchnorm.num_features}']

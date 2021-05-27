@@ -11,12 +11,29 @@ import torch.nn as tnn
 import inspect
 
 
-class _ModuleWithMethods(tnn.Module):
+class Module(tnn.Module):
     """A class that defines methods to manipulate losses, metrics, etc.
 
     No class actually inherits it. It is only used to hold method
     definitions that are assigned to other classes by a decorator.
     """
+    _nitorchmodule = True
+
+    def __init__(self):
+        super().__init__()
+        self.losses = {}
+        self.metrics = {}
+        self.tags = []
+        self.augmenters = []
+
+    def __call__(self, *args, **kwargs):
+        if '_loss' in kwargs.keys():
+            if not '_loss' in inspect.signature(self.forward).parameters.keys():
+                kwargs.pop('_loss')
+        if '_metric' in kwargs.keys():
+            if not '_metric' in inspect.signature(self.forward).parameters.keys():
+                kwargs.pop('_metric')
+        return super().__call__(*args, **kwargs)
 
     def add_augmenter(self, augmenter):
         """Add one or more augmenters.
@@ -228,6 +245,16 @@ class _ModuleWithMethods(tnn.Module):
             metrics = self.compute_metric(**tag_args)
             self.update_dict(_metric, metrics)
 
+    @staticmethod
+    def update_dict(old_dict, new_dict):
+        for key, val in new_dict.items():
+            if key in old_dict.keys():
+                i = 1
+                while '{}/{}'.format(key, i) in old_dict.keys():
+                    i += 1
+                key = '{}/{}'.format(key, i)
+            old_dict[key] = val
+
     def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None,
               mode=None, loss=None, losses=None, metrics=None, *args, **kwargs):
         """Defines model-specific tensorboard callback.
@@ -260,6 +287,10 @@ class _ModuleWithMethods(tnn.Module):
 def nitorchmodule(klass):
     """Decorator for modules to make them understand 'forward with loss'"""
 
+    if hasattr(klass, '_nitorchmodule'):
+        return klass
+    klass._nitorchmodule = True
+
     init = klass.__init__
     def __init__(self, *args, **kwargs):
         init(self, *args, **kwargs)
@@ -279,31 +310,19 @@ def nitorchmodule(klass):
                 kwargs.pop('_metric')
         return call(self, *args, **kwargs)
     klass.__call__ = __call__
-
-    _getattr = klass.__getattr__
-    def __getattr__(self, name):
-        # overload pytorch's getter to allow access to properties
-        # (pytorch only allows access to attributes stored in
-        # _parameters, _modules or _buffers)
-        if (name not in self._parameters and
-                name not in self._buffers and
-                name not in self._modules and
-                name in self.__class__.__dict__):
-            return getattr(self.__class__, name).fget(self)
-        return _getattr(self, name)
-    klass.__getattr__ = __getattr__
-
-    # define helper to store metrics
-    @staticmethod
-    def update_dict(old_dict, new_dict):
-        for key, val in new_dict.items():
-            if key in old_dict.keys():
-                i = 1
-                while '{}/{}'.format(key, i) in old_dict.keys():
-                    i += 1
-                key = '{}/{}'.format(key, i)
-            old_dict[key] = val
-    klass.update_dict = update_dict
+#
+# #     _getattr = klass.__getattr__
+# #     def __getattr__(self, name):
+# #         # overload pytorch's getter to allow access to properties
+# #         # (pytorch only allows access to attributes stored in
+# #         # _parameters, _modules or _buffers)
+# # #         if (name not in self._parameters and
+# # #                 name not in self._buffers and
+# # #                 name not in self._modules and
+# # #                 name in self.__class__.__dict__):
+# # #             return type.__getattr__(self.__class__, name).fget(self)
+# #         return _getattr(self, name)
+# #     klass.__getattr__ = __getattr__
 
     if issubclass(klass, tnn.Sequential):
         if not hasattr(klass, 'in_channels'):
@@ -317,14 +336,26 @@ def nitorchmodule(klass):
                 return x
             klass.shape = shape
 
-    for key, value in _ModuleWithMethods.__dict__.items():
+    for key, value in Module.__dict__.items():
         if key[0] != '_':
             setattr(klass, key, value)
     return klass
 
 
-@nitorchmodule
-class Module(tnn.Module):
-    """Syntaxic sugar: allows to inherit from Module instead of calling
-    the decorator"""
+class Sequential(tnn.Sequential, Module):
+
+    in_channels = property(lambda self: self[0].in_channels)
+    out_channels = property(lambda self: self[-1].out_channels)
+
+    def shape(self, x):
+        for layer in self:
+            x = layer.shape(x)
+        return x
+
+
+class ModuleList(tnn.ModuleList, Module):
+    pass
+
+
+class ModuleDict(tnn.ModuleList, Module):
     pass

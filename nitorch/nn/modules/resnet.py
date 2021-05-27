@@ -11,18 +11,23 @@ References
 ..[2] "Identity Mappings in Deep Residual Networks"
       K He, X Zhang, S Ren, J Sun
       ECCV (2016)
+..[3] "Bag of Tricks for Image Classification with Convolutional
+       Neural Network"
+      Tong He, Zhi Zhang, Hang Zhang, Zhongyue Zhang, Junyuan Xie, Mu Li
+      CVPR (2019)
 """
 
 import torch.nn as tnn
 import torch
 from nitorch.core import py, utils
-from ..base import Module, nitorchmodule
-from .conv import ConvBlock
-from .encode_decode import DownStep, UpStep
+from ..base import Module, ModuleList, Sequential, nitorchmodule
+from .conv import Conv, ConvGroup, ConvBlock, BottleneckConv
+from .encode_decode import DownStep, UpStep, Upsample
+from .pool import MeanPool
 
 
 @nitorchmodule
-class ResBlock(tnn.ModuleList):
+class ResBlock(ModuleList):
     """Residual block.
 
     We follow He et al. (ECCV 2016) and perform all activations and
@@ -128,7 +133,7 @@ class ResBlock(tnn.ModuleList):
         conv_opt = dict(
             dim=dim,
             channels=channels,
-            bottleneck=bottleneck,
+            bottleneck=channels//bottleneck if bottleneck else None,
             nb_conv=nb_conv,
             recurrent='conv' in recurrent,
             kernel_size=kernel_size,
@@ -142,7 +147,7 @@ class ResBlock(tnn.ModuleList):
             inplace=act_inplace
         )
         nb_res_inde = 1 if 'res' in recurrent else nb_res
-        super().__init__([ConvBlock(**conv_opt) for _ in range(nb_res_inde)])
+        super().__init__([ConvGroup(**conv_opt) for _ in range(nb_res_inde)])
         self.recurrent = recurrent
 
     in_channels = property(lambda self: self[0].in_channels)
@@ -192,7 +197,253 @@ class ResBlock(tnn.ModuleList):
 
 
 @nitorchmodule
-class AtrousBlock(tnn.Sequential):
+class ResDownStep(ModuleList):
+    """Downsampling step for ResNets
+
+    This layer performs a residual downsampling:
+        strided_proj(x) + strided_conv(x)
+
+    It implements strided_conv as option B in [2]:
+        strided_conv = Conv(1) -> Conv(3, stride=2) -> Conv(1)
+    Note that the 1d conv are only used if `bottleneck` is used.
+
+    It implements strided_proj as option D in [2], but with a tweak:
+    the kernel_size of the average pooling is 3 instead of two, and 'auto'
+    padding is used. Otherwise, a half voxel shift is introduced between
+    the two branches:
+        strided_proj = Pool(3, stride=2) -> Proj(1)
+
+    References
+    ----------
+    ..[1] "Deep Residual Learning for Image Recognition"
+          K He, X Zhang, S Ren, J Sun
+          CVPR (2016)
+    ..[2] "Bag of Tricks for Image Classification with Convolutional
+           Neural Network"
+          Tong He, Zhi Zhang, Hang Zhang, Zhongyue Zhang, Junyuan Xie, Mu Li
+          CVPR (2019)
+
+    """
+    def __init__(self,
+                 dim,
+                 in_channels,
+                 out_channels=None,
+                 bottleneck=1,
+                 residual=True,
+                 kernel_size=3,
+                 stride=2,
+                 padding_mode='zeros',
+                 groups=1,
+                 bias=True,
+                 dilation=1,
+                 activation=tnn.ReLU,
+                 batch_norm=True,
+                 order='nac'):
+        """
+
+        Parameters
+        ----------
+        dim : int
+            Number of spatial dimensions
+
+        in_channels : int
+            Number of input channels
+
+        out_channels : int, default=in_channels*2
+            Number of output channels
+
+        bottleneck : int, default=1
+            Divide input channels by this number in the bottleneck
+
+        residual : bool, default=True
+            Residual connection. If False, only perform the
+            convolutional branch.
+
+        Other Parameters
+        ----------------
+        kernel_size : int, default=3
+        stride : int, default=2
+        padding_mode : default='zeros'
+        groups : int, default=1
+        bias : bool, default=True
+        dilation : int, default=1
+        activation : default=ReLU
+        batch_norm : bool, default=True
+        order : permutation of 'nac', default='nac'
+        """
+        out_channels = out_channels or (in_channels * 2)
+        opt = dict(
+            dim=dim,
+            padding_mode=padding_mode,
+            padding='auto',
+            groups=groups,
+            bias=bias,
+            dilation=dilation,
+            activation=activation,
+            batch_norm=batch_norm,
+            order=order,
+        )
+        if bottleneck:
+            bottleneck = in_channels//bottleneck
+            branch1 = BottleneckConv(
+                kernel_size=kernel_size,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                bottleneck=bottleneck,
+                stride=stride,
+                **opt)
+        else:
+            branch1 = ConvBlock(
+                kernel_size=kernel_size,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                stride=stride,
+                **opt)
+        # Branch 2 (pseudo-identity) is just a projection
+        # (no activation, no bias, no batch norm)
+        if residual:
+            branch2 = nitorchmodule(tnn.Sequential)(
+                MeanPool(dim,
+                         kernel_size=3,
+                         stride=stride,
+                         padding='auto'),
+                Conv(dim=dim,
+                     kernel_size=1,
+                     in_channels=in_channels,
+                     out_channels=out_channels),
+            )
+            super().__init__([branch1, branch2])
+        else:
+            super().__init__([branch1])
+
+    in_channels = property(lambda self: self[0].in_channels)
+    out_channels = property(lambda self: self[0].out_channels)
+
+    def shape(self, x):
+        return self[0].shape(x)
+
+    def forward(self, x):
+        return sum(layer(x) for layer in self)
+
+
+@nitorchmodule
+class ResUpStep(ModuleList):
+    """Downsampling step for ResNets
+
+    This layer performs a residual upsampling:
+        strided_deproj(x) + strided_deconv(x)
+
+    The strided deconvolution is implemented similarly to the strided
+    convolution (option B) in [2]:
+        strided_deconv = Conv(1) -> Conv(3, stride=2, transposed) -> Conv(1)
+    where all Conv have batch norm, pre-activation and a bias term.
+
+    The identity branch is implemented using linear resampling [2]:
+        strided_proj = Proj(1) -> Resize(2)
+    where Proj is a plain linear projection (no BN, no activation, no bias).
+
+    References
+    ----------
+    ..[1] "Deep Residual Learning for Image Recognition"
+          K He, X Zhang, S Ren, J Sun
+          CVPR (2016)
+    ..[2] "Bag of Tricks for Image Classification with Convolutional
+           Neural Network"
+          Tong He, Zhi Zhang, Hang Zhang, Zhongyue Zhang, Junyuan Xie, Mu Li
+          CVPR (2019)
+
+    """
+    def __init__(self,
+                 dim,
+                 in_channels,
+                 out_channels=None,
+                 bottleneck=1,
+                 residual=True,
+                 kernel_size=3,
+                 stride=2,
+                 padding_mode='zeros',
+                 groups=1,
+                 bias=True,
+                 dilation=1,
+                 activation=tnn.ReLU,
+                 batch_norm=True,
+                 order='nac'):
+        """
+
+        Parameters
+        ----------
+        dim : int
+        in_channels : int
+        out_channels : int, default=in_channels*2
+        bottleneck : int, default=1
+        residual : bool, default=True
+        kernel_size : int, default=3
+        stride : int, default=2
+        padding_mode : default='zeros'
+        groups : int, default=1
+        bias : bool, default=True
+        dilation : int, default=1
+        activation : default=ReLU
+        batch_norm : bool, default=True
+        order : permutation of 'nac', default='nac'
+        """
+        out_channels = out_channels or (in_channels * 2)
+        opt = dict(
+            dim=dim,
+            padding_mode=padding_mode,
+            padding='auto',
+            groups=groups,
+            bias=bias,
+            dilation=dilation,
+            activation=activation,
+            batch_norm=batch_norm,
+            order=order,
+            transposed=True,
+        )
+        if bottleneck:
+            bottleneck = out_channels//bottleneck
+            branch1 = BottleneckConv(
+                kernel_size=kernel_size,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                bottleneck=bottleneck,
+                stride=stride,
+                **opt)
+        else:
+            branch1 = ConvBlock(kernel_size=kernel_size,
+                                in_channels=in_channels,
+                                out_channels=out_channels,
+                                stride=stride,
+                                **opt)
+        # Branch 2 (pseudo-identity) is just a projection
+        # (no activation, no bias, no batch norm)
+        if residual:
+            branch2 = nitorchmodule(tnn.Sequential)(
+                Conv(dim=dim,
+                     kernel_size=1,
+                     in_channels=in_channels,
+                     out_channels=out_channels),
+                Upsample(stride=2),
+            )
+            super().__init__([branch1, branch2])
+        else:
+            super().__init__([branch1])
+
+    in_channels = property(lambda self: self[0].in_channels)
+    out_channels = property(lambda self: self[0].out_channels)
+
+    def shape(self, x, output_shape=None):
+        return self[0].shape(x, output_shape=output_shape)
+
+    def forward(self, x, output_shape=None):
+        conv, (conv1, up) = self
+        y = up(conv1(x), output_shape=output_shape)
+        y += conv(x, output_shape=output_shape)
+        return y
+
+
+@nitorchmodule
+class AtrousBlock(Sequential):
     """Atrous residual block"""
 
     def __init__(self,
@@ -321,7 +572,7 @@ class AtrousBlock(tnn.Sequential):
 
 
 @nitorchmodule
-class ResEncodingBlock(tnn.Sequential):
+class ResEncodingBlock(Sequential):
 
     def __init__(
             self,
@@ -334,7 +585,7 @@ class ResEncodingBlock(tnn.Sequential):
             recurrent=False,
             kernel_size=3,
             stride=2,
-            pool=None,
+            residual_pool=True,
             activation=tnn.ReLU,
             batch_norm=False):
         """
@@ -349,6 +600,8 @@ class ResEncodingBlock(tnn.Sequential):
 
         out_channels : sequence[int], default=in_channels*2
             Number of channels at the next scale.
+
+        bottleneck : int, default=1
 
         nb_conv : int, default=2
             Number of convolutions per convolutional block.
@@ -365,8 +618,12 @@ class ResEncodingBlock(tnn.Sequential):
         stride : int or sequence[int], default=2
             Stride per dimension.
 
-        pool : {'max, 'down', 'conv', None}, default='conv'
+        pool : {'a', 'b', 'd', 'max, 'conv', None}, default='conv'
             Downsampling method.
+            - 'a', 'b' and 'd' sum the outputs of two branches.
+            - 'max' performs a max-pooling followed by a 1d conv
+            - 'conv' performs a strided 2x2 conv
+            - None performs a strided 1x1 conv
 
         activation : str or type or callable or None, default='relu'
             Activation function.
@@ -386,12 +643,15 @@ class ResEncodingBlock(tnn.Sequential):
             activation=activation,
             batch_norm=batch_norm,
         )
-        down = DownStep(
+        down = ResDownStep(
             dim=dim,
             in_channels=in_channels,
             out_channels=out_channels,
+            bottleneck=bottleneck,
             batch_norm=batch_norm,
-            pool=pool,
+            residual=residual_pool,
+            kernel_size=kernel_size,
+            activation=activation,
             stride=stride)
         super().__init__(res, down)
 
@@ -405,7 +665,7 @@ class ResEncodingBlock(tnn.Sequential):
 
 
 @nitorchmodule
-class ResDecodingBlock(tnn.Sequential):
+class ResDecodingBlock(Sequential):
 
     def __init__(
             self,
@@ -418,7 +678,7 @@ class ResDecodingBlock(tnn.Sequential):
             recurrent=False,
             kernel_size=3,
             stride=2,
-            unpool=None,
+            residual_unpool=True,
             activation=tnn.ReLU,
             batch_norm=True):
         """
@@ -473,26 +733,26 @@ class ResDecodingBlock(tnn.Sequential):
             activation=activation,
             batch_norm=batch_norm,
         )
-        down = UpStep(
+        down = ResUpStep(
             dim=dim,
             in_channels=in_channels,
             out_channels=out_channels,
+            bottleneck=bottleneck,
             batch_norm=batch_norm,
-            unpool=unpool,
+            kernel_size=kernel_size,
+            activation=activation,
+            residual=residual_unpool,
             stride=stride)
         super().__init__(res, down)
 
-    in_channels = property(lambda self: self[0].in_channels)
-    out_channels = property(lambda self: self[1].out_channels)
-
-    def shape(self, x):
+    def forward(self, x, **overload):
         for layer in self:
-            x = layer.shape(x)
+            x = layer(x, **overload)
         return x
 
 
 @nitorchmodule
-class UResBlock(tnn.Sequential):
+class UResBlock(Sequential):
     """U-Net with residual blocks"""
 
     def __init__(
@@ -505,8 +765,8 @@ class UResBlock(tnn.Sequential):
             recurrent=False,
             kernel_size=3,
             stride=2,
-            pool='conv',
-            unpool='conv',
+            residual_pool=True,
+            residual_unpool=True,
             activation=tnn.LeakyReLU(0.2),
             batch_norm=True):
         """
@@ -541,11 +801,19 @@ class UResBlock(tnn.Sequential):
         stride : int or sequence[int], default=2
             Stride per dimension.
 
-        pool : {'max, 'down', 'conv', None}, default='conv'
-            Downsampling method.
+        residual_pool : default=True
+            If True, the downsampling is "residual": it adds a convolved
+            version of the previous layer to a linearly projected version
+            (which is equivalent to the identity shortcut in a
+            single-resolution resnet). If False, only the convolved version is
+            passed to the next scale.
 
-        unpool : {'up', 'conv', None}, default='conv'
-            Upsampling method.
+        residual_unpool : default=True
+            If True, the upsampling step is "residual": it adds a convolved
+            version of the previous layer to a linearly projected version
+            (which is equivalent to the identity shortcut in a
+            single-resolution resnet). If False, only the convolved version is
+            passed to the next scale.
 
         activation : str or type or callable or None, default='relu'
             Activation function.
@@ -574,7 +842,7 @@ class UResBlock(tnn.Sequential):
                 nb_conv=nbc,
                 nb_res=nbr,
                 stride=stride,
-                pool=pool,
+                residual_pool=residual_pool,
                 **resopt
             )
             encoder.append(resblock)
@@ -592,7 +860,7 @@ class UResBlock(tnn.Sequential):
                 nb_conv=nbc,
                 nb_res=nbr,
                 stride=stride,
-                unpool=unpool,
+                residual_unpool=residual_unpool,
                 **resopt
             )
             encoder.append(resblock)
@@ -656,11 +924,11 @@ class UResBlock(tnn.Sequential):
         outputs = []
         for layer in decoder:
             x += intermediates.pop(0)
-            layer, pool = layer
+            layer, unpool = layer
             x = layer(x)
             if return_all:
                 outputs.append(x)
-            x = pool(x, output_shape=intermediates[0].shape[2:])
+            x = unpool(x, output_shape=intermediates[0].shape[2:])
 
         # last residual block
         x += intermediates.pop(0)

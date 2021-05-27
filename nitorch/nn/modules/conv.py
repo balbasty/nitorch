@@ -4,11 +4,12 @@ from copy import copy
 import math
 import inspect
 import random
+from collections import OrderedDict
 import torch
 from torch import nn as tnn
 from nitorch.core.py import make_tuple
 from nitorch.core import py, utils
-from ..base import nitorchmodule, Module
+from ..base import nitorchmodule, Module, Sequential, ModuleList
 from ..activations import _map_activations
 from .norm import BatchNorm
 
@@ -29,7 +30,30 @@ from .norm import BatchNorm
 # https://discuss.pytorch.org/t/why-do-we-use-constants-or-final/70331/4
 
 
+# padding options natively handled by pytorch
 _native_padding_mode = ('zeros', 'reflect', 'replicate', 'circular')
+
+
+def _defer_property(prop: str, module: str,
+                    setter: callable or bool = False,
+                    getter: callable = None):
+    """Return a 'property' objet that links to a submodule property
+
+    prop (str) : property name
+    module (str): module name
+    setter (callable or bool, default=False) : define a setter
+    getter (callable, optional) : function to apply to the returned value
+    returns (property) : property object
+
+    """
+    getter = getter or (lambda x: x)
+    if setter:
+        if not callable(setter):
+            setter = lambda x: x
+        return property(lambda self: getter(getattr(getattr(self, module), prop)),
+                        lambda self, val: setattr(getattr(self, module), prop, setter(val)))
+    else:
+        return property(lambda self: getter(getattr(getattr(self, module), prop)))
 
 
 def _guess_output_shape(inshape, kernel_size, stride=1, dilation=1,
@@ -81,7 +105,7 @@ def _get_conv_class(dim, transposed=False):
     return ConvKlass
 
 
-class SimpleConv(Module):
+class Conv(Module):
     """Simple convolution.
     
     We merely wrap torch's Conv class, with a single entry point for
@@ -264,25 +288,12 @@ class SimpleConv(Module):
             self._padding_mode = padding_mode
             self.conv.padding = 0
 
-    @property
-    def weight(self):
-        return self.conv.weight
-
-    @property
-    def bias(self):
-        return self.conv.bias
-
-    @property
-    def kernel_size(self):
-        return self.conv.kernel_size
-
-    @property
-    def stride(self):
-        return self.conv.stride
-
-    @stride.setter
-    def stride(self, value):
-        self.conv.stride = make_tuple(value, self.dim)
+    weight = _defer_property('weight', 'conv')
+    bias = _defer_property('bias', 'conv')
+    kernel_size = _defer_property('kernel_size', 'conv')
+    stride = _defer_property('stride', 'conv', setter=make_tuple)
+    dilation = _defer_property('dilation', 'conv', setter=make_tuple)
+    groups = _defer_property('groups', 'conv', setter=True)
 
     @property
     def padding(self):
@@ -304,22 +315,6 @@ class SimpleConv(Module):
             self._post_padding = make_tuple(value, self.dim)
 
     @property
-    def dilation(self):
-        return self.conv.dilation
-
-    @dilation.setter
-    def dilation(self, value):
-        self.conv.dilation = make_tuple(value, self.dim)
-
-    @property
-    def groups(self):
-        return self.conv.dilation
-
-    @groups.setter
-    def groups(self, value):
-        self.conv.groups = value
-
-    @property
     def padding_mode(self):
         if self._pre_padding:
             return self._padding_mode
@@ -329,17 +324,23 @@ class SimpleConv(Module):
     @padding_mode.setter
     def padding_mode(self, value):
         self._set_padding(self.padding, value)
-
-    @property
-    def groups(self):
-        return self.conv.groups
-
-    @groups.setter
-    def groups(self, value):
-        self.conv.groups = value
     
     def forward(self, x, **overload):
-        
+        """
+
+        Parameters
+        ----------
+        x : (b, in_channels, *spatial) tensor
+        output_shape : sequence[int], optional
+        overload : dict
+
+
+        Returns
+        -------
+        x : (b, out_channels, *spatial_out) tensor
+
+        """
+
         stride = overload.get('stride', self.stride)
         padding = overload.get('padding', self.padding)
         padding_mode = overload.get('padding_mode', self.padding_mode)
@@ -350,6 +351,13 @@ class SimpleConv(Module):
         stride = make_tuple(stride, self.dim)
         output_padding = make_tuple(output_padding, self.dim)
         dilation = make_tuple(dilation, self.dim)
+
+        output_shape = overload.pop('output_shape', None)
+        if output_shape:
+            overload['output_padding'] = 0
+            shape_nopad = self.shape(x, **overload)[2:]
+            output_padding = [s1 - s0 for s1, s0
+                              in zip(output_shape, shape_nopad)]
 
         if padding == 'auto':
             padding = [((k-1)*d)//2 for k, d in zip(kernel_size, dilation)]
@@ -410,14 +418,16 @@ class SimpleConv(Module):
         transposed = self.transposed
         kernel_size = self.kernel_size
 
-        shape = _guess_output_shape(
-            inshape[2:],
-            kernel_size=kernel_size,
-            stride=stride,
-            dilation=dilation,
-            padding=padding,
-            output_padding=output_padding,
-            transposed=transposed)
+        shape = overload.get('output_shape', None)
+        if not shape:
+            shape = _guess_output_shape(
+                inshape[2:],
+                kernel_size=kernel_size,
+                stride=stride,
+                dilation=dilation,
+                padding=padding,
+                output_padding=output_padding,
+                transposed=transposed)
         shape = (inshape[0], self.out_channels, *shape)
         return shape
     
@@ -439,7 +449,7 @@ class SimpleConv(Module):
 
 
 @nitorchmodule
-class GroupedConv(tnn.ModuleList):
+class GroupedConv(ModuleList):
     """Simple imbalanced grouped convolution.
     
     Same as SimpleConv, but allows to have groups with non-equal number of channels.
@@ -508,7 +518,7 @@ class GroupedConv(tnn.ModuleList):
                              f'must be the same: {len(in_channels)} vs '
                              f'{len(out_channels)}')
 
-        modules = [SimpleConv(dim, i, o, *args, **kwargs)
+        modules = [Conv(dim, i, o, *args, **kwargs)
                    for i, o in zip(in_channels, out_channels)]
         super().__init__(modules)
         self.in_channels = sum(in_channels)
@@ -520,6 +530,8 @@ class GroupedConv(tnn.ModuleList):
         Parameters
         ----------
         input : (B, sum(in_channels), *in_spatial) tensor
+        output_shape : sequence[int], optional
+        overload : dict
 
         Returns
         -------
@@ -536,7 +548,6 @@ class GroupedConv(tnn.ModuleList):
             output[slicer] = layer(inp, **overload)
         return output
 
-    
     def reset_parameters(self, *args, **kwargs):
         for layer in self:
             layer.reset_parameters(*args, **kwargs)
@@ -644,7 +655,7 @@ class GroupedConv(tnn.ModuleList):
         out_channels = [l.out_channels for l in self]
         in_channels = ', '.join(in_channels)
         out_channels = ', '.join(out_channels)
-        s = [f'[{self.in_channels}]', f'[{self.out_channels}]']
+        s = [f'[{in_channels}]', f'[{out_channels}]']
         s += [f'kernel_size={self.kernel_size}']
         if self.transposed:
             s += [f'transposed=True']
@@ -655,28 +666,13 @@ class GroupedConv(tnn.ModuleList):
         if self.groups > 1:
             s += [f'groups={self.groups}']
         s = ', '.join(s)
-        return f'SimpleConv({s})'
+        return f'GroupedConv({s})'
     
     __repr__ = __str__
 
 
-def _defer_property(prop, module, setter=False):
-    """Return a 'property' objet that links to a submodule property
-
-    prop (str) : property name
-    module (str): module name
-    setter (bool, default=False) : define a setter
-    returns (property) : property object
-
-    """
-    if setter:
-        return property(lambda self: getattr(getattr(self, module), prop),
-                        lambda self, val: setattr(getattr(self, module), prop, val))
-    else:
-        return property(lambda self: getattr(getattr(self, module), prop))
-
-
-class Conv(Module):
+@nitorchmodule
+class ConvBlock(Sequential):
     """Convolution layer (with batch norm and activation).
 
     Applies a convolution over an input signal.
@@ -835,7 +831,7 @@ class Conv(Module):
                              'input channels, as both define grouped '
                              'convolutions.')
         if len(in_channels) == 1 and len(out_channels) == 1:
-            ConvKlass = SimpleConv
+            ConvKlass = Conv
             in_channels = in_channels[0]
             out_channels = out_channels[0]
             opt_conv['groups'] = groups
@@ -945,6 +941,9 @@ class Conv(Module):
         ----------
         x : tuple or (batch, in_channel, *in_spatial) tensor
             Input tensor or its shape
+        output_shape : sequence[int], optional
+            Instead of using 'output_padding', a target output shape
+            can be provided (when using transposed convolutions).
         overload : dict
             All parameters defined at build time can be overridden
             at call time, except `dim`, `in_channels`, `out_channels`
@@ -960,8 +959,73 @@ class Conv(Module):
 
 
 @nitorchmodule
-class ConvBlock(tnn.Sequential):
-    """A block of multiple convolutions with the same number of input
+class BottleneckConv(Sequential):
+    """
+    Squeeze and unsqueeze the number of channels around a (spatial)
+    convolution using channel convolutions.
+    """
+
+    def __init__(self,
+                 dim,
+                 in_channels,
+                 out_channels,
+                 bottleneck,
+                 kernel_size,
+                 stride=1,
+                 **kwargs):
+        """
+        Parameters
+        ----------
+        dim : {1, 2, 3}
+            Number of spatial dimensions.
+
+        in_channels : int or sequence[int]
+            Number of channels in the input image.
+            If a sequence, grouped convolutions are used.
+
+        out_channels : int or sequence[int]
+            Number of channels produced by the convolution.
+            If a sequence, grouped convolutions are used.
+
+        bottleneck : int or sequence[int]
+            Number of channels in the bottleneck.
+            If a sequence, grouped convolutions are used.
+
+        stride : int or sequence[int], default=1
+            Only used in the main convolution (not in the channel-wise ones).
+
+        Other Parameters
+        ----------------
+        All parameters from `ConvBlock` are parameters of `BottleneckConv`.
+
+        """
+        super().__init__(OrderedDict(
+            squeeze=ConvBlock(dim, in_channels, bottleneck, 1, **kwargs),
+            conv=ConvBlock(dim, bottleneck, bottleneck, kernel_size,
+                           stride=stride, **kwargs),
+            unsqueeze=ConvBlock(dim, bottleneck, out_channels, 1, **kwargs),
+        ))
+
+    def forward(self, x, output_shape=None, **overload):
+        overload1d = dict(overload)
+        overload1d.pop('stride', None)
+        x = self.squeeze(x, **overload1d)
+        x = self.conv(x, output_shape=output_shape, **overload)
+        x = self.unsqueeze(x, **overload1d)
+        return x
+
+    def shape(self, x, output_shape=None, **overload):
+        overload1d = dict(overload)
+        overload1d.pop('stride', None)
+        x = self.squeeze.shape(x, **overload1d)
+        x = self.conv.shape(x, output_shape=output_shape, **overload)
+        x = self.unsqueeze.shape(x, **overload1d)
+        return x
+
+
+@nitorchmodule
+class ConvGroup(Sequential):
+    """A group of multiple convolutions with the same number of input
     and output channels. Usually used inside a ResBlock."""
 
     def __init__(self,
@@ -1063,22 +1127,16 @@ class ConvBlock(tnn.Sequential):
             order=order,
             inplace=inplace,
         )
-        nb_conv_inde = 1 if recurrent else nb_conv
-        convs = [Conv(**conv_opt) for _ in range(nb_conv_inde)]
         if bottleneck:
-            conv_opt['kernel_size'] = 1
-            conv_opt['out_channels'] = bottleneck
-            pre_conv = Conv(**conv_opt)
-            conv_opt['out_channels'] = conv_opt['in_channels']
-            conv_opt['in_channels'] = bottleneck
-            post_conv = Conv(**conv_opt)
-            convs = [pre_conv, *convs, post_conv]
+            conv_opt['bottleneck'] = bottleneck
+            Klass = BottleneckConv
+        else:
+            Klass = ConvBlock
+        nb_conv_inde = 1 if recurrent else nb_conv
+        convs = [Klass(**conv_opt) for _ in range(nb_conv_inde)]
         self.convs = super().__init__(*convs)
         self.recurrent = recurrent
         self.nb_conv = nb_conv
-
-    in_channels = property(lambda self: self[0].in_channels)
-    out_channels = property(lambda self: self[-1].out_channels)
 
     def shape(self, x, **overload):
         nb_conv = overload.pop('nb_conv', self.nb_conv)

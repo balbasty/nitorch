@@ -175,7 +175,7 @@ class Pool(Module):
         return x
 
 
-class MaxPool(Module):
+class MaxPool(Pool):
     """Generic max pooling layer"""
     reduction = 'max'
 
@@ -195,7 +195,7 @@ class MedianPool(Pool):
     reduction = 'median'
 
 
-class MeanPool(Module):
+class MeanPool(Pool):
     """Generic mean pooling layer"""
     reduction = 'mean'
 
@@ -241,3 +241,10 @@ class MeanPool(Module):
             return x
 
 
+pool_map = {
+    'max': MaxPool,
+    'mean': MeanPool,
+    'median': MedianPool,
+    'sum': SumPool,
+    'min': MinPool,
+}

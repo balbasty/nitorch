@@ -16,7 +16,7 @@ from ..base import Module
 from ..activations import SoftMax
 from ..losses import cat as catloss
 from .cnn import UNet2
-from .conv import Conv, SimpleConv
+from .conv import ConvBlock, Conv
 from .seg_utils import board2
 
 
@@ -197,7 +197,7 @@ class ReweightingLayer(Module):
             If True, a bias term is added to the convolution.
         """
         super().__init__()
-        self.conv = Conv(1, nb_classes, nb_classes, bias=implicit)
+        self.conv = ConvBlock(1, nb_classes, nb_classes, bias=implicit)
 
     def forward(self, x):
         b, c, *shape = x.shape
@@ -291,13 +291,13 @@ class SegNet(Module):
             self.to_feat = lambda x: x
             self.from_feat = lambda x: x
         else:
-            self.to_feat = SimpleConv(
+            self.to_feat = Conv(
                 dim,
                 in_channels=input_channels,
                 out_channels=unet.in_channels,
                 kernel_size=1)
             self.unet = unet
-            self.from_feat = SimpleConv(
+            self.from_feat = Conv(
                 dim,
                 in_channels=unet.out_channels,
                 out_channels=output_classes + (not head.implicit),

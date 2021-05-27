@@ -835,7 +835,7 @@ class Resize(Module):
 
         Parameters
         ----------
-        factor : float or list[float], optional
+        factor : float or sequence[float], optional
             Resizing factor
             * > 1 : larger image <-> smaller voxels
             * < 1 : smaller image <-> larger voxels

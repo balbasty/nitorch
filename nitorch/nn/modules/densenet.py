@@ -12,7 +12,7 @@ import torch
 import torch.nn as tnn
 from nitorch.core import py, utils
 from ..base import Module, nitorchmodule
-from .conv import Conv
+from .conv import ConvBlock
 from .encode_decode import DownStep, UpStep
 
 
@@ -98,8 +98,8 @@ class DenseBottleneck(tnn.Sequential):
             batch_norm=batch_norm,
             order=order,
         )
-        conv1 = Conv(dim, in_channels, bottleneck, kernel_size=1, **opt)
-        conv3 = Conv(dim, bottleneck, out_channels, kernel_size=kernel_size, **opt)
+        conv1 = ConvBlock(dim, in_channels, bottleneck, kernel_size=1, **opt)
+        conv3 = ConvBlock(dim, bottleneck, out_channels, kernel_size=kernel_size, **opt)
         super().__init__(conv1, conv3)
 
     in_channels = property(lambda self: self[0].in_channels)
@@ -203,7 +203,7 @@ class DenseBlock(tnn.Sequential):
             Klass = DenseBottleneck
             opt['bottleneck'] = bottleneck * growth
         else:
-            Klass = Conv
+            Klass = ConvBlock
 
         convs = []
         for l in range(nb_conv):
