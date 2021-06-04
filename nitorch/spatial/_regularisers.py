@@ -622,7 +622,8 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
 
 
 def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
-                   lame=0, voxel_size=1, bound='dft', weights=None):
+                   lame=0, factor=1, voxel_size=1, bound='dft', weights=None,
+                   verbose=False):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
     Parameters
@@ -633,6 +634,7 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     membrane : float, default=0
     bending : float, default=0
     lame : (float, float), default=0
+    factor : float, default=1
     voxel_size : float or sequence[float], default=1
     bound : str, default='dft'
     weights : [dict of] (..., *spatial) tensor, optional
@@ -646,7 +648,10 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     voxel_size = make_vector(voxel_size, dim, **backend)
     is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
 
-    lame = make_vector(lame, 2, **backend)
+    absolute = absolute * factor
+    membrane = membrane * factor
+    bending = bending * factor
+    lame = [l*factor for l in make_vector(lame, 2, **backend)]
     no_reg = not (membrane or bending or any(lame))
 
     # regulariser
@@ -663,7 +668,7 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     def regulariser(v):
         y = 0
         if absolute:
-            y += absolute_grid(v, weights=wa) * absolute
+            y += absolute_grid(v, weights=wa, voxel_size=voxel_size) * absolute
         if membrane:
             y += membrane_grid(v, weights=wm, **fdopt) * membrane
         if bending:
@@ -675,24 +680,25 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         return y
 
     # diagonal of the regulariser
-    ivx2 = voxel_size.square().reciprocal()
+    vx2 = voxel_size.square()
+    ivx2 = vx2.reciprocal()
     smo = 0
     if absolute:
         if wa is not None:
-            smo = smo + absolute * voxel_size.square() * wa
+            smo = smo + absolute * vx2 * wa
         else:
-            smo = smo + absolute * voxel_size.square()
+            smo = smo + absolute * vx2
     if membrane:
         if wm is not None:
-            smo = smo + 2 * membrane * ivx2.sum() * wm
+            smo = smo + 2 * membrane * ivx2.sum() * vx2 * wm
         else:
-            smo = smo + 2 * membrane * ivx2.sum()
+            smo = smo + 2 * membrane * ivx2.sum() * vx2
     if bending:
         val = torch.combinations(ivx2, r=2).prod(dim=-1).sum()
         if wb is not None:
-            smo = smo + bending * (8 * val + 6 * ivx2.square().sum()) * wb
+            smo = smo + bending * (8 * val + 6 * ivx2.square().sum()) * vx2 * wb
         else:
-            smo = smo + bending * (8 * val + 6 * ivx2.square().sum())
+            smo = smo + bending * (8 * val + 6 * ivx2.square().sum()) * vx2
     if lame[0]:
         if wl[0] is not None:
             smo = smo + 2 * lame[0] * wl[0]
@@ -704,17 +710,23 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         else:
             smo = smo + 2 * lame[1] * (ivx2.sum() + ivx2)/ivx2
 
-    hessian_smo = hessian + smo
-    precond = ((lambda x: x / hessian_smo) if is_diag else
-               (lambda x: sym_solve(hessian_smo, x)))
+    hessian_smo = hessian.clone()
+    hessian_smo[..., :dim] += smo
+    # precond = ((lambda x: x / hessian_smo) if is_diag else
+    #            (lambda x: sym_solve(hessian_smo, x)))
+    # forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
+    #            (lambda x: sym_matvec(hessian, x) + regulariser(x)))
+
+    precond = ((lambda x, s: x / hessian_smo[s]) if is_diag else
+               (lambda x, s: sym_solve(hessian_smo[s], x)))
     forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
                (lambda x: sym_matvec(hessian, x) + regulariser(x)))
 
     if no_reg:
         result = precond(gradient)
     else:
-        result = core.optim.cg(forward, gradient, precond=precond,
-                               max_iter=100)
+        result = core.optim.relax(forward, gradient, precond=precond,
+                                  max_iter=16, verbose=verbose, stop='residuals')
     return result
 
 

@@ -2,6 +2,7 @@
 """Optimisers."""
 
 import torch
+import itertools
 
 # TODO:
 # . Implement CG/RELAX as autograd functions.
@@ -245,12 +246,11 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
         precond = D_function
 
     # Initialisation
-    r = A(x).neg_().add_(b)    # Residual: b - A*x
-    z = precond(r)             # Preconditioned residual
+    r = b - A(x)
 
     if tolerance or verbose:
         if stop == 'residuals':
-            obj0 = torch.sqrt(z.square().sum(dtype=dtype))
+            obj0 = torch.sqrt(r.square().sum(dtype=dtype))
         else:
             obj0 = A(x).sub_(2 * b).mul_(x)
             obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
@@ -263,14 +263,86 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     # Run algorithm
     for n_iter in range(1, max_iter + 1):
 
-        x += z
-        r = A(x).neg_().add_(b)
-        z = precond(r)
+        x += precond(r)
+        r = b - A(x)
 
         # Check convergence
         if tolerance or verbose:
             if stop == 'residuals':
-                obj1 = torch.sqrt(z.square().sum(dtype=dtype))
+                obj1 = torch.sqrt(r.square().sum(dtype=dtype))
+            else:
+                obj1 = A(x).sub_(2 * b).mul_(x)
+                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
+            obj[n_iter] = obj1
+            gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
+            if verbose:
+                width = str(len(str(max_iter + 1)))
+                s = '{:' + width + '} | {} = {:12.6g} | gain = {:12.6g}'
+                print(s.format(n_iter, stop, obj[n_iter], gain))
+            if gain.abs() < tolerance:
+                break
+
+    return x
+
+
+def relax(A, b, precond, x=None, max_iter=None, scheme='checkerboard',
+          dim=None, tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
+          inplace=True, stop='residuals'):
+
+    # Format arguments
+    dim = dim or (b.dim() - 1)
+    if max_iter is None:
+        max_iter = len(b) * 10
+    if x is None:
+        x = torch.zeros_like(b)
+    elif not inplace:
+        x = x.clone()
+
+    r = b - A(x)
+
+    if tolerance or verbose:
+        if stop == 'residuals':
+            obj0 = r.square().sum(dtype=sum_dtype).sqrt()
+        else:
+            obj0 = A(x).sub_(2 * b).mul_(x)
+            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+        if verbose:
+            s = '{:' + str(len(str(max_iter + 1))) + '} | {} = {:12.6g}'
+            print(s.format(0, stop, obj0))
+        obj = torch.zeros(max_iter + 1, dtype=sum_dtype, device=obj0.device)
+        obj[0] = obj0
+
+    checkerboard = isinstance(scheme, str) and scheme[0] == 'c'
+    bandwidth = 2 if checkerboard else scheme
+    offsets = list(itertools.product(range(bandwidth), repeat=dim))
+    slicers = []
+    for offset in offsets:
+        slicer = tuple(slice(int(o), None, bandwidth) for o in offset)
+        slicer = (Ellipsis, *slicer, slice(None))
+        slicers.append(slicer)
+    if checkerboard:
+        # gather odd/even slicers
+        slicers = [[slicer for slicer in slicers
+                    if sum(s.start for s in slicer[1:-1]) % 2],
+                   [slicer for slicer in slicers
+                    if not sum(s.start for s in slicer[1:-1]) % 2]]
+    else:
+        slicers = [[slicer] for slicer in slicers]
+
+    for n_iter in range(1, max_iter+1):
+
+        for group in slicers:
+
+            r.copy_(b).sub_(A(x))
+            for slicer in group:
+                # compute residuals
+                # apply preconditioner in selected voxels and update
+                x[slicer] += precond(r[slicer], slicer)
+
+        # Check convergence
+        if tolerance or verbose:
+            if stop == 'residuals':
+                obj1 = r.square().sum(dtype=sum_dtype).sqrt()
             else:
                 obj1 = A(x).sub_(2 * b).mul_(x)
                 obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
@@ -371,5 +443,5 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
     return fig_ax
 
 
-def relax(A, b, iE=lambda x: x, x0=0, max_iter=10):
-    pass
+# def relax(A, b, iE=lambda x: x, x0=0, max_iter=10):
+#     pass

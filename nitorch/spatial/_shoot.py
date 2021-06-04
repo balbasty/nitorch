@@ -307,7 +307,6 @@ def shoot(vel, greens=None,
             print(f'{0.5*steps*(vel*mom).sum().item()/py.prod(spatial):6g}',
                   end='\n' if not (i % 5) else ' ', flush=True)
 
-
         # $\psi \gets \psi \circ (id - \tfrac{1}{T} v)$
         # JA: I found that simply using
         # $\psi \gets \psi - \tfrac{1}{T} (D \psi) v$ was not so stable.
