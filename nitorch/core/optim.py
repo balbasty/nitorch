@@ -13,7 +13,7 @@ import itertools
 
 def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
        tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
-       inplace=True, stop='residuals'):
+       inplace=True, stop='E'):
     """ Solve A*x = b by the conjugate gradient method.
 
         The method of conjugate gradients solves linear systems of
@@ -42,9 +42,12 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
     inplace : bool, default=True
         Perform computations inplace (saves performance but overrides
         `x` and may break the computational graph).
-    stop : {'residuals', 'norm'}, default='residuals'
-        What stopping criteria to use.
-        The squared residuals ('residuals') are not motonically decreasing,
+    stop : {'E', 'A'}, default='E'
+        What (squared) norm to use a stopping criterion:
+            - 'E': (squared) Euclidean norm of the residuals
+            - 'A': (squared) A-norm of the error
+                   <=> A^{-1}-norm of the residuals
+        The Euclidean norm is not motonically decreasing,
         whilst the norm induced by the A-weighted scalar product ('norm') is.
         If monotonicity is important then select 'norm'. However, this requires
         an additional evaluation of A.
@@ -90,10 +93,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
 
     """
     # Format arguments
-    device = b.device
-    dtype = b.dtype
-    if max_iter is None:
-        max_iter = len(b) * 10
+    max_iter = max_iter or len(b) * 10
     if x is None:
         x = torch.zeros_like(b)
     elif not inplace:
@@ -107,13 +107,18 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         A = A_function
 
     # Initialisation
-    r = b - A(x)  # Residual: b - A*x
+    r = b - A(x)    # Residual: b - A*x
     z = precond(r)  # Preconditioned residual
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
-    p = z.clone()  # Initial conjugate directions p
+    p = z.clone()   # Initial conjugate directions p
     
     if tolerance or verbose:
-        if stop == 'residuals':
+        if stop == 'residual':
+            stop = 'e'
+        elif stop == 'norm':
+            stop = 'a'
+        stop = stop[0].lower()
+        if stop == 'e':
             obj0 = torch.sqrt(rz)
         else:
             obj0 = A(x).sub_(2*b).mul_(x)
@@ -121,7 +126,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         if verbose:
             s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g}'
             print(s.format(0, stop, obj0))
-        obj = torch.zeros(max_iter+1, dtype=sum_dtype, device=device)
+        obj = obj0.new_zeros(max_iter+1)
         obj[0] = obj0
 
     # Run algorithm
@@ -142,7 +147,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         
         # Check convergence
         if tolerance or verbose:
-            if stop == 'residuals':
+            if stop == 'e':
                 obj1 = torch.sqrt(rz)
             else:
                 obj1 = A(x).sub_(2*b).mul_(x)
@@ -218,10 +223,7 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
 
     """
     # Format arguments
-    device = b.device
-    dtype = b.dtype
-    if max_iter is None:
-        max_iter = len(b) * 10
+    max_iter = max_iter or len(b) * 10
     if x is None:
         x = torch.zeros_like(b)
     elif not inplace:
@@ -230,34 +232,31 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     # Create functor if A is a tensor
     if isinstance(A, torch.Tensor):
         A_tensor = A
-
-        def A_function(x):
-            return A_tensor.mm(x)
-
-        A = A_function
+        A = lambda x: A_tensor.mm(x)
 
     # Create functor if D is a tensor
     if isinstance(precond, torch.Tensor):
         D_tensor = precond
-
-        def D_function(x):
-            return x * D_tensor
-
-        precond = D_function
+        precond = lambda x: x * D_tensor
 
     # Initialisation
     r = b - A(x)
 
     if tolerance or verbose:
-        if stop == 'residuals':
-            obj0 = torch.sqrt(r.square().sum(dtype=dtype))
+        if stop == 'residual':
+            stop = 'e'
+        elif stop == 'norm':
+            stop = 'a'
+        stop = stop[0].lower()
+        if stop == 'e':
+            obj0 = torch.sqrt(r.square().sum(dtype=sum_dtype))
         else:
             obj0 = A(x).sub_(2 * b).mul_(x)
             obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
         if verbose:
             s = '{:' + str(len(str(max_iter + 1))) + '} | {} = {:12.6g}'
             print(s.format(0, stop, obj0))
-        obj = torch.zeros(max_iter + 1, dtype=sum_dtype, device=device)
+        obj = obj0.new_zeros(max_iter + 1)
         obj[0] = obj0
 
     # Run algorithm
@@ -268,8 +267,8 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
 
         # Check convergence
         if tolerance or verbose:
-            if stop == 'residuals':
-                obj1 = torch.sqrt(r.square().sum(dtype=dtype))
+            if stop == 'e':
+                obj1 = torch.sqrt(r.square().sum(dtype=sum_dtype))
             else:
                 obj1 = A(x).sub_(2 * b).mul_(x)
                 obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
@@ -285,9 +284,65 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     return x
 
 
-def relax(A, b, precond, x=None, max_iter=None, scheme='checkerboard',
+def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
           dim=None, tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
-          inplace=True, stop='residuals'):
+          inplace=True, stop='E'):
+    """Solve `A*x = b` by block-relaxation (e.g., checkerboard Gauss-Seidel).
+
+    The Gauss-Seidel method solves linear systems of the form `A*x = b`,
+    where A is either positive definite or diagonal dominant.
+
+    This method performs updates of the form `x[block] += (P\(b - A*x))[block]`,
+    where P is a suitable pre-conditioner, and elements within a block
+    are independent of each other conditioned on the elements outside
+    of the block.
+
+    Parameters
+    ----------
+    A : callable(tensor)
+        Linear operator.
+        Should take as inputs a tensor with the same shape as `b`
+        and return a tensor with the same shape as `b`.
+    b : (..., *spatial, K) tensor
+        Right hand side 'vector'.
+        Note that it needs a tensor dimension on the right.
+    precond : callable(tensor, slicer)
+        Preconditioner.
+        Should take as inputs a tensor with the same shape as `b` and
+        a tuple of slices, and return a tensor with the same shape as
+        `b[slicer]`.
+    x : (..., *spatial, K) tensor, optional, default=0
+        Initial guess.
+    scheme : 'checkerboard' or int, default='checkerboard'
+        Scheme used to define conditionally independent blocks.
+         - 'checkerboard' uses a "black and white" scheme where all
+           elements that do not share a "face" belong to the same block.
+        - `int` uses strides to define blocks. In effect, elements must
+           have an l1 distance larger than this number to belong to
+           the same block.
+    max_iter : int, default=len(b)*10
+        Maximum number of iteration.
+    tolerance : float, default=1e-5
+        Tolerance for early-stopping.
+    verbose : bool, default = False
+        Write something at each iteration.
+    sum_dtype : torch.dtype, default=float64
+        Choose `float32` for speed or `float64` for precision.
+    inplace : bool, default=True
+        Perform computations inplace (saves performance but overrides
+        `x` and may break the computational graph).
+    stop : {'E', 'A'}, default='E'
+        What (squared) norm to use a stopping criterion:
+            - 'E': (squared) Euclidean norm of the residuals
+            - 'A': (squared) A-norm of the error
+                   <=> A^{-1}-norm of the residuals
+
+    Returns
+    -------
+    x : tensor
+        Solution of the linear system.
+
+    """
 
     # Format arguments
     dim = dim or (b.dim() - 1)
@@ -301,7 +356,12 @@ def relax(A, b, precond, x=None, max_iter=None, scheme='checkerboard',
     r = b - A(x)
 
     if tolerance or verbose:
-        if stop == 'residuals':
+        if stop == 'residual':
+            stop = 'e'
+        elif stop == 'norm':
+            stop = 'a'
+        stop = stop[0].lower()
+        if stop == 'e':
             obj0 = r.square().sum(dtype=sum_dtype).sqrt()
         else:
             obj0 = A(x).sub_(2 * b).mul_(x)
@@ -337,11 +397,11 @@ def relax(A, b, precond, x=None, max_iter=None, scheme='checkerboard',
             for slicer in group:
                 # compute residuals
                 # apply preconditioner in selected voxels and update
-                x[slicer] += precond(r[slicer], slicer)
+                x[slicer] += precond(r, slicer)
 
         # Check convergence
         if tolerance or verbose:
-            if stop == 'residuals':
+            if stop == 'e':
                 obj1 = r.square().sum(dtype=sum_dtype).sqrt()
             else:
                 obj1 = A(x).sub_(2 * b).mul_(x)

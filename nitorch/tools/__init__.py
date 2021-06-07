@@ -2,6 +2,7 @@
 
 from . import affine_reg
 from . import qmri
+from . import registration
 
 from .preproc import *
 from ._preproc_fov import *

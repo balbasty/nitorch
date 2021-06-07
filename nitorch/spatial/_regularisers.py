@@ -492,7 +492,7 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     x = torch.as_tensor(x)
     backend = dict(dtype=x.dtype, device=x.device)
     dim = dim or x.dim() - 1
-    nb_prm = x.shape[-1]
+    nb_prm = x.shape[-dim-1]
     channel2last = lambda x: movedim(x, -(dim + 1), -1)
     last2channel = lambda x: movedim(x, -1, -(dim + 1))
 
@@ -529,7 +529,7 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
 
 def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                     factor=1, voxel_size=1, bound='dct2', dim=None,
-                    weights=None):
+                    optim='relax', max_iter=16, verbose=False, weights=None):
     """Solve a positive-definite linear system of the form (H + L)x = g
 
     Parameters
@@ -551,14 +551,13 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     hessian, gradient = core.utils.to_max_backend(hessian, gradient)
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = dim or gradient.dim() - 1
-    ch2last = lambda x: (movedim(unsqueeze(x, 0, max(0, dim+1-x.dim())),
-                                 -(dim + 1), -1)
-                         if x is not None else x)
-    last2ch = lambda x: (movedim(x, -1, -(dim + 1))
-                         if x is not None else x)
+    ch2last = lambda x: movedim(x, -(dim + 1), -1)
+    last2ch = lambda x: movedim(x, -1, -(dim + 1))
+
     hessian = ch2last(hessian)
     gradient = ch2last(gradient)
     nb_prm = gradient.shape[-1]
+
     voxel_size = make_vector(voxel_size, dim, **backend)
     is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
 
@@ -597,33 +596,54 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     # diagonal of the regulariser
     smo = 0
     if any(absolute):
-        smo += absolute * ch2last(absolute_diag(weights=wa))
+        if wa is not None:
+            smo += absolute * ch2last(absolute_diag(weights=wa))
+        else:
+            smo += absolute * absolute_diag()
     if any(membrane):
-        smo += membrane * ch2last(membrane_diag(weights=wm, **fdopt))
+        if wm is not None:
+            smo += membrane * ch2last(membrane_diag(weights=wm, **fdopt))
+        else:
+            smo += membrane * membrane_diag(**fdopt)
     if any(bending):
-        smo += bending * ch2last(bending_diag(weights=wb, **fdopt))
+        if wb is not None:
+            smo += bending * ch2last(bending_diag(weights=wb, **fdopt))
+        else:
+            smo += bending * bending_diag(**fdopt)
 
     if is_diag:
         hessian_smo = hessian + smo
     else:
         hessian_smo = hessian.clone()
         hessian_smo[..., :nb_prm] += smo
-    precond = ((lambda x: x / hessian_smo) if is_diag else
-               (lambda x: sym_solve(hessian_smo, x)))
+
+    def s2h(s):
+        # do not slice if hessian_smo is constant across space
+        if all(sz == 1 for sz in hessian_smo.shape[-dim - 1:-1]):
+            s = list(s)
+            s[-dim - 1:-1] = [slice(None)] * dim
+            s = tuple(s)
+        return s
+
     forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
                (lambda x: sym_matvec(hessian, x) + regulariser(x)))
+    precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s2h(s)]) if is_diag else
+               (lambda x, s=Ellipsis: sym_solve(hessian_smo[s2h(s)], x[s])))
 
     if no_reg:
         result = precond(gradient)
     else:
-        result = core.optim.cg(forward, gradient, precond=precond,
-                               max_iter=100)
+        prm = dict(max_iter=max_iter, verbose=verbose)
+        if optim == 'relax':
+            prm['scheme'] = (3 if bending else 'checkerboard')
+        optim = core.optim.relax if optim == 'relax' else core.optim.cg
+        result = optim(forward, gradient, precond=precond, **prm)
     return last2ch(result)
 
 
 def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                    lame=0, factor=1, voxel_size=1, bound='dft', weights=None,
-                   verbose=False):
+                   optim='relax', max_iter=16, verbose=False):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
     Parameters
@@ -712,21 +732,23 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
 
     hessian_smo = hessian.clone()
     hessian_smo[..., :dim] += smo
-    # precond = ((lambda x: x / hessian_smo) if is_diag else
-    #            (lambda x: sym_solve(hessian_smo, x)))
-    # forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
-    #            (lambda x: sym_matvec(hessian, x) + regulariser(x)))
 
-    precond = ((lambda x, s: x / hessian_smo[s]) if is_diag else
-               (lambda x, s: sym_solve(hessian_smo[s], x)))
     forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
                (lambda x: sym_matvec(hessian, x) + regulariser(x)))
+    precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s]) if is_diag else
+               (lambda x, s=Ellipsis: sym_solve(hessian_smo[s], x[s])))
 
     if no_reg:
+        # no spatial regularisation: we can use a closed-form
         result = precond(gradient)
     else:
-        result = core.optim.relax(forward, gradient, precond=precond,
-                                  max_iter=16, verbose=verbose, stop='residuals')
+        prm = dict(max_iter=max_iter, verbose=verbose)
+        if optim == 'relax':
+            prm['scheme'] = (3 if bending else
+                             2 if any(lame) else
+                             'checkerboard')
+        optim = core.optim.relax if optim == 'relax' else core.optim.cg
+        result = optim(forward, gradient, precond=precond, **prm)
     return result
 
 
