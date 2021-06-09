@@ -619,6 +619,8 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
 
     def s2h(s):
         # do not slice if hessian_smo is constant across space
+        if s is Ellipsis:
+            return s
         if all(sz == 1 for sz in hessian_smo.shape[-dim - 1:-1]):
             s = list(s)
             s[-dim - 1:-1] = [slice(None)] * dim
@@ -776,15 +778,15 @@ def absolute_diag(weights=None):
         return weights
 
 
-def membrane_weights(field, lam=1, voxel_size=1, bound='dct2',
-                     dim=None, joint=True, return_sum=False):
+def membrane_weights(field, factor=1, voxel_size=1, bound='dct2',
+                     dim=None, joint=True, return_sum=False, eps=1e-5):
     """Update the (L1) weights of the membrane energy.
 
     Parameters
     ----------
     field : (..., K, *spatial) tensor
         Field
-    lam : float or (K,) sequence[float], default=1
+    factor : float or (K,) sequence[float], default=1
         Regularisation factor
     voxel_size : float or sequence[float], default=1
         Voxel size
@@ -800,29 +802,31 @@ def membrane_weights(field, lam=1, voxel_size=1, bound='dct2',
     -------
     weight : (..., 1 or K, *spatial) tensor
         Weights for the reweighted least squares scheme
+    sum : () tensor, if `return_sum`
+        Sum of weights (before inversion)
     """
     field = torch.as_tensor(field)
     backend = core.utils.backend(field)
     dim = dim or field.dim() - 1
     nb_prm = field.shape[-dim-1]
     voxel_size = make_vector(voxel_size, dim, **backend)
-    lam = make_vector(lam, nb_prm, **backend)
-    lam = core.utils.unsqueeze(lam, -1, dim+1)
+    factor = make_vector(factor, nb_prm, **backend)
+    factor = core.utils.unsqueeze(factor, -1, dim + 1)
     if joint:
-        lam = lam * nb_prm
+        factor = factor * nb_prm
     dims = list(range(field.dim()-dim, field.dim()))
     fieldb = diff(field, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
     field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
-    field.square_().mul_(lam)
-    field += fieldb.square_().mul_(lam)
+    field.square_().mul_(factor)
+    field += fieldb.square_().mul_(factor)
     field /= 2.
     dims = [-1] + ([-dim-2] if joint else [])
     field = field.sum(dim=dims, keepdims=True)[..., 0].sqrt_()
     if return_sum:
         ll = field.sum()
-        return field.clamp_min_(1e-5).reciprocal_(), ll
+        return field.clamp_min_(eps).reciprocal_(), ll
     else:
-        return field.clamp_min_(1e-5).reciprocal_()
+        return field.clamp_min_(eps).reciprocal_()
 
 
 def bending_weights(field, lam=1, voxel_size=1, bound='dct2',

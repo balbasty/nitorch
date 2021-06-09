@@ -39,7 +39,7 @@ def exp(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
 
 
 def exp_forward(vel, inverse=False, steps=8, interpolation='linear',
-                bound='dft', displacement=False):
+                bound='dft', displacement=False, jacobian=False):
     """Exponentiate a stationary velocity field by scaling and squaring.
 
     Parameters
@@ -64,13 +64,14 @@ def exp_forward(vel, inverse=False, steps=8, interpolation='linear',
         Exponentiated tranformation
 
     """
-
+    backend = utils.backend(vel)
     vel = -vel if inverse else vel.clone()
 
     # Precompute identity + aliases
     dim = vel.shape[-1]
     spatial = vel.shape[-1-dim:-1]
-    id = identity_grid(spatial, **utils.backend(vel))
+    id = identity_grid(spatial, **backend)
+    jac = torch.eye(dim, **backend).expand([*vel.shape[:-1], dim, dim])
     opt = {'interpolation': interpolation, 'bound': bound}
 
     if vel.requires_grad:
@@ -80,11 +81,13 @@ def exp_forward(vel, inverse=False, steps=8, interpolation='linear',
 
     vel /= (2**steps)
     for i in range(steps):
+        if jacobian:
+            jac = _composition_jac(jac, vel, type='displacement', identity=id)
         vel = iadd(vel, _pull_vel(vel, id + vel, **opt))
 
     if not displacement:
         vel += id
-    return vel
+    return (vel, jac) if jacobian else vel
 
 
 def _jhj(jac, hess):
@@ -205,21 +208,22 @@ def exp_backward(vel, grad, hess=None, inverse=False, steps=8,
     shape = vel.shape[-dim-1:-1]
     id = identity_grid(shape, **utils.backend(vel))
     vel = vel.clone()
-    vel /= (-1 if not inverse else 1) * (2**steps)
 
     if rotate_grad:
         # It forces us to perform a forward exponentiation, which
         # is a bit annoying...
-        grid = exp_forward(vel, steps=steps, displacement=True, **opt)
-        grid = grid_jacobian(grid, bound=bound, type='disp')
-        grid = grid.transpose(-1, -2)
-        grad = linalg.matvec(grid, grad)
+        # Maybe save the Jacobian after the forward pass? But it take space
+        _, jac = exp_forward(vel, jacobian=True, steps=steps,
+                             displacement=True, **opt)
+        jac = jac.transpose(-1, -2)
+        grad = linalg.matvec(jac, grad)
         if hess is not None:
-            hess = _jhj(grid, hess)
-        del grid
+            hess = _jhj(jac, hess)
+        del jac
 
+    vel /= (-1 if not inverse else 1) * (2**steps)
+    jac = grid_jacobian(vel, bound=bound, type='disp')
     for _ in range(steps):
-        jac = grid_jacobian(vel, bound=bound, type='disp')
         det = jac.det()
         jac = jac.transpose(-1, -2)
         grad0 = grad
@@ -233,7 +237,10 @@ def exp_backward(vel, grad, hess=None, inverse=False, steps=8,
             hess = _jhj(jac, hess)
             hess *= det[..., None]
             hess += hess0
-        vel += _pull_vel(vel, id + vel, **opt)   # squaring
+        # squaring
+        jac = jac.transpose(-1, -2)
+        jac = _composition_jac(jac, vel, type='disp', identity=id, **opt)
+        vel += _pull_vel(vel, id + vel, **opt)
 
     if inverse:
         grad.neg_()
@@ -347,3 +354,84 @@ def _push_vel(vel, grid, *args, **kwargs):
     if vel_no_batch and grid_no_batch:
         vel = vel[0]
     return vel
+
+
+def _pull_jac(jac, grid, **kwargs):
+    """Interpolate a Jacobian field.
+
+    Notes
+    -----
+    Defaults differ from grid_pull:
+    - bound -> dft
+    - extrapolate -> True
+
+    Parameters
+    ----------
+    jac : ([batch], *spatial, ndim, ndim) tensor
+        Jacobian matrix
+    grid : ([batch], *spatial, ndim) tensor
+        Transformation field
+    kwargs : dict
+        Options to ``grid_pull``
+
+    Returns
+    -------
+    pulled_jac : ([batch], *spatial, ndim, ndim) tensor
+        Velocity
+
+    """
+    kwargs.setdefault('bound', 'dft')
+    kwargs.setdefault('extrapolate', True)
+    dim = grid.shape[-1]
+
+    jac = jac.reshape([*jac.shape[:-2], -1])
+    jac = utils.movedim(jac, -1, -dim-1)
+    jac_no_batch = jac.dim() == dim + 1
+    grid_no_batch = grid.dim() == dim + 1
+    if jac_no_batch:
+        jac = jac[None]
+    if grid_no_batch:
+        grid = grid[None]
+    jac = grid_pull(jac, grid, **kwargs)
+    jac = utils.movedim(jac, -dim-1, -1)
+    jac = jac.reshape([*jac.shape[:-1], dim, dim])
+    if jac_no_batch and grid_no_batch:
+        jac = jac[0]
+    return jac
+
+
+def _composition_jac(jac, rhs, lhs=None, type='grid', identity=None, **kwargs):
+    """Jacobian of the composition `(lhs)o(rhs)`
+
+    Parameters
+    ----------
+    jac : ([batch], *spatial, ndim, ndim) tensor
+        Jacobian of input RHS transformation
+    rhs : ([batch], *spatial, ndim) tensor
+        RHS transformation
+    lhs : ([batch], *spatial, ndim) tensor, default=`rhs`
+        LHS small displacement
+    kwargs : dict
+        Options to ``grid_pull``
+
+    Returns
+    -------
+    composed_jac : ([batch], *spatial, ndim, ndim) tensor
+        Jacobian of composition
+
+    """
+    if lhs is None:
+        lhs = rhs
+    dim = rhs.shape[-1]
+    backend = utils.backend(rhs)
+    typer, typel = py.make_list(type, 2)
+    jac_left = grid_jacobian(lhs, type=typel)
+    if typer != 'grid':
+        if identity is None:
+            identity = identity_grid(rhs.shape[-dim-1:-1], **backend)
+        rhs = rhs + identity
+    jac_left = _pull_jac(jac_left, rhs)
+    jac = torch.matmul(jac_left, jac)
+    return jac
+
+

@@ -71,7 +71,8 @@ def _plot(fixed, moving, warped, vel, cat=False, dim=None):
 
 
 def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
-             loss='mse', optim='relax', sub_iter=16, plot=False, **prm):
+             loss='mse', optim='relax', sub_iter=16, plot=False, steps=8,
+             **prm):
     """Diffeomorphic registration between two images using SVFs.
 
     Parameters
@@ -136,17 +137,15 @@ def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
     for n_iter in range(1, max_iter+1):
 
         # forward
-        grid = spatial.exp_forward(vel)
+        grid, jac = spatial.exp_forward(vel, steps=steps, jacobian=True)
 
         # compute spatial gradients in warped space
         mugrad = spatial.grid_grad(moving, grid, bound='dct2', extrapolate=True)
 
         # TODO: add that back? see JA's email
-        # jac = spatial.grid_jacobian(vel, type='disp').inverse()
-        # jac = torch.matmul(spatial.grid_jacobian(grid), jac)
+        # jac = torch.matmul(jac, spatial.grid_jacobian(vel, type='disp').inverse())
 
-        # rotate gradients
-        jac = spatial.grid_jacobian(grid)
+        # rotate gradients (we want `D(mu o phi)`, not `D(mu) o phi`)
         jac = jac.transpose(-1, -2)
         mugrad = linalg.matvec(jac, mugrad)
         del jac
@@ -182,7 +181,7 @@ def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
             print(f'{n_iter:03d} | {ll:12.6g} | gain = {gain:12.6g}', end='\r')
 
         # propagate gradients backward
-        grad, hess = spatial.exp_backward(vel, grad, hess)
+        grad, hess = spatial.exp_backward(vel, grad, hess, steps=steps)
         grad += vgrad
 
         if optim.startswith('gd'):

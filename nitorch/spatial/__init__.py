@@ -54,5 +54,5 @@ from ._finite_differences import *
 from ._grid import *
 from ._mrfield import *
 from ._regularisers import *
-from ._sclsq import *
+from ._svf import *
 from ._shoot import *
