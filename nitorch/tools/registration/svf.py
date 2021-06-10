@@ -2,72 +2,9 @@ from nitorch import spatial
 from nitorch.core import py, utils, linalg, math
 import torch
 from .losses import mse, cat
-from .utils import jg, jhj
+from .utils import jg, jhj, defaults_velocity, defaults_template
 from .phantoms import demo_atlas, demo_register
-
-
-def defaults_velocity(prm=None):
-    if prm is None:
-        prm = dict()
-    # values from SPM shoot
-    prm.setdefault('absolute', 1e-4)
-    prm.setdefault('membrane', 1e-3)
-    prm.setdefault('bending', 0.2)
-    prm.setdefault('lame', (0.05, 0.2))
-    prm.setdefault('voxel_size', 1.)
-    return prm
-
-
-def defaults_template(prm=None):
-    if prm is None:
-        prm = dict()
-    # values from SPM shoot
-    prm.setdefault('absolute', 1e-4)
-    prm.setdefault('membrane', 0.08)
-    prm.setdefault('bending', 0.8)
-    prm.setdefault('voxel_size', 1.)
-    return prm
-
-
-def _plot(fixed, moving, warped, vel, cat=False, dim=None):
-    """Plot registration live"""
-    import matplotlib.pyplot as plt
-
-    dim = dim or (fixed.dim() - 1)
-    if fixed.dim() < dim + 2:
-        fixed = fixed[None]
-    if moving.dim() < dim + 2:
-        moving = moving[None]
-    if warped.dim() < dim + 2:
-        warped = warped[None]
-    if vel.dim() < dim + 2:
-        vel = vel[None]
-    nb_channels = fixed.shape[-dim-1]
-    nb_batch = len(fixed)
-
-    if dim == 3:
-        fixed = fixed.squeeze(-1)
-        moving = moving.squeeze(-1)
-        warped = warped.squeeze(-1)
-        vel = vel.squeeze(-2)
-    vel = vel.square().sum(-1).sqrt()
-
-    if cat:
-        moving = math.softmax(moving, dim=1, implicit=True)
-        warped = math.softmax(warped, dim=1, implicit=True)
-
-    nb_rows = min(nb_batch, 3)
-    nb_cols = 4
-    for b in range(nb_rows):
-        plt.subplot(nb_rows, nb_cols, b*nb_cols + 1)
-        plt.imshow(moving[b, 0])
-        plt.subplot(nb_rows, nb_cols, b*nb_cols + 2)
-        plt.imshow(warped[b, 0])
-        plt.subplot(nb_rows, nb_cols, b*nb_cols + 3)
-        plt.imshow(fixed[b, 0])
-        plt.subplot(nb_rows, nb_cols, b*nb_cols + 4)
-        plt.imshow(vel[b])
-    plt.show()
+from . import plot as plt
 
 
 def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
@@ -133,6 +70,11 @@ def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
         # Greens kernel for Hilbert gradient
         kernel = spatial.greens(shape, **prm)
 
+    iscat = loss == 'cat'
+    loss = (mse if loss == 'mse' else
+            cat if loss == 'cat' else
+            loss)
+
     ll_prev = None
     for n_iter in range(1, max_iter+1):
 
@@ -153,13 +95,8 @@ def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
         # gradient/Hessian of the log-likelihood in observed space
         warped = spatial.grid_pull(moving, grid, bound='dct2', extrapolate=True)
         if plot:
-            _plot(fixed, moving, warped, vel, cat=(loss == 'cat'), dim=dim)
-        if loss == 'mse':
-            ll, grad, hess = mse(fixed, warped, dim=dim)
-        elif loss == 'cat':
-            ll, grad, hess = cat(fixed, warped, dim=dim, acceleration=0)
-        else:
-            raise NotImplementedError(loss)
+            plt.mov2fix(fixed, moving, warped, vel, cat=iscat, dim=dim)
+        ll, grad, hess = loss(warped, fixed, dim=dim)
         del warped
 
         # compose with spatial gradients
@@ -467,7 +404,7 @@ def update_velocity(fixed=None, moving=None, lam=1., max_iter=20,
         # gradient/Hessian of the log=likelihood in observed space
         warped = spatial.grid_pull(moving, grid, bound='dct2', extrapolate=True)
         if plot:
-            _plot(fixed, moving, warped, velocity, cat=(loss == 'cat'), dim=dim)
+            plt.mov2fix(fixed, moving, warped, velocity, cat=(loss == 'cat'), dim=dim)
         if loss == 'mse':
             ll, lossgrad, losshess = mse(fixed, warped, dim=dim)
         elif loss == 'cat':

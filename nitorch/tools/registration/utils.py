@@ -3,6 +3,29 @@ from nitorch._C.grid import GridGrad
 import torch
 
 
+def defaults_velocity(prm=None):
+    if prm is None:
+        prm = dict()
+    # values from SPM shoot
+    prm.setdefault('absolute', 1e-4)
+    prm.setdefault('membrane', 1e-3)
+    prm.setdefault('bending', 0.2)
+    prm.setdefault('lame', (0.05, 0.2))
+    prm.setdefault('voxel_size', 1.)
+    return prm
+
+
+def defaults_template(prm=None):
+    if prm is None:
+        prm = dict()
+    # values from SPM shoot
+    prm.setdefault('absolute', 1e-4)
+    prm.setdefault('membrane', 0.08)
+    prm.setdefault('bending', 0.8)
+    prm.setdefault('voxel_size', 1.)
+    return prm
+
+
 def jg(jac, grad, dim=None):
     """Jacobian-gradient product: J*g
 
