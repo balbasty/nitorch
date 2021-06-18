@@ -283,18 +283,22 @@ def init_optimizers(options):
     for trf in options.transformations:
         if hasattr(trf, 'optdat'):
             param = trf.optdat
-            params.append({'params': param, 'lr': trf.lr})
+            params.append({'params': param,
+                           'lr': trf.lr,
+                           'weight_decay': trf.weight_decay})
 
     for optim in options.optimizers:
         params1 = []
         for param in params:
             params1.append({'params': param['params'],
-                            'lr': param['lr'] * optim.lr})
+                            'lr': param['lr'] * optim.lr,
+                           'weight_decay': param['weight_decay'] * optim.weight_decay})
         if hasattr(optim, 'obj') and isinstance(optim.obj, torch.optim.Adam):
             state = get_state(optim)
         else:
             state = None
-        optim.obj = optim.call(params1, lr=optim.lr)
+        optim.obj = optim.call(params1, lr=optim.lr,
+                               weight_decay=optim.weight_decay)
         # if state is not None:
         #     p, new_shape = get_shape(params1)
         #     state['step'] = 0
@@ -303,6 +307,7 @@ def init_optimizers(options):
         #     state['exp_avg_sq'] = spatial.resize_grid(
         #         state['exp_avg_sq'][None], shape=new_shape, type='displacement')[0]
         #     optim.state[p] = state
+
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim.obj)
         if optim.ls != 0:
             if optim.ls is True:
@@ -311,20 +316,12 @@ def init_optimizers(options):
         optim.first_iter = True
 
         def optim_step(fwd):
-            optim.obj.zero_grad()
-            # for group in optim.obj.param_groups:
-            #     for param in group['params']:
-            #         print('param_in:', param.isfinite().all())
-            loss = fwd()
-            # print(loss.item())
-            loss.backward()
-            # for group in optim.obj.param_groups:
-            #     for param in group['params']:
-            #         print('grad:', param.grad.isfinite().all())
-            optim.obj.step()
-            # for group in optim.obj.param_groups:
-            #     for param in group['params']:
-            #         print('param_out:', param.isfinite().all())
+            def closure():
+                optim.obj.zero_grad()
+                loss = fwd()
+                loss.backward()
+                return loss
+            loss = optim.obj.step(closure)
             if optim.first_iter:
                 optim.first_iter = False
             else:
@@ -754,7 +751,7 @@ def reslice(moving, fname, like, inv=False, lin=None, nonlin=None,
 def write_data(options):
 
     device = torch.device(options.device)
-    backend = dict(dtype=torch.float, device=device)
+    backend = dict(dtype=torch.float, device='cpu')
 
     need_inv = False
     for loss in options.losses:
@@ -804,7 +801,7 @@ def write_data(options):
         prm = dict(interpolation=moving.interpolation,
                    bound=moving.bound,
                    extrapolate=moving.extrapolate,
-                   device=device,
+                   device='cpu',
                    verbose=options.verbose)
         nonlin = dict(disp=d, affine=d_aff)
         if moving.updated:
@@ -816,7 +813,7 @@ def write_data(options):
         prm = dict(interpolation=fixed.interpolation,
                    bound=fixed.bound,
                    extrapolate=fixed.extrapolate,
-                   device=device,
+                   device='cpu',
                    verbose=options.verbose)
         nonlin = dict(disp=id, affine=d_aff)
         if fixed.updated:
