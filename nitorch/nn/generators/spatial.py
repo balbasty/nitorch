@@ -2,7 +2,7 @@ import math
 import torch
 import torch.distributions as td
 from nitorch.core import utils
-from nitorch.core.utils import channel2last, unsqueeze
+from nitorch.core.utils import channel2last, unsqueeze, make_vector
 from nitorch.core.py import make_list
 from nitorch.core.linalg import matvec
 from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean
@@ -12,7 +12,7 @@ from .field import RandomSplineSample
 
 
 __all__ = ['VelocitySample', 'DiffeoSample', 'AffineSample', 'GridSample',
-           'DeformedSample', 'PatchSample']
+           'DeformedSample', 'PatchSample', 'FlipSample']
 
 
 defaults = dict(
@@ -623,3 +623,51 @@ class PatchSample(Module):
             return image
 
 
+class FlipSample(Module):
+    """Apply a random flip to a tensor."""
+
+    def __init__(self, prob=0.5, dim=None):
+        """
+
+        Parameters
+        ----------
+        prob : float or sequence[float]
+            Probability yo flip (per spatial dimension)
+        dim : int or sequence[int], default=all
+            Index of spatial dimension to flip
+        """
+
+        super().__init__()
+        self.prob = prob
+        self.dim = dim
+
+    def forward(self, *image, **overload):
+        """
+
+        Parameters
+        ----------
+        image : (batch, channel, *spatial)
+        overload
+
+        Returns
+        -------
+
+        """
+
+        image = list(image)
+        device = image[0].device
+
+        nb_dim = image[0].dim() - 2
+        prob = make_vector(overload.get('prob', self.prob),
+                           dtype=torch.float, device=device)
+        dim = overload.get('dim', self.dim)
+        dim = make_list(dim or range(-nb_dim, 0), nb_dim)
+
+        # sample shift
+        flip = torch.rand((nb_dim,), device=device) > (1 - prob)
+        dim = [d for d, f in zip(dim, flip) if f]
+
+        if dim:
+            for i, img in enumerate(image):
+                image[i] = img.flip(dim)
+        return image[0] if len(image) == 1 else tuple(image)

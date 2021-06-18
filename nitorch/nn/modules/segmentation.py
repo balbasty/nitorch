@@ -31,7 +31,7 @@ class ClassificationHead(Module):
            cannot be recovered. This is the case for e.g. the hinge loss)
     """
 
-    def __init__(self, implicit='sum'):
+    def __init__(self, implicit='zero'):
         super().__init__()
         self.implicit = implicit
 
@@ -90,7 +90,7 @@ class LogisticHead(ClassificationHead):
     The posterior is the softmaxed score.
     """
 
-    def __init__(self, implicit='sum', weighted=False):
+    def __init__(self, implicit='zero', weighted=False):
         super().__init__(implicit)
         self.loss = catloss.CategoricalLoss(weighted, log=True, implicit=False)
 
@@ -119,7 +119,7 @@ class FocalHead(ClassificationHead):
            https://arxiv.org/abs/2011.09172
     """
 
-    def __init__(self, gamma=2, implicit='sum', weighted=False):
+    def __init__(self, gamma=2, implicit='zero', weighted=False):
         """
 
         Parameters
@@ -163,7 +163,7 @@ class HingeHead(ClassificationHead):
 class DiceHead(ClassificationHead):
     """Head for a Dice loss"""
 
-    def __init__(self, exclude_background=False, implicit='sum', weighted=False):
+    def __init__(self, exclude_background=False, implicit='zero', weighted=False):
         super().__init__(implicit)
         self.loss = catloss.DiceLoss(weighted=weighted,
                                      exclude_background=exclude_background,

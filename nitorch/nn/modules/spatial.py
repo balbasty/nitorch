@@ -859,7 +859,7 @@ class Resize(Module):
         """
         super().__init__()
         self.factor = factor
-        self.outshape = shape
+        self.output_shape = shape
         self.anchor = anchor
         self.interpolation = interpolation
         self.bound = bound
@@ -924,7 +924,7 @@ class Resize(Module):
 
     def shape(self, image, affine=None, **overload):
         factor = overload.get('factor', self.factor)
-        shape = overload.get('shape', self.outshape),
+        output_shape = overload.get('output_shape', self.output_shape)
         output_padding = overload.get('output_padding', self.output_padding)
 
         # read parameters
@@ -936,15 +936,15 @@ class Resize(Module):
         batch = inshape[:2]
         inshape = inshape[2:]
         factor = utils.make_vector(factor or 0., nb_dim).tolist()
-        outshape = make_list(shape or [None], nb_dim)
+        output_shape = make_list(output_shape or [None], nb_dim)
         output_padding = make_list(output_padding or [0], nb_dim)
         output_padding = [p or 0 for p in output_padding]
 
         # compute output shape
-        outshape = [int(inshp * f) if outshp is None else outshp
-                    for inshp, outshp, f in zip(inshape, outshape, factor)]
-        outshape = [s+p for s, p in zip(outshape, output_padding)]
-        return (*batch, *outshape)
+        output_shape = [int(inshp * f) if outshp is None else outshp
+                        for inshp, outshp, f in zip(inshape, output_shape, factor)]
+        output_shape = [s+p for s, p in zip(output_shape, output_padding)]
+        return (*batch, *output_shape)
 
 
 class GridResize(Module):

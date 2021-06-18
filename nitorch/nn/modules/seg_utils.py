@@ -26,19 +26,19 @@ def board2(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None, mode
     pred = outputs
     fig = plt.figure()
 
-    if image.dim( ) -2 == 2:
-        image = get_slice(image[0, 0])
+    if image.dim() - 2 == 2:
+        image = image[0, 0]
         image = intensity_to_rgb(image)
         nk = pred.shape[1] + implicit
-        pred = get_slice(pred[0])
+        pred = pred[0]
         pred = prob_to_rgb(pred, implicit=implicit)
         if ref.dtype in (torch.float, torch.double):
-            ref = get_slice(ref[0])
+            ref = ref[0]
         else:
-            ref = get_slice(ref[0, 0])
+            ref = ref[0, 0]
             ref = torch.stack \
                 ([ref == i for i in range(1, ref.max().item( ) +1)]).float()
-        ref = prob_to_rgb(ref, implicit=ref.shape[1] < pred.nk)
+        ref = prob_to_rgb(ref, implicit=ref.shape[0] < nk)
         plt.subplot(1, 3, 1)
         plt.imshow(image.detach().cpu())
         plt.axis('off')

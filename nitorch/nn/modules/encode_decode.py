@@ -118,7 +118,7 @@ class Upsample(Module):
             x = utils.unsqueeze(x, -1, dim)
             slicer = [slice(o, o+sz*st) for sz, st, o in
                       zip(x.shape[2:], stride, offset)]
-            slicer = [slice(None)]*2 + slicer + [slice(None)]*dim
+            slicer = [slice(None)]*2 + slicer
             z[tuple(slicer)].copy_(x)
         else:
             slicer = [slice(o, None, s) for o, s in zip(offset, stride)]

@@ -4,7 +4,7 @@ import torch.distributions as td
 from nitorch.core.utils import unsqueeze, ensure_shape
 from nitorch.core.constants import pi
 from nitorch.core.kernels import smooth
-from nitorch.core import utils
+from nitorch.core import utils, py, linalg
 from nitorch import spatial
 from nitorch.nn.base import Module
 
@@ -246,6 +246,297 @@ class RandomSplineSample(Module):
         nodes = [(s/f).ceil().int().item() for s, f in zip(shape, fwhm)]
         sample = torch.randn([batch, channel, *nodes], **backend) * amplitude
         sample = spatial.resize(sample, shape=shape, interpolation=basis, bound='dct2')
+        sample += mean
+
+        return sample
+
+
+class RandomGreensSample(Module):
+    """Sample a Gaussian random field defined by its Greens function."""
+
+    def __init__(self, shape=None, mean=0, channel=1,
+                 absolute=1e-3, membrane=0.1, bending=0, voxel_size=1,
+                 cache_greens=True, device='cpu', dtype=None):
+        """
+
+        Parameters
+        ----------
+        shape : sequence[int], optional
+            Lattice shape
+        mean : callable or tensor, default=0
+            Mean value. Should broadcast to (channel, *shape)
+        channel : int, default=1
+            Number of channels
+        absolute : callable or tensor, default=1e-4
+            Penalty on absolute displacements.
+            Should broadcast to (channel,)
+        membrane : callable or tensor, default=0.1
+            Penalty on membrane energy (first derivatives).
+            Should broadcast to (channel,)
+        bending : callable or tensor, default=0
+            Penalty on bending energy (second derivatives).
+            Should broadcast to (channel,)
+        voxel_size : float or sequence[float], default=1
+            Voxel size of the lattice.
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+
+        """
+        super().__init__()
+        self.shape = shape
+        self.mean = mean
+        self.channel = channel
+        self.absolute = absolute
+        self.membrane = membrane
+        self.bending = bending
+        self.voxel_size = voxel_size
+        self.cache_greens = cache_greens
+        self.device = device
+        if dtype is None or not dtype.is_floating_point:
+            dtype = torch.get_default_dtype()
+        self.dtype = dtype
+
+    def forward(self, batch=1, **overload):
+        """
+
+        Parameters
+        ----------
+        batch : int, default=1
+            Batch size
+        overload : dict
+
+        Returns
+        -------
+        field : (batch, channel, *shape) tensor
+            Generated random field
+
+        """
+
+        # get arguments
+        shape = overload.get('shape', self.shape)
+        mean = overload.get('mean', self.mean)
+        channel = overload.get('channel', self.channel)
+        absolute = overload.get('absolute', self.absolute)
+        membrane = overload.get('membrane', self.membrane)
+        bending = overload.get('bending', self.bending)
+        voxel_size = overload.get('voxel_size', self.voxel_size)
+        dtype = overload.get('dtype', self.dtype)
+        device = overload.get('device', self.device)
+        backend = dict(dtype=dtype, device=device)
+
+        # sample if parameters are callable
+        mean = mean() if callable(mean) else mean
+        absolute = absolute() if callable(absolute) else absolute
+        membrane = membrane() if callable(membrane) else membrane
+        bending = bending() if callable(bending) else bending
+
+        # reshape
+        nb_dim = len(shape)
+        full_shape = [batch, channel, *shape]
+        mean = torch.as_tensor(mean, **backend).expand(full_shape)
+        absolute = utils.make_vector(absolute, channel, **backend)
+        membrane = utils.make_vector(membrane, channel, **backend)
+        bending = utils.make_vector(bending, channel, **backend)
+        if torch.is_tensor(voxel_size):
+            voxel_size = voxel_size.tolist()
+        voxel_size = py.make_list(voxel_size, nb_dim)
+
+        # sample white noise
+        sample = torch.randn([batch, channel, *shape, 2], **backend)
+
+        # create greens kernel
+        for c in range(channel):
+            if (hasattr(self, '_greens') and
+                    absolute[c] == self._absolute and
+                    membrane[c] == self._membrane and
+                    bending[c] == self._bending and
+                    voxel_size == self._voxel_size):
+                greens = self._greens.to(dtype=dtype, device=device)
+            else:
+                greens = spatial.greens(shape,
+                                        absolute=absolute[c],
+                                        membrane=membrane[c],
+                                        bending=bending[c],
+                                        lame=0,
+                                        voxel_size=voxel_size,
+                                        device=device,
+                                        dtype=dtype)
+                greens = greens.sqrt()
+                if self.cache_greens:
+                    self._greens = greens
+                    self._absolute = absolute[c]
+                    self._membrane = membrane[c]
+                    self._bending = bending[c]
+                    self._voxel_size = voxel_size
+
+            # multiply by square root of greens
+            sample[:, c] = sample[:, c] * greens[..., None]
+
+        # inverse Fourier transform
+        if utils.torch_version('>=', (1, 8)):
+            sample = torch.fft.ifftn(sample, dim=nb_dim).real()
+        else:
+            sample = torch.ifft(sample, nb_dim)[..., 0]
+        sample *= py.prod(shape)
+
+        # add mean
+        sample += mean
+
+        return sample
+
+
+class RandomGreensGridSample(Module):
+    """Sample a Gaussian random field defined by its Greens function."""
+
+    def __init__(self, shape=None, mean=0,
+                 absolute=1e-4, membrane=1e-3, bending=0.2, lame=(0.05, 0.2),
+                 voxel_size=1, cache_greens=True, device='cpu', dtype=None):
+        """
+
+        Parameters
+        ----------
+        shape : sequence[int], optional
+            Lattice shape
+        mean : callable or tensor, default=0
+            Mean value. Should broadcast to (channel, *shape)
+        absolute : callable or tensor, default=1e-4
+            Penalty on absolute displacements.
+            Should broadcast to (channel,)
+        membrane : callable or tensor, default=1e-3
+            Penalty on membrane energy (first derivatives).
+            Should broadcast to (channel,)
+        bending : callable or tensor, default=0.2
+            Penalty on bending energy (second derivatives).
+            Should broadcast to (channel,)
+        lame : pair of [callable or tensor], default=(0.05, 0.2)
+            Penalty on linear-elastic energy (zooms and shears).
+            Should broadcast to (channel,)
+        voxel_size : float or sequence[float], default=1
+            Voxel size of the lattice.
+        device : torch.device: default='cpu'
+            Output tensor device.
+        dtype : torch.dtype, default=torch.get_default_dtype()
+            Output tensor datatype.
+
+        """
+        super().__init__()
+        self.shape = shape
+        self.mean = mean
+        self.absolute = absolute
+        self.membrane = membrane
+        self.bending = bending
+        self.lame = lame
+        self.voxel_size = voxel_size
+        self.cache_greens = cache_greens
+        self.device = device
+        if dtype is None or not dtype.is_floating_point:
+            dtype = torch.get_default_dtype()
+        self.dtype = dtype
+
+    def forward(self, batch=1, **overload):
+        """
+
+        Parameters
+        ----------
+        batch : int, default=1
+            Batch size
+        overload : dict
+
+        Returns
+        -------
+        field : (batch, channel, *shape) tensor
+            Generated random field
+
+        """
+
+        # get arguments
+        shape = overload.get('shape', self.shape)
+        mean = overload.get('mean', self.mean)
+        absolute = overload.get('absolute', self.absolute)
+        membrane = overload.get('membrane', self.membrane)
+        bending = overload.get('bending', self.bending)
+        lame = overload.get('lame', self.lame)
+        voxel_size = overload.get('voxel_size', self.voxel_size)
+        dtype = overload.get('dtype', self.dtype)
+        device = overload.get('device', self.device)
+        backend = dict(dtype=dtype, device=device)
+
+        # sample if parameters are callable
+        mean = mean() if callable(mean) else mean
+        absolute = absolute() if callable(absolute) else absolute
+        membrane = membrane() if callable(membrane) else membrane
+        bending = bending() if callable(bending) else bending
+        lame1, lame2 = py.make_list(lame, 2)
+        lame1 = lame1() if callable(lame1) else lame1
+        lame2 = lame2() if callable(lame2) else lame2
+
+        # reshape
+        nb_dim = len(shape)
+        full_shape = [batch, *shape, nb_dim]
+        mean = torch.as_tensor(mean, **backend).expand(full_shape)
+        absolute = torch.as_tensor(absolute, **backend).flatten()[0]
+        membrane = torch.as_tensor(membrane, **backend).flatten()[0]
+        bending = torch.as_tensor(bending, **backend).flatten()[0]
+        lame1 = torch.as_tensor(lame1, **backend).flatten()[0]
+        lame2 = torch.as_tensor(lame2, **backend).flatten()[0]
+        if torch.is_tensor(voxel_size):
+            voxel_size = voxel_size.tolist()
+        voxel_size = utils.make_vector(voxel_size, nb_dim, **backend)
+
+        # sample white noise
+        sample = torch.randn([2, batch, *shape, nb_dim], **backend)
+
+        # create greens kernel
+        if (hasattr(self, '_greens') and
+                absolute == self._absolute and
+                membrane == self._membrane and
+                bending == self._bending and
+                lame1 == self._lame1 and
+                lame2 == self._lame2 and
+                voxel_size == self._voxel_size):
+            greens = self._greens.to(dtype=dtype, device=device)
+        else:
+            greens = spatial.greens(shape,
+                                    absolute=absolute,
+                                    membrane=membrane,
+                                    bending=bending,
+                                    lame=(lame1, lame2),
+                                    voxel_size=voxel_size,
+                                    device=device,
+                                    dtype=dtype)
+            if lame1 or lame2:
+                greens = greens.cholesky(upper=False)
+            else:
+                greens = greens.sqrt()
+            if self.cache_greens:
+                self._greens = greens
+                self._absolute = absolute
+                self._membrane = membrane
+                self._bending = bending
+                self._lame1 = lame1
+                self._lame2 = lame2
+                self._voxel_size = voxel_size
+
+        # multiply by square root of greens
+        if lame1 or lame2:
+            sample = linalg.matvec(greens, sample)
+        else:
+            sample = sample * greens[..., None]
+            sample = sample / voxel_size.sqrt()
+
+        # inverse Fourier transform
+        sample = utils.movedim(sample, 0, -1)
+        sample = utils.movedim(sample, -2, 1)
+        if utils.torch_version('>=', (1, 8)):
+            sample = torch.fft.ifftn(sample, dim=nb_dim).real()
+        else:
+            sample = torch.ifft(sample, nb_dim)[..., 0]
+        sample = utils.movedim(sample, 1, -1)
+        sample *= py.prod(shape)
+
+        # add mean
         sample += mean
 
         return sample

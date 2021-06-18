@@ -23,6 +23,7 @@ from nitorch.core import py, utils
 from ..base import Module, ModuleList, Sequential, nitorchmodule
 from .conv import Conv, ConvGroup, ConvBlock, BottleneckConv
 from .encode_decode import DownStep, UpStep, Upsample
+from .spatial import Resize
 from .pool import MeanPool
 
 
@@ -423,7 +424,7 @@ class ResUpStep(ModuleList):
                      kernel_size=1,
                      in_channels=in_channels,
                      out_channels=out_channels),
-                Upsample(stride=2),
+                Resize(factor=2),
             )
             super().__init__([branch1, branch2])
         else:
@@ -733,7 +734,7 @@ class ResDecodingBlock(Sequential):
             activation=activation,
             batch_norm=batch_norm,
         )
-        down = ResUpStep(
+        up = ResUpStep(
             dim=dim,
             in_channels=in_channels,
             out_channels=out_channels,
@@ -743,11 +744,12 @@ class ResDecodingBlock(Sequential):
             activation=activation,
             residual=residual_unpool,
             stride=stride)
-        super().__init__(res, down)
+        super().__init__(res, up)
 
-    def forward(self, x, **overload):
-        for layer in self:
-            x = layer(x, **overload)
+    def forward(self, x, output_shape=None, **overload):
+        res, up = self
+        x = res(x, **overload)
+        x = up(x, output_shape=output_shape, **overload)
         return x
 
 
@@ -927,6 +929,7 @@ class UResBlock(Sequential):
             layer, unpool = layer
             x = layer(x)
             if return_all:
+                outputs.append(x)
                 outputs.append(x)
             x = unpool(x, output_shape=intermediates[0].shape[2:])
 
