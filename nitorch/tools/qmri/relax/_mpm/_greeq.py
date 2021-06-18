@@ -221,17 +221,17 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                         del g1
 
                 # --- gauss-newton ---
-                if not hess.isfinite().all():
+                if not torch.isfinite(hess).all():
                     print('WARNING: NaNs in hess')
-                if not grad.isfinite().all():
-                    print('WARNING: NaNs in hess')
+                if not torch.isfinite(grad).all():
+                    print('WARNING: NaNs in grad')
                 if opt.penalty.norm:
                     hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)
                     deltas = _nonlin_solve(hess, grad, multi_rls, lam * vol, vx, opt)
                 else:
                     hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
                     deltas = hessian_sym_solve(hess, grad)
-                if not deltas.isfinite().all():
+                if not torch.isfinite(deltas).all():
                     print('WARNING: NaNs in delta')
 
                 for map, delta in zip(maps, deltas):
@@ -546,7 +546,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         # compute residuals
         dat = echo.fdata(**backend)                          # observed
         fit = fit0 * (-echo.te * r2s).exp_()                 # fitted
-        msk = fit.isfinite() & dat.isfinite() & (dat > 0)    # mask of observed
+        msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
         dat[~msk] = 0
         fit[~msk] = 0
         res = dat.neg_()
