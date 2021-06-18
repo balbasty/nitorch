@@ -3,10 +3,11 @@ import os
 import torch
 from nitorch import io, spatial
 from nitorch.cli.cli import commands
-from nitorch.core import utils
+from nitorch.core.cli import ParseError
+from nitorch.core import utils, py
 from nitorch.core.dtypes import dtype as nitype
 from . import struct
-from .parser import parse, ParseError, help
+from .parser import parse, help
 from .. import helpers
 
 
@@ -111,6 +112,13 @@ def read_info(options):
             trf.affine, trf.shape = read_field(trf.file)
     if options.target:
         options.target = read_file(options.target)
+        if options.voxel_size:
+            options.voxel_size = utils.make_vector(options.voxel_size, 3,
+                                                   dtype=options.target.affine.dtype)
+            factor = spatial.voxel_size(options.target.affine) / options.voxel_size
+            options.target.affine, options.target.shape = \
+                spatial.affine_resize(options.target.affine, options.target.shape,
+                                      factor=factor, anchor='f')
 
 
 def collapse_transforms(options):
@@ -175,10 +183,9 @@ def write_data(options):
             file.affine = spatial.affine_lmdiv(aff, mat)
         options.transformations = options.transformations[1:]
 
-    def build_from_target(target):
+    def build_from_target(affine, shape):
         """Compose all transformations, starting from the final orientation"""
-        grid = spatial.affine_grid(target.affine.to(**backend),
-                                   target.shape)
+        grid = spatial.affine_grid(affine.to(**backend), shape)
         for trf in reversed(options.transformations):
             if isinstance(trf, struct.Linear):
                 grid = spatial.affine_matvec(trf.affine.to(**backend), grid)
@@ -186,7 +193,7 @@ def write_data(options):
                 mat = trf.affine.to(**backend)
                 if trf.inv:
                     vx0 = spatial.voxel_size(mat)
-                    vx1 = spatial.voxel_size(target.affine.to(**backend))
+                    vx1 = spatial.voxel_size(affine.to(**backend))
                     factor = vx0 / vx1
                     disp, mat = spatial.resize_grid(trf.dat[None], factor,
                                                     affine=mat,
@@ -205,7 +212,7 @@ def write_data(options):
     # 3) If target is provided, we can build most of the transform once
     #    and just multiply it with a input-wise affine matrix.
     if options.target:
-        grid = build_from_target(options.target)
+        grid = build_from_target(options.target.affine, options.target.shape)
         oaffine = options.target.affine
 
     # 4) Loop across input files
@@ -217,13 +224,19 @@ def write_data(options):
         ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext)
         print(f'Reslicing:   {file.fname}\n'
               f'          -> {ofname}')
-        dat = io.volumes.loadf(file.fname, rand=True, **backend)
+        dat = io.volumes.loadf(file.fname, rand=options.interpolation>0, **backend)
         dat = dat.reshape([*file.shape, file.channels])
         dat = utils.movedim(dat, -1, 0)
 
         if not options.target:
-            grid = build_from_target(file)
             oaffine = file.affine
+            oshape = file.shape
+            if options.voxel_size:
+                ovx = utils.make_vector(options.voxel_size, 3,
+                                        dtype=oaffine.dtype)
+                factor = spatial.voxel_size(oaffine) / ovx
+                oaffine, oshape = spatial.affine_resize(oaffine, oshape, factor=factor, anchor='f')
+            grid = build_from_target(oaffine, oshape)
         mat = file.affine.to(**backend)
         imat = spatial.affine_inv(mat)
         dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt)

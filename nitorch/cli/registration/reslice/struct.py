@@ -103,6 +103,7 @@ class Reslicer(Base):
     files: list = []
     transformations: list = []
     target: str = None
+    voxel_size: list = None
     output: str = '{dir}/{base}.resliced{ext}'
     interpolation: int = 1
     bound: str = 'dct2'
