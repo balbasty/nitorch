@@ -76,7 +76,7 @@ class RegisterStep:
                 derivatives.append(grad)
             if hess is not False:
                 hess = jhj(mugrad, hess)
-                derivatives.append(grad)
+                derivatives.append(hess)
 
             # propagate backward
             derivatives = spatial.exp_backward(vel, *derivatives, steps=self.steps)
@@ -86,7 +86,7 @@ class RegisterStep:
                 grad = derivatives
 
         # add regularization term
-        vgrad = spatial.regulariser_grid(vel, **self.prm).div_(nvox)
+        vgrad = spatial.regulariser_grid(vel, **self.prm)
         llv = 0.5 * (vel * vgrad).sum()
         if grad is not False:
             grad += vgrad
@@ -117,7 +117,7 @@ class RegisterStep:
 class Register:
 
     def __init__(self, dim=None, lam=1., loss='mse',
-                 optim='ogm', hilbert=True, max_iter=500, sub_iter=16,
+                 optim='ogm', hilbert=None, max_iter=500, sub_iter=16,
                  lr=1, ls=6, steps=8, plot=False, klosure=RegisterStep,
                  kernel=None, verbose=True, **prm):
         self.dim = dim
@@ -143,7 +143,7 @@ class Register:
 
 
 def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
-             optim='ogm', hilbert=True, max_iter=500, sub_iter=16,
+             optim='ogm', hilbert=None, max_iter=500, sub_iter=16,
              lr=1, ls=6, steps=8, plot=False, klosure=RegisterStep,
              velocity=None, kernel=None, verbose=True, **prm):
     """Diffeomorphic registration between two images using SVFs.
@@ -199,7 +199,6 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
 
     """
     defaults_velocity(prm)
-    prm['factor'] = lam
 
     # If no inputs provided: demo "circle to square"
     if fixed is None or moving is None:
@@ -209,11 +208,15 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
     fixed, moving = utils.to_max_backend(fixed, moving)
     dim = dim or (fixed.dim() - 1)
     shape = fixed.shape[-dim:]
+    lam = lam / py.prod(shape)
+    prm['factor'] = lam
     velshape = [*fixed.shape[:-dim-1], *shape, dim]
     if velocity is None:
         velocity = torch.zeros(velshape, **utils.backend(fixed))
 
     # init optimizer
+    if hilbert is None:
+        hilbert = optim not in ('cg', 'relax')
     if hilbert and kernel is None:
         kernel = spatial.greens(shape, **prm, **utils.backend(fixed))
     optim = regutils.make_iteroptim_grid(optim, lr, ls, max_iter, sub_iter,

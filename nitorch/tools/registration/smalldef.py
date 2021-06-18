@@ -73,7 +73,7 @@ class RegisterStep:
                 hess = jhj(mugrad, hess)
 
         # add regularization term
-        vgrad = spatial.regulariser_grid(vel, **self.prm).div_(nvox)
+        vgrad = spatial.regulariser_grid(vel, **self.prm)
         llv = 0.5 * (vel * vgrad).sum()
         if grad is not False:
             grad += vgrad
@@ -102,7 +102,7 @@ class RegisterStep:
 
 
 def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
-             optim='nesterov', hilbert=True, max_iter=500, sub_iter=16,
+             optim='nesterov', hilbert=None, max_iter=500, sub_iter=16,
              lr=None, ls=0, plot=False, klosure=RegisterStep, **prm):
     """Nonlinear registration between two images using smooth displacements.
 
@@ -152,7 +152,6 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
 
     """
     defaults_velocity(prm)
-    prm['factor'] = lam
 
     # If no inputs provided: demo "circle to square"
     if fixed is None or moving is None:
@@ -162,6 +161,8 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
     fixed, moving = utils.to_max_backend(fixed, moving)
     dim = dim or (fixed.dim() - 1)
     shape = fixed.shape[-dim:]
+    lam = lam / py.prod(shape)
+    prm['factor'] = lam
     velshape = [*fixed.shape[:-dim-1], *shape, dim]
     vel = torch.zeros(velshape, **utils.backend(fixed))
 
@@ -177,6 +178,8 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
     if isinstance(optim, optm.Optim):
         lr = lr or (1 if isinstance(optim, optm.SecondOrder) else 0.01)
         optim.lr = lr
+    if hilbert is None:
+        hilbert = not isinstance(optim, optm.SecondOrder)
     if hilbert and hasattr(optim, 'preconditioner'):
         # Hilbert gradient
         kernel = spatial.greens(shape, **prm, **utils.backend(fixed))

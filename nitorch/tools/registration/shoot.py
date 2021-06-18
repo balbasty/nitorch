@@ -44,7 +44,6 @@ class RegisterStep:
         # derivatives along the way.
 
         dim = vel.shape[-1]
-        nvox = py.prod(self.fixed.shape[-dim:])
 
         in_line_search = not grad and not hess
         logplot = max(self.max_iter // 20, 1)
@@ -83,7 +82,7 @@ class RegisterStep:
                 hess = jhj(self.mugrad, hess)
 
         # add regularization term
-        vgrad = spatial.regulariser_grid(vel, **self.prm).div_(nvox)
+        vgrad = spatial.regulariser_grid(vel, **self.prm)
         llv = 0.5 * (vel * vgrad).sum()
         if grad is not False:
             grad += vgrad
@@ -112,8 +111,8 @@ class RegisterStep:
 
 
 def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
-             optim='ogm', hilbert=True, max_iter=500, sub_iter=16,
-             lr=1, ls=6, steps=8, plot=False, klosure=RegisterStep, **prm):
+             optim='ogm', hilbert=None, max_iter=500, sub_iter=16,
+             lr=None, ls=6, steps=8, plot=False, klosure=RegisterStep, **prm):
     """Diffeomirphic registration between two images using geodesic shooting.
 
     Parameters
@@ -163,7 +162,6 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
 
     """
     defaults_velocity(prm)
-    prm['factor'] = lam
 
     # If no inputs provided: demo "circle to square"
     if fixed is None or moving is None:
@@ -173,20 +171,25 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
     fixed, moving = utils.to_max_backend(fixed, moving)
     dim = dim or (fixed.dim() - 1)
     shape = fixed.shape[-dim:]
+    lam = lam / py.prod(shape)
+    prm['factor'] = lam
     velshape = [*fixed.shape[:-dim-1], *shape, dim]
     vel = torch.zeros(velshape, **utils.backend(fixed))
 
     # init optimizer
-    lr = lr or 1
-    optim = (optm.GradientDescent(lr=lr) if optim == 'gd' else
-             optm.Momentum(lr=lr) if optim == 'momentum' else
-             optm.Nesterov(lr=lr) if optim == 'nesterov' else
-             optm.OGM(lr=lr) if optim == 'ogm' else
-             optm.LBFGS(lr=lr, max_iter=max_iter) if optim == 'lbfgs' else
-             optm.GridCG(lr=lr, max_iter=sub_iter, **prm) if optim == 'cg' else
-             optm.GridRelax(lr=lr, max_iter=sub_iter, **prm) if optim == 'relax' else
-             optm.GridNesterov(lr=lr, max_iter=sub_iter, **prm) if optim.startswith('gnnesterov') else
+    optim = (optm.GradientDescent() if optim == 'gd' else
+             optm.Momentum() if optim == 'momentum' else
+             optm.Nesterov() if optim == 'nesterov' else
+             optm.OGM() if optim == 'ogm' else
+             optm.LBFGS(max_iter=max_iter) if optim == 'lbfgs' else
+             optm.GridCG(max_iter=sub_iter, **prm) if optim == 'cg' else
+             optm.GridRelax(max_iter=sub_iter, **prm) if optim == 'relax' else
              optim)
+    if isinstance(optim, optm.Optim):
+        lr = lr or (1 if isinstance(optim, optm.SecondOrder) else 0.01)
+        optim.lr = lr
+    if hilbert is None:
+        hilbert = not isinstance(optim, optm.SecondOrder)
     if hilbert and hasattr(optim, 'preconditioner'):
         # Hilbert gradient
         kernel = spatial.greens(shape, **prm, **utils.backend(fixed))
