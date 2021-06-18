@@ -9,10 +9,12 @@ from nitorch._C.spatial import BoundType, InterpolationType
 from nitorch._C.grid import GridPull, GridPush, GridCount, GridGrad
 from ._affine import affine_resize, affine_lmdiv
 from ._regularisers import solve_grid_sym
+from ._finite_differences import diff
 
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad', 'grid_inv',
            'identity_grid', 'affine_grid', 'resize', 'resize_grid', 'reslice',
+           'grid_jacobian', 'grid_jacdet',
            'BoundType', 'InterpolationType']
 
 _doc_interpolation = \
@@ -706,8 +708,71 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
         return identity - disp
     else:
         return -disp
-#
-#
+
+def grid_jacobian(grid, bound='dft', voxel_size=1, type='grid'):
+    """Compute the Jacobian of a transformation field
+
+    Notes
+    -----
+    .. If a displacement (`type='disp'`) is provided, we compute the Jacobian
+       of the transformation field (identity + displacement) by
+       adding ones to the diagonal.
+    .. This function uses central finite differences to estimate the
+       Jacobian.
+
+    Parameters
+    ----------
+    grid : (..., *spatial, dim) tensor
+        Transformation ('grid') or displacement ('disp')
+    bound : str, default='dft'
+    voxel_size : [sequence of] float, default=1
+    type : {'grid', 'disp'}, default='grid'
+
+    Returns
+    -------
+    jac : (..., *spatial, dim, dim) tensor
+        Jacobian. In each matrix: jac[i, j] = d psi[i] / d xj
+
+    """
+    grid = torch.as_tensor(grid)
+    dim = grid.shape[-1]
+    if type == 'grid':
+        grid -= identity_grid(grid.shape[-dim-1:-1], **utils.backend(grid))
+    dims = list(range(-dim-1, -1))
+    jac = diff(grid, dim=dims, bound=bound, voxel_size=voxel_size, side='c')
+    torch.diagonal(jac, 0, -1, -2).add_(1)
+    return jac
+
+
+def grid_jacdet(grid, bound='dft', voxel_size=1, type='grid'):
+    """Compute the Jacobian determinant of a transformation field
+
+    Notes
+    -----
+    .. If a displacement (`type='disp'`) is provided, we compute the Jacobian
+       of the transformation field (identity + displacement) by
+       adding ones to the diagonal.
+    .. This function uses central finite differences to estimate the
+       Jacobian.
+
+    Parameters
+    ----------
+    grid : (..., *spatial, dim) tensor
+        Transformation ('grid') or displacement ('disp')
+    bound : str, default='dft'
+    voxel_size : [sequence of] float, default=1
+    type : {'grid', 'disp'}, default='grid'
+
+    Returns
+    -------
+    det : (..., *spatial) tensor
+        Jacobian determinant.
+
+    """
+    jac = grid_jacobian(grid, bound=bound, voxel_size=voxel_size, type=type)
+    return jac.det()
+
+
 # def transform_points(points, grid, type='grid',
 #                      affine=None, points_unit='mm', grid_unit='voxels',
 #                      bound='zero', interpolation=1, extrapolate=0):
