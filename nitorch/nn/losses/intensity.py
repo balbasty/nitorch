@@ -304,7 +304,10 @@ class MutualInfoLoss(Loss):
         mi = h_xy - (h_x + h_y)
 
         # normalize
-        if normalize not in (None, 'none'):
+        if normalize == 'studholme':
+            mi = mi / h_xy.clamp_min_(eps(x.dtype))
+            mi += 1
+        elif normalize not in (None, 'none'):
             normalize = (lambda a, b: (a+b)/2) if normalize == 'arithmetic' else \
                         (lambda a, b: (a*b).sqrt()) if normalize == 'geometric' else \
                         torch.min if normalize == 'min' else \

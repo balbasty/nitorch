@@ -3,7 +3,7 @@
 import torch
 import torch.nn.functional as F
 from . import py
-from .py import make_list, make_tuple
+from .py import make_list, make_tuple, ensure_list
 from .constants import inf, eps
 from .dtypes import as_torch as dtype_astorch
 from . import dtypes
@@ -281,6 +281,18 @@ def shiftdim(x, n=None):
         n = n % x.dim()
         x = x.permute(tuple(range(n, x.dim())) + tuple(range(n)))
     return x
+
+
+def fast_movedim(input, source, destination):
+    """Move the position of exactly one dimension"""
+    dim = input.dim()
+
+    source = dim + source if source < 0 else source
+    destination = dim + destination if destination < 0 else destination
+    permutation = list(range(dim))
+    del permutation[source]
+    permutation.insert(destination, source)
+    return input.permute(*permutation)
 
 
 def movedim(input, source, destination):
@@ -707,6 +719,36 @@ def requires_grad(ctx, name):
     return False
 
 
+def fast_slice_tensor(x, index, dim=-1):
+    """Index a tensor along one dimensions.
+
+    This function is relatively similar to `torch.index_select`, except
+    that it uses the native indexing mechanism and can therefore
+    returns a tensor that use the same storage as the input tensor.
+
+    It is faster but less versatile than `slice_tensor`.
+
+    Parameters
+    ----------
+    x : tensor
+        Input tensor.
+    index : int or list[int] or slice
+        Indices to select along `dim`.
+    dim : int, default=last
+        Dimension to index.
+
+    Returns
+    -------
+    y : tensor
+        Output tensor.
+
+    """
+    slicer = [slice(None)] * x.dim()
+    slicer[dim] = index
+    slicer = tuple(slicer)
+    return x[slicer]
+
+
 def slice_tensor(x, index, dim=None):
     """Index a tensor along one or several dimensions.
 
@@ -741,10 +783,10 @@ def slice_tensor(x, index, dim=None):
         index = (index,)
     if dim is None:
         dim = list(range(-len(index), 0))
-    dim = make_list(dim)
+    dim = ensure_list(dim)
     nb_dim = max(len(index), len(dim))
-    dim = make_list(dim, nb_dim)
-    index = make_tuple(index, nb_dim)
+    dim = ensure_list(dim, nb_dim)
+    index = tuple(ensure_list(index, nb_dim))
 
     # build index
     full_index = [slice(None)] * x.dim()

@@ -1,10 +1,30 @@
-from nitorch.core import utils, py, math, constants
-from nitorch import spatial
+"""
+This file implements losses that are typically used for registration
+Each of these functions can return analytical gradients and (approximate)
+Hessians to be used in optimization-based algorithms (although the
+objective function is differentiable and autograd can be used as well).
+
+These function are implemented in functional form (mse, nmi, cat, ...),
+but OO wrappers are also provided for ease of use (MSE, NMI, Cat, ...).
+
+Currently, the following losses are implemented:
+- mse : mean squared error
+- cat : categorical cross entropy
+- ncc : normalized cross-correlation
+- nmi : normalized mutual information
+"""
+from nitorch.core import utils, py, math, constants, linalg
+import math as pymath
 import torch
+from .utils import JointHist
+pyutils = py
 
 
 def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True):
     """Mean-squared error loss for optimisation-based registration.
+
+    (A factor 1/2 is included, and the loss is averaged across voxels,
+    but not across channels or batches)
 
     Parameters
     ----------
@@ -37,14 +57,15 @@ def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True):
         if lam.dim() == 0:
             lam = lam.flatten()
         lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
+    nvox = py.prod(fixed.shape[-dim:])
 
-    ll = (moving - fixed).square_().mul_(lam).sum()
+    ll = (moving - fixed).square().mul_(lam).sum() / (2*nvox)
     out = [ll]
     if grad:
-        g = (moving - fixed).mul_(lam)
+        g = (moving - fixed).mul_(lam/nvox)
         out.append(g)
     if hess:
-        h = lam
+        h = lam/nvox
         out.append(h)
     return tuple(out) if len(out) > 1 else out[0]
 
@@ -88,11 +109,12 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
     dim = dim or (fixed.dim() - 1)
     nc = moving.shape[-dim-1]                               # nb classes - bck
     fixed = utils.slice_tensor(fixed, slice(nc), -dim-1)    # remove bkg class
+    nvox = py.prod(fixed.shape[-dim:])
 
     # log likelihood
     ll = moving*fixed
     ll -= math.logsumexp(moving, dim=-dim-1, implicit=True)            # implicit lse
-    ll = ll.sum().neg()
+    ll = ll.sum().neg() / nvox
     out = [ll]
 
     if grad or (hess and acceleration > 0):
@@ -101,7 +123,7 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
 
     # gradient
     if grad:
-        g = moving - fixed
+        g = (moving - fixed).div_(nvox)
         out.append(g)
 
     # hessian
@@ -147,8 +169,331 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
             else:
                 h = hb
 
+        out.append(h.div_(nvox))
+
+    return tuple(out) if len(out) > 1 else out[0]
+
+
+def ncc_hist(moving, fixed, dim=None,
+        bins=64, order=3, grad=True, hess=True):
+    """Normalized cross-correlation: E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)
+
+    Parameters
+    ----------
+    moving : tensor
+    fixed : tensor
+    dim : int, default=`fixed.dim() - 1`
+    bins : int, default=64
+    order : int, default=3
+    grad : bool, default=True
+    hess : bool, default=True
+
+    Returns
+    -------
+    ll : () tensor
+
+    """
+
+    jointhist = JointHist(bins, order=order)
+
+    # compute histogram
+    dim = dim or fixed.shape[-1]
+    concat = torch.stack([moving, fixed], dim=-1)
+    concat = concat.reshape([-1, py.prod(concat.shape[-dim-1:-1]), 2])
+    h, min, max = jointhist.forward(concat)
+    h = h / h.sum(dim=[-1, -2], keepdim=True)
+
+    minm = min[..., 0]
+    maxm = max[..., 0]
+    minf = min[..., 1]
+    maxf = max[..., 1]
+    deltam = (maxm - minm) / bins
+    deltaf = (maxf - minf) / bins
+    idx = torch.arange(0, bins, **utils.backend(h))
+
+    def moments(h, mn, delta):
+        mean = mn + delta * (h * idx).sum(-1)
+        var = (mn.square()
+               + delta.square() * (h * idx.square()).sum(-1)
+               + 2 * mn * delta * (h * idx).sum(-1))
+        var -= mean.square()
+        return mean, var
+
+    hm = h.sum(-1)
+    hm /= hm.sum(-1, keepdim=True)
+    meanm, varm = moments(hm, minm, deltam)
+
+    hf = h.sum(-2)
+    hf /= hf.sum(-1, keepdim=True)
+    meanf, varf = moments(hf, minf, deltaf)
+
+    minm -= meanm
+    minf -= meanf
+    idx2 = idx[None, :] * idx[:, None]
+
+    l = (minm * minf
+         + minf * deltam * (h.sum(-2) * idx).sum(-1)
+         + minm * deltaf * (h.sum(-1) * idx).sum(-1)
+         + deltam * deltaf * (h * idx2).sum([-1, -2]))
+    l /= varm.sqrt() * varf.sqrt()
+    l = l.sum()
+    return l
+
+
+def ncc(moving, fixed, dim=None, grad=True, hess=True):
+    """Normalized cross-correlation: 1 - E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)
+
+    Parameters
+    ----------
+    moving : (..., K, *spatial) tensor
+        Moving image with K channels.
+    fixed : (..., K, *spatial) tensor
+        Fixed image with K channels.
+    dim : int, default=`fixed.dim() - 1`
+        Number of spatial dimensions.
+    grad : bool, default=True
+        Compute an return gradient
+    hess : bool, default=True
+        Compute and return approximate Hessian
+
+    Returns
+    -------
+    ll : () tensor
+
+    """
+    moving = moving.clone()
+    fixed = fixed.clone()
+
+    dim = dim or (fixed.dim() - 1)
+    dims = list(range(-dim, 0))
+    n = py.prod(fixed.shape[-dim:])
+    moving -= moving.mean(dim=dims, keepdim=True)
+    fixed -= fixed.mean(dim=dims, keepdim=True)
+    sigm = moving.square().mean(dim=dims, keepdim=True).sqrt_()
+    sigf = fixed.square().mean(dim=dims, keepdim=True).sqrt_()
+    moving = moving / sigm
+    fixed = fixed / sigf
+
+    ll = (moving*fixed).mean(dim=dims, keepdim=True)
+
+    out = []
+    if grad:
+        g = (moving * ll - fixed) / (n * sigm)
+        out.append(g)
+
+    if hess:
+        # true hessian
+        h = 2 * n * fixed * moving
+        h -= (3 * moving.square() + (1 - n)) * ll
+        # something positive definite (?)
+        # h = (2 * n + 3 * ll) * moving.square()
+        h /= (n*n * sigm.square())
         out.append(h)
 
+    # return stuff
+    ll = (1 - ll).sum()
+    out = [ll, *out]
+    return tuple(out) if len(out) > 1 else out[0]
+
+
+def nmi(moving, fixed, dim=None, bins=64, order=5, norm='studholme',
+        grad=True, hess=True, minmax=False):
+    """(Normalized) Mutual Information
+
+    If multi-channel data is provided, the MI between each  pair of
+    channels (e.g., (1, 1), (2, 2), ...) is computed -- but *not*
+    between all possible pairs (e.g., (1, 1), (1, 2), (1, 3), ...).
+
+    Parameters
+    ----------
+    moving : (..., K, *spatial) tensor
+        Moving image with K channels.
+    fixed : (..., K, *spatial) tensor
+        Fixed image with K channels.
+    dim : int, default=`fixed.dim() - 1`
+        Number of spatial dimensions.
+    bins : int, default=64
+        Number of bins in the joing histogram.
+    order : int, default=3
+        Order of B-splines encoding the histogram.
+    norm : {'studholme', 'arithmetic', None}, default='studholme'
+        Normalization method:
+        None : mi = H[x] + H[y] - H[xy]
+        'arithmetic' : nmi = 0.5 * mi / (H[x] + H[y])
+        'studholme' : nmi = mi / H[xy]
+    grad : bool, default=True
+        Compute an return gradient
+    hess : bool, default=True
+        Compute and return approximate Hessian
+
+    Returns
+    -------
+    ll : () tensor
+        1 -  NMI
+    grad : (..., K, *spatial) tensor
+    hess : (..., K, *spatial) tensor
+
+    """
+
+    hist = JointHist(bins, order)
+
+    shape = moving.shape
+    dim = dim or fixed.dim() - 1
+    nvox = pyutils.prod(shape[-dim:])
+    moving = moving.reshape([*moving.shape[:-dim], -1])
+    fixed = fixed.reshape([*fixed.shape[:-dim], -1])
+    idx = torch.stack([moving, fixed], -1)
+
+    if minmax not in (True, False, None):
+        mn, mx = minmax
+        h, mn, mx = hist.forward(idx, min=mn, max=mx)
+    else:
+        h, mn, mx = hist.forward(idx)
+    h = h.clamp(1e-8)
+    h /= nvox
+    # import matplotlib.pyplot as plt
+    # plt.imshow(h.squeeze())
+    # plt.show()
+
+    pxy = h
+    px = pxy.sum(-2, keepdim=True)
+    py = pxy.sum(-1, keepdim=True)
+
+    hxy = -(pxy * pxy.log()).sum([-1, -2], keepdim=True)
+    hx = -(px * px.log()).sum([-1, -2], keepdim=True)
+    hy = -(py * py.log()).sum([-1, -2], keepdim=True)
+
+    if norm == 'studholme':
+        nmi = (hx + hy) / hxy  # Studholme's NMI + 1
+    elif norm == 'arithmetic':
+        nmi = -hxy / (hx + hy)  # 1 - Arithmetic normalization
+    else:
+        nmi = hx + hy - hxy
+
+    out = []
+    if grad or hess:
+        if norm == 'studholme':
+            g0 = ((1 + px.log()) + (1 + py.log())) - nmi * (1 + pxy.log())
+            g0 /= hxy
+        elif norm == 'arithmetic':
+            g0 = nmi * ((1 + px.log()) + (1 + py.log())) + (1 + pxy.log())
+            g0 = -g0 / (hx + hy)
+        else:
+            g0 = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
+        if grad:
+            g = hist.backward(idx, g0/nvox)[..., 0]
+            g = g.reshape(shape)
+            out.append(g)
+
+        if hess:
+            # # try 1
+            ones = torch.ones([bins, bins])
+            g0 = g0.flatten(start_dim=-2)
+            pxy = pxy.flatten(start_dim=-2)
+            h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
+            h = h + h.transpose(-1, -2)
+            tmp = linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed())
+            h -= tmp
+            tmp = linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones)
+            h -= tmp
+            h += (nmi/pxy).flatten(start_dim=-2).diag_embed()
+            h /= hxy
+            h.neg_()
+            h = h.abs().sum(-1)
+            h = h.reshape([*h.shape[:-1], bins, bins])
+            # try 2
+            # h = 2 * (g0 * (1 + pxy.log()))
+            # h = h[..., :, None] * h[..., None, :]
+            # h = h.abs_().sum(-1)
+            # h += (nmi/pxy - px.reciprocal() - py.reciprocal()).abs_()
+            # h /= hxy.abs()
+            # project
+            h = hist.backward(idx, h/nvox)[..., 0]
+            h = h.reshape(shape)
+            out.append(h)
+
+    nmi = -nmi
+    if norm == 'studholme':
+        nmi = (2+nmi)
+    elif norm in (None, 'none'):
+        nmi = nmi/hy
+    nmi = nmi.sum()
+
+    out = [nmi, *out]
+    if minmax is True:
+        out.extend([mn, mx])
+    return tuple(out) if len(out) > 1 else out[0]
+
+
+def mse_hist(moving, fixed, dim=None, bins=32, order=3, grad=True, hess=True, minmax=False):
+    """Studholme's Normalized Mutual Information
+
+    Parameters
+    ----------
+    moving : (..., K, *spatial) tensor
+    fixed : (..., K, *spatial) tensor
+    dim : int, default=`fixed.dim() - 1`
+    bins : int, default=64
+    order : int, default=3
+    grad : bool, default=True
+    hess : bool, default=True
+
+    Returns
+    -------
+    ll : () tensor
+        Negative NMI
+    grad : (..., K, *spatial) tensor
+    hess : (..., K, *spatial) tensor
+
+    """
+    hist = JointHist(bins, order, bound='zero')
+
+    shape = moving.shape
+    dim = dim or fixed.dim() - 1
+    moving = moving.reshape([*moving.shape[:-dim], -1])
+    fixed = fixed.reshape([*fixed.shape[:-dim], -1])
+    idx = torch.stack([moving, fixed], -1)
+
+    if minmax not in (True, False, None):
+        mn, mx = minmax
+        h, mn, mx = hist.forward(idx, min=mn, max=mx)
+    else:
+        h, mn, mx = hist.forward(idx)
+    minm, minf = mn.unbind(-1)
+    maxm, maxf = mx.unbind(-1)
+    deltam = (maxm-minm)/bins
+    deltaf = (maxf-minf)/bins
+
+    val = torch.linspace(0.5, 0.95, bins, **utils.backend(h))
+    nodesm = minm[..., None] + val * deltam[..., None]
+    nodesf = minf[..., None] + val * deltaf[..., None]
+    mse = nodesm[..., :, None] - nodesf[..., None, :]
+    mse = mse.square_()
+
+    out = []
+    if grad:
+        g = hist.backward(idx, mse)[..., 0]
+        g = g.reshape(shape)
+        out.append(g)
+
+    if hess:
+        # # try 1
+        # hh = torch.ones_like(h)
+        # hh = hist.backward(idx, hh, hess=True)[..., 0]
+        # hh = hh.reshape(shape)
+        # import matplotlib.pyplot as plt
+        # plt.imshow(hh[0])
+        # plt.colorbar()
+        # plt.show()
+        hh = mse.new_full([1] * (dim + 1), 2.25 * (2**(dim+1)))
+        hh = hh * (bins / (maxm - minm)).square()
+        out.append(hh)
+
+    mse *= h
+    mse = mse.sum()
+    out = [mse, *out]
+    if minmax is True:
+        out.extend([mn, mx])
     return tuple(out) if len(out) > 1 else out[0]
 
 
@@ -179,6 +524,23 @@ class OptimizationLoss:
         raise NotImplementedError
 
 
+class HistBasedOptimizationLoss(OptimizationLoss):
+    """Base class for histogram-bases losses"""
+
+    def __init__(self, dim=None, bins=None, order=3):
+        super().__init__()
+        self.dim = dim
+        self.bins = bins
+        self.order = order
+
+    def autobins(self, image, dim):
+        dim = dim or (image.dim() - 1)
+        shape = image.shape[-dim:]
+        nvox = py.prod(shape)
+        bins = 2 ** int(pymath.ceil(pymath.log2(nvox ** (1/4))))
+        return bins
+
+
 class MSE(OptimizationLoss):
     """Mean-squared error"""
 
@@ -195,6 +557,7 @@ class MSE(OptimizationLoss):
         super().__init__()
         self.lam = lam
         self.dim = dim
+        self.minmax = None
 
     def loss(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -216,7 +579,7 @@ class MSE(OptimizationLoss):
         """
         lam = kwargs.get('lam', self.lam)
         dim = kwargs.get('dim', self.dim)
-        return mse(moving, fixed, lam=lam, dim=dim, grad=False, hess=False)
+        return mse(moving, fixed, dim=dim, lam=lam, grad=False, hess=False)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -236,7 +599,7 @@ class MSE(OptimizationLoss):
         """
         lam = kwargs.get('lam', self.lam)
         dim = kwargs.get('dim', self.dim)
-        return mse(moving, fixed, lam=lam, dim=dim, hess=False)
+        return mse(moving, fixed, dim=dim, lam=lam, hess=False)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -260,7 +623,96 @@ class MSE(OptimizationLoss):
         """
         lam = kwargs.get('lam', self.lam)
         dim = kwargs.get('dim', self.dim)
-        return mse(moving, fixed, lam=lam, dim=dim)
+        return mse(moving, fixed, dim=dim, lam=lam)
+
+
+class MSEHist(HistBasedOptimizationLoss):
+    """Mean-squared error"""
+
+    def __init__(self, lam=1, dim=None, bins=None, order=3):
+        """
+
+        Parameters
+        ----------
+        lam : (K|1,) tensor_like
+            Precision
+        dim : int, default=1fixed.dim() - 1`
+            Number of spatial dimensions
+        """
+        super().__init__(dim, bins, order)
+        self.lam = lam
+        self.minmax = None
+
+    def loss(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : ([B], K, *spatial) tensor
+            Moving image
+        fixed : ([B], K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        grad : ([B], K, *spatial) tensor
+            Gradient
+
+        """
+        lam = kwargs.get('lam', self.lam)
+        dim = kwargs.get('dim', self.dim) # lam=lam,
+        return mse_hist(moving, fixed, dim=dim, grad=False, hess=False)
+
+    def loss_grad(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : ([B], K, *spatial) tensor
+            Moving image
+        fixed : ([B], K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+
+        """
+        lam = kwargs.get('lam', self.lam)
+        dim = kwargs.get('dim', self.dim) # lam=lam,
+        return mse_hist(moving, fixed, dim=dim, hess=False)
+
+    def loss_grad_hess(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : ([B], K, *spatial) tensor
+            Moving image
+        fixed : ([B], K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        grad : ([B], K, *spatial) tensor
+            Gradient
+        hess : ([B], K, *spatial) tensor
+            Diagonal Hessian
+
+        """
+        lam = kwargs.get('lam', self.lam)
+        dim = kwargs.get('dim', self.dim) # lam=lam,
+        if self.minmax is None:
+            ll, g, h, *minmax = mse_hist(moving, fixed, dim=dim, minmax=True)
+            self.minmax = minmax
+            return ll, g, h
+        else:
+            return mse_hist(moving, fixed, dim=dim, minmax=self.minmax)
 
 
 class Cat(OptimizationLoss):
@@ -349,6 +801,197 @@ class Cat(OptimizationLoss):
         dim = kwargs.get('dim', self.dim)
         return cat(moving, fixed, acceleration=acceleration, dim=dim)
 
+
+class NCC(OptimizationLoss):
+    """Normalized cross-correlation"""
+
+    def __init__(self, dim=None):
+        """
+
+        Parameters
+        ----------
+        dim : int, default=1fixed.dim() - 1`
+            Number of spatial dimensions
+        """
+        super().__init__()
+        self.dim = dim
+
+    def loss(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        return ncc(moving, fixed, dim=dim, grad=False, hess=False)
+
+    def loss_grad(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        return ncc(moving, fixed, dim=dim, hess=False)
+
+    def loss_grad_hess(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+        h : (..., K*(K+1)//2, *spatial) tensor, optional
+            Hessian with respect to the moving image.
+            Its spatial dimensions are singleton when `acceleration == 0`.
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        return ncc(moving, fixed, dim=dim)
+
+
+class NMI(HistBasedOptimizationLoss):
+    """Normalized cross-correlation"""
+
+    def __init__(self, dim=None, bins=None, order=3, norm='studholme'):
+        """
+
+        Parameters
+        ----------
+        dim : int, default=`fixed.dim() - 1`
+            Number of spatial dimensions
+        """
+        super().__init__(dim, bins, order)
+        self.norm = norm
+        self.minmax = None
+
+    def loss(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        order = kwargs.get('order', self.order)
+        norm = kwargs.get('norm', self.norm)
+        bins = bins or self.autobins(fixed, dim)
+        if self.minmax is None:
+            ll, *minmax = nmi(moving, fixed, grad=False, hess=False,
+                              norm=norm, bins=bins, dim=dim, minmax=True)
+            self.minmax = minmax
+            return ll
+        else:
+            return nmi(moving, fixed, grad=False, hess=False, norm=norm,
+                       bins=bins, order=order, dim=dim, minmax=self.minmax)
+
+    def loss_grad(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        order = kwargs.get('order', self.order)
+        norm = kwargs.get('norm', self.norm)
+        bins = bins or self.autobins(fixed, dim)
+        if self.minmax is None:
+            ll, g, *minmax = nmi(moving, fixed, hess=False, norm=norm,
+                                    bins=bins, dim=dim, minmax=True)
+            self.minmax = minmax
+            return ll, g
+        else:
+            return nmi(moving, fixed, hess=False, norm=norm,
+                       bins=bins, order=order, dim=dim, minmax=self.minmax)
+
+    def loss_grad_hess(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+        h : (..., K*(K+1)//2, *spatial) tensor, optional
+            Hessian with respect to the moving image.
+            Its spatial dimensions are singleton when `acceleration == 0`.
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        order = kwargs.get('order', self.order)
+        norm = kwargs.get('norm', self.norm)
+        bins = bins or self.autobins(fixed, dim)
+        if self.minmax is None:
+            ll, g, h, *minmax = nmi(moving, fixed, norm=norm,
+                                    bins=bins, dim=dim, minmax=True)
+            self.minmax = minmax
+            return ll, g, h
+        else:
+            return nmi(moving, fixed, norm=norm,
+                       bins=bins, order=order, dim=dim, minmax=self.minmax)
 
 
 # WORK IN PROGRESS

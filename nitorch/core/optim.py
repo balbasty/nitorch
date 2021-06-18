@@ -284,6 +284,53 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     return x
 
 
+def relax_slicers(shape, scheme='checkerboard'):
+
+    # We use strides to extract subvolumes whise voxels belong to a
+    # single group.
+    #
+    # We have to be careful: with circular boundary conditions,
+    # the first and last indices of a line can belong to the same
+    # group while they should not. Since we don't know which
+    # boundary conditions are used, we are extra careful and treat
+    # the last few lines independently.
+    #
+    # Therefore, there are `bandwidth**dim x 2**dim` subvolumes, where
+    # 2**dim corresponds to the quadrants. Although some quadrants can be
+    # dropped if the shape along a dimension is a multiple of the bandwidth.
+    #
+    # Since strides cannot define all possible patterns (e.g. checkerboard)
+    # some groups are formed of multiple subvolumes.
+
+    dim = len(shape)
+    checkerboard = isinstance(scheme, str) and scheme[0] == 'c'
+    bandwidth = 2 if checkerboard else scheme
+    size_last = tuple(int(s % bandwidth) for s in shape)
+    # size_last = [0] * dim
+    offsets = list(itertools.product(range(bandwidth), repeat=dim))
+    quadrants = list(itertools.product([True, False], repeat=dim))
+    slicers = []
+    for offset in offsets:
+        for quadrant in quadrants:
+            if any(o >= l for o, l, q in zip(offset, size_last, quadrant)
+                   if not q):
+                continue
+            slicer = tuple(slice(int(o) if q else int(s-l+o),       # start
+                                 (int(-l) or None) if q else None,  # stop
+                                 bandwidth)                         # stride
+                           for o, s, l, q in zip(offset, shape, size_last, quadrant))
+            slicers.append(slicer)
+    if checkerboard:
+        # gather odd/even slicers
+        slicers = [[slicer for slicer in slicers
+                    if sum(s.start for s in slicer[1:-1]) % 2],
+                   [slicer for slicer in slicers
+                    if not sum(s.start for s in slicer[1:-1]) % 2]]
+    else:
+        slicers = [[slicer] for slicer in slicers]
+    return slicers
+
+
 def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
           dim=None, tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
           inplace=True, stop='E'):
@@ -352,6 +399,7 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
         x = torch.zeros_like(b)
     elif not inplace:
         x = x.clone()
+    shape = x.shape[-dim-1:-1]
 
     r = b - A(x)
 
@@ -372,23 +420,7 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
         obj = torch.zeros(max_iter + 1, dtype=sum_dtype, device=obj0.device)
         obj[0] = obj0
 
-    checkerboard = isinstance(scheme, str) and scheme[0] == 'c'
-    bandwidth = 2 if checkerboard else scheme
-    offsets = list(itertools.product(range(bandwidth), repeat=dim))
-    slicers = []
-    for offset in offsets:
-        slicer = tuple(slice(int(o), None, bandwidth) for o in offset)
-        slicer = (Ellipsis, *slicer, slice(None))
-        slicers.append(slicer)
-    if checkerboard:
-        # gather odd/even slicers
-        slicers = [[slicer for slicer in slicers
-                    if sum(s.start for s in slicer[1:-1]) % 2],
-                   [slicer for slicer in slicers
-                    if not sum(s.start for s in slicer[1:-1]) % 2]]
-    else:
-        slicers = [[slicer] for slicer in slicers]
-
+    slicers = relax_slicers(shape, scheme)
     for n_iter in range(1, max_iter+1):
 
         for group in slicers:

@@ -5,6 +5,9 @@ def mov2fix(fixed, moving, warped, vel, cat=False, dim=None):
     """Plot registration live"""
     import matplotlib.pyplot as plt
 
+    warped = warped.detach()
+    vel = vel.detach()
+
     dim = dim or (fixed.dim() - 1)
     if fixed.dim() < dim + 2:
         fixed = fixed[None]
@@ -18,10 +21,10 @@ def mov2fix(fixed, moving, warped, vel, cat=False, dim=None):
     nb_batch = len(fixed)
 
     if dim == 3:
-        fixed = fixed.squeeze(-1)
-        moving = moving.squeeze(-1)
-        warped = warped.squeeze(-1)
-        vel = vel.squeeze(-2)
+        fixed = fixed[..., fixed.shape[-1]//2]
+        moving = moving[..., moving.shape[-1]//2]
+        warped = warped[..., warped.shape[-1]//2]
+        vel = vel[..., vel.shape[-2]//2, :]
     vel = vel.square().sum(-1).sqrt()
 
     if cat:
@@ -33,10 +36,15 @@ def mov2fix(fixed, moving, warped, vel, cat=False, dim=None):
     for b in range(nb_rows):
         plt.subplot(nb_rows, nb_cols, b*nb_cols + 1)
         plt.imshow(moving[b, 0])
+        plt.axis('off')
         plt.subplot(nb_rows, nb_cols, b*nb_cols + 2)
         plt.imshow(warped[b, 0])
+        plt.axis('off')
         plt.subplot(nb_rows, nb_cols, b*nb_cols + 3)
         plt.imshow(fixed[b, 0])
+        plt.axis('off')
         plt.subplot(nb_rows, nb_cols, b*nb_cols + 4)
         plt.imshow(vel[b])
+        plt.axis('off')
+        plt.colorbar()
     plt.show()

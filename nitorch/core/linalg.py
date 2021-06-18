@@ -83,6 +83,33 @@ def meanm(mats, max_iter=1024, tol=1e-20):
     return mean_mat.to(dtype)
 
 
+def kron2(x, y):
+    """Kronecker product of two matrices
+
+    Parameters
+    ----------
+    x : (..., m, n) tensor
+        Left matrix
+    y : (..., p, q) tensor
+        Right matrix
+
+    Returns
+    -------
+    xy : (..., p*m, q*n) tensor
+        Kronecker product
+        `xy.reshape([P, M, Q, N])[p, m, q, n] == x[m, n] * y[n, q]`
+
+    """
+    x, y = utils.to_max_backend(x, y)
+    *_, m, n = x.shape
+    *_, p, q = y.shape
+    x = x[..., None, :, None, :]
+    y = y[..., :, None, :, None]
+    xy = x*y
+    xy = xy.reshape([*xy.shape[:-4], m*p, n*q])
+    return xy
+
+
 def lmdiv(a, b, method='lu', rcond=1e-15, out=None):
     r"""Left matrix division ``inv(a) @ b``.
 

@@ -1,15 +1,18 @@
 from nitorch import spatial
 from nitorch.core import py, utils, linalg, math
 import torch
-from .losses import mse, cat
+from .losses import MSE, Cat, NCC, NMI
 from .utils import jg, jhj, defaults_velocity, defaults_template
 from .phantoms import demo_atlas, demo_register
+from .optim import Optim, ZerothOrder, FirstOrder, SecondOrder, \
+    GradientDescent, Momentum, Nesterov, GridCG, GridRelax, \
+    BacktrackingLineSearch
 from . import plot as plt
 
 
-def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
-             loss='mse', optim='relax', sub_iter=16, plot=False, steps=8,
-             **prm):
+def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
+             optim='nesterov', hilbert=True, max_iter=500, sub_iter=16,
+             lr=1, ls=0, steps=8, plot=False, **prm):
     """Diffeomorphic registration between two images using SVFs.
 
     Parameters
@@ -22,18 +25,25 @@ def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
         Number of spatial dimensions
     lam : float, default=1
         Modulate regularisation
-    max_iter : int, default=100
-        Maximum number of Gauss-Newton or Gradient descent optimisation
-    loss : {'mse', 'cat'}, default='mse'
+    loss : {'mse', 'cat'} or OptimizationLoss, default='mse'
         'mse': Mean-squared error
         'cat': Categorical cross-entropy
-    optim : {'relax', 'cg', 'gd', 'gdh'}, default='relax'
+    optim : {'relax', 'cg', 'gd', 'momentum', 'nesterov'}, default='relax'
         'relax': Gauss-Newton (linear system solved by relaxation)
         'cg': Gauss-Newton (linear system solved by conjugate gradient)
         'gd': Gradient descent
-        'gdh': Hilbert gradient descent
+        'momentum': Gradient descent with momentum
+        'nesterov': Nesterov-accelerated gradient descent
+    hilbert : bool, default=True
+        Use hilbert gradient (not used if optim is second order)
+    max_iter : int, default=100
+        Maximum number of Gauss-Newton or Gradient descent iterations
     sub_iter : int, default=16
         Number of relax/cg iterations per GN step
+    lr : float, default=1
+        Learning rate.
+    ls : int, default=0
+        Number of line search iterations.
     absolute : float, default=1e-4
         Penalty on absolute displacements
     membrane : float, default=1e-3
@@ -45,8 +55,8 @@ def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
 
     Returns
     -------
-    vel : (..., *spatial, dim) tensor
-        Stationary velocity field.
+    disp : (..., *spatial, dim) tensor
+        Displacement field.
 
     """
     defaults_velocity(prm)
@@ -56,89 +66,276 @@ def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
     if fixed is None or moving is None:
         fixed, moving = demo_register(cat=(loss == 'cat'))
 
+    # init tensors
     fixed, moving = utils.to_max_backend(fixed, moving)
     dim = dim or (fixed.dim() - 1)
     shape = fixed.shape[-dim:]
+    nvox = py.prod(shape)
     velshape = [*fixed.shape[:-dim-1], *shape, dim]
-    vel = torch.zeros(velshape, **utils.backend(fixed))
+    vel0 = torch.zeros(velshape, **utils.backend(fixed))
 
-    lr = None
-    if isinstance(optim, (tuple, list)):
-        optim, lr = optim
-    lr = lr or (1e-3 if optim.startswith('gd') else 1)
-    if optim == 'gdh':
-        # Greens kernel for Hilbert gradient
-        kernel = spatial.greens(shape, **prm)
+    # init optimizer
+    lr = lr or 1
+    optim = (GradientDescent(lr=lr) if optim == 'gd' else
+             Nesterov(lr=lr) if optim == 'nesterov' else
+             Momentum(lr=lr) if optim == 'momentum' else
+             GridCG(lr=lr, max_iter=sub_iter, **prm) if optim == 'cg' else
+             GridRelax(lr=lr, max_iter=sub_iter, **prm) if optim == 'relax' else
+             optim)
+    if ls:
+        ls = BacktrackingLineSearch(max_iter=ls)
+    if hilbert and not isinstance(optim, SecondOrder):
+        # Hilbert gradient
+        kernel = spatial.greens(shape, **prm, **utils.backend(fixed))
 
+    # init loss
     iscat = loss == 'cat'
-    loss = (mse if loss == 'mse' else
-            cat if loss == 'cat' else
+    loss = (MSE(dim=dim) if loss == 'mse' else
+            Cat(dim=dim) if loss == 'cat' else
+            NCC(dim=dim) if loss == 'ncc' else
+            NMI(dim=dim) if loss == 'nmi' else
             loss)
 
-    ll_prev = None
-    for n_iter in range(1, max_iter+1):
+    print(f'{"it":3s} | {"fit":^12s} + {"reg":^12s} = {"obj":^12s} | {"gain":^12s}')
+    print('-' * 63)
+
+    def closure(vel=None):
+
+        in_line_search = True
+        if vel is None:
+            in_line_search = False
+            vel = vel0
 
         # forward
         grid, jac = spatial.exp_forward(vel, steps=steps, jacobian=True)
-
-        # compute spatial gradients in warped space
-        mugrad = spatial.grid_grad(moving, grid, bound='dct2', extrapolate=True)
-
-        # TODO: add that back? see JA's email
-        # jac = torch.matmul(jac, spatial.grid_jacobian(vel, type='disp').inverse())
-
-        # rotate gradients (we want `D(mu o phi)`, not `D(mu) o phi`)
-        jac = jac.transpose(-1, -2)
-        mugrad = linalg.matvec(jac, mugrad)
-        del jac
+        warped = spatial.grid_pull(moving, grid, bound='dct2', extrapolate=True)
+        if (not in_line_search) and plot and ((n_iter - 1) % max(1, max_iter//20)) == 0:
+            plt.mov2fix(fixed, moving, warped, vel, cat=iscat, dim=dim)
 
         # gradient/Hessian of the log-likelihood in observed space
-        warped = spatial.grid_pull(moving, grid, bound='dct2', extrapolate=True)
-        if plot:
-            plt.mov2fix(fixed, moving, warped, vel, cat=iscat, dim=dim)
-        ll, grad, hess = loss(warped, fixed, dim=dim)
+        grad = hess = None
+        if in_line_search or isinstance(optim, ZerothOrder):
+            llx = loss.loss(warped, fixed)
+        elif isinstance(optim, FirstOrder):
+            llx, grad = loss.loss_grad(warped, fixed)
+        else:
+            llx, grad, hess = loss.loss_grad_hess(warped, fixed)
         del warped
 
         # compose with spatial gradients
-        grad = jg(mugrad, grad)
-        hess = jhj(mugrad, hess)
-        vgrad = spatial.regulariser_grid(vel, **prm)
+        if grad is not None or hess is not None:
+
+            mugrad = spatial.grid_grad(moving, grid, bound='dct2', extrapolate=True)
+
+            # TODO: add that back? see JA's email
+            # jac = torch.matmul(jac, spatial.grid_jacobian(vel, type='disp').inverse())
+
+            # rotate gradients (we want `D(mu o phi)`, not `D(mu) o phi`)
+            jac = jac.transpose(-1, -2)
+            mugrad = linalg.matvec(jac, mugrad)
+            del jac
+
+            if grad is not None:
+                grad = jg(mugrad, grad)
+            if hess is not None:
+                hess = jhj(mugrad, hess)
+                derivatives = [grad, hess]
+            else:
+                derivatives = [grad]
+
+            # propagate backward
+            derivatives = spatial.exp_backward(vel, *derivatives, steps=steps)
+            if hess is not None:
+                grad, hess = derivatives
+            else:
+                grad = derivatives
+
+        # add regularization term
+        vgrad = spatial.regulariser_grid(vel, **prm).div_(nvox)
+        llv = 0.5 * (vel*vgrad).sum()
+        if grad is not None:
+            grad += vgrad
+        del vgrad
 
         # print objective
-        ll += (vel*vgrad).sum()
-        ll /= fixed.numel()
-        ll = ll.item()
-        if ll_prev is None:
-            ll_prev = ll
-            ll_max = ll
-            print(f'{n_iter:03d} | {ll:12.6g}', end='\r')
-        else:
-            gain = (ll_prev - ll) / max(abs(ll_max - ll), 1e-8)
-            ll_prev = ll
-            print(f'{n_iter:03d} | {ll:12.6g} | gain = {gain:12.6g}', end='\r')
+        llx = llx.item()
+        llv = llv.item()
+        ll = llx + llv
+        if not in_line_search:
+            if ll_prev is None:
+                print(f'{n_iter:03d} | {llx:12.6g} + {llv:12.6g} = {ll:12.6g}', end='\r')
+            else:
+                gain = (ll_prev - ll) / max(abs(ll_max - ll), 1e-8)
+                print(f'{n_iter:03d} | {llx:12.6g} + {llv:12.6g} = {ll:12.6g} | {gain:12.6g}', end='\r')
 
-        # propagate gradients backward
-        grad, hess = spatial.exp_backward(vel, grad, hess, steps=steps)
-        grad += vgrad
+        if hilbert and grad is not None and hess is None:
+            grad = spatial.greens_apply(grad, kernel)
 
-        if optim.startswith('gd'):
-            # Gradient descent
-            if optim == 'gdh':
-                # Hilbert gradient
-                # == preconditioning with the regularizer
-                grad = spatial.greens_apply(grad, kernel)
+        if in_line_search:
+            return ll
         else:
-            # Levenberg-Marquardt regularisation
-            hess[..., :dim] += hess[..., :dim].abs().max(-1, True).values * 1e-5
-            # Gauss-Newton update
-            grad = spatial.solve_grid_sym(hess, grad, optim=optim,
-                                          max_iter=sub_iter, **prm)
-        if lr != 1:
-            grad.mul_(lr)
-        vel -= grad
+            out = [ll]
+            if grad is not None:
+                out.append(grad)
+            if hess is not None:
+                out.append(hess)
+            return tuple(out)
+
+    ll_prev = None
+    ll_max = None
+    for n_iter in range(1, max_iter+1):
+
+        ll, *derivatives = closure()
+        ll_prev = ll
+        ll_max = ll_max or ll_prev
+
+        step = optim.step(*derivatives)
+        if ls:
+            vel0, success = ls.step(closure, vel0, ll, step)
+            if not success:
+                print('\nFailed to improve')
+                break
+        else:
+            vel0.add_(step)
 
     print('')
-    return vel
+    return vel0
+
+
+# def register(fixed=None, moving=None, dim=None, lam=1., max_iter=20,
+#              loss='mse', optim='relax', sub_iter=16, plot=False, steps=8,
+#              **prm):
+#     """Diffeomorphic registration between two images using SVFs.
+#
+#     Parameters
+#     ----------
+#     fixed : (..., K, *spatial) tensor
+#         Fixed image
+#     moving : (..., K, *spatial) tensor
+#         Moving image
+#     dim : int, default=`fixed.dim() - 1`
+#         Number of spatial dimensions
+#     lam : float, default=1
+#         Modulate regularisation
+#     max_iter : int, default=100
+#         Maximum number of Gauss-Newton or Gradient descent optimisation
+#     loss : {'mse', 'cat'}, default='mse'
+#         'mse': Mean-squared error
+#         'cat': Categorical cross-entropy
+#     optim : {'relax', 'cg', 'gd', 'gdh'}, default='relax'
+#         'relax': Gauss-Newton (linear system solved by relaxation)
+#         'cg': Gauss-Newton (linear system solved by conjugate gradient)
+#         'gd': Gradient descent
+#         'gdh': Hilbert gradient descent
+#     sub_iter : int, default=16
+#         Number of relax/cg iterations per GN step
+#     absolute : float, default=1e-4
+#         Penalty on absolute displacements
+#     membrane : float, default=1e-3
+#         Penalty on first derivatives
+#     bending : float, default=0.2
+#         Penalty on second derivatives
+#     lame : (float, float), default=(0.05, 0.2)
+#         Penalty on zooms and shears
+#
+#     Returns
+#     -------
+#     vel : (..., *spatial, dim) tensor
+#         Stationary velocity field.
+#
+#     """
+#     defaults_velocity(prm)
+#     prm['factor'] = lam
+#
+#     # If no inputs provided: demo "circle to square"
+#     if fixed is None or moving is None:
+#         fixed, moving = demo_register(cat=(loss == 'cat'))
+#
+#     fixed, moving = utils.to_max_backend(fixed, moving)
+#     dim = dim or (fixed.dim() - 1)
+#     shape = fixed.shape[-dim:]
+#     velshape = [*fixed.shape[:-dim-1], *shape, dim]
+#     vel = torch.zeros(velshape, **utils.backend(fixed))
+#
+#     lr = None
+#     if isinstance(optim, (tuple, list)):
+#         optim, lr = optim
+#     lr = lr or (1e-3 if optim.startswith('gd') else 1)
+#     if optim == 'gdh':
+#         # Greens kernel for Hilbert gradient
+#         kernel = spatial.greens(shape, **prm)
+#
+#     iscat = loss == 'cat'
+#     loss = (MSE(dim=dim) if loss == 'mse' else
+#             Cat(dim=dim) if loss == 'cat' else
+#             NCC(dim=dim) if loss == 'ncc' else
+#             NMI(dim=dim) if loss == 'nmi' else
+#             loss)
+#
+#     ll_prev = None
+#     for n_iter in range(1, max_iter+1):
+#
+#         # forward
+#         grid, jac = spatial.exp_forward(vel, steps=steps, jacobian=True)
+#
+#         # compute spatial gradients in warped space
+#         mugrad = spatial.grid_grad(moving, grid, bound='dct2', extrapolate=True)
+#
+#         # TODO: add that back? see JA's email
+#         # jac = torch.matmul(jac, spatial.grid_jacobian(vel, type='disp').inverse())
+#
+#         # rotate gradients (we want `D(mu o phi)`, not `D(mu) o phi`)
+#         jac = jac.transpose(-1, -2)
+#         mugrad = linalg.matvec(jac, mugrad)
+#         del jac
+#
+#         # gradient/Hessian of the log-likelihood in observed space
+#         warped = spatial.grid_pull(moving, grid, bound='dct2', extrapolate=True)
+#         if plot:
+#             plt.mov2fix(fixed, moving, warped, vel, cat=iscat, dim=dim)
+#         ll, grad, hess = loss.loss_grad_hess(warped, fixed)
+#         del warped
+#
+#         # compose with spatial gradients
+#         grad = jg(mugrad, grad)
+#         hess = jhj(mugrad, hess)
+#         vgrad = spatial.regulariser_grid(vel, **prm)
+#
+#         # print objective
+#         ll += (vel*vgrad).sum()
+#         ll /= fixed.numel()
+#         ll = ll.item()
+#         if ll_prev is None:
+#             ll_prev = ll
+#             ll_max = ll
+#             print(f'{n_iter:03d} | {ll:12.6g}', end='\r')
+#         else:
+#             gain = (ll_prev - ll) / max(abs(ll_max - ll), 1e-8)
+#             ll_prev = ll
+#             print(f'{n_iter:03d} | {ll:12.6g} | gain = {gain:12.6g}', end='\r')
+#
+#         # propagate gradients backward
+#         grad, hess = spatial.exp_backward(vel, grad, hess, steps=steps)
+#         grad += vgrad
+#
+#         if optim.startswith('gd'):
+#             # Gradient descent
+#             if optim == 'gdh':
+#                 # Hilbert gradient
+#                 # == preconditioning with the regularizer
+#                 grad = spatial.greens_apply(grad, kernel)
+#         else:
+#             # Levenberg-Marquardt regularisation
+#             hess[..., :dim] += hess[..., :dim].abs().max(-1, True).values * 1e-5
+#             # Gauss-Newton update
+#             grad = spatial.solve_grid_sym(hess, grad, optim=optim,
+#                                           max_iter=sub_iter, **prm)
+#         if lr != 1:
+#             grad.mul_(lr)
+#         vel -= grad
+#
+#     print('')
+#     return vel
 
 
 def loadf(x):
@@ -186,13 +383,6 @@ def init_template(images, loss='mse', optim='relax', velocities=None,
     defaults_template(prm)
     prm['factor'] = lam
 
-    if loss == 'mse':
-        loss = mse
-    elif loss == 'cat':
-        loss = cat
-    else:
-        raise NotImplementedError(loss)
-
     lr = None
     if isinstance(optim, (tuple, list)):
         optim, lr = optim
@@ -202,6 +392,12 @@ def init_template(images, loss='mse', optim='relax', velocities=None,
     if velocities is None:
         velocities = [None] * len(images)
 
+    loss = (MSE() if loss == 'mse' else
+            Cat() if loss == 'cat' else
+            NCC() if loss == 'ncc' else
+            NMI() if loss == 'nmi' else
+            loss)
+
     grad = 0
     hess = 0
     for image, vel in zip(images, velocities):
@@ -210,7 +406,7 @@ def init_template(images, loss='mse', optim='relax', velocities=None,
             vel = spatial.exp(vel)
             image = spatial.grid_pull(image, vel, bound='dct2')
         template = template.expand(image.shape).to(**utils.backend(images))
-        _, g, h = loss(image, template, dim=dim)
+        _, g, h = loss.loss_grad_hess(image, template, dim=dim)
         if vel is not None:
             g = spatial.grid_push(g, vel, bound='dct2')
             h = spatial.grid_push(h, vel, bound='dct2')
@@ -381,6 +577,13 @@ def update_velocity(fixed=None, moving=None, lam=1., max_iter=20,
         # Greens kernel for Hilbert gradient
         kernel = spatial.greens(shape, **prm)
 
+    iscat = (loss == 'cat')
+    loss = (MSE(dim=dim) if loss == 'mse' else
+            Cat(dim=dim) if loss == 'cat' else
+            NCC(dim=dim) if loss == 'ncc' else
+            NMI(dim=dim) if loss == 'nmi' else
+            loss)
+
     print('|', end ='', flush=True)
     for n_iter in range(1, max_iter+1):
         print('.', end='', flush=True)
@@ -404,13 +607,8 @@ def update_velocity(fixed=None, moving=None, lam=1., max_iter=20,
         # gradient/Hessian of the log=likelihood in observed space
         warped = spatial.grid_pull(moving, grid, bound='dct2', extrapolate=True)
         if plot:
-            plt.mov2fix(fixed, moving, warped, velocity, cat=(loss == 'cat'), dim=dim)
-        if loss == 'mse':
-            ll, lossgrad, losshess = mse(fixed, warped, dim=dim)
-        elif loss == 'cat':
-            ll, lossgrad, losshess = cat(fixed, warped, dim=dim, acceleration=0)
-        else:
-            raise NotImplementedError(loss)
+            plt.mov2fix(fixed, moving, warped, velocity, cat=iscat, dim=dim)
+        ll, lossgrad, losshess = loss.loss_grad_hess(fixed, warped)
         del warped
 
         # compose with spatial gradients
