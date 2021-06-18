@@ -1340,7 +1340,10 @@ def unfold(inp, kernel_size, stride=None, collapse=False):
         inp = inp.unfold(dimension=batch_dim+d, size=sz, step=st)
     if collapse:
         batch_shape = inp.shape[:-dim*2]
-        inp = inp.reshape([*batch_shape, -1, *kernel_size])
+        if collapse == 'view':
+            inp = inp.view([*batch_shape, -1, *kernel_size])
+        else:
+            inp = inp.reshape([*batch_shape, -1, *kernel_size])
     return inp
 
 
@@ -1363,8 +1366,11 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
         `stride` and `kernel_size`. If the output shape is larger than
         the computed shape, zero-padding is used.
         This parameter is mandatory if `collapsed = True`.
-    collapsed : bool, default=False
+    collapsed : 'view' or bool, default=False
         Whether the spatial dimensions are collapsed in the input tensor.
+        If 'view', use `view` instead of `reshape`, which will raise an
+        error instead of triggering a copy when dimensions cannot be
+        collapsed in a contiguous way.
     reduction : {'mean', 'sum', 'min', 'max'}, default='mean'
         Method to use to merge overlapping patches.
 

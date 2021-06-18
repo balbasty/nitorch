@@ -248,24 +248,28 @@ def matvec(mat, vec, out=None):
     return mv
 
 
-def dot(a, b, out=None):
+def dot(a, b, keepdim=False, out=None):
     """(Batched) dot product
 
     Parameters
     ----------
     a : (..., N) tensor
     b : (..., N) tensor
+    keepdim : bool, default=False
     out : tensor, optional
 
     Returns
     -------
-    ab : (...) tensor
+    ab : (..., [1]) tensor
 
     """
     a = a[..., None, :]
     b = b[..., :, None]
     ab = torch.matmul(a, b, out=out)
-    ab = ab[..., 0, 0]
+    if keepdim:
+        ab = ab[..., 0, 0]
+    else:
+        ab = ab[..., 0]
     return ab
 
 
