@@ -1,6 +1,7 @@
 from nitorch.core import py, utils, linalg
 from nitorch import spatial
 import torch
+from . import optim as optm
 
 
 def defaults_velocity(prm=None):
@@ -24,6 +25,93 @@ def defaults_template(prm=None):
     prm.setdefault('bending', 0.8)
     prm.setdefault('voxel_size', 1.)
     return prm
+
+
+def loadf(x):
+    """Load data from disk if needed"""
+    return x.fdata() if hasattr(x, 'fdata') else x
+
+
+def savef(x, parent):
+    """Save data to disk if needed"""
+    if hasattr(parent, 'fdata'):
+        parent[...] = x
+    else:
+        parent.copy_(x)
+
+
+def smart_pull(image, grid, **kwargs):
+    """spatial.grid_pull that accepts None grid"""
+    if grid is not None:
+        image = spatial.grid_pull(image, grid, **kwargs)
+    return image
+
+
+def smart_push(image, grid, **kwargs):
+    """spatial.grid_push that accepts None grid"""
+    if grid is not None:
+        image = spatial.grid_push(image, grid, **kwargs)
+    return image
+
+
+def smart_exp(vel, **kwargs):
+    """spatial.exp that accepts None vel"""
+    if vel is not None:
+        vel = spatial.exp(vel, **kwargs)
+    return vel
+
+
+def make_optim_grid(optim, lr=None, sub_iter=None, kernel=None, **prm):
+    """Prepare optimizer for displacement/velocity"""
+    correct_keys = ('absolute', 'membrane', 'bending', 'lame',
+                    'factor', 'voxel_size')
+    prm = {k: prm[k] for k in prm if k in correct_keys}
+
+    optim = (optm.GradientDescent() if optim == 'gd' else
+             optm.Momentum() if optim == 'momentum' else
+             optm.Nesterov() if optim == 'nesterov' else
+             optm.OGM() if optim == 'ogm' else
+             optm.GridCG(max_iter=sub_iter, **prm) if optim == 'cg' else
+             optm.GridRelax(max_iter=sub_iter, **prm) if optim == 'relax' else
+             optm.GridNesterov(max_iter=sub_iter, **prm) if optim.startswith('gnnesterov') else
+             optim)
+    if lr:
+        optim.lr = lr
+    if kernel is not None and hasattr(optim, 'preconditioner'):
+        optim.preconditioner = lambda x: spatial.greens_apply(x, kernel)
+    return optim
+
+
+def make_optim_field(optim, lr=None, sub_iter=None, kernel=None, **prm):
+    """Prepare optimizer for displacement/velocity"""
+    correct_keys = ('absolute', 'membrane', 'bending', 'factor', 'voxel_size')
+    prm = {k: prm[k] for k in prm if k in correct_keys}
+
+    optim = (optm.GradientDescent() if optim == 'gd' else
+             optm.Momentum() if optim == 'momentum' else
+             optm.Nesterov() if optim == 'nesterov' else
+             optm.OGM() if optim == 'ogm' else
+             optm.FieldCG(max_iter=sub_iter, **prm) if optim == 'cg' else
+             optm.FieldRelax(max_iter=sub_iter, **prm) if optim == 'relax' else
+             optim)
+    if lr:
+        optim.lr = lr
+    if kernel is not None and hasattr(optim, 'preconditioner'):
+        dim = kernel.dim()
+        optim.preconditioner = lambda x: spatial.greens_apply(x, kernel)
+    return optim
+
+
+def make_iteroptim_grid(optim, lr=None, ls=None, max_iter=None, sub_iter=None,
+                        kernel=None, **prm):
+    if optim == 'lbfgs':
+        optim = optm.LBFGS(max_iter=max_iter)
+    else:
+        optim = make_optim_grid(optim, lr=lr, sub_iter=sub_iter,
+                                kernel=kernel, **prm)
+    if not hasattr(optim, 'iter'):
+        optim = optm.IterateOptim(optim, max_iter=max_iter, ls=ls)
+    return optim
 
 
 def jg(jac, grad, dim=None):

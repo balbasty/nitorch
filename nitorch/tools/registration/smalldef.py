@@ -3,7 +3,7 @@ from nitorch import spatial
 from nitorch.core import py, utils, linalg, math
 from .utils import jg, jhj, defaults_velocity
 from . import plot as plt, optim as optm, losses, phantoms
-
+import functools
 
 class RegisterStep:
     """Forward pass of Small Deformation registration, with derivatives"""
@@ -103,7 +103,7 @@ class RegisterStep:
 
 def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
              optim='nesterov', hilbert=True, max_iter=500, sub_iter=16,
-             lr=1, ls=0, plot=False, **prm):
+             lr=None, ls=0, plot=False, klosure=RegisterStep, **prm):
     """Nonlinear registration between two images using smooth displacements.
 
     Parameters
@@ -166,15 +166,17 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
     vel = torch.zeros(velshape, **utils.backend(fixed))
 
     # init optimizer
-    lr = lr or 1
-    optim = (optm.GradientDescent(lr=lr) if optim == 'gd' else
-             optm.Momentum(lr=lr) if optim == 'momentum' else
-             optm.Nesterov(lr=lr) if optim == 'nesterov' else
-             optm.OGM(lr=lr) if optim == 'ogm' else
-             optm.LBFGS(lr=lr, max_iter=max_iter) if optim == 'lbfgs' else
-             optm.GridCG(lr=lr, max_iter=sub_iter, **prm) if optim == 'cg' else
-             optm.GridRelax(lr=lr, max_iter=sub_iter, **prm) if optim == 'relax' else
+    optim = (optm.GradientDescent() if optim == 'gd' else
+             optm.Momentum() if optim == 'momentum' else
+             optm.Nesterov() if optim == 'nesterov' else
+             optm.OGM() if optim == 'ogm' else
+             optm.LBFGS(max_iter=max_iter) if optim == 'lbfgs' else
+             optm.GridCG(max_iter=sub_iter, **prm) if optim == 'cg' else
+             optm.GridRelax(max_iter=sub_iter, **prm) if optim == 'relax' else
              optim)
+    if isinstance(optim, optm.Optim):
+        lr = lr or (1 if isinstance(optim, optm.SecondOrder) else 0.01)
+        optim.lr = lr
     if hilbert and hasattr(optim, 'preconditioner'):
         # Hilbert gradient
         kernel = spatial.greens(shape, **prm, **utils.backend(fixed))
@@ -191,7 +193,8 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
 
     print(f'{"it":3s} | {"fit":^12s} + {"reg":^12s} = {"obj":^12s} | {"gain":^12s}')
     print('-' * 63)
-    closure = RegisterStep(moving, fixed, loss, plot=plot, max_iter=optim.max_iter, **prm)
+    closure = klosure(moving, fixed, loss, plot=plot,
+                      max_iter=optim.max_iter, **prm)
     vel = optim.iter(vel, closure)
     print('')
     return vel
@@ -232,6 +235,8 @@ class AutoRegStep:
         # select correct gradient mode
         if grad:
             vel.requires_grad_()
+            if vel.grad is not None:
+                vel.grad.zero_()
         if grad and not torch.is_grad_enabled():
             with torch.enable_grad():
                 return self(vel, grad)
@@ -286,90 +291,6 @@ class AutoRegStep:
         return tuple(out) if len(out) > 1 else out[0]
 
 
-def autoreg(fixed=None, moving=None, dim=None, lam=1., loss='mse',
-             optim='nesterov', hilbert=True, max_iter=500,
-             lr=1, ls=0, plot=False, **prm):
-    """Nonlinear registration between two images using smooth displacements.
-
-    Parameters
-    ----------
-    fixed : (..., K, *spatial) tensor
-        Fixed image
-    moving : (..., K, *spatial) tensor
-        Moving image
-    dim : int, default=`fixed.dim() - 1`
-        Number of spatial dimensions
-    lam : float, default=1
-        Modulate regularisation
-    loss : {'mse', 'cat'} or OptimizationLoss, default='mse'
-        'mse': Mean-squared error
-        'cat': Categorical cross-entropy
-    optim : {'relax', 'cg', 'gd', 'momentum', 'nesterov'}, default='nesterov'
-        'gd': Gradient descent
-        'momentum': Gradient descent with momentum
-        'nesterov': Nesterov-accelerated gradient descent
-    hilbert : bool, default=True
-        Use hilbert gradient (not used if optim is second order)
-    max_iter : int, default=100
-        Maximum number of Gauss-Newton or Gradient descent iterations
-    lr : float, default=1
-        Learning rate.
-    ls : int, default=0
-        Number of line search iterations.
-    absolute : float, default=1e-4
-        Penalty on absolute displacements
-    membrane : float, default=1e-3
-        Penalty on first derivatives
-    bending : float, default=0.2
-        Penalty on second derivatives
-    lame : (float, float), default=(0.05, 0.2)
-        Penalty on zooms and shears
-
-    Returns
-    -------
-    disp : (..., *spatial, dim) tensor
-        Displacement field.
-
-    """
-    defaults_velocity(prm)
-    prm['factor'] = lam
-
-    # If no inputs provided: demo "circle to square"
-    if fixed is None or moving is None:
-        fixed, moving = phantoms.demo_register(cat=(loss == 'cat'))
-
-    # init tensors
-    fixed, moving = utils.to_max_backend(fixed, moving)
-    dim = dim or (fixed.dim() - 1)
-    shape = fixed.shape[-dim:]
-    velshape = [*fixed.shape[:-dim-1], *shape, dim]
-    vel = torch.zeros(velshape, **utils.backend(fixed))
-
-    # init optimizer
-    lr = lr or 1
-    optim = (optm.GradientDescent(lr=lr) if optim == 'gd' else
-             optm.Momentum(lr=lr) if optim == 'momentum' else
-             optm.Nesterov(lr=lr) if optim == 'nesterov' else
-             optm.OGM(lr=lr) if optim == 'ogm' else
-             optm.LBFGS(lr=lr, max_iter=max_iter) if optim == 'lbfgs' else
-             optim)
-    if hilbert and hasattr(optim, 'preconditioner'):
-        # Hilbert gradient
-        kernel = spatial.greens(shape, **prm, **utils.backend(fixed))
-        optim.preconditioner = lambda x: spatial.greens_apply(x, kernel)
-    if not hasattr(optim, 'iter'):
-        optim = optm.IterateOptim(optim, max_iter=max_iter, ls=ls)
-
-    # init loss
-    loss = (losses.MSE(dim=dim) if loss == 'mse' else
-            losses.Cat(dim=dim) if loss == 'cat' else
-            losses.NCC(dim=dim) if loss == 'ncc' else
-            losses.NMI(dim=dim) if loss == 'nmi' else
-            loss)
-
-    print(f'{"it":3s} | {"fit":^12s} + {"reg":^12s} = {"obj":^12s} | {"gain":^12s}')
-    print('-' * 63)
-    closure = AutoRegStep(moving, fixed, loss, plot=plot, max_iter=optim.max_iter, **prm)
-    vel = optim.iter(vel, closure)
-    print('')
-    return vel
+@functools.wraps(register)
+def autoreg(*args, **kwargs):
+    return register(*args, klosure=AutoRegStep, **kwargs)

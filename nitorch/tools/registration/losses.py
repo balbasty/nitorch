@@ -20,6 +20,15 @@ from .utils import JointHist
 pyutils = py
 
 
+def make_loss(loss, dim=None):
+    loss = (MSE(dim=dim) if loss == 'mse' else
+            Cat(dim=dim) if loss == 'cat' else
+            NCC(dim=dim) if loss == 'ncc' else
+            NMI(dim=dim) if loss == 'nmi' else
+            loss)
+    return loss
+
+
 def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True):
     """Mean-squared error loss for optimisation-based registration.
 

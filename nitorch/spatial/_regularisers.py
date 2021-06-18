@@ -600,7 +600,8 @@ def quadnesterov(A, b, x=None, precond=None, lr=0.5, momentum=0.9, max_iter=None
 
 def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                     factor=1, voxel_size=1, bound='dct2', dim=None,
-                    optim='relax', max_iter=16, verbose=False, weights=None):
+                    optim='relax', max_iter=16, verbose=False, weights=None,
+                    precond=None):
     """Solve a positive-definite linear system of the form (H + L)x = g
 
     Parameters
@@ -700,8 +701,11 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
 
     forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
                (lambda x: sym_matvec(hessian, x) + regulariser(x)))
-    precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s2h(s)]) if is_diag else
-               (lambda x, s=Ellipsis: sym_solve(hessian_smo[s2h(s)], x[s])))
+    if precond is None:
+        precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s2h(s)]) if is_diag else
+                   (lambda x, s=Ellipsis: sym_solve(hessian_smo[s2h(s)], x[s])))
+    elif precond is False:
+        precond = lambda x: x
 
     if no_reg:
         result = precond(gradient)

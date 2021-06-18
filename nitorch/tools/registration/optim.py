@@ -22,6 +22,7 @@ Along with helpers
 
 from nitorch import spatial
 import torch
+import copy
 
 
 class Optim:
@@ -173,7 +174,6 @@ class Nesterov(FirstOrder):
         theta = 0.5 * (1 + (1 + 4 * self.theta * self.theta) ** 0.5)
         self.theta = theta
         self._momentum = self.momentum or (theta_prev - 1) / theta
-        self._relaxation = self.relaxation or theta_prev / theta
 
     def step(self, grad):
         grad = self.precondition(grad)
@@ -383,87 +383,6 @@ class MultiOptim(Optim):
         return params
 
 
-class BacktrackingLineSearch(Optim):
-    """Meta-optimizer that performs a backtracking line search on the
-    value of an optimizer's parameter.
-    """
-
-    class Armijo(Optim):
-        def step(self, grad):
-            return grad.mul(self.lr)
-
-    def __init__(self, optim=None, max_iter=6, key='lr', factor=0.5,
-                 store_value=False):
-        """
-
-        Parameters
-        ----------
-        optim : `Optim`, default=GradientDescent
-            Optimizer whose parameter is line-searched
-        max_iter : int, default=6
-            Maximum number of searches
-        key : str, default='lr'
-            Name of the parameter to search.
-            It should be a mutable attribute of `optim`.
-        factor : float, default=0.5
-            The searched parameter is multiplied by this factor after
-            each failed iteration.
-        store_value : bool, default=False
-            Whether to store the successful parameter in `optim`.
-            If False, the original value is restored at the end of the
-            line search.
-        """
-        super().__init__()
-        self.key = key
-        self.factor = factor
-        self.max_iter = max_iter
-        self.optim = optim or self.Armijo()
-        self.store_value = store_value
-
-    def step(self, closure, params, ll0, *derivatives):
-        """
-
-        Parameters
-        ----------
-        closure : callable([list of] tensor) -> tensor
-            Function that takes optimized parameters as inputs and
-            returns the objective function.
-        params : [list of] tensor
-            Current state of the optimized parameters
-        derivatives : [list of] tensors
-            Gradient and (optionally) Hessian of the objective function.
-
-        Returns
-        -------
-        params : [list of] tensor
-            Updated parameters.
-        ok : bool
-            True if line search succeeded.
-
-        """
-        ok = False
-        params0 = params
-        value0 = getattr(self.optim, self.key)
-        value = value0
-        for n_iter in range(self.max_iter):
-
-            setattr(self.optim, self.key, value)
-            step = self.optim.step(*derivatives)
-            params = self.optim.update(params0.clone(), step)
-            ll = closure(params)
-            if ll < ll0:
-                ok = True
-                break
-            else:
-                value = self.factor * value
-
-        if not ok:
-            params = params0
-        if not self.store_value:
-            setattr(self.optim, self.key, value0)
-        return params, ok
-
-
 class GridGaussNewton(SecondOrder):
     """Base class for Gauss-Newton on displacement grids"""
 
@@ -532,6 +451,64 @@ class GridNesterov(GridGaussNewton):
         prm = self._get_prm()
         step = spatial.solve_grid_sym(hess, grad, optim='nesterov',
                                       precond=self.preconditioner, **prm)
+        step.mul_(-self.lr)
+        return step
+
+
+class FieldGaussNewton(SecondOrder):
+    """Base class for Gauss-Newton on vector fields"""
+
+    def __init__(self, max_iter=16, factor=1, voxel_size=1,
+                 absolute=0, membrane=0, bending=0, marquardt=True,
+                 preconditioner=None, **kwargs):
+        super().__init__(**kwargs)
+        self.preconditioner = preconditioner
+        self.factor = factor
+        self.absolute = absolute
+        self.membrane = membrane
+        self.bending = bending
+        self.voxel_size = voxel_size
+        self.marquardt = marquardt
+        self.max_iter = max_iter
+
+    def _get_prm(self):
+        prm = dict(absolute=self.absolute,
+                   membrane=self.membrane,
+                   bending=self.bending,
+                   factor=self.factor,
+                   voxel_size=self.voxel_size,
+                   max_iter=self.max_iter)
+        return prm
+
+    def _add_marquardt(self, grad, hess):
+        dim = grad.shape[-1]
+        if self.marquardt is True:
+            hess[..., :dim] += hess[..., :dim].abs().max(-1, True).values * 1e-5
+        elif self.marquardt:
+            hess[..., :dim] += self.marquardt
+        return grad, hess
+
+
+class FieldCG(FieldGaussNewton):
+    """Gauss-Newton on vector fields using Conjugate Gradients"""
+
+    def step(self, grad, hess):
+        grad, hess = self._add_marquardt(grad, hess)
+        prm = self._get_prm()
+        step = spatial.solve_field_sym(hess, grad, optim='cg',
+                                       precond=self.preconditioner, **prm)
+        step.mul_(-self.lr)
+        return step
+
+
+class FieldRelax(FieldGaussNewton):
+    """Gauss-Newton on vector fields using Relaxation"""
+
+    def step(self, grad, hess):
+        grad, hess = self._add_marquardt(grad, hess)
+        prm = self._get_prm()
+        step = spatial.solve_field_sym(hess, grad, optim='relax',
+                                       precond=self.preconditioner, **prm)
         step.mul_(-self.lr)
         return step
 
@@ -786,7 +763,7 @@ class LBFGS(FirstOrder):
         self.yy = []
         self.last_grad = 0
 
-    def iter(self, param, closure):
+    def iter(self, param, closure, derivatives=False):
         """Perform multiple LBFGS iterations, including Wolfe line search
 
         Parameters
@@ -796,11 +773,14 @@ class LBFGS(FirstOrder):
         closure : callable(tensor, grad=False) -> Tensor, Tensor
             Function that takes a parameter and returns the objective and
             its (optionally) gradient evaluated at that point.
+        derivatives : bool, default=False
+            Return latest derivatives
 
         Returns
         -------
         param : tensor
             Updated parameter
+        grad : tensor, if `derivatives is True`
 
         """
 
@@ -830,7 +810,7 @@ class LBFGS(FirstOrder):
                 break
             if ll_prev and abs(ll - ll_prev) < 1e-9:
                 break
-        return param
+        return (param, grad) if derivatives else param
 
     def step(self, grad, update=True):
         """Compute gradient direction, without Wolfe line search"""
@@ -874,22 +854,216 @@ class LBFGS(FirstOrder):
                                  self.delta[-1].flatten()))
 
 
-class IterateOptim(Optim):
+class IterationStep(Optim):
+    """One step of an optimizer (compute gradient, compute step, update)"""
 
-    def __init__(self, optim, max_iter=20, tol=1e-9, ls=0):
+    def __init__(self, optim):
         super().__init__()
         self.optim = optim
-        self.max_iter = max_iter
-        self.tol = tol
-        if ls and isinstance(ls, int):
-            self.ls = BacktrackingLineSearch(max_iter=ls)
-        else:
-            self.ls = ls
+        self._requires = None
 
     requires_grad = property(lambda self: isinstance(self.optim, (FirstOrder, SecondOrder)))
     requires_hess = property(lambda self: isinstance(self.optim, SecondOrder))
 
-    def iter(self, param, closure):
+    @property
+    def requires(self):
+        if self._requires is None:
+            self._requires = dict()
+            if self.requires_grad:
+                self._requires['grad'] = True
+            if self.requires_hess:
+                self._requires['hess'] = True
+        return self._requires
+
+    def step(self, param, closure, derivatives=False):
+        """
+
+        Parameters
+        ----------
+        param : [list of] tensor
+            Current state of the optimized parameters
+        closure : callable([list of] tensor) -> tensor
+            Function that takes optimized parameters as inputs and
+            returns the objective function.
+        derivaitves : bool, default=False
+            Return most recent derivatives
+
+        Returns
+        -------
+        param : [list of] tensor
+            Updated parameters.
+        ll : () tensor
+        *derivatives : tensor, optional
+
+        """
+        return_derivatives = derivatives
+        derivatives = []
+        ll = closure(param, **self.requires)
+        if self.requires:
+            ll, *derivatives = ll
+        delta = self.optim.step(*derivatives)
+        param = self.optim.update(param, delta)
+        if return_derivatives:
+            return (param, ll, *derivatives)
+        return param, ll
+
+
+class BacktrackingLineSearch(IterationStep):
+    """Meta-optimizer that performs a backtracking line search on the
+    value of an optimizer's parameter.
+    """
+
+    def __init__(self, optim, max_iter=6, key='lr', factor=0.5,
+                 store_value=False):
+        """
+
+        Parameters
+        ----------
+        optim : `Optim`, default=GradientDescent
+            Optimizer whose parameter is line-searched
+        max_iter : int, default=6
+            Maximum number of searches
+        key : str, default='lr'
+            Name of the parameter to search.
+            It should be a mutable attribute of `optim`.
+        factor : float, default=0.5
+            The searched parameter is multiplied by this factor after
+            each failed iteration.
+        store_value : bool or float, default=1.1
+            Whether to store the successful parameter in `optim`.
+            If False, the original value is restored at the end of the
+            line search. If a float, the successful parameter is modulated
+            by that value before being stored.
+        """
+        super().__init__(optim)
+        self.key = key
+        self.factor = factor
+        self.max_iter = max_iter
+        self.store_value = store_value
+
+    def step(self, param, closure, derivatives=False):
+        # compute derivatives
+        return_derivatives = derivatives
+        derivatives = []
+        ll = closure(param, **self.requires)
+        if self.requires:
+            ll, *derivatives = ll
+
+        ok = False
+        ll0 = ll
+        param0 = param
+        value0 = getattr(self.optim, self.key)
+        value = value0
+        for n_iter in range(self.max_iter):
+
+            optim = copy.deepcopy(self.optim)
+            setattr(optim, self.key, value)
+            delta = self.optim.step(*derivatives)
+            param = self.optim.update(param0.clone(), delta)
+
+            ll = closure(param)
+            if ll < ll0:
+                ok = True
+                break
+            else:
+                value = self.factor * value
+
+        if ok:
+            self.optim = optim
+            if self.store_value:
+                setattr(self.optim, self.key, value * self.store_value)
+            else:
+                setattr(self.optim, self.key, value0)
+        else:
+            param = param0
+            ll = ll0
+        if return_derivatives:
+            return (param, ll, *derivatives)
+        return param, ll
+
+
+class StepSizeLineSearch(BacktrackingLineSearch):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def step(self, param, closure, derivatives=False):
+        # compute derivatives and step
+        return_derivatives = derivatives
+        derivatives = []
+        ll = closure(param, **self.requires)
+        if self.requires:
+            ll, *derivatives = ll
+        delta = self.optim.step(*derivatives)
+
+        # line search step size
+        ok = False
+        ll0 = ll
+        param0 = param
+        lr0 = self.lr
+        lr = lr0
+        for n_iter in range(self.max_iter):
+
+            param = param0.add(delta, alpha=lr)
+
+            ll = closure(param)
+            if ll < ll0:
+                ok = True
+                break
+            else:
+                lr = self.factor * lr
+
+        if ok:
+            if self.store_value:
+                self.lr = lr * self.store_value
+            else:
+                self.lr = lr0
+        else:
+            param = param0
+            ll = ll0
+        if return_derivatives:
+            return (param, ll, *derivatives)
+        return param, ll
+
+
+class IterateOptim(Optim):
+    """Wrapper that performs multiple steps of an optimizer.
+
+    Backtracking line search can be used.
+    """
+
+    def __init__(self, optim, max_iter=20, tol=1e-9, ls=0):
+        """
+
+        Parameters
+        ----------
+        optim : Optim or IterationStep
+        max_iter : int, default=20
+        tol : float, default=1e-9
+        ls : int or callable(Optim), default=0
+        """
+        super().__init__()
+        self.optim = optim
+        self.max_iter = max_iter
+        self.tol = tol
+        if ls:
+            if isinstance(self.optim, IterationStep):
+                raise ValueError('Cannot add line search to pre-defined '
+                                 'IterationStep')
+            if isinstance(ls, int):
+                if isinstance(self.optim, SecondOrder):
+                    self.optim = StepSizeLineSearch(self.optim, max_iter=ls)
+                else:
+                    self.optim = BacktrackingLineSearch(self.optim, max_iter=ls)
+            elif callable(ls):
+                self.optim = ls(self.optim)
+        elif not isinstance(self.optim, IterationStep):
+            self.optim = IterationStep(self.optim)
+
+    requires_grad = property(lambda self: isinstance(self.optim, (FirstOrder, SecondOrder)))
+    requires_hess = property(lambda self: isinstance(self.optim, SecondOrder))
+
+    def iter(self, param, closure, derivatives=False):
         """Perform multiple optimization iterations
 
         Parameters
@@ -906,24 +1080,12 @@ class IterateOptim(Optim):
             Updated parameter
 
         """
-        derivatives = []
-        requires = dict()
-        if self.requires_grad:
-            requires['grad'] = True
-        if self.requires_hess:
-            requires['hess'] = True
-
         ll_prev = float('inf')
         ll_max = 0
         for n_iter in range(1, self.max_iter+1):
-            ll = closure(param, **requires)
-            if requires:
-                ll, *derivatives = ll
-            delta = self.optim.step(*derivatives)
-            if self.ls:
-                param, success = self.ls.step(closure, param, ll, delta)
-            else:
-                param.add_(delta)
+            # perform step
+            param, ll, *drv = self.optim.step(param, closure,
+                                              derivatives=derivatives)
 
             # check convergence
             if abs((ll_prev-ll)/(ll_max-ll)) < self.tol:
@@ -931,4 +1093,6 @@ class IterateOptim(Optim):
             ll_prev = ll
             ll_max = max(ll, ll_max)
 
+        if derivatives:
+            return (param, *drv)
         return param

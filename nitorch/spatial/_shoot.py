@@ -89,7 +89,7 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
     else:
         center = (subsize//2,)*dim
         subkernel[center] = 1
-        subkernel[..., 0, 0] = regulariser(subkernel[..., 0, 0], **prm, dim=dim)
+        subkernel[..., 0, 0] = regulariser(subkernel[None, ..., 0, 0], **prm, dim=dim)[0]
 
     kernel = ifftshift(kernel, dim=range(dim))
 
