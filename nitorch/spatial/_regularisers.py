@@ -108,53 +108,6 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
     return field
 
 
-def _membrane_l2(field, voxel_size=1, bound='dct2', dim=None):
-    """Precision matrix for the Membrane energy
-
-    Note
-    ----
-    .. Specialized implementation for the l2 version (i.e., no weight map).
-    .. This is exactly equivalent to SPM's membrane energy
-
-    Parameters
-    ----------
-    field : (..., *spatial) tensor
-    voxel_size : float or sequence[float], default=1
-    bound : str, default='dct2'
-    dim : int, default=field.dim()
-
-    Returns
-    -------
-    field : (..., *spatial) tensor
-
-    """
-    field = torch.as_tensor(field)
-    backend = core.utils.backend(field)
-    dim = dim or field.dim()
-    voxel_size = make_vector(voxel_size, dim, **backend)
-    vx = voxel_size.square().reciprocal()
-
-    # build sparse kernel
-    kernel = [2 * vx.sum()]
-    center_index = [1] * dim
-    indices = [list(center_index)]
-    for d in range(dim):
-        # cross
-        kernel += [-vx[d]] * 2
-        index = list(center_index)
-        index[d] = 0
-        indices.append(index)
-        index = list(center_index)
-        index[d] = 2
-        indices.append(index)
-    indices = torch.as_tensor(indices, dtype=torch.long, device=field.device)
-    kernel = torch.as_tensor(kernel, **backend)
-    kernel = torch.sparse_coo_tensor(indices.t(), kernel, [3] * dim)
-
-    # perform convolution
-    return spconv(field, kernel, bound=bound, dim=dim)
-
-
 def membrane_grid(grid, voxel_size=1, bound='dft', weights=None):
     """Precision matrix for the Membrane energy of a deformation grid
 
@@ -175,7 +128,7 @@ def membrane_grid(grid, voxel_size=1, bound='dft', weights=None):
     dim = grid.shape[-1]
     voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
     if (voxel_size != 1).any():
-        grid = grid * voxel_size
+        grid = grid * voxel_size.square()
     grid = fast_movedim(grid, -1, -(dim + 1))
     grid = membrane(grid, weights=weights, voxel_size=voxel_size,
                     bound=bound, dim=dim)
@@ -256,7 +209,7 @@ def bending_grid(grid, voxel_size=1, bound='dft', weights=None):
     dim = grid.shape[-1]
     voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
     if (voxel_size != 1).any():
-        grid = grid * voxel_size
+        grid = grid * voxel_size.square()
     grid = fast_movedim(grid, -1, -(dim + 1))
     grid = bending(grid, weights=weights, voxel_size=voxel_size,
                    bound=bound, dim=dim)
@@ -294,45 +247,42 @@ def lame_shear(grid, voxel_size=1, bound='dft', weights=None):
     backend = dict(dtype=grid.dtype, device=grid.device)
     dim = grid.shape[-1]
     voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
-    if (voxel_size != 1).any():
-        grid = grid * voxel_size
     bound = ensure_list(bound, dim)
     dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
     if weights is not None:
         backend = dict(dtype=grid.dtype, device=grid.device)
         weights = torch.as_tensor(weights, **backend)
 
-    mom = [0] * dim
+    mom = torch.zeros_like(grid)
     for i in range(dim):
         # symmetric part
         x_i = grid[..., i]
-        for j in range(dim):
+        for j in range(i, dim):
             for side_i in ('f', 'b'):
                 opt_ij = dict(dim=dims[j], side=side_i, bound=bound[j],
                               voxel_size=voxel_size[j])
-                diff_ij = diff1d(x_i, **opt_ij)
+                diff_ij = diff1d(x_i, **opt_ij).mul_(voxel_size[i])
                 if i == j:
                     # diagonal elements
                     diff_ij_w = diff_ij if weights is None else diff_ij * weights
-                    mom[i] += 2 ** (dim-1) * div1d(diff_ij_w, **opt_ij)
+                    mom[..., i].add_(div1d(diff_ij_w, **opt_ij), alpha=0.5)
                 else:
                     # off diagonal elements
                     x_j = grid[..., j]
                     for side_j in ('f', 'b'):
                         opt_ji = dict(dim=dims[i], side=side_j, bound=bound[i],
                                       voxel_size=voxel_size[i])
-                        diff_ji = diff1d(x_j, **opt_ji)
-                        diff_ji = (diff_ij + diff_ji) / 2.
+                        diff_ji = diff1d(x_j, **opt_ji).mul_(voxel_size[j])
+                        diff_ji = diff_ji.add_(diff_ij).mul_(0.5)
                         if weights is not None:
                             diff_ji = diff_ji * weights
-                        mom[j] += div1d(diff_ji, **opt_ji)
-                        mom[i] += div1d(diff_ji, **opt_ij)
+                        mom[..., j].add_(div1d(diff_ji, **opt_ji), alpha=0.25)
+                        mom[..., i].add_(div1d(diff_ji, **opt_ij), alpha=0.25)
                     del x_j
         del x_i
     del grid
 
-    mom = torch.stack(mom, dim=-1)
-    mom = mom / float(2 ** (dim-1))  # weight sides combinations
+    mom *= 2 * voxel_size  # JA added an additional factor 2 to the kernel
     return mom
 
 
@@ -351,7 +301,7 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
     Parameters
     ----------
     grid : (..., *spatial, dim) tensor
-    voxel_size : float or sequence[float], default=1
+    voxel_size : float or sequence[float], default=1 (actually unused)
     bound : str, default='dft'
     weights : (..., *spatial) tensor, optional
 
@@ -361,11 +311,7 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
 
     """
     grid = torch.as_tensor(grid)
-    backend = dict(dtype=grid.dtype, device=grid.device)
     dim = grid.shape[-1]
-    voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
-    if (voxel_size != 1).any():
-        grid = grid * voxel_size
     bound = ensure_list(bound, dim)
     dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
     if weights is not None:
@@ -378,13 +324,12 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
     for i in range(dim):
         x_i = grid[..., i]
         for side in ('f', 'b'):
-            opt_i = dict(dim=dims[i], side=side, bound=bound[i],
-                         voxel_size=voxel_size[i])
+            opt_i = dict(dim=dims[i], side=side, bound=bound[i])
             grad[i][side] = diff1d(x_i, **opt_i)
             opt[i][side] = opt_i
 
     # compute divergence
-    mom = [0] * dim
+    mom = torch.zeros_like(grid)
     all_sides = list(itertools.product(['f', 'b'], repeat=dim))
     for sides in all_sides:
         div = 0
@@ -393,10 +338,9 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
         if weights is not None:
             div = div * weights
         for i, side in enumerate(sides):
-            mom[i] += div1d(div, **(opt[i][side]))
+            mom[..., i] += div1d(div, **(opt[i][side]))
 
-    mom = torch.stack(mom, dim=-1)
-    mom = mom / float(2 ** dim)  # weight sides combinations
+    mom /= float(2 ** dim)  # weight sides combinations
     return mom
 
 
@@ -406,8 +350,468 @@ _membrane = membrane
 _bending = bending
 
 
+def absolute_kernel(dim, voxel_size=1, dtype=None, device=None):
+    """Precision matrix for the Absolute energy, as a convolution kernel.
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's absolute energy
+    .. The convolution can be performed with `ni.spatial.spconv`
+
+    Parameters
+    ----------
+    dim : int
+    voxel_size : float or sequence[float], default=1 (unused)
+
+    Returns
+    -------
+    kernel : (1,)*dim sparse tensor
+
+    """
+    dtype = dtype or torch.get_default_dtype()
+
+    kernel = torch.sparse_coo_tensor(
+        torch.zeros([dim, 1], dtype=torch.long, device=device),
+        torch.ones([1], dtype=dtype, device=device),
+        [1] * dim)
+    return kernel
+
+
+def absolute_grid_kernel(dim, voxel_size=1, dtype=None, device=None):
+    """Precision matrix for the Absolute energy, as a convolution kernel.
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's absolute energy
+    .. The convolution can be performed with `ni.spatial.spconv`
+
+    Parameters
+    ----------
+    dim : int
+    voxel_size : float or sequence[float], default=1
+
+    Returns
+    -------
+    kernel : (1,)*dim sparse tensor
+
+    """
+    kernel = absolute_kernel(dim, voxel_size, dtype=dtype, device=device)
+    voxel_size = core.utils.make_vector(voxel_size, dim,
+                                        **core.utils.backend(kernel))
+    kernel = torch.stack([kernel * vx.square() for vx in voxel_size], dim=0)
+    return kernel
+
+
+def membrane_kernel(dim, voxel_size=1, dtype=None, device=None):
+    """Precision matrix for the Membrane energy, as a convolution kernel.
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's membrane energy
+    .. The convolution can be performed with `ni.spatial.spconv`
+
+    Parameters
+    ----------
+    dim : int
+    voxel_size : float or sequence[float], default=1
+
+    Returns
+    -------
+    kernel : (3,)*dim sparse tensor
+
+    """
+    dtype = dtype or torch.get_default_dtype()
+    voxel_size = make_vector(voxel_size, dim, dtype=dtype, device=device)
+    vx = voxel_size.square().reciprocal()
+
+    # build sparse kernel
+    kernel = [2 * vx.sum()]
+    center_index = [1] * dim
+    indices = [list(center_index)]
+    for d in range(dim):
+        # cross
+        kernel += [-vx[d]] * 2
+        index = list(center_index)
+        index[d] = 0
+        indices.append(index)
+        index = list(center_index)
+        index[d] = 2
+        indices.append(index)
+    indices = torch.as_tensor(indices, dtype=torch.long, device=vx.device)
+    kernel = torch.as_tensor(kernel, dtype=dtype, device=device)
+    kernel = torch.sparse_coo_tensor(indices.t(), kernel, [3] * dim)
+
+    return kernel
+
+
+def membrane_grid_kernel(dim, voxel_size=1, dtype=None, device=None):
+    """Precision matrix for the Membrane energy, as a convolution kernel.
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's membrane energy
+    .. The convolution can be performed with `ni.spatial.spconv`
+
+    Parameters
+    ----------
+    dim : int
+    voxel_size : float or sequence[float], default=1
+
+    Returns
+    -------
+    kernel : (dim, [3,]*dim) sparse tensor
+
+    """
+    kernel = membrane_kernel(dim, voxel_size, dtype=dtype, device=device)
+    voxel_size = core.utils.make_vector(voxel_size, dim,
+                                        **core.utils.backend(kernel))
+    kernel = torch.stack([kernel * vx.square() for vx in voxel_size], dim=0)
+    return kernel
+
+
+def bending_kernel(dim, voxel_size=1, dtype=None, device=None):
+    """Precision matrix for the Bending energy, as a convolution kernel.
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's bending energy
+    .. The convolution can be performed with `ni.spatial.spconv`
+
+    Parameters
+    ----------
+    dim : int
+    voxel_size : float or sequence[float], default=1
+
+    Returns
+    -------
+    kernel : (5,)*dim sparse tensor
+
+    """
+    dtype = dtype or torch.get_default_dtype()
+    voxel_size = make_vector(voxel_size, dim, dtype=dtype, device=device)
+    vx = voxel_size.square().reciprocal()
+    vx2 = vx.square()
+    cvx = torch.combinations(vx, r=2).prod(dim=-1)
+
+    # build sparse kernel
+    kernel = [6 * vx2.sum() + 8 * cvx.sum()]
+    center_index = [2] * dim
+    indices = [list(center_index)]
+    for d in range(dim):
+        # cross 1st order
+        kernel += [-4*vx[d]*vx.sum()] * 2
+        index = list(center_index)
+        index[d] = 1
+        indices.append(index)
+        index = list(center_index)
+        index[d] = 3
+        indices.append(index)
+        # cross 2nd order
+        kernel += [vx2[d]] * 2
+        index = list(center_index)
+        index[d] = 0
+        indices.append(index)
+        index = list(center_index)
+        index[d] = 4
+        indices.append(index)
+        for dd in range(d+1, dim):
+            # off
+            kernel += [2 * vx[d] * vx[dd]] * 4
+            index = list(center_index)
+            index[d] = 1
+            index[dd] = 1
+            indices.append(index)
+            index = list(center_index)
+            index[d] = 1
+            index[dd] = 3
+            indices.append(index)
+            index = list(center_index)
+            index[d] = 3
+            index[dd] = 1
+            indices.append(index)
+            index = list(center_index)
+            index[d] = 3
+            index[dd] = 3
+            indices.append(index)
+    indices = torch.as_tensor(indices, dtype=torch.long, device=vx.device)
+    kernel = torch.as_tensor(kernel, dtype=dtype, device=device)
+    kernel = torch.sparse_coo_tensor(indices.t(), kernel, [5] * dim)
+
+    return kernel
+
+
+def bending_grid_kernel(dim, voxel_size=1, dtype=None, device=None):
+    """Precision matrix for the Bending energy, as a convolution kernel.
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's bending energy
+    .. The convolution can be performed with `ni.spatial.spconv`
+
+    Parameters
+    ----------
+    dim : int
+    voxel_size : float or sequence[float], default=1
+
+    Returns
+    -------
+    kernel : (dim, dim, [5,]*dim) sparse tensor
+
+    """
+    kernel = bending_kernel(dim, voxel_size, dtype=dtype, device=device)
+    voxel_size = core.utils.make_vector(voxel_size, dim,
+                                        **core.utils.backend(kernel))
+    kernel = torch.stack([kernel * vx.square() for vx in voxel_size], dim=0)
+    return kernel
+
+
+def lame_shear_kernel(dim, voxel_size=1, dtype=None, device=None):
+    """Precision matrix for the Linear Elastic energy, as a convolution kernel.
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's LE energy
+    .. The convolution can be performed with `ni.spatial.spconv`
+
+    Parameters
+    ----------
+    dim : int
+    voxel_size : float or sequence[float], default=1
+
+    Returns
+    -------
+    kernel : (dim, dim, [3,]*dim) sparse tensor
+
+    """
+    dtype = dtype or torch.get_default_dtype()
+    voxel_size = make_vector(voxel_size, dim, dtype=dtype, device=device)
+    vx = voxel_size.square().reciprocal()
+
+    # build sparse kernel
+    kernel = []
+    center_index = [1] * dim
+    indices = []
+    for d in range(dim):  # input channel
+        kernel += [2 + 2*vx.sum()/vx[d]]
+        index = [d, d, *center_index]
+        indices.append(index)
+        for dd in range(dim):  # cross
+            if dd == d:
+                kernel += [-2] * 2
+            else:
+                kernel += [-vx[dd]/vx[d]] * 2
+            index = [d, d, *center_index]
+            index[2 + dd] = 0
+            indices.append(index)
+            index = [d, d, *center_index]
+            index[2 + dd] = 2
+            indices.append(index)
+        for dd in range(d+1, dim):  # output channel
+            kernel += [-0.25] * 4
+            index = [d, dd, *center_index]
+            index[2 + d] = 0
+            index[2 + dd] = 0
+            indices.append(index)
+            index = [dd, d, *center_index]
+            index[2 + d] = 0
+            index[2 + dd] = 0
+            indices.append(index)
+            index = [d, dd, *center_index]
+            index[2 + d] = 2
+            index[2 + dd] = 2
+            indices.append(index)
+            index = [dd, d, *center_index]
+            index[2 + d] = 2
+            index[2 + dd] = 2
+            indices.append(index)
+            kernel += [0.25] * 4
+            index = [d, dd, *center_index]
+            index[2 + d] = 0
+            index[2 + dd] = 2
+            indices.append(index)
+            index = [dd, d, *center_index]
+            index[2 + d] = 0
+            index[2 + dd] = 2
+            indices.append(index)
+            index = [d, dd, *center_index]
+            index[2 + d] = 2
+            index[2 + dd] = 0
+            indices.append(index)
+            index = [dd, d, *center_index]
+            index[2 + d] = 2
+            index[2 + dd] = 0
+            indices.append(index)
+
+    indices = torch.as_tensor(indices, dtype=torch.long, device=vx.device)
+    kernel = torch.as_tensor(kernel, dtype=dtype, device=device)
+    kernel = torch.sparse_coo_tensor(indices.t(), kernel, [dim, dim] + [3] * dim)
+
+    return kernel
+
+
+def lame_div_kernel(dim, voxel_size=1, dtype=None, device=None):
+    """Precision matrix for the Linear Elastic energy, as a convolution kernel.
+
+    Note
+    ----
+    .. Specialized implementation for the l2 version (i.e., no weight map).
+    .. This is exactly equivalent to SPM's LE energy
+    .. The convolution can be performed with `ni.spatial.spconv`
+
+    Parameters
+    ----------
+    dim : int
+    voxel_size : float or sequence[float], default=1 (actually unused)
+
+    Returns
+    -------
+    kernel : (dim, dim, [3,]*dim) sparse tensor
+
+    """
+    dtype = dtype or torch.get_default_dtype()
+
+    # build sparse kernel
+    kernel = []
+    center_index = [1] * dim
+    indices = []
+    for d in range(dim):  # input channel
+        kernel += [2]
+        index = [d, d, *center_index]
+        indices.append(index)
+        kernel += [-1] * 2
+        index = [d, d, *center_index]
+        index[2 + d] = 0
+        indices.append(index)
+        index = [d, d, *center_index]
+        index[2 + d] = 2
+        indices.append(index)
+        for dd in range(d+1, dim):  # output channel
+            for d1 in range(dim):   # interation 1
+                for d2 in range(d + 1, dim):  # interation 2
+                    kernel += [-0.25] * 4
+                    index = [d, dd, *center_index]
+                    index[2 + d1] = 0
+                    index[2 + d2] = 0
+                    indices.append(index)
+                    index = [dd, d, *center_index]
+                    index[2 + d1] = 0
+                    index[2 + d2] = 0
+                    indices.append(index)
+                    index = [d, dd, *center_index]
+                    index[2 + d1] = 2
+                    index[2 + d2] = 2
+                    indices.append(index)
+                    index = [dd, d, *center_index]
+                    index[2 + d1] = 2
+                    index[2 + d2] = 2
+                    indices.append(index)
+                    kernel += [0.25] * 4
+                    index = [d, dd, *center_index]
+                    index[2 + d1] = 0
+                    index[2 + d2] = 2
+                    indices.append(index)
+                    index = [dd, d, *center_index]
+                    index[2 + d1] = 0
+                    index[2 + d2] = 2
+                    indices.append(index)
+                    index = [d, dd, *center_index]
+                    index[2 + d1] = 2
+                    index[2 + d2] = 0
+                    indices.append(index)
+                    index = [dd, d, *center_index]
+                    index[2 + d1] = 2
+                    index[2 + d2] = 0
+                    indices.append(index)
+
+    indices = torch.as_tensor(indices, dtype=torch.long, device=device)
+    kernel = torch.as_tensor(kernel, dtype=dtype, device=device)
+    kernel = torch.sparse_coo_tensor(indices.t(), kernel, [dim, dim] + [3] * dim)
+
+    return kernel
+
+
+def sum_kernels(dim, *kernels):
+    """Sum sparse kernels of different shapes
+
+    Parameters
+    ----------
+    dim : int
+        Number of spatial dimensions
+    *kernels : sparse tensor
+        Kernels to sum
+
+    Returns
+    -------
+    kernel : sparse tensor
+        Sum of input tensors
+
+    """
+    # compute maximum shape
+    spatial = [0] * dim
+    device = None
+    dtype = None
+    for k in kernels:
+        device = k.device
+        dtype = k.dtype
+        kspatial = k.shape[-dim:]
+        spatial = [max(s, ks) for s, ks in zip(spatial, kspatial)]
+    has_matrix = any(kernel.dim() == dim+2 for kernel in kernels)
+    has_diag = any(kernel.dim() == dim+1 for kernel in kernels)
+
+    # prepare output
+    out_shape = [dim, dim] if has_matrix else [dim] if has_diag else []
+    out_shape += spatial
+    out = torch.sparse_coo_tensor(
+        torch.zeros([len(out_shape), 0], dtype=torch.long, device=device),
+        torch.zeros([0], dtype=dtype, device=device),
+        out_shape)
+
+    # sum kernels
+    for kernel in kernels:
+        offset = [(s - ks)//2 for s, ks in zip(spatial, kernel.shape[-dim:])]
+        if any(offset):
+            new_shape = [*kernel.shape[:-dim], *spatial]
+            offset = torch.as_tensor(offset, **core.utils.backend(kernel._indices()))
+            indices = kernel._indices()
+            indices[-dim:] += offset[:, None]
+            kernel = torch.sparse_coo_tensor(
+                indices, kernel._values(), new_shape)
+        if has_matrix:
+            if kernel.dim() == dim:
+                for d in range(len(out)):
+                    pad_indices = torch.full([], d, dtype=torch.long, device=kernel.device)
+                    pad_indices = pad_indices.expand([2, kernel._indices().shape[-1]])
+                    indices = torch.cat([pad_indices, kernel._indices()], 0)
+                    new_kernel = torch.sparse_coo_tensor(
+                        indices, kernel._values(), out_shape)
+                    out += new_kernel
+            elif kernel.dim() == dim + 1:
+                for d in range(len(out)):
+                    pad_indices = torch.full([], d, dtype=torch.long, device=kernel.device)
+                    pad_indices = pad_indices.expand([2, kernel[d]._indices().shape[-1]])
+                    indices = torch.cat([pad_indices, kernel[d]._indices()], 0)
+                    new_kernel = torch.sparse_coo_tensor(
+                        indices, kernel[d]._values(), out_shape)
+                    out += new_kernel
+            else:
+                out += kernel
+        else:
+            out += kernel
+
+    out = out.coalesce()
+    return out
+
+
 def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
-                     factor=1, voxel_size=1, bound='dft', weights=None):
+                     factor=1, voxel_size=1, bound='dft', weights=None,
+                     kernel=False):
     """Precision matrix for a mixture of energies for a deformation grid.
 
     Parameters
@@ -433,6 +837,14 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     backend = dict(dtype=v.dtype, device=v.device)
     dim = v.shape[-1]
 
+    if kernel:
+        kernel = regulariser_grid_kernel(dim, absolute, membrane, bending,
+                                         lame, factor, voxel_size, **backend)
+        v = core.utils.fast_movedim(v, -1, -dim-1)
+        v = spconv(v, kernel, bound=bound, dim=dim)
+        v = core.utils.fast_movedim(v, -dim-1, -1)
+        return v
+
     voxel_size = make_vector(voxel_size, dim, **backend)
     absolute = absolute * factor
     membrane = membrane * factor
@@ -451,7 +863,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
 
     y = 0
     if absolute:
-        y += absolute_grid(v, weights=wa) * absolute
+        y += absolute_grid(v, weights=wa, voxel_size=voxel_size) * absolute
     if membrane:
         y += membrane_grid(v, weights=wm, **fdopt) * membrane
     if bending:
@@ -464,6 +876,44 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     if y is 0:
         y = torch.zeros_like(v)
     return y
+
+
+def regulariser_grid_kernel(dim, absolute=0, membrane=0, bending=0, lame=0,
+                            factor=1, voxel_size=1, dtype=None, device=None):
+    """Precision kernel for a mixture of energies for a deformation grid.
+
+    Parameters
+    ----------
+    dim : int
+    absolute : float, default=0
+    membrane : float, default=0
+    bending : float, default=0
+    lame : (float, float), default=0
+    factor : float, default=1
+    voxel_size : [sequence of] float, default=1
+
+    Returns
+    -------
+    kernel : ([dim, [dim,]] *spatial) sparse tensor
+
+    """
+    lame_div, lame_shear = core.py.make_list(lame, 2)
+    backend = dict(dtype=dtype, device=device)
+
+    kernels = []
+    if absolute:
+        kernels.append(absolute_grid_kernel(dim, voxel_size, **backend) * absolute)
+    if membrane:
+        kernels.append(membrane_grid_kernel(dim, voxel_size, **backend) * membrane)
+    if bending:
+        kernels.append(bending_grid_kernel(dim, voxel_size, **backend) * bending)
+    if lame_div:
+        kernels.append(lame_div_kernel(dim, voxel_size, **backend) * lame_div)
+    if lame_shear:
+        kernels.append(lame_shear_kernel(dim, voxel_size, **backend) * lame_shear)
+    kernel = sum_kernels(dim, *kernels)
+    kernel *= factor
+    return kernel
 
 
 def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
@@ -525,6 +975,38 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     else:
         y = last2channel(y)
     return y
+
+
+def regulariser_kernel(dim, absolute=0, membrane=0, bending=0,
+                       factor=1, voxel_size=1, dtype=None, device=None):
+    """Precision kernel for a mixture of energies for a deformation grid.
+
+    Parameters
+    ----------
+    dim : int
+    absolute : float, default=0
+    membrane : float, default=0
+    bending : float, default=0
+    factor : float, default=1
+    voxel_size : [sequence of] float, default=1
+
+    Returns
+    -------
+    kernel : ([dim, [dim,]] *spatial) sparse tensor
+
+    """
+    backend = dict(dtype=dtype, device=device)
+
+    kernels = []
+    if absolute:
+        kernels.append(absolute_kernel(dim, voxel_size, **backend))
+    if membrane:
+        kernels.append(membrane_kernel(dim, voxel_size, **backend))
+    if bending:
+        kernels.append(bending_kernel(dim, voxel_size, **backend))
+    kernel = sum_kernels(dim, *kernels)
+    kernel *= factor
+    return kernel
 
 
 def quadnesterov(A, b, x=None, precond=None, lr=0.5, momentum=0.9, max_iter=None,
@@ -713,7 +1195,7 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         prm = dict(max_iter=max_iter, verbose=verbose)
         if optim == 'relax':
             prm['scheme'] = (3 if bending else 'checkerboard')
-        optim = core.optim.relax if optim == 'relax' else core.optim.cg
+        optim = getattr(core.optim, optim)
         result = optim(forward, gradient, precond=precond, **prm)
     return last2ch(result)
 
@@ -829,10 +1311,109 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
             prm['scheme'] = (3 if bending else
                              2 if any(lame) else
                              'checkerboard')
-        optim = (core.optim.relax if optim == 'relax' else
-                 core.optim.cg if optim == 'cg' else
-                 quadnesterov if optim.startswith('nesterov') else
-                 None)
+        optim = (quadnesterov if optim.startswith('nesterov') else
+                 getattr(core.optim, optim))
+        # prm['verbose'] = True
+        result = optim(forward, gradient, precond=precond, **prm)
+    return result
+
+
+def solve_kernel_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
+                   lame=0, factor=1, voxel_size=1, bound='dft',
+                   optim='relax', max_iter=16, verbose=False, precond=None):
+    """Solve a positive-definite linear system of the form (H + L)v = g
+
+    Parameters
+    ----------
+    hessian : (..., *spatial, 1 or D or D*(D+1)//2) tensor
+    gradient : (..., *spatial, D) tensor
+    absolute : float, default=0
+    membrane : float, default=0
+    bending : float, default=0
+    lame : (float, float), default=0
+    factor : float, default=1
+    voxel_size : float or sequence[float], default=1
+    bound : str, default='dft'
+
+    """
+    hessian, gradient = core.utils.to_max_backend(hessian, gradient)
+    backend = dict(dtype=hessian.dtype, device=hessian.device)
+    dim = gradient.shape[-1]
+    voxel_size = make_vector(voxel_size, dim, **backend)
+    is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
+
+    lame = core.py.ensure_list(lame)
+    no_reg = not (membrane or bending or any(lame))
+    if not no_reg:
+        ker = regulariser_grid_kernel(dim, absolute=absolute, membrane=membrane,
+                                      bending=bending, lame=lame, factor=factor,
+                                      voxel_size=voxel_size, **backend)
+
+    # pre-multiply by factor
+    absolute = absolute * factor
+    membrane = membrane * factor
+    bending = bending * factor
+    lame = [l*factor for l in make_vector(lame, 2, **backend)]
+
+    # regulariser
+    fdopt = dict(bound=bound)
+    def regulariser(v, s=Ellipsis):
+        if s and s is not Ellipsis:
+            if s[0] is Ellipsis:
+                s = s[1:]
+            start = [sl.start for sl in s[:dim]]
+            stop = [sl.stop for sl in s[:dim]]
+            step = [sl.step for sl in s[:dim]]
+        else:
+            start = step = stop = None
+        if no_reg:
+            v = absolute_grid(v[s], voxel_size=voxel_size)
+        else:
+            v = core.utils.fast_movedim(v, -1, -dim-1)
+            v = spconv(v, ker, start=start, stop=stop, step=step, dim=dim, **fdopt)
+            v = core.utils.fast_movedim(v, -dim-1, -1)
+        return v
+
+    # diagonal of the regulariser
+    vx2 = voxel_size.square()
+    ivx2 = vx2.reciprocal()
+    smo = 0
+    if absolute:
+        smo += absolute * vx2
+    if membrane:
+        smo += 2 * membrane * ivx2.sum() * vx2
+    if bending:
+        val = torch.combinations(ivx2, r=2).prod(dim=-1).sum()
+        smo += bending * (8 * val + 6 * ivx2.square().sum()) * vx2
+    if lame[0]:
+        smo += 2 * lame[0]
+    if lame[1]:
+        smo += 2 * lame[1] * (ivx2.sum() + ivx2)/ivx2
+
+    hessian_smo = hessian.clone()
+    hessian_smo[..., :dim] += smo
+
+    forward = ((lambda x, s=Ellipsis: (x[s] * hessian[s]).add_(regulariser(x, s))) if is_diag else
+               (lambda x, s=Ellipsis: sym_matvec(hessian[s], x[s]).add_(regulariser(x, s))))
+    if precond is None:
+        precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s]) if is_diag else
+                   (lambda x, s=Ellipsis: sym_solve(hessian_smo[s], x[s])))
+    elif precond is False:
+        precond = lambda x, s=Ellipsis: x[s]
+
+    if no_reg:
+        # no spatial regularisation: we can use a closed-form
+        result = precond(gradient)
+    else:
+        prm = dict(max_iter=max_iter, verbose=verbose)
+        if optim == 'relax':
+            prm['scheme'] = (3 if bending else
+                             2 if any(lame) else
+                             'checkerboard')
+            prm['mode'] = 2
+        optim = (quadnesterov if optim.startswith('nesterov') else
+                 getattr(core.optim, optim))
+        prm['verbose'] = False
         result = optim(forward, gradient, precond=precond, **prm)
     return result
 
