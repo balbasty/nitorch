@@ -115,10 +115,10 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
     bound = [getattr(_bounds, b, None) for b in bound]
     shift = torch.as_tensor([int(pymath.floor(k/2)) for k in kernel_size],
                             dtype=torch.long, device=kernel.device)
-    sides = itertools.product([True, False], repeat=dim)
+    sides = list(itertools.product([True, False], repeat=dim))
 
     # Numeric magic to (hopefully) avoid floating point inaccuracy
-    subw0 = True
+    subw0 = False
     if subw0:
         kernel, w0 = _split_kernel(kernel, dim)
     else:
@@ -210,14 +210,16 @@ def _split_kernel(kernel, dim):
             kernel._indices()[:, keep],
             kernel._values()[keep],
             kernel.shape)
+        for d in range(dim):
+            w0[d] += kernel.to_dense()[d, d].sum()
     else:
-        center = (kernel._indices()[2:] == kernel.shape[-1] // 2).all(-1)
+        center = (kernel._indices()[2:] == kernel.shape[-1] // 2).all(0)
         kernel = torch.sparse_coo_tensor(
             kernel._indices()[:, ~center],
             kernel._values()[~center],
             kernel.shape)
-    for d in range(dim):
-        w0[d] += kernel.to_dense()[d, d].sum()
+        for d in range(dim):
+            w0 += kernel.to_dense().sum()
     return kernel, w0
 
 
@@ -332,7 +334,7 @@ def _make_slicers(idx, start, stop, step, oshape, ishape, bound):
     transfo_side = []
 
     for d in range(len(idx)):
-        inpc, outc, inps, outs, t =  \
+        inpc, inps, outc, outs, t =  \
             _make_slicer(d, idx[d], start[d], stop[d], step[d],
                            oshape[d], ishape[d], bound[d])
         input_center_slice.append(inpc)
@@ -352,7 +354,7 @@ def _make_slicer(dim, idx, start, stop, step, oshape, ishape, bound):
     # last left out index that is out of bounds
     out_lower = int(pymath.ceil((-idx - start) / float(step))) - 1
     # last right out index that is out of bounds
-    out_upper = int(pymath.floor((stop - idx - start) // float(step))) + 1
+    out_upper = int(pymath.floor((stop - idx - start) / float(step))) + 1
 
     # last left inp index that is out of bound
     inp_lower = start + out_lower * step + idx
@@ -403,7 +405,7 @@ def _make_slicer(dim, idx, start, stop, step, oshape, ishape, bound):
         # out-of-bounds bit is on the right
 
         if bound is None:
-            output_side_slice= None
+            output_side_slice = None
             input_side_slice = None
             transfo_side = None
 
