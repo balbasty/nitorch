@@ -4,7 +4,7 @@ from nitorch.core.utils import movedim, make_vector, unsqueeze, fast_movedim
 from nitorch.core.py import ensure_list
 from nitorch.core.linalg import sym_matvec, sym_solve
 from ._finite_differences import diff, div, diff1d, div1d
-from ._conv import spconv
+from ._spconv import spconv
 import itertools
 
 
