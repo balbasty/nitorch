@@ -261,7 +261,7 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     # Run algorithm
     for n_iter in range(1, max_iter + 1):
 
-        x += 0.5 * precond(r)
+        x += precond(r)
         r = b - A(x)
 
         # Check convergence
