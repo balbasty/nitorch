@@ -433,8 +433,7 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
                     x[slicer] += precond(r, slicer)
             else:
                 for slicer in group:
-                    r[slicer].copy_(b[slicer])
-                    r[slicer].sub_(A(x, slicer))
+                    r[slicer].copy_(b[slicer]).sub_(A(x, slicer))
                 for slicer in group:
                     x[slicer] += precond(r, slicer)
 
