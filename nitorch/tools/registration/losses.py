@@ -397,25 +397,31 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, norm='studholme',
         if hess:
             # # try 1
             ones = torch.ones([bins, bins])
+            # g0 = g0.flatten(start_dim=-2)
+            # pxy = pxy.flatten(start_dim=-2)
+            # h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
+            # h = h + h.transpose(-1, -2)
+            # tmp = linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed())
+            # h -= tmp
+            # tmp = linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones)
+            # h -= tmp
+            # h += (nmi/pxy).flatten(start_dim=-2).diag_embed()
+            # h /= hxy
+            # h.neg_()
+            # h = h.abs().sum(-1)
+            # h = h.reshape([*h.shape[:-1], bins, bins])
+            # try 2
             g0 = g0.flatten(start_dim=-2)
             pxy = pxy.flatten(start_dim=-2)
             h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
             h = h + h.transpose(-1, -2)
-            tmp = linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed())
-            h -= tmp
-            tmp = linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones)
-            h -= tmp
-            h += (nmi/pxy).flatten(start_dim=-2).diag_embed()
-            h /= hxy
-            h.neg_()
-            h = h.abs().sum(-1)
-            h = h.reshape([*h.shape[:-1], bins, bins])
-            # try 2
-            # h = 2 * (g0 * (1 + pxy.log()))
-            # h = h[..., :, None] * h[..., None, :]
-            # h = h.abs_().sum(-1)
+            h = h.abs_().sum(-1)
+            h += linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed()).abs_().sum(-1)
+            h += linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones).abs_().sum(-1)
+            h += (nmi/pxy).flatten(start_dim=-2).abs()
             # h += (nmi/pxy - px.reciprocal() - py.reciprocal()).abs_()
-            # h /= hxy.abs()
+            # h += (nmi/pxy).abs_() + px.reciprocal().abs_() + py.reciprocal().abs_()
+            h /= hxy.flatten(start_dim=-2).abs()
             # project
             h = hist.backward(idx, h/nvox)[..., 0]
             h = h.reshape(shape)
