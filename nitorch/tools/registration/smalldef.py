@@ -39,7 +39,6 @@ class RegisterStep:
         # derivatives along the way.
 
         dim = vel.shape[-1]
-        nvox = py.prod(self.fixed.shape[-dim:])
 
         in_line_search = not grad and not hess
         logplot = max(self.max_iter // 20, 1)
@@ -249,7 +248,6 @@ class AutoRegStep:
                 return self(vel, grad)
 
         dim = vel.shape[-1]
-        nvox = py.prod(vel.shape[-dim-1:-1])
 
         in_line_search = not grad
         do_plot = (not in_line_search) and self.plot \
@@ -270,7 +268,7 @@ class AutoRegStep:
         del warped
 
         # add regularization term
-        vgrad = spatial.regulariser_grid(vel, **self.prm).div_(nvox)
+        vgrad = spatial.regulariser_grid(vel, **self.prm)
         llv = 0.5 * (vel*vgrad).sum()
         lll = llx + llv
         del vgrad
