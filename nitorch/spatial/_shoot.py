@@ -100,7 +100,9 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
     kernel = kernel.double()
     if utils.torch_version('>=', (1, 8)):
         kernel = utils.movedim(kernel, [-2, -1], [0, 1])
-        kernel = torch.fft.fftn(kernel, dim=dim).real()
+        kernel = torch.fft.fftn(kernel, dim=list(range(-dim, 0))).real
+        if callable(kernel):
+            kernel = kernel()
         kernel = utils.movedim(kernel, [0, 1], [-2, -1])
     else:
         kernel = utils.movedim(kernel, [-2, -1], [0, 1])
@@ -160,7 +162,7 @@ def greens_apply(mom, greens, voxel_size=1):
     # fourier transform
     mom = utils.movedim(mom, -1, 0)
     if utils.torch_version('>=', (1, 8)):
-        mom = torch.fft.fftn(mom, dim=dim)
+        mom = torch.fft.fftn(mom, dim=list(range(-dim, 0)))
     else:
         if torch.backends.mkl.is_available:
             # use rfft
@@ -184,12 +186,15 @@ def greens_apply(mom, greens, voxel_size=1):
             mom[..., 0, :] = linalg.matvec(greens, mom[..., 0, :])
             mom[..., 1, :] = linalg.matvec(greens, mom[..., 1, :])
         else:
-            mom = torch.matmul(greens, mom)
+            mom = torch.complex(linalg.matvec(greens, mom.real),
+                                linalg.matvec(greens, mom.imag))
 
     # inverse fourier transform
     mom = utils.movedim(mom, -1, 0)
     if utils.torch_version('>=', (1, 8)):
-        mom = torch.fft.ifftn(mom, dim=dim).real()
+        mom = torch.fft.ifftn(mom, dim=list(range(-dim, 0))).real
+        if callable(mom):
+            mom = mom()
     else:
         mom = torch.ifft(mom, dim)[..., 0]
     mom = utils.movedim(mom, 0, -1)
