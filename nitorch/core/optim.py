@@ -219,7 +219,6 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     ----
     In practice, if A is provided as a function, b and x do not need
     to be vector-shaped.
-    ```
 
     """
     # Format arguments
@@ -262,7 +261,7 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     # Run algorithm
     for n_iter in range(1, max_iter + 1):
 
-        x += precond(r)
+        x += 0.5 * precond(r)
         r = b - A(x)
 
         # Check convergence
@@ -286,7 +285,7 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
 
 def relax_slicers(shape, scheme='checkerboard'):
 
-    # We use strides to extract subvolumes whise voxels belong to a
+    # We use strides to extract subvolumes whose voxels belong to a
     # single group.
     #
     # We have to be careful: with circular boundary conditions,
@@ -320,6 +319,8 @@ def relax_slicers(shape, scheme='checkerboard'):
                                  bandwidth)                         # stride
                            for o, s, l, q in zip(offset, shape, size_last, quadrant))
             slicers.append(slicer)
+    # add vector dimension
+    slicers = [(*slicer, slice(None)) for slicer in slicers]
     if checkerboard:
         # gather odd/even slicers
         slicers = [[slicer for slicer in slicers
@@ -333,7 +334,7 @@ def relax_slicers(shape, scheme='checkerboard'):
 
 def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
           dim=None, tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
-          inplace=True, stop='E'):
+          inplace=True, stop='E', mode=1):
     """Solve `A*x = b` by block-relaxation (e.g., checkerboard Gauss-Seidel).
 
     The Gauss-Seidel method solves linear systems of the form `A*x = b`,
@@ -393,8 +394,7 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
 
     # Format arguments
     dim = dim or (b.dim() - 1)
-    if max_iter is None:
-        max_iter = len(b) * 10
+    max_iter = max_iter or len(b) * 10
     if x is None:
         x = torch.zeros_like(b)
     elif not inplace:
@@ -425,11 +425,18 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
 
         for group in slicers:
 
-            r.copy_(b).sub_(A(x))
-            for slicer in group:
-                # compute residuals
-                # apply preconditioner in selected voxels and update
-                x[slicer] += precond(r, slicer)
+            if mode == 1:
+                r.copy_(b).sub_(A(x))
+                for slicer in group:
+                    # compute residuals
+                    # apply preconditioner in selected voxels and update
+                    x[slicer] += precond(r, slicer)
+            else:
+                for slicer in group:
+                    r[slicer].copy_(b[slicer])
+                    r[slicer].sub_(A(x, slicer))
+                for slicer in group:
+                    x[slicer] += precond(r, slicer)
 
         # Check convergence
         if tolerance or verbose:
