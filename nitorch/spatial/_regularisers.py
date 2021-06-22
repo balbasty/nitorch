@@ -837,9 +837,10 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     backend = dict(dtype=v.dtype, device=v.device)
     dim = v.shape[-1]
 
-    if kernel:
-        kernel = regulariser_grid_kernel(dim, absolute, membrane, bending,
-                                         lame, factor, voxel_size, **backend)
+    if torch.is_tensor(kernel) or kernel:
+        if not torch.is_tensor(kernel):
+            kernel = regulariser_grid_kernel(dim, absolute, membrane, bending,
+                                             lame, factor, voxel_size, **backend)
         v = core.utils.fast_movedim(v, -1, -dim-1)
         v = spconv(v, kernel, bound=bound, dim=dim)
         v = core.utils.fast_movedim(v, -dim-1, -1)
