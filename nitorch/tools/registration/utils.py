@@ -73,6 +73,7 @@ def make_optim_grid(optim, lr=None, sub_iter=None, kernel=None, **prm):
              optm.OGM() if optim == 'ogm' else
              optm.GridCG(max_iter=sub_iter, **prm) if optim == 'cg' else
              optm.GridRelax(max_iter=sub_iter, **prm) if optim == 'relax' else
+             optm.GridJacobi(max_iter=sub_iter, **prm) if optim == 'jacobi' else
              optm.GridNesterov(max_iter=sub_iter, **prm) if optim.startswith('gnnesterov') else
              optim)
     if lr:

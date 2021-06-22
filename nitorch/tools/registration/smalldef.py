@@ -5,6 +5,7 @@ from .utils import jg, jhj, defaults_velocity
 from . import plot as plt, optim as optm, losses, phantoms
 import functools
 
+
 class RegisterStep:
     """Forward pass of Small Deformation registration, with derivatives"""
     # We use a class so that we can have a state to keep track of
@@ -73,7 +74,7 @@ class RegisterStep:
                 hess = jhj(mugrad, hess)
 
         # add regularization term
-        vgrad = spatial.regulariser_grid(vel, **self.prm)
+        vgrad = spatial.regulariser_grid(vel, **self.prm, kernel=True)
         llv = 0.5 * (vel * vgrad).sum()
         if grad is not False:
             grad += vgrad

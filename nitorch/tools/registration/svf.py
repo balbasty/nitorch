@@ -216,7 +216,7 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
 
     # init optimizer
     if hilbert is None:
-        hilbert = optim not in ('cg', 'relax')
+        hilbert = optim not in ('cg', 'relax', 'jacobi')
     if hilbert and kernel is None:
         kernel = spatial.greens(shape, **prm, **utils.backend(fixed))
     optim = regutils.make_iteroptim_grid(optim, lr, ls, max_iter, sub_iter,

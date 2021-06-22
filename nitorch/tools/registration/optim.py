@@ -437,7 +437,19 @@ class GridRelax(GridGaussNewton):
     def step(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
-        step = spatial.solve_grid_sym(hess, grad, optim='relax',
+        step = spatial.solve_kernel_grid_sym(hess, grad, optim='relax',
+                                      precond=self.preconditioner, **prm)
+        step.mul_(-self.lr)
+        return step
+
+
+class GridJacobi(GridGaussNewton):
+    """Gauss-Newton on displacement grids using Relaxation"""
+
+    def step(self, grad, hess):
+        grad, hess = self._add_marquardt(grad, hess)
+        prm = self._get_prm()
+        step = spatial.solve_grid_sym(hess, grad, optim='jacobi',
                                       precond=self.preconditioner, **prm)
         step.mul_(-self.lr)
         return step
@@ -1088,7 +1100,7 @@ class IterateOptim(Optim):
                                               derivatives=derivatives)
 
             # check convergence
-            if abs((ll_prev-ll)/(ll_max-ll)) < self.tol:
+            if abs((ll_prev-ll)/max(ll_max-ll, 1e-9)) < self.tol:
                 break
             ll_prev = ll
             ll_max = max(ll, ll_max)
