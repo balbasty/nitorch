@@ -41,9 +41,13 @@ class Optim:
     def step(self, *derivatives):
         raise NotImplementedError
 
+    requires_grad = False
+    requires_hess = False
+
 
 class ZerothOrder(Optim):
-    pass
+    requires_grad = False
+    requires_hess = False
 
 
 class FirstOrder(Optim):
@@ -68,9 +72,13 @@ class FirstOrder(Optim):
             grad = grad.mul_(self.preconditioner)
         return grad
 
+    requires_grad = True
+    requires_hess = False
+
 
 class SecondOrder(Optim):
-    pass
+    requires_grad = True
+    requires_hess = True
 
 
 class GradientDescent(FirstOrder):
@@ -410,10 +418,10 @@ class GridGaussNewton(SecondOrder):
                    max_iter=self.max_iter)
         return prm
 
-    def _add_marquardt(self, grad, hess):
+    def _add_marquardt(self, grad, hess, tiny=1e-5):
         dim = grad.shape[-1]
         if self.marquardt is True:
-            hess[..., :dim] += hess[..., :dim].abs().max(-1, True).values * 1e-5
+            hess[..., :dim] += hess[..., :dim].abs().max(-1, True).values * tiny
         elif self.marquardt:
             hess[..., :dim] += self.marquardt
         return grad, hess
@@ -877,8 +885,8 @@ class IterationStep(Optim):
         self.optim = optim
         self._requires = None
 
-    requires_grad = property(lambda self: isinstance(self.optim, (FirstOrder, SecondOrder)))
-    requires_hess = property(lambda self: isinstance(self.optim, SecondOrder))
+    requires_grad = property(lambda self: self.optim.requires_grad)
+    requires_hess = property(lambda self: self.optim.requires_hess)
 
     @property
     def preconditioner(self):
@@ -1083,8 +1091,8 @@ class IterateOptim(Optim):
         elif not isinstance(self.optim, IterationStep):
             self.optim = IterationStep(self.optim)
 
-    requires_grad = property(lambda self: isinstance(self.optim, (FirstOrder, SecondOrder)))
-    requires_hess = property(lambda self: isinstance(self.optim, SecondOrder))
+    requires_grad = property(lambda self: self.optim.requires_grad)
+    requires_hess = property(lambda self: self.optim.requires_hess)
 
     @property
     def preconditioner(self):
@@ -1093,6 +1101,7 @@ class IterateOptim(Optim):
     @preconditioner.setter
     def preconditioner(self, value):
         self.optim.preconditioner = value
+
 
     def iter(self, param, closure, derivatives=False):
         """Perform multiple optimization iterations
