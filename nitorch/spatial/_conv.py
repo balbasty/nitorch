@@ -337,7 +337,7 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
     return tensor
 
 
-def spconv(input, kernel, bound='dct2', dim=None):
+def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2', dim=None):
     """Convolution with a sparse kernel.
 
     Notes
@@ -355,6 +355,10 @@ def spconv(input, kernel, bound='dct2', dim=None):
         Input tensor, to convolve.
     kernel : ([channel_in, [channel_out]], *kernel_size) sparse tensor
         Convolution kernel.
+    start : [sequence of] int, default=0
+    stop : [sequence of] int, default=None
+    step : [sequence of] int, default=1
+        Equivalent to spconv(x)[start:stop:step]
     bound : [sequence of] str, default='dct2'
         Boundary condition (per spatial dimension).
     dim : int, default=kernel.dim()
@@ -388,6 +392,9 @@ def spconv(input, kernel, bound='dct2', dim=None):
         channel_in = channel_out = None
     else:
         raise ValueError('Incompatible kernel shape: too many dimensions')
+    start = core.py.ensure_list(start or 0, dim)
+    stop = core.py.ensure_list(stop, dim)
+    step = core.py.ensure_list(step, dim)
 
     import functools
     def lambda_flip(x, d):
@@ -418,22 +425,73 @@ def spconv(input, kernel, bound='dct2', dim=None):
         batch_shape = input.shape[:-dim]
         input = input.reshape([*batch_shape, 1, *spatial_shape])
         output_shape = input.shape
-    output = input.new_zeros(output_shape)
+    output_spatial_shape = spatial_shape
+    start = [0 if not str else str + sz if str < 0 else str
+             for str, sz in zip(start, spatial_shape)]
+    stop = [sz if stp is None else stp + sz if stp < 0 else stp
+            for stp, sz in zip(stop, spatial_shape)]
+    stop = [stp - 1 for stp in stop]  # we use an inclusive stop in the rest of the code
+    step = [st or 1 for st in step]
+    if step:
+        output_spatial_shape = [int(pymath.floor((stp-str)/float(st) + 1))
+                                for stp, st, str in
+                                zip(stop, step, start)]
+        output_shape = [*output_shape[:-dim], *output_spatial_shape]
+    slicer = [slice(str, stp+1, st) for str, stp, st in zip(start, stop, step)]
+    slicer = tuple([Ellipsis, *slicer])
+    identity = input[slicer]
+    assert identity.shape[-dim:] == tuple(output_shape[-dim:]), "oops"
+    if inplace:
+        output = identity
+        identity = identity.clone()
+        output.zero_()
+    else:
+        output = input.new_zeros(output_shape)
 
     # move channel + spatial dimensions to the front
     spdim = list(range(input.dim()-dim-1, input.dim()))
     input = movedim(input, spdim, list(range(dim+1)))
     output = movedim(output, spdim, list(range(dim+1)))
+    identity = movedim(identity, spdim, list(range(dim+1)))
 
     # prepare other stuff
     bound = make_list(bound, dim)
-    shift = torch.LongTensor([int(pymath.floor(k/2)) for k in kernel_size])
+    shift = torch.as_tensor([int(pymath.floor(k/2)) for k in kernel_size],
+                            dtype=torch.long, device=kernel.device)
 
+    # Numeric magic to (hopefully) avoid floating point inaccuracy
+    subw0 = True
+    if subw0:
+        w0 = kernel[tuple([Ellipsis, *[s//2 for s in kernel.shape[-dim:]]])]
+        if w0.dim():
+            w0 = torch.stack([w0[d, d] for d in range(dim)])
+            diagonal = kernel._indices()[0] == kernel._indices()[1]
+            center = (kernel._indices()[2:] == kernel.shape[-1]//2).all(0)
+            keep = ~(diagonal & center)
+            kernel = torch.sparse_coo_tensor(
+                kernel._indices()[:, keep],
+                kernel._values()[keep],
+                kernel.shape)
+        else:
+            center = (kernel._indices()[2:] == kernel.shape[-1]//2).all(-1)
+            kernel = torch.sparse_coo_tensor(
+                kernel._indices()[:, ~center],
+                kernel._values()[~center],
+                kernel.shape)
+        for d in range(dim):
+            w0[d] += kernel.to_dense()[d, d].sum()
+
+    # loop across weights in the sparse kernel
     for idx, weight in zip(kernel._indices().t(), kernel._values()):
+
+        # map input and output channels
         if kernel.dim() == dim + 2:
-            ci, co, *idx = idx
+            ci = idx[0]
+            co = idx[1]
+            idx = idx[2:]
         elif kernel.dim() == dim + 1:
-            ci, *idx = idx
+            ci = idx[0]
+            idx = idx[1:]
             co = ci
         else:
             ci = co = 0
@@ -441,68 +499,155 @@ def spconv(input, kernel, bound='dct2', dim=None):
 
         inp = input[ci]
         out = output[co]
+        idt = identity[co]
+
+        # Bounds of inbounds/out-of-bounds regions
+        #
+        # Let j encode output voxels and i encode input voxels, the
+        # number of output voxels is `floor[(stop - start)//step] + 1`
+        # (i.e., j takes value in [0 .. floor[(stop - start)//step]])
+        # The index of a corresponding voxel in the input volume is
+        # `i = start + j * step`, and the convolution that we perform
+        # can be written as:
+        # for all k, y[j] += w[k] x[i + k]
+        # x is sampled inbounds if i + k >= 0 and i + k <= stop, which
+        # give us
+        #             j >= -(k + offset)/stride
+        #       => j_low = ceil[-(k + offset)/stride]
+        #             j < (stop - offset - k)/stride
+        #       => j_up = floor[(stop - offset - k)/stride]
+
+
+        # out_lower = [int(pymath.ceil((-i-str)/float(st)))
+        #              for i, str, st in zip(idx, start, step)]
+        # has_center = [l >=0 for l in out_lower]
+        # out_lower = [max(0, l) for l in out_lower]
+        # out_upper = [min(s-1, int(pymath.floor((stp-i-str)//float(st))))
+        #              for stp, s, i, str, st in
+        #              zip(stop, output_spatial_shape, idx, start, step)]
+        # print('out', out_lower, out_upper)
+        # # lower and upper bound of voxels to extract in the input volume
+        # # (convert to input coordinates + add kernel index)
+        # inp_lower = [o + l * st + i for i, o, l, st
+        #              in zip(idx, start, out_lower, step)]
+        # inp_upper = [o + u * st + i for i, o, u, st
+        #              in zip(idx, start, out_upper, step)]
+        # print('inp', inp_lower, inp_upper)
+        #
+        # # Prepare slicers for the in-bound bits
+        # input_center_slice = [slice(l, u+1, st) for l, u, st, s
+        #                       in zip(inp_lower, inp_upper, step, spatial_shape)]
+        # output_center_slice = [slice(l, u+1) for l, u, s in
+        #                        zip(out_lower, out_upper, output_spatial_shape)]
+
+        # last left out index that is out of bounds
+        out_lower = [int(pymath.ceil((-i-str)/float(st))) - 1
+                     for i, str, st in zip(idx, start, step)]
+        # last right out index that is out of bounds
+        out_upper = [int(pymath.floor((stp-i-str)//float(st))) + 1
+                     for stp, s, i, str, st in
+                     zip(stop, output_spatial_shape, idx, start, step)]
+
+        # last left inp index that is out of bound
+        inp_lower = [o + l * st + i for i, o, l, st
+                     in zip(idx, start, out_lower, step)]
+        # last right inp index that is out of bound
+        inp_upper = [o + u * st + i for i, o, u, st
+                     in zip(idx, start, out_upper, step)]
 
         # Prepare slicers for the out-of-bound bits
         input_side_slice = []
         output_side_slice = []
         transfo_side = []
-        for d, (i, s, b) in enumerate(zip(idx, spatial_shape, bound)):
-            if i < 0:
+        all_params = zip(idx, spatial_shape, bound, start, step)
+        for d, (i, s, b, o, st) in enumerate(all_params):
+            convert = getattr(core.bounds, b, None)
+            # if i < -o:  # do we fall outside of the FOV on the left?
+            if out_lower[d] >= 0:
+
+                if b.startswith('zero'):
+                    output_side_slice.append(None)
+                    input_side_slice.append(None)
+                    transfo_side.append(None)
+                    continue
+
+                i = i + o
+                # bounds
+                i_first = inp_lower[d] - st * out_lower[d]
+                i_last = inp_lower[d]
+                i_first, _ = convert(i_first, s)
+                if i_first < 0:
+                    i_first += s
+                i_last, _ = convert(i_last, s)
+                if i_last < 0:
+                    i_last += s
+                i_first, i_last = ((i_first, i_last) if i_first <= i_last
+                                   else (i_last, i_first))
                 if b == 'dst1':
+                    # FIXME
                     if i < -1:
                         output_side_slice.append(slice(i+1, None))
-                        input_side_slice.append(slice(None, -i-1))
+                        input_side_slice.append(slice(None, -i-1, st))
                         transfo_side.append(get_lambda_iflip(d))
                     else:
                         output_side_slice.append(None)
                         input_side_slice.append(None)
                         transfo_side.append(None)
                     continue
-                output_side_slice.append(slice(None, -i))
+                output_side_slice.append(slice(None, out_lower[d]+1))
+                input_side_slice.append(slice(i_first, i_last+1, st))
                 if b == 'dct1':
-                    input_side_slice.append(slice(1, -i+1))
                     transfo_side.append(get_lambda_flip(d))
                 elif b == 'dft':
-                    input_side_slice.append(slice(i, None))
                     transfo_side.append(None)
                 elif b == 'replicate':
-                    input_side_slice.append(slice(None, 1))
-                    transfo_side.append(None)
-                elif b == 'zeros':
-                    input_side_slice.append(None)
                     transfo_side.append(None)
                 else:
-                    input_side_slice.append(slice(None, -i))
                     if b == 'dct2':
                         transfo_side.append(get_lambda_flip(d))
                     elif b == 'dst2':
                         transfo_side.append(get_lambda_iflip(d))
-            elif i > 0:
+            # elif i > (stop[d] - o) % st:  # do we fall outside of the FOV on the right?
+            elif out_upper[d] < output_spatial_shape[d]:
+
+                if b.startswith('zero'):
+                    output_side_slice.append(None)
+                    input_side_slice.append(None)
+                    transfo_side.append(None)
+                    continue
+
+                # bounds
+                i_first = inp_upper[d] + st * (output_spatial_shape[d] - 1 - out_upper[d])
+                i_last = inp_upper[d]
+                i_first, _ = convert(i_first, s)
+                i_last, _ = convert(i_last, s)
+                if i_first < 0:
+                    i_first += s
+                i_last, _ = convert(i_last, s)
+                if i_last < 0:
+                    i_last += s
+                i_first, i_last = ((i_first, i_last) if i_first <= i_last
+                                   else (i_last, i_first))
                 if b == 'dst1':
+                    # FIXME
                     if i > 1:
                         output_side_slice.append(slice(None, i-1))
-                        input_side_slice.append(slice(-i+1, None))
+                        input_side_slice.append(slice(-i+1, None, st))
                         transfo_side.append(get_lambda_iflip(d))
                     else:
                         output_side_slice.append(None)
                         input_side_slice.append(None)
                         transfo_side.append(None)
                     continue
-                output_side_slice.append(slice(-i, None))
+                output_side_slice.append(slice(out_upper[d], None))
+                input_side_slice.append(slice(i_first, i_last+1, st))
                 if b == 'dct1':
-                    input_side_slice.append(slice(-i-1, -1))
                     transfo_side.append(get_lambda_flip(d))
                 elif b == 'dft':
-                    input_side_slice.append(slice(None, i))
                     transfo_side.append(None)
                 elif b == 'replicate':
-                    input_side_slice.append(slice(-1, None))
-                    transfo_side.append(None)
-                elif b == 'zeros':
-                    input_side_slice.append(None)
                     transfo_side.append(None)
                 else:
-                    input_side_slice.append(slice(-i, None))
                     if b == 'dct2':
                         transfo_side.append(get_lambda_flip(d))
                     elif b == 'dst2':
@@ -512,11 +657,20 @@ def spconv(input, kernel, bound='dct2', dim=None):
                 input_side_slice.append(None)
                 transfo_side.append(None)
 
-        # Prepare slicers for the in-bound bits
-        input_center_slice = [slice(max(0, i), min(s + i, s))
-                              for s, i in zip(spatial_shape, idx)]
-        output_center_slice = [slice(max(0, -i), min(s - i, s))
-                               for s, i in zip(spatial_shape, idx)]
+        # inbounds bits
+        # print(out_lower, out_upper)
+        out_lower = [max(0, l+1) for l in out_lower]
+        out_upper = [min(s-1, u-1)
+                     for s, u in zip(output_spatial_shape, out_upper)]
+        inp_lower = [o + l * st + i for i, o, l, st
+                     in zip(idx, start, out_lower, step)]
+        inp_upper = [o + u * st + i for i, o, u, st
+                     in zip(idx, start, out_upper, step)]
+
+        output_center_slice = [slice(l, u+1) for l, u, s in
+                               zip(out_lower, out_upper, output_spatial_shape)]
+        input_center_slice = [slice(l, u+1, st) for l, u, st, s
+                              in zip(inp_lower, inp_upper, step, spatial_shape)]
 
         # Iterate all combinations of in/out of bounds
         sides = itertools.product([True, False], repeat=dim)
@@ -532,19 +686,43 @@ def spconv(input, kernel, bound='dct2', dim=None):
 
             if any(sl is None for sl in input_slicer):
                 continue
+            if any(sl is None for sl in output_slicer):
+                continue
 
             # slice + apply boundary condition + accumulate
+            # print(start, stop, step, spatial_shape, output_spatial_shape)
+            # print(idx.tolist(), side, output_slicer, input_slicer)
+            # print(inp.shape, out.shape)
             dat = inp[input_slicer]
             for trf in transfo:
                 if trf:
                     dat = trf(dat)
                 if dat is None:
                     break
-            if dat is not None:
-                out[output_slicer].addcmul_(dat, weight)
+            if dat is None:
+                continue
+            dout = out[output_slicer]
+            # if dat.shape != dout.shape:
+            #     print(start, stop, step, spatial_shape, output_spatial_shape)
+            #     print(idx.tolist(), side, output_slicer, input_slicer)
+            #     print(dat.shape, dout.shape)
+            #     raise ValueError
+            if dout.numel() == 0 or dat.numel() == 0:
+                continue
+            # print(dat.shape, out[output_slicer].shape)
+            if subw0 and ci == co:
+                dat = dat - idt[output_slicer]
+            out[output_slicer].add_(dat, alpha=weight)
+            # out[output_slicer] += 1  ## TEST
+
+    # add weighted identity
+    if subw0:
+        w0 = core.utils.unsqueeze(w0, -1, output.dim() - 1)
+        output.addcmul_(identity, w0)
 
     # move spatial dimensions to the back
     output = movedim(output, list(range(dim+1)), spdim)
+
     # remove fake channels
     if channel_in is None:
         output = output.squeeze(len(batch_shape))
