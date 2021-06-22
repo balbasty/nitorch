@@ -113,12 +113,13 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
     # prepare other stuff
     bound = core.py.ensure_list(bound, dim)
     bound = [getattr(_bounds, b, None) for b in bound]
-    shift = torch.as_tensor([int(pymath.floor(k/2)) for k in kernel_size],
-                            dtype=torch.long, device=kernel.device)
+    # shift = torch.as_tensor([int(pymath.floor(k/2)) for k in kernel_size],
+    #                         dtype=torch.long, device=kernel.device)
+    shift = [int(pymath.floor(k/2)) for k in kernel_size]
     sides = list(itertools.product([True, False], repeat=dim))
 
     # Numeric magic to (hopefully) avoid floating point inaccuracy
-    subw0 = False
+    subw0 = True
     if subw0:
         kernel, w0 = _split_kernel(kernel, dim)
     else:
@@ -127,11 +128,13 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
     split_idx = _get_idx_split(kernel.dim(), dim)
 
     # loop across weights in the sparse kernel
-    for idx, weight in zip(kernel._indices().t(), kernel._values()):
+    indices = kernel._indices().t().tolist()
+    values = kernel._values()
+    for idx, weight in zip(indices, values):
 
         # map input and output channels
         ci, co, idx = split_idx(idx)
-        idx = idx - shift
+        idx = [i - s for i, s in zip(idx, shift)]
 
         inp = input[ci]
         out = output[co]
@@ -203,23 +206,24 @@ def _split_kernel(kernel, dim):
     w0 = kernel[tuple([Ellipsis, *[s // 2 for s in kernel.shape[-dim:]]])]
     if w0.dim():
         w0 = torch.stack([w0[d, d] for d in range(dim)])
-        diagonal = kernel._indices()[0] == kernel._indices()[1]
-        center = (kernel._indices()[2:] == kernel.shape[-1] // 2).all(0)
-        keep = ~(diagonal & center)
+        diagonal = kernel._indices()[0].eq(kernel._indices()[1])
+        center = (kernel._indices()[2:].eq(kernel.shape[-1] // 2).all(0))
+        keep = diagonal.bitwise_and_(center).bitwise_not_()
         kernel = torch.sparse_coo_tensor(
             kernel._indices()[:, keep],
             kernel._values()[keep],
             kernel.shape)
         for d in range(dim):
-            w0[d] += kernel.to_dense()[d, d].sum()
+            w0[d].add_(kernel.to_dense()[d, d].sum())
     else:
-        center = (kernel._indices()[2:] == kernel.shape[-1] // 2).all(0)
+        center = kernel._indices()[2:].eq(kernel.shape[-1] // 2).all(0)
+        keep = center.bitwise_not_()
         kernel = torch.sparse_coo_tensor(
-            kernel._indices()[:, ~center],
-            kernel._values()[~center],
+            kernel._indices()[:, keep],
+            kernel._values()[keep],
             kernel.shape)
         for d in range(dim):
-            w0 += kernel.to_dense().sum()
+            w0.add_(kernel.to_dense().sum())
     return kernel, w0
 
 
@@ -349,7 +353,7 @@ def _make_slicers(idx, start, stop, step, oshape, ishape, bound):
 
 def _make_slicer(dim, idx, start, stop, step, oshape, ishape, bound):
 
-    idx = idx.item()
+    # idx = idx.item()  # converted earlier
 
     # last left out index that is out of bounds
     out_lower = int(pymath.ceil((-idx - start) / float(step))) - 1
