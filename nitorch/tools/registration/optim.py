@@ -425,7 +425,7 @@ class GridCG(GridGaussNewton):
     def step(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
-        step = spatial.solve_grid_sym(hess, grad, optim='cg',
+        step = spatial.solve_kernel_grid_sym(hess, grad, optim='cg',
                                       precond=self.preconditioner, **prm)
         step.mul_(-self.lr)
         return step
@@ -807,8 +807,8 @@ class LBFGS(FirstOrder):
                 self.update_state(grad, delta)
                 delta = self.step(grad, update=False)
                 step = self.lr
-            if torch.dot(delta.flatten(), grad.flatten()).abs() < 1e-9:
-                break
+            # if torch.dot(delta.flatten(), grad.flatten()) > -1e-9:
+            #     break
             if self.wolfe is not False:
                 step, ll, grad = self.wolfe.iter(param, ll, grad, step, delta, closure)
             delta.mul_(step)
@@ -817,10 +817,13 @@ class LBFGS(FirstOrder):
                 ll, grad = closure(param, grad=True)
             # convergence
             if grad.abs().max() <= 1e-7:
+                print('grad', grad.abs().max())
                 break
-            if delta.abs().max() <= 1e-9:
+            if delta.abs().max() / step <= 1e-9:
+                print('step', delta.abs().max())
                 break
             if ll_prev and abs(ll - ll_prev) < 1e-9:
+                print('ll')
                 break
         return (param, grad) if derivatives else param
 
@@ -876,6 +879,14 @@ class IterationStep(Optim):
 
     requires_grad = property(lambda self: isinstance(self.optim, (FirstOrder, SecondOrder)))
     requires_hess = property(lambda self: isinstance(self.optim, SecondOrder))
+
+    @property
+    def preconditioner(self):
+        return self.optim.preconditioner
+
+    @preconditioner.setter
+    def preconditioner(self, value):
+        self.optim.preconditioner = value
 
     @property
     def requires(self):
@@ -970,8 +981,8 @@ class BacktrackingLineSearch(IterationStep):
 
             optim = copy.deepcopy(self.optim)
             setattr(optim, self.key, value)
-            delta = self.optim.step(*derivatives)
-            param = self.optim.update(param0.clone(), delta)
+            delta = optim.step(*derivatives)
+            param = optim.update(param0.clone(), delta)
 
             ll = closure(param)
             if ll < ll0:
@@ -1074,6 +1085,14 @@ class IterateOptim(Optim):
 
     requires_grad = property(lambda self: isinstance(self.optim, (FirstOrder, SecondOrder)))
     requires_hess = property(lambda self: isinstance(self.optim, SecondOrder))
+
+    @property
+    def preconditioner(self):
+        return self.optim.preconditioner
+
+    @preconditioner.setter
+    def preconditioner(self, value):
+        self.optim.preconditioner = value
 
     def iter(self, param, closure, derivatives=False):
         """Perform multiple optimization iterations
