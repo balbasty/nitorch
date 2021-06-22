@@ -1288,9 +1288,9 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
             smo += 2 * lame[0]
     if lame[1]:
         if wl[1] is not None:
-            smo.add_(wl[1], alpha=2 * lame[1] * (ivx2.sum() + ivx2)/ivx2)
+            smo.add_(wl[1], alpha=2 * lame[1] * (1 + ivx2.sum() / ivx2))
         else:
-            smo += 2 * lame[1] * (ivx2.sum() + ivx2)/ivx2
+            smo += 2 * lame[1] * (1 + ivx2.sum() / ivx2)
 
     hessian_smo = hessian.clone()
     hessian_smo[..., :dim] += smo
@@ -1389,8 +1389,7 @@ def solve_kernel_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     if lame[0]:
         smo += 2 * lame[0]
     if lame[1]:
-        smo += 2 * lame[1] * (ivx2.sum() + ivx2)/ivx2
-
+        smo += 2 * lame[1] * (1 + ivx2.sum() / ivx2)
     hessian_smo = hessian.clone()
     hessian_smo[..., :dim] += smo
 
