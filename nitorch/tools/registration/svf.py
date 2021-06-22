@@ -14,7 +14,8 @@ class RegisterStep:
     # iterations and objectives (mainly for pretty printing)
 
     def __init__(self, moving, fixed, loss, verbose=True, plot=False,
-                 max_iter=100, steps=8, kernel=None, **prm):
+                 max_iter=100, steps=8, kernel=None,
+                 bound='dct2', extrapolate=True, **prm):
         self.moving = moving        # moving image
         self.fixed = fixed          # fixed image
         self.loss = loss            # similarity loss (`OptimizationLoss`)
@@ -23,6 +24,8 @@ class RegisterStep:
         self.prm = prm              # dict of regularization parameters
         self.steps = steps          # nb integration steps
         self.kernel = kernel        # pre-computed greens kernel
+        self.bound = bound
+        self.extrapolate = extrapolate
 
         # pretty printing
         self.max_iter = max_iter    # max number of iterations
@@ -30,12 +33,28 @@ class RegisterStep:
         self.ll_prev = None         # previous loss value
         self.ll_max = 0             # max loss value
 
-    def __call__(self, vel, grad=False, hess=False):
+    def __call__(self, vel, grad=False, hess=False, gradmov=False, hessmov=False):
+        """
+        vel : (..., *spatial, dim) tensor, Velocity
+        grad : Whether to compute and return the gradient wrt `vel`
+        hess : Whether to compute and return the Hessian wrt `vel`
+        gradmov : Whether to compute and return the gradient wrt `moving`
+        hessmov : Whether to compute and return the Hessian wrt `moving`
+
+        Returns
+        -------
+        ll : () tensor, loss value (objective to minimize)
+        g : (..., *spatial, dim) tensor, optional, Gradient wrt velocity
+        h : (..., *spatial, ?) tensor, optional, Hessian wrt velocity
+        gm : (..., *spatial, dim) tensor, optional, Gradient wrt moving
+        hm : (..., *spatial, ?) tensor, optional, Hessian wrt moving
+
+        """
         # This loop performs the forward pass, and computes
         # derivatives along the way.
 
         dim = vel.shape[-1]
-        nvox = py.prod(self.fixed.shape[-dim:])
+        pullopt = dict(bound=self.bound, extrapolate=self.extrapolate)
 
         in_line_search = not grad and not hess
         logplot = max(self.max_iter // 20, 1)
@@ -55,8 +74,14 @@ class RegisterStep:
             llx = self.loss.loss(warped, self.fixed)
         elif not hess:
             llx, grad = self.loss.loss_grad(warped, self.fixed)
+            if gradmov:
+                gradmov = spatial.grid_push(grad, grid, **pullopt)
         else:
             llx, grad, hess = self.loss.loss_grad_hess(warped, self.fixed)
+            if gradmov:
+                gradmov = spatial.grid_push(grad, grid, **pullopt)
+            if hessmov:
+                hessmov = spatial.grid_push(hess, grid, **pullopt)
         del warped
 
         # compose with spatial gradients
@@ -111,6 +136,10 @@ class RegisterStep:
             out.append(grad)
         if hess is not False:
             out.append(hess)
+        if gradmov is not False:
+            out.append(gradmov)
+        if hessmov is not False:
+            out.append(hessmov)
         return tuple(out) if len(out) > 1 else out[0]
 
 
@@ -215,12 +244,12 @@ def register(fixed=None, moving=None, dim=None, lam=1., loss='mse',
         velocity = torch.zeros(velshape, **utils.backend(fixed))
 
     # init optimizer
-    if hilbert is None:
-        hilbert = optim not in ('cg', 'relax', 'jacobi')
+    optim = regutils.make_iteroptim_grid(optim, lr, ls, max_iter, sub_iter, **prm)
+    hilbert = hilbert and not isinstance(optim, optm.SecondOrder)
     if hilbert and kernel is None:
         kernel = spatial.greens(shape, **prm, **utils.backend(fixed))
-    optim = regutils.make_iteroptim_grid(optim, lr, ls, max_iter, sub_iter,
-                                         kernel, **prm)
+    if kernel is not None:
+        optim.preconditioner = lambda x: spatial.greens_apply(x, kernel)
 
     # init loss
     loss = losses.make_loss(loss, dim)

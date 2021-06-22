@@ -84,7 +84,7 @@ def make_optim_grid(optim, lr=None, sub_iter=None, kernel=None, **prm):
 
 
 def make_optim_field(optim, lr=None, sub_iter=None, kernel=None, **prm):
-    """Prepare optimizer for displacement/velocity"""
+    """Prepare optimizer for vectir field"""
     correct_keys = ('absolute', 'membrane', 'bending', 'factor', 'voxel_size')
     prm = {k: prm[k] for k in prm if k in correct_keys}
 
@@ -98,13 +98,13 @@ def make_optim_field(optim, lr=None, sub_iter=None, kernel=None, **prm):
     if lr:
         optim.lr = lr
     if kernel is not None and hasattr(optim, 'preconditioner'):
-        dim = kernel.dim()
         optim.preconditioner = lambda x: spatial.greens_apply(x, kernel)
     return optim
 
 
 def make_iteroptim_grid(optim, lr=None, ls=None, max_iter=None, sub_iter=None,
                         kernel=None, **prm):
+    """Prepare iterative optimizer for displacement/velocity"""
     if optim == 'lbfgs':
         optim = optm.LBFGS(max_iter=max_iter)
     else:
