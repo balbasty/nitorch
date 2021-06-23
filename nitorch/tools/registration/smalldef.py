@@ -37,7 +37,8 @@ class RegisterStep:
         self.ll_max = 0
         self.id = None
 
-    def __call__(self, vel, grad=False, hess=False, gradmov=False, hessmov=False):
+    def __call__(self, vel, grad=False, hess=False,
+                 gradmov=False, hessmov=False, in_line_search=False):
         """
         vel : (..., *spatial, dim) tensor, Displacement
         grad : Whether to compute and return the gradient wrt `vel`
@@ -60,7 +61,7 @@ class RegisterStep:
         dim = vel.shape[-1]
         pullopt = dict(bound=self.bound, extrapolate=self.extrapolate)
 
-        in_line_search = not grad and not hess
+        # in_line_search = not grad and not hess
         logplot = max(self.max_iter // 20, 1)
         do_plot = (not in_line_search) and self.plot \
                   and (self.n_iter - 1) % logplot == 0
@@ -99,7 +100,7 @@ class RegisterStep:
                 hess = jhj(mugrad, hess)
 
         # add regularization term
-        vgrad = spatial.regulariser_grid(vel, **self.prm, kernel=True)
+        vgrad = spatial.regulariser_grid(vel, **self.prm, kernel=False)
         llv = 0.5 * (vel * vgrad).sum()
         if grad is not False:
             grad += vgrad
