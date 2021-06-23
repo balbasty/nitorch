@@ -11,7 +11,7 @@ import itertools
 #     (again) by CG
 
 
-def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
+def cg(A, b, x=None, precond=None, max_iter=None,
        tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
        inplace=True, stop='E'):
     """ Solve A*x = b by the conjugate gradient method.
@@ -106,12 +106,14 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
             return A_tensor.mm(x)
         A = A_function
 
+    precond = precond or (lambda y: y)
+
     # Initialisation
     r = b - A(x)    # Residual: b - A*x
     z = precond(r)  # Preconditioned residual
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
     p = z.clone()   # Initial conjugate directions p
-    
+
     if tolerance or verbose:
         if stop == 'residual':
             stop = 'e'
@@ -123,6 +125,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         else:
             obj0 = A(x).sub_(2*b).mul_(x)
             obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+
         if verbose:
             s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g}'
             print(s.format(0, stop, obj0))
