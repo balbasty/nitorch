@@ -421,7 +421,12 @@ class GridGaussNewton(SecondOrder):
     def _add_marquardt(self, grad, hess, tiny=1e-5):
         dim = grad.shape[-1]
         if self.marquardt is True:
-            hess[..., :dim] += hess[..., :dim].abs().max(-1, True).values * tiny
+            # maj = hess[..., :dim].abs()
+            # if hess.shape[-1] > dim:
+            #     maj.add_(hess[..., dim:].abs(), alpha=2)
+            maj = hess[..., :dim].abs().max(-1, True).values
+            hess[..., :dim].add(maj, alpha=tiny)
+            # hess[..., :dim] += tiny
         elif self.marquardt:
             hess[..., :dim] += self.marquardt
         return grad, hess
@@ -431,9 +436,9 @@ class GridCG(GridGaussNewton):
     """Gauss-Newton on displacement grids using Conjugate Gradients"""
 
     def step(self, grad, hess):
-        grad, hess = self._add_marquardt(grad, hess)
+        grad, hess = self._add_marquardt(grad, hess, 1e-5)
         prm = self._get_prm()
-        step = spatial.solve_kernel_grid_sym(hess, grad, optim='cg',
+        step = spatial.solve_grid_sym(hess, grad, optim='cg',
                                       precond=self.preconditioner, **prm)
         step.mul_(-self.lr)
         return step
@@ -803,6 +808,11 @@ class LBFGS(FirstOrder):
         grad : tensor, if `derivatives is True`
 
         """
+        import inspect
+        if 'in_line_search' in inspect.signature(closure).parameters:
+            closure_line_search = lambda *a, **k: closure(*a, **k, in_line_search=True)
+        else:
+            closure_line_search = closure
 
         ll_prev = None
         for n_iter in range(1, self.max_iter+1):
@@ -815,23 +825,26 @@ class LBFGS(FirstOrder):
                 self.update_state(grad, delta)
                 delta = self.step(grad, update=False)
                 step = self.lr
-            # if torch.dot(delta.flatten(), grad.flatten()) > -1e-9:
-            #     break
+                # if torch.dot(delta.flatten(), grad.flatten()) > -1e-9:
+                #     print('delta x grad', grad.abs().max())
+                #     break
             if self.wolfe is not False:
-                step, ll, grad = self.wolfe.iter(param, ll, grad, step, delta, closure)
+                step, ll, grad = self.wolfe.iter(
+                    param, ll, grad, step, delta, closure_line_search)
+                # closure(param)  # to plot stuff
             delta.mul_(step)
             param.add_(delta)
             if self.wolfe is False and n_iter != self.max_iter:
                 ll, grad = closure(param, grad=True)
             # convergence
             if grad.abs().max() <= 1e-7:
-                print('grad', grad.abs().max())
+                # print('grad', grad.abs().max())
                 break
-            if delta.abs().max() / step <= 1e-9:
-                print('step', delta.abs().max())
+            if delta.abs().max() <= 1e-9:
+                # print('step', delta.abs().max())
                 break
             if ll_prev and abs(ll - ll_prev) < 1e-9:
-                print('ll')
+                # print('ll')
                 break
         return (param, grad) if derivatives else param
 
@@ -973,6 +986,13 @@ class BacktrackingLineSearch(IterationStep):
         self.store_value = store_value
 
     def step(self, param, closure, derivatives=False):
+
+        import inspect
+        if 'in_line_search' in inspect.signature(closure).parameters:
+            closure_line_search = lambda *a, **k: closure(*a, **k, in_line_search=True)
+        else:
+            closure_line_search = closure
+
         # compute derivatives
         return_derivatives = derivatives
         derivatives = []
@@ -980,6 +1000,7 @@ class BacktrackingLineSearch(IterationStep):
         if self.requires:
             ll, *derivatives = ll
 
+        # line search
         ok = False
         ll0 = ll
         param0 = param
@@ -992,7 +1013,7 @@ class BacktrackingLineSearch(IterationStep):
             delta = optim.step(*derivatives)
             param = optim.update(param0.clone(), delta)
 
-            ll = closure(param)
+            ll = closure_line_search(param)
             if ll < ll0:
                 ok = True
                 break
@@ -1019,6 +1040,13 @@ class StepSizeLineSearch(BacktrackingLineSearch):
         super().__init__(*args, **kwargs)
 
     def step(self, param, closure, derivatives=False):
+
+        import inspect
+        if 'in_line_search' in inspect.signature(closure).parameters:
+            closure_line_search = lambda *a, **k: closure(*a, **k, in_line_search=True)
+        else:
+            closure_line_search = closure
+
         # compute derivatives and step
         return_derivatives = derivatives
         derivatives = []
@@ -1037,7 +1065,7 @@ class StepSizeLineSearch(BacktrackingLineSearch):
 
             param = param0.add(delta, alpha=lr)
 
-            ll = closure(param)
+            ll = closure_line_search(param)
             if ll < ll0:
                 ok = True
                 break
@@ -1101,7 +1129,6 @@ class IterateOptim(Optim):
     @preconditioner.setter
     def preconditioner(self, value):
         self.optim.preconditioner = value
-
 
     def iter(self, param, closure, derivatives=False):
         """Perform multiple optimization iterations
