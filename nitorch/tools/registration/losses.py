@@ -76,6 +76,7 @@ def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True):
     if hess:
         h = lam/nvox
         out.append(h)
+
     return tuple(out) if len(out) > 1 else out[0]
 
 
@@ -250,7 +251,7 @@ def ncc_hist(moving, fixed, dim=None,
 
 
 def ncc(moving, fixed, dim=None, grad=True, hess=True):
-    """Normalized cross-correlation: 1 - E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)
+    """Zero-normalized cross-correlation: 1 - E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)
 
     Parameters
     ----------
@@ -286,21 +287,35 @@ def ncc(moving, fixed, dim=None, grad=True, hess=True):
     ll = (moving*fixed).mean(dim=dims, keepdim=True)
 
     out = []
-    if grad:
+    if grad or hess:
         g = (moving * ll - fixed) / (n * sigm)
-        out.append(g)
 
     if hess:
         # true hessian
-        h = 2 * n * fixed * moving
-        h -= (3 * moving.square() + (1 - n)) * ll
-        # something positive definite (?)
-        # h = (2 * n + 3 * ll) * moving.square()
+        # hh = (3 * ncc) * (xnorm*xnorm') - (N*eye(N) - 1) * ncc - (ynorm*xnorm' + xnorm*ynorm');
+        # hh = hh / (N.^2 * std(x, 1).^2);
+        # something positive definite
+        moving = moving.abs_()
+        fixed = fixed.abs_()
+        summ = moving.sum(dim=dims, keepdim=True)
+        sumf = fixed.sum(dim=dims, keepdim=True)
+        lla = ll.abs()
+        h = moving * 3 * lla * summ
+        h += moving * sumf + fixed * summ
+        h += (n - 1) * lla
         h /= (n*n * sigm.square())
+        h = lla * h + g.abs() * g.abs().sum(dim=dims, keepdim=True)
+        # h = g.abs() * g.abs().sum(dim=dims, keepdim=True)
+        h.mul_(2)
         out.append(h)
 
+    if grad:
+        g *= ll
+        g.mul_(2)
+        out.append(g)
+
     # return stuff
-    ll = (1 - ll).sum()
+    ll = (1 - ll.square()).sum()
     out = [ll, *out]
     return tuple(out) if len(out) > 1 else out[0]
 
@@ -360,9 +375,6 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, norm='studholme',
         h, mn, mx = hist.forward(idx)
     h = h.clamp(1e-8)
     h /= nvox
-    # import matplotlib.pyplot as plt
-    # plt.imshow(h.squeeze())
-    # plt.show()
 
     pxy = h
     px = pxy.sum(-2, keepdim=True)
@@ -395,8 +407,11 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, norm='studholme',
             out.append(g)
 
         if hess:
-            # # try 1
-            ones = torch.ones([bins, bins])
+            # This Hessian is for Studholme's normalization only!
+            # I need to derive one for Arithmetic/None cases
+
+            # True Hessian: not positive definite
+            # ones = torch.ones([bins, bins])
             # g0 = g0.flatten(start_dim=-2)
             # pxy = pxy.flatten(start_dim=-2)
             # h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
@@ -410,18 +425,32 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, norm='studholme',
             # h.neg_()
             # h = h.abs().sum(-1)
             # h = h.reshape([*h.shape[:-1], bins, bins])
-            # try 2
+
+            # Approximate Hessian: positive definite
+            # I take the positive definite majorizer diag(|H|1) of each
+            # term in the sum.
+            #   H = H1 + H2 + H2 + H4
+            #   => P = diag(|H1|1) + diag(|H1|2) + diag(|H1|3) + diag(|H1|4)
+            ones = torch.ones([bins, bins])
             g0 = g0.flatten(start_dim=-2)
             pxy = pxy.flatten(start_dim=-2)
+            # 1) diag(|H1|1)
             h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
             h = h + h.transpose(-1, -2)
             h = h.abs_().sum(-1)
-            h += linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed()).abs_().sum(-1)
-            h += linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones).abs_().sum(-1)
+            # 2) diag(|H2|1)
+            tmp = linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed())
+            tmp = tmp.abs_().sum(-1)
+            h += tmp
+            # 3) diag(|H3|1)
+            tmp = linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones)
+            tmp = tmp.abs_().sum(-1)
+            h += tmp
+            # 4) |H4| (already diagonal)
             h += (nmi/pxy).flatten(start_dim=-2).abs()
-            # h += (nmi/pxy - px.reciprocal() - py.reciprocal()).abs_()
-            # h += (nmi/pxy).abs_() + px.reciprocal().abs_() + py.reciprocal().abs_()
+            # denominator
             h /= hxy.flatten(start_dim=-2).abs()
+
             # project
             h = hist.backward(idx, h/nvox)[..., 0]
             h = h.reshape(shape)
@@ -496,10 +525,6 @@ def mse_hist(moving, fixed, dim=None, bins=32, order=3, grad=True, hess=True, mi
         # hh = torch.ones_like(h)
         # hh = hist.backward(idx, hh, hess=True)[..., 0]
         # hh = hh.reshape(shape)
-        # import matplotlib.pyplot as plt
-        # plt.imshow(hh[0])
-        # plt.colorbar()
-        # plt.show()
         hh = mse.new_full([1] * (dim + 1), 2.25 * (2**(dim+1)))
         hh = hh * (bins / (maxm - minm)).square()
         out.append(hh)
