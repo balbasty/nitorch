@@ -115,6 +115,103 @@ def make_iteroptim_grid(optim, lr=None, ls=None, max_iter=None, sub_iter=None,
     return optim
 
 
+def make_optim_affine(optim, lr=None):
+    """Prepare optimizer for affine matrices"""
+
+    optim = (optm.GradientDescent() if optim == 'gd' else
+             optm.Momentum() if optim == 'momentum' else
+             optm.Nesterov() if optim == 'nesterov' else
+             optm.OGM() if optim == 'ogm' else
+             optm.GaussNewton() if optim == 'gn' else
+             optim)
+    if lr:
+        optim.lr = lr
+    return optim
+
+
+def make_iteroptim_affine(optim, lr=None, ls=None, max_iter=None):
+    """Prepare iterative optimizer for displacement/velocity"""
+    if optim == 'lbfgs':
+        optim = optm.LBFGS(max_iter=max_iter)
+    else:
+        optim = make_optim_affine(optim, lr=lr)
+    if not hasattr(optim, 'iter'):
+        optim = optm.IterateOptim(optim, max_iter=max_iter, ls=ls)
+    return optim
+
+
+@torch.jit.script
+def _affine_grid_backward_g(grid, grad):
+    # type: (Tensor, Tensor) -> Tensor
+    dim = grid.shape[-1]
+    g = torch.zeros([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
+    for i in range(dim):
+        g[..., i, -1] = grad[..., i].sum(1)
+        for j in range(dim):
+            g[..., i, j] = (grad[..., i] * grid[..., j]).sum(1)
+    return g
+
+
+@torch.jit.script
+def _affine_grid_backward_gh(grid, grad, hess):
+    # type: (Tensor, Tensor, Tensor) -> Tuple[Tensor, Tensor]
+    dim = grid.shape[-1]
+    g = torch.zeros([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
+    h = torch.zeros([hess.shape[0], dim, dim+1, dim, dim+1], dtype=grad.dtype, device=grad.device)
+    for i in range(dim):
+        g[..., i, -1] = grad[..., i].sum(1)
+        h[..., i, -1, i, -1] = hess[..., i].sum(1)
+        for j in range(dim):
+            g[..., i, j] = (grad[..., i] * grid[..., j]).sum(1)
+            h[..., i, j, i, j] = (hess[..., i] * grid[..., j].square()).sum(1)
+            for l in range(dim):
+                h[..., i, j, i, l] = (hess[..., i] * grid[..., j] * grid[..., l]).sum(1)
+                cnt = 0
+                for k in range(i+1, dim):
+                    cnt += 1
+                    h[..., i, j, k, l] = h[..., k, j, i, l] \
+                                       = (hess[..., cnt] * grid[..., j] * grid[..., l]).sum(1)
+    return g, h
+
+
+def affine_grid_backward(grad, hess=None, grid=None):
+    """Converts ∇ wrt dense displacement into ∇ wrt affine matrix
+
+    Parameters
+    ----------
+    grad : (..., *spatial, dim) tensor
+        Gradient with respect to a dense displacement.
+    hess : (..., *spatial, dim*(dim+1)//2) tensor, optional
+        Hessian with respect to a dense displacement.
+    grid : (*spatial, dim) tensor, optional
+        Pre-computed identity grid
+
+    Returns
+    -------
+    grad : (..., dim, dim+1) tensor
+        Gradient with respect to an affine matrix
+    hess : (..., dim, dim+1, dim, dim+1) tensor
+        Hessian with respect to an affine matrix
+
+    """
+    dim = grad.shape[-1]
+    shape = grad.shape[-dim-1:-1]
+    batch = grad.shape[:-dim-1]
+    nvox = py.prod(shape)
+    if grid is None:
+        grid = spatial.identity_grid(shape, **utils.backend(grad))
+    grid = grid.reshape([-1, dim])
+    grad = grad.reshape([-1, nvox, dim])
+    if hess is not None:
+        hess = hess.reshape([-1, nvox, dim*(dim+1)//2])
+        grad, hess = _affine_grid_backward_gh(grid, grad, hess)
+        hess = hess.reshape([*batch, dim, dim+1, dim, dim+1])
+    else:
+        grad = _affine_grid_backward_g(grid, grad)
+    grad = grad.reshape([*batch, dim, dim+1])
+    return (grad, hess) if hess is not None else grad
+
+
 def jg(jac, grad, dim=None):
     """Jacobian-gradient product: J*g
 
@@ -153,8 +250,8 @@ def jhj(jac, hess, dim=0):
     """
 
     dim = dim or (hess.dim() - 1)
-    hess = utils.movedim(hess, -dim-1, -1)
-    jac = utils.movedim(jac, -dim-2, -1)
+    hess = utils.fast_movedim(hess, -dim-1, -1)
+    jac = utils.fast_movedim(jac, -dim-2, -1)
 
     @torch.jit.script
     def _jhj(jac, hess):

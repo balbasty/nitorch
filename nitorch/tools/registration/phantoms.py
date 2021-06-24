@@ -1,6 +1,6 @@
 import torch
 from nitorch import spatial
-from nitorch.core import utils, math
+from nitorch.core import utils, math, py
 
 
 def augment(x, rand=0.05, fwhm=2, dim=None):
@@ -86,7 +86,7 @@ def letterc(shape=(64, 64), radius=None, width=None, rotation=0, **backend):
 
 
 def demo_register(shape=(64, 64), cat=False, fixed='square', moving='circle',
-                  **backend):
+                  shift=0, **backend):
     """Generate a simulated 2d dataset (circle and square)"""
     torch.random.manual_seed(1234)
     fixed = (square if fixed == 'square' else
@@ -104,6 +104,11 @@ def demo_register(shape=(64, 64), cat=False, fixed='square', moving='circle',
     if cat:
         fixed = sigmoid(make_cat(fixed))
         moving = make_cat(moving)
+    shift = py.make_list(shift, len(shape))
+    if shift[0]:
+        moving = torch.cat([moving[:, 8:, :], moving[:, :8, :]], 1)
+    if shift[1]:
+        moving = torch.cat([moving[:, :, 8:], moving[:, :, :8]], 2)
     return fixed, moving
 
 

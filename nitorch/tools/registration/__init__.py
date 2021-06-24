@@ -1,3 +1,4 @@
+from . import affine
 from . import svf
 from . import svf_graph
 from . import shoot
