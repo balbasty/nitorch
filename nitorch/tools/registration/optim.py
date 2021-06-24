@@ -21,6 +21,7 @@ Along with helpers
 """
 
 from nitorch import spatial
+from nitorch.core import linalg
 import torch
 import copy
 
@@ -391,6 +392,64 @@ class MultiOptim(Optim):
         return params
 
 
+class SymGaussNewton(SecondOrder):
+    """Base class for Gauss-Newton"""
+
+    def __init__(self, marquardt=True, preconditioner=None,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.preconditioner = preconditioner
+        self.marquardt = marquardt
+
+    def _add_marquardt(self, grad, hess, tiny=1e-5):
+        dim = grad.shape[-1]
+        if self.marquardt is True:
+            # maj = hess[..., :dim].abs()
+            # if hess.shape[-1] > dim:
+            #     maj.add_(hess[..., dim:].abs(), alpha=2)
+            maj = hess[..., :dim].abs().max(-1, True).values
+            hess[..., :dim].add_(maj, alpha=tiny)
+            # hess[..., :dim] += tiny
+        elif self.marquardt:
+            hess[..., :dim] += self.marquardt
+        return grad, hess
+
+    def step(self, grad, hess):
+        grad, hess = self._add_marquardt(grad, hess)
+        step = linalg.sym_solve(hess, grad)
+        step.mul_(-self.lr)
+        return step
+
+
+class GaussNewton(SecondOrder):
+    """Base class for Gauss-Newton"""
+
+    def __init__(self, marquardt=True, preconditioner=None,
+                 **kwargs):
+        super().__init__(**kwargs)
+        self.preconditioner = preconditioner
+        self.marquardt = marquardt
+
+    def _add_marquardt(self, grad, hess, tiny=1e-5):
+        dim = grad.shape[-1]
+        if self.marquardt is True:
+            # maj = hess[..., :dim].abs()
+            # if hess.shape[-1] > dim:
+            #     maj.add_(hess[..., dim:].abs(), alpha=2)
+            maj = hess.diagonal(0, -1, -2).abs().max(-1, True).values
+            hess.diagonal(0, -1, -2).add_(maj, alpha=tiny)
+            # hess[..., :dim] += tiny
+        elif self.marquardt:
+            hess[..., :dim] += self.marquardt
+        return grad, hess
+
+    def step(self, grad, hess):
+        grad, hess = self._add_marquardt(grad, hess)
+        step = linalg.lmdiv(hess, grad[..., None])[..., 0]
+        step.mul_(-self.lr)
+        return step
+
+
 class GridGaussNewton(SecondOrder):
     """Base class for Gauss-Newton on displacement grids"""
 
@@ -425,7 +484,7 @@ class GridGaussNewton(SecondOrder):
             # if hess.shape[-1] > dim:
             #     maj.add_(hess[..., dim:].abs(), alpha=2)
             maj = hess[..., :dim].abs().max(-1, True).values
-            hess[..., :dim].add(maj, alpha=tiny)
+            hess[..., :dim].add_(maj, alpha=tiny)
             # hess[..., :dim] += tiny
         elif self.marquardt:
             hess[..., :dim] += self.marquardt
@@ -553,14 +612,18 @@ class StrongWolfe(ZerothOrder):
 
         Parameters
         ----------
+        x0 : previous parameter
         f0 : previous value
         g0 : previous gradient
+        a0 : initial step size
         delta : step direction
         closure : callable(x, grad=False), evaluate function
 
         Returns
         -------
-        delta : step
+        a : step
+        f : next value
+        g : next gradient
 
         """
 
@@ -580,7 +643,7 @@ class StrongWolfe(ZerothOrder):
             dg = delta.flatten().dot(g.flatten())
 
             if f > (f0 + self.c1 * a * dg0) or (ls_iter > 1 and f >= f1):
-                # Armijo condition failed=
+                # Armijo condition failed
                 return -1, [a1, a], [f1, f], [g1, g], [dg1, dg]
 
             if abs(dg) <= -self.c2 * dg0:
@@ -646,7 +709,7 @@ class StrongWolfe(ZerothOrder):
                 break
             else:
                 a_prev = a
-                a = self.interpolate_bracket((a, a1), (f, f1), (dg, dg1), bound=True)
+                a = self.interpolate_bracket((a1, a), (f1, f), (dg1, dg), bound=True)
                 a1 = a_prev
                 f1 = f
                 g1 = g
@@ -716,15 +779,17 @@ class StrongWolfe(ZerothOrder):
     @staticmethod
     def interpolate_bracket(bracket_a, bracket_f, bracket_dg, bound=False):
         if bound:
-            min_step = bracket_a[0] + 0.01 * (bracket_a[0] - bracket_a[1])
-            max_step = bracket_a[0] * 10
+            min_step = bracket_a[1] + 0.01 * (bracket_a[1] - bracket_a[0])
+            max_step = bracket_a[1] * 10
             bounds = (min_step, max_step)
         else:
             bounds = None
         a = StrongWolfe.cubic_interpolate(
-            bracket_a[1], bracket_f[1], bracket_dg[1],
             bracket_a[0], bracket_f[0], bracket_dg[0],
+            bracket_a[1], bracket_f[1], bracket_dg[1],
             bounds=bounds)
+        if bound and a < bracket_a[1]:
+            a = (bounds[0] + bounds[1]) / 2
         return a
 
     @staticmethod
@@ -737,6 +802,44 @@ class StrongWolfe(ZerothOrder):
         else:
             xmin_bound, xmax_bound = (x1, x2) if x1 <= x2 else (x2, x1)
 
+        if x2 < x1:
+            ((x1, f1, g1), (x2, f2, g2)) = ((x2, f2, g2), (x1, f1, g1))
+
+        # import matplotlib.pyplot as plt
+        # plt.scatter([x1, x2], [f1, f2])
+        # x = torch.linspace(x1, x2, 512)
+        # plt.plot(x, f1 + g1*(x - x1))
+        # plt.plot(x, f2 + g2*(x - x2))
+
+        # My code
+        # I reimplemented it to deal with the case where both critical
+        # points lie in the interval, which I take as a hint that we are in
+        # a non-convex portion and we should not trust the minimum.
+        # Solution based on https://math.stackexchange.com/questions/1522439/
+        a = g1 + g2 - 2 * (f2 - f1) / (x2 - x1)
+        a /= (x1 - x2) ** 2
+        b = 0.5 * (g2 - g1) / (x2 - x1) - 1.5 * a * (x1 + x2)
+        c = g1 - 3 * a * x1 * x1 - 2 * x1 * b
+        # d = f1 - x1 ** 3 * a - x1 ** 2 * b - x1 * c  # not used
+        delta = b*b - 3 * a * c
+        if delta > 0:
+            x_min = (- b - (delta ** 0.5)) / (3 * a)
+            x_max = (- b + (delta ** 0.5)) / (3 * a)
+            if x_min > x1 and x_min < x2 and x_max > x1 and x_max < x2:
+                # both critical points are in the interval
+                # we are probably in a non-convex portion
+                return (xmin_bound + xmax_bound) / 2.
+            else:
+                return min(max(x_min, xmin_bound), xmax_bound)
+        elif delta < 0:
+            # no critical point (no or one inflexion point)
+            return (xmin_bound + xmax_bound) / 2.
+
+        # plt.plot(x, a*x*x*x + b*x*x + c*x + d)
+        # plt.show()
+
+        # PyTorch code
+        #
         # Code for most common case: cubic interpolation of 2 points
         #   w/ function and derivative values for both
         # Solution in this case (where x2 is the farthest point):
@@ -744,17 +847,17 @@ class StrongWolfe(ZerothOrder):
         #   d2 = sqrt(d1^2 - g1*g2);
         #   min_pos = x2 - (x2 - x1)*((g2 + d2 - d1)/(g2 - g1 + 2*d2));
         #   t_new = min(max(min_pos,xmin_bound),xmax_bound);
-        d1 = g1 + g2 - 3 * (f1 - f2) / (x1 - x2)
-        d2_square = d1 ** 2 - g1 * g2
-        if d2_square >= 0:
-            d2 = d2_square.sqrt()
-            if x1 <= x2:
-                min_pos = x2 - (x2 - x1) * ((g2 + d2 - d1) / (g2 - g1 + 2 * d2))
-            else:
-                min_pos = x1 - (x1 - x2) * ((g1 + d2 - d1) / (g1 - g2 + 2 * d2))
-            return min(max(min_pos, xmin_bound), xmax_bound)
-        else:
-            return (xmin_bound + xmax_bound) / 2.
+        # d1 = g1 + g2 - 3 * (f1 - f2) / (x1 - x2)
+        # d2_square = d1 ** 2 - g1 * g2
+        # if d2_square >= 0:
+        #     d2 = d2_square.sqrt()
+        #     if x1 <= x2:
+        #         min_pos = x2 - (x2 - x1) * ((g2 + d2 - d1) / (g2 - g1 + 2 * d2))
+        #     else:
+        #         min_pos = x1 - (x1 - x2) * ((g1 + d2 - d1) / (g1 - g2 + 2 * d2))
+        #     return min(max(min_pos, xmin_bound), xmax_bound)
+        # else:
+        #     return (xmin_bound + xmax_bound) / 2.
 
 
 class LBFGS(FirstOrder):
@@ -820,7 +923,6 @@ class LBFGS(FirstOrder):
                 ll, grad = closure(param, grad=True)
                 delta = grad.neg()
                 step = min(1., 1. / grad.abs().sum()) * self.lr
-                # step = self.lr
             else:
                 self.update_state(grad, delta)
                 delta = self.step(grad, update=False)
@@ -831,7 +933,7 @@ class LBFGS(FirstOrder):
             if self.wolfe is not False:
                 step, ll, grad = self.wolfe.iter(
                     param, ll, grad, step, delta, closure_line_search)
-                # closure(param)  # to plot stuff
+                closure(param)  # to plot stuff
             delta.mul_(step)
             param.add_(delta)
             if self.wolfe is False and n_iter != self.max_iter:
