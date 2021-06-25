@@ -1604,7 +1604,7 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
         # hidden feature: tell pullpush to use +/- 0.5 tolerance when
         # deciding if a coordinate is inbounds.
         extrapolate = 2
-    h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
+    h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate, False)[:, 0, ]
 
     # reshape
     h = h.to(dtype)
@@ -1702,7 +1702,7 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
         # hidden feature: tell pullpush to use +/- 0.5 tolerance when
         # deciding if a coordinate is inbounds.
         extrapolate = 2
-    h = GridCount.apply(x[:, None], n, order, bound, extrapolate)[:, 0]
+    h = GridCount.apply(x[:, None], n, order, bound, extrapolate, False)[:, 0]
 
     # reshape
     h = h.to(dtype)
@@ -1786,9 +1786,9 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
 
     input, q = to_max_backend(input, q)
     dim = py.make_list(dim or [])
-    if torch_is_recent() and len(dim) < 2 and not bins:
-        dim = dim[0] if dim else None
-        return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
+    # if torch_is_recent() and len(dim) < 2 and not bins:
+    #     dim = dim[0] if dim else None
+    #     return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
 
     # ------------------
     # our implementation
@@ -1813,7 +1813,7 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
         # sort and sample
         input, _ = input.sort(-1)
         q = q.mul_(input.shape[-1]-1)
-        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0, False)[0]
     else:
         # compute cumulative histogram
         min = input.min(-1).values

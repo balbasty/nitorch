@@ -11,49 +11,49 @@ at::Tensor grid_pull(
   const at::Tensor& input, const at::Tensor& grid,
   const std::vector<BoundType> & bound, 
   const std::vector<InterpolationType> & interpolation,  
-  int extrapolate);
+  int extrapolate, bool abs);
 
 std::deque<at::Tensor> grid_pull_backward(
   const at::Tensor& grad, const at::Tensor& input, const at::Tensor& grid,
   const std::vector<BoundType> & bound, 
   const std::vector<InterpolationType> & interpolation, 
-  int extrapolate);
+  int extrapolate, bool abs);
 
 at::Tensor grid_push(
   const at::Tensor& input, const at::Tensor& grid, c10::IntArrayRef source_size,
   const std::vector<BoundType> & bound,
   const std::vector<InterpolationType> & interpolation, 
-  int extrapolate);
+  int extrapolate, bool abs);
 
 std::deque<at::Tensor> grid_push_backward(
   const at::Tensor& grad, const at::Tensor& input,  const at::Tensor& grid,
   const std::vector<BoundType> & bound, 
   const std::vector<InterpolationType> & interpolation, 
-  int extrapolate);
+  int extrapolate, bool abs);
 
 at::Tensor grid_count(
   const at::Tensor& grid, c10::IntArrayRef source_size,
   const std::vector<BoundType> & bound,
   const std::vector<InterpolationType> & interpolation, 
-  int extrapolate);
+  int extrapolate, bool abs);
 
 at::Tensor grid_count_backward(
   const at::Tensor& grad, const at::Tensor& grid,
   const std::vector<BoundType> & bound, 
   const std::vector<InterpolationType> & interpolation, 
-  int extrapolate);
+  int extrapolate, bool abs);
 
 at::Tensor grid_grad(
   const at::Tensor& input, const at::Tensor& grid,
   const std::vector<BoundType> & bound, 
   const std::vector<InterpolationType> & interpolation,  
-  int extrapolate);
+  int extrapolate, bool abs);
 
 std::deque<at::Tensor> grid_grad_backward(
   const at::Tensor& grad, const at::Tensor& input, const at::Tensor& grid,
   const std::vector<BoundType> & bound, 
   const std::vector<InterpolationType> & interpolation, 
-  int extrapolate);
+  int extrapolate, bool abs);
 
 
 

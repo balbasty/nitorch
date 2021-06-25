@@ -49,7 +49,8 @@ _doc_bound = \
     """
 
 
-def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=False):
+def grid_pull(input, grid, interpolation='linear', bound='zero',
+              extrapolate=False, abs=False):
     """Sample an image with respect to a deformation field.
 
     Notes
@@ -107,12 +108,12 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Fal
         for label in input.unique():
             soft = (input == label).to(grid.dtype)
             soft = expand(soft, [batch, *input.shape[1:]])
-            soft = GridPull.apply(soft, grid, interpolation, bound, extrapolate)
+            soft = GridPull.apply(soft, grid, interpolation, bound, extrapolate, abs)
             out[soft > pmax] = label
             pmax = torch.max(pmax, soft)
     else:
         input = expand(input, [batch, *input.shape[1:]])
-        out = GridPull.apply(input, grid, interpolation, bound, extrapolate)
+        out = GridPull.apply(input, grid, interpolation, bound, extrapolate, abs)
     if input_no_channel:
         out = out[:, 0]
     if input_no_batch and grid_no_batch:
@@ -121,7 +122,7 @@ def grid_pull(input, grid, interpolation='linear', bound='zero', extrapolate=Fal
 
 
 def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
-              extrapolate=False):
+              extrapolate=False, abs=False):
     """Splat an image with respect to a deformation field (pull adjoint).
 
     Notes
@@ -174,7 +175,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
     if shape is None:
         shape = tuple(input.shape[2:])
 
-    out = GridPush.apply(input, grid, shape, interpolation, bound, extrapolate)
+    out = GridPush.apply(input, grid, shape, interpolation, bound, extrapolate, abs)
     if input_no_channel:
         out = out[:, 0]
     if input_no_batch and grid_no_batch:
@@ -183,7 +184,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
 
 
 def grid_count(grid, shape=None, interpolation='linear', bound='zero',
-               extrapolate=False):
+               extrapolate=False, abs=False):
     """Splatting weights with respect to a deformation field (pull adjoint).
 
     Notes
@@ -218,14 +219,14 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
     if shape is None:
         shape = tuple(grid.shape[1:-1])
 
-    out = GridCount.apply(grid, shape, interpolation, bound, extrapolate)
+    out = GridCount.apply(grid, shape, interpolation, bound, extrapolate, abs)
     if grid_no_batch:
         out = out[0]
     return out
 
 
 def grid_grad(input, grid, interpolation='linear', bound='zero',
-              extrapolate=False):
+              extrapolate=False, abs=False):
     """Sample spatial gradients of an image with respect to a deformation field.
     
     Notes
@@ -271,7 +272,7 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
     input = expand(input, [batch, *input.shape[1:]])
     grid = expand(grid, [batch, *grid.shape[1:]])
 
-    out = GridGrad.apply(input, grid, interpolation, bound, extrapolate)
+    out = GridGrad.apply(input, grid, interpolation, bound, extrapolate, abs)
     if input_no_channel:
         out = out[:, 0]
     if input_no_batch and grid_no_batch:
