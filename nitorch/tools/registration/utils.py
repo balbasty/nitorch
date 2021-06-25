@@ -1,5 +1,6 @@
 from nitorch.core import py, utils, linalg
 from nitorch import spatial
+from nitorch._C import grid as _spatial
 import torch
 from . import optim as optm
 
@@ -144,11 +145,11 @@ def make_iteroptim_affine(optim, lr=None, ls=None, max_iter=None):
 def _affine_grid_backward_g(grid, grad):
     # type: (Tensor, Tensor) -> Tensor
     dim = grid.shape[-1]
-    g = torch.zeros([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
+    g = torch.empty([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
     for i in range(dim):
-        g[..., i, -1] = grad[..., i].sum(1)
+        g[..., i, -1] = grad[..., i].sum(1, dtype=torch.double).to(g.dtype)
         for j in range(dim):
-            g[..., i, j] = (grad[..., i] * grid[..., j]).sum(1)
+            g[..., i, j] = (grad[..., i] * grid[..., j]).sum(1, dtype=torch.double).to(g.dtype)
     return g
 
 
@@ -158,19 +159,29 @@ def _affine_grid_backward_gh(grid, grad, hess):
     dim = grid.shape[-1]
     g = torch.zeros([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
     h = torch.zeros([hess.shape[0], dim, dim+1, dim, dim+1], dtype=grad.dtype, device=grad.device)
+    basecount = dim - 1
     for i in range(dim):
-        g[..., i, -1] = grad[..., i].sum(1)
-        h[..., i, -1, i, -1] = hess[..., i].sum(1)
-        for j in range(dim):
-            g[..., i, j] = (grad[..., i] * grid[..., j]).sum(1)
-            h[..., i, j, i, j] = (hess[..., i] * grid[..., j].square()).sum(1)
-            for l in range(dim):
-                h[..., i, j, i, l] = (hess[..., i] * grid[..., j] * grid[..., l]).sum(1)
-                cnt = 0
-                for k in range(i+1, dim):
-                    cnt += 1
-                    h[..., i, j, k, l] = h[..., k, j, i, l] \
-                                       = (hess[..., cnt] * grid[..., j] * grid[..., l]).sum(1)
+        basecount = basecount + i * (dim-i)
+        for j in range(dim+1):
+            if j == dim:
+                g[..., i, j] = (grad[..., i]).sum(1)
+            else:
+                g[..., i, j] = (grad[..., i] * grid[..., j]).sum(1)
+            for k in range(dim):
+                idx = k
+                if k < i:
+                    continue
+                elif k != i:
+                    idx = basecount + (k - i)
+                for l in range(dim+1):
+                    if l == dim and j == dim:
+                        h[..., i, j, k, l] = h[..., k, j, i, l] = hess[..., idx].sum(1)
+                    elif l == dim:
+                        h[..., i, j, k, l] = h[..., k, j, i, l] = (hess[..., idx] * grid[..., j]).sum(1)
+                    elif j == dim:
+                        h[..., i, j, k, l] = h[..., k, j, i, l] = (hess[..., idx] * grid[..., l]).sum(1)
+                    else:
+                        h[..., i, j, k, l] = h[..., k, j, i, l] = (hess[..., idx] * grid[..., j] * grid[..., l]).sum(1)
     return g, h
 
 
@@ -200,7 +211,7 @@ def affine_grid_backward(grad, hess=None, grid=None):
     nvox = py.prod(shape)
     if grid is None:
         grid = spatial.identity_grid(shape, **utils.backend(grad))
-    grid = grid.reshape([-1, dim])
+    grid = grid.reshape([1, nvox, dim])
     grad = grad.reshape([-1, nvox, dim])
     if hess is not None:
         hess = hess.reshape([-1, nvox, dim*(dim+1)//2])
@@ -299,7 +310,7 @@ class JointHist:
     Joint histogram with a backward pass for optimization-based registration.
     """
 
-    def __init__(self, n=64, order=3, bound='replicate', extrapolate=False):
+    def __init__(self, n=64, order=3, fwhm=2, bound='replicate', extrapolate=False):
         """
 
         Parameters
@@ -317,6 +328,7 @@ class JointHist:
         self.order = order
         self.bound = bound
         self.extrapolate = extrapolate
+        self.fwhm = fwhm
 
     def _prepare(self, x, min, max):
         """
@@ -373,9 +385,12 @@ class JointHist:
         #   deciding if a coordinate is inbounds.
         extrapolate = self.extrapolate or 2
         h = spatial.grid_count(x[:, None], [self.n, self.n], self.order,
-                               self.bound, extrapolate)[:, 0]
+                               self.bound, extrapolate, abs=False)[:, 0]
         h = h.to(x.dtype)
         h = h.reshape([*shape[:-2], *h.shape[-2:]])
+
+        if self.fwhm:
+            h = spatial.smooth(h, fwhm=self.fwhm, bound=self.bound, dim=2)
 
         return h, min, max
 
@@ -397,16 +412,44 @@ class JointHist:
             Gradient with respect to x
 
         """
+        if self.fwhm:
+            g = spatial.smooth(g, fwhm=self.fwhm, bound=self.bound, dim=2)
+
         shape = x.shape
         x, min, max = self._prepare(x, min, max)
+        nvox = x.shape[-2]
         min = min.unsqueeze(-2)
         max = max.unsqueeze(-2)
         g = g.reshape([-1, *g.shape[-2:]])
 
         extrapolate = self.extrapolate or 2
-        g = spatial.grid_grad(g[:, None], x[:, None], self.order,
-                              self.bound, extrapolate)
-        g = g[:, 0].reshape(shape)
+        if not hess:
+            g = spatial.grid_grad(g[:, None], x[:, None], self.order,
+                                  self.bound, extrapolate)
+            g = g[:, 0].reshape(shape)
+        else:
+            # 1) Absolute value of adjoint of gradient
+            # we want shapes
+            #   o : [batch=1, channel=1, spatial=[1, vox], dim=2]
+            #   g : [batch=1, channel=1, spatial=[B(mov), B(fix)]]
+            #   x : [batch=1, spatial=[1, vox], dim=2]
+            #    -> [batch=1, channel=1, spatial=[B(mov), B(fix)]]
+            order = _spatial.inter_to_nitorch([self.order], True)
+            bound = _spatial.bound_to_nitorch([self.bound], True)
+            o = torch.ones_like(x)
+            g.requires_grad_()  # triggers push
+            o, = _spatial.grid_grad_backward(o[:, None, None], g[:, None], x[:, None],
+                                            bound, order, extrapolate, True)
+            g.requires_grad_(False)
+            g *= o[:, 0]
+            # 2) Absolute value of gradient
+            #   g : [batch=1, channel=1, spatial=[B(mov), B(fix)]]
+            #   x : [batch=1, spatial=[1, vox], dim=2]
+            #    -> [batch=1, channel=1, spatial=[1, vox], 2]
+            g = _spatial.grid_grad(g[:, None], x[:, None],
+                                   bound, order, extrapolate, True)
+            g = g.reshape(shape)
+            g /= nvox*nvox
 
         # adjoint of affine function
         nn = torch.as_tensor(self.n, dtype=x.dtype, device=x.device)
