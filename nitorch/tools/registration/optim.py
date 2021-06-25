@@ -788,8 +788,6 @@ class StrongWolfe(ZerothOrder):
             bracket_a[0], bracket_f[0], bracket_dg[0],
             bracket_a[1], bracket_f[1], bracket_dg[1],
             bounds=bounds)
-        if bound and a < bracket_a[1]:
-            a = (bounds[0] + bounds[1]) / 2
         return a
 
     @staticmethod
@@ -816,24 +814,24 @@ class StrongWolfe(ZerothOrder):
         # points lie in the interval, which I take as a hint that we are in
         # a non-convex portion and we should not trust the minimum.
         # Solution based on https://math.stackexchange.com/questions/1522439/
-        a = g1 + g2 - 2 * (f2 - f1) / (x2 - x1)
-        a /= (x1 - x2) ** 2
-        b = 0.5 * (g2 - g1) / (x2 - x1) - 1.5 * a * (x1 + x2)
-        c = g1 - 3 * a * x1 * x1 - 2 * x1 * b
-        # d = f1 - x1 ** 3 * a - x1 ** 2 * b - x1 * c  # not used
-        delta = b*b - 3 * a * c
-        if delta > 0:
-            x_min = (- b - (delta ** 0.5)) / (3 * a)
-            x_max = (- b + (delta ** 0.5)) / (3 * a)
-            if x_min > x1 and x_min < x2 and x_max > x1 and x_max < x2:
-                # both critical points are in the interval
-                # we are probably in a non-convex portion
-                return (xmin_bound + xmax_bound) / 2.
-            else:
-                return min(max(x_min, xmin_bound), xmax_bound)
-        elif delta < 0:
-            # no critical point (no or one inflexion point)
-            return (xmin_bound + xmax_bound) / 2.
+        # a = g1 + g2 - 2 * (f2 - f1) / (x2 - x1)
+        # a /= (x1 - x2) ** 2
+        # b = 0.5 * (g2 - g1) / (x2 - x1) - 1.5 * a * (x1 + x2)
+        # c = g1 - 3 * a * x1 * x1 - 2 * x1 * b
+        # # d = f1 - x1 ** 3 * a - x1 ** 2 * b - x1 * c  # not used
+        # delta = b*b - 3 * a * c
+        # if delta > 0:
+        #     x_min = (- b - (delta ** 0.5)) / (3 * a)
+        #     x_max = (- b + (delta ** 0.5)) / (3 * a)
+        #     if x_min > x1 and x_min < x2 and x_max > x1 and x_max < x2:
+        #         # both critical points are in the interval
+        #         # we are probably in a non-convex portion
+        #         return (xmin_bound + xmax_bound) / 2.
+        #     else:
+        #         return min(max(x_min, xmin_bound), xmax_bound)
+        # else:
+        #     # no critical point (no or one inflexion point)
+        #     return (xmin_bound + xmax_bound) / 2.
 
         # plt.plot(x, a*x*x*x + b*x*x + c*x + d)
         # plt.show()
@@ -847,17 +845,17 @@ class StrongWolfe(ZerothOrder):
         #   d2 = sqrt(d1^2 - g1*g2);
         #   min_pos = x2 - (x2 - x1)*((g2 + d2 - d1)/(g2 - g1 + 2*d2));
         #   t_new = min(max(min_pos,xmin_bound),xmax_bound);
-        # d1 = g1 + g2 - 3 * (f1 - f2) / (x1 - x2)
-        # d2_square = d1 ** 2 - g1 * g2
-        # if d2_square >= 0:
-        #     d2 = d2_square.sqrt()
-        #     if x1 <= x2:
-        #         min_pos = x2 - (x2 - x1) * ((g2 + d2 - d1) / (g2 - g1 + 2 * d2))
-        #     else:
-        #         min_pos = x1 - (x1 - x2) * ((g1 + d2 - d1) / (g1 - g2 + 2 * d2))
-        #     return min(max(min_pos, xmin_bound), xmax_bound)
-        # else:
-        #     return (xmin_bound + xmax_bound) / 2.
+        d1 = g1 + g2 - 3 * (f1 - f2) / (x1 - x2)
+        d2_square = d1 ** 2 - g1 * g2
+        if d2_square >= 0:
+            d2 = d2_square.sqrt()
+            if x1 <= x2:
+                min_pos = x2 - (x2 - x1) * ((g2 + d2 - d1) / (g2 - g1 + 2 * d2))
+            else:
+                min_pos = x1 - (x1 - x2) * ((g1 + d2 - d1) / (g1 - g2 + 2 * d2))
+            return min(max(min_pos, xmin_bound), xmax_bound)
+        else:
+            return (xmin_bound + xmax_bound) / 2.
 
 
 class LBFGS(FirstOrder):
