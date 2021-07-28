@@ -394,7 +394,7 @@ class DiceLoss(Loss):
         # prepare weights
         if not torch.is_tensor(weighted) and not weighted:
             weighted = False
-        if not utils.isinstance(weighted, bool):
+        if not isinstance(weighted, bool):
             weighted = utils.make_vector(weighted, nb_classes, **backend)[None]
 
         # preprocess reference
