@@ -325,8 +325,8 @@ def identity_grid(shape, dtype=None, device=None, jitter=False):
         with torch.random.fork_rng(device_ids, enabled=reproducible):
             if reproducible:
                 torch.manual_seed(0)
-            grid += torch.rand_like(grid)
-            grid -= 0.5
+            jitter = torch.rand_like(grid).sub_(0.5).mul_(0.1)
+            grid += jitter
     return grid
 
 

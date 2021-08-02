@@ -3,6 +3,7 @@ from . import svf
 from . import svf_graph
 from . import shoot
 from . import losses
+from . import experimental_losses
 from . import phantoms
 from . import utils
 

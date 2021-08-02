@@ -75,10 +75,13 @@ class RegisterStep:
                   and (self.n_iter - 1) % logplot == 0
 
         # jitter
-        # idj = spatial.identity_grid(self.fixed.shape[-self.dim:], jitter=True,
-        #                             **utils.backend(self.fixed))
-        # fixed = spatial.grid_pull(self.fixed, idj, **pullopt)
-        # del idj
+        # if not hasattr(self, '_fixed'):
+        #     idj = spatial.identity_grid(self.fixed.shape[-self.dim:],
+        #                                 jitter=True,
+        #                                 **utils.backend(self.fixed))
+        #     self._fixed = spatial.grid_pull(self.fixed, idj, **pullopt)
+        #     del idj
+        # fixed = self._fixed
         fixed = self.fixed
 
         # forward
@@ -101,7 +104,7 @@ class RegisterStep:
         # haff = linalg.lmdiv(self.affine_moving, haff)
         if self.id is None:
             shape = self.fixed.shape[-self.dim:]
-            self.id = spatial.identity_grid(shape, **utils.backend(logaff))
+            self.id = spatial.identity_grid(shape, **utils.backend(logaff), jitter=False)
         grid = spatial.affine_matvec(aff, self.id)
         warped = spatial.grid_pull(self.moving, grid, **pullopt)
         if do_plot:
@@ -131,7 +134,7 @@ class RegisterStep:
                 hess = jhj(mugrad, hess)
                 grad, hess = regutils.affine_grid_backward(grad, hess, grid=self.id)
             else:
-                grad = regutils.affine_grid_backward(grad, grid=self.id)
+                grad = regutils.affine_grid_backward(grad) # , grid=self.id)
             dim2 = self.dim*(self.dim+1)
             grad = grad.reshape([*grad.shape[:-2], dim2])
             gaff = gaff[..., :-1, :]

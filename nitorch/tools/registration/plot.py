@@ -1,4 +1,4 @@
-from nitorch.core import math
+from nitorch.core import math, utils
 
 
 def mov2fix(fixed, moving, warped, vel=None, cat=False, dim=None):
@@ -35,21 +35,35 @@ def mov2fix(fixed, moving, warped, vel=None, cat=False, dim=None):
         moving = math.softmax(moving, dim=1, implicit=True)
         warped = math.softmax(warped, dim=1, implicit=True)
 
+    checker = fixed.clone()
+    patch = max([s//8 for s in fixed.shape])
+    checker_unfold = utils.unfold(checker, [patch]*2, [2*patch]*2)
+    warped_unfold = utils.unfold(warped, [patch]*2, [2*patch]*2)
+    checker_unfold.copy_(warped_unfold)
+
     nb_rows = min(nb_batch, 3)
-    nb_cols = 3 + (vel is not None)
+    nb_cols = 4 + (vel is not None)
     for b in range(nb_rows):
         plt.subplot(nb_rows, nb_cols, b*nb_cols + 1)
         plt.imshow(moving[b, 0].cpu())
+        plt.title('moving')
         plt.axis('off')
         plt.subplot(nb_rows, nb_cols, b*nb_cols + 2)
         plt.imshow(warped[b, 0].cpu())
+        plt.title('moved')
         plt.axis('off')
         plt.subplot(nb_rows, nb_cols, b*nb_cols + 3)
+        plt.imshow(checker[b, 0].cpu())
+        plt.title('checker')
+        plt.axis('off')
+        plt.subplot(nb_rows, nb_cols, b*nb_cols + 4)
         plt.imshow(fixed[b, 0].cpu())
+        plt.title('fixed')
         plt.axis('off')
         if vel is not None:
-            plt.subplot(nb_rows, nb_cols, b*nb_cols + 4)
+            plt.subplot(nb_rows, nb_cols, b*nb_cols + 5)
             plt.imshow(vel[b].cpu())
+            plt.title('velocity')
             plt.axis('off')
             plt.colorbar()
     plt.show()

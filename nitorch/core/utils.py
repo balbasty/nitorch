@@ -1349,8 +1349,11 @@ def unfold(inp, kernel_size, stride=None, collapse=False):
         Patch shape.
     stride : [sequence of] int, default=`kernel_size`
         Stride.
-    collapse : bool, default=False
-        Collapse the original spatial dimensions
+    collapse : bool or 'view', default=False
+        Collapse the original spatial dimensions.
+        If 'view', forces collapsing to use the view mechanism, which ensures
+        that no data copy is triggered. This can fail if the tensor's
+        strides do not allow these dimensions to be collapsed.
 
     Returns
     -------

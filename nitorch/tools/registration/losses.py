@@ -14,7 +14,10 @@ Currently, the following losses are implemented:
 - nmi : normalized mutual information
 """
 from nitorch.core import utils, py, math, constants, linalg
+from nitorch.nn.modules.conv import _guess_output_shape
+from torch.nn import functional as F
 import math as pymath
+import typing
 import torch
 from .utils import JointHist
 pyutils = py
@@ -45,7 +48,7 @@ def make_loss(loss, dim=None):
             MAD(dim=dim) if loss == 'mad' else
             Tukey(dim=dim) if loss == 'tukey' else
             Cat(dim=dim) if loss == 'cat' else
-            NCC(dim=dim) if loss == 'ncc' else
+            CC(dim=dim) if loss == 'ncc' else
             NMI(dim=dim) if loss == 'nmi' else
             loss)
     if isinstance(loss, str):
@@ -297,76 +300,10 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
     return tuple(out) if len(out) > 1 else out[0]
 
 
-def ncc_hist(moving, fixed, dim=None,
-        bins=64, order=3, grad=True, hess=True):
-    """Normalized cross-correlation: E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)
+def cc(moving, fixed, dim=None, grad=True, hess=True):
+    """Squared Pearson's correlation coefficient loss
 
-    Parameters
-    ----------
-    moving : tensor
-    fixed : tensor
-    dim : int, default=`fixed.dim() - 1`
-    bins : int, default=64
-    order : int, default=3
-    grad : bool, default=True
-    hess : bool, default=True
-
-    Returns
-    -------
-    ll : () tensor
-
-    """
-
-    jointhist = JointHist(bins, order=order)
-
-    # compute histogram
-    dim = dim or fixed.shape[-1]
-    concat = torch.stack([moving, fixed], dim=-1)
-    concat = concat.reshape([-1, py.prod(concat.shape[-dim-1:-1]), 2])
-    h, min, max = jointhist.forward(concat)
-    h = h / h.sum(dim=[-1, -2], keepdim=True)
-
-    minm = min[..., 0]
-    maxm = max[..., 0]
-    minf = min[..., 1]
-    maxf = max[..., 1]
-    deltam = (maxm - minm) / bins
-    deltaf = (maxf - minf) / bins
-    idx = torch.arange(0, bins, **utils.backend(h))
-
-    def moments(h, mn, delta):
-        mean = mn + delta * (h * idx).sum(-1)
-        var = (mn.square()
-               + delta.square() * (h * idx.square()).sum(-1)
-               + 2 * mn * delta * (h * idx).sum(-1))
-        var -= mean.square()
-        return mean, var
-
-    hm = h.sum(-1)
-    hm /= hm.sum(-1, keepdim=True)
-    meanm, varm = moments(hm, minm, deltam)
-
-    hf = h.sum(-2)
-    hf /= hf.sum(-1, keepdim=True)
-    meanf, varf = moments(hf, minf, deltaf)
-
-    minm -= meanm
-    minf -= meanf
-    idx2 = idx[None, :] * idx[:, None]
-
-    l = (minm * minf
-         + minf * deltam * (h.sum(-2) * idx).sum(-1)
-         + minm * deltaf * (h.sum(-1) * idx).sum(-1)
-         + deltam * deltaf * (h * idx2).sum([-1, -2]))
-    l /= varm.sqrt() * varf.sqrt()
-    l = l.sum()
-    return l
-
-
-def ncc(moving, fixed, dim=None, grad=True, hess=True):
-    """Person's correlation (or Zero-normalized cross-correlation) loss
-
-        (1 - E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)) ** 2
+        1 - (E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)) ** 2
 
     Parameters
     ----------
@@ -399,118 +336,241 @@ def ncc(moving, fixed, dim=None, grad=True, hess=True):
     moving = moving / sigm
     fixed = fixed / sigf
 
-    ll = (moving*fixed).mean(dim=dims, keepdim=True)
+    corr = (moving*fixed).mean(dim=dims, keepdim=True)
 
     out = []
-    if grad or hess:
-        g = (moving * ll - fixed) / (n * sigm)
-
-    if hess:
-        # true hessian
-        # hh = (3 * ncc) * (xnorm*xnorm') - (N*eye(N) - 1) * ncc - (ynorm*xnorm' + xnorm*ynorm');
-        # hh = hh / (N.^2 * std(x, 1).^2);
-        # something positive definite
-        moving = moving.abs_()
-        fixed = fixed.abs_()
-        summ = moving.sum(dim=dims, keepdim=True)
-        sumf = fixed.sum(dim=dims, keepdim=True)
-        lla = ll.abs()
-        h = moving * 3 * lla * summ
-        h += moving * sumf + fixed * summ
-        h += (n - 1) * lla
-        h /= (n*n * sigm.square())
-        h = lla * h + g.abs() * g.abs().sum(dim=dims, keepdim=True)
-        # h = g.abs() * g.abs().sum(dim=dims, keepdim=True)
-        h.mul_(2)
-        out.append(h)
-
     if grad:
-        g *= ll
-        g.mul_(2)
+        g = 2 * corr * (moving * corr - fixed) / (n * sigm)
         out.append(g)
 
+    if hess:
+        # approximate hessian
+        h = 2 * (corr / sigm).square() / n
+        out.append(h)
+
     # return stuff
-    ll = (1 - ll.square()).sum()
-    out = [ll, *out]
+    corr = (1 - corr.square()).sum()
+    out = [corr, *out]
     return tuple(out) if len(out) > 1 else out[0]
 
 
-# def pncc(moving, fixed, dim=None, patch=5, link='vm', lam=1, grad=True, hess=True):
-#     """Patch-based Pearson's correlation
-#
-#     Normalized cross correlation is computed within patches, and an l1
-#     norm is applied
-#
-#     Parameters
-#     ----------
-#     moving : (..., K, *spatial) tensor
-#         Moving image with K channels.
-#     fixed : (..., K, *spatial) tensor
-#         Fixed image with K channels.
-#     dim : int, default=`fixed.dim() - 1`
-#         Number of spatial dimensions.
-#     patch : int, default=5
-#         Patch size
-#     link : {'vm', 'u', '
-#     lam : float or ([B], K|1, [*spatial]) tensor_like, default=1
-#         Precision of the Von-Mises link distribution
-#     grad : bool, default=True
-#         Compute an return gradient
-#     hess : bool, default=True
-#         Compute and return approximate Hessian
-#
-#     Returns
-#     -------
-#     ll : () tensor
-#
-#     """
-#     moving = moving.clone()
-#     fixed = fixed.clone()
-#
-#     dim = dim or (fixed.dim() - 1)
-#     dims = list(range(-dim, 0))
-#     n = py.prod(fixed.shape[-dim:])
-#     moving -= moving.mean(dim=dims, keepdim=True)
-#     fixed -= fixed.mean(dim=dims, keepdim=True)
-#     sigm = moving.square().mean(dim=dims, keepdim=True).sqrt_()
-#     sigf = fixed.square().mean(dim=dims, keepdim=True).sqrt_()
-#     moving = moving / sigm
-#     fixed = fixed / sigf
-#
-#     ll = (moving*fixed).mean(dim=dims, keepdim=True)
-#
-#     out = []
-#     if grad or hess:
-#         g = (moving * ll - fixed) / (n * sigm)
-#
-#     if hess:
-#         # true hessian
-#         # hh = (3 * ncc) * (xnorm*xnorm') - (N*eye(N) - 1) * ncc - (ynorm*xnorm' + xnorm*ynorm');
-#         # hh = hh / (N.^2 * std(x, 1).^2);
-#         # something positive definite
-#         moving = moving.abs_()
-#         fixed = fixed.abs_()
-#         summ = moving.sum(dim=dims, keepdim=True)
-#         sumf = fixed.sum(dim=dims, keepdim=True)
-#         lla = ll.abs()
-#         h = moving * 3 * lla * summ
-#         h += moving * sumf + fixed * summ
-#         h += (n - 1) * lla
-#         h /= (n*n * sigm.square())
-#         h = lla * h + g.abs() * g.abs().sum(dim=dims, keepdim=True)
-#         # h = g.abs() * g.abs().sum(dim=dims, keepdim=True)
-#         h.mul_(2)
-#         out.append(h)
-#
-#     if grad:
-#         g *= ll
-#         g.mul_(2)
-#         out.append(g)
-#
-#     # return stuff
-#     ll = (1 - ll.square()).sum()
-#     out = [ll, *out]
-#     return tuple(out) if len(out) > 1 else out[0]
+def _conv(dim):
+    return getattr(F, f'conv{dim}d')
+
+
+def _convt(dim):
+    return getattr(F, f'conv_transpose{dim}d')
+
+
+def local_mean(x, kernel_size=5, stride=1, mode='constant', dim=None,
+               backward=False, shape=None):
+    """
+
+    Parameters
+    ----------
+    x : ([batch], channel, *inspatial)
+        Input tensor
+    kernel_size : [sequence of] int, default=5
+    stride : [sequence of] int, default=1
+    mode : {'constant', 'gaussian'}, default='constant'
+        If 'gaussian', the fwhm is set to kernel_size/3
+    dim : int, default=x.dim() - 1
+    backward : bool, default=False
+        Perform backward pass (transposed conv) instead of forward
+    shape : sequence[int], optional
+        Only used if 'backward'
+
+    Returns
+    -------
+    m : ([batch], channel, *outspatial)
+
+    """
+    dim = dim or x.dim() - 1
+    extra_batch = x.dim() > dim + 2
+    if extra_batch:
+        batch = x.shape[:-dim-1]
+        x = x.reshape([-1, *x.shape[-dim-1:]])
+    virtual_channel = x.dim() <= dim
+    virtual_batch = x.dim() <= dim + 1
+    if virtual_channel:
+        x = x[None]
+    if virtual_batch:
+        x = x[None]
+
+    # build kernel
+    kernel_size = py.make_list(kernel_size, dim)
+    stride = [s or k for s, k in zip(py.make_list(stride, dim), kernel_size)]
+    if mode[0].lower() == 'c':
+        # constant kernel (classical mean)
+        kernel = x.new_ones(kernel_size)
+        kernel = kernel[None, None]
+    elif mode[0].lower() == 'g':
+        # Gaussian kernel (weighted mean)
+        fwhm = [k/3 for k in kernel_size]
+        sigma2 = [(f/2.355)**2 for f in fwhm]
+        kernel = []
+        for d in range(dim):
+            k = torch.arange(kernel_size[d], **utils.backend(x))
+            k -= kernel_size[d]//2
+            k = k.square_().div_(-2*sigma2[d]).exp_()
+            k = utils.unsqueeze(k, 0, d)
+            k = utils.unsqueeze(k, -1, dim-d-1)
+            k = k[None, None]
+            kernel.append(k)
+        norm = py.prod(k).sum()
+        for k in kernel:
+            k.div_(norm)
+    else:
+        raise ValueError(f'Unknown mode {mode}')
+
+    # conv
+    if backward:
+        if shape is not None:  # estimate output padding
+            ishape = [1, 1, *x.shape[-dim:]]
+            oshape = _guess_output_shape(ishape, dim, kernel_size,
+                                         stride=stride, transposed=True)
+            oshape = oshape[2:]
+            opad = [s-os for s, os in zip(shape, oshape)]
+        else:
+            opad = [0] * dim
+        if isinstance(kernel, list):
+            conv = _convt(dim)
+            for d, (k, s, p) in enumerate(zip(kernel, stride, opad)):
+                s = [1] * d + [s] + [1] * (dim-d-1)
+                p = [0] * d + [p] + [0] * (dim-d-1)
+                x = conv(x, k, stride=s, output_padding=p)
+        else:
+            x = _convt(dim)(x, kernel, stride=stride, output_padding=opad)
+    else:  # forward pass
+        if isinstance(kernel, list):
+            conv = _conv(dim)
+            for d, (k, s) in enumerate(zip(kernel, stride)):
+                s = [1] * d + [s] + [1] * (dim-d-1)
+                x = conv(x, k, stride=s)
+        else:
+            x = _conv(dim)(x, kernel, stride=stride)
+
+    if virtual_batch:
+        x = x[0]
+    if virtual_channel:
+        x = x[0]
+    if extra_batch:
+        x = x.reshape([*batch, *x.shape[1:]])
+    return x
+
+
+def _suffstat(fn, x, y):
+
+    square_ = lambda x: x.square() if x.requires_grad else x.square_()
+    mul_ = lambda x, y: x.mul(y) if y.requires_grad else x.mul_(y)
+
+    mom = x.new_empty([5, *x.shape])
+    mom[0] = x
+    mom[1] = y
+    mom[2] = x
+    mom[2] = square_(mom[2])
+    mom[3] = y
+    mom[3] = square_(mom[3])
+    mom[4] = x
+    mom[4] = mul_(mom[4], y)
+
+    mom = fn(mom)
+    return mom
+
+
+def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
+        grad=True, hess=True):
+    """Local correlation coefficient (squared)
+
+    This function implements a squared version of Cachier and
+    Pennec's local correlation coefficient, so that anti-correlations
+    are not penalized.
+
+    Parameters
+    ----------
+    moving : (..., K, *spatial) tensor
+        Moving image with K channels.
+    fixed : (..., K, *spatial) tensor
+        Fixed image with K channels.
+    dim : int, default=`fixed.dim() - 1`
+        Number of spatial dimensions.
+    patch : int, default=5
+        Patch size
+    lam : float or ([B], K|1, [*spatial]) tensor_like, default=1
+        Precision of the NCC distribution
+    grad : bool, default=True
+        Compute and return gradient
+    hess : bool, default=True
+        Compute and return approximate Hessian
+
+    Returns
+    -------
+    ll : () tensor
+
+    References
+    ----------
+    ..[1] "3D Non-Rigid Registration by Gradient Descent on a Gaussian-
+           Windowed Similarity Measure using Convolutions"
+          Pascal Cachier, Xavier Pennec
+          MMBIA (2000)
+
+    """
+    sqrt_ = lambda x: x.sqrt() if x.requires_grad else x.sqrt_()
+    square_ = lambda x: x.square() if x.requires_grad else x.square_()
+    mul_ = lambda x, y: x.mul(y) if y.requires_grad else x.mul_(y)
+    div_ = lambda x, y: x.div(y) if y.requires_grad else x.div_(y)
+
+    fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
+
+    dim = dim or (fixed.dim() - 1)
+    shape = fixed.shape[-dim:]
+
+    if lam.dim() <= 2:
+        if lam.dim() == 0:
+            lam = lam.flatten()
+        lam = utils.unsqueeze(lam, -1, dim)
+
+    fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode)
+    bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode,
+                               backward=True, shape=shape)
+
+    # compute ncc within each patch
+    moving_mean, fixed_mean, moving_std, fixed_std, corr = \
+        _suffstat(fwd, moving, fixed)
+    moving_std = sqrt_(moving_std.addcmul_(moving_mean, moving_mean, value=-1))
+    fixed_std = sqrt_(fixed_std.addcmul_(fixed_mean, fixed_mean, value=-1))
+    std2 = moving_std * fixed_std
+    corr = div_(corr.addcmul_(moving_mean, fixed_mean, value=-1), std2)
+    nvox = py.prod(corr.shape[-dim:])
+
+    out = []
+    if grad or hess:
+        fixed_mean = div_(fixed_mean, fixed_std)
+        moving_mean = div_(moving_mean, moving_std)
+
+        h = bwd(square_(corr / moving_std).mul_(lam))
+
+        if grad:
+            # g = G' * (corr.*(corr.*xmean./xstd - ymean./ystd)./xstd)
+            #   - x .* (G' * (corr./ xstd).^2)
+            #   + y .* (G' * (corr ./ (xstd.*ystd)))
+            # g = -2 * g
+            g = fixed_mean.addcmul_(corr, moving_mean, value=-1)
+            g = mul_(g, corr / moving_std).mul_(lam)
+            g = bwd(g)
+            g = g.addcmul_(h, moving)
+            g = g.addcmul_(bwd((corr / std2).mul_(lam)), fixed, value=-1)
+            out.append(g.mul_(2/nvox))
+
+        if hess:
+            # h = 2 * (G' * (corr./ xstd).^2)
+            out.append(h.mul_(2/nvox))
+
+    # return stuff
+    corr = square_(corr).neg_().add_(1).mul_(lam)
+    corr = corr.mean(list(range(-dim, 0))).sum()
+    out = [corr, *out]
+    return tuple(out) if len(out) > 1 else out[0]
 
 
 def nmi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
@@ -651,14 +711,6 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
             # project
             h = hist.backward(idx, h/nvox, hess=True)[..., 0]
             h = h.reshape(shape)
-            import matplotlib.pyplot as plt
-            plt.subplot(1, 2, 1)
-            plt.imshow(g[0, ..., g.shape[-1]//2])
-            plt.colorbar()
-            plt.subplot(1, 2, 2)
-            plt.imshow(h[0, ..., h.shape[-1]//2])
-            plt.colorbar()
-            plt.show()
             out.append(h)
 
     nmi = -nmi
@@ -669,74 +721,6 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
     nmi = nmi.sum()
 
     out = [nmi, *out]
-    if minmax is True:
-        out.extend([mn, mx])
-    return tuple(out) if len(out) > 1 else out[0]
-
-
-def mse_hist(moving, fixed, dim=None, bins=32, order=3, grad=True, hess=True, minmax=False):
-    """Studholme's Normalized Mutual Information
-
-    Parameters
-    ----------
-    moving : (..., K, *spatial) tensor
-    fixed : (..., K, *spatial) tensor
-    dim : int, default=`fixed.dim() - 1`
-    bins : int, default=64
-    order : int, default=3
-    grad : bool, default=True
-    hess : bool, default=True
-
-    Returns
-    -------
-    ll : () tensor
-        Negative NMI
-    grad : (..., K, *spatial) tensor
-    hess : (..., K, *spatial) tensor
-
-    """
-    hist = JointHist(bins, order, bound='zero')
-
-    shape = moving.shape
-    dim = dim or fixed.dim() - 1
-    moving = moving.reshape([*moving.shape[:-dim], -1])
-    fixed = fixed.reshape([*fixed.shape[:-dim], -1])
-    idx = torch.stack([moving, fixed], -1)
-
-    if minmax not in (True, False, None):
-        mn, mx = minmax
-        h, mn, mx = hist.forward(idx, min=mn, max=mx)
-    else:
-        h, mn, mx = hist.forward(idx)
-    minm, minf = mn.unbind(-1)
-    maxm, maxf = mx.unbind(-1)
-    deltam = (maxm-minm)/bins
-    deltaf = (maxf-minf)/bins
-
-    val = torch.linspace(0.5, 0.95, bins, **utils.backend(h))
-    nodesm = minm[..., None] + val * deltam[..., None]
-    nodesf = minf[..., None] + val * deltaf[..., None]
-    mse = nodesm[..., :, None] - nodesf[..., None, :]
-    mse = mse.square_()
-
-    out = []
-    if grad:
-        g = hist.backward(idx, mse)[..., 0]
-        g = g.reshape(shape)
-        out.append(g)
-
-    if hess:
-        # # try 1
-        # hh = torch.ones_like(h)
-        # hh = hist.backward(idx, hh, hess=True)[..., 0]
-        # hh = hh.reshape(shape)
-        hh = mse.new_full([1] * (dim + 1), 2.25 * (2**(dim+1)))
-        hh = hh * (bins / (maxm - minm)).square()
-        out.append(hh)
-
-    mse *= h
-    mse = mse.sum()
-    out = [mse, *out]
     if minmax is True:
         out.extend([mn, mx])
     return tuple(out) if len(out) > 1 else out[0]
@@ -1133,95 +1117,6 @@ class Tukey(OptimizationLoss):
         return llx + llw + lll, g, h
 
 
-class MSEHist(HistBasedOptimizationLoss):
-    """Mean-squared error"""
-
-    def __init__(self, lam=1, dim=None, bins=None, order=3):
-        """
-
-        Parameters
-        ----------
-        lam : (K|1,) tensor_like
-            Precision
-        dim : int, default=1fixed.dim() - 1`
-            Number of spatial dimensions
-        """
-        super().__init__(dim, bins, order)
-        self.lam = lam
-        self.minmax = None
-
-    def loss(self, moving, fixed, **kwargs):
-        """Compute the [weighted] mse (* 0.5)
-
-        Parameters
-        ----------
-        moving : ([B], K, *spatial) tensor
-            Moving image
-        fixed : ([B], K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-        grad : ([B], K, *spatial) tensor
-            Gradient
-
-        """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
-        return mse_hist(moving, fixed, dim=dim, grad=False, hess=False)
-
-    def loss_grad(self, moving, fixed, **kwargs):
-        """Compute the [weighted] mse (* 0.5)
-
-        Parameters
-        ----------
-        moving : ([B], K, *spatial) tensor
-            Moving image
-        fixed : ([B], K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-
-        """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim) # lam=lam,
-        return mse_hist(moving, fixed, dim=dim, hess=False)
-
-    def loss_grad_hess(self, moving, fixed, **kwargs):
-        """Compute the [weighted] mse (* 0.5)
-
-        Parameters
-        ----------
-        moving : ([B], K, *spatial) tensor
-            Moving image
-        fixed : ([B], K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-        grad : ([B], K, *spatial) tensor
-            Gradient
-        hess : ([B], K, *spatial) tensor
-            Diagonal Hessian
-
-        """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim) # lam=lam,
-        if self.minmax is None:
-            ll, g, h, *minmax = mse_hist(moving, fixed, dim=dim, minmax=True)
-            self.minmax = minmax
-            return ll, g, h
-        else:
-            return mse_hist(moving, fixed, dim=dim, minmax=self.minmax)
-
-
 class Cat(OptimizationLoss):
     """Categorical cross-entropy"""
 
@@ -1309,8 +1204,8 @@ class Cat(OptimizationLoss):
         return cat(moving, fixed, acceleration=acceleration, dim=dim)
 
 
-class NCC(OptimizationLoss):
-    """Normalized cross-correlation"""
+class CC(OptimizationLoss):
+    """Pearson's correlation coefficient (squared)"""
 
     def __init__(self, dim=None):
         """
@@ -1340,7 +1235,7 @@ class NCC(OptimizationLoss):
 
         """
         dim = kwargs.get('dim', self.dim)
-        return ncc(moving, fixed, dim=dim, grad=False, hess=False)
+        return cc(moving, fixed, dim=dim, grad=False, hess=False)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1361,7 +1256,7 @@ class NCC(OptimizationLoss):
 
         """
         dim = kwargs.get('dim', self.dim)
-        return ncc(moving, fixed, dim=dim, hess=False)
+        return cc(moving, fixed, dim=dim, hess=False)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1385,7 +1280,105 @@ class NCC(OptimizationLoss):
 
         """
         dim = kwargs.get('dim', self.dim)
-        return ncc(moving, fixed, dim=dim)
+        return cc(moving, fixed, dim=dim)
+
+
+class LCC(OptimizationLoss):
+    """Local correlation coefficient"""
+
+    def __init__(self, dim=None, patch=20, stride=1, lam=1, mode='g'):
+        """
+
+        Parameters
+        ----------
+        dim : int, default=`fixed.dim() - 1`
+            Number of spatial dimensions
+        """
+        super().__init__()
+        self.dim = dim
+        self.patch = patch
+        self.stride = stride
+        self.lam = lam
+        self.mode = mode
+
+    def loss(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        patch = kwargs.get('patch', self.patch)
+        stride = kwargs.get('stride', self.stride)
+        lam = kwargs.get('lam', self.lam)
+        mode = kwargs.get('mode', self.mode)
+        return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
+                   lam=lam, mode=mode, grad=False, hess=False)
+
+    def loss_grad(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        patch = kwargs.get('patch', self.patch)
+        stride = kwargs.get('stride', self.stride)
+        lam = kwargs.get('lam', self.lam)
+        mode = kwargs.get('mode', self.mode)
+        return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
+                   lam=lam, mode=mode, hess=False)
+
+    def loss_grad_hess(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+        h : (..., K*(K+1)//2, *spatial) tensor, optional
+            Hessian with respect to the moving image.
+            Its spatial dimensions are singleton when `acceleration == 0`.
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        patch = kwargs.get('patch', self.patch)
+        stride = kwargs.get('stride', self.stride)
+        lam = kwargs.get('lam', self.lam)
+        mode = kwargs.get('mode', self.mode)
+        return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
+                   lam=lam, mode=mode)
 
 
 class NMI(HistBasedOptimizationLoss):
@@ -1501,73 +1494,3 @@ class NMI(HistBasedOptimizationLoss):
             return nmi(moving, fixed, norm=norm,
                        bins=bins, order=order, dim=dim, minmax=self.minmax)
 
-
-# WORK IN PROGRESS
-# def nmi(fixed, moving, dim=None, bins=64, order=3, limits=None,
-#         normalized='studholme'):
-#     fixed, moving = utils.to_max_backend(fixed, moving)
-#     dim = dim or (fixed.dim() - 1)
-#
-#     # compute histograms limits
-#     if not isinstance(limits, dict):
-#         limits = dict(fixed=limits, moving=limits)
-#     limits['fixed'] = py.make_list(limits['fixed'], 2)
-#     limits['moving'] = py.make_list(limits['moving'], 2)
-#     if limits['fixed'][0] is None:
-#         limits['fixed'][0] = math.min(fixed, dim=range(-dim, 0), keepdim=True)
-#     if limits['fixed'][1] is None:
-#         limits['fixed'][1] = math.max(fixed, dim=range(-dim, 0), keepdim=True)
-#     if limits['moving'][0] is None:
-#         limits['moving'][0] = math.min(moving, dim=range(-dim, 0), keepdim=True)
-#     if limits['moving'][1] is None:
-#         limits['moving'][1] = math.max(moving, dim=range(-dim, 0), keepdim=True)
-#
-#     def pnorm(x, dims=-1):
-#         """Normalize a tensor so that it's sum across `dims` is one."""
-#         dims = py.make_list(dims)
-#         x = x.clamp_min_(constants.eps(x.dtype))
-#         s = math.sum(x, dim=dims, keepdim=True)
-#         return x/s, s
-#
-#     vmin = (limits['fixed'][0], limits['moving'][0])
-#     vmax = (limits['fixed'][1], limits['moving'][1])
-#     pxy = utils.histc2(
-#         torch.stack([fixed, moving], -1), bins, vmin, vmax,
-#         dim=range(-dim-1, -1), order=order, bound='zero')
-#
-#     # compute probabilities
-#     px, sx = pnorm(pxy.sum(dim=-2))  # -> [B, C, nb_bins]
-#     py, sy = pnorm(pxy.sum(dim=-1))  # -> [B, C, nb_bins]
-#     pxy, sxy = pnorm(pxy, [-1, -2])
-#
-#     # compute entropies
-#     hx = -(px * px.log()).sum(dim=-1)  # -> [B, C]
-#     hy = -(py * py.log()).sum(dim=-1)  # -> [B, C]
-#     hxy = -(pxy * pxy.log()).sum(dim=[-1, -2])  # -> [B, C]
-#
-#     # mutual information
-#     mi = (hx + hy) - hxy
-#     if normalized == 'studholme':
-#         mi /= hxy
-#     elif normalized == 'arithmetic':
-#         mi /= (hx + hy)
-#
-#     # gradient
-#     gxy = pxy.log()
-#     gy = py.log()
-#     if normalized == 'studholme':
-#         gxy = (gxy + (1 + pxy.log()) * mi) / hxy
-#         gy /= hxy
-#     elif normalized == 'arithmetic':
-#         gy = (gy + (1 + py.log()) * mi) / (hx + hy)
-#         gxy /= (hx + hy)
-#     gy *= 1/sy - py.square()
-#     gxy *= 1/sxy - pxy.square()
-#     gxy += gy
-#     gxy = gxy.sum(dim=-2)
-#     gxy = spatial.grid_pull()
-#
-#     # take negative
-#     mi = 1 - mi
-#     g = g.neg_()
-#     return mi, g, h

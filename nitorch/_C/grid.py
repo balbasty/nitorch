@@ -116,10 +116,10 @@ class GridPull(torch.autograd.Function):
         bound = bound_to_nitorch(make_list(bound), as_enum=True)
         interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
+        opt = (bound, interpolation, extrapolate, abs)
 
         # Pull
-        output = grid_pull(input, grid, *opt, abs)
+        output = grid_pull(input, grid, *opt)
 
         # Context
         if input.requires_grad or grid.requires_grad:
