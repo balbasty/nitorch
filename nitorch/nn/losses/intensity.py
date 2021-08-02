@@ -96,7 +96,7 @@ def joint_hist_gaussian(x, y, bins=64, min=None, max=None, fwhm=1, mask=None):
 
 
 def joint_hist_spline(x, y, bins=64, min=None, max=None, order=3, mask=None):
-    """Compute joint histogram with Gaussian window
+    """Compute joint histogram with B-spline window
 
     Parameters
     ----------
