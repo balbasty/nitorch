@@ -477,7 +477,8 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
 
 
 def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
-                fig_num=1, colorbar=False, figsize=None):
+                fig_num=1, colorbar=False, figsize=None, aspect='auto',
+                sp_title=None):
     """ Display a multi-channel 2D or 3D image.
 
     Allows for real-time plotting if giving returned fig_ax objects as input.
@@ -500,12 +501,29 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
         return
 
     # Work out dimensions/channels
-    img = img[..., None, None]
-    dm = img.shape
-    num_chan = dm[3]  # Number of channels
-    dm = torch.tensor(dm)
-    is_3d = dm[2] > 1
-    ix = torch.floor(0.5 * dm).int().tolist()
+    issequence = False
+    if isinstance(img, (list, tuple)):
+        issequence = True
+        ix = []        
+        num_chan = len(img)  # Number of channels
+        for i in img:            
+            i = i[..., None, None]
+            dm = i.shape
+            dm = torch.tensor(dm)
+            is_3d = dm[2] > 1
+            ix.append(torch.floor(0.5 * dm).int().tolist())        
+    else:
+        img = img[..., None, None]
+        dm = img.shape
+        num_chan = dm[3]  # Number of channels
+        dm = torch.tensor(dm)
+        is_3d = dm[2] > 1
+        ix = torch.floor(0.5 * dm).int().tolist()
+
+    if not isinstance(sp_title, (list, tuple)):
+        sp_title = [sp_title]
+    if len(sp_title) != num_chan:
+        sp_title = [sp_title[0],] * num_chan
 
     if fig_ax is None:
         # Make figure object
@@ -530,26 +548,40 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
     # Show images
     img_list = []
     for c in range(num_chan):  # loop over image channels
-        im_c = torch.squeeze(img[:, :, ix[2], c]).detach().cpu()
+        if issequence:
+            im_c = torch.squeeze(img[c][:, :, ix[c][2]]).detach().cpu()
+        else:
+            im_c = torch.squeeze(img[:, :, ix[2], c]).detach().cpu()
         if is_3d:
+            # 3D slice 1
             ax_c = ax[0] if num_chan == 1 else ax[0, c] if not flip else ax[c, 0]
-            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
+            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect=aspect)
             img_list.append(im_c)
+            # 3D slice 2
             ax_c = ax[1] if num_chan == 1 else ax[1, c] if not flip else ax[c, 1]
-            im_c = torch.squeeze(img[:, ix[1], :, c]).detach().cpu()
-            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
+            if issequence:
+                im_c = torch.squeeze(img[c][:, ix[c][1], :]).detach().cpu()
+            else:
+                im_c = torch.squeeze(img[:, ix[1], :, c]).detach().cpu()
+            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect=aspect)
             img_list.append(im_c)
+            # 3D slice 3
             ax_c = ax[2] if num_chan == 1 else ax[2, c] if not flip else ax[c, 2]
-            im_c = torch.squeeze(img[ix[0], :, :, c]).detach().cpu()
-            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
+            if issequence:
+                im_c = torch.squeeze(img[c][ix[c][0], :, :]).detach().cpu()
+            else:
+                im_c = torch.squeeze(img[ix[0], :, :, c]).detach().cpu()
+            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect=aspect)
             img_list.append(im_c)
         else:
+            # 2D
             ax_c = ax if num_chan == 1 else ax[c]
-            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect='auto')
+            im_c = ax_c.imshow(im_c, interpolation='None', cmap=cmap,  aspect=aspect)
             img_list.append(im_c)
 
     # Modify axes
     cnt = 0
+    fontsize = 9
     for c in range(num_chan):  # loop over image channels
         if is_3d:
             for r in range(3):
@@ -560,6 +592,9 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                     divider = make_axes_locatable(ax_c)
                     cax = divider.append_axes('right', size='5%', pad=0.05)
                     fig.colorbar(img_list[cnt], cax=cax, orientation='vertical')
+                if r == 1:
+                    ax_c.title.set_text(sp_title[c])
+                    ax_c.title.set_fontsize(fontsize)
                 cnt += 1
         else:
             ax_c = ax if num_chan == 1 else ax[c]
@@ -568,10 +603,13 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 divider = make_axes_locatable(ax_c)
                 cax = divider.append_axes('right', size='5%', pad=0.05)
                 fig.colorbar(img_list[cnt], cax=cax, orientation='vertical')
+            ax_c.title.set_text(sp_title[c])
+            ax_c.title.set_fontsize(fontsize)
             cnt += 1
 
     fig.suptitle(title)
     fig.canvas.draw()
     fig.canvas.flush_events()
-
+    fig.tight_layout()
+    
     return fig_ax
