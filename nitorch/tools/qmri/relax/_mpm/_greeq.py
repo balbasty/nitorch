@@ -181,7 +181,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 crit = 0
                 grad.zero_()
                 hess.zero_()
-
                 # --- loop over contrasts ---
                 for contrast, b1m, b1p in zip(data, receive, transmit):
                     # compute gradient
@@ -207,8 +206,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                         hess += h1
                         crit += crit1
                     
-                    del g1, h1
-
+                    del g1, h1, crit1
+                    torch.cuda.empty_cache()
                 # --- penalty ---
                 reg = 0.
                 if opt.penalty.norm:
@@ -218,7 +217,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                         reg1, g1 = _nonlin_reg(map.fdata(**backend), vx, weight, l * vol)
                         reg += reg1
                         grad[i] += g1
-                        del g1
+                        del g1, reg1
 
                 # --- gauss-newton ---
                 if not torch.isfinite(hess).all():
@@ -238,6 +237,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     map.volume -= delta
                     if map.min is not None or map.max is not None:
                         map.volume.clamp_(map.min, map.max)
+                    del delta
                 del deltas
 
                 # --- Compute gain ---
@@ -250,7 +250,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 if gain < opt.optim.tolerance_gn:
                     print('GN converged: ', ll_prev.item(), '->', ll.item())
                     break
-
             # --- Update RLS weights ---
             if opt.penalty.norm in ('tv', 'jtv'):
                 del multi_rls
@@ -483,7 +482,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         b1m = smart_pull(receive.fdata(**backend)[None], grid1)[0]
         if receive.unit in ('%', 'pct', 'p.u.'):
             b1m = b1m.div(100.) if grid1 is None else b1m.div_(100.)
-        del grid1
+        del grid1, aff1
 
     if transmit is not None:
         aff1 = core.linalg.lmdiv(transmit.affine, contrast.affine)
@@ -494,7 +493,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             b1p = b1p.clone()
         if transmit.unit in ('%', 'pct', 'p.u.'):
             b1p /= 100.
-        del grid1
+        del grid1, aff1
 
     # exponentiate
     pd = pd.exp() if grid is None else pd.exp_()
@@ -634,7 +633,8 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             grad1[~torch.isfinite(grad1)] = 0
             grad += grad1
             del grad1
-
+        del res
+        torch.cuda.empty_cache()
     del r1, r2s, omt, e1, fit0, omt_x_cosfa
     if do_grad:
         # push gradient and Hessian to recon space
@@ -642,7 +642,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         grad = smart_push(grad, grid, recon_shape)
         hess = smart_push(hess, grid, recon_shape)
         return crit, grad, hess
-
+    torch.cuda.empty_cache()
     return crit
 
 
