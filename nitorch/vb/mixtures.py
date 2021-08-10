@@ -600,3 +600,169 @@ class RMM(Mixture):
                 self.sig[k] = \
                     0.5*(torch.sqrt(torch.tensor(2, dtype=dtype, device=self.dev).float())
                          *torch.sqrt(mu1[k]**2 + mu2[k]))
+
+
+
+class CMM(Mixture):
+    # Univariate Rician Mixture Model (RMM).
+    def __init__(self, num_class=2, dof=None, sig=None):
+        """
+        nu (torch.tensor): "mean" parameter of each Rician (K).
+        sig (torch.tensor): "standard deviation" parameter of each Rician (K).
+
+        """
+        super(CMM, self).__init__(num_class=num_class)
+        self.dof = dof
+        self.sig = sig
+
+    def get_means_variances(self):
+        """ Return means and variances.
+
+        Returns:
+            (torch.tensor): Means (1, K).
+            (torch.tensor): Variances (1, 1, K).
+
+        """
+        K = self.K
+        dtype = torch.float64
+        #pi = torch.tensor(math.pi, dtype=dtype, device=self.dev)
+
+        # Compute means and variances
+        mean = torch.zeros((1, K), dtype=dtype, device=self.dev)
+        var = torch.zeros((1, 1, K), dtype=dtype, device=self.dev)
+        for k in range(K):
+            dof_k = self.dof[k]
+            sig_k = self.sig[k]
+            
+            if torch.exp(torch.lgamma((dof_k+1)/2)-torch.lgamma(dof_k/2)) is finite:
+                mean[:, k] = math.sqrt(2)*torch.exp(torch.lgamma((dof_k+1)/2)-torch.lgamma(dof_k/2))
+            else:
+                mean[:, k] = dof_k
+            var[:, :, k] = dof_k-mean[:, k]**2
+
+        return mean, var
+
+    def _log_likelihood(self, X, k=0, c=None):
+        """
+        Log-probability density function (pdf) of the Rician
+        distribution, evaluated at the values in X.
+
+        Args:
+            X (torch.tensor): Observed data (N, C).
+            k (int, optional): Index of mixture component. Defaults to 0.
+
+        Returns:
+            log_pdf (torch.tensor): (N, 1).
+
+        See also:
+            https://en.wikipedia.org/wiki/Rice_distribution#Characterization
+
+        """
+        N = X.shape[0]
+        device = X.device
+        dtype = X.dtype
+        pi = torch.tensor(math.pi, dtype=dtype, device=device)
+        tiny = torch.tensor(1e-32, dtype=dtype, device=device)
+
+        # Get Rice parameters
+        dof = self.dof[k]
+        sig = self.sig[k]
+        dof = dof.type(dtype)
+        sig = sig.type(dtype)
+        dof = dof.to(device)
+        sig = sig.to(device)
+
+        log_pdf = torch.zeros((N, 1), dtype=dtype, device=device)
+        tmp = -(X**2 + dof**2)/(2*sig**2)
+        # Identify where Rice probability can be computed
+        msk = (tmp > -95) & ((X * (dof / sig**2)) < 85)
+        # Use Rician distribution
+        #log_pdf[msk] = (X[msk]/sig2) * torch.exp(tmp[msk]) * besseli(X[msk] * (nu / sig2), order=0)
+        log_pdf[msk] = (dof/2-1)*math.log(2)+(1-dof)*torch.log(X[msk])+X[msk]**2/(sig**2)+ \
+            dof*math.log(sig)+torch.lgamma(dof/2)
+        # Use normal distribution
+        log_pdf[~msk] = (1. / torch.sqrt(2 * pi * sig**2)) \
+                  * torch.exp((-0.5 / sig**2) * (X[~msk] - dof)**2)
+
+    
+
+        #return torch.log(log_pdf.flatten() + tiny)
+        print (log_pdf)
+        return log_pdf
+
+    def _init_par(self, X):
+        """  Initialise RMM specific parameters: nu, sig
+
+        """
+        K = self.K
+        mn = torch.min(X, dim=0)[0]
+        mx = torch.max(X, dim=0)[0]
+        dtype = torch.float64
+
+        # Init mixing prop
+        self._init_mp(dtype)
+
+        # RMM specific
+        if self.dof is None:
+            self.dof = (torch.arange(K, dtype=dtype, device=self.dev)*mx)/(K + 1)
+        if self.sig is None:
+            self.sig = torch.ones(K, dtype=dtype, device=self.dev)*((mx - mn)/(K*10))
+
+    def _update(self, ss0, ss1, ss2):
+        """ Update RMM parameters.
+
+        Args:
+            ss0 (torch.tensor): 0th moment (K).
+            ss1 (torch.tensor): 1st moment (C, K).
+            ss2 (torch.tensor): 2nd moment (C, C, K).
+
+        See also
+            Koay, C.G. and Basser, P. J., Analytically exact correction scheme
+            for signal extraction from noisy magnitude MR signals,
+            Journal of Magnetic Resonance, Volume 179, Issue = 2, p. 317–322, (2006)
+
+        """
+        C = ss1.shape[0]
+        K = ss1.shape[1]
+        dtype = torch.float64
+        pi = torch.tensor(math.pi, dtype=dtype, device=self.dev)
+        one = torch.tensor(1.0, dtype=dtype, device=self.dev)
+
+        # Compute means and variances
+        mu1 = torch.zeros(K, dtype=dtype, device=self.dev)
+        mu2 = torch.zeros(K, dtype=dtype, device=self.dev)
+        for k in range(K):
+            # Update mean
+            mu1[k] = 1/ss0[k] * ss1[:, k]
+
+            # Update covariance
+            mu2[k] = (ss2[:, :, k] - ss1[:, k]*ss1[:, k]/ss0[k]
+                     + self.lam*1e-3)/(ss0[k] + 1e-3)
+
+
+        # Update parameters (using means and variances)
+        for k in range(K):
+            # r = mu1[k]/torch.sqrt(mu2[k])
+            # theta = torch.sqrt(pi/(4 - pi))
+            # if r > theta:
+            #     for i in range(256):
+            #         xi = 2 + theta**2 \
+            #             - pi/8*torch.exp(-theta**2/2)*((2 + theta**2) * besseli(theta**2/4, order=0) \
+            #             + theta**2*besseli(theta**2/4, order=1))**2
+            #         g = torch.sqrt(xi*(1 + r**2) - 2)
+            #         if torch.abs(theta - g) < 1e-6:
+            #             break
+            #         theta = g
+            #     if not torch.isfinite(xi):
+            #         xi = one
+            #     self.sig[k] = torch.sqrt(mu2[k])/torch.sqrt(xi)
+            #     self.nu[k] = torch.sqrt(mu1[k]**2 + (xi - 2)*self.sig[k]**2)
+            # else:
+            #     self.nu[k] = 0
+            #     self.sig[k] = \
+            #         0.5*(torch.sqrt(torch.tensor(2, dtype=dtype, device=self.dev).float())
+            #              *torch.sqrt(mu1[k]**2 + mu2[k]))
+            self.sig[k] =  ss2[:, :, k]/(self.dof[k]*ss0[k])
+            gkl = ss0[k]*(torch.digamma(self.dof[k]/2)/2+0.5*torch.log(2*self.sig[k]))-ss1[:, k]
+            hkl = ss0[k]*torch.polygamma(1, self.dof[k]/2)/4
+            self.dof[k] = torch.max(self.dof-hkl/gkl, 2)

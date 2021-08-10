@@ -7,6 +7,7 @@ import torch
 from nitorch.core.kernels import smooth
 from nitorch.vb.mixtures import GMM
 from nitorch.vb.mixtures import RMM
+from nitorch.vb.mixtures import CMM
 from nitorch.spatial import im_gradient
 from nitorch.core.constants import inf
 from nitorch.plot import show_slices
@@ -140,7 +141,8 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     if mn < 0:  # Make GMM model
         model = GMM(num_class=num_class)
     else:  # Make RMM model
-        model = RMM(num_class=num_class)
+        #model = RMM(num_class=num_class)
+        model = CMM(num_class=num_class)
 
     # Fit GMM using Numpy
     model.fit(x, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
