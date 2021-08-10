@@ -138,6 +138,8 @@ class Mixture:
             # ==========
             # Product Rule
             for k in range(K):
+                #print(self.mp[k])
+                #print(self._log_likelihood(X, k))
                 Z[:, k] = torch.log(self.mp[k]) + self._log_likelihood(X, k)
 
             # Get responsibilities
@@ -625,16 +627,14 @@ class CMM(Mixture):
         """
         K = self.K
         dtype = torch.float64
-        #pi = torch.tensor(math.pi, dtype=dtype, device=self.dev)
-
+        
         # Compute means and variances
         mean = torch.zeros((1, K), dtype=dtype, device=self.dev)
         var = torch.zeros((1, 1, K), dtype=dtype, device=self.dev)
         for k in range(K):
             dof_k = self.dof[k]
-            sig_k = self.sig[k]
             
-            if torch.exp(torch.lgamma((dof_k+1)/2)-torch.lgamma(dof_k/2)) is finite:
+            if torch.isfinite(torch.exp(torch.lgamma((dof_k+1)/2)-torch.lgamma(dof_k/2))):
                 mean[:, k] = math.sqrt(2)*torch.exp(torch.lgamma((dof_k+1)/2)-torch.lgamma(dof_k/2))
             else:
                 mean[:, k] = dof_k
@@ -673,9 +673,10 @@ class CMM(Mixture):
         sig = sig.to(device)
 
         log_pdf = torch.zeros((N, 1), dtype=dtype, device=device)
-        tmp = -(X**2 + dof**2)/(2*sig**2)
+
         # Identify where Rice probability can be computed
-        msk = (tmp > -95) & ((X * (dof / sig**2)) < 85)
+        msk = (torch.isfinite(torch.log(X))) & (torch.isfinite(torch.lgamma(dof/2)))
+
         # Use Rician distribution
         #log_pdf[msk] = (X[msk]/sig2) * torch.exp(tmp[msk]) * besseli(X[msk] * (nu / sig2), order=0)
         log_pdf[msk] = (dof/2-1)*math.log(2)+(1-dof)*torch.log(X[msk])+X[msk]**2/(sig**2)+ \
@@ -684,11 +685,7 @@ class CMM(Mixture):
         log_pdf[~msk] = (1. / torch.sqrt(2 * pi * sig**2)) \
                   * torch.exp((-0.5 / sig**2) * (X[~msk] - dof)**2)
 
-    
-
-        #return torch.log(log_pdf.flatten() + tiny)
-        print (log_pdf)
-        return log_pdf
+        return log_pdf.flatten()
 
     def _init_par(self, X):
         """  Initialise RMM specific parameters: nu, sig
@@ -765,4 +762,4 @@ class CMM(Mixture):
             self.sig[k] =  ss2[:, :, k]/(self.dof[k]*ss0[k])
             gkl = ss0[k]*(torch.digamma(self.dof[k]/2)/2+0.5*torch.log(2*self.sig[k]))-ss1[:, k]
             hkl = ss0[k]*torch.polygamma(1, self.dof[k]/2)/4
-            self.dof[k] = torch.max(self.dof-hkl/gkl, 2)
+            self.dof[k] = self.dof[k]-hkl/gkl
