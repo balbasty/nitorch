@@ -151,10 +151,10 @@ class GridPush(torch.autograd.Function):
         bound = bound_to_nitorch(make_list(bound), as_enum=True)
         interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
+        opt = (bound, interpolation, extrapolate, abs)
 
         # Push
-        output = grid_push(input, grid, shape, *opt, abs)
+        output = grid_push(input, grid, shape, *opt)
 
         # Context
         if input.requires_grad or grid.requires_grad:
@@ -204,7 +204,7 @@ class GridCount(torch.autograd.Function):
         opt = ctx.opt
         grad_grid = None
         if ctx.needs_input_grad[0]:
-            grad_grid = grid_count_backward(grad, *var, *opt)
+            grad_grid = grid_count_backward(grad, *var, *opt, 0)
         return grad_grid, None, None, None, None, None
 
 
@@ -216,10 +216,10 @@ class GridGrad(torch.autograd.Function):
         bound = bound_to_nitorch(make_list(bound), as_enum=True)
         interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
+        opt = (bound, interpolation, extrapolate, abs)
 
         # Pull
-        output = grid_grad(input, grid, *opt, abs)
+        output = grid_grad(input, grid, *opt)
 
         # Context
         if input.requires_grad or grid.requires_grad:
