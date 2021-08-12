@@ -1226,7 +1226,6 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = gradient.shape[-1]
     voxel_size = make_vector(voxel_size, dim, **backend)
-    is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
 
     absolute = absolute * factor
     membrane = membrane * factor
@@ -1292,8 +1291,12 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         else:
             smo += 2 * lame[1] * (1 + ivx2.sum() / ivx2)
 
-    hessian_smo = hessian.clone()
-    hessian_smo[..., :dim] += smo
+    if smo.shape[-1] > hessian.shape[-1]:
+        hessian_smo = hessian + smo
+    else:
+        hessian_smo = hessian.clone()
+        hessian_smo[..., :dim] += smo
+    is_diag = hessian_smo.shape[-1] in (1, gradient.shape[-1])
 
     forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
                (lambda x: sym_matvec(hessian, x) + regulariser(x)))
