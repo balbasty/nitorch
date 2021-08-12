@@ -136,7 +136,7 @@ def cg(A, b, x=None, precond=None, max_iter=None,
     for n_iter in range(1, max_iter+1):
         # Find the step size of the conj. gradient descent
         Ap = A(p)
-        alpha = rz / torch.sum(p * Ap, dtype=sum_dtype)
+        alpha = rz / torch.sum(p * Ap, dtype=sum_dtype).clamp_min_(1e-12)
         # Perform conj. gradient descent, obtaining updated X and R, using the
         # calculated P and alpha
         x += alpha * p
@@ -146,7 +146,7 @@ def cg(A, b, x=None, precond=None, max_iter=None,
         # Finds the step size for updating P
         rz0 = rz
         rz = torch.sum(r * z, dtype=sum_dtype)
-        beta = rz / rz0
+        beta = rz / rz0.clamp_min_(1e-12)
         
         # Check convergence
         if tolerance or verbose:
@@ -479,7 +479,7 @@ def get_gain(obj, monotonicity='increasing'):
         gain = (obj[-2] - obj[-1])
     else:
         raise ValueError('Undefined monotonicity')
-    gain = gain / (torch.max(obj) - torch.min(obj))
+    gain = gain / max(torch.max(obj) - torch.min(obj), 1e-12)
     return gain
 
 
