@@ -1,8 +1,6 @@
 """Integrate stationary velocity fields."""
 
 from ._grid import grid_pull, grid_push, identity_grid, grid_jacobian
-from ._regularisers import regulariser_grid
-from ._shoot import greens, greens_apply
 from nitorch.core import utils, py, linalg
 import torch
 
@@ -10,7 +8,7 @@ __all__ = ['exp', 'exp_forward', 'exp_backward']
 
 
 def exp(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
-        displacement=False):
+        displacement=False, anagrad=False):
     """Exponentiate a stationary velocity field by scaling and squaring.
 
     Parameters
@@ -28,6 +26,10 @@ def exp(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
         Boundary conditions
     displacement : bool, default=False
         Return a displacement field rather than a transformation field
+    anagrad : bool, default=False
+        Use analytical gradients rather than autodiff gradients in
+        the backward pass. Should be more memory efficient and (maybe)
+        faster.
 
     Returns
     -------
@@ -35,12 +37,17 @@ def exp(vel, inverse=False, steps=8, interpolation='linear', bound='dft',
         Exponentiated tranformation
 
     """
-    return exp_forward(vel, inverse, steps, interpolation, bound, displacement)
+    exp_fn = _Exp.apply if anagrad else exp_forward
+    return exp_fn(vel, inverse, steps, interpolation, bound, displacement)
 
 
 def exp_forward(vel, inverse=False, steps=8, interpolation='linear',
-                bound='dft', displacement=False, jacobian=False):
+                bound='dft', displacement=False, jacobian=False,
+                _anagrad=False):
     """Exponentiate a stationary velocity field by scaling and squaring.
+
+    This function always uses autodiff in the backward pass.
+    It can also compute Jacobian fields on the fly.
 
     Parameters
     ----------
@@ -74,7 +81,7 @@ def exp_forward(vel, inverse=False, steps=8, interpolation='linear',
     jac = torch.eye(dim, **backend).expand([*vel.shape[:-1], dim, dim])
     opt = {'interpolation': interpolation, 'bound': bound}
 
-    if vel.requires_grad:
+    if not _anagrad and vel.requires_grad:
         iadd = lambda x, y: x.add(y)
     else:
         iadd = lambda x, y: x.add_(y)
@@ -88,6 +95,63 @@ def exp_forward(vel, inverse=False, steps=8, interpolation='linear',
     if not displacement:
         vel += id
     return (vel, jac) if jacobian else vel
+
+
+@torch.jit.script
+def _jhj1(jac, hess):
+    # type: (Tensor, Tensor) -> Tensor
+    # jac should be ordered as (D, B, *spatial)
+    # hess should be ordered as (D, D, B, *spatial)
+    return jac[0, 0] * jac[0, 0] * hess[0]
+
+
+@torch.jit.script
+def _jhj2(jac, hess):
+    # type: (Tensor, Tensor) -> Tensor
+    # jac should be ordered as (D, B, *spatial)
+    # hess should be ordered as (D, D, B, *spatial)
+    out = torch.empty_like(hess)
+    h00 = hess[0]
+    h11 = hess[1]
+    h01 = hess[2]
+    j00 = jac[0, 0]
+    j01 = jac[0, 1]
+    j10 = jac[1, 0]
+    j11 = jac[1, 1]
+    out[0] = j00 * j00 * h00 + j01 * j01 * h11 + 2 * j00 * j01 * h01
+    out[1] = j10 * j10 * h00 + j11 * j11 * h11 + 2 * j10 * j11 * h01
+    out[2] = j00 * j10 * h00 + j01 * j11 * h11 + (j01 * j10 + j00 * j11) * h01
+    return out
+
+
+@torch.jit.script
+def _jhj3(jac, hess):
+    # type: (Tensor, Tensor) -> Tensor
+    # jac should be ordered as (D, B, *spatial)
+    # hess should be ordered as (D, D, B, *spatial)
+    out = torch.empty_like(hess)
+    h00 = hess[0]
+    h11 = hess[1]
+    h22 = hess[2]
+    h01 = hess[3]
+    h02 = hess[4]
+    h12 = hess[5]
+    j00 = jac[0, 0]
+    j01 = jac[0, 1]
+    j02 = jac[0, 2]
+    j10 = jac[1, 0]
+    j11 = jac[1, 1]
+    j12 = jac[1, 2]
+    j20 = jac[2, 0]
+    j21 = jac[2, 1]
+    j22 = jac[2, 2]
+    out[0] = h00 * j00 * j00 + 2 * h01 * j00 * j01 + 2 * h02 * j00 * j02 + h11 * j01 * j01 + 2 * h12 * j01 * j02 + h22 * j02 * j02
+    out[1] = h00 * j10 * j10 + 2 * h01 * j10 * j11 + 2 * h02 * j10 * j12 + h11 * j11 * j11 + 2 * h12 * j11 * j12 + h22 * j12 * j12
+    out[2] = h00 * j20 * j20 + 2 * h01 * j20 * j21 + 2 * h02 * j20 * j22 + h11 * j21 * j21 + 2 * h12 * j21 * j22 + h22 * j22 * j22
+    out[3] = j10 * (h00 * j00 + h01 * j01 + h02 * j02) + j11 * (h01 * j00 + h11 * j01 + h12 * j02) + j12 * (h02 * j00 + h12 * j01 + h22 * j02)
+    out[4] = j20 * (h00 * j00 + h01 * j01 + h02 * j02) + j21 * (h01 * j00 + h11 * j01 + h12 * j02) + j22 * (h02 * j00 + h12 * j01 + h22 * j02)
+    out[5] = j20 * (h00 * j10 + h01 * j11 + h02 * j12) + j21 * (h01 * j10 + h11 * j11 + h12 * j12) + j22 * (h02 * j10 + h12 * j11 + h22 * j12)
+    return out
 
 
 def _jhj(jac, hess):
@@ -108,52 +172,20 @@ def _jhj(jac, hess):
     # out[02] = j20*(h00*j00 + h01*j01 + h02*j02) + j21*(h01*j00 + h11*j01 + h12*j02) + j22*(h02*j00 + h12*j01 + h22*j02)
     # out[12] = j20*(h00*j10 + h01*j11 + h02*j12) + j21*(h01*j10 + h11*j11 + h12*j12) + j22*(h02*j10 + h12*j11 + h22*j12)
 
-    # TODO: Should I wrap this in a torchscript function?
-
     dim = jac.shape[-1]
     hess = utils.movedim(hess, -1, 0)
     jac = utils.movedim(jac, [-2, -1], [0, 1])
-    out = torch.empty_like(hess)
     if dim == 1:
-        out[0] = jac[0, 0].square() * hess[0]
+        out = _jhj1(jac, hess)
     elif dim == 2:
-        out[0] = (jac[0, 0].square() * hess[0] +
-                  jac[0, 1].square() * hess[1] +
-                  2 * jac[0, 0] * jac[0, 1] * hess[2])
-        out[1] = (jac[1, 0].square() * hess[0] +
-                  jac[1, 1].square() * hess[1] +
-                  2 * jac[1, 0] * jac[1, 1] * hess[2])
-        out[2] = (jac[0, 0] * jac[1, 0] * hess[0] +
-                  jac[0, 1] * jac[1, 1] * hess[1] +
-                  jac[0, 1] * jac[1, 0] * hess[2] +
-                  jac[0, 0] * jac[1, 1] * hess[2])
+        out = _jhj2(jac, hess)
     elif dim == 3:
-        h00 = hess[0]
-        h11 = hess[1]
-        h22 = hess[2]
-        h01 = hess[3]
-        h02 = hess[4]
-        h12 = hess[5]
-        j00 = jac[0, 0]
-        j01 = jac[0, 1]
-        j02 = jac[0, 2]
-        j10 = jac[1, 0]
-        j11 = jac[1, 1]
-        j12 = jac[1, 2]
-        j20 = jac[2, 0]
-        j21 = jac[2, 1]
-        j22 = jac[2, 2]
-        out[0] = h00*j00.square() + 2*h01*j00*j01 + 2*h02*j00*j02 + h11*j01.square() + 2*h12*j01*j02 + h22*j02.square()
-        out[1] = h00*j10.square() + 2*h01*j10*j11 + 2*h02*j10*j12 + h11*j11.square() + 2*h12*j11*j12 + h22*j12.square()
-        out[2] = h00*j20.square() + 2*h01*j20*j21 + 2*h02*j20*j22 + h11*j21.square() + 2*h12*j21*j22 + h22*j22.square()
-        out[3] = j10*(h00*j00 + h01*j01 + h02*j02) + j11*(h01*j00 + h11*j01 + h12*j02) + j12*(h02*j00 + h12*j01 + h22*j02)
-        out[4] = j20*(h00*j00 + h01*j01 + h02*j02) + j21*(h01*j00 + h11*j01 + h12*j02) + j22*(h02*j00 + h12*j01 + h22*j02)
-        out[5] = j20*(h00*j10 + h01*j11 + h02*j12) + j21*(h01*j10 + h11*j11 + h12*j12) + j22*(h02*j10 + h12*j11 + h22*j12)
+        out = _jhj3(jac, hess)
     out = utils.movedim(out, 0, -1)
     return out
 
 
-def exp_backward(vel, grad, hess=None, inverse=False, steps=8,
+def exp_backward(vel, *grad_and_hess, inverse=False, steps=8,
                  interpolation='linear', bound='dft', rotate_grad=False):
     """Backward pass of SVF exponentiation.
 
@@ -203,6 +235,11 @@ def exp_backward(vel, grad, hess=None, inverse=False, steps=8,
         Approximate (block diagonal) Hessian with respect to the SVF
 
     """
+    has_hess = len(grad_and_hess) > 1
+    grad, *hess = grad_and_hess
+    hess = hess[0] if hess else None
+    del grad_and_hess
+
     opt = dict(bound=bound, interpolation=interpolation)
     dim = vel.shape[-1]
     shape = vel.shape[-dim-1:-1]
@@ -214,7 +251,7 @@ def exp_backward(vel, grad, hess=None, inverse=False, steps=8,
         # is a bit annoying...
         # Maybe save the Jacobian after the forward pass? But it take space
         _, jac = exp_forward(vel, jacobian=True, steps=steps,
-                             displacement=True, **opt)
+                             displacement=True, **opt, _anagrad=True)
         jac = jac.transpose(-1, -2)
         grad = linalg.matvec(jac, grad)
         if hess is not None:
@@ -249,7 +286,7 @@ def exp_backward(vel, grad, hess=None, inverse=False, steps=8,
     if hess is not None:
         hess /= (2**steps)
 
-    return (grad, hess) if hess is not None else grad
+    return (grad, hess) if has_hess else grad
 
 
 class _Exp(torch.autograd.Function):
@@ -260,7 +297,8 @@ class _Exp(torch.autograd.Function):
             ctx.save_for_backward(vel)
             ctx.args = {'steps': steps, 'inverse': inverse,
                         'interpolation': interpolation, 'bound': bound}
-        return exp_forward(vel, inverse, steps, interpolation, bound, displacement)
+        return exp_forward(vel, inverse, steps, interpolation, bound,
+                           displacement, _anagrad=True)
 
     @staticmethod
     def backward(ctx, grad):
