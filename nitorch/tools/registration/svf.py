@@ -6,6 +6,7 @@ from .phantoms import demo_atlas
 from .utils import jg, jhj, defaults_velocity
 from . import plot as plt, optim as optm, losses, phantoms, utils as regutils
 import functools
+import time
 
 
 class RegisterStep:
@@ -52,6 +53,8 @@ class RegisterStep:
         """
         # This loop performs the forward pass, and computes
         # derivatives along the way.
+
+        tic = time.time()
 
         dim = vel.shape[-1]
         pullopt = dict(bound=self.bound, extrapolate=self.extrapolate)
@@ -122,12 +125,13 @@ class RegisterStep:
         llv = llv.item()
         ll = llx + llv
         if self.verbose and not in_line_search:
+            toc = time.time() - tic
             self.n_iter += 1
             if self.ll_prev is None:
-                print(f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} = {ll:12.6g}', end='\r')
+                print(f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} = {ll:12.6g} ({toc:6.2f} s)', end='\r')
             else:
                 gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
-                print(f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} = {ll:12.6g} | {gain:12.6g}', end='\r')
+                print(f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} = {ll:12.6g} | {gain:12.6g} ({toc:6.2f} s)', end='\r')
             self.ll_prev = ll
             self.ll_max = max(self.ll_max, ll)
 

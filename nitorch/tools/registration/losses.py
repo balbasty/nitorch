@@ -774,6 +774,8 @@ class HistBasedOptimizationLoss(OptimizationLoss):
 class MSE(OptimizationLoss):
     """Mean-squared error"""
 
+    order = 2  # Hessian defined
+
     def __init__(self, lam=None, dim=None):
         """
 
@@ -874,6 +876,8 @@ class MSE(OptimizationLoss):
 
 class MAD(OptimizationLoss):
     """Median absolute deviation (using IRLS)"""
+
+    order = 2  # Hessian defined
 
     def __init__(self, lam=None, joint=False, dim=None):
         """
@@ -1001,6 +1005,8 @@ class MAD(OptimizationLoss):
 class Tukey(OptimizationLoss):
     """Tukey's biweight loss (using IRLS)"""
 
+    order = 2  # Hessian defined
+
     def __init__(self, lam=None, c=4.685, joint=False, dim=None):
         """
 
@@ -1120,6 +1126,8 @@ class Tukey(OptimizationLoss):
 class Cat(OptimizationLoss):
     """Categorical cross-entropy"""
 
+    order = 2  # Hessian defined
+
     def __init__(self, acceleration=0, dim=None):
         """
 
@@ -1207,6 +1215,8 @@ class Cat(OptimizationLoss):
 class CC(OptimizationLoss):
     """Pearson's correlation coefficient (squared)"""
 
+    order = 2  # Hessian defined
+
     def __init__(self, dim=None):
         """
 
@@ -1285,6 +1295,8 @@ class CC(OptimizationLoss):
 
 class LCC(OptimizationLoss):
     """Local correlation coefficient"""
+
+    order = 2  # Hessian defined
 
     def __init__(self, dim=None, patch=20, stride=1, lam=1, mode='g'):
         """
@@ -1383,6 +1395,8 @@ class LCC(OptimizationLoss):
 
 class NMI(HistBasedOptimizationLoss):
     """Normalized cross-correlation"""
+
+    order = 1  # Gradient defined
 
     def __init__(self, dim=None, bins=None, order=3, fwhm=2, norm='studholme'):
         """

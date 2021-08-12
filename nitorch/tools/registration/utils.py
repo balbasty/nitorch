@@ -43,22 +43,159 @@ def savef(x, parent):
 
 def smart_pull(image, grid, **kwargs):
     """spatial.grid_pull that accepts None grid"""
-    if grid is not None:
-        image = spatial.grid_pull(image, grid, **kwargs)
-    return image
+    if image is None or grid is None:
+        return image
+    return spatial.grid_pull(image, grid, **kwargs)
 
 
 def smart_push(image, grid, **kwargs):
     """spatial.grid_push that accepts None grid"""
-    if grid is not None:
-        image = spatial.grid_push(image, grid, **kwargs)
-    return image
+    if image is None or grid is None:
+        return image
+    return spatial.grid_push(image, grid, **kwargs)
 
 
 def smart_exp(vel, **kwargs):
     """spatial.exp that accepts None vel"""
     if vel is not None:
         vel = spatial.exp(vel, **kwargs)
+    return vel
+
+
+def smart_pull_grid(vel, grid, type='disp', *args, **kwargs):
+    """Interpolate a velocity/grid/displacement field.
+
+    Notes
+    -----
+    Defaults differ from grid_pull:
+    - bound -> dft
+    - extrapolate -> True
+
+    Parameters
+    ----------
+    vel : ([batch], *spatial, ndim) tensor
+        Velocity
+    grid : ([batch], *spatial, ndim) tensor
+        Transformation field
+    kwargs : dict
+        Options to ``grid_pull``
+
+    Returns
+    -------
+    pulled_vel : ([batch], *spatial, ndim) tensor
+        Velocity
+
+    """
+    if grid is None or vel is None:
+        return vel
+    kwargs.setdefault('bound', 'dft')
+    kwargs.setdefault('extrapolate', True)
+    dim = vel.shape[-1]
+    if type == 'grid':
+        id = spatial.identity_grid(vel.shape[-dim-1:-1],  **utils.backend(vel))
+        vel = vel - id
+    vel = utils.movedim(vel, -1, -dim-1)
+    vel_no_batch = vel.dim() == dim + 1
+    grid_no_batch = grid.dim() == dim + 1
+    if vel_no_batch:
+        vel = vel[None]
+    if grid_no_batch:
+        grid = grid[None]
+    vel = spatial.grid_pull(vel, grid, *args, **kwargs)
+    vel = utils.movedim(vel, -dim-1, -1)
+    if vel_no_batch:
+        vel = vel[0]
+    if type == 'grid':
+        id = spatial.identity_grid(vel.shape[-dim-1:-1], **utils.backend(vel))
+        vel += id
+    return vel
+
+
+def smart_pull_jac(jac, grid, *args, **kwargs):
+    """Interpolate a jacobian field.
+
+    Notes
+    -----
+    Defaults differ from grid_pull:
+    - bound -> dft
+    - extrapolate -> True
+
+    Parameters
+    ----------
+    jac : ([batch], *spatial_in, ndim, ndim) tensor
+        Jacobian field
+    grid : ([batch], *spatial_out, ndim) tensor
+        Transformation field
+    kwargs : dict
+        Options to ``grid_pull``
+
+    Returns
+    -------
+    pulled_jac : ([batch], *spatial_out, ndim) tensor
+        Jacobian field
+
+    """
+    if grid is None or jac is None:
+        return jac
+    kwargs.setdefault('bound', 'dft')
+    kwargs.setdefault('extrapolate', True)
+    dim = jac.shape[-1]
+    jac = jac.reshape([*jac.shape[:-2], dim*dim])  # collapse matrix
+    jac = utils.movedim(jac, -1, -dim - 1)
+    jac_no_batch = jac.dim() == dim + 1
+    grid_no_batch = grid.dim() == dim + 1
+    if jac_no_batch:
+        jac = jac[None]
+    if grid_no_batch:
+        grid = grid[None]
+    jac = spatial.grid_pull(jac, grid, *args, **kwargs)
+    jac = utils.movedim(jac, -dim - 1, -1)
+    jac = jac.reshape([*jac.shape[:-1], dim, dim])
+    if jac_no_batch:
+        jac = jac[0]
+    return jac
+
+
+def smart_push_grid(vel, grid, *args, **kwargs):
+    """Push a velocity/grid/displacement field.
+
+    Notes
+    -----
+    Defaults differ from grid_push:
+    - bound -> dft
+    - extrapolate -> True
+
+    Parameters
+    ----------
+    vel : ([batch], *spatial, ndim) tensor
+        Velocity
+    grid : ([batch], *spatial, ndim) tensor
+        Transformation field
+    kwargs : dict
+        Options to ``grid_pull``
+
+    Returns
+    -------
+    pulled_vel : ([batch], *spatial, ndim) tensor
+        Velocity
+
+    """
+    if grid is None or vel is None:
+        return vel
+    kwargs.setdefault('bound', 'dft')
+    kwargs.setdefault('extrapolate', True)
+    dim = vel.shape[-1]
+    vel = utils.movedim(vel, -1, -dim-1)
+    vel_no_batch = vel.dim() == dim + 1
+    grid_no_batch = grid.dim() == dim + 1
+    if vel_no_batch:
+        vel = vel[None]
+    if grid_no_batch:
+        grid = grid[None]
+    vel = spatial.grid_push(vel, grid, *args, **kwargs)
+    vel = utils.movedim(vel, -dim-1, -1)
+    if vel_no_batch and grid_no_batch:
+        vel = vel[0]
     return vel
 
 
@@ -85,7 +222,7 @@ def make_optim_grid(optim, lr=None, sub_iter=None, kernel=None, **prm):
 
 
 def make_optim_field(optim, lr=None, sub_iter=None, kernel=None, **prm):
-    """Prepare optimizer for vectir field"""
+    """Prepare optimizer for vector field"""
     correct_keys = ('absolute', 'membrane', 'bending', 'factor', 'voxel_size')
     prm = {k: prm[k] for k in prm if k in correct_keys}
 
@@ -185,8 +322,11 @@ def _affine_grid_backward_gh(grid, grad, hess):
     return g, h
 
 
-def affine_grid_backward(grad, hess=None, grid=None):
+def affine_grid_backward(*grad_hess, grid=None):
     """Converts ∇ wrt dense displacement into ∇ wrt affine matrix
+
+    g = affine_grid_backward(g, [grid=None])
+    g, h = affine_grid_backward(g, h, [grid=None])
 
     Parameters
     ----------
@@ -201,10 +341,15 @@ def affine_grid_backward(grad, hess=None, grid=None):
     -------
     grad : (..., dim, dim+1) tensor
         Gradient with respect to an affine matrix
-    hess : (..., dim, dim+1, dim, dim+1) tensor
+    hess : (..., dim, dim+1, dim, dim+1) tensor, optional
         Hessian with respect to an affine matrix
 
     """
+    has_hess = len(grad_hess) > 1
+    grad, *hess = grad_hess
+    hess = hess.pop(0) if hess else None
+    del grad_hess
+
     dim = grad.shape[-1]
     shape = grad.shape[-dim-1:-1]
     batch = grad.shape[:-dim-1]
@@ -220,7 +365,7 @@ def affine_grid_backward(grad, hess=None, grid=None):
     else:
         grad = _affine_grid_backward_g(grid, grad)
     grad = grad.reshape([*batch, dim, dim+1])
-    return (grad, hess) if hess is not None else grad
+    return (grad, hess) if has_hess else grad
 
 
 def jg(jac, grad, dim=None):
@@ -236,6 +381,8 @@ def jg(jac, grad, dim=None):
     new_grad : (..., *spatial, D)
 
     """
+    if grad is None:
+        return None
     dim = dim or (grad.dim() - 1)
     grad = utils.movedim(grad, -dim-1, -1)
     jac = utils.movedim(jac, -dim-2, -1)
@@ -259,7 +406,8 @@ def jhj(jac, hess, dim=0):
     new_hess : (..., *spatial, D*(D+1)//2)
 
     """
-
+    if hess is None:
+        return None
     dim = dim or (hess.dim() - 1)
     hess = utils.fast_movedim(hess, -dim-1, -1)
     jac = utils.fast_movedim(jac, -dim-2, -1)

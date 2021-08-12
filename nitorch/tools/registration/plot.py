@@ -1,7 +1,7 @@
 from nitorch.core import math, utils
 
 
-def mov2fix(fixed, moving, warped, vel=None, cat=False, dim=None):
+def mov2fix(fixed, moving, warped, vel=None, cat=False, dim=None, title=None):
     """Plot registration live"""
     import matplotlib.pyplot as plt
 
@@ -66,4 +66,7 @@ def mov2fix(fixed, moving, warped, vel=None, cat=False, dim=None):
             plt.title('velocity')
             plt.axis('off')
             plt.colorbar()
-    plt.show()
+    if title:
+        plt.suptitle(title)
+    plt.gcf().canvas.flush_events()
+    plt.show(block=False)

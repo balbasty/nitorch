@@ -1126,12 +1126,12 @@ class BacktrackingLineSearch(IterationStep):
                 setattr(self.optim, self.key, value * self.store_value)
             else:
                 setattr(self.optim, self.key, value0)
+            param0.copy_(param)
         else:
-            param = param0
             ll = ll0
         if return_derivatives:
-            return (param, ll, *derivatives)
-        return param, ll
+            return (param0, ll, *derivatives)
+        return param0, ll
 
 
 class StepSizeLineSearch(BacktrackingLineSearch):
@@ -1177,12 +1177,12 @@ class StepSizeLineSearch(BacktrackingLineSearch):
                 self.lr = lr * self.store_value
             else:
                 self.lr = lr0
+            param0.copy_(param)
         else:
-            param = param0
             ll = ll0
         if return_derivatives:
-            return (param, ll, *derivatives)
-        return param, ll
+            return (param0, ll, *derivatives)
+        return param0, ll
 
 
 class IterateOptim(Optim):
@@ -1263,3 +1263,71 @@ class IterateOptim(Optim):
         if derivatives:
             return (param, *drv)
         return param
+
+
+class IterateOptimInterleaved(Optim):
+    """Interleave optimizers (for block coordinate descent)"""
+
+    def __init__(self, optim, max_iter=20, tol=1e-9,
+                 sub_iter=None, sub_tol=None, ls=None):
+        """
+
+        Parameters
+        ----------
+        optim : list[IterateOptim]
+        max_iter : int, default=20
+        tol : float, default=1e-9
+        sub_iter : int, optional
+        sub_tol : float, optional
+        ls : int, optional
+        """
+        super().__init__()
+        self.optim = list(optim)
+        self.max_iter = max_iter
+        self.tol = tol
+        for i in range(len(optim)):
+            if not isinstance(optim[i], IterateOptim):
+                optim[i] = IterateOptim(optim[i], max_iter=sub_iter or 1,
+                                        tol=sub_tol or 1e-9, ls=ls or None)
+
+    requires_grad = property(lambda self: any(o.requires_grad for o in self.optim))
+    requires_hess = property(lambda self: any(o.requires_hess for o in self.optim))
+
+    def iter(self, param, closure, derivatives=False):
+        """Perform multiple optimization iterations
+
+        Parameters
+        ----------
+        param : list of tensor
+            Initial guess (will be modified inplace)
+        closure : list of callable(tensor, [grad=False], [hess=False]) -> Tensor, *Tensor
+            Function that takes a parameter and returns the objective and
+            its (optionally) gradient evaluated at that point.
+
+        Returns
+        -------
+        param : list of tensor
+            Updated parameter
+
+        """
+        gg_prev = float('inf')
+        gg_max = 0
+        for n_iter in range(1, self.max_iter+1):
+            oparam = []
+            ograd = []
+            for opt, prm, cls in zip(self.optim, param, closure):
+                prm, *derivatives = opt.iter(prm, cls, derivatives=True)
+                oparam.append(prm)
+                ograd.append(derivatives[0])
+
+            # check convergence
+            gg = [g.flatten().dot(g.flatten()) for og in ograd for g in og]
+            gg = sum(gg)
+            if abs((gg_prev-gg)/max(gg_max-gg, 1e-9)) < self.tol:
+                break
+            gg_prev = gg
+            gg_max = max(gg, gg_max)
+
+        if derivatives:
+            return (oparam, ograd)
+        return oparam
