@@ -631,8 +631,8 @@ def reslice(image, affine, affine_to, shape_to=None, **kwargs):
     return image
 
 
-def grid_inv(grid, type='grid', lam=0.1, bound='dft',
-             extrapolate=True):
+def grid_inv(grid, type='grid', bound='dft',
+             extrapolate=True, **prm):
     """Invert a dense deformation (or displacement) grid
     
     Notes
@@ -662,7 +662,7 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
         Transformation (or displacement) grid
     type : {'grid', 'disp'}, default='grid'
         Type of deformation.
-    lam : float, default=0.1
+    membrane : float, default=0.1
         Regularisation
     bound : str, default='dft'
         Boundary conditions
@@ -676,6 +676,8 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
         Inverse transformation (or displacement) grid
     
     """
+    prm = prm or dict(membrane=0.1)
+
     # get shape components
     grid = torch.as_tensor(grid)
     dim = grid.shape[-1]
@@ -701,8 +703,7 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
     count = utils.movedim(count, 1, -1)
     
     # Fill missing values using regularised least squares
-    disp = solve_grid_sym(count, disp, bound=bound,
-                          membrane=lam)
+    disp = solve_grid_sym(count, disp, bound=bound, **prm, optim='cg')
     disp = disp.reshape([*batch, *shape, dim])
     
     if type == 'grid':
@@ -711,7 +712,8 @@ def grid_inv(grid, type='grid', lam=0.1, bound='dft',
         return -disp
 
 
-def grid_jacobian(grid, bound='dft', voxel_size=1, type='grid', add_identity=True):
+def grid_jacobian(grid, sample=None, bound='dft', voxel_size=1, type='grid',
+                  add_identity=True, extrapolate=True):
     """Compute the Jacobian of a transformation field
 
     Notes
@@ -719,13 +721,16 @@ def grid_jacobian(grid, bound='dft', voxel_size=1, type='grid', add_identity=Tru
     .. If `add_identity` is True, we compute the Jacobian
        of the transformation field (identity + displacement), even if
        a displacement is provided, by adding ones to the diagonal.
-    .. This function uses central finite differences to estimate the
-       Jacobian.
+    .. If `sample` is not used, this function uses central finite
+       differences to estimate the Jacobian.
+    .. If 'sample' is provided, `grid_grad` is used to sample derivatives.
 
     Parameters
     ----------
     grid : (..., *spatial, dim) tensor
         Transformation or displacement field
+    sample : (..., *spatial, dim) tensor, optional
+        Coordinates to sample in the input grid.
     bound : str, default='dft'
         Boundary condition
     voxel_size : [sequence of] float, default=1
@@ -733,6 +738,8 @@ def grid_jacobian(grid, bound='dft', voxel_size=1, type='grid', add_identity=Tru
     type : {'grid', 'disp'}, default='grid'
         Whether the input is a transformation ('grid') or displacement
         ('disp') field.
+    extrapolate : bool, default=True
+        Extrapolate out-of-boudnd ata (only useful is `sample` is used)
 
     Returns
     -------
@@ -745,8 +752,13 @@ def grid_jacobian(grid, bound='dft', voxel_size=1, type='grid', add_identity=Tru
     shape = grid.shape[-dim-1:-1]
     if type == 'grid':
         grid = grid - identity_grid(shape, **utils.backend(grid))
-    dims = list(range(-dim-1, -1))
-    jac = diff(grid, dim=dims, bound=bound, voxel_size=voxel_size, side='c')
+    if sample is None:
+        dims = list(range(-dim-1, -1))
+        jac = diff(grid, dim=dims, bound=bound, voxel_size=voxel_size, side='c')
+    else:
+        grid = utils.movedim(grid, -1, -dim-1)
+        jac = grid_grad(grid, sample, bound=bound, extrapolate=extrapolate)
+        jac = utils.movedim(jac, -dim-2, -2)
     if add_identity:
         torch.diagonal(jac, 0, -1, -2).add_(1)
     return jac
