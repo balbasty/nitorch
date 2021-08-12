@@ -2051,6 +2051,11 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     offset = []
     for L, S, Pi, D, K, Po in zip(shape, stride, padding,
                                   dilation, kernel_size, output_padding):
+        if Pi == 'auto':
+            if K % 2 == 0:
+                raise ValueError('Cannot compute automatic padding '
+                                 'for even-sized kernels.')
+            Pi = D * (K // 2)
         if transposed:
             oshape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
             scale += [1/S]
@@ -2388,7 +2393,8 @@ def affine_mean(mats, shapes=None):
 _voxel_size = voxel_size  # little alias to avoid the function being shadowed
 
 
-def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
+def mean_space(mats, shapes, voxel_size=None, vx_unit='mm',
+               layout=None, fov='max', **fovopt):
     """Compute a mean space from a set of spaces (= affine + shape).
 
     Gradient *do not* propagate through this function.
@@ -2402,6 +2408,8 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     voxel_size : (dim,) tensor_like, optional
         Output voxel size.
         Uses the mean voxel size of all input matrices by default.
+    vx_unit : {'um', 'mm', ..., '%'}, default='mm'
+        If '%', a percentage of the mean voxel size will be used.
     layout : str or (dim+1, dim+1) array_like, default=None
         Output layout.
         Uses the majority layout of all input matrices by default.
@@ -2463,6 +2471,9 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     if voxel_size is not None:
         vs0 = torch.as_tensor(voxel_size, **backend)
         voxel_size = _voxel_size(mat)
+        if vx_unit in ('%', 'pct'):
+            vs0 = vs0 / 100
+            vs0 *= voxel_size
         vs0[~torch.isfinite(vs0)] = voxel_size[~torch.isfinite(vs0)]
         one = torch.ones([1], **backend)
         mat = mat * torch.diag(torch.cat((vs0 / voxel_size, one)))
