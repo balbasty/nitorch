@@ -73,7 +73,8 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
     padding = make_list(padding, dim)
     dilation = make_list(dilation, dim)
     for i in range(dim):
-        if padding[i].lower() == 'auto':
+        if isinstance(padding[i], str):
+            assert padding[i].lower() == 'auto'
             if kernel_size[i] % 2 == 0:
                 raise ValueError('Cannot compute automatic padding '
                                  'for even-sized kernels.')
@@ -275,7 +276,8 @@ pool2d = lambda *args, **kwargs: pool(2, *args, **kwargs)
 pool3d = lambda *args, **kwargs: pool(3, *args, **kwargs)
 
 
-def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
+def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
+           stride=1, padding='auto'):
     """Smooth a tensor.
 
     Parameters
@@ -301,6 +303,12 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
         Dimension of the convolution.
         The last `dim` dimensions of `tensor` will
         be smoothed.
+    stride : [sequence of] int, default=1
+        Stride between output elements.
+    padding : [sequence of] int or 'auto', default='auto'
+        Amount of padding applied to the input volume.
+        'auto' ensures that the output dimensions are the same as the
+        input dimensions.
 
     Returns
     -------
@@ -308,7 +316,6 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
         The resulting tensor has the same shape as the input tensor.
         This differs from the behaviour of torch's `conv*d`.
     """
-
     dim = dim or tensor.dim()
     batch = tensor.shape[:-dim]
     shape = tensor.shape[-dim:]
@@ -316,23 +323,18 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
     backend = dict(dtype=tensor.dtype, device=tensor.device)
     fwhm = make_list(fwhm, dim)
     kernels = core.kernels.smooth(type, fwhm, basis, **backend)
-    pad_size = [kernels[i].shape[i + 2] // 2 for i in range(len(kernels))]
-    pad_size = [0, 0] + pad_size
-    bound = ('reflect2' if bound == 'dct2' else
-             'reflect1' if bound == 'dct1' else
-             'circular' if bound == 'dft' else
-             'reflect2')
-    tensor = core.utils.pad(tensor, pad_size, mode=bound, side='both')
-    if dim == 1:
-        conv = torch.nn.functional.conv1d
-    elif dim == 2:
-        conv = torch.nn.functional.conv2d
-    elif dim == 3:
-        conv = torch.nn.functional.conv3d
-    else:
-        raise NotImplementedError
-    for kernel in kernels:
-        tensor = conv(tensor, kernel)
-    tensor = tensor.reshape([*batch, *shape])
+    stride = make_list(stride, dim)
+    padding = make_list(padding, dim)
+    for d, kernel in enumerate(kernels):
+        substride = [1] * dim
+        substride[d] = stride[d]
+        subpadding = [0] * dim
+        subpadding[d] = padding[d]
+        tensor = conv(dim, tensor, kernel, bound=bound,
+                      stride=substride, padding=subpadding)
+    # stride = make_list(stride, dim)
+    # slicer = [Ellipsis] + [slice(None, None, s) for s in stride]
+    # tensor = tensor[tuple(slicer)]
+    tensor = tensor.reshape([*batch, *tensor.shape[-dim:]])
     return tensor
 
