@@ -1396,7 +1396,7 @@ class LCC(OptimizationLoss):
 class NMI(HistBasedOptimizationLoss):
     """Normalized cross-correlation"""
 
-    order = 1  # Gradient defined
+    order = 2  # Gradient defined
 
     def __init__(self, dim=None, bins=None, order=3, fwhm=2, norm='studholme'):
         """
@@ -1507,4 +1507,39 @@ class NMI(HistBasedOptimizationLoss):
         else:
             return nmi(moving, fixed, norm=norm,
                        bins=bins, order=order, dim=dim, minmax=self.minmax)
+
+
+class AutoGradLoss(OptimizationLoss):
+    """Loss class built on an autodiff function"""
+
+    order = 1
+
+    def __init__(self, function, **kwargs):
+        super().__init__()
+        self.function = function
+        self.options = list(kwargs.keys())
+        for key, val in kwargs.items():
+            setattr(self, key, val)
+
+    def loss(self, moving, fixed, **overload):
+        options = {key: getattr(self, key) for key in self.options}
+        for key, value in overload:
+            options[key] = value
+        return self.function(moving, fixed, **options)
+
+    def loss_grad(self, moving, fixed, **overload):
+        options = {key: getattr(self, key) for key in self.options}
+        for key, value in overload:
+            options[key] = value
+        if moving.requires_grad:
+            raise ValueError('`moving` already requires gradients')
+        moving.requires_grad_()
+        moving.grad.zero_()
+        with torch.enable_grad():
+            loss = self.function(moving, fixed, **options)
+            loss.backward()
+            grad = moving.grad
+        moving.requires_grad_(False)
+        moving.grad = None
+        return loss, grad
 
