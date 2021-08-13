@@ -8,7 +8,7 @@ import copy
 
 
 # TODO:
-#  [ ] fix backward gradients for smalldef/shoot (svf should be ok)
+#  [x] fix backward gradients for smalldef/shoot (svf should be ok)
 #  [x] implement forward pass for affine
 #  [x] implement a forward pass for affine only (when nonlin is None).
 #      It deserves its own implementation as it is so much simpler (the
@@ -31,13 +31,12 @@ import copy
 
 class MeanSpace:
     """Compute a mean space from a bunch of affine + shape"""
-    def __init__(self, images, voxel_size=None, pad=0, pad_unit='%'):
-        # TODO: I could add a voxel_size_unit option as well, in case
-        #   we want the voxel size to be e.g. half the mean voxel space.
+    def __init__(self, images, voxel_size=None, vx_unit='mm', pad=0, pad_unit='%'):
         mat, shape = spatial.mean_space(
             [image.affine for image in images],
             [image.shape for image in images],
-            voxel_size=voxel_size, pad=pad, pad_unit=pad_unit)
+            voxel_size=voxel_size, vx_unit=vx_unit,
+            pad=pad, pad_unit=pad_unit)
         self.affine = mat
         self.shape = shape
 
@@ -997,12 +996,22 @@ class RegisterStep:
         self.llv = 0                # last velocity penalty
         self.lla = 0                # last affine penalty
 
+        self.framerate = 1
+        self._last_plot = 0
         if self.verbose > 2:
             import matplotlib.pyplot as plt
             self.figure = plt.figure()
 
     def mov2fix(self, fixed, moving, warped, vel=None, cat=False, dim=None, title=None):
         """Plot registration live"""
+
+        import time
+        tic = self._last_plot
+        toc = time.time()
+        if toc - tic < 1/self.framerate:
+            return
+        self._last_plot = toc
+
         import matplotlib.pyplot as plt
 
         warped = warped.detach()
@@ -1593,12 +1602,17 @@ class Register:
 
         step = RegisterStep(self.losses, self.affine, self.nonlin, self.verbose)
         if self.affine is not None and self.nonlin is not None:
+            if isinstance(self.optim.optim[1].optim.optim, optm.FirstOrder):
+                self.optim.optim[1].preconditioner = lambda x: self.nonlin.greens_apply(x)
             self.optim.iter([self.affine.dat.dat, self.nonlin.dat.dat],
                             [step.do_affine, step.do_vel])
         elif self.affine is not None:
             self.optim.iter(self.affine.dat.dat, step.do_affine_only)
         elif self.nonlin is not None:
-            self.optim.preconditioner = lambda x: self.nonlin.greens_apply(x)
+            if isinstance(self.optim, optm.FirstOrder):
+                self.optim.preconditioner = lambda x: self.nonlin.greens_apply(x)
+            elif isinstance(self.optim.optim.optim, optm.FirstOrder):
+                self.optim.preconditioner = lambda x: self.nonlin.greens_apply(x)
             self.optim.iter(self.nonlin.dat.dat, step.do_vel)
 
         return
