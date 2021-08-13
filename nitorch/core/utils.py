@@ -1765,7 +1765,7 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
         # sort and sample
         input, _ = input.sort(-1)
         q = q.mul_(input.shape[-1]-1)
-        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 1)[0]
     else:
         # compute cumulative histogram
         min = input.min(-1).values
