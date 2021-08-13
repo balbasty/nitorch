@@ -25,7 +25,7 @@ from .. import check
 from nitorch.nn.base import Module
 from .cnn import UNet, MRF
 from .spatial import GridPull, GridPushCount
-from ..generators import DiffeoSample
+from ..generators import RandomDiffeo
 from .seg_utils import augment_params, augment, warp_image, warp_label, board
 from .segmentation import SegNet
 
@@ -293,8 +293,8 @@ class MeanSpaceNet(Module):
         fwhm = (augment_params['warp']['fwhm'],) * self.dim
         fwhm = [f / v for f, v in zip(fwhm, self.vx)]  # modulate FWHM with voxel size
         # instantiate augmenter
-        aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
-            device=image[0].device, dtype=image[0].dtype)
+        aug = RandomDiffeo(amplitude=amplitude, fwhm=fwhm, bound='zero',
+                           device=image[0].device, dtype=image[0].dtype)
         # get random grid in mean space
         grid0 = aug(batch=1, shape=self.mean_dim, dim=self.dim)[0, ...]
         # loop over images

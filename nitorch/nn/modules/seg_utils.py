@@ -1,5 +1,5 @@
 from nitorch import spatial
-from ..generators import (BiasFieldTransform, DiffeoSample)
+from ..generators import (BiasFieldTransform, RandomDiffeo)
 import torch
 from ...core.constants import eps
 
@@ -263,7 +263,7 @@ def augment(method, image, label=None, vx=None):
         fwhm = [f / v for f, v in
                 zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
-        aug = DiffeoSample(amplitude=amplitude, fwhm=fwhm, bound='zero',
+        aug = RandomDiffeo(amplitude=amplitude, fwhm=fwhm, bound='zero',
                            device=image.device, dtype=image.dtype)
         # Get random grid
         grid = aug(batch=nbatch, shape=dim)

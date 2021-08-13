@@ -3,10 +3,10 @@ from nitorch.core.utils import expand, channel2last
 from nitorch.core import py, utils, math
 from nitorch.nn.base import Module
 from .distribution import RandomDistribution
-from .field import RandomSplineSample
+from .field import RandomFieldSpline
 
 
-class SmoothProbabilitySample(Module):
+class RandomSmoothSimplexMap(Module):
     """Sample a smooth categorical prior"""
 
     def __init__(self, shape=None, nb_classes=None, amplitude=5, fwhm=15,
@@ -37,9 +37,9 @@ class SmoothProbabilitySample(Module):
         self.logits = logits
         self.implicit = implicit
         shape = py.make_list(shape)
-        self.field = RandomSplineSample(shape=shape, channel=nb_classes,
-                                        amplitude=amplitude, fwhm=fwhm,
-                                        device=device, dtype=dtype)
+        self.field = RandomFieldSpline(shape=shape, channel=nb_classes,
+                                       amplitude=amplitude, fwhm=fwhm,
+                                       device=device, dtype=dtype)
 
     nb_classes = property(lambda self: self.field.channel)
     shape = property(lambda self: self.field.shape)
@@ -109,7 +109,7 @@ class SmoothProbabilitySample(Module):
         return sample
 
 
-class SmoothCategoricalSample(Module):
+class RandomSmoothLabelMap(Module):
     """Sample a smooth (i.e., contiguous) label map.
 
     This function first samples smooth log-probabilities from a
@@ -137,7 +137,7 @@ class SmoothCategoricalSample(Module):
         """
 
         super().__init__()
-        self.prob = SmoothProbabilitySample(
+        self.prob = RandomSmoothSimplexMap(
             shape=shape,
             nb_classes=nb_classes,
             amplitude=amplitude,
@@ -176,7 +176,7 @@ class SmoothCategoricalSample(Module):
         return prob.argmax(dim=1, keepdim=True)
 
 
-class CategoricalSample(Module):
+class RandomLabel(Module):
     """Sample from a categorical distribution."""
 
     def __init__(self, shape=None, logits=False, implicit=False):
@@ -248,7 +248,7 @@ class CategoricalSample(Module):
         return sample
 
 
-class MixtureSample(Module):
+class RandomMixture(Module):
     """Sample from a mixture of distributions."""
 
     def __init__(self, distributions):
