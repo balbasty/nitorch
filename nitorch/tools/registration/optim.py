@@ -97,7 +97,23 @@ class GradientDescent(FirstOrder):
         return grad.mul_(-self.lr)
 
 
-class Momentum(FirstOrder):
+class AcceleratedFirstOrder(FirstOrder):
+    """Base class for accelerated methods.
+
+    Accelerated methods store the previous step taken and use it
+    when computing the next step.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.delta = 0
+
+    def update_lr(self, lr):
+        if torch.is_tensor(self.delta):
+            self.delta.mul_(lr / self.lr)
+        self.lr = lr
+
+
+class Momentum(AcceleratedFirstOrder):
     """Gradient descent with momentum
 
     Δ{k+1} = α Δ{k} - η ∇f(x{k})
@@ -118,10 +134,10 @@ class Momentum(FirstOrder):
             self.delta.sub_(grad, alpha=self.lr)
         else:
             self.delta = grad.mul(-self.lr)
-        return self.delta
+        return self.delta.clone()
 
 
-class Nesterov(FirstOrder):
+class Nesterov(AcceleratedFirstOrder):
     """Nesterov accelerated gradient
 
     Nesterov's acceleration can be seen as taking a step in the same
@@ -208,7 +224,7 @@ class Nesterov(FirstOrder):
         return step
 
 
-class OGM(FirstOrder):
+class OGM(AcceleratedFirstOrder):
     """Optimized Gradient Method (Kim & Fessler)
 
     It belongs to the family of Accelerated First order Methods (AFM)
@@ -597,7 +613,7 @@ class FieldRelax(FieldGaussNewton):
         return step
 
 
-class StrongWolfe(ZerothOrder):
+class StrongWolfe(FirstOrder):
     # Adapted from PyTorch
 
     def __init__(self, c1=0, c2=0.9, tol=1e-9, max_iter=25):
@@ -1052,9 +1068,23 @@ class IterationStep(Optim):
         return param, ll
 
 
-class BacktrackingLineSearch(IterationStep):
+class LineSearch(IterationStep):
+    """Base class for line searches.
+    Line searches are heuristics that are often called after the search
+    direction is found. Some line search only look at the loss value
+    (e.g., backtracking line searches generally try to find the largest
+    step size --up to a limit -- that improves the loss) while other look at
+    the gradient as well (e.g. a Wolfe line search looks for a step size
+    that brings the loss in a "nice" region).
+    """
+    pass
+
+
+class BacktrackingLineSearch(LineSearch):
     """Meta-optimizer that performs a backtracking line search on the
-    value of an optimizer's parameter.
+    value of an optimizer's parameter. The search direction is recomputed
+    for each new parameter value, so this is not purely a "line" search.
+    But it can be seen as a 1D optimizer.
     """
 
     def __init__(self, optim, max_iter=6, key='lr', factor=0.5,
@@ -1136,6 +1166,9 @@ class BacktrackingLineSearch(IterationStep):
 
 
 class StepSizeLineSearch(BacktrackingLineSearch):
+    """Backtracking line search that only look at the step size.
+    The search direction is fixed a priori.
+    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1187,6 +1220,61 @@ class StepSizeLineSearch(BacktrackingLineSearch):
         return param0, ll
 
 
+class StrongWolfeLineSearch(LineSearch):
+    """Line search that only look at the step size.
+    The search direction is fixed a priori. A zero-th order optimizer
+    is used to optimize the loss along the search direction. This optimizer
+    returns as soon as the strong Wolfe conditions are satisfied.
+    """
+
+    def __init__(self, optim, c1=0, c2=0.9, tol=1e-9, max_iter=25):
+        """
+
+        Parameters
+        ----------
+        optim : `Optim`, default
+            Optimizer whose parameter is line-searched
+        c1 : float, default=0
+        c2 : float, default=0.9
+        tol : float, default=1e-9
+            Tolerance for early stopping
+        max_iter : int, default=25
+            Maximum number of line search iterations
+        """
+        super().__init__(optim)
+        self.wolfe = StrongWolfe(c1=c1, c2=c2, tol=tol, max_iter=max_iter)
+
+    def step(self, param, closure, derivatives=False):
+
+        import inspect
+        if 'in_line_search' in inspect.signature(closure).parameters:
+            closure_line_search = lambda *a, **k: closure(*a, **k, in_line_search=True)
+        else:
+            closure_line_search = closure
+
+        # compute derivatives and step
+        return_derivatives = derivatives
+        requires = dict(self.requires)
+        requires['grad'] = True
+        ll, *derivatives = closure(param, **self.requires)
+        grad = derivatives[0]
+        if 'grad' not in self.requires:
+            requires.pop('grad')
+        delta = self.optim.step(*derivatives)
+
+        # perform Wolfe line search
+        step, ll, grad = self.wolfe.iter(
+            param, ll, grad, self.lr, delta, closure_line_search)
+        delta.mul_(step)
+        param.add_(delta)
+        if hasattr(self.optim, 'udpate_lr'):
+            self.optim.update_lr(step)
+
+        if return_derivatives:
+            return (param, ll, *derivatives)
+        return param, ll
+
+
 class IterateOptim(Optim):
     """Wrapper that performs multiple steps of an optimizer.
 
@@ -1201,7 +1289,11 @@ class IterateOptim(Optim):
         optim : Optim or IterationStep
         max_iter : int, default=20
         tol : float, default=1e-9
-        ls : int or callable(Optim), default=0
+        ls : int or 'wolfe' or callable(Optim), default=0
+            If an int, use `StepSizeLineSearch` if optim is a SecondOrder
+            optimizer or `BacktrackingLineSearch` if optim is FirstOrder
+            optimizer. If 'wolfe', use `StrongWolfeLineSearch`.
+            If callable, should be a non-instantiated `LineSearch` class.
         """
         super().__init__()
         self.optim = optim
@@ -1216,6 +1308,8 @@ class IterateOptim(Optim):
                     self.optim = StepSizeLineSearch(self.optim, max_iter=ls)
                 else:
                     self.optim = BacktrackingLineSearch(self.optim, max_iter=ls)
+            elif isinstance(ls, str) and ls.lower() == 'wolfe':
+                self.optim = StrongWolfeLineSearch(self.optim)
             elif callable(ls):
                 self.optim = ls(self.optim)
         elif not isinstance(self.optim, IterationStep):
