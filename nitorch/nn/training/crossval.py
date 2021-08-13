@@ -7,7 +7,8 @@ from torch.multiprocessing import Pool, current_process
 def _init1(args):
     trainer, keep_on_gpu, cuda_pool = args
     if cuda_pool:
-        cuda_id = cuda_pool[current_process()._identity[0] - 1]
+        procid = (current_process()._identity or [1])[0] - 1
+        cuda_id = cuda_pool[procid]
     else:
         cuda_id = None
     if (cuda_id is not None
@@ -22,7 +23,8 @@ def _init1(args):
 def _train1(args):
     trainer, epoch, keep_on_gpu, cuda_pool = args
     if cuda_pool:
-        cuda_id = cuda_pool[current_process()._identity[0] - 1]
+        procid = (current_process()._identity or [1])[0] - 1
+        cuda_id = cuda_pool[procid]
     else:
         cuda_id = None
     if (cuda_id is not None
@@ -72,7 +74,8 @@ def multitrainer(trainers, keep_on_gpu=True, parallel=False, cuda_pool=(0,)):
         args = zip(trainers, [keep_on_gpu]*n, [cuda_pool]*n)
         trainers = list(pool.map(_init1, args, chunksize=chunksize))
     else:
-        trainers = list(map(_init1, trainer))
+        args = zip(trainers, [keep_on_gpu]*n, [cuda_pool]*n)
+        trainers = list(map(_init1, args))
 
     # --- train ---
     for epoch in range(initial_epoch+1, nb_epoch+1):
@@ -80,5 +83,6 @@ def multitrainer(trainers, keep_on_gpu=True, parallel=False, cuda_pool=(0,)):
             args = zip(trainers, [epoch]*n, [keep_on_gpu]*n, [cuda_pool]*n)
             trainers = list(pool.map(_train1, args, chunksize=chunksize))
         else:
-            trainers = list(map(_train1, trainer))
+            args = zip(trainers, [epoch]*n, [keep_on_gpu]*n, [cuda_pool]*n)
+            trainers = list(map(_train1, args))
 
