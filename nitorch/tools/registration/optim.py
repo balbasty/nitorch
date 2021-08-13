@@ -1129,6 +1129,7 @@ class BacktrackingLineSearch(IterationStep):
             param0.copy_(param)
         else:
             ll = ll0
+        closure(param0)  # to plot stuff
         if return_derivatives:
             return (param0, ll, *derivatives)
         return param0, ll
@@ -1180,6 +1181,7 @@ class StepSizeLineSearch(BacktrackingLineSearch):
             param0.copy_(param)
         else:
             ll = ll0
+        closure(param0)  # to plot stuff
         if return_derivatives:
             return (param0, ll, *derivatives)
         return param0, ll
