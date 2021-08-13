@@ -1145,8 +1145,8 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
                 dMs[n_mat] = dM
                 hMs[n_mat] = hM
             dM = torch.cat(dMs)
+            hMs = [hM.abs().sum(-3) for hM in hMs]  # diagonal majoriser (Fessler)
             hM = torch.cat(hMs)
-            hM = hM.abs().sum(-3)   # diagonal majoriser (see Fessler)
             M = torch.chain_matmul(*M)
 
             # Compute gradient/Hessian of the loss (squared residuals)
