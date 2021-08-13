@@ -1602,7 +1602,9 @@ class Register:
 
         step = RegisterStep(self.losses, self.affine, self.nonlin, self.verbose)
         if self.affine is not None and self.nonlin is not None:
-            if isinstance(self.optim.optim[1].optim.optim, optm.FirstOrder):
+            if isinstance(self.optim.optim[1], optm.FirstOrder):
+                self.optim.optim[1].preconditioner = lambda x: self.nonlin.greens_apply(x)
+            elif isinstance(self.optim.optim[1].optim.optim, optm.FirstOrder):
                 self.optim.optim[1].preconditioner = lambda x: self.nonlin.greens_apply(x)
             self.optim.iter([self.affine.dat.dat, self.nonlin.dat.dat],
                             [step.do_affine, step.do_vel])
