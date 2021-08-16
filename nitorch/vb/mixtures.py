@@ -77,7 +77,7 @@ class Mixture:
             W = torch.reshape(W, (N, 1))
 
         # Initialise model parameters
-        self._init_par(X)
+        self._init_par(X, W)
 
         # Compute a regularisation value
         self.lam = torch.zeros(C, dtype=self.dt, device=self.dev)
@@ -139,7 +139,8 @@ class Mixture:
             # Product Rule
             for k in range(K):
                 #print(self.mp[k])
-                #print(self._log_likelihood(X, k))
+                #print(f"dof{self.dof[k]}")
+                # print(self._log_likelihood(X, k))
                 Z[:, k] = torch.log(self.mp[k]) + self._log_likelihood(X, k)
 
             # Get responsibilities
@@ -171,6 +172,7 @@ class Mixture:
 
             # Update model specific parameters
             self._update(ss0, ss1, ss2)
+            #print(f"dof after update {self.dof}")
 
         return Z, lb[:n_iter + 1]
     
@@ -206,6 +208,7 @@ class Mixture:
 
         # Compute 0th moment
         ss0 = torch.sum(Z, dim=0, dtype=torch.float64) + tiny
+        #print(f"ss0 {ss0}")
 
         # Compute 1st and 2nd moments
         for k in range(K):
@@ -222,6 +225,9 @@ class Mixture:
                         torch.sum(Z[:, k] * (X[:, c1] * X[:, c2]),
                                   dtype=torch.float64)
                     ss2[c2, c1, k] = ss2[c1, c2, k]
+
+        #print(f"ss1 {ss1}")
+        #print(f"ss2 {ss2}")
 
         return ss0, ss1, ss2
 
@@ -391,7 +397,7 @@ class GMM(Mixture):
         log_pdf = - (C / 2) * torch.log(2 * pi) - log_det_Cov - 0.5 * torch.sum(diff**2, dim=1)
         return log_pdf
 
-    def _init_par(self, X):
+    def _init_par(self, X, W=None):
         """ Initialise GMM specific parameters: mu, Cov
 
         """
@@ -530,7 +536,7 @@ class RMM(Mixture):
 
         return torch.log(log_pdf.flatten() + tiny)
 
-    def _init_par(self, X):
+    def _init_par(self, X, W=None):
         """  Initialise RMM specific parameters: nu, sig
 
         """
@@ -658,6 +664,7 @@ class CMM(Mixture):
             https://en.wikipedia.org/wiki/Rice_distribution#Characterization
 
         """
+
         N = X.shape[0]
         device = X.device
         dtype = X.dtype
@@ -671,39 +678,68 @@ class CMM(Mixture):
         sig = sig.type(dtype)
         dof = dof.to(device)
         sig = sig.to(device)
+        #print(f"dof {dof}")
+
+        # lp   = ((1-nu/2)*log(2) - 0.5*nu*log(sig2) - gammaln(nu/2)) + (nu-1)*log(max(x,eps)) - x.^2./(2*sig2);
 
         log_pdf = torch.zeros((N, 1), dtype=dtype, device=device)
 
         # Identify where Rice probability can be computed
-        msk = (torch.isfinite(torch.log(X))) & (torch.isfinite(torch.lgamma(dof/2)))
+        msk = (torch.isfinite(torch.log(X+tiny))) & (torch.isfinite(torch.lgamma(dof/2))) & (torch.isfinite(X**2/(2*sig**2)))
+        #print(f"msk{ msk}")
 
         # Use Rician distribution
         #log_pdf[msk] = (X[msk]/sig2) * torch.exp(tmp[msk]) * besseli(X[msk] * (nu / sig2), order=0)
-        log_pdf[msk] = (dof/2-1)*math.log(2)+(1-dof)*torch.log(X[msk])+X[msk]**2/(sig**2)+ \
-            dof*math.log(sig)+torch.lgamma(dof/2)
+        log_pdf[msk] = -((dof/2-1)*math.log(2)+(1-dof)*torch.log(X[msk]+tiny)+X[msk]**2/(2*sig**2)+ \
+                    0.5*dof*torch.log(sig**2+tiny)+torch.lgamma(dof/2))
+        #print(f"msk: {log_pdf[msk]}")
+        #print(f"msk_(1-dof)*torch.log(X[msk]+tiny): {(1-dof)*torch.log(X[msk]+tiny)}")
+        #print(f"msk_0.5*dof*torch.log(sig**2+tiny): {0.5*dof*torch.log(sig**2+tiny)}")
+        #print(f"msk_(dof/2-1)*math.log(2): {(dof/2-1)*math.log(2)}")
+        #print(f"msk_X[msk]**2/(2*sig**2): {X[msk]**2/(2*sig**2)}")
+        #print(f"msk_torch.lgamma(dof/2): {torch.lgamma(dof/2)}")
         # Use normal distribution
-        log_pdf[~msk] = (1. / torch.sqrt(2 * pi * sig**2)) \
-                  * torch.exp((-0.5 / sig**2) * (X[~msk] - dof)**2)
-
+        log_pdf[~msk] = torch.log((1. / torch.sqrt(2 * pi * sig**2)) \
+                  * torch.exp((-0.5 / sig**2) * (X[~msk] - dof)**2))
+        #print(f"~msk: {log_pdf[~msk]}")
+        #print(f"~msk_torch.log((1. / torch.sqrt(2 * pi * sig**2)): {torch.log((1. / torch.sqrt(2 * pi * sig**2)))}")
+        #print(f"~msk_torch.exp((-0.5 / sig**2) * (X[~msk] - dof)**2): {torch.exp((-0.5 / sig**2) * (X[~msk] - dof)**2)}")
         return log_pdf.flatten()
 
-    def _init_par(self, X):
+    def _init_par(self, X, W=None):
         """  Initialise RMM specific parameters: nu, sig
 
         """
         K = self.K
-        mn = torch.min(X, dim=0)[0]
-        mx = torch.max(X, dim=0)[0]
         dtype = torch.float64
 
         # Init mixing prop
         self._init_mp(dtype)
 
-        # RMM specific
-        if self.dof is None:
-            self.dof = (torch.arange(K, dtype=dtype, device=self.dev)*mx)/(K + 1)
+        # mu   = 5*sum(h.*x)/sum(h);
+        # sig2 = sum(h.*(x-mu).^2)/sum(h);
+        # sig2 = sig2/(K+1)*(1:K)';
+        # nu   = 3*ones(K,1);
+        # gam  = ones(K,1)/K;
+        # ll   = -Inf;
+        # lp   = zeros(numel(h),K);
+
         if self.sig is None:
-            self.sig = torch.ones(K, dtype=dtype, device=self.dev)*((mx - mn)/(K*10))
+            if W is None:
+                self.sig = torch.mean(X)*5
+                self.sig = torch.sum((self.sig - X)**2)/torch.numel(X)
+                self.sig = torch.sqrt(self.sig/(K+1)*(torch.arange(K, dtype=dtype, device=self.dev)))
+            else:
+                self.sig = 5*torch.mean(W*X)/torch.sum(W)
+                self.sig = torch.sum(W*(self.sig - X)**2)/torch.sum(W)
+                self.sig = torch.sqrt(self.sig/(K+1)*(torch.arange(K, dtype=dtype, device=self.dev)))
+
+        
+        if self.dof is None:
+            self.dof = torch.ones(K, dtype=dtype, device=self.dev)*3
+        # print(self.sig)
+        # print(self.dof)
+
 
     def _update(self, ss0, ss1, ss2):
         """ Update RMM parameters.
@@ -721,45 +757,32 @@ class CMM(Mixture):
         """
         C = ss1.shape[0]
         K = ss1.shape[1]
-        dtype = torch.float64
-        pi = torch.tensor(math.pi, dtype=dtype, device=self.dev)
-        one = torch.tensor(1.0, dtype=dtype, device=self.dev)
+        device = self.sig.device
+        dtype = self.sig.dtype
+        tiny = torch.tensor(1e-32, dtype=dtype, device=device)
 
-        # Compute means and variances
-        mu1 = torch.zeros(K, dtype=dtype, device=self.dev)
-        mu2 = torch.zeros(K, dtype=dtype, device=self.dev)
-        for k in range(K):
-            # Update mean
-            mu1[k] = 1/ss0[k] * ss1[:, k]
-
-            # Update covariance
-            mu2[k] = (ss2[:, :, k] - ss1[:, k]*ss1[:, k]/ss0[k]
-                     + self.lam*1e-3)/(ss0[k] + 1e-3)
 
 
         # Update parameters (using means and variances)
         for k in range(K):
-            # r = mu1[k]/torch.sqrt(mu2[k])
-            # theta = torch.sqrt(pi/(4 - pi))
-            # if r > theta:
-            #     for i in range(256):
-            #         xi = 2 + theta**2 \
-            #             - pi/8*torch.exp(-theta**2/2)*((2 + theta**2) * besseli(theta**2/4, order=0) \
-            #             + theta**2*besseli(theta**2/4, order=1))**2
-            #         g = torch.sqrt(xi*(1 + r**2) - 2)
-            #         if torch.abs(theta - g) < 1e-6:
-            #             break
-            #         theta = g
-            #     if not torch.isfinite(xi):
-            #         xi = one
-            #     self.sig[k] = torch.sqrt(mu2[k])/torch.sqrt(xi)
-            #     self.nu[k] = torch.sqrt(mu1[k]**2 + (xi - 2)*self.sig[k]**2)
-            # else:
-            #     self.nu[k] = 0
-            #     self.sig[k] = \
-            #         0.5*(torch.sqrt(torch.tensor(2, dtype=dtype, device=self.dev).float())
-            #              *torch.sqrt(mu1[k]**2 + mu2[k]))
-            self.sig[k] =  ss2[:, :, k]/(self.dof[k]*ss0[k])
-            gkl = ss0[k]*(torch.digamma(self.dof[k]/2)/2+0.5*torch.log(2*self.sig[k]))-ss1[:, k]
+            
+            # sig2 = s2/(nu*s0);                                % Closed form update of sig2
+            # g    = s0*(psi(0,nu/2)/2 + 0.5*log(2*sig2)) - sl; % Gradient w.r.t. nu
+            # H    = s0* psi(1,nu/2)/4;                         % Hessian  w.r.t. nu
+            # nu   = max(nu - H\g, 2);                          % Gauss-newton update (constrained)
+            # if g'*g < eps, break; end  
+
+            print(f"self.dof[k] before update {self.dof[k]}")
+            print(f"ss0[k] {ss0[k]}")
+            print(f"ss2[:, :, k] {ss2[:, :, k]}")
+            self.sig[k] =  torch.sqrt(ss2[:, :, k]/(self.dof[k]*ss0[k]))
+            print(f"self.sig[k] {self.sig[k]}")
+            gkl = ss0[k]*(torch.digamma(self.dof[k]/2)/2+0.5*torch.log(2*self.sig[k]**2+tiny))-ss1[:, k]
+            print(f"gkl {gkl}")
             hkl = ss0[k]*torch.polygamma(1, self.dof[k]/2)/4
-            self.dof[k] = self.dof[k]-hkl/gkl
+            #print(f"hkl {hkl}")
+            # find max of tensor self.dof[k]-hkl/gkl and scalar 2: (compatible with torch 1.5.1)
+            self.dof[k] = torch.clamp(self.dof[k]-hkl/gkl, min=2)
+            #print(f"self.dof[k] {self.dof[k]}")
+            if not torch.isfinite(self.dof[k]):
+                self.dof[k] = 2        
