@@ -5,7 +5,10 @@ from ._preproc import preproc, postproc
 from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul,
                      hessian_sym_solve, hessian_sym_inv, rls_maj,
                      smart_grid, smart_pull, smart_push)
+from scipy.special import jve
 from nitorch.tools.qmri.param import ParameterMap
+
+
 
 
 # NOTE:
@@ -553,7 +556,17 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         del dat
 
         # compute log-likelihood
-        crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
+        #crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
+
+        # chi log likelihood
+        dof= 14.1450
+        sig = 3
+        besin = dat*fit/(sig**2)
+        bes = jve(dof/2-1, besin)
+        crit = crit + (dof/2-1)*torch.log(fit)-dof/2*torch.log(dat)+(fit.square()+dat.square())/(2*sig**2)\
+            - torch.log(bes)
+
+
 
         if do_grad:
 
