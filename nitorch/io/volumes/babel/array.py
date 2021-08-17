@@ -650,6 +650,14 @@ class BabelArray(MappedArray):
         if hasattr(header, 'writeftr_to'):
             header.writeftr_to(fftr)
 
+        # close files
+        if not fhdr.closed:
+            fhdr.close_if_mine()
+        if not fimg.closed:
+            fimg.close_if_mine()
+        if not fftr.closed:
+            fftr.close_if_mine()
+
     # ------------------------------------------------------------------
     #    ADAPTED FROM NIBABEL'S ARRAYPROXY
     # ------------------------------------------------------------------
