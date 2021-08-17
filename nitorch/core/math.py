@@ -1065,9 +1065,9 @@ def besseli_ratio(X, nu=0, N=4, K=10):
         rk[k+1] = X/((nu1+k+0.5) + torch.sqrt((nu1+k+1.5)**2 + X**2))
 
     # del k
-    for m in range(N,-1,-1):
+    for m in range(N, 0,-1):
         # Recursive updates (eq. 20b)
-        for k2 in range(m+1):
+        for k2 in range(1, m+1):
             # rk{k} = x./(nu1+k+sqrt((nu1+k).^2+((rk{k+1})./rk{k}).
             if k2 != 0 : # indice 0 is invalid
                 rk[k2] = X/(nu1+k2+torch.sqrt( (nu1+k2)**2 + (rk[k2+1]/rk[k2])*X**2))
