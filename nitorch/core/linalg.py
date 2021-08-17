@@ -11,6 +11,11 @@ from ._linalg_logm import logm
 from ._linalg_qr import eig_sym, eig_sym_
 
 
+_torch_has_linalg_solve = utils.torch_version('>=', (1, 8))
+_solve_lu = (torch.linalg.solve if _torch_has_linalg_solve else
+             (lambda A, b: torch.solve(b, A)[0]))
+
+
 def meanm(mats, max_iter=1024, tol=1e-20):
     """Compute the exponential barycentre of a set of matrices.
 
@@ -145,7 +150,7 @@ def lmdiv(a, b, method='lu', rcond=1e-15, out=None):
         method = 'pinv'
     if method.lower().startswith('lu'):
         # TODO: out keyword
-        return torch.solve(b, a)[0]
+        return _solve_lu(a, b)
     elif method.lower().startswith('chol'):
         u = torch.cholesky(a, upper=False)
         return torch.cholesky_solve(b, u, upper=False, out=out)
