@@ -8,16 +8,18 @@ These function are implemented in functional form (mse, nmi, cat, ...),
 but OO wrappers are also provided for ease of use (MSE, NMI, Cat, ...).
 
 Currently, the following losses are implemented:
-- mse : mean squared error
-- cat : categorical cross entropy
-- ncc : normalized cross-correlation
-- nmi : normalized mutual information
+- MSE : mean squared error == l2 == Gaussian negative log-likelihood
+- MAD : median absolute deviation == l1 == Laplace negative log-likelihood
+- Tukey : Tukey's biweight
+- Cat : categorical cross entropy
+- CC  : correlation coefficient == normalized cross-correlation
+- LCC : local correlation coefficient
+- NMI : normalized mutual information
 """
 from nitorch.core import utils, py, math, constants, linalg
 from nitorch.nn.modules.conv import _guess_output_shape
 from torch.nn import functional as F
 import math as pymath
-import typing
 import torch
 from .utils import JointHist
 pyutils = py
@@ -1543,3 +1545,12 @@ class AutoGradLoss(OptimizationLoss):
         moving.grad = None
         return loss, grad
 
+
+class Dice(AutoGradLoss):
+
+    def __init__(self, log=False, implicit=True, exclude_background=True,
+                 weighted=False):
+        from nitorch.nn.losses import DiceLoss
+        dice = DiceLoss(log=log, implicit=implicit, weighted=weighted,
+                        exclude_background=exclude_background)
+        super().__init__(dice)

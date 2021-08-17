@@ -45,6 +45,11 @@ class Optim:
     requires_grad = False
     requires_hess = False
 
+    def __repr__(self):
+        return f'{type(self).__name__}(lr={self.lr})'
+
+    __str__ = __repr__
+
 
 class ZerothOrder(Optim):
     requires_grad = False
@@ -1067,6 +1072,11 @@ class IterationStep(Optim):
             return (param, ll, *derivatives)
         return param, ll
 
+    def __repr__(self):
+        return f'{type(self).__name__} o {self.optim}'
+
+    __str__ = __repr__
+
 
 class LineSearch(IterationStep):
     """Base class for line searches.
@@ -1360,8 +1370,14 @@ class IterateOptim(Optim):
             return (param, *drv)
         return param
 
+    def __repr__(self):
+        return f'{type(self).__name__}(max_iter={self.max_iter}, ' \
+               f'tol={self.tol}) o {self.optim}'
 
-class IterateOptimInterleaved(Optim):
+    __str__ = __repr__
+
+
+class IterateOptimInterleaved(IterateOptim):
     """Interleave optimizers (for block coordinate descent)"""
 
     def __init__(self, optim, max_iter=20, tol=1e-9,
@@ -1377,7 +1393,7 @@ class IterateOptimInterleaved(Optim):
         sub_tol : float, optional
         ls : int, optional
         """
-        super().__init__()
+        # no super call
         self.optim = list(optim)
         self.max_iter = max_iter
         self.tol = tol
@@ -1427,3 +1443,13 @@ class IterateOptimInterleaved(Optim):
         if derivatives:
             return (oparam, ograd)
         return oparam
+
+    def __repr__(self):
+        s = f'{type(self).__name__}(max_iter={self.max_iter}, ' \
+            f'tol={self.tol}) o [\n'
+        for opt in self.optim:
+            s += f'    {opt},\n'
+        s = s[:-2] + '])'
+        return s
+
+    __str__ = __repr__

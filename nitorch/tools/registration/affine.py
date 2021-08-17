@@ -1,10 +1,17 @@
+"""Affine registration.
+
+The function `affine.register` is a prototype that requires input images
+to be defined on the same grid. See `registration.joint` for a more flexible
+model.
+
+The classes `RegisterStep`, `AutoRegStep` and `Register` are implementation
+utilities. The main entry points are `register` and `autoreg`.
+"""
 from nitorch import spatial
-from nitorch.core import py, utils, linalg, math
+from nitorch.core import utils, linalg
 import torch
-from .utils import defaults_template, loadf, savef
-from .phantoms import demo_atlas
-from .utils import jg, jhj, defaults_velocity
-from . import plot as plt, optim as optm, losses, phantoms, utils as regutils
+from .utils import jg, jhj
+from . import plot as plt, losses, phantoms, utils as regutils
 import functools
 
 
