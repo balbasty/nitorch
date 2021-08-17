@@ -1,3 +1,4 @@
+from nitorch.core.math import besseli_ratio
 import torch
 from nitorch import core, spatial
 from ._options import GREEQOptions
@@ -5,9 +6,9 @@ from ._preproc import preproc, postproc
 from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul,
                      hessian_sym_solve, hessian_sym_inv, rls_maj,
                      smart_grid, smart_pull, smart_push)
-from scipy.special import jve
+from scipy.special import jve, jv, ive, iv
 from nitorch.tools.qmri.param import ParameterMap
-
+import numpy as np
 
 
 
@@ -404,7 +405,7 @@ def _resize(maps, rls, aff, shape):
     return maps, rls
 
 
-def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
+def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=True):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
 
@@ -551,20 +552,37 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
         dat[~msk] = 0
         fit[~msk] = 0
-        res = dat.neg_()
-        res += fit
-        del dat
 
-        # compute log-likelihood
-        #crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
+        res = dat.neg_()
+        if chi:
+            dof= 14.1450
+            ndat_np, fit_np = dat.neg_().clone().detach().cpu(), fit.clone().detach().cpu()
+            # #print(iv(dof/2-1, ndat_np.numpy()*fit_np.numpy()*lam))
+            bes_np = iv(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*lam)
+            # besup_np = np.log(iv(dof/2., ndat_np.numpy()*fit_np.numpy()*lam))
+            # epsilon_np = np.log(besup_np)-np.log(bes_np)
+            # epsilon_np = np.exp(epsilon_np)
+            # epsilon = torch.as_tensor(epsilon_np, dtype=dtype).cuda()
+            bes = torch.as_tensor(bes_np, dtype=dtype).cuda()
+
+
+            # # epsilon = torch.tensor(epsilon, dtype=dtype, device=device)
+            # # bes = torch.tensor(bes, dtype=dtype, device=device)
+            epsilon = besseli_ratio(res*fit*lam, dof/2-1, N=2, K=4)
+            res = res*epsilon
+        res += fit
+        
+
 
         # chi log likelihood
-        dof= 14.1450
-        sig = 3
-        besin = dat*fit/(sig**2)
-        bes = jve(dof/2-1, besin)
-        crit = crit + (dof/2-1)*torch.log(fit)-dof/2*torch.log(dat)+(fit.square()+dat.square())/(2*sig**2)\
-            - torch.log(bes)
+        if chi:
+            crit = crit + (dof/2-1)*torch.log(fit)-dof/2*torch.log(dat)+(fit.square()+dat.square())/(2*lam**2)\
+                - torch.log(bes)
+        else:
+            #compute log-likelihood
+            crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
+        del dat
+
 
 
 
