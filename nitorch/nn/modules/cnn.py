@@ -1229,7 +1229,7 @@ class CNN(tnn.Sequential):
             reduction='max',
             activation='relu',
             batch_norm=False,
-            dropout=0.5):
+            dropout=1.0):
         """
 
         Parameters
@@ -1279,9 +1279,9 @@ class CNN(tnn.Sequential):
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
 
-        dropout : float, default=0.5
+        dropout : sequence[float], default=1.0
             Dropout amount applied to the output of each fully connected layer (before activation).
-            Set to 0.0 to use no dropout.
+            Set to 0.0 or 1.0 to use no dropout.
 
         """
         self.dim = dim

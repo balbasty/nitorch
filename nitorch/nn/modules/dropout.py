@@ -61,12 +61,10 @@ class Dropout(Module):
             return self.activation(x)
 
     def __str__(self):
-        s = ['']
-        if self.dropout.p != 0.5:
-            s += [f'p={p}']
-        if not self.before_activation:
-            s += [f'before_activation=False']
-        s = ', '.join(s)
-        return f'Dropout({s})'
+        if self.before_activation:
+            s = f"{self.activation} o Dropout(p={self.dropout.p})"
+        else:
+            s = f"Dropout(p={self.dropout.p}) o {self.activation}"
+        return s
 
     __repr__ = __str__

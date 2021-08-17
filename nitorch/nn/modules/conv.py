@@ -832,16 +832,16 @@ class Conv(Module):
 
         # Add dropout
         p = dropout  # dropout amount
-        if isinstance(p, float) and p > 0.0 and p <= 1.0:
+        if isinstance(p, float) and p > 0.0 and p < 1.0:
             dropout = Dropout(p=p)
-        self.dropout = (dropout(p=p) 
-                           if inspect.isclass(dropout)
-                           else dropout if callable(dropout)
-                           else None)
-        if self.dropout is not None:
+        dropout = (dropout(p=p) 
+                    if inspect.isclass(dropout)
+                    else dropout if callable(dropout)
+                    else None)
+        if dropout is not None:
             # integrate dropout into activation function
-            self.dropout.activation = self.activation
-            self.activation = self.dropout
+            dropout.activation = self.activation
+            self.activation = dropout
 
     @property
     def weight(self):
