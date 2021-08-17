@@ -1031,3 +1031,53 @@ def besseli(X, order=0, Nk=64):
                        (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1, dtype=torch.float64)
     return i
 
+
+def besseli_ratio(X, nu=0, N=4, K=10):
+    """Approximates ratio of the modified Bessel functions of the first kind:
+       besseli(nu+1,x)/besseli(nu,x)
+
+    Args:
+        X (torch.tensor): Input (N, 1).
+        nu (float, optional): degrees of freedom.
+        N, K (int, optional): Terms in summation, higher number, better approximation.
+            Defaults to N=4, K=10.
+
+    Returns:
+        I (torch.tensor): ratio of the modified Bessel functions of the first kind (N, 1).
+    
+    See also:
+        Reference
+        * Amos DE. Computation of modified Bessel functions and their ratios.
+          Mathematics of Computation. 1974;28(125):239-251.
+
+    """
+    device = X.device
+    dtype = X.dtype
+
+    # Begin by computing besseli(nu+1+N,x)/besseli(nu+N,x)
+    nu1 = nu+K
+    # rk = torch.arange(0, N+2, dtype=dtype, device=device)
+    rk = [0] * (N+2)
+    # Lower bound (eq. 20a)
+    # for k=0:N, rk{k+1} = x./((nu1+k+0.5)+sqrt((nu1+k+1.5).^2+x.^2)); end
+
+    for k in range(0,N+1):
+        rk[k+1] = X/((nu1+k+0.5) + torch.sqrt((nu1+k+1.5)**2 + X**2))
+
+    # del k
+    for m in range(N,-1,-1):
+        # Recursive updates (eq. 20b)
+        for k2 in range(m+1):
+            # rk{k} = x./(nu1+k+sqrt((nu1+k).^2+((rk{k+1})./rk{k}).
+            if k2 != 0 : # indice 0 is invalid
+                rk[k2] = X/(nu1+k2+torch.sqrt( (nu1+k2)**2 + (rk[k2+1]/rk[k2])*X**2))
+    
+    # rk[0] is invalid due to artifacts from matlab (difference in indices)
+    result = rk[1]
+    del rk
+
+    # Convert the result to besseli(nu+1,x)/besseli(nu,x) with
+    # backward recursion (eq. 2).
+    for k3 in range(K,0,-1):
+        result = 1./(2.*(nu+k3)/X + result)
+    return result
