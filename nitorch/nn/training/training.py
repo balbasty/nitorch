@@ -385,12 +385,12 @@ class ModelTrainer:
                 for func in self._tensorboard_callbacks['train']['epoch']:
                     func(self.tensorboard, **tbopt)
 
-        return epoch_loss
+        return epoch_metrics, epoch_loss
 
     def _eval(self, epoch=0):
         """Evaluate once"""
         if self.eval_set is None:
-            return
+            return None, None
 
         self.model.eval()
         with torch.no_grad():
@@ -446,7 +446,7 @@ class ModelTrainer:
                 for func in self._tensorboard_callbacks['eval']['epoch']:
                     func(self.tensorboard, **tbopt)
 
-        return epoch_loss
+        return epoch_metrics, epoch_loss
 
     def _print(self, mode, n_epoch, n_batch, nb_steps, loss,
                losses=None, metrics=None, last=False):
@@ -574,6 +574,17 @@ class ModelTrainer:
                 os.makedirs(dir_optimizer, exist_ok=True)
             torch.save(self.optimizer.state_dict(), save_optimizer)
 
+    def _append_results(self, results, results_batch):
+        """append losses+metrics from one batch"""
+        if not results:
+            for key in results_batch:
+                results[key] = results_batch[key][None]
+        else:
+            for key in results_batch:
+                results[key] = \
+                    torch.cat((results[key], results_batch[key][None]))
+        return results
+
     @staticmethod
     def _formatfile(file, epoch):
         """Format filename for an epoch"""
@@ -590,12 +601,15 @@ class ModelTrainer:
         
         Returns
         ----------
-        losses : dict
-            Loss dictionary with train ('train') and validation ('val') losses.
+        results : dict
+            dictionary with train ('train') and validation ('val') results (losses+metrics).
             
         """
         self._hello('train')
-        losses = {'train': [], 'val': []}
+        results = {
+            'train': {}, 
+            'val': {},
+        }
         with torch.random.fork_rng(enabled=self.seed is not None):
             if self.seed is not None:
                 torch.random.manual_seed(self.seed)
@@ -606,11 +620,15 @@ class ModelTrainer:
                 self._eval(self.epoch)
                 self._save(self.epoch)
                 for self.epoch in range(self.epoch+1, self.nb_epoch+1):
-                    train_loss = self._train(self.epoch)
-                    losses['train'].append(float(train_loss.cpu()))
-                    val_loss = self._eval(self.epoch)
-                    if val_loss is not None:
-                        losses['val'].append(float(val_loss.cpu()))
+                    # do training
+                    train_results, train_loss = self._train(self.epoch)
+                    # append results
+                    results['train'] = self._append_results(results['train'], train_results)
+                    # do evalutation
+                    val_results, val_loss = self._eval(self.epoch)
+                    if val_results is not None:
+                        # append results
+                        results['val'] = self._append_results(results['val'], val_results)
                     self._save(self.epoch)
                     # scheduler
                     if isinstance(self.scheduler, ReduceLROnPlateau):
@@ -619,7 +637,7 @@ class ModelTrainer:
                     elif self.scheduler:
                         self.scheduler.step()
                         
-        return losses
+        return results
 
     def eval(self):
         """Launch evaluation"""
