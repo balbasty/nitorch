@@ -688,7 +688,7 @@ class Conv(Module):
                  output_padding=0,
                  activation=None,
                  batch_norm=False,
-                 dropout=0.0,
+                 dropout=1.0,
                  inplace=True):
         """
         Parameters

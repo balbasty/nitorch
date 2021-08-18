@@ -44,7 +44,7 @@ def interleaved_cat(tensors, dim=0, groups=1):
     return torch.cat(tensors, dim=dim)
 
 
-def expand_list(x, n, crop=False, default=None):
+def expand_list(x, n, crop=False, default=None, use_default=False):
     """Expand ellipsis in a list by substituting it with the value
     on its left, repeated as many times as necessary. By default,
     a "virtual" ellipsis is present at the end of the list.
@@ -57,7 +57,7 @@ def expand_list(x, n, crop=False, default=None):
     if Ellipsis not in x:
         x.append(Ellipsis)
     idx_ellipsis = x.index(Ellipsis)
-    if idx_ellipsis == 0:
+    if idx_ellipsis == 0 or use_default:
         fill_value = default
     else:
         fill_value = x[idx_ellipsis-1]
@@ -398,7 +398,7 @@ class StackedConv(tnn.ModuleList):
             whereas 'cat' returns all concatenated input arguments.
             `True` is equivalent to 'single'.
 
-        dropout : float or type or callable, default=0.0
+        dropout : float or sequence[float] or type or callable, default=0.0
             Apply dropout (if 0.0<p<=1.0)
 
         """
@@ -416,8 +416,7 @@ class StackedConv(tnn.ModuleList):
         groups = [g or s for g, s in zip(groups, stitch)]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
         batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
-        dropout = expand_list(make_list(dropout), nb_layers, default=False)
-        dropout[-1] = 1.0  # no dropout on last layers
+        dropout = expand_list(make_list(dropout), nb_layers, default=1.0, use_default=True)        
         bias = expand_list(make_list(bias), nb_layers, default=True)
         
         if pool not in (None, 'up', 'conv') and transposed:
@@ -1228,7 +1227,7 @@ class CNN(tnn.Sequential):
             stride=2,
             pool=None,
             reduction='max',
-            activation='relu',
+            activation=None,
             batch_norm=False,
             dropout=1.0):
         """
@@ -1300,6 +1299,8 @@ class CNN(tnn.Sequential):
             raise TypeError('reduction must be a `Reduction` module.')
 
         nb_layers = len(encoder) + len(stack)
+        if activation is None:
+            activation = ['relu', ..., None]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
         activation_encoder = activation[:len(encoder)]
         activation_stack = activation[len(encoder):]
