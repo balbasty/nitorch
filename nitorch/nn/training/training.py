@@ -2,7 +2,7 @@
 
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from nitorch.core.utils import benchmark
+from nitorch.core.utils import benchmark, isin
 from nitorch.core.py import make_tuple
 from nitorch.nn.modules import Module
 import string
@@ -672,6 +672,44 @@ class ModelTrainer:
         self.random_state = [torch.get_rng_state()]
         self.random_state.extend(torch.cuda.get_rng_state(device)
                                  for device in devices)
+
+    def pick_model(self, results, metric, dataset='val', epoch=None, arg_max=True):
+        """pick a trained model
+        
+        Parameters
+        ----------
+        results : dict
+            Output of ModelTrainer.train()
+        metric : str
+            Key in results dict.
+        dataset : str, default='val'
+            Dataset to chose model from ('train' or 'val').
+        epoch : int, optional
+            Overrides model selection and just picks based on training epoch.
+        arg_max : bool, default=True
+            argmax or argmin when chosing model.
+
+        Returns
+        ----------
+        model : torch.model
+            Selected model.
+
+        """        
+        if epoch is None or not isinstance(epoch, int):
+            if metric not in results[dataset]:
+                raise ValueError("metric {:} not in {:} results dictionary!" \
+                    .format(metric, dataset))
+            if arg_max:
+                epoch = int(results[dataset][metric].argmax())
+            else:
+                epoch = int(results[dataset][metric].argmin())
+            print("Returning model with {:} {:} {:} | epoch={:}, {:}={:.3f}." \
+                .format('max' if arg_max else 'min', 
+                    dataset, metric, epoch + 1, metric, results[dataset][metric][epoch]))
+        file = self._formatfile(self.save_model, epoch)
+        self.model.load_state_dict(torch.load(file))
+        self.model.to(self.device)
+        return self.model
 
     def train1(self):
         """Train for one epoch."""
