@@ -1096,11 +1096,11 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=1e-9):
 
     # Format mat
     mat = utils.as_tensor(mat)
-    dtype = mat.dtype
+    backend = dict(dtype=mat.dtype, device=mat.device)
     dim = mat.shape[-1] - 1
 
     # Format basis
-    basis = build_affine_basis(*basis, dim)
+    basis = build_affine_basis(*basis, dim, **backend)
     basis = py.make_list(basis)
     nb_basis = sum([len(b) for b in basis])
 
@@ -1108,8 +1108,8 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=1e-9):
         # Predefine these values in case max_iter == 0
         n_iter = -1
         # Gauss-Newton optimisation
-        prm = torch.zeros(nb_basis, dtype=dtype)
-        M = torch.eye(dim+1, dtype=dtype)
+        prm = torch.zeros(nb_basis, **backend)
+        M = torch.eye(dim+1, **backend)
         norm = (mat ** 2).sum()
         crit = constants.inf
         for n_iter in range(max_iter):
