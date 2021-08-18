@@ -417,6 +417,7 @@ class StackedConv(tnn.ModuleList):
         activation = expand_list(make_list(activation), nb_layers, default='relu')
         batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
         dropout = expand_list(make_list(dropout), nb_layers, default=False)
+        dropout[-1] = 1.0  # no dropout on last layers
         bias = expand_list(make_list(bias), nb_layers, default=True)
         
         if pool not in (None, 'up', 'conv') and transposed:
