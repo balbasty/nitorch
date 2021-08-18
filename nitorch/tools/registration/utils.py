@@ -509,7 +509,7 @@ class JointHist:
         x = x.reshape([-1, *x.shape[-2:]])
         return x, min.squeeze(-2), max.squeeze(-2)
 
-    def forward(self, x, min=None, max=None):
+    def forward(self, x, min=None, max=None, mask=None):
         """
 
         Parameters
@@ -518,6 +518,7 @@ class JointHist:
             Input multivariate vector
         min : (..., 2) tensor, optional
         max : (..., 2) tensor, optional
+        mask : (..., N) tensor, optional
 
         Returns
         -------
@@ -532,8 +533,13 @@ class JointHist:
         #   hidden feature: tell pullpush to use +/- 0.5 tolerance when
         #   deciding if a coordinate is inbounds.
         extrapolate = self.extrapolate or 2
-        h = spatial.grid_count(x[:, None], [self.n, self.n], self.order,
-                               self.bound, extrapolate, abs=False)[:, 0]
+        if mask is None:
+            h = spatial.grid_count(x[:, None], [self.n, self.n], self.order,
+                                   self.bound, extrapolate, abs=False)[:, 0]
+        else:
+            mask = mask.to(x.device, x.dtype)
+            h = spatial.grid_push(mask, x[:, None], [self.n, self.n], self.order,
+                                  self.bound, extrapolate, abs=False)[:, 0]
         h = h.to(x.dtype)
         h = h.reshape([*shape[:-2], *h.shape[-2:]])
 
@@ -542,7 +548,7 @@ class JointHist:
 
         return h, min, max
 
-    def backward(self, x, g, min=None, max=None, hess=False):
+    def backward(self, x, g, min=None, max=None, hess=False, mask=None):
         """
 
         Parameters
@@ -605,6 +611,8 @@ class JointHist:
         if hess:
             factor = factor.square_()
         g = g.mul_(factor)
+        if mask is not None:
+            g *= mask[..., None]
 
         return g
 

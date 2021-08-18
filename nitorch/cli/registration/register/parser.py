@@ -129,6 +129,7 @@ usage:
     -s, --rescale [[MN], MX]        Rescale image so that its MN/MX percentiles match (0, 1). [0, 95]
     -l, --label *VAL                Specifies that the file is a label map [False]
                                     If no argument given, labels are [all but zero]
+    -m, --mask FILE                 Path to a mask of voxels to *include* [all]
 
 @affine options:
     FACTOR must be a scalar value [1] and is a global penalty factor
@@ -329,6 +330,8 @@ file.add_option('name', '--name', nargs=1,
 file.add_option('label', ('-l', '--label'), nargs='*', default=False,
                 action=cli.Actions.store_true, convert=int,
                 help='The file is a label map (and specify labels)')
+file.add_option('mask', ('-m', '--mask'), nargs=1, default=None,
+                help='Path to a mask of voxels to include')
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)
 mov = cli.Group('mov', '@@mov', n=1)
@@ -355,7 +358,7 @@ optim.add_option('max_iter', ('-n', '--max-iter'), nargs=1, default=None,
 optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  default='wolfe', convert=number_or_str(int),
                  help='Number of backtracking line search')
-optim.add_option('tolerance', ('-t', '--tolerance'),
+optim.add_option('tolerance', ('-t', '--tolerance'), nargs=1,
                  convert=float, default=1e-9, help='Tolerance for early stopping')
 optim.add_suboption('gn', 'marquardt', ('-m', '--marquardt'), nargs=1,
                     default=None, convert=number_or_str(float),

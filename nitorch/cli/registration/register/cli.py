@@ -113,12 +113,20 @@ def _make_image(option, dim=None, device=None):
     """Return an ImagePyramid object"""
     dat, affine = _load_image(option.files, dim=dim, device=device,
                               label=option.label)
+    dim = dat.dim() - 1
+    if option.mask:
+        mask, _ = _load_image([option.mask], dim=dim, device=device,
+                              label=option.label)
+        if mask.shape[-dim:] != dat.shape[-dim:]:
+            raise ValueError('Mask should have the same shape as the image. '
+                             f'Got {mask.shape[-dim:]} and {dat.shape[-dim:]}')
+    else:
+        mask = None
     if option.world:  # overwrite orientation matrix
         affine = io.transforms.map(option.world).fdata()
     for transform in (option.affine or []):
         transform = io.transforms.map(transform).fdata()
         affine = spatial.affine_lmdiv(transform, affine)
-    dim = dat.dim() - 1
     if option.rescale:
         dat = _rescale_image(dat, option.rescale)
     if option.fwhm:
@@ -139,7 +147,7 @@ def _make_image(option, dim=None, device=None):
         else:
             pyramid.append(level)
     image = objects.ImagePyramid(dat, levels=pyramid, affine=affine,
-                                 dim=dim, bound=option.bound,
+                                 dim=dim, bound=option.bound, mask=mask,
                                  extrapolate=option.extrapolate)
     return image
 
@@ -408,12 +416,12 @@ def _main(options):
         space = objects.MeanSpace(
             [image_dict[key] for key in (options.nonlin.fov or image_dict)],
             voxel_size=vx, vx_unit=vx_unit, pad=pad, pad_unit=pad_unit)
-
         prm = dict(absolute=options.nonlin.absolute,
                    membrane=options.nonlin.membrane,
                    bending=options.nonlin.bending,
                    lame=options.nonlin.lame)
-        vel = objects.Displacement(space.shape, affine=space.affine, dim=dim)
+        vel = objects.Displacement(space.shape, affine=space.affine, dim=dim,
+                                   device=device)
         Model = objects.NonLinModel.subclass(options.nonlin.name)
         nonlin = Model(dat=vel, factor=options.nonlin.factor,
                        prm=prm, steps=getattr(options.nonlin, 'steps', None))

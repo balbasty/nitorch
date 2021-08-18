@@ -1291,7 +1291,7 @@ class IterateOptim(Optim):
     Backtracking line search can be used.
     """
 
-    def __init__(self, optim, max_iter=20, tol=1e-9, ls=0):
+    def __init__(self, optim, max_iter=20, tol=1e-9, ls=0, keep_state=True):
         """
 
         Parameters
@@ -1324,6 +1324,9 @@ class IterateOptim(Optim):
                 self.optim = ls(self.optim)
         elif not isinstance(self.optim, IterationStep):
             self.optim = IterationStep(self.optim)
+        self.keep_state = keep_state
+        self.loss_max = -float('inf')
+        self.loss_prev = float('inf')
 
     requires_grad = property(lambda self: self.optim.requires_grad)
     requires_hess = property(lambda self: self.optim.requires_hess)
@@ -1353,18 +1356,22 @@ class IterateOptim(Optim):
             Updated parameter
 
         """
-        ll_prev = float('inf')
-        ll_max = 0
+        if not self.keep_state:
+            self.loss_prev = float('inf')
+            self.loss_max = -float('inf')
         for n_iter in range(1, self.max_iter+1):
             # perform step
-            param, ll, *drv = self.optim.step(param, closure,
-                                              derivatives=derivatives)
+            param, loss, *drv = self.optim.step(param, closure,
+                                                derivatives=derivatives)
 
             # check convergence
-            if abs((ll_prev-ll)/max(ll_max-ll, 1e-9)) < self.tol:
+            num = abs(self.loss_prev-loss)
+            denom = abs(self.loss_max-loss)
+            denom = max(denom, 1e-9 * abs(self.loss_max))
+            if num/denom < self.tol:
                 break
-            ll_prev = ll
-            ll_max = max(ll, ll_max)
+            self.loss_prev = loss
+            self.loss_max = max(loss, self.loss_max)
 
         if derivatives:
             return (param, *drv)
@@ -1423,7 +1430,7 @@ class IterateOptimInterleaved(IterateOptim):
 
         """
         gg_prev = float('inf')
-        gg_max = 0
+        gg_max = -float('inf')
         for n_iter in range(1, self.max_iter+1):
             oparam = []
             ograd = []
@@ -1435,7 +1442,7 @@ class IterateOptimInterleaved(IterateOptim):
             # check convergence
             gg = [g.flatten().dot(g.flatten()) for og in ograd for g in og]
             gg = sum(gg)
-            if abs((gg_prev-gg)/max(gg_max-gg, 1e-9)) < self.tol:
+            if abs((gg_prev-gg)/max(abs(gg_max-gg), 1e-9)) < self.tol:
                 break
             gg_prev = gg
             gg_max = max(gg, gg_max)

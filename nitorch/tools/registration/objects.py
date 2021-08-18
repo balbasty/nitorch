@@ -75,7 +75,7 @@ class SpatialTensor:
 
 class Image(SpatialTensor):
     """Data + Metadata (affine, boundary) of an Image"""
-    def __init__(self, dat, affine=None, dim=None,
+    def __init__(self, dat, affine=None, dim=None, mask=None,
                  bound='dct2', extrapolate=False):
         """
         Parameters
@@ -89,6 +89,11 @@ class Image(SpatialTensor):
         super().__init__(dat, affine, dim)
         self.bound = bound
         self.extrapolate = extrapolate
+        self.mask = mask
+        if self.masked and mask.shape[-self.dim:] != self.shape:
+            raise ValueError('Wrong shape for mask')
+
+    masked = property(lambda self: self.mask is not None)
 
     def _prm_as_str(self):
         s = []
@@ -106,10 +111,11 @@ class Image(SpatialTensor):
             kwargs.setdefault('affine', dat.affine)
             kwargs.setdefault('bound', dat.bound)
             kwargs.setdefault('extrapolate', dat.extrapolate)
-            dat = dat.dat
+            kwargs.setdefault('mask', dat.mask)
+            dat = dat.mask
         return cls(dat.dat, **kwargs)
 
-    def pull(self, grid):
+    def pull(self, grid, mask=False):
         """Sample the image at dense coordinates.
 
         Parameters
@@ -122,8 +128,16 @@ class Image(SpatialTensor):
         warped : ([C], *spatial) tensor
 
         """
-        return regutils.smart_pull(self.dat, grid, bound=self.bound,
-                                   extrapolate=self.extrapolate)
+        dat = regutils.smart_pull(self.dat, grid, bound=self.bound,
+                                  extrapolate=self.extrapolate)
+        if mask:
+            msk = None
+            if self.masked:
+                msk = self.mask.to(self.dat.dtype)
+                msk = regutils.smart_pull(msk, grid, bound=self.bound,
+                                          extrapolate=self.extrapolate)
+            return dat, msk
+        return dat
 
     def pull_grad(self, grid, rotate=False):
         """Sample the image gradients at dense coordinates.
@@ -162,6 +176,12 @@ class Image(SpatialTensor):
         return spatial.diff(self.dat, dim=list(range(-self.dim, 0)),
                             bound=self.bound)
 
+    def _prm_as_str(self):
+        s = super()._prm_as_str()
+        if self.masked:
+            s += ['masked=True']
+        return s
+
 
 class ImagePyramid(Image):
     """Compute a multiscale image pyramid.
@@ -169,7 +189,7 @@ class ImagePyramid(Image):
     resolution is returned) or as a list of Images.
     """
 
-    def __init__(self, dat, levels=1, affine=None, dim=None,
+    def __init__(self, dat, levels=1, affine=None, dim=None, mask=None,
                  bound='dct2', extrapolate=False, method='gauss', **backend):
         """
 
@@ -210,8 +230,10 @@ class ImagePyramid(Image):
             if affine is None:
                 shape = dat.shape[-dim:]
                 affine = spatial.affine_default(shape, **utils.backend(dat[0]))
-            dat = self._build_pyramid(dat, levels, method, dim, bound)
+            dat, mask = self._build_pyramid(dat, levels, method, dim, bound, mask)
         dat = list(dat)
+        if not mask:
+            mask = [None] * len(dat)
 
         if all(isinstance(d, Image) for d in dat):
             self._dat = dat
@@ -226,8 +248,8 @@ class ImagePyramid(Image):
                 raise ValueError('levels required to compute affine pyramid')
             shape = dat[0].shape[-dim:]
             affine = self._build_affine_pyramid(affine, shape, levels, method)
-        self._dat = [Image(d, aff, dim=dim, bound=bound, extrapolate=extrapolate)
-                     for d, aff in zip(dat, affine)]
+        self._dat = [Image(d, aff, mask=m, dim=dim, bound=bound, extrapolate=extrapolate)
+                     for d, m, aff in zip(dat, mask, affine)]
 
     def _prm_as_str(self):
         s = []
@@ -252,6 +274,7 @@ class ImagePyramid(Image):
     bound = property(lambda self: self[0].bound)
     extrapolate = property(lambda self: self[0].extrapolate)
     voxel_size = property(lambda self: self[0].voxel_size)
+    mask = property(lambda self: self[0].mask)
 
     def to(self, *args, **kwargs):
         return copy.deepcopy(self).to_(*args, **kwargs)
@@ -261,27 +284,40 @@ class ImagePyramid(Image):
             dat.to_(*args, **kwargs)
         return self
 
-    def _build_pyramid(self, dat, levels, method, dim, bound):
+    def _build_pyramid(self, dat, levels, method, dim, bound, mask=None):
         levels = list(levels)
         indexed_levels = list(enumerate(levels))
         indexed_levels.sort(key=lambda x: x[1])
         nb_levels = max(levels)
+        if mask is not None:
+            mask = mask.to(dat.device)
         dats = [dat] * levels.count(0)
+        masks = [mask] * levels.count(0)
+        if mask is not None:
+            mask = mask.to(dat.dtype)
         for level in range(1, nb_levels+1):
             if method[0] == 'g':  # gaussian pyramid
-                dat = spatial.smooth(dat, fwhm=2, stride=2, dim=dim,
-                                     bound=bound)
+                smooth = lambda x: spatial.smooth(x, fwhm=2, stride=2,
+                                                  dim=dim, bound=bound)
             elif method[0] == 'a':  # average window
-                dat = spatial.pool(dim, dat, kernel_size=2, stride=2,
-                                   reduction='mean')
+                smooth = lambda x: spatial.pool(dim, x, kernel_size=2,
+                                                stride=2, reduction='mean')
             elif method[0] == 'm':  # median window
-                dat = spatial.pool(dim, dat, kernel_size=2, stride=2,
-                                   reduction='median')
+                smooth = lambda x: spatial.pool(dim, x, kernel_size=2,
+                                                stride=2, reduction='median')
+            else:
+                raise ValueError(method)
+            dat = smooth(dat)
+            if mask is not None:
+                mask = smooth(mask)
             dats += [dat] * levels.count(level)
+            masks += [mask] * levels.count(level)
         reordered_dats = [None] * len(levels)
-        for (i, level), dat in zip(indexed_levels, dats):
+        reordered_masks = [None] * len(levels)
+        for (i, level), dat, mask in zip(indexed_levels, dats, masks):
             reordered_dats[i] = dat
-        return reordered_dats
+            reordered_masks[i] = mask
+        return reordered_dats, reordered_masks
 
     def _build_affine_pyramid(self, affine, shape, levels, method):
         levels = list(levels)
@@ -578,7 +614,7 @@ class NonLinModel:
                 affine = self.dat.affine
         if isinstance(dat, SpatialTensor) and affine is None:
             affine = dat.affine
-        self.dat = Displacement.make(dat, affine=affine).to(**backend)
+        self.dat = Displacement.make(dat, affine=affine, **backend)
         if self.kernel is None:
             self.kernel = spatial.greens(self.shape, **self.prm,
                                          factor=self.factor / py.prod(self.shape),
@@ -1042,7 +1078,7 @@ class AffineModel:
             symmetric.
         """
         self.factor = factor
-        self.prm = prm or {} # regutils.defaults_affine()
+        self.prm = prm or {}  # regutils.defaults_affine()
         self._basis = self._name_to_basis.get(basis, basis)
         self.position = position
         if dat is not None:
@@ -1050,8 +1086,8 @@ class AffineModel:
         else:
             self.dat = None
 
-    def set_dat(self, dat=None, dim=None):
-        self.dat = LogAffine.make(dat, basis=self._basis, dim=dim)
+    def set_dat(self, dat=None, dim=None, **backend):
+        self.dat = LogAffine.make(dat, basis=self._basis, dim=dim, **backend)
         return self
 
     basis = property(lambda self: self.dat.basis if self.dat is not None else None)

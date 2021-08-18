@@ -294,7 +294,12 @@ class RegisterStep:
                     phi = spatial.affine_matvec(aff_left, phi)
 
                 # forward
-                warped = moving.pull(phi)
+                warped, mask = moving.pull(phi, mask=True)
+                if fixed.masked:
+                    if mask is None:
+                        mask = fixed.mask
+                    else:
+                        mask = mask * fixed.mask
 
                 if is_level0 and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
@@ -307,11 +312,11 @@ class RegisterStep:
                 # gradient/Hessian of the log-likelihood in observed space
                 g = h = None
                 if not grad and not hess:
-                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim)
+                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim, mask=mask)
                 elif not hess:
-                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim)
+                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim, mask=mask)
                 else:
-                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim)
+                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim, mask=mask)
 
                 # compose with spatial gradients
                 if grad or hess:
@@ -447,7 +452,12 @@ class RegisterStep:
                     phi = spatial.affine_matvec(aff_left, phi)
 
                 # forward
-                warped = moving.pull(phi)
+                warped, mask = moving.pull(phi, mask=True)
+                if fixed.masked:
+                    if mask is None:
+                        mask = fixed.mask
+                    else:
+                        mask = mask * fixed.mask
 
                 if is_level0 and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
@@ -458,11 +468,11 @@ class RegisterStep:
                 # gradient/Hessian of the log-likelihood in observed space
                 g = h = None
                 if not grad and not hess:
-                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim)
+                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim, mask=mask)
                 elif not hess:
-                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim)
+                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim, mask=mask)
                 else:
-                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim)
+                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim, mask=mask)
 
                 def compose_grad(g, h, g_mu, g_aff):
                     """
@@ -589,7 +599,12 @@ class RegisterStep:
                 phi = spatial.affine_grid(aff, fixed.shape)
 
                 # forward
-                warped = moving.pull(phi)
+                warped, mask = moving.pull(phi, mask=True)
+                if fixed.masked:
+                    if mask is None:
+                        mask = fixed.mask
+                    else:
+                        mask = mask * fixed.mask
 
                 if is_level0 and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
@@ -600,11 +615,11 @@ class RegisterStep:
                 # gradient/Hessian of the log-likelihood in observed space
                 g = h = None
                 if not grad and not hess:
-                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim)
+                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim, mask=mask)
                 elif not hess:
-                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim)
+                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim, mask=mask)
                 else:
-                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim)
+                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim, mask=mask)
 
                 def compose_grad(g, h, g_mu, g_aff):
                     """
@@ -690,12 +705,15 @@ class Register:
         return self.fit()
 
     def fit(self):
+        backend = dict(device=self.losses[0].fixed.device,
+                       dtype=self.losses[0].fixed.dtype)
         if self.affine is not None and self.affine.dat is None:
-            self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim)
+            self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
+                                              **backend)
         if self.nonlin is not None and self.nonlin.dat is None:
             space = MeanSpace([loss.fixed for loss in self.losses] +
                               [loss.moving for loss in self.losses])
-            self.nonlin.set_dat(space.shape, affine=space.affine)
+            self.nonlin.set_dat(space.shape, affine=space.affine, **backend)
 
         if self.verbose > 1:
             for loss in self.losses:
@@ -718,10 +736,10 @@ class Register:
         step = RegisterStep(self.losses, self.affine, self.nonlin, self.verbose)
         step.framerate = self.framerate
         if self.affine and self.nonlin:
-            if isinstance(self.optim.optim[1], optm.FirstOrder):
-                self.optim.optim[1].optim.preconditioner = self.nonlin.greens_apply
-            elif isinstance(self.optim.optim[1].optim.optim, optm.FirstOrder):
-                self.optim.optim[1].optim.preconditioner = self.nonlin.greens_apply
+            # if isinstance(self.optim.optim[1], optm.FirstOrder):
+            #     self.optim.optim[1].preconditioner = self.nonlin.greens_apply
+            # elif isinstance(self.optim.optim[1].optim, optm.FirstOrder):
+            #     self.optim.optim[1].optim.preconditioner = self.nonlin.greens_apply
             self.optim.iter([self.affine.dat.dat, self.nonlin.dat.dat],
                             [step.do_affine, step.do_vel])
         elif self.affine:

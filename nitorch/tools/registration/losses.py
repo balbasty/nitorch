@@ -24,6 +24,9 @@ import torch
 from .utils import JointHist
 pyutils = py
 
+# TODO:
+#   lcc: option to cache values that only depend on fixed?
+
 
 def make_loss(loss, dim=None):
     """Instantiate loss object from string.
@@ -58,7 +61,8 @@ def make_loss(loss, dim=None):
     return loss
 
 
-def irls_laplace_reweight(moving, fixed, lam=1, joint=False, eps=1e-5, dim=None):
+def irls_laplace_reweight(moving, fixed, lam=1, joint=False, eps=1e-5, dim=None,
+                          mask=None):
     """Update iteratively reweighted least-squares weights for l1
 
     Parameters
@@ -82,15 +86,21 @@ def irls_laplace_reweight(moving, fixed, lam=1, joint=False, eps=1e-5, dim=None)
     if lam is None:
         lam = 1
     fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
+    if mask is not None:
+        mask = mask.to(fixed.device)
     dim = dim or (fixed.dim() - 1)
     if lam.dim() <= 2:
         if lam.dim() == 0:
             lam = lam.flatten()
         lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
     weights = (moving - fixed).square_().mul_(lam)
+    if mask is not None:
+        weights = weights.mul_(mask)
     if joint:
         weights = weights.sum(dim=-dim-1, keepdims=True)
     weights = weights.sqrt_().clamp_min_(eps).reciprocal_()
+    if mask is not None:
+        weights = weights.masked_fill_(mask == 0, 0)
     return weights
 
 
@@ -99,12 +109,16 @@ def weighted_precision(moving, fixed, weights=None, dim=None):
     residuals = (moving - fixed).square_()
     if weights is not None:
         residuals.mul_(weights)
-    lam = residuals.mean(dim=list(range(-dim, 0)))
+        lam = residuals.sum(dim=list(range(-dim, 0)))
+        lam = lam.div_(weights.sum(dim=list(range(-dim, 0))))
+    else:
+        lam = residuals.mean(dim=list(range(-dim, 0)))
     lam = lam.reciprocal_()  # variance to precision
     return lam
 
 
-def irls_tukey_reweight(moving, fixed, lam=1, c=4.685, joint=False, dim=None):
+def irls_tukey_reweight(moving, fixed, lam=1, c=4.685, joint=False, dim=None,
+                        mask=None):
     """Update iteratively reweighted least-squares weights for Tukey's biweight
 
     Parameters
@@ -133,21 +147,27 @@ def irls_tukey_reweight(moving, fixed, lam=1, c=4.685, joint=False, dim=None):
         lam = 1
     c = c * c
     fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
+    if mask is not None:
+        mask = mask.to(fixed.device)
     dim = dim or (fixed.dim() - 1)
     if lam.dim() <= 2:
         if lam.dim() == 0:
             lam = lam.flatten()
         lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
     residuals = (moving - fixed).square_().mul_(lam)
+    if mask is not None:
+        residuals = residuals.mul_(mask)
     if joint:
         residuals = residuals.sum(dim=-dim-1, keepdims=True)
     weights = torch.zeros_like(residuals)
-    mask = residuals <= c
-    weights[mask] = (1 - weights[mask]/c).square()
+    # threshold = residuals <= c
+    # weights[threshold] = (1 - weights[threshold]/c).square()
+    residuals = residuals <= c
+    weights[residuals].div_(-c).add_(1).square_()
     return weights
 
 
-def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True):
+def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True, mask=None):
     """Mean-squared error loss for optimisation-based registration.
 
     (A factor 1/2 is included, and the loss is averaged across voxels,
@@ -179,6 +199,8 @@ def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True):
 
     """
     fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
+    if mask is not None:
+        mask = mask.to(fixed.device)
     dim = dim or (fixed.dim() - 1)
     if lam.dim() <= 2:
         if lam.dim() == 0:
@@ -186,19 +208,35 @@ def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True):
         lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
     nvox = py.prod(fixed.shape[-dim:])
 
-    ll = (moving - fixed).square().mul_(lam).sum() / (2*nvox)
+    if moving.requires_grad:
+        ll = moving - fixed
+        if mask is not None:
+            ll = ll.mul_(mask)
+        ll = ll.square().mul_(lam).sum() / (2*nvox)
+    else:
+        ll = moving - fixed
+        if mask is not None:
+            ll = ll.mul_(mask)
+        ll = ll.square_().mul_(lam).sum() / (2*nvox)
+
     out = [ll]
     if grad:
-        g = (moving - fixed).mul_(lam/nvox)
+        g = moving - fixed
+        if mask is not None:
+            g = g.mul_(mask)
+        g = g.mul_(lam).div_(nvox)
         out.append(g)
     if hess:
         h = lam/nvox
+        if mask is not None:
+            h = mask * h
         out.append(h)
 
     return tuple(out) if len(out) > 1 else out[0]
 
 
-def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
+def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True,
+        mask=None):
     """Categorical loss for optimisation-based registration.
 
     Parameters
@@ -234,6 +272,8 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
 
     """
     fixed, moving = utils.to_max_backend(fixed, moving)
+    if mask is not None:
+        mask = mask.to(fixed.device)
     dim = dim or (fixed.dim() - 1)
     nc = moving.shape[-dim-1]                               # nb classes - bck
     fixed = utils.slice_tensor(fixed, slice(nc), -dim-1)    # remove bkg class
@@ -241,7 +281,9 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
 
     # log likelihood
     ll = moving*fixed
-    ll -= math.logsumexp(moving, dim=-dim-1, implicit=True)            # implicit lse
+    ll -= math.logsumexp(moving, dim=-dim-1, implicit=True)  # implicit lse
+    if mask is not None:
+        ll = ll.mul_(mask)
     ll = ll.sum().neg() / nvox
     out = [ll]
 
@@ -252,6 +294,8 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
     # gradient
     if grad:
         g = (moving - fixed).div_(nvox)
+        if mask is not None:
+            g = g.mul_(mask)
         out.append(g)
 
     # hessian
@@ -297,12 +341,15 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True):
             else:
                 h = hb
 
-        out.append(h.div_(nvox))
+        h = h.div_(nvox)
+        if mask is not None:
+            h = h.mul_(mask)
+        out.append(h)
 
     return tuple(out) if len(out) > 1 else out[0]
 
 
-def cc(moving, fixed, dim=None, grad=True, hess=True):
+def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     """Squared Pearson's correlation coefficient loss
 
         1 - (E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)) ** 2
@@ -325,29 +372,40 @@ def cc(moving, fixed, dim=None, grad=True, hess=True):
     ll : () tensor
 
     """
+    moving, fixed = utils.to_max_backend(moving, fixed)
     moving = moving.clone()
     fixed = fixed.clone()
-
     dim = dim or (fixed.dim() - 1)
     dims = list(range(-dim, 0))
-    n = py.prod(fixed.shape[-dim:])
-    moving -= moving.mean(dim=dims, keepdim=True)
-    fixed -= fixed.mean(dim=dims, keepdim=True)
-    sigm = moving.square().mean(dim=dims, keepdim=True).sqrt_()
-    sigf = fixed.square().mean(dim=dims, keepdim=True).sqrt_()
-    moving = moving / sigm
-    fixed = fixed / sigf
 
-    corr = (moving*fixed).mean(dim=dims, keepdim=True)
+    if mask is not None:
+        mask = mask.to(fixed.device)
+        mean = lambda x: (x*mask).sum(dim=dims, keepdim=True).div_(mask.sum(dim=dims, keepdim=True))
+    else:
+        mean = lambda x: x.mean(dim=dims, keepdim=True)
+
+    n = py.prod(fixed.shape[-dim:])
+    moving -= mean(moving)
+    fixed -= mean(fixed)
+    sigm = mean(moving.square()).sqrt_()
+    sigf = mean(fixed.square()).sqrt_()
+    moving = moving.div_(sigm)
+    fixed = fixed.div_(sigf)
+
+    corr = mean(moving*fixed)
 
     out = []
     if grad:
         g = 2 * corr * (moving * corr - fixed) / (n * sigm)
+        if mask is not None:
+            g = g.mul_(mask)
         out.append(g)
 
     if hess:
         # approximate hessian
         h = 2 * (corr / sigm).square() / n
+        if h is not None:
+            h = h.mul_(mask)
         out.append(h)
 
     # return stuff
@@ -365,8 +423,8 @@ def _convt(dim):
 
 
 def local_mean(x, kernel_size=5, stride=1, mode='constant', dim=None,
-               backward=False, shape=None):
-    """
+               backward=False, shape=None, mask=None):
+    """Compute a local weighted mean using convolutions.
 
     Parameters
     ----------
@@ -387,6 +445,8 @@ def local_mean(x, kernel_size=5, stride=1, mode='constant', dim=None,
     m : ([batch], channel, *outspatial)
 
     """
+    if mask is not None:
+        mask = mask.to(x.device, x.dtype)
     dim = dim or x.dim() - 1
     extra_batch = x.dim() > dim + 2
     if extra_batch:
@@ -398,6 +458,8 @@ def local_mean(x, kernel_size=5, stride=1, mode='constant', dim=None,
         x = x[None]
     if virtual_batch:
         x = x[None]
+    if mask is not None:
+        mask = utils.unsqueeze(mask, 0, x.dim() - mask.dim())
 
     # build kernel
     kernel_size = py.make_list(kernel_size, dim)
@@ -425,25 +487,9 @@ def local_mean(x, kernel_size=5, stride=1, mode='constant', dim=None,
     else:
         raise ValueError(f'Unknown mode {mode}')
 
-    # conv
-    if backward:
-        if shape is not None:  # estimate output padding
-            ishape = [1, 1, *x.shape[-dim:]]
-            oshape = _guess_output_shape(ishape, dim, kernel_size,
-                                         stride=stride, transposed=True)
-            oshape = oshape[2:]
-            opad = [s-os for s, os in zip(shape, oshape)]
-        else:
-            opad = [0] * dim
-        if isinstance(kernel, list):
-            conv = _convt(dim)
-            for d, (k, s, p) in enumerate(zip(kernel, stride, opad)):
-                s = [1] * d + [s] + [1] * (dim-d-1)
-                p = [0] * d + [p] + [0] * (dim-d-1)
-                x = conv(x, k, stride=s, output_padding=p)
-        else:
-            x = _convt(dim)(x, kernel, stride=stride, output_padding=opad)
-    else:  # forward pass
+    # build convolution function and its transpose
+
+    def do_conv(x):
         if isinstance(kernel, list):
             conv = _conv(dim)
             for d, (k, s) in enumerate(zip(kernel, stride)):
@@ -451,6 +497,44 @@ def local_mean(x, kernel_size=5, stride=1, mode='constant', dim=None,
                 x = conv(x, k, stride=s)
         else:
             x = _conv(dim)(x, kernel, stride=stride)
+        return x
+
+    if shape is not None:  # estimate output padding
+        ishape = [1, 1, *x.shape[-dim:]]
+        oshape = _guess_output_shape(ishape, dim, kernel_size,
+                                     stride=stride, transposed=True)
+        oshape = oshape[2:]
+        opad = [s - os for s, os in zip(shape, oshape)]
+    else:
+        opad = [0] * dim
+
+    def do_convt(x):
+        if isinstance(kernel, list):
+            conv = _convt(dim)
+            for d, (k, s, p) in enumerate(zip(kernel, stride, opad)):
+                s = [1] * d + [s] + [1] * (dim - d - 1)
+                p = [0] * d + [p] + [0] * (dim - d - 1)
+                x = conv(x, k, stride=s, output_padding=p)
+        else:
+            x = _convt(dim)(x, kernel, stride=stride, output_padding=opad)
+        return x
+
+    # conv
+    if backward:
+        if mask is not None:
+            convmask = do_conv(mask)
+            x = x / convmask
+            del convmask
+        x = do_convt(x)
+        if mask is not None:
+            x = x.mul_(mask)
+    else:  # forward pass
+        if mask is not None:
+            x = x * mask
+        x = do_conv(x)
+        if mask is not None:
+            mask = do_conv(mask)
+            x = x.div_(mask)
 
     if virtual_batch:
         x = x[0]
@@ -481,7 +565,7 @@ def _suffstat(fn, x, y):
 
 
 def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
-        grad=True, hess=True):
+        grad=True, hess=True, mask=None):
     """Local correlation coefficient (squared)
 
     This function implements a squared version of Cachier and
@@ -517,23 +601,30 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
           MMBIA (2000)
 
     """
-    sqrt_ = lambda x: x.sqrt() if x.requires_grad else x.sqrt_()
-    square_ = lambda x: x.square() if x.requires_grad else x.square_()
-    mul_ = lambda x, y: x.mul(y) if y.requires_grad else x.mul_(y)
-    div_ = lambda x, y: x.div(y) if y.requires_grad else x.div_(y)
+    if moving.requires_grad:
+        sqrt_ = torch.sqrt
+        square_ = torch.square
+        mul_ = torch.mul
+        div_ = torch.div
+    else:
+        sqrt_ = torch.sqrt_
+        square_ = torch.square_
+        mul_ = lambda x, y: x.mul_(y)
+        div_ = lambda x, y: x.div_(y)
 
     fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
-
     dim = dim or (fixed.dim() - 1)
     shape = fixed.shape[-dim:]
+    if mask is not None:
+        mask = mask.to(**utils.backend(fixed))
 
     if lam.dim() <= 2:
         if lam.dim() == 0:
             lam = lam.flatten()
         lam = utils.unsqueeze(lam, -1, dim)
 
-    fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode)
-    bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode,
+    fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask)
+    bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
                                backward=True, shape=shape)
 
     # compute ncc within each patch
@@ -562,11 +653,17 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
             g = bwd(g)
             g = g.addcmul_(h, moving)
             g = g.addcmul_(bwd((corr / std2).mul_(lam)), fixed, value=-1)
-            out.append(g.mul_(2/nvox))
+            g = g.mul_(2/nvox)
+            if mask is not None:
+                g = g.mul_(mask)
+            out.append(g)
 
         if hess:
             # h = 2 * (G' * (corr./ xstd).^2)
-            out.append(h.mul_(2/nvox))
+            h = h.mul_(2/nvox)
+            if mask is not None:
+                h = h.mul_(mask)
+            out.append(h)
 
     # return stuff
     corr = square_(corr).neg_().add_(1).mul_(lam)
@@ -576,7 +673,7 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
 
 
 def nmi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
-        grad=True, hess=True, minmax=False):
+        grad=True, hess=True, minmax=False, mask=None):
     """(Normalized) Mutual Information
 
     If multi-channel data is provided, the MI between each  pair of
@@ -622,12 +719,15 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
     moving = moving.reshape([*moving.shape[:-dim], -1])
     fixed = fixed.reshape([*fixed.shape[:-dim], -1])
     idx = torch.stack([moving, fixed], -1)
+    if mask is not None:
+        mask = mask.to(fixed.device)
+        mask = mask.reshape([*mask.shape[:-dim], -1])
 
     if minmax not in (True, False, None):
         mn, mx = minmax
-        h, mn, mx = hist.forward(idx, min=mn, max=mx)
+        h, mn, mx = hist.forward(idx, min=mn, max=mx, mask=mask)
     else:
-        h, mn, mx = hist.forward(idx)
+        h, mn, mx = hist.forward(idx, mask=mask)
     h = h.clamp(1e-8)
     h /= nvox
 
@@ -657,7 +757,7 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
         else:
             g0 = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
         if grad:
-            g = hist.backward(idx, g0/nvox)[..., 0]
+            g = hist.backward(idx, g0/nvox, mask=mask)[..., 0]
             g = g.reshape(shape)
             out.append(g)
 
@@ -711,7 +811,7 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
             # h /= hxy.flatten(start_dim=-2).abs()
 
             # project
-            h = hist.backward(idx, h/nvox, hess=True)[..., 0]
+            h = hist.backward(idx, h/nvox, hess=True, mask=mask)[..., 0]
             h = h.reshape(shape)
             out.append(h)
 
@@ -810,13 +910,15 @@ class MSE(OptimizationLoss):
             Gradient
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        mask = kwargs.pop('mask', None)
         lll = 0
         if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim)
+            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
-        llx = mse(moving, fixed, dim=dim, lam=lam, grad=False, hess=False)
+        llx = mse(moving, fixed, dim=dim, lam=lam, grad=False, hess=False,
+                  mask=mask)
         return llx + lll
 
     def loss_grad(self, moving, fixed, **kwargs):
@@ -837,13 +939,14 @@ class MSE(OptimizationLoss):
             Gradient
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        mask = kwargs.pop('mask', None)
         lll = 0
         if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim)
+            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
-        llx, g = mse(moving, fixed, dim=dim, lam=lam, hess=False)
+        llx, g = mse(moving, fixed, dim=dim, lam=lam, hess=False, **kwargs)
         return llx + lll, g
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
@@ -866,13 +969,14 @@ class MSE(OptimizationLoss):
             Diagonal Hessian
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        mask = kwargs.pop('mask', None)
         lll = 0
         if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim)
+            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
-        llx, g, h = mse(moving, fixed, dim=dim, lam=lam)
+        llx, g, h = mse(moving, fixed, dim=dim, lam=lam, mask=mask, **kwargs)
         return llx + lll, g, h
 
 
@@ -914,21 +1018,27 @@ class MAD(OptimizationLoss):
             Gradient
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
-        joint = kwargs.get('joint', self.joint)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        joint = kwargs.pop('joint', self.joint)
+        mask = kwargs.pop('mask', None)
         dim = dim or (fixed.dim() - 1)
         nvox = py.prod(fixed.shape[-dim:])
         recompute_lam = lam is None
         if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim)
-        weights = irls_laplace_reweight(moving, fixed, lam=lam, joint=joint, dim=dim)
+            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
+        weights = irls_laplace_reweight(moving, fixed, lam=lam, joint=joint,
+                                        dim=dim, mask=mask)
+        if mask is not None:
+            weights *= mask
         lll = 0
         if recompute_lam:
             lam = weighted_precision(moving, fixed, weights, dim=dim)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
-        llx = mse(moving, fixed, dim=dim, lam=lam, grad=False, hess=False)
-        llw = weights.reciprocal_().sum().div_(2*nvox)
+        lam = lam * weights
+        llx = mse(moving, fixed, dim=dim, lam=lam, grad=False, hess=False,
+                  **kwargs)
+        llw = weights[weights > 1e-9].reciprocal_().sum().div_(2*nvox)
         return llx + llw + lll
 
     def loss_grad(self, moving, fixed, **kwargs):
@@ -949,21 +1059,26 @@ class MAD(OptimizationLoss):
             Gradient
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
-        joint = kwargs.get('joint', self.joint)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        joint = kwargs.pop('joint', self.joint)
+        mask = kwargs.pop('mask', None)
         dim = dim or (fixed.dim() - 1)
         nvox = py.prod(fixed.shape[-dim:])
         recompute_lam = lam is None
         if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim)
-        weights = irls_laplace_reweight(moving, fixed, lam=lam, joint=joint, dim=dim)
+            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
+        weights = irls_laplace_reweight(moving, fixed, lam=lam, joint=joint,
+                                        dim=dim, mask=mask)
+        if mask is not None:
+            weights *= mask
         lll = 0
         if recompute_lam:
             lam = weighted_precision(moving, fixed, weights, dim=dim)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
+        lam = lam * weights
         llx, g = mse(moving, fixed, dim=dim, lam=lam, grad=True, hess=False)
-        llw = weights.reciprocal_().sum().div_(2*nvox)
+        llw = weights[weights > 1e-9].reciprocal_().sum().div_(2*nvox)
         return llx + llw + lll, g
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
@@ -986,21 +1101,26 @@ class MAD(OptimizationLoss):
             Diagonal Hessian
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
-        joint = kwargs.get('joint', self.joint)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        joint = kwargs.pop('joint', self.joint)
+        mask = kwargs.pop('mask', None)
         dim = dim or (fixed.dim() - 1)
         nvox = py.prod(fixed.shape[-dim:])
         recompute_lam = lam is None
         if lam is None:
             lam = weighted_precision(moving, fixed, dim=dim)
-        weights = irls_laplace_reweight(moving, fixed, lam=lam, joint=joint, dim=dim)
+        weights = irls_laplace_reweight(moving, fixed, lam=lam, joint=joint,
+                                        dim=dim, mask=mask)
+        if mask is not None:
+            weights *= mask
         lll = 0
         if recompute_lam:
             lam = weighted_precision(moving, fixed, weights, dim=dim)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
+        lam = lam * weights
         llx, g, h = mse(moving, fixed, dim=dim, lam=lam, grad=True, hess=True)
-        llw = weights.reciprocal_().sum().div_(2*nvox)
+        llw = weights[weights > 1e-9].reciprocal_().sum().div_(2*nvox)
         return llx + llw + lll, g, h
 
 
@@ -1043,19 +1163,24 @@ class Tukey(OptimizationLoss):
             Gradient
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
-        joint = kwargs.get('joint', self.joint)
-        c = kwargs.get('c', self.c)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        joint = kwargs.pop('joint', self.joint)
+        c = kwargs.pop('c', self.c)
+        mask = kwargs.pop('mask', None)
         dim = dim or (fixed.dim() - 1)
         nvox = py.prod(fixed.shape[-dim:])
-        weights = irls_tukey_reweight(moving, fixed, lam=lam, c=c, joint=joint, dim=dim)
+        weights = irls_tukey_reweight(moving, fixed, lam=lam, c=c, joint=joint,
+                                      dim=dim, mask=mask)
+        if mask is not None:
+            weights *= mask
         lll = 0
         if lam is None:
             lam = weighted_precision(moving, fixed, weights, dim=dim)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
+        lam = lam * weights
         llx = mse(moving, fixed, dim=dim, lam=lam, grad=False, hess=False)
-        llw = weights.reciprocal_().sum().div_(2*nvox)
+        llw = weights[weights > 1e-9].reciprocal_().sum().div_(2*nvox)
         return llx + llw + lll
 
     def loss_grad(self, moving, fixed, **kwargs):
@@ -1074,19 +1199,24 @@ class Tukey(OptimizationLoss):
             Loss
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
-        joint = kwargs.get('joint', self.joint)
-        c = kwargs.get('c', self.c)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        joint = kwargs.pop('joint', self.joint)
+        c = kwargs.pop('c', self.c)
+        mask = kwargs.pop('mask', None)
         dim = dim or (fixed.dim() - 1)
         nvox = py.prod(fixed.shape[-dim:])
-        weights = irls_tukey_reweight(moving, fixed, lam=lam, c=c, joint=joint, dim=dim)
+        weights = irls_tukey_reweight(moving, fixed, lam=lam, c=c, joint=joint,
+                                      dim=dim, mask=mask)
+        if mask is not None:
+            weights *= mask
         lll = 0
         if lam is None:
             lam = weighted_precision(moving, fixed, weights, dim=dim)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
+        lam = lam * weights
         llx, g = mse(moving, fixed, dim=dim, lam=lam, grad=True, hess=False)
-        llw = weights.reciprocal_().sum().div_(2*nvox)
+        llw = weights[weights > 1e-9].reciprocal_().sum().div_(2*nvox)
         return llx + llw + lll, g
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
@@ -1109,19 +1239,24 @@ class Tukey(OptimizationLoss):
             Diagonal Hessian
 
         """
-        lam = kwargs.get('lam', self.lam)
-        dim = kwargs.get('dim', self.dim)
-        joint = kwargs.get('joint', self.joint)
-        c = kwargs.get('c', self.c)
+        lam = kwargs.pop('lam', self.lam)
+        dim = kwargs.pop('dim', self.dim)
+        joint = kwargs.pop('joint', self.joint)
+        c = kwargs.pop('c', self.c)
+        mask = kwargs.pop('mask', None)
         dim = dim or (fixed.dim() - 1)
         nvox = py.prod(fixed.shape[-dim:])
-        weights = irls_tukey_reweight(moving, fixed, lam=lam, c=c, joint=joint, dim=dim)
+        weights = irls_tukey_reweight(moving, fixed, lam=lam, c=c, joint=joint,
+                                      dim=dim, mask=mask)
+        if mask is not None:
+            weights *= mask
         lll = 0
         if lam is None:
             lam = weighted_precision(moving, fixed, weights, dim=dim)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
+        lam = lam * weights
         llx, g, h = mse(moving, fixed, dim=dim, lam=lam, grad=True, hess=True)
-        llw = weights.reciprocal_().sum().div_(2*nvox)
+        llw = weights[weights > 1e-9].reciprocal_().sum().div_(2*nvox)
         return llx + llw + lll, g, h
 
 
@@ -1160,10 +1295,10 @@ class Cat(OptimizationLoss):
             Loss
 
         """
-        acceleration = kwargs.get('acceleration', self.acceleration)
-        dim = kwargs.get('dim', self.dim)
+        acceleration = kwargs.pop('acceleration', self.acceleration)
+        dim = kwargs.pop('dim', self.dim)
         return cat(moving, fixed, acceleration=acceleration, dim=dim,
-                   grad=False, hess=False)
+                   grad=False, hess=False, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1183,10 +1318,10 @@ class Cat(OptimizationLoss):
             Gradient with respect to the moving image
 
         """
-        acceleration = kwargs.get('acceleration', self.acceleration)
-        dim = kwargs.get('dim', self.dim)
+        acceleration = kwargs.pop('acceleration', self.acceleration)
+        dim = kwargs.pop('dim', self.dim)
         return cat(moving, fixed, acceleration=acceleration, dim=dim,
-                   hess=False)
+                   hess=False, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1209,9 +1344,10 @@ class Cat(OptimizationLoss):
             Its spatial dimensions are singleton when `acceleration == 0`.
 
         """
-        acceleration = kwargs.get('acceleration', self.acceleration)
-        dim = kwargs.get('dim', self.dim)
-        return cat(moving, fixed, acceleration=acceleration, dim=dim)
+        acceleration = kwargs.pop('acceleration', self.acceleration)
+        dim = kwargs.pop('dim', self.dim)
+        return cat(moving, fixed, acceleration=acceleration, dim=dim,
+                   **kwargs)
 
 
 class CC(OptimizationLoss):
@@ -1246,8 +1382,8 @@ class CC(OptimizationLoss):
             Loss
 
         """
-        dim = kwargs.get('dim', self.dim)
-        return cc(moving, fixed, dim=dim, grad=False, hess=False)
+        dim = kwargs.pop('dim', self.dim)
+        return cc(moving, fixed, dim=dim, grad=False, hess=False, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1267,8 +1403,8 @@ class CC(OptimizationLoss):
             Gradient with respect to the moving image
 
         """
-        dim = kwargs.get('dim', self.dim)
-        return cc(moving, fixed, dim=dim, hess=False)
+        dim = kwargs.pop('dim', self.dim)
+        return cc(moving, fixed, dim=dim, hess=False, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1291,8 +1427,8 @@ class CC(OptimizationLoss):
             Its spatial dimensions are singleton when `acceleration == 0`.
 
         """
-        dim = kwargs.get('dim', self.dim)
-        return cc(moving, fixed, dim=dim)
+        dim = kwargs.pop('dim', self.dim)
+        return cc(moving, fixed, dim=dim, **kwargs)
 
 
 class LCC(OptimizationLoss):
@@ -1331,13 +1467,13 @@ class LCC(OptimizationLoss):
             Loss
 
         """
-        dim = kwargs.get('dim', self.dim)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        mode = kwargs.get('mode', self.mode)
+        dim = kwargs.pop('dim', self.dim)
+        patch = kwargs.pop('patch', self.patch)
+        stride = kwargs.pop('stride', self.stride)
+        lam = kwargs.pop('lam', self.lam)
+        mode = kwargs.pop('mode', self.mode)
         return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
-                   lam=lam, mode=mode, grad=False, hess=False)
+                   lam=lam, mode=mode, grad=False, hess=False, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -1357,13 +1493,13 @@ class LCC(OptimizationLoss):
             Gradient with respect to the moving image
 
         """
-        dim = kwargs.get('dim', self.dim)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        mode = kwargs.get('mode', self.mode)
+        dim = kwargs.pop('dim', self.dim)
+        patch = kwargs.pop('patch', self.patch)
+        stride = kwargs.pop('stride', self.stride)
+        lam = kwargs.pop('lam', self.lam)
+        mode = kwargs.pop('mode', self.mode)
         return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
-                   lam=lam, mode=mode, hess=False)
+                   lam=lam, mode=mode, hess=False, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -1386,19 +1522,19 @@ class LCC(OptimizationLoss):
             Its spatial dimensions are singleton when `acceleration == 0`.
 
         """
-        dim = kwargs.get('dim', self.dim)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        mode = kwargs.get('mode', self.mode)
+        dim = kwargs.pop('dim', self.dim)
+        patch = kwargs.pop('patch', self.patch)
+        stride = kwargs.pop('stride', self.stride)
+        lam = kwargs.pop('lam', self.lam)
+        mode = kwargs.pop('mode', self.mode)
         return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
-                   lam=lam, mode=mode)
+                   lam=lam, mode=mode, **kwargs)
 
 
 class NMI(HistBasedOptimizationLoss):
     """Normalized cross-correlation"""
 
-    order = 2  # Gradient defined
+    order = 1  # Gradient defined
 
     def __init__(self, dim=None, bins=None, order=3, fwhm=2, norm='studholme'):
         """
@@ -1428,20 +1564,22 @@ class NMI(HistBasedOptimizationLoss):
             Loss
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        order = kwargs.get('order', self.order)
-        norm = kwargs.get('norm', self.norm)
-        fwhm = kwargs.get('fwhm', self.fwhm)
+        dim = kwargs.pop('dim', self.dim)
+        bins = kwargs.pop('bins', self.bins)
+        order = kwargs.pop('order', self.order)
+        norm = kwargs.pop('norm', self.norm)
+        fwhm = kwargs.pop('fwhm', self.fwhm)
         bins = bins or self.autobins(fixed, dim)
         if self.minmax is None:
             ll, *minmax = nmi(moving, fixed, grad=False, hess=False,
-                              norm=norm, bins=bins, dim=dim, fwhm=fwhm, minmax=True)
+                              norm=norm, bins=bins, dim=dim, fwhm=fwhm,
+                              minmax=True, **kwargs)
             self.minmax = minmax
             return ll
         else:
             return nmi(moving, fixed, grad=False, hess=False, norm=norm,
-                       bins=bins, order=order, dim=dim, fwhm=fwhm, minmax=self.minmax)
+                       bins=bins, order=order, dim=dim, fwhm=fwhm,
+                       minmax=self.minmax, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1461,19 +1599,20 @@ class NMI(HistBasedOptimizationLoss):
             Gradient with respect to the moving image
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        order = kwargs.get('order', self.order)
-        norm = kwargs.get('norm', self.norm)
+        dim = kwargs.pop('dim', self.dim)
+        bins = kwargs.pop('bins', self.bins)
+        order = kwargs.pop('order', self.order)
+        norm = kwargs.pop('norm', self.norm)
         bins = bins or self.autobins(fixed, dim)
         if self.minmax is None:
             ll, g, *minmax = nmi(moving, fixed, hess=False, norm=norm,
-                                    bins=bins, dim=dim, minmax=True)
+                                    bins=bins, dim=dim, minmax=True, **kwargs)
             self.minmax = minmax
             return ll, g
         else:
             return nmi(moving, fixed, hess=False, norm=norm,
-                       bins=bins, order=order, dim=dim, minmax=self.minmax)
+                       bins=bins, order=order, dim=dim,
+                       minmax=self.minmax, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1496,19 +1635,20 @@ class NMI(HistBasedOptimizationLoss):
             Its spatial dimensions are singleton when `acceleration == 0`.
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        order = kwargs.get('order', self.order)
-        norm = kwargs.get('norm', self.norm)
+        dim = kwargs.pop('dim', self.dim)
+        bins = kwargs.pop('bins', self.bins)
+        order = kwargs.pop('order', self.order)
+        norm = kwargs.pop('norm', self.norm)
         bins = bins or self.autobins(fixed, dim)
         if self.minmax is None:
             ll, g, h, *minmax = nmi(moving, fixed, norm=norm,
-                                    bins=bins, dim=dim, minmax=True)
+                                    bins=bins, dim=dim, minmax=True, **kwargs)
             self.minmax = minmax
             return ll, g, h
         else:
             return nmi(moving, fixed, norm=norm,
-                       bins=bins, order=order, dim=dim, minmax=self.minmax)
+                       bins=bins, order=order, dim=dim,
+                       minmax=self.minmax, **kwargs)
 
 
 class AutoGradLoss(OptimizationLoss):
