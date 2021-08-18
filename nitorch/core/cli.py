@@ -517,7 +517,7 @@ class NamedGroup(Group):
         results.name = self.switch.parse(args, all_stops)
         results.merge(self.positionals.parse(args, all_stops))
         options = self.options + self.suboptions.get(results.name, [])
-        results.merge(options.parse(args, stops))
+        results.merge(options.parse(args, all_stops))
         results.merge(self.groups.parse(args, all_stops))
         return results
 
