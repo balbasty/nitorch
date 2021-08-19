@@ -406,7 +406,7 @@ def _resize(maps, rls, aff, shape):
     return maps, rls
 
 
-def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=True):
+def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=False):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
 
@@ -563,11 +563,15 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
 
 
         if chi:
-            dof= torch.as_tensor(14.1450 , dtype=dtype)
+            # nu = 21.4342
+            # sig2 = 386.7943
+            dof= torch.as_tensor(21.4342 , dtype=dtype)
+            sig2= 1./386.7943
             ndat_np, fit_np = dat.neg_().clone().detach().cpu(), fit.clone().detach().cpu()
             #print(fit)
             # #print(iv(dof/2-1, ndat_np.numpy()*fit_np.numpy()*lam))
-            bes_np = iv(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*lam)
+            # bes_np = iv(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*lam)
+            bes_np = ive(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*sig2)
             # besup_np = np.log(iv(dof/2., ndat_np.numpy()*fit_np.numpy()*lam))
             # epsilon_np = np.log(besup_np)-np.log(bes_np)
             # epsilon_np = np.exp(epsilon_np)
@@ -575,34 +579,25 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
             bes = torch.as_tensor(bes_np, dtype=dtype).cuda()
             # # epsilon = torch.tensor(epsilon, dtype=dtype, device=device)
             # # bes = torch.tensor(bes, dtype=dtype, device=device)
-            epsilon = besseli_ratio(res*fit*lam, dof/2-1, N=2, K=4)
+            epsilon = besseli_ratio(res*fit*sig2, dof/2-1, N=2, K=4)
             res = res*epsilon
+            del bes_np, epsilon, ndat_np, fit_np
         res += fit
         
 
 
         # chi log likelihood
         if chi:
-            # print((crit+(dof/2.-1.)*torch.log(fit)-dof/2.*torch.log(dat)+(fit.square()+dat.square())*lam/2\
-            #     - torch.log(bes)))
             critn = (dof/2.-1.)*torch.log(fit+tiny)\
                 -(dof/2.)*torch.log(dat+tiny)\
-                    +((fit.square()+dat.square())*lam)/2.\
-                        - torch.log(bes+tiny)
-            print(torch.isfinite(critn).all())
+                    +((fit.square()+dat.square())*sig2)/2.\
+                        - (torch.log(bes+tiny) - torch.abs(fit*dat*sig2))
+                        # ive(v, z) = iv(v, z) * exp(-abs(z.real))
+
             crit = crit + torch.sum(critn, dtype=torch.double)
-            #print(critn)
-            #print(crit)
-            #print(crit)
-            # print(f" (dof/2-1)*torch.log(fit) {(dof/2-1)*torch.log(fit).sum(dtype=torch.double)}")
-            # print(f"-dof/2*torch.log(dat) {-dof/2*torch.log(dat).sum(dtype=torch.double)}")
-            # print(f"(fit.square()+dat.square())*lam/(2) {(fit.square()+dat.square()).sum(dtype=torch.double)*lam/2}")
-            # print(f"- torch.log(bes) {- torch.log(bes)}")
-            # print(f"torch.log(fit) {torch.log(fit)}")
-            # print(f"torch.log(dat) {torch.log(dat)}")
+            del critn
         else:
             #compute log-likelihood
-            #print(f"tosum {(0.5 * lam * res.square()).type}")
             crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
         del dat
 
