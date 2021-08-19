@@ -706,7 +706,7 @@ class ModelTrainer:
             print("Returning model with {:} {:} {:} | epoch={:}, {:}={:.3f}." \
                 .format('max' if arg_max else 'min', 
                     dataset, metric, epoch + 1, metric, results[dataset][metric][epoch]))
-        file = self._formatfile(self.save_model, epoch)
+        file = self._formatfile(self.save_model, epoch + 1)
         self.model.load_state_dict(torch.load(file))
         self.model.to(self.device)
         return self.model
