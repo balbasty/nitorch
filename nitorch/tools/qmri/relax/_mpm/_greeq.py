@@ -181,7 +181,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
             # --- Gauss Newton loop ---
             ll_gn = []
             for n_iter_gn in range(opt.optim.max_iter_gn):
-                print(n_iter_gn)
+                # print(n_iter_gn)
                 printer.gn = n_iter_gn
                 crit = 0
                 grad.zero_()
