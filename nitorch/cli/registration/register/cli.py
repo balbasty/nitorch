@@ -345,7 +345,8 @@ def _main(options):
         elif loss.name == 'gmh':
             lossobj = experimental_losses.GMMH(bins=loss.bins, dim=dim)
         elif loss.name == 'cat':
-            lossobj = losses.Cat(dim=dim)
+            lossobj = losses.Cat(dim=dim, log=False)
+            # lossobj = losses.AutoCat()
         elif loss.name == 'dice':
             lossobj = losses.Dice(weighted=loss.weight)
         else:

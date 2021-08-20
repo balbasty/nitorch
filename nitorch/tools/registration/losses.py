@@ -347,6 +347,77 @@ def cat(moving, fixed, dim=None, acceleration=0, grad=True, hess=True,
     return tuple(out) if len(out) > 1 else out[0]
 
 
+def cat_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None):
+    """Categorical loss for optimisation-based registration.
+
+    Parameters
+    ----------
+    moving : (..., K, *spatial) tensor
+        Moving image of probabilities (post-softmax).
+        The background class should be omitted.
+    fixed : (..., K, *spatial) tensor
+        Fixed image of probabilities
+    dim : int, default=`fixed.dim() - 1`
+        Number of spatial dimensions.
+    grad : bool, default=True
+        Compute and return gradient
+    hess : bool, default=True
+        Compute and return Hessian
+
+    Returns
+    -------
+    ll : () tensor
+        Negative log-likelihood
+    g : (..., K, *spatial) tensor, optional
+        Gradient with respect to the moving image
+    h : (..., K*(K+1)//2, *spatial) tensor, optional
+        Hessian with respect to the moving image.
+        Its spatial dimensions are singleton when `acceleration == 0`.
+
+    """
+    fixed, moving = utils.to_max_backend(fixed, moving)
+    if mask is not None:
+        mask = mask.to(fixed.device)
+    dim = dim or (fixed.dim() - 1)
+    nc = moving.shape[-dim-1]                               # nb classes - bck
+    fixed = utils.slice_tensor(fixed, slice(nc), -dim-1)    # remove bkg class
+    nvox = py.prod(fixed.shape[-dim:])
+
+    # log likelihood
+    logmoving = moving.clamp_min_(1e-5).log_()
+    last_fixed = fixed.sum(-dim-1, keepdim=True).neg_().add_(1)
+    last_moving = moving.sum(-dim-1, keepdim=True).neg_().add_(1)
+    ll = (logmoving*fixed).sum(-dim-1, keepdim=True)
+    ll += last_fixed * last_moving.clamp_min_(1e-5).log_()
+    if mask is not None:
+        ll = ll.mul_(mask)
+    ll = ll.sum().neg() / nvox
+    out = [ll]
+
+    # gradient
+    if grad:
+        g = last_fixed/last_moving.clamp_min(1e-5) - fixed/moving.clamp_min(1e-5)
+        g = g.div_(nvox)
+        if mask is not None:
+            g = g.mul_(mask)
+        out.append(g)
+
+    # hessian
+    if hess:
+        h = last_fixed/last_moving.square().clamp_min(1e-5)
+        hshape = list(h.shape)
+        hshape[-dim-1] = nc*(nc+1)//2
+        h = h.expand(hshape).clone()
+        diag = utils.slice_tensor(h, range(nc), -dim-1)
+        diag += fixed/moving.square().clamp_min(1e-5)
+        h = h.div_(nvox)
+        if mask is not None:
+            h = h.mul_(mask)
+        out.append(h)
+
+    return tuple(out) if len(out) > 1 else out[0]
+
+
 def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     """Squared Pearson's correlation coefficient loss
 
@@ -403,7 +474,7 @@ def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
         # approximate hessian
         h = 2 * (corr / sigm).square() / n
         if mask is not None:
-            h = h.mul_(mask)
+            h = h * mask
         out.append(h)
 
     # return stuff
@@ -520,7 +591,7 @@ def local_mean(x, kernel_size=5, stride=1, mode='constant', dim=None,
     # conv
     if backward:
         if mask is not None:
-            convmask = do_conv(mask)
+            convmask = do_conv(mask).clamp_min_(1e-5)
             x = x / convmask
             del convmask
         x = do_convt(x)
@@ -531,7 +602,7 @@ def local_mean(x, kernel_size=5, stride=1, mode='constant', dim=None,
             x = x * mask
         x = do_conv(x)
         if mask is not None:
-            mask = do_conv(mask)
+            mask = do_conv(mask).clamp_min_(1e-5)
             x = x.div_(mask)
 
     if virtual_batch:
@@ -630,6 +701,8 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
         _suffstat(fwd, moving, fixed)
     moving_std = sqrt_(moving_std.addcmul_(moving_mean, moving_mean, value=-1))
     fixed_std = sqrt_(fixed_std.addcmul_(fixed_mean, fixed_mean, value=-1))
+    moving_std.clamp_min_(1e-5)
+    fixed_std.clamp_min_(1e-5)
     std2 = moving_std * fixed_std
     corr = div_(corr.addcmul_(moving_mean, fixed_mean, value=-1), std2)
     nvox = py.prod(corr.shape[-dim:])
@@ -1266,17 +1339,20 @@ class Cat(OptimizationLoss):
 
     order = 2  # Hessian defined
 
-    def __init__(self, acceleration=0, dim=None):
+    def __init__(self, log=False, acceleration=0, dim=None):
         """
 
         Parameters
         ----------
+        log : bool, default=False
+            Whether the input are logits (pre-softmax) or probits (post-softmax)
         acceleration : (0..1) float
-            Acceleration
+            Acceleration. Only used if `log is True`.
         dim : int, default=1fixed.dim() - 1`
             Number of spatial dimensions
         """
         super().__init__()
+        self.log = log
         self.acceleration = acceleration
         self.dim = dim
 
@@ -1298,8 +1374,13 @@ class Cat(OptimizationLoss):
         """
         acceleration = kwargs.pop('acceleration', self.acceleration)
         dim = kwargs.pop('dim', self.dim)
-        return cat(moving, fixed, acceleration=acceleration, dim=dim,
-                   grad=False, hess=False, **kwargs)
+        log = kwargs.pop('log', self.log)
+        if log:
+            return cat(moving, fixed, acceleration=acceleration, dim=dim,
+                       grad=False, hess=False, **kwargs)
+        else:
+            return cat_nolog(moving, fixed, dim=dim,
+                             grad=False, hess=False, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1321,8 +1402,13 @@ class Cat(OptimizationLoss):
         """
         acceleration = kwargs.pop('acceleration', self.acceleration)
         dim = kwargs.pop('dim', self.dim)
-        return cat(moving, fixed, acceleration=acceleration, dim=dim,
-                   hess=False, **kwargs)
+        log = kwargs.pop('log', self.log)
+        if log:
+            return cat(moving, fixed, acceleration=acceleration, dim=dim,
+                       hess=False, **kwargs)
+        else:
+            return cat_nolog(moving, fixed, dim=dim,
+                             grad=True, hess=False, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -1347,8 +1433,13 @@ class Cat(OptimizationLoss):
         """
         acceleration = kwargs.pop('acceleration', self.acceleration)
         dim = kwargs.pop('dim', self.dim)
-        return cat(moving, fixed, acceleration=acceleration, dim=dim,
-                   **kwargs)
+        log = kwargs.pop('log', self.log)
+        if log:
+            return cat(moving, fixed, acceleration=acceleration, dim=dim,
+                       **kwargs)
+        else:
+            return cat_nolog(moving, fixed, dim=dim,
+                             grad=True, hess=True, **kwargs)
 
 
 class CC(OptimizationLoss):
@@ -1666,22 +1757,24 @@ class AutoGradLoss(OptimizationLoss):
 
     def loss(self, moving, fixed, **overload):
         options = {key: getattr(self, key) for key in self.options}
-        for key, value in overload:
+        for key, value in overload.items():
             options[key] = value
         return self.function(moving, fixed, **options)
 
     def loss_grad(self, moving, fixed, **overload):
         options = {key: getattr(self, key) for key in self.options}
-        for key, value in overload:
+        for key, value in overload.items():
             options[key] = value
         if moving.requires_grad:
             raise ValueError('`moving` already requires gradients')
         moving.requires_grad_()
-        moving.grad.zero_()
+        if moving.grad is not None:
+            moving.grad.zero_()
         with torch.enable_grad():
             loss = self.function(moving, fixed, **options)
             loss.backward()
             grad = moving.grad
+        loss = loss.detach()
         moving.requires_grad_(False)
         moving.grad = None
         return loss, grad
@@ -1695,3 +1788,11 @@ class Dice(AutoGradLoss):
         dice = DiceLoss(log=log, implicit=implicit, weighted=weighted,
                         exclude_background=exclude_background)
         super().__init__(dice)
+
+
+class AutoCat(AutoGradLoss):
+
+    def __init__(self, log=False, implicit=True, weighted=False):
+        from nitorch.nn.losses import CategoricalLoss
+        cat = CategoricalLoss(log=log, implicit=implicit, weighted=weighted)
+        super().__init__(cat)
