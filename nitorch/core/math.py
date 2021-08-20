@@ -722,8 +722,8 @@ def _softmax_fwd(input, dim=-1, implicit=False):
     sumval = torch.sum(input, dim=dim, keepdim=True,
                        out=maxval if not implicit_in else None)
     if implicit_in:
-        sumval += maxval.neg().exp()  # don't forget the class full of zeros
-    input *= sumval.reciprocal_()
+        sumval += maxval.neg().exp_()  # don't forget the class full of zeros
+    input /= sumval
 
     if implicit_in and not implicit_out:
         background = input.sum(dim, keepdim=True).neg_().add_(1)
@@ -767,10 +767,10 @@ def _softmax_bwd(output, output_grad, dim=-1, implicit=False):
     del output_grad
     grad *= output
     gradsum = grad.sum(dim=dim, keepdim=True)
-    grad -= gradsum * output
+    grad = grad.addcmul_(gradsum, output, value=-1)  # grad -= gradsum * output
     if add_dim:
         grad_background = output.sum(dim=dim, keepdim=True).neg().add(1)
-        grad_background.mul_(gradsum).neg_()
+        grad_background.mul_(gradsum.neg_())
         grad = torch.cat((grad, grad_background), dim=dim)
     elif drop_dim:
         grad = utils.slice_tensor(grad, slice(-1), dim)
