@@ -361,7 +361,7 @@ optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  default='wolfe', convert=number_or_str(int),
                  help='Number of backtracking line search')
 optim.add_option('tolerance', ('-t', '--tolerance'), nargs=1,
-                 convert=float, default=1e-9, help='Tolerance for early stopping')
+                 convert=float, default=1e-4, help='Tolerance for early stopping')
 optim.add_suboption('gn', 'marquardt', ('-m', '--marquardt'), nargs=1,
                     default=None, convert=number_or_str(float),
                     help='Levenberg-Marquardt regularization')
@@ -460,7 +460,7 @@ joptim = cli.NamedGroup('optim', joptim_choices, '@optim', n='?')
 joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
                      default=10, convert=int, help='Maximum number of iterations')
 joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
-                     convert=float, default=1e-9, help='Tolerance for early stopping')
+                     convert=float, default=1e-5, help='Tolerance for early stopping')
 
 # register groups
 parser.add_group(loss)
