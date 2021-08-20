@@ -621,7 +621,7 @@ class FieldRelax(FieldGaussNewton):
 class StrongWolfe(FirstOrder):
     # Adapted from PyTorch
 
-    def __init__(self, c1=0, c2=0.9, tol=1e-9, max_iter=25):
+    def __init__(self, c1=1e-4, c2=0.9, tol=1e-9, max_iter=25):
         super().__init__()
         self.c1 = c1
         self.c2 = c2
@@ -654,29 +654,39 @@ class StrongWolfe(FirstOrder):
         f1 = f0
         g1 = g0
         dg0 = dg1 = delta.flatten().dot(g0.flatten())
-        f, g = closure(x0.add(delta, alpha=a), grad=True)
-        dd = delta.abs().max()
 
-        def update_bracket_init(a, f, g, a1, f1, g1, dg1):
-            # (a, f, g, dg)     -> new values (step, function, gradient, dot)
-            # (a1, f1, g1, dg1) -> old values
-            # (_, f0, _, dg0)   -> initial value
-            dg = delta.flatten().dot(g.flatten())
+        def update_bracket_init(a_new, f_new, dg_new, f_old):
+            # Here, we're just looking for an upper bound on `a`:
+            # `a_new` (step), `f_new` (func) and `dg_new` (grad) are a
+            # values for a new step size to investigate. `f_old` was the
+            # previous best value (with a negative gradient) .
+            # - If we find a point that does not decrease the objective
+            #   (Armijo failed), we know that the minimum lies between
+            #   `a_old` and `a_new` (side == -1)
+            # - If we find a point that does decrease the objective
+            #   (Armijo success) but whose gradient is positive
+            #   (dg > 0), we're also too far and know that the minimum
+            #   lies between `a_old` and `a_new` (side == -1)
+            # - If we find a point that does decrease the objective
+            #   (Armijo success) but whose gradient is still too steep
+            #   (Wolfe failed) we have to keep moving right (side == 1)
+            # - Else, we found a point that enforces all conditions, we
+            #   were lucky and return it (side == 0)
 
-            if f > (f0 + self.c1 * a * dg0) or (ls_iter > 1 and f >= f1):
+            if f_new > (f0 + self.c1 * a_new * dg0) or f_new >= f_old:
                 # Armijo condition failed
-                return -1, [a1, a], [f1, f], [g1, g], [dg1, dg]
+                return -1
 
-            if abs(dg) <= -self.c2 * dg0:
+            if abs(dg_new) <= -self.c2 * dg0:
                 # Armijo + Wolfe succeeded
-                return 0, [a, a], [f, f], [g, g], [dg, dg]
+                return 0
 
-            if dg >= 0:
+            if dg_new >= 0:
                 # Wolfe failed + wrong direction
-                return -1, [a1, a], [f1, f], [g1, g], [dg1, dg]
+                return -1
 
             # Wolfe failed + right direction
-            return 1, [a1, a], [f1, f], [g1, g], [dg1, dg]
+            return 1
 
         def update_bracket(a, f, g, ba, bf, bg, bdg):
             # (a, f, g, dg)     -> new values (step, function, gradient, dot)
@@ -697,7 +707,7 @@ class StrongWolfe(FirstOrder):
                 return True, [a, a], [f, f], [g, g], [dg, dg]
 
             if dg * (ba[1] - ba[0]) >= 0:
-                # old high becomes new low
+                # old low becomes new high
                 ba = ba[::-1]
                 bf = bf[::-1]
                 bg = bg[::-1]
@@ -710,6 +720,10 @@ class StrongWolfe(FirstOrder):
             bdg = [dg, bdg[1]]
             return False, ba, bf, bg, bdg
 
+        # value at initial step size
+        f, g = closure(x0.add(delta, alpha=a), grad=True)
+        dg = delta.flatten().dot(g.flatten())
+
         # We first want to find an upper bound for the step size.
         # We explore the space on the right of the initial step size
         # (a > a0) until we either find a point that enforces all Wolfe
@@ -718,12 +732,12 @@ class StrongWolfe(FirstOrder):
         # gradient and search direction is >= 0). As long as this is not
         # true, cubic interpolation brings us to the right of the
         # rightmost point.
+        dd = delta.abs().max()
         while ls_iter < self.max_iter:
-            side, (a1, a), (f1, f), (g1, g), (dg1, dg) \
-                = update_bracket_init(a, f, g, a1, f1, g1, dg1)
+            side = update_bracket_init(a, f, dg, f1)
             ls_iter += 1
             if side == 0:
-                return a1, f1, g1
+                return a, f, g
             elif side < 0:
                 break
             elif abs(a1 - a) * dd < self.tol:
@@ -824,40 +838,56 @@ class StrongWolfe(FirstOrder):
         if x2 < x1:
             ((x1, f1, g1), (x2, f2, g2)) = ((x2, f2, g2), (x1, f1, g1))
 
-        # import matplotlib.pyplot as plt
-        # plt.scatter([x1, x2], [f1, f2])
-        # x = torch.linspace(x1, x2, 512)
-        # plt.plot(x, f1 + g1*(x - x1))
-        # plt.plot(x, f2 + g2*(x - x2))
-
         # My code
         # I reimplemented it to deal with the case where both critical
         # points lie in the interval, which I take as a hint that we are in
         # a non-convex portion and we should not trust the minimum.
         # Solution based on https://math.stackexchange.com/questions/1522439/
-        # a = g1 + g2 - 2 * (f2 - f1) / (x2 - x1)
-        # a /= (x1 - x2) ** 2
-        # b = 0.5 * (g2 - g1) / (x2 - x1) - 1.5 * a * (x1 + x2)
-        # c = g1 - 3 * a * x1 * x1 - 2 * x1 * b
-        # # d = f1 - x1 ** 3 * a - x1 ** 2 * b - x1 * c  # not used
-        # delta = b*b - 3 * a * c
-        # if delta > 0:
-        #     x_min = (- b - (delta ** 0.5)) / (3 * a)
-        #     x_max = (- b + (delta ** 0.5)) / (3 * a)
-        #     if x_min > x1 and x_min < x2 and x_max > x1 and x_max < x2:
-        #         # both critical points are in the interval
-        #         # we are probably in a non-convex portion
-        #         return (xmin_bound + xmax_bound) / 2.
-        #     else:
-        #         return min(max(x_min, xmin_bound), xmax_bound)
-        # else:
-        #     # no critical point (no or one inflexion point)
-        #     return (xmin_bound + xmax_bound) / 2.
-
-        # plt.plot(x, a*x*x*x + b*x*x + c*x + d)
-        # plt.show()
+        #
+        # 18 Aug 2021: I might not need this extra check, but the pytorch
+        # solution is weird so I am keeping my solution for now.
+        a = g1 + g2 - 2 * (f2 - f1) / (x2 - x1)
+        a /= (x1 - x2) ** 2
+        b = 0.5 * (g2 - g1) / (x2 - x1) - 1.5 * a * (x1 + x2)
+        c = g1 - 3 * a * x1 * x1 - 2 * x1 * b
+        # d = f1 - x1 ** 3 * a - x1 ** 2 * b - x1 * c  # not used
+        delta = b*b - 3 * a * c
+        # import matplotlib.pyplot as plt
+        # fig = plt.gcf()
+        # x = torch.linspace(x1, x2, 512)
+        # f = lambda x: a*x*x*x+b*x*x+c*x+d
+        # plt.plot(x, f(x))
+        # plt.scatter([x1, x2], [f1, f2], color='k', marker='o')
+        if delta > 0:
+            if a < 0:
+                x_min = (- b + (delta ** 0.5)) / (3 * a)
+                x_max = (- b - (delta ** 0.5)) / (3 * a)
+            else:
+                x_min = (- b - (delta ** 0.5)) / (3 * a)
+                x_max = (- b + (delta ** 0.5)) / (3 * a)
+            # plt.scatter([x_min], [f(x_min)], color='r', marker='o')
+            # plt.xlim([x1-0.5*(x2-x1), x2+0.5*(x2-x1)])
+            # plt.scatter([x_max], [f(x_max)], color='k', marker='o')
+            # if x1 < x_min < x2 and x1 < x_max < x2:
+            #     # both critical points are in the interval
+            #     # we are probably in a non-convex portion
+            #     return (xmin_bound + xmax_bound) / 2.
+            # else:
+            #     return min(max(x_min, xmin_bound), xmax_bound)
+            sol = min(max(x_min, xmin_bound), xmax_bound)
+        else:
+            # no critical point (no or one inflexion point)
+            sol = (xmin_bound + xmax_bound) / 2.
+        # plt.vlines(sol, min(f(x)), max(f(x)))
+        # plt.show(block=False)
+        # input('')
+        # plt.close(fig)
+        return sol
 
         # PyTorch code
+        # /!\ I don't find this solution when checking with the symbolic
+        # toolbox. I have reimplemented using something that passes the
+        # symbolic test above.
         #
         # Code for most common case: cubic interpolation of 2 points
         #   w/ function and derivative values for both
@@ -866,17 +896,18 @@ class StrongWolfe(FirstOrder):
         #   d2 = sqrt(d1^2 - g1*g2);
         #   min_pos = x2 - (x2 - x1)*((g2 + d2 - d1)/(g2 - g1 + 2*d2));
         #   t_new = min(max(min_pos,xmin_bound),xmax_bound);
-        d1 = g1 + g2 - 3 * (f1 - f2) / (x1 - x2)
-        d2_square = d1 ** 2 - g1 * g2
-        if d2_square >= 0:
-            d2 = d2_square.sqrt()
-            if x1 <= x2:
-                min_pos = x2 - (x2 - x1) * ((g2 + d2 - d1) / (g2 - g1 + 2 * d2))
-            else:
-                min_pos = x1 - (x1 - x2) * ((g1 + d2 - d1) / (g1 - g2 + 2 * d2))
-            return min(max(min_pos, xmin_bound), xmax_bound)
-        else:
-            return (xmin_bound + xmax_bound) / 2.
+
+        # d1 = g1 + g2 - 3 * (f1 - f2) / (x1 - x2)
+        # d2_square = d1 ** 2 - g1 * g2
+        # if d2_square >= 0:
+        #     d2 = d2_square.sqrt()
+        #     if x1 <= x2:
+        #         min_pos = x2 - (x2 - x1) * ((g2 + d2 - d1) / (g2 - g1 + 2 * d2))
+        #     else:
+        #         min_pos = x1 - (x1 - x2) * ((g1 + d2 - d1) / (g1 - g2 + 2 * d2))
+        #     return min(max(min_pos, xmin_bound), xmax_bound)
+        # else:
+        #     return (xmin_bound + xmax_bound) / 2.
 
 
 class LBFGS(FirstOrder):
@@ -898,6 +929,7 @@ class LBFGS(FirstOrder):
         """
         super().__init__(lr=lr, **kwargs)
 
+        self.tol = kwargs.pop('tol', 1e-9)
         self.max_iter = max_iter
         self.history = history
         if wolfe is False:
@@ -936,19 +968,22 @@ class LBFGS(FirstOrder):
         else:
             closure_line_search = closure
 
-        ll_prev = None
+        ll_prev = float('inf')
+        max_ll = -float('inf')
+        max_grad = 0
+        max_prm = param.abs().max()
         for n_iter in range(1, self.max_iter+1):
             if n_iter == 1:
                 ll, grad = closure(param, grad=True)
-                delta = grad.neg()
-                step = min(1., 1. / grad.abs().sum()) * self.lr
             else:
                 self.update_state(grad, delta)
-                delta = self.step(grad, update=False)
-                step = self.lr
-                # if torch.dot(delta.flatten(), grad.flatten()) > -1e-9:
-                #     print('delta x grad', grad.abs().max())
-                #     break
+            delta = self.step(grad, update=False)
+            step = self.lr
+            if not self.sy:
+                step = step * min(1., 1. / grad.abs().sum())
+            # if torch.dot(delta.flatten(), grad.flatten()) > -1e-9:
+            #     print('delta x grad', grad.abs().max())
+            #     break
             if self.wolfe is not False:
                 step, ll, grad = self.wolfe.iter(
                     param, ll, grad, step, delta, closure_line_search)
@@ -958,22 +993,27 @@ class LBFGS(FirstOrder):
             if self.wolfe is False and n_iter != self.max_iter:
                 ll, grad = closure(param, grad=True)
             # convergence
-            if grad.abs().max() <= 1e-7:
+            new_max_grad = grad.abs().max()
+            if max_grad > 0 and new_max_grad/max_grad <= self.tol:
                 # print('grad', grad.abs().max())
                 break
-            if delta.abs().max() <= 1e-9:
+            max_grad = max(max_grad, new_max_grad)
+            if max_prm > 0 and delta.abs().max()/max_prm <= self.tol:
                 # print('step', delta.abs().max())
                 break
-            if ll_prev and abs(ll - ll_prev) < 1e-9:
+            max_prm = max(max_prm, param.abs().max())
+            if ll_prev and abs(ll_prev - ll)/abs(max_ll - ll) < self.tol:
                 # print('ll')
                 break
+            ll_prev = ll
+            max_ll = max(max_ll, ll)
         return (param, grad) if derivatives else param
 
     def step(self, grad, update=True):
         """Compute gradient direction, without Wolfe line search"""
         alphas = []
         delta = grad.neg()
-        for i in range(1, min(self.history, len(self.delta))+1):
+        for i in range(1, len(self.delta)+1):
             alpha = torch.dot(self.delta[-i].flatten(),
                               delta.flatten()) / self.sy[-i]
             alphas.append(alpha)
@@ -981,13 +1021,13 @@ class LBFGS(FirstOrder):
         alphas = list(reversed(alphas))
         if callable(self.preconditioner):
             delta = self.preconditioner(delta)
-        elif self.preconditioner:
+        elif self.preconditioner is not None:
             # assume diagonal
             delta.mul_(self.preconditioner)
-        else:
+        if self.sy:
             gamma = self.sy[-1] / self.yy[-1]
             delta *= gamma
-        for i in range(min(self.history, len(self.delta))):
+        for i in range(len(self.delta)):
             beta = torch.dot(self.delta_grad[i].flatten(),
                              delta.flatten()) / self.sy[i]
             delta.add_(self.delta[i], alpha=alphas[i] - beta)
@@ -997,18 +1037,22 @@ class LBFGS(FirstOrder):
 
     def update_state(self, grad, delta):
         """Update state"""
-        if len(self.delta) == self.history:
-            self.delta.pop(0)
-            self.delta_grad.pop(0)
-            self.sy.pop(0)
-            self.yy.pop(0)
-        self.delta_grad.append(grad - self.last_grad)
-        self.last_grad = grad
-        self.delta.append(delta)
-        self.yy.append(torch.dot(self.delta_grad[-1].flatten(),
-                                 self.delta_grad[-1].flatten()))
-        self.sy.append(torch.dot(self.delta_grad[-1].flatten(),
-                                 self.delta[-1].flatten()))
+        delta_grad = grad - self.last_grad
+        sy = torch.dot(delta_grad[-1].flatten(),
+                       delta[-1].flatten())
+        if sy > 1e-10:
+            yy = torch.dot(delta_grad.flatten(),
+                           delta_grad.flatten())
+            if len(self.delta) == self.history:
+                self.delta.pop(0)
+                self.delta_grad.pop(0)
+                self.sy.pop(0)
+                self.yy.pop(0)
+            self.delta_grad.append(delta_grad)
+            self.last_grad = grad
+            self.delta.append(delta)
+            self.yy.append(yy)
+            self.sy.append(sy)
 
 
 class IterationStep(Optim):
