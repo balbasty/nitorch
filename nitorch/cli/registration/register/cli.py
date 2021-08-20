@@ -1,8 +1,8 @@
 from nitorch.cli.cli import commands
-from nitorch.core.py import make_list
-# from .main import convert
 from .parser import parser, help, ParseError
-from nitorch.tools.registration import joint, losses, optim, utils as regutils, objects
+from nitorch.tools.registration import (joint, losses, optim,
+                                        utils as regutils, objects,
+                                        experimental_losses)
 from nitorch import io, spatial
 from nitorch.core import utils, py
 import torch
@@ -187,8 +187,8 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
         odir = odir or idir or '.'
 
         image = objects.Image(mov.fdata(rand=True, device=device), dim=dim,
-                            affine=mov_affine, bound=option.mov.bound,
-                            extrapolate=option.mov.extrapolate)
+                              affine=mov_affine, bound=option.mov.bound,
+                              extrapolate=option.mov.extrapolate)
 
         if option.mov.output:
             target_affine = mov_affine
@@ -212,7 +212,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             fname = option.mov.resliced.format(dir=odir, base=base, sep=os.path.sep, ext=ext)
             print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = _warp_image1(image, target_affine, target_shape,
-                                  affine=affine, nonlin=nonlin)
+                                  affine=affine, nonlin=nonlin, reslice=True)
             io.savef(warped, fname, like=ifname, affine=target_affine)
             print('done.')
             del warped
@@ -249,22 +249,26 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             fname = option.mov.resliced.format(dir=odir, base=base, sep=os.path.sep, ext=ext)
             print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = _warp_image1(image, target_affine, target_shape,
-                                  affine=affine, nonlin=nonlin, backward=True)
+                                  affine=affine, nonlin=nonlin,
+                                  backward=True, reslice=True)
             io.savef(warped, fname, like=ifname, affine=target_affine)
             print('done.')
             del warped
 
 
 def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
-                 backward=False):
+                 backward=False, reslice=False):
     """Returns the warped image, with channel dimension last"""
     # build transform
     aff_right = target
     aff_left = spatial.affine_inv(image.affine)
     aff = None
     if affine:
-        exp = affine.iexp if backward else affine.exp
+        # exp = affine.iexp if backward else affine.exp
+        exp = affine.exp
         aff = exp(recompute=False, cache_result=True)
+        if backward:
+            aff = spatial.affine_inv(aff)
     if nonlin:
         if affine:
             if affine.position[0].lower() in ('ms' if backward else 'fs'):
@@ -285,15 +289,12 @@ def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
             phi = spatial.affine_matvec(aff_left, phi)
     else:
         # no nonlin: single affine even if position == 'symmetric'
-        if affine.position[0].lower() in ('ms' if backward else 'f'):
-            aff_right = spatial.affine_matmul(aff, aff_right)
-        if affine.position[0].lower() in ('f' if backward else 'ms'):
-            aff_left = spatial.affine_matmul(aff_left, aff)
-        aff = spatial.affine_matmul(aff_right, aff_left)
-        if _almost_identity(aff) and shape == image.shape:
-            phi = None
-        else:
+        if reslice:
+            aff = spatial.affine_matmul(aff, aff_right)
+            aff = spatial.affine_matmul(aff_left, aff)
             phi = spatial.affine_grid(aff, shape)
+        else:
+            phi = None
 
     # warp image
     if phi is not None:
@@ -341,6 +342,8 @@ def _main(options):
             lossobj = losses.CC(dim=dim)
         elif loss.name == 'lcc':
             lossobj = losses.LCC(patch=loss.patch, dim=dim)
+        elif loss.name == 'gmh':
+            lossobj = experimental_losses.GMMH(bins=loss.bins, dim=dim)
         elif loss.name == 'cat':
             lossobj = losses.Cat(dim=dim)
         elif loss.name == 'dice':
