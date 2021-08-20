@@ -1,115 +1,181 @@
 import matplotlib.pyplot as plt
 
 from nitorch.core import utils, py, math, constants, linalg, kernels
-from nitorch.nn.modules.conv import _guess_output_shape
-from nitorch import spatial
+from nitorch.core.math import softmax, _softmax_bwd
 import math as pymath
 import torch
 from torch.nn import functional as F
-from .losses import OptimizationLoss, HistBasedOptimizationLoss, local_mean
-from .utils import JointHist
-from typing import List
+from .losses import OptimizationLoss, local_mean
 pyutils = py
 
 
-def fit_gmm2(moving, fixed, bins=3, max_iter=20, dim=None):
+def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
+             update='em', regularization=1e-3):
+    """Fit a 2D Gaussian mixture
+
+    Parameters
+    ----------
+    x : (..., *spatial) tensor
+        Moving image (first dimension)
+    y : (..., *spatial) tensor
+        Fixed image (first dimension)
+    bins : int, default=3
+        Number of clusters
+    max_iter : int, default=20
+        Maximum number of iterations (only if 'em')
+    dim : int, default=`fixed.dim()-1`
+        Number of spatial dimensions
+    z : (..., *spatial, bins) tensor, default=`1/bins`
+        Initial responsibilities
+    theta : dict(ymean, xmean, yvar, xvar, corr, prior), optional
+        Initial parameters.
+    update : {'e', 'm', 'em'}, default='em'
+        - 'e' requires `theta`
+        - 'm' requires `z`
+        - 'em' doesn't need anything
+    regularization : float, default=1e-3
+        Loading of the diagonal of the covariances.
+        Acts like a small Wishart prior.
+
+    Returns
+    -------
+    dict:
+        z : (..., *spatial, bins) tensor
+            Voxel-wise responsibilties
+        xmean : (..., *1, bins) tensor
+            Mean of the moving (1st dimension) image
+        ymean : (..., *1, bins) tensor
+            Mean of the fixed (1st dimension) image
+        xvar : (..., *1, bins) tensor
+            Variance of the moving (1st dimension) image
+        yvar : (..., *1, bins) tensor
+            Variance of the fixed (1st dimension) image
+        corr : (..., *1, bins) tensor
+            Correlation coefficient
+        prior : (..., *1, bins) tensor
+            Proportion of each class
+        logidet : (..., *1, bins) tensor
+            Pre-computed log-determinant of the inverse covariance
+        hz : (..., *1, 1) tensor
+            Pre-computed entropy of the responsibilites: sum(z*log(z))
+
+
+
+    """
     # Fit a 2D Gaussian mixture model
-    dim = dim or (fixed.dim() - 1)
-    nvox = py.prod(fixed.shape[-dim:])
-
-    quantiles = torch.arange(bins+1)/bins
-    moving_mean = utils.quantile(moving, quantiles, dim=range(-dim, 0), keepdim=True)
-    fixed_mean = utils.quantile(fixed, quantiles, dim=range(-dim, 0), keepdim=True)
-    moving_var = (moving_mean[..., 1:] - moving_mean[..., :-1]).div_(2.355).square_()
-    fixed_var = (fixed_mean[..., 1:] - fixed_mean[..., :-1]).div_(2.355).square_()
-    moving_mean = (moving_mean[..., 1:] + moving_mean[..., :-1]).div_(2)
-    fixed_mean = (fixed_mean[..., 1:] + fixed_mean[..., :-1]).div_(2)
-    cov = torch.zeros_like(fixed_var)
-    det = moving_var * fixed_var - cov * cov
-    logidet = -det.clamp_min(1e-5).log_()
-    idet = det.clamp_min(1e-5).reciprocal_()
-
-    moving_prec = fixed_var * idet
-    fixed_prec = moving_var * idet
-    icov = -cov * idet
-
-    prior = fixed.new_full([bins], 1/bins)
-    logprior = prior.clamp_min(1e-5).log()
-
-    moving = moving[..., None]
-    fixed = fixed[..., None]
-
+    dim = dim or (y.dim() - 1)
+    nvox = py.prod(y.shape[-dim:])
     eps = 1e-10
 
-    for nit in range(max_iter):
+    x = x[..., None]
+    y = y[..., None]
 
-        # update responsibilities (E)
-        x = (moving - moving_mean)
-        y = (fixed - fixed_mean)
-        # z = x.square() * fixed_var + y.square() * moving_var - 2 * x * y * cov
-        z = x * (x * fixed_var - y * cov)
-        z += y * (y * moving_var - x * cov)
+    def e_step(xmean, ymean, xvar, yvar, cov, idet, logprior):
+        xnorm = (x - xmean)
+        ynorm = (y - ymean)
+        z = (xnorm * xnorm) * yvar
+        z += (ynorm * ynorm) * xvar
+        z -= (xnorm * ynorm) * (2*cov)
         z *= idet
-        del x, y
-        z -= logidet
+        del xnorm, ynorm
+        z -= idet.log()
         z *= -0.5
         z += logprior
-        z = F.softmax(z, dim=-1)
-        # print('min z', z.min().item())
-        hz = -(z*z.clamp_min(eps).log()).sum(dtype=torch.double).float()
+        z = softmax(z, dim=-1)
+        return z
 
-        # for k in range(bins):
-        #     plt.subplot(1, bins, k+1)
-        #     plt.imshow(z[0, ..., z.shape[-2]//2, k])
-        #     plt.colorbar()
-        # plt.suptitle('resp')
-        # plt.show()
+    sumspatial = lambda x: x.sum(list(range(-dim - 1, -1)), keepdim=True, dtype=torch.double).float()
 
-        # compute suffstat
-        mom0 = z.sum(list(range(-dim-1, -1)), keepdim=True, dtype=torch.double).float()
-        z /= mom0
-        mom1_moving = (moving * z).sum(list(range(-dim-1, -1)), keepdim=True, dtype=torch.double).float()
-        mom1_fixed = (fixed * z).sum(list(range(-dim-1, -1)), keepdim=True, dtype=torch.double).float()
-        mom2_moving = (moving.square() * z).sum(list(range(-dim-1, -1)), keepdim=True, dtype=torch.double).float()
-        mom2_fixed = (fixed.square() * z).sum(list(range(-dim-1, -1)), keepdim=True, dtype=torch.double).float()
-        mom2_cov = (moving * fixed * z).sum(list(range(-dim-1, -1)), keepdim=True, dtype=torch.double).float()
+    def suffstat(z):
+        mom0 = sumspatial(z)
+        z.div_(mom0)
+        xmom1 = sumspatial(x * z)
+        ymom1 = sumspatial(y * z)
+        xmom2 = sumspatial(x.square() * z)
+        ymom2 = sumspatial(y.square() * z)
+        xymom2 = sumspatial((x * y) * z)
+        return mom0, xmom1, ymom1, xmom2, ymom2, xymom2
 
-        # update parameters (M)
-        prior = mom0
-        prior /= nvox
-        # print(prior.flatten().sort().values.tolist())
-        # print('min pi', prior.min().item())
-        logprior = prior.clamp_min(eps).log()
-        moving_mean = mom1_moving
-        fixed_mean = mom1_fixed
-        moving_var = mom2_moving.addcmul_(moving_mean, moving_mean, value=-1)
-        fixed_var = mom2_fixed.addcmul_(fixed_mean, fixed_mean, value=-1)
-        cov = mom2_cov.addcmul_(moving_mean, fixed_mean, value=-1)
+    def m_step(z):
+        mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = suffstat(z)
+
+        prior = mom0.div_(nvox)
+        logprior = prior.clamp_min(eps).log_()
+        xmean = xmom1
+        ymean = ymom1
+        xvar = xmom2.addcmul_(xmean, xmean, value=-1)
+        yvar = ymom2.addcmul_(ymean, ymean, value=-1)
+        cov = xymom2.addcmul_(xmean, ymean, value=-1)
 
         # regularization
-        # print(moving_var.flatten())
-        alpha = 1e-3
-        moving_var = (moving_var + alpha) / (1+alpha)
-        fixed_var = (fixed_var + alpha) / (1+alpha)
-        cov = cov / (1+alpha)
+        alpha = regularization
+        xvar = xvar.add_(alpha).div_(1+alpha)
+        yvar = yvar.add_(alpha).div_(1+alpha)
+        cov = cov.div_(1+alpha)
 
         # invert
-        det = moving_var * fixed_var - cov * cov
-        # print(det.flatten().sort().values.tolist())
-        # print('min det', det.min().item())
+        det = xvar * yvar - cov * cov
         idet = det.clamp_min(1e-30).reciprocal_()
-        logidet = idet.log()
-        moving_prec = fixed_var * idet
-        fixed_prec = moving_var * idet
-        icov = -cov * idet
+        return xmean, ymean, xvar, yvar, cov, idet, logprior
 
-        # ll
-        ll = ((logidet * 0.5 + logprior) * prior).sum(dtype=torch.double).float()
-        ll *= -nvox
-        ll -= hz
-        # print(ll.item())
+    if theta:
+        xmean = theta.pop('xmean')
+        ymean = theta.pop('ymean')
+        xvar = theta.pop('xvar')
+        yvar = theta.pop('yvar')
+        corr = theta.pop('corr')
+        prior = theta.pop('prior')
+    elif z is not None:
+        xmean, ymean, xvar, yvar, cov, idet, logprior = m_step(z)
+        corr = (xvar * yvar).reciprocal_().mul_(cov)
+        prior = logprior.exp()
+    else:
+        quantiles = torch.arange(bins+1)/bins
+        xmean = utils.quantile(x[..., 0], quantiles, dim=range(-dim, 0), keepdim=True)
+        ymean = utils.quantile(y[..., 0], quantiles, dim=range(-dim, 0), keepdim=True)
+        xvar = (xmean[..., 1:] - xmean[..., :-1]).div_(2.355).square_()
+        yvar = (ymean[..., 1:] - ymean[..., :-1]).div_(2.355).square_()
+        xmean = (xmean[..., 1:] + xmean[..., :-1]).div_(2)
+        ymean = (ymean[..., 1:] + ymean[..., :-1]).div_(2)
+        corr = torch.zeros_like(yvar)
+        prior = y.new_full([bins], 1 / bins)
 
-    return z, prior, moving_mean, fixed_mean, moving_var, fixed_var, cov, hz
+    cov = corr * yvar.sqrt() * xvar.sqrt()
+    det = xvar * yvar - cov * cov
+    logidet = -det.clamp_min(1e-5).log_()
+    idet = det.clamp_min(1e-5).reciprocal_()
+    logprior = prior.clamp_min(1e-5).log_()
+    # TODO: include trace(REG\ICOV) and log|ICOV| bits that correspond
+    #       to the Wishart prior.
+
+    if update.lower() == 'e':
+        z = e_step(xmean, ymean, xvar, yvar, cov, idet, logprior)
+        hz = -sumspatial(z.clamp_min(eps).log_().mul_(z))
+    elif update.lower() == 'em':
+        ell_prev = None
+        for nit in range(max_iter):
+            z = e_step(xmean, ymean, xvar, yvar, cov, idet, logprior)
+            hz = -sumspatial(z.clamp_min(eps).log_().mul_(z))
+            xmean, ymean, xvar, yvar, cov, idet, logprior = m_step(z)
+
+            # negative log-likelihood (upper bound)
+            ll = ((logidet * 0.5 + logprior) * prior).sum()
+            ll += hz.sum() / nvox
+            ll = -ll
+            ell = ll.neg().exp()
+            print(ll.item())
+            if ell_prev is not None:
+                gain = (ell - ell_prev) / ell_prev
+                ell_prev = ell
+                if gain < 1e-5:
+                    break
+
+    corr = (xvar*yvar).sqrt_().reciprocal_().mul_(cov)
+    output = dict(
+        z=z, prior=prior, moving_mean=xmean, fixed_mean=ymean, ll=ll,
+        moving_var=xvar, fixed_var=yvar, corr=corr, hz=hz, idet=idet,
+    )
+    return output
 
 
 def _quickmi(moving, fixed, bins=64, dim=None):
@@ -505,6 +571,106 @@ def lgmm(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     return (mi, g, h) if hess else (mi, g) if grad else mi
 
 
+def gmmh(moving, fixed, dim=None, bins=6, max_iter=50,
+         grad=True, hess=True):
+    """Entropy estimated by Gaussian Mixture Modeling"""
+
+    dim = dim or (fixed.dim() - 1)
+    n = py.prod(fixed.shape[-dim:])
+    gmmfit = fit_gmm2(moving, fixed, bins, max_iter, dim=dim)
+
+    z = gmmfit.pop('z')
+    prior = gmmfit.pop('prior')
+    moving_mean = gmmfit.pop('moving_mean')
+    fixed_mean = gmmfit.pop('fixed_mean')
+    moving_var = gmmfit.pop('moving_var')
+    fixed_var = gmmfit.pop('fixed_var')
+    corr = gmmfit.pop('corr')
+    hz = gmmfit.pop('hz')
+    idet = gmmfit.pop('idet')
+
+    # prm = prior, moving_mean, fixed_mean, moving_var, fixed_var, cov
+    # _plot_gmm(moving, fixed, prm)
+
+    moving = moving[..., None]
+    fixed = fixed[..., None]
+    # _quickmi(moving, fixed, dim=dim)
+
+    # mi = corr.square().neg_().add_(1).clamp_min_(1e-5)
+    onemc2 = (1 - corr.square())
+
+    moving_std = moving_var.sqrt()
+    fixed_std = fixed_var.sqrt()
+    moving = (moving - moving_mean).div_(moving_std)
+    fixed = (fixed - fixed_mean).div_(fixed_std)
+
+    if grad:
+        # g = 2 * (z / mi) * corr * (moving * corr - fixed) / (moving_var.sqrt())
+        # g *= prior
+        # g = g.sum(-1)
+
+        # gradient of (1 - corr^2)
+        g = 2 * z * corr * (moving * corr - fixed) / moving_std
+        # gradient of log (chain rule)
+        g /= onemc2
+        # gradient of log(moving_var)
+        g += 2 * z * moving / moving_std
+        g *= 0.5
+
+        # weight by proportion and sum
+        g *= prior
+        g = g.sum(-1)
+
+        # gradient of z*log(z)
+        # gz = z.log().add_(1).div_(n)  # - prior.log().add_(1)
+        # gz = _softmax_bwd(z, gz, dim=-1)
+        # gz *= (fixed * corr - moving)
+        # gz /= moving_std * onemc2
+        # gz = gz.sum(-1)
+        # g += gz
+
+        # g = (corr * moving - fixed)
+        # g *= corr / (mi * moving_var.sqrt())
+        # g *= z
+        # g *= prior
+        # g = g.sum(-1)
+        # g *= 2
+
+    if hess:
+        # approximate hessian
+        # h = 2 * (z / mi) * (corr.square() / moving_var)
+        # h *= prior
+        # h = h.sum(-1)
+
+        # hessian of (1 - corr^2)
+        h = 2 * (corr / moving_std).square() / n
+        # "semi" chain rule
+        h /= onemc2
+        h *= 0.5
+
+        h *= prior
+        h = h.sum(-1)
+
+        # h = corr.square() / (mi * moving_var)
+        # h = h * z
+        # h *= prior
+        # h = h.sum(-1)
+        # h *= 2
+
+    # weighted sum
+    ll = moving_var.log_()
+    ll += fixed_var.log_()
+    ll += onemc2.log_()
+    ll *= 0.5
+    ll -= prior.log()
+    ll *= prior
+    ll = ll.sum()
+    ll -= hz.sum() / n
+    print(ll, gmmfit.get('ll'))
+
+    return (ll, g, h) if hess else (ll, g) if grad else ll
+
+
 class LGMM(OptimizationLoss):
     """Local mutual information estimated by GMM"""
 
@@ -689,3 +855,94 @@ class GMMI(OptimizationLoss):
         bins = kwargs.get('bins', self.bins)
         lam = kwargs.get('lam', self.lam)
         return gmmi(moving, fixed, dim=dim, bins=bins)
+
+
+class GMMH(OptimizationLoss):
+    """Gaussian Mixture Entropy"""
+
+    order = 2
+
+    def __init__(self, dim=None, bins=3, lam=1):
+        """
+
+        Parameters
+        ----------
+        dim : int, default=1fixed.dim() - 1`
+            Number of spatial dimensions
+        """
+        super().__init__()
+        self.dim = dim
+        self.bins = bins
+        self.lam = lam
+
+    def loss(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        lam = kwargs.get('lam', self.lam)
+        return gmmh(moving, fixed, dim=dim, bins=bins,
+                    grad=False, hess=False)
+
+    def loss_grad(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        lam = kwargs.get('lam', self.lam)
+        return gmmh(moving, fixed, dim=dim, bins=bins,
+                    hess=False)
+
+    def loss_grad_hess(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+        h : (..., K*(K+1)//2, *spatial) tensor, optional
+            Hessian with respect to the moving image.
+            Its spatial dimensions are singleton when `acceleration == 0`.
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        lam = kwargs.get('lam', self.lam)
+        return gmmh(moving, fixed, dim=dim, bins=bins)
