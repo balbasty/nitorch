@@ -406,7 +406,7 @@ def _resize(maps, rls, aff, shape):
     return maps, rls
 
 
-def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=False):
+def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=True):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
 
@@ -582,6 +582,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
             epsilon = besseli_ratio(res*fit*sig2, dof/2-1, N=2, K=4)
             res = res*epsilon
             del bes_np, epsilon, ndat_np, fit_np
+            torch.cuda.empty_cache()
         res += fit
         
 
@@ -594,12 +595,13 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
                         - (torch.log(bes+tiny) - torch.abs(fit*dat*sig2))
                         # ive(v, z) = iv(v, z) * exp(-abs(z.real))
 
-            crit = crit + torch.sum(critn, dtype=torch.double)
+            crit = crit - torch.sum(critn, dtype=torch.double)
             del critn
         else:
             #compute log-likelihood
             crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
         del dat
+        torch.cuda.empty_cache()
 
 
 
@@ -616,7 +618,8 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
             #   all gradients are multiplied by fit at some point
             #   so we initialize them with fit
             grad1[...] = fit[None].expand((3+has_mt, *fit.shape))
-
+            del fit
+            torch.cuda.empty_cache()
             grad1[1] *= -tr * r1 * (omt_x_cosfa - 1) * e1
             grad1[1] /= (1 - e1) * (1 - omt_x_cosfa * e1)
             grad1[2] *= -echo.te * r2s
@@ -656,6 +659,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
             if has_mt:
                 hess1[3] = grad1[3].square().add_(hess0[3])
                 del hess0
+                torch.cuda.empty_cache()
                 hess1[4] = grad1[0] * grad1[1]
                 hess1[5] = grad1[0] * grad1[2]
                 hess1[6] = grad1[0] * grad1[3]
@@ -664,15 +668,17 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
                 hess1[9] = grad1[2] * grad1[3]
             else:
                 del hess0
+                torch.cuda.empty_cache()
                 hess1[3] = grad1[0] * grad1[1]
                 hess1[4] = grad1[0] * grad1[2]
                 hess1[5] = grad1[1] * grad1[2]
             hess1 *= lam
             hess1[:, ~msk] = 0
-            diag = hess1[:(3+has_mt)]
-            diag[~torch.isfinite(diag)] = 1e-3
-            offdiag = hess1[(3+has_mt):]
-            offdiag[~torch.isfinite(offdiag)] = 0
+            # diag = hess1[:(3+has_mt)]
+            torch.cuda.empty_cache()
+            # diag[~torch.isfinite(diag)] = 1e-3
+            # offdiag = hess1[(3+has_mt):]
+            # offdiag[~torch.isfinite(offdiag)] = 0
             hess += hess1
             del hess1
 
