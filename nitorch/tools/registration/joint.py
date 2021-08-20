@@ -658,21 +658,22 @@ class RegisterStep:
                 sumloss = llx.mul_(factor) if sumloss is None else sumloss.add_(llx, alpha=factor)
 
         # TODO add regularization term
-        llv = 0
+        lla = 0
 
         # print objective
         llx = sumloss.item()
-        sumloss += llv
-        llv = llv
+        sumloss += lla
+        lla = lla
         ll = sumloss.item()
         if self.verbose and not in_line_search:
             self.n_iter += 1
             self.all_ll.append(ll)
-            if self.ll_prev is None:
-                print(f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} = {ll:12.6g}', end='\r')
-            else:
+            line = '(affine) | '
+            line += f'{self.n_iter:03d} | {llx:12.6g} + {lla:12.6g} = {ll:12.6g}'
+            if self.ll_prev is not None:
                 gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
-                print(f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} = {ll:12.6g} | {gain:12.6g}', end='\r')
+                line += f' | {gain:12.6g}'
+            print(line, end='\r')
             self.ll_prev = ll
             self.ll_max = max(self.ll_max, ll)
 
