@@ -154,16 +154,14 @@ def irls_tukey_reweight(moving, fixed, lam=1, c=4.685, joint=False, dim=None,
         if lam.dim() == 0:
             lam = lam.flatten()
         lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
-    residuals = (moving - fixed).square_().mul_(lam)
+    weights = (moving - fixed).square_().mul_(lam)
     if mask is not None:
-        residuals = residuals.mul_(mask)
+        weights = weights.mul_(mask)
     if joint:
-        residuals = residuals.sum(dim=-dim-1, keepdims=True)
-    weights = torch.zeros_like(residuals)
-    # threshold = residuals <= c
-    # weights[threshold] = (1 - weights[threshold]/c).square()
-    residuals = residuals <= c
-    weights[residuals].div_(-c).add_(1).square_()
+        weights = weights.sum(dim=-dim-1, keepdims=True)
+    zeromsk = weights > c
+    weights = weights.div_(-c).add_(1).square()
+    weights[zeromsk].zero_()
     return weights
 
 
@@ -404,7 +402,7 @@ def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     if hess:
         # approximate hessian
         h = 2 * (corr / sigm).square() / n
-        if h is not None:
+        if mask is not None:
             h = h.mul_(mask)
         out.append(h)
 
@@ -765,25 +763,28 @@ def nmi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
             # This Hessian is for Studholme's normalization only!
             # I need to derive one for Arithmetic/None cases
 
-            # # # True Hessian: not positive definite
-            # ones = torch.ones([bins, bins])
-            # g0 = g0.flatten(start_dim=-2)
-            # pxy = pxy.flatten(start_dim=-2)
-            # h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
-            # h = h + h.transpose(-1, -2)
-            # tmp = linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed())
+            # True Hessian: not positive definite
+            ones = torch.ones([bins, bins])
+            g0 = g0.flatten(start_dim=-2)
+            pxy = pxy.flatten(start_dim=-2)
+            h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
+            h = h + h.transpose(-1, -2)
+            h = h.abs().sum(-1)
+            tmp = linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed())
             # h -= tmp
-            # tmp = linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones)
+            tmp += linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones)
             # h -= tmp
+            h += tmp.abs().sum(-1)
             # h += (nmi/pxy).flatten(start_dim=-2).diag_embed()
-            # h /= hxy
-            # # h.neg_()
-            # # h = h.abs().sum(-1)
+            h += (nmi/pxy).flatten(start_dim=-2).abs()
+            h /= hxy.flatten(start_dim=-2)
+            # h.neg_()
+            # h = h.abs().sum(-1)
             # h.diagonal(0, -1, -2).abs()
             # h = h.reshape([*h.shape[:-1], bins, bins])
 
-            h = (2 - nmi) * py.reciprocal() / hxy
-            h = h.diag_embed()
+            # h = (2 - nmi) * py.reciprocal() / hxy
+            # h = h.diag_embed()
 
             # Approximate Hessian: positive definite
             # I take the positive definite majorizer diag(|H|1) of each
