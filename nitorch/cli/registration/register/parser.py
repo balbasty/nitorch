@@ -459,7 +459,7 @@ joptim_choices = cli.Positional('name', nargs='?', default='interleaved',
 joptim = cli.NamedGroup('optim', joptim_choices, '@optim', n='?')
 joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
                      default=10, convert=int, help='Maximum number of iterations')
-joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'),
+joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
                      convert=float, default=1e-9, help='Tolerance for early stopping')
 
 # register groups
