@@ -260,7 +260,7 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 # Loss group
 loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice'}
-loss_choices = list(loss_aliases.values())
+loss_choices = list(loss_aliases.values()) + ['gmh']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -295,6 +295,8 @@ loss.add_suboption('tuk', weight_option)
 loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=False,
                    convert=float, action=cli.Actions.store_true,
                    help='Weight of each class')
+loss.add_suboption('gmh', 'bins', ('-b', '--bins'), nargs=1, default=6,
+                   convert=int, help='Number of bins in the mixture')
 # fix/mov subgroups
 file = cli.Group('file', n=1, help='Volume to register')
 file.add_positional('files', nargs='1*', help='File names')
@@ -404,7 +406,7 @@ affine_choices = cli.Positional('name', nargs='?', default='rigid',
 affine = cli.NamedGroup('affine', affine_choices, '@affine', n='?', make_default=False)
 affine.add_positional('factor', nargs='?', default=1., convert=float,
                       help='Penalty factor')
-affine.add_option('position', ('-p', '--position'), default='sym',
+affine.add_option('position', ('-p', '--position'), default='sym', nargs=1,
                   validation=cli.Validations.choice(['sym', 'mov', 'fix']),
                   help='Position of the affine transform in the model')
 affine.add_option('output', ('-o', '--output'), nargs=1,
