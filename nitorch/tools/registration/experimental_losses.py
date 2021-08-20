@@ -100,7 +100,6 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
         mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = suffstat(z)
 
         prior = mom0.div_(nvox)
-        logprior = prior.clamp_min(eps).log_()
         xmean = xmom1
         ymean = ymom1
         xvar = xmom2.addcmul_(xmean, xmean, value=-1)
@@ -116,7 +115,7 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
         # invert
         det = xvar * yvar - cov * cov
         idet = det.clamp_min(1e-30).reciprocal_()
-        return xmean, ymean, xvar, yvar, cov, idet, logprior
+        return xmean, ymean, xvar, yvar, cov, idet, prior
 
     if theta:
         xmean = theta.pop('xmean')
@@ -126,9 +125,8 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
         corr = theta.pop('corr')
         prior = theta.pop('prior')
     elif z is not None:
-        xmean, ymean, xvar, yvar, cov, idet, logprior = m_step(z)
+        xmean, ymean, xvar, yvar, cov, idet, prior = m_step(z)
         corr = (xvar * yvar).reciprocal_().mul_(cov)
-        prior = logprior.exp()
     else:
         quantiles = torch.arange(bins+1)/bins
         xmean = utils.quantile(x[..., 0], quantiles, dim=range(-dim, 0), keepdim=True)
@@ -142,7 +140,6 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
 
     cov = corr * yvar.sqrt() * xvar.sqrt()
     det = xvar * yvar - cov * cov
-    logidet = -det.clamp_min(1e-5).log_()
     idet = det.clamp_min(1e-5).reciprocal_()
     logprior = prior.clamp_min(1e-5).log_()
     # TODO: include trace(REG\ICOV) and log|ICOV| bits that correspond
@@ -156,19 +153,21 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
         for nit in range(max_iter):
             z = e_step(xmean, ymean, xvar, yvar, cov, idet, logprior)
             hz = -sumspatial(z.clamp_min(eps).log_().mul_(z))
-            xmean, ymean, xvar, yvar, cov, idet, logprior = m_step(z)
+            xmean, ymean, xvar, yvar, cov, idet, prior = m_step(z)
+            logidet = idet.clamp_min(1e-5).log_()
+            logprior = prior.clamp_min(1e-5).log_()
 
             # negative log-likelihood (upper bound)
             ll = ((logidet * 0.5 + logprior) * prior).sum()
             ll += hz.sum() / nvox
             ll = -ll
-            ell = ll.neg().exp()
-            print(ll.item())
-            if ell_prev is not None:
-                gain = (ell - ell_prev) / ell_prev
-                ell_prev = ell
-                if gain < 1e-5:
-                    break
+            # ell = ll.neg().exp()
+            # print(ll.item())
+            # if ell_prev is not None:
+            #     gain = (ell - ell_prev) / ell_prev
+            #     ell_prev = ell
+            #     if gain < 1e-5:
+            #         break
 
     corr = (xvar*yvar).sqrt_().reciprocal_().mul_(cov)
     output = dict(
@@ -571,7 +570,7 @@ def lgmm(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     return (mi, g, h) if hess else (mi, g) if grad else mi
 
 
-def gmmh(moving, fixed, dim=None, bins=6, max_iter=50,
+def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
          grad=True, hess=True):
     """Entropy estimated by Gaussian Mixture Modeling"""
 
@@ -666,7 +665,6 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=50,
     ll *= prior
     ll = ll.sum()
     ll -= hz.sum() / n
-    print(ll, gmmfit.get('ll'))
 
     return (ll, g, h) if hess else (ll, g) if grad else ll
 
