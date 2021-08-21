@@ -304,8 +304,13 @@ class RegisterStep:
                 if is_level0 and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
                     is_level0 = False
-                    from .plot import mov2fix
-                    self.mov2fix(fixed.dat, moving.dat, warped, vel0,
+                    init = spatial.affine_lmdiv(moving.affine, fixed.affine)
+                    if _almost_identity(init) and moving.shape == fixed.shape:
+                        init = moving.dat
+                    else:
+                        init = spatial.affine_grid(init, fixed.shape)
+                        init = moving.pull(init)
+                    self.mov2fix(fixed.dat, init, warped, vel0,
                                  dim=fixed.dim,
                                  title=f'(nonlin) {self.n_iter:03d}')
 
@@ -462,7 +467,13 @@ class RegisterStep:
                 if is_level0 and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
                     is_level0 = False
-                    self.mov2fix(fixed.dat, moving.dat, warped, dim=fixed.dim,
+                    init = spatial.affine_lmdiv(moving.affine, fixed.affine)
+                    if _almost_identity(init) and moving.shape == fixed.shape:
+                        init = moving.dat
+                    else:
+                        init = spatial.affine_grid(init, fixed.shape)
+                        init = moving.pull(init)
+                    self.mov2fix(fixed.dat, init, warped, dim=fixed.dim,
                                  title=f'(affine) {self.n_iter:03d}')
 
                 # gradient/Hessian of the log-likelihood in observed space
@@ -609,7 +620,13 @@ class RegisterStep:
                 if is_level0 and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
                     is_level0 = False
-                    self.mov2fix(fixed.dat, moving.dat, warped, dim=fixed.dim,
+                    init = spatial.affine_lmdiv(moving.affine, fixed.affine)
+                    if _almost_identity(init) and moving.shape == fixed.shape:
+                        init = moving.dat
+                    else:
+                        init = spatial.affine_grid(init, fixed.shape)
+                        init = moving.pull(init)
+                    self.mov2fix(fixed.dat, init, warped, dim=fixed.dim,
                                  title=f'(affine) {self.n_iter:03d}')
 
                 # gradient/Hessian of the log-likelihood in observed space

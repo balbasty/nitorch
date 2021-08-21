@@ -10,7 +10,7 @@ pyutils = py
 
 
 def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
-             update='em', regularization=1e-3):
+             update='em'):
     """Fit a 2D Gaussian mixture
 
     Parameters
@@ -33,9 +33,6 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
         - 'e' requires `theta`
         - 'm' requires `z`
         - 'em' doesn't need anything
-    regularization : float, default=1e-3
-        Loading of the diagonal of the covariances.
-        Acts like a small Wishart prior.
 
     Returns
     -------
@@ -70,35 +67,46 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
     x = x[..., None]
     y = y[..., None]
 
-    def e_step(xmean, ymean, xvar, yvar, cov, idet, logprior):
+    @ torch.jit.script
+    def e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior):
+        # type: (Tensor, Tensor, Tensor,Tensor, Tensor, Tensor, Tensor, Tensor, Tensor) -> Tensor
         xnorm = (x - xmean)
         ynorm = (y - ymean)
         z = (xnorm * xnorm) * yvar
         z += (ynorm * ynorm) * xvar
         z -= (xnorm * ynorm) * (2*cov)
         z *= idet
-        del xnorm, ynorm
         z -= idet.log()
         z *= -0.5
         z += logprior
-        z = softmax(z, dim=-1)
+        z = F.softmax(z, dim=-1)
         return z
 
-    sumspatial = lambda x: x.sum(list(range(-dim - 1, -1)), keepdim=True, dtype=torch.double).float()
+    @ torch.jit.script
+    def sumspatial(x, ndim):
+        # type: (Tensor, int) -> Tensor
+        dims = [d for d in range(-ndim-1, -1)]
+        return x.sum(dims, keepdim=True, dtype=torch.double).float()
 
-    def suffstat(z):
-        mom0 = sumspatial(z)
-        z.div_(mom0)
-        xmom1 = sumspatial(x * z)
-        ymom1 = sumspatial(y * z)
-        xmom2 = sumspatial(x.square() * z)
-        ymom2 = sumspatial(y.square() * z)
-        xymom2 = sumspatial((x * y) * z)
+    @ torch.jit.script
+    def suffstat(x, y, z, ndim):
+        # type: (Tensor, Tensor, Tensor, int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]
+
+        # z must be normalized (== divided by mom0)
+        mom0 = sumspatial(z, ndim)
+        z = z / mom0
+        xmom1 = sumspatial(x * z, ndim)
+        ymom1 = sumspatial(y * z, ndim)
+        xmom2 = sumspatial((x * x) * z, ndim)
+        ymom2 = sumspatial((y * y) * z, ndim)
+        xymom2 = sumspatial((x * y) * z, ndim)
         return mom0, xmom1, ymom1, xmom2, ymom2, xymom2
 
-    def m_step(z):
-        mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = suffstat(z)
+    @ torch.jit.script
+    def m_step(x, y, z, ndim, nvox):
+        # type: (Tensor, Tensor, Tensor, int, int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]
 
+        mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = suffstat(x, y, z, ndim)
         prior = mom0.div_(nvox)
         xmean = xmom1
         ymean = ymom1
@@ -107,7 +115,7 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
         cov = xymom2.addcmul_(xmean, ymean, value=-1)
 
         # regularization
-        alpha = regularization
+        alpha = 1e-3
         xvar = xvar.add_(alpha).div_(1+alpha)
         yvar = yvar.add_(alpha).div_(1+alpha)
         cov = cov.div_(1+alpha)
@@ -117,6 +125,16 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
         idet = det.clamp_min(1e-30).reciprocal_()
         return xmean, ymean, xvar, yvar, cov, idet, prior
 
+    @torch.jit.script
+    def em_loop(max_iter, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior, ndim, nvox):
+        # type: (int, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, int, int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]
+        z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
+        for nit in range(max_iter):
+            xmean, ymean, xvar, yvar, cov, idet, prior = m_step(x, y, z, ndim, nvox)
+            z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
+            logprior = prior.clamp_min(1e-5).log_()
+        return z, xmean, ymean, xvar, yvar, cov, idet, logprior
+
     if theta:
         xmean = theta.pop('xmean')
         ymean = theta.pop('ymean')
@@ -125,7 +143,7 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
         corr = theta.pop('corr')
         prior = theta.pop('prior')
     elif z is not None:
-        xmean, ymean, xvar, yvar, cov, idet, prior = m_step(z)
+        xmean, ymean, xvar, yvar, cov, idet, prior = m_step(z, dim, nvox)
         corr = (xvar * yvar).reciprocal_().mul_(cov)
     else:
         quantiles = torch.arange(bins+1)/bins
@@ -142,34 +160,23 @@ def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
     det = xvar * yvar - cov * cov
     idet = det.clamp_min(1e-5).reciprocal_()
     logprior = prior.clamp_min(1e-5).log_()
-    # TODO: include trace(REG\ICOV) and log|ICOV| bits that correspond
-    #       to the Wishart prior.
 
     if update.lower() == 'e':
-        z = e_step(xmean, ymean, xvar, yvar, cov, idet, logprior)
-        hz = -sumspatial(z.clamp_min(eps).log_().mul_(z))
+        z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
     elif update.lower() == 'em':
-        ell_prev = None
-        for nit in range(max_iter):
-            z = e_step(xmean, ymean, xvar, yvar, cov, idet, logprior)
-            hz = -sumspatial(z.clamp_min(eps).log_().mul_(z))
-            xmean, ymean, xvar, yvar, cov, idet, prior = m_step(z)
-            logidet = idet.clamp_min(1e-5).log_()
-            logprior = prior.clamp_min(1e-5).log_()
+        z, xmean, ymean, xvar, yvar, cov, idet, logprior = \
+            em_loop(max_iter, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior, dim, nvox)
 
-            # negative log-likelihood (upper bound)
-            ll = ((logidet * 0.5 + logprior) * prior).sum()
-            ll += hz.sum() / nvox
-            ll = -ll
-            # ell = ll.neg().exp()
-            # print(ll.item())
-            # if ell_prev is not None:
-            #     gain = (ell - ell_prev) / ell_prev
-            #     ell_prev = ell
-            #     if gain < 1e-5:
-            #         break
-
+    # negative log-likelihood (upper bound)
+    hz = -sumspatial(z.clamp_min(eps).log_().mul_(z), dim)
     corr = (xvar*yvar).sqrt_().reciprocal_().mul_(cov)
+    prior = logprior.exp()
+    logidet = idet.clamp_min(1e-5).log_()
+    ll = ((logidet * 0.5 + logprior) * prior).sum()
+    ll += hz.sum() / nvox
+    ll = -ll
+
+    z = z.div_(sumspatial(z, dim))
     output = dict(
         z=z, prior=prior, moving_mean=xmean, fixed_mean=ymean, ll=ll,
         moving_var=xvar, fixed_var=yvar, corr=corr, hz=hz, idet=idet,
@@ -585,86 +592,51 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
     moving_var = gmmfit.pop('moving_var')
     fixed_var = gmmfit.pop('fixed_var')
     corr = gmmfit.pop('corr')
-    hz = gmmfit.pop('hz')
-    idet = gmmfit.pop('idet')
-
-    # prm = prior, moving_mean, fixed_mean, moving_var, fixed_var, cov
-    # _plot_gmm(moving, fixed, prm)
+    ll = gmmfit.pop('ll')
 
     moving = moving[..., None]
     fixed = fixed[..., None]
-    # _quickmi(moving, fixed, dim=dim)
-
-    # mi = corr.square().neg_().add_(1).clamp_min_(1e-5)
-    onemc2 = (1 - corr.square())
-
-    moving_std = moving_var.sqrt()
-    fixed_std = fixed_var.sqrt()
-    moving = (moving - moving_mean).div_(moving_std)
-    fixed = (fixed - fixed_mean).div_(fixed_std)
 
     if grad:
-        # g = 2 * (z / mi) * corr * (moving * corr - fixed) / (moving_var.sqrt())
-        # g *= prior
-        # g = g.sum(-1)
 
-        # gradient of (1 - corr^2)
-        g = 2 * z * corr * (moving * corr - fixed) / moving_std
-        # gradient of log (chain rule)
-        g /= onemc2
-        # gradient of log(moving_var)
-        g += 2 * z * moving / moving_std
-        g *= 0.5
+        @torch.jit.script
+        def make_grad(moving, fixed, moving_mean, fixed_mean, moving_var, fixed_var, corr, prior, z):
+            # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor) -> Tensor
+            # compute normalized values
+            moving_std = moving_var.sqrt()
+            fixed_std = fixed_var.sqrt()
+            moving = (moving - moving_mean) / moving_std
+            fixed = (fixed - fixed_mean) / fixed_std
+            # gradient of (1 - corr^2)
+            g = z * corr * (moving * corr - fixed) / moving_std
+            # gradient of log (chain rule)
+            g /= 1 - corr * corr
+            # gradient of log(moving_var)
+            g += z * moving / moving_std
+            # weight by proportion and sum
+            g *= prior
+            g = g.sum(-1)
+            return g
 
-        # weight by proportion and sum
-        g *= prior
-        g = g.sum(-1)
+        g = make_grad(moving, fixed, moving_mean, fixed_mean,
+                      moving_var, fixed_var, corr, prior, z)
 
-        # gradient of z*log(z)
-        # gz = z.log().add_(1).div_(n)  # - prior.log().add_(1)
-        # gz = _softmax_bwd(z, gz, dim=-1)
-        # gz *= (fixed * corr - moving)
-        # gz /= moving_std * onemc2
-        # gz = gz.sum(-1)
-        # g += gz
+        if hess:
 
-        # g = (corr * moving - fixed)
-        # g *= corr / (mi * moving_var.sqrt())
-        # g *= z
-        # g *= prior
-        # g = g.sum(-1)
-        # g *= 2
+            @torch.jit.script
+            def make_hess(moving_var, corr, prior, z):
+                # type: (Tensor, Tensor, Tensor, Tensor) -> Tensor
+                moving_std = moving_var.sqrt()
+                # hessian of (1 - corr^2)
+                h = corr / moving_std
+                h = z * (h * h)
+                # "semi" chain rule
+                h /= 1 - corr * corr
+                h *= prior
+                h = h.sum(-1)
+                return h
 
-    if hess:
-        # approximate hessian
-        # h = 2 * (z / mi) * (corr.square() / moving_var)
-        # h *= prior
-        # h = h.sum(-1)
-
-        # hessian of (1 - corr^2)
-        h = 2 * (corr / moving_std).square() / n
-        # "semi" chain rule
-        h /= onemc2
-        h *= 0.5
-
-        h *= prior
-        h = h.sum(-1)
-
-        # h = corr.square() / (mi * moving_var)
-        # h = h * z
-        # h *= prior
-        # h = h.sum(-1)
-        # h *= 2
-
-    # weighted sum
-    ll = moving_var.log_()
-    ll += fixed_var.log_()
-    ll += onemc2.log_()
-    ll *= 0.5
-    ll -= prior.log()
-    ll *= prior
-    ll = ll.sum()
-    ll -= hz.sum() / n
+            h = make_hess(moving_var, corr, prior, z)
 
     return (ll, g, h) if hess else (ll, g) if grad else ll
 
