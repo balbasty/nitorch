@@ -654,7 +654,7 @@ class NonLinModel:
                                         voxel_size=self.voxel_size)
 
     def greens_apply(self, m):
-        return spatial.greens_apply(m, self.kernel, self.voxel_size)
+        return spatial.greens_apply(m, self.kernel, self.factor, self.voxel_size)
 
     def __repr__(self):
         s = []
@@ -688,6 +688,8 @@ class ShootModel(NonLinModel):
                                  factor=self.factor / py.prod(self.shape),
                                  voxel_size=self.voxel_size, **self.prm,
                                  displacement=True)
+        else:
+            grid = self._cache
         if cache_result:
             self._cache = grid
         if jacobian:
