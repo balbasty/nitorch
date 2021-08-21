@@ -12,6 +12,71 @@ _default_bending = 0.2
 _default_lame = (0.05, 0.2)
 
 
+@torch.jit.script
+def _det2(A):
+    # type: (Tensor) -> Tensor
+    dt = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+    return dt
+
+
+@torch.jit.script
+def _det3(A):
+    # type: (Tensor) -> Tensor
+    dt = A[0, 0] * (A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1]) + \
+         A[0, 1] * (A[1, 2] * A[2, 0] - A[1, 0] * A[2, 2]) + \
+         A[0, 2] * (A[1, 0] * A[2, 1] - A[1, 1] * A[2, 0])
+    return dt
+
+
+@torch.jit.script
+def _inv2(A):
+    # type: (Tensor) -> Tensor
+    F = torch.empty_like(A)
+    F[0, 0] = A[1, 1]
+    F[1, 1] = A[0, 0]
+    F[0, 1] = -A[1, 0]
+    F[1, 0] = -A[0, 1]
+    dt = _det2(A)
+    Aabs = A.reshape((-1,) + A.shape[2:]).abs()
+    rnge = Aabs.max(dim=0).values - Aabs.min(dim=0).values
+    dt += rnge * 1E-12
+    F /= dt[None, None]
+    return F
+
+
+@torch.jit.script
+def _inv3(A):
+    # type: (Tensor) -> Tensor
+    F = torch.empty_like(A)
+    F[0, 0] = A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1]
+    F[1, 1] = A[0, 0] * A[2, 2] - A[0, 2] * A[2, 0]
+    F[2, 2] = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+    F[0, 1] = A[0, 2] * A[2, 1] - A[0, 1] * A[2, 2]
+    F[0, 2] = A[0, 1] * A[1, 2] - A[0, 2] * A[1, 1]
+    F[1, 0] = A[1, 2] * A[2, 0] - A[1, 0] * A[2, 2]
+    F[1, 2] = A[1, 0] * A[0, 2] - A[1, 2] * A[0, 0]
+    F[2, 0] = A[2, 1] * A[1, 0] - A[2, 0] * A[1, 1]
+    F[2, 1] = A[2, 0] * A[0, 1] - A[2, 1] * A[0, 0]
+    dt = _det3(A)
+    Aabs = A.reshape((-1,) + A.shape[2:]).abs()
+    rnge = Aabs.max(dim=0).values - Aabs.min(dim=0).values
+    dt += rnge * 1E-12
+    F /= dt[None, None]
+    return F
+
+
+def _inv(A):
+    A = utils.movedim(A, [-2, -1], [0, 1])
+    if len(A) == 3:
+        A = _inv3(A)
+    elif len(A) == 2:
+        A = _inv2(A)
+    else:
+        raise NotImplementedError
+    A = utils.movedim(A, [0, 1], [-2, -1])
+    return A
+
+
 def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
            bending=_default_bending, lame=_default_lame, factor=1,
            voxel_size=1, dtype=None, device=None):
@@ -60,7 +125,7 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
         absolute=absolute,
         membrane=membrane,
         bending=bending,
-        factor=factor,
+        # factor=factor,
         voxel_size=voxel_size,
         bound='dft')
     if lame1 or lame2:
@@ -118,7 +183,7 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
     kernel = kernel.to(dtype=dtype)
 
     if lame1 or lame2:
-        kernel = kernel.inverse()
+        kernel = _inv(kernel)  #kernel.inverse()
     else:
         kernel = kernel[..., 0, 0].reciprocal_()
     return kernel
@@ -127,7 +192,7 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
 _greens = greens  # alias to avoid shadowing
 
 
-def greens_apply(mom, greens, voxel_size=1):
+def greens_apply(mom, greens, factor=1, voxel_size=1):
     """Apply the Greens function to a momentum field.
 
     Parameters
@@ -198,6 +263,7 @@ def greens_apply(mom, greens, voxel_size=1):
     else:
         mom = torch.ifft(mom, dim)[..., 0]
     mom = utils.movedim(mom, 0, -1)
+    mom /= factor
 
     return mom
 
@@ -307,7 +373,8 @@ def shoot(vel, greens=None,
 
         # Convolve with Greens function of L
         # v_t \gets L^g u_t
-        vel = greens_apply(mom, greens, voxel_size=voxel_size).div_(steps)
+        vel = greens_apply(mom, greens, factor=factor, voxel_size=voxel_size)
+        vel = vel.div_(steps)
         if verbose:
             print(f'{0.5*steps*(vel*mom).sum().item()/py.prod(spatial):6g}',
                   end='\n' if not (i % 5) else ' ', flush=True)
@@ -416,7 +483,7 @@ def shoot_approx(vel, greens=None,
         (It is used to warp a fixed image to a moving one).
 
     """
-    args = (vel, greens, absolute, membrane, bending, lame, voxel_size, 
+    args = (vel, greens, absolute, membrane, bending, lame, factor, voxel_size,
             return_inverse, displacement, steps, fast, verbose)
     return _ApproximateShoot.apply(*args)
         
