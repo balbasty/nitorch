@@ -478,7 +478,7 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
 
 def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 fig_num=1, colorbar=False, figsize=None, aspect='auto',
-                sp_title=None):
+                title_img=None, ijk=None):
     """ Display a multi-channel 2D or 3D image.
 
     Allows for real-time plotting if giving returned fig_ax objects as input.
@@ -492,6 +492,9 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
         fig_num (int, optional): matplotlib figure number, defaults to 1.
         colorbar (bool, optional): Show colorbar, defaults to False.
         figsize (tuple, optional): Figure size, given as (width, height)
+        aspect (str, optional): matplotlib imshow aspect, default='auto'.
+        title_img (str, optional): title for each individual image.
+        ijk ([int,] * 3, optional): slice indices to visualise, if not given uses midline in all axes.
 
     Returns:
         fig_ax ([matplotlib.figure, matplotlib.axes])
@@ -503,7 +506,7 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
     # Work out dimensions/channels
     issequence = False
     if isinstance(img, (list, tuple)):
-        issequence = True
+        issequence = True        
         ix = []        
         num_chan = len(img)  # Number of channels
         for i in img:            
@@ -511,19 +514,23 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
             dm = i.shape
             dm = torch.tensor(dm)
             is_3d = dm[2] > 1
-            ix.append(torch.floor(0.5 * dm).int().tolist())        
+            if ijk is None:
+                ix.append(torch.floor(0.5 * dm).int().tolist())        
+            else:
+                ix.append(ijk)
     else:
         img = img[..., None, None]
         dm = img.shape
         num_chan = dm[3]  # Number of channels
         dm = torch.tensor(dm)
         is_3d = dm[2] > 1
-        ix = torch.floor(0.5 * dm).int().tolist()
+        if ijk is None:
+            ix = torch.floor(0.5 * dm).int().tolist()
 
-    if not isinstance(sp_title, (list, tuple)):
-        sp_title = [sp_title]
-    if len(sp_title) != num_chan:
-        sp_title = [sp_title[0],] * num_chan
+    if not isinstance(title_img, (list, tuple)):
+        title_img = [title_img]
+    if len(title_img) != num_chan:
+        title_img = [title_img[0],] * num_chan
 
     if fig_ax is None:
         # Make figure object
@@ -593,7 +600,7 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                     cax = divider.append_axes('right', size='5%', pad=0.05)
                     fig.colorbar(img_list[cnt], cax=cax, orientation='vertical')
                 if r == 1:
-                    ax_c.title.set_text(sp_title[c])
+                    ax_c.title.set_text(title_img[c])
                     ax_c.title.set_fontsize(fontsize)
                 cnt += 1
         else:
@@ -603,7 +610,7 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 divider = make_axes_locatable(ax_c)
                 cax = divider.append_axes('right', size='5%', pad=0.05)
                 fig.colorbar(img_list[cnt], cax=cax, orientation='vertical')
-            ax_c.title.set_text(sp_title[c])
+            ax_c.title.set_text(title_img[c])
             ax_c.title.set_fontsize(fontsize)
             cnt += 1
 
