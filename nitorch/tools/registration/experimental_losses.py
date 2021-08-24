@@ -1,187 +1,14 @@
 import matplotlib.pyplot as plt
 
 from nitorch.core import utils, py, math, constants, linalg, kernels
-from nitorch.core.math import softmax, _softmax_bwd
 import math as pymath
 import torch
 from torch.nn import functional as F
-from .losses import OptimizationLoss, local_mean
+from .losses import OptimizationLoss
+from .local import local_mean
+from .gmm2 import fit_gmm2, fit_lgmm2, sumspatial, Fwd, Bwd
+Tensor = torch.Tensor
 pyutils = py
-
-
-def fit_gmm2(x, y, bins=3, max_iter=20, dim=None, z=None, theta=None,
-             update='em'):
-    """Fit a 2D Gaussian mixture
-
-    Parameters
-    ----------
-    x : (..., *spatial) tensor
-        Moving image (first dimension)
-    y : (..., *spatial) tensor
-        Fixed image (first dimension)
-    bins : int, default=3
-        Number of clusters
-    max_iter : int, default=20
-        Maximum number of iterations (only if 'em')
-    dim : int, default=`fixed.dim()-1`
-        Number of spatial dimensions
-    z : (..., *spatial, bins) tensor, default=`1/bins`
-        Initial responsibilities
-    theta : dict(ymean, xmean, yvar, xvar, corr, prior), optional
-        Initial parameters.
-    update : {'e', 'm', 'em'}, default='em'
-        - 'e' requires `theta`
-        - 'm' requires `z`
-        - 'em' doesn't need anything
-
-    Returns
-    -------
-    dict:
-        z : (..., *spatial, bins) tensor
-            Voxel-wise responsibilties
-        xmean : (..., *1, bins) tensor
-            Mean of the moving (1st dimension) image
-        ymean : (..., *1, bins) tensor
-            Mean of the fixed (1st dimension) image
-        xvar : (..., *1, bins) tensor
-            Variance of the moving (1st dimension) image
-        yvar : (..., *1, bins) tensor
-            Variance of the fixed (1st dimension) image
-        corr : (..., *1, bins) tensor
-            Correlation coefficient
-        prior : (..., *1, bins) tensor
-            Proportion of each class
-        logidet : (..., *1, bins) tensor
-            Pre-computed log-determinant of the inverse covariance
-        hz : (..., *1, 1) tensor
-            Pre-computed entropy of the responsibilites: sum(z*log(z))
-
-
-
-    """
-    # Fit a 2D Gaussian mixture model
-    dim = dim or (y.dim() - 1)
-    nvox = py.prod(y.shape[-dim:])
-    eps = 1e-10
-
-    x = x[..., None]
-    y = y[..., None]
-
-    @ torch.jit.script
-    def e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior):
-        # type: (Tensor, Tensor, Tensor,Tensor, Tensor, Tensor, Tensor, Tensor, Tensor) -> Tensor
-        xnorm = (x - xmean)
-        ynorm = (y - ymean)
-        z = (xnorm * xnorm) * yvar
-        z += (ynorm * ynorm) * xvar
-        z -= (xnorm * ynorm) * (2*cov)
-        z *= idet
-        z -= idet.log()
-        z *= -0.5
-        z += logprior
-        z = F.softmax(z, dim=-1)
-        return z
-
-    @ torch.jit.script
-    def sumspatial(x, ndim):
-        # type: (Tensor, int) -> Tensor
-        dims = [d for d in range(-ndim-1, -1)]
-        return x.sum(dims, keepdim=True, dtype=torch.double).float()
-
-    @ torch.jit.script
-    def suffstat(x, y, z, ndim):
-        # type: (Tensor, Tensor, Tensor, int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]
-
-        # z must be normalized (== divided by mom0)
-        mom0 = sumspatial(z, ndim)
-        z = z / mom0
-        xmom1 = sumspatial(x * z, ndim)
-        ymom1 = sumspatial(y * z, ndim)
-        xmom2 = sumspatial((x * x) * z, ndim)
-        ymom2 = sumspatial((y * y) * z, ndim)
-        xymom2 = sumspatial((x * y) * z, ndim)
-        return mom0, xmom1, ymom1, xmom2, ymom2, xymom2
-
-    @ torch.jit.script
-    def m_step(x, y, z, ndim, nvox):
-        # type: (Tensor, Tensor, Tensor, int, int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]
-
-        mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = suffstat(x, y, z, ndim)
-        prior = mom0.div_(nvox)
-        xmean = xmom1
-        ymean = ymom1
-        xvar = xmom2.addcmul_(xmean, xmean, value=-1)
-        yvar = ymom2.addcmul_(ymean, ymean, value=-1)
-        cov = xymom2.addcmul_(xmean, ymean, value=-1)
-
-        # regularization
-        alpha = 1e-3
-        xvar = xvar.add_(alpha).div_(1+alpha)
-        yvar = yvar.add_(alpha).div_(1+alpha)
-        cov = cov.div_(1+alpha)
-
-        # invert
-        det = xvar * yvar - cov * cov
-        idet = det.clamp_min(1e-30).reciprocal_()
-        return xmean, ymean, xvar, yvar, cov, idet, prior
-
-    @torch.jit.script
-    def em_loop(max_iter, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior, ndim, nvox):
-        # type: (int, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, int, int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]
-        z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
-        for nit in range(max_iter):
-            xmean, ymean, xvar, yvar, cov, idet, prior = m_step(x, y, z, ndim, nvox)
-            z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
-            logprior = prior.clamp_min(1e-5).log_()
-        return z, xmean, ymean, xvar, yvar, cov, idet, logprior
-
-    if theta:
-        xmean = theta.pop('xmean')
-        ymean = theta.pop('ymean')
-        xvar = theta.pop('xvar')
-        yvar = theta.pop('yvar')
-        corr = theta.pop('corr')
-        prior = theta.pop('prior')
-    elif z is not None:
-        xmean, ymean, xvar, yvar, cov, idet, prior = m_step(z, dim, nvox)
-        corr = (xvar * yvar).reciprocal_().mul_(cov)
-    else:
-        quantiles = torch.arange(bins+1)/bins
-        xmean = utils.quantile(x[..., 0], quantiles, dim=range(-dim, 0), keepdim=True)
-        ymean = utils.quantile(y[..., 0], quantiles, dim=range(-dim, 0), keepdim=True)
-        xvar = (xmean[..., 1:] - xmean[..., :-1]).div_(2.355).square_()
-        yvar = (ymean[..., 1:] - ymean[..., :-1]).div_(2.355).square_()
-        xmean = (xmean[..., 1:] + xmean[..., :-1]).div_(2)
-        ymean = (ymean[..., 1:] + ymean[..., :-1]).div_(2)
-        corr = torch.zeros_like(yvar)
-        prior = y.new_full([bins], 1 / bins)
-
-    cov = corr * yvar.sqrt() * xvar.sqrt()
-    det = xvar * yvar - cov * cov
-    idet = det.clamp_min(1e-5).reciprocal_()
-    logprior = prior.clamp_min(1e-5).log_()
-
-    if update.lower() == 'e':
-        z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
-    elif update.lower() == 'em':
-        z, xmean, ymean, xvar, yvar, cov, idet, logprior = \
-            em_loop(max_iter, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior, dim, nvox)
-
-    # negative log-likelihood (upper bound)
-    hz = -sumspatial(z.clamp_min(eps).log_().mul_(z), dim)
-    corr = (xvar*yvar).sqrt_().reciprocal_().mul_(cov)
-    prior = logprior.exp()
-    logidet = idet.clamp_min(1e-5).log_()
-    ll = ((logidet * 0.5 + logprior) * prior).sum()
-    ll += hz.sum() / nvox
-    ll = -ll
-
-    z = z.div_(sumspatial(z, dim))
-    output = dict(
-        z=z, prior=prior, moving_mean=xmean, fixed_mean=ymean, ll=ll,
-        moving_var=xvar, fixed_var=yvar, corr=corr, hz=hz, idet=idet,
-    )
-    return output
 
 
 def _quickmi(moving, fixed, bins=64, dim=None):
@@ -293,299 +120,109 @@ def _plot_gmm(moving, fixed, prm, bins=64):
     plt.show()
 
 
-def gmmi(moving, fixed, dim=None, bins=3, max_iter=20,
-         grad=True, hess=True):
-
-    dim = dim or (fixed.dim() - 1)
-    n = py.prod(fixed.shape[-dim:])
-    z, prior, moving_mean, fixed_mean, moving_var, fixed_var, cov, hz = \
-        fit_gmm2(moving, fixed, bins, max_iter, dim=dim)
-
-    prm = prior, moving_mean, fixed_mean, moving_var, fixed_var, cov
-    # _plot_gmm(moving, fixed, prm)
-
-    moving = moving[..., None]
-    fixed = fixed[..., None]
-    # _quickmi(moving, fixed, dim=dim)
-
-    std = (moving_var*fixed_var).sqrt_()
-    corr = cov / std
-    # mi = corr.square().neg_().add_(1).clamp_min_(1e-5)
-    mi = (1 - corr.square())
-
-    moving = (moving - moving_mean) / moving_var.sqrt()
-    fixed = (fixed - fixed_mean) / fixed_var.sqrt()
-
-    if grad:
-        # g = 2 * (z / mi) * corr * (moving * corr - fixed) / (moving_var.sqrt())
-        # g *= prior
-        # g = g.sum(-1)
-
-        g = (corr * moving - fixed)
-        g *= corr / (mi * moving_var.sqrt())
-        g *= z
-        g *= prior
-        g = g.sum(-1)
-        g *= 2
-
-    if hess:
-        # approximate hessian
-        # h = 2 * (z / mi) * (corr.square() / moving_var)
-        # h *= prior
-        # h = h.sum(-1)
-
-        h = corr.square() / (mi * moving_var)
-        h = h * z
-        h *= prior
-        h = h.sum(-1)
-        h *= 2
-
-    # weighted sum
-    mi = mi.log_().mul_(0.5)
-    # print('intra cluster', (mi*prior).sum().item())
-    # print('extra cluster', (prior.log()*prior).sum().item())
-    mi += prior.log()
-    mi *= prior
-    mi = mi.sum(-1)
-    mi += hz
-
-    mi = mi.sum()
-    # print(-mi, _quickmi(moving, fixed, dim=dim).sum())
-    return (mi, g, h) if hess else (mi, g) if grad else mi
-
-
-def lgmm(moving, fixed, dim=None, bins=3, patch=7, stride=1,
-         grad=True, hess=True):
+def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
+          grad=True, hess=True, mode='g', max_iter=25):
 
     fixed, moving = utils.to_max_backend(fixed, moving)
-
     dim = dim or (fixed.dim() - 1)
     shape = fixed.shape[-dim:]
 
-    def fwd(x, r=None):
-        if r is not None:
-            x = x*r
-        return local_mean(x, patch, stride, dim=dim, mode='g')
+    if not isinstance(patch, (list, tuple)):
+        patch = [patch]
+    patch = list(patch)
+    if not isinstance(stride, (list, tuple)):
+        stride = [stride]
+    stride = [s or 0 for s in stride]
 
-    def bwd(x, r=None, r0=None):
-        if r0 is not None:
-            x = x/r0
-        x = local_mean(x, patch, stride, dim=dim, mode='g',
-                       backward=True, shape=shape)
-        if r is not None:
-            x.mul_(r)
-        return x
+    fwd = Fwd(patch, stride, dim, mode)
+    bwd = Bwd(patch, stride, dim, mode, shape)
 
-    # initialize parameters globally
-    resp, prior, *_ = fit_gmm2(moving, fixed, bins, dim=dim)
-    resp = utils.fast_movedim(resp, -1, -dim-2)
-    prior = utils.fast_movedim(prior, -1, -dim-2)
+    gmmfit = fit_lgmm2(moving, fixed, bins, max_iter, dim,
+                       patch=patch, stride=stride, mode=mode)
+    z = gmmfit.pop('resp')
+    moving_mean = gmmfit.pop('xmean')
+    fixed_mean = gmmfit.pop('ymean')
+    moving_var = gmmfit.pop('xvar')
+    fixed_var = gmmfit.pop('yvar')
+    corr = gmmfit.pop('corr')
+    prior = gmmfit.pop('prior')
+    nll = gmmfit.pop('nll')
+    nvox = py.prod(z.shape[-dim:])
+    del gmmfit
 
-    # update responsibilities by EM
-    # resp = torch.rand([*fixed.shape[:-dim-1], bins, 1, *shape], **utils.backend(fixed))
-    # resp /= resp.sum(-dim-2, keepdim=True)
-    fixed = fixed.unsqueeze(-dim-1)
     moving = moving.unsqueeze(-dim-1)
-    # prior = None
+    fixed = fixed.unsqueeze(-dim-1)
 
-    # for k in range(bins):
-    #     plt.subplot(1, bins, k+1)
-    #     plt.imshow(resp[k, 0, ..., resp.shape[-1]//2])
-    #     plt.colorbar()
-    # plt.suptitle('resp')
-    # plt.show()
+    if grad:
+        z0 = fwd(z)
 
-    for nit in range(8):
+        @torch.jit.script
+        def make_grad(bwd: Bwd, z, z0, moving, fixed, moving_mean, fixed_mean,
+                      moving_var, fixed_var, corr, prior) -> Tensor:
+            cov = corr * moving_var.sqrt() * fixed_var.sqrt()
+            idet = moving_var * fixed_var * (1 - corr * corr)
+            idet = prior / idet
+            # gradient of determinant + chain rule of log
+            g = moving * bwd(fixed_var * idet, z, z0) - fixed * bwd(cov * idet, z, z0)
+            g -= bwd((moving_mean * fixed_var - fixed_mean * cov) * idet, z, z0)
+            g = g.sum(-bwd.dim-1)
+            return g
 
-        # M-step: update Gaussian parameters (pull suffstat)
-        # I stack everything in a single tensor to batch convolutions
-
-        # if prior is None:
-        #     prior = torch.full_like(norm, 1/bins)
-        resp0 = fwd(resp)
-        suffstat = fwd(torch.stack([moving, moving.square(),
-                                    fixed, fixed.square(),
-                                    moving*fixed]), resp)
-        suffstat /= resp0
-        moving_mean, moving_var, fixed_mean, fixed_var, cov = suffstat
-        moving_var.addcmul_(moving_mean, moving_mean, value=-1).clamp_min_(0)
-        fixed_var.addcmul_(fixed_mean, fixed_mean, value=-1).clamp_min_(0)
-        cov.addcmul_(moving_mean, fixed_mean, value=-1)
-
-        if py.prod(prior.shape[-dim:]) == 1:
-            prior = prior.expand([*prior.shape[:-dim], *suffstat.shape[-dim:]])
-
-        # for k in range(bins):
-        #     plt.subplot(1, bins, k+1)
-        #     plt.imshow(moving_mean[k, 0, ..., resp.shape[-1]//2])
-        #     plt.colorbar()
-        # plt.suptitle('moving_mean')
-        # plt.show()
-        # for k in range(bins):
-        #     plt.subplot(1, bins, k+1)
-        #     plt.imshow(fixed_mean[k, 0, ..., resp.shape[-1]//2])
-        #     plt.colorbar()
-        # plt.suptitle('fixed_mean')
-        # plt.show()
-
-        # for k in range(bins):
-        #     plt.subplot(1, bins, k+1)
-        #     plt.imshow(moving_mean[k, 0, ..., resp.shape[-1]//2])
-        #     plt.colorbar()
-        # plt.suptitle('moving_mean')
-        # plt.show()
-        # for k in range(bins):
-        #     plt.subplot(1, bins, k+1)
-        #     plt.imshow(fixed_mean[k, 0, ..., resp.shape[-1]//2])
-        #     plt.colorbar()
-        # plt.suptitle('fixed_mean')
-        # plt.show()
-        # for k in range(bins):
-        #     plt.subplot(1, bins, k+1)
-        #     plt.imshow(corr[k, 0, ..., resp.shape[-1]//2])
-        #     plt.colorbar()
-        # plt.suptitle('corr')
-        # plt.show()
-
-        det = (moving_var * fixed_var).addcmul_(cov, cov, value=-1).clamp_min_(1e-5)
-        idet = det.reciprocal()
-        fixed_var.mul_(idet)   # = moving_prec
-        moving_var.mul_(idet)  # = fixed_prec
-        cov.neg_().mul_(idet)  # = off-diagonal of precision
-        det.log_()             # log determinant of covariance matrix
-
-        # push suffstat (icov, icov*mean, mean*icov*mean + logdetcov)
-        # we have enough room in `suffstat` to store icov and icov*mean
-        # -> we can allocate an additional volume for the scalar bit at
-        #    the cost of an extra convolution (but saves a new stack)
-        scalar = moving_mean.square() * fixed_var \
-               + fixed_mean.square() * moving_var \
-               + 2 * moving_mean * fixed_mean * cov
-        scalar += det - 2 * prior.log()
-        tmp_moving = (fixed_var * moving_mean).addcmul_(cov, fixed_mean)  # (A * mu)[moving]
-        tmp_fixed = (moving_var * fixed_mean).addcmul_(cov, moving_mean)  # (A * mu)[fixed]                                   # -log|A|
-        moving_mean.copy_(tmp_moving)
-        fixed_mean.copy_(tmp_fixed)
-        scalar = bwd(scalar)
-        suffstat = bwd(suffstat)
-        Amu_moving, fixed_prec, Amu_fixed, moving_prec, icov = suffstat
-
-        # E-step: update responsibilities
-        resp = moving.square() * moving_prec + fixed.square() * fixed_prec
-        resp += 2 * moving * fixed * icov
-        resp -= 2 * (moving * Amu_moving + fixed * Amu_fixed)
-        resp += scalar
-        resp *= -0.5
-        resp = F.softmax(resp, -dim-2)
-
-        # M-step (2): update proportions
-        prior = fwd(resp)
-        norm = prior.sum(-dim-2, keepdim=True).clamp_min_(1e-5).reciprocal_()
-        prior.mul_(norm).clamp_min_(1e-5)
-
-        # for k in range(bins):
-        #     plt.subplot(1, bins, k+1)
-        #     plt.imshow(resp[k, 0, ..., resp.shape[-1]//2])
-        #     plt.colorbar()
-        # plt.suptitle('resp')
-        # plt.show()
-
-    #
-    # for k in range(bins):
-    #     plt.subplot(1, bins, k+1)
-    #     plt.imshow(tmpf[k, 0, ..., tmpf.shape[-1]//2])
-    #     plt.colorbar()
-    # plt.suptitle('fixed mean')
-    # plt.show()
-    #
-    # for k in range(bins):
-    #     plt.subplot(1, bins, k+1)
-    #     plt.imshow(tmpm[k, 0, ..., tmpm.shape[-1]//2])
-    #     plt.colorbar()
-    # plt.suptitle('moving mean')
-    # plt.show()
-
-    # Compute final estimate of Gaussian parameters
-    resp0 = fwd(resp)
-    suffstat = fwd(torch.stack([moving, moving.square(),
-                                fixed, fixed.square(),
-                                moving * fixed]), resp)
-    suffstat /= resp0
-    moving_mean, moving_var, fixed_mean, fixed_var, cov = suffstat
-    moving_var.addcmul_(moving_mean, moving_mean, value=-1).clamp_min_(0)
-    fixed_var.addcmul_(fixed_mean, fixed_mean, value=-1).clamp_min_(0)
-    cov.addcmul_(moving_mean, fixed_mean, value=-1)
-    istd = (fixed_var * moving_var).sqrt_().clamp_min_(1e-3).reciprocal_()
-    imoving_var = moving_var.clamp_min_(1e-5).reciprocal_()
-    corr = cov.mul_(istd)
-
-    # Compute mutual information
-    #
-    #   We follow Leiva-Murillo & Antonio Artes-Rodriguez (ICA 2004)
-    #   and approximate the entropy of the mixture by the sum of the
-    #   entropy of each cluster weighted by mixing proportion.
-    #
-    # MI within each cluster is -log(1 - c**2), where c is the
-    # correlation coefficient of the Gaussian (log is applied later).
-    # (here, we multiply by -1 to get something to minimize)
-    mi = corr.square().neg_().add_(1).clamp_min_(1e-5)
-
-    resp0 = fwd(resp)
-
-    if grad or hess:
-        chain = mi.reciprocal()
-        chain = chain.mul_(corr).mul_(prior)
-        h = bwd(corr * imoving_var * chain, resp, resp0)
-
-        if grad:
-            # first compute the gradient wrt each correlation coefficient
-            # (same as in LCC, expect that we multiply by resp in backward)
-            g = fixed_mean * istd - moving_mean * corr * imoving_var
-            g = bwd(g * chain, resp, resp0)
-            g -= fixed * bwd(istd * chain, resp, resp0)
-            g += moving * h
-
-            # weighted sum
-            g = g.sum(-dim-2)
-            g.mul_(2)
-            # print(g.min(), g.max(), g.median())
+        g = make_grad(bwd, z, z0, moving, fixed, moving_mean, fixed_mean,
+                      moving_var, fixed_var, corr, prior)
+        g.div_(nvox)
 
         if hess:
-            h = h.sum(-dim-2)
-            h.mul_(2)
-            # print(h.min(), h.max(), h.median())
 
-    # plt.imshow(g[0, ..., g.shape[-1]//2])
-    # plt.colorbar()
-    # plt.show()
+            @torch.jit.script
+            def make_hess(bwd: Bwd, z, z0, moving_var, corr, prior) -> Tensor:
+                h = (1 - z0) * prior / (moving_var * (1 - corr * corr))
+                h = bwd(h, z, z0)
+                h = h.sum(-bwd.dim-1)
+                return h
 
-    # weighted sum
-    mi = mi.log_().mul_(0.5)
-    mi += prior.log()
-    mi *= prior
-    mi = mi.sum(-dim-2)
+            h = make_hess(bwd, z, z0, moving_var, corr, prior)
+            h.div_(nvox)
 
-    # tmp = mi[0, ..., mi.shape[-1]//2].neg()
-    # mn, mx = utils.quantile(tmp, [0.05, 0.95])
-    # tmp = tmp.clamp(mn, mx)
-    # plt.imshow(tmp)
-    # plt.colorbar()
-    # plt.show()
-
-    mi = mi.mean(list(range(-dim, 0))).sum()
-
-    return (mi, g, h) if hess else (mi, g) if grad else mi
+    return (nll, g, h) if hess else (nll, g) if grad else nll
 
 
 def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
          grad=True, hess=True):
-    """Entropy estimated by Gaussian Mixture Modeling"""
+    """Entropy estimated by Gaussian Mixture Modeling
+
+    Parameters
+    ----------
+    moving : (..., *spatial) tensor
+        Moving image
+    fixed : (..., *spatial) tensor
+        Fixed image
+    dim : int, default=`fixed.dim() - 1`
+        Number of spatial dimensions
+    bins : int, default=6
+        Number of clusters in the mixture
+    max_iter : int, default=25
+        Number of EM iterations
+    grad : bool, default=True
+    hess : bool, default=True
+
+    Returns
+    -------
+    l : () tensor
+        Negative log likelihood
+    g : (..., *spatial) tensor, if `grad`
+        Gradient
+    h : (..., *spatial) tensor, if `hess`
+        Hessian
+    """
+    # TODO: multivariate GMM?
+    #   -> must differentiate ln|C| where C is the correlation matrix
 
     dim = dim or (fixed.dim() - 1)
-    n = py.prod(fixed.shape[-dim:])
     gmmfit = fit_gmm2(moving, fixed, bins, max_iter, dim=dim)
 
     z = gmmfit.pop('z')
+    z = z.div_(sumspatial(z, dim))
     prior = gmmfit.pop('prior')
     moving_mean = gmmfit.pop('moving_mean')
     fixed_mean = gmmfit.pop('fixed_mean')
@@ -601,20 +238,19 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
 
         @torch.jit.script
         def make_grad(moving, fixed, moving_mean, fixed_mean, moving_var, fixed_var, corr, prior, z):
-            # type: (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor) -> Tensor
             # compute normalized values
-            moving_std = moving_var.sqrt()
-            fixed_std = fixed_var.sqrt()
+            moving_std = moving_var.sqrt().clamp_min_(1e-5)
+            fixed_std = fixed_var.sqrt().clamp_min_(1e-5)
             moving = (moving - moving_mean) / moving_std
             fixed = (fixed - fixed_mean) / fixed_std
             # gradient of (1 - corr^2)
-            g = z * corr * (moving * corr - fixed) / moving_std
+            g = corr * (moving * corr - fixed) / moving_std
             # gradient of log (chain rule)
             g /= 1 - corr * corr
             # gradient of log(moving_var)
-            g += z * moving / moving_std
+            g += moving / moving_std
             # weight by proportion and sum
-            g *= prior
+            g *= (z * prior)
             g = g.sum(-1)
             return g
 
@@ -625,206 +261,22 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
 
             @torch.jit.script
             def make_hess(moving_var, corr, prior, z):
-                # type: (Tensor, Tensor, Tensor, Tensor) -> Tensor
-                moving_std = moving_var.sqrt()
                 # hessian of (1 - corr^2)
-                h = corr / moving_std
-                h = z * (h * h)
-                # "semi" chain rule
-                h /= 1 - corr * corr
-                h *= prior
+                imoving_var = moving_var.clamp_min_(1e-5).reciprocal()
+                corr2 = corr * corr
+                h = corr2 * imoving_var
+                # chain rule (with Fisher's scoring)
+                h /= 1 - corr2
+                # hessian of log(moving_var)
+                h += imoving_var
+                # weight by proportion and sum
+                h = h * (z * prior)
                 h = h.sum(-1)
                 return h
 
             h = make_hess(moving_var, corr, prior, z)
 
     return (ll, g, h) if hess else (ll, g) if grad else ll
-
-
-class LGMM(OptimizationLoss):
-    """Local mutual information estimated by GMM"""
-
-    def __init__(self, dim=None, bins=3, patch=7, stride=1, lam=1):
-        """
-
-        Parameters
-        ----------
-        dim : int, default=1fixed.dim() - 1`
-            Number of spatial dimensions
-        """
-        super().__init__()
-        self.dim = dim
-        self.bins = bins
-        self.patch = patch
-        self.stride = stride
-        self.lam = lam
-
-    def loss(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-
-        """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        return lgmm(moving, fixed, dim=dim, bins=bins, patch=patch, stride=stride,
-                    grad=False, hess=False)
-
-    def loss_grad(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-        g : (..., K, *spatial) tensor, optional
-            Gradient with respect to the moving image
-
-        """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        return lgmm(moving, fixed, dim=dim, bins=bins, patch=patch, stride=stride,
-                    hess=False)
-
-    def loss_grad_hess(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-        g : (..., K, *spatial) tensor, optional
-            Gradient with respect to the moving image
-        h : (..., K*(K+1)//2, *spatial) tensor, optional
-            Hessian with respect to the moving image.
-            Its spatial dimensions are singleton when `acceleration == 0`.
-
-        """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        return lgmm(moving, fixed, dim=dim, bins=bins, patch=patch, stride=stride)
-
-
-class GMMI(OptimizationLoss):
-    """Gaussian Mixture Mutual Information"""
-
-    def __init__(self, dim=None, bins=3, lam=1):
-        """
-
-        Parameters
-        ----------
-        dim : int, default=1fixed.dim() - 1`
-            Number of spatial dimensions
-        """
-        super().__init__()
-        self.dim = dim
-        self.bins = bins
-        self.lam = lam
-
-    def loss(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-
-        """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        lam = kwargs.get('lam', self.lam)
-        return gmmi(moving, fixed, dim=dim, bins=bins,
-                    grad=False, hess=False)
-
-    def loss_grad(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-        g : (..., K, *spatial) tensor, optional
-            Gradient with respect to the moving image
-
-        """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        lam = kwargs.get('lam', self.lam)
-        return gmmi(moving, fixed, dim=dim, bins=bins,
-                    hess=False)
-
-    def loss_grad_hess(self, moving, fixed, **kwargs):
-        """Compute the squared LCC loss
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-        g : (..., K, *spatial) tensor, optional
-            Gradient with respect to the moving image
-        h : (..., K*(K+1)//2, *spatial) tensor, optional
-            Hessian with respect to the moving image.
-            Its spatial dimensions are singleton when `acceleration == 0`.
-
-        """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        lam = kwargs.get('lam', self.lam)
-        return gmmi(moving, fixed, dim=dim, bins=bins)
 
 
 class GMMH(OptimizationLoss):
@@ -916,3 +368,103 @@ class GMMH(OptimizationLoss):
         bins = kwargs.get('bins', self.bins)
         lam = kwargs.get('lam', self.lam)
         return gmmh(moving, fixed, dim=dim, bins=bins)
+
+
+class LGMMH(OptimizationLoss):
+    """Gaussian Mixture Entropy"""
+
+    order = 2
+
+    def __init__(self, dim=None, bins=3, lam=1, patch=20, stride=1):
+        """
+
+        Parameters
+        ----------
+        dim : int, default=1fixed.dim() - 1`
+            Number of spatial dimensions
+        """
+        super().__init__()
+        self.dim = dim
+        self.bins = bins
+        self.patch = patch
+        self.stride = stride
+        self.lam = lam
+
+    def loss(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        patch = kwargs.get('patch', self.patch)
+        stride = kwargs.get('stride', self.stride)
+        lam = kwargs.get('lam', self.lam)
+        return lgmmh(moving, fixed, dim=dim, bins=bins,
+                     grad=False, hess=False, patch=patch, stride=stride)
+
+    def loss_grad(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        patch = kwargs.get('patch', self.patch)
+        stride = kwargs.get('stride', self.stride)
+        lam = kwargs.get('lam', self.lam)
+        return lgmmh(moving, fixed, dim=dim, bins=bins,
+                     hess=False, patch=patch, stride=stride)
+
+    def loss_grad_hess(self, moving, fixed, **kwargs):
+        """Compute the squared LCC loss
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+        h : (..., K*(K+1)//2, *spatial) tensor, optional
+            Hessian with respect to the moving image.
+            Its spatial dimensions are singleton when `acceleration == 0`.
+
+        """
+        dim = kwargs.get('dim', self.dim)
+        bins = kwargs.get('bins', self.bins)
+        patch = kwargs.get('patch', self.patch)
+        stride = kwargs.get('stride', self.stride)
+        lam = kwargs.get('lam', self.lam)
+        return lgmmh(moving, fixed, dim=dim, bins=bins,
+                     patch=patch, stride=stride)

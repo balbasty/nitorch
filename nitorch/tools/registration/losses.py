@@ -22,6 +22,7 @@ from torch.nn import functional as F
 import math as pymath
 import torch
 from .utils import JointHist
+from .local import local_mean as _local_mean
 pyutils = py
 
 # TODO:
@@ -692,9 +693,15 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
             lam = lam.flatten()
         lam = utils.unsqueeze(lam, -1, dim)
 
-    fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask)
-    bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
-                               backward=True, shape=shape)
+    if not isinstance(patch, (list, tuple)):
+        patch = [patch]
+    patch = list(patch)
+    if not isinstance(stride, (list, tuple)):
+        stride = [stride]
+    stride = [s or 0 for s in stride]
+    fwd = lambda x: _local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask)
+    bwd = lambda x: _local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
+                                backward=True, shape=shape)
 
     # compute ncc within each patch
     moving_mean, fixed_mean, moving_std, fixed_std, corr = \

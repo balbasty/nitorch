@@ -260,7 +260,7 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 # Loss group
 loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice'}
-loss_choices = list(loss_aliases.values()) + ['gmh']
+loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -275,8 +275,12 @@ loss.add_option('symmetric', ('-s', '--symmetric'), nargs=0, default=False,
 weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
                            default=None, convert=number_or_str(float),
                            help='Weight (= precision) or the loss.')
-patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=0,
+patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=20,
                           convert=number_or_str(int), help='Patch size')
+stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
+                           convert=int, help='Strides between patches.')
+cluster_option = cli.Option('bins', ('-b', '--bins'), nargs=1, default=6,
+                            convert=int, help='Number of bins in the mixture')
 loss.add_suboption('mi', 'norm', ('-m', '--norm'),
                    validation=cli.Validations.choice(['studholme', 'arithmetic', 'geometric', 'no']),
                    nargs='1', default='studholme',
@@ -289,14 +293,17 @@ loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=3,
                    convert=int, help='Spline order of the joint histogram')
 loss.add_suboption('mi', patch_option)
 loss.add_suboption('lcc', patch_option)
+loss.add_suboption('lcc', stride_option)
 loss.add_suboption('mse', weight_option)
 loss.add_suboption('mad', weight_option)
 loss.add_suboption('tuk', weight_option)
 loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=False,
                    convert=float, action=cli.Actions.store_true,
                    help='Weight of each class')
-loss.add_suboption('gmh', 'bins', ('-b', '--bins'), nargs=1, default=6,
-                   convert=int, help='Number of bins in the mixture')
+loss.add_suboption('gmm', cluster_option)
+loss.add_suboption('lgmm', cluster_option)
+loss.add_suboption('lgmm', patch_option)
+loss.add_suboption('lgmm', stride_option)
 # fix/mov subgroups
 file = cli.Group('file', n=1, help='Volume to register')
 file.add_positional('files', nargs='1*', help='File names')
