@@ -556,10 +556,9 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
             dat[~msk] = tiny
             fit[~msk] = tiny
         else:
-            msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
+            msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0) 
             dat[~msk] = 0
             fit[~msk] = 0
-        res = dat.neg_()
 
 
         if chi:
@@ -567,35 +566,26 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
             # sig2 = 386.7943
             dof= torch.as_tensor(21.4342 , dtype=dtype)
             sig2= 1./386.7943
-            ndat_np, fit_np = dat.neg_().clone().detach().cpu(), fit.clone().detach().cpu()
-            #print(fit)
-            # #print(iv(dof/2-1, ndat_np.numpy()*fit_np.numpy()*lam))
-            # bes_np = iv(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*lam)
+            ndat_np, fit_np = dat.clone().detach().cpu(), fit.clone().detach().cpu()
             bes_np = ive(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*sig2)
-            # besup_np = np.log(iv(dof/2., ndat_np.numpy()*fit_np.numpy()*lam))
-            # epsilon_np = np.log(besup_np)-np.log(bes_np)
-            # epsilon_np = np.exp(epsilon_np)
-            # epsilon = torch.as_tensor(epsilon_np, dtype=dtype).cuda()
-            bes = torch.as_tensor(bes_np, dtype=dtype).cuda()
-            # # epsilon = torch.tensor(epsilon, dtype=dtype, device=device)
-            # # bes = torch.tensor(bes, dtype=dtype, device=device)
-            epsilon = besseli_ratio(res*fit*sig2, dof/2-1, N=2, K=4)
-            res = res*epsilon
+            bes = torch.as_tensor(bes_np, dtype=dtype, device=dat.device) 
+            epsilon = besseli_ratio(dat*fit*sig2, dof/2.-1., N=2, K=4)
+            res = fit-epsilon*dat.neg()
             del bes_np, epsilon, ndat_np, fit_np
             torch.cuda.empty_cache()
-        res += fit
+        else:
+            res = fit+dat.neg()
         
-
 
         # chi log likelihood
         if chi:
             critn = (dof/2.-1.)*torch.log(fit+tiny)\
                 -(dof/2.)*torch.log(dat+tiny)\
                     +((fit.square()+dat.square())*sig2)/2.\
-                        - (torch.log(bes+tiny) - torch.abs(fit*dat*sig2))
+                        - torch.log(bes+tiny) + torch.abs(fit*dat*sig2)
                         # ive(v, z) = iv(v, z) * exp(-abs(z.real))
 
-            crit = crit - torch.sum(critn, dtype=torch.double)
+            crit = crit + torch.sum(critn, dtype=torch.double)
             del critn
         else:
             #compute log-likelihood
