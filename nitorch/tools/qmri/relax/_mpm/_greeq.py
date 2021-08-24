@@ -565,11 +565,11 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
             # nu = 21.4342
             # sig2 = 386.7943
             dof= torch.as_tensor(21.4342 , dtype=dtype)
-            sig2= 1./386.7943
+            lam= 1./386.7943
             ndat_np, fit_np = dat.clone().detach().cpu(), fit.clone().detach().cpu()
-            bes_np = ive(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*sig2)
+            bes_np = ive(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*lam)
             bes = torch.as_tensor(bes_np, dtype=dtype, device=dat.device) 
-            epsilon = besseli_ratio(dat*fit*sig2, dof/2.-1., N=2, K=4)
+            epsilon = besseli_ratio(dat*fit*lam, dof/2.-1., N=2, K=4)
             res = fit-epsilon*dat.neg()
             del bes_np, epsilon, ndat_np, fit_np
             torch.cuda.empty_cache()
@@ -581,8 +581,8 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
         if chi:
             critn = (dof/2.-1.)*torch.log(fit+tiny)\
                 -(dof/2.)*torch.log(dat+tiny)\
-                    +((fit.square()+dat.square())*sig2)/2.\
-                        - torch.log(bes+tiny) + torch.abs(fit*dat*sig2)
+                    +((fit.square()+dat.square())*lam)/2.\
+                        - torch.log(bes+tiny) + torch.abs(fit*dat*lam)
                         # ive(v, z) = iv(v, z) * exp(-abs(z.real))
 
             crit = crit + torch.sum(critn, dtype=torch.double)
