@@ -351,7 +351,7 @@ def _main(options):
             lossobj = losses.Cat(dim=dim, log=False)
             # lossobj = losses.AutoCat()
         elif loss.name == 'dice':
-            lossobj = losses.Dice(weighted=loss.weight)
+            lossobj = losses.Dice(weighted=loss.weight, log=False)
         else:
             raise ValueError(loss.name)
         lossobj = objects.LossComponent(lossobj, mov, fix, factor=loss.factor,

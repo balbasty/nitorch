@@ -3,9 +3,7 @@ import matplotlib.pyplot as plt
 from nitorch.core import utils, py, math, constants, linalg, kernels
 import math as pymath
 import torch
-from torch.nn import functional as F
 from .losses import OptimizationLoss
-from .local import local_mean
 from .gmm2 import fit_gmm2, fit_lgmm2, sumspatial, Fwd, Bwd
 Tensor = torch.Tensor
 pyutils = py

@@ -21,6 +21,22 @@ def _pad_list_int(x: List[int], length: int) -> List[int]:
 
 
 @torch.jit.script
+def _any(x: List[bool]) -> bool:
+    for elem in x:
+        if elem:
+            return True
+    return False
+
+
+@torch.jit.script
+def _all(x: List[bool]) -> bool:
+    for elem in x:
+        if not elem:
+            return False
+    return True
+
+
+@torch.jit.script
 def _guess_output_shape(inshape: List[int],
                         dim: int,
                         kernel_size: List[int],
@@ -86,7 +102,7 @@ def conv_transpose(dim: int, x: Tensor, kernel: Tensor, stride: List[int],
     else:
         groups = 1
     tpad: Optional[List[int]] = None
-    if any([p > s for p, s in zip(opad, stride)]):
+    if _any([p > s for p, s in zip(opad, stride)]):
         tpad = opad
         opad = [0] * dim
     if dim == 1:

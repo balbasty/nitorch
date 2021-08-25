@@ -220,6 +220,8 @@ def number_or_str(type=float):
 
 
 def parse_range(x):
+    if ':' not in x:
+        return [int(x)]
     x = x.split(':')
     if len(x) == 2:
         x = [*x, '']

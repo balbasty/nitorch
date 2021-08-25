@@ -153,7 +153,7 @@ def suffstat(x, y, z, ndim: int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor
 
 
 @torch.jit.script
-def m_step(x, y, z, ndim: int, nvox: int) \
+def m_step(x, y, z, ndim: int, nvox: int, alpha: float = 1e-8) \
         -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = suffstat(x, y, z, ndim)
     prior = mom0.div_(nvox)
@@ -164,33 +164,34 @@ def m_step(x, y, z, ndim: int, nvox: int) \
     cov = xymom2.addcmul_(xmean, ymean, value=-1)
 
     # regularization
-    alpha = 1e-3
     xvar = xvar.add_(alpha).div_(1+alpha)
     yvar = yvar.add_(alpha).div_(1+alpha)
     cov = cov.div_(1+alpha)
 
     # invert
     det = xvar * yvar - cov * cov
-    idet = det.clamp_min(1e-30).reciprocal_()
+    idet = det.reciprocal_()
     return xmean, ymean, xvar, yvar, cov, idet, prior
 
 
 @torch.jit.script
 def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior,
             ndim: int, nvox: int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+    print('')
     z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
     for nit in range(max_iter):
         xmean, ymean, xvar, yvar, cov, idet, prior = m_step(x, y, z, ndim, nvox)
         z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
-        logprior = prior.clamp_min(1e-5).log_()
+        logprior = prior.log()
 
         # negative log-likelihood (upper bound)
-        hz = -sumspatial(z.clamp_min(1e-5).log_().mul_(z), ndim)
-        logidet = idet.clamp_min(1e-5).log_()
+        hz = -sumspatial(z.clamp_min(1e-30).log_().mul_(z), ndim)
+        logidet = idet.log()
         ll = ((logidet * 0.5 + logprior) * prior).sum()
         ll += hz.sum() / nvox
         ll = -ll
         print('gmm', ll.item())
+    print('')
     return z, xmean, ymean, xvar, yvar, cov, idet, logprior
 
 
@@ -244,10 +245,11 @@ def _fit_gmm2(x: Tensor, y: Tensor, max_iter: int = 20,
     ll += hz.sum() / nvox
     ll = -ll
 
-    output = dict(
-        z=z, prior=prior, moving_mean=xmean, fixed_mean=ymean, ll=ll,
-        moving_var=xvar, fixed_var=yvar, corr=corr, hz=hz, idet=idet,
-    )
+    output: Dict[str, Tensor] = {
+        'z': z, 'prior': prior, 'moving_mean': xmean, 'fixed_mean': ymean,
+        'll': ll, 'moving_var': xvar, 'fixed_var': yvar, 'corr': corr,
+        'hz': hz, 'idet': idet,
+    }
     return output
 
 
@@ -378,10 +380,10 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, z: Tensor,
     nll += hz.sum() / script_prod(hz.shape[-dim:])
     nll = -nll
 
-    output = dict(
-        resp=z, prior=pi, xmean=xmean, ymean=ymean, nll=nll,
-        xvar=xvar, yvar=yvar, corr=corr, resp_entropy=hz,
-    )
+    output: Dict[str, Tensor] = {
+        'resp':z, 'prior': pi, 'xmean': xmean, 'ymean': ymean, 'nll': nll,
+        'xvar': xvar, 'yvar': yvar, 'corr': corr, 'resp_entropy': hz,
+    }
     return output
 
 
