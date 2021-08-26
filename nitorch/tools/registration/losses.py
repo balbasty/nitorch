@@ -21,12 +21,11 @@ from nitorch.nn.modules.conv import _guess_output_shape
 from torch.nn import functional as F
 import math as pymath
 import torch
+from typing import List, Optional
 from .utils import JointHist
 from .local import local_mean as _local_mean
 pyutils = py
-
-# TODO:
-#   lcc: option to cache values that only depend on fixed?
+Tensor = torch.Tensor
 
 
 def make_loss(loss, dim=None):
@@ -425,7 +424,7 @@ def cat_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None):
 
 def dice_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None,
                add_background=False, weighted=False):
-    """Categorical loss for optimisation-based registration.
+    """Dice loss for optimisation-based registration.
 
     Parameters
     ----------
@@ -433,70 +432,92 @@ def dice_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None,
         Moving image of probabilities (post-softmax).
         The background class should be omitted.
     fixed : (..., K, *spatial) tensor
-        Fixed image of probabilities
+        Fixed image of probabilities.
     dim : int, default=`fixed.dim() - 1`
         Number of spatial dimensions.
     grad : bool, default=True
         Compute and return gradient
     hess : bool, default=True
         Compute and return Hessian
+    mask : (..., *spatial) tensor, optional
+        Mask of voxels to include in the loss (all by default)
+    add_background : bool, default=False
+        Include the Dice of the (implicit) background class in the loss.
+    weighted : bool or tensor, default=False
+        Weights for each class. If True, weight by positive rate.
 
     Returns
     -------
     ll : () tensor
         Negative log-likelihood
     g : (..., K, *spatial) tensor, optional
-        Gradient with respect to the moving image
-    h : (..., K*(K+1)//2, *spatial) tensor, optional
+        Gradient with respect to the moving image.
+    h : (..., K, *spatial) tensor, optional
         Hessian with respect to the moving image.
-        Its spatial dimensions are singleton when `acceleration == 0`.
 
     """
     fixed, moving = utils.to_max_backend(fixed, moving)
-    if mask is not None:
-        mask = mask.to(moving.device)
     dim = dim or (fixed.dim() - 1)
     nc = moving.shape[-dim-1]                               # nb classes - bck
     fixed = utils.slice_tensor(fixed, slice(nc), -dim-1)    # remove bkg class
     if mask is not None:
+        mask = mask.to(moving.device)
         nvox = mask.sum(range(-dim-1), keepdim=True)
     else:
         nvox = py.prod(fixed.shape[-dim:])
 
-    # log likelihood
-    moving = moving.clamp_min(0)
-    moving = moving / moving.sum(-dim-1, keepdim=True).clamp_min_(1)
-    fixed = fixed.clamp_min(0)
-    fixed = fixed / fixed.sum(-dim-1, keepdim=True).clamp_min_(1)
-    if add_background:
-        fixed = torch.stack([fixed, fixed.sum(-dim-1, keepdim=True).neg_().add_(1)], dim=-dim-1)
-        moving = torch.stack([moving, moving.sum(-dim-1, keepdim=True).neg_().add_(1)], dim=-dim-1)
+    @torch.jit.script
+    def rescale(x, dim_channel: int, add_background: bool = False):
+        """Ensure that a tensor is in [0, 1]"""
+        x = x.clamp_min(0)
+        x = x / x.sum(dim_channel, keepdim=True).clamp_min_(1)
+        if add_background:
+            x = torch.stack([x, 1 - x.sum(dim_channel, keepdim=True)], dim_channel)
+        return x
+
+    moving = rescale(moving, -dim-1, add_background)
+    fixed = rescale(fixed, -dim-1, add_background)
     if mask is not None:
         moving *= mask
         fixed *= mask
-    overlap = (moving * fixed).sum(list(range(-dim, 0)), keepdim=True)
-    union = (moving + fixed).sum(list(range(-dim, 0)), keepdim=True)
-    dice = 2 * overlap / union
-    if weighted is not False:
-        if weighted is True:
+
+    if weighted is True:
             weighted = fixed.sum(list(range(-dim, 0)), keepdim=True).div_(nvox)
-        else:
-            weighted = torch.as_tensor(weighted, dtype=moving.dtype, device=moving.device)
-            for _ in range(dim):
-                weighted = weighted.unsqueeze(-1)
-        ll = 1 - weighted * dice
+    elif weighted is not False:
+        weighted = torch.as_tensor(weighted, **utils.backend(moving))
+        for _ in range(dim):
+            weighted = weighted.unsqueeze(-1)
     else:
-        ll = 1 - dice
-    ll = ll.sum()
+        weighted = None
+
+    @torch.jit.script
+    def loss_components(moving, fixed, dim: int, weighted: Optional[Tensor] = None):
+        """Compute the (negative) DiceLoss, (positive) Dice and union"""
+        dims = [d for d in range(-dim, 0)]
+        overlap = (moving * fixed).sum(dims, keepdim=True)
+        union = (moving + fixed).sum(dims, keepdim=True)
+        union += 1e-5
+        dice = 2 * overlap / union
+        if weighted is not None:
+            ll = 1 - weighted * dice
+        else:
+            ll = 1 - dice
+        ll = ll.sum()
+        return ll, dice, union
+
+    ll, dice, union = loss_components(moving, fixed, dim, weighted)
     out = [ll]
 
     # gradient
     if grad:
-        g = (dice - 2 * fixed) / union
-        if weighted is not False:
+        @torch.jit.script
+        def do_grad(dice, fixed, union):
+            return (dice - 2 * fixed) / union
+        g = do_grad(dice, fixed, union)
+        if weighted is not None:
             g *= weighted
         if add_background:
-            g_last = utils.slice_tensor(g, -1, -dim-1)
+            g_last = utils.slice_tensor(g, slice(-1, None), -dim-1)
             g = utils.slice_tensor(g, slice(-1), -dim-1)
             g -= g_last
         if mask is not None:
@@ -505,15 +526,20 @@ def dice_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None,
 
     # hessian
     if hess:
-        h = abs(dice - fixed - fixed.sum(list(range(-dim, 0)), keepdim=True) / nvox)
-        h *= 2 * nvox / union.square()
-        # h = abs(dice - 2*fixed)
-        # h *= 2 / union.square()
-        if weighted is not False:
+        @torch.jit.script
+        def do_hess(dice, fixed, union, nvox, dim: int):
+            dims = [d for d in range(-dim, 0)]
+            positive_rate = fixed.sum(dims, keepdim=True) / nvox
+            h = (dice - fixed - positive_rate).abs()
+            h = 2 * nvox * h / union.square()
+            return h
+        nvox = torch.as_tensor(nvox, device=moving.device)
+        h = do_hess(dice, fixed, union, nvox, dim)
+        if weighted is not None:
             h *= weighted
         if add_background:
             h_foreground = utils.slice_tensor(h, slice(-1), -dim-1)
-            h = utils.slice_tensor(h, -1, -dim-1)  # h background
+            h = utils.slice_tensor(h, slice(-1, None), -dim-1)  # h background
             hshape = list(h.shape)
             hshape[-dim-1] = nc*(nc+1)//2
             h = h.expand(hshape).clone()
