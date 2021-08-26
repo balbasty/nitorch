@@ -372,9 +372,9 @@ def local_mean(x: Tensor,
     stride = stride + stride[-1:] * max(0, dim - len(stride))
     stride = [s if s > 0 else k for s, k in zip(stride, kernel_size)]
 
-    if mode[0].lower() == 'c':
+    if mode[0].lower() in ('c', 's'):  # const/square
         x = _local_mean_patch(x, kernel_size, stride, backward, shape, mask)
-    elif mode[0].lower() == 'g':
+    elif mode[0].lower() == 'g':  # gauss
         x = _local_mean_conv(x, kernel_size, stride, backward, shape, mask)
     else:
         raise ValueError(f'Unknown mode {mode}')

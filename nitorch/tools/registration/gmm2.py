@@ -27,7 +27,7 @@ def sumspatial(x: Tensor, ndim: int) -> Tensor:
 
 
 # cannot use TorchScript because of `quantile`.
-def init_gmm2(x, y, bins=6, dim=None):
+def init_gmm2(x, y, bins=6, dim=None, mask=None):
     """Initialize parameters of a 2D GMM by drawing quantiles.
 
     Parameters
@@ -40,6 +40,8 @@ def init_gmm2(x, y, bins=6, dim=None):
         Number of clusters
     dim : int, default=`fixed.dim()-1`
         Number of spatial dimensions
+    mask : (..., *spatial) tensor, optional
+        Mask or weights
 
     Returns
     -------
@@ -57,10 +59,12 @@ def init_gmm2(x, y, bins=6, dim=None):
         prior : (..., *1, bins) tensor
             Proportion of each class
     """
+    if mask:
+        mask = mask[..., 0]
     dim = dim or x.dim() - 1
     quantiles = torch.arange(bins + 1) / bins
-    xmean = utils.quantile(x[..., 0], quantiles, dim=range(-dim, 0), keepdim=True)
-    ymean = utils.quantile(y[..., 0], quantiles, dim=range(-dim, 0), keepdim=True)
+    xmean = utils.quantile(x[..., 0], quantiles, dim=range(-dim, 0), keepdim=True, mask=mask)
+    ymean = utils.quantile(y[..., 0], quantiles, dim=range(-dim, 0), keepdim=True, mask=mask)
     xvar = (xmean[..., 1:] - xmean[..., :-1]).div_(2.355).square_()
     yvar = (ymean[..., 1:] - ymean[..., :-1]).div_(2.355).square_()
     xmean = (xmean[..., 1:] + xmean[..., :-1]).div_(2)
@@ -73,7 +77,7 @@ def init_gmm2(x, y, bins=6, dim=None):
 def fit_gmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20,
              dim: Optional[int] = None, z: Optional[Tensor] = None,
              theta: Optional[Dict[str, Tensor]] = None,
-             update: str = 'em'):
+             update: str = 'em', mask: Optional[Tensor] = None):
     """Fit a 2D Gaussian mixture
 
     Parameters
@@ -120,28 +124,37 @@ def fit_gmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20,
             Pre-computed entropy of the responsibilites: sum(z*log(z))
     """
     if z is None and not theta:
-        theta = init_gmm2(x, y, bins, dim)
-    return _fit_gmm2(x, y, max_iter, dim, z, theta, update)
+        theta = init_gmm2(x, y, bins, dim, mask)
+    return _fit_gmm2(x, y, max_iter, dim, z, theta, update, mask)
 
 
 @torch.jit.script
-def e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior):
+def e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior, mask: Optional[Tensor] = None):
     x = x - xmean
     y = y - ymean
-    z = (x * x) * yvar
-    z += (y * y) * xvar
-    z -= (x * y) * (2*cov)
-    z *= idet
-    z -= idet.log()
-    z *= -0.5
-    z += logprior
-    z = F.softmax(z, dim=-1)
-    return z
+    lz = (x * x) * yvar
+    lz += (y * y) * xvar
+    lz -= (x * y) * (2*cov)
+    lz *= idet
+    lz -= idet.log()
+    lz *= -0.5
+    lz += logprior
+    z = F.softmax(lz, dim=-1)
+    lz = F.log_softmax(lz, dim=-1)
+    if mask is not None:
+        lz *= mask
+    hz = -lz.flatten().dot(z.flatten())
+    # numerical regularization
+    # z = z.clamp_min_(1e-30)
+    # z /= z.sum(dim=1, keepdim=True)
+    return z, hz
 
 
 @torch.jit.script
-def suffstat(x, y, z, ndim: int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+def suffstat(x, y, z, ndim: int, mask: Optional[Tensor] = None):
     # z must be normalized (== divided by mom0)
+    if mask is not None:
+        z = z * mask
     mom0 = sumspatial(z, ndim)
     z = z / mom0
     xmom1 = sumspatial(x * z, ndim)
@@ -153,64 +166,111 @@ def suffstat(x, y, z, ndim: int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor
 
 
 @torch.jit.script
-def m_step(x, y, z, ndim: int, nvox: int, alpha: float = 1e-8) \
-        -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = suffstat(x, y, z, ndim)
-    prior = mom0.div_(nvox)
+def load_cov(xvar, yvar, cov, alpha: float = 1e-10):
+    # regularization
+    #   to add the minimum amount of regularization possible, I compute
+    #   the smallest eigenvalue of the covariance matrix and if it is negative
+    #   or smaller than `alpha`, I add enough regularization to make it
+    #   equal to `alpha`.
+
+    det = xvar * yvar - cov * cov
+    tr = xvar + yvar
+    delta = tr * tr - 4 * det
+    delta = delta.clamp_min_(0)
+    lam = (tr - delta.sqrt()) / 2  # smallest eigenvalue
+    lam = (alpha - lam).clamp_min_(0)
+    # if (lam > 0).any():
+    #     plam: List[float] = lam.flatten().tolist()
+    #     print('eps', plam)
+
+    xvar = (xvar + lam) / (1 + lam)
+    yvar = (yvar + lam) / (1 + lam)
+    cov = cov / (1 + lam)
+
+    return xvar, yvar, cov
+
+
+@torch.jit.script
+def m_step(x, y, z, ndim: int, alpha: float = 1e-10,
+           mask: Optional[Tensor] = None):
+    nvox = script_prod(x.shape[-ndim-1:-1])
+    mom0, xmom1, ymom1, xmom2, ymom2, xymom2 = suffstat(x, y, z, ndim, mask=mask)
+    if mask is None:
+        prior = mom0.div_(nvox)
+    else:
+        prior = mom0.div_(sumspatial(mask, ndim))
     xmean = xmom1
     ymean = ymom1
     xvar = xmom2.addcmul_(xmean, xmean, value=-1)
     yvar = ymom2.addcmul_(ymean, ymean, value=-1)
     cov = xymom2.addcmul_(xmean, ymean, value=-1)
 
-    # regularization
-    xvar = xvar.add_(alpha).div_(1+alpha)
-    yvar = yvar.add_(alpha).div_(1+alpha)
-    cov = cov.div_(1+alpha)
+    xvar, yvar, cov = load_cov(xvar, yvar, cov, alpha)
 
     # invert
     det = xvar * yvar - cov * cov
     idet = det.reciprocal_()
+
     return xmean, ymean, xvar, yvar, cov, idet, prior
 
 
 @torch.jit.script
 def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior,
-            ndim: int, nvox: int) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
+            ndim: int, mask: Optional[Tensor] = None):
     print('')
-    z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
+    nvox = script_prod(x.shape[-ndim-1:-1])
+    nmsk: Optional[Tensor] = sumspatial(mask, ndim) if mask is not None else None
+    z, hz = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
+    ll_max = torch.zeros([1], dtype=x.dtype, device=x.device)
+    ll_prev = torch.zeros([1], dtype=x.dtype, device=x.device)
     for nit in range(max_iter):
-        xmean, ymean, xvar, yvar, cov, idet, prior = m_step(x, y, z, ndim, nvox)
-        z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
+        xmean, ymean, xvar, yvar, cov, idet, prior = m_step(x, y, z, ndim, mask=mask)
+        z, hz = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior, mask=mask)
         logprior = prior.log()
 
         # negative log-likelihood (upper bound)
-        hz = -sumspatial(z.clamp_min(1e-30).log_().mul_(z), ndim)
         logidet = idet.log()
         ll = ((logidet * 0.5 + logprior) * prior).sum()
-        ll += hz.sum() / nvox
+        if nmsk is not None:
+            ll += hz / nmsk
+        else:
+            ll += hz / nvox
         ll = -ll
-        print('gmm', ll.item())
+        if nit == 0:
+            print('gmm', nit, ll.item())
+            ll_max = ll
+            ll_prev = ll
+            continue
+        gain = ((ll_prev - ll) / (ll_max - ll)).abs()
+        print('gmm', nit, ll.item(), gain.item())
+        if gain < 1e-5:
+            break
+        ll_prev = ll
+        ll_max = torch.maximum(ll_max, ll)
     print('')
-    return z, xmean, ymean, xvar, yvar, cov, idet, logprior
+    return z, xmean, ymean, xvar, yvar, cov, idet, logprior, hz
 
 
 @torch.jit.script
 def _fit_gmm2(x: Tensor, y: Tensor, max_iter: int = 20,
              dim: Optional[int] = None, z: Optional[Tensor] = None,
              theta: Optional[Dict[str, Tensor]] = None,
-             update: str = 'em') -> Dict[str, Tensor]:
+             update: str = 'em', mask: Optional[Tensor] = None) -> Dict[str, Tensor]:
     # Fit a 2D Gaussian mixture model
     if dim is None:
         dim = y.dim() - 1
     nvox = script_prod(y.shape[-dim:])
-    eps = 1e-10
 
     x = x.unsqueeze(-1)
     y = y.unsqueeze(-1)
+    nmsk: Optional[Tensor] = None
+    if mask is not None:
+        mask = mask.unsqueeze(-1)
+        nmsk = sumspatial(mask, dim)
 
     if z is not None:
-        xmean, ymean, xvar, yvar, cov, idet, prior = m_step(x, y, z, dim, nvox)
+        xmean, ymean, xvar, yvar, cov, idet, prior = \
+            m_step(x, y, z, dim, mask=mask)
         corr = cov / (xvar * yvar)
     elif theta is not None:
         xmean = theta.pop('xmean')
@@ -223,26 +283,34 @@ def _fit_gmm2(x: Tensor, y: Tensor, max_iter: int = 20,
         raise ValueError('One of z or theta must be provided')
 
     cov = corr * yvar.sqrt() * xvar.sqrt()
+    xvar, yvar, cov = load_cov(xvar, yvar, cov)
     det = xvar * yvar - cov * cov
-    idet = det.clamp_min(1e-5).reciprocal_()
-    logprior = prior.clamp_min(1e-5).log_()
+    idet = det.reciprocal_()
+    logprior = prior.log_()
 
     if update.lower() == 'e':
-        z = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
+        z, hz = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior, mask=mask)
     elif update.lower() == 'em':
-        z, xmean, ymean, xvar, yvar, cov, idet, logprior = \
+        z, xmean, ymean, xvar, yvar, cov, idet, logprior, hz = \
             em_loop(max_iter, x, y, xmean, ymean, xvar, yvar, cov, idet,
-                    logprior, dim, nvox)
+                    logprior, dim, mask=mask)
     elif z is None:
         raise ValueError('update == "m" requires z')
+    else:
+        hz = z.log()
+        if mask is not None:
+            hz *= mask
+        hz = -hz.flatten().dot(z.flatten())
 
     # negative log-likelihood (upper bound)
-    hz = -sumspatial(z.clamp_min(eps).log_().mul_(z), dim)
-    corr = (xvar*yvar).sqrt_().reciprocal_().mul_(cov)
+    corr = cov / (xvar*yvar).sqrt()
     prior = logprior.exp()
-    logidet = idet.clamp_min(1e-5).log_()
+    logidet = idet.log()
     ll = ((logidet * 0.5 + logprior) * prior).sum()
-    ll += hz.sum() / nvox
+    if nmsk is not None:
+        ll += hz / nmsk
+    else:
+        ll += hz / nvox
     ll = -ll
 
     output: Dict[str, Tensor] = {
@@ -298,15 +366,48 @@ def make_moments(x, y):
 @torch.jit.script
 def m_step_local(fwd: Fwd, z: Tensor, moments: Tensor)\
         -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    z0 = fwd(z)
+    z0 = fwd(z).clamp_min(1e-10)
     suffstat = fwd(moments, z).div_(z0)
     xmean, ymean, xvar, yvar, cov = suffstat.unbind(0)
     xvar = xvar - xmean * xmean
     yvar = yvar - ymean * ymean
     cov = cov - xmean * ymean
-    pi = z0.clamp_min_(1e-5).clamp_max_(1-1e-5)
-    pi = pi / pi.sum(-fwd.dim-1, keepdim=True)
+    pi = z0 / z0.sum(-fwd.dim-1, keepdim=True)
     return xmean, ymean, xvar, yvar, cov, pi
+
+
+@torch.jit.script
+def e_step_local(bwd: Bwd, x, y, xmean, ymean, xvar, yvar, cov, prior):
+
+    # covariance to precision
+    det = xvar*yvar - cov*cov
+    idet = det.reciprocal()
+    icov = -cov * idet
+    xprec = yvar * idet
+    yprec = xvar * idet
+
+    # push suffstat (icov, icov*mean, mean*icov*mean + logdetcov)
+    mAm = (xmean * xmean * xprec  # \
+           + ymean * ymean * yprec  # | mu * A * mu
+           + 2 * xmean * ymean * icov  # /
+           + det.log() - 2 * prior.log())  # log|A| - 2 * log pi
+    Ax = xprec * xmean + icov * ymean  # (A * mu)[moving]
+    Ay = yprec * ymean + icov * xmean  # (A * mu)[fixed]
+
+    suffstat = torch.stack([mAm, Ax, Ay, xprec, yprec, icov])
+    suffstat = bwd(suffstat)
+    mAm, Ax, Ay, xprec, yprec, icov = suffstat.unbind(0)
+
+    # E-step: update responsibilities
+    lz = (x*x) * xprec + (y*y) * yprec
+    lz += 2 * x * y * icov
+    lz -= 2 * (x * Ax + y * Ay)
+    lz += mAm
+    lz *= -0.5
+    z = F.softmax(lz, -bwd.dim - 1)
+    lz = F.log_softmax(lz, -bwd.dim - 1)
+    hz = -lz.flatten().dot(z.flatten())
+    return z, hz
 
 
 @torch.jit.script
@@ -317,62 +418,42 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, z: Tensor,
 
     nll_prev = torch.zeros([1], dtype=x.dtype, device=x.device)
     nll_max = torch.zeros([1], dtype=x.dtype, device=x.device)
+    hz = -z.log().flatten().dot(z.flatten())
     for nit in range(max_iter):
 
         # M-step: update Gaussian parameters (pull suffstat)
-        hz = -sumspatial(z.clamp_min(1e-10).log_().mul_(z).unsqueeze(-1), dim).squeeze(-1)
         xmean, ymean, xvar, yvar, cov, pi = m_step_local(fwd, z, moments)
+        xvar, yvar, cov = load_cov(xvar, yvar, cov, alpha=1e-6)
 
         # compute log likelihood
         det = xvar * yvar - cov * cov
-        det = det.clamp_min_(1e-5)
         logdet = det.log()
         logpi = pi.log()
         nll = ((-0.5 * logdet + logpi) * pi).sum()
         nll /= script_prod(hz.shape[-dim:])
-        nll += hz.sum() / script_prod(hz.shape[-dim:])
+        nll += hz / script_prod(hz.shape[-dim:])
         nll = -nll
         if nit > 1:
-            gain = abs(nll - nll_prev) / abs(nll_max - nll)
-            print('lgmm', nll.item(), gain.item())
-            if gain < 1e-8:
+            gain = (nll - nll_prev).abs() / (nll_max - nll).abs()
+            print('lgmm', nit, nll.item(), gain.item())
+            if gain < 1e-6:
                 break
-        nll_prev = nll
-        nll_max = torch.maximum(nll_max, nll)
+            nll_prev = nll
+            nll_max = torch.maximum(nll_max, nll)
+        else:
+            print('lgmm', nit, nll.item())
+            nll_prev = nll
+            nll_max = nll
 
         # covariance to precision
-        idet = det.reciprocal()
-        icov = -cov * idet
-        xprec = yvar * idet
-        yprec = xvar * idet
-
-        # push suffstat (icov, icov*mean, mean*icov*mean + logdetcov)
-        mAm = (xmean * xmean * xprec       # \
-               + ymean * ymean * yprec     # | mu * A * mu
-               + 2 * xmean * ymean * icov  # /
-               + logdet - 2 * logpi)       # log|A| - 2 * log pi
-        Ax = xprec * xmean + icov * ymean  # (A * mu)[moving]
-        Ay = yprec * ymean + icov * xmean  # (A * mu)[fixed]
-
-        suffstat = torch.stack([mAm, Ax, Ay, xprec, yprec, icov])
-        suffstat = bwd(suffstat)
-        mAm, Ax, Ay, xprec, yprec, icov = suffstat.unbind(0)
-
-        # E-step: update responsibilities
-        z = x2 * xprec + y2 * yprec
-        z += 2 * x * y * icov
-        z -= 2 * (x * Ax + y * Ay)
-        z += mAm
-        z *= -0.5
-        z = F.softmax(z, -dim-1)
+        z, hz = e_step_local(bwd, x, y, xmean, ymean, xvar, yvar, cov, pi)
 
     # final M-step
-    hz = -sumspatial(z.clamp_min(1e-10).log_().mul_(z).unsqueeze(-1), dim).squeeze(-1)
     xmean, ymean, xvar, yvar, cov, pi = m_step_local(fwd, z, moments)
+    xvar, yvar, cov = load_cov(xvar, yvar, cov, alpha=1e-6)
 
-    corr = cov / (xvar * yvar).sqrt_().clamp_min_(1e-5)
+    corr = cov / (xvar * yvar).sqrt()
     det = xvar * yvar - cov * cov
-    det = det.clamp_min_(1e-5)
     logdet = det.log()
     logpi = pi.log()
     nll = ((-0.5 * logdet + logpi) * pi).sum()
@@ -381,7 +462,7 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, z: Tensor,
     nll = -nll
 
     output: Dict[str, Tensor] = {
-        'resp':z, 'prior': pi, 'xmean': xmean, 'ymean': ymean, 'nll': nll,
+        'resp': z, 'prior': pi, 'xmean': xmean, 'ymean': ymean, 'nll': nll,
         'xvar': xvar, 'yvar': yvar, 'corr': corr, 'resp_entropy': hz,
     }
     return output
