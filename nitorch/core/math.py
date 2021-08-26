@@ -6,6 +6,9 @@
 import torch
 from .constants import inf, ninf
 from nitorch.core import py, utils
+from typing import List, Optional, Tuple
+import math as pymath
+Tensor = torch.Tensor
 
 
 def round(t, decimals=0):
@@ -941,6 +944,27 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
         return input, maxval
     else:
         return input
+
+
+if utils.torch_version('>=', (1, 6)):
+    @torch.jit.script
+    def mvdigamma(input, order: int = 1):
+        """Derivative of the log of the Gamma function, eventually multivariate
+
+        Parameters
+        ----------
+        input : tensor
+        order : int, default=1
+
+        Returns
+        -------
+        tensor
+
+        """
+        dg = torch.digamma(input)
+        for p in range(2, order + 1):
+            dg += torch.digamma(input + (1 - p) / 2)
+        return dg
 
 
 # TODO:
