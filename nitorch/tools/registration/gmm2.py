@@ -217,7 +217,7 @@ def m_step(x, y, z, ndim: int, alpha: float = 1e-10,
 @torch.jit.script
 def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior,
             ndim: int, mask: Optional[Tensor] = None):
-    print('')
+    # print('')
     nvox = script_prod(x.shape[-ndim-1:-1])
     nmsk: Optional[Tensor] = sumspatial(mask, ndim) if mask is not None else None
     z, hz = e_step(x, y, xmean, ymean, xvar, yvar, cov, idet, logprior)
@@ -237,17 +237,17 @@ def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior,
             ll += hz / nvox
         ll = -ll
         if nit == 0:
-            print('gmm', nit, ll.item())
+            # print('gmm', nit, ll.item())
             ll_max = ll
             ll_prev = ll
             continue
         gain = ((ll_prev - ll) / (ll_max - ll)).abs()
-        print('gmm', nit, ll.item(), gain.item())
+        # print('gmm', nit, ll.item(), gain.item())
         if gain < 1e-5:
             break
         ll_prev = ll
         ll_max = torch.maximum(ll_max, ll)
-    print('')
+    # print('')
     return z, xmean, ymean, xvar, yvar, cov, idet, logprior, hz
 
 
@@ -435,13 +435,13 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, z: Tensor,
         nll = -nll
         if nit > 1:
             gain = (nll - nll_prev).abs() / (nll_max - nll).abs()
-            print('lgmm', nit, nll.item(), gain.item())
+            # print('lgmm', nit, nll.item(), gain.item())
             if gain < 1e-6:
                 break
             nll_prev = nll
             nll_max = torch.maximum(nll_max, nll)
         else:
-            print('lgmm', nit, nll.item())
+            # print('lgmm', nit, nll.item())
             nll_prev = nll
             nll_max = nll
 
