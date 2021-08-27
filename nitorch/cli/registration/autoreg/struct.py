@@ -283,6 +283,7 @@ class Transformation(Base):
     factor: float = 1.              # Multiplicative factor for all losses
     init: list = []                 # Path to file holding initial guesses
     lr: float = 1.                  # Transformation-specific learning rate
+    weight_decay: float = 0.        # Transformation-specific weight decay
     output = True                   # Path to output file
     losses: list = []               # List of losses on that transformation
     ext: str = None                 # Default extension for that transform
@@ -424,6 +425,7 @@ class Optimizer(Base):
     name = None
     max_iter: int = None                # Maximum number of iterations
     lr: float = None                    # Learning rate
+    weight_decay: float = None          # Weight decay
     stop: float = None                  # Stop if `lr/lr[0] < stop`
     ls: int = None                      # Number of line search steps
 
@@ -442,6 +444,46 @@ class GradientDescent(Optimizer):
         return torch.optim.SGD(*args, **kwargs)
 
 
+class LBFGS(Optimizer):
+    name = 'lbfgs'
+    max_eval: int = None
+    history: int = 100
+    strong_wolfe: bool = False
+
+    class MultiLBFGS(torch.optim.Optimizer):
+        def __init__(self, params, **kwargs):
+            optims = []
+            for group in params:
+                if not isinstance(group, dict):
+                    prm = group
+                    group = dict(params=prm)
+                group = dict(group)
+                for key, value in kwargs.items():
+                    group.setdefault(key, value)
+                group.pop('weight_decay', None)
+                if torch.is_tensor(group['params']):
+                    group['params'] = [group['params']]
+                optims.append(torch.optim.LBFGS(**group))
+            # do not init `Optimizer` on purpose
+            self.optims = optims
+
+        @property
+        def param_groups(self):
+            return [optim.param_groups[0] for optim in self.optims]
+
+        def step(self, closure):
+            loss = None
+            for optim in self.optims:
+                loss = optim.step(closure)
+            return loss
+
+    def call(self, *args, **kwargs):
+        kwargs.setdefault('max_eval', self.max_eval)
+        kwargs.setdefault('history_size', self.history)
+        kwargs.setdefault('line_search_fn', 'strong_wolfe' if self.strong_wolfe else None)
+        return self.MultiLBFGS(*args, **kwargs)
+
+
 class Defaults(Base):
     interpolation: int = 1
     bound: str = 'dct2'
@@ -451,7 +493,8 @@ class Defaults(Base):
     output = '{name}{ext}'
     init: float or str = 0.
     max_iter: int = 1000
-    lr: int = 0.1
+    lr: float = 0.1
+    weight_decay: float = 0.
     stop: float = 1e-4
     ls: int = 0
     pyramid: list = [1]
@@ -507,6 +550,7 @@ class AutoReg(Base):
         for opt in self.optimizers:
             set_default(opt, 'max_iter')
             set_default(opt, 'lr')
+            set_default(opt, 'weight_decay')
             set_default(opt, 'stop')
             set_default(opt, 'ls')
 

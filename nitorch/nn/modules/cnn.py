@@ -44,7 +44,7 @@ def interleaved_cat(tensors, dim=0, groups=1):
     return torch.cat(tensors, dim=dim)
 
 
-def expand_list(x, n, crop=False, default=None):
+def expand_list(x, n, crop=False, default=None, use_default=False):
     """Expand ellipsis in a list by substituting it with the value
     on its left, repeated as many times as necessary. By default,
     a "virtual" ellipsis is present at the end of the list.
@@ -57,7 +57,7 @@ def expand_list(x, n, crop=False, default=None):
     if Ellipsis not in x:
         x.append(Ellipsis)
     idx_ellipsis = x.index(Ellipsis)
-    if idx_ellipsis == 0:
+    if idx_ellipsis == 0 or use_default:
         fill_value = default
     else:
         fill_value = x[idx_ellipsis-1]
@@ -309,8 +309,8 @@ class StackedConv(tnn.ModuleList):
     By default, padding is used so that convolutions with stride 1
     preserve spatial dimensions.
 
-    (BatchNorm? > [Grouped]Conv > Activation? > Stitch?)* > 
-    (BatchNorm? > [Grouped](StridedConv|Conv > Pool) > Activation? > Stitch?)
+    (BatchNorm? > [Grouped]Conv > Dropout?(Activation)? > Stitch?)* > 
+    (BatchNorm? > [Grouped](StridedConv|Conv > Pool) > Dropout?(Activation)? > Stitch?)
     """
     
     def __init__(
@@ -329,7 +329,8 @@ class StackedConv(tnn.ModuleList):
             output_padding=0,
             bias=True,
             residual=False,
-            return_last=False):
+            return_last=False,
+            dropout=0):
         """
 
         Parameters
@@ -353,7 +354,7 @@ class StackedConv(tnn.ModuleList):
         batch_norm : [sequence of] bool, default=False
             Batch normalization before each convolution.
             
-        stride : int or sequence[int], default=2
+        stride : int or sequence[int], default=1
             Up to one value per spatial dimension.
             `output_shape \approx input_shape // stride`
             
@@ -397,6 +398,9 @@ class StackedConv(tnn.ModuleList):
             whereas 'cat' returns all concatenated input arguments.
             `True` is equivalent to 'single'.
 
+        dropout : float or sequence[float] or type or callable, default=0.0
+            Apply dropout (if 0.0<p<=1.0)
+
         """
         self.dim = dim
         self.residual = residual
@@ -412,6 +416,7 @@ class StackedConv(tnn.ModuleList):
         groups = [g or s for g, s in zip(groups, stitch)]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
         batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
+        dropout = expand_list(make_list(dropout), nb_layers, default=1.0, use_default=True)        
         bias = expand_list(make_list(bias), nb_layers, default=True)
         
         if pool not in (None, 'up', 'conv') and transposed:
@@ -422,6 +427,7 @@ class StackedConv(tnn.ModuleList):
             out_channels, 
             activation,
             batch_norm,
+            dropout,
             groups, 
             stitch,
             bias)
@@ -429,11 +435,12 @@ class StackedConv(tnn.ModuleList):
         
         # stacked conv (without strides)
         modules = []
-        for d, (i, o, a, bn, g, s, b) in enumerate(all_shapes):
+        for d, (i, o, a, bn, do, g, s, b) in enumerate(all_shapes):
             modules.append(ConvBlock(
                 dim, i, o, kernel_size,
                 activation=a,
                 batch_norm=bn,
+                dropout=do,
                 padding='auto',
                 groups=g,
                 bias=b))
@@ -441,12 +448,13 @@ class StackedConv(tnn.ModuleList):
                 modules.append(Stitch(s, s))
         
         # last conv (strided if not pool)
-        i, o, a, bn, g, s, b = final_shape
+        i, o, a, bn, do, g, s, b = final_shape
         modules.append(ConvBlock(
             dim, i, o, kernel_size,
             transposed=transposed and not pool,
             activation=a,
             batch_norm=bn,
+            dropout=do,
             stride=1 if pool else stride,
             padding='auto',
             groups=g,
@@ -466,6 +474,7 @@ class StackedConv(tnn.ModuleList):
                     transposed=transposed,
                     activation=None,
                     batch_norm=bn,
+                    dropout=do,
                     stride=stride,
                     padding='auto',
                     groups=g,
@@ -1218,8 +1227,9 @@ class CNN(tnn.Sequential):
             stride=2,
             pool=None,
             reduction='max',
-            activation='relu',
-            batch_norm=False):
+            activation=None,
+            batch_norm=False,
+            dropout=1.0):
         """
 
         Parameters
@@ -1268,6 +1278,11 @@ class CNN(tnn.Sequential):
 
         batch_norm : bool or type or callable, default=False
             Batch normalization before each convolution.
+
+        dropout : sequence[float], default=1.0
+            Dropout amount applied to the output of each fully connected layer (before activation).
+            Set to 0.0 or 1.0 to use no dropout.
+
         """
         self.dim = dim
 
@@ -1284,6 +1299,8 @@ class CNN(tnn.Sequential):
             raise TypeError('reduction must be a `Reduction` module.')
 
         nb_layers = len(encoder) + len(stack)
+        if activation is None:
+            activation = ['relu', ..., None]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
         activation_encoder = activation[:len(encoder)]
         activation_stack = activation[len(encoder):]
@@ -1305,7 +1322,8 @@ class CNN(tnn.Sequential):
                           in_channels=last_encoder,
                           out_channels=stack,
                           kernel_size=1,
-                          activation=activation_stack)
+                          activation=activation_stack,
+                          dropout=dropout)
         modules.append(('stack', stk))
 
         super().__init__(OrderedDict(modules))

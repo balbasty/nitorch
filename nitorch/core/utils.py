@@ -176,30 +176,42 @@ def unsqueeze(input, dim=0, ndim=1):
     ----------
     input : tensor_like
         Input tensor.
-    dim : int or list[int], default=0
-        Position(s) at which to insert singleton dimensions.
-    ndim : int or list[int], default=1
-        Number of singleton dimensions inserted in each position.
+    dim : int, default=0
+        Position at which to insert singleton dimensions.
+    ndim : int, default=1
+        Number of singleton dimensions to insert.
 
     Returns
     -------
     output : tensor
         Tensor with additional singleton dimensions.
     """
+    for _ in range(ndim):
+        input = torch.unsqueeze(input, dim)
+    return input
 
-    if not isinstance(dim, (list, tuple)):
-        dim = [dim]
-    if not isinstance(ndim, (list, tuple)):
-        ndim = [ndim]
-    ndim = make_list(ndim, len(dim))
-    extra_dims = 0
-    for d, nd in zip(dim, ndim):
-        # FIXME: does not work when inputs are lists
-        d += extra_dims
-        for _ in range(nd):
-            input = torch.unsqueeze(input, min(d, input.dim()) if d > 0 else
-                                           max(d, -(input.dim()+1)))
-        extra_dims += nd
+
+def squeeze(input, dim=0, ndim=1):
+    """Removes singleton dimensions to a tensor.
+
+    This function expands `torch.squeeze` with additional options.
+
+    Parameters
+    ----------
+    input : tensor_like
+        Input tensor.
+    dim : int, default=0
+        Position at which to drop singleton dimensions.
+    ndim : int, default=1
+        Number of singleton dimensions to drop.
+
+    Returns
+    -------
+    output : tensor
+        Tensor with singleton dimensions removed.
+    """
+    for _ in range(ndim):
+        input = torch.squeeze(input, dim)
     return input
 
 
@@ -1328,7 +1340,10 @@ def unfold(inp, kernel_size, stride=None, collapse=False):
         inp = inp.unfold(dimension=batch_dim+d, size=sz, step=st)
     if collapse:
         batch_shape = inp.shape[:-dim*2]
-        inp = inp.reshape([*batch_shape, -1, *kernel_size])
+        if collapse == 'view':
+            inp = inp.view([*batch_shape, -1, *kernel_size])
+        else:
+            inp = inp.reshape([*batch_shape, -1, *kernel_size])
     return inp
 
 
@@ -1351,8 +1366,11 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
         `stride` and `kernel_size`. If the output shape is larger than
         the computed shape, zero-padding is used.
         This parameter is mandatory if `collapsed = True`.
-    collapsed : bool, default=False
+    collapsed : 'view' or bool, default=False
         Whether the spatial dimensions are collapsed in the input tensor.
+        If 'view', use `view` instead of `reshape`, which will raise an
+        error instead of triggering a copy when dimensions cannot be
+        collapsed in a contiguous way.
     reduction : {'mean', 'sum', 'min', 'max'}, default='mean'
         Method to use to merge overlapping patches.
 

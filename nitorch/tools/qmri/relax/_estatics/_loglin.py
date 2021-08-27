@@ -140,7 +140,7 @@ def _loglin_gradient(contrast, intercept, decay, opt, do_grad=True):
         # compute residuals
         dat = echo.fdata(**backend, cache=False)             # observed
         fit = inter - echo.te * slope                        # fitted
-        msk = fit.isfinite() & dat.isfinite() & (dat > 0)    # mask of observed
+        msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
         dat = dat.log_()
         dat[~msk] = 0
         fit[~msk] = 0

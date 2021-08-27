@@ -43,8 +43,7 @@ def pad(inp, size=None, space='vx', like=None, bound=0.,
         the first element contains the volume data and the second contains
         the orientation matrix.
     size : [sequence of] int, optional
-        Size of the patch to extract.
-        Its unit and axes are defined by `units` and `layout`.
+        Amount of padding to perform.
     space : [sequence of] {'vox', 'ras'}, default='vox'
         The space in which the `size` and `center` parameters are expressed.
     like : str or (tensor, tensor), optional

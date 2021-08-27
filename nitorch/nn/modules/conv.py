@@ -10,6 +10,8 @@ from torch import nn as tnn
 from nitorch.core.py import make_tuple
 from nitorch.core import py, utils
 from ..base import nitorchmodule, Module, Sequential, ModuleList
+from .norm import BatchNorm
+from .dropout import Dropout
 from ..activations import _map_activations
 from .norm import BatchNorm
 
@@ -694,7 +696,8 @@ class ConvBlock(Sequential):
                  output_padding=0,
                  activation=None,
                  batch_norm=False,
-                 order='nca',
+                 order='ncda',
+                 dropout=0,
                  inplace=True):
         """
         Parameters
@@ -763,6 +766,12 @@ class ConvBlock(Sequential):
             Order in which to perform the normalization (n), convolution (c)
             and activation (a).
 
+        dropout : float or type or callable, optional
+            Dropout layer.
+            Can be a class (typically a Module), which is then instantiated,
+            or a callable (an already instantiated class or a more simple
+            function).
+
         inplace : bool, default=True
             Apply activation inplace if possible
             (i.e., not ``is_leaf and requires_grad``).
@@ -770,7 +779,7 @@ class ConvBlock(Sequential):
         """
         super().__init__()
 
-        # Store dimension
+        # store in-place
         self.inplace = inplace
         self.order = self._fix_order(order)
 
@@ -787,6 +796,7 @@ class ConvBlock(Sequential):
         conv = self._build_conv(dim, in_channels, out_channels, groups, **opt_conv)
         batch_norm = self._build_batch_norm(batch_norm, conv, order)
         activation = self._build_activation(activation)
+        dropout = self._build_dropout(dropout)
 
         # Assign submodules in order so that they are nicely
         # ordered during pretty printing
@@ -795,6 +805,8 @@ class ConvBlock(Sequential):
                 self.batch_norm = batch_norm
             elif o == 'c':
                 self.conv = conv
+            elif o == 'd':
+                self.dropout = dropout
             elif o == 'a':
                 self.activation = activation
 
@@ -807,6 +819,8 @@ class ConvBlock(Sequential):
             order = order + 'n'
         if 'c' not in order:
             order = order + 'c'
+        if 'd' not in order:
+            order = order + 'd'
         if 'a' not in order:
             order = order + 'a'
         return order
@@ -859,6 +873,14 @@ class ConvBlock(Sequential):
         return activation
 
     @staticmethod
+    def _build_dropout(dropout):
+        dropout = (dropout() if inspect.isclass(dropout)
+                   else dropout if callable(dropout)
+                   else tnn.Dropout(p=float(dropout)) if dropout
+                   else None)
+        return dropout
+
+    @staticmethod
     def _build_batch_norm(batch_norm, conv, order):
         #   an normalization can be a class (typically a Module), which is
         #   then instantiated, or a callable (an already instantiated
@@ -886,6 +908,7 @@ class ConvBlock(Sequential):
     dilation = _defer_property('dilation', 'conv', setter=True)
     padding_mode = _defer_property('padding_mode', 'conv', setter=True)
     groups = _defer_property('groups', 'conv', setter=True)
+    p_dropout = _defer_property('p', 'dropout', setter=True)
             
     def forward(self, x, **overload):
         """Forward pass.
@@ -916,23 +939,59 @@ class ConvBlock(Sequential):
         batch_norm = self._build_batch_norm(batch_norm, self.conv, order)
         activation = overload.pop('activation', self.activation)
         activation = self._build_activation(activation)
+        dropout = overload.pop('dropout', self.dropout)
+        dropout = self._build_dropout(dropout)
 
-        # make sure we can use inplace
-        activation = copy(activation)
-        if (activation and self.inplace and 
-                hasattr(activation, 'inplace') and
-                not (x.is_leaf and x.requires_grad)):
-            activation.inplace = True
+        if self.inplace:
+            if not (x.is_leaf and x.requires_grad):
+                if activation and hasattr(activation, 'inplace'):
+                    activation.inplace = True
+                if dropout:
+                    dropout.inplace = True
+        else:
+            activation, dropout = self._set_inplace(activation, dropout,
+                                                    batch_norm, order)
 
-        # BatchNorm + Convolution + Activation
+        # BatchNorm + Convolution + Dropout + Activation
         for o in order:
             if o == 'n' and batch_norm:
                 x = batch_norm(x)
             elif o == 'c':
                 x = self.conv(x, **overload)
+            elif o == 'd' and dropout:
+                x = dropout(x)
             elif o == 'a' and activation:
                 x = activation(x)
         return x
+
+    @classmethod
+    def _set_inplace(cls, activation, dropout, batch_norm, order):
+        dropout = copy(dropout)
+        if dropout:
+            dropout.inplace = False
+        activation = copy(activation)
+        if activation and hasattr(activation, 'inplace'):
+            activation.inplace = False
+
+        true_order = []
+        for o in order:
+            if o == 'b' and batch_norm:
+                true_order.append(o)
+            elif o == 'a' and activation:
+                true_order.append(o)
+            elif o == 'd' and dropout:
+                true_order.append(o)
+            elif o == 'c':
+                true_order.append(o)
+
+        if true_order[0] != 'd' and dropout:
+            dropout.inplace = True
+        if true_order[0] != 'a' and activation and hasattr(activation, 'inplace'):
+            activation.inplace = True
+
+        return activation, dropout
+
+
 
     def shape(self, x, **overload):
         """Compute output shape of the equivalent ``forward`` call.
@@ -1041,7 +1100,7 @@ class ConvGroup(Sequential):
                  dilation=1,
                  activation=tnn.ReLU,
                  batch_norm=True,
-                 order='nac',
+                 order='nadc',
                  inplace=True):
         """
         Parameters
@@ -1088,7 +1147,7 @@ class ConvGroup(Sequential):
         activation : str or type or callable, default=ReLU
             Activation function. An activation can be a class
             (typically a Module), which is then instantiated, or a
-            callable (an already instantiated class or a more simple
+            callable (an aflready instantiated class or a more simple
             function). It is useful to accept both these cases as they
             allow to either:
                 * have a learnable activation specific to this module
