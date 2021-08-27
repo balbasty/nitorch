@@ -142,10 +142,11 @@ def _make_image(option, dim=None, device=None):
         dat = spatial.smooth(dat, dim=dim, fwhm=fwhm, bound=option.bound)
     pyramid = []
     for level in option.pyramid:
-        if isinstance(level, range):
-            pyramid.extend(list(level))
-        else:
+        if isinstance(level, int):
             pyramid.append(level)
+        else:
+            pyramid.extend(list(level))
+    print(pyramid)
     image = objects.ImagePyramid(dat, levels=pyramid, affine=affine,
                                  dim=dim, bound=option.bound, mask=mask,
                                  extrapolate=option.extrapolate)
