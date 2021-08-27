@@ -220,6 +220,8 @@ def number_or_str(type=float):
 
 
 def parse_range(x):
+    if ':' not in x:
+        return [int(x)]
     x = x.split(':')
     if len(x) == 2:
         x = [*x, '']
@@ -281,6 +283,10 @@ stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
                            convert=int, help='Strides between patches.')
 cluster_option = cli.Option('bins', ('-b', '--bins'), nargs=1, default=6,
                             convert=int, help='Number of bins in the mixture')
+kernel_option = cli.Option('kernel', ('-k', '--kernel'), nargs=1, default='g',
+                           help='Kernel type: [gauss], square')
+iter_option = cli.Option('max_iter', ('-n', '--max-iter'), nargs=1, default=128,
+                         convert=int, help='Maximum number of EM iterations')
 loss.add_suboption('mi', 'norm', ('-m', '--norm'),
                    validation=cli.Validations.choice(['studholme', 'arithmetic', 'geometric', 'no']),
                    nargs='1', default='studholme',
@@ -294,6 +300,7 @@ loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=3,
 loss.add_suboption('mi', patch_option)
 loss.add_suboption('lcc', patch_option)
 loss.add_suboption('lcc', stride_option)
+loss.add_suboption('lcc', kernel_option)
 loss.add_suboption('mse', weight_option)
 loss.add_suboption('mad', weight_option)
 loss.add_suboption('tuk', weight_option)
@@ -301,9 +308,12 @@ loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=Fals
                    convert=float, action=cli.Actions.store_true,
                    help='Weight of each class')
 loss.add_suboption('gmm', cluster_option)
+loss.add_suboption('gmm', iter_option)
 loss.add_suboption('lgmm', cluster_option)
 loss.add_suboption('lgmm', patch_option)
 loss.add_suboption('lgmm', stride_option)
+loss.add_suboption('lgmm', kernel_option)
+loss.add_suboption('lgmm', iter_option)
 # fix/mov subgroups
 file = cli.Group('file', n=1, help='Volume to register')
 file.add_positional('files', nargs='1*', help='File names')

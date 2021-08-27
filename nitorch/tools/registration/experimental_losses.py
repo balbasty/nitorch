@@ -3,9 +3,7 @@ import matplotlib.pyplot as plt
 from nitorch.core import utils, py, math, constants, linalg, kernels
 import math as pymath
 import torch
-from torch.nn import functional as F
 from .losses import OptimizationLoss
-from .local import local_mean
 from .gmm2 import fit_gmm2, fit_lgmm2, sumspatial, Fwd, Bwd
 Tensor = torch.Tensor
 pyutils = py
@@ -121,7 +119,7 @@ def _plot_gmm(moving, fixed, prm, bins=64):
 
 
 def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
-          grad=True, hess=True, mode='g', max_iter=25):
+          grad=True, hess=True, mode='g', max_iter=128):
 
     fixed, moving = utils.to_max_backend(fixed, moving)
     dim = dim or (fixed.dim() - 1)
@@ -154,12 +152,12 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     fixed = fixed.unsqueeze(-dim-1)
 
     if grad:
-        z0 = fwd(z)
+        z0 = fwd(z).clamp_min_(1e-10)
 
         @torch.jit.script
         def make_grad(bwd: Bwd, z, z0, moving, fixed, moving_mean, fixed_mean,
                       moving_var, fixed_var, corr, prior) -> Tensor:
-            cov = corr * moving_var.sqrt() * fixed_var.sqrt()
+            cov = corr * (moving_var * fixed_var).sqrt()
             idet = moving_var * fixed_var * (1 - corr * corr)
             idet = prior / idet
             # gradient of determinant + chain rule of log
@@ -173,6 +171,18 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
         g.div_(nvox)
 
         if hess:
+            #
+            # # hessian of (1 - corr^2)
+            # imoving_var = moving_var.reciprocal()
+            # corr2 = corr * corr
+            # h = corr2 * imoving_var
+            # # chain rule (with Fisher's scoring)
+            # h /= 1 - corr2
+            # # hessian of log(moving_var)
+            # h += imoving_var
+            # # weight by proportion and sum
+            # h = h * (z * prior)
+            # h = h.sum(-1)
 
             @torch.jit.script
             def make_hess(bwd: Bwd, z, z0, moving_var, corr, prior) -> Tensor:
@@ -187,7 +197,7 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     return (nll, g, h) if hess else (nll, g) if grad else nll
 
 
-def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
+def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
          grad=True, hess=True):
     """Entropy estimated by Gaussian Mixture Modeling
 
@@ -203,6 +213,7 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
         Number of clusters in the mixture
     max_iter : int, default=25
         Number of EM iterations
+    mask : tensor, optional
     grad : bool, default=True
     hess : bool, default=True
 
@@ -219,9 +230,11 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
     #   -> must differentiate ln|C| where C is the correlation matrix
 
     dim = dim or (fixed.dim() - 1)
-    gmmfit = fit_gmm2(moving, fixed, bins, max_iter, dim=dim)
+    gmmfit = fit_gmm2(moving, fixed, bins, max_iter, dim=dim, mask=mask)
 
     z = gmmfit.pop('z')
+    if mask is not None:
+        z *= mask
     z = z.div_(sumspatial(z, dim))
     prior = gmmfit.pop('prior')
     moving_mean = gmmfit.pop('moving_mean')
@@ -239,8 +252,8 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
         @torch.jit.script
         def make_grad(moving, fixed, moving_mean, fixed_mean, moving_var, fixed_var, corr, prior, z):
             # compute normalized values
-            moving_std = moving_var.sqrt().clamp_min_(1e-5)
-            fixed_std = fixed_var.sqrt().clamp_min_(1e-5)
+            moving_std = moving_var.sqrt()
+            fixed_std = fixed_var.sqrt()
             moving = (moving - moving_mean) / moving_std
             fixed = (fixed - fixed_mean) / fixed_std
             # gradient of (1 - corr^2)
@@ -262,7 +275,7 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=25,
             @torch.jit.script
             def make_hess(moving_var, corr, prior, z):
                 # hessian of (1 - corr^2)
-                imoving_var = moving_var.clamp_min_(1e-5).reciprocal()
+                imoving_var = moving_var.reciprocal()
                 corr2 = corr * corr
                 h = corr2 * imoving_var
                 # chain rule (with Fisher's scoring)
@@ -284,7 +297,7 @@ class GMMH(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, bins=3, lam=1):
+    def __init__(self, dim=None, bins=3, max_iter=128):
         """
 
         Parameters
@@ -295,7 +308,7 @@ class GMMH(OptimizationLoss):
         super().__init__()
         self.dim = dim
         self.bins = bins
-        self.lam = lam
+        self.max_iter = max_iter
 
     def loss(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -313,11 +326,10 @@ class GMMH(OptimizationLoss):
             Loss
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        lam = kwargs.get('lam', self.lam)
-        return gmmh(moving, fixed, dim=dim, bins=bins,
-                    grad=False, hess=False)
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('bins', self.bins)
+        kwargs.setdefault('max_iter', self.max_iter)
+        return gmmh(moving, fixed, **kwargs, grad=False, hess=False)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -337,11 +349,10 @@ class GMMH(OptimizationLoss):
             Gradient with respect to the moving image
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        lam = kwargs.get('lam', self.lam)
-        return gmmh(moving, fixed, dim=dim, bins=bins,
-                    hess=False)
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('bins', self.bins)
+        kwargs.setdefault('max_iter', self.max_iter)
+        return gmmh(moving, fixed, **kwargs, grad=True, hess=False)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -364,10 +375,10 @@ class GMMH(OptimizationLoss):
             Its spatial dimensions are singleton when `acceleration == 0`.
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        lam = kwargs.get('lam', self.lam)
-        return gmmh(moving, fixed, dim=dim, bins=bins)
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('bins', self.bins)
+        kwargs.setdefault('max_iter', self.max_iter)
+        return gmmh(moving, fixed, **kwargs, grad=True, hess=False)
 
 
 class LGMMH(OptimizationLoss):
@@ -375,7 +386,7 @@ class LGMMH(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, bins=3, lam=1, patch=20, stride=1):
+    def __init__(self, dim=None, bins=3, patch=20, stride=1, mode='g', max_iter=128):
         """
 
         Parameters
@@ -388,7 +399,8 @@ class LGMMH(OptimizationLoss):
         self.bins = bins
         self.patch = patch
         self.stride = stride
-        self.lam = lam
+        self.mode = mode
+        self.max_iter = max_iter
 
     def loss(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -406,13 +418,14 @@ class LGMMH(OptimizationLoss):
             Loss
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        return lgmmh(moving, fixed, dim=dim, bins=bins,
-                     grad=False, hess=False, patch=patch, stride=stride)
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('bins', self.bins)
+        kwargs.setdefault('patch', self.patch)
+        kwargs.setdefault('stride', self.stride)
+        kwargs.setdefault('mode', self.mode)
+        kwargs.setdefault('max_iter', self.max_iter)
+        kwargs.pop('mask', None)
+        return lgmmh(moving, fixed, **kwargs, grad=False, hess=False)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -432,13 +445,14 @@ class LGMMH(OptimizationLoss):
             Gradient with respect to the moving image
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        return lgmmh(moving, fixed, dim=dim, bins=bins,
-                     hess=False, patch=patch, stride=stride)
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('bins', self.bins)
+        kwargs.setdefault('patch', self.patch)
+        kwargs.setdefault('stride', self.stride)
+        kwargs.setdefault('mode', self.mode)
+        kwargs.setdefault('max_iter', self.max_iter)
+        kwargs.pop('mask', None)
+        return lgmmh(moving, fixed, **kwargs, grad=True, hess=False)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -461,10 +475,11 @@ class LGMMH(OptimizationLoss):
             Its spatial dimensions are singleton when `acceleration == 0`.
 
         """
-        dim = kwargs.get('dim', self.dim)
-        bins = kwargs.get('bins', self.bins)
-        patch = kwargs.get('patch', self.patch)
-        stride = kwargs.get('stride', self.stride)
-        lam = kwargs.get('lam', self.lam)
-        return lgmmh(moving, fixed, dim=dim, bins=bins,
-                     patch=patch, stride=stride)
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('bins', self.bins)
+        kwargs.setdefault('patch', self.patch)
+        kwargs.setdefault('stride', self.stride)
+        kwargs.setdefault('mode', self.mode)
+        kwargs.setdefault('max_iter', self.max_iter)
+        kwargs.pop('mask', None)
+        return lgmmh(moving, fixed, **kwargs, grad=True, hess=True)

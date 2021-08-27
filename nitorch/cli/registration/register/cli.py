@@ -341,17 +341,22 @@ def _main(options):
         elif loss.name == 'cc':
             lossobj = losses.CC(dim=dim)
         elif loss.name == 'lcc':
-            lossobj = losses.LCC(patch=loss.patch, dim=dim, stride=loss.stride)
+            lossobj = losses.LCC(patch=loss.patch, dim=dim, stride=loss.stride,
+                                 mode=loss.kernel)
         elif loss.name == 'gmm':
-            lossobj = experimental_losses.GMMH(bins=loss.bins, dim=dim)
+            lossobj = experimental_losses.GMMH(bins=loss.bins, dim=dim,
+                                               max_iter=loss.max_iter)
         elif loss.name == 'lgmm':
             lossobj = experimental_losses.LGMMH(bins=loss.bins, dim=dim,
-                                                patch=loss.patch, stride=loss.stride)
+                                                max_iter=loss.max_iter,
+                                                patch=loss.patch,
+                                                stride=loss.stride,
+                                                mode=loss.kernel)
         elif loss.name == 'cat':
             lossobj = losses.Cat(dim=dim, log=False)
             # lossobj = losses.AutoCat()
         elif loss.name == 'dice':
-            lossobj = losses.Dice(weighted=loss.weight)
+            lossobj = losses.Dice(weighted=loss.weight, log=False)
         else:
             raise ValueError(loss.name)
         lossobj = objects.LossComponent(lossobj, mov, fix, factor=loss.factor,
