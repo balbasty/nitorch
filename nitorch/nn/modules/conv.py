@@ -10,6 +10,7 @@ from nitorch.core.py import make_tuple
 from nitorch.core import py, utils
 from .base import nitorchmodule, Module
 from .norm import BatchNorm
+from .dropout import Dropout
 from ..activations import _map_activations
 
 # NOTE:
@@ -687,6 +688,7 @@ class Conv(Module):
                  output_padding=0,
                  activation=None,
                  batch_norm=False,
+                 dropout=1.0,
                  inplace=True):
         """
         Parameters
@@ -751,6 +753,12 @@ class Conv(Module):
             or a callable (an already instantiated class or a more simple
             function).
             
+        dropout : float or type or callable, optional
+            Dropout layer.
+            Can be a class (typically a Module), which is then instantiated,
+            or a callable (an already instantiated class or a more simple
+            function).
+
         inplace : bool, default=True
             Apply activation inplace if possible
             (i.e., not ``is_leaf and requires_grad``).
@@ -758,7 +766,7 @@ class Conv(Module):
         """
         super().__init__()
 
-        # Store dimension
+        # store in-place
         self.inplace = inplace
 
         # Check if "manual" grouped conv are required
@@ -813,14 +821,27 @@ class Conv(Module):
             activation = _map_activations.get(activation.lower(), None)
         self.activation = (activation() if inspect.isclass(activation)
                            else activation if callable(activation)
-                           else None)
-        
+                           else None)        
+
         if isinstance(activation, tnn.ReLU):
             self.conv.reset_parameters(a=0)
         elif isinstance(activation, tnn.LeakyReLU):
             self.conv.reset_parameters(a=activation.negative_slope)
         else:
             self.conv.reset_parameters()
+
+        # Add dropout
+        p = dropout  # dropout amount
+        if isinstance(p, float) and p > 0.0 and p < 1.0:
+            dropout = Dropout(p=p)
+        dropout = (dropout(p=p) 
+                    if inspect.isclass(dropout)
+                    else dropout if callable(dropout)
+                    else None)
+        if dropout is not None:
+            # integrate dropout into activation function
+            dropout.activation = self.activation
+            self.activation = dropout
 
     @property
     def weight(self):
@@ -939,7 +960,7 @@ class Conv(Module):
                 not (x.is_leaf and x.requires_grad)):
             activation.inplace = True
 
-        # BatchNorm + Convolution + Activation
+        # BatchNorm + Convolution + Activation (Dropout before | Dropout after)
         if batch_norm:
             x = batch_norm(x)
         x = self.conv(x, **overload)

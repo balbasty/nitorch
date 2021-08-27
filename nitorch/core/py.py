@@ -6,23 +6,23 @@ import warnings
 from collections import Counter
 
 
-def file_mod(s, nam='', prefix='', suffix='', odir='', ext=''):
+def file_mod(s, nam=None, prefix='', suffix='', odir=None, ext=None):
     """Modify a file path.
 
     Parameters
     ----------
     s : str
         File path.
-    nam : str, default=''
-        Filename, if empty string, unchanged.
+    nam : str, optional
+        New basename (without extension). Default: same as input.
     prefix : str, default=''
         Filename prefix.
     suffix : str, default=''
         Filename suffix.
-    odir : str, default=''
-        Output directory, if empty string, unchanged.
-    ext : str, default=''
-        Extension, if empty string, unchanged.
+    odir : str, optional
+        Output directory. Default: same as input.
+    ext : str, optional
+        New extension (with leading dot). Default: same as input.
 
     Returns
     ----------

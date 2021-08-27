@@ -4,6 +4,7 @@ from . import base
 from . import cnn
 from . import conv
 from . import norm
+from . import dropout
 from . import pool
 from . import registration
 from . import spatial
@@ -14,6 +15,7 @@ from .base import *
 from .cnn import *
 from .conv import *
 from .norm import *
+from .dropout import *
 from .pool import *
 from .registration import *
 from .spatial import *
