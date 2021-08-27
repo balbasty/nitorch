@@ -569,9 +569,10 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
             ndat_np, fit_np = dat.clone().detach().cpu(), fit.clone().detach().cpu()
             bes_np = ive(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*lam)
             bes = torch.as_tensor(bes_np, dtype=dtype, device=dat.device) 
-            epsilon = besseli_ratio(dat*fit*lam, dof/2.-1., N=2, K=4)
-            res = fit+epsilon*dat.neg()
-            del bes_np, epsilon, ndat_np, fit_np
+            xi = besseli_ratio(dat*fit*lam+tiny, dof/2.-1., N=2, K=4)
+            res = fit+xi*dat.neg()
+            res[~msk] = 0
+            del bes_np, xi, ndat_np, fit_np
             torch.cuda.empty_cache()
         else:
             res = fit+dat.neg()
@@ -584,7 +585,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
                     +((fit.square()+dat.square())*lam)/2.\
                         - torch.log(bes+tiny) - torch.abs(fit*dat*lam)
                         # ive(v, z) = iv(v, z) * exp(-abs(z.real))
-            crit[~msk] = 0
+            critn[~msk] = 0
             crit = crit + torch.sum(critn, dtype=torch.double)
             del critn
         else:
@@ -664,11 +665,11 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=T
                 hess1[5] = grad1[1] * grad1[2]
             hess1 *= lam
             hess1[:, ~msk] = 0
-            # diag = hess1[:(3+has_mt)]
+            #diag = hess1[:(3+has_mt)]
             torch.cuda.empty_cache()
-            # diag[~torch.isfinite(diag)] = 1e-3
-            # offdiag = hess1[(3+has_mt):]
-            # offdiag[~torch.isfinite(offdiag)] = 0
+            #diag[~torch.isfinite(diag)] = 1e-3
+            #offdiag = hess1[(3+has_mt):]
+            #offdiag[~torch.isfinite(offdiag)] = 0
             hess += hess1
             del hess1
 
