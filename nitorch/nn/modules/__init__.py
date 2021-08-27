@@ -12,7 +12,6 @@ from . import resnet
 from . import spatial
 from . import segmentation
 from . import seg_advanced
-from . import _sip_segreg
 
 from .cnn import *
 from .conv import *
@@ -26,4 +25,3 @@ from .resnet import *
 from .spatial import *
 from .segmentation import *
 from .seg_advanced import *
-from ._sip_segreg import *
