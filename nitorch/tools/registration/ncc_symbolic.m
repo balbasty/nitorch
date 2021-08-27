@@ -6,7 +6,20 @@ xnorm = (x - mean(x)) / std(x, 1);
 ynorm = (y - mean(y)) / std(y, 1);
 ncc = (xnorm'*ynorm)/N;
 
-% --- components
+%% --- components
+
+
+% d sigma^2 / dx = 2 * x * (1 - mean(x)) / n
+g = diff(var(x, 1), x(1));
+gg = 2 * x * (1 - mean(x)) / N;
+simplify(g - gg(1), 100)
+
+
+% d2 sigma^2 / dxdx = 2 * (I - ) / n
+g = diff(var(x, 1), x(1));
+gg = 2 * x * (1 - mean(x)) / N;
+simplify(g - gg(1), 100)
+
 
 % d sigma / dx = xnorm / n
 g = diff(std(x, 1), x(1));
