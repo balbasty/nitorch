@@ -21,7 +21,14 @@ else
 fi
 
 # check compatibility
-if [ "$TORCH_SHORT" == "18" ]; then
+if [ "$TORCH_SHORT" == "19" ]; then
+  [ "$CUDA_SHORT" == "cpu" ] || \
+  [ "$CUDA_SHORT" == "111" ] || \
+  [ "$CUDA_SHORT" == "102" ] || \
+  [ "$CUDA_SHORT" == "101" ] || \
+  { echo "Incompatible versions: pytorch ${TORCH_MAJOR}.${TORCH_MINOR} " \
+  "and cuda ${CUDA_MAJOR}.${CUDA_MINOR}"; exit 1; }
+elif [ "$TORCH_SHORT" == "18" ]; then
   [ "$CUDA_SHORT" == "cpu" ] || \
   [ "$CUDA_SHORT" == "111" ] || \
   [ "$CUDA_SHORT" == "102" ] || \
