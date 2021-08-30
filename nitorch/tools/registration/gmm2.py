@@ -15,6 +15,12 @@ Tensor = torch.Tensor
 pyutils = py
 
 
+if utils.torch_version('>=', (1, 7)):
+    _maximum = torch.maximum
+else:
+    _maximum = torch.max
+
+
 @torch.jit.script
 def sumspatial(x: Tensor, ndim: int) -> Tensor:
     """Reduce across spatial dimensions.
