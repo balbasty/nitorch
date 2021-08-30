@@ -191,6 +191,24 @@ def make_list(*args, **kwargs) -> List:
     return [elem for elem in make_sequence(*args, **kwargs)]
 
 
+def ensure_list(x, dim=None):
+    """Ensure that an object is a list (of size at last dim)
+
+    If x is a list, nothing is done (no copy triggered).
+    If it is a tuple, it is converted into a list.
+    Otherwise, it is placed inside a list.
+
+    This function is less versatile (but much faster) than `make_list`.
+    """
+    if not isinstance(x, (list, tuple)):
+        x = [x]
+    elif isinstance(x, tuple):
+        x = list(x)
+    if dim and len(x) < dim:
+        x += x[-1:] * (dim - len(x))
+    return x
+
+
 def make_tuple(*args, **kwargs) -> Tuple:
     """Ensure that the input is a tuple and pad/crop if necessary.
 

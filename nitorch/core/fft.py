@@ -113,6 +113,8 @@ def ifftshift(x, dim=None):
     """
     x = torch.as_tensor(x)
     if _torch_has_fftshift:
+        if isinstance(dim, range):
+            dim = tuple(dim)
         return fft_mod.ifftshift(x, dim)
 
     if dim is None:

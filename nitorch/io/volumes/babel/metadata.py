@@ -28,12 +28,12 @@ def set_affine(header, affine, shape=None):
             raise ValueError('Expected a (3, 4) or (4, 4) affine matrix. '
                              'Got {}'.format(affine.shape))
         else:
-            Mdc = affine[:3, :3] / vx
+            Mdc = affine[:3, :3] / vx[:3]
             shape = np.asarray(shape[:3])
             c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
 
             # Assign after we've had a chance to raise exceptions
-            header['delta'] = vx
+            header['delta'] = vx[:3]
             header['Mdc'] = Mdc.T
             header['Pxyz_c'] = c_ras
     elif isinstance(header, Nifti1Header):
@@ -56,7 +56,7 @@ def set_voxel_size(header, vx, shape=None):
     aff = torch.as_tensor(header.get_best_affine())
     vx = torch.as_tensor(vx, dtype=aff.dtype, device=aff.device)
     vx0 = voxel_size(aff)
-    aff[:-1,:] *= vx[:3, None] / vx0[:3, None]
+    aff[:-1, :] *= vx[:3, None] / vx0[:3, None]
     header = set_affine(header, aff, shape)
     return header
     

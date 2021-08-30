@@ -91,7 +91,7 @@ public:
   PushPullAllocator(int dim, BoundVectorRef bound,
                     InterpolationVectorRef interpolation,
                     int extrapolate, bool do_pull, bool do_push,
-                    bool do_count, bool do_grad, bool do_sgrad):
+                    bool do_count, bool do_grad, bool do_sgrad, bool abs):
     dim(dim),
     bound0(bound.size() > 0 ? bound[0] : BoundType::Replicate),
     bound1(bound.size() > 1 ? bound[1] :
@@ -113,7 +113,8 @@ public:
     do_push(do_push),
     do_count(do_count),
     do_grad(do_grad),
-    do_sgrad(do_sgrad)
+    do_sgrad(do_sgrad),
+    abs(abs)
   {
     iso = interpolation0 == interpolation1 &&
           interpolation0 == interpolation2;
@@ -125,7 +126,7 @@ public:
   NI_HOST
   PushPullAllocator(int dim, BoundType bound, InterpolationVectorRef interpolation,
                     int extrapolate, bool do_pull, bool do_push,
-                    bool do_count, bool do_grad, bool do_sgrad):
+                    bool do_count, bool do_grad, bool do_sgrad, bool abs):
     dim(dim),
     bound0(bound),
     bound1(bound),
@@ -144,7 +145,8 @@ public:
     do_push(do_push),
     do_count(do_count),
     do_grad(do_grad),
-    do_sgrad(do_sgrad)
+    do_sgrad(do_sgrad),
+    abs(abs)
   {
     iso = interpolation0 == interpolation1 &&
           interpolation0 == interpolation2;
@@ -153,7 +155,7 @@ public:
   NI_HOST
   PushPullAllocator(int dim, BoundVectorRef bound, InterpolationType interpolation,
                     int extrapolate, bool do_pull, bool do_push,
-                    bool do_count, bool do_grad, bool do_sgrad):
+                    bool do_count, bool do_grad, bool do_sgrad, bool abs):
      dim(dim),
      bound0(bound.size() > 0 ? bound[0] : BoundType::Replicate),
      bound1(bound.size() > 1 ? bound[1] :
@@ -169,7 +171,8 @@ public:
     do_push(do_push),
     do_count(do_count),
     do_grad(do_grad),
-    do_sgrad(do_sgrad)
+    do_sgrad(do_sgrad),
+    abs(abs)
   {
     iso = interpolation0 == interpolation1 &&
           interpolation0 == interpolation2;
@@ -178,7 +181,7 @@ public:
   NI_HOST
   PushPullAllocator(int dim, BoundType bound, InterpolationType interpolation,
                     int extrapolate, bool do_pull, bool do_push,
-                    bool do_count, bool do_grad, bool do_sgrad):
+                    bool do_count, bool do_grad, bool do_sgrad, bool abs):
     dim(dim),
     bound0(bound),
     bound1(bound),
@@ -191,7 +194,8 @@ public:
     do_push(do_push),
     do_count(do_count),
     do_grad(do_grad),
-    do_sgrad(do_sgrad)
+    do_sgrad(do_sgrad),
+    abs(abs)
   {
     iso = interpolation0 == interpolation1 &&
           interpolation0 == interpolation2;
@@ -325,6 +329,7 @@ private:
   bool              do_count;       // splatting weights (= jacobian determinant)
   bool              do_grad;        // backprop: gradient of grid // pull
   bool              do_sgrad;       // sample spatial gradients
+  bool              abs;            // Use absolute weights (useful for majorizing)
 
   // ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   std::deque<Tensor> output;
@@ -591,7 +596,7 @@ public:
     interpolation2(info.interpolation1),
     iso(info.iso), extrapolate(info.extrapolate),
     do_pull(info.do_pull), do_push(info.do_push), do_count(info.do_count),
-    do_grad(info.do_grad), do_sgrad(info.do_sgrad),
+    do_grad(info.do_grad), do_sgrad(info.do_sgrad), abs(info.abs),
     N(static_cast<offset_t>(info.N)),
     C(static_cast<offset_t>(info.C)),
     src_X(static_cast<offset_t>(info.src_X)),
@@ -748,6 +753,7 @@ private:
   bool              do_count;       // splatting weights (= jacobian determinant)
   bool              do_grad;        // backprop: gradient of grid // pull
   bool              do_sgrad;       // sample spatial gradients
+  bool              abs;            // Absolute weights
 
   // ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   offset_t N;
@@ -1138,6 +1144,17 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
       *(osz++)  = bound::sign(bound2, bz, src_Z);
       *(oiz++)  = bound::index(bound2, bz, src_Z);
     }
+    if (abs)
+    {
+        owz = static_cast<scalar_t*>(wz),
+        ogz = static_cast<scalar_t*>(gz),
+        ohz = static_cast<scalar_t*>(hz);
+        for (offset_t bz = bz0; bz <= bz1; ++bz) {
+          if (*owz < 0) *owz = -(*owz); ++owz;
+          if (*ogz < 0) *ogz = -(*ogz); ++ogz;
+          if (*ohz < 0) *ohz = -(*ohz); ++ohz;
+        }
+    }
   }
   {
     scalar_t *owy = static_cast<scalar_t*>(wy), 
@@ -1153,6 +1170,17 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
       *(osy++)  = bound::sign(bound1, by, src_Y);
       *(oiy++)  = bound::index(bound1, by, src_Y);
     }
+    if (abs)
+    {
+        owy = static_cast<scalar_t*>(wy),
+        ogy = static_cast<scalar_t*>(gy),
+        ohy = static_cast<scalar_t*>(hy);
+        for (offset_t by = by0; by <= by1; ++by) {
+          if (*owy < 0) *owy = -(*owy); ++owy;
+          if (*ogy < 0) *ogy = -(*ogy); ++ogy;
+          if (*ohy < 0) *ohy = -(*ohy); ++ohy;
+        }
+    }
   }
   {
     scalar_t *owx = static_cast<scalar_t*>(wx), 
@@ -1167,6 +1195,17 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
       if (do_grad && trgt_sK>1) *(ohx++) = interpolation::fasthess(interpolation0, dx);
       *(osx++)  = bound::sign(bound0, bx, src_X);
       *(oix++)  = bound::index(bound0, bx, src_X);
+    }
+    if (abs)
+    {
+        owx = static_cast<scalar_t*>(wx),
+        ogx = static_cast<scalar_t*>(gx),
+        ohx = static_cast<scalar_t*>(hx);
+        for (offset_t bx = bx0; bx <= bx1; ++bx) {
+          if (*owx < 0) *owx = -(*owx); ++owx;
+          if (*ogx < 0) *ogx = -(*ogx); ++ogx;
+          if (*ohx < 0) *ohx = -(*ohx); ++ohx;
+        }
     }
   }
 
@@ -1366,6 +1405,17 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d(
       *(osy++)  = bound::sign(bound1, by, src_Y);
       *(oiy++)  = bound::index(bound1, by, src_Y);
     }
+    if (abs)
+    {
+        owy = static_cast<scalar_t*>(wy),
+        ogy = static_cast<scalar_t*>(gy),
+        ohy = static_cast<scalar_t*>(hy);
+        for (offset_t by = by0; by <= by1; ++by) {
+          if (*owy < 0) *owy = -(*owy); ++owy;
+          if (*ogy < 0) *ogy = -(*ogy); ++ogy;
+          if (*ohy < 0) *ohy = -(*ohy); ++ohy;
+        }
+    }
   }
   {
     scalar_t *owx = static_cast<scalar_t*>(wx), 
@@ -1380,6 +1430,17 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d(
       if (do_grad && trgt_sK>1) *(ohx++) = interpolation::fasthess(interpolation0, dx);
       *(osx++)  = bound::sign(bound0, bx, src_X);
       *(oix++)  = bound::index(bound0, bx, src_X);
+    }
+    if (abs)
+    {
+        owx = static_cast<scalar_t*>(wx),
+        ogx = static_cast<scalar_t*>(gx),
+        ohx = static_cast<scalar_t*>(hx);
+        for (offset_t bx = bx0; bx <= bx1; ++bx) {
+          if (*owx < 0) *owx = -(*owx); ++owx;
+          if (*ogx < 0) *ogx = -(*ogx); ++ogx;
+          if (*ohx < 0) *ohx = -(*ohx); ++ohx;
+        }
     }
   }
 
@@ -1552,6 +1613,17 @@ void PushPullImpl<scalar_t,offset_t>::interpolate1d(
       if (do_grad && trgt_sK>1) *(ohx++) = interpolation::fasthess(interpolation0, dx);
       *(osx++)  = bound::sign(bound0, bx, src_X);
       *(oix++)  = bound::index(bound0, bx, src_X);
+    }
+    if (abs)
+    {
+        owx = static_cast<scalar_t*>(wx),
+        ogx = static_cast<scalar_t*>(gx),
+        ohx = static_cast<scalar_t*>(hx);
+        for (offset_t bx = bx0; bx <= bx1; ++bx) {
+          if (*owx < 0) *owx = -(*owx); ++owx;
+          if (*ogx < 0) *ogx = -(*ogx); ++ogx;
+          if (*ohx < 0) *ohx = -(*ohx); ++ohx;
+        }
     }
   }
 
@@ -1884,30 +1956,60 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d_trilinear(
       scalar_t src101 = bound::get(src_ptr_NC, o101, s101);
       scalar_t src011 = bound::get(src_ptr_NC, o011, s011);
       scalar_t src111 = bound::get(src_ptr_NC, o111, s111);
-      *out_ptr_NCXYZ =           - dy0 * dz0 * src000
-                                 + dy0 * dz0 * src100
-                                 - dy1 * dz0 * src010
-                                 + dy1 * dz0 * src110
-                                 - dy0 * dz1 * src001
-                                 + dy0 * dz1 * src101
-                                 - dy1 * dz1 * src011
-                                 + dy1 * dz1 * src111;
-      out_ptr_NCXYZ[out_sK] =    - dx0 * dz0 * src000
-                                 - dx1 * dz0 * src100
-                                 + dx0 * dz0 * src010
-                                 + dx1 * dz0 * src110
-                                 - dx0 * dz1 * src001
-                                 - dx1 * dz1 * src101
-                                 + dx0 * dz1 * src011
-                                 + dx1 * dz1 * src111;
-      out_ptr_NCXYZ[out_sK*2] =  - dx0 * dy0 * src000
-                                 - dx1 * dy0 * src100
-                                 - dx0 * dy1 * src010
-                                 - dx1 * dy1 * src110
-                                 + dx0 * dy0 * src001
-                                 + dx1 * dy0 * src101
-                                 + dx0 * dy1 * src011
-                                 + dx1 * dy1 * src111;
+      if (abs)
+      {
+          *out_ptr_NCXYZ =             dy0 * dz0 * src000
+                                     + dy0 * dz0 * src100
+                                     + dy1 * dz0 * src010
+                                     + dy1 * dz0 * src110
+                                     + dy0 * dz1 * src001
+                                     + dy0 * dz1 * src101
+                                     + dy1 * dz1 * src011
+                                     + dy1 * dz1 * src111;
+          out_ptr_NCXYZ[out_sK] =      dx0 * dz0 * src000
+                                     + dx1 * dz0 * src100
+                                     + dx0 * dz0 * src010
+                                     + dx1 * dz0 * src110
+                                     + dx0 * dz1 * src001
+                                     + dx1 * dz1 * src101
+                                     + dx0 * dz1 * src011
+                                     + dx1 * dz1 * src111;
+          out_ptr_NCXYZ[out_sK*2] =    dx0 * dy0 * src000
+                                     + dx1 * dy0 * src100
+                                     + dx0 * dy1 * src010
+                                     + dx1 * dy1 * src110
+                                     + dx0 * dy0 * src001
+                                     + dx1 * dy0 * src101
+                                     + dx0 * dy1 * src011
+                                     + dx1 * dy1 * src111;
+      }
+      else
+      {
+          *out_ptr_NCXYZ =           - dy0 * dz0 * src000
+                                     + dy0 * dz0 * src100
+                                     - dy1 * dz0 * src010
+                                     + dy1 * dz0 * src110
+                                     - dy0 * dz1 * src001
+                                     + dy0 * dz1 * src101
+                                     - dy1 * dz1 * src011
+                                     + dy1 * dz1 * src111;
+          out_ptr_NCXYZ[out_sK] =    - dx0 * dz0 * src000
+                                     - dx1 * dz0 * src100
+                                     + dx0 * dz0 * src010
+                                     + dx1 * dz0 * src110
+                                     - dx0 * dz1 * src001
+                                     - dx1 * dz1 * src101
+                                     + dx0 * dz1 * src011
+                                     + dx1 * dz1 * src111;
+          out_ptr_NCXYZ[out_sK*2] =  - dx0 * dy0 * src000
+                                     - dx1 * dy0 * src100
+                                     - dx0 * dy1 * src010
+                                     - dx1 * dy1 * src110
+                                     + dx0 * dy0 * src001
+                                     + dx1 * dy0 * src101
+                                     + dx0 * dy1 * src011
+                                     + dx1 * dy1 * src111;
+      }
     }
   }
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2144,14 +2246,28 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d_bilinear(
       scalar_t src10 = bound::get(src_ptr_NC, o10, s10);
       scalar_t src01 = bound::get(src_ptr_NC, o01, s01);
       scalar_t src11 = bound::get(src_ptr_NC, o11, s11);
-      *out_ptr_NCXY =           - dy0 * src00
-                                + dy0 * src10
-                                - dy1 * src01
-                                + dy1 * src11;
-      out_ptr_NCXY[out_sK] =    - dx0 * src00
-                                - dx1 * src10
-                                + dx0 * src01
-                                + dx1 * src11;
+      if (abs)
+      {
+          *out_ptr_NCXY =             dy0 * src00
+                                    + dy0 * src10
+                                    + dy1 * src01
+                                    + dy1 * src11;
+          out_ptr_NCXY[out_sK] =      dx0 * src00
+                                    + dx1 * src10
+                                    + dx0 * src01
+                                    + dx1 * src11;
+      }
+      else
+      {
+          *out_ptr_NCXY =           - dy0 * src00
+                                    + dy0 * src10
+                                    - dy1 * src01
+                                    + dy1 * src11;
+          out_ptr_NCXY[out_sK] =    - dx0 * src00
+                                    - dx1 * src10
+                                    + dx0 * src01
+                                    + dx1 * src11;
+      }
     }
   }
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2299,8 +2415,12 @@ void PushPullImpl<scalar_t,offset_t>::interpolate1d_linear(
 
     for (offset_t c = 0; c < C; ++c, out_ptr_NCX += out_sC,
                                      src_ptr_NC  += src_sC) {
-      *out_ptr_NCX  = bound::get(src_ptr_NC, o1, s1)
-                    - bound::get(src_ptr_NC, o0, s0);
+      if (abs)
+          *out_ptr_NCX  = bound::get(src_ptr_NC, o1, s1)
+                        + bound::get(src_ptr_NC, o0, s0);
+      else
+          *out_ptr_NCX  = bound::get(src_ptr_NC, o1, s1)
+                        - bound::get(src_ptr_NC, o0, s0);
     }
   }
   // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Push ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2508,10 +2628,10 @@ __global__ void pushpull_kernel(PushPullImpl<scalar_t,offset_t> f) {
 #define PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, SourceType0) \
   template std::deque<Tensor> pushpull( \
     const SourceType0 &, const Tensor&, const Tensor&, \
-    BoundType0, InterpolationType0, int, bool, bool, bool, bool, bool); \
+    BoundType0, InterpolationType0, int, bool, bool, bool, bool, bool, bool); \
   template std::deque<Tensor> pushpull( \
     const SourceType0&, const Tensor&, \
-    BoundType0, InterpolationType0, int, bool, bool, bool, bool, bool)
+    BoundType0, InterpolationType0, int, bool, bool, bool, bool, bool, bool)
 #define PUSHPULL_INSTANTIATE2(BoundType0, InterpolationType0) \
   PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, IntArrayRef); \
   PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, Tensor)
@@ -2533,10 +2653,10 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
-  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad, bool abs)
 {
   PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
-                         do_pull, do_push, do_count, do_grad, do_sgrad);
+                         do_pull, do_push, do_count, do_grad, do_sgrad, abs);
   info.ioset(source, grid);
 
   return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
@@ -2565,10 +2685,10 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
-  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad, bool abs)
 {
   PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
-                         do_pull, do_push, do_count, do_grad, do_sgrad);
+                         do_pull, do_push, do_count, do_grad, do_sgrad, abs);
   info.ioset(source, grid, target);
 
   return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
@@ -2600,10 +2720,10 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
-  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad, bool abs)
 {
   PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
-                         do_pull, do_push, do_count, do_grad, do_sgrad);
+                         do_pull, do_push, do_count, do_grad, do_sgrad, abs);
   info.ioset(source, grid);
 
   return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
@@ -2621,10 +2741,10 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
-  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad, bool abs)
 {
   PushPullAllocator info(grid.dim()-2, bound, interpolation, extrapolate,
-                         do_pull, do_push, do_count, do_grad, do_sgrad);
+                         do_pull, do_push, do_count, do_grad, do_sgrad, abs);
   info.ioset(source, grid, target);
 
   return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
@@ -2649,7 +2769,7 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
-  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad, bool abs)
 {
   throw std::logic_error("Function not implemented for this device.");
 }
@@ -2659,7 +2779,7 @@ NI_HOST
 std::deque<Tensor> pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
-  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
+  bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad, bool abs)
 {
   throw std::logic_error("Function not implemented for this device.");
 }

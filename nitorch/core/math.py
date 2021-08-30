@@ -6,6 +6,9 @@
 import torch
 from .constants import inf, ninf
 from nitorch.core import py, utils
+from typing import List, Optional, Tuple
+import math as pymath
+Tensor = torch.Tensor
 
 
 def round(t, decimals=0):
@@ -722,8 +725,8 @@ def _softmax_fwd(input, dim=-1, implicit=False):
     sumval = torch.sum(input, dim=dim, keepdim=True,
                        out=maxval if not implicit_in else None)
     if implicit_in:
-        sumval += maxval.neg().exp()  # don't forget the class full of zeros
-    input *= sumval.reciprocal_()
+        sumval += maxval.neg().exp_()  # don't forget the class full of zeros
+    input /= sumval
 
     if implicit_in and not implicit_out:
         background = input.sum(dim, keepdim=True).neg_().add_(1)
@@ -767,10 +770,10 @@ def _softmax_bwd(output, output_grad, dim=-1, implicit=False):
     del output_grad
     grad *= output
     gradsum = grad.sum(dim=dim, keepdim=True)
-    grad -= gradsum * output
+    grad = grad.addcmul_(gradsum, output, value=-1)  # grad -= gradsum * output
     if add_dim:
         grad_background = output.sum(dim=dim, keepdim=True).neg().add(1)
-        grad_background.mul_(gradsum).neg_()
+        grad_background.mul_(gradsum.neg_())
         grad = torch.cat((grad, grad_background), dim=dim)
     elif drop_dim:
         grad = utils.slice_tensor(grad, slice(-1), dim)
@@ -941,6 +944,27 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
         return input, maxval
     else:
         return input
+
+
+if utils.torch_version('>=', (1, 6)):
+    @torch.jit.script
+    def mvdigamma(input, order: int = 1):
+        """Derivative of the log of the Gamma function, eventually multivariate
+
+        Parameters
+        ----------
+        input : tensor
+        order : int, default=1
+
+        Returns
+        -------
+        tensor
+
+        """
+        dg = torch.digamma(input)
+        for p in range(2, order + 1):
+            dg += torch.digamma(input + (1 - p) / 2)
+        return dg
 
 
 # TODO:

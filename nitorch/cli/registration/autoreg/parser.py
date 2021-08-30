@@ -63,6 +63,7 @@ usage:
     <OPT> can take values:
         -adam,  --adam               ADAM (default)
         -gd,    --gradient-descent   Gradient descent
+        -ogm,  --optimized-gradient-descent
         -lbfgs, --lbfgs              L-BFGS
             -h, --history               History size (100)
 
@@ -131,11 +132,12 @@ class ParseError(RuntimeError):
 # matching loss
 # -
 mi = ('-mi', '--mutual-info', '--mutual-information')
+mse = ('-mse', '--mean-squared-error')
 jtv = ('-jtv', '--total-variation')
 dice = ('-dice', '--dice')
 cat = ('-cat', '--categorical')
 oth = ('-oth', '--other')
-match_losses = (*mi, *jtv, *dice, *cat, *oth)
+match_losses = (*mi, *mse, *jtv, *dice, *cat, *oth)
 
 # -
 # transformations
@@ -163,8 +165,9 @@ regularizations = (*absolute, *membrane, *bending, *linelastic)
 # -
 adam = ('-adam', '--adam')
 gd = ('-gd', '--gradient-descent')
+ogm = ('-ogm', '--optimized-gradient-descent')
 lbfgs = ('-lbfgs', '--lbfgs')
-optim = (*adam, *gd, *lbfgs)
+optim = (*adam, *gd, *ogm, *lbfgs)
 
 
 # ----------------------------------------------------------------------
@@ -346,6 +349,7 @@ def parse_match(args, options):
     """Parse a loss group"""
     loss, *args = args
     opt = (struct.MILoss if loss in mi else
+           struct.MSELoss if loss in mse else
            struct.JTVLoss if loss in jtv else
            struct.DiceLoss if loss in dice else
            struct.CatLoss if loss in cat else
@@ -456,6 +460,7 @@ def parse_optim(args, options):
 
     opt = (struct.Adam if optim in adam else
            struct.GradientDescent if optim in gd else
+           struct.OGM if optim in ogm else
            struct.LBFGS if optim in lbfgs else
            None)
     opt = opt()
