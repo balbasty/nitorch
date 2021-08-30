@@ -2,6 +2,7 @@
 import torch
 from . import utils
 from warnings import warn
+from typing import List
 import math
 
 
@@ -420,7 +421,6 @@ def sym_to_full(mat):
 
 @torch.jit.script
 def _sym_matvec2(mat, vec):
-    # type: (Tensor, Tensor) -> Tensor
     mm = mat[:2] * vec
     mm[0].addcmul_(mat[2], vec[1])
     mm[1].addcmul_(mat[2], vec[0])
@@ -429,7 +429,6 @@ def _sym_matvec2(mat, vec):
 
 @torch.jit.script
 def _sym_matvec3(mat, vec):
-    # type: (Tensor, Tensor) -> Tensor
     mm = mat[:3] * vec
     mm[0].addcmul_(mat[3], vec[1]).addcmul_(mat[4], vec[2])
     mm[1].addcmul_(mat[3], vec[0]).addcmul_(mat[5], vec[2])
@@ -439,7 +438,6 @@ def _sym_matvec3(mat, vec):
 
 @torch.jit.script
 def _sym_matvec4(mat, vec):
-    # type: (Tensor, Tensor) -> Tensor
     mm = mat[:4] * vec
     mm[0].addcmul_(mat[4], vec[1]) \
         .addcmul_(mat[5], vec[2]) \
@@ -457,8 +455,7 @@ def _sym_matvec4(mat, vec):
 
 
 @torch.jit.script
-def _sym_matvecn(mat, vec, nb_prm):
-    # type: (Tensor, Tensor, int) -> Tensor
+def _sym_matvecn(mat, vec, nb_prm: int):
     mm = mat[:nb_prm] * vec
     c = nb_prm
     for i in range(nb_prm):
@@ -534,9 +531,19 @@ def sym_diag(mat):
 
 
 @torch.jit.script
-def _sym_solve2(diag, uppr, vec, shape):
-    # type: (Tensor, Tensor, Tensor, List[int]) -> Tensor
-    det = uppr[0].square().neg_()
+def _square(x):
+    return x * x
+
+
+@torch.jit.script
+def _square_(x):
+    x *= x
+    return x
+
+
+@torch.jit.script
+def _sym_solve2(diag, uppr, vec, shape: List[int]):
+    det = _square(uppr[0]).neg_()
     det.addcmul_(diag[0], diag[1])
     res = vec.new_empty(shape)
     res[0] = diag[1] * vec[0] - uppr[0] * vec[1]
@@ -546,33 +553,31 @@ def _sym_solve2(diag, uppr, vec, shape):
 
 
 @torch.jit.script
-def _sym_solve3(diag, uppr, vec, shape):
-    # type: (Tensor, Tensor, Tensor, List[int]) -> Tensor
+def _sym_solve3(diag, uppr, vec, shape: List[int]):
     det = diag.prod(0) + 2 * uppr.prod(0) \
-        - (diag[0] * uppr[2].square() +
-           diag[2] * uppr[0].square() +
-           diag[1] * uppr[1].square())
+        - (diag[0] * _square(uppr[2]) +
+           diag[2] * _square(uppr[0]) +
+           diag[1] * _square(uppr[1]))
     res = vec.new_empty(shape)
-    res[0] = (diag[1] * diag[2] - uppr[2].square()) * vec[0] \
+    res[0] = (diag[1] * diag[2] - _square(uppr[2])) * vec[0] \
            + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[1] \
            + (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[2]
     res[1] = (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[0] \
-           + (diag[0] * diag[2] - uppr[1].square()) * vec[1] \
+           + (diag[0] * diag[2] - _square(uppr[1])) * vec[1] \
            + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[2]
     res[2] = (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[0] \
            + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[1] \
-           + (diag[0] * diag[1] - uppr[0].square()) * vec[2]
+           + (diag[0] * diag[1] - _square(uppr[0])) * vec[2]
     res /= det
     return res
 
 
 @torch.jit.script
-def _sym_solve4(diag, uppr, vec, shape):
-    # type: (Tensor, Tensor, Tensor, List[int]) -> Tensor
+def _sym_solve4(diag, uppr, vec, shape: List[int]):
     det = diag.prod(0) \
-         + ((uppr[0] * uppr[5]).square() +
-            (uppr[1] * uppr[4]).square() +
-            (uppr[2] * uppr[3]).square()) + \
+         + (_square(uppr[0] * uppr[5]) +
+            _square(uppr[1] * uppr[4]) +
+            _square(uppr[2] * uppr[3])) + \
          - 2 * (uppr[0] * uppr[1] * uppr[4] * uppr[5] +
                 uppr[0] * uppr[2] * uppr[3] * uppr[5] +
                 uppr[1] * uppr[2] * uppr[3] * uppr[4]) \
@@ -580,77 +585,77 @@ def _sym_solve4(diag, uppr, vec, shape):
                 diag[1] * uppr[1] * uppr[2] * uppr[5] +
                 diag[2] * uppr[0] * uppr[2] * uppr[4] +
                 diag[3] * uppr[0] * uppr[1] * uppr[3]) \
-         - (diag[0] * diag[1] * uppr[5].square() +
-            diag[0] * diag[2] * uppr[4].square() +
-            diag[0] * diag[3] * uppr[3].square() +
-            diag[1] * diag[2] * uppr[2].square() +
-            diag[1] * diag[3] * uppr[1].square() +
-            diag[2] * diag[3] * uppr[0].square())
+         - (diag[0] * diag[1] * _square(uppr[5]) +
+            diag[0] * diag[2] * _square(uppr[4]) +
+            diag[0] * diag[3] * _square(uppr[3]) +
+            diag[1] * diag[2] * _square(uppr[2]) +
+            diag[1] * diag[3] * _square(uppr[1]) +
+            diag[2] * diag[3] * _square(uppr[0]))
     inv01 = (- diag[2] * diag[3] * uppr[0]
              + diag[2] * uppr[2] * uppr[4]
              + diag[3] * uppr[1] * uppr[3]
-             + uppr[0] * uppr[5].square()
+             + uppr[0] * _square(uppr[5])
              - uppr[1] * uppr[4] * uppr[5]
              - uppr[2] * uppr[3] * uppr[5])
     inv02 = (- diag[1] * diag[3] * uppr[1]
              + diag[1] * uppr[2] * uppr[5]
              + diag[3] * uppr[0] * uppr[3]
-             + uppr[1] * uppr[4].square()
+             + uppr[1] * _square(uppr[4])
              - uppr[0] * uppr[4] * uppr[5]
              - uppr[2] * uppr[3] * uppr[4])
     inv03 = (- diag[1] * diag[2] * uppr[2]
              + diag[1] * uppr[1] * uppr[5]
              + diag[2] * uppr[0] * uppr[4]
-             + uppr[2] * uppr[3].square()
+             + uppr[2] * _square(uppr[3])
              - uppr[0] * uppr[3] * uppr[5]
              - uppr[1] * uppr[3] * uppr[4])
     inv12 = (- diag[0] * diag[3] * uppr[3]
              + diag[0] * uppr[4] * uppr[5]
              + diag[3] * uppr[0] * uppr[1]
-             + uppr[3] * uppr[2].square()
+             + uppr[3] * _square(uppr[2])
              - uppr[0] * uppr[2] * uppr[5]
              - uppr[1] * uppr[2] * uppr[4])
     inv13 = (- diag[0] * diag[2] * uppr[4]
              + diag[0] * uppr[3] * uppr[5]
              + diag[2] * uppr[0] * uppr[2]
-             + uppr[4] * uppr[1].square()
+             + uppr[4] * _square(uppr[1])
              - uppr[0] * uppr[1] * uppr[5]
              - uppr[1] * uppr[2] * uppr[3])
     inv23 = (- diag[0] * diag[1] * uppr[5]
              + diag[0] * uppr[4] * uppr[3]
              + diag[1] * uppr[1] * uppr[2]
-             + uppr[5] * uppr[0].square()
+             + uppr[5] * _square(uppr[0])
              - uppr[0] * uppr[1] * uppr[4]
              - uppr[0] * uppr[2] * uppr[3])
     res = vec.new_empty(shape)
     res[0] = (diag[1] * diag[2] * diag[3]
-              - diag[1] * uppr[5].square()
-              - diag[2] * uppr[4].square()
-              - diag[3] * uppr[3].square()
+              - diag[1] * _square(uppr[5])
+              - diag[2] * _square(uppr[4])
+              - diag[3] * _square(uppr[3])
               + 2 * uppr[3] * uppr[4] * uppr[5]) * vec[0]
     res[0] += inv01 * vec[1]
     res[0] += inv02 * vec[2]
     res[0] += inv03 * vec[3]
     res[1] = (diag[0] * diag[2] * diag[3]
-              - diag[0] * uppr[5].square()
-              - diag[2] * uppr[2].square()
-              - diag[3] * uppr[1].square()
+              - diag[0] * _square(uppr[5])
+              - diag[2] * _square(uppr[2])
+              - diag[3] * _square(uppr[1])
               + 2 * uppr[1] * uppr[2] * uppr[5]) * vec[1]
     res[1] += inv01 * vec[0]
     res[1] += inv12 * vec[2]
     res[1] += inv13 * vec[3]
     res[2] = (diag[0] * diag[1] * diag[3]
-              - diag[0] * uppr[4].square()
-              - diag[1] * uppr[2].square()
-              - diag[3] * uppr[0].square()
+              - diag[0] * _square(uppr[4])
+              - diag[1] * _square(uppr[2])
+              - diag[3] * _square(uppr[0])
               + 2 * uppr[0] * uppr[2] * uppr[4]) * vec[2]
     res[2] += inv02 * vec[0]
     res[2] += inv12 * vec[1]
     res[2] += inv23 * vec[3]
     res[3] = (diag[0] * diag[1] * diag[2]
-              - diag[0] * uppr[3].square()
-              - diag[1] * uppr[1].square()
-              - diag[2] * uppr[0].square()
+              - diag[0] * _square(uppr[3])
+              - diag[1] * _square(uppr[1])
+              - diag[2] * _square(uppr[0])
               + 2 * uppr[0] * uppr[1] * uppr[3]) * vec[3]
     res[3] += inv03 * vec[0]
     res[3] += inv13 * vec[1]
