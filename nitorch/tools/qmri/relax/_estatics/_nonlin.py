@@ -39,7 +39,6 @@ def nonlin(data, opt=None):
     
     # --- estimate noise / register / initialize maps ---
     data, maps = preproc(data, opt)
-    print(maps.affine)
     vx = spatial.voxel_size(maps.affine)
 
     # --- prepare regularization factor ---
@@ -128,15 +127,15 @@ def nonlin(data, opt=None):
                     grad[i] += g1
 
             # --- gauss-newton ---
-            if not hess.isfinite().all():
-                print('WARNING: NaNs in hess (??)')
+            if not torch.isfinite(hess).all():
+                print('WARNING: NaNs in hess')
             if opt.regularization.norm:
                 hess = hessian_loaddiag(hess, 1e-6, 1e-8)
                 deltas = _nonlin_solve(hess, grad, multi_rls, lam, vx, opt)
             else:
                 hess = hessian_loaddiag(hess, 1e-6, 1e-8)
                 deltas = hessian_solve(hess, grad)
-            if not deltas.isfinite().all():
+            if not torch.isfinite(deltas).all():
                 print('WARNING: NaNs in delta (non stable Hessian)')
 
             for map, delta in zip(maps, deltas):
@@ -234,7 +233,7 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
         # compute residuals
         dat = echo.fdata(**backend, rand=True, cache=False)  # observed
         fit = (inter - echo.te * slope).exp_()               # fitted
-        msk = fit.isfinite() & dat.isfinite() & (dat > 0)    # mask of observed
+        msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
         dat[~msk] = 0
         fit[~msk] = 0
         res = dat.neg_()

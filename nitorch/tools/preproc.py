@@ -5,11 +5,11 @@
 
 from .affine_reg._align import (_affine_align, _atlas_align)
 from ._preproc_fov import (_atlas_crop, _reset_origin, _subvol)
-from ._preproc_img import _world_reslice
+from ._preproc_img import (_world_reslice, _reslice2ref)
 from ._preproc_utils import (_format_input, _process_reg, _write_output)
 
 
-def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
+def atlas_crop(img, write=False, nam=None, odir=None, prefix='ac_',
                device='cpu', do_align=True, fov='head', mat_a=None):
     """Crop an image to the NITorch T1w brain atlas' field-of-view.
 
@@ -21,10 +21,10 @@ def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
         (4, 4).
     write : bool, default=False
         Write preprocessed data to disk.
-    nam = str, default=''
-        Output filename, if empty, uses same as input.
-    odir = str, default=''
-        Output directory, if empty, uses same as input.
+    nam = str, optional
+        Output filename, if None, uses same as input.
+    odir = str, optional
+        Output directory, if None, uses same as input.
     prefix = str, default='ac_'
         Output prefix.
     device : torch.device, default='cpu'
@@ -67,7 +67,7 @@ def atlas_crop(img, write=False, nam='', odir='', prefix='ac_',
     return dat[0], mat[0], pth
 
 
-def affine_align(img, write=None, nam='', odir='', prefix='aa_',
+def affine_align(img, write=None, nam=None, odir=None, prefix='aa_',
                  device='cpu', cost_fun='nmi', samp=(3, 1.5),
                  mean_space=False, group='SE', fix=0, fwhm=7.):
     """Affinely align images.
@@ -114,10 +114,10 @@ def affine_align(img, write=None, nam='', odir='', prefix='aa_',
         Write preprocessed data to disk.
         * 'reslice' : writes image data resliced to fixed image.
         * 'affine' : writes original image data with affine modified.
-    nam = str, default=''
-        Output filename, if empty, uses same as input.
-    odir = str, default=''
-        Output directory, if empty, uses same as input.
+    nam = str, optional
+        Output filename, if None, uses same as input.
+    odir = str, optional
+        Output directory, if None, uses same as input.
     prefix = str, default='aa_'
         Output prefix.
     device : torch.device, default='cpu'
@@ -177,7 +177,7 @@ def affine_align(img, write=None, nam='', odir='', prefix='aa_',
     return rdat, mat_a, pth
 
 
-def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='aa_',
+def atlas_align(img, rigid=True, write=None, nam=None, odir=None, prefix='aa_',
                 device='cpu', pth_atlas=None):
     """Affinely align an image to some atlas space.
 
@@ -193,10 +193,10 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='aa_',
         Write preprocessed data to disk.
         * 'reslice' : writes image data resliced to fixed image.
         * 'affine' : writes original image data with affine modified.
-    nam = str, default=''
-        Output filename, if empty, uses same as input.
-    odir = str, default=''
-        Output directory, if empty, uses same as input.
+    nam = str, optional
+        Output filename, if None, uses same as input.
+    odir = str, optional
+        Output directory, if None, uses same as input.
     prefix = str, default='aa_'
         Output prefix.
     device : torch.device, default='cpu'
@@ -239,7 +239,7 @@ def atlas_align(img, rigid=True, write=None, nam='', odir='', prefix='aa_',
     return rdat[0, ...], mat_a[0, ...], pth, mat_cso[0, ...]
 
 
-def reset_origin(img, write=False, nam='', odir='', prefix='ro_',
+def reset_origin(img, write=False, nam=None, odir=None, prefix='ro_',
                  device='cpu', interpolation=1):
     """Reset affine matrix.
 
@@ -251,10 +251,10 @@ def reset_origin(img, write=False, nam='', odir='', prefix='ro_',
         (4, 4).
     write : bool, default=False
         Write preprocessed data to disk.
-    nam = str, default=''
-        Output filename, if empty, uses same as input.
-    odir = str, default=''
-        Output directory, if empty, uses same as input.
+    nam = str, optional
+        Output filename, if None, uses same as input.
+    odir = str, optional
+        Output directory, if None, uses same as input.
     prefix = str, default='ro_'
         Output prefix.
     device : torch.device, default='cpu'
@@ -288,7 +288,7 @@ def reset_origin(img, write=False, nam='', odir='', prefix='ro_',
     return dat[0], mat[0], pth
 
 
-def subvol(img, bb=None, write=False, nam='', odir='', prefix='sv_',
+def subvol(img, bb=None, write=False, nam=None, odir=None, prefix='sv_',
            device='cpu'):
     """Extract a sub-volume.
 
@@ -307,10 +307,10 @@ def subvol(img, bb=None, write=False, nam='', odir='', prefix='sv_',
          dimensions.
     write : bool, default=False
         Write preprocessed data to disk.
-    nam = str, default=''
-        Output filename, if empty, uses same as input.
-    odir = str, default=''
-        Output directory, if empty, uses same as input.
+    nam = str, optional
+        Output filename, if None, uses same as input.
+    odir = str, optional
+        Output directory, if None, uses same as input.
     prefix = str, default='sv_'
         Output prefix.
     device : torch.device, default='cpu'
@@ -342,8 +342,59 @@ def subvol(img, bb=None, write=False, nam='', odir='', prefix='sv_',
     return dat[0], mat[0], pth
 
 
-def world_reslice(img, write=False, nam='', odir='', prefix='wr_',
-                  device='cpu', interpolation=1):
+def reslice2ref(img, write=False, nam=None, odir=None, prefix='r_',
+                device='cpu', interpolation=1, ref=0):
+    """Reslice images to reference.
+
+    Parameters
+    ----------
+    img : str or [tensor_like, tensor_like]
+        Either paths to image files, or a list of lists with two tensors
+        containing the image data (X, Y, Z) and the image affine matrix
+        (4, 4).
+    write : bool, default=False
+        Write preprocessed data to disk.
+    nam = str, optional
+        Output filename, if None, uses same as input.
+    odir = str, optional
+        Output directory, if None, uses same as input.
+    prefix = str, default='r_'
+        Output prefix.
+    device : torch.device, default='cpu'
+        Output device, only used if input are paths. If input are tensors,
+        then the device of those tensors will be used.
+    interpolation : int, default=1 (linear)
+        Interpolation order.
+    ref : int, default=0
+        Index of reference image.
+
+    Returns
+    -------
+    dat : (C, X1, Y1, Z1) tensor_like, dtype=float32
+        Resliced image data.
+    mat : (4, 4) tensor_like, dtype=float64
+        Reference affine matrix.
+    pth : str
+        Paths to resliced images (only if write=True).
+
+    """
+    # Get properly formatted function input
+    dat, mat, file = _format_input(img, device=device)
+    if len(dat) < 2:
+        raise ValueError('More than one image should be given!')
+    # Do preprocessing
+    dat, mat = _reslice2ref(dat, mat, interpolation=interpolation, ref=ref)
+    # Possibly write output to disk
+    pth = None
+    if write:
+        pth = _write_output(dat, mat, file=file, nam=nam, odir=odir,
+                            prefix=prefix)
+
+    return dat, mat, pth
+
+
+def world_reslice(img, write=False, nam=None, odir=None, prefix='wr_',
+                  device='cpu', interpolation=1, vx=None):
     """Reslice image data to world space.
 
     Parameters
@@ -354,10 +405,10 @@ def world_reslice(img, write=False, nam='', odir='', prefix='wr_',
         (4, 4).
     write : bool, default=False
         Write preprocessed data to disk.
-    nam = str, default=''
-        Output filename, if empty, uses same as input.
-    odir = str, default=''
-        Output directory, if empty, uses same as input.
+    nam = str, optional
+        Output filename, if None, uses same as input.
+    odir = str, optional
+        Output directory, if None, uses same as input.
     prefix = str, default='wr_'
         Output prefix.
     device : torch.device, default='cpu'
@@ -365,6 +416,8 @@ def world_reslice(img, write=False, nam='', odir='', prefix='wr_',
         then the device of those tensors will be used.
     interpolation : int, default=1 (linear)
         Interpolation order.
+    vx : float | [float,] *3, optional
+        Output voxel size.
 
     Returns
     -------
@@ -381,7 +434,7 @@ def world_reslice(img, write=False, nam='', odir='', prefix='wr_',
     if len(dat) != 1:
         raise ValueError('Only one input image should be given!')
     # Do preprocessing
-    dat[0], mat[0] = _world_reslice(dat[0], mat[0], interpolation=interpolation)
+    dat[0], mat[0] = _world_reslice(dat[0], mat[0], interpolation=interpolation, vx=vx)
     # Possibly write output to disk
     pth = None
     if write:

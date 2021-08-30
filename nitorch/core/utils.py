@@ -175,30 +175,42 @@ def unsqueeze(input, dim=0, ndim=1):
     ----------
     input : tensor_like
         Input tensor.
-    dim : int or list[int], default=0
-        Position(s) at which to insert singleton dimensions.
-    ndim : int or list[int], default=1
-        Number of singleton dimensions inserted in each position.
+    dim : int, default=0
+        Position at which to insert singleton dimensions.
+    ndim : int, default=1
+        Number of singleton dimensions to insert.
 
     Returns
     -------
     output : tensor
         Tensor with additional singleton dimensions.
     """
+    for _ in range(ndim):
+        input = torch.unsqueeze(input, dim)
+    return input
 
-    if not isinstance(dim, (list, tuple)):
-        dim = [dim]
-    if not isinstance(ndim, (list, tuple)):
-        ndim = [ndim]
-    ndim = make_list(ndim, len(dim))
-    extra_dims = 0
-    for d, nd in zip(dim, ndim):
-        # FIXME: does not work when inputs are lists
-        d += extra_dims
-        for _ in range(nd):
-            input = torch.unsqueeze(input, min(d, input.dim()) if d > 0 else
-                                           max(d, -(input.dim()+1)))
-        extra_dims += nd
+
+def squeeze(input, dim=0, ndim=1):
+    """Removes singleton dimensions to a tensor.
+
+    This function expands `torch.squeeze` with additional options.
+
+    Parameters
+    ----------
+    input : tensor_like
+        Input tensor.
+    dim : int, default=0
+        Position at which to drop singleton dimensions.
+    ndim : int, default=1
+        Number of singleton dimensions to drop.
+
+    Returns
+    -------
+    output : tensor
+        Tensor with singleton dimensions removed.
+    """
+    for _ in range(ndim):
+        input = torch.squeeze(input, dim)
     return input
 
 

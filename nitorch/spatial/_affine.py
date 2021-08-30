@@ -2198,7 +2198,7 @@ def max_bb(all_mat, all_dim, vx=None):
     # Make output affine matrix and image dimensions
     mat = affine_matrix_classic(torch.cat((mn, torch.zeros(3, dtype=dtype, device=device), vx)))\
         .mm(affine_matrix_classic(-torch.ones(3, dtype=dtype, device=device)))
-    dm = torch.cat((mx, torch.ones(1, dtype=dtype, device=device)))[..., None].solve(mat)[0]
+    dm = torch.linalg.solve(mat, torch.cat((mx, torch.ones(1, dtype=dtype, device=device)))[..., None])    
     dm = dm[:3].round().flatten()
 
     return mat, dm

@@ -5,8 +5,7 @@ import torch
 from nitorch.core import utils, linalg
 from nitorch.core.utils import expand, make_vector
 from nitorch.core.py import make_list, prod
-from nitorch._C.spatial import BoundType, InterpolationType
-from nitorch._C.grid import GridPull, GridPush, GridCount, GridGrad
+from nitorch._C.grid import GridPull, GridPush, GridCount, GridGrad, BoundType, InterpolationType
 from ._affine import affine_resize, affine_lmdiv
 from ._regularisers import solve_grid_sym
 from ._finite_differences import diff
@@ -14,7 +13,7 @@ from ._finite_differences import diff
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad', 'grid_inv',
            'identity_grid', 'affine_grid', 'resize', 'resize_grid', 'reslice',
-           'grid_jacobian', 'BoundType', 'InterpolationType']
+           'grid_jacobian', 'grid_jacdet', 'BoundType', 'InterpolationType']
 
 _doc_interpolation = \
 """`interpolation` can be an int, a string or an InterpolationType.
@@ -738,8 +737,11 @@ def grid_jacobian(grid, sample=None, bound='dft', voxel_size=1, type='grid',
     type : {'grid', 'disp'}, default='grid'
         Whether the input is a transformation ('grid') or displacement
         ('disp') field.
+    add_identity : bool, default=True
+        Adds the identity to the Jacobian of the displacement, making it
+        the jacobian of the transformation.
     extrapolate : bool, default=True
-        Extrapolate out-of-boudnd ata (only useful is `sample` is used)
+        Extrapolate out-of-boudn data (only useful is `sample` is used)
 
     Returns
     -------
@@ -762,6 +764,51 @@ def grid_jacobian(grid, sample=None, bound='dft', voxel_size=1, type='grid',
     if add_identity:
         torch.diagonal(jac, 0, -1, -2).add_(1)
     return jac
+
+
+def grid_jacdet(grid, sample=None, bound='dft', voxel_size=1, type='grid',
+                add_identity=True, extrapolate=True):
+    """Compute the determinant of the Jacobian of a transformation field
+
+    Notes
+    -----
+    .. If `add_identity` is True, we compute the Jacobian
+       of the transformation field (identity + displacement), even if
+       a displacement is provided, by adding ones to the diagonal.
+    .. If `sample` is not used, this function uses central finite
+       differences to estimate the Jacobian.
+    .. If 'sample' is provided, `grid_grad` is used to sample derivatives.
+
+    Parameters
+    ----------
+    grid : (..., *spatial, dim) tensor
+        Transformation or displacement field
+    sample : (..., *spatial, dim) tensor, optional
+        Coordinates to sample in the input grid.
+    bound : str, default='dft'
+        Boundary condition
+    voxel_size : [sequence of] float, default=1
+        Voxel size
+    type : {'grid', 'disp'}, default='grid'
+        Whether the input is a transformation ('grid') or displacement
+        ('disp') field.
+    add_identity : bool, default=True
+        Adds the identity to the Jacobian of the displacement, making it
+        the jacobian of the transformation.
+    extrapolate : bool, default=True
+        Extrapolate out-of-boudn data (only useful is `sample` is used)
+
+    Returns
+    -------
+    det : (..., *spatial) tensor
+        Jacobian determinant.
+
+    """
+    jac = grid_jacobian(grid, sample=sample, bound=bound,
+                        voxel_size=voxel_size, type=type,
+                        add_identity=add_identity, extrapolate=extrapolate)
+    return jac.det()
+
 
 # def transform_points(points, grid, type='grid',
 #                      affine=None, points_unit='mm', grid_unit='voxels',

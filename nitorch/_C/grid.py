@@ -1,12 +1,29 @@
 """AutoGrad version of pull/push/count/grad"""
 
 import torch
-from nitorch._C.spatial import (
-    grid_pull, grid_pull_backward,
-    grid_push, grid_push_backward,
-    grid_count, grid_count_backward,
-    grid_grad, grid_grad_backward,
-    InterpolationType, BoundType)
+
+try:
+    from nitorch._C.spatial import (
+        grid_pull, grid_pull_backward,
+        grid_push, grid_push_backward,
+        grid_count, grid_count_backward,
+        grid_grad, grid_grad_backward,
+        InterpolationType, BoundType)
+    COMPILED_BACKEND = 'nitorch'
+except ImportError:
+    try:
+        from monai._C import (
+        grid_pull, grid_pull_backward,
+        grid_push, grid_push_backward,
+        grid_count, grid_count_backward,
+        grid_grad, grid_grad_backward,
+        InterpolationType, BoundType)
+        COMPILED_BACKEND = 'monai'
+    except ImportError:
+        grid_pull = grid_pull_backward = grid_push = grid_push_backward = None
+        grid_count = grid_count_backward = grid_grad = grid_grad_backward = None
+        InterpolationType = BoundType = None
+        COMPILED_BACKEND = None
 
 
 def make_list(x):

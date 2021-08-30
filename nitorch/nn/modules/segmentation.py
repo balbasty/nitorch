@@ -625,7 +625,8 @@ class SegNet(Module):
                 final_activation = tnn.Sigmoid
             else:
                 final_activation = tnn.Softmax(dim=1)
-                output_classes += 1
+        if implicit:
+            output_classes += 1
 
         self.unet = UNet2(
             dim,

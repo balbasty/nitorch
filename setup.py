@@ -11,6 +11,9 @@ import collections
 from setuptools import setup, find_packages, Extension
 from buildtools import *
 import torch
+import os
+
+MONAI_BACKEND = bool(int(os.environ.get('NI_MONAI_BACKEND', '0')))
 
 
 # ~~~ libnitorch files
@@ -474,84 +477,91 @@ def abspathC(files):
     sourcedir = os.path.join(scriptdir, 'nitorch', '_C')
     return [os.path.join(sourcedir, f) for f in files]
 
-# ~~~ checks
-use_cuda = cuda_home() and cuda_check()
-use_cudnn = False  # cudnn_home() and cudnn_check()
-
 
 build_extensions = []
-nitorch_lib = []
-nitorch_libext = []
-# ~~~ setup libraries
-NiTorchCPULibrary = SharedLibrary(
-    name='lib.nitorch_cpu',
-    sources=abspathC(libnitorch_cpu_sources),
-    depends=abspathC(libnitorch_cpu_headers),
-    libraries=torch_libraries(),
-    library_dirs=torch_library_dirs(),
-    include_dirs=torch_include_dirs(),
-    extra_compile_args=common_flags() + torch_flags(),
-    extra_link_args=torch_link_flags(),
-    language='c++',
-)
-build_extensions += [NiTorchCPULibrary]
-nitorch_libext += [NiTorchCPULibrary]
-nitorch_lib += ['nitorch_cpu']
-if use_cuda:
-    NiTorchCUDALibrary = SharedLibrary(
-        name='lib.nitorch_cuda',
-        sources=abspathC(libnitorch_cuda_sources),
-        depends=abspathC(libnitorch_cuda_headers),
-        libraries=torch_libraries(use_cuda),
-        library_dirs=torch_library_dirs(use_cuda, use_cudnn),
-        include_dirs=torch_include_dirs(use_cuda, use_cudnn),
-        extra_compile_args=cuda_flags() + torch_flags(cuda=True),
-        extra_link_args=torch_link_flags(cuda=True),
-        language='cuda',
-    )
-    build_extensions += [NiTorchCUDALibrary]
-    nitorch_libext += [NiTorchCUDALibrary]
-    nitorch_lib += ['nitorch_cuda']
-NiTorchLibrary = SharedLibrary(
-    name='lib.nitorch',
-    sources=abspathC(libnitorch_sources),
-    depends=nitorch_libext + abspathC(libnitorch_headers),
-    libraries=torch_libraries() + nitorch_lib,
-    library_dirs=torch_library_dirs(),
-    include_dirs=torch_include_dirs(),
-    extra_compile_args=common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
-    runtime_library_dirs=[link_relative('.')],
-    language='c++',
-)
-build_extensions += [NiTorchLibrary]
-nitorch_libext = [NiTorchLibrary]
-nitorch_lib = ['nitorch']
-# ~~~ setup extensions
-python_library_dirs = [os.path.join(sys.exec_prefix, 'lib')]
-SpatialExtension = Extension(
-    name='_C.spatial',
-    sources=abspathC(ext_spatial_sources),
-    depends=nitorch_libext + abspathC(ext_spatial_headers),
-    libraries=torch_libraries(use_cuda) + nitorch_lib,
-    library_dirs=torch_library_dirs(use_cuda, use_cudnn) + python_library_dirs,
-    include_dirs=torch_include_dirs(use_cuda, use_cudnn),
-    extra_compile_args=common_flags() + torch_flags() + torch_extension_flags('spatial'),
-    runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]
-)
-build_extensions += [SpatialExtension]
+if not MONAI_BACKEND:
+    # ~~~ checks
+    use_cuda = cuda_home() and cuda_check()
+    use_cudnn = False  # cudnn_home() and cudnn_check()
 
+
+    nitorch_lib = []
+    nitorch_libext = []
+    # ~~~ setup libraries
+    NiTorchCPULibrary = SharedLibrary(
+        name='lib.nitorch_cpu',
+        sources=abspathC(libnitorch_cpu_sources),
+        depends=abspathC(libnitorch_cpu_headers),
+        libraries=torch_libraries(),
+        library_dirs=torch_library_dirs(),
+        include_dirs=torch_include_dirs(),
+        extra_compile_args=common_flags() + torch_flags(),
+        extra_link_args=torch_link_flags(),
+        language='c++',
+    )
+    build_extensions += [NiTorchCPULibrary]
+    nitorch_libext += [NiTorchCPULibrary]
+    nitorch_lib += ['nitorch_cpu']
+    if use_cuda:
+        NiTorchCUDALibrary = SharedLibrary(
+            name='lib.nitorch_cuda',
+            sources=abspathC(libnitorch_cuda_sources),
+            depends=abspathC(libnitorch_cuda_headers),
+            libraries=torch_libraries(use_cuda),
+            library_dirs=torch_library_dirs(use_cuda, use_cudnn),
+            include_dirs=torch_include_dirs(use_cuda, use_cudnn),
+            extra_compile_args=cuda_flags() + torch_flags(cuda=True),
+            extra_link_args=torch_link_flags(cuda=True),
+            language='cuda',
+        )
+        build_extensions += [NiTorchCUDALibrary]
+        nitorch_libext += [NiTorchCUDALibrary]
+        nitorch_lib += ['nitorch_cuda']
+    NiTorchLibrary = SharedLibrary(
+        name='lib.nitorch',
+        sources=abspathC(libnitorch_sources),
+        depends=nitorch_libext + abspathC(libnitorch_headers),
+        libraries=torch_libraries() + nitorch_lib,
+        library_dirs=torch_library_dirs(),
+        include_dirs=torch_include_dirs(),
+        extra_compile_args=common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
+        runtime_library_dirs=[link_relative('.')],
+        language='c++',
+    )
+    build_extensions += [NiTorchLibrary]
+    nitorch_libext = [NiTorchLibrary]
+    nitorch_lib = ['nitorch']
+    # ~~~ setup extensions
+    python_library_dirs = [os.path.join(sys.exec_prefix, 'lib')]
+    SpatialExtension = Extension(
+        name='_C.spatial',
+        sources=abspathC(ext_spatial_sources),
+        depends=nitorch_libext + abspathC(ext_spatial_headers),
+        libraries=torch_libraries(use_cuda) + nitorch_lib,
+        library_dirs=torch_library_dirs(use_cuda, use_cudnn) + python_library_dirs,
+        include_dirs=torch_include_dirs(use_cuda, use_cudnn),
+        extra_compile_args=common_flags() + torch_flags() + torch_extension_flags('spatial'),
+        runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]
+    )
+    build_extensions += [SpatialExtension]
+
+
+INSTALL_REQUIRES = [
+    'torch>=1.5',
+    'wget', 'appdirs',  # < used for downloading nitorch data
+    'numpy', 'scipy',   # < used only in spm/affine_reg
+]
+if MONAI_BACKEND:
+    INSTALL_REQUIRES += ['monai>=0.5']
 
 setup(
     name='nitorch',
     version='0.1a.dev',
     packages=find_packages(),
-    install_requires=['torch>=1.5',
-                      'wget', 'appdirs', # < used for downloading nitorch data
-                      'numpy', 'scipy',  # < used only in spm/affine_reg
-                      ],
+    install_requires=INSTALL_REQUIRES,
     python_requires='>=3.6',
     ext_package='nitorch',
     ext_modules=build_extensions,
-    cmdclass={'build_ext': build_ext},
+    cmdclass={'build_ext': build_ext} if not MONAI_BACKEND else {},
     entry_points={'console_scripts': ['nitorch=nitorch.cli:cli']}
 )

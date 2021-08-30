@@ -61,9 +61,11 @@ usage:
     and no penalty is placed on affine transforms.
 
     <OPT> can take values:
-        -adam, --adam               ADAM (default)
-        -gd,   --gradient-descent   Gradient descent
+        -adam,  --adam               ADAM (default)
+        -gd,    --gradient-descent   Gradient descent
         -ogm,  --optimized-gradient-descent
+        -lbfgs, --lbfgs              L-BFGS
+            -h, --history               History size (100)
 
     Generic options (within group `-all`):
         -inter, --interpolation      Interpolation order (1)
@@ -164,7 +166,8 @@ regularizations = (*absolute, *membrane, *bending, *linelastic)
 adam = ('-adam', '--adam')
 gd = ('-gd', '--gradient-descent')
 ogm = ('-ogm', '--optimized-gradient-descent')
-optim = (*adam, *gd, *ogm)
+lbfgs = ('-lbfgs', '--lbfgs')
+optim = (*adam, *gd, *ogm, *lbfgs)
 
 
 # ----------------------------------------------------------------------
@@ -400,6 +403,10 @@ def parse_transform(args, options):
             check_next_isvalue(args, tag)
             opt.lr, *args = args
             opt.lr = float(opt.lr)
+        elif tag in ('-wd', '--weight-decay'):
+            check_next_isvalue(args, tag)
+            opt.weight_decay, *args = args
+            opt.weight_decay = float(opt.weight_decay)
         elif tag in ('-stop', '--stop'):
             check_next_isvalue(args, tag)
             opt.stop, *args = args
@@ -453,7 +460,9 @@ def parse_optim(args, options):
 
     opt = (struct.Adam if optim in adam else
            struct.GradientDescent if optim in gd else
-           struct.OGM if optim in ogm else None)
+           struct.OGM if optim in ogm else
+           struct.LBFGS if optim in lbfgs else
+           None)
     opt = opt()
 
     while args:
@@ -468,6 +477,10 @@ def parse_optim(args, options):
             check_next_isvalue(args, tag)
             opt.lr, *args = args
             opt.lr = float(opt.lr)
+        elif tag in ('-wd', '--weight-decay'):
+            check_next_isvalue(args, tag)
+            opt.weight_decay, *args = args
+            opt.weight_decay = float(opt.weight_decay)
         elif tag in ('-stop', '--stop'):
             check_next_isvalue(args, tag)
             opt.stop, *args = args
@@ -477,6 +490,9 @@ def parse_optim(args, options):
             if next_isvalue(args):
                 opt.ls, *args = args
                 opt.ls = int(opt.ls)
+        elif isinstance(opt, struct.LBFGS) and tag in ('-h', '--history'):
+            check_next_isvalue(args, tag)
+            opt.history = int(args.pop(0))
         else:
             args = [tag, *args]
             break

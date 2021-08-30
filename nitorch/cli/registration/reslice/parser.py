@@ -1,4 +1,5 @@
 from . import struct
+from nitorch.core import cli
 
 help = r"""[nitorch] Reslice volumes
 
@@ -39,39 +40,12 @@ usage:
         nireslice fix.nii -iv velocity.nii -l affine.lta -t mov.nii
 """
 
-
-class ParseError(RuntimeError):
-    pass
-
-
 lin = ('-l', '--linear')
 disp = ('-d', '--displacement')
 vel = ('-v', '--velocity')
 trf = [*lin, *disp, *vel]
 itrf = [t + '-inverse' if t.startswith('--') else '-i' + t[1:]
         for t in trf]
-
-# --- HELPERS ----------------------------------------------------------
-def istag(x):
-    return x.startswith('-')
-
-
-def isvalue(x):
-    return not istag(x)
-
-
-def next_istag(args):
-    return args and istag(args[0])
-
-
-def next_isvalue(args):
-    return args and isvalue(args[0])
-
-
-def check_next_isvalue(args, group):
-    if not next_isvalue(args):
-        raise RuntimeError(f'Expected a value for tag {group} '
-                           f'but found nothing.')
 
 
 # --- TRF PARSER -------------------------------------------------------
@@ -94,17 +68,17 @@ def parse_transform(args, options):
     opt = opt()
     opt.inv = inv
 
-    check_next_isvalue(args, tag)
+    cli.check_next_isvalue(args, tag)
     opt.file, *args = args
 
-    while next_istag(args):
+    while cli.next_istag(args):
         tag, *args = args
         if isinstance(opt, struct.Displacement) and tag in ('-n', '--order'):
-            check_next_isvalue(args, tag)
+            cli.check_next_isvalue(args, tag)
             opt.order, *args = args
             opt.order = int(opt.order)
         if isinstance(opt, struct.Displacement) and tag in ('-u', '--unit'):
-            check_next_isvalue(args, tag)
+            cli.check_next_isvalue(args, tag)
             opt.unit, *args = args
         else:
             args = [tag, *args]
@@ -123,12 +97,12 @@ def parse(args):
     options = struct.Reslicer()
 
     # Get input files
-    while next_isvalue(args):
+    while cli.next_isvalue(args):
         val, *args = args
         options.files.append(val)
 
     while args:
-        if not next_istag(args):
+        if not cli.next_istag(args):
             break
         tag, *args = args
 
@@ -143,35 +117,40 @@ def parse(args):
 
         # Parse remaining top-level tags
         elif tag in ('-t', '--target'):
-            check_next_isvalue(args, tag)
+            cli.check_next_isvalue(args, tag)
             options.target, *args = args
         elif tag in ('-o', '--output'):
             options.output = []
-            while next_isvalue(args):
+            while cli.next_isvalue(args):
                 val, *args = args
                 options.output.append(val)
         elif tag in ('-inter', '--interpolation'):
-            check_next_isvalue(args, tag)
+            cli.check_next_isvalue(args, tag)
             options.interpolation, *args = args
             options.interpolation = int(options.interpolation)
         elif tag in ('-bnd', '--bound'):
-            check_next_isvalue(args, tag)
+            cli.check_next_isvalue(args, tag)
             options.bound, *args = args
         elif tag in ('-ex', '--extrapolate'):
             options.extrapolate = False
+        elif tag in ('-vx', '--voxel-size'):
+            options.voxel_size = []
+            while cli.next_isvalue(args):
+                val, *args = args
+                options.voxel_size.append(float(val))
         elif tag in ('-cpu', '--cpu'):
             options.device = 'cpu'
         elif tag in ('-gpu', '--gpu'):
             options.device = 'cuda'
-            if next_isvalue(args):
+            if cli.next_isvalue(args):
                 gpu, *args = args
                 options.device = 'cuda:{:d}'.format(int(gpu))
 
         # Something went wrong
         else:
             print(help)
-            raise RuntimeError(f'Argument {tag} does not seem to '
-                               f'belong to a group')
+            raise cli.ParseError(f'Argument {tag} does not seem to '
+                                 f'belong to a group')
 
     return options
 
