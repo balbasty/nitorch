@@ -268,7 +268,7 @@ def _local_mean_conv(
     for d in range(dim):
         k = torch.arange(kernel_size[d], dtype=x.dtype, device=x.device)
         k -= kernel_size[d]//2
-        k = k.square_().div_(-2*sigma2[d]).exp_()
+        k = k.mul_(k).div_(-2*sigma2[d]).exp_()
         for dd in range(d):
             k = k.unsqueeze(0)
         for dd in range(dim-d-1):
