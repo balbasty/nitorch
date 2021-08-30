@@ -1318,7 +1318,8 @@ def sub2ind(subs, shape, out=None):
 # advised to use div(..., rounding_mode='trunc'|'floor') instead.
 # Here, we only use floor_divide on positive values so we do not care.
 _trunc_div = ((lambda *a, **k: torch.div(*a, **k, rounding_mode='trunc'))
-              if torch_version('>=', (1, 8)) else torch.floor_divide)
+              if torch_version('>=', (1, 8)) else torch.floor_divide
+              if torch_version('>=', (1, 5)) else (lambda x, y, **k: x // y))
 
 
 def ind2sub(ind, shape, out=None):
@@ -1353,7 +1354,7 @@ def ind2sub(ind, shape, out=None):
     for d in range(len(shape)):
         if d > 0:
             torch.remainder(sub[d], torch.as_tensor(stride[d-1], **bck), out=sub[d])
-        _trunc_div(sub[d], stride[d], out=sub[d])
+        sub[d] = _trunc_div(sub[d], stride[d], out=sub[d])
     return sub
 
 
