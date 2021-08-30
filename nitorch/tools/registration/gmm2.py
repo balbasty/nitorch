@@ -379,7 +379,7 @@ def make_moments(x, y):
 @torch.jit.script
 def m_step_local(fwd: Fwd, z: Tensor, moments: Tensor)\
         -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-    z0 = fwd(z).clamp_min(1e-10)
+    z0 = fwd(z, None).clamp_min(1e-10)
     suffstat = fwd(moments, z).div_(z0)
     xmean, ymean, xvar, yvar, cov = suffstat.unbind(0)
     xvar = xvar - xmean * xmean
@@ -408,7 +408,7 @@ def e_step_local(bwd: Bwd, x, y, xmean, ymean, xvar, yvar, cov, prior):
     Ay = yprec * ymean + icov * xmean  # (A * mu)[fixed]
 
     suffstat = torch.stack([mAm, Ax, Ay, xprec, yprec, icov])
-    suffstat = bwd(suffstat)
+    suffstat = bwd(suffstat, None, None)
     mAm, Ax, Ay, xprec, yprec, icov = suffstat.unbind(0)
 
     # E-step: update responsibilities
