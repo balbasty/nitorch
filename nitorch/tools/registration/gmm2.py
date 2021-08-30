@@ -259,7 +259,7 @@ def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, idet, logprior,
         if gain < 1e-5:
             break
         ll_prev = ll
-        ll_max = torch.maximum(ll_max, ll)
+        ll_max = _maximum(ll_max, ll)
     # print('')
     return z, xmean, ymean, xvar, yvar, cov, idet, logprior, hz
 
@@ -452,7 +452,7 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, z: Tensor,
             if gain < 1e-6:
                 break
             nll_prev = nll
-            nll_max = torch.maximum(nll_max, nll)
+            nll_max = _maximum(nll_max, nll)
         else:
             # print('lgmm', nit, nll.item())
             nll_prev = nll
