@@ -148,7 +148,7 @@ def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
     """
     dim = x.dim() - 2
     if len(kernel) == 1:
-        x = conv(dim, x, kernel[0], stride)
+        x = conv(x, kernel[0], stride)
     else:
         for d, (k, s) in enumerate(zip(kernel, stride)):
             ss: List[int] = [1] * d + [s] + [1] * (dim-d-1)
