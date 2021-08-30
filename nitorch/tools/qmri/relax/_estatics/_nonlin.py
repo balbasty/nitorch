@@ -3,9 +3,9 @@ from nitorch import core, spatial
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag, hessian_matmul, hessian_solve,
-                     smart_grid, smart_pull, smart_push)
+                     smart_grid, smart_pull, smart_push, smart_grad)
 from ..utils import rls_maj
-from nitorch.tools.qmri.param import ParameterMap
+from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
 
 
 def nonlin(data, opt=None):
@@ -36,24 +36,29 @@ def nonlin(data, opt=None):
     print(f'Fitting a (multi) exponential decay model with {len(data)} contrasts. Echo times:')
     for i, contrast in enumerate(data):
         print(f'    - contrast {i:2d}: [' + ', '.join([f'{te*1e3:.1f}' for te in contrast.te]) + '] ms')
-    
+
     # --- estimate noise / register / initialize maps ---
-    data, maps = preproc(data, opt)
-    print(maps.affine)
+    data, maps, dist = preproc(data, opt)
     vx = spatial.voxel_size(maps.affine)
 
     # --- prepare regularization factor ---
     lam = opt.regularization.factor
-    lam = core.utils.make_list(lam)
+    lam = core.py.make_list(lam)
     if len(lam) > 1:
         *lam, lam_decay = lam
     else:
         lam_decay = lam[0]
-    lam = core.utils.make_list(lam, len(maps)-1)
+    lam = core.py.make_list(lam, len(maps)-1)
     lam.append(lam_decay)
 
+    distprm = dict(
+        factor=opt.distortiom.factor,
+        absolute=opt.distortiom.absolute,
+        membrane=opt.distortiom.membrane,
+        bending=opt.distortiom.bending)
+
     # --- initialize weights (RLS) ---
-    if (not opt.regularization.norm or 
+    if (not opt.regularization.norm or
         opt.regularization.norm.lower() == 'none' or
         all(l == 0 for l in lam)):
         opt.regularization.norm = ''
@@ -74,8 +79,7 @@ def nonlin(data, opt=None):
         print(f'    - decay:          {lam[-1]:.3g}')
     else:
         print('Without regularization:')
-    
-        
+
     # --- compute derivatives ---
     grad = torch.empty((len(data) + 1,) + mean_shape, **backend)
     hess = torch.empty((len(data)*2 + 1,) + mean_shape, **backend)
@@ -91,15 +95,19 @@ def nonlin(data, opt=None):
 
     ll_rls = []
     ll_max = core.constants.ninf
-        
+
     for n_iter_rls in range(opt.optim.max_iter_rls):
 
         multi_rls = rls if opt.regularization.norm == 'tv' \
                     else [rls] * len(maps)
 
-        # --- Gauss Newton loop ---
         ll_gn = []
         for n_iter_gn in range(opt.optim.max_iter_gn):
+
+            # -----------------
+            #    Update maps
+            # -----------------
+
             decay = maps.decay
             crit = 0
             grad.zero_()
@@ -144,16 +152,53 @@ def nonlin(data, opt=None):
                 if map.min is not None or map.max is not None:
                     map.volume.clamp_(map.min, map.max)
 
-            # --- Compute gain ---
-            ll = crit + reg + sumrls
+            # ------------------------
+            #    Update distortions
+            # ------------------------
+            vreg = 0
+            crit = 0
+            if opt.distortion.enable:
+                # --- loop over contrasts ---
+                for i, contrast, intercept, distortion in enumerate(zip(data, maps.intercepts, dist)):
+                    distortion.blip = distortion.blip or (2*(i % 2) - 1)
+                    crit1, g, h = _distortion_gradient(contrast, distortion, intercept, decay, opt)
+                    crit += crit1
+
+                    # --- regularization ---
+                    g1 = spatial.regulariser_grid(distortion.volume, **distprm,
+                                                  voxel_size=distortion.voxel_size)
+                    reg1 = distortion.volume.flatten().dot(g1.flatten())
+                    vreg += 0.5 * reg1
+                    g += g1
+                    del g1
+
+                    # --- gauss-newton ---
+                    if not torch.isfinite(h).all():
+                        print('WARNING: NaNs in hess')
+                    h = core.utils.movedim(h, -1, -4)
+                    h = hessian_loaddiag(h, 1e-6, 1e-8)
+                    h = core.utils.movedim(h, -4, -1)
+                    delta = _nonlin_solve(h, g, multi_rls, lam, vx, opt)
+                    if not torch.isfinite(delta).all():
+                        print('WARNING: NaNs in delta (non stable Hessian)')
+                    distortion.volume -= delta
+                    del delta, g, h
+
+            # ------------------
+            #    Compute gain
+            # ------------------
+            ll = crit + reg + vreg + sumrls
             ll_max = max(ll_max, ll)
             ll_prev = ll_gn[-1] if ll_gn else ll_max
             gain = (ll_prev - ll) / (ll_max - ll_prev)
             ll_gn.append(ll)
             if opt.verbose:
-                print('{:3d} | {:3d} | {:12.6g} + {:12.6g} + {:12.6g} = {:12.6g} | gain = {:7.2g}'
-                      .format(n_iter_rls, n_iter_gn, crit, reg, sumrls,
-                              crit + reg + sumrls, gain))
+                pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | '
+                        f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
+                if opt.distortion.enable:
+                    pstr += f'| {vreg:3d} '
+                pstr += f'= {ll:12.6g} | gain = {gain:7.2g}'
+                print(pstr)
             if gain < opt.optim.tolerance_gn:
                 break
 
@@ -163,9 +208,9 @@ def nonlin(data, opt=None):
             sumrls = 0.5 * rls.sum(dtype=torch.double)
             eps = core.constants.eps(rls.dtype)
             rls = rls.clamp_min_(eps).reciprocal_()
-        
+
             # --- Compute gain ---
-            # (we are late by one full RLS iteration when computing the 
+            # (we are late by one full RLS iteration when computing the
             #  gain but we save some computations)
             ll = ll_gn[-1]
             ll_prev = ll_rls[-1][-1] if ll_rls else ll_max
@@ -179,7 +224,7 @@ def nonlin(data, opt=None):
     return postproc(maps, data)
 
 
-def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
+def _nonlin_gradient(contrast, distortion, intercept, decay, opt, do_grad=True):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
 
@@ -187,21 +232,24 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
     ----------
     contrast : (nb_echo, *obs_shape) GradientEchoMulti
         A single echo series (with the same weighting)
+    distortion : ParameterizedDeformation
+        A model of distortions caused by B0 inhomogeneities.
     intercept : (*recon_shape) ParameterMap
         Log-intercept of the contrast
     decay : (*recon_shape) ParameterMap
         Exponential decay
     opt : Options
+    do_grad : bool, default=True
 
     Returns
     -------
     crit : () tensor
         Log-likelihood
-    grad : (2, *recon_shape) tensor
+    grad : (2, *recon_shape) tensor, if `do_grad`
         Gradient with respect to:
             [0] intercept
             [1] decay
-    hess : (3, *recon_shape) tensor
+    hess : (3, *recon_shape) tensor, if `do_grad`
         Hessian with respect to:
             [0] intercept ** 2
             [1] decay ** 2
@@ -224,16 +272,25 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
     inter_slope = torch.stack([intercept.fdata(**backend),
                                decay.fdata(**backend)])
     inter, slope = smart_pull(inter_slope, grid)
+    del inter_slope
+    if distortion:
+        grid_up, grid_down = distortion.exp2(add_identity=True)
+    else:
+        grid_up = grid_down = None
 
     crit = 0
     grad = torch.zeros((2,) + obs_shape, **backend) if do_grad else None
     hess = torch.zeros((3,) + obs_shape, **backend) if do_grad else None
 
-    for echo in contrast:
+    for e, echo in enumerate(contrast):
+
+        blip = echo.blip or (2*(e * 2) - 1)
+        grid_blip = grid_up if blip > 0 else grid_down
 
         # compute residuals
         dat = echo.fdata(**backend, rand=True, cache=False)  # observed
         fit = (inter - echo.te * slope).exp_()               # fitted
+        fit = smart_pull(fit, grid_blip, bound='dft')
         msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
         dat[~msk] = 0
         fit[~msk] = 0
@@ -245,6 +302,8 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
         crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
 
         if do_grad:
+            res = smart_push(res, grid_blip, bound='dft')
+
             # compute gradient and Hessian in observed space
             #
             #   grad[inter]       =           lam * res * fit
@@ -275,13 +334,13 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
             hess[1] += res
             del res, fit
 
-    
+
     grad[~torch.isfinite(grad)] = 0
     diag = hess[:-1]
     diag[~torch.isfinite(diag)] = 1e-3
     offdiag = hess[-1]
     offdiag[~torch.isfinite(offdiag)] = 0
-            
+
     if do_grad:
         # push gradient and Hessian to recon space
         grad = smart_push(grad, grid, recon_shape)
@@ -289,6 +348,117 @@ def _nonlin_gradient(contrast, intercept, decay, opt, do_grad=True):
         return crit, grad, hess
 
     return crit
+
+
+def _distortion_gradient(contrast, distortion, intercept, decay, opt, do_grad=True):
+    """Compute the gradient and Hessian of the distortion field.
+
+    Parameters
+    ----------
+    contrast : (nb_echo, *obs_shape) GradientEchoMulti
+        A single echo series (with the same weighting)
+    distortion : ParameterizedDeformation
+        A model of distortions caused by B0 inhomogeneities.
+    intercept : (*recon_shape) ParameterMap
+        Log-intercept of the contrast
+    decay : (*recon_shape) ParameterMap
+        Exponential decay
+    opt : Options
+
+    Returns
+    -------
+    crit : () tensor
+        Log-likelihood
+    grad : (*shape, 3) tensor
+    hess : (*shape, 6) tensor
+
+    """
+
+    dtype = opt.backend.dtype
+    device = opt.backend.device
+    backend = dict(dtype=dtype, device=device)
+
+    obs_shape = contrast.volume.shape[1:]
+    recon_shape = intercept.volume.shape
+    aff = core.linalg.lmdiv(intercept.affine, contrast.affine)
+    aff = aff.to(**backend)
+    lam = 1/contrast.noise
+
+    # pull parameter maps to observed space
+    grid = smart_grid(aff, obs_shape, recon_shape)
+    inter_slope = torch.stack([intercept.fdata(**backend),
+                               decay.fdata(**backend)])
+    inter, slope = smart_pull(inter_slope, grid)
+    del inter_slope
+    grid_up, grid_down = distortion.exp2(add_identity=True)
+    readout = distortion.readout
+
+    crit = 0
+    grad = torch.zeros((3,) + obs_shape, **backend) if do_grad else None
+    hess = torch.zeros((6,) + obs_shape, **backend) if do_grad else None
+
+    for e, echo in enumerate(contrast):
+
+        blip = echo.blip or (2*(e * 2) - 1)
+        grid_blip = grid_up if blip > 0 else grid_down
+
+        # compute residuals
+        dat = echo.fdata(**backend, rand=True, cache=False)  # observed
+        fit = (inter - echo.te * slope).exp_()               # fitted
+        if isinstance(distortion, DenseDeformation):
+            gfit = smart_grad(fit, grid_blip, bound='dft')
+        fit = smart_pull(fit, grid_blip, bound='dft')        # fitted o phi
+        if isinstance(distortion, SVFDeformation):
+            gfit = spatial.diff(fit, bound='dft', dim=3)      # D(fitted o phi)
+        msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
+        dat[~msk] = 0
+        fit[~msk] = 0
+        gfit[~msk, :] = 0
+        res = dat.neg_()
+        res += fit
+        del dat, msk
+
+        # compute log-likelihood
+        crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
+
+        if do_grad:
+            g1 = res.unsqueeze(-1).mul_(gfit)
+            h1 = torch.zeros_like(hess)
+            h1[..., :3] = gfit.square()
+            if readout is not None:
+                for d in range(3):
+                    if d != readout:
+                        g1[..., d].zero_()
+                        h1[..., d].zero_()
+            else:
+                h1[..., 3] = gfit[..., 0] * gfit[..., 1]
+                h1[..., 4] = gfit[..., 0] * gfit[..., 2]
+                h1[..., 5] = gfit[..., 1] * gfit[..., 2]
+            g1 = g1.mul_(lam)
+            h1 = h1.mul_(lam)
+
+            # propagate backward
+            if isinstance(distortion, SVFDeformation):
+                vel = distortion.volume
+                if blip < 0:
+                    vel = -vel
+                g1, h1 = spatial.exp_backward(vel, g1, h1, steps=distortion.steps)
+            if blip < 0:
+                g1 = g1.neg_()
+
+            grad += g1
+            hess += h1
+
+    if not do_grad:
+        return crit
+
+    grad[~torch.isfinite(grad)] = 0
+    diag = hess[..., :-3]
+    diag[~torch.isfinite(diag)] = 1e-3
+    offdiag = hess[..., -3:]
+    offdiag[~torch.isfinite(offdiag)] = 0
+
+    return crit, grad, hess
 
 
 def _nonlin_reg(map, vx=1., rls=None, lam=1., do_grad=True):
@@ -371,11 +541,11 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
             result[i] += res1
         return result
 
-    # The Hessian is A = H + L, where H corresponds to the data term 
-    # and L to the regularizer. Note that, L = D'WD where D is the 
+    # The Hessian is A = H + L, where H corresponds to the data term
+    # and L to the regularizer. Note that, L = D'WD where D is the
     # gradient operator, D' the divergence and W a diagonal matrix
     # that contains the RLS weights.
-    # We use (H + diag(|D'D|w)) as a preconditioner because it is easy to 
+    # We use (H + diag(|D'D|w)) as a preconditioner because it is easy to
     # invert and majorises the true Hessian.
     hessp = hess.clone()
     smo = torch.as_tensor(vx).square().reciprocal().sum().item()
@@ -383,10 +553,10 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
         if not l:
             continue
         hessp[2*i] += l * (rls_maj(weight, vx) if weight is not None else 4*smo)
-    
+
     def precond(x):
         return hessian_solve(hessp, x)
-    
+
     result = core.optim.cg(hess_fn, grad, precond=precond,
                            verbose=(opt.verbose > 1), stop='norm',
                            max_iter=opt.optim.max_iter_cg,

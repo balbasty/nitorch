@@ -29,7 +29,7 @@ from nitorch.tools.qmri.param import ParameterMap
 #   which, after chain rule, yields
 #                   dL/dy = flash'(y) * (phi.T @ res)
 #   where this time res = (phi @ flash(y) - x)
-#   In that case, we pull the param the signal only to compute the
+#   In that case, we pull the precomputed signal only to compute the
 #   residuals that are then pushed back to parameter space.
 #   The derivative of the flash equation is computed in parameter space
 #   and multiplied with the pushed residuals.

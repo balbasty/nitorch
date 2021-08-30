@@ -144,7 +144,7 @@ def smart_grid(aff, shape, inshape=None):
     return spatial.affine_grid(aff, shape)
 
 
-def smart_pull(tensor, grid):
+def smart_pull(tensor, grid, **opt):
     """Pull iff grid is defined (+ add/remove batch dim).
     
     Parameters
@@ -162,10 +162,33 @@ def smart_pull(tensor, grid):
     """
     if grid is None:
         return tensor
-    return spatial.grid_pull(tensor[None, ...], grid[None, ...])[0]
+    return spatial.grid_pull(tensor[None, ...], grid[None, ...], **opt)[0]
 
 
-def smart_push(tensor, grid, shape=None):
+def smart_grad(tensor, grid, **opt):
+    """Pull gradients iff grid is defined (+ add/remove batch dim).
+
+    Parameters
+    ----------
+    tensor : (channels, *input_shape) tensor
+        Input volume
+    grid : (*output_shape, D) tensor or None
+        Sampling grid
+
+    Returns
+    -------
+    pulled : (channels, *output_shape) tensor
+        Sampled volume
+
+    """
+    if grid is None:
+        opt.pop('extrapolate', None)
+        opt.pop('interpolation', None)
+        return spatial.diff(tensor, dim=3, **opt)
+    return spatial.grid_pull(tensor[None, ...], grid[None, ...], **opt)[0]
+
+
+def smart_push(tensor, grid, shape=None, **opt):
     """Pull iff grid is defined (+ add/remove batch dim).
     
     Parameters
@@ -185,5 +208,5 @@ def smart_push(tensor, grid, shape=None):
     """
     if grid is None:
         return tensor
-    return spatial.grid_push(tensor[None, ...], grid[None, ...], shape)[0]
+    return spatial.grid_push(tensor[None, ...], grid[None, ...], shape, **opt)[0]
 

@@ -17,6 +17,18 @@ class RegularizationOptions(Option):
     factor: float or list = [1e3, 1e0]      # Regularization factor
 
 
+class DistortionOption(Option):
+    """Options for the regularization or distortion fields"""
+    enable: bool = False                    # enable distortion correction
+    model: str = 'svf'                      # {'smalldef', 'svf', 'shoot'}
+    steps: int = 8                          # Number of integration steps
+    factor: float = 1                       # Global regularization factor
+    absolute: float = 0.1                   # Penalty on absolute displacements
+    membrane: float = 0.01                  # Penalty on 1st derivatives
+    bending: float = 0.2                    # Penalty on 2nd derivatives
+    # lame?
+
+
 class OptimOptions(Option):
     """Options for the optimizer(s)"""
     max_iter_gn: int = 3                   # Number of Gauss-Newton iterations
@@ -46,5 +58,6 @@ class ESTATICSOptions(Option):
     optim: OptimOptions = OptimOptions()
     backend: BackendOptions = BackendOptions()
     regularization: RegularizationOptions = RegularizationOptions()
+    distortion: DistortionOption = DistortionOption()
     verbose: int or bool = 1
-    uncertainty: bool = False                  # Whether to return uncertainty maps (posterior variance)
+    uncertainty: bool = False                  # Whether to return uncertainty maps (posterior variance)
