@@ -2,6 +2,7 @@
 import torch
 from . import utils
 from warnings import warn
+from typing import List
 import math
 
 
@@ -9,6 +10,11 @@ import math
 from ._linalg_expm import expm, _expm
 from ._linalg_logm import logm
 from ._linalg_qr import eig_sym, eig_sym_
+
+
+_torch_has_linalg_solve = utils.torch_version('>=', (1, 8))
+_solve_lu = (torch.linalg.solve if _torch_has_linalg_solve else
+             (lambda A, b: torch.solve(b, A)[0]))
 
 
 def meanm(mats, max_iter=1024, tol=1e-20):
@@ -83,6 +89,33 @@ def meanm(mats, max_iter=1024, tol=1e-20):
     return mean_mat.to(dtype)
 
 
+def kron2(x, y):
+    """Kronecker product of two matrices
+
+    Parameters
+    ----------
+    x : (..., m, n) tensor
+        Left matrix
+    y : (..., p, q) tensor
+        Right matrix
+
+    Returns
+    -------
+    xy : (..., p*m, q*n) tensor
+        Kronecker product
+        `xy.reshape([P, M, Q, N])[p, m, q, n] == x[m, n] * y[n, q]`
+
+    """
+    x, y = utils.to_max_backend(x, y)
+    *_, m, n = x.shape
+    *_, p, q = y.shape
+    x = x[..., None, :, None, :]
+    y = y[..., :, None, :, None]
+    xy = x*y
+    xy = xy.reshape([*xy.shape[:-4], m*p, n*q])
+    return xy
+
+
 def lmdiv(a, b, method='lu', rcond=1e-15, out=None):
     r"""Left matrix division ``inv(a) @ b``.
 
@@ -118,7 +151,7 @@ def lmdiv(a, b, method='lu', rcond=1e-15, out=None):
         method = 'pinv'
     if method.lower().startswith('lu'):
         # TODO: out keyword
-        return torch.solve(b, a)[0]
+        return _solve_lu(a, b)
     elif method.lower().startswith('chol'):
         u = torch.cholesky(a, upper=False)
         return torch.cholesky_solve(b, u, upper=False, out=out)
@@ -386,6 +419,53 @@ def sym_to_full(mat):
     return utils.movedim(full, [0, 1], [-2, -1])
 
 
+@torch.jit.script
+def _sym_matvec2(mat, vec):
+    mm = mat[:2] * vec
+    mm[0].addcmul_(mat[2], vec[1])
+    mm[1].addcmul_(mat[2], vec[0])
+    return mm
+
+
+@torch.jit.script
+def _sym_matvec3(mat, vec):
+    mm = mat[:3] * vec
+    mm[0].addcmul_(mat[3], vec[1]).addcmul_(mat[4], vec[2])
+    mm[1].addcmul_(mat[3], vec[0]).addcmul_(mat[5], vec[2])
+    mm[2].addcmul_(mat[4], vec[0]).addcmul_(mat[5], vec[1])
+    return mm
+
+
+@torch.jit.script
+def _sym_matvec4(mat, vec):
+    mm = mat[:4] * vec
+    mm[0].addcmul_(mat[4], vec[1]) \
+        .addcmul_(mat[5], vec[2]) \
+        .addcmul_(mat[6], vec[3])
+    mm[1].addcmul_(mat[4], vec[0]) \
+        .addcmul_(mat[7], vec[2]) \
+        .addcmul_(mat[8], vec[3])
+    mm[2].addcmul_(mat[5], vec[0]) \
+        .addcmul_(mat[7], vec[1]) \
+        .addcmul_(mat[9], vec[3])
+    mm[3].addcmul_(mat[6], vec[0]) \
+        .addcmul_(mat[8], vec[1]) \
+        .addcmul_(mat[9], vec[2])
+    return mm
+
+
+@torch.jit.script
+def _sym_matvecn(mat, vec, nb_prm: int):
+    mm = mat[:nb_prm] * vec
+    c = nb_prm
+    for i in range(nb_prm):
+        for j in range(i+1, nb_prm):
+            mm[i].addcmul_(mat[c], vec[j])
+            mm[j].addcmul_(mat[c], vec[i])
+            c += 1
+    return mm
+
+
 def sym_matvec(mat, vec):
     """Matrix-vector product with a symmetric matrix
 
@@ -405,6 +485,7 @@ def sym_matvec(mat, vec):
         The matrix-vector product
 
     """
+
     mat, vec = utils.to_max_backend(mat, vec)
 
     nb_prm = vec.shape[-1]
@@ -412,42 +493,19 @@ def sym_matvec(mat, vec):
         return mat * vec
 
     # make the vector dimension first so that the code is less ugly
-    mat = utils.movedim(mat, -1, 0)
-    vec = utils.movedim(vec, -1, 0)
+    mat = utils.fast_movedim(mat, -1, 0)
+    vec = utils.fast_movedim(vec, -1, 0)
 
     if nb_prm == 2:
-        mm = mat[:nb_prm] * vec
-        mm[0].add_(mat[2] * vec[1])
-        mm[1].add_(mat[2] * vec[0])
+        mm = _sym_matvec2(mat, vec)
     elif nb_prm == 3:
-        mm = mat[:nb_prm] * vec
-        mm[0].add_(mat[3] * vec[1]).add_(mat[4] * vec[2])
-        mm[1].add_(mat[3] * vec[0]).add_(mat[5] * vec[2])
-        mm[2].add_(mat[4] * vec[0]).add_(mat[5] * vec[1])
+        mm = _sym_matvec3(mat, vec)
     elif nb_prm == 4:
-        mm = mat[:nb_prm] * vec
-        mm[0] += (mat[4] * vec[1])
-        mm[0] += (mat[5] * vec[2])
-        mm[0] += (mat[6] * vec[3])
-        mm[1] += (mat[4] * vec[0])
-        mm[1] += (mat[7] * vec[2])
-        mm[1] += (mat[8] * vec[3])
-        mm[2] += (mat[5] * vec[0])
-        mm[2] += (mat[7] * vec[1])
-        mm[2] += (mat[9] * vec[3])
-        mm[3] += (mat[6] * vec[0])
-        mm[3] += (mat[8] * vec[1])
-        mm[3] += (mat[9] * vec[2])
+        mm = _sym_matvec4(mat, vec)
     else:
-        mm = mat[:nb_prm] * vec
-        c = nb_prm
-        for i in range(nb_prm):
-            for j in range(i+1, nb_prm):
-                mm[i] += mat[c] * vec[j]
-                mm[j] += mat[c] * vec[i]
-                c += 1
+        mm = _sym_matvecn(mat, vec)
 
-    return utils.movedim(mm, 0, -1)
+    return utils.fast_movedim(mm, 0, -1)
 
 
 def sym_diag(mat):
@@ -470,6 +528,140 @@ def sym_diag(mat):
     mat = torch.as_tensor(mat)
     nb_prm = int((math.sqrt(1 + 8 * mat.shape[-1]) - 1)//2)
     return mat[..., :nb_prm]
+
+
+@torch.jit.script
+def _square(x):
+    return x * x
+
+
+@torch.jit.script
+def _square_(x):
+    x *= x
+    return x
+
+
+@torch.jit.script
+def _sym_solve2(diag, uppr, vec, shape: List[int]):
+    det = _square(uppr[0]).neg_()
+    det.addcmul_(diag[0], diag[1])
+    res = vec.new_empty(shape)
+    res[0] = diag[1] * vec[0] - uppr[0] * vec[1]
+    res[1] = diag[0] * vec[1] - uppr[0] * vec[0]
+    res /= det
+    return res
+
+
+@torch.jit.script
+def _sym_solve3(diag, uppr, vec, shape: List[int]):
+    det = diag.prod(0) + 2 * uppr.prod(0) \
+        - (diag[0] * _square(uppr[2]) +
+           diag[2] * _square(uppr[0]) +
+           diag[1] * _square(uppr[1]))
+    res = vec.new_empty(shape)
+    res[0] = (diag[1] * diag[2] - _square(uppr[2])) * vec[0] \
+           + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[1] \
+           + (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[2]
+    res[1] = (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[0] \
+           + (diag[0] * diag[2] - _square(uppr[1])) * vec[1] \
+           + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[2]
+    res[2] = (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[0] \
+           + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[1] \
+           + (diag[0] * diag[1] - _square(uppr[0])) * vec[2]
+    res /= det
+    return res
+
+
+@torch.jit.script
+def _sym_solve4(diag, uppr, vec, shape: List[int]):
+    det = diag.prod(0) \
+         + (_square(uppr[0] * uppr[5]) +
+            _square(uppr[1] * uppr[4]) +
+            _square(uppr[2] * uppr[3])) + \
+         - 2 * (uppr[0] * uppr[1] * uppr[4] * uppr[5] +
+                uppr[0] * uppr[2] * uppr[3] * uppr[5] +
+                uppr[1] * uppr[2] * uppr[3] * uppr[4]) \
+         + 2 * (diag[0] * uppr[3] * uppr[4] * uppr[5] +
+                diag[1] * uppr[1] * uppr[2] * uppr[5] +
+                diag[2] * uppr[0] * uppr[2] * uppr[4] +
+                diag[3] * uppr[0] * uppr[1] * uppr[3]) \
+         - (diag[0] * diag[1] * _square(uppr[5]) +
+            diag[0] * diag[2] * _square(uppr[4]) +
+            diag[0] * diag[3] * _square(uppr[3]) +
+            diag[1] * diag[2] * _square(uppr[2]) +
+            diag[1] * diag[3] * _square(uppr[1]) +
+            diag[2] * diag[3] * _square(uppr[0]))
+    inv01 = (- diag[2] * diag[3] * uppr[0]
+             + diag[2] * uppr[2] * uppr[4]
+             + diag[3] * uppr[1] * uppr[3]
+             + uppr[0] * _square(uppr[5])
+             - uppr[1] * uppr[4] * uppr[5]
+             - uppr[2] * uppr[3] * uppr[5])
+    inv02 = (- diag[1] * diag[3] * uppr[1]
+             + diag[1] * uppr[2] * uppr[5]
+             + diag[3] * uppr[0] * uppr[3]
+             + uppr[1] * _square(uppr[4])
+             - uppr[0] * uppr[4] * uppr[5]
+             - uppr[2] * uppr[3] * uppr[4])
+    inv03 = (- diag[1] * diag[2] * uppr[2]
+             + diag[1] * uppr[1] * uppr[5]
+             + diag[2] * uppr[0] * uppr[4]
+             + uppr[2] * _square(uppr[3])
+             - uppr[0] * uppr[3] * uppr[5]
+             - uppr[1] * uppr[3] * uppr[4])
+    inv12 = (- diag[0] * diag[3] * uppr[3]
+             + diag[0] * uppr[4] * uppr[5]
+             + diag[3] * uppr[0] * uppr[1]
+             + uppr[3] * _square(uppr[2])
+             - uppr[0] * uppr[2] * uppr[5]
+             - uppr[1] * uppr[2] * uppr[4])
+    inv13 = (- diag[0] * diag[2] * uppr[4]
+             + diag[0] * uppr[3] * uppr[5]
+             + diag[2] * uppr[0] * uppr[2]
+             + uppr[4] * _square(uppr[1])
+             - uppr[0] * uppr[1] * uppr[5]
+             - uppr[1] * uppr[2] * uppr[3])
+    inv23 = (- diag[0] * diag[1] * uppr[5]
+             + diag[0] * uppr[4] * uppr[3]
+             + diag[1] * uppr[1] * uppr[2]
+             + uppr[5] * _square(uppr[0])
+             - uppr[0] * uppr[1] * uppr[4]
+             - uppr[0] * uppr[2] * uppr[3])
+    res = vec.new_empty(shape)
+    res[0] = (diag[1] * diag[2] * diag[3]
+              - diag[1] * _square(uppr[5])
+              - diag[2] * _square(uppr[4])
+              - diag[3] * _square(uppr[3])
+              + 2 * uppr[3] * uppr[4] * uppr[5]) * vec[0]
+    res[0] += inv01 * vec[1]
+    res[0] += inv02 * vec[2]
+    res[0] += inv03 * vec[3]
+    res[1] = (diag[0] * diag[2] * diag[3]
+              - diag[0] * _square(uppr[5])
+              - diag[2] * _square(uppr[2])
+              - diag[3] * _square(uppr[1])
+              + 2 * uppr[1] * uppr[2] * uppr[5]) * vec[1]
+    res[1] += inv01 * vec[0]
+    res[1] += inv12 * vec[2]
+    res[1] += inv13 * vec[3]
+    res[2] = (diag[0] * diag[1] * diag[3]
+              - diag[0] * _square(uppr[4])
+              - diag[1] * _square(uppr[2])
+              - diag[3] * _square(uppr[0])
+              + 2 * uppr[0] * uppr[2] * uppr[4]) * vec[2]
+    res[2] += inv02 * vec[0]
+    res[2] += inv12 * vec[1]
+    res[2] += inv23 * vec[3]
+    res[3] = (diag[0] * diag[1] * diag[2]
+              - diag[0] * _square(uppr[3])
+              - diag[1] * _square(uppr[1])
+              - diag[2] * _square(uppr[0])
+              + 2 * uppr[0] * uppr[1] * uppr[3]) * vec[3]
+    res[3] += inv03 * vec[0]
+    res[3] += inv13 * vec[1]
+    res[3] += inv23 * vec[2]
+    res /= det
+    return res
 
 
 def sym_solve(mat, vec, eps=None):
@@ -510,12 +702,12 @@ def sym_solve(mat, vec, eps=None):
     # make the vector dimension first so that the code is less ugly
     mat, vec = utils.to_max_backend(mat, vec)
     backend = dict(dtype=mat.dtype, device=mat.device)
-    mat = utils.movedim(mat, -1, 0)
-    vec = utils.movedim(vec, -1, 0)
+    mat = utils.fast_movedim(mat, -1, 0)
+    vec = utils.fast_movedim(vec, -1, 0)
     nb_prm = len(vec)
 
     shape = utils.expanded_shape(mat.shape[1:], vec.shape[1:])
-    shape = (vec.shape[0], *shape)
+    shape = [vec.shape[0], *shape]
 
     diag = mat[:nb_prm]  # diagonal
     uppr = mat[nb_prm:]  # upper triangular part
@@ -529,126 +721,19 @@ def sym_solve(mat, vec, eps=None):
 
     if nb_prm == 1:
         res = vec / diag
-        return utils.movedim(res, 0, -1)
     elif nb_prm == 2:
-        det = uppr[0].square().neg_()
-        det += diag[0] * diag[1]
-        res = vec.new_empty(shape)
-        res[0] = diag[1] * vec[0] - uppr[0] * vec[1]
-        res[1] = diag[0] * vec[1] - uppr[0] * vec[0]
-        res /= det
-        return utils.movedim(res, 0, -1)
+        res = _sym_solve2(diag, uppr, vec, shape)
     elif nb_prm == 3:
-        det = diag.prod(0) + 2 * uppr.prod(0) \
-            - (diag[0] * uppr[2].square() +
-               diag[2] * uppr[0].square() +
-               diag[1] * uppr[1].square())
-        res = vec.new_empty(shape)
-        res[0] = (diag[1] * diag[2] - uppr[2].square()) * vec[0] \
-               + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[1] \
-               + (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[2]
-        res[1] = (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[0] \
-               + (diag[0] * diag[2] - uppr[1].square()) * vec[1] \
-               + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[2]
-        res[2] = (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[0] \
-               + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[1] \
-               + (diag[0] * diag[1] - uppr[0].square()) * vec[2]
-        res /= det
-        return utils.movedim(res, 0, -1)
+        res = _sym_solve3(diag, uppr, vec, shape)
     elif nb_prm == 4:
-        det = diag.prod(0) \
-             + ((uppr[0] * uppr[5]).square() +
-                (uppr[1] * uppr[4]).square() +
-                (uppr[2] * uppr[3]).square()) + \
-             - 2 * (uppr[0] * uppr[1] * uppr[4] * uppr[5] +
-                    uppr[0] * uppr[2] * uppr[3] * uppr[5] +
-                    uppr[1] * uppr[2] * uppr[3] * uppr[4]) \
-             + 2 * (diag[0] * uppr[3] * uppr[4] * uppr[5] +
-                    diag[1] * uppr[1] * uppr[2] * uppr[5] +
-                    diag[2] * uppr[0] * uppr[2] * uppr[4] +
-                    diag[3] * uppr[0] * uppr[1] * uppr[3]) \
-             - (diag[0] * diag[1] * uppr[5].square() +
-                diag[0] * diag[2] * uppr[4].square() +
-                diag[0] * diag[3] * uppr[3].square() +
-                diag[1] * diag[2] * uppr[2].square() +
-                diag[1] * diag[3] * uppr[1].square() +
-                diag[2] * diag[3] * uppr[0].square())
-        inv01 = (- diag[2] * diag[3] * uppr[0]
-                 + diag[2] * uppr[2] * uppr[4]
-                 + diag[3] * uppr[1] * uppr[3]
-                 + uppr[0] * uppr[5].square()
-                 - uppr[1] * uppr[4] * uppr[5]
-                 - uppr[2] * uppr[3] * uppr[5])
-        inv02 = (- diag[1] * diag[3] * uppr[1]
-                 + diag[1] * uppr[2] * uppr[5]
-                 + diag[3] * uppr[0] * uppr[3]
-                 + uppr[1] * uppr[4].square()
-                 - uppr[0] * uppr[4] * uppr[5]
-                 - uppr[2] * uppr[3] * uppr[4])
-        inv03 = (- diag[1] * diag[2] * uppr[2]
-                 + diag[1] * uppr[1] * uppr[5]
-                 + diag[2] * uppr[0] * uppr[4]
-                 + uppr[2] * uppr[3].square()
-                 - uppr[0] * uppr[3] * uppr[5]
-                 - uppr[1] * uppr[3] * uppr[4])
-        inv12 = (- diag[0] * diag[3] * uppr[3]
-                 + diag[0] * uppr[4] * uppr[5]
-                 + diag[3] * uppr[0] * uppr[1]
-                 + uppr[3] * uppr[2].square()
-                 - uppr[0] * uppr[2] * uppr[5]
-                 - uppr[1] * uppr[2] * uppr[4])
-        inv13 = (- diag[0] * diag[2] * uppr[4]
-                 + diag[0] * uppr[3] * uppr[5]
-                 + diag[2] * uppr[0] * uppr[2]
-                 + uppr[4] * uppr[1].square()
-                 - uppr[0] * uppr[1] * uppr[5]
-                 - uppr[1] * uppr[2] * uppr[3])
-        inv23 = (- diag[0] * diag[1] * uppr[5]
-                 + diag[0] * uppr[4] * uppr[3]
-                 + diag[1] * uppr[1] * uppr[2]
-                 + uppr[5] * uppr[0].square()
-                 - uppr[0] * uppr[1] * uppr[4]
-                 - uppr[0] * uppr[2] * uppr[3])
-        res = vec.new_empty(shape)
-        res[0] = (diag[1] * diag[2] * diag[3]
-                  - diag[1] * uppr[5].square()
-                  - diag[2] * uppr[4].square()
-                  - diag[3] * uppr[3].square()
-                  + 2 * uppr[3] * uppr[4] * uppr[5]) * vec[0]
-        res[0] += inv01 * vec[1]
-        res[0] += inv02 * vec[2]
-        res[0] += inv03 * vec[3]
-        res[1] = (diag[0] * diag[2] * diag[3]
-                  - diag[0] * uppr[5].square()
-                  - diag[2] * uppr[2].square()
-                  - diag[3] * uppr[1].square()
-                  + 2 * uppr[1] * uppr[2] * uppr[5]) * vec[1]
-        res[1] += inv01 * vec[0]
-        res[1] += inv12 * vec[2]
-        res[1] += inv13 * vec[3]
-        res[2] = (diag[0] * diag[1] * diag[3]
-                  - diag[0] * uppr[4].square()
-                  - diag[1] * uppr[2].square()
-                  - diag[3] * uppr[0].square()
-                  + 2 * uppr[0] * uppr[2] * uppr[4]) * vec[2]
-        res[2] += inv02 * vec[0]
-        res[2] += inv12 * vec[1]
-        res[2] += inv23 * vec[3]
-        res[3] = (diag[0] * diag[1] * diag[2]
-                  - diag[0] * uppr[3].square()
-                  - diag[1] * uppr[1].square()
-                  - diag[2] * uppr[0].square()
-                  + 2 * uppr[0] * uppr[1] * uppr[3]) * vec[3]
-        res[3] += inv03 * vec[0]
-        res[3] += inv13 * vec[1]
-        res[3] += inv23 * vec[2]
-        res /= det
-        return utils.movedim(res, 0, -1)
+        res = _sym_solve4(diag, uppr, vec, shape)
     else:
-        vec = utils.movedim(vec, 0, -1)
-        mat = utils.movedim(mat, 0, -1)
+        vec = utils.fast_movedim(vec, 0, -1)
+        mat = utils.fast_movedim(mat, 0, -1)
         mat = sym_to_full(mat)
         return torch.solve(vec, mat)
+
+    return utils.fast_movedim(res, 0, -1)
 
 
 def sym_inv(mat, diag=False):

@@ -73,7 +73,8 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
     padding = make_list(padding, dim)
     dilation = make_list(dilation, dim)
     for i in range(dim):
-        if padding[i].lower() == 'auto':
+        if isinstance(padding[i], str):
+            assert padding[i].lower() == 'auto'
             if kernel_size[i] % 2 == 0:
                 raise ValueError('Cannot compute automatic padding '
                                  'for even-sized kernels.')
@@ -275,7 +276,8 @@ pool2d = lambda *args, **kwargs: pool(2, *args, **kwargs)
 pool3d = lambda *args, **kwargs: pool(3, *args, **kwargs)
 
 
-def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
+def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
+           stride=1, padding='auto'):
     """Smooth a tensor.
 
     Parameters
@@ -301,6 +303,12 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
         Dimension of the convolution.
         The last `dim` dimensions of `tensor` will
         be smoothed.
+    stride : [sequence of] int, default=1
+        Stride between output elements.
+    padding : [sequence of] int or 'auto', default='auto'
+        Amount of padding applied to the input volume.
+        'auto' ensures that the output dimensions are the same as the
+        input dimensions.
 
     Returns
     -------
@@ -308,7 +316,6 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
         The resulting tensor has the same shape as the input tensor.
         This differs from the behaviour of torch's `conv*d`.
     """
-
     dim = dim or tensor.dim()
     batch = tensor.shape[:-dim]
     shape = tensor.shape[-dim:]
@@ -316,239 +323,18 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
     backend = dict(dtype=tensor.dtype, device=tensor.device)
     fwhm = make_list(fwhm, dim)
     kernels = core.kernels.smooth(type, fwhm, basis, **backend)
-    pad_size = [kernels[i].shape[i + 2] // 2 for i in range(len(kernels))]
-    pad_size = [0, 0] + pad_size
-    bound = ('reflect2' if bound == 'dct2' else
-             'reflect1' if bound == 'dct1' else
-             'circular' if bound == 'dft' else
-             'reflect2')
-    tensor = core.utils.pad(tensor, pad_size, mode=bound, side='both')
-    if dim == 1:
-        conv = torch.nn.functional.conv1d
-    elif dim == 2:
-        conv = torch.nn.functional.conv2d
-    elif dim == 3:
-        conv = torch.nn.functional.conv3d
-    else:
-        raise NotImplementedError
-    for kernel in kernels:
-        tensor = conv(tensor, kernel)
-    tensor = tensor.reshape([*batch, *shape])
+    stride = make_list(stride, dim)
+    padding = make_list(padding, dim)
+    for d, kernel in enumerate(kernels):
+        substride = [1] * dim
+        substride[d] = stride[d]
+        subpadding = [0] * dim
+        subpadding[d] = padding[d]
+        tensor = conv(dim, tensor, kernel, bound=bound,
+                      stride=substride, padding=subpadding)
+    # stride = make_list(stride, dim)
+    # slicer = [Ellipsis] + [slice(None, None, s) for s in stride]
+    # tensor = tensor[tuple(slicer)]
+    tensor = tensor.reshape([*batch, *tensor.shape[-dim:]])
     return tensor
 
-
-def spconv(input, kernel, bound='dct2', dim=None):
-    """Convolution with a sparse kernel.
-
-    Notes
-    -----
-    .. This convolution does not support strides, padding, dilation.
-    .. The output spatial shape is the same as the input spatial shape.
-    .. The output batch shape is the same as the input batch shape.
-    .. Data outside the field-of-view is extrapolated according to `bound`
-    .. It is implemented as a linear combination of views into the input
-       tensor and should therefore be relatively memory-efficient.
-
-    Parameters
-    ----------
-    input : (..., [channel_in], *spatial) tensor
-        Input tensor, to convolve.
-    kernel : ([channel_in, [channel_out]], *kernel_size) sparse tensor
-        Convolution kernel.
-    bound : [sequence of] str, default='dct2'
-        Boundary condition (per spatial dimension).
-    dim : int, default=kernel.dim()
-        Number of spatial dimensions.
-
-    Returns
-    -------
-    output : (..., [channel_out or channel_in], *spatial) tensor
-
-        * If the kernel shape is (channel_in, channel_out, *kernel_size),
-          the output shape is (..., channel_out, *spatial) and cross-channel
-          convolution happens:
-            out[co] = \sum_{ci} conv(inp[ci], ker[ci, co])
-        * If the kernel_shape is (channel_in, *kernel_size), independent
-          single-channel convolutions are applied to each channels::
-            out[c] = conv(inp[c], ker[c])
-        * If the kernel shape is (*kernel_size), the same convolution
-          is applied to all input channels:
-            out[c] = conv(inp[c], ker)
-
-    """
-    # get kernel dimensions
-    dim = dim or kernel.dim()
-    if kernel.dim() == dim + 2:
-        channel_in, channel_out, *kernel_size = kernel.shape
-    elif kernel.dim() == dim + 1:
-        channel_in, *kernel_size = kernel.shape
-        channel_out = None
-    elif kernel.dim() == dim:
-        kernel_size = kernel.shape
-        channel_in = channel_out = None
-    else:
-        raise ValueError('Incompatible kernel shape: too many dimensions')
-
-    import functools
-    def lambda_flip(x, d):
-        if x.shape[d] > 1:
-            x = x.flip(d)
-        return x
-
-    def lambda_iflip(x, d):
-        if x.shape[d] > 1:
-            x = x.flip(d)
-            return x.flip(d).neg()
-
-    def get_lambda_flip(d): return functools.partial(lambda_flip, d=d)
-    def get_lambda_iflip(d): return functools.partial(lambda_iflip, d=d)
-
-    # check input dimensions
-    added_dims = max(0, dim + 1 - input.dim())
-    input = unsqueeze(input, 0, added_dims)
-    if channel_in is not None:
-        if input.shape[-dim-1] not in (1, channel_in):
-            raise ValueError('Incompatible kernel shape: input channels')
-        spatial_shape = input.shape[-dim:]
-        batch_shape = input.shape[:-dim-1]
-        output_shape = tuple([*batch_shape, channel_out, *spatial_shape])
-    else:
-        # add a fake channel dimension
-        spatial_shape = input.shape[-dim:]
-        batch_shape = input.shape[:-dim]
-        input = input.reshape([*batch_shape, 1, *spatial_shape])
-        output_shape = input.shape
-    output = input.new_zeros(output_shape)
-
-    # move channel + spatial dimensions to the front
-    spdim = list(range(input.dim()-dim-1, input.dim()))
-    input = movedim(input, spdim, list(range(dim+1)))
-    output = movedim(output, spdim, list(range(dim+1)))
-
-    # prepare other stuff
-    bound = make_list(bound, dim)
-    shift = torch.LongTensor([int(pymath.floor(k/2)) for k in kernel_size])
-
-    for idx, weight in zip(kernel._indices().t(), kernel._values()):
-        if kernel.dim() == dim + 2:
-            ci, co, *idx = idx
-        elif kernel.dim() == dim + 1:
-            ci, *idx = idx
-            co = ci
-        else:
-            ci = co = 0
-        idx = idx - shift
-
-        inp = input[ci]
-        out = output[co]
-
-        # Prepare slicers for the out-of-bound bits
-        input_side_slice = []
-        output_side_slice = []
-        transfo_side = []
-        for d, (i, s, b) in enumerate(zip(idx, spatial_shape, bound)):
-            if i < 0:
-                if b == 'dst1':
-                    if i < -1:
-                        output_side_slice.append(slice(i+1, None))
-                        input_side_slice.append(slice(None, -i-1))
-                        transfo_side.append(get_lambda_iflip(d))
-                    else:
-                        output_side_slice.append(None)
-                        input_side_slice.append(None)
-                        transfo_side.append(None)
-                    continue
-                output_side_slice.append(slice(None, -i))
-                if b == 'dct1':
-                    input_side_slice.append(slice(1, -i+1))
-                    transfo_side.append(get_lambda_flip(d))
-                elif b == 'dft':
-                    input_side_slice.append(slice(i, None))
-                    transfo_side.append(None)
-                elif b == 'replicate':
-                    input_side_slice.append(slice(None, 1))
-                    transfo_side.append(None)
-                elif b == 'zeros':
-                    input_side_slice.append(None)
-                    transfo_side.append(None)
-                else:
-                    input_side_slice.append(slice(None, -i))
-                    if b == 'dct2':
-                        transfo_side.append(get_lambda_flip(d))
-                    elif b == 'dst2':
-                        transfo_side.append(get_lambda_iflip(d))
-            elif i > 0:
-                if b == 'dst1':
-                    if i > 1:
-                        output_side_slice.append(slice(None, i-1))
-                        input_side_slice.append(slice(-i+1, None))
-                        transfo_side.append(get_lambda_iflip(d))
-                    else:
-                        output_side_slice.append(None)
-                        input_side_slice.append(None)
-                        transfo_side.append(None)
-                    continue
-                output_side_slice.append(slice(-i, None))
-                if b == 'dct1':
-                    input_side_slice.append(slice(-i-1, -1))
-                    transfo_side.append(get_lambda_flip(d))
-                elif b == 'dft':
-                    input_side_slice.append(slice(None, i))
-                    transfo_side.append(None)
-                elif b == 'replicate':
-                    input_side_slice.append(slice(-1, None))
-                    transfo_side.append(None)
-                elif b == 'zeros':
-                    input_side_slice.append(None)
-                    transfo_side.append(None)
-                else:
-                    input_side_slice.append(slice(-i, None))
-                    if b == 'dct2':
-                        transfo_side.append(get_lambda_flip(d))
-                    elif b == 'dst2':
-                        transfo_side.append(get_lambda_iflip(d))
-            else:
-                output_side_slice.append(None)
-                input_side_slice.append(None)
-                transfo_side.append(None)
-
-        # Prepare slicers for the in-bound bits
-        input_center_slice = [slice(max(0, i), min(s + i, s))
-                              for s, i in zip(spatial_shape, idx)]
-        output_center_slice = [slice(max(0, -i), min(s - i, s))
-                               for s, i in zip(spatial_shape, idx)]
-
-        # Iterate all combinations of in/out of bounds
-        sides = itertools.product([True, False], repeat=dim)
-        for side in sides:
-            input_slicer = [input_center_slice[d] if inside
-                            else input_side_slice[d]
-                            for d, inside in enumerate(side)]
-            output_slicer = [output_center_slice[d] if inside
-                             else output_side_slice[d]
-                             for d, inside in enumerate(side)]
-            transfo = [None if inside else transfo_side[d]
-                       for d, inside in enumerate(side)]
-
-            if any(sl is None for sl in input_slicer):
-                continue
-
-            # slice + apply boundary condition + accumulate
-            dat = inp[input_slicer]
-            for trf in transfo:
-                if trf:
-                    dat = trf(dat)
-                if dat is None:
-                    break
-            if dat is not None:
-                out[output_slicer].addcmul_(dat, weight)
-
-    # move spatial dimensions to the back
-    output = movedim(output, list(range(dim+1)), spdim)
-    # remove fake channels
-    if channel_in is None:
-        output = output.squeeze(len(batch_shape))
-    # remove added dimensions
-    for _ in range(added_dims):
-        output = output.squeeze(-dim-1)
-    return output

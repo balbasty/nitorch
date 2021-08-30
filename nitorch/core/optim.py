@@ -2,6 +2,7 @@
 """Optimisers."""
 
 import torch
+import itertools
 
 # TODO:
 # . Implement CG/RELAX as autograd functions.
@@ -10,9 +11,9 @@ import torch
 #     (again) by CG
 
 
-def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
+def cg(A, b, x=None, precond=None, max_iter=None,
        tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
-       inplace=True, stop='residuals'):
+       inplace=True, stop='E'):
     """ Solve A*x = b by the conjugate gradient method.
 
         The method of conjugate gradients solves linear systems of
@@ -41,9 +42,12 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
     inplace : bool, default=True
         Perform computations inplace (saves performance but overrides
         `x` and may break the computational graph).
-    stop : {'residuals', 'norm'}, default='residuals'
-        What stopping criteria to use.
-        The squared residuals ('residuals') are not motonically decreasing,
+    stop : {'E', 'A'}, default='E'
+        What (squared) norm to use a stopping criterion:
+            - 'E': (squared) Euclidean norm of the residuals
+            - 'A': (squared) A-norm of the error
+                   <=> A^{-1}-norm of the residuals
+        The Euclidean norm is not motonically decreasing,
         whilst the norm induced by the A-weighted scalar product ('norm') is.
         If monotonicity is important then select 'norm'. However, this requires
         an additional evaluation of A.
@@ -89,10 +93,7 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
 
     """
     # Format arguments
-    device = b.device
-    dtype = b.dtype
-    if max_iter is None:
-        max_iter = len(b) * 10
+    max_iter = max_iter or len(b) * 10
     if x is None:
         x = torch.zeros_like(b)
     elif not inplace:
@@ -105,29 +106,37 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
             return A_tensor.mm(x)
         A = A_function
 
+    precond = precond or (lambda y: y)
+
     # Initialisation
-    r = b - A(x)  # Residual: b - A*x
+    r = b - A(x)    # Residual: b - A*x
     z = precond(r)  # Preconditioned residual
     rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
-    p = z.clone()  # Initial conjugate directions p
-    
+    p = z.clone()   # Initial conjugate directions p
+
     if tolerance or verbose:
-        if stop == 'residuals':
+        if stop == 'residual':
+            stop = 'e'
+        elif stop == 'norm':
+            stop = 'a'
+        stop = stop[0].lower()
+        if stop == 'e':
             obj0 = torch.sqrt(rz)
         else:
             obj0 = A(x).sub_(2*b).mul_(x)
             obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+
         if verbose:
             s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g}'
             print(s.format(0, stop, obj0))
-        obj = torch.zeros(max_iter+1, dtype=sum_dtype, device=device)
+        obj = obj0.new_zeros(max_iter+1)
         obj[0] = obj0
 
     # Run algorithm
     for n_iter in range(1, max_iter+1):
         # Find the step size of the conj. gradient descent
         Ap = A(p)
-        alpha = rz / torch.sum(p * Ap, dtype=sum_dtype)
+        alpha = rz / torch.sum(p * Ap, dtype=sum_dtype).clamp_min_(1e-12)
         # Perform conj. gradient descent, obtaining updated X and R, using the
         # calculated P and alpha
         x += alpha * p
@@ -137,11 +146,11 @@ def cg(A, b, x=None, precond=lambda y: y, max_iter=None,
         # Finds the step size for updating P
         rz0 = rz
         rz = torch.sum(r * z, dtype=sum_dtype)
-        beta = rz / rz0
+        beta = rz / rz0.clamp_min_(1e-12)
         
         # Check convergence
         if tolerance or verbose:
-            if stop == 'residuals':
+            if stop == 'e':
                 obj1 = torch.sqrt(rz)
             else:
                 obj1 = A(x).sub_(2*b).mul_(x)
@@ -213,14 +222,10 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     ----
     In practice, if A is provided as a function, b and x do not need
     to be vector-shaped.
-    ```
 
     """
     # Format arguments
-    device = b.device
-    dtype = b.dtype
-    if max_iter is None:
-        max_iter = len(b) * 10
+    max_iter = max_iter or len(b) * 10
     if x is None:
         x = torch.zeros_like(b)
     elif not inplace:
@@ -229,48 +234,216 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     # Create functor if A is a tensor
     if isinstance(A, torch.Tensor):
         A_tensor = A
-
-        def A_function(x):
-            return A_tensor.mm(x)
-
-        A = A_function
+        A = lambda x: A_tensor.mm(x)
 
     # Create functor if D is a tensor
     if isinstance(precond, torch.Tensor):
         D_tensor = precond
-
-        def D_function(x):
-            return x * D_tensor
-
-        precond = D_function
+        precond = lambda x: x * D_tensor
 
     # Initialisation
-    r = A(x).neg_().add_(b)    # Residual: b - A*x
-    z = precond(r)             # Preconditioned residual
+    r = b - A(x)
 
     if tolerance or verbose:
-        if stop == 'residuals':
-            obj0 = torch.sqrt(z.square().sum(dtype=dtype))
+        if stop == 'residual':
+            stop = 'e'
+        elif stop == 'norm':
+            stop = 'a'
+        stop = stop[0].lower()
+        if stop == 'e':
+            obj0 = torch.sqrt(r.square().sum(dtype=sum_dtype))
         else:
             obj0 = A(x).sub_(2 * b).mul_(x)
             obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
         if verbose:
             s = '{:' + str(len(str(max_iter + 1))) + '} | {} = {:12.6g}'
             print(s.format(0, stop, obj0))
-        obj = torch.zeros(max_iter + 1, dtype=sum_dtype, device=device)
+        obj = obj0.new_zeros(max_iter + 1)
         obj[0] = obj0
 
     # Run algorithm
     for n_iter in range(1, max_iter + 1):
 
-        x += z
-        r = A(x).neg_().add_(b)
-        z = precond(r)
+        x += precond(r)
+        r = b - A(x)
 
         # Check convergence
         if tolerance or verbose:
-            if stop == 'residuals':
-                obj1 = torch.sqrt(z.square().sum(dtype=dtype))
+            if stop == 'e':
+                obj1 = torch.sqrt(r.square().sum(dtype=sum_dtype))
+            else:
+                obj1 = A(x).sub_(2 * b).mul_(x)
+                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
+            obj[n_iter] = obj1
+            gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
+            if verbose:
+                width = str(len(str(max_iter + 1)))
+                s = '{:' + width + '} | {} = {:12.6g} | gain = {:12.6g}'
+                print(s.format(n_iter, stop, obj[n_iter], gain))
+            if gain.abs() < tolerance:
+                break
+
+    return x
+
+
+def relax_slicers(shape, scheme='checkerboard'):
+
+    # We use strides to extract subvolumes whose voxels belong to a
+    # single group.
+    #
+    # We have to be careful: with circular boundary conditions,
+    # the first and last indices of a line can belong to the same
+    # group while they should not. Since we don't know which
+    # boundary conditions are used, we are extra careful and treat
+    # the last few lines independently.
+    #
+    # Therefore, there are `bandwidth**dim x 2**dim` subvolumes, where
+    # 2**dim corresponds to the quadrants. Although some quadrants can be
+    # dropped if the shape along a dimension is a multiple of the bandwidth.
+    #
+    # Since strides cannot define all possible patterns (e.g. checkerboard)
+    # some groups are formed of multiple subvolumes.
+
+    dim = len(shape)
+    checkerboard = isinstance(scheme, str) and scheme[0] == 'c'
+    bandwidth = 2 if checkerboard else scheme
+    size_last = tuple(int(s % bandwidth) for s in shape)
+    # size_last = [0] * dim
+    offsets = list(itertools.product(range(bandwidth), repeat=dim))
+    quadrants = list(itertools.product([True, False], repeat=dim))
+    slicers = []
+    for offset in offsets:
+        for quadrant in quadrants:
+            if any(o >= l for o, l, q in zip(offset, size_last, quadrant)
+                   if not q):
+                continue
+            slicer = tuple(slice(int(o) if q else int(s-l+o),       # start
+                                 (int(-l) or None) if q else None,  # stop
+                                 bandwidth)                         # stride
+                           for o, s, l, q in zip(offset, shape, size_last, quadrant))
+            slicers.append(slicer)
+    # add vector dimension
+    slicers = [(*slicer, slice(None)) for slicer in slicers]
+    if checkerboard:
+        # gather odd/even slicers
+        slicers = [[slicer for slicer in slicers
+                    if sum(s.start for s in slicer[1:-1]) % 2],
+                   [slicer for slicer in slicers
+                    if not sum(s.start for s in slicer[1:-1]) % 2]]
+    else:
+        slicers = [[slicer] for slicer in slicers]
+    return slicers
+
+
+def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
+          dim=None, tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
+          inplace=True, stop='E', mode=1):
+    """Solve `A*x = b` by block-relaxation (e.g., checkerboard Gauss-Seidel).
+
+    The Gauss-Seidel method solves linear systems of the form `A*x = b`,
+    where A is either positive definite or diagonal dominant.
+
+    This method performs updates of the form `x[block] += (P\(b - A*x))[block]`,
+    where P is a suitable pre-conditioner, and elements within a block
+    are independent of each other conditioned on the elements outside
+    of the block.
+
+    Parameters
+    ----------
+    A : callable(tensor)
+        Linear operator.
+        Should take as inputs a tensor with the same shape as `b`
+        and return a tensor with the same shape as `b`.
+    b : (..., *spatial, K) tensor
+        Right hand side 'vector'.
+        Note that it needs a tensor dimension on the right.
+    precond : callable(tensor, slicer)
+        Preconditioner.
+        Should take as inputs a tensor with the same shape as `b` and
+        a tuple of slices, and return a tensor with the same shape as
+        `b[slicer]`.
+    x : (..., *spatial, K) tensor, optional, default=0
+        Initial guess.
+    scheme : 'checkerboard' or int, default='checkerboard'
+        Scheme used to define conditionally independent blocks.
+         - 'checkerboard' uses a "black and white" scheme where all
+           elements that do not share a "face" belong to the same block.
+        - `int` uses strides to define blocks. In effect, elements must
+           have an l1 distance larger than this number to belong to
+           the same block.
+    max_iter : int, default=len(b)*10
+        Maximum number of iteration.
+    tolerance : float, default=1e-5
+        Tolerance for early-stopping.
+    verbose : bool, default = False
+        Write something at each iteration.
+    sum_dtype : torch.dtype, default=float64
+        Choose `float32` for speed or `float64` for precision.
+    inplace : bool, default=True
+        Perform computations inplace (saves performance but overrides
+        `x` and may break the computational graph).
+    stop : {'E', 'A'}, default='E'
+        What (squared) norm to use a stopping criterion:
+            - 'E': (squared) Euclidean norm of the residuals
+            - 'A': (squared) A-norm of the error
+                   <=> A^{-1}-norm of the residuals
+
+    Returns
+    -------
+    x : tensor
+        Solution of the linear system.
+
+    """
+
+    # Format arguments
+    dim = dim or (b.dim() - 1)
+    max_iter = max_iter or len(b) * 10
+    if x is None:
+        x = torch.zeros_like(b)
+    elif not inplace:
+        x = x.clone()
+    shape = x.shape[-dim-1:-1]
+
+    r = b - A(x)
+
+    if tolerance or verbose:
+        if stop == 'residual':
+            stop = 'e'
+        elif stop == 'norm':
+            stop = 'a'
+        stop = stop[0].lower()
+        if stop == 'e':
+            obj0 = r.square().sum(dtype=sum_dtype).sqrt()
+        else:
+            obj0 = A(x).sub_(2 * b).mul_(x)
+            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+        if verbose:
+            s = '{:' + str(len(str(max_iter + 1))) + '} | {} = {:12.6g}'
+            print(s.format(0, stop, obj0))
+        obj = torch.zeros(max_iter + 1, dtype=sum_dtype, device=obj0.device)
+        obj[0] = obj0
+
+    slicers = relax_slicers(shape, scheme)
+    for n_iter in range(1, max_iter+1):
+
+        for group in slicers:
+
+            if mode == 1:
+                r.copy_(b).sub_(A(x))
+                for slicer in group:
+                    # compute residuals
+                    # apply preconditioner in selected voxels and update
+                    x[slicer] += precond(r, slicer)
+            else:
+                for slicer in group:
+                    r[slicer].copy_(b[slicer]).sub_(A(x, slicer))
+                for slicer in group:
+                    x[slicer] += precond(r, slicer)
+
+        # Check convergence
+        if tolerance or verbose:
+            if stop == 'e':
+                obj1 = r.square().sum(dtype=sum_dtype).sqrt()
             else:
                 obj1 = A(x).sub_(2 * b).mul_(x)
                 obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
@@ -306,7 +479,7 @@ def get_gain(obj, monotonicity='increasing'):
         gain = (obj[-2] - obj[-1])
     else:
         raise ValueError('Undefined monotonicity')
-    gain = gain / (torch.max(obj) - torch.min(obj))
+    gain = gain / max(torch.max(obj) - torch.min(obj), 1e-12)
     return gain
 
 
@@ -371,5 +544,5 @@ def plot_convergence(vals, fig_ax=None, fig_num=1, fig_title='Model convergence'
     return fig_ax
 
 
-def relax(A, b, iE=lambda x: x, x0=0, max_iter=10):
-    pass
+# def relax(A, b, iE=lambda x: x, x0=0, max_iter=10):
+#     pass

@@ -768,6 +768,20 @@ def _build_affine_basis(basis, dim=None, dtype=None, device=None):
     return basis
 
 
+# chain_matmul is replaced by linalg.multi_dot in recent versions of pytorch
+_multi_dot = (torch.linalg.multi_dot if utils.torch_version('>=', (1, 8)) else
+              lambda x: torch.chain_matmul(*x))
+
+
+def multi_dot(x):
+    if torch.is_tensor(x):
+        x = x.unbind(0)
+    if len(x) == 1:
+        return x[0]
+    return _multi_dot(x)
+
+
+
 def affine_matrix(prm, *basis, dim=None):
     r"""Reconstruct an affine matrix from its Lie parameters.
 
@@ -854,7 +868,7 @@ def affine_matrix(prm, *basis, dim=None):
 
     # Matrix product
     if len(mats) > 1:
-        affine = torch.chain_matmul(*mats)
+        affine = multi_dot(mats)
     else:
         affine = mats[0]
     return affine
@@ -1048,8 +1062,7 @@ def affine_matrix_classic(prm=None, dim=3, *,
     return mat
 
 
-def affine_parameters(mat, *basis, max_iter=10000, tol=None,
-                      max_line_search=8):
+def affine_parameters(mat, *basis, max_iter=10000, tol=1e-9):
     """Compute the parameters of an affine matrix in a basis of the algebra.
 
     This function finds the matrix closest to ``mat`` (in the least squares
@@ -1066,15 +1079,8 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
     max_iter : int, default=10000
         Maximum number of Gauss-Newton iterations in the least-squares fit.
 
-    tol : float, optional
+    tol : float, default=1e-9
         Tolerance criterion for convergence.
-        Use the data type's machine epsilon by default.
-        It is based on the squared norm of the GN step divided by the
-        squared norm of the input matrix.
-
-    max_line_search: int, default=6
-        Maximum number of line search steps.
-        If zero: no line-search is performed.
 
     Returns
     -------
@@ -1090,14 +1096,11 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
 
     # Format mat
     mat = utils.as_tensor(mat)
-    dtype = mat.dtype
+    backend = dict(dtype=mat.dtype, device=mat.device)
     dim = mat.shape[-1] - 1
 
-    if tol is None:
-        tol = core.dtypes.dtype(dtype).eps
-
     # Format basis
-    basis = build_affine_basis(*basis, dim)
+    basis = build_affine_basis(*basis, dim, **backend)
     basis = py.make_list(basis)
     nb_basis = sum([len(b) for b in basis])
 
@@ -1105,9 +1108,8 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
         # Predefine these values in case max_iter == 0
         n_iter = -1
         # Gauss-Newton optimisation
-        prm = torch.zeros(nb_basis, dtype=dtype)
-        M = torch.eye(dim+1, dtype=dtype)
-        sos = ((M - mat) ** 2).sum()
+        prm = torch.zeros(nb_basis, **backend)
+        M = torch.eye(dim+1, **backend)
         norm = (mat ** 2).sum()
         crit = constants.inf
         for n_iter in range(max_iter):
@@ -1135,19 +1137,19 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             # * dM/dBi = mprod(M[:i, ...]) @ dMi/dBi @ mprod(M[i+1:, ...])
             for n_mat, (dM, hM) in enumerate(zip(dMs, hMs)):
                 if n_mat > 0:
-                    pre = torch.chain_matmul(*M[:n_mat])
+                    pre = multi_dot(M[:n_mat])
                     dM = torch.matmul(pre, dM)
                     hM = torch.matmul(pre, hM)
                 if n_mat < len(M)-1:
-                    post = torch.chain_matmul(*M[(n_mat+1):])
+                    post = multi_dot(M[(n_mat+1):])
                     dM = torch.matmul(dM, post)
                     hM = torch.matmul(hM, post)
                 dMs[n_mat] = dM
                 hMs[n_mat] = hM
             dM = torch.cat(dMs)
+            hMs = [hM.abs().sum(-3) for hM in hMs]  # diagonal majoriser (Fessler)
             hM = torch.cat(hMs)
-            hM = hM.abs().sum(-3)   # diagonal majoriser (see Fessler)
-            M = torch.chain_matmul(*M)
+            M = multi_dot(M)
 
             # Compute gradient/Hessian of the loss (squared residuals)
             diff = M - mat
@@ -1165,35 +1167,6 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             crit = delta_prm.square().sum() / norm
             if crit < tol:
                 break
-
-            # ---
-            # we don't need a line search anymore
-            # TODO: remove commented part once new algo is well tested
-            # ---
-            # if max_line_search == 0:
-            #     # We trust the Gauss-Newton step
-            #     prm -= delta_prm
-            # else:
-            #     # Line Search
-            #     sos0 = sos
-            #     prm0 = prm
-            #     M0 = M
-            #     armijo = 1
-            #     success = False
-            #     for lsit in range(max_line_search):
-            #         prm = prm0 - armijo * delta_prm
-            #         M = affine_matrix(prm, *basis)
-            #         sos = ((M - mat) ** 2).sum()
-            #         # print(n_iter, lsit, sos, sos < sos0)  ## DEBUG
-            #         if sos < sos0:
-            #             success = True
-            #             break
-            #         else:
-            #             armijo /= 2
-            #     if not success:
-            #         prm = prm0
-            #         M = M0
-            #         break
 
         if crit >= tol:
             warn('Gauss-Newton optimisation did not converge: '
@@ -1767,7 +1740,8 @@ def affine_sub(affine, shape, indices):
     affine = torch.as_tensor(affine)
     nb_dim = affine.shape[-1] - 1
     info = {'dtype': affine.dtype, 'device': affine.device}
-    shape = list(shape)
+    if torch.is_tensor(shape):
+        shape = shape.tolist()
     if len(shape) != nb_dim:
         raise ValueError('Expected shape of length {}. Got {}'
                          .format(nb_dim, len(shape)))
@@ -2051,6 +2025,11 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     offset = []
     for L, S, Pi, D, K, Po in zip(shape, stride, padding,
                                   dilation, kernel_size, output_padding):
+        if Pi == 'auto':
+            if K % 2 == 0:
+                raise ValueError('Cannot compute automatic padding '
+                                 'for even-sized kernels.')
+            Pi = D * (K // 2)
         if transposed:
             oshape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
             scale += [1/S]
@@ -2255,7 +2234,10 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
             tensor = shape_or_tensor
             shape = tensor.shape[-dim:]
         else:
-            shape = tuple(shape_or_tensor)
+            shape = shape_or_tensor
+            if torch.is_tensor(shape):
+                shape = shape.tolist()
+            shape = tuple(shape)
 
     # find current layout and target layout
     #   layouts are (dim, 2) tensors where
@@ -2367,6 +2349,7 @@ def affine_mean(mats, shapes=None):
 
     # STEP 2: Compute exponential barycentre
     # ------
+    # Compute mean affine
     mat = linalg.meanm(mats)
 
     # STEP 3: Remove spurious shears
@@ -2388,7 +2371,8 @@ def affine_mean(mats, shapes=None):
 _voxel_size = voxel_size  # little alias to avoid the function being shadowed
 
 
-def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
+def mean_space(mats, shapes, voxel_size=None, vx_unit='mm',
+               layout=None, fov='max', **fovopt):
     """Compute a mean space from a set of spaces (= affine + shape).
 
     Gradient *do not* propagate through this function.
@@ -2402,6 +2386,8 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     voxel_size : (dim,) tensor_like, optional
         Output voxel size.
         Uses the mean voxel size of all input matrices by default.
+    vx_unit : {'um', 'mm', ..., '%'}, default='mm'
+        If '%', a percentage of the mean voxel size will be used.
     layout : str or (dim+1, dim+1) array_like, default=None
         Output layout.
         Uses the majority layout of all input matrices by default.
@@ -2463,9 +2449,13 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     if voxel_size is not None:
         vs0 = torch.as_tensor(voxel_size, **backend)
         voxel_size = _voxel_size(mat)
+        if vx_unit in ('%', 'pct'):
+            vs0 = vs0 / 100
+            vs0 = vs0 * voxel_size
         vs0[~torch.isfinite(vs0)] = voxel_size[~torch.isfinite(vs0)]
         one = torch.ones([1], **backend)
-        mat = mat * torch.diag(torch.cat((vs0 / voxel_size, one)))
+        vs_ratio = torch.cat((vs0 / voxel_size, one))
+        mat = mat * vs_ratio  # == mat @ diag(vs_ratio)
 
     # Field of view
     if fov == 'max':

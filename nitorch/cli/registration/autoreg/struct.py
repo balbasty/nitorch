@@ -9,6 +9,7 @@ from nitorch.core.dtypes import dtype as nitype
 from nitorch.core.utils import make_vector
 from nitorch import nn
 import torch
+from .optim import OGM as _OGM
 
 
 class Base:
@@ -218,6 +219,32 @@ matching_losses = [NoLoss, DiceLoss, MILoss, CatLoss, JTVLoss, MSELoss]
 class TransformationLoss(Base):
     name = None
     factor: float = 1.      # Multiplicative factor for the losses
+
+
+class GridLoss(TransformationLoss):
+    name = 'grid'
+    absolute = 0
+    membrane = 0
+    bending = 0
+    lame = (0, 0)
+
+    def call(self, v):
+        opt = dict(absolute=self.absolute,
+                   membrane=self.membrane,
+                   bending=self.bending,
+                   lame=self.lame,
+                   factor=self.factor)
+        loss = nn.GridLoss(**opt)
+        return loss(v)
+
+    def greens(self, shape, **backend):
+        opt = dict(absolute=self.absolute,
+                   membrane=self.membrane,
+                   bending=self.bending,
+                   lame=self.lame,
+                   factor=self.factor)
+        kernel = spatial.greens(shape, **opt, **backend)
+        return kernel
 
 
 class AbsoluteLoss(TransformationLoss):
@@ -435,6 +462,13 @@ class Adam(Optimizer):
 
     def call(self, *args, **kwargs):
         return torch.optim.Adam(*args, **kwargs)
+
+
+class OGM(Optimizer):
+    name = 'ogm'
+
+    def call(self, *args, **kwargs):
+        return _OGM(*args, **kwargs)
 
 
 class GradientDescent(Optimizer):

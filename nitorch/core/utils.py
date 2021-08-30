@@ -1,13 +1,12 @@
 """PyTorch utilities."""
 
 import torch
-import torch.nn.functional as F
 from . import py
-from .py import make_list, make_tuple
+from .py import make_list, make_tuple, ensure_list
 from .constants import inf, eps
 from .dtypes import as_torch as dtype_astorch
 from . import dtypes
-from nitorch._C.grid import GridCount, GridPull
+from nitorch._C.grid import GridCount, GridPull, GridPush
 import numbers
 import os
 import numpy as np
@@ -293,6 +292,18 @@ def shiftdim(x, n=None):
         n = n % x.dim()
         x = x.permute(tuple(range(n, x.dim())) + tuple(range(n)))
     return x
+
+
+def fast_movedim(input, source, destination):
+    """Move the position of exactly one dimension"""
+    dim = input.dim()
+
+    source = dim + source if source < 0 else source
+    destination = dim + destination if destination < 0 else destination
+    permutation = list(range(dim))
+    del permutation[source]
+    permutation.insert(destination, source)
+    return input.permute(*permutation)
 
 
 def movedim(input, source, destination):
@@ -719,6 +730,36 @@ def requires_grad(ctx, name):
     return False
 
 
+def fast_slice_tensor(x, index, dim=-1):
+    """Index a tensor along one dimensions.
+
+    This function is relatively similar to `torch.index_select`, except
+    that it uses the native indexing mechanism and can therefore
+    returns a tensor that use the same storage as the input tensor.
+
+    It is faster but less versatile than `slice_tensor`.
+
+    Parameters
+    ----------
+    x : tensor
+        Input tensor.
+    index : int or list[int] or slice
+        Indices to select along `dim`.
+    dim : int, default=last
+        Dimension to index.
+
+    Returns
+    -------
+    y : tensor
+        Output tensor.
+
+    """
+    slicer = [slice(None)] * x.dim()
+    slicer[dim] = index
+    slicer = tuple(slicer)
+    return x[slicer]
+
+
 def slice_tensor(x, index, dim=None):
     """Index a tensor along one or several dimensions.
 
@@ -753,10 +794,10 @@ def slice_tensor(x, index, dim=None):
         index = (index,)
     if dim is None:
         dim = list(range(-len(index), 0))
-    dim = make_list(dim)
+    dim = ensure_list(dim)
     nb_dim = max(len(index), len(dim))
-    dim = make_list(dim, nb_dim)
-    index = make_tuple(index, nb_dim)
+    dim = ensure_list(dim, nb_dim)
+    index = tuple(ensure_list(index, nb_dim))
 
     # build index
     full_index = [slice(None)] * x.dim()
@@ -1272,6 +1313,15 @@ def sub2ind(subs, shape, out=None):
     return ind
 
 
+# floor_divide returns wrong results for negative values, because it truncates
+# instead of performing a proper floor. In recent version of pytorch, it is
+# advised to use div(..., rounding_mode='trunc'|'floor') instead.
+# Here, we only use floor_divide on positive values so we do not care.
+_trunc_div = ((lambda *a, **k: torch.div(*a, **k, rounding_mode='trunc'))
+              if torch_version('>=', (1, 8)) else torch.floor_divide
+              if torch_version('>=', (1, 5)) else (lambda x, y, **k: x // y))
+
+
 def ind2sub(ind, shape, out=None):
     """Convert linear indices into sub indices (i, j, k).
 
@@ -1304,7 +1354,7 @@ def ind2sub(ind, shape, out=None):
     for d in range(len(shape)):
         if d > 0:
             torch.remainder(sub[d], torch.as_tensor(stride[d-1], **bck), out=sub[d])
-        torch.floor_divide(sub[d], stride[d], out=sub[d])
+        sub[d] = _trunc_div(sub[d], stride[d], out=sub[d])
     return sub
 
 
@@ -1319,8 +1369,11 @@ def unfold(inp, kernel_size, stride=None, collapse=False):
         Patch shape.
     stride : [sequence of] int, default=`kernel_size`
         Stride.
-    collapse : bool, default=False
-        Collapse the original spatial dimensions
+    collapse : bool or 'view', default=False
+        Collapse the original spatial dimensions.
+        If 'view', forces collapsing to use the view mechanism, which ensures
+        that no data copy is triggered. This can fail if the tensor's
+        strides do not allow these dimensions to be collapsed.
 
     Returns
     -------
@@ -1393,6 +1446,8 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
         return x
 
     inp = torch.as_tensor(inp)
+    if torch.is_tensor(shape):
+        shape = shape.tolist()
     dim = dim or (len(shape) if shape else None)
     if not dim:
         raise ValueError('Cannot guess dim from inputs')
@@ -1497,7 +1552,7 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
     return out
 
 
-def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
+def histc(x, n=64, min=None, max=None, dim=None, keepdim=False, weights=None,
           order=1, bound='replicate', extrapolate=False, dtype=None):
     """Batched + differentiable histogram computation
 
@@ -1517,6 +1572,8 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
         Dimensions along which to compute the histogram
     keepdim : bool, default=False
         Keep singleton dimensions.
+    weights : tensor, optional
+        Observation weights
     order : {0..7}, default=1
         B-spline order encoding the histogram
     bound : bound_like, default='replicate'
@@ -1537,9 +1594,14 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
     """
     # reshape as [batch, pool]]
     x = torch.as_tensor(x)
+    if weights is not None:
+        dtype = x.dtype if x.dtype.is_floating_point else torch.get_default_dtype()
+        weights = torch.as_tensor(weights, dtype=dtype, device=x.device).expand(x.shape)
     if dim is None:
         x = x.reshape([1, -1])
         batch = []
+        if weights is not None:
+            weights = weights.reshape([1, -1])
     else:
         dim = py.make_list(dim)
         odim = list(range(-len(dim), 0))
@@ -1548,6 +1610,8 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
         batch = x.shape[:-len(dim)]
         pool = x.shape[-len(dim):]
         x = x.reshape([-1, py.prod(pool)])
+        if weights is not None:
+            weights = weights.reshape([-1, py.prod(pool)])
 
     # compute limits
     if min is None:
@@ -1574,7 +1638,12 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
         # hidden feature: tell pullpush to use +/- 0.5 tolerance when
         # deciding if a coordinate is inbounds.
         extrapolate = 2
-    h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
+    if weights is None:
+        # count == push an image of ones
+        h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate, False)[:, 0, ]
+    else:
+        # push weights
+        h = GridPush.apply(weights[:, None, :], x[:, :, None], [n], order, bound, extrapolate, False)[:, 0, ]
 
     # reshape
     h = h.to(dtype)
@@ -1672,7 +1741,7 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
         # hidden feature: tell pullpush to use +/- 0.5 tolerance when
         # deciding if a coordinate is inbounds.
         extrapolate = 2
-    h = GridCount.apply(x[:, None], n, order, bound, extrapolate)[:, 0]
+    h = GridCount.apply(x[:, None], n, order, bound, extrapolate, False)[:, 0]
 
     # reshape
     h = h.to(dtype)
@@ -1724,7 +1793,7 @@ def _hist_to_quantile(hist, q):
     return q
 
 
-def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
+def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=None):
     """Compute quantiles.
 
     Parameters
@@ -1756,9 +1825,9 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
 
     input, q = to_max_backend(input, q)
     dim = py.make_list(dim or [])
-    if torch_is_recent() and len(dim) < 2 and not bins:
-        dim = dim[0] if dim else None
-        return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
+    # if torch_is_recent() and len(dim) < 2 and not bins:
+    #     dim = dim[0] if dim else None
+    #     return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
 
     # ------------------
     # our implementation
@@ -1766,7 +1835,11 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
 
     # reshape as (batch, pool)
     inshape = input.shape
+    if mask is not None:
+        mask = mask.expand(inshape)
     if dim is None:
+        if mask is not None:
+            mask = mask.reshape([1, -1])
         input = input.reshape([1, -1])
         batch = []
     else:
@@ -1776,20 +1849,29 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
         batch = input.shape[:-len(dim)]
         pool = input.shape[-len(dim):]
         input = input.reshape([-1, py.prod(pool)])
+        if mask is not None:
+            mask = movedim(mask, dim, odim).reshape([-1, py.prod(pool)])
 
     q_scalar = q.dim() == 0
     q = q.reshape([-1]).clone()
-    if not bins:
+    if not bins and mask is None:
         # sort and sample
         input, _ = input.sort(-1)
         q = q.mul_(input.shape[-1]-1)
-        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0, False)[0]
+    elif not bins:
+        input, index = input.sort(-1)
+        mask = mask[:, index]
+        mask = mask.cumsum(-1) / mask.sum(-1, keepdim=True)
+        mask[:, -1] = 1
+        q = _hist_to_quantile(mask, q)
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0, False)[0]
     else:
         # compute cumulative histogram
         min = input.min(-1).values
         max = input.max(-1).values
         bin_width = (max-min)/bins
-        hist = histc(input, bins, dim=-1, min=min, max=max)
+        hist = histc(input, bins, dim=-1, min=min, max=max, weights=mask)
         del max, input
         hist += eps(hist.dtype)  # ensures monotonicity
         hist = hist.cumsum(-1) / hist.sum(-1, keepdim=True)
