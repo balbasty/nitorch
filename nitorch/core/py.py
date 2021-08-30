@@ -4,6 +4,7 @@ import functools
 from types import GeneratorType as generator
 import warnings
 from collections import Counter
+from typing import List, Tuple, Iterable
 
 
 def file_mod(s, nam=None, prefix='', suffix='', odir=None, ext=None):
@@ -100,7 +101,7 @@ def fileparts(fname):
     return dir, base, ext
 
 
-def make_sequence(input, n=None, crop=True, *args, **kwargs):
+def make_sequence(input, n=None, crop=True, *args, **kwargs) -> Iterable:
     """Ensure that the input is a sequence and pad/crop if necessary.
 
     Parameters
@@ -166,7 +167,7 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs):
         return return_type(input)
 
 
-def make_list(*args, **kwargs) -> list:
+def make_list(*args, **kwargs) -> List:
     """Ensure that the input is a list and pad/crop if necessary.
 
     Parameters
@@ -187,10 +188,10 @@ def make_list(*args, **kwargs) -> list:
         Output arguments.
 
     """
-    return list(make_sequence(*args, **kwargs))
+    return [elem for elem in make_sequence(*args, **kwargs)]
 
 
-def make_tuple(*args, **kwargs) -> tuple:
+def make_tuple(*args, **kwargs) -> Tuple:
     """Ensure that the input is a tuple and pad/crop if necessary.
 
     Parameters
@@ -211,7 +212,7 @@ def make_tuple(*args, **kwargs) -> tuple:
         Output arguments.
 
     """
-    return tuple(make_sequence(*args, **kwargs))
+    return tuple(elem for elem in make_sequence(*args, **kwargs))
 
 
 def make_set(input) -> set:
