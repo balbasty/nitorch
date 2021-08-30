@@ -1,9 +1,13 @@
 from nitorch.core import math, utils
+from nitorch.core.optionals import try_import
+plt = try_import('matplotlib.pyplot')
 
 
 def mov2fix(fixed, moving, warped, vel=None, cat=False, dim=None, title=None):
     """Plot registration live"""
-    import matplotlib.pyplot as plt
+
+    if plt is None:
+        return
 
     warped = warped.detach()
     if vel is not None:

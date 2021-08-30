@@ -1,7 +1,7 @@
 """Joint affine + nonlinear registration.
 
 This model is the most polished one. All simpler models (affine, smalldef,
-svf, shoot) can be performed by the joint model as subcases.
+svf, shoot) can be performed by the joint model as sub-cases.
 
 Given its flexibility, there is no simple function to call it. I used
 an object-oriented representation of the different blocks (implemented in

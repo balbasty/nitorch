@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt
+"""Experimental losses based on [local] mixtures of Gaussians."""
 
 from nitorch.core import utils, py, math, constants, linalg, kernels
 import math as pymath
@@ -10,6 +10,7 @@ pyutils = py
 
 
 def _quickmi(moving, fixed, bins=64, dim=None):
+    import matplotlib.pyplot as plt
 
     dim = dim or (fixed.dim() - 1)
 
@@ -50,6 +51,7 @@ def _quickmi(moving, fixed, bins=64, dim=None):
 
 
 def _plot_gmm(moving, fixed, prm, bins=64):
+    import matplotlib.pyplot as plt
 
     prior, mmean, fmean, mvar, fvar, cov = prm
 

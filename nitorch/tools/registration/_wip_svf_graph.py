@@ -1,7 +1,22 @@
+"""
+This is an attempt at implementing registration refinement based on a
+graph os stationary velocity fields.
+
+References
+----------
+..[1] "Robust joint registration of multiple stains and MRI for
+       multimodal 3D histology reconstruction: Application to the
+       Allen human brain atlas"
+      Adrià Casamitjana, Marco Lorenzi, Sebastiano Ferraris,
+      Loic Peter, Marc Modat, Allison Stevens, Bruce Fischl,
+      Tom Vercauteren, Juan Eugenio Iglesias
+      https://arxiv.org/abs/2104.14873
+"""
+
 import torch
 from nitorch.core import py, utils, linalg
 from nitorch import spatial
-from . import svf, losses, phantoms
+from . import _prototype_svf, losses, phantoms
 
 
 def _build_matrix(observed, latent):
@@ -50,7 +65,7 @@ def register_pairs(images=None, register=None, loss='mse'):
 
     if not register:
         prm = dict(lame=(0.05, 1e-4), lam=0.1, plot=True, max_iter=10)
-        register = lambda x, y: svf.register(x, y, loss=loss, **prm)
+        register = lambda x, y: _prototype_svf.register(x, y, loss=loss, **prm)
 
     # If no inputs provided: demo "squircles"
     if images is None:
@@ -88,7 +103,7 @@ def atlas(images=None, register=None, vels=None, loss='mse'):
     """
 
     if not register:
-        register = lambda x, y: svf.register(x, y, loss=loss)
+        register = lambda x, y: _prototype_svf.register(x, y, loss=loss)
 
     # If no inputs provided: demo "squircles"
     if images is None:
@@ -101,7 +116,7 @@ def atlas(images=None, register=None, vels=None, loss='mse'):
     vels = graph_atlas(vels).neg_()
 
     # compute template
-    template = svf.init_template(images, loss, velocities=vels)
+    template = _prototype_svf.init_template(images, loss, velocities=vels)
 
     return template
 

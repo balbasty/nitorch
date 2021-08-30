@@ -1,3 +1,8 @@
+"""Utility functions for registration algorithms.
+Some (jg, jhj, affine_grid_backward) should maybe be moved to the `spatial`
+module (?).
+"""
+
 from nitorch.core import py, utils, linalg
 from nitorch import spatial
 from nitorch._C import grid as _spatial

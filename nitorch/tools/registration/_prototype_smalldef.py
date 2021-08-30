@@ -1,3 +1,13 @@
+"""Non-linear registration using dense small deformations.
+
+The function `smalldef.register` is a prototype that requires input images
+to be defined on the same grid. See `registration.joint` for a more flexible
+model.
+
+The classes `RegisterStep` and `AutoRegStep` are implementation
+utilities. The main entry points are `register` and `autoreg`.
+"""
+
 import torch
 from nitorch import spatial
 from nitorch.core import py, utils, linalg, math

@@ -37,6 +37,16 @@ def _all(x: List[bool]) -> bool:
 
 
 @torch.jit.script
+def prod(x: List[int]) -> int:
+    if len(x) == 0:
+        return 1
+    x0 = x[0]
+    for x1 in x[1:]:
+        x0 = x0 * x1
+    return x0
+
+
+@torch.jit.script
 def _guess_output_shape(inshape: List[int],
                         dim: int,
                         kernel_size: List[int],
@@ -64,14 +74,14 @@ def _guess_output_shape(inshape: List[int],
 
 
 @torch.jit.script
-def conv(dim: int, x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
+def conv(x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
     """ND convolution
-    dim : {1, 2, 3}
     x : (B, Ci, *inspatial) tensor
     kernel : (Ci, Co, *kernel_size) tensor
     stride : List{dim}[int]
     returns : (B, Co, *outspatial) tensor
     """
+    dim = x.dim() - 2
     if kernel.shape[-dim-1] == kernel.shape[-dim-2] == 1:
         groups = x.shape[-dim-1]
         kernel = kernel.expand([x.shape[-dim-1], 1] + kernel.shape[2:])
@@ -86,16 +96,16 @@ def conv(dim: int, x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
 
 
 @torch.jit.script
-def conv_transpose(dim: int, x: Tensor, kernel: Tensor, stride: List[int],
+def conv_transpose(x: Tensor, kernel: Tensor, stride: List[int],
                    opad: List[int]) -> Tensor:
     """ND transposed convolution
-    dim : {1, 2, 3}
     x : (B, Ci, *inspatial) tensor
     kernel : (Ci, Co, *kernel_size) tensor
     stride : List{dim}[int]
     opad : List{dim}[int]
     returns : (B, Co, *outspatial) tensor
     """
+    dim = x.dim() - 2
     if kernel.shape[-dim-1] == kernel.shape[-dim-2] == 1:
         groups = x.shape[-dim-1]
         kernel = kernel.expand([x.shape[-dim-1], 1] + kernel.shape[2:])
@@ -129,41 +139,41 @@ def conv_transpose(dim: int, x: Tensor, kernel: Tensor, stride: List[int],
 
 
 @torch.jit.script
-def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int], dim: int) -> Tensor:
+def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
     """Apply a [separable] convolution
     x : (B, C, *inspatial) tensor
     kernel : List[(C, C, *kernel_size) tensor]
     stride : List{dim}[int]
-    dim : {1, 2, 3}
     returns : (B, C, *outspatial) tensor
     """
+    dim = x.dim() - 2
     if len(kernel) == 1:
         x = conv(dim, x, kernel[0], stride)
     else:
         for d, (k, s) in enumerate(zip(kernel, stride)):
             ss: List[int] = [1] * d + [s] + [1] * (dim-d-1)
-            x = conv(dim, x, k, ss)
+            x = conv(x, k, ss)
     return x
 
 
 @torch.jit.script
 def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
-             opad: List[int], dim: int) -> Tensor:
+             opad: List[int]) -> Tensor:
     """Apply a [separable] transposed convolution
     x : (B, C, *inspatial) tensor
     kernel : List[(C, C, *kernel_size) tensor]
     stride : List{dim}[int]
     opad : List{dim}[int]
-    dim : {1, 2, 3}
     returns : (B, C, *outspatial) tensor
     """
+    dim = x.dim() - 2
     if len(kernel) == 1:
         x = conv_transpose(dim, x, kernel[0], stride, opad)
     else:
         for d, (k, s, p) in enumerate(zip(kernel, stride, opad)):
             ss: List[int] = [1] * d + [s] + [1] * (dim - d - 1)
             pp: List[int] = [0] * d + [p] + [0] * (dim - d - 1)
-            x = conv_transpose(dim, x, k, ss, pp)
+            x = conv_transpose(x, k, ss, pp)
     return x
 
 
@@ -176,16 +186,6 @@ def do_patch(x: Tensor, kernel_size: List[int], stride: List[int]) -> Tensor:
     dims = [d for d in range(-dim, 0)]
     x = x.mean(dim=dims)
     return x
-
-
-@torch.jit.script
-def prod(x: List[int]) -> int:
-    if len(x) == 0:
-        return 1
-    x0 = x[0]
-    for x1 in x[1:]:
-        x0 = x0 * x1
-    return x0
 
 
 @torch.jit.script
@@ -295,17 +295,17 @@ def _local_mean_conv(
     # conv
     if backward:
         if mask is not None:
-            convmask = do_conv(mask, kernel, stride, dim).clamp_min_(1e-5)
+            convmask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
             x = x / convmask
-        x = do_convt(x, kernel, stride, opad, dim)
+        x = do_convt(x, kernel, stride, opad)
         if mask is not None:
             x = x.mul_(mask)
     else:  # forward pass
         if mask is not None:
             x = x * mask
-        x = do_conv(x, kernel, stride, dim)
+        x = do_conv(x, kernel, stride)
         if mask is not None:
-            mask = do_conv(mask, kernel, stride, dim).clamp_min_(1e-5)
+            mask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
             x = x.div_(mask)
 
     return x

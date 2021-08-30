@@ -1,3 +1,6 @@
+"""This file implements simple numerical phantoms (circle, square, squircle,
+letter C) to test registration algorithms."""
+
 import torch
 from nitorch import spatial
 from nitorch.core import utils, math, py

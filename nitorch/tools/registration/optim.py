@@ -10,14 +10,17 @@ Available optimizers are:
 - GradientDescent
 - Momentum
 - Nesterov
+- OGM
+- GaussNewton
 - GridCG
 - GridRelax
 - LBFGS
 Along with helpers
+- StepSizeLineSearch
 - BacktrackingLineSearch
-- StrongWolfe
+- StrongWolfeLineSearch
 - IterateOptim
-- MultiOptim
+- IterateOptimInterleaved
 """
 
 from nitorch import spatial

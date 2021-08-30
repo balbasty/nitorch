@@ -1,4 +1,11 @@
-"""Utilities to fit 2D Gaussian Mixture Models for registration."""
+"""Utilities to fit 2D Gaussian Mixture Models for registration.
+
+The main entry points are:
+- fit_gmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20, ...)
+- fit_lgmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20,
+            patch: int|List[int] = 20,  stride: int|List[int] = 1,
+            mode: str = 'g', ...)
+"""
 from nitorch.core import utils, py, math, constants, linalg, kernels
 import torch
 from torch.nn import functional as F
