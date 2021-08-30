@@ -195,7 +195,7 @@ def do_patcht(x: Tensor, kernel_size: List[int], stride: List[int],
     dim = x.dim() - 2
     # allocate output
     oshape = [s*k + p for s, p, k in zip(x.shape[-dim:], opad, kernel_size)]
-    if all([p == 0 for p in opad]):
+    if _all([p == 0 for p in opad]):
         y = torch.empty(oshape, dtype=x.dtype, device=x.device)
     else:
         y = torch.zeros(oshape, dtype=x.dtype, device=x.device)
