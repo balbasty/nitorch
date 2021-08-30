@@ -5,8 +5,7 @@ import torch
 from nitorch.core import utils, linalg
 from nitorch.core.utils import expand, make_vector
 from nitorch.core.py import make_list, prod
-from nitorch._C.spatial import BoundType, InterpolationType
-from nitorch._C.grid import GridPull, GridPush, GridCount, GridGrad
+from nitorch._C.grid import GridPull, GridPush, GridCount, GridGrad, BoundType, InterpolationType
 from ._affine import affine_resize, affine_lmdiv
 from ._regularisers import solve_grid_sym
 from ._finite_differences import diff
