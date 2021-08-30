@@ -168,7 +168,7 @@ def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
     """
     dim = x.dim() - 2
     if len(kernel) == 1:
-        x = conv_transpose(dim, x, kernel[0], stride, opad)
+        x = conv_transpose(x, kernel[0], stride, opad)
     else:
         for d, (k, s, p) in enumerate(zip(kernel, stride, opad)):
             ss: List[int] = [1] * d + [s] + [1] * (dim - d - 1)
