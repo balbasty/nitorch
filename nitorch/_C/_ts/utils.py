@@ -1,0 +1,205 @@
+import torch
+from typing import List, Tuple, Optional
+
+
+@torch.jit.script
+def list_any(x: List[bool]) -> bool:
+    for elem in x:
+        if elem:
+            return True
+    return False
+
+
+@torch.jit.script
+def list_all(x: List[bool]) -> bool:
+    for elem in x:
+        if not elem:
+            return False
+    return True
+
+
+@torch.jit.script
+def list_prod_int(x: List[int]) -> int:
+    if len(x) == 0:
+        return 1
+    x0 = x[0]
+    for x1 in x[1:]:
+        x0 = x0 * x1
+    return x0
+
+
+@torch.jit.script
+def list_sum_int(x: List[int]) -> int:
+    if len(x) == 0:
+        return 1
+    x0 = x[0]
+    for x1 in x[1:]:
+        x0 = x0 + x1
+    return x0
+
+
+@torch.jit.script
+def list_reverse_int(x: List[int]) -> List[int]:
+    if len(x) == 0:
+        return x
+    return [x[i] for i in range(-len(x), 0)]
+
+
+@torch.jit.script
+def list_cumprod_int(x: List[int], reverse: bool = False,
+                     exclusive: bool = False) -> List[int]:
+    if len(x) == 0:
+        lx: List[int] = []
+        return lx
+    if reverse:
+        x = list_reverse_int(x)
+
+    x0 = x[0] if exclusive else 1
+    lx = [x0]
+    all_x = x[:-1] if exclusive else x[1:]
+    for x1 in all_x:
+        x0 = x0 * x1
+        lx.append(x0)
+    if reverse:
+        lx = list_reverse_int(lx)
+    return lx
+
+
+@torch.jit.script
+def movedim1(x, source: int, destination: int):
+    dim = x.dim()
+    source = dim + source if source < 0 else source
+    destination = dim + destination if destination < 0 else destination
+    permutation = [d for d in range(dim)]
+    permutation = permutation[:source] + permutation[source+1:]
+    permutation = permutation[:destination] + [source] + permutation[destination:]
+    return x.permute(permutation)
+
+
+def compare_versions(version1: List[int], mode: str, version2: List[int]) -> bool:
+    for v1, v2 in zip(version1, version2):
+        if mode in ('gt', '>'):
+            if v1 > v2:
+                return True
+            elif v1 < v2:
+                return False
+        elif mode in ('ge', '>='):
+            if v1 > v2:
+                return True
+            elif v1 < v2:
+                return False
+        elif mode in ('lt', '<'):
+            if v1 < v2:
+                return True
+            elif v1 > v2:
+                return False
+        elif mode in ('le', '<='):
+            if v1 < v2:
+                return True
+            elif v1 > v2:
+                return False
+    if mode in ('gt', 'lt', '>', '<'):
+        return False
+    else:
+        return True
+
+
+def torch_version(mode: str, version: List[int]) -> bool:
+    """Check torch version
+
+    Parameters
+    ----------
+    mode : {'<', '<=', '>', '>='}
+    version : list[int]
+
+    Returns
+    -------
+    True if "torch.version <mode> version"
+
+    """
+    current_version = torch.__version__.split('+')[0]
+    current_version = current_version.split('.')
+    current_version = [int(current_version[0]),
+                       int(current_version[1]),
+                       int(current_version[2])]
+    return compare_versions(current_version, mode, version)
+
+
+@torch.jit.script
+def sub2ind(subs, shape: List[int]):
+    """Convert sub indices (i, j, k) into linear indices.
+
+    The rightmost dimension is the most rapidly changing one
+    -> if shape == [D, H, W], the strides are therefore [H*W, W, 1]
+
+    Parameters
+    ----------
+    subs : (D, ...) tensor_like
+        List of sub-indices. The first dimension is the number of dimension.
+        Each element should have the same number of elements and shape.
+    shape : (D,) vector_like
+        Size of each dimension. Its length should be the same as the
+        first dimension of ``subs``.
+
+    Returns
+    -------
+    ind : (...) tensor
+        Linear indices
+    """
+    subs = subs.unbind(0)
+    ind = subs[-1]
+    subs = subs[:-1]
+    ind = torch.as_tensor(ind).clone()
+    stride = list_cumprod_int(shape[1:], reverse=True, exclusive=False)
+    for i, s in zip(subs, stride):
+        ind += i * s
+    return ind
+
+
+# floor_divide returns wrong results for negative values, because it truncates
+# instead of performing a proper floor. In recent version of pytorch, it is
+# advised to use div(..., rounding_mode='trunc'|'floor') instead.
+# Here, we only use floor_divide on positive values so we do not care.
+if torch_version('>=', [1, 8]):
+    @torch.jit.script
+    def floor_div(x, y) -> torch.Tensor:
+        return torch.div(x, y, rounding_mode='floor')
+    @torch.jit.script
+    def floor_div_int(x, y: int) -> torch.Tensor:
+        return torch.div(x, y, rounding_mode='floor')
+else:
+    @torch.jit.script
+    def floor_div(x, y) -> torch.Tensor:
+        return (x / y).floor_()
+    @torch.jit.script
+    def floor_div_int(x, y: int) -> torch.Tensor:
+        return (x / y).floor_()
+
+
+@torch.jit.script
+def ind2sub(ind, shape: List[int]):
+    """Convert linear indices into sub indices (i, j, k).
+
+    The rightmost dimension is the most rapidly changing one
+    -> if shape == [D, H, W], the strides are therefore [H*W, W, 1]
+
+    Parameters
+    ----------
+    ind : tensor_like
+        Linear indices
+    shape : (D,) vector_like
+        Size of each dimension.
+
+    Returns
+    -------
+    subs : (D, ...) tensor
+        Sub-indices.
+    """
+    stride = list_cumprod_int(shape, reverse=True, exclusive=True)
+    sub = ind.new_empty([len(shape)] + ind.shape)
+    sub.copy_(ind)
+    for d in range(len(shape)):
+        if d > 0:
+            sub[d] = torch.remainder(sub[d], stride[d-1])
+        sub[d] = floor_div_int(sub[d], stride[d])
+    return sub
