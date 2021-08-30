@@ -1150,9 +1150,12 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
         ogz = static_cast<scalar_t*>(gz),
         ohz = static_cast<scalar_t*>(hz);
         for (offset_t bz = bz0; bz <= bz1; ++bz) {
-          if (*owz < 0) *owz = -(*owz); ++owz;
-          if (*ogz < 0) *ogz = -(*ogz); ++ogz;
-          if (*ohz < 0) *ohz = -(*ohz); ++ohz;
+          if (*owz < 0) *owz = -(*owz);
+          ++owz;
+          if (*ogz < 0) *ogz = -(*ogz);
+          ++ogz;
+          if (*ohz < 0) *ohz = -(*ohz);
+          ++ohz;
         }
     }
   }
@@ -1176,9 +1179,12 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
         ogy = static_cast<scalar_t*>(gy),
         ohy = static_cast<scalar_t*>(hy);
         for (offset_t by = by0; by <= by1; ++by) {
-          if (*owy < 0) *owy = -(*owy); ++owy;
-          if (*ogy < 0) *ogy = -(*ogy); ++ogy;
-          if (*ohy < 0) *ohy = -(*ohy); ++ohy;
+          if (*owy < 0) *owy = -(*owy);
+          ++owy;
+          if (*ogy < 0) *ogy = -(*ogy);
+          ++ogy;
+          if (*ohy < 0) *ohy = -(*ohy);
+          ++ohy;
         }
     }
   }
@@ -1202,9 +1208,12 @@ void PushPullImpl<scalar_t,offset_t>::interpolate3d(
         ogx = static_cast<scalar_t*>(gx),
         ohx = static_cast<scalar_t*>(hx);
         for (offset_t bx = bx0; bx <= bx1; ++bx) {
-          if (*owx < 0) *owx = -(*owx); ++owx;
-          if (*ogx < 0) *ogx = -(*ogx); ++ogx;
-          if (*ohx < 0) *ohx = -(*ohx); ++ohx;
+          if (*owx < 0) *owx = -(*owx);
+          ++owx;
+          if (*ogx < 0) *ogx = -(*ogx);
+          ++ogx;
+          if (*ohx < 0) *ohx = -(*ohx);
+          ++ohx;
         }
     }
   }
@@ -1411,9 +1420,12 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d(
         ogy = static_cast<scalar_t*>(gy),
         ohy = static_cast<scalar_t*>(hy);
         for (offset_t by = by0; by <= by1; ++by) {
-          if (*owy < 0) *owy = -(*owy); ++owy;
-          if (*ogy < 0) *ogy = -(*ogy); ++ogy;
-          if (*ohy < 0) *ohy = -(*ohy); ++ohy;
+          if (*owy < 0) *owy = -(*owy);
+          ++owy;
+          if (*ogy < 0) *ogy = -(*ogy);
+          ++ogy;
+          if (*ohy < 0) *ohy = -(*ohy);
+          ++ohy;
         }
     }
   }
@@ -1437,9 +1449,12 @@ void PushPullImpl<scalar_t,offset_t>::interpolate2d(
         ogx = static_cast<scalar_t*>(gx),
         ohx = static_cast<scalar_t*>(hx);
         for (offset_t bx = bx0; bx <= bx1; ++bx) {
-          if (*owx < 0) *owx = -(*owx); ++owx;
-          if (*ogx < 0) *ogx = -(*ogx); ++ogx;
-          if (*ohx < 0) *ohx = -(*ohx); ++ohx;
+          if (*owx < 0) *owx = -(*owx);
+          ++owx;
+          if (*ogx < 0) *ogx = -(*ogx);
+          ++ogx;
+          if (*ohx < 0) *ohx = -(*ohx);
+          ++ohx;
         }
     }
   }
@@ -1620,9 +1635,12 @@ void PushPullImpl<scalar_t,offset_t>::interpolate1d(
         ogx = static_cast<scalar_t*>(gx),
         ohx = static_cast<scalar_t*>(hx);
         for (offset_t bx = bx0; bx <= bx1; ++bx) {
-          if (*owx < 0) *owx = -(*owx); ++owx;
-          if (*ogx < 0) *ogx = -(*ogx); ++ogx;
-          if (*ohx < 0) *ohx = -(*ohx); ++ohx;
+          if (*owx < 0) *owx = -(*owx);
+          ++owx;
+          if (*ogx < 0) *ogx = -(*ogx);
+          ++ogx;
+          if (*ohx < 0) *ohx = -(*ohx);
+          ++ohx;
         }
     }
   }

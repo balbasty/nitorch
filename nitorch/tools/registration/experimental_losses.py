@@ -154,7 +154,11 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     fixed = fixed.unsqueeze(-dim-1)
 
     if grad:
+<<<<<<< HEAD
         z0 = fwd(z).clamp_min_(1e-10)
+=======
+        z0 = fwd(z, None).clamp_min_(1e-10)
+>>>>>>> new_dartel
 
         @torch.jit.script
         def make_grad(bwd: Bwd, z, z0, moving, fixed, moving_mean, fixed_mean,
