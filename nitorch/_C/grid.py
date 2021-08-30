@@ -1,12 +1,29 @@
 """AutoGrad version of pull/push/count/grad"""
 
 import torch
-from nitorch._C.spatial import (
-    grid_pull, grid_pull_backward,
-    grid_push, grid_push_backward,
-    grid_count, grid_count_backward,
-    grid_grad, grid_grad_backward,
-    InterpolationType, BoundType)
+
+try:
+    from nitorch._C.spatial import (
+        grid_pull, grid_pull_backward,
+        grid_push, grid_push_backward,
+        grid_count, grid_count_backward,
+        grid_grad, grid_grad_backward,
+        InterpolationType, BoundType)
+    COMPILED_BACKEND = 'nitorch'
+except ImportError:
+    try:
+        from monai._C import (
+        grid_pull, grid_pull_backward,
+        grid_push, grid_push_backward,
+        grid_count, grid_count_backward,
+        grid_grad, grid_grad_backward,
+        InterpolationType, BoundType)
+        COMPILED_BACKEND = 'monai'
+    except ImportError:
+        grid_pull = grid_pull_backward = grid_push = grid_push_backward = None
+        grid_count = grid_count_backward = grid_grad = grid_grad_backward = None
+        InterpolationType = BoundType = None
+        COMPILED_BACKEND = None
 
 
 def make_list(x):
@@ -16,7 +33,7 @@ def make_list(x):
 
 
 def bound_to_nitorch(bound, as_enum=False):
-    """Convert boundary type to NITorch's convention.
+    """Convert boundary type to niTorch's convention.
 
     Parameters
     ----------
@@ -111,12 +128,12 @@ def inter_to_nitorch(inter, as_enum=False):
 class GridPull(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, input, grid, interpolation, bound, extrapolate):
+    def forward(ctx, input, grid, interpolation, bound, extrapolate, abs):
 
         bound = bound_to_nitorch(make_list(bound), as_enum=True)
         interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
+        opt = (bound, interpolation, extrapolate, abs)
 
         # Pull
         output = grid_pull(input, grid, *opt)
@@ -130,7 +147,7 @@ class GridPull(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        var = ctx.saved_variables
+        var = ctx.saved_tensors
         opt = ctx.opt
         grad_input = grad_grid = None
         grads = grid_pull_backward(grad, *var, *opt)
@@ -140,18 +157,18 @@ class GridPull(torch.autograd.Function):
                 grad_grid = grads[1]
         elif ctx.needs_input_grad[1]:
             grad_grid = grads[0]
-        return grad_input, grad_grid, None, None, None
+        return grad_input, grad_grid, None, None, None, None
 
 
 class GridPush(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, input, grid, shape, interpolation, bound, extrapolate):
+    def forward(ctx, input, grid, shape, interpolation, bound, extrapolate, abs):
 
         bound = bound_to_nitorch(make_list(bound), as_enum=True)
         interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
+        opt = (bound, interpolation, extrapolate, abs)
 
         # Push
         output = grid_push(input, grid, shape, *opt)
@@ -165,7 +182,7 @@ class GridPush(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        var = ctx.saved_variables
+        var = ctx.saved_tensors
         opt = ctx.opt
         grad_input = grad_grid = None
         grads = grid_push_backward(grad, *var, *opt)
@@ -175,13 +192,13 @@ class GridPush(torch.autograd.Function):
                 grad_grid = grads[1]
         elif ctx.needs_input_grad[1]:
             grad_grid = grads[0]
-        return grad_input, grad_grid, None, None, None, None
+        return grad_input, grad_grid, None, None, None, None, None
 
 
 class GridCount(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, grid, shape, interpolation, bound, extrapolate):
+    def forward(ctx, grid, shape, interpolation, bound, extrapolate, abs):
 
         bound = bound_to_nitorch(make_list(bound), as_enum=True)
         interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
@@ -189,7 +206,7 @@ class GridCount(torch.autograd.Function):
         opt = (bound, interpolation, extrapolate)
 
         # Push
-        output = grid_count(grid, shape, *opt)
+        output = grid_count(grid, shape, *opt, 0)
 
         # Context
         if grid.requires_grad:
@@ -200,23 +217,23 @@ class GridCount(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        var = ctx.saved_variables
+        var = ctx.saved_tensors
         opt = ctx.opt
         grad_grid = None
         if ctx.needs_input_grad[0]:
-            grad_grid = grid_count_backward(grad, *var, *opt)
-        return grad_grid, None, None, None, None
+            grad_grid = grid_count_backward(grad, *var, *opt, 0)
+        return grad_grid, None, None, None, None, None
 
 
 class GridGrad(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, input, grid, interpolation, bound, extrapolate):
+    def forward(ctx, input, grid, interpolation, bound, extrapolate, abs):
 
         bound = bound_to_nitorch(make_list(bound), as_enum=True)
         interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate)
+        opt = (bound, interpolation, extrapolate, abs)
 
         # Pull
         output = grid_grad(input, grid, *opt)
@@ -230,7 +247,7 @@ class GridGrad(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad):
-        var = ctx.saved_variables
+        var = ctx.saved_tensors
         opt = ctx.opt
         grad_input = grad_grid = None
         if ctx.needs_input_grad[0] or ctx.needs_input_grad[1]:
@@ -241,4 +258,4 @@ class GridGrad(torch.autograd.Function):
                     grad_grid = grads[1]
             elif ctx.needs_input_grad[1]:
                 grad_grid = grads[0]
-        return grad_input, grad_grid, None, None, None
+        return grad_input, grad_grid, None, None, None, None

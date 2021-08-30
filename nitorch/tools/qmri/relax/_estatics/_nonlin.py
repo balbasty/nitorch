@@ -39,7 +39,6 @@ def nonlin(data, opt=None):
     
     # --- estimate noise / register / initialize maps ---
     data, maps = preproc(data, opt)
-    print(maps.affine)
     vx = spatial.voxel_size(maps.affine)
 
     # --- prepare regularization factor ---

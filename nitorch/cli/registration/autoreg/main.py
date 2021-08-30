@@ -7,7 +7,7 @@ from nitorch.core import utils, linalg
 from nitorch.cli.cli import commands
 from nitorch.spatial import (
     mean_space, affine_conv, affine_resize, affine_matmul, affine_lmdiv,
-    affine_grid, affine_matvec, grid_inv, affine_inv)
+    affine_grid, affine_matvec, grid_inv, affine_inv, greens_apply)
 from .parser import parse, ParseError, help
 from nitorch.cli.registration.helpers import (
     ffd_exp, samespace, smalldef, pull_grid, pull, BacktrackingLineSearch)
@@ -49,6 +49,7 @@ def _autoreg(argv=None):
             trf.losses.append(struct.MembraneLoss(factor=0.001))
             trf.losses.append(struct.BendingLoss(factor=0.2))
             trf.losses.append(struct.LinearElasticLoss(factor=(0.05, 0.2)))
+        trf.losses = [collapse_losses(trf.losses)]
     if not options.optimizers:
         options.optimizers.append(struct.Adam())
 
@@ -90,6 +91,21 @@ def _autoreg(argv=None):
     write_data(options)
 
 
+def collapse_losses(losses):
+    """Collapse losses on dense fields into a GridLoss"""
+    gridloss = struct.GridLoss()
+    for loss in losses:
+        if isinstance(loss, struct.AbsoluteLoss):
+            gridloss.absolute = loss.factor
+        if isinstance(loss, struct.MembraneLoss):
+            gridloss.membrane = loss.factor
+        if isinstance(loss, struct.BendingLoss):
+            gridloss.bending = loss.factor
+        if isinstance(loss, struct.LinearElasticLoss):
+            gridloss.lame = loss.factor
+    return gridloss
+
+
 def load_data(s):
     """Loads data and prepare loss functions"""
 
@@ -110,6 +126,10 @@ def load_data(s):
             dat = dat.reshape([*file.shape, file.channels])
             dat = dat[..., file.subchannels]
             dat = utils.movedim(dat, -1, 0)
+            dim = dat.dim() - 1
+            qt = utils.quantile(dat, (0.01, 0.95), dim=range(-dim, 0), keepdim=True)
+            mn, mx = qt.unbind(-1)
+            dat = dat.sub_(mn).div_(mx-mn)
             dats.append(dat)
             del dat
         dats = torch.cat(dats, dim=0)
@@ -293,10 +313,10 @@ def init_optimizers(options):
             params1.append({'params': param['params'],
                             'lr': param['lr'] * optim.lr,
                            'weight_decay': param['weight_decay'] * optim.weight_decay})
-        if hasattr(optim, 'obj') and isinstance(optim.obj, torch.optim.Adam):
-            state = get_state(optim)
-        else:
-            state = None
+        # if hasattr(optim, 'obj') and isinstance(optim.obj, torch.optim.Adam):
+        #     state = get_state(optim)
+        # else:
+        #     state = None
         optim.obj = optim.call(params1, lr=optim.lr,
                                weight_decay=optim.weight_decay)
         # if state is not None:
@@ -315,13 +335,19 @@ def init_optimizers(options):
             optim.obj = BacktrackingLineSearch(optim.obj, max_iter=optim.ls)
         optim.first_iter = True
 
-        def optim_step(fwd):
+        def optim_step(fwd, greens=None):
             def closure():
                 optim.obj.zero_grad()
                 loss = fwd()
                 loss.backward()
+                if greens is not None:
+                    for group in optim.obj.param_groups:
+                        for param in group['params']:
+                            if param.dim() >= 3:
+                                param.grad = greens_apply(param.grad, greens)
                 return loss
             loss = optim.obj.step(closure)
+
             if optim.first_iter:
                 optim.first_iter = False
             else:
@@ -370,6 +396,12 @@ def optimize(options):
     device = torch.device(options.device)
     backend = dict(dtype=torch.float, device=device)
 
+    greens = None
+    for trf in options.transformations:
+        if isinstance(trf, struct.Diffeo):
+            if trf.losses:
+                greens = trf.losses[0].greens(trf.dat.shape[:-1], **backend)
+
     def forward():
         """Forward pass up to the loss"""
 
@@ -388,6 +420,7 @@ def optimize(options):
                     # include shift
                     shift = trf.shift.to(**backend)
                     eye = torch.eye(options.dim, **backend)
+                    A = A.clone()  # needed because expm is a custom autograd.Function
                     A[:-1, -1] += torch.matmul(A[:-1, :-1] - eye, shift)
                 for loss1 in trf.losses:
                     loss += loss1.call(q)
@@ -479,7 +512,7 @@ def optimize(options):
     # optimization loop
     for optimizer in options.optimizers:
         for n_iter in range(1, optimizer.max_iter+1):
-            loss = optimizer.step(forward)
+            loss = optimizer.step(forward, greens=greens)
             current_lr = optimizer.current_lr()
             if options.verbose:
                 print(f'{n_iter:4d} | {loss.item():12.6f} | '

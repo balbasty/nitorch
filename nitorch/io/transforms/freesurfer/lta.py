@@ -455,7 +455,6 @@ class LinearTransformArray(MappedAffine):
         self._struct.dst.cras = c
         return self
 
-
     def type(self):
         if self._struct.type == Constants.LINEAR_VOX_TO_VOX:
             return 'voxel', 'voxel'

@@ -416,7 +416,7 @@ class DiceLoss(Loss):
                 reference = reference[:, :-1]
             inter = math.nansum(predicted * reference, dim=spatial_dims)
             union = math.nansum(predicted + reference, dim=spatial_dims)
-            loss = -2 * inter / union
+            loss = -2 * inter / union.clamp_min_(1e-5)
             if weighted is not False:
                 if weighted is True:
                     weights = math.nansum(reference, dim=spatial_dims)
