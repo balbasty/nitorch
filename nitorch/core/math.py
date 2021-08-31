@@ -6,6 +6,7 @@
 import torch
 from .constants import inf, ninf
 from nitorch.core import py, utils
+from math import lgamma as pylgamma
 
 
 def round(t, decimals=0):
@@ -1054,6 +1055,8 @@ def besseli_ratio(X, nu=0, N=4, K=10):
     device = X.device
     dtype = X.dtype
 
+    #print(f"x: {X}")
+
     # Begin by computing besseli(nu+1+N,x)/besseli(nu+N,x)
     nu1 = nu+K
     # rk = torch.arange(0, N+2, dtype=dtype, device=device)
@@ -1062,8 +1065,8 @@ def besseli_ratio(X, nu=0, N=4, K=10):
     # for k=0:N, rk{k+1} = x./((nu1+k+0.5)+sqrt((nu1+k+1.5).^2+x.^2)); end
 
     for k in range(0,N+1):
-        rk[k+1] = X/((nu1+k+0.5) + torch.sqrt((nu1+k+1.5)**2 + X**2))
-
+        rk[k+1] = X/((nu1+k+0.5) + torch.sqrt(((nu1+k+1.5)**2 + X**2)))
+    
     # del k
     for m in range(N, 0,-1):
         # Recursive updates (eq. 20b)
@@ -1081,3 +1084,41 @@ def besseli_ratio(X, nu=0, N=4, K=10):
     for k3 in range(K,0,-1):
         result = 1./(2.*(nu+k3)/X + result)
     return result
+
+    from math import lgamma as pylgamma
+
+
+@torch.jit.script
+def log_modified_bessel_first(x, alpha: float = 0., max_iter: int = 32, tol: float = 1e-9):
+    """ Log of the Modified Bessel function of the first kind of real order
+
+    Notes
+    -----
+    .. This function only works on real inputs.
+    .. It uses scaling by exp(-x) internally for numerical stability.
+
+    Parameters
+    ----------
+    x : tensor
+        Input tensor
+    alpha : float, default=0
+        Order
+    max_iter : int, default=32
+        Maximum number of elements in the sum
+    tol : float, default=1e-9
+        Tolerance for early stopping
+    """
+    # !! x should be positive !!
+    y = x * (alpha / 2) - pylgamma(alpha + 1)
+    y = y.sub_(x).clamp_max_(80).exp_()
+    yy = y.flatten().dot(y.flatten())
+    for m in range(1, max_iter):
+        y1 = x * (m + alpha / 2) - pylgamma(m) - pylgamma(m + alpha + 1)
+        y1 = y1.sub_(x).clamp_max_(80).exp_()
+        y += y1
+        yy1 = y1.flatten().dot(y1.flatten())
+        if yy1/yy < tol:
+            break
+        yy = yy1
+    y = y.log_().add_(x)
+    return y
