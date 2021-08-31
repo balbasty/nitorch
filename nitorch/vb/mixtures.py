@@ -77,7 +77,7 @@ class Mixture:
             W = torch.reshape(W, (N, 1))
 
         # Initialise model parameters
-        self._init_par(X, W)
+        self._init_par(X)
 
         # Compute a regularisation value
         self.lam = torch.zeros(C, dtype=self.dt, device=self.dev)
@@ -397,7 +397,7 @@ class GMM(Mixture):
         log_pdf = - (C / 2) * torch.log(2 * pi) - log_det_Cov - 0.5 * torch.sum(diff**2, dim=1)
         return log_pdf
 
-    def _init_par(self, X, W=None):
+    def _init_par(self, X):
         """ Initialise GMM specific parameters: mu, Cov
 
         """
@@ -536,7 +536,7 @@ class RMM(Mixture):
 
         return torch.log(log_pdf.flatten() + tiny)
 
-    def _init_par(self, X, W=None):
+    def _init_par(self, X):
         """  Initialise RMM specific parameters: nu, sig
 
         """
