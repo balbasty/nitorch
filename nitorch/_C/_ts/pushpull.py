@@ -1,6 +1,6 @@
 import torch
-from typing import List, Optional
-from .utils import list_all
+from typing import List, Optional, Tuple
+from .utils import list_all, dot, dot_multi
 from .bounds import Bound
 from .splines import Spline
 from . import iso0, iso1, nd
@@ -230,7 +230,8 @@ def grid_hess(inp, grid, bound: List[int], interpolation: List[int],
 @torch.jit.script
 def grid_pull_backward(grad, inp, grid, bound: List[int],
                        interpolation: List[int], extrapolate: int,
-                       abs: bool = False):
+                       abs: bool = False) \
+        -> Tuple[Optional[Tensor], Optional[Tensor], ]:
     """
     grad: (B, C, *spatial_out) tensor
     inp: (B, C, *spatial_in) tensor
@@ -241,16 +242,22 @@ def grid_pull_backward(grad, inp, grid, bound: List[int],
     returns: (B, C, *spatial_in) tensor, (B, *spatial_out, D)
     """
     dim = grid.shape[-1]
-    grad_inp = grid_push(grad, grid, inp.shape[-dim:], bound, interpolation, extrapolate)
-    grad_grid = grid_grad(inp, grid, bound, interpolation, extrapolate)
-    grad_grid = (grad_grid * grad.unsqueeze(-1)).sum(1)  # TODO: use matmul
+    grad_inp: Optional[Tensor] = None
+    grad_grid: Optional[Tensor] = None
+    if inp.requires_grad:
+        grad_inp = grid_push(grad, grid, inp.shape[-dim:], bound, interpolation, extrapolate)
+    if grid.requires_grad:
+        grad_grid = grid_grad(inp, grid, bound, interpolation, extrapolate)
+        # grad_grid = dot(grad_grid, grad.unsqueeze(-1), dim=1)
+        grad_grid = (grad_grid * grad.unsqueeze(-1)).sum(dim=1)
     return grad_inp, grad_grid
 
 
 @torch.jit.script
 def grid_push_backward(grad, inp, grid, bound: List[int],
                        interpolation: List[int], extrapolate: int,
-                       abs: bool = False):
+                       abs: bool = False) \
+        -> Tuple[Optional[Tensor], Optional[Tensor], ]:
     """
     grad: (B, C, *spatial_out) tensor
     inp: (B, C, *spatial_in) tensor
@@ -260,16 +267,21 @@ def grid_push_backward(grad, inp, grid, bound: List[int],
     extrapolate: int
     returns: (B, C, *spatial_in) tensor, (B, *spatial_in, D)
     """
-    grad_inp = grid_pull(grad, grid, bound, interpolation, extrapolate)
-    grad_grid = grid_grad(grad, grid, bound, interpolation, extrapolate)
-    grad_grid = (grad_grid * inp.unsqueeze(-1)).sum(1)
+    grad_inp: Optional[Tensor] = None
+    grad_grid: Optional[Tensor] = None
+    if inp.requires_grad:
+        grad_inp = grid_pull(grad, grid, bound, interpolation, extrapolate)
+    if grid.requires_grad:
+        grad_grid = grid_grad(grad, grid, bound, interpolation, extrapolate)
+        # grad_grid = dot(grad_grid, inp.unsqueeze(-1), dim=1)
+        grad_grid = (grad_grid * inp.unsqueeze(-1)).sum(dim=1)
     return grad_inp, grad_grid
 
 
 @torch.jit.script
 def grid_count_backward(grad, grid, bound: List[int],
                        interpolation: List[int], extrapolate: int,
-                        abs: bool = False):
+                       abs: bool = False) -> Optional[Tensor]:
     """
     grad: (B, C, *spatial_out) tensor
     grid: (B, *spatial_in, D) tensor
@@ -278,14 +290,16 @@ def grid_count_backward(grad, grid, bound: List[int],
     extrapolate: int
     returns: (B, C, *spatial_in) tensor, (B, *spatial_in, D)
     """
-    grad_grid = grid_grad(grad, grid, bound, interpolation, extrapolate).sum(1)
-    return grad_grid
+    if grid.requires_grad:
+        return grid_grad(grad, grid, bound, interpolation, extrapolate).sum(1)
+    return None
 
 
 @torch.jit.script
 def grid_grad_backward(grad, inp, grid, bound: List[int],
                        interpolation: List[int], extrapolate: int,
-                       abs: bool = False):
+                       abs: bool = False) \
+        -> Tuple[Optional[Tensor], Optional[Tensor], ]:
     """
     grad: (B, C, *spatial_out, D) tensor
     inp: (B, C, *spatial_in) tensor
@@ -296,8 +310,13 @@ def grid_grad_backward(grad, inp, grid, bound: List[int],
     returns: (B, C, *spatial_in, D) tensor, (B, *spatial_out, D)
     """
     dim = grid.shape[-1]
-    shape = inp.shape[-dim-1:-1]
-    grad_inp = grid_pushgrad(grad, grid, shape, bound, interpolation, extrapolate)
-    grad_grid = grid_hess(inp, grid, bound, interpolation, extrapolate)
-    grad_grid = (grad_grid * grad.unsqueeze(-1)).sum([1, -2])  # TODO: use matmul
+    shape = inp.shape[-dim:]
+    grad_inp: Optional[Tensor] = None
+    grad_grid: Optional[Tensor] = None
+    if inp.requires_grad:
+        grad_inp = grid_pushgrad(grad, grid, shape, bound, interpolation, extrapolate)
+    if grid.requires_grad:
+        grad_grid = grid_hess(inp, grid, bound, interpolation, extrapolate)
+        # grad_grid = dot_multi(grad_grid, grad.unsqueeze(-1), dim=[1, -2])
+        grad_grid = (grad_grid * grad.unsqueeze(-1)).sum(dim=[1, -2])
     return grad_inp, grad_grid

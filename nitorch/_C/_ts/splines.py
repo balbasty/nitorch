@@ -22,7 +22,8 @@ class Spline:
 
     def weight(self, x):
         w = self.fastweight(x)
-        w[x.abs() >= (self.order + 1)/2].zero_()
+        zero = torch.zeros([1], dtype=x.dtype, device=x.device)
+        w = torch.where(x.abs() >= (self.order + 1)/2, zero, w)
         return w
 
     def fastweight(self, x):
@@ -54,18 +55,10 @@ class Spline:
         if self.order == 6:
             x_low = square(x)
             x_low = x_low * (x_low * (7./48. - x/36.) - 77./192.) + 5887./11520.
-            x_mid_low = (x * (x * (x * (x * (x * (x / 48. - 7./48.)
-                                             + 0.328125)
-                                        - 35./288.)
-                                   - 91./256.)
-                              - 7./768.)
-                         + 7861./15360.)
-            x_mid_up = (x * (x * (x * (x * (x * (7./60. - x / 120.)
-                                            - 0.65625)
-                                       + 133./72.)
-                                  - 2.5703125)
-                             + 1267./960.)
-                        + 1379./7680.)
+            x_mid_low = (x * (x * (x * (x * (x * (x / 48. - 7./48.) + 0.328125)
+                         - 35./288.) - 91./256.) - 7./768.) + 7861./15360.)
+            x_mid_up = (x * (x * (x * (x * (x * (7./60. - x / 120.) - 0.65625)
+                        + 133./72.) - 2.5703125) + 1267./960.) + 1379./7680.)
             x_up = pow6(x - 3.5) / 720.
             return torch.where(x < .5, x_low,
                                torch.where(x < 1.5, x_mid_low,
@@ -89,13 +82,14 @@ class Spline:
         if self.order == 0:
             return torch.zeros(x.shape, dtype=x.dtype, device=x.device)
         g = self.fastgrad(x)
-        g[x.abs() >= (self.order + 1)/2].zero_()
+        zero = torch.zeros([1], dtype=x.dtype, device=x.device)
+        g = torch.where(x.abs() >= (self.order + 1)/2, zero, g)
         return g
 
     def fastgrad(self, x):
         if self.order == 0:
             return torch.zeros(x.shape, dtype=x.dtype, device=x.device)
-        return self._fastgrad(x.abs()).mul_(x.sign())
+        return self._fastgrad(x.abs()).mul(x.sign())
 
     def _fastgrad(self, x):
         if self.order == 1:
@@ -123,7 +117,7 @@ class Spline:
             g_low = x * (g_low * (7./12.) - square(g_low) / 6. - 77./96.)
             g_mid_low = (x * (x * (x * (x * (x * 0.125 - 35./48.) + 1.3125)
                          - 35./96.) - 0.7109375) - 7./768.)
-            g_mid_up = (x * (x * (x * (x * (x / (-20.) + 7./12.) -2.625)
+            g_mid_up = (x * (x * (x * (x * (x / (-20.) + 7./12.) - 2.625)
                         + 133./24.) - 5.140625) + 1267./960.)
             g_up = pow5(2*x - 7) / 3840.
             return torch.where(x < 0.5, g_low,
@@ -147,7 +141,8 @@ class Spline:
         if self.order == 0:
             return torch.zeros(x.shape, dtype=x.dtype, device=x.device)
         h = self.fasthess(x)
-        h[x.abs() >= (self.order + 1)/2].zero_()
+        zero = torch.zeros([1], dtype=x.dtype, device=x.device)
+        h = torch.where(x.abs() >= (self.order + 1)/2, zero, h)
         return h
 
     def fasthess(self, x):
@@ -155,9 +150,8 @@ class Spline:
             return torch.zeros(x.shape, dtype=x.dtype, device=x.device)
         x = x.abs()
         if self.order == 2:
-            one = torch.ones(x.shape, dtype=x.dtype, device=x.device)
-            one[x < 0.5].fill_(-2)
-            return one
+            one = torch.ones([1], dtype=x.dtype, device=x.device)
+            return torch.where(x < 0.5, one, -2 * one)
         if self.order == 3:
             return torch.where(x < 1, 3. * x - 2., 2. - x)
         if self.order == 4:

@@ -1,6 +1,6 @@
 import torch
 from .bounds import Bound
-from .utils import (sub2ind, list_any, make_sign,
+from .utils import (sub2ind_list, make_sign,
                     inbounds_mask_3d, inbounds_mask_2d, inbounds_mask_1d)
 from typing import List, Optional
 Tensor = torch.Tensor
@@ -10,7 +10,7 @@ Tensor = torch.Tensor
 def get_indices(g, n: int, bound: Bound):
     g0 = g.round().long()
     sign0 = bound.transform(g0, n)
-    g0 = bound.index_(g0, n)
+    g0 = bound.index(g0, n)
     return g0, sign0
 
 
@@ -48,7 +48,7 @@ def pull3d(inp, g, bound: List[Bound], extrapolate: int = 1):
 
     # gather
     inp = inp.reshape(inp.shape[:2] + [-1])
-    idx = sub2ind(torch.stack([gx, gy, gz]), shape)
+    idx = sub2ind_list([gx, gy, gz], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     out = inp.gather(-1, idx)
     sign = make_sign([signx, signy, signz])
@@ -96,7 +96,7 @@ def push3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
 
     # scatter
     out = torch.zeros([batch, channel, nx*ny*nz], dtype=inp.dtype, device=inp.device)
-    idx = sub2ind(torch.stack([gx, gy, gz]), shape)
+    idx = sub2ind_list([gx, gy, gz], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])
     sign = make_sign([signx, signy, signz])
     if sign is not None or mask is not None:
@@ -118,13 +118,92 @@ def push3d(inp, g, shape: Optional[List[int]], bound: List[Bound],
 
 @torch.jit.script
 def pull2d(inp, g, bound: List[Bound], extrapolate: int = 1):
-    return torch.zeros([1])
+    """
+    inp: (B, C, iX, iY) tensor
+    g: (B, oX, oY, 2) tensor
+    bound: List{2}[Bound] tensor
+    extrapolate: ExtrapolateType
+    returns: (B, C, oX, oY) tensor
+    """
+    dim = 2
+    boundx, boundy = bound
+    oshape = g.shape[-dim-1:-1]
+    g = g.reshape([g.shape[0], 1, -1, dim])
+    gx, gy = g.unbind(-1)
+    batch = max(inp.shape[0], gx.shape[0])
+    channel = inp.shape[1]
+    shape = inp.shape[-dim:]
+    nx, ny = shape
+
+    # mask of inbounds voxels
+    mask = inbounds_mask_2d(extrapolate, gx, gy, nx, ny)
+
+    # nearest integer coordinates
+    gx, signx = get_indices(gx, nx, boundx)
+    gy, signy = get_indices(gy, ny, boundy)
+
+    # gather
+    inp = inp.reshape(inp.shape[:2] + [-1])
+    idx = sub2ind_list([gx, gy], shape)
+    idx = idx.expand([batch, channel, idx.shape[-1]])
+    out = inp.gather(-1, idx)
+    sign = make_sign([signx, signy])
+    if sign is not None:
+        out *= sign
+    if mask is not None:
+        out *= mask
+    out = out.reshape(out.shape[:2] + oshape)
+    return out
 
 
 @torch.jit.script
 def push2d(inp, g, shape: Optional[List[int]], bound: List[Bound],
            extrapolate: int = 1):
-    return torch.zeros([1])
+    """
+    inp: (B, C, iX, iY) tensor
+    g: (B, iX, iY, 2) tensor
+    shape: List{2}[int], optional
+    bound: List{2}[Bound] tensor
+    extrapolate: ExtrapolateType
+    returns: (B, C, *shape) tensor
+    """
+    dim = 2
+    boundx, boundy = bound
+    if inp.shape[-dim:] != g.shape[-dim-1:-1]:
+        raise ValueError('Input and grid should have the same spatial shape')
+    ishape = inp.shape[-dim:]
+    g = g.reshape([g.shape[0], 1, -1, dim])
+    gx, gy = torch.unbind(g, -1)
+    inp = inp.reshape(inp.shape[:2] + [-1])
+    batch = max(inp.shape[0], gx.shape[0])
+    channel = inp.shape[1]
+
+    if shape is None:
+        shape = ishape
+    nx, ny = shape
+
+    # mask of inbounds voxels
+    mask = inbounds_mask_2d(extrapolate, gx, gy, nx, ny)
+
+    # nearest integer coordinates
+    gx, signx = get_indices(gx, nx, boundx)
+    gy, signy = get_indices(gy, ny, boundy)
+
+    # scatter
+    out = torch.zeros([batch, channel, nx*ny], dtype=inp.dtype, device=inp.device)
+    idx = sub2ind_list([gx, gy], shape)
+    idx = idx.expand([batch, channel, idx.shape[-1]])
+    sign = make_sign([signx, signy])
+    if sign is not None or mask is not None:
+        inp = inp.clone()
+    if sign is not None:
+        inp *= sign
+    if mask is not None:
+        inp *= mask
+    out.scatter_add_(-1, idx, inp)
+
+    out = out.reshape(out.shape[:2] + shape)
+    return out
 
 
 # ======================================================================
@@ -134,13 +213,90 @@ def push2d(inp, g, shape: Optional[List[int]], bound: List[Bound],
 
 @torch.jit.script
 def pull1d(inp, g, bound: List[Bound], extrapolate: int = 1):
-    return torch.zeros([1])
+    """
+    inp: (B, C, iX) tensor
+    g: (B, oX, 1) tensor
+    bound: List{1}[Bound] tensor
+    extrapolate: ExtrapolateType
+    returns: (B, C, oX) tensor
+    """
+    dim = 1
+    boundx = bound[0]
+    oshape = g.shape[-dim-1:-1]
+    g = g.reshape([g.shape[0], 1, -1, dim])
+    gx = g.squeeze(-1)
+    batch = max(inp.shape[0], gx.shape[0])
+    channel = inp.shape[1]
+    shape = inp.shape[-dim:]
+    nx = shape[0]
+
+    # mask of inbounds voxels
+    mask = inbounds_mask_1d(extrapolate, gx, nx)
+
+    # nearest integer coordinates
+    gx, signx = get_indices(gx, nx, boundx)
+
+    # gather
+    inp = inp.reshape(inp.shape[:2] + [-1])
+    idx = gx
+    idx = idx.expand([batch, channel, idx.shape[-1]])
+    out = inp.gather(-1, idx)
+    sign = signx
+    if sign is not None:
+        out *= sign
+    if mask is not None:
+        out *= mask
+    out = out.reshape(out.shape[:2] + oshape)
+    return out
 
 
 @torch.jit.script
 def push1d(inp, g, shape: Optional[List[int]], bound: List[Bound],
            extrapolate: int = 1):
-    return torch.zeros([1])
+    """
+    inp: (B, C, iX) tensor
+    g: (B, iX, 1) tensor
+    shape: List{1}[int], optional
+    bound: List{1}[Bound] tensor
+    extrapolate: ExtrapolateType
+    returns: (B, C, *shape) tensor
+    """
+    dim = 1
+    boundx = bound[0]
+    if inp.shape[-dim:] != g.shape[-dim-1:-1]:
+        raise ValueError('Input and grid should have the same spatial shape')
+    ishape = inp.shape[-dim:]
+    g = g.reshape([g.shape[0], 1, -1, dim])
+    gx = g.squeeze(-1)
+    inp = inp.reshape(inp.shape[:2] + [-1])
+    batch = max(inp.shape[0], gx.shape[0])
+    channel = inp.shape[1]
+
+    if shape is None:
+        shape = ishape
+    nx = shape[0]
+
+    # mask of inbounds voxels
+    mask = inbounds_mask_1d(extrapolate, gx, nx)
+
+    # nearest integer coordinates
+    gx, signx = get_indices(gx, nx, boundx)
+
+    # scatter
+    out = torch.zeros([batch, channel, nx], dtype=inp.dtype, device=inp.device)
+    idx = gx
+    idx = idx.expand([batch, channel, idx.shape[-1]])
+    sign = signx
+    if sign is not None or mask is not None:
+        inp = inp.clone()
+    if sign is not None:
+        inp *= sign
+    if mask is not None:
+        inp *= mask
+    out.scatter_add_(-1, idx, inp)
+
+    out = out.reshape(out.shape[:2] + shape)
+    return out
 
 
 # ======================================================================
@@ -158,7 +314,7 @@ def grad(inp, g, bound: List[Bound], extrapolate: int = 1):
     returns: (B, C, *oshape, D) tensor
     """
     dim = g.shape[-1]
-    oshape = g.shape[-dim-1:-1]
+    oshape = list(g.shape[-dim-1:-1])
     batch = max(inp.shape[0], g.shape[0])
     channel = inp.shape[1]
 
@@ -186,6 +342,7 @@ def pushgrad(inp, g, shape: Optional[List[int]], bound: List[Bound],
 
     if shape is None:
         shape = ishape
+    shape = list(shape)
 
     return torch.zeros([batch, channel] + shape,
                        dtype=inp.dtype, device=inp.device)
@@ -201,7 +358,7 @@ def hess(inp, g, bound: List[Bound], extrapolate: int = 1):
     returns: (B, C, *oshape, D, D) tensor
     """
     dim = g.shape[-1]
-    oshape = g.shape[-dim-1:-1]
+    oshape = list(g.shape[-dim-1:-1])
     g = g.reshape([g.shape[0], 1, -1, dim])
     batch = max(inp.shape[0], g.shape[0])
     channel = inp.shape[1]

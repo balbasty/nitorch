@@ -157,4 +157,4 @@ jobs:
       run: |
         # install scipy ourselves because setuptools does a poor job
         pip install scipy
-        TORCH_CUDA_ARCH_LIST="3.5" python setup.py install
+        NI_COMPILED_BACKEND="C" TORCH_CUDA_ARCH_LIST="3.5" python setup.py install

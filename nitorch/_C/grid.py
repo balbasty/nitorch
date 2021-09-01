@@ -73,6 +73,10 @@ if not COMPILED_BACKEND:
                 COMPILED_BACKEND = None
 
 
+if bool(int(os.environ.get('NI_SHOW_COMPILED_BACKEND', '0') or '0')):
+    print('COMPILED_BACKEND:', COMPILED_BACKEND)
+
+
 def make_list(x):
     if not isinstance(x, (list, tuple)):
         x = [x]
@@ -202,12 +206,15 @@ class GridPull(torch.autograd.Function):
         opt = ctx.opt
         grad_input = grad_grid = None
         grads = grid_pull_backward(grad, *var, *opt)
-        if ctx.needs_input_grad[0]:
-            grad_input = grads[0]
-            if ctx.needs_input_grad[1]:
-                grad_grid = grads[1]
-        elif ctx.needs_input_grad[1]:
-            grad_grid = grads[0]
+        if COMPILED_BACKEND == 'TS':
+            grad_input, grad_grid = grads
+        else:
+            if ctx.needs_input_grad[0]:
+                grad_input = grads[0]
+                if ctx.needs_input_grad[1]:
+                    grad_grid = grads[1]
+            elif ctx.needs_input_grad[1]:
+                grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None, None
 
 
@@ -237,12 +244,15 @@ class GridPush(torch.autograd.Function):
         opt = ctx.opt
         grad_input = grad_grid = None
         grads = grid_push_backward(grad, *var, *opt)
-        if ctx.needs_input_grad[0]:
-            grad_input = grads[0]
-            if ctx.needs_input_grad[1]:
-                grad_grid = grads[1]
-        elif ctx.needs_input_grad[1]:
-            grad_grid = grads[0]
+        if COMPILED_BACKEND == 'TS':
+            grad_input, grad_grid = grads
+        else:
+            if ctx.needs_input_grad[0]:
+                grad_input = grads[0]
+                if ctx.needs_input_grad[1]:
+                    grad_grid = grads[1]
+            elif ctx.needs_input_grad[1]:
+                grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None, None, None
 
 
@@ -303,10 +313,13 @@ class GridGrad(torch.autograd.Function):
         grad_input = grad_grid = None
         if ctx.needs_input_grad[0] or ctx.needs_input_grad[1]:
             grads = grid_grad_backward(grad, *var, *opt)
-            if ctx.needs_input_grad[0]:
-                grad_input = grads[0]
-                if ctx.needs_input_grad[1]:
-                    grad_grid = grads[1]
-            elif ctx.needs_input_grad[1]:
-                grad_grid = grads[0]
+            if COMPILED_BACKEND == 'TS':
+                grad_input, grad_grid = grads
+            else:
+                if ctx.needs_input_grad[0]:
+                    grad_input = grads[0]
+                    if ctx.needs_input_grad[1]:
+                        grad_grid = grads[1]
+                elif ctx.needs_input_grad[1]:
+                    grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None, None

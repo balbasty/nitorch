@@ -2,7 +2,7 @@ import torch
 from typing import List, Optional, Tuple
 from .bounds import Bound
 from .splines import Spline
-from .utils import sub2ind, make_sign, list_prod_int
+from .utils import sub2ind_list, make_sign, list_prod_int, cartesian_prod
 Tensor = torch.Tensor
 
 
@@ -41,8 +41,8 @@ def get_weights(grid, bound: List[Bound], spline: List[Spline],
     coords: List[List[Tensor]] = []
     signs: List[List[Optional[Tensor]]] = []
     for g, b, s, n in zip(grid.unbind(-1), bound, spline, shape):
-        grid0 = g.floor().long()
-        dist0 = grid0 - g
+        grid0 = (g - (s.order-1)/2).floor().long()
+        dist0 = g - grid0
         nb_nodes = s.order + 1
         subweights: List[Tensor] = []
         subcoords: List[Tensor] = []
@@ -50,12 +50,12 @@ def get_weights(grid, bound: List[Bound], spline: List[Spline],
         subhesss: List[Optional[Tensor]] = []
         subsigns: List[Optional[Tensor]] = []
         for node in range(nb_nodes):
-            grid1 = grid0 + int(node - s.order//2)
+            grid1 = grid0 + node
             sign1 = b.transform(grid1, n)
             subsigns.append(sign1)
-            grid1 = b.index_(grid1, n)
+            grid1 = b.index(grid1, n)
             subcoords.append(grid1)
-            dist1 = dist0 + int(node - s.order//2)
+            dist1 = dist0 - node
             weight1 = s.fastweight(dist1)
             subweights.append(weight1)
             grad1 = s.fastgrad(dist1) if grad else None
@@ -84,8 +84,8 @@ def pull(inp, grid, bound: List[Bound], spline: List[Spline],
     """
 
     dim = grid.shape[-1]
-    shape = inp.shape[-dim:]
-    oshape = grid.shape[-dim-1:-1]
+    shape = list(inp.shape[-dim:])
+    oshape = list(grid.shape[-dim-1:-1])
     batch = max(inp.shape[0], grid.shape[0])
     channel = inp.shape[1]
 
@@ -103,11 +103,14 @@ def pull(inp, grid, bound: List[Bound], spline: List[Spline],
     # iterate across nodes/corners
     range_nodes = [torch.as_tensor([d for d in range(n)])
                    for n in [s.order + 1 for s in spline]]
-    for nodes in torch.cartesian_prod(range_nodes):
+    all_nodes = cartesian_prod(range_nodes)
+    if dim == 1:
+        all_nodes = all_nodes.unsqueeze(0)
+    for nodes in all_nodes:
 
         # gather
-        idx = torch.stack([c[n] for c, n in zip(coords, nodes)])
-        idx = sub2ind(idx, shape)
+        idx = [c[n] for c, n in zip(coords, nodes)]
+        idx = sub2ind_list(idx, shape)
         idx = idx.expand([batch, channel, idx.shape[-1]])
         out1 = inp.gather(-1, idx)
 
@@ -127,7 +130,7 @@ def pull(inp, grid, bound: List[Bound], spline: List[Spline],
     if mask is not None:
         out *= mask
 
-    out = out.reshape(out.shape[:2] + oshape)
+    out = out.reshape(list(out.shape[:2]) + oshape)
     return out
 
 
@@ -145,9 +148,10 @@ def push(inp, grid, shape: Optional[List[int]], bound: List[Bound],
     """
 
     dim = grid.shape[-1]
-    oshape = grid.shape[-dim - 1:-1]
+    ishape = list(grid.shape[-dim - 1:-1])
     if shape is None:
-        shape = oshape
+        shape = ishape
+    shape = list(shape)
     batch = max(inp.shape[0], grid.shape[0])
     channel = inp.shape[1]
 
@@ -164,12 +168,15 @@ def push(inp, grid, shape: Optional[List[int]], bound: List[Bound],
 
     # iterate across nodes/corners
     range_nodes = [torch.as_tensor([d for d in range(n)])
-                   for n in [(s.order + 1) // 2 for s in spline]]
-    for nodes in torch.cartesian_prod(range_nodes):
+                   for n in [s.order + 1 for s in spline]]
+    all_nodes = cartesian_prod(range_nodes)
+    if dim == 1:
+        all_nodes = all_nodes.unsqueeze(0)
+    for nodes in all_nodes:
 
         # gather
-        idx = torch.stack([c[n] for c, n in zip(coords, nodes)])
-        idx = sub2ind(idx, shape)
+        idx = [c[n] for c, n in zip(coords, nodes)]
+        idx = sub2ind_list(idx, shape)
         idx = idx.expand([batch, channel, idx.shape[-1]])
         out1 = inp.clone()
 
@@ -178,8 +185,9 @@ def push(inp, grid, shape: Optional[List[int]], bound: List[Bound],
         if sign1 is not None:
             out1 *= sign1
 
+        # out-of-bounds mask
         if mask is not None:
-            out *= mask
+            out1 *= mask
 
         # apply weights
         for weight, n in zip(weights, nodes):
@@ -188,7 +196,7 @@ def push(inp, grid, shape: Optional[List[int]], bound: List[Bound],
         # accumulate
         out.scatter_add_(-1, idx, out1)
 
-    out = out.reshape(out.shape[:2] + shape)
+    out = out.reshape(list(out.shape[:2]) + shape)
     return out
 
 
@@ -205,8 +213,8 @@ def grad(inp, grid, bound: List[Bound], spline: List[Spline],
     """
 
     dim = grid.shape[-1]
-    shape = inp.shape[-dim:]
-    oshape = grid.shape[-dim-1:-1]
+    shape = list(inp.shape[-dim:])
+    oshape = list(grid.shape[-dim-1:-1])
     batch = max(inp.shape[0], grid.shape[0])
     channel = inp.shape[1]
 
@@ -215,7 +223,8 @@ def grad(inp, grid, bound: List[Bound], spline: List[Spline],
     mask = inbounds_mask(extrapolate, grid, shape)
 
     # precompute weights along each dimension
-    weights, grads, _, coords, signs = get_weights(grid, bound, spline, shape, grad=True)
+    weights, grads, _, coords, signs = get_weights(grid, bound, spline, shape,
+                                                   grad=True)
 
     # initialize
     out = torch.zeros([batch, channel, grid.shape[1], dim],
@@ -224,11 +233,14 @@ def grad(inp, grid, bound: List[Bound], spline: List[Spline],
     # iterate across nodes/corners
     range_nodes = [torch.as_tensor([d for d in range(n)])
                    for n in [s.order + 1 for s in spline]]
-    for nodes in torch.cartesian_prod(range_nodes):
+    all_nodes = cartesian_prod(range_nodes)
+    if dim == 1:
+        all_nodes = all_nodes.unsqueeze(0)
+    for nodes in all_nodes:
 
         # gather
-        idx = torch.stack([c[n] for c, n in zip(coords, nodes)])
-        idx = sub2ind(idx, shape)
+        idx = [c[n] for c, n in zip(coords, nodes)]
+        idx = sub2ind_list(idx, shape)
         idx = idx.expand([batch, channel, idx.shape[-1]])
         out0 = inp.gather(-1, idx)
 
@@ -249,13 +261,13 @@ def grad(inp, grid, bound: List[Bound], spline: List[Spline],
                     out1 *= weight[n]
 
             # accumulate
-            out.unbind(-1)[d] += out1
+            out.unbind(-1)[d].add_(out1)
 
     # out-of-bounds mask
     if mask is not None:
         out *= mask.unsqueeze(-1)
 
-    out = out.reshape(out.shape[:2] + oshape + out.shape[-1:])
+    out = out.reshape(list(out.shape[:2]) + oshape + list(out.shape[-1:]))
     return out
 
 
@@ -272,9 +284,10 @@ def pushgrad(inp, grid, shape: Optional[List[int]], bound: List[Bound],
     returns: (B, C, *shape) tensor
     """
     dim = grid.shape[-1]
-    oshape = grid.shape[-dim-1:-1]
+    oshape = list(grid.shape[-dim-1:-1])
     if shape is None:
         shape = oshape
+    shape = list(shape)
     batch = max(inp.shape[0], grid.shape[0])
     channel = inp.shape[1]
 
@@ -292,11 +305,14 @@ def pushgrad(inp, grid, shape: Optional[List[int]], bound: List[Bound],
     # iterate across nodes/corners
     range_nodes = [torch.as_tensor([d for d in range(n)])
                    for n in [s.order + 1 for s in spline]]
-    for nodes in torch.cartesian_prod(range_nodes):
+    all_nodes = cartesian_prod(range_nodes)
+    if dim == 1:
+        all_nodes = all_nodes.unsqueeze(0)
+    for nodes in all_nodes:
 
         # gather
-        idx = torch.stack([c[n] for c, n in zip(coords, nodes)])
-        idx = sub2ind(idx, shape)
+        idx = [c[n] for c, n in zip(coords, nodes)]
+        idx = sub2ind_list(idx, shape)
         idx = idx.expand([batch, channel, idx.shape[-1]])
         out0 = inp.clone()
 
@@ -323,7 +339,7 @@ def pushgrad(inp, grid, shape: Optional[List[int]], bound: List[Bound],
             # accumulate
             out.scatter_add_(-1, idx, out1)
 
-    out = out.reshape(out.shape[:2] + shape)
+    out = out.reshape(list(out.shape[:2]) + shape)
     return out
 
 
@@ -340,8 +356,8 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
     """
 
     dim = grid.shape[-1]
-    shape = inp.shape[-dim:]
-    oshape = grid.shape[-dim-1:-1]
+    shape = list(inp.shape[-dim:])
+    oshape = list(grid.shape[-dim-1:-1])
     batch = max(inp.shape[0], grid.shape[0])
     channel = inp.shape[1]
 
@@ -360,11 +376,14 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
     # iterate across nodes/corners
     range_nodes = [torch.as_tensor([d for d in range(n)])
                    for n in [s.order + 1 for s in spline]]
-    for nodes in torch.cartesian_prod(range_nodes):
+    all_nodes = cartesian_prod(range_nodes)
+    if dim == 1:
+        all_nodes = all_nodes.unsqueeze(0)
+    for nodes in all_nodes:
 
         # gather
-        idx = torch.stack([c[n] for c, n in zip(coords, nodes)])
-        idx = sub2ind(idx, shape)
+        idx = [c[n] for c, n in zip(coords, nodes)]
+        idx = sub2ind_list(idx, shape)
         idx = idx.expand([batch, channel, idx.shape[-1]])
         out1 = inp.gather(-1, idx)
 
@@ -387,7 +406,7 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
                     out1 *= weight[n]
 
             # accumulate
-            out.unbind(-1)[d].unbind(-1)[d] += out1
+            out.unbind(-1)[d].unbind(-1)[d].add_(out1)
 
             # -- off diagonal --
             for d2 in range(d+1, dim):
@@ -403,7 +422,7 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
                         out1 *= weight[n]
 
                 # accumulate
-                out.unbind(-1)[d].unbind(-1)[d2] += out1
+                out.unbind(-1)[d].unbind(-1)[d2].add_(out1)
 
     # out-of-bounds mask
     if mask is not None:
@@ -414,5 +433,5 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
         for d2 in range(d+1, dim):
             out.unbind(-1)[d2].unbind(-1)[d].copy_(out.unbind(-1)[d].unbind(-1)[d2])
 
-    out = out.reshape(out.shape[:2] + oshape + out.shape[-2:])
+    out = out.reshape(list(out.shape[:2]) + oshape + list(out.shape[-2:]))
     return out

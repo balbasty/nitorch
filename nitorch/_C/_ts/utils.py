@@ -1,4 +1,5 @@
 import torch
+import os
 from typing import List, Tuple, Optional
 Tensor = torch.Tensor
 
@@ -135,10 +136,10 @@ def sub2ind(subs, shape: List[int]):
 
     Parameters
     ----------
-    subs : (D, ...) tensor_like
+    subs : (D, ...) tensor
         List of sub-indices. The first dimension is the number of dimension.
         Each element should have the same number of elements and shape.
-    shape : (D,) vector_like
+    shape : (D,) list[int]
         Size of each dimension. Its length should be the same as the
         first dimension of ``subs``.
 
@@ -156,6 +157,35 @@ def sub2ind(subs, shape: List[int]):
         ind += i * s
     return ind
 
+
+@torch.jit.script
+def sub2ind_list(subs: List[Tensor], shape: List[int]):
+    """Convert sub indices (i, j, k) into linear indices.
+
+    The rightmost dimension is the most rapidly changing one
+    -> if shape == [D, H, W], the strides are therefore [H*W, W, 1]
+
+    Parameters
+    ----------
+    subs : (D,) list[tensor]
+        List of sub-indices. The first dimension is the number of dimension.
+        Each element should have the same number of elements and shape.
+    shape : (D,) list[int]
+        Size of each dimension. Its length should be the same as the
+        first dimension of ``subs``.
+
+    Returns
+    -------
+    ind : (...) tensor
+        Linear indices
+    """
+    ind = subs[-1]
+    subs = subs[:-1]
+    ind = ind.clone()
+    stride = list_cumprod_int(shape[1:], reverse=True, exclusive=False)
+    for i, s in zip(subs, stride):
+        ind += i * s
+    return ind
 
 # floor_divide returns wrong results for negative values, because it truncates
 # instead of performing a proper floor. In recent version of pytorch, it is
@@ -323,3 +353,38 @@ def pow7(x):
 @torch.jit.script
 def pow7_(x):
     return pow6_(x).mul_(x)
+
+
+@torch.jit.script
+def dot(x, y, dim: int = -1, keepdim: bool = False):
+    """(Batched) dot product along a dimension"""
+    x = movedim1(x, dim, -1).unsqueeze(-2)
+    y = movedim1(y, dim, -1).unsqueeze(-1)
+    d = torch.matmul(x, y).squeeze(-1).squeeze(-1)
+    if keepdim:
+        d.unsqueeze(dim)
+    return d
+
+
+@torch.jit.script
+def dot_multi(x, y, dim: List[int], keepdim: bool = False):
+    """(Batched) dot product along a dimension"""
+    for d in dim:
+        x = movedim1(x, d, -1)
+        y = movedim1(y, d, -1)
+    x = x.reshape(x.shape[:-len(dim)] + [1, -1])
+    y = y.reshape(x.shape[:-len(dim)] + [-1, 1])
+    dt = torch.matmul(x, y).squeeze(-1).squeeze(-1)
+    if keepdim:
+        for d in dim:
+            dt.unsqueeze(d)
+    return dt
+
+
+# cartesian_prod takes multiple inout tensors as input in eager mode
+# but takes a list of tensor in jit mode. This is a helper that works
+# in both cases.
+if not int(os.environ.get('PYTORCH_JIT', '1')):
+    cartesian_prod = lambda x: torch.cartesian_prod(*x)
+else:
+    cartesian_prod = torch.cartesian_prod
