@@ -1,29 +1,76 @@
 """AutoGrad version of pull/push/count/grad"""
-
 import torch
+import os
 
-try:
-    from nitorch._C.spatial import (
-        grid_pull, grid_pull_backward,
-        grid_push, grid_push_backward,
-        grid_count, grid_count_backward,
-        grid_grad, grid_grad_backward,
-        InterpolationType, BoundType)
-    COMPILED_BACKEND = 'nitorch'
-except ImportError:
+_compiled_backend = os.environ.get('NI_COMPILED_BACKEND', None)
+COMPILED_BACKEND = None
+
+if _compiled_backend == 'C':
+    try:
+        from nitorch._C.spatial import (
+            grid_pull, grid_pull_backward,
+            grid_push, grid_push_backward,
+            grid_count, grid_count_backward,
+            grid_grad, grid_grad_backward,
+            InterpolationType, BoundType)
+        COMPILED_BACKEND = 'C'
+    except ImportError:
+        pass
+elif _compiled_backend == 'TS':
+    try:
+        from nitorch._C._ts import (
+            grid_pull, grid_pull_backward,
+            grid_push, grid_push_backward,
+            grid_count, grid_count_backward,
+            grid_grad, grid_grad_backward,
+            InterpolationType, BoundType)
+        COMPILED_BACKEND = 'TS'
+    except ImportError:
+        pass
+elif _compiled_backend == 'MONAI':
     try:
         from monai._C import (
-        grid_pull, grid_pull_backward,
-        grid_push, grid_push_backward,
-        grid_count, grid_count_backward,
-        grid_grad, grid_grad_backward,
-        InterpolationType, BoundType)
-        COMPILED_BACKEND = 'monai'
+            grid_pull, grid_pull_backward,
+            grid_push, grid_push_backward,
+            grid_count, grid_count_backward,
+            grid_grad, grid_grad_backward,
+            InterpolationType, BoundType)
+        COMPILED_BACKEND = 'MONAI'
     except ImportError:
-        grid_pull = grid_pull_backward = grid_push = grid_push_backward = None
-        grid_count = grid_count_backward = grid_grad = grid_grad_backward = None
-        InterpolationType = BoundType = None
-        COMPILED_BACKEND = None
+        pass
+
+if not COMPILED_BACKEND:
+    try:
+        from nitorch._C.spatial import (
+            grid_pull, grid_pull_backward,
+            grid_push, grid_push_backward,
+            grid_count, grid_count_backward,
+            grid_grad, grid_grad_backward,
+            InterpolationType, BoundType)
+        COMPILED_BACKEND = 'C'
+    except ImportError:
+        try:
+            from monai._C import (
+            grid_pull, grid_pull_backward,
+            grid_push, grid_push_backward,
+            grid_count, grid_count_backward,
+            grid_grad, grid_grad_backward,
+            InterpolationType, BoundType)
+            COMPILED_BACKEND = 'MONAI'
+        except ImportError:
+            try:
+                from nitorch._C._ts import (
+                    grid_pull, grid_pull_backward,
+                    grid_push, grid_push_backward,
+                    grid_count, grid_count_backward,
+                    grid_grad, grid_grad_backward,
+                    InterpolationType, BoundType)
+                COMPILED_BACKEND = 'TS'
+            except ImportError:
+                grid_pull = grid_pull_backward = grid_push = grid_push_backward = None
+                grid_count = grid_count_backward = grid_grad = grid_grad_backward = None
+                InterpolationType = BoundType = None
+                COMPILED_BACKEND = None
 
 
 def make_list(x):
@@ -72,6 +119,8 @@ def bound_to_nitorch(bound, as_enum=False):
             raise ValueError(f'Unknown boundary condition {b}')
     if as_enum:
         obound = list(map(lambda b: getattr(BoundType, b), obound))
+        if COMPILED_BACKEND == 'TS':
+            obound = [b.value for b in obound]
     if issubclass(intype, (list, tuple)):
         obound = intype(obound)
     else:
@@ -118,6 +167,8 @@ def inter_to_nitorch(inter, as_enum=False):
             raise ValueError(f'Unknown interpolation order {o}')
     if as_enum:
         ointer = list(map(InterpolationType, ointer))
+        if COMPILED_BACKEND == 'TS':
+            ointer = [o.value for o in ointer]
     if issubclass(intype, (list, tuple)):
         ointer = intype(ointer)
     else:

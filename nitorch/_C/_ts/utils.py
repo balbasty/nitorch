@@ -1,5 +1,6 @@
 import torch
 from typing import List, Tuple, Optional
+Tensor = torch.Tensor
 
 
 @torch.jit.script
@@ -42,7 +43,7 @@ def list_sum_int(x: List[int]) -> int:
 def list_reverse_int(x: List[int]) -> List[int]:
     if len(x) == 0:
         return x
-    return [x[i] for i in range(-len(x), 0)]
+    return [x[i] for i in range(-1, -len(x)-1, -1)]
 
 
 @torch.jit.script
@@ -54,7 +55,7 @@ def list_cumprod_int(x: List[int], reverse: bool = False,
     if reverse:
         x = list_reverse_int(x)
 
-    x0 = x[0] if exclusive else 1
+    x0 = 1 if exclusive else x[0]
     lx = [x0]
     all_x = x[:-1] if exclusive else x[1:]
     for x1 in all_x:
@@ -149,7 +150,7 @@ def sub2ind(subs, shape: List[int]):
     subs = subs.unbind(0)
     ind = subs[-1]
     subs = subs[:-1]
-    ind = torch.as_tensor(ind).clone()
+    ind = ind.clone()
     stride = list_cumprod_int(shape[1:], reverse=True, exclusive=False)
     for i, s in zip(subs, stride):
         ind += i * s
@@ -203,3 +204,122 @@ def ind2sub(ind, shape: List[int]):
             sub[d] = torch.remainder(sub[d], stride[d-1])
         sub[d] = floor_div_int(sub[d], stride[d])
     return sub
+
+
+@torch.jit.script
+def inbounds_mask_3d(extrapolate: int, gx, gy, gz, nx: int, ny: int, nz: int) \
+        -> Optional[Tensor]:
+    # mask of inbounds voxels
+    mask: Optional[Tensor] = None
+    if extrapolate in (0, 2):  # no / hist
+        tiny = 1e-5
+        threshold = tiny
+        if extrapolate == 2:
+            threshold = 0.5 + tiny
+        mask = ((gx > -threshold) & (gx < nx - 1 + threshold) &
+                (gy > -threshold) & (gy < ny - 1 + threshold) &
+                (gz > -threshold) & (gz < nz - 1 + threshold))
+        return mask
+    return mask
+
+
+@torch.jit.script
+def inbounds_mask_2d(extrapolate: int, gx, gy, nx: int, ny: int) \
+        -> Optional[Tensor]:
+    # mask of inbounds voxels
+    mask: Optional[Tensor] = None
+    if extrapolate in (0, 2):  # no / hist
+        tiny = 1e-5
+        threshold = tiny
+        if extrapolate == 2:
+            threshold = 0.5 + tiny
+        mask = ((gx > -threshold) & (gx < nx - 1 + threshold) &
+                (gy > -threshold) & (gy < ny - 1 + threshold))
+        return mask
+    return mask
+
+
+@torch.jit.script
+def inbounds_mask_1d(extrapolate: int, gx, nx: int) -> Optional[Tensor]:
+    # mask of inbounds voxels
+    mask: Optional[Tensor] = None
+    if extrapolate in (0, 2):  # no / hist
+        tiny = 1e-5
+        threshold = tiny
+        if extrapolate == 2:
+            threshold = 0.5 + tiny
+        mask = (gx > -threshold) & (gx < nx - 1 + threshold)
+        return mask
+    return mask
+
+
+@torch.jit.script
+def make_sign(sign: List[Optional[Tensor]]) -> Optional[Tensor]:
+    osign: Optional[Tensor] = None
+    for s in sign:
+        if s is not None:
+            if osign is None:
+                osign = s
+            else:
+                osign = osign * s
+    return osign
+
+
+@torch.jit.script
+def square(x):
+    return x * x
+
+
+@torch.jit.script
+def square_(x):
+    return x.mul_(x)
+
+
+@torch.jit.script
+def cube(x):
+    return x * x * x
+
+
+@torch.jit.script
+def cube_(x):
+    return square_(x).mul_(x)
+
+
+@torch.jit.script
+def pow4(x):
+    return square(square(x))
+
+
+@torch.jit.script
+def pow4_(x):
+    return square_(square_(x))
+
+
+@torch.jit.script
+def pow5(x):
+    return x * pow4(x)
+
+
+@torch.jit.script
+def pow5_(x):
+    return pow4_(x).mul_(x)
+
+
+@torch.jit.script
+def pow6(x):
+    return square(cube(x))
+
+
+@torch.jit.script
+def pow6_(x):
+    return square_(cube_(x))
+
+
+@torch.jit.script
+def pow7(x):
+    return pow6(x) * x
+
+
+@torch.jit.script
+def pow7_(x):
+    return pow6_(x).mul_(x)

@@ -69,14 +69,10 @@ class Bound:
             return i
 
     def transform(self, i, n: int) -> Optional[Tensor]:
-        """
-        i : (B, 1, *spatial) tensor
-        n : int
-        """
         if self.type == 4:  # dst1
             if n == 1:
                 return None
-            x = torch.ones(i.shape, dtype=torch.int, device=i.device)
+            x = torch.ones(i.shape, dtype=torch.int8, device=i.device)
             n2 = 2 * (n + 1)
             i = i.clone()
             i[i < 0].neg_().add_(n - 1)
@@ -85,12 +81,12 @@ class Bound:
             x[floor_div_int(i, n+1).remainder_(2) > 0].fill_(-1)
             return x
         elif self.type == 5:  # dst2
-            x = torch.ones(i.shape, dtype=torch.int, device=i.device)
+            x = torch.ones(i.shape, dtype=torch.int8, device=i.device)
             i = torch.where(i < 0, n - 1 - i, i)
             x[floor_div_int(i, n).remainder_(2) > 0].fill_(-1)
             return x
         elif self.type == 0:  # zero
-            x = torch.ones(i.shape, dtype=torch.int, device=i.device)
+            x = torch.ones(i.shape, dtype=torch.int8, device=i.device)
             outbounds = ((i < 0) | (i >= n))
             x[outbounds].zero_()
             return x
