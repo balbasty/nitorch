@@ -1,14 +1,14 @@
 """AutoGrad version of pull/push/count/grad"""
 import torch
 import os
-from ._ts.coeff import spline_coeff_nd, spline_coeff
+from ._ts import spline_coeff_nd, spline_coeff, BoundType as _TSBoundType
 
 _compiled_backend = os.environ.get('NI_COMPILED_BACKEND', None)
 COMPILED_BACKEND = None
 
 if _compiled_backend == 'C':
     try:
-        from nitorch._C.spatial import (
+        from .spatial import (
             grid_pull, grid_pull_backward,
             grid_push, grid_push_backward,
             grid_count, grid_count_backward,
@@ -19,7 +19,7 @@ if _compiled_backend == 'C':
         pass
 elif _compiled_backend == 'TS':
     try:
-        from nitorch._C._ts import (
+        from ._ts import (
             grid_pull, grid_pull_backward,
             grid_push, grid_push_backward,
             grid_count, grid_count_backward,
@@ -125,7 +125,7 @@ def bound_to_nitorch(bound, as_type='str'):
     if as_type in ('enum', 'int', int):
         obound = list(map(lambda b: getattr(BoundType, b), obound))
         if as_type in ('int', int):
-            obound = [b.value for b in obound]
+            obound = [getattr(_TSBoundType, b.name).value for b in obound]
     if issubclass(intype, (list, tuple)):
         obound = intype(obound)
     else:

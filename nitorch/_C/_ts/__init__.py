@@ -11,3 +11,4 @@ from .pushpull import (
     grid_count, grid_count_backward, grid_grad, grid_grad_backward)
 from .bounds import BoundType
 from .splines import InterpolationType
+from .coeff import spline_coeff, spline_coeff_nd
