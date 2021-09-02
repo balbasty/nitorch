@@ -5,7 +5,9 @@ import torch
 from nitorch.core import utils, linalg
 from nitorch.core.utils import expand, make_vector
 from nitorch.core.py import make_list, prod
-from nitorch._C.grid import GridPull, GridPush, GridCount, GridGrad, BoundType, InterpolationType
+from nitorch._C.grid import (GridPull, GridPush, GridCount, GridGrad,
+                             BoundType, InterpolationType,
+                             SplineCoeff, SplineCoeffND)
 from ._affine import affine_resize, affine_lmdiv
 from ._regularisers import solve_grid_sym
 from ._finite_differences import diff
@@ -43,6 +45,21 @@ _doc_bound = \
     - `dft` corresponds to circular padding
     - `dct2` corresponds to Neumann boundary conditions (symmetric)
     - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
+    See https://en.wikipedia.org/wiki/Discrete_cosine_transform
+        https://en.wikipedia.org/wiki/Discrete_sine_transform
+    """
+
+_doc_bound_coeff = \
+"""`bound` can be an int, a string or a BoundType. 
+    /!\ Only 'dct1' and 'dft' are implemented for `spline_coeff`
+    Possible values are:
+        - 'dct1'       or BoundType.dct1
+        - 'dft'        or BoundType.dft
+    A list of values can be provided, in the order [W, H, D],
+    to specify dimension-specific boundary conditions.
+    Note that
+    - `dft` corresponds to circular padding
+    - `dct1` corresponds to mirroring about the center of hte first/last voxel
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
         https://en.wikipedia.org/wiki/Discrete_sine_transform
     """
@@ -279,6 +296,74 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
     return out
 
 
+def spline_coeff(input, interpolation='linear', bound='dct1', dim=-1,
+                 inplace=False):
+    """Compute the interpolating spline coefficients, for a given spline order
+    and boundary conditions, along a single dimension..
+
+    Notes
+    -----
+    {interpolation}
+
+    {bound}
+
+    Parameters
+    ----------
+    input : tensor
+        Input image.
+    interpolation : int or sequence[int], default=1
+        Interpolation order.
+    bound : BoundType or sequence[BoundType], default='dct1'
+        Boundary conditions.
+    dim : int, default=-1
+        Dimension along which to process
+    inplace : bool, default=False
+        Process the volume in place.
+
+    Returns
+    -------
+    output : tensor
+        Coefficient image.
+
+    """
+    out = SplineCoeff.apply(input, bound, interpolation, dim, inplace)
+    return out
+
+
+def spline_coeff_nd(input, interpolation='linear', bound='dct1', dim=None,
+                    inplace=False):
+    """Compute the interpolating spline coefficients, for a given spline order
+    and boundary conditions, along the last `dim` dimensions.
+
+    Notes
+    -----
+    {interpolation}
+
+    {bound}
+
+    Parameters
+    ----------
+    input : (..., *spatial) tensor
+        Input image.
+    interpolation : int or sequence[int], default=1
+        Interpolation order.
+    bound : BoundType or sequence[BoundType], default='dct1'
+        Boundary conditions.
+    dim : int, default=-1
+        Number of spatial dimensions
+    inplace : bool, default=False
+        Process the volume in place.
+
+    Returns
+    -------
+    output : (..., *spatial) tensor
+        Coefficient image.
+
+    """
+    out = SplineCoeffND.apply(input, bound, interpolation, dim, inplace)
+    return out
+
+
 grid_pull.__doc__ = grid_pull.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
 grid_push.__doc__ = grid_push.__doc__.format(
@@ -287,6 +372,10 @@ grid_count.__doc__ = grid_count.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
 grid_grad.__doc__ = grid_grad.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
+spline_coeff.__doc__ = spline_coeff.__doc__.format(
+    interpolation=_doc_interpolation, bound=_doc_bound_coeff)
+spline_coeff_nd.__doc__ = spline_coeff_nd.__doc__.format(
+    interpolation=_doc_interpolation, bound=_doc_bound_coeff)
 
 # aliases
 pull = grid_pull

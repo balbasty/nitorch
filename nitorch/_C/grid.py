@@ -1,6 +1,7 @@
 """AutoGrad version of pull/push/count/grad"""
 import torch
 import os
+from ._ts.coeff import spline_coeff_nd, spline_coeff
 
 _compiled_backend = os.environ.get('NI_COMPILED_BACKEND', None)
 COMPILED_BACKEND = None
@@ -83,15 +84,15 @@ def make_list(x):
     return list(x)
 
 
-def bound_to_nitorch(bound, as_enum=False):
+def bound_to_nitorch(bound, as_type='str'):
     """Convert boundary type to niTorch's convention.
 
     Parameters
     ----------
     bound : [list of] str or bound_like
         Boundary condition in any convention
-    as_enum : bool, default=False
-        Return BoundType rather than str
+    as_type : {'str', 'enum', 'int'}, default='str'
+        Return BoundType or int rather than str
 
     Returns
     -------
@@ -121,9 +122,9 @@ def bound_to_nitorch(bound, as_enum=False):
             obound.append('dst1')
         else:
             raise ValueError(f'Unknown boundary condition {b}')
-    if as_enum:
+    if as_type in ('enum', 'int', int):
         obound = list(map(lambda b: getattr(BoundType, b), obound))
-        if COMPILED_BACKEND == 'TS':
+        if as_type in ('int', int):
             obound = [b.value for b in obound]
     if issubclass(intype, (list, tuple)):
         obound = intype(obound)
@@ -132,13 +133,13 @@ def bound_to_nitorch(bound, as_enum=False):
     return obound
 
 
-def inter_to_nitorch(inter, as_enum=False):
+def inter_to_nitorch(inter, as_type='str'):
     """Convert interpolation order to NITorch's convention.
 
     Parameters
     ----------
     inter : [sequence of] int or str or InterpolationType
-    as_enum : bool, default=False
+    as_type : {'str', 'enum', 'int'}, default='int'
 
     Returns
     -------
@@ -169,10 +170,10 @@ def inter_to_nitorch(inter, as_enum=False):
             ointer.append(7)
         else:
             raise ValueError(f'Unknown interpolation order {o}')
-    if as_enum:
+    if as_type in ('enum', 'str', str):
         ointer = list(map(InterpolationType, ointer))
-        if COMPILED_BACKEND == 'TS':
-            ointer = [o.value for o in ointer]
+        if as_type in ('str', str):
+            ointer = [o.name for o in ointer]
     if issubclass(intype, (list, tuple)):
         ointer = intype(ointer)
     else:
@@ -185,8 +186,8 @@ class GridPull(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, grid, interpolation, bound, extrapolate, abs):
 
-        bound = bound_to_nitorch(make_list(bound), as_enum=True)
-        interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
+        bound = bound_to_nitorch(make_list(bound), as_type='int')
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate, abs)
 
@@ -223,8 +224,8 @@ class GridPush(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, grid, shape, interpolation, bound, extrapolate, abs):
 
-        bound = bound_to_nitorch(make_list(bound), as_enum=True)
-        interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
+        bound = bound_to_nitorch(make_list(bound), as_type='int')
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate, abs)
 
@@ -261,8 +262,8 @@ class GridCount(torch.autograd.Function):
     @staticmethod
     def forward(ctx, grid, shape, interpolation, bound, extrapolate, abs):
 
-        bound = bound_to_nitorch(make_list(bound), as_enum=True)
-        interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
+        bound = bound_to_nitorch(make_list(bound), as_type='int')
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate)
 
@@ -291,8 +292,8 @@ class GridGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, grid, interpolation, bound, extrapolate, abs):
 
-        bound = bound_to_nitorch(make_list(bound), as_enum=True)
-        interpolation = inter_to_nitorch(make_list(interpolation), as_enum=True)
+        bound = bound_to_nitorch(make_list(bound), as_type='int')
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate, abs)
 
@@ -323,3 +324,55 @@ class GridGrad(torch.autograd.Function):
                 elif ctx.needs_input_grad[1]:
                     grad_grid = grads[0]
         return grad_input, grad_grid, None, None, None, None
+
+
+class SplineCoeff(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input, bound, interpolation, dim, inplace):
+
+        bound = bound_to_nitorch(make_list(bound), as_type='int')
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
+        opt = (bound, interpolation, dim, inplace)
+
+        # Pull
+        output = spline_coeff(input, *opt)
+
+        # Context
+        if input.requires_grad:
+            ctx.opt = opt
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad):
+        # symmetric filter -> backward == forward
+        # (I don't know if I can write into grad, so inplace=False to be safe)
+        grad = spline_coeff(grad, *ctx.opt[:-1], inplace=False)
+        return [grad] + [None] * 4
+
+
+class SplineCoeffND(torch.autograd.Function):
+
+    @staticmethod
+    def forward(ctx, input, bound, interpolation, dim, inplace):
+
+        bound = bound_to_nitorch(make_list(bound), as_type='int')
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
+        opt = (bound, interpolation, dim, inplace)
+
+        # Pull
+        output = spline_coeff_nd(input, *opt)
+
+        # Context
+        if input.requires_grad:
+            ctx.opt = opt
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad):
+        # symmetric filter -> backward == forward
+        # (I don't know if I can write into grad, so inplace=False to be safe)
+        grad = spline_coeff_nd(grad, *ctx.opt[:-1], inplace=False)
+        return [grad] + [None] * 4

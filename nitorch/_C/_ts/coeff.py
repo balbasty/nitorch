@@ -1,3 +1,24 @@
+"""Compute spline interpolating coefficients
+
+These functions are ported from the C routines in SPM's bsplines.c
+by John Ashburner, which are themselves ports from Philippe Thevenaz's
+code. JA furthermore derived the initial conditions for the DFT ("wrap around")
+boundary conditions.
+
+Only boundary conditions dct1 and dft are implemented.
+
+References
+----------
+..[1]  M. Unser, A. Aldroubi and M. Eden.
+       "B-Spline Signal Processing: Part I-Theory,"
+       IEEE Transactions on Signal Processing 41(2):821-832 (1993).
+..[2]  M. Unser, A. Aldroubi and M. Eden.
+       "B-Spline Signal Processing: Part II-Efficient Design and Applications,"
+       IEEE Transactions on Signal Processing 41(2):834-848 (1993).
+..[3]  M. Unser.
+       "Splines: A Perfect Fit for Signal and Image Processing,"
+       IEEE Signal Processing Magazine 16(6):22-38 (1999).
+"""
 import torch
 import math
 from typing import List, Optional
@@ -42,16 +63,17 @@ def get_gain(poles: List[float]) -> float:
 @torch.jit.script
 def dft_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
+    assert inp.shape[dim] > 1
     max_iter: int = int(math.ceil(-30./math.log(abs(pole))))
     max_iter = min(max_iter, inp.shape[dim])
 
     poles = torch.as_tensor(pole, dtype=inp.dtype, device=inp.device)
-    poles = poles.pow(torch.arange(1, max_iter+1, dtype=inp.dtype, device=inp.device))
+    poles = poles.pow(torch.arange(1, max_iter, dtype=inp.dtype, device=inp.device))
     poles = poles.flip(0)
 
     inp = movedim1(inp, dim, 0)
     inp0 = inp[0]
-    inp = inp[-max_iter:]
+    inp = inp[1-max_iter:]
     inp = movedim1(inp, 0, -1)
     out = torch.matmul(inp.unsqueeze(-2), poles.unsqueeze(-1)).squeeze(-1)
     out = out + inp0.unsqueeze(-1)
@@ -66,7 +88,7 @@ def dft_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
 
 @torch.jit.script
-def dct2_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
+def dct1_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
     n = inp.shape[dim]
     max_iter: int = int(math.ceil(-30./math.log(abs(pole))))
@@ -105,7 +127,7 @@ def dct2_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
         else:
             out = out.squeeze(-1)
 
-        pole = pole ** max_iter
+        pole = pole ** (max_iter - 1)
         out = out / (1 - pole * pole)
 
     return out
@@ -114,18 +136,19 @@ def dct2_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
 @torch.jit.script
 def dft_final(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
+    assert inp.shape[dim] > 1
     max_iter: int = int(math.ceil(-30./math.log(abs(pole))))
     max_iter = min(max_iter, inp.shape[dim])
 
     poles = torch.as_tensor(pole, dtype=inp.dtype, device=inp.device)
-    poles = poles.pow(torch.arange(1, max_iter+1, dtype=inp.dtype, device=inp.device))
+    poles = poles.pow(torch.arange(2, max_iter+1, dtype=inp.dtype, device=inp.device))
 
     inp = movedim1(inp, dim, 0)
     inp0 = inp[-1]
-    inp = inp[:max_iter]
+    inp = inp[:max_iter-1]
     inp = movedim1(inp, 0, -1)
     out = torch.matmul(inp.unsqueeze(-2), poles.unsqueeze(-1)).squeeze(-1)
-    out = out + inp0.unsqueeze(-1)
+    out = out.add(inp0.unsqueeze(-1), alpha=pole)
     if keepdim:
         out = movedim1(out, -1, dim)
     else:
@@ -137,7 +160,7 @@ def dft_final(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
 
 @torch.jit.script
-def dct2_final(inp, pole: float, dim: int = -1, keepdim: bool = False):
+def dct1_final(inp, pole: float, dim: int = -1, keepdim: bool = False):
     inp = movedim1(inp, dim, 0)
     out = pole * inp[-2] + inp[-1]
     out = out * (pole / (pole*pole - 1))
@@ -163,7 +186,7 @@ def dft_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
     for pole in poles:
         inp[0] = dft_initial(inp, pole, dim=0)
 
-        for i in range(1, n-1):
+        for i in range(1, n):
             inp[i].add_(inp[i-1], alpha=pole)
 
         inp[-1] = dft_final(inp, pole, dim=0)
@@ -176,7 +199,7 @@ def dft_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
 
 
 @torch.jit.script
-def dct2_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
+def dct1_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
 
     if not inplace:
         inp = inp.clone()
@@ -190,12 +213,12 @@ def dct2_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
     n = inp.shape[0]
 
     for pole in poles:
-        inp[0] = dct2_initial(inp, pole, dim=0)
+        inp[0] = dct1_initial(inp, pole, dim=0)
 
-        for i in range(1, n-1):
+        for i in range(1, n):
             inp[i].add_(inp[i-1], alpha=pole)
 
-        inp[-1] = dct2_final(inp, pole, dim=0)
+        inp[-1] = dct1_final(inp, pole, dim=0)
 
         for i in range(n-2, -1, -1):
             inp[i].neg_().add_(inp[i+1]).mul_(pole)
@@ -205,8 +228,59 @@ def dct2_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
 
 
 @torch.jit.script
-def spline_coeff(inp, bound: List[int], order: List[int], dim: Optional[int],
+def spline_coeff(inp, bound: int, order: int, dim: int = -1,
                  inplace: bool = False):
+    """Compute the interpolating spline coefficients, for a given spline order
+    and boundary conditions, along a single dimension.
+
+    Parameters
+    ----------
+    inp : tensor
+    bound : {2: dct1, 6: dft}
+    order : {0..7}
+    dim : int, default=-1
+    inplace : bool, default=False
+
+    Returns
+    -------
+    out : tensor
+
+    """
+    if not inplace:
+        inp = inp.clone()
+
+    if order in (0, 1):
+        return inp
+
+    poles = get_poles2(order)
+    if bound == 6:  # dft
+        inp = dft_filter(inp, poles, dim=dim, inplace=True)
+    elif bound == 2:  # dct1
+        inp = dct1_filter(inp, poles, dim=dim, inplace=True)
+    else:
+        raise NotImplementedError
+    return inp
+
+
+@torch.jit.script
+def spline_coeff_nd(inp, bound: List[int], order: List[int],
+                    dim: Optional[int] = None, inplace: bool = False):
+    """Compute the interpolating spline coefficients, for a given spline order
+    and boundary condition, along the last `dim` dimensions.
+
+    Parameters
+    ----------
+    inp : (..., *spatial) tensor
+    bound : List[{2: dct1, 6: dft}]
+    order : List[{0..7}]
+    dim : int, default=`inp.dim()`
+    inplace : bool, default=False
+
+    Returns
+    -------
+    out : (..., *spatial) tensor
+
+    """
     if not inplace:
         inp = inp.clone()
 
@@ -217,13 +291,6 @@ def spline_coeff(inp, bound: List[int], order: List[int], dim: Optional[int],
     order = pad_list_int(order, dim)
 
     for d, b, o in zip(range(dim), bound, order):
-
-        poles = get_poles2(o)
-        if b == 6:    # dft
-            inp = dft_filter(inp, poles, dim=-dim+d, inplace=True)
-        elif b == 3:  # dct2 (but is it really dct2, or dct1 ?)
-            inp = dct2_filter(inp, poles, dim=-dim+d, inplace=True)
-        else:
-            raise NotImplementedError
+        inp = spline_coeff(inp, b, o, dim=-dim + d, inplace=True)
 
     return inp
