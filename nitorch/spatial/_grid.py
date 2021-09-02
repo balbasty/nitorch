@@ -15,7 +15,8 @@ from ._finite_differences import diff
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad', 'grid_inv',
            'identity_grid', 'affine_grid', 'resize', 'resize_grid', 'reslice',
-           'grid_jacobian', 'grid_jacdet', 'BoundType', 'InterpolationType']
+           'grid_jacobian', 'grid_jacdet', 'BoundType', 'InterpolationType',
+           'spline_coeff', 'spline_coeff_nd']
 
 _doc_interpolation = \
 """`interpolation` can be an int, a string or an InterpolationType.
