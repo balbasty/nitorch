@@ -21,7 +21,7 @@ else
 fi
 
 # check compatibility
-echo "version: ${TORCH_SHORT}+${$CUDA_SHORT}"
+echo "version: ${TORCH_SHORT}+${CUDA_SHORT}"
 if [ "$TORCH_SHORT" == "19" ]; then
   [ "$CUDA_SHORT" == "cpu" ] || \
   [ "$CUDA_SHORT" == "111" ] || \
