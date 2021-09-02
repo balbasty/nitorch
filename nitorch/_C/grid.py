@@ -181,13 +181,15 @@ def inter_to_nitorch(inter, as_type='str'):
     return ointer
 
 
+enum_type = 'int' if COMPILED_BACKEND == 'TS' else 'enum'
+
 class GridPull(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input, grid, interpolation, bound, extrapolate, abs):
 
-        bound = bound_to_nitorch(make_list(bound), as_type='int')
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
+        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate, abs)
 
@@ -224,8 +226,8 @@ class GridPush(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, grid, shape, interpolation, bound, extrapolate, abs):
 
-        bound = bound_to_nitorch(make_list(bound), as_type='int')
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
+        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate, abs)
 
@@ -262,8 +264,8 @@ class GridCount(torch.autograd.Function):
     @staticmethod
     def forward(ctx, grid, shape, interpolation, bound, extrapolate, abs):
 
-        bound = bound_to_nitorch(make_list(bound), as_type='int')
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
+        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate)
 
@@ -292,8 +294,8 @@ class GridGrad(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, grid, interpolation, bound, extrapolate, abs):
 
-        bound = bound_to_nitorch(make_list(bound), as_type='int')
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
+        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate, abs)
 
