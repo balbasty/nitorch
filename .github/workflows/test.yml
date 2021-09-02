@@ -63,8 +63,9 @@ jobs:
       run: |
         # install scipy ourselves because setuptools does a poor job
         pip install scipy
-        TORCH_CUDA_ARCH_LIST="3.5" python setup.py develop
+        TORCH_CUDA_ARCH_LIST="3.5" python setup.py install
         python -c "from nitorch._C import spatial"
+        NI_SHOW_COMPILED_BACKEND=1 python -c "from nitorch._C import grid"
 
 #    - name: Lint
 #      run: |

@@ -1,4 +1,4 @@
-name: nitorch-test
+name: nitorch-test-pushpull-C
 
 on:
   workflow_dispatch:

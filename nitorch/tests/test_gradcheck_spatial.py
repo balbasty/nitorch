@@ -2,7 +2,6 @@ import torch
 from torch.autograd import gradcheck
 from nitorch.spatial import grid_grad, grid_pull, grid_push, grid_count
 from nitorch.spatial import identity_grid, BoundType, InterpolationType
-from nitorch._C.grid import COMPILED_BACKEND
 import pytest
 
 # global parameters
