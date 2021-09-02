@@ -12,12 +12,7 @@ extrapolate = True
 
 # parameters
 bounds = set(BoundType.__members__.values())
-orders = set([o.value for o in InterpolationType.__members__.values()])
-if COMPILED_BACKEND == 'TS':
-    # I have precision issues but only for
-    # dim==3 && interpolation==6 && bound in ('dft', 'dct2'), which is weird...
-    # I am disabling order 6 for now.
-    orders.remove(6)
+orders = set(InterpolationType.__members__.values())
 devices = [('cpu', 1)]
 if torch.backends.openmp.is_available() or torch.backends.mkl.is_available():
     print('parallel backend available')
@@ -45,7 +40,10 @@ def init_device(device):
     if device == 'cuda':
         torch.cuda.set_device(param)
         torch.cuda.init()
-        torch.cuda.empty_cache()
+        try:
+            torch.cuda.empty_cache()
+        except RuntimeError:
+            pass
         device = '{}:{}'.format(device, param)
     else:
         assert device == 'cpu'
@@ -96,7 +94,7 @@ def test_gradcheck_grid_push(device, dim, bound, interpolation):
     vol.requires_grad = True
     grid.requires_grad = True
     assert gradcheck(grid_push, (vol, grid, shape, interpolation, bound, extrapolate),
-                     rtol=1., raise_exception=False)
+                     rtol=1., raise_exception=True)
 
 
 @pytest.mark.parametrize("device", devices)
@@ -110,4 +108,4 @@ def test_gradcheck_grid_count(device, dim, bound, interpolation):
     _, grid = make_data(shape, device, dtype)
     grid.requires_grad = True
     assert gradcheck(grid_count, (grid, shape, interpolation, bound, extrapolate),
-                     rtol=1., raise_exception=False)
+                     rtol=1., raise_exception=True)
