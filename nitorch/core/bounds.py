@@ -17,7 +17,7 @@ dst2                                                        antireflect, dirichl
 dst1                                                        antimirror               -a  0 | a b c d |  0 -d
 """
 import torch
-from nitorch._C.spatial import BoundType
+from nitorch._C.grid import BoundType
 
 
 def to_nitorch(bound, as_enum=False):

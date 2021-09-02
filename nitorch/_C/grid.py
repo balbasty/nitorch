@@ -42,7 +42,7 @@ elif _compiled_backend == 'MONAI':
 
 if not COMPILED_BACKEND:
     try:
-        from nitorch._C.spatial import (
+        from .spatial import (
             grid_pull, grid_pull_backward,
             grid_push, grid_push_backward,
             grid_count, grid_count_backward,
@@ -60,7 +60,7 @@ if not COMPILED_BACKEND:
             COMPILED_BACKEND = 'MONAI'
         except ImportError:
             try:
-                from nitorch._C._ts import (
+                from ._ts import (
                     grid_pull, grid_pull_backward,
                     grid_push, grid_push_backward,
                     grid_count, grid_count_backward,
