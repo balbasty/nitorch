@@ -27,7 +27,7 @@ from .pushpull import pad_list_int
 
 
 @torch.jit.script
-def get_poles2(order: int) -> List[float]:
+def get_poles(order: int) -> List[float]:
     empty: List[float] = []
     if order in (0, 1):
         return empty
@@ -252,7 +252,7 @@ def spline_coeff(inp, bound: int, order: int, dim: int = -1,
     if order in (0, 1):
         return inp
 
-    poles = get_poles2(order)
+    poles = get_poles(order)
     if bound == 6:  # dft
         inp = dft_filter(inp, poles, dim=dim, inplace=True)
     elif bound == 2:  # dct1
