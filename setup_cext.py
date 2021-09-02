@@ -99,7 +99,7 @@ def torch_abi():
 
 def torch_omp_lib():
     torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
-    torch_library_dir = os.path.join(torch_dir, 'nitorch/lib')
+    torch_library_dir = os.path.join(torch_dir, 'lib')
     if is_darwin():
         libtorch = os.path.join(torch_library_dir, 'libtorch.dylib')
         linked_libs = os.popen('otool -L "{}"'.format(libtorch)).read()
@@ -232,7 +232,7 @@ def cuda_arch_flags():
     if not arch_list or arch_list.lower() == 'all':
         cuobjdump = os.path.join(cuda_home(), 'bin', 'cuobjdump')
         torchdir = os.path.dirname(os.path.abspath(torch.__file__))
-        libtorch = os.path.join(torchdir, 'nitorch/lib')
+        libtorch = os.path.join(torchdir, 'lib')
         if is_windows():
             libtorch = os.path.join(libtorch, 'torch_cuda.lib')
         else:
@@ -332,7 +332,7 @@ def find_omp_darwin():
             if os.environ.get('LD_LIBRARY_PATH'):
                 dirs += os.environ.get('LD_LIBRARY_PATH').split(':')
             for dir in dirs:
-                if os.path.exists(os.path.join(dir, 'nitorch/lib', 'lib' + name + '.dylib')):
+                if os.path.exists(os.path.join(dir, 'lib', 'lib' + name + '.dylib')):
                     return name, dir
         return None, None
 
@@ -409,7 +409,7 @@ def omp_libraries():
 def omp_library_dirs():
     if is_darwin():
         ompdir = find_omp_darwin()[3]
-        return [os.path.join(ompdir, 'nitorch/lib')] if ompdir else []
+        return [os.path.join(ompdir, 'lib')] if ompdir else []
     else:
         return []
 
@@ -514,14 +514,14 @@ def prepare_extensions():
         library_dirs=torch_library_dirs(),
         include_dirs=torch_include_dirs(),
         extra_compile_args=common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
-        runtime_library_dirs=[link_relative('nitorch')],
+        runtime_library_dirs=[link_relative('.')],
         language='c++',
     )
     build_extensions += [NiTorchLibrary]
     nitorch_libext = [NiTorchLibrary]
     nitorch_lib = ['nitorch']
     # ~~~ setup extensions
-    python_library_dirs = [os.path.join(sys.exec_prefix, 'nitorch/lib')]
+    python_library_dirs = [os.path.join(sys.exec_prefix, 'lib')]
     SpatialExtension = Extension(
         name='_C.spatial',
         sources=abspathC(ext_spatial_sources),
@@ -530,7 +530,7 @@ def prepare_extensions():
         library_dirs=torch_library_dirs(use_cuda, use_cudnn) + python_library_dirs,
         include_dirs=torch_include_dirs(use_cuda, use_cudnn),
         extra_compile_args=common_flags() + torch_flags() + torch_extension_flags('spatial'),
-        runtime_library_dirs=[link_relative(os.path.join('', 'lib'))]
+        runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]
     )
     build_extensions += [SpatialExtension]
     return build_extensions
