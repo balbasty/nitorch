@@ -470,7 +470,8 @@ def abspathC(files):
 def prepare_extensions():
     build_extensions = []
     # ~~~ checks
-    use_cuda = cuda_home() and cuda_check()
+    use_cuda = bool(int(os.environ.get('NI_USE_CUDA', '1')))
+    use_cuda = use_cuda and cuda_home() and cuda_check()
     use_cudnn = False  # cudnn_home() and cudnn_check()
 
 

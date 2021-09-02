@@ -67,7 +67,7 @@ jobs:
       run: |
         # install scipy ourselves because setuptools does a poor job
         pip install scipy
-        NI_COMPILED_BACKEND="TS" TORCH_CUDA_ARCH_LIST="3.5" python setup.py install
+        NI_COMPILED_BACKEND="TS" NI_USE_CUDA=0 TORCH_CUDA_ARCH_LIST="3.5" python setup.py develop
         NI_SHOW_COMPILED_BACKEND=1 python -c "from nitorch._C import grid"
 
 #    - name: Lint
