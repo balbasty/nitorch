@@ -48,11 +48,11 @@ class Bound:
             n2 = 2 * (n + 1)
             first = torch.zeros([1], dtype=i.dtype, device=i.device)
             last = torch.full([1], n - 1, dtype=i.dtype, device=i.device)
-            i = torch.where(i == -1, first, i)
             i = torch.where(i < 0, -i - 2, i)
             i = i.remainder(n2)
-            i = torch.where(i == n, last, i)
             i = torch.where(i > n, -i + (n2 - 2), i)
+            i = torch.where(i == -1, first, i)
+            i = torch.where(i == n, last, i)
             return i
         elif self.type == 6:  # dft
             return i.remainder(n)

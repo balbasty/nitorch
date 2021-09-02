@@ -106,7 +106,7 @@ def grid_count(grid, shape: Optional[List[int]], bound: List[int],
     bound: List{D}[int] tensor
     interpolation: List{D}[int]
     extrapolate: int
-    returns: (B, C, *shape) tensor
+    returns: (B, 1, *shape) tensor
     """
     dim = grid.shape[-1]
     bound = pad_list_int(bound, dim)
@@ -114,7 +114,7 @@ def grid_count(grid, shape: Optional[List[int]], bound: List[int],
     bound_fn = make_bound(bound)
     if shape is None:
         shape = grid.shape[-dim-1:-1]
-    inp = torch.ones(shape, dtype=grid.dtype, device=grid.device)
+    inp = torch.ones([1, 1] + list(shape), dtype=grid.dtype, device=grid.device)
     is_iso1 = list_all([order == 1 for order in interpolation])
     if is_iso1:
         if dim == 3:

@@ -798,7 +798,6 @@ def push2d(inp, g, shape: Optional[List[int]], bound: List[Bound],
         out1 *= mask
     out1 *= (1 - gx) * (1 - gy)
     out.scatter_add_(-1, idx, out1)
-    out.scatter_add_(-1, idx, out1)
     # - corner 01
     idx = sub2ind_list([gx0, gy1], shape)
     idx = idx.expand([batch, channel, idx.shape[-1]])

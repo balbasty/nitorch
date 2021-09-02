@@ -54,7 +54,7 @@ class Spline:
             return torch.where(x < 1., x_low, torch.where(x < 2., x_mid, x_up))
         if self.order == 6:
             x_low = square(x)
-            x_low = x_low * (x_low * (7./48. - x/36.) - 77./192.) + 5887./11520.
+            x_low = x_low * (x_low * (7./48. - x_low/36.) - 77./192.) + 5887./11520.
             x_mid_low = (x * (x * (x * (x * (x * (x / 48. - 7./48.) + 0.328125)
                          - 35./288.) - 91./256.) - 7./768.) + 7861./15360.)
             x_mid_up = (x * (x * (x * (x * (x * (7./60. - x / 120.) - 0.65625)
@@ -102,7 +102,7 @@ class Spline:
             return torch.where(x < 1, g_low, g_up)
         if self.order == 4:
             g_low = x * (square(x) - 1.25)
-            g_mid = x * (x * (x / 3. + 2.5) - 2.5) + 5./24.
+            g_mid = x * (x * (x * (-2./3.) + 2.5) - 2.5) + 5./24.
             g_up = cube(2. * x - 5.) / 48.
             return torch.where(x < 0.5, g_low,
                                torch.where(x < 1.5, g_mid, g_up))

@@ -299,13 +299,17 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
 def spline_coeff(input, interpolation='linear', bound='dct1', dim=-1,
                  inplace=False):
     """Compute the interpolating spline coefficients, for a given spline order
-    and boundary conditions, along a single dimension..
+    and boundary conditions, along a single dimension.
 
     Notes
     -----
     {interpolation}
 
     {bound}
+
+    References
+    ----------
+
 
     Parameters
     ----------
@@ -326,6 +330,14 @@ def spline_coeff(input, interpolation='linear', bound='dct1', dim=-1,
         Coefficient image.
 
     """
+    # This implementation is based on the file bsplines.c in SPM12, written
+    # by John Ashburner, which is itself based on the file coeff.c,
+    # written by Philippe Thevenaz: http://bigwww.epfl.ch/thevenaz/interpolation
+    # . DCT1 boundary conditions were derived by Thevenaz and Unser.
+    # . DFT boundary conditions were derived by John Ashburner.
+    # SPM12 is released under the GNU-GPL v2 license.
+    # Philippe Thevenaz's code does not have an explicit license as far
+    # as we know.
     out = SplineCoeff.apply(input, bound, interpolation, dim, inplace)
     return out
 
@@ -360,6 +372,14 @@ def spline_coeff_nd(input, interpolation='linear', bound='dct1', dim=None,
         Coefficient image.
 
     """
+    # This implementation is based on the file bsplines.c in SPM12, written
+    # by John Ashburner, which is itself based on the file coeff.c,
+    # written by Philippe Thevenaz: http://bigwww.epfl.ch/thevenaz/interpolation
+    # . DCT1 boundary conditions were derived by Thevenaz and Unser.
+    # . DFT boundary conditions were derived by John Ashburner.
+    # SPM12 is released under the GNU-GPL v2 license.
+    # Philippe Thevenaz's code does not have an explicit license as far
+    # as we know.
     out = SplineCoeffND.apply(input, bound, interpolation, dim, inplace)
     return out
 

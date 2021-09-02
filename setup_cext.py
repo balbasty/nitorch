@@ -128,22 +128,22 @@ def torch_libraries(use_cuda=False):
 
 def torch_library_dirs(use_cuda=False, use_cudnn=False):
     torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
-    torch_library_dir = os.path.join(torch_dir, 'nitorch/lib')
+    torch_library_dir = os.path.join(torch_dir, 'lib')
     library_dirs = [torch_library_dir]
     if use_cuda:
         if is_windows():
             library_dirs += [os.path.join(cuda_home(), 'lib/x64')]
         elif os.path.exists(os.path.join(cuda_home(), 'lib64')):
             library_dirs += [os.path.join(cuda_home(), 'lib64')]
-        elif os.path.exists(os.path.join(cuda_home(), 'nitorch/lib')):
-            library_dirs += [os.path.join(cuda_home(), 'nitorch/lib')]
+        elif os.path.exists(os.path.join(cuda_home(), 'lib')):
+            library_dirs += [os.path.join(cuda_home(), 'lib')]
     if use_cudnn:
         if is_windows():
             library_dirs += [os.path.join(cudnn_home(), 'lib/x64')]
         elif os.path.exists(os.path.join(cudnn_home(), 'lib64')):
             library_dirs += [os.path.join(cudnn_home(), 'lib64')]
-        elif os.path.exists(os.path.join(cudnn_home(), 'nitorch/lib')):
-            library_dirs += [os.path.join(cudnn_home(), 'nitorch/lib')]
+        elif os.path.exists(os.path.join(cudnn_home(), 'lib')):
+            library_dirs += [os.path.join(cudnn_home(), 'lib')]
     if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
         library_dirs += omp_library_dirs()
     return library_dirs
@@ -463,7 +463,7 @@ def cuda_flags():
 
 def abspathC(files):
     scriptdir = os.path.abspath(os.path.dirname(__file__))
-    sourcedir = os.path.join(scriptdir, 'nitorch', 'nitorch/_C')
+    sourcedir = os.path.join(scriptdir, 'nitorch', '_C')
     return [os.path.join(sourcedir, f) for f in files]
 
 
