@@ -39,6 +39,7 @@ def get_gain(poles: List[float]) -> float:
     return lam
 
 
+@torch.jit.script
 def dft_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
     max_iter: int = int(math.ceil(-30./math.log(abs(pole))))
@@ -64,6 +65,7 @@ def dft_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
     return out
 
 
+@torch.jit.script
 def dct2_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
     n = inp.shape[dim]
