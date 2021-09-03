@@ -5,7 +5,6 @@ from nitorch.core.py import file_replace
 from nitorch.io import (map, savef)
 from nitorch.spatial import (diff, voxel_size)
 from nitorch.tools.img_statistics import estimate_noise
-import numpy as np
 import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from .parser import DenoiseMRI as opt

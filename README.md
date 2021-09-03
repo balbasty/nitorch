@@ -1,43 +1,52 @@
-# NITorch
-NeuroImaging in PyTorch
+<p align="center">
+  <img src="docs/images/nitorch_logo_v0.1.png" alt="NITorch">
+  **N**euro**I**maging in Py**Torch**
+</p>
 
-## DISCLAIMER
+NITorch is a library written in [PyTorch](https://pytorch.org) aimed at 
+**medical image processing and analysis**, with a focus on neuroimaging. 
 
-NITorch is currently in a very *alpha* state: its API is far from stable, 
-it has been loosely tested, and there is not warranty that it can run on any 
-OS or against any version of PyTorch. Up to now, it has only been used 
-on linux, compiled from source against PyTorch 1.4, 1.5 and 1.6.
+It is a versatile package that implements low-level tools and high-level 
+algorithms for **deep learning** _and_ **optimization-based algorithms**.
+It implements low level differentiable functions, layers, backbones,
+optimizers, but also high level algorithms for registration and inverse 
+problems as well as a set of command line utilities for manipulating 
+medical images.
+
+Much of the current implementation targets image registration tasks, and 
+many differentiable transformation models are implemented (classic and 
+Lie-encoded affine matrices, B-spline-encoded deformation fields, dense 
+deformation fields, stationary velocity fields, geodesic shooting). All
+of these models can be used as layers in neural networks, and we showcase
+them by reimplementing popular registration networks such as 
+[VoxelMorph](https://github.com/voxelmorph/voxelmorph). We also provide 
+generic augmentation layers and easy-to-use and highly-parameterized 
+backbone models (U-Nets, ResNets, _etc._).
+
+We also provide optimization-based registration tools that can be easily
+applied from the command line, as well as algorithms and utilities for 
+solving inverse problems in Magnetic Resonance Imaging.
 
 ## Quick start
 
-0. (If GPU support needed) Install [cuda](https://developer.nvidia.com/cuda-toolkit-archive) 
-    
-    - You need the *driver* and the toolkit (*compiler*, *headers* and *libraries*).
-    - Follow instructions from the nvidia website based on your OS and the cuda version supported by your device.
-    - See also: section **Troubleshooting**.
+Clone and install `nitorch`
+```shell
+pip install git+https://github.com/balbasty/nitorch
 
-
-1. Build conda environement
-
-    - (If GPU support needed) Change the `cudatoolkit` version so that it matches that of your local cuda toolkit.
-    - (Else) Remove `cudatoolkit` from the package list
-
-```{bash}
-conda env create --file ./conda/nitorch.yml
-conda activate nitorch
+# Or, alternatively
+git clone git@github.com:balbasty/nitorch.git
+pip install ./nitorch
 ```
 
-2. Compile C++/CUDA library
-    - `install` copies files in the python `site-packages` directory
-    - `develop` softlinks files in the python `site-packages` directory, allowing them to be modified without requiring a new `install` step.
-
-```{bash}
-./setup.py [install|develop]
-```
-
-3. Use nitorch
-```{python}
+Start using it in Python
+```python
 import nitorch as ni
+# my cool script
+```
+
+Use high-level tools from the command line
+```shell
+nitorch --help
 ```
 
 ## Demo code
@@ -47,58 +56,98 @@ The demo folder contains various Jupyter notebooks that showcase some of NITorch
 * **Affine Registration** <br /> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/13eSBtEvAp1wIJD0Rlvq5Q9kJWnuEc7WI?usp=sharing "NITorch Affine Registration Demo")
 * **Spatial Tools** <br /> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1-dfCosj9XoesFt7byIhp84p2JMUuHxby?usp=sharing "NITorch Spatial Tools Demo")
 
+
+## Compiling C++/CUDA extensions
+
+By default, a pure PyTorch implementation is used. However, we also 
+provide a version of our image resampling tools written in C++/CUDA, 
+which provide a x10 speedup over the default version. Because it requires
+a specific compilation environment, this is for advanced users only.
+
+Note that these extensions are built _against_ PyTorch and therefore pin
+the installation to the specific PyTorch version used for compilation. 
+To force pip to use a specific version of PyTorch, it is advised to 
+install it beforehand and call `pip install` with the option 
+`--no-build-isolation`. 
+
+0. (If GPU support needed) Install [cuda](https://developer.nvidia.com/cuda-toolkit-archive) 
+    
+    - You need the *driver* and the toolkit (*compiler*, *headers* and *libraries*).
+    - Follow instructions from the nvidia website based on your OS and the cuda version supported by your device.
+    - See also: section **Troubleshooting**.
+
+1. Install NITorch with compilation enabled:
+```{bash}
+git clone git@github.com:balbasty/nitorch.git
+cd nitorch
+NI_COMPILED_BACKEND="C" pip install .
+
+# Or, alternatively (the version used is an arbitrary example)
+pip install torch==1.9.0+cu111
+NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
+```
+
 ## Compiling your own wheel
 
-1. Build conda environement
+1. Build a wheel file
 ```{bash}
-conda env create --file ./conda/nitorch.yml
-conda activate nitorch
-```
-NITorch is a **compiled** package and is therefore specific to an **OS**, a **Python version** and (if CUDA is enabled) a **CUDA version**. 
-Since we link against libtorch, I *think* it is also specific to a **PyTorch version** (this should be checked).
-You must therefore be careful about what packages are present in your environment. It would be good practice to name the created wheel files accordingly.
-
-2. Build a wheel file
-```{bash}
+git clone git@github.com:balbasty/nitorch.git
+cd nitorch
 ./setup.py bdist_wheel
+# or alternatively
+# NI_COMPILED_BACKEND="C" ./setup.py bdist_wheel
 ```
 This will create a wheel file in a `dist/` directory:
 ```{bash}
 .
 ├── dist
-│   ├── nitorch-[*].whl
+│   ├── nitorch-[*].whl
 ```
 
-3. Install wheel file using `pip`
+2. Install wheel file using `pip`
 ```{bash}
 pip install nitorch-[*].whl
 ```
+
+Note that when `NI_COMPILED_BACKEND="C"` is used, NITorch becomes specific 
+to an **OS**, a **Python version** and (if CUDA is enabled) a **CUDA version**. 
+Since we link against libtorch, it is also specific to a **PyTorch version**
+You must therefore be careful about what packages are present in your 
+environment.
+
 
 ## Troubleshooting
 
 ### CUDA
 
-- Different versions of the CUDA toolkit support different *compute capability* versions 
-  (see: https://en.wikipedia.org/wiki/CUDA#GPUs_supported). 
-  You should install a version of the toolkit that is compatible with the compute capability of your device.
-- The toolkit installer allows both the *driver* and the *toolkit* (compiler, headers, libraries) to be installed.
-  The driver needs admin priviledges to be installed, but the toolkit does not. Here's a way to install the toolkit without 
-  admin priviledges (copied from [here](https://forums.developer.nvidia.com/t/72087/6)):
+- Different versions of the CUDA toolkit support different *compute 
+  capability* versions (see: https://en.wikipedia.org/wiki/CUDA#GPUs_supported). 
+  You should install a version of the toolkit that is compatible with the   
+  compute capability of your device.
+- The toolkit installer allows both the *driver* and the *toolkit*
+  (compiler, headers, libraries) to be installed. The driver needs admin 
+  priviledges to be installed, but the toolkit does not. Here's a way to 
+  install the toolkit without admin priviledges (copied from 
+  [here](https://forums.developer.nvidia.com/t/72087/6)):
   ```{bash}
   ./cuda_<VERSION>_linux.run --silent --toolkit --toolkitpath=<INSTALLPATH> --defaultroot=<INSTALLPATH>
   ```
-- If your CUDA toolkit is installed in a non-standard location (*i.e.*, different from `/usr/local/cuda`), use the environement 
+- If your CUDA toolkit is installed in a non-standard location (*i.e.*, 
+  different from `/usr/local/cuda`), use the environement 
   variable `CUDA_HOME` to help the setup script locate it:
   ```{bash}
   CUDA_HOME=<PATH_TO_CUDA> ./setup.py install
   ```
-  However, note that `nvcc` should call the correct nvidia compiler. Therefore, setup your path accordingly:
+  However, note that `nvcc` should call the correct nvidia compiler. 
+  Therefore, setup your path accordingly:
   ```{bash}
   export PATH="$CUDA_HOME/bin:$PATH"
   ```
-- The nvidia compiler (`nvcc`) calls a host compiler (`gcc`, `clang`, ...). If you wish to use a non-standard host compiler 
-  (*e.g.*, you are using `gcc-8` instead of the native `gcc`), things might be trickier. A solution could be to alias nvcc 
-  so that it uses the `-ccbin` option by default. In your `~/.bashrc`, add:
+- The nvidia compiler (`nvcc`) calls a host compiler (`gcc`, `clang`, ...). 
+  If you wish to use a non-standard host compiler (*e.g.*, you are using 
+  `gcc-8` instead of the native `gcc`), things might be trickier. 
+  A solution could be to alias nvcc so that it uses the `-ccbin` option 
+  by default. In your `~/.bashrc`, add:
   ```{bash}
   alias nvcc='nvcc -ccbin <PATH_TO_GCC_BIN>'
   ```

@@ -7,9 +7,9 @@ from .constants import inf, eps
 from .dtypes import as_torch as dtype_astorch
 from . import dtypes
 from nitorch._C.grid import GridCount, GridPull, GridPush
+from .optionals import numpy as np
 import numbers
 import os
-import numpy as np
 import random
 
 
@@ -73,7 +73,8 @@ def reproducible(seed=1234):
 
     """	
     random.seed(seed)
-    np.random.seed(seed)
+    if np:
+        np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)

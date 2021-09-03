@@ -281,7 +281,10 @@ def torch_extension_flags(name):
 
 
 def gcc_clang_flags():
-    return ['-fPIC', '-std=c++14']
+    flags = ['-fPIC', '-std=c++14']
+    if is_darwin() and darwin_cc_type() == 'apple_clang':
+        flags += ['-stdlib=libc++']
+    return flags
 
 
 def msvc_flags():
@@ -295,6 +298,18 @@ def nvcc_flags():
       '-D__CUDA_NO_HALF_CONVERSIONS__',
       '-D__CUDA_NO_HALF2_OPERATORS__',
       '--expt-relaxed-constexpr']
+
+
+def darwin_cc_type():
+    CC = os.environ.get('CC', 'clang')
+    CC_name = os.popen(CC + ' --version').read().split(' ')[0]
+    if CC_name == 'Apple':
+        CC_type = 'apple_clang'
+    elif CC_name == 'clang':
+        CC_type = 'other_clang'
+    else:
+        CC_type = 'other'
+    return CC_type
 
 
 def find_omp_darwin():
@@ -338,14 +353,7 @@ def find_omp_darwin():
 
     # First, check which clang we're dealing with
     # (gcc, apple clang or external clang)
-    CC = os.environ.get('CC', 'clang')
-    CC_name = os.popen(CC + ' --version').read().split(' ')[0]
-    if CC_name == 'Apple':
-        CC_type = 'apple_clang'
-    elif CC_name == 'clang':
-        CC_type = 'other_clang'
-    else:
-        CC_type = 'other'
+    CC_type = darwin_cc_type()
 
     # If not apple clang: openmp should be packaged with the compiler:
     if CC_type != 'apple_clang':
@@ -433,7 +441,7 @@ def torch_flags(cuda=False):
     version = torch_version()
     version = version[0]*10000+version[1]*100+version[2]
     flags = ['-DNI_TORCH_VERSION=' + str(version)]
-    backend = torch_parallel_backend();
+    backend = torch_parallel_backend()
     flags += [
         '-D' + torch_parallel_backend() + '=1',
         '-D_GLIBCXX_USE_CXX11_ABI=' + torch_abi()]
@@ -448,6 +456,12 @@ def torch_link_flags(cuda=False):
     if not cuda and backend == 'AT_PARALLEL_OPENMP':
         flags += omp_link_flags()
     return flags
+
+
+def common_links_flags():
+    if is_darwin() and darwin_cc_type() == 'apple_clang':
+        return ['-stdlib=libc++']
+    return []
 
 
 def cuda_flags():
@@ -486,7 +500,7 @@ def prepare_extensions():
         library_dirs=torch_library_dirs(),
         include_dirs=torch_include_dirs(),
         extra_compile_args=common_flags() + torch_flags(),
-        extra_link_args=torch_link_flags(),
+        extra_link_args=common_links_flags() + torch_link_flags(),
         language='c++',
     )
     build_extensions += [NiTorchCPULibrary]
@@ -515,6 +529,7 @@ def prepare_extensions():
         library_dirs=torch_library_dirs(),
         include_dirs=torch_include_dirs(),
         extra_compile_args=common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
+        extra_link_args=common_links_flags(),
         runtime_library_dirs=[link_relative('.')],
         language='c++',
     )
@@ -531,6 +546,7 @@ def prepare_extensions():
         library_dirs=torch_library_dirs(use_cuda, use_cudnn) + python_library_dirs,
         include_dirs=torch_include_dirs(use_cuda, use_cudnn),
         extra_compile_args=common_flags() + torch_flags() + torch_extension_flags('spatial'),
+        extra_link_args=common_links_flags(),
         runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]
     )
     build_extensions += [SpatialExtension]
