@@ -41,13 +41,27 @@ git clone git@github.com:balbasty/nitorch.git
 pip install ./nitorch
 ```
 
-Start using it in Python
+However, this only installs the core dependencies (torch and numpy). 
+If you wish to automatically install dependencies used by, _e.g._, 
+readers and writers, plotters and/or dataset loaders, you can specify 
+the extra tags `io`, `plot`, `data`. Alternatively, the tag `all` 
+combines all of these dependencies.
+
+```shell
+pip install git+https://github.com/balbasty/nitorch#egg=nitorch[all]
+
+# Or, alternatively
+git clone git@github.com:balbasty/nitorch.git
+pip install -e "./nitorch[all]"
+```
+
+You may then start using NITorch in a Python program:
 ```python
 import nitorch as ni
 # my cool script
 ```
 
-Use high-level tools from the command line
+Or use high-level tools from the command line:
 ```shell
 nitorch --help
 ```
