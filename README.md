@@ -132,18 +132,18 @@ environment.
   priviledges to be installed, but the toolkit does not. Here's a way to 
   install the toolkit without admin priviledges (copied from 
   [here](https://forums.developer.nvidia.com/t/72087/6)):
-  ```{bash}
+  ```shell
   ./cuda_<VERSION>_linux.run --silent --toolkit --toolkitpath=<INSTALLPATH> --defaultroot=<INSTALLPATH>
   ```
 - If your CUDA toolkit is installed in a non-standard location (*i.e.*, 
   different from `/usr/local/cuda`), use the environement 
   variable `CUDA_HOME` to help the setup script locate it:
-  ```{bash}
+  ```shell
   CUDA_HOME=<PATH_TO_CUDA> ./setup.py install
   ```
   However, note that `nvcc` should call the correct nvidia compiler. 
   Therefore, setup your path accordingly:
-  ```{bash}
+  ```shell
   export PATH="$CUDA_HOME/bin:$PATH"
   ```
 - The nvidia compiler (`nvcc`) calls a host compiler (`gcc`, `clang`, ...). 
@@ -151,7 +151,7 @@ environment.
   `gcc-8` instead of the native `gcc`), things might be trickier. 
   A solution could be to alias nvcc so that it uses the `-ccbin` option 
   by default. In your `~/.bashrc`, add:
-  ```{bash}
+  ```shell
   alias nvcc='nvcc -ccbin <PATH_TO_GCC_BIN>'
   ```
 
