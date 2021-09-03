@@ -80,7 +80,7 @@ install it beforehand and call `pip install` with the option
     - See also: section **Troubleshooting**.
 
 1. Install NITorch with compilation enabled:
-```{bash}
+```shell
 git clone git@github.com:balbasty/nitorch.git
 cd nitorch
 NI_COMPILED_BACKEND="C" pip install .
@@ -101,14 +101,14 @@ cd nitorch
 # NI_COMPILED_BACKEND="C" ./setup.py bdist_wheel
 ```
 This will create a wheel file in a `dist/` directory:
-```{bash}
+```
 .
 ├── dist
 │   ├── nitorch-[*].whl
 ```
 
 2. Install wheel file using `pip`
-```{bash}
+```shell
 pip install nitorch-[*].whl
 ```
 
