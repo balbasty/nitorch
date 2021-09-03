@@ -1,7 +1,7 @@
 <p align="center">
-  <img src="docs/images/nitorch_logo_v0.1.png" alt="NITorch">
-  **N**euro**I**maging in Py**Torch**
+  <img align="center" src="docs/images/nitorch_logo_v0.1.png" alt="NITorch" width="50%">
 </p>
+**N**euro**I**maging in Py**Torch**
 
 NITorch is a library written in [PyTorch](https://pytorch.org) aimed at 
 **medical image processing and analysis**, with a focus on neuroimaging. 
