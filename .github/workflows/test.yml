@@ -63,6 +63,8 @@ jobs:
       run: |
         # install scipy ourselves because setuptools does a poor job
         pip install scipy
+        # wget needed for io test
+        pip install wget
         NI_USE_CUDA=0 TORCH_CUDA_ARCH_LIST="3.5" python setup.py develop
         python -c "from nitorch._C import spatial"
         NI_SHOW_COMPILED_BACKEND=1 python -c "from nitorch._C import grid"
