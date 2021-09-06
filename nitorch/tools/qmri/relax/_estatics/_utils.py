@@ -146,7 +146,7 @@ def smart_grid(aff, shape, inshape=None):
 
 def smart_pull(tensor, grid, **opt):
     """Pull iff grid is defined (+ add/remove batch dim).
-    
+
     Parameters
     ----------
     tensor : (channels, *input_shape) tensor
@@ -158,11 +158,157 @@ def smart_pull(tensor, grid, **opt):
     -------
     pulled : (channels, *output_shape) tensor
         Sampled volume
-    
+
     """
     if grid is None:
         return tensor
     return spatial.grid_pull(tensor[None], grid[None], **opt)[0]
+
+
+def smart_pull1d(tensor, grid, dim=-1, **opt):
+    """Pull iff grid is defined (+ add/remove batch dim).
+
+    This is a 1D version used for distortion correction.
+    It is advised to use negative indices for `dim`.
+
+    Parameters
+    ----------
+    tensor : (channels, *input_shape) tensor
+        Input volume
+    grid : (*output_shape) tensor or None
+        Sampling grid
+
+    Returns
+    -------
+    pulled : (channels, *output_shape) tensor
+        Sampled volume
+
+    """
+    if grid is None:
+        return tensor
+    channels = len(tensor)
+    out_shape = grid.shape
+    out_shape_t = list(out_shape)
+    out_shape_t[dim], out_shape_t[-1] = out_shape_t[-1], out_shape_t[dim]
+
+    # tensor -> [other_spatial, channel, pulled_spatial]
+    # grid   -> [other_spatial, pulled_spatial, 1]
+    tensor = tensor.transpose(dim, -1).reshape([channels, -1, tensor.shape[-1]])
+    tensor = tensor.transpose(0, 1)
+    grid = grid.transpose(dim, -1).reshape([-1, grid.shape[-1], 1])
+
+    tensor = spatial.grid_pull(tensor, grid, **opt)
+
+    tensor = tensor.transpose(0, 1).reshape([channels, out_shape_t])
+    tensor = tensor.transpose(dim, -1)
+    return tensor
+
+
+def smart_push1d(tensor, grid, dim=-1, shape=None, **opt):
+    """Push iff grid is defined (+ add/remove batch dim).
+
+    This is a 1D version used for distortion correction.
+    It is advised to use negative indices for `dim`.
+
+    Parameters
+    ----------
+    tensor : (channels, *input_shape) tensor
+        Input volume
+    grid : (*input_shape) tensor or None
+        Sampling grid
+
+    Returns
+    -------
+    pushed : (channels, *shape) tensor
+        Pushed volumhe
+
+    """
+    if grid is None:
+        return tensor
+    channels = len(tensor)
+    shape = list(shape or grid.shape)
+    shape_t = list(shape)
+    shape_t[dim], shape_t[-1] = shape_t[-1], shape_t[dim]
+
+    # tensor -> [other_spatial, channel, pulled_spatial]
+    # grid   -> [other_spatial, pulled_spatial, 1]
+    tensor = tensor.transpose(dim, -1).reshape([channels, -1, tensor.shape[-1]])
+    tensor = tensor.transpose(0, 1)
+    grid = grid.transpose(dim, -1).reshape([-1, grid.shape[-1], 1])
+
+    tensor = spatial.grid_push(tensor, grid, shape=shape_t[-1], **opt)
+
+    tensor = tensor.transpose(0, 1).reshape([channels, shape_t])
+    tensor = tensor.transpose(dim, -1)
+    return tensor
+
+
+def smart_grad1d(tensor, grid, dim=-1, **opt):
+    """Pull gradient iff grid is defined (+ add/remove batch dim).
+
+    This is a 1D version used for distortion correction.
+    It is advised to use negative indices for `dim`.
+
+    Parameters
+    ----------
+    tensor : (channels, *input_shape) tensor
+        Input volume
+    grid : (*output_shape) tensor or None
+        Sampling grid
+
+    Returns
+    -------
+    pulled : (channels, *output_shape) tensor
+        Sampled 1d gradient
+
+    """
+    if grid is None:
+        opt.pop('extrapolate', None)
+        opt.pop('interpolation', None)
+        return spatial.diff1d(tensor, dim=dim, **opt)
+
+    channels = len(tensor)
+    out_shape = grid.shape
+    out_shape_t = list(out_shape)
+    out_shape_t[dim], out_shape_t[-1] = out_shape_t[-1], out_shape_t[dim]
+
+    # tensor -> [other_spatial, channel, pulled_spatial]
+    # grid   -> [other_spatial, pulled_spatial, 1]
+    tensor = tensor.transpose(dim, -1).reshape([channels, -1, tensor.shape[-1]])
+    tensor = tensor.transpose(0, 1)
+    grid = grid.transpose(dim, -1).reshape([-1, grid.shape[-1], 1])
+
+    tensor = spatial.grid_grad(tensor, grid, **opt).squeeze(-1)
+
+    tensor = tensor.transpose(0, 1).reshape([channels, out_shape_t])
+    tensor = tensor.transpose(dim, -1)
+    return tensor
+
+
+def exp_backward_1d(vel, *g_and_h, dim=-1, **opt):
+    has_hess = len(g_and_h) > 0
+    g_and_h = list(g_and_h)
+    g = g_and_h.pop(0)
+    h = g_and_h.pop(0) if g_and_h else None
+
+    out_shape = vel.shape
+    out_shape_t = list(out_shape)
+    out_shape_t[dim], out_shape_t[-1] = out_shape_t[-1], out_shape_t[dim]
+
+    # g -> [other_spatial, 1, pulled_spatial]
+    # h -> [other_spatial, 1, pulled_spatial]
+    # vel   -> [other_spatial, pulled_spatial, 1]
+    vel = vel.transpose(dim, -1).reshape([-1, vel.shape[-1], 1])
+    g = g.transpose(dim, -1).reshape([1, -1, g.shape[-1]]).transpose(0, 1)
+    if h is not None:
+        h = h.transpose(dim, -1).reshape([1, -1, h.shape[-1]]).transpose(0, 1)
+
+    g, h = spatial.exp_backward(vel, g, h, **opt)
+
+    g = g.transpose(0, 1).reshape([1, out_shape_t]).transpose(dim, -1)
+    if h is not None:
+        h = h.transpose(0, 1).reshape([1, out_shape_t]).transpose(dim, -1)
+    return (g, h) if has_hess else g
 
 
 def smart_grad(tensor, grid, **opt):

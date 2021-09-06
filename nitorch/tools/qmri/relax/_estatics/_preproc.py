@@ -140,11 +140,13 @@ def preproc(data, opt):
             if opt.distortion.model == 'smalldef':
                 dist1 = DenseDeformation(contrast.spatial_shape,
                                          affine=contrast.affine,
+                                         dim1d=contrast.readout,
                                          **backend)
             elif opt.distortion.model == 'svf':
                 dist1 = SVFDeformation(contrast.spatial_shape,
                                        affine=contrast.affine,
                                        steps=opt.distortion.steps,
+                                       dim1d=contrast.readout,
                                        **backend)
             elif opt.distortion.model == 'shoot':
                 dist1 = GeodesicDeformation(contrast.spatial_shape,
@@ -154,6 +156,7 @@ def preproc(data, opt):
                                             absolute=opt.distortion.absolute,
                                             membrane=opt.distortion.membrane,
                                             bending=opt.distortion.bending,
+                                            dim1d=contrast.readout,
                                             **backend)
             else:
                 dist1 = None

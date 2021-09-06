@@ -3,7 +3,9 @@ from nitorch import core, spatial
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag, hessian_matmul, hessian_solve,
-                     smart_grid, smart_pull, smart_push, smart_grad)
+                     smart_grid, smart_pull, smart_push, smart_grad,
+                     smart_pull1d, smart_push1d, smart_grad1d,
+                     exp_backward_1d)
 from ..utils import rls_maj
 from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
 from nitorch.spatial import solve_grid_sym
@@ -185,8 +187,13 @@ def nonlin(data, opt=None):
                     crit += crit1
 
                     # --- regularization ---
-                    g1 = spatial.regulariser_grid(distortion.volume, **distprm,
-                                                  voxel_size=distortion.voxel_size)
+                    if distortion.dim1d is None:
+                        g1 = spatial.regulariser_grid(distortion.volume, **distprm,
+                                                      voxel_size=distortion.voxel_size)
+                    else:
+                        g1 = spatial.regulariser(distortion.volume[None], **distprm,
+                                                 voxel_size=distortion.voxel_size)[0]
+
                     reg1 = distortion.volume.flatten().dot(g1.flatten())
                     vreg += 0.5 * reg1
                     g += g1
@@ -195,11 +202,15 @@ def nonlin(data, opt=None):
                     # --- gauss-newton ---
                     if not torch.isfinite(h).all():
                         print('WARNING: NaNs in hess')
-                    h = core.utils.movedim(h, -1, -4)
-                    h = hessian_loaddiag(h, 1e-6, 1e-8)
-                    h = core.utils.movedim(h, -4, -1)
-                    delta = spatial.solve_grid_sym(h, g, **distprm,
-                                                   voxel_size=distortion.voxel_size)
+                    if distortion.dim1d is None:
+                        h = core.utils.movedim(h, -1, -4)
+                        h = hessian_loaddiag(h, 1e-6, 1e-8)
+                        h = core.utils.movedim(h, -4, -1)
+                        delta = spatial.solve_grid_sym(h, g, **distprm,
+                                                       voxel_size=distortion.voxel_size)
+                    else:
+                        delta = spatial.solve_field_sym(h[None], g[None], **distprm,
+                                                        voxel_size=distortion.voxel_size)[0]
                     if not torch.isfinite(delta).all():
                         print('WARNING: NaNs in delta (non stable Hessian)')
                     distortion.volume -= delta
@@ -250,6 +261,49 @@ def nonlin(data, opt=None):
     return out
 
 
+@torch.jit.script
+def recon_fit(inter, slope, te: float):
+    return torch.add(inter, slope, alpha=-te).exp()
+
+
+@torch.jit.script
+def ssq(x):
+    return x.double().sum(dtype=x.double)
+
+
+@torch.jit.script
+def get_mask_missing(dat, fit):
+    return ~(torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0))
+
+
+@torch.jit.script
+def mask_nan_(x, value: float = 0.):
+    x.masked_fill_(~torch.isfinite(x), value)
+
+
+@torch.jit.script
+def acc_grad(grad, hess, fit, res, te: float, lam: float):
+    # compute gradient and Hessian in observed space
+    #
+    #   grad[inter]       =           lam * res * fit
+    #   grad[decay]       =     -te * lam * res * fit
+    #   hess[inter**2]    =           lam * fit * fit + abs(grad[inter])
+    #   hess[decay**2]    = (te*te) * lam * fit * fit + abs(grad[decay])
+    #   hess[inter*decay] =     -te * lam * fit * fit
+    #
+    # When (res < 0), the true Hessian is not positive definite
+    # and the optimization problem is not convex
+    # -> we use the expected Hessian instead.
+    res.mul_(fit)
+    grad[0].add_(res, alpha=lam)
+    grad[1].add_(res, alpha=-te*lam)
+    fit.mul_(fit)
+    hess[2].add_(fit, alpha=-te*lam)
+    fit.add_(res.abs_())
+    hess[0].add_(fit, alpha=lam)
+    hess[1].add_(fit, alpha=lam*(te*te))
+
+
 def _nonlin_gradient(contrast, distortion, intercept, decay, opt, do_grad=True):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
@@ -295,14 +349,20 @@ def _nonlin_gradient(contrast, distortion, intercept, decay, opt, do_grad=True):
 
     # pull parameter maps to observed space
     grid = smart_grid(aff, obs_shape, recon_shape)
-    inter_slope = torch.stack([intercept.fdata(**backend),
-                               decay.fdata(**backend)])
-    inter, slope = smart_pull(inter_slope, grid)
-    del inter_slope
+    inter = smart_pull(intercept.fdata(**backend)[None], grid)[0]
+    slope = smart_pull(decay.fdata(**backend)[None], grid)[0]
     if distortion:
         grid_up, grid_down = distortion.exp2(add_identity=True)
+        if distortion.dim1d is not None:
+            pull_dist = lambda *a, **k: smart_pull1d(*a, **k, dim=distortion.dim1d)
+            push_dist = lambda *a, **k: smart_push1d(*a, **k, dim=distortion.dim1d)
+        else:
+            pull_dist = smart_pull
+            push_dist = smart_push
     else:
         grid_up = grid_down = None
+        pull_dist = smart_pull
+        push_dist = smart_push
 
     crit = 0
     grad = torch.zeros((2,) + obs_shape, **backend) if do_grad else None
@@ -315,57 +375,24 @@ def _nonlin_gradient(contrast, distortion, intercept, decay, opt, do_grad=True):
 
         # compute residuals
         dat = echo.fdata(**backend, rand=True, cache=False)  # observed
-        fit = (inter - echo.te * slope).exp_()               # fitted
-        fit = smart_pull(fit[None], grid_blip, bound='dft')[0]
-        msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
-        dat[~msk] = 0
-        fit[~msk] = 0
-        res = dat.neg_()
-        res += fit
+        fit = recon_fit(inter, slope, echo.te)               # fitted
+        fit = pull_dist(fit[None], grid_blip, bound='dft')[0]
+        msk = get_mask_missing(dat, fit)                     # mask of observed
+        dat.masked_fill_(msk, 0)
+        fit.masked_fill_(msk, 0)
+        res = dat.neg_().add_(fit)
         del dat, msk
 
         # compute log-likelihood
-        crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
+        crit = crit + 0.5 * lam * ssq(res)
 
         if do_grad:
-            res = smart_push(res[None], grid_blip, bound='dft')[0]
+            res = push_dist(res[None], grid_blip, bound='dft')[0]
+            acc_grad(grad, hess, res, fit, echo.te, lam)
 
-            # compute gradient and Hessian in observed space
-            #
-            #   grad[inter]       =           lam * res * fit
-            #   grad[decay]       =     -te * lam * res * fit
-            #   hess[inter**2]    =           lam * fit * fit + (grad[inter] if res > 0)
-            #   hess[decay**2]    = (te*te) * lam * fit * fit + (grad[decay] if res > 0)
-            #   hess[inter*decay] =     -te * lam * fit * fit
-            #
-            # When (res < 0), the true Hessian is not positive definite
-            # and the optimization problem is not convex
-            # -> we use the expected Hessian instead.
-
-            res *= fit
-            res *= lam
-            grad[0] += res
-            grad[1] -= res * echo.te
-            res = res.abs_()
-
-            fit = fit.square_()
-            fit *= lam
-            hess[0] += fit
-            hess[0] += res
-            fit *= echo.te
-            hess[2] -= fit
-            fit *= echo.te
-            hess[1] += fit
-            res *= (echo.te * echo.te)
-            hess[1] += res
-            del res, fit
-
-
-    grad[~torch.isfinite(grad)] = 0
-    diag = hess[:-1]
-    diag[~torch.isfinite(diag)] = 1e-3
-    offdiag = hess[-1]
-    offdiag[~torch.isfinite(offdiag)] = 0
+    mask_nan_(grad)
+    mask_nan_(hess[:-1], 1e-8)  # diagonal
+    mask_nan_(hess[-1])         # off-diagonal
 
     if do_grad:
         # push gradient and Hessian to recon space
@@ -417,11 +444,31 @@ def _distortion_gradient(contrast, distortion, intercept, decay, opt, do_grad=Tr
     inter, slope = smart_pull(inter_slope, grid)
     del inter_slope
     grid_up, grid_down = distortion.exp2(add_identity=True)
-    readout = contrast.readout
+    if distortion.dim1d is not None:
+        dim1d = distortion.dim1d
+        if dim1d > 0:
+            dim1d = -3 + dim1d
+        pull_dist = lambda *a, **k: smart_pull1d(*a, **k, dim=dim1d)
+        if isinstance(distortion, DenseDeformation):
+            grad_dist = lambda *a, **k: smart_grad1d(*a, **k, dim=dim1d)
+        else:
+            assert isinstance(distortion, SVFDeformation)
+            grad_dist = lambda *a, **k: spatial.diff1d(*a, **k, dim=dim1d)
+
+    else:
+        pull_dist = smart_pull
+        if isinstance(distortion, DenseDeformation):
+            grad_dist = smart_grad
+        else:
+            grad_dist = lambda *a, **k: spatial.diff(*a, **k, dim=[-3, -2, -1])
 
     crit = 0
-    grad = torch.zeros(obs_shape + (3,), **backend) if do_grad else None
-    hess = torch.zeros(obs_shape + (6,), **backend) if do_grad else None
+    if distortion.dim1d is not None:
+        grad = torch.zeros(obs_shape, **backend) if do_grad else None
+        hess = torch.zeros(obs_shape, **backend) if do_grad else None
+    else:
+        grad = torch.zeros(obs_shape + (3,), **backend) if do_grad else None
+        hess = torch.zeros(obs_shape + (6,), **backend) if do_grad else None
 
     for e, echo in enumerate(contrast):
 
@@ -431,35 +478,33 @@ def _distortion_gradient(contrast, distortion, intercept, decay, opt, do_grad=Tr
         # compute residuals
         dat = echo.fdata(**backend, rand=True, cache=False)  # observed
         fit = (inter - echo.te * slope).exp_()               # fitted
-        if isinstance(distortion, DenseDeformation):
-            gfit = smart_grad(fit[None], grid_blip, bound='dft')[0]
-        fit = smart_pull(fit[None], grid_blip, bound='dft')[0]   # fitted o phi
-        if isinstance(distortion, SVFDeformation):
-            gfit = spatial.diff(fit, bound='dft', dim=[-3, -2, -1])      # D(fitted o phi)
-        msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
-        dat[~msk] = 0
-        fit[~msk] = 0
-        gfit[~msk, :] = 0
-        res = dat.neg_()
-        res += fit
-        del dat, msk
+        if do_grad and isinstance(distortion, DenseDeformation):
+            gfit = grad_dist(fit[None], grid_blip, bound='dft')[0]
+        fit = pull_dist(fit[None], grid_blip, bound='dft')[0]   # fitted o phi
+        if do_grad and isinstance(distortion, SVFDeformation):
+            gfit = grad_dist(fit, bound='dft')                   # D(fitted o phi)
+        msk = get_mask_missing(dat, fit)    # mask of missing values
+        dat.masked_fill_(msk, 0)
+        fit.masked_fill_(msk, 0)
+        res = dat.neg_().add_(fit)
+        del dat
 
         # compute log-likelihood
         crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
 
         if do_grad:
-            g1 = res.unsqueeze(-1).mul(gfit)
-            h1 = torch.zeros_like(hess)
-            h1[..., :3] = gfit.square()
-            if readout is not None:
-                for d in range(3):
-                    if d != readout:
-                        g1[..., d].zero_()
-                        h1[..., d].zero_()
-            else:
+            if distortion.dim1d is None:
+                gfit.masked_fill_(msk.unsqueeze(-1), 0)
+                g1 = res.unsqueeze(-1).mul(gfit)
+                h1 = torch.zeros_like(hess)
+                h1[..., :3] = gfit.square()
                 h1[..., 3] = gfit[..., 0] * gfit[..., 1]
                 h1[..., 4] = gfit[..., 0] * gfit[..., 2]
                 h1[..., 5] = gfit[..., 1] * gfit[..., 2]
+            else:
+                gfit.masked_fill_(msk, 0)
+                g1 = res.mul_(gfit)
+                h1 = gfit.square_()
             g1 = g1.mul_(lam)
             h1 = h1.mul_(lam)
 
@@ -468,7 +513,11 @@ def _distortion_gradient(contrast, distortion, intercept, decay, opt, do_grad=Tr
                 vel = distortion.volume
                 if blip < 0:
                     vel = -vel
-                g1, h1 = spatial.exp_backward(vel, g1, h1, steps=distortion.steps)
+                if distortion.dim1d is None:
+                    g1, h1 = spatial.exp_backward(vel, g1, h1, steps=distortion.steps)
+                else:
+                    g1, h1 = exp_backward_1d(vel, g1, h1, dim=distortion.dim1d,
+                                             steps=distortion.steps)
             if blip < 0:
                 g1 = g1.neg_()
 
@@ -478,11 +527,12 @@ def _distortion_gradient(contrast, distortion, intercept, decay, opt, do_grad=Tr
     if not do_grad:
         return crit
 
-    grad[~torch.isfinite(grad)] = 0
-    diag = hess[..., :-3]
-    diag[~torch.isfinite(diag)] = 1e-3
-    offdiag = hess[..., -3:]
-    offdiag[~torch.isfinite(offdiag)] = 0
+    mask_nan_(grad)
+    if distortion.dim1d is None:
+        mask_nan_(hess[:-3], 1e-8)  # diagonal
+        mask_nan_(hess[-3:])        # off-diagonal
+    else:
+        mask_nan_(hess)
 
     return crit, grad, hess
 
@@ -655,8 +705,11 @@ def _show_maps(maps, dist):
         for i, dst in enumerate(dist):
             if dst is None:
                 continue
+            vol = dst.volume
+            if dst.dim1d is not None:
+                vol = vol.unsqueeze(-1)
             plt.subplot(1 + has_dist, ncol, i+1+ncol)
-            plt.imshow(dst.volume[:, :, dst.shape[-2]//2, :].square().sum(-1).sqrt().cpu())
+            plt.imshow(vol[:, :, dst.shape[-2]//2, :].square().sum(-1).sqrt().cpu())
             plt.axis('off')
             plt.colorbar()
     plt.show()
