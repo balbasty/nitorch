@@ -94,7 +94,7 @@ class BaseND:
 
     @property
     def spatial_shape(self):
-        return self.shape[:-self.spatial_dim] if self.spatial_dim else None
+        return self.shape[-self.spatial_dim:] if self.spatial_dim else None
 
     @property
     def dtype(self):
@@ -136,7 +136,10 @@ class BaseND:
             return cls.from_tensor(input, *args, **kwargs)
         if isinstance(input, BaseND):
             return cls.from_instance(input, *args, **kwargs)
-        return object.__new__(cls).set_attributes(**kwargs)
+        return object.__new__(cls)
+
+    def __init__(self, input=None, *args, **kwargs):
+        self.set_attributes(**kwargs)
 
     def __str__(self):
         if self.volume is None:
@@ -359,7 +362,8 @@ class BaseND:
             raise TypeError('Expected a torch.dtype but got '
                             f'{type(dtype)}')
         self._dtype = dtype or self._dtype
-        self._device = torch.device(device or self._device)
+        device = device or self._device
+        self._device = torch.device(device) if device else None
         backend = dict(dtype=self.dtype, device=self.device)
         if self._fdata is not None:
             self._fdata = self._fdata.to(**backend)
@@ -397,6 +401,7 @@ class GradientEcho(BaseND):
     blip : {1, -1}                          Readout direction (up or down)
 
     """
+    spatial_dim = 3
     te: float = None                # Echo time (in sec)
     tr: float = None                # Repetition time (in sec)
     ti: float = None                # Inversion time (in sec)

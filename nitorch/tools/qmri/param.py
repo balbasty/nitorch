@@ -5,7 +5,7 @@ import torch
 import copy
 
 
-class ParameterMap(qio.Volume3D):
+class _ParameterMap(qio.BaseND):
     """
     Wrapper object for Parameter maps
     """
@@ -33,7 +33,7 @@ class ParameterMap(qio.Volume3D):
                 volume = torch.full(input, fill, dtype=dtype, device=device)
             else:
                 volume = torch.zeros(input, dtype=dtype, device=device)
-            return cls.__new__(cls, volume, **kwargs)
+            return super().__new__(cls, volume, **kwargs)
         return super().__new__(cls, input, **kwargs)
 
     def copy(self):
@@ -43,10 +43,51 @@ class ParameterMap(qio.Volume3D):
         return copy.deepcopy(self)
 
 
-class DisplacementField(ParameterMap):
+class ParameterMap(_ParameterMap, qio.Volume3D):
+    """
+    Wrapper object for Parameter maps
+    """
 
-    def __new__(cls, input=None, **kwargs):
+    min = None   # minimum value
+    max = None   # maximum value
+
+    def __new__(cls, input=None, fill=None, dtype=None, device=None, **kwargs):
+        """
+
+        Parameters
+        ----------
+        input : sequence[int] or tensor_like or flie_like
+            If a sequence[int], allocate a tensor of that shape
+            Else, wrap the underlying `Volume3D` object.
+        fill : number, optional
+            A value to fill the tensor with
+        dtype : torch.dtype, optional
+        device : torch.device, optional
+        kwargs : dict
+            Attributes for `Volume3D`.
+        """
+        if isinstance(input, (list, tuple)):
+            if fill is not None:
+                volume = torch.full(input, fill, dtype=dtype, device=device)
+            else:
+                volume = torch.zeros(input, dtype=dtype, device=device)
+            return super().__new__(cls, volume, **kwargs)
         return super().__new__(cls, input, **kwargs)
+
+    def copy(self):
+        return copy.copy(self)
+
+    def deepcopy(self):
+        return copy.deepcopy(self)
+
+
+class DisplacementField(_ParameterMap):
+    spatial_dim = 3
+
+    def __new__(cls, input=None, fill=None, dtype=None, device=None, **kwargs):
+        if isinstance(input, (list, tuple)):
+            input = list(input) + [len(input)]
+        return super().__new__(cls, input, fill, dtype, device, **kwargs)
 
     @property
     def spatial_shape(self):
@@ -62,13 +103,14 @@ class DisplacementField(ParameterMap):
 class ParameterizedDeformation(DisplacementField):
     model: str = None
 
-    def __new__(cls, input=None, model='svf', **kwargs):
+    @classmethod
+    def make(cls, input=None, model='svf', **kwargs):
         if model == 'svf':
-            return SVFDeformation.__new__(cls, input, **kwargs)
+            return SVFDeformation(input, **kwargs)
         elif model == 'shoot':
-            return GeodesicDeformation.__new__(cls, input, **kwargs)
+            return GeodesicDeformation(input, **kwargs)
         elif model == 'smalldef':
-            return DenseDeformation.__new__(cls, input, **kwargs)
+            return DenseDeformation(input, **kwargs)
         else:
             raise NotImplementedError
 

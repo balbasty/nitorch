@@ -1203,7 +1203,7 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
 
 def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                    lame=0, factor=1, voxel_size=1, bound='dft', weights=None,
-                   optim='relax', max_iter=16, verbose=False, precond=None):
+                   optim='cg', max_iter=16, verbose=False, precond=None):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
     Parameters
