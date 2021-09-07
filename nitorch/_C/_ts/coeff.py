@@ -267,12 +267,12 @@ def filter(inp, bound: CoeffBound, poles: List[float],
     n = inp.shape[0]
 
     for pole in poles:
-        inp[0] = bound.initial(inp, pole, dim=0)
+        inp[0] = bound.initial(inp, pole, dim=0, keepdim=False)
 
         for i in range(1, n):
             inp[i].add_(inp[i-1], alpha=pole)
 
-        inp[-1] = bound.final(inp, pole, dim=0)
+        inp[-1] = bound.final(inp, pole, dim=0, keepdim=False)
 
         for i in range(n-2, -1, -1):
             inp[i].neg_().add_(inp[i+1]).mul_(pole)
