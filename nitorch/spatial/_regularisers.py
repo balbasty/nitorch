@@ -1083,7 +1083,7 @@ def quadnesterov(A, b, x=None, precond=None, lr=0.5, momentum=0.9, max_iter=None
 
 def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                     factor=1, voxel_size=1, bound='dct2', dim=None,
-                    optim='relax', max_iter=16, verbose=False, weights=None,
+                    optim='cg', max_iter=16, verbose=False, weights=None,
                     precond=None):
     """Solve a positive-definite linear system of the form (H + L)x = g
 
