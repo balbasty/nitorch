@@ -5,7 +5,12 @@ by John Ashburner, which are themselves ports from Philippe Thevenaz's
 code. JA furthermore derived the initial conditions for the DFT ("wrap around")
 boundary conditions.
 
-Only boundary conditions dct1 and dft are implemented.
+Note that similar routines are available in scipy with boundary conditions
+DCT1 ("mirror"), DCT2 ("reflect") and DFT ("wrap"); all derived by P. Thevenaz,
+according to the comments. Our DCT2 boundary conditions are ported from
+scipy.
+
+Only boundary conditions DCT1, DCT2 and DFT are implemented.
 
 References
 ----------
@@ -110,6 +115,7 @@ def dct1_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
             out = out.squeeze(-1)
 
     else:
+        max_iter = n
 
         polen = pole ** (n - 1)
         inp0 = inp[0] + polen * inp[-1]
@@ -129,6 +135,44 @@ def dct1_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
         pole = pole ** (max_iter - 1)
         out = out / (1 - pole * pole)
+
+    return out
+
+
+@torch.jit.script
+def dct2_initial(inp, pole: float, dim: int = -1, keepdim: bool = False):
+    # Ported from scipy:
+    # https://github.com/scipy/scipy/blob/master/scipy/ndimage/src/ni_splines.c
+    #
+    # I (YB) unwarped and simplied the terms so that I could use a dot
+    # product instead of a loop.
+    # It should certainly be possible to derive a version for max_iter < n,
+    # as JA did for DCT1, to avoid long recursions when `n` is large. But
+    # I think it would require a more complicated anticausal/final condition.
+
+    n = inp.shape[dim]
+
+    polen = pole ** n
+    pole_last = polen * (1 + 1/(pole + polen * polen))
+    inp00 = inp[0]
+    inp0 = inp[0] + pole_last * inp[-1]
+    inp = inp[1:-1]
+    inp = movedim1(inp, 0, -1)
+
+    poles = torch.as_tensor(pole, dtype=inp.dtype, device=inp.device)
+    poles = (poles.pow(torch.arange(1, n-1, dtype=inp.dtype, device=inp.device)) +
+             poles.pow(torch.arange(2*n-2, n, -1, dtype=inp.dtype, device=inp.device)))
+
+    out = torch.matmul(inp.unsqueeze(-2), poles.unsqueeze(-1)).squeeze(-1)
+
+    out = out + inp0.unsqueeze(-1)
+    out = out * (pole / (1 - polen * polen))
+    out = out + inp00.unsqueeze(-1)
+
+    if keepdim:
+        out = movedim1(out, -1, dim)
+    else:
+        out = out.squeeze(-1)
 
     return out
 
@@ -170,36 +214,46 @@ def dct1_final(inp, pole: float, dim: int = -1, keepdim: bool = False):
 
 
 @torch.jit.script
-def dft_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
-
-    if not inplace:
-        inp = inp.clone()
-
-    if inp.shape[dim] == 1:
-        return inp
-
-    gain = get_gain(poles)
-    inp *= gain
+def dct2_final(inp, pole: float, dim: int = -1, keepdim: bool = False):
+    # Ported from scipy:
+    # https://github.com/scipy/scipy/blob/master/scipy/ndimage/src/ni_splines.c
     inp = movedim1(inp, dim, 0)
-    n = inp.shape[0]
-
-    for pole in poles:
-        inp[0] = dft_initial(inp, pole, dim=0)
-
-        for i in range(1, n):
-            inp[i].add_(inp[i-1], alpha=pole)
-
-        inp[-1] = dft_final(inp, pole, dim=0)
-
-        for i in range(n-2, -1, -1):
-            inp[i].neg_().add_(inp[i+1]).mul_(pole)
-
-    inp = movedim1(inp, 0, dim)
-    return inp
+    out = inp[-1] * (pole / (pole - 1))
+    if keepdim:
+        out = movedim1(out.unsqueeze(0), 0, dim)
+    return out
 
 
 @torch.jit.script
-def dct1_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
+class CoeffBound:
+
+    def __init__(self, bound: int):
+        self.bound = bound
+
+    def initial(self, inp, pole: float, dim: int = -1, keepdim: bool = False):
+        if self.bound in (0, 2):    # zero, dct1
+            return dct1_initial(inp, pole, dim, keepdim)
+        elif self.bound in (1, 3):  # nearest, dct2
+            return dct2_initial(inp, pole, dim, keepdim)
+        elif self.bound == 6:       # dft
+            return dft_initial(inp, pole, dim, keepdim)
+        else:
+            raise NotImplementedError
+
+    def final(self, inp, pole: float, dim: int = -1, keepdim: bool = False):
+        if self.bound in (0, 2):    # zero, dct1
+            return dct1_final(inp, pole, dim, keepdim)
+        elif self.bound in (1, 3):  # nearest, dct2
+            return dct2_final(inp, pole, dim, keepdim)
+        elif self.bound == 6:       # dft
+            return dft_final(inp, pole, dim, keepdim)
+        else:
+            raise NotImplementedError
+
+
+@torch.jit.script
+def filter(inp, bound: CoeffBound, poles: List[float],
+           dim: int = -1, inplace: bool = False):
 
     if not inplace:
         inp = inp.clone()
@@ -213,12 +267,12 @@ def dct1_filter(inp, poles: List[float], dim: int = -1, inplace: bool = False):
     n = inp.shape[0]
 
     for pole in poles:
-        inp[0] = dct1_initial(inp, pole, dim=0)
+        inp[0] = bound.initial(inp, pole, dim=0)
 
         for i in range(1, n):
             inp[i].add_(inp[i-1], alpha=pole)
 
-        inp[-1] = dct1_final(inp, pole, dim=0)
+        inp[-1] = bound.final(inp, pole, dim=0)
 
         for i in range(n-2, -1, -1):
             inp[i].neg_().add_(inp[i+1]).mul_(pole)
@@ -253,13 +307,7 @@ def spline_coeff(inp, bound: int, order: int, dim: int = -1,
         return inp
 
     poles = get_poles(order)
-    if bound == 6:  # dft
-        inp = dft_filter(inp, poles, dim=dim, inplace=True)
-    elif bound == 2:  # dct1
-        inp = dct1_filter(inp, poles, dim=dim, inplace=True)
-    else:
-        raise NotImplementedError
-    return inp
+    return filter(inp, CoeffBound(bound), poles, dim=dim, inplace=True)
 
 
 @torch.jit.script

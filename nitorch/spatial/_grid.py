@@ -47,15 +47,18 @@ _doc_bound = \
     - `dct2` corresponds to Neumann boundary conditions (symmetric)
     - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
-        https://en.wikipedia.org/wiki/Discrete_sine_transform
-    """
+        https://en.wikipedia.org/wiki/Discrete_sine_transform"""
 
 _doc_bound_coeff = \
 """`bound` can be an int, a string or a BoundType. 
-    /!\ Only 'dct1' and 'dft' are implemented for `spline_coeff`
     Possible values are:
+        - 'replicate'  or BoundType.replicate
         - 'dct1'       or BoundType.dct1
+        - 'dct2'       or BoundType.dct2
+        - 'dst1'       or BoundType.dst1
+        - 'dst2'       or BoundType.dst2
         - 'dft'        or BoundType.dft
+        - 'zero'       or BoundType.zero
     A list of values can be provided, in the order [W, H, D],
     to specify dimension-specific boundary conditions.
     Note that
@@ -63,8 +66,22 @@ _doc_bound_coeff = \
     - `dct1` corresponds to mirroring about the center of hte first/last voxel
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
         https://en.wikipedia.org/wiki/Discrete_sine_transform
-    """
+        
+    /!\ Only 'dct1', 'dct2' and 'dft' are implemented for interpolation
+        orders >= 6."""
 
+
+_ref_coeff = \
+"""..[1]  M. Unser, A. Aldroubi and M. Eden.
+       "B-Spline Signal Processing: Part I-Theory,"
+       IEEE Transactions on Signal Processing 41(2):821-832 (1993).
+..[2]  M. Unser, A. Aldroubi and M. Eden.
+       "B-Spline Signal Processing: Part II-Efficient Design and Applications,"
+       IEEE Transactions on Signal Processing 41(2):834-848 (1993).
+..[3]  M. Unser.
+       "Splines: A Perfect Fit for Signal and Image Processing,"
+       IEEE Signal Processing Magazine 16(6):22-38 (1999).
+"""
 
 def grid_pull(input, grid, interpolation='linear', bound='zero',
               extrapolate=False, abs=False):
@@ -297,7 +314,7 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
     return out
 
 
-def spline_coeff(input, interpolation='linear', bound='dct1', dim=-1,
+def spline_coeff(input, interpolation='linear', bound='dct2', dim=-1,
                  inplace=False):
     """Compute the interpolating spline coefficients, for a given spline order
     and boundary conditions, along a single dimension.
@@ -310,6 +327,7 @@ def spline_coeff(input, interpolation='linear', bound='dct1', dim=-1,
 
     References
     ----------
+    {ref}
 
 
     Parameters
@@ -343,7 +361,7 @@ def spline_coeff(input, interpolation='linear', bound='dct1', dim=-1,
     return out
 
 
-def spline_coeff_nd(input, interpolation='linear', bound='dct1', dim=None,
+def spline_coeff_nd(input, interpolation='linear', bound='dct2', dim=None,
                     inplace=False):
     """Compute the interpolating spline coefficients, for a given spline order
     and boundary conditions, along the last `dim` dimensions.
@@ -353,6 +371,10 @@ def spline_coeff_nd(input, interpolation='linear', bound='dct1', dim=None,
     {interpolation}
 
     {bound}
+
+    References
+    ----------
+    {ref}
 
     Parameters
     ----------
@@ -394,9 +416,9 @@ grid_count.__doc__ = grid_count.__doc__.format(
 grid_grad.__doc__ = grid_grad.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
 spline_coeff.__doc__ = spline_coeff.__doc__.format(
-    interpolation=_doc_interpolation, bound=_doc_bound_coeff)
+    interpolation=_doc_interpolation, bound=_doc_bound_coeff, ref=_ref_coeff)
 spline_coeff_nd.__doc__ = spline_coeff_nd.__doc__.format(
-    interpolation=_doc_interpolation, bound=_doc_bound_coeff)
+    interpolation=_doc_interpolation, bound=_doc_bound_coeff, ref=_ref_coeff)
 
 # aliases
 pull = grid_pull

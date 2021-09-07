@@ -2,7 +2,6 @@ import torch
 from enum import Enum
 from typing import Optional
 Tensor = torch.Tensor
-from .utils import floor_div_int
 
 
 class BoundType(Enum):
