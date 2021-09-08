@@ -403,7 +403,8 @@ def _nonlin_gradient(contrast, distortion, intercept, decay, opt, do_grad=True):
             fit2 = fit.mul_(fit)
             hess[2].add_(fit2, alpha=-te*lam)
             hess[0].add_(fit2, alpha=lam).add_(abs_res, alpha=lam)
-            hess[1].add_(fit2, alpha=lam*(te*te)).add_(abs_res, alpha=te*lam)
+            fit2.add_(abs_res)
+            hess[1].add_(fit2, alpha=lam*(te*te))
             
             del res, fit, abs_res, fit2
 
