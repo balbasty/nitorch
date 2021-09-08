@@ -212,13 +212,17 @@ def nonlin(data, opt=None):
                         h = hessian_loaddiag(h, 1e-6, 1e-8)
                         h = core.utils.movedim(h, -4, -1)
                         delta = spatial.solve_grid_sym(h, g, **distprm,
-                                                       voxel_size=distortion.voxel_size)
+                                                       voxel_size=distortion.voxel_size,
+                                                       verbose=(opt.verbose > 1),
+                                                       stop='norm', max_iter=32)
                     else:
                         h = hessian_loaddiag(h[None], 1e-6, 1e-8)[0]
                         distprm1 = dict(distprm)
                         distprm1['factor'] *= distortion.voxel_size[contrast.readout] ** 2
                         delta = spatial.solve_field_sym(h[None], g[None], **distprm1,
-                                                        voxel_size=distortion.voxel_size)[0]
+                                                        voxel_size=distortion.voxel_size,
+                                                        verbose=(opt.verbose > 1),
+                                                        stop='norm', max_iter=32)[0]
                     if not torch.isfinite(delta).all():
                         print('WARNING: NaNs in delta (non stable Hessian)')
                     if contrast.readout is None:
@@ -404,7 +408,7 @@ def _nonlin_gradient(contrast, distortion, intercept, decay, opt, do_grad=True):
             del res, fit, abs_res, fit2
 
     mask_nan_(grad)
-    mask_nan_(hess[:-1], 1e-8)  # diagonal
+    mask_nan_(hess[:-1], 1e-3)  # diagonal
     mask_nan_(hess[-1])         # off-diagonal
 
     if do_grad:

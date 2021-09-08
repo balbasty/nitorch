@@ -1083,7 +1083,7 @@ def quadnesterov(A, b, x=None, precond=None, lr=0.5, momentum=0.9, max_iter=None
 
 def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                     factor=1, voxel_size=1, bound='dct2', dim=None,
-                    optim='cg', max_iter=16, verbose=False, weights=None,
+                    optim='cg', max_iter=16, stop='e', verbose=False, weights=None,
                     precond=None):
     """Solve a positive-definite linear system of the form (H + L)x = g
 
@@ -1197,13 +1197,13 @@ def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         if optim == 'relax':
             prm['scheme'] = (3 if bending else 'checkerboard')
         optim = getattr(core.optim, optim)
-        result = optim(forward, gradient, precond=precond, **prm)
+        result = optim(forward, gradient, precond=precond, stop=stop, **prm)
     return last2ch(result)
 
 
 def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                    lame=0, factor=1, voxel_size=1, bound='dft', weights=None,
-                   optim='cg', max_iter=16, verbose=False, precond=None):
+                   optim='cg', max_iter=16, stop='e', verbose=False, precond=None):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
     Parameters
@@ -1318,13 +1318,13 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         optim = (quadnesterov if optim.startswith('nesterov') else
                  getattr(core.optim, optim))
         # prm['verbose'] = True
-        result = optim(forward, gradient, precond=precond, **prm)
+        result = optim(forward, gradient, precond=precond, stop=stop, **prm)
     return result
 
 
 def solve_kernel_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
                    lame=0, factor=1, voxel_size=1, bound='dft',
-                   optim='relax', max_iter=16, verbose=False, precond=None):
+                   optim='relax', max_iter=16, stop='e', verbose=False, precond=None):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
     Parameters
@@ -1417,7 +1417,7 @@ def solve_kernel_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         optim = (quadnesterov if optim.startswith('nesterov') else
                  getattr(core.optim, optim))
         prm['verbose'] = False
-        result = optim(forward, gradient, precond=precond, **prm)
+        result = optim(forward, gradient, precond=precond, stop=stop, **prm)
     return result
 
 
