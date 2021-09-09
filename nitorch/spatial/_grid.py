@@ -83,8 +83,9 @@ _ref_coeff = \
        IEEE Signal Processing Magazine 16(6):22-38 (1999).
 """
 
+
 def grid_pull(input, grid, interpolation='linear', bound='zero',
-              extrapolate=False, abs=False):
+              extrapolate=False, prefilter=False, abs=False):
     """Sample an image with respect to a deformation field.
 
     Notes
@@ -111,6 +112,8 @@ def grid_pull(input, grid, interpolation='linear', bound='zero',
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
+    prefilter : bool, default=False
+        Apply spline pre-filter (= interpolates the input)
 
     Returns
     -------
@@ -141,12 +144,16 @@ def grid_pull(input, grid, interpolation='linear', bound='zero',
         pmax = grid.new_zeros([batch, channel, *grid.shape[1:-1]])
         for label in input.unique():
             soft = (input == label).to(grid.dtype)
-            soft = expand(soft, [batch, *input.shape[1:]])
+            if prefilter:
+                input = spline_coeff_nd(soft, interpolation=interpolation,
+                                        bound=bound, dim=dim, inplace=True)
             soft = GridPull.apply(soft, grid, interpolation, bound, extrapolate, abs)
             out[soft > pmax] = label
             pmax = torch.max(pmax, soft)
     else:
-        input = expand(input, [batch, *input.shape[1:]])
+        if prefilter:
+            input = spline_coeff_nd(input, interpolation=interpolation,
+                                    bound=bound, dim=dim)
         out = GridPull.apply(input, grid, interpolation, bound, extrapolate, abs)
     if input_no_channel:
         out = out[:, 0]
@@ -156,7 +163,7 @@ def grid_pull(input, grid, interpolation='linear', bound='zero',
 
 
 def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
-              extrapolate=False, abs=False):
+              extrapolate=False, prefilter=False, abs=False):
     """Splat an image with respect to a deformation field (pull adjoint).
 
     Notes
@@ -179,6 +186,8 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
+    prefilter : bool, default=False
+        Apply spline pre-filter.
 
     Returns
     -------
@@ -210,6 +219,9 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
         shape = tuple(input.shape[2:])
 
     out = GridPush.apply(input, grid, shape, interpolation, bound, extrapolate, abs)
+    if prefilter:
+        out = spline_coeff_nd(out, interpolation=interpolation, bound=bound,
+                              dim=dim, inplace=True)
     if input_no_channel:
         out = out[:, 0]
     if input_no_batch and grid_no_batch:
@@ -260,7 +272,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
 
 
 def grid_grad(input, grid, interpolation='linear', bound='zero',
-              extrapolate=False, abs=False):
+              extrapolate=False, prefilter=False, abs=False):
     """Sample spatial gradients of an image with respect to a deformation field.
     
     Notes
@@ -283,6 +295,8 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
+    prefilter : bool, default=False
+        Apply spline pre-filter (= interpolates the input)
 
     Returns
     -------
@@ -306,6 +320,8 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
     input = expand(input, [batch, *input.shape[1:]])
     grid = expand(grid, [batch, *grid.shape[1:]])
 
+    if prefilter:
+        input = spline_coeff_nd(input, interpolation, bound, dim)
     out = GridGrad.apply(input, grid, interpolation, bound, extrapolate, abs)
     if input_no_channel:
         out = out[:, 0]
@@ -544,7 +560,7 @@ def affine_grid(mat, shape, jitter=False):
 
 
 def resize(image, factor=None, shape=None, affine=None, anchor='c',
-           *args, **kwargs):
+           *args, prefilter=True, **kwargs):
     """Resize an image by a factor or to a specific shape.
 
     Notes
@@ -591,6 +607,8 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
         * A list of anchors (one per dimension) can also be provided.
     **kwargs : dict
         Parameters of `grid_pull`.
+        Note that here, `prefilter=True` by default, whereas in
+        `grid_pull`, `prefilter=False` by default.
 
     Returns
     -------
@@ -651,6 +669,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     grid = torch.stack(torch.meshgrid(*lin), dim=-1)[None, ...]
 
     # resize input image
+    kwargs.setdefault('prefilter', True)
     resized = grid_pull(image, grid, *args, **kwargs)
 
     # compute orientation matrix
@@ -714,6 +733,8 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
         * A list of anchors (one per dimension) can also be provided.
     **kwargs
         Parameters of `grid_pull`.
+        Note that here, `prefilter=True` by default, whereas in
+        `grid_pull`, `prefilter=False` by default.
 
     Returns
     -------
@@ -725,6 +746,7 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
     """
     # resize grid
     kwargs['_return_trf'] = True
+    kwargs.setdefault('prefilter', True)
     grid = utils.last2channel(grid)
     outputs = resize(grid, factor, shape, affine, *args, **kwargs)
     if affine is not None:
@@ -771,6 +793,8 @@ def reslice(image, affine, affine_to, shape_to=None, **kwargs):
     Other Parameters
     ----------------
     Parameters of `grid_pull`
+    Note that here, `prefilter=True` by default, whereas in
+    `grid_pull`, `prefilter=False` by default.
 
     Returns
     -------
@@ -778,6 +802,8 @@ def reslice(image, affine, affine_to, shape_to=None, **kwargs):
         Resliced image.
 
     """
+    kwargs.setdefault('prefilter', True)
+
     # prepare tensors
     image = torch.as_tensor(image)
     backend = dict(dtype=image.dtype, device=image.device)

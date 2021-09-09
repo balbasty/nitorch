@@ -5,6 +5,33 @@ Tensor = torch.Tensor
 
 
 @torch.jit.script
+def pad_list_int(x: List[int], dim: int) -> List[int]:
+    if len(x) < dim:
+        x = x + x[-1:] * (dim - len(x))
+    if len(x) > dim:
+        x = x[:dim]
+    return x
+
+
+@torch.jit.script
+def pad_list_float(x: List[float], dim: int) -> List[float]:
+    if len(x) < dim:
+        x = x + x[-1:] * (dim - len(x))
+    if len(x) > dim:
+        x = x[:dim]
+    return x
+
+
+@torch.jit.script
+def pad_list_str(x: List[str], dim: int) -> List[str]:
+    if len(x) < dim:
+        x = x + x[-1:] * (dim - len(x))
+    if len(x) > dim:
+        x = x[:dim]
+    return x
+
+
+@torch.jit.script
 def list_any(x: List[bool]) -> bool:
     for elem in x:
         if elem:

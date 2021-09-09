@@ -1,6 +1,6 @@
 import torch
 from typing import List, Optional, Tuple
-from .utils import list_all, dot, dot_multi
+from .utils import list_all, dot, dot_multi, pad_list_int
 from .bounds import Bound
 from .splines import Spline
 from . import iso0, iso1, nd
@@ -15,15 +15,6 @@ def make_bound(bound: List[int]) -> List[Bound]:
 @torch.jit.script
 def make_spline(spline: List[int]) -> List[Spline]:
     return [Spline(s) for s in spline]
-
-
-@torch.jit.script
-def pad_list_int(x: List[int], dim: int) -> List[int]:
-    if len(x) < dim:
-        x = x + x[-1:] * (dim - len(x))
-    if len(x) > dim:
-        x = x[:dim]
-    return x
 
 
 # @torch.jit.script
