@@ -462,24 +462,6 @@ def identity_grid(shape, dtype=None, device=None, jitter=False):
 
 
 @torch.jit.script
-def add_identity_grid(disp):
-    """Adds the identity grid to a displacement field.
-
-    Parameters
-    ----------
-    disp : (..., *spatial, dim) tensor
-        Displacement field
-
-    Returns
-    -------
-    grid : (..., *spatial, dim) tensor
-        Transformation field
-
-    """
-    return add_identity_grid_(disp.clone())
-
-
-@torch.jit.script
 def add_identity_grid_(disp):
     """Adds the identity grid to a displacement field, inplace.
 
@@ -502,6 +484,24 @@ def add_identity_grid_(disp):
     for disp1, grid1 in zip(disp.unbind(-1), grid):
         disp1.add_(grid1)
     return disp
+
+
+@torch.jit.script
+def add_identity_grid(disp):
+    """Adds the identity grid to a displacement field.
+
+    Parameters
+    ----------
+    disp : (..., *spatial, dim) tensor
+        Displacement field
+
+    Returns
+    -------
+    grid : (..., *spatial, dim) tensor
+        Transformation field
+
+    """
+    return add_identity_grid_(disp.clone())
 
 
 def affine_grid(mat, shape, jitter=False):
