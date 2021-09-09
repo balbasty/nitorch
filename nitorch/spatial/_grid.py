@@ -560,7 +560,7 @@ def affine_grid(mat, shape, jitter=False):
 
 
 def resize(image, factor=None, shape=None, affine=None, anchor='c',
-           *args, prefilter=True, **kwargs):
+           *args, **kwargs):
     """Resize an image by a factor or to a specific shape.
 
     Notes
