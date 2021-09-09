@@ -73,6 +73,8 @@ jobs:
           cuda-version: '10.2'
         - pytorch-version: '1.4'
           cuda-version: '10.2'
+        - pytorch-version: '1.9'
+          cuda-version: '10.1'
         # incompatible os versions
         - os: 'ubuntu-20.04'
           cuda-version: '10.1'
@@ -157,4 +159,4 @@ jobs:
       run: |
         # install scipy ourselves because setuptools does a poor job
         pip install scipy
-        TORCH_CUDA_ARCH_LIST="3.5" python setup.py install
+        NI_COMPILED_BACKEND="C" TORCH_CUDA_ARCH_LIST="3.5" python setup.py install

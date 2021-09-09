@@ -5,7 +5,9 @@ import torch
 from nitorch.core import utils, linalg
 from nitorch.core.utils import expand, make_vector
 from nitorch.core.py import make_list, prod
-from nitorch._C.grid import GridPull, GridPush, GridCount, GridGrad, BoundType, InterpolationType
+from nitorch._C.grid import (GridPull, GridPush, GridCount, GridGrad,
+                             BoundType, InterpolationType,
+                             SplineCoeff, SplineCoeffND)
 from ._affine import affine_resize, affine_lmdiv
 from ._regularisers import solve_grid_sym
 from ._finite_differences import diff
@@ -13,7 +15,8 @@ from ._finite_differences import diff
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad', 'grid_inv',
            'identity_grid', 'affine_grid', 'resize', 'resize_grid', 'reslice',
-           'grid_jacobian', 'grid_jacdet', 'BoundType', 'InterpolationType']
+           'grid_jacobian', 'grid_jacdet', 'BoundType', 'InterpolationType',
+           'spline_coeff', 'spline_coeff_nd']
 
 _doc_interpolation = \
 """`interpolation` can be an int, a string or an InterpolationType.
@@ -44,12 +47,45 @@ _doc_bound = \
     - `dct2` corresponds to Neumann boundary conditions (symmetric)
     - `dst2` corresponds to Dirichlet boundary conditions (antisymmetric)
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
+        https://en.wikipedia.org/wiki/Discrete_sine_transform"""
+
+_doc_bound_coeff = \
+"""`bound` can be an int, a string or a BoundType. 
+    Possible values are:
+        - 'replicate'  or BoundType.replicate
+        - 'dct1'       or BoundType.dct1
+        - 'dct2'       or BoundType.dct2
+        - 'dst1'       or BoundType.dst1
+        - 'dst2'       or BoundType.dst2
+        - 'dft'        or BoundType.dft
+        - 'zero'       or BoundType.zero
+    A list of values can be provided, in the order [W, H, D],
+    to specify dimension-specific boundary conditions.
+    Note that
+    - `dft` corresponds to circular padding
+    - `dct1` corresponds to mirroring about the center of hte first/last voxel
+    See https://en.wikipedia.org/wiki/Discrete_cosine_transform
         https://en.wikipedia.org/wiki/Discrete_sine_transform
-    """
+        
+    /!\ Only 'dct1', 'dct2' and 'dft' are implemented for interpolation
+        orders >= 6."""
+
+
+_ref_coeff = \
+"""..[1]  M. Unser, A. Aldroubi and M. Eden.
+       "B-Spline Signal Processing: Part I-Theory,"
+       IEEE Transactions on Signal Processing 41(2):821-832 (1993).
+..[2]  M. Unser, A. Aldroubi and M. Eden.
+       "B-Spline Signal Processing: Part II-Efficient Design and Applications,"
+       IEEE Transactions on Signal Processing 41(2):834-848 (1993).
+..[3]  M. Unser.
+       "Splines: A Perfect Fit for Signal and Image Processing,"
+       IEEE Signal Processing Magazine 16(6):22-38 (1999).
+"""
 
 
 def grid_pull(input, grid, interpolation='linear', bound='zero',
-              extrapolate=False, abs=False):
+              extrapolate=False, prefilter=False, abs=False):
     """Sample an image with respect to a deformation field.
 
     Notes
@@ -76,6 +112,8 @@ def grid_pull(input, grid, interpolation='linear', bound='zero',
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
+    prefilter : bool, default=False
+        Apply spline pre-filter (= interpolates the input)
 
     Returns
     -------
@@ -106,12 +144,16 @@ def grid_pull(input, grid, interpolation='linear', bound='zero',
         pmax = grid.new_zeros([batch, channel, *grid.shape[1:-1]])
         for label in input.unique():
             soft = (input == label).to(grid.dtype)
-            soft = expand(soft, [batch, *input.shape[1:]])
+            if prefilter:
+                input = spline_coeff_nd(soft, interpolation=interpolation,
+                                        bound=bound, dim=dim, inplace=True)
             soft = GridPull.apply(soft, grid, interpolation, bound, extrapolate, abs)
             out[soft > pmax] = label
             pmax = torch.max(pmax, soft)
     else:
-        input = expand(input, [batch, *input.shape[1:]])
+        if prefilter:
+            input = spline_coeff_nd(input, interpolation=interpolation,
+                                    bound=bound, dim=dim)
         out = GridPull.apply(input, grid, interpolation, bound, extrapolate, abs)
     if input_no_channel:
         out = out[:, 0]
@@ -121,7 +163,7 @@ def grid_pull(input, grid, interpolation='linear', bound='zero',
 
 
 def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
-              extrapolate=False, abs=False):
+              extrapolate=False, prefilter=False, abs=False):
     """Splat an image with respect to a deformation field (pull adjoint).
 
     Notes
@@ -144,6 +186,8 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
+    prefilter : bool, default=False
+        Apply spline pre-filter.
 
     Returns
     -------
@@ -175,6 +219,9 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
         shape = tuple(input.shape[2:])
 
     out = GridPush.apply(input, grid, shape, interpolation, bound, extrapolate, abs)
+    if prefilter:
+        out = spline_coeff_nd(out, interpolation=interpolation, bound=bound,
+                              dim=dim, inplace=True)
     if input_no_channel:
         out = out[:, 0]
     if input_no_batch and grid_no_batch:
@@ -225,7 +272,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
 
 
 def grid_grad(input, grid, interpolation='linear', bound='zero',
-              extrapolate=False, abs=False):
+              extrapolate=False, prefilter=False, abs=False):
     """Sample spatial gradients of an image with respect to a deformation field.
     
     Notes
@@ -248,6 +295,8 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
+    prefilter : bool, default=False
+        Apply spline pre-filter (= interpolates the input)
 
     Returns
     -------
@@ -271,11 +320,106 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
     input = expand(input, [batch, *input.shape[1:]])
     grid = expand(grid, [batch, *grid.shape[1:]])
 
+    if prefilter:
+        input = spline_coeff_nd(input, interpolation, bound, dim)
     out = GridGrad.apply(input, grid, interpolation, bound, extrapolate, abs)
     if input_no_channel:
         out = out[:, 0]
     if input_no_batch and grid_no_batch:
         out = out[0]
+    return out
+
+
+def spline_coeff(input, interpolation='linear', bound='dct2', dim=-1,
+                 inplace=False):
+    """Compute the interpolating spline coefficients, for a given spline order
+    and boundary conditions, along a single dimension.
+
+    Notes
+    -----
+    {interpolation}
+
+    {bound}
+
+    References
+    ----------
+    {ref}
+
+
+    Parameters
+    ----------
+    input : tensor
+        Input image.
+    interpolation : int or sequence[int], default=1
+        Interpolation order.
+    bound : BoundType or sequence[BoundType], default='dct1'
+        Boundary conditions.
+    dim : int, default=-1
+        Dimension along which to process
+    inplace : bool, default=False
+        Process the volume in place.
+
+    Returns
+    -------
+    output : tensor
+        Coefficient image.
+
+    """
+    # This implementation is based on the file bsplines.c in SPM12, written
+    # by John Ashburner, which is itself based on the file coeff.c,
+    # written by Philippe Thevenaz: http://bigwww.epfl.ch/thevenaz/interpolation
+    # . DCT1 boundary conditions were derived by Thevenaz and Unser.
+    # . DFT boundary conditions were derived by John Ashburner.
+    # SPM12 is released under the GNU-GPL v2 license.
+    # Philippe Thevenaz's code does not have an explicit license as far
+    # as we know.
+    out = SplineCoeff.apply(input, bound, interpolation, dim, inplace)
+    return out
+
+
+def spline_coeff_nd(input, interpolation='linear', bound='dct2', dim=None,
+                    inplace=False):
+    """Compute the interpolating spline coefficients, for a given spline order
+    and boundary conditions, along the last `dim` dimensions.
+
+    Notes
+    -----
+    {interpolation}
+
+    {bound}
+
+    References
+    ----------
+    {ref}
+
+    Parameters
+    ----------
+    input : (..., *spatial) tensor
+        Input image.
+    interpolation : int or sequence[int], default=1
+        Interpolation order.
+    bound : BoundType or sequence[BoundType], default='dct1'
+        Boundary conditions.
+    dim : int, default=-1
+        Number of spatial dimensions
+    inplace : bool, default=False
+        Process the volume in place.
+
+    Returns
+    -------
+    output : (..., *spatial) tensor
+        Coefficient image.
+
+    """
+    # This implementation is based on the file bsplines.c in SPM12, written
+    # by John Ashburner, which is itself based on the file coeff.c,
+    # written by Philippe Thevenaz: http://bigwww.epfl.ch/thevenaz/interpolation
+    # . DCT1 boundary conditions were derived by Thevenaz and Unser.
+    # . DFT boundary conditions were derived by John Ashburner.
+    # SPM12 is released under the GNU-GPL v2 license.
+    # Philippe Thevenaz's code does not have an explicit license as far
+    # as we know.
+    out = SplineCoeffND.apply(input, bound, interpolation, dim, inplace)
     return out
 
 
@@ -287,6 +431,10 @@ grid_count.__doc__ = grid_count.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
 grid_grad.__doc__ = grid_grad.__doc__.format(
     interpolation=_doc_interpolation, bound=_doc_bound)
+spline_coeff.__doc__ = spline_coeff.__doc__.format(
+    interpolation=_doc_interpolation, bound=_doc_bound_coeff, ref=_ref_coeff)
+spline_coeff_nd.__doc__ = spline_coeff_nd.__doc__.format(
+    interpolation=_doc_interpolation, bound=_doc_bound_coeff, ref=_ref_coeff)
 
 # aliases
 pull = grid_pull
@@ -327,6 +475,49 @@ def identity_grid(shape, dtype=None, device=None, jitter=False):
             jitter = torch.rand_like(grid).sub_(0.5).mul_(0.1)
             grid += jitter
     return grid
+
+
+@torch.jit.script
+def add_identity_grid_(disp):
+    """Adds the identity grid to a displacement field, inplace.
+
+    Parameters
+    ----------
+    disp : (..., *spatial, dim) tensor
+        Displacement field
+
+    Returns
+    -------
+    grid : (..., *spatial, dim) tensor
+        Transformation field
+
+    """
+    dim = disp.shape[-1]
+    spatial = disp.shape[-dim-1:-1]
+    mesh1d = [torch.arange(s, dtype=disp.dtype, device=disp.device)
+              for s in spatial]
+    grid = torch.meshgrid(mesh1d)
+    for disp1, grid1 in zip(disp.unbind(-1), grid):
+        disp1.add_(grid1)
+    return disp
+
+
+@torch.jit.script
+def add_identity_grid(disp):
+    """Adds the identity grid to a displacement field.
+
+    Parameters
+    ----------
+    disp : (..., *spatial, dim) tensor
+        Displacement field
+
+    Returns
+    -------
+    grid : (..., *spatial, dim) tensor
+        Transformation field
+
+    """
+    return add_identity_grid_(disp.clone())
 
 
 def affine_grid(mat, shape, jitter=False):
@@ -416,6 +607,8 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
         * A list of anchors (one per dimension) can also be provided.
     **kwargs : dict
         Parameters of `grid_pull`.
+        Note that here, `prefilter=True` by default, whereas in
+        `grid_pull`, `prefilter=False` by default.
 
     Returns
     -------
@@ -476,6 +669,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     grid = torch.stack(torch.meshgrid(*lin), dim=-1)[None, ...]
 
     # resize input image
+    kwargs.setdefault('prefilter', True)
     resized = grid_pull(image, grid, *args, **kwargs)
 
     # compute orientation matrix
@@ -539,6 +733,8 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
         * A list of anchors (one per dimension) can also be provided.
     **kwargs
         Parameters of `grid_pull`.
+        Note that here, `prefilter=True` by default, whereas in
+        `grid_pull`, `prefilter=False` by default.
 
     Returns
     -------
@@ -550,6 +746,7 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
     """
     # resize grid
     kwargs['_return_trf'] = True
+    kwargs.setdefault('prefilter', True)
     grid = utils.last2channel(grid)
     outputs = resize(grid, factor, shape, affine, *args, **kwargs)
     if affine is not None:
@@ -596,6 +793,8 @@ def reslice(image, affine, affine_to, shape_to=None, **kwargs):
     Other Parameters
     ----------------
     Parameters of `grid_pull`
+    Note that here, `prefilter=True` by default, whereas in
+    `grid_pull`, `prefilter=False` by default.
 
     Returns
     -------
@@ -603,6 +802,8 @@ def reslice(image, affine, affine_to, shape_to=None, **kwargs):
         Resliced image.
 
     """
+    kwargs.setdefault('prefilter', True)
+
     # prepare tensors
     image = torch.as_tensor(image)
     backend = dict(dtype=image.dtype, device=image.device)

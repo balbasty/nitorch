@@ -146,7 +146,6 @@ def _make_image(option, dim=None, device=None):
             pyramid.append(level)
         else:
             pyramid.extend(list(level))
-    print(pyramid)
     image = objects.ImagePyramid(dat, levels=pyramid, affine=affine,
                                  dim=dim, bound=option.bound, mask=mask,
                                  extrapolate=option.extrapolate)

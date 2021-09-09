@@ -300,8 +300,8 @@ namespace _interpolation {
     if ( x < 1. ) 
     {
       x = x * ( x * 1.5 - 2. );
-    } 
-    else 
+    }
+    else
     {
       x = 2. - x;
       x = - ( x * x ) * 0.5;

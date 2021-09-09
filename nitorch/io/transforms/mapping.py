@@ -1,4 +1,4 @@
-import numpy as np
+from nitorch.core.optionals import numpy as np
 from ..mapping import MappedFile
 
 

@@ -32,7 +32,9 @@ def circle(shape=(64, 64), radius=None, **backend):
     radius = radius or min(shape) / 4
     radius = utils.make_vector(radius, len(shape), **backend)
 
-    circle = circle.sub_(min(shape)/2).div_(radius).square_().sum(-1) < 1
+    circle = circle.sub_(min(shape)/2).div_(radius)
+    circle *= circle
+    circle = circle.sum(-1) < 1
     circle = circle.to(**backend)
     return circle
 

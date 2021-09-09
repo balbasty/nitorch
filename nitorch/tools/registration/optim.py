@@ -651,6 +651,9 @@ class StrongWolfe(FirstOrder):
 
         """
 
+        if torch.is_tensor(a):
+            a = a.item()
+
         # initialization
         ls_iter = 0
         a1 = 0
@@ -885,6 +888,9 @@ class StrongWolfe(FirstOrder):
         # plt.show(block=False)
         # input('')
         # plt.close(fig)
+
+        if torch.is_tensor(sol):
+            sol = sol.item()
         return sol
 
         # PyTorch code

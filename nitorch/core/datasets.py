@@ -1,12 +1,16 @@
 """For querying NITorch data."""
 import os
-import wget
 import pathlib
-import appdirs
+from .optionals import try_import
+wget = try_import('wget')
+appdirs = try_import('appdirs')
 
 
 # Download NITorch data to OS cache
-dir_os_cache = pathlib.Path(appdirs.user_cache_dir('nitorch'))
+if appdirs is not None:
+    dir_os_cache = pathlib.Path(appdirs.user_cache_dir('nitorch'))
+else:
+    dir_os_cache = None
 
 # NITorch data dictionary.
 # Keys are data names, values are list of FigShare URL and filename.
@@ -20,7 +24,7 @@ data['atlas_pd_mni'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_m
 
 
 def fetch_data(name, dir_download=None, speak=False):
-    '''Get nitorch package data.
+    """Get nitorch package data.
     Parameters
     ----------
     name : str
@@ -39,9 +43,8 @@ def fetch_data(name, dir_download=None, speak=False):
     ----------
     pth_data : str
         Absolute path to requested nitorch data.
-    '''
-    if dir_download is None:
-        dir_download = dir_os_cache
+    """
+    dir_download = dir_download or dir_os_cache or '.'
     fname = data[name][1]
     pth_data = os.path.join(dir_download, fname)
     if not os.path.exists(pth_data):        
@@ -54,8 +57,9 @@ def fetch_data(name, dir_download=None, speak=False):
 
 
 def download_url(url, pth_download=None, speak=False):
-    '''Download data from URL.
-    '''
+    """Download data from URL."""
+    if wget is None:
+        raise ImportError('wget not available')
     bar = None
     if speak:
         def bar(current, total, width=80):

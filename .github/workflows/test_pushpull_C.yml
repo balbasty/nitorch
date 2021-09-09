@@ -1,4 +1,4 @@
-name: nitorch-test
+name: nitorch-test-pushpull-C
 
 on:
   workflow_dispatch:
@@ -9,11 +9,17 @@ on:
         default: 'true'
   push:
     paths:
-      # all library files
-      - "nitorch/**"
+      - "nitorch/_C/*.py"
+      - "nitorch/_C/*.cpp"
+      - "nitorch/_C/*.h"
+      - "nitorch/spatial/_grid.py"
     branches: [ master ]
   pull_request:
-    # always run tests on pull request
+    paths:
+      - "nitorch/_C/*.py"
+      - "nitorch/_C/*.cpp"
+      - "nitorch/_C/*.h"
+      - "nitorch/spatial/_grid.py"
     branches: [ master ]
 
 jobs:
@@ -63,8 +69,6 @@ jobs:
       run: |
         # install scipy ourselves because setuptools does a poor job
         pip install scipy
-        # wget needed for io test
-        pip install wget
         NI_USE_CUDA=0 NI_COMPILED_BACKEND="C" python setup.py develop
         python -c "from nitorch._C import spatial"
         NI_SHOW_COMPILED_BACKEND=1 python -c "from nitorch._C import grid"
@@ -77,4 +81,4 @@ jobs:
     - name: Tests
       run: |
         pip install pytest
-        pytest --ignore nitorch/tests/test_gradcheck_spatial.py
+        pytest nitorch/tests/test_gradcheck_spatial.py
