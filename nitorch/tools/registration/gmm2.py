@@ -75,7 +75,7 @@ def init_gmm2(x, y, bins=6, dim=None, mask=None):
     if mask:
         mask = mask[..., 0]
     dim = dim or x.dim() - 1
-    quantiles = torch.arange(bins + 1) / bins
+    quantiles = torch.arange(bins + 1, dtype=x.dtype, device=x.device).div_(bins)
     xmean = utils.quantile(x[..., 0], quantiles, dim=range(-dim, 0), keepdim=True, mask=mask)
     ymean = utils.quantile(y[..., 0], quantiles, dim=range(-dim, 0), keepdim=True, mask=mask)
     xvar = (xmean[..., 1:] - xmean[..., :-1]).div_(2.355).square_()
@@ -195,7 +195,6 @@ def load_cov(xvar, yvar, cov, alpha: float = 1e-10):
     # if (lam > 0).any():
     #     plam: List[float] = lam.flatten().tolist()
     #     print('eps', plam)
-
     xvar = (xvar + lam) / (1 + lam)
     yvar = (yvar + lam) / (1 + lam)
     cov = cov / (1 + lam)
