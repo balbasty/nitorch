@@ -105,7 +105,12 @@ def nonlin(data, opt=None):
 
     ll_rls = []
     ll_max = -float('inf')
-    vreg = 0
+    crit = crit_prev = float('inf')
+    sumrls_prev = sumrls
+    reg = reg_prev = 0
+    vreg = vreg_prev = 0
+    lm = 1.  # levenberg marquardt
+    lm_confidence = 0
 
     for n_iter_rls in range(opt.optim.max_iter_rls):
 
@@ -120,6 +125,7 @@ def nonlin(data, opt=None):
             # -----------------
 
             decay = maps.decay
+            crit_prev = crit
             crit = 0
             grad.zero_()
             hess.zero_()
@@ -138,6 +144,7 @@ def nonlin(data, opt=None):
                 crit += crit1
 
             # --- regularization ---
+            reg_prev = reg
             reg = 0.
             if opt.regularization.norm:
                 for i, (map, weight, l) in enumerate(zip(maps, multi_rls, lam)):
@@ -169,20 +176,31 @@ def nonlin(data, opt=None):
             # ------------------------
             if opt.distortion.enable:
 
-                # --- intermediate gain ---
+                # --- intermediate ll (distortion) ---
+                # This is the gain due to the distortion update since we
+                # compute the criterion *before* computing the derivatives
+                if crit + vreg <= crit_prev + vreg_prev:
+                    lm /= 10 * (2 ** lm_confidence)
+                    lm_confidence += 1
+                    evol = '<='
+                else:
+                    lm *= 10 * (2 ** (-lm_confidence))
+                    lm_confidence -= 1
+                    evol = '>'
                 if opt.verbose:
-                    ll_tmp = crit + reg + vreg + sumrls
-                    ll_prev = ll_gn[-1] if ll_gn else float('inf')
-                    pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"prm":4s} | '
-                            f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
+                    ll_tmp = crit + reg_prev + vreg + sumrls
+                    pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"dist":4s} | '
+                            f'{crit:12.6g} + {reg_prev:12.6g} + {sumrls:12.6g} ')
                     if opt.distortion.enable:
                         pstr += f'+ {vreg:12.6g} '
                     pstr += f'= {ll_tmp:12.6g} | '
-                    pstr += ' <=' if ll_tmp <= ll_prev else '>'
+                    pstr += f'{evol} (lm = {lm:6.3g})'
                     print(pstr)
 
-                vreg = 0
+                crit_prev = crit
+                vreg_prev = vreg
                 crit = 0
+                vreg = 0
                 # --- loop over contrasts ---
                 for i, (contrast, intercept, distortion) in enumerate(zip(data, maps.intercepts, dist)):
                     crit1, g, h = _distortion_gradient(contrast, distortion, intercept, decay, opt)
@@ -209,16 +227,19 @@ def nonlin(data, opt=None):
                         print('WARNING: NaNs in hess')
                     if contrast.readout is None:
                         h = core.utils.movedim(h, -1, -4)
-                        h = hessian_loaddiag(h, 1e-6, 1e-8)
+                        h = hessian_loaddiag(h, lm*1e-6, 1e-8)
                         h = core.utils.movedim(h, -4, -1)
-                        delta = spatial.solve_grid_sym(h, g, **distprm,
+                        distprm1 = dict(distprm)
+                        distprm1['factor'] *= lm
+                        delta = spatial.solve_grid_sym(h, g, **distprm1,
                                                        voxel_size=distortion.voxel_size,
                                                        verbose=(opt.verbose > 1),
                                                        stop='norm', max_iter=32)
                     else:
-                        h = hessian_loaddiag(h[None], 1e-6, 1e-8)[0]
+                        h = hessian_loaddiag(h[None], lm*1e-6, 1e-8)[0]
                         distprm1 = dict(distprm)
-                        distprm1['factor'] *= distortion.voxel_size[contrast.readout] ** 2
+                        distprm1['factor'] *= (distortion.voxel_size[contrast.readout] ** 2)
+                        distprm1['factor'] *= (1 + lm*1e-6)
                         delta = spatial.solve_field_sym(h[None], g[None], **distprm1,
                                                         voxel_size=distortion.voxel_size,
                                                         verbose=(opt.verbose > 1),
@@ -226,11 +247,28 @@ def nonlin(data, opt=None):
                     if not torch.isfinite(delta).all():
                         print('WARNING: NaNs in delta (non stable Hessian)')
                     if contrast.readout is None:
-                        distortion.volume -= 0.5 * delta
+                        distortion.volume -= delta
                     else:
-                        distortion.volume[..., contrast.readout] -= 0.5 * delta
+                        distortion.volume[..., contrast.readout] -= delta
                     del delta, g, h
 
+                # --- intermediate ll (param) ---
+                # This is the gain due to the distortion update since we
+                # compute the criterion *before* computing the derivatives
+                if crit + reg <= crit_prev + reg_prev:
+                    # lm *= 0.9
+                    evol = '<='
+                else:
+                    # lm *= 10
+                    evol = '>'
+                if opt.verbose:
+                    ll_tmp = crit + reg_prev + vreg + sumrls
+                    pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"prm":4s} | '
+                            f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
+                    pstr += f'+ {vreg_prev:12.6g} '
+                    pstr += f'= {ll_tmp:12.6g} | '
+                    pstr += f'{evol}'
+                    print(pstr)
 
             # ------------------
             #    Compute gain
@@ -240,11 +278,10 @@ def nonlin(data, opt=None):
             ll_prev = ll_gn[-1] if ll_gn else float('inf')
             gain = (ll_prev - ll) / (ll_max - ll_prev)
             ll_gn.append(ll)
-            ll_prev = ll
             if opt.verbose:
                 pstr = f'{n_iter_rls:3d} | {n_iter_gn:3d} | '
                 if opt.distortion.enable:
-                    pstr += f'{"dist":4s} | ' 
+                    pstr += f'{"----":4s} | '
                 pstr += f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} '
                 if opt.distortion.enable:
                     pstr += f'+ {vreg:12.6g} '
@@ -475,7 +512,7 @@ def _distortion_gradient(contrast, distortion, intercept, decay, opt, do_grad=Tr
 
         # compute residuals
         dat = echo.fdata(**backend, rand=True, cache=False)  # observed
-        fit =  recon_fit(inter, slope, echo.te)              # fitted
+        fit = recon_fit(inter, slope, echo.te)               # fitted
 #         if do_grad:
 #             gfit = smart_grad(fit[None], grid_blip, bound='dft')[0]
 #             if isinstance(distortion, SVFDeformation):

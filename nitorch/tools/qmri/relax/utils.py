@@ -76,12 +76,20 @@ def hessian_sym_loaddiag(hess, eps=None, eps2=None):
     a flattened array. Elements are ordered as:
      `[(i, i) for i in range(P)] +
       [(i, j) for i in range(P) for j in range(i+1, P)]
+
     ..warning:: Modifies `hess` in place
 
     Parameters
     ----------
     hess : (P*(P+1)//2, ...) tensor
+        Symmetric Hessian
     eps : float, optional
+        Levenberg-Marquardt parameter
+        This parameter is multiplied by the maximum absolute diagonal element
+        and added to the diagonal of the Hessian.
+    eps2 : float, optional
+        Levenberg parameter
+        This parameter is added to the diagonal of the Hessian.
 
     Returns
     -------
