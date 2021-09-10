@@ -650,8 +650,8 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
             scales.append((inshp - 1) / (outshp - 1))
             shifts.append(0)
         elif anch == 'e':  # edges
-            shift = (inshp * (1 / outshp - 1) + (inshp - 1)) / 2
-            scale = inshp/outshp
+            scale = inshp / outshp
+            shift = 0.5 * (scale - 1)
             lin.append(torch.arange(0., outshp, **info) * scale + shift)
             scales.append(scale)
             shifts.append(shift)
