@@ -182,19 +182,25 @@ class _FMG:
 
     def solve(self):
 
-        pyrg = self.pyrg
-        pyrx = self.pyrx
-        pyrn = self.pyrn
+        g = self.pyrg       # gradient (g + Lv)
+        x = self.pyrx       # solution (input/output)
+        d = self.pyrn       # shape
+        h = self.forward    # full hessian (H + L)
+        ih = self.solvers   # inverse of the hessian:  ih(g, x) <=> x = h\g
 
-        # Targets at each level (not always the same as restricted gradient)
-        # pyrb = [None] * self.nb_levels
-        # pyrb[0] = self.pyrg[0]
-        pyrb = pyrg
+        # JA has precomputed gradients in b0 and also another pyramid `b`
+        # which is initialized by b0 and then updated during the residuals
+        # steps. I don't understand the point of keeping two separate buffers.
+        # Trying with one for now:
+        b = g
+        # That's if we want to use two buffers:
+        # b = [None] * self.nb_levels
+        # b[0] = g[0]
 
         # Initial solution at coarsest grid
         if self.verbose > 0:
             print(f'(fmg) solve last ({self.nb_levels-1})')
-        pyrx[-1] = self.solvers[-1](pyrb[-1], pyrx[-1])
+        x[-1] = ih[-1](b[-1], x[-1])
 
         # The full multigrid (FMG) solver performs lots of  "two-grid"
         # multigrid (2MG) steps, at different scales. There are therefore
@@ -203,9 +209,9 @@ class _FMG:
         for n_base in reversed(range(self.nb_levels-1)):
             if self.verbose > 0:
                 print(f'(fmg) base level {n_base}')
-            pyrx[n_base] = self.prolong_g(pyrx[n_base+1], pyrn[n_base])
+            x[n_base] = self.prolong_g(x[n_base+1], d[n_base])
             # if n_base > 0:
-            #     pyrb[n_base] = pyrg[n_base].clone()
+            #     b[n_base] = g[n_base].clone()
 
             for n_cycle in range(self.nb_cycles):
                 if self.verbose > 0:
@@ -213,27 +219,27 @@ class _FMG:
                 for n in range(n_base, self.nb_levels-1):
                     if self.verbose > 0:
                         print(f'(fmg) ---- solve {n}')
-                    pyrx[n] = self.solvers[n](pyrb[n], pyrx[n])
-                    res = self.forward[n](pyrx[n]).neg_().add_(pyrb[n])
+                    x[n] = ih[n](b[n], x[n])
+                    res = h[n](x[n]).neg_().add_(b[n])
                     if self.verbose > 0:
                         print(f'(fmg) ---- restrict {n} -> {n+1} (sub)')
-                    pyrb[n+1] = self.restrict_g(res, pyrn[n+1])
+                    b[n+1] = self.restrict_g(res, d[n+1])
                     del res
-                    pyrx[n+1].zero_()
+                    x[n+1].zero_()
 
                 if self.verbose > 0:
                     print(f'(fmg) ---- solve last ({self.nb_levels-1})')
-                pyrx[-1] = self.solvers[-1](pyrb[-1], pyrx[-1])
+                x[-1] = ih[-1](b[-1], x[-1])
 
                 for n in reversed(range(n_base, self.nb_levels-1)):
                     if self.verbose > 0:
                         print(f'(fmg) ---- prolong {n+1} -> {n} (add)')
-                    pyrx[n] += self.prolong_g(pyrx[n+1], pyrn[n])
+                    x[n] += self.prolong_g(x[n+1], d[n])
                     if self.verbose > 0:
                         print(f'(fmg) ---- solve {n}')
-                    pyrx[n] = self.solvers[n](pyrb[n], pyrx[n])
+                    x[n] = ih[n](b[n], x[n])
 
-        x = pyrx[0]
+        x = x[0]
         self.clear_data()
         return x
 
