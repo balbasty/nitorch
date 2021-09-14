@@ -4,7 +4,7 @@ from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag, hessian_matmul, hessian_solve,
                      smart_grid, smart_pull, smart_push, smart_grad,)
-from ..utils import rls_maj, min_intensity_step
+from ..utils import rls_maj
 from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
 from nitorch.spatial import solve_grid_sym
 
@@ -207,12 +207,12 @@ def nonlin(data, opt=None):
                     # --- regularization ---
                     def momentum(vol):
                         if contrast.readout is None:
-                            g1 = spatial.regulariser_grid(vol, **distprm,
+                            g1 = spatial.regulariser_grid(vol, **distprm, bound='dft',
                                                           voxel_size=distortion.voxel_size)
                         else:
                             distprm1 = dict(distprm)
                             distprm1['factor'] *= distortion.voxel_size[contrast.readout] ** 2
-                            g1 = spatial.regulariser(vol[None], **distprm1, dim=3,
+                            g1 = spatial.regulariser(vol[None], **distprm1, dim=3, bound='dft',
                                                      voxel_size=distortion.voxel_size)[0]
                         return g1
                     
@@ -235,23 +235,22 @@ def nonlin(data, opt=None):
                         h = core.utils.movedim(h, -4, -1)
                         distprm1 = dict(distprm)
                         distprm1['factor'] *= lm
-                        delta = spatial.solve_grid_fmg(h, g, **distprm1,
+                        delta = spatial.solve_grid_fmg(h, g, **distprm1, bound='dft',
                                                        voxel_size=distortion.voxel_size,
-                                                       verbose=opt.verbose-1)
-                                                       # stop='norm', max_iter=32
+                                                       verbose=opt.verbose-1,
+                                                       nb_iter=opt.optim.max_iter_cg,
+                                                       tolerance=opt.optim.tolerance_cg)
                     else:
                         h = hessian_loaddiag(h[None], lm*1e-6, 1e-8)[0]
                         distprm1 = dict(distprm)
                         distprm1['factor'] *= (distortion.voxel_size[contrast.readout] ** 2)
                         distprm1['factor'] *= (1 + lm*1e-6)
-                        delta = spatial.solve_field_sym(h[None], g[None], **distprm1, dim=3,
+                        delta = spatial.solve_field_fmg(h[None], g[None], **distprm1, dim=3,
+                                                        bound='dft',
                                                         voxel_size=distortion.voxel_size,
-                                                        stop='norm', max_iter=32,
+                                                        nb_iter=opt.optim.max_iter_cg,
+                                                        tolerance=opt.optim.tolerance_cg,
                                                         verbose=opt.verbose-1)[0]
-                        # delta = spatial.solve_field_fmg(h[None], g[None], **distprm1, dim=3,
-                        #                                 nb_iter=4,
-                        #                                 voxel_size=distortion.voxel_size,
-                        #                                 verbose=opt.verbose-1)[0]
                     if not torch.isfinite(delta).all():
                         print('WARNING: NaNs in delta (non stable Hessian)')
                             
@@ -266,20 +265,18 @@ def nonlin(data, opt=None):
                         armijo_prev = armijo
                         new_vreg = 0.5 * armijo*(armijo*dd - 2 * dv)
                         new_crit = _nonlin_gradient(contrast, distortion, intercept, decay, opt, do_grad=False)
-                        print(f'{new_crit.item():12.6g}, {new_vreg.item():12.6g}, '
-                              f'{new_crit.item() + new_vreg.item():12.6g}, {crit1.item():12.6g}')
+                        # print(f'{new_crit.item():12.6g}, {new_vreg.item():12.6g}, '
+                        #       f'{new_crit.item() + new_vreg.item():12.6g}, {crit1.item():12.6g}')
                         if new_crit + new_vreg <= crit1:
-                            print(f'armijo {armijo} -> :D')
+                            # print(f'armijo {armijo} -> :D')
                             ok = True
                             break
                         else:
-                            print(f'armijo {armijo} -> :(')
+                            # print(f'armijo {armijo} -> :(')
                             armijo = armijo / 2
                     if not ok:
                         vol.add_(delta, alpha=armijo_prev)
-                    armijo_prev = 1 # 4 * armijo
-                        
-                        
+                    armijo_prev = 1
                     del delta, g, h
 
                 # --- intermediate ll (param) ---
@@ -545,13 +542,6 @@ def _distortion_gradient(contrast, distortion, intercept, decay, opt, do_grad=Tr
         dat = mask_nan_(dat)
         msk = dat < 1
         fit = recon_fit(inter, slope, echo.te)               # fitted
-#         if do_grad:
-#             gfit = smart_grad(fit[None], grid_blip, bound='dft')[0]
-#             if isinstance(distortion, SVFDeformation):
-#                 jac = spatial.grid_jacobian(grid_blip[None], bound='dft')[0]
-#                 jac = jac.transpose(-1, -2)
-#                 gfit = core.linalg.matvec(jac, gfit)
-#                 del jac
         if do_grad and isinstance(distortion, DenseDeformation):
             if not (grid_blip == 0).any():
                 gfit = spatial.diff(fit, bound='dft', dim=[-3, -2, -1])
@@ -693,7 +683,9 @@ def _nonlin_solve(hess, grad, rls, lam, vx, opt):
 
     rls = torch.stack(rls)
     return spatial.solve_field_fmg(hess, grad, rls, factor=lam, membrane=1,
-                                   voxel_size=vx, verbose=(opt.verbose > 1),
+                                   voxel_size=vx, verbose=opt.verbose - 1,
+                                   nb_iter=opt.optim.max_iter_cg,
+                                   tolerance = opt.optim.tolerance_cg,
                                    matvec=matvec, matsolve=matsolve, matdiag=matdiag)
 
     def hess_fn(x):

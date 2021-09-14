@@ -1,8 +1,43 @@
+"""
+This file implements spatial regularizers for vector and displacement fields.
+
+All functions exist in a "field" (by default) for vector fields or "grid"
+for displacement fields.
+
+- absolute(x) / absolute_grid(v)
+    Squared norm of absolute values
+- membrane(x) / membrane_grid(v)
+    Squared norm of first order derivatives
+- bending(x) / bending_grid(v)
+    Squared norm of second order derivatives
+- lame_div(v) [displacement only]
+    Squared norm of the trace of the Jacobian matrix
+- lame_shear(v) [displacement only]
+    Squared norm of the off-diagonal elements of the Jacobian matrix
+- regulariser(x) / regulariser_grid(v)
+    Combination of all regularisers.
+All these functions accept non-stationary weight maps.
+
+Another set of functions generate an equivalent convolution kernel
+- regulariser_kernel / regulariser_grid_kernel
+    Return a sparse convolution kernel
+
+A set of functions return the diagonal of each regulariser (when
+though of in matrix form). They are only implemented in the "field" case.
+- absolute_diag
+- membrane_diag
+- bending_diag
+
+Finally, some functions compute updated weight maps in the RLS context:
+- membrane_weights
+- bending_weights
+These functions are not yet implemented for the other regularisers (WIP).
+"""
+
 import torch
 from nitorch import core
 from nitorch.core.utils import movedim, make_vector, unsqueeze, fast_movedim
 from nitorch.core.py import ensure_list
-from nitorch.core.linalg import sym_matvec, sym_solve
 from ._finite_differences import diff, div, diff1d, div1d
 from ._spconv import spconv
 import itertools
@@ -1134,412 +1169,6 @@ def regulariser_kernel(dim, absolute=0, membrane=0, bending=0,
     kernel = sum_kernels(dim, *kernels)
     kernel *= factor
     return kernel
-
-
-def quadnesterov(A, b, x=None, precond=None, lr=0.5, momentum=0.9, max_iter=None,
-                 tolerance=1e-5, inplace=True, verbose=False, stop='E',
-                 sum_dtype=torch.double):
-    """Nesterov accelerated gradient for quadratic problems."""
-    if x is None:
-        x = torch.zeros_like(b)
-    elif not inplace:
-        x = x.clone()
-    max_iter = max_iter or len(b) * 10
-
-    # Create functor if A is a tensor
-    if isinstance(A, torch.Tensor):
-        A_tensor = A
-        A = lambda x: A_tensor.mm(x)
-
-    # Create functor if D is a tensor
-    if isinstance(precond, torch.Tensor):
-        D_tensor = precond
-        precond = lambda x: x * D_tensor
-    precond = precond or (lambda x: x)
-
-    r = b - A(x)
-
-    if tolerance or verbose:
-        if stop == 'residual':
-            stop = 'e'
-        elif stop == 'norm':
-            stop = 'a'
-        stop = stop[0].lower()
-        if stop == 'e':
-            obj0 = r.square().sum(dtype=sum_dtype).sqrt()
-        else:
-            obj0 = A(x).sub_(2 * b).mul_(x)
-            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
-        if verbose:
-            s = '{:' + str(len(str(max_iter + 1))) + '} | {} = {:12.6g}'
-            print(s.format(0, stop, obj0))
-        obj = torch.zeros(max_iter + 1, dtype=sum_dtype, device=obj0.device)
-        obj[0] = obj0
-
-    delta = torch.zeros_like(x)
-    for n_iter in range(max_iter):
-
-        prev_momentum = momentum or n_iter / (n_iter + 3)
-        cur_momentum = momentum or (n_iter + 1) / (n_iter + 4)
-        r = precond(r)
-
-        delta.mul_(prev_momentum)
-        delta.add_(r, alpha=lr)
-        x.add_(delta, alpha=cur_momentum).add_(r, alpha=lr)
-        r = b - A(x)
-
-        # Check convergence
-        if tolerance or verbose:
-            if stop == 'e':
-                obj1 = r.square().sum(dtype=sum_dtype).sqrt()
-            else:
-                obj1 = A(x).sub_(2 * b).mul_(x)
-                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
-            obj[n_iter] = obj1
-            gain = core.optim.get_gain(obj[:n_iter + 1], monotonicity='decreasing')
-            if verbose:
-                width = str(len(str(max_iter + 1)))
-                s = '{:' + width + '} | {} = {:12.6g} | gain = {:12.6g}'
-                print(s.format(n_iter, stop, obj[n_iter], gain))
-            if gain.abs() < tolerance:
-                break
-
-    return x
-
-
-def solve_field_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
-                    factor=1, voxel_size=1, bound='dct2', dim=None,
-                    optim='cg', max_iter=16, stop='e', verbose=False, weights=None,
-                    precond=None):
-    """Solve a positive-definite linear system of the form (H + L)x = g
-
-    Parameters
-    ----------
-    hessian : (..., 1 or K or K*(K+1)//2, *spatial) tensor
-    gradient : (..., K, *spatial) tensor
-    absolute : float, default=0
-    membrane : float, default=0
-    bending : float, default=0
-    factor : [sequence of] float, default=1
-    voxel_size : [sequence of] float, default=1
-    bound : str, default='dct2'
-    dim : int, default=`gradient.dim()-1`
-    weights : [dict of] (..., 1|K, *spatial) tensor, optional
-        If a dict: keys must be in {'absolute', 'membrane', 'bending'}
-        Else: the same weight map is shared across penalties.
-
-    """
-    backend = dict(dtype=hessian.dtype, device=hessian.device)
-    dim = dim or gradient.dim() - 1
-    nb_prm = gradient.shape[-dim-1]
-
-    voxel_size = make_vector(voxel_size, dim, **backend)
-    is_diag = hessian.shape[-dim-1] in (1, gradient.shape[-dim-1])
-
-    factor = make_vector(factor, nb_prm, **backend)
-    pad_spatial = (Ellipsis,) + (None,) * dim
-    factor = factor[pad_spatial]
-    no_reg = not (membrane or bending)
-
-    # regulariser
-    fdopt = dict(bound=bound, voxel_size=voxel_size, dim=dim)
-    if isinstance(weights, dict):
-        wa = weights.get('absolute', None)
-        wm = weights.get('membrane', None)
-        wb = weights.get('bending', None)
-    else:
-        wa = wm = wb = weights
-    has_weights = (wa is not None or wm is not None or wb is not None)
-
-    def regulariser(x):
-        y = torch.zeros_like(x)
-        if absolute:
-            y.add_(_absolute(x, weights=wa), alpha=absolute)
-        if membrane:
-            y.add_(_membrane(x, weights=wm, **fdopt), alpha=membrane)
-        if bending:
-            y.add_(_bending(x, weights=wb, **fdopt), alpha=bending)
-        return y.mul_(factor)
-
-    # diagonal of the regulariser
-    if has_weights:
-        smo = torch.zeros_like(gradient)
-    else:
-        smo = gradient.new_zeros([nb_prm] + [1]*dim)
-    if absolute:
-        smo.add_(absolute_diag(weights=wa), alpha=absolute)
-    if membrane:
-        smo.add_(membrane_diag(weights=wm, **fdopt), alpha=membrane)
-    if bending:
-        smo.add_(bending_diag(weights=wb, **fdopt), alpha=bending)
-    smo.mul_(factor)
-
-    if is_diag:
-        hessian_smo = hessian + smo
-    else:
-        hessian_smo = hessian.clone()
-        core.utils.slice_tensor(hessian_smo, slice(nb_prm), -dim-1).add_(smo)
-
-    def s2h(s):
-        # do not slice if hessian_smo is constant across space
-        if s is Ellipsis:
-            return s
-        if all(sz == 1 for sz in hessian_smo.shape[-dim:]):
-            s = list(s)
-            s[-dim:] = [slice(None)] * dim
-            s = tuple(s)
-        return s
-
-    def matvec(h, x):
-        h = h.transpose(-dim-1, -1)
-        x = x.transpose(-dim-1, -1)
-        x = sym_matvec(h, x)
-        x = x.transpose(-dim-1, -1)
-        return x
-
-    def solve(h, x):
-        h = h.transpose(-dim-1, -1)
-        x = x.transpose(-dim-1, -1)
-        x = sym_solve(h, x)
-        x = x.transpose(-dim-1, -1)
-        return x
-
-    forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
-               (lambda x: matvec(hessian, x) + regulariser(x)))
-    if precond is None:
-        precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s2h(s)]) if is_diag else
-                   (lambda x, s=Ellipsis: solve(hessian_smo[s2h(s)], x[s])))
-    elif precond is False:
-        precond = lambda x: x
-
-    if no_reg:
-        result = precond(gradient)
-    else:
-        prm = dict(max_iter=max_iter, verbose=verbose)
-        if optim == 'relax':
-            prm['scheme'] = (3 if bending else 'checkerboard')
-        optim = getattr(core.optim, optim)
-        result = optim(forward, gradient, precond=precond, stop=stop, **prm)
-    return result
-
-
-def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
-                   lame=0, factor=1, voxel_size=1, bound='dft', weights=None,
-                   optim='cg', max_iter=16, stop='e', verbose=False, precond=None):
-    """Solve a positive-definite linear system of the form (H + L)v = g
-
-    Parameters
-    ----------
-    hessian : (..., *spatial, 1 or D or D*(D+1)//2) tensor
-    gradient : (..., *spatial, D) tensor
-    absolute : float, default=0
-    membrane : float, default=0
-    bending : float, default=0
-    lame : (float, float), default=0
-    factor : float, default=1
-    voxel_size : float or sequence[float], default=1
-    bound : str, default='dft'
-    weights : [dict of] (..., *spatial) tensor, optional
-        If a dict: keys must be in {'absolute', 'membrane', 'bending', 'lame'}
-        Else: the same weight map is shared across penalties.
-
-    """
-    backend = dict(dtype=hessian.dtype, device=hessian.device)
-    dim = gradient.shape[-1]
-    voxel_size = make_vector(voxel_size, dim, **backend)
-
-    absolute = absolute * factor
-    membrane = membrane * factor
-    bending = bending * factor
-    lame = [l*factor for l in make_vector(lame, 2).tolist()]
-    no_reg = not (membrane or bending or any(lame))
-
-    # regulariser
-    fdopt = dict(bound=bound, voxel_size=voxel_size)
-    if isinstance(weights, dict):
-        wa = weights.get('absolute', None)
-        wm = weights.get('membrane', None)
-        wb = weights.get('bending', None)
-        wl = weights.get('lame', None)
-    else:
-        wa = wm = wb = wl = weights
-    wl = ensure_list(wl, 2)
-    has_weights = (wa is not None or wm is not None or wb is not None or
-                   wl[0] is not None or wl[1] is not None)
-
-    def regulariser(v):
-        y = torch.zeros_like(v)
-        if absolute:
-            y.add_(absolute_grid(v, weights=wa, voxel_size=voxel_size), alpha=absolute)
-        if membrane:
-            y.add_(membrane_grid(v, weights=wm, **fdopt), alpha=membrane)
-        if bending:
-            y.add_(bending_grid(v, weights=wb, **fdopt), alpha=bending)
-        if lame[0]:
-            y.add_(lame_div(v, weights=wl[0], **fdopt), alpha=lame[0])
-        if lame[1]:
-            y.add_(lame_shear(v, weights=wl[1], **fdopt), alpha=lame[1])
-        return y
-
-    # diagonal of the regulariser
-    vx2 = voxel_size.square()
-    ivx2 = vx2.reciprocal()
-    smo = torch.zeros_like(gradient) if has_weights else 0
-    if absolute:
-        if wa is not None:
-            smo.add_(wa, alpha=absolute * vx2)
-        else:
-            smo += absolute * vx2
-    if membrane:
-        if wm is not None:
-            smo.add_(wm, alpha=2 * membrane * ivx2.sum() * vx2)
-        else:
-            smo += 2 * membrane * ivx2.sum() * vx2
-    if bending:
-        val = torch.combinations(ivx2, r=2).prod(dim=-1).sum()
-        if wb is not None:
-            smo.add_(wb, alpha=(8 * val + 6 * ivx2.square().sum()) * vx2)
-        else:
-            smo += bending * (8 * val + 6 * ivx2.square().sum()) * vx2
-    if lame[0]:
-        if wl[0] is not None:
-            smo.add_(wl[0], alpha=2 * lame[0])
-        else:
-            smo += 2 * lame[0]
-    if lame[1]:
-        if wl[1] is not None:
-            smo.add_(wl[1], alpha=2 * lame[1] * (1 + ivx2.sum() / ivx2))
-        else:
-            smo += 2 * lame[1] * (1 + ivx2.sum() / ivx2)
-
-    if smo.shape[-1] > hessian.shape[-1]:
-        hessian_smo = hessian + smo
-    else:
-        hessian_smo = hessian.clone()
-        hessian_smo[..., :dim] += smo
-    is_diag = hessian_smo.shape[-1] in (1, gradient.shape[-1])
-
-    forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
-               (lambda x: sym_matvec(hessian, x) + regulariser(x)))
-    if precond is None:
-        precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s]) if is_diag else
-                   (lambda x, s=Ellipsis: sym_solve(hessian_smo[s], x[s])))
-    elif precond is False:
-        precond = lambda x: x
-
-    if no_reg:
-        # no spatial regularisation: we can use a closed-form
-        result = precond(gradient)
-    else:
-        prm = dict(max_iter=max_iter, verbose=verbose)
-        if optim == 'relax':
-            prm['scheme'] = (3 if bending else
-                             2 if any(lame) else
-                             'checkerboard')
-        optim = (quadnesterov if optim.startswith('nesterov') else
-                 getattr(core.optim, optim))
-        # prm['verbose'] = True
-        result = optim(forward, gradient, precond=precond, stop=stop, **prm)
-    return result
-
-
-def solve_kernel_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
-                   lame=0, factor=1, voxel_size=1, bound='dft',
-                   optim='relax', max_iter=16, stop='e', verbose=False, precond=None):
-    """Solve a positive-definite linear system of the form (H + L)v = g
-
-    Parameters
-    ----------
-    hessian : (..., *spatial, 1 or D or D*(D+1)//2) tensor
-    gradient : (..., *spatial, D) tensor
-    absolute : float, default=0
-    membrane : float, default=0
-    bending : float, default=0
-    lame : (float, float), default=0
-    factor : float, default=1
-    voxel_size : float or sequence[float], default=1
-    bound : str, default='dft'
-
-    """
-    hessian, gradient = core.utils.to_max_backend(hessian, gradient)
-    backend = dict(dtype=hessian.dtype, device=hessian.device)
-    dim = gradient.shape[-1]
-    voxel_size = make_vector(voxel_size, dim, **backend)
-    is_diag = hessian.shape[-1] in (1, gradient.shape[-1])
-
-    lame = core.py.ensure_list(lame)
-    no_reg = not (membrane or bending or any(lame))
-    if not no_reg:
-        ker = regulariser_grid_kernel(dim, absolute=absolute, membrane=membrane,
-                                      bending=bending, lame=lame, factor=factor,
-                                      voxel_size=voxel_size, **backend)
-
-    # pre-multiply by factor
-    absolute = absolute * factor
-    membrane = membrane * factor
-    bending = bending * factor
-    lame = [l*factor for l in make_vector(lame, 2, **backend)]
-
-    # regulariser
-    fdopt = dict(bound=bound)
-    def regulariser(v, s=Ellipsis):
-        if s and s is not Ellipsis:
-            if s[0] is Ellipsis:
-                s = s[1:]
-            start = [sl.start for sl in s[:dim]]
-            stop = [sl.stop for sl in s[:dim]]
-            step = [sl.step for sl in s[:dim]]
-        else:
-            start = step = stop = None
-        if no_reg:
-            v = absolute_grid(v[s], voxel_size=voxel_size)
-        else:
-            v = core.utils.fast_movedim(v, -1, -dim-1)
-            v = spconv(v, ker, start=start, stop=stop, step=step, dim=dim, **fdopt)
-            v = core.utils.fast_movedim(v, -dim-1, -1)
-        return v
-
-    # diagonal of the regulariser
-    vx2 = voxel_size.square()
-    ivx2 = vx2.reciprocal()
-    smo = 0
-    if absolute:
-        smo += absolute * vx2
-    if membrane:
-        smo += 2 * membrane * ivx2.sum() * vx2
-    if bending:
-        val = torch.combinations(ivx2, r=2).prod(dim=-1).sum()
-        smo += bending * (8 * val + 6 * ivx2.square().sum()) * vx2
-    if lame[0]:
-        smo += 2 * lame[0]
-    if lame[1]:
-        smo += 2 * lame[1] * (1 + ivx2.sum() / ivx2)
-    hessian_smo = hessian.clone()
-    hessian_smo[..., :dim] += smo
-
-    forward = ((lambda x, s=Ellipsis: (x[s] * hessian[s]).add_(regulariser(x, s))) if is_diag else
-               (lambda x, s=Ellipsis: sym_matvec(hessian[s], x[s]).add_(regulariser(x, s))))
-    if precond is None:
-        precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s]) if is_diag else
-                   (lambda x, s=Ellipsis: sym_solve(hessian_smo[s], x[s])))
-    elif precond is False:
-        precond = lambda x, s=Ellipsis: x[s]
-
-    if no_reg:
-        # no spatial regularisation: we can use a closed-form
-        result = precond(gradient)
-    else:
-        prm = dict(max_iter=max_iter, verbose=verbose)
-        if optim == 'relax':
-            prm['scheme'] = (3 if bending else
-                             2 if any(lame) else
-                             'checkerboard')
-            prm['mode'] = 2
-        optim = (quadnesterov if optim.startswith('nesterov') else
-                 getattr(core.optim, optim))
-        prm['verbose'] = False
-        result = optim(forward, gradient, precond=precond, stop=stop, **prm)
-    return result
 
 
 # ---- WORK IN PROGRESS ----

@@ -74,7 +74,7 @@ def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2
             raise ValueError('Incompatible kernel shape: input channels')
         spatial_shape = input.shape[-dim:]
         batch_shape = input.shape[:-dim-1]
-        output_shape = tuple([*batch_shape, channel_out, *spatial_shape])
+        output_shape = tuple([*batch_shape, channel_out or channel_in, *spatial_shape])
     else:
         # add a fake channel dimension
         spatial_shape = input.shape[-dim:]
@@ -204,7 +204,7 @@ def _split_kernel(kernel, dim):
 
     """
     w0 = kernel[tuple([Ellipsis, *[s // 2 for s in kernel.shape[-dim:]]])]
-    if w0.dim():
+    if w0.dim() == 2:
         w0 = torch.stack([w0[d, d] for d in range(dim)])
         diagonal = kernel._indices()[0].eq(kernel._indices()[1])
         center = (kernel._indices()[2:].eq(kernel.shape[-1] // 2).all(0))

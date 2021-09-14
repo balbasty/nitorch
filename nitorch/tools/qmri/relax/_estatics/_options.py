@@ -32,10 +32,10 @@ class DistortionOption(Option):
 class OptimOptions(Option):
     """Options for the optimizer(s)"""
     max_iter_gn: int = 3                   # Number of Gauss-Newton iterations
-    max_iter_cg: int = 32                  # Number of Conjugate Gradient iteration
+    max_iter_cg: int = 4                   # Number of Conjugate Gradient iteration
     max_iter_rls: int = 10                 # Number of Reweighted LS iterations
     tolerance_gn: float = 1e-5
-    tolerance_cg: float = 1e-5
+    tolerance_cg: float = 0
     tolerance_rls: float = 1e-5
 
 
