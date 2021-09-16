@@ -30,7 +30,7 @@ def hessian_matmul(hess, grad):
     return mm
 
 
-def hessian_loaddiag(hess, eps=None, eps2=None):
+def hessian_loaddiag_(hess, eps=None, eps2=None):
     """Load the diagonal of the (sparse) Hessian
 
     ..warning:: Modifies `hess` in place
@@ -162,7 +162,8 @@ def smart_pull(tensor, grid, **opt):
     """
     if grid is None:
         return tensor
-    return spatial.grid_pull(tensor[None], grid[None], **opt)[0]
+    out = spatial.grid_pull(tensor, grid, **opt)
+    return out
 
 
 def smart_grad(tensor, grid, **opt):
@@ -185,7 +186,8 @@ def smart_grad(tensor, grid, **opt):
         opt.pop('extrapolate', None)
         opt.pop('interpolation', None)
         return spatial.diff(tensor, dim=3, **opt)
-    return spatial.grid_grad(tensor[None], grid[None], **opt)[0]
+    out = spatial.grid_grad(tensor, grid, **opt)
+    return out
 
 
 def smart_push(tensor, grid, shape=None, **opt):
@@ -208,5 +210,6 @@ def smart_push(tensor, grid, shape=None, **opt):
     """
     if grid is None:
         return tensor
-    return spatial.grid_push(tensor[None], grid[None], shape, **opt)[0]
+    out = spatial.grid_push(tensor, grid, shape, **opt)
+    return out
 

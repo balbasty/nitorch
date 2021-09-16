@@ -101,7 +101,6 @@ class DisplacementField(_ParameterMap):
         return spatial.identity_grid(shape, **utils.backend(disp)).add_(disp)
 
 
-
 class ParameterizedDeformation(DisplacementField):
     model: str = None
 
@@ -120,27 +119,33 @@ class ParameterizedDeformation(DisplacementField):
 class DenseDeformation(ParameterizedDeformation):
     model = 'smalldef'
 
-    def exp(self, jacobian=False, add_identity=False):
+    def exp(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate forward transform"""
         grid = self.fdata()
+        if alpha:
+            grid = grid * alpha
         if jacobian:
             jac = spatial.grid_jacobian(grid, type='displacement')
         if add_identity:
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
 
-    def iexp(self, jacobian=False, add_identity=False):
+    def iexp(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate inverse transform"""
         grid = -self.fdata()
+        if alpha:
+            grid = grid * alpha
         if jacobian:
             jac = spatial.grid_jacobian(grid, type='displacement')
         if add_identity:
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
 
-    def exp2(self, jacobian=False, add_identity=False):
+    def exp2(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate both forward and inverse transforms"""
         grid = self.fdata()
+        if alpha:
+            grid = grid * alpha
         igrid = -grid
         if jacobian:
             jac = spatial.grid_jacobian(grid, type='displacement')
@@ -155,9 +160,11 @@ class SVFDeformation(ParameterizedDeformation):
     model = 'svf'
     steps: int = 8
 
-    def exp(self, jacobian=False, add_identity=False):
+    def exp(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate forward transform"""
         v = self.fdata()
+        if alpha:
+            v = v * alpha
         grid = spatial.exp_forward(v, steps=self.steps,
                                    jacobian=jacobian,
                                    displacement=True)
@@ -167,9 +174,11 @@ class SVFDeformation(ParameterizedDeformation):
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
 
-    def iexp(self, jacobian=False, add_identity=False):
+    def iexp(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate inverse transform"""
         v = self.fdata()
+        if alpha:
+            v = v * alpha
         igrid = spatial.exp_forward(v, steps=self.steps,
                                     jacobian=jacobian, inverse=True,
                                     displacement=True)
@@ -179,9 +188,11 @@ class SVFDeformation(ParameterizedDeformation):
             igrid = self.add_identity(igrid)
         return (igrid, ijac) if jacobian else igrid
 
-    def exp2(self, jacobian=False, add_identity=False):
+    def exp2(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate both forward and inverse transforms"""
         v = self.fdata()
+        if alpha:
+            v = v * alpha
         if jacobian:
             grid, jac = spatial.exp_forward(v, steps=self.steps,
                                             jacobian=True,
@@ -233,9 +244,11 @@ class GeodesicDeformation(ParameterizedDeformation):
                                      factor=self.factor, voxel_size=vx,
                                      **utils.backend(self))
 
-    def exp(self, jacobian=False, add_identity=False):
+    def exp(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate forward transform"""
         v = self.fdata()
+        if alpha:
+            v = v * alpha
         grid = spatial.shoot(v, self.kernel, steps=self.steps,
                              factor=self.factor,
                              voxel_size=self.voxel_size, **self.reg_prm,
@@ -246,9 +259,11 @@ class GeodesicDeformation(ParameterizedDeformation):
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
 
-    def iexp(self, jacobian=False, add_identity=False):
+    def iexp(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate inverse transform"""
         v = self.fdata()
+        if alpha:
+            v = v * alpha
         _, grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                 factor=self.factor,
                                 voxel_size=self.voxel_size, **self.reg_prm,
@@ -259,9 +274,11 @@ class GeodesicDeformation(ParameterizedDeformation):
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
 
-    def exp2(self, jacobian=False, add_identity=False):
+    def exp2(self, jacobian=False, add_identity=False, alpha=None):
         """Exponentiate both forward and inverse transforms"""
         v = self.fdata()
+        if alpha:
+            v = v * alpha
         grid, igrid = spatial.shoot(v, self.kernel, steps=self.steps,
                                     factor=self.factor,
                                     voxel_size=self.voxel_size, **self.reg_prm,

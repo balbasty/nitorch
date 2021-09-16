@@ -127,11 +127,10 @@ def preproc(data, opt):
         mean_shape = tuple(opt.recon.fov)
 
     # --- allocate maps ---
-    maps = ESTATICSParameterMaps()
-    maps.intercepts = [ParameterMap(mean_shape, fill=inter[c], affine=mean_affine, **backend)
-                       for c in range(len(data))]
-    maps.decay = ParameterMap(mean_shape, fill=decay, affine=mean_affine, min=0, **backend)
-    maps.affine = mean_affine
+    maps = ESTATICSParameterMaps(len(data), mean_shape, **backend, affine=mean_affine)
+    for c in range(len(data)):
+        maps.intercepts[c].volume.fill_(inter[c])
+    maps.decay.volume.fill_(decay)
 
     # --- allocate distortions ---
     if opt.distortion.enable:
