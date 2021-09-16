@@ -487,19 +487,16 @@ def dot(x, y):
     return (x*y).sum(dtype=torch.double)
 
 
-# @torch.jit.script
 def get_mask_missing(dat, fit):
     """Mask of voxels excluded from the objective"""
     return ~(torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0))
 
 
-@torch.jit.script
 def mask_nan_(x, value: float = 0.):
     """Mask out all non-finite values"""
     return x.masked_fill_(torch.isfinite(x).bitwise_not(), value)
 
 
-@torch.jit.script
 def check_nans_(x, warn: Optional[str] = None, value: float = 0):
     """Mask out all non-finite values + warn if `warn is not None`"""
     msk = torch.isfinite(x)
@@ -508,6 +505,15 @@ def check_nans_(x, warn: Optional[str] = None, value: float = 0):
             print(f'WARNING: NaNs in {warn}')
     x.masked_fill_(msk.bitwise_not(), value)
     return x
+
+
+if core.utils.torch_version('>', (1, 4)):
+    # For some reason, the output of torch.isfinite is not understood
+    # as a tensor by TS. I am disabling TS for these functions until
+    # I find a better solution.
+    get_mask_missing = torch.jit.script(get_mask_missing)
+    mask_nan_ = torch.jit.script(mask_nan_)
+    check_nans_ = torch.jit.script(check_nans_)
 
 
 def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=True):
