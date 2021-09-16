@@ -496,7 +496,7 @@ def get_mask_missing(dat, fit):
 @torch.jit.script
 def mask_nan_(x, value: float = 0.):
     """Mask out all non-finite values"""
-    return x.masked_fill_(~torch.isfinite(x), value)
+    return x.masked_fill_(torch.isfinite(x).bitwise_not(), value)
 
 
 @torch.jit.script
@@ -504,9 +504,9 @@ def check_nans_(x, warn: Optional[str] = None, value: float = 0):
     """Mask out all non-finite values + warn if `warn is not None`"""
     msk = torch.isfinite(x)
     if warn is not None:
-        if ~msk.all():
+        if ~(msk.all()):
             print(f'WARNING: NaNs in {warn}')
-    x.masked_fill_(~msk, value)
+    x.masked_fill_(msk.bitwise_not(), value)
     return x
 
 
