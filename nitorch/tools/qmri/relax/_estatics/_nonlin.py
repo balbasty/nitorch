@@ -478,7 +478,7 @@ def recon_fit(inter, slope, te: float):
 @torch.jit.script
 def ssq(x):
     """Sum of squares"""
-    return x.square().sum(dtype=torch.double)
+    return (x*x).sum(dtype=torch.double)
 
 
 @torch.jit.script
