@@ -487,7 +487,7 @@ def dot(x, y):
     return (x*y).sum(dtype=torch.double)
 
 
-@torch.jit.script
+# @torch.jit.script
 def get_mask_missing(dat, fit):
     """Mask of voxels excluded from the objective"""
     return ~(torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0))
