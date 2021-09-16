@@ -1196,7 +1196,7 @@ def absolute_diag(weights=None):
 
 
 def membrane_weights(field, factor=1, voxel_size=1, bound='dct2',
-                     dim=None, joint=True, return_sum=False, eps=1e-5):
+                     dim=None, joint=True, return_sum=False, eps=None):
     """Update the (L1) weights of the membrane energy.
 
     Parameters
@@ -1227,19 +1227,21 @@ def membrane_weights(field, factor=1, voxel_size=1, bound='dct2',
     nb_prm = field.shape[-dim-1]
     voxel_size = make_vector(voxel_size, dim, **backend)
     factor = make_vector(factor, nb_prm, **backend)
-    factor = core.utils.unsqueeze(factor, -1, dim + 1)
-    if joint:
-        factor = factor * nb_prm
+    factor = core.utils.unsqueeze(factor, -1, dim+1)
+    # if joint:
+    #     factor = factor * nb_prm
     dims = list(range(field.dim()-dim, field.dim()))
     fieldb = diff(field, dim=dims, voxel_size=voxel_size, side='b', bound=bound)
     field = diff(field, dim=dims, voxel_size=voxel_size, side='f', bound=bound)
-    field.square_().mul_(factor)
-    field += fieldb.square_().mul_(factor)
-    field /= 2.
+    field.square_().add_(fieldb.square_())
+    del fieldb
+    field.mul_(factor/2)
     dims = [-1] + ([-dim-2] if joint else [])
     field = field.sum(dim=dims, keepdims=True)[..., 0].sqrt_()
+    if eps is None:
+        eps = core.constants.eps(field.dtype)
     if return_sum:
-        ll = field.sum()
+        ll = field.sum(dtype=torch.double)
         return field.clamp_min_(eps).reciprocal_(), ll
     else:
         return field.clamp_min_(eps).reciprocal_()

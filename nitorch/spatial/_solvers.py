@@ -962,7 +962,8 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
     """
     if not (membrane or bending):
         return solve_field_closedform(hessian, gradient, weights=weights,
-                                      absolute=absolute, factor=factor)
+                                      absolute=absolute, factor=factor,
+                                      matsolve=matsolve, matdiag=matdiag)
 
     FMG = _FieldFMG(absolute=absolute, membrane=membrane, bending=bending,
                     factor=factor, voxel_size=voxel_size,
@@ -987,7 +988,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
                 absolute=0, membrane=0, bending=0, factor=1,
                 voxel_size=1, bound='dct2',
                 optim='cg', max_iter=16, tolerance=1e-5, stop='e',
-                verbose=False):
+                verbose=False, matvec=None, matsolve=None, matdiag=None):
     """Solve a positive-definite linear system of the form (H + L)x = g
 
     Notes
@@ -1030,7 +1031,12 @@ def solve_field(hessian, gradient, weights=None, dim=None,
     """
     if not (membrane or bending):
         return solve_field_closedform(hessian, gradient, weights=weights,
-                                      absolute=absolute, factor=factor)
+                                      absolute=absolute, factor=factor,
+                                      matsolve=matsolve, matdiag=matdiag)
+
+    matvec = matvec or sym_matvec
+    matsolve = matsolve or sym_solve
+    matdiag = matdiag or (lambda x, dim: x[..., :dim])
 
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = dim or gradient.dim() - 1
@@ -1081,7 +1087,8 @@ def solve_field(hessian, gradient, weights=None, dim=None,
         hessian_smo = hessian + smo
     else:
         hessian_smo = hessian.clone()
-        utils.slice_tensor(hessian_smo, slice(nb_prm), -dim-1).add_(smo)
+        hessian_diag = matdiag(hessian_smo.transpose(-dim-1, -1), nb_prm).transpose(-dim-1, -1)
+        hessian_diag.add_(smo)
 
     def s2h(s):
         # do not slice if hessian_smo is constant across space
@@ -1093,24 +1100,24 @@ def solve_field(hessian, gradient, weights=None, dim=None,
             s = tuple(s)
         return s
 
-    def matvec(h, x):
+    def _matvec(h, x):
         h = h.transpose(-dim-1, -1)
         x = x.transpose(-dim-1, -1)
-        x = sym_matvec(h, x)
+        x = matvec(h, x)
         x = x.transpose(-dim-1, -1)
         return x
 
-    def solve(h, x):
+    def _solve(h, x):
         h = h.transpose(-dim-1, -1)
         x = x.transpose(-dim-1, -1)
-        x = sym_solve(h, x)
+        x = matsolve(h, x)
         x = x.transpose(-dim-1, -1)
         return x
 
     forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
-               (lambda x: matvec(hessian, x) + regulariser(x)))
+               (lambda x: _matvec(hessian, x) + regulariser(x)))
     precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s2h(s)]) if is_diag else
-               (lambda x, s=Ellipsis: solve(hessian_smo[s2h(s)], x[s])))
+               (lambda x, s=Ellipsis: _solve(hessian_smo[s2h(s)], x[s])))
 
     if no_reg:
         result = precond(gradient)
@@ -1537,7 +1544,7 @@ solve_field_sym = solve_field
 
 
 def solve_field_closedform(hessian, gradient, weights=None, dim=None,
-                           absolute=0, factor=1):
+                           absolute=0, factor=1, matsolve=None, matdiag=None):
     """Solve a positive-definite linear system of the form (H + I)x = g
 
     Notes
@@ -1565,6 +1572,9 @@ def solve_field_closedform(hessian, gradient, weights=None, dim=None,
     solution : (..., K, *spatial) tensor
 
     """
+    matsolve = matsolve or sym_solve
+    matdiag = matdiag or (lambda x, dim: x[..., :dim])
+
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = dim or gradient.dim() - 1
     nb_prm = gradient.shape[-dim-1]
@@ -1580,7 +1590,7 @@ def solve_field_closedform(hessian, gradient, weights=None, dim=None,
 
     if absolute:
         hessian = hessian.clone()
-        hessian_diag = utils.slice_tensor(hessian, slice(nb_prm), -dim - 1)
+        hessian_diag = matdiag(hessian.transpose(-dim-1, -1), nb_prm).transpose(-dim-1, -1)
         if has_weights:
             hessian_diag.addcmul_(weights, absolute*factor)
         else:
@@ -1592,7 +1602,7 @@ def solve_field_closedform(hessian, gradient, weights=None, dim=None,
         def solve(h, x):
             h = h.transpose(-dim-1, -1)
             x = x.transpose(-dim-1, -1)
-            x = sym_solve(h, x)
+            x = matsolve(h, x)
             x = x.transpose(-dim-1, -1)
             return x
 
