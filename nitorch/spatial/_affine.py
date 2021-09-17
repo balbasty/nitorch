@@ -1675,7 +1675,7 @@ def affine_resize(affine, shape, factor, anchor='c'):
             shifts.append(0)
             scales.append((inshp - 1) / (outshp - 1))
         elif anch == 'e':
-            shifts.append((inshp * (1 / outshp - 1) + (inshp - 1)) / 2)
+            shifts.append(0.5 * (inshp/outshp - 1))
             scales.append(inshp/outshp)
         elif anch == 'f':
             shifts.append(0)

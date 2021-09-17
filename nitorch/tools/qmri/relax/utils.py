@@ -76,12 +76,20 @@ def hessian_sym_loaddiag(hess, eps=None, eps2=None):
     a flattened array. Elements are ordered as:
      `[(i, i) for i in range(P)] +
       [(i, j) for i in range(P) for j in range(i+1, P)]
+
     ..warning:: Modifies `hess` in place
 
     Parameters
     ----------
     hess : (P*(P+1)//2, ...) tensor
+        Symmetric Hessian
     eps : float, optional
+        Levenberg-Marquardt parameter
+        This parameter is multiplied by the maximum absolute diagonal element
+        and added to the diagonal of the Hessian.
+    eps2 : float, optional
+        Levenberg parameter
+        This parameter is added to the diagonal of the Hessian.
 
     Returns
     -------
@@ -605,3 +613,15 @@ def rls_maj(rls, vx=1., lam=1.):
     if out.dim() > 3:
         out = core.utils.movedim(-1, 0)
     return out
+
+
+def min_intensity_step(x, max_points=1e6):
+    nb_points = x.numel()
+    ratio = 1/min(1, max_points / nb_points)
+    ratio = max(1, int((ratio ** (1/3)) // 1))
+    x = x[..., ::ratio, ::ratio, ::ratio].flatten().clone()
+    x[~torch.isfinite(x)] = 0
+    x = x.sort().values
+    x = x[1:] - x[:-1]
+    x = x[x > 0].min().item()
+    return x

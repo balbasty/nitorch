@@ -19,7 +19,7 @@ def make_spline(spline: List[int]) -> List[Spline]:
 
 # @torch.jit.script
 def grid_pull(inp, grid, bound: List[int], interpolation: List[int],
-              extrapolate: int, abs: bool = False):
+              extrapolate: int):
     """
     inp: (B, C, *spatial_in) tensor
     grid: (B, *spatial_out, D) tensor
@@ -54,7 +54,7 @@ def grid_pull(inp, grid, bound: List[int], interpolation: List[int],
 
 # @torch.jit.script
 def grid_push(inp, grid, shape: Optional[List[int]], bound: List[int],
-              interpolation: List[int], extrapolate: int, abs: bool = False):
+              interpolation: List[int], extrapolate: int):
     """
     inp: (B, C, *spatial_in) tensor
     grid: (B, *spatial_in, D) tensor
@@ -90,7 +90,7 @@ def grid_push(inp, grid, shape: Optional[List[int]], bound: List[int],
 
 # @torch.jit.script
 def grid_count(grid, shape: Optional[List[int]], bound: List[int],
-              interpolation: List[int], extrapolate: int, abs: bool = False):
+              interpolation: List[int], extrapolate: int):
     """
     grid: (B, *spatial_in, D) tensor
     shape: List{D}[int] tensor, optional, default=spatial_in
@@ -128,7 +128,7 @@ def grid_count(grid, shape: Optional[List[int]], bound: List[int],
 
 # @torch.jit.script
 def grid_grad(inp, grid, bound: List[int], interpolation: List[int],
-              extrapolate: int, abs: bool = False):
+              extrapolate: int):
     """
     inp: (B, C, *spatial_in) tensor
     grid: (B, *spatial_out, D) tensor
@@ -158,8 +158,7 @@ def grid_grad(inp, grid, bound: List[int], interpolation: List[int],
 
 # @torch.jit.script
 def grid_pushgrad(inp, grid, shape: List[int], bound: List[int],
-                  interpolation: List[int], extrapolate: int,
-                  abs: bool = False):
+                  interpolation: List[int], extrapolate: int):
     """ /!\ Used only in backward pass of grid_grad
     inp: (B, C, *spatial_in, D) tensor
     grid: (B, *spatial_in, D) tensor
@@ -190,7 +189,7 @@ def grid_pushgrad(inp, grid, shape: List[int], bound: List[int],
 
 # @torch.jit.script
 def grid_hess(inp, grid, bound: List[int], interpolation: List[int],
-              extrapolate: int, abs: bool = False):
+              extrapolate: int):
     """ /!\ Used only in backward pass of grid_grad
     inp: (B, C, *spatial_in) tensor
     grid: (B, *spatial_out, D) tensor
@@ -220,8 +219,7 @@ def grid_hess(inp, grid, bound: List[int], interpolation: List[int],
 
 # @torch.jit.script
 def grid_pull_backward(grad, inp, grid, bound: List[int],
-                       interpolation: List[int], extrapolate: int,
-                       abs: bool = False) \
+                       interpolation: List[int], extrapolate: int) \
         -> Tuple[Optional[Tensor], Optional[Tensor], ]:
     """
     grad: (B, C, *spatial_out) tensor
@@ -246,8 +244,7 @@ def grid_pull_backward(grad, inp, grid, bound: List[int],
 
 # @torch.jit.script
 def grid_push_backward(grad, inp, grid, bound: List[int],
-                       interpolation: List[int], extrapolate: int,
-                       abs: bool = False) \
+                       interpolation: List[int], extrapolate: int) \
         -> Tuple[Optional[Tensor], Optional[Tensor], ]:
     """
     grad: (B, C, *spatial_out) tensor
@@ -271,8 +268,8 @@ def grid_push_backward(grad, inp, grid, bound: List[int],
 
 # @torch.jit.script
 def grid_count_backward(grad, grid, bound: List[int],
-                       interpolation: List[int], extrapolate: int,
-                       abs: bool = False) -> Optional[Tensor]:
+                       interpolation: List[int], extrapolate: int) \
+        -> Optional[Tensor]:
     """
     grad: (B, C, *spatial_out) tensor
     grid: (B, *spatial_in, D) tensor
@@ -288,8 +285,7 @@ def grid_count_backward(grad, grid, bound: List[int],
 
 # @torch.jit.script
 def grid_grad_backward(grad, inp, grid, bound: List[int],
-                       interpolation: List[int], extrapolate: int,
-                       abs: bool = False) \
+                       interpolation: List[int], extrapolate: int) \
         -> Tuple[Optional[Tensor], Optional[Tensor], ]:
     """
     grad: (B, C, *spatial_out, D) tensor

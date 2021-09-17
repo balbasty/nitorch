@@ -48,7 +48,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     .value("antireflect", BoundType::DST2,      "-c -b -a | a b c d | -d -c -b")
     .value("dft",         BoundType::DFT,       "b c d | a b c d | a b c")
     .value("wrap",        BoundType::DFT,       "b c d | a b c d | a b c")
-//    .value("sliding",     BoundType::Sliding)
     .value("zero",        BoundType::Zero,      "0 0 0 | a b c d | 0 0 0")
     .export_values();
 
