@@ -44,6 +44,7 @@ def nonlin(data, opt=None):
     # --- estimate noise / register / initialize maps ------------------
     data, maps, dist = preproc(data, opt)
     vx = spatial.voxel_size(maps.affine)
+    print(vx)
     nb_contrasts = len(maps) - 1
 
     # --- prepare regularization factor --------------------------------
@@ -208,7 +209,7 @@ def nonlin(data, opt=None):
             # Computing the GN step involves solving H\g
             hess = check_nans_(hess, warn='hessian')
             hess = hessian_loaddiag_(hess, 1e-6, 1e-8)
-            deltas = hessian_solve(hess, grad)
+            deltas = solve_parameters(hess, grad, rls, lam, vx, opt)
             deltas = check_nans_(deltas, warn='delta')
 
             if not opt.distortion.enable:
@@ -423,7 +424,7 @@ def nonlin(data, opt=None):
                     print(pstr)
                     if opt.plot:
                         _show_maps(maps, dist)
-                if gain < opt.optim.tolerance_gn:
+                if abs(gain) < opt.optim.tolerance_gn:
                     break
 
         # --------------------------------------------------------------
@@ -442,7 +443,7 @@ def nonlin(data, opt=None):
             ll_prev = ll_rls[-1][-1] if ll_rls else float('inf')
             ll_rls.append(ll_gn)
             gain = (ll_prev - ll) / (ll_max - ll_prev)
-            if gain < opt.optim.tolerance_rls:
+            if abs(gain) < opt.optim.tolerance_rls:
                 print(f'Converged ({gain:7.2g})')
                 break
 
@@ -507,13 +508,13 @@ def check_nans_(x, warn: Optional[str] = None, value: float = 0):
     return x
 
 
-if core.utils.torch_version('>', (1, 4)):
+# if core.utils.torch_version('>', (1, 4)):
     # For some reason, the output of torch.isfinite is not understood
     # as a tensor by TS. I am disabling TS for these functions until
     # I find a better solution.
-    get_mask_missing = torch.jit.script(get_mask_missing)
-    mask_nan_ = torch.jit.script(mask_nan_)
-    check_nans_ = torch.jit.script(check_nans_)
+    # get_mask_missing = torch.jit.script(get_mask_missing)
+    # mask_nan_ = torch.jit.script(mask_nan_)
+    # check_nans_ = torch.jit.script(check_nans_)
 
 
 def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=True):
@@ -596,7 +597,8 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=
         dat.masked_fill_(msk, 0)
         pull_fit.masked_fill_(msk, 0)
         res = dat.neg_().add_(pull_fit)
-        del dat, msk, pull_fit
+        msk = msk.bitwise_not_().to(fit.dtype)
+        del dat, pull_fit
 
         # compute log-likelihood
         crit = crit + 0.5 * lam * ssq(res)
@@ -607,6 +609,7 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=
                 res = smart_push(res0, grid_blip, bound='dft', extrapolate=True)
                 abs_res = smart_push(res0.abs_(), grid_blip, bound='dft', extrapolate=True)
                 abs_res.mul_(fit)
+                msk = smart_push(msk, grid_blip, bound='dft', extrapolate=True)
                 del res0
 
             # ----------------------------------------------------------
@@ -629,7 +632,8 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=
             grad[1].add_(res, alpha=-te*lam)
             if grid_blip is None:
                 abs_res = res.abs_()
-            fit2 = fit.mul_(fit)
+            fit2 = fit.mul_(fit).mul_(msk)
+            del msk
             hess[2].add_(fit2, alpha=-te*lam)
             fit2.add_(abs_res)
             hess[0].add_(fit2, alpha=lam)
