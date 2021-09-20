@@ -383,9 +383,9 @@ def _lame_shear_l2(grid, voxel_size=1, bound='dft'):
 
     # allocate buffers
     if not grid.requires_grad:
-        buf1 = torch.empty_like(grid)
-        buf2 = torch.empty_like(grid)
-        buf3 = torch.empty_like(grid)
+        buf1 = torch.empty_like(grid[..., 0])
+        buf2 = torch.empty_like(buf1)
+        buf3 = torch.empty_like(buf1)
     else:
         buf1 = buf2 = buf3 = None
         
