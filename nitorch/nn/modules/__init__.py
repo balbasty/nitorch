@@ -4,6 +4,7 @@ from . import cnn
 from . import conv
 from . import _wip_densenet
 from . import encode_decode
+from . import hyper
 from . import norm
 from . import dropout
 from . import pool
@@ -17,6 +18,7 @@ from .cnn import *
 from .conv import *
 from ._wip_densenet import *
 from .encode_decode import *
+from .hyper import *
 from .norm import *
 from .dropout import *
 from .pool import *
