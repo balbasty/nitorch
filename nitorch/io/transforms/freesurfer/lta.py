@@ -29,9 +29,9 @@ A bit must be said on the FreeSurfer space conventions:
 """
 
 from enum import IntEnum
-import numpy as np
 import os
 import torch
+from nitorch.core.optionals import numpy as np
 from nitorch.spatial import affine_matmul
 from nitorch.core.struct import Structure
 from nitorch.io.mapping import AccessType

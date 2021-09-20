@@ -7,9 +7,9 @@ from .constants import inf, eps
 from .dtypes import as_torch as dtype_astorch
 from . import dtypes
 from nitorch._C.grid import GridCount, GridPull, GridPush
+from .optionals import numpy as np
 import numbers
 import os
-import numpy as np
 import random
 
 
@@ -73,7 +73,8 @@ def reproducible(seed=1234):
 
     """	
     random.seed(seed)
-    np.random.seed(seed)
+    if np:
+        np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -1640,10 +1641,10 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False, weights=None,
         extrapolate = 2
     if weights is None:
         # count == push an image of ones
-        h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate, False)[:, 0, ]
+        h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
     else:
         # push weights
-        h = GridPush.apply(weights[:, None, :], x[:, :, None], [n], order, bound, extrapolate, False)[:, 0, ]
+        h = GridPush.apply(weights[:, None, :], x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
 
     # reshape
     h = h.to(dtype)
@@ -1741,7 +1742,7 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
         # hidden feature: tell pullpush to use +/- 0.5 tolerance when
         # deciding if a coordinate is inbounds.
         extrapolate = 2
-    h = GridCount.apply(x[:, None], n, order, bound, extrapolate, False)[:, 0]
+    h = GridCount.apply(x[:, None], n, order, bound, extrapolate)[:, 0]
 
     # reshape
     h = h.to(dtype)
@@ -1858,14 +1859,14 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
         # sort and sample
         input, _ = input.sort(-1)
         q = q.mul_(input.shape[-1]-1)
-        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0, False)[0]
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
     elif not bins:
         input, index = input.sort(-1)
         mask = mask[:, index]
         mask = mask.cumsum(-1) / mask.sum(-1, keepdim=True)
         mask[:, -1] = 1
         q = _hist_to_quantile(mask, q)
-        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0, False)[0]
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
     else:
         # compute cumulative histogram
         min = input.min(-1).values

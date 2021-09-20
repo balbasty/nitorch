@@ -296,7 +296,7 @@ class OGM(AcceleratedFirstOrder):
             # gradient and step disagree
             self.restart()
             self.delta = grad.mul(-self.lr)
-        elif (self.damping != 1 and self._grad is not 0 and
+        elif (self.damping != 1 and torch.is_tensor(self._grad) and
               grad.flatten().dot(self._grad.flatten()) < 0):
             # Kim & Fessler (2017) 4.3 (27)
             # consecutive gradients disagree
@@ -342,7 +342,7 @@ class OGM(AcceleratedFirstOrder):
         step = step.sub_(grad, alpha=self.lr * (1 + relaxation))
 
         # save gradient
-        if self._grad is 0:
+        if not torch.is_tensor(self._grad):
             self._grad = grad.mul(self.lr)
         else:
             self._grad.copy_(grad).mul_(self.lr)
@@ -651,6 +651,9 @@ class StrongWolfe(FirstOrder):
 
         """
 
+        if torch.is_tensor(a):
+            a = a.item()
+
         # initialization
         ls_iter = 0
         a1 = 0
@@ -885,6 +888,9 @@ class StrongWolfe(FirstOrder):
         # plt.show(block=False)
         # input('')
         # plt.close(fig)
+
+        if torch.is_tensor(sol):
+            sol = sol.item()
         return sol
 
         # PyTorch code

@@ -11,6 +11,14 @@ import itertools
 #     (again) by CG
 
 
+# def dot(x, y):
+#     return x.flatten().dot(y.flatten())
+
+@torch.jit.script
+def dot(x, y):
+    return (x*y).sum()
+
+
 def cg(A, b, x=None, precond=None, max_iter=None,
        tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
        inplace=True, stop='E'):
@@ -109,10 +117,10 @@ def cg(A, b, x=None, precond=None, max_iter=None,
     precond = precond or (lambda y: y)
 
     # Initialisation
-    r = b - A(x)    # Residual: b - A*x
-    z = precond(r)  # Preconditioned residual
-    rz = torch.sum(r * z, dtype=sum_dtype)  # Inner product of r and z
-    p = z.clone()   # Initial conjugate directions p
+    r = A(x).neg_().add_(b)     # Residual: b - A*x
+    z = precond(r)              # Preconditioned residual
+    rz = dot(r, z)              # Inner product of r and z
+    p = z.clone()               # Initial conjugate directions p
 
     if tolerance or verbose:
         if stop == 'residual':
@@ -123,8 +131,8 @@ def cg(A, b, x=None, precond=None, max_iter=None,
         if stop == 'e':
             obj0 = torch.sqrt(rz)
         else:
-            obj0 = A(x).sub_(2*b).mul_(x)
-            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+            obj0 = A(x).sub_(b, alpha=2).mul_(x)
+            obj0 = 0.5 * torch.sum(obj0)
 
         if verbose:
             s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g}'
@@ -136,16 +144,16 @@ def cg(A, b, x=None, precond=None, max_iter=None,
     for n_iter in range(1, max_iter+1):
         # Find the step size of the conj. gradient descent
         Ap = A(p)
-        alpha = rz / torch.sum(p * Ap, dtype=sum_dtype).clamp_min_(1e-12)
+        alpha = dot(p, Ap).clamp_min_(1e-12).reciprocal_().mul_(rz)
         # Perform conj. gradient descent, obtaining updated X and R, using the
         # calculated P and alpha
-        x += alpha * p
-        r -= alpha * Ap
+        x.add_(p, alpha=alpha)
+        r.sub_(Ap, alpha=alpha)
         # Update preconditioned residual
         z = precond(r)
         # Finds the step size for updating P
         rz0 = rz
-        rz = torch.sum(r * z, dtype=sum_dtype)
+        rz = dot(r, z)
         beta = rz / rz0.clamp_min_(1e-12)
         
         # Check convergence
@@ -153,8 +161,8 @@ def cg(A, b, x=None, precond=None, max_iter=None,
             if stop == 'e':
                 obj1 = torch.sqrt(rz)
             else:
-                obj1 = A(x).sub_(2*b).mul_(x)
-                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
+                obj1 = A(x).sub_(b, alpha=2).mul_(x)
+                obj1 = 0.5 * torch.sum(obj1)
             obj[n_iter] = obj1
             gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
             if verbose:
@@ -164,8 +172,7 @@ def cg(A, b, x=None, precond=None, max_iter=None,
                 break
 
         # Calculate conjugate directions P (descent direction)
-        p *= beta
-        p += z
+        p.mul_(beta).add_(z)
 
     return x
 

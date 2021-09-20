@@ -380,7 +380,7 @@ class GMMH(OptimizationLoss):
         kwargs.setdefault('dim', self.dim)
         kwargs.setdefault('bins', self.bins)
         kwargs.setdefault('max_iter', self.max_iter)
-        return gmmh(moving, fixed, **kwargs, grad=True, hess=False)
+        return gmmh(moving, fixed, **kwargs, grad=True, hess=True)
 
 
 class LGMMH(OptimizationLoss):
