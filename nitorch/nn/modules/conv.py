@@ -1271,7 +1271,7 @@ class ConvGroup(Sequential):
         """
         Parameters
         ----------
-        dim : {1, 2, 3}
+        dim : (1, 2, 3)
             Number of spatial dimensions.
 
         channels : int or sequence[int]
