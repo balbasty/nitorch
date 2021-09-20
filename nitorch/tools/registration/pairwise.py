@@ -546,7 +546,7 @@ class RegisterStep:
         llx = sumloss.item()
         sumloss += lla
         sumloss += self.llv
-        self.loss_value = ll.item()
+        self.loss_value = sumloss.item()
         if self.verbose and not in_line_search:
             self.n_iter += 1
             ll = sumloss.item()

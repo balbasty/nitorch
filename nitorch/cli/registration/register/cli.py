@@ -1,6 +1,6 @@
 from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
-from nitorch.tools.registration import (joint, losses, optim,
+from nitorch.tools.registration import (pairwise, losses, optim,
                                         utils as regutils, objects,
                                         experimental_losses)
 from nitorch import io, spatial
@@ -425,6 +425,8 @@ def _main(options):
             *pad, pad_unit = pad
         else:
             pad_unit = '%'
+        vx = py.make_list(vx, dim)
+        pad = py.make_list(pad, dim)
         space = objects.MeanSpace(
             [image_dict[key] for key in (options.nonlin.fov or image_dict)],
             voxel_size=vx, vx_unit=vx_unit, pad=pad, pad_unit=pad_unit)
@@ -468,19 +470,26 @@ def _main(options):
                                      auto_restart=options.nonlin.optim.restart)
             nonlin_optim.preconditioner = nonlin.greens_apply
         elif options.nonlin.optim.name == 'gn':
+            marquardt = getattr(options.nonlin.optim, 'marquardt', None)
+            sub_iter = getattr(options.nonlin.optim, 'sub_iter', None)
+            if not sub_iter:
+                if options.nonlin.optim.fmg:
+                    sub_iter = 2
+                else:
+                    sub_iter = 16
             prm = {'factor': nonlin.factor / py.prod(nonlin.shape),
                    'voxel_size': nonlin.voxel_size,
                    **nonlin.prm}
             if getattr(options.nonlin.optim, 'solver', 'cg') == 'cg':
                 nonlin_optim = optim.GridCG(
                     lr=options.nonlin.optim.lr,
-                    marquardt=getattr(options.nonlin.optim, 'marquardt', None),
-                    max_iter=getattr(options.nonlin.optim, 'sub_iter', 16),
+                    marquardt=marquardt,
+                    max_iter=sub_iter,
                     **prm)
             elif getattr(options.nonlin.optim, 'solver') == 'relax':
                 nonlin_optim = optim.GridRelax(lr=options.nonlin.optim.lr,
-                                               marquardt=getattr(options.nonlin.optim, 'marquardt', None),
-                                               max_iter=getattr(options.nonlin.optim, 'sub_iter', 16),
+                                               marquardt=marquardt,
+                                               max_iter=sub_iter,
                                                **prm)
             else:
                 raise ValueError(getattr(options.nonlin.optim, 'solver'))
@@ -520,9 +529,13 @@ def _main(options):
         import matplotlib
         matplotlib.use('TkAgg')
 
-    register = joint.Register(loss_list, affine, nonlin, joptim,
-                              verbose=options.verbose,
-                              framerate=options.framerate)
+    # LCC and related losses may benefit from selecting the best conv
+    # torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.enabled = False
+
+    register = pairwise.Register(loss_list, affine, nonlin, joptim,
+                                 verbose=options.verbose,
+                                 framerate=options.framerate)
     register.fit()
 
     if register.affine and options.affine.output:

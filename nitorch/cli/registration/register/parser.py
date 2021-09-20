@@ -374,6 +374,8 @@ optim.add_option('lr', ('-l', '--lr'), nargs=1, default=1, convert=float,
                  help='Learning rate')
 optim.add_option('max_iter', ('-n', '--max-iter'), nargs=1, default=None,
                  convert=int, help='Maximum number of iterations')
+optim.add_option('fmg', ('-g', '--fmg'), nargs=1, default=2,
+                 convert=int, help='Number of FMG cycles (do no use FMG if 0)')
 optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  default='wolfe', convert=number_or_str(int),
                  help='Number of backtracking line search')
@@ -386,7 +388,7 @@ optim.add_suboption('gn', 'solver', ('-a', '--solver'), nargs=1,
                     default='cg', validation=cli.Validations.choice(['cg', 'relax']),
                     help='Linear solver')
 optim.add_suboption('gn', 'sub_iter', ('-j', '--sub-iter'), nargs=1,
-                    default=16, convert=int,
+                    default=None, convert=int,
                     help='Number of linear solver iterations')
 optim.add_suboption('mom', 'momentum', ('-m', '--momentum'), nargs=1,
                     default=0.9, convert=float, help='Momentum factor')
