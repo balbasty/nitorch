@@ -5,7 +5,7 @@ Reduction mecanisms are implemented here.
 """
 
 import torch.nn as tnn
-from nitorch.core.math import nansum, nanmean
+from nitorch.core.math import nansum, nanmean, sum, mean
 
 
 class Loss(tnn.Module):
@@ -31,9 +31,9 @@ class Loss(tnn.Module):
         elif isinstance(reduction, str):
             reduction = reduction.lower()
             if reduction == 'mean':
-                return nanmean(x)
+                return mean(x)
             elif reduction == 'sum':
-                return nansum(x)
+                return sum(x)
             elif reduction in ('none', None):
                 return x
             else:
