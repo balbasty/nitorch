@@ -27,15 +27,23 @@ class Linear(Module):
     """
 
     def __init__(self, in_channels, out_channels, bias=True, dim=1):
+        """
+
+        Parameters
+        ----------
+        in_channels : int
+        out_channels : int
+        bias : bool, default=True
+        dim : int, default=1
+        """
         super().__init__()
         self.linear = tnn.Linear(in_channels, out_channels, bias)
         self.dim = dim
 
-    def forward(self, x, **overload):
-        dim = overload.get('dim', self.dim)
-        x = utils.movedim(x, dim, -1)
+    def forward(self, x):
+        x = utils.fast_movedim(x, self.dim, -1)
         x = self.linear(x)
-        x = utils.movedim(x, -1, dim)
+        x = utils.fast_movedim(x, -1, self.dim)
         return x
 
     in_channels = _defer_property('in_features', 'linear')

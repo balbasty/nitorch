@@ -2,11 +2,16 @@
 
 import torch.nn as tnn
 import torch
+from typing import Sequence, Optional, Union, Callable, Type
 from nitorch.core import py, utils
 from ..base import Module, nitorchmodule
 from .pool import pool_map
 from .conv import ConvBlock
 from .spatial import Resize
+
+
+ActivationLike = Union[str, Callable, Type]
+NormalizationLike = Union[bool, str, Callable, Type]
 
 
 class Subsample(Module):
@@ -26,39 +31,33 @@ class Subsample(Module):
         self.offset = offset
         self.stride = stride
 
-    def forward(self, x, **overload):
+    def forward(self, x):
         """
 
         Parameters
         ----------
         x : (b, c, **spatial) tensor
-        overload : dict
-            `offset` and `stride` can be overloaded at call time
 
         Returns
         -------
         x : (b, c, **spatial_out) tensor
 
         """
-        offset = overload.get('offset', self.offset)
-        stride = overload.get('stride', self.stride)
         dim = x.dim() - 2
-        offset = py.make_list(offset, dim)
-        stride = py.make_list(stride, dim)
+        offset = py.make_list(self.offset, dim)
+        stride = py.make_list(self.stride, dim)
         slicer = [slice(o, ((sz-o)//st)*st, st) for o, st, sz in
                   zip(offset, stride, x.shape[2:])]
         slicer = [slice(None)]*2 + slicer
         return x[tuple(slicer)]
 
-    def shape(self, x, **overload):
+    def shape(self, x):
         """Output shape of the equivalent forward call.
 
         Parameters
         ----------
         x : (b, c, **spatial) tensor or sequence[int]
             A tensor or its shape.
-        overload : dict
-            `offset` and `stride` can be overloaded at call time
 
         Returns
         -------
@@ -71,11 +70,9 @@ class Subsample(Module):
             x = x.shape
         x = list(x)
 
-        offset = overload.get('offset', self.offset)
-        stride = overload.get('stride', self.stride)
         dim = len(x) - 2
-        offset = py.make_list(offset, dim)
-        stride = py.make_list(stride, dim)
+        offset = py.make_list(self.offset, dim)
+        stride = py.make_list(self.stride, dim)
 
         x = x[:2] + [(xx-o)//s for xx, o, s in zip(x[2:], offset, stride)]
         return tuple(x)
@@ -103,17 +100,28 @@ class Upsample(Module):
         self.output_shape = output_shape
         self.fill = fill
 
-    def forward(self, x, **overload):
-        offset = overload.get('offset', self.offset)
-        stride = overload.get('stride', self.stride)
-        fill = overload.get('fill', self.fill)
-        dim = x.dim() - 2
-        offset = py.make_list(offset, dim)
-        stride = py.make_list(stride, dim)
+    def forward(self, x, output_padding=None, output_shape=None):
+        """
 
-        new_shape = self.shape(x, **overload)
+        Parameters
+        ----------
+        x : (batch, channel, *in_spatial) tensor
+        output_padding : [sequence of] int, default=self.output_padding
+        output_shape : [sequence of] int, default=self.output_shape
+
+        Returns
+        -------
+        x : (batch, channel, *out_spatial) tensor
+
+        """
+        dim = x.dim() - 2
+        offset = py.make_list(self.offset, dim)
+        stride = py.make_list(self.stride, dim)
+
+        new_shape = self.shape(x, output_padding=output_padding,
+                               output_shape=output_shape)
         y = x.new_zeros(new_shape)
-        if fill:
+        if self.fill:
             z = utils.unfold(y, stride)
             x = utils.unsqueeze(x, -1, dim)
             slicer = [slice(o, o+sz*st) for sz, st, o in
@@ -126,18 +134,33 @@ class Upsample(Module):
             y[tuple(slicer)] = x
         return y
 
-    def shape(self, x, **overload):
+    def shape(self, x, output_padding=None, output_shape=None):
+        """
+
+        Parameters
+        ----------
+        x : (batch, channel, *in_spatial) tensor or sequence[int]
+        output_padding : [sequence of] int, default=self.output_padding
+        output_shape : [sequence of] int, default=self.output_shape
+
+        Returns
+        -------
+        shape : tuple[int]
+
+        """
         if torch.is_tensor(x):
             x = x.shape
         x = list(x)
 
-        offset = overload.get('offset', self.offset)
-        stride = overload.get('stride', self.stride)
-        output_padding = overload.get('output_padding', self.output_padding)
-        output_shape = overload.get('output_shape', self.output_shape)
+        if output_padding is not None and output_shape is not None:
+            raise ValueError('Only one of `output_padding` or `output_shape` '
+                             'should be provided.')
+        elif output_padding is None and output_shape is None:
+            output_padding = self.output_padding
+            output_shape = self.output_shape
         dim = len(x) - 2
-        offset = py.make_list(offset, dim)
-        stride = py.make_list(stride, dim)
+        offset = py.make_list(self.offset, dim)
+        stride = py.make_list(self.stride, dim)
         output_padding = py.make_list(output_padding, dim)
 
         if output_shape:
@@ -169,7 +192,7 @@ class DownStep(tnn.Sequential):
             stride=2,
             pool=None,
             activation=None,
-            batch_norm=False,
+            norm=False,
             groups=1,
             bias=False,
             order='nac'):
@@ -192,7 +215,7 @@ class DownStep(tnn.Sequential):
         activation : [sequence of] str or type or callable, default='relu'
             Activation function (if strided conv).
 
-        batch_norm : [sequence of] bool, default=False
+        norm : [sequence of] bool, default=False
             Batch normalization before each convolution (if strided conv).
 
         pool : pool_like or int or None, default=None
@@ -224,7 +247,7 @@ class DownStep(tnn.Sequential):
                    bias=bias,
                    activation=activation,
                    groups=groups,
-                   batch_norm=batch_norm,
+                   norm=norm,
                    order=order)
 
         if pool in pool_map:
@@ -236,33 +259,38 @@ class DownStep(tnn.Sequential):
             modules = [ConvBlock(kernel_size=pool, stride=stride, **opt)]
         super().__init__(*modules)
 
-    def shape(self, x, **overload):
+    def shape(self, x):
+        """
+
+        Parameters
+        ----------
+        x : (batch, channel, *in_spatial) tensor
+
+        Returns
+        -------
+        shape : tuple[int]
+
+        """
         if torch.is_tensor(x):
             x = x.shape
         x = list(x)
 
-        stride = overload.get('stride', self.stride)
         dim = len(x) - 2
-        stride = py.make_list(stride, dim)
+        stride = py.make_list(self.stride, dim)
 
         x = [x[0], self.out_channels] + [xx//s for xx, s in zip(x[2:], stride)]
         return tuple(x)
 
-    def forward(self, x, **overload):
-        opt = ({'stride': overload.pop('stride')}
-               if 'stride' in overload else {})
+    def forward(self, x):
         if len(self) == 1:
             # strided conv
             conv, = self
-            if 'stride' in opt:
-                opt['kernel_size'] = opt['stride']
-            x = conv(x, **overload, **opt)
+            x = conv(x)
         else:
             # pool + conv
             pool, conv = self
-            opt['kernel_size'] = opt['stride']
-            x = pool(x, **opt)
-            x = conv(x, **overload)
+            x = pool(x)
+            x = conv(x)
         return x
 
 
@@ -290,7 +318,7 @@ class UpStep(tnn.Sequential):
             output_padding=0,
             unpool=None,
             activation=None,
-            batch_norm=False,
+            norm=False,
             groups=1,
             bias=False,
             order='nac'):
@@ -315,7 +343,7 @@ class UpStep(tnn.Sequential):
         activation : str or type or callable, default='relu'
             Activation function
 
-        batch_norm : [sequence of] bool, default=False
+        norm : [sequence of] bool, default=False
             Batch normalization before each convolution (if strided conv).
 
         unpool : interpolation_like or int or None, default=None
@@ -348,7 +376,7 @@ class UpStep(tnn.Sequential):
                    bias=bias,
                    activation=activation,
                    groups=groups,
-                   batch_norm=batch_norm,
+                   norm=norm,
                    order=order)
 
         if unpool in ('nearest', 'linear'):
@@ -368,48 +396,30 @@ class UpStep(tnn.Sequential):
     stride = property(lambda self: self[0].stride)
     output_padding = property(lambda self: self[0].output_padding)
 
-    def shape(self, x, output_shape=None, **overload):
+    def shape(self, x, output_shape=None):
         if torch.is_tensor(x):
             x = x.shape
         x = list(x)
 
-        stride = overload.get('stride', self.stride)
-        output_padding = overload.get('output_padding', self.output_padding)
         dim = len(x) - 2
-        stride = py.make_list(stride, dim)
-        output_padding = py.make_list(output_padding, dim)
+        stride = py.make_list(self.stride, dim)
 
         if output_shape:
             output_shape = py.make_list(output_shape, dim)
         else:
-            output_shape = [sz*st + p for sz, st, p in
-                            zip(x[2:], stride, output_padding)]
+            output_shape = [sz*st for sz, st in zip(x[2:], stride)]
         return (*x[:2], *output_shape)
 
-    def forward(self, x, output_shape=None, **overload):
+    def forward(self, x, output_shape=None):
 
-        if output_shape:
-            overload['output_padding'] = 0
-            shape_nopad = self.shape(x, **overload)[2:]
-            output_padding = [s1 - s0 for s1, s0 in
-                              zip(output_shape, shape_nopad)]
-            overload['output_padding'] = output_padding
-
-        opt = ({'stride': overload.pop('stride')}
-               if 'stride' in overload else {})
         if len(self) == 1:
             # strided conv
             conv, = self
-            if 'stride' in opt:
-                opt['kernel_size'] = opt['stride']
-            x = conv(x, **overload, **opt)
+            x = conv(x, output_shape=output_shape)
         else:
             # resize + conv
             resize, conv = self
-            opt['factor'] = [1/s for s in py.make_list(opt['stride'])]
-            opt.pop('stride')
-            x = resize(x, **opt)
-            x = conv(x, **overload)
+            factor = [1/s for s in py.make_list(self.stride)]
+            x = resize(x, output_shape=output_shape, factor=factor)
+            x = conv(x)
         return x
-
-

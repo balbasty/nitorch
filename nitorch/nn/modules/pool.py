@@ -89,17 +89,14 @@ class Pool(Module):
                            else activation if callable(activation)
                            else None)
             
-    def shape(self, x, **overload):
+    def shape(self, x):
         """Compute output shape of the equivalent ``forward`` call.
 
         Parameters
         ----------
         x : tuple or (batch, in_channel, *in_spatial) tensor
             Input tensor or its shape
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time, except `dim`, `in_channels`, `out_channels`
-            and `kernel_size`.
+            (Only used by min/max/median)
 
         Returns
         -------
@@ -111,31 +108,19 @@ class Pool(Module):
             inshape = tuple(x.shape)
         else:
             inshape = x
-        
-        stride = overload.get('stride', self.stride)
-        padding = overload.get('padding', self.padding)
-        dilation = overload.get('dilation', self.dilation)
-        kernel_size = overload.get('kernel_size', self.kernel_size)
-
-        stride = make_tuple(stride, self.dim)
-        padding = make_tuple(padding, self.dim)
-        kernel_size = make_tuple(kernel_size, self.dim)
-        dilation = make_tuple(dilation, self.dim)
 
         return _guess_output_shape(
-            inshape, self.dim, kernel_size,
-            stride=stride, dilation=dilation, padding=padding)
+            inshape, self.dim, self.kernel_size,
+            stride=self.stride, dilation=self.dilation, padding=self.padding)
 
-    def forward(self, x, **overload):
+    def forward(self, x, return_indices=None):
         """
 
         Parameters
         ----------
         x : (batch, channel, *spatial) tensor
             Tensor to pool
-        overload : dict
-            Most parameters defined at build time can be overriden at
-            call time
+        return_indices : bool, default=self.return_indices
 
         Returns
         -------
@@ -145,33 +130,20 @@ class Pool(Module):
             Indices of input elements.
 
         """
+        return_indices = self.return_indices
+        if return_indices is None:
+            return_indices = self.return_indices
 
-        dim = self.dim
-        kernel_size = make_list(overload.get('kernel_size', self.kernel_size), dim)
-        stride = make_list(overload.get('stride', self.stride), dim)
-        padding = make_list(overload.get('padding', self.padding), dim)
-        dilation = make_list(overload.get('dilation', self.dilation), dim)
-        reduction = overload.get('reduction', self.reduction)
-        return_indices = overload.get('return_indices', self.return_indices)
-
-        # Activation
-        activation = overload.get('activation', self.activation)
-        if isinstance(activation, str):
-            activation = _map_activations.get(activation.lower(), None)
-        activation = (activation() if inspect.isclass(activation)
-                      else activation if callable(activation)
-                      else None)
-
-        x = pool(dim, x,
-                 kernel_size=kernel_size,
-                 stride=stride,
-                 dilation=dilation,
-                 padding=padding,
-                 reduction=reduction,
+        x = pool(self.dim, x,
+                 kernel_size=self.kernel_size,
+                 stride=self.stride,
+                 dilation=self.dilation,
+                 padding=self.padding,
+                 reduction=self.reduction,
                  return_indices=return_indices)
 
-        if activation:
-            x = activation(x)
+        if self.activation:
+            x = self.activation(x)
         return x
 
 
@@ -199,7 +171,7 @@ class MeanPool(Pool):
     """Generic mean pooling layer"""
     reduction = 'mean'
 
-    def forward(self, x, w=None, **overload):
+    def forward(self, x, w=None):
         """
 
         Parameters
@@ -209,9 +181,7 @@ class MeanPool(Pool):
         w : (batch, channel, *spatial) tensor, optional
             Tensor of weights. Its shape must be broadcastable to the
             shape of `x`.
-        overload : dict
-            Most parameters defined at build time can be overriden at
-            call time
+        return_indices : bool, default=self.return_indices
 
         Returns
         -------
@@ -219,24 +189,17 @@ class MeanPool(Pool):
             Pooled tensor
 
         """
-
         if w is None:
-            return super().forward(x, **overload)
+            return super().forward(x)
         else:
-            overload['reduction'] = 'sum'
-            activation = overload.pop('activation', self.activation)
-            overload['activation'] = 'None'
-            sumpool = lambda t: super().forward(t, **overload)
+            sumpool = SumPool(self.dim, kernel_size=self.kernel_size,
+                              stride=self.stride, padding=self.padding,
+                              dilation=self.dilation)
             w = w.expand(x.shape)
             x = sumpool(x*w) / sumpool(w)
 
-            if isinstance(activation, str):
-                activation = _map_activations.get(activation.lower(), None)
-            activation = (activation() if inspect.isclass(activation)
-                          else activation if callable(activation)
-                          else None)
-            if activation is not None:
-                x = activation(x)
+            if self.activation is not None:
+                x = self.activation(x)
 
             return x
 

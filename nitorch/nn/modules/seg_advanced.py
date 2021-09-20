@@ -133,7 +133,7 @@ class MeanSpaceNet(Module):
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=[activation, ..., None],
-                         batch_norm=batch_norm)
+                         norm=batch_norm)
         # Add pull operators
         self.pull = GridPull(interpolation=interpolation,
                              bound=bound, extrapolate=extrapolate)

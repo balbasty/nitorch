@@ -287,7 +287,7 @@ class SegNet(Module):
                 pool=pool,
                 unpool=unpool,
                 activation=activation,
-                batch_norm=batch_norm)
+                norm=batch_norm)
             self.to_feat = lambda x: x
             self.from_feat = lambda x: x
         else:

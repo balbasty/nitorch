@@ -22,7 +22,6 @@ import torch
 from nitorch.core import py, utils
 from ..base import Module, ModuleList, Sequential, nitorchmodule
 from .conv import Conv, ConvGroup, ConvBlock, BottleneckConv
-from .encode_decode import DownStep, UpStep, Upsample
 from .spatial import Resize
 from .pool import MeanPool
 
@@ -59,7 +58,7 @@ class ResBlock(ModuleList):
                  bias=True,
                  dilation=1,
                  activation=tnn.ReLU,
-                 batch_norm=True,
+                 norm=True,
                  order='nac'):
         """
         Parameters
@@ -115,7 +114,7 @@ class ResBlock(ModuleList):
                 * have a learnable activation shared with other modules
                 * have a non-learnable activation
 
-        batch_norm : bool or type or callable, default=True
+        norm : bool or type or callable, default=True
             Batch normalization layer.
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
@@ -130,7 +129,7 @@ class ResBlock(ModuleList):
         if not isinstance(recurrent, str):
             recurrent = 'res' if recurrent else ''
         act_inplace = (order.index('a') > order.index('c') or
-                       (batch_norm and order.index('a') > order.index('n')))
+                       (norm and order.index('a') > order.index('n')))
         conv_opt = dict(
             dim=dim,
             channels=channels,
@@ -143,7 +142,7 @@ class ResBlock(ModuleList):
             bias=bias,
             dilation=dilation,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
             order=order,
             inplace=act_inplace
         )
@@ -154,21 +153,19 @@ class ResBlock(ModuleList):
     in_channels = property(lambda self: self[0].in_channels)
     out_channels = property(lambda self: self[-1].out_channels)
 
-    def shape(self, x, **overload):
+    def shape(self, x):
         if torch.is_tensor(x):
             return tuple(x.shape)
         else:
             return tuple(x)
 
-    def forward(self, x, **overload):
+    def forward(self, x):
         """
 
         Parameters
         ----------
         x : (batch, channels, *spatial) tensor
             Input tensor
-        **overload : dict
-            Some parameters can be overloaded at call time
 
         Returns
         -------
@@ -176,24 +173,11 @@ class ResBlock(ModuleList):
             Output tensor, with the same shape as the input tensor
 
         """
-        nb_res = overload.pop('nb_res', len(self))
-        if nb_res != len(self) and not self.recurrent:
-            raise ValueError(
-                f'Number of required blocks and registered '
-                f'blocks not consistent: '
-                f'{nb_res} vs. {len(self)}.')
-
-        if self.recurrent:
-            block = self[0]
-            for _ in range(nb_res):
-                identity = x
-                x = block(x, **overload)
-                x += identity
-        else:
-            for block in self:
-                identity = x
-                x = block(x, **overload)
-                x += identity
+        blocks = [self[0]] * self.nb_res if self.recurrent else self
+        for block in blocks:
+            identity = x
+            x = block(x)
+            x += identity
         return x
 
 
@@ -233,12 +217,12 @@ class ResDownStep(ModuleList):
                  residual=True,
                  kernel_size=3,
                  stride=2,
-                 padding_mode='zeros',
+                 bound='zeros',
                  groups=1,
                  bias=True,
                  dilation=1,
                  activation=tnn.ReLU,
-                 batch_norm=True,
+                 norm=True,
                  order='nac'):
         """
 
@@ -264,24 +248,24 @@ class ResDownStep(ModuleList):
         ----------------
         kernel_size : int, default=3
         stride : int, default=2
-        padding_mode : default='zeros'
+        bound : default='zeros'
         groups : int, default=1
         bias : bool, default=True
         dilation : int, default=1
         activation : default=ReLU
-        batch_norm : bool, default=True
+        norm : bool, default=True
         order : permutation of 'nac', default='nac'
         """
         out_channels = out_channels or (in_channels * 2)
         opt = dict(
             dim=dim,
-            padding_mode=padding_mode,
-            padding='auto',
+            bound=bound,
+            padding='same',
             groups=groups,
             bias=bias,
             dilation=dilation,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
             order=order,
         )
         if bottleneck:
@@ -367,7 +351,7 @@ class ResUpStep(ModuleList):
                  bias=True,
                  dilation=1,
                  activation=tnn.ReLU,
-                 batch_norm=True,
+                 norm=True,
                  order='nac'):
         """
 
@@ -385,7 +369,7 @@ class ResUpStep(ModuleList):
         bias : bool, default=True
         dilation : int, default=1
         activation : default=ReLU
-        batch_norm : bool, default=True
+        norm : bool, default=True
         order : permutation of 'nac', default='nac'
         """
         out_channels = out_channels or (in_channels * 2)
@@ -397,7 +381,7 @@ class ResUpStep(ModuleList):
             bias=bias,
             dilation=dilation,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
             order=order,
             transposed=True,
         )
@@ -455,11 +439,11 @@ class AtrousBlock(Sequential):
                  nb_res=2,
                  recurrent=False,
                  kernel_size=3,
-                 padding_mode='zeros',
+                 bound='zeros',
                  groups=1,
                  bias=True,
                  activation=tnn.ReLU,
-                 batch_norm=True,
+                 norm=True,
                  order='nac',
                  inplace=True):
         """
@@ -472,7 +456,7 @@ class AtrousBlock(Sequential):
             Number of channels in the input image.
             If a sequence, grouped convolutions are used.
 
-        dilations : sequence[int], default=(1, 2, 4, 8, 16)
+        dilation : sequence[int], default=(1, 2, 4, 8, 16)
             Number of dilation in each parallel path.
 
         nb_conv : int, default=2
@@ -488,7 +472,7 @@ class AtrousBlock(Sequential):
         kernel_size : int or sequence[int], default=3
             Size of the convolution kernel.
 
-        padding_mode : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
+        bound : {'zeros', 'reflect', 'replicate', 'circular'}, default='zeros'
             Padding mode.
 
         groups : int, default=1
@@ -512,7 +496,7 @@ class AtrousBlock(Sequential):
                 * have a learnable activation shared with other modules
                 * have a non-learnable activation
 
-        batch_norm : bool or type or callable, default=True
+        norm : bool or type or callable, default=True
             Batch normalization layer.
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
@@ -537,25 +521,23 @@ class AtrousBlock(Sequential):
             nb_res=nb_res,
             recurrent=recurrent,
             kernel_size=kernel_size,
-            padding_mode=padding_mode,
+            bound=bound,
             groups=groups,
             bias=bias,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
             order=order,
             inplace=inplace,
         )
         super().__init__(*[ResBlock(**conv_opt, dilation=d) for d in dilations])
 
-    def forward(self, x, **overload):
+    def forward(self, x):
         """
 
         Parameters
         ----------
         x : (batch, channels, *spatial) tensor
             Input tensor
-        **overload : dict
-            Some parameters can be overloaded at call time
 
         Returns
         -------
@@ -566,7 +548,7 @@ class AtrousBlock(Sequential):
         y = 0
         for block in self:
             identity = y
-            y = block(x, **overload)
+            y = block(x)
             y += identity
         y /= len(self)
         return y
@@ -588,7 +570,7 @@ class ResEncodingBlock(Sequential):
             stride=2,
             residual_pool=True,
             activation=tnn.ReLU,
-            batch_norm=False):
+            norm=False):
         """
 
         Parameters
@@ -619,17 +601,10 @@ class ResEncodingBlock(Sequential):
         stride : int or sequence[int], default=2
             Stride per dimension.
 
-        pool : {'a', 'b', 'd', 'max, 'conv', None}, default='conv'
-            Downsampling method.
-            - 'a', 'b' and 'd' sum the outputs of two branches.
-            - 'max' performs a max-pooling followed by a 1d conv
-            - 'conv' performs a strided 2x2 conv
-            - None performs a strided 1x1 conv
-
         activation : str or type or callable or None, default='relu'
             Activation function.
 
-        batch_norm : bool or type or callable, default=False
+        norm : bool or type or callable, default=False
             Batch normalization before each convolution.
         """
         out_channels = out_channels or in_channels * 2
@@ -642,14 +617,14 @@ class ResEncodingBlock(Sequential):
             recurrent=recurrent,
             kernel_size=kernel_size,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
         )
         down = ResDownStep(
             dim=dim,
             in_channels=in_channels,
             out_channels=out_channels,
             bottleneck=bottleneck,
-            batch_norm=batch_norm,
+            norm=norm,
             residual=residual_pool,
             kernel_size=kernel_size,
             activation=activation,
@@ -681,7 +656,7 @@ class ResDecodingBlock(Sequential):
             stride=2,
             residual_unpool=True,
             activation=tnn.ReLU,
-            batch_norm=True):
+            norm=True):
         """
 
         Parameters
@@ -710,16 +685,10 @@ class ResDecodingBlock(Sequential):
         stride : int or sequence[int], default=2
             Stride per dimension.
 
-        unpool : {'conv', 'up', 0..7}, default=0
-            Unpooling used to change resolution:
-            'conv' : strided convolution
-            'up' : upsampling (without filling) + channel-conv
-            0..7 : upsampling (of a given order) + channel-conv
-
         activation : str or type or callable or None, default='relu'
             Activation function.
 
-        batch_norm : bool or type or callable, default=False
+        norm : bool or type or callable, default=False
             Batch normalization before each convolution.
         """
         out_channels = out_channels or in_channels * 2
@@ -732,24 +701,30 @@ class ResDecodingBlock(Sequential):
             recurrent=recurrent,
             kernel_size=kernel_size,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
         )
         up = ResUpStep(
             dim=dim,
             in_channels=in_channels,
             out_channels=out_channels,
             bottleneck=bottleneck,
-            batch_norm=batch_norm,
+            norm=norm,
             kernel_size=kernel_size,
             activation=activation,
             residual=residual_unpool,
             stride=stride)
         super().__init__(res, up)
 
-    def forward(self, x, output_shape=None, **overload):
+    def forward(self, x, output_shape=None):
         res, up = self
-        x = res(x, **overload)
-        x = up(x, output_shape=output_shape, **overload)
+        x = res(x)
+        x = up(x, output_shape=output_shape)
+        return x
+
+    def shape(self, x, output_shape=None):
+        res, up = self
+        x = res.shape(x)
+        x = up.shape(x, output_shape=output_shape)
         return x
 
 
@@ -770,7 +745,7 @@ class UResBlock(Sequential):
             residual_pool=True,
             residual_unpool=True,
             activation=tnn.LeakyReLU(0.2),
-            batch_norm=True):
+            norm=True):
         """
 
         Parameters
@@ -820,7 +795,7 @@ class UResBlock(Sequential):
         activation : str or type or callable or None, default='relu'
             Activation function.
 
-        batch_norm : bool or type or callable, default=False
+        norm : bool or type or callable, default=False
             Batch normalization before each convolution.
         """
         nb_conv = py.make_list(nb_conv, len(channels))
@@ -832,7 +807,7 @@ class UResBlock(Sequential):
             recurrent=recurrent,
             kernel_size=kernel_size,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
         )
 
         encoder = []

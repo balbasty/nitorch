@@ -4,6 +4,7 @@ import inspect
 import math
 from collections import OrderedDict
 import torch
+from typing import Sequence, Optional, Union, Callable, Type, TypeVar
 from torch import nn as tnn
 from nitorch.core.py import make_list, flatten
 from nitorch.core.linalg import matvec
@@ -14,6 +15,12 @@ from .pool import Pool
 from .reduction import reductions, Reduction
 from .spatial import Resize
 from .. import check
+
+
+ActivationLike = Union[str, Callable, Type]
+NormalizationLike = Union[bool, str, Callable, Type]
+_T = TypeVar('_T')
+ScalarOrSequence = Union[_T, Sequence[_T]]
 
 
 def interleaved_cat(tensors, dim=0, groups=1):
@@ -83,7 +90,7 @@ class Stitch(Module):
           CVPR 2016
     """
 
-    def __init__(self, input_groups=2, output_groups=2):
+    def __init__(self, input_groups: int = 2, output_groups: int = 2):
         """
 
         Parameters
@@ -134,203 +141,35 @@ class Stitch(Module):
 
 
 @nitorchmodule
-class Down(tnn.ModuleList):
-
-    def __init__(
-            self,
-            dim,
-            in_channels=None,
-            out_channels=None,
-            stride=2,
-            kernel_size=None,
-            pool=None,
-            activation=tnn.ReLU,
-            batch_norm=False,
-            groups=None,
-            stitch=1,
-            bias=True):
-        """
-
-        Parameters
-        ----------
-        dim : {1, 2, 3}
-            Number of spatial dimensions.
-
-        in_channels : int, optional if `pool`
-            Number of input channels (if strided conv).
-
-        out_channels : int, optional if `pool`
-            Number of output channels (if strided conv).
-
-        stride : int or sequence[int], default=2
-            Up/Downsampling factor.
-
-        kernel_size : int or sequence[int], default=`stride`
-            Kernel size per dimension (if strided conv).
-
-        activation : [sequence of] str or type or callable, default='relu'
-            Activation function (if strided conv).
-
-        batch_norm : [sequence of] bool, default=False
-            Batch normalization before each convolution (if strided conv).
-
-        pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
-            Pooling used to change resolution.
-            If None, use a strided convolution.
-
-        groups : [sequence of] int, default=`stitch`
-            Number of groups per convolution. If > 1, a grouped convolution
-            is performed, which is equivalent to `groups` independent
-            layers.
-
-        stitch : int, default=1
-            Number of stitched tasks.
-
-        bias : bool, default=True
-            Include a bias term in the convolution.
-
-        """
-        if not pool and (not in_channels or not out_channels):
-            raise ValueError('Number of channels mandatory for strided conv')
-        stitch = stitch or 1
-        groups = groups or stitch
-        stride = make_list(stride, dim)
-        kernel_size = make_list(kernel_size, dim)
-        kernel_size = [k or s for k, s in zip(kernel_size, stride)]
-
-        if pool:
-            module = Pool(dim,
-                          kernel_size=kernel_size,
-                          stride=stride,
-                          activation=activation)
-        else:
-            module = ConvBlock(dim,
-                               in_channels, out_channels,
-                               kernel_size=kernel_size,
-                               stride=stride,
-                               activation=activation,
-                               groups=groups,
-                               bias=bias,
-                               batch_norm=batch_norm)
-        modules = [module]
-        if stitch:
-            modules.append(Stitch(stitch, stitch))
-        super().__init__(modules)
-
-
-@nitorchmodule
-class Up(tnn.ModuleList):
-
-    def __init__(
-            self,
-            dim,
-            in_channels,
-            out_channels,
-            stride=2,
-            kernel_size=None,
-            output_padding=None,
-            activation=tnn.ReLU,
-            batch_norm=False,
-            groups=None,
-            stitch=1,
-            bias=True):
-        """
-
-        Parameters
-        ----------
-        dim : {1, 2, 3}
-            Number of spatial dimensions.
-
-        in_channels : int
-            Number of input channels.
-
-        out_channels : int
-            Number of output channels.
-
-        stride : int or sequence[int], default=2
-            Up/Downsampling factor.
-
-        kernel_size : int or sequence[int], default=`stride`
-            Kernel size per dimension.
-
-        output_padding : int or sequence[int], default=0
-            Padding to add to the output.
-
-        activation : [sequence of] str or type or callable, default='relu'
-            Activation function (if strided conv).
-
-        batch_norm : [sequence of] bool, default=False
-            Batch normalization before each convolution (if strided conv).
-
-        pool : {'max', 'min', 'median', 'mean', 'sum', None}, default=None
-            Pooling used to change resolution.
-            If None, use a strided convolution.
-
-        groups : [sequence of] int, default=`stitch`
-            Number of groups per convolution. If > 1, a grouped convolution
-            is performed, which is equivalent to `groups` independent
-            layers.
-
-        stitch : int, default=1
-            Number of stitched tasks.
-
-        bias : bool, default=True
-            Include a bias term in the convolution.
-
-        """
-        stitch = stitch or 1
-        groups = groups or stitch
-        stride = make_list(stride, dim)
-        kernel_size = make_list(kernel_size, dim)
-        kernel_size = [k or s for k, s in zip(kernel_size, stride)]
-
-        module = ConvBlock(dim,
-                           in_channels, out_channels,
-                           transposed=True,
-                           kernel_size=kernel_size,
-                           stride=stride,
-                           activation=activation,
-                           groups=groups,
-                           bias=bias,
-                           batch_norm=batch_norm,
-                           output_padding=output_padding)
-        modules = [module]
-        if stitch:
-            modules.append(Stitch(stitch, stitch))
-        super().__init__([module])
-
-
-@nitorchmodule
 class StackedConv(tnn.ModuleList):
     """Multiple convolutions at the same resolution followed by 
     a up- or down- sampling, using either a strided convolution or 
     a pooling operation.
 
     By default, padding is used so that convolutions with stride 1
-    preserve spatial dimensions.
+    preserve spatial dimensions. Strided convolutions do not use padding.
 
-    (BatchNorm? > [Grouped]Conv > Dropout?(Activation)? > Stitch?)* > 
-    (BatchNorm? > [Grouped](StridedConv|Conv > Pool) > Dropout?(Activation)? > Stitch?)
+    (Norm? > [Grouped]Conv > Dropout?(Activation)? > Stitch?)* >
+    (Norm? > [Grouped](StridedConv|Conv > Pool) > Dropout?(Activation)? > Stitch?)
     """
     
     def __init__(
             self,
-            dim,
-            in_channels,
-            out_channels,
-            kernel_size=3,
-            stride=1,
-            transposed=False,
-            pool=None,
-            activation=tnn.ReLU,
-            batch_norm=False,
-            groups=None,
-            stitch=1,
-            output_padding=0,
-            bias=True,
-            residual=False,
-            return_last=False,
-            dropout=0):
+            dim: int,
+            in_channels: int,
+            out_channels: ScalarOrSequence[int],
+            kernel_size: ScalarOrSequence[int] = 3,
+            stride: ScalarOrSequence[int] = 1,
+            transposed: bool = False,
+            pool: Optional[str] = None,
+            activation: ScalarOrSequence[Optional[ActivationLike]] = tnn.ReLU,
+            norm: ScalarOrSequence[NormalizationLike] = None,
+            groups: ScalarOrSequence[Optional[int]] = None,
+            stitch: ScalarOrSequence[int] = 1,
+            bias: ScalarOrSequence[bool] = True,
+            dropout: ScalarOrSequence[float] = 0,
+            residual: bool = False,
+            return_last: bool = False):
         """
 
         Parameters
@@ -351,8 +190,8 @@ class StackedConv(tnn.ModuleList):
         activation : [sequence of] str or type or callable, default='relu'
             Activation function.
             
-        batch_norm : [sequence of] bool, default=False
-            Batch normalization before each convolution.
+        norm : [sequence of] {'batch', 'instance', 'layer', 'group'}, default=None
+            Normalization before each convolution.
             
         stride : int or sequence[int], default=1
             Up to one value per spatial dimension.
@@ -382,6 +221,9 @@ class StackedConv(tnn.ModuleList):
         bias : [sequence of] int, default=True
             Include a bias term in the convolution.
 
+        dropout : float or sequence[float] or type or callable, default=0
+            Apply dropout (if 0 < p <= 1)
+
         residual : bool, default=False
             Add residual connections between convolutions.
             This has no effect if only one convolution is performed.
@@ -398,9 +240,6 @@ class StackedConv(tnn.ModuleList):
             whereas 'cat' returns all concatenated input arguments.
             `True` is equivalent to 'single'.
 
-        dropout : float or sequence[float] or type or callable, default=0.0
-            Apply dropout (if 0.0<p<=1.0)
-
         """
         self.dim = dim
         self.residual = residual
@@ -415,7 +254,7 @@ class StackedConv(tnn.ModuleList):
         groups = expand_list(make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
-        batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
+        norm = expand_list(make_list(norm), nb_layers, default=False)
         dropout = expand_list(make_list(dropout), nb_layers, default=1.0, use_default=True)        
         bias = expand_list(make_list(bias), nb_layers, default=True)
         
@@ -426,7 +265,7 @@ class StackedConv(tnn.ModuleList):
             in_channels, 
             out_channels, 
             activation,
-            batch_norm,
+            norm,
             dropout,
             groups, 
             stitch,
@@ -439,9 +278,9 @@ class StackedConv(tnn.ModuleList):
             modules.append(ConvBlock(
                 dim, i, o, kernel_size,
                 activation=a,
-                batch_norm=bn,
+                norm=bn,
                 dropout=do,
-                padding='auto',
+                padding='same',
                 groups=g,
                 bias=b))
             if s > 1:
@@ -453,12 +292,11 @@ class StackedConv(tnn.ModuleList):
             dim, i, o, kernel_size,
             transposed=transposed and not pool,
             activation=a,
-            batch_norm=bn,
+            norm=bn,
             dropout=do,
             stride=1 if pool else stride,
-            padding='auto',
+            padding='same' if pool or (stride == 1) else 'valid',
             groups=g,
-            output_padding=output_padding,
             bias=b))
         
         # pooling
@@ -473,12 +311,11 @@ class StackedConv(tnn.ModuleList):
                     dim, o, o, stride,
                     transposed=transposed,
                     activation=None,
-                    batch_norm=bn,
+                    norm=bn,
                     dropout=do,
                     stride=stride,
-                    padding='auto',
+                    padding='valid',
                     groups=g,
-                    output_padding=output_padding,
                     bias=False))
             else:
                 modules.append(Pool(
@@ -497,13 +334,6 @@ class StackedConv(tnn.ModuleList):
         for layer in reversed(self):
             if isinstance(self, (Pool, ConvBlock)):
                 return layer.stride
-            
-    @property
-    def output_padding(self):
-        for layer in reversed(self):
-            if isinstance(self, ConvBlock):
-                return layer.output_padding
-        return 0
 
     @property
     def in_channels(self):
@@ -523,31 +353,38 @@ class StackedConv(tnn.ModuleList):
             if isinstance(layer, ConvBlock):
                 return layer.in_channels
 
-    def shape(self, x, **k):
+    def shape(self, x):
         if torch.is_tensor(x):
             x = tuple(x.shape)
         for layer in self:
             if isinstance(layer, (ConvBlock, Pool, Resize)):
-                x = layer.shape(x, **k)
+                x = layer.shape(x)
         return x
     
-    def forward(self, *x, **overload):
+    def forward(self, *x, output_shape=None, return_last=None):
         """
 
         Parameters
         ----------
         x : (B, Ci, *spatial_in) tensor
+            Input tensor.
+            If multiple tensors are provided, they are concatenated
+            along the channel dimension.
 
         Other parameters
         ----------------
-        output_padding : int or sequence[int], optional
-        residual : bool, optional
-        return_last : [sequence of] bool or str, optional
+        output_shape : sequence[int], optional
+            Shape of the output tensor. Only useful if the last convolution
+            is transposed, or if 'down' pooling is used.
+        return_last : bool or {'single', 'cat', 'single+cat'}, optional
+            Whether to return the last
 
         Returns
         -------
         output : (B, Co, *spatial_out) tensor
             Convolved tensor
+        last : (B, C2, *spatial_in) tensor, if `return_last`
+            Last output before the final up/downsampling
         last : (B, C2, *spatial_in) tensor, if `return_last`
             Last output before the final up/downsampling
 
@@ -560,9 +397,8 @@ class StackedConv(tnn.ModuleList):
                     return True
             return False
 
-        output_padding = overload.get('output_padding', self.output_padding)
-        residual = overload.get('residual', self.residual)
-        return_last = overload.get('return_last', self.return_last)
+        if return_last is None:
+            return_last = self.return_last
         if not isinstance(return_last, str):
             return_last = 'single' if return_last else ''
 
@@ -574,14 +410,16 @@ class StackedConv(tnn.ModuleList):
             last.append(x)
         for layer in self:
             if isinstance(layer, ConvBlock) and layer.transposed:
-                kwargs = dict(output_padding=output_padding)
+                kwargs = dict(output_shape=output_shape)
             elif isinstance(layer, Resize):
-                kwargs = dict(output_padding=output_padding)
+                kwargs = dict(output_shape=output_shape)
             else:
                 kwargs = {}
 
-            if residual:
-                x = x + layer(x, **kwargs)
+            if self.residual:
+                identity = x
+                x = layer(x, **kwargs)
+                x += identity
             else:
                 x = layer(x, **kwargs)
             if return_last and not is_last(layer):
@@ -610,7 +448,7 @@ class EncodingLayer(StackedConv):
             stride=2,
             pool=None,
             activation=tnn.ReLU,
-            batch_norm=False,
+            norm=None,
             groups=None,
             stitch=1,
             bias=True,
@@ -625,7 +463,7 @@ class EncodingLayer(StackedConv):
             stride=stride,
             pool=pool,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
             groups=groups,
             stitch=stitch,
             bias=bias,
@@ -652,10 +490,9 @@ class DecodingLayer(StackedConv):
             stride=2,
             unpool=None,
             activation=tnn.ReLU,
-            batch_norm=False,
+            norm=None,
             groups=None,
             stitch=1,
-            output_padding=0,
             bias=True,
             residual=False,
             return_last=False):
@@ -669,13 +506,12 @@ class DecodingLayer(StackedConv):
             stride=stride,
             pool=unpool,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
             groups=groups,
             stitch=stitch,
             bias=bias,
             residual=residual,
             return_last=return_last,
-            output_padding=output_padding,
         )
 
 
@@ -690,7 +526,7 @@ class Encoder(tnn.Sequential):
        strided convolution _or_ pooling.
     .. The activation function that follows the very last convolution/pooling
        can be different from the other ones.
-    .. If batch normalization is activated, it is performed before each
+    .. If normalization is activated, it is performed before each
        convolution.
     .. Grouped convolutions and stitching units can be used at each layer.
 
@@ -727,7 +563,7 @@ class Encoder(tnn.Sequential):
             stride=2,
             pool=None,
             activation=tnn.ReLU,
-            batch_norm=False,
+            norm=None,
             groups=None,
             stitch=1):
         """
@@ -753,8 +589,8 @@ class Encoder(tnn.Sequential):
         activation : [sequence of] str or type or callable, default='relu'
             Activation function.
             
-        batch_norm : [sequence of] bool or type or callable, default=False
-            Batch normalization before each convolution.
+        norm : [sequence of] {'batch', 'instance', 'layer', 'group'}, default=None
+            Normalization before each convolution.
             
         stride : int or sequence[int], default=2
             Spatial dimensions are divided by this number after each
@@ -783,7 +619,7 @@ class Encoder(tnn.Sequential):
         groups = expand_list(make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
-        batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
+        norm = expand_list(make_list(norm), nb_layers, default=False)
 
         # deal with skipped connections (what a nightmare...)
         skip_channels = make_list(skip_channels or [])
@@ -798,7 +634,7 @@ class Encoder(tnn.Sequential):
             in_channels, 
             out_channels, 
             activation,
-            batch_norm,
+            norm,
             groups, 
             stitch)
                                
@@ -809,7 +645,7 @@ class Encoder(tnn.Sequential):
                 stride=stride,
                 pool=pool,
                 activation=a,
-                batch_norm=b,
+                norm=b,
                 groups=g,
                 stitch=[..., s]))
             # If the layer is grouped, all convolutions in that 
@@ -830,7 +666,7 @@ class Decoder(tnn.ModuleList):
        strided transposed convolution.
     .. The activation function that follows the very last convolution/pooling
        can be different from the other ones.
-    .. If batch normalization is activated, it is performed before each
+    .. If Normalization is activated, it is performed before each
        convolution.
     .. The `skip_channels` option can be used so that the the input is a
        list of tensors that are concatenated after each transposed
@@ -868,7 +704,7 @@ class Decoder(tnn.ModuleList):
             stride=2,
             unpool=None,
             activation=tnn.ReLU,
-            batch_norm=False,
+            norm=None,
             groups=None,
             stitch=1):
         """
@@ -904,8 +740,8 @@ class Decoder(tnn.ModuleList):
         activation : [sequence of] str or type or callable, default='relu'
             Activation function.
             
-        batch_norm : [sequence of] bool or type or callable, default=False
-            Batch normalization before each convolution.
+        norm : [sequence of] {'batch', 'instance', 'layer', 'group'}, default=None
+            Normalization before each convolution.
             
         groups : [sequence of] int, default=`stitch`
             Number of groups per layer. If > 1, a grouped convolution
@@ -927,7 +763,7 @@ class Decoder(tnn.ModuleList):
         groups = expand_list(make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
         activation = expand_list(make_list(activation), nb_layers, default='relu')
-        batch_norm = expand_list(make_list(batch_norm), nb_layers, default=False)
+        norm = expand_list(make_list(norm), nb_layers, default=False)
 
         # deal with skipped connections (what a nightmare...)
         skip_channels = make_list(skip_channels or [])
@@ -942,7 +778,7 @@ class Decoder(tnn.ModuleList):
             in_channels, 
             out_channels, 
             activation,
-            batch_norm,
+            norm,
             groups, 
             stitch)
                                
@@ -953,7 +789,7 @@ class Decoder(tnn.ModuleList):
                 stride=stride,
                 unpool=unpool,
                 activation=a,
-                batch_norm=b,
+                norm=b,
                 groups=g,
                 stitch=[..., s]))
             # If the layer is grouped, all convolutions in that 
@@ -985,13 +821,9 @@ class Decoder(tnn.ModuleList):
         # Layers with skipped connections
         groups = list(self.skip_groups)
         for i, layer in enumerate(decoder):
-            grp1 = groups.pop(0)
             inp1 = inputs.pop(0)
-            oshape = layer.shape(x)[2:]
-            ishape = inp1.shape[2:]
-            pad = [i-o for o, i in zip(oshape, ishape)]
-            x = layer(x, output_padding=pad)
-            x = interleaved_cat((x, inp1), dim=1, groups=grp1)
+            x = layer(x, output_shape=inp1.shape[2:])
+            x = interleaved_cat((x, inp1), dim=1, groups=groups.pop(0))
 
         # Post-processing (convolutions without skipped connections)
         for layer in postproc:
@@ -1006,19 +838,19 @@ class UNet(tnn.Sequential):
 
     def __init__(
             self,
-            dim,
-            in_channels,
-            out_channels,
-            encoder=None,
-            decoder=None,
-            kernel_size=3,
-            stride=2,
+            dim: int,
+            in_channels: Union[int, Sequence[int]],
+            out_channels: Union[int, Sequence[int]],
+            encoder: Optional[Sequence[int]] = None,
+            decoder: Optional[Sequence[int]] = None,
+            kernel_size: Union[int, Sequence[int]] = 3,
+            stride: Union[int, Sequence[int]] = 2,
             activation=tnn.ReLU,
-            pool=None,
-            unpool=None,
-            batch_norm=False,
-            groups=None,
-            stitch=1):
+            pool: Optional[str] = None,
+            unpool: Optional[str] = None,
+            norm=None,
+            groups: Optional[int] = None,
+            stitch: int = 1):
         """
 
         Parameters
@@ -1065,8 +897,8 @@ class UNet(tnn.Sequential):
             If 'down', use strided convolution with same kernel size as stride.
             If None, use strided convolutions with same kernel size as other conv.
 
-        batch_norm : bool or type or callable, default=False
-            Batch normalization before each convolution.
+        norm : {'batch', 'instance', 'layer', 'group'}, default=None
+            Normalization before each convolution.
             
         groups : [sequence of] int, default=`stitch`
             Number of groups per layer. If > 1, a grouped convolution
@@ -1127,7 +959,7 @@ class UNet(tnn.Sequential):
                       kernel_size=kernel_size,
                       stride=stride,
                       activation=activation_encoder,
-                      batch_norm=batch_norm,
+                      norm=norm,
                       pool=pool,
                       groups=groups_encoder,
                       stitch=stitch_encoder)
@@ -1148,7 +980,7 @@ class UNet(tnn.Sequential):
                       stride=stride,
                       unpool=unpool,
                       activation=activation_decoder,
-                      batch_norm=batch_norm,
+                      norm=norm,
                       groups=groups_decoder,
                       stitch=stitch_decoder)
         modules.append(('decoder', dec))
@@ -1160,7 +992,7 @@ class UNet(tnn.Sequential):
                               out_channels=stack,
                               kernel_size=kernel_size,
                               activation=activation_stack,
-                              batch_norm=batch_norm,
+                              norm=norm,
                               groups=groups_stack,
                               stitch=stitch_stack)
         else:
@@ -1174,8 +1006,8 @@ class UNet(tnn.Sequential):
         stk = ConvBlock(dim, input_final, out_channels,
                         kernel_size=kernel_size,
                         activation=activation_final,
-                        batch_norm=batch_norm,
-                        padding='auto')
+                        norm=norm,
+                        padding='same')
         modules.append(('final', stk))
 
         super().__init__(OrderedDict(modules))
@@ -1211,25 +1043,25 @@ class CNN(tnn.Sequential):
     .. Each encoding layer is made of `k >= 0` convolutions followed by one
        strided convolution _or_ pooling.
     .. The very last activation function can be different from the other ones.
-    .. If batch normalization is activated, it is performed before each
+    .. If Normalization is activated, it is performed before each
        encoding convolution.
 
     """
 
     def __init__(
             self,
-            dim,
-            in_channels,
-            out_channels,
-            encoder=None,
-            stack=None,
+            dim: int,
+            in_channels: int,
+            out_channels: int,
+            encoder: Optional[Sequence[int]] = None,
+            stack: Optional[Sequence[int]] = None,
             kernel_size=3,
             stride=2,
-            pool=None,
+            pool: Optional[str] = None,
             reduction='max',
             activation=None,
-            batch_norm=False,
-            dropout=1.0):
+            norm=None,
+            dropout: float = 1.0):
         """
 
         Parameters
@@ -1276,8 +1108,9 @@ class CNN(tnn.Sequential):
                 * have a learnable activation shared with other modules
                 * have a non-learnable activation
 
-        batch_norm : bool or type or callable, default=False
-            Batch normalization before each convolution.
+        norm : {'batch', 'instance', layer'} or int, default=None
+            Normalization before each convolution.
+            If an int, group noramlization is used.
 
         dropout : sequence[float], default=1.0
             Dropout amount applied to the output of each fully connected layer (before activation).
@@ -1313,7 +1146,7 @@ class CNN(tnn.Sequential):
                       stride=stride,
                       pool=pool,
                       activation=activation_encoder,
-                      batch_norm=batch_norm)
+                      norm=norm)
         modules.append(('encoder', enc))
 
         modules.append(('reduction', reduction))
@@ -1400,9 +1233,9 @@ class MRF(tnn.Sequential):
                            out_channels=num_filters,
                            kernel_size=kernel_size,
                            activation=mrf_activation,
-                           batch_norm=mrf_batch_norm,
+                           norm=mrf_batch_norm,
                            bias=mrf_bias,
-                           padding='auto')
+                           padding='same')
 
         center = tuple(k//2 for k in kernel_size)
         center = (slice(None),) * 2 + center
@@ -1415,7 +1248,7 @@ class MRF(tnn.Sequential):
             out_channels=[num_filters] * num_extra + [num_classes],
             kernel_size=1,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=batch_norm,
             bias=bias)
         modules.append(('extra', module))
 
@@ -1453,18 +1286,18 @@ class UNet2(tnn.Sequential):
 
     def __init__(
             self,
-            dim,
-            in_channels,
-            out_channels,
-            encoder=None,
-            decoder=None,
-            conv_per_layer=1,
-            kernel_size=3,
-            stride=2,
-            pool=None,
-            unpool=None,
+            dim: int,
+            in_channels: int,
+            out_channels: int,
+            encoder: Optional[Sequence[int]] = None,
+            decoder: Optional[Sequence[int]] = None,
+            conv_per_layer: int = 1,
+            kernel_size: Union[int, Sequence[int]] = 3,
+            stride: Union[int, Sequence[int]] = 2,
+            pool: Optional[str] = None,
+            unpool: Optional[str] = None,
             activation=tnn.ReLU,
-            batch_norm=False):
+            norm=None):
         """
 
         Parameters
@@ -1504,8 +1337,9 @@ class UNet2(tnn.Sequential):
         activation : str or type or callable or None, default='relu'
             Activation function.
 
-        batch_norm : bool or type or callable, default=False
-            Batch normalization before each convolution.
+        norm : {'batch', 'instance', 'layer'} or int, default=None
+            Normalization before each convolution.
+            In an int, group normalization is used.
         """
         self.dim = dim
 
@@ -1530,8 +1364,8 @@ class UNet2(tnn.Sequential):
                               out_channels=encoder[0],
                               kernel_size=kernel_size,
                               activation=activation,
-                              batch_norm=batch_norm,
-                              padding='auto')
+                              norm=norm,
+                              padding='same')
             modules.append(('first', first))
 
         modules_encoder = []
@@ -1553,7 +1387,7 @@ class UNet2(tnn.Sequential):
                 stride=stride,
                 pool=pool,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             ))
         enc = tnn.ModuleList(modules_encoder)
         modules.append(('encoder', enc))
@@ -1581,7 +1415,7 @@ class UNet2(tnn.Sequential):
             stride=stride,
             unpool=unpool,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
         )
         modules.append(('bottleneck', btk))
 
@@ -1606,7 +1440,7 @@ class UNet2(tnn.Sequential):
                 stride=stride,
                 unpool=unpool,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             ))
         dec = tnn.ModuleList(modules_decoder)
         modules.append(('decoder', dec))
@@ -1627,7 +1461,7 @@ class UNet2(tnn.Sequential):
                 out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             )
             modules.append(('stack', stk))
             last_stack = cout[-1]
@@ -1637,7 +1471,7 @@ class UNet2(tnn.Sequential):
 
         final = ConvBlock(dim, last_stack, out_channels,
                           kernel_size=kernel_size,
-                          padding='auto')
+                          padding='same')
         modules.append(('final', final))
 
         super().__init__(OrderedDict(modules))
@@ -1683,11 +1517,11 @@ class UNet2(tnn.Sequential):
                 print(list(x.shape))
             buffers.append(buffer)
 
-        pad = self.get_padding(buffers[-1].shape, x.shape, self.bottleneck)
         x = [x, all_x.pop(0)] if all_x else [x]
         if verbose:
             print('bottleneck:', *[list(xx.shape) for xx in x], end=' -> ', flush=True)
-        x = self.bottleneck(*x, output_padding=pad, return_last=return_all)
+        x = self.bottleneck(*x, output_shape=buffers[-1].shape[2:],
+                            return_last=return_all)
         if return_all:
             x, tmp = x
             if verbose:
@@ -1699,10 +1533,11 @@ class UNet2(tnn.Sequential):
         # decoder
         for layer in self.decoder:
             buffer = buffers.pop()
-            pad = self.get_padding(buffers[-1].shape, x.shape, layer)
             if verbose:
                 print('decoder:', list(x.shape), list(buffer.shape), end=' -> ', flush=True)
-            x = layer(x, buffer, output_padding=pad, return_last=return_all)
+            x = layer(x, buffer,
+                      output_shape=buffers[-1].shape[2:],
+                      return_last=return_all)
             if return_all:
                 x, tmp = x
                 if verbose:
@@ -1727,12 +1562,6 @@ class UNet2(tnn.Sequential):
             return tuple(buffers)
         return x
 
-    def get_padding(self, outshape, inshape, layer):
-        outshape = outshape[2:]
-        shape = layer.shape(inshape, output_padding=0)[2:]
-        padding = [o - i for o, i in zip(outshape, shape)]
-        return padding
-
 
 @nitorchmodule
 class UUNet(tnn.Sequential):
@@ -1740,18 +1569,18 @@ class UUNet(tnn.Sequential):
 
     def __init__(
             self,
-            dim,
-            in_channels,
-            out_channels,
-            encoder=None,
-            decoder=None,
-            conv_per_layer=1,
-            kernel_size=3,
-            stride=2,
+            dim: int,
+            in_channels: int,
+            out_channels: int,
+            encoder: Optional[Sequence[int]] = None,
+            decoder: Optional[Sequence[int]] = None,
+            conv_per_layer: int = 1,
+            kernel_size: Union[int, Sequence[int]] = 3,
+            stride: Union[int, Sequence[int]] = 2,
             activation=tnn.ReLU,
-            batch_norm=False,
-            residual=False,
-            nb_iter=1):
+            norm=None,
+            residual: bool = False,
+            nb_iter: int = 1):
         """
 
         Parameters
@@ -1781,8 +1610,9 @@ class UUNet(tnn.Sequential):
         activation : [sequence of] str or type or callable or None, default='relu'
             Activation function.
 
-        batch_norm : bool or type or callable, default=False
-            Batch normalization before each convolution.
+        norm : {'batch', 'instance', 'layer'}, default=None
+            Normalization before each convolution.
+            In an int, group normalizarion is used.
 
         residual : bool, default=False
             Use residual skipped connections
@@ -1806,8 +1636,8 @@ class UUNet(tnn.Sequential):
                           out_channels=encoder[0],
                           kernel_size=kernel_size,
                           activation=activation,
-                          batch_norm=batch_norm,
-                          padding='auto')
+                          norm=norm,
+                          padding='same')
         modules.append(('first', first))
 
         modules_encoder = []
@@ -1822,7 +1652,7 @@ class UUNet(tnn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             ))
         enc = tnn.ModuleList(modules_encoder)
         modules.append(('encoder', enc))
@@ -1837,7 +1667,7 @@ class UUNet(tnn.Sequential):
             kernel_size=kernel_size,
             stride=stride,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
         )
         modules.append(('bottleneck', btk))
 
@@ -1856,7 +1686,7 @@ class UUNet(tnn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             ))
         dec = tnn.ModuleList(modules_decoder)
         modules.append(('decoder', dec))
@@ -1872,7 +1702,7 @@ class UUNet(tnn.Sequential):
                 out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             )
             modules.append(('stack', stk))
             last_stack = cout[-1]
@@ -1883,7 +1713,7 @@ class UUNet(tnn.Sequential):
         final = ConvBlock(dim, last_stack, out_channels,
                           kernel_size=kernel_size,
                           activation=final_activation,
-                          padding='auto')
+                          padding='same')
         modules.append(('final', final))
 
         super().__init__(OrderedDict(modules))
@@ -1901,30 +1731,21 @@ class UUNet(tnn.Sequential):
             x, buffer = layer(x, buffer, return_last=True)
             buffers.append(buffer)
 
-        pad = self.get_padding(buffers[-1].shape, x.shape, self.bottleneck)
-        x = self.bottleneck(x, output_padding=pad)
-
         # decoder
         for layer in self.decoder:
             buffer = buffers.pop()
-            pad = self.get_padding(buffers[-1].shape, x.shape, layer)
-            x = layer(x, buffer, output_padding=pad)
+            x = layer(x, buffer, output_shape=buffers[-1].shape[2:])
 
         x = self.stack(x, buffers.pop())
         x = self.final(x)
         return x
 
-    def get_padding(self, outshape, inshape, layer):
-        outshape = outshape[2:]
-        shape = layer.shape(inshape, output_padding=0)[2:]
-        padding = [o - i for o, i in zip(outshape, shape)]
-        return padding
+    def forward(self, x, nb_iter=None):
 
-    def forward(self, x, **overload):
-
-        nb_iter = overload.get('nb_iter', self.nb_iter)
-#         if nb_iter == 1:
-#             return self.forward_once(x)
+        if nb_iter is None:
+            nb_iter = self.nb_iter
+        if nb_iter == 1:
+            return self.forward_once(x)
 
         buffers_encoder = [None] * len(self.encoder)
         buffers_decoder = [None] * len(self.decoder)
@@ -1948,14 +1769,13 @@ class UUNet(tnn.Sequential):
                 else:
                     buffers_encoder[d] = buffers_encoder[d] + buffer
 
-            pad = self.get_padding(buffers_encoder[-1].shape, x.shape, self.bottleneck)
-            x = self.bottleneck(x, output_padding=pad)
+            x = self.bottleneck(x, output_shape=buffers_encoder[-1].shape[2:])
 
             # decoder
             for d, layer in enumerate(self.decoder):
                 buffer = buffers_encoder[-d-1]
-                pad = self.get_padding(buffers_encoder[-d-2].shape, x.shape, layer)
-                x, buffer = layer(x, buffer, return_last=True, output_padding=pad)
+                x, buffer = layer(x, buffer, return_last=True,
+                                  output_shape=buffers_encoder[-d-2].shape[2:])
                 if buffers_decoder[d] is None or not self.residual:
                     buffers_decoder[d] = buffer
                 else:
@@ -1978,20 +1798,20 @@ class WNet(tnn.Sequential):
 
     def __init__(
             self,
-            dim,
-            in_channels,
-            out_channels,
-            mid_channels=None,
-            encoder=None,
-            decoder=None,
-            encoder2=None,
-            decoder2=None,
-            conv_per_layer=1,
-            kernel_size=3,
-            stride=2,
+            dim: int,
+            in_channels: int,
+            out_channels: int,
+            mid_channels: Optional[int] = None,
+            encoder: Optional[Sequence[int]] = None,
+            decoder: Optional[Sequence[int]] = None,
+            encoder2: Optional[Sequence[int]] = None,
+            decoder2: Optional[Sequence[int]] = None,
+            conv_per_layer: int = 1,
+            kernel_size: Union[int, Sequence[int]] = 3,
+            stride: Union[int, Sequence[int]] = 2,
             activation=tnn.ReLU,
-            batch_norm=False,
-            skip=True):
+            norm=None,
+            skip: bool = True):
         """
 
         Parameters
@@ -2047,8 +1867,8 @@ class WNet(tnn.Sequential):
             If a list/tuple of two elements, the second element is
             the final activation.
 
-        batch_norm : bool or type or callable, default=False
-            Batch normalization before each convolution.
+        norm : {'batch', 'instance', 'layer'} or int, default=False
+            Normalization before each convolution.
 
         skip : bool, default=True
             Add skip connections between the two U-Nets.
@@ -2087,8 +1907,8 @@ class WNet(tnn.Sequential):
             out_channels=encoder1[0],
             kernel_size=kernel_size,
             activation=activation,
-            batch_norm=batch_norm,
-            padding='auto')
+            norm=norm,
+            padding='same')
 
         # --- first unet -----------------------------------------------
         modules_encoder = []
@@ -2103,7 +1923,7 @@ class WNet(tnn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             ))
         modules['encoder1'] = tnn.ModuleList(modules_encoder)
 
@@ -2117,7 +1937,7 @@ class WNet(tnn.Sequential):
             kernel_size=kernel_size,
             stride=stride,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
         )
 
         modules_decoder = []
@@ -2133,7 +1953,7 @@ class WNet(tnn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             ))
         modules['decoder1'] = tnn.ModuleList(modules_decoder)
 
@@ -2152,7 +1972,7 @@ class WNet(tnn.Sequential):
             kernel_size=kernel_size,
             stride=stride,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
         ))
         # next levels -> skip connections
         for n in range(len(encoder2) - 1):
@@ -2168,7 +1988,7 @@ class WNet(tnn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             ))
         modules['encoder2'] = tnn.ModuleList(modules_encoder)
 
@@ -2182,7 +2002,7 @@ class WNet(tnn.Sequential):
             kernel_size=kernel_size,
             stride=stride,
             activation=activation,
-            batch_norm=batch_norm,
+            norm=norm,
         )
 
         modules_decoder = []
@@ -2198,7 +2018,7 @@ class WNet(tnn.Sequential):
                 kernel_size=kernel_size,
                 stride=stride,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             ))
         modules['decoder2'] = tnn.ModuleList(modules_decoder)
 
@@ -2214,7 +2034,7 @@ class WNet(tnn.Sequential):
                 out_channels=cout,
                 kernel_size=kernel_size,
                 activation=activation,
-                batch_norm=batch_norm,
+                norm=norm,
             )
             last_stack = cout[-1]
         else:
@@ -2226,7 +2046,7 @@ class WNet(tnn.Sequential):
             dim, last_stack, out_channels,
             kernel_size=final_kernel_size,
             activation=final_activation,
-            padding='auto')
+            padding='same')
 
         # --- middle output --------------------------------------------
         if mid_channels:
@@ -2234,15 +2054,9 @@ class WNet(tnn.Sequential):
                 dim, modules['encoder2'][0].out_channels_last, mid_channels,
                 kernel_size=final_kernel_size,
                 activation=final_activation,
-                padding='auto')
+                padding='same')
 
         super().__init__(modules)
-
-    def get_padding(self, outshape, inshape, layer):
-        outshape = outshape[2:]
-        shape = layer.shape(inshape, output_padding=0)[2:]
-        padding = [o - i for o, i in zip(outshape, shape)]
-        return padding
 
     def forward(self, x, **overload):
 
@@ -2255,20 +2069,18 @@ class WNet(tnn.Sequential):
             buffers_encoder.append(buffer)
 
         # bottleneck 1
-        pad = self.get_padding(buffers_encoder[-1].shape, x.shape,
-                               self.bottleneck1)
-        x, buffer = self.bottleneck1(x, return_last=True, output_padding=pad)
+        oshape = buffers_encoder[-1].shape[2:]
+        x, buffer = self.bottleneck1(x, return_last=True, output_shape=oshape)
 
         # decoder1
         buffers_decoder = [buffer] if self.skip else []
         for layer in self.decoder2:
             buffer = buffers_encoder.pop()
             if buffers_encoder:
-                pad = self.get_padding(buffers_encoder[-1].shape,
-                                       x.shape, layer)
+                oshape = buffers_encoder[-1].shape[2:]
             else:
-                pad = 0
-            x, buffer = layer(x, buffer, return_last=True, output_padding=pad)
+                oshape = None
+            x, buffer = layer(x, buffer, return_last=True, output_shape=oshape)
             if self.skip:
                 buffers_decoder.append(buffer)
 
@@ -2288,19 +2100,17 @@ class WNet(tnn.Sequential):
 
         # bottleneck 2
         buffer = [buffers_decoder.pop()] if buffers_decoder else []
-        pad = self.get_padding(buffers_encoder[-1].shape, x.shape,
-                               self.bottleneck2)
-        x = self.bottleneck2(x, *buffer, output_padding=pad)
+        oshape = buffers_encoder[-1].shape[2:]
+        x = self.bottleneck2(x, *buffer, output_shape=oshape)
 
         # decoder2
         for layer in self.decoder2:
             buffer = buffers_encoder.pop()
             if buffers_encoder:
-                pad = self.get_padding(buffers_encoder[-1].shape,
-                                       x.shape, layer)
+                oshape = buffers_encoder[-1].shape[2:]
             else:
-                pad = 0
-            x = layer(x, buffer, output_padding=pad)
+                oshape = None
+            x = layer(x, buffer, output_shape=oshape)
 
         x = self.stack2(x, *buffers_encoder)
         x = self.final(x)
@@ -2316,20 +2126,27 @@ class SEWNet(Module):
 
     Optionally, skip-connections between the encoding U-Net and decoding
     U-Net can be used.
+
+    Schematically, it goes like this:
+    ```
+    Input1  ~~~[FeatUNet]~~~>  Feat1 \
+                                      ~~[Cat]~~>  Feat  ~~~[MainNet]~~~> Output
+    Input2  ~~~[FeatUNet]~~~>  Feat2 /
+    ```
     """
 
     def __init__(
             self,
-            dim,
-            nb_twins,
-            in_channels,
-            out_channels,
-            mid_channels=None,
-            encoder=None,
-            decoder=None,
-            encoder2=None,
-            decoder2=None,
-            skip=False,
+            dim: int,
+            nb_twins: int,
+            in_channels: int,
+            out_channels: int,
+            feat_channels: Optional[int] = None,
+            encoder: Optional[Sequence[int]] = None,
+            decoder: Optional[Sequence[int]] = None,
+            encoder2: Optional[Sequence[int]] = None,
+            decoder2: Optional[Sequence[int]] = None,
+            skip: bool = False,
             **kwargs):
         """
 
@@ -2347,8 +2164,9 @@ class SEWNet(Module):
         out_channels : int
             Number of output channels.
 
-        mid_channels : int, optional
-            Number of output channels after the first U-Net.
+        feat_channels : int, optional
+            Number of output "feature" channels after the first U-Net.
+            By default, the last value of `encoder` is used.
 
         encoder : sequence[int], default=[16, 32, 32, 32]
             Number of channels in each encoding layer of the first U-Net.
@@ -2390,7 +2208,7 @@ class SEWNet(Module):
             the final kernel size.
 
         pool : {'max, 'down', 'conv', None}, default=None
-            Downsampling method (.
+            Downsampling method.
 
         unpool : {'up', 'conv', None}, default=None
             Upsampling method.
@@ -2398,8 +2216,8 @@ class SEWNet(Module):
         activation : str or type or callable or None, default='relu'
             Activation function.
 
-        batch_norm : bool or type or callable, default=False
-            Batch normalization before each convolution.
+        norm : {'batch', 'instance', 'layer'} or int, default=None
+            Normalization before each convolution.
 
         """
         super().__init__()
@@ -2422,15 +2240,15 @@ class SEWNet(Module):
         default_decoder2 = decoder1
         decoder2 = make_list(decoder2 or default_decoder2,
                              n=len(encoder2), crop=False)
-        if not mid_channels:
-            mid_channels = decoder1.pop()
+        if not feat_channels:
+            feat_channels = decoder1.pop()
 
         # feature extraction
-        self.siamese = UNet2(dim, in_channels, mid_channels,
+        self.siamese = UNet2(dim, in_channels, feat_channels,
                              encoder=encoder1, decoder=decoder1, **kwargs)
 
         # compute number of input channels (per scale)
-        siamese_out = [mid_channels]
+        siamese_out = [feat_channels]
         if skip:
             siamese_out.insert(1, self.siamese.bottleneck.out_channels)
             for layer in self.siamese.decoder[:-1]:
@@ -2441,24 +2259,23 @@ class SEWNet(Module):
         self.fusion = UNet2(dim, siamese_out, out_channels,
                             encoder=encoder2, decoder=decoder2, **kwargs)
 
-    def forward(self, *x, return_mid=False, verbose=False):
+    def forward(self, *x, return_feat=False, verbose=False):
         """
 
         Parameters
         ----------
         *x : (batch, in_channels, *spatial) tensor
             `nb_twins` input tensors.
-        return_mid : bool, default=False
+        return_feat : bool, default=False
             Return output after the first unet
 
         Returns
         -------
         out : (batch, out_channels, *spatial) tensor
             Output tensor
-        mid : (batch, mid_channels, *spatial) tensor, if `mid_channels`
-            Middle tensor
+        feat : (batch, feat_channels, *spatial) tensor, if `return_feat`
+            Feature tensor
         """
-
         # check inputs
         for y in x[1:]:
             check.shape(x[0], y)
@@ -2473,18 +2290,15 @@ class SEWNet(Module):
         x = self.siamese(x, return_all=self.skip, verbose=verbose)
         x = make_list(x)
 
-        print([list(xx.shape) for xx in x])
-
         # convert batch to channels
         x = [xx.chunk(self.nb_twins) for xx in x]
-        if return_mid:
-            mid = x[0]
+        feat = x[0] if return_feat else None
         x = [torch.cat(xx, dim=1) for xx in x]
 
         # second unet
         x = self.fusion(*x, verbose=verbose)
 
-        return x, mid if return_mid else x
+        return (x, feat) if return_feat else x
 
 
 

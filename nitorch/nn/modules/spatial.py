@@ -83,7 +83,7 @@ class GridPull(Module):
         self.bound = bound
         self.extrapolate = extrapolate
 
-    def forward(self, x, grid, **overload):
+    def forward(self, x, grid):
         """
 
         Parameters
@@ -92,9 +92,6 @@ class GridPull(Module):
             Input image to deform
         grid : (batch, *spatial_out, len(spatial_in)) tensor
             Transformation grid
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
 
         Returns
         -------
@@ -102,10 +99,8 @@ class GridPull(Module):
             Deformed image.
 
         """
-        interpolation = overload.get('interpolation', self.interpolation)
-        bound = overload.get('bound', self.bound)
-        extrapolate = overload.get('extrapolate', self.extrapolate)
-        return spatial.grid_pull(x, grid, interpolation, bound, extrapolate)
+        return spatial.grid_pull(x, grid, self.interpolation, self.bound,
+                                 self.extrapolate)
 
 
 class GridPush(Module):
@@ -140,7 +135,7 @@ class GridPush(Module):
         self.bound = bound
         self.extrapolate = extrapolate
 
-    def forward(self, x, grid, **overload):
+    def forward(self, x, grid, shape=None):
         """
 
         Parameters
@@ -149,9 +144,8 @@ class GridPush(Module):
             Input image to deform
         grid : (batch, *spatial_out, len(spatial_in)) tensor
             Transformation grid
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
+        shape : list[int], default=self.shape
+            Output spatial shape.
 
         Returns
         -------
@@ -159,14 +153,11 @@ class GridPush(Module):
             Deformed image.
 
         """
-        shape = overload.get('shape', self.shape)
-        interpolation = overload.get('interpolation', self.interpolation)
-        bound = overload.get('bound', self.bound)
-        extrapolate = overload.get('extrapolate', self.extrapolate)
+        shape = shape or self.shape
         return spatial.grid_push(x, grid, shape,
-                                 interpolation=interpolation,
-                                 bound=bound,
-                                 extrapolate=extrapolate)
+                                 interpolation=self.interpolation,
+                                 bound=self.bound,
+                                 extrapolate=self.extrapolate)
 
 
 class GridPushCount(Module):
@@ -204,7 +195,7 @@ class GridPushCount(Module):
         self.bound = bound
         self.extrapolate = extrapolate
 
-    def forward(self, x, grid, **overload):
+    def forward(self, x, grid, shape=None):
         """
 
         Parameters
@@ -213,9 +204,8 @@ class GridPushCount(Module):
             Input image to deform
         grid : (batch, *spatial_in, dir) tensor
             Transformation grid
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
+        shape : list[int], default=self.shape
+            Output spatial shape. Default is the same as the input shape.
 
         Returns
         -------
@@ -225,18 +215,15 @@ class GridPushCount(Module):
             Pushed image.
 
         """
-        shape = overload.get('shape', self.shape)
-        interpolation = overload.get('interpolation', self.interpolation)
-        bound = overload.get('bound', self.bound)
-        extrapolate = overload.get('extrapolate', self.extrapolate)
+        shape = shape or self.shape
         push = spatial.grid_push(x, grid, shape,
-                                 interpolation=interpolation,
-                                 bound=bound,
-                                 extrapolate=extrapolate)
+                                 interpolation=self.interpolation,
+                                 bound=self.bound,
+                                 extrapolate=self.extrapolate)
         count = spatial.grid_count(grid, shape,
-                                   interpolation=interpolation,
-                                   bound=bound,
-                                   extrapolate=extrapolate)
+                                   interpolation=self.interpolation,
+                                   bound=self.bound,
+                                   extrapolate=self.extrapolate)
         return push, count
 
 
@@ -274,34 +261,33 @@ class GridExp(Module):
         self.bound = bound
         self.displacement = displacement
 
-    def forward(self, velocity, **kwargs):
+    def forward(self, velocity, fwd=None, inv=None):
         """
 
         Parameters
         ----------
         velocity :(batch, *spatial, dim) tensor
             Stationary velocity field.
-        **overload : dict
-            all parameters of the module can be overridden at call time.
+        fwd : bool, default=self.fwd
+        inv : bool, default=self.inv
 
         Returns
         -------
-        forward : (batch, *spatial, dim) tensor, if `forward is True`
+        forward : (batch, *spatial, dim) tensor, if `fwd is True`
             Forward displacement (if `displacement is True`) or
             transformation (if `displacement is False`) field.
-        inverse : (batch, *spatial, dim) tensor, if `inverse is True`
+        inverse : (batch, *spatial, dim) tensor, if `inv is True`
             Inverse displacement (if `displacement is True`) or
             transformation (if `displacement is False`) field.
 
         """
-        fwd = kwargs.get('fwd', self.forward)
-        inv = kwargs.get('inverse', self.inv)
-        opt = {
-            'steps': kwargs.get('steps', self.steps),
-            'interpolation': kwargs.get('interpolation', self.interpolation),
-            'bound': kwargs.get('bound', self.bound),
-            'displacement': kwargs.get('displacement', self.displacement),
-        }
+        fwd = fwd if fwd is not None else self.fwd
+        inv = inv if inv is not None else self.inv
+        opt = dict(
+            steps=self.steps,
+            interpolation=self.interpolation,
+            bound=self.bound,
+            displacement=self.displacement)
 
         output = []
         if fwd:
@@ -367,15 +353,16 @@ class GridShoot(Module):
         self.displacement = displacement
         self.cache_greens = cache_greens
 
-    def forward(self, velocity, **overload):
+    def forward(self, velocity, fwd=None, inv=None, voxel_size=None):
         """
 
         Parameters
         ----------
         velocity :(batch, *spatial, dim) tensor
             Initial velocity field.
-        **overload : dict
-            all parameters of the module can be overridden at call time.
+        fwd : bool, default=self.fwd
+        inv : bool, default=self.inv
+        voxel_size : sequence[float], default=self.voxel_size
 
         Returns
         -------
@@ -387,33 +374,26 @@ class GridShoot(Module):
             transformation (if `displacement is False`) field.
 
         """
-        fwd = overload.get('fwd', self.forward)
-        inv = overload.get('inverse', self.inv)
-        approx = overload.get('approx', self.approx)
-        absolute = overload.get('absolute', self.absolute)
-        membrane = overload.get('membrane', self.membrane)
-        bending = overload.get('bending', self.bending)
-        lame = overload.get('lame', self.lame)
-        lame = make_list(lame, 2)
-        factor = overload.get('factor', self.factor)
-        voxel_size = overload.get('voxel_size', self.voxel_size)
+        fwd = fwd if fwd is not None else self.fwd
+        inv = inv if inv is not None else self.inv
+        voxel_size = voxel_size if voxel_size is not None else self.voxel_size
 
         shoot_opt = {
-            'steps': overload.get('steps', self.steps),
-            'displacement': overload.get('displacement', self.displacement),
+            'steps': self.steps,
+            'displacement': self.displacement,
             'voxel_size': voxel_size,
-            'absolute': absolute,
-            'membrane': membrane,
-            'bending': bending,
-            'lame': lame,
-            'factor': factor,
+            'absolute': self.absolute,
+            'membrane': self.membrane,
+            'bending': self.bending,
+            'lame': self.lame,
+            'factor': self.factor,
         }
         greens_prm = {
-            'absolute': absolute,
-            'membrane': membrane,
-            'bending': bending,
-            'lame': lame,
-            'factor': factor,
+            'absolute': self.absolute,
+            'membrane': self.membrane,
+            'bending': self.bending,
+            'lame': self.lame,
+            'factor': self.factor,
             'voxel_size': voxel_size,
             'shape': velocity.shape[1:-1],
         }
@@ -428,7 +408,7 @@ class GridShoot(Module):
         else:
             greens = spatial.greens(**greens_prm, **utils.backend(velocity))
 
-        shoot_fn = spatial.shoot_approx if approx else spatial.shoot
+        shoot_fn = spatial.shoot_approx if self.approx else spatial.shoot
             
         output = []
         if inv:
@@ -481,15 +461,13 @@ class AffineExp(Module):
         self.fwd = fwd
         self.inv = inv
 
-    def forward(self, prm, **overload):
+    def forward(self, prm, fwd=None, inv=None):
         """
 
         Parameters
         ----------
         prm : (batch, nb_prm) tensor or list[tensor]
             Affine parameters on the Lie algebra.
-        overload : dict
-            All parameters of the module can be overridden at call time.
 
         Returns
         -------
@@ -499,21 +477,19 @@ class AffineExp(Module):
             Inverse matrix
 
         """
-        fwd = overload.get('fwd', self.forward)
-        inv = overload.get('inverse', self.inv)
-        basis = overload.get('basis', self.basis)
-        basis = spatial.build_affine_basis(basis, self.dim)
+        fwd = fwd if fwd is not None else self.fwd
+        inv = inv if inv is not None else self.inv
 
         output = []
         if fwd:
-            aff = spatial.affine_matrix(prm, basis)
+            aff = spatial.affine_matrix(prm, self.basis)
             output.append(aff)
         if inv:
             if isinstance(prm, (list, tuple)):
                 prm = [-p for p in prm]
             else:
                 prm = -prm
-            iaff = spatial.affine_matrix(prm, basis)
+            iaff = spatial.affine_matrix(prm, self.basis)
             output.append(iaff)
 
         return output if len(output) > 1 else \
@@ -534,11 +510,13 @@ class AffineLog(Module):
 
     """
 
-    def __init__(self, basis='CSO'):
+    def __init__(self, dim, basis='CSO', **backend):
         """
 
         Parameters
         ----------
+        dim : int
+            Number of spatial dimensions
         basis : basis_like or list[basis_like], default='CSO'
             The simplest way to define an affine basis is to choose from
             a list of Lie groups:
@@ -555,43 +533,31 @@ class AffineLog(Module):
             See `affine_matrix`.
         """
         super().__init__()
+        self.basis = spatial.build_affine_basis(basis, dim, **backend)
 
-        self.basis = basis
-
-    def forward(self, affine, **overload):
+    def forward(self, affine):
         """
 
         Parameters
         ----------
-        prm : (batch, nb_prm) tensor or list[tensor]
-            Affine parameters on the Lie algebra.
-        overload : dict
-            All parameters of the module can be overridden at call time.
+        affine : (batch, dim+1, dim+1) tensor
 
         Returns
         -------
-        forward : (batch, dim+1, dim+1) tensor, optional
-            Forward matrix
-        inverse : (batch, dim+1, dim+1) tensor, optional
-            Inverse matrix
+        logaff : (batch, nbprm) tensor
 
         """
-        # I build the matrix at each call, which is not great.
-        # Hard to be efficient *and* generic...
-        dim = affine.shape[-1] - 1
-        backend = dict(dtype=affine.dtype, device=affine.device)
-        basis = overload.get('basis', self.basis)
-        basis = spatial.build_affine_basis(basis, dim, **backend)
-
         # When the affine is well conditioned, its log should be real.
         # Here, I take the real part just in case.
         # Another solution could be to regularise the affine (by loading
         # slightly the diagonal) until it is well conditioned -- but
         # how would that work with autograd?
+        backend = utils.backend(affine)
         affine = core.linalg.logm(affine.double())
         if affine.is_complex():
             affine = affine.real
         affine = affine.to(**backend)
+        basis = self.basis.to(**backend)
         affine = core.linalg.mdot(affine[:, None, ...], basis[None, ...])
         return affine
 
@@ -625,7 +591,7 @@ class AffineClassic(Module):
         self.basis = basis
         self.logzooms = logzooms
 
-    def forward(self, prm, **overload):
+    def forward(self, prm):
         """
 
         Parameters
@@ -633,8 +599,6 @@ class AffineClassic(Module):
         prm : (batch, nb_prm) tensor or list[tensor]
             Affine parameters, ordered as
             (*translations, *rotations, *zooms, *shears).
-        overload : dict
-            All parameters of the module can be overridden at call time.
 
         Returns
         -------
@@ -642,56 +606,53 @@ class AffineClassic(Module):
             Affine matrix
 
         """
-        dim = overload.get('dim', self.dim)
-        basis = overload.get('basis', self.basis)
-        logzooms = overload.get('logzooms', self.logzooms)
-
         def checkdim(expected, got):
             if got != expected:
-                raise ValueError('Expected {} parameters for group {}({}) but '
-                                 'got {}.'.format(expected, basis, dim, got))
+                raise ValueError(f'Expected {expected} parameters for '
+                                 f'group {self.basis}({self.dim}) but '
+                                 f'got {got}.')
 
         nb_prm = prm.shape[-1]
         eps = core.constants.eps(prm.dtype)
 
-        if basis == 'T':
-            checkdim(dim, nb_prm)
-        elif basis == 'SO':
-            checkdim(dim*(dim-1)//2, nb_prm)
-        elif basis == 'SE':
-            checkdim(dim + dim*(dim-1)//2, nb_prm)
-        elif basis == 'D':
-            checkdim(dim + 1, nb_prm)
-            translations = prm[..., :dim]
+        if self.basis == 'T':
+            checkdim(self.dim, nb_prm)
+        elif self.basis == 'SO':
+            checkdim(self.dim*(self.dim-1)//2, nb_prm)
+        elif self.basis == 'SE':
+            checkdim(self.dim + self.dim*(self.dim-1)//2, nb_prm)
+        elif self.basis == 'D':
+            checkdim(self.dim + 1, nb_prm)
+            translations = prm[..., :self.dim]
             zooms = prm[..., -1]
-            zooms = zooms.expand([*zooms.shape, dim])
-            zooms = zooms.exp() if logzooms else zooms.clamp_min(eps)
+            zooms = zooms.expand([*zooms.shape, self.dim])
+            zooms = zooms.exp() if self.logzooms else zooms.clamp_min(eps)
             prm = torch.cat((translations, zooms), dim=-1)
-        elif basis == 'CSO':
-            checkdim(dim + dim*(dim-1)//2 + 1, nb_prm)
+        elif self.basis == 'CSO':
+            checkdim(self.dim + self.dim*(self.dim-1)//2 + 1, nb_prm)
             rigid = prm[..., :-1]
             zooms = prm[..., -1]
-            zooms = zooms.expand([*zooms.shape, dim])
-            zooms = zooms.exp() if logzooms else zooms.clamp_min(eps)
+            zooms = zooms.expand([*zooms.shape, self.dim])
+            zooms = zooms.exp() if self.logzooms else zooms.clamp_min(eps)
             prm = torch.cat((rigid, zooms), dim=-1)
-        elif basis == 'GL+':
-            checkdim((dim-1)*(dim+1), nb_prm)
-            rigid = prm[..., :dim*(dim-1)//2]
-            zooms = prm[..., dim*(dim-1)//2:(dim + dim*(dim-1)//2)]
-            zooms = zooms.exp() if logzooms else zooms.clamp_min(eps)
-            strides = prm[..., (dim + dim*(dim-1)//2):]
+        elif self.basis == 'GL+':
+            checkdim((self.dim-1)*(self.dim+1), nb_prm)
+            rigid = prm[..., :self.dim*(self.dim-1)//2]
+            zooms = prm[..., self.dim*(self.dim-1)//2:(self.dim + self.dim*(self.dim-1)//2)]
+            zooms = zooms.exp() if self.logzooms else zooms.clamp_min(eps)
+            strides = prm[..., (self.dim + self.dim*(self.dim-1)//2):]
             prm = torch.cat((rigid, zooms, strides), dim=-1)
-        elif basis == 'Aff+':
-            checkdim(dim*(dim+1), nb_prm)
-            rigid = prm[..., :(dim + dim*(dim-1)//2)]
-            zooms = prm[..., (dim + dim*(dim-1)//2):(2*dim + dim*(dim-1)//2)]
-            zooms = zooms.exp() if logzooms else zooms.clamp_min(eps)
-            strides = prm[..., (2*dim + dim*(dim-1)//2):]
+        elif self.basis == 'Aff+':
+            checkdim(self.dim*(self.dim+1), nb_prm)
+            rigid = prm[..., :(self.dim + self.dim*(self.dim-1)//2)]
+            zooms = prm[..., (self.dim + self.dim*(self.dim-1)//2):(2*self.dim + self.dim*(self.dim-1)//2)]
+            zooms = zooms.exp() if self.logzooms else zooms.clamp_min(eps)
+            strides = prm[..., (2*self.dim + self.dim*(self.dim-1)//2):]
             prm = torch.cat((rigid, zooms, strides), dim=-1)
         else:
-            raise ValueError(f'Unknown basis {basis}')
+            raise ValueError(f'Unknown basis {self.basis}')
 
-        return spatial.affine_matrix_classic(prm, dim=dim)
+        return spatial.affine_matrix_classic(prm, dim=self.dim)
 
 
 class AffineClassicInverse(Module):
@@ -720,15 +681,13 @@ class AffineClassicInverse(Module):
         self.basis = basis
         self.logzooms = logzooms
 
-    def forward(self, affine, **overload):
+    def forward(self, affine):
         """
 
         Parameters
         ----------
         affine : (batch, dim+1, dim+1) tensor
             Affine matrix
-        overload : dict
-            All parameters of the module can be overridden at call time.
 
         Returns
         -------
@@ -736,32 +695,29 @@ class AffineClassicInverse(Module):
             Parameters
 
         """
-        logzooms = overload.get('logzooms', self.logzooms)
-        basis = overload.get('basis', self.basis)
-
         T, R, Z, S = spatial.affine_parameters_classic(affine,
                                                        return_stacked=False)
-        if logzooms:
+        if self.logzooms:
             Z = Z.log()
 
-        if basis == 'T':
+        if self.basis == 'T':
             return T
-        elif basis == 'SO':
+        elif self.basis == 'SO':
             return R
-        elif basis == 'SE':
+        elif self.basis == 'SE':
             return torch.cat((T, R), dim=-1)
-        elif basis == 'D':
+        elif self.basis == 'D':
             Z = torch.mean(Z, dim=-1)[..., None]
             return torch.cat((T, Z), dim=-1)
-        elif basis == 'CSO':
+        elif self.basis == 'CSO':
             Z = torch.mean(Z, dim=-1)[..., None]
             return torch.cat((T, R, Z), dim=-1)
-        elif basis == 'GL+':
+        elif self.basis == 'GL+':
             return torch.cat((R, Z, S), dim=-1)
-        elif basis == 'Aff+':
+        elif self.basis == 'Aff+':
             return torch.cat((T, R, Z, S), dim=-1)
         else:
-            raise ValueError(f'Unknown basis {basis}')
+            raise ValueError(f'Unknown basis {self.basis}')
 
 
 class AffineGrid(Module):
@@ -783,15 +739,14 @@ class AffineGrid(Module):
         self.shape = shape
         self.shift = shift
 
-    def forward(self, affine, **overload):
+    def forward(self, affine, shape=None):
         """
 
         Parameters
         ----------
         affine : (batch, ndim[+1], ndim+1) tensor
             Affine matrix
-        overload : dict
-            All parameters of the module can be overridden at call time.
+        shape : sequence[int], default=self.shape
 
         Returns
         -------
@@ -801,14 +756,13 @@ class AffineGrid(Module):
         """
 
         nb_dim = affine.shape[-1] - 1
-        info = {'dtype': affine.dtype, 'device': affine.device}
-        shape = make_list(overload.get('shape', self.shape), nb_dim)
-        shift = overload.get('shift', self.shift)
+        backend = {'dtype': affine.dtype, 'device': affine.device}
+        shape = shape or self.shape
 
-        if shift:
+        if self.shift:
             affine_shift = torch.cat((
-                torch.eye(nb_dim, **info),
-                -torch.as_tensor(shape, **info)[:, None]/2),
+                torch.eye(nb_dim, **backend),
+                -torch.as_tensor(shape, **backend)[:, None]/2),
                 dim=1)
             affine = spatial.affine_matmul(affine, affine_shift)
             affine = spatial.affine_lmdiv(affine_shift, affine)
@@ -830,7 +784,7 @@ class Resize(Module):
 
     def __init__(self, factor=None, shape=None, anchor='c',
                  interpolation='linear', bound='dct2', extrapolate=True,
-                 output_padding=None):
+                 prefilter=True):
         """
 
         Parameters
@@ -856,6 +810,8 @@ class Resize(Module):
             Boundary condition.
         extrapolate : bool, default=True
             Extrapolate data outside of the field of view.
+        prefilter : bool, default=True
+            Apply spline prefilter.
         """
         super().__init__()
         self.factor = factor
@@ -864,9 +820,9 @@ class Resize(Module):
         self.interpolation = interpolation
         self.bound = bound
         self.extrapolate = extrapolate
-        self.output_padding = output_padding
+        self.prefilter = prefilter
 
-    def forward(self, image, affine=None, **overload):
+    def forward(self, image, affine=None, output_shape=None):
         """
 
         Parameters
@@ -877,9 +833,7 @@ class Resize(Module):
             Orientation matrix of the input image.
             If provided, the orientation matrix of the resized image is
             returned as well.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
+        output_shape : sequence[int], optional
 
         Returns
         -------
@@ -889,14 +843,15 @@ class Resize(Module):
             Orientation matrix
 
         """
-        outshape = self.shape(image, **overload)
+        outshape = self.shape(image, output_shape=output_shape)
         kwargs = {
             'shape': outshape[2:],
-            'factor': overload.get('factor', self.factor),
-            'anchor': overload.get('anchor', self.anchor),
-            'interpolation': overload.get('interpolation', self.interpolation),
-            'bound': overload.get('bound', self.bound),
-            'extrapolate': overload.get('extrapolate', self.extrapolate),
+            'factor': self.factor,
+            'anchor': self.anchor,
+            'interpolation': self.interpolation,
+            'bound': self.bound,
+            'extrapolate': self.extrapolate,
+            'prefilter': self.prefilter,
         }
         return spatial.resize(image, affine=affine, **kwargs)
 
@@ -922,10 +877,8 @@ class Resize(Module):
 
     __repr__ = __str__
 
-    def shape(self, image, affine=None, **overload):
-        factor = overload.get('factor', self.factor)
-        output_shape = overload.get('output_shape', self.output_shape)
-        output_padding = overload.get('output_padding', self.output_padding)
+    def shape(self, image, affine=None, output_shape=None):
+        output_shape = output_shape or self.shape
 
         # read parameters
         if torch.is_tensor(image):
@@ -935,15 +888,12 @@ class Resize(Module):
         nb_dim = len(inshape) - 2
         batch = inshape[:2]
         inshape = inshape[2:]
-        factor = utils.make_vector(factor or 0., nb_dim).tolist()
+        factor = utils.make_vector(self.factor or 0., nb_dim).tolist()
         output_shape = make_list(output_shape or [None], nb_dim)
-        output_padding = make_list(output_padding or [0], nb_dim)
-        output_padding = [p or 0 for p in output_padding]
 
         # compute output shape
         output_shape = [int(inshp * f) if outshp is None else outshp
                         for inshp, outshp, f in zip(inshape, output_shape, factor)]
-        output_shape = [s+p for s, p in zip(output_shape, output_padding)]
         return (*batch, *output_shape)
 
 
@@ -959,7 +909,8 @@ class GridResize(Module):
     """.format(interpolation=_interpolation_doc, bound=_bound_doc)
 
     def __init__(self, factor=None, shape=None, type='grid', anchor='c',
-                 interpolation='linear', bound='dct2', extrapolate=True):
+                 interpolation='linear', bound='dct2', extrapolate=True,
+                 prefilter=True):
         """
 
         Parameters
@@ -990,6 +941,8 @@ class GridResize(Module):
             Boundary condition.
         extrapolate : bool, default=True
             Extrapolate data outside of the field of view.
+        prefilter : bool, default=True
+            Apply spline prefilter.
         """
         super().__init__()
         self.factor = factor
@@ -999,8 +952,9 @@ class GridResize(Module):
         self.interpolation = interpolation
         self.bound = bound
         self.extrapolate = extrapolate
+        self.prefilter = prefilter
 
-    def forward(self, grid, affine=None, **overload):
+    def forward(self, grid, affine=None, output_shape=None):
         """
 
         Parameters
@@ -1011,9 +965,7 @@ class GridResize(Module):
             Orientation matrix of the input image.
             If provided, the orientation matrix of the resized image is
             returned as well.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
+        output_shape : bool, optional
 
         Returns
         -------
@@ -1023,14 +975,16 @@ class GridResize(Module):
             Orientation matrix
 
         """
+        output_shape = output_shape or self.shape
         kwargs = {
-            'factor': overload.get('factor', self.factor),
-            'shape': overload.get('shape', self.shape),
-            'type': overload.get('type', self.type),
-            'anchor': overload.get('anchor', self.anchor),
-            'interpolation': overload.get('interpolation', self.interpolation),
-            'bound': overload.get('bound', self.bound),
-            'extrapolate': overload.get('extrapolate', self.extrapolate),
+            'factor': self.factor,
+            'shape': output_shape,
+            'type': self.type,
+            'anchor': self.anchor,
+            'interpolation': self.interpolation,
+            'bound': self.bound,
+            'extrapolate': self.extrapolate,
+            'prefilter': self.prefilter
         }
         return spatial.resize_grid(grid, affine=affine, **kwargs)
 

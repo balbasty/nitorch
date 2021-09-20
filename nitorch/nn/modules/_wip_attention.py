@@ -61,8 +61,8 @@ class ConvAttentionLayer(Module):
 
         dim = q.dim() - 2
         if padding == 'auto':
-            k = spatial.pad_auto(dim, k, kernel_size, bound=padding_mode)
-            v = spatial.pad_auto(dim, v, kernel_size, bound=padding_mode)
+            k = spatial.pad_same(dim, k, kernel_size, bound=padding_mode)
+            v = spatial.pad_same(dim, v, kernel_size, bound=padding_mode)
         elif padding:
             padding = [0] * 2 + py.make_list(padding, dim)
             k = utils.pad(k, padding, side='both', mode=padding_mode)
