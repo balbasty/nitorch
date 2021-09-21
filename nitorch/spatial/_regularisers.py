@@ -1354,7 +1354,7 @@ def solve_grid_sym(hessian, gradient, absolute=0, membrane=0, bending=0,
         else:
             smo += 2 * lame[1] * (1 + ivx2.sum() / ivx2)
 
-    if smo.shape[-1] > hessian.shape[-1]:
+    if torch.is_tensor(smo) and smo.shape[-1] > hessian.shape[-1]:
         hessian_smo = hessian + smo
     else:
         hessian_smo = hessian.clone()
