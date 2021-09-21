@@ -208,7 +208,15 @@ class ImagePyramid(Image):
         """
         # I don't call super().__init__() on purpose
         self.method = method
-
+        
+        if isinstance(dat, Image):
+            if affine is None:
+                affine = dat.affine
+            dim = dat.dim
+            mask = dat.mask
+            bound = dat.bound
+            extrapolate = dat.extrapolate
+            dat = dat.dat
         if isinstance(dat, str):
             dat = io.map(dat)
         if isinstance(dat, io.MappedArray):
