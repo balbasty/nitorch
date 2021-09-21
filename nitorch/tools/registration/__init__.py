@@ -1,4 +1,4 @@
-from . import joint
+from . import pairwise
 from . import losses
 from . import objects
 from . import experimental_losses

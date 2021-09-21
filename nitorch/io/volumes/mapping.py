@@ -384,7 +384,7 @@ class MappedArray(MappedFile):
             if pos is None:
                 positions_out[i], *positions_in = positions_in
 
-        return self.permute(*positions_out)
+        return self.permute(positions_out)
 
     def transpose(self, dim0, dim1):
         """Transpose two dimensions

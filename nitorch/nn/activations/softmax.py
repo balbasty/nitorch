@@ -24,14 +24,12 @@ class SoftMax(nn.Module):
         self.implicit = py.make_list(implicit, 2)
         self.dim = dim
 
-    def forward(self, input, **overload):
+    def forward(self, input):
         """
 
         Parameters
         ----------
         input : (batch, classes [-1], *spatial) tensor
-        overload : dict
-            `dim` and `implicit` can be overloaded at call time.
 
         Returns
         -------
@@ -39,11 +37,7 @@ class SoftMax(nn.Module):
             Softmaxed tensor
 
         """
-        dim = overload.get('dim', self.dim)
-        implicit = overload.get('implicit', self.implicit)
-        implicit = py.make_list(implicit, 2)
-
-        return softmax(input, dim=dim, implicit=implicit)
+        return softmax(input, dim=self.dim, implicit=self.implicit)
 
 
 class LogSoftMax(nn.Module):
@@ -67,14 +61,12 @@ class LogSoftMax(nn.Module):
         self.implicit = py.make_list(implicit, 2)
         self.dim = dim
 
-    def forward(self, input, **overload):
+    def forward(self, input):
         """
 
         Parameters
         ----------
         input : (batch, classes [-1], *spatial) tensor
-        overload : dict
-            `dim` and `implicit` can be overloaded at call time.
 
         Returns
         -------
@@ -82,8 +74,4 @@ class LogSoftMax(nn.Module):
             Softmaxed tensor
 
         """
-        dim = overload.get('dim', self.dim)
-        implicit = overload.get('implicit', self.implicit)
-        implicit = py.make_list(implicit, 2)
-
-        return log_softmax(input, dim=dim, implicit=implicit)
+        return log_softmax(input, dim=self.dim, implicit=self.implicit)

@@ -5,7 +5,7 @@ from ..registration import losses, phantoms
 
 
 def denoise(image=None, lam=1, max_iter=64, sub_iter=32, optim='relax',
-            plot=False, jtv=True, **prm):
+            plot=False, jtv=True, dim=None, **prm):
     """Denoise an image using a (joint) total variation prior.
 
     This implementation uses a reweighted least squares approach.
@@ -23,7 +23,8 @@ def denoise(image=None, lam=1, max_iter=64, sub_iter=32, optim='relax',
     optim : {'cg', 'relax'}, default='relax'
     plot : bool, default=False
     jtv : bool, default=True
-        Joint regularisation across channels (l12 norm)
+        Joint regularisation across channels ($\ell_{1,2}$ norm)
+    dim : int, default=image.dim()-1
 
     Returns
     -------
@@ -36,20 +37,22 @@ def denoise(image=None, lam=1, max_iter=64, sub_iter=32, optim='relax',
         torch.random.manual_seed(1234)
         image = phantoms.augment(phantoms.circle(), fwhm=0)[None]
 
-    prm['membrane'] = 1
-    prm['factor'] = lam
-
     image = torch.as_tensor(image)
-    dim = image.dim() - 1
+    dim = dim or (image.dim() - 1)
 
     lr = None
     if isinstance(optim, (tuple, list)):
         optim, lr = optim
     lr = lr or (1e-3 if optim.startswith('gd') else 1)
 
-    weight_shape = [1, *image.shape[1:]] if jtv else [image.shape[1:]]
+    weight_shape = [1, *image.shape[-dim:]] if jtv else [image.shape[-dim-1:]]
     weights = image.new_ones(weight_shape)
     denoised = image.clone()
+
+    if jtv:
+        lam = lam / image.shape[-dim-1]
+    prm['membrane'] = 1
+    prm['factor'] = lam
 
     l_prev = None
     l_max = None
@@ -68,7 +71,7 @@ def denoise(image=None, lam=1, max_iter=64, sub_iter=32, optim='relax',
         denoised -= g
 
         weights, lw = spatial.membrane_weights(denoised, dim=dim, return_sum=True,
-                                               joint=jtv)
+                                               joint=jtv, factor=lam)
 
         ll = ll.item() / image.numel()
         lg = lg.item() / image.numel()

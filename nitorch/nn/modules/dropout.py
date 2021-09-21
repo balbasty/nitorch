@@ -1,6 +1,6 @@
 """Dropout layer"""
 from torch import nn as tnn
-from .base import Module, nitorchmodule
+from ..base import Module, nitorchmodule
 
 
 class Dropout(Module):

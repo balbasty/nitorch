@@ -1,4 +1,6 @@
-from .base import Module
+"""Work In Progress: joint segmentation and registration"""
+
+from nitorch.nn.base import Module
 from .cnn import UNet, UUNet, WNet, UNet2, SEWNet
 from .spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax
@@ -452,7 +454,7 @@ class SegMorphUNet(BaseMorph):
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=[activation, ..., None],
-                         batch_norm=batch_norm,
+                         norm=batch_norm,
                          groups=groups,
                          stitch=stitch)
 
@@ -635,7 +637,7 @@ class SegMorphRUNet(BaseMorph):
                           kernel_size=kernel_size,
                           conv_per_layer=conv_per_layer,
                           activation=[activation, None],
-                          batch_norm=batch_norm,
+                          norm=batch_norm,
                           nb_iter=nb_iter,
                           residual=residual)
 
@@ -808,7 +810,7 @@ class SegMorphRWNet(BaseMorph):
                            decoder=decoder,
                            kernel_size=kernel_size,
                            activation=[activation, ..., None],
-                           batch_norm=batch_norm)
+                           norm=batch_norm)
 
         in_channels = int('image' in unet_inputs) \
                          + int('seg' in unet_inputs) \
@@ -820,7 +822,7 @@ class SegMorphRWNet(BaseMorph):
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=[activation, ..., None],
-                         batch_norm=batch_norm)
+                         norm=batch_norm)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target',
@@ -1074,7 +1076,7 @@ class SegMorphWNet2(BaseMorph):
                          skip=skip,
                          kernel_size=kernel_size,
                          activation=[activation, None],
-                         batch_norm=batch_norm)
+                         norm=batch_norm)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
@@ -1235,7 +1237,7 @@ class SegMorphWNet3(BaseMorph):
                          skip=skip,
                          kernel_size=kernel_size,
                          activation=[activation, None],
-                         batch_norm=batch_norm)
+                         norm=batch_norm)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
@@ -1386,7 +1388,7 @@ class SegMorphWNet4(BaseMorph):
                             decoder=decoder,
                             kernel_size=kernel_size,
                             activation=activation,
-                            batch_norm=batch_norm)
+                            norm=batch_norm)
 
         nb_feat = self.segnet.final.in_channels
         in_channels = int('image' in unet_inputs) \
@@ -1400,7 +1402,7 @@ class SegMorphWNet4(BaseMorph):
                           decoder=decoder,
                           kernel_size=kernel_size,
                           activation=activation,
-                          batch_norm=batch_norm)
+                          norm=batch_norm)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
@@ -1550,7 +1552,7 @@ class SewMorph(BaseMorph):
         self.sewnet = SEWNet(dim,
                              nb_twins=2,
                              in_channels=1,
-                             mid_channels=mid_channels,
+                             feat_channels=mid_channels,
                              out_channels=dim,
                              encoder=encoder,
                              decoder=decoder,

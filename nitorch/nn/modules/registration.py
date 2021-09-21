@@ -1,9 +1,36 @@
+"""Registration networks
+
+These are mostly re-implementations of VoxelMorph and its derivatives.
+
+VoxelMorph : pair-wise registration network
+AtlasMorph : (unconditional) atlas building
+
+References
+----------
+.. [1] "An Unsupervised Learning Model for Deformable Medical Image Registration"
+    Guha Balakrishnan, Amy Zhao, Mert R. Sabuncu, John Guttag, Adrian V. Dalca
+    CVPR 2018. eprint arXiv:1802.02604
+.. [2] "VoxelMorph: A Learning Framework for Deformable Medical Image Registration"
+    Guha Balakrishnan, Amy Zhao, Mert R. Sabuncu, John Guttag, Adrian V. Dalca
+    IEEE TMI 2019. eprint arXiv:1809.05231
+.. [3] "Unsupervised Learning for Fast Probabilistic Diffeomorphic Registration"
+    Adrian V. Dalca, Guha Balakrishnan, John Guttag, Mert R. Sabuncu
+    MICCAI 2018. eprint arXiv:1805.04605
+.. [4] "Unsupervised Learning of Probabilistic Diffeomorphic Registration for Images and Surfaces"
+    Adrian V. Dalca, Guha Balakrishnan, John Guttag, Mert R. Sabuncu
+    MedIA 2019. eprint arXiv:1903.03545
+.. [5] "Learning Conditional Deformable Templates with Convolutional Networks"
+    A.V. Dalca, M. Rakic, J. Guttag, M.R. Sabuncu.
+    NeurIPS 2019. eprint arXiv:1908.02738
+"""
+
+
 import torch
 from torch import nn as tnn
 from nitorch import core, spatial
 from nitorch.core import py, utils
 from .cnn import UNet2
-from .base import Module
+from nitorch.nn.base import Module
 from .spatial import GridPull, GridResize, GridExp, GridShoot
 from ..activations import SoftMax
 from .. import check

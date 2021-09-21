@@ -1,4 +1,4 @@
-from ..modules.base import Module
+from nitorch.nn.base import Module
 import torch
 
 

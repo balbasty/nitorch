@@ -2,7 +2,7 @@
 
 import torch
 from .base import Loss
-from ..modules import Module
+from nitorch.nn.base import Module
 from nitorch.core import py, utils, math
 
 
@@ -10,7 +10,7 @@ def _pad_norm(x, implicit=False):
     """Add a channel that ensures that prob sum to one if the input has
     an implicit background class. Else, ensures that prob sum to one."""
     if not implicit:
-        return x / x.sum(dim=1, keepdim=True)
+        return x / x.sum(dim=1, keepdim=True).clamp_min_(1e-3)
     x = torch.cat((x, 1 - x.sum(dim=1, keepdim=True)), dim=1)
     return x
 
@@ -158,10 +158,12 @@ class CatDotProduct(Module):
                 raise ValueError('Number of classes not consistent. '
                                  'Expected {} or {} but got {}.'.format(
                                  nb_classes, nb_classes-1, truth.shape[1]))
+
             loss = score * truth
             if weighted is True:
                 dim = truth.dim() - 2
                 weighted = truth.sum(dim=list(range(2, 2 + dim)), keepdim=True)
+                weighted = weighted.float().clamp_min_(0.5)
                 weighted = weighted / py.prod(truth.shape[2:])
                 loss = loss / weighted
             elif weighted not in (None, False):
@@ -190,7 +192,7 @@ class CatDotProduct(Module):
                     dim = truth1.dim() - 2
                     nvox = py.prod(truth1.shape[2:]) or 1
                     w = truth1.sum(dim=list(range(2, 2 + dim)), keepdim=True)
-                    w = w.float() / nvox
+                    w = w.float().clamp_min_(0.5).div_(nvox)
                     loss[:, soft] = loss[:, soft] / w
                 elif weighted not in (None, False):
                     w = utils.make_vector(weighted, **utils.backend(loss))
@@ -481,8 +483,8 @@ class FocalLoss(Loss):
 
         Parameters
         ----------
-        gamma : float, defualt=2
-            Focal parameter (1 == CategoricalLoss)
+        gamma : float, default=2
+            Focal parameter (0 == CategoricalLoss)
         weighted : bool or list[float], default=False
             If True, weight by the inverse class frequency.
             If a list of float, they are user-provided weights.
@@ -650,5 +652,96 @@ class HingeLoss(Loss):
                 score = score.sum(dim=1)
 
         loss = self.dot(score, obs, **overload)
+        loss = loss.sum(dim=1, keepdim=True)
+        return super().forward(loss, **overload)
+
+
+class AlphaLoss(Loss):
+    """Focal loss.
+
+    References
+    ----------
+    .. [1] "A Tunable Loss Function for Robust Classification:
+            Calibration, Landscape, and Generalization"
+           Sypherd, Diaz, Cava, Dasarathy, Kairouz, Sankar
+           ISIT (2019)
+    """
+
+    def __init__(self, alpha=0.5, weighted=False, log=False, implicit=False,
+                 one_hot_map=None, *args, **kwargs):
+        """
+
+        Parameters
+        ----------
+        alpha : float, default=0.5
+            Approximation parameter (1 == CategoricalLoss)
+        weighted : bool or list[float], default=False
+            If True, weight by the inverse class frequency.
+            If a list of float, they are user-provided weights.
+        one_hot_map : list[int or list[int] or None], optional
+            Mapping from one-hot to hard index. Default: identity mapping.
+            Each index of the list corresponds to a soft label.
+            Each soft label can be mapped to a hard label or a list of
+            hard labels. Up to one `None` can be used, in which case the
+            corresponding soft label will be considered a background class
+            and will be mapped to all remaining labels. If `len(one_hot_map)`
+            has one less element than the number of soft labels, such a
+            background class will be appended to the right.
+        log : bool, default=True
+            If True, priors are log-probabilities (pre-softmax).
+            Else, they are probabilities and we take their log in the
+            forward pass.
+        implicit : bool, default=False
+            If True, the one-hot tensors only use K-1 channels to encode
+            K classes.
+        reduction : {'mean', 'sum'} or callable, default='mean'
+            Type of reduction to apply.
+        """
+        super().__init__(*args, **kwargs)
+        self.alpha = alpha
+        self.log = log
+        self.implicit = implicit
+        self.dot = CatDotProduct(weighted, one_hot_map)
+
+    def forward(self, prior, obs, **overload):
+        """
+
+        Parameters
+        ----------
+        prior : (nb_batch, nb_class[-1], *spatial) tensor
+            (Log)-prior probabilities
+        obs : (nb_batch, nb_class[-1]|1, *spatial) tensor
+            Observed classes (or their expectation).
+                * If `obs` has a floating point data type (`half`,
+                  `float`, `double`) it is assumed to hold one-hot or
+                  soft labels, and its channel dimension should be
+                  `nb_class` or `nb_class - 1`.
+                * If `obs` has an integer or boolean data type, it is
+                  assumed to hold hard labels and its channel dimension
+                  should be 1. Eventually, `one_hot_map` is used to map
+                  one-hot labels to hard labels.
+        overload : dict
+            All parameters defined at build time can be overridden
+            at call time.
+
+        Returns
+        -------
+        loss : scalar or tensor
+            The output shape depends on the type of reduction used.
+            If 'mean' or 'sum', this function returns a scalar.
+
+        """
+
+        alpha = overload.pop('alpha', self.alpha)
+        log = overload.pop('log', self.log)
+        implicit = overload.pop('implicit', self.implicit)
+
+        ratio = (alpha - 1)/alpha
+
+        prior = torch.as_tensor(prior)
+        prior = get_prob_explicit(prior, log=log, implicit=implicit)
+        prior = prior.pow(ratio).neg_().add_(1).div_(ratio)
+
+        loss = self.dot(prior, obs)
         loss = loss.sum(dim=1, keepdim=True)
         return super().forward(loss, **overload)

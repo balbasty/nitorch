@@ -216,9 +216,13 @@ def write_data(options):
         oaffine = options.target.affine
 
     # 4) Loop across input files
-    opt = dict(interpolation=options.interpolation,
-               bound=options.bound,
-               extrapolate=options.extrapolate)
+    opt_pull = dict(interpolation=options.interpolation,
+                    bound=options.bound,
+                    extrapolate=options.extrapolate)
+    opt_coeff = dict(interpolation=options.interpolation,
+                     bound=options.bound,
+                     dim=3,
+                     inplace=True)
     output = utils.make_list(options.output, len(options.files))
     for file, ofname in zip(options.files, output):
         ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext)
@@ -239,7 +243,9 @@ def write_data(options):
             grid = build_from_target(oaffine, oshape)
         mat = file.affine.to(**backend)
         imat = spatial.affine_inv(mat)
-        dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt)
+        if options.prefilter:
+            dat = spatial.spline_coeff_nd(dat, **opt_coeff)
+        dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt_pull)
         dat = utils.movedim(dat, 0, -1)
 
         io.volumes.savef(dat, ofname, like=file.fname, affine=oaffine)

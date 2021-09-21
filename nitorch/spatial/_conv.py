@@ -9,6 +9,36 @@ from nitorch.core.py import make_list
 from ._affine import affine_conv
 
 
+def pad_same(dim, tensor, kernel_size, dilation=1, bound='zero'):
+    """Applies a padding that preserves the input dimensions when
+    followed by a convolution-like (i.e. moving window) operation.
+
+    Parameters
+    ----------
+    dim : int
+    tensor : (..., *spatial) tensor
+    kernel_size : [sequence of] int
+    dilation : [sequence f] int, default=1
+    bound : {'zeros', 'dft', 'dct1', 'dct2'}, default='zeros'
+
+    Returns
+    -------
+    padded : (..., *spatial_out) tensor
+
+    """
+    kernel_size = make_list(kernel_size, dim)
+    dilation = make_list(dilation, dim)
+
+    padding = []
+    for i in range(dim):
+        if kernel_size[i] % 2 == 0:
+            raise ValueError('Cannot compute "same" padding '
+                             'for even-sized kernels.')
+        padding[i] = dilation[i] * (kernel_size[i] // 2)
+    padding = [0] * (tensor.dim() - dim) + padding
+    return utils.pad(tensor, padding, side='both', mode=bound)
+
+
 def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
          dilation=1, groups=1):
     """Perform a convolution
@@ -25,9 +55,9 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
         Bias tensor
     stride : int or sequence[int], default=1
         Strides between output elements,
-    padding : 'auto' or int or sequence[int], default=0
+    padding : 'same' or int or sequence[int], default=0
         Padding performed before the convolution.
-        If 'auto', the padding is chosen such that the shape of the
+        If 'same', the padding is chosen such that the shape of the
         output tensor is `spatial_in // stride`.
     bound : str, default='zero'
         Boundary conditions used in the padding.
@@ -70,13 +100,15 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
                              channels_out, bias.numel()))
 
     # Perform padding
-    padding = make_list(padding, dim)
     dilation = make_list(dilation, dim)
+    padding = make_list(padding, dim)
+    padding = [0 if p == 'valid' else 'same' if p == 'auto' else p
+               for p in padding]
     for i in range(dim):
         if isinstance(padding[i], str):
-            assert padding[i].lower() == 'auto'
+            assert padding[i].lower() == 'same'
             if kernel_size[i] % 2 == 0:
-                raise ValueError('Cannot compute automatic padding '
+                raise ValueError('Cannot compute "same" padding '
                                  'for even-sized kernels.')
             padding[i] = dilation[i] * (kernel_size[i] // 2)
     if bound != 'zero' and sum(padding) > 0:
@@ -118,9 +150,9 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         Strides between output elements.
     dilation : int or sequece[int], default=1
         Strides between elements of the kernel.
-    padding : 'auto' or int or sequence[int], default=0
+    padding : 'same' or int or sequence[int], default=0
         Padding performed before the convolution.
-        If 'auto', the padding is chosen such that the shape of the
+        If 'same', the padding is chosen such that the shape of the
         output tensor is `spatial_in // stride`.
     bound : str, default='zero'
         Boundary conditions used in the padding.
@@ -153,11 +185,13 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
     stride = [st or ks for st, ks in zip(stride, kernel_size)]
     dilation = make_list(dilation or 1, dim)
     padding = make_list(padding, dim)
+    padding = [0 if p == 'valid' else 'same' if p == 'auto' else p
+               for p in padding]
     padding0 = padding  # save it to update the affine
     for i in range(dim):
-        if isinstance(padding[i], str) and padding[i].lower() == 'auto':
+        if isinstance(padding[i], str) and padding[i].lower() == 'same':
             if kernel_size[i] % 2 == 0:
-                raise ValueError('Cannot compute automatic padding '
+                raise ValueError('Cannot compute "same" padding '
                                  'for even-sized kernels.')
             padding[i] = ((kernel_size[i]-1) * dilation[i] + 1) // 2
 
@@ -277,7 +311,7 @@ pool3d = lambda *args, **kwargs: pool(3, *args, **kwargs)
 
 
 def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
-           stride=1, padding='auto'):
+           stride=1, padding='same'):
     """Smooth a tensor.
 
     Parameters
@@ -305,9 +339,9 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
         be smoothed.
     stride : [sequence of] int, default=1
         Stride between output elements.
-    padding : [sequence of] int or 'auto', default='auto'
+    padding : [sequence of] int or 'same', default='same'
         Amount of padding applied to the input volume.
-        'auto' ensures that the output dimensions are the same as the
+        'same' ensures that the output dimensions are the same as the
         input dimensions.
 
     Returns

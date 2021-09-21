@@ -296,7 +296,7 @@ class OGM(AcceleratedFirstOrder):
             # gradient and step disagree
             self.restart()
             self.delta = grad.mul(-self.lr)
-        elif (self.damping != 1 and self._grad is not 0 and
+        elif (self.damping != 1 and torch.is_tensor(self._grad) and
               grad.flatten().dot(self._grad.flatten()) < 0):
             # Kim & Fessler (2017) 4.3 (27)
             # consecutive gradients disagree
@@ -342,7 +342,7 @@ class OGM(AcceleratedFirstOrder):
         step = step.sub_(grad, alpha=self.lr * (1 + relaxation))
 
         # save gradient
-        if self._grad is 0:
+        if not torch.is_tensor(self._grad):
             self._grad = grad.mul(self.lr)
         else:
             self._grad.copy_(grad).mul_(self.lr)
@@ -477,7 +477,7 @@ class GaussNewton(SecondOrder):
 class GridGaussNewton(SecondOrder):
     """Base class for Gauss-Newton on displacement grids"""
 
-    def __init__(self, max_iter=16, factor=1, voxel_size=1,
+    def __init__(self, fmg=2, max_iter=2, factor=1, voxel_size=1,
                  absolute=0, membrane=0, bending=0, lame=0, marquardt=True,
                  preconditioner=None, **kwargs):
         super().__init__(**kwargs)
@@ -490,6 +490,7 @@ class GridGaussNewton(SecondOrder):
         self.voxel_size = voxel_size
         self.marquardt = marquardt
         self.max_iter = max_iter
+        self.fmg = fmg
 
     def _get_prm(self):
         prm = dict(absolute=self.absolute,
@@ -497,8 +498,12 @@ class GridGaussNewton(SecondOrder):
                    bending=self.bending,
                    lame=self.lame,
                    factor=self.factor,
-                   voxel_size=self.voxel_size,
-                   max_iter=self.max_iter)
+                   voxel_size=self.voxel_size)
+        if self.fmg:
+            prm['nb_iter'] = self.max_iter
+            prm['nb_cycles'] = self.fmg
+        else:
+            prm['max_iter'] = self.max_iter
         return prm
 
     def _add_marquardt(self, grad, hess, tiny=1e-5):
@@ -521,8 +526,8 @@ class GridCG(GridGaussNewton):
     def step(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess, 1e-5)
         prm = self._get_prm()
-        step = spatial.solve_grid_sym(hess, grad, optim='cg',
-                                      precond=self.preconditioner, **prm)
+        solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
+        step = solver(hess, grad, optim='cg', **prm)
         step.mul_(-self.lr)
         return step
 
@@ -533,8 +538,8 @@ class GridRelax(GridGaussNewton):
     def step(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
-        step = spatial.solve_kernel_grid_sym(hess, grad, optim='relax',
-                                      precond=self.preconditioner, **prm)
+        solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
+        step = solver(hess, grad, optim='relax', **prm)
         step.mul_(-self.lr)
         return step
 
@@ -545,20 +550,8 @@ class GridJacobi(GridGaussNewton):
     def step(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
-        step = spatial.solve_grid_sym(hess, grad, optim='jacobi',
-                                      precond=self.preconditioner, **prm)
-        step.mul_(-self.lr)
-        return step
-
-
-class GridNesterov(GridGaussNewton):
-    """Gauss-Newton on displacement grids using Relaxation"""
-
-    def step(self, grad, hess):
-        grad, hess = self._add_marquardt(grad, hess)
-        prm = self._get_prm()
-        step = spatial.solve_grid_sym(hess, grad, optim='nesterov',
-                                      precond=self.preconditioner, **prm)
+        solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
+        step = solver(hess, grad, optim='jacobi', **prm)
         step.mul_(-self.lr)
         return step
 
@@ -566,7 +559,7 @@ class GridNesterov(GridGaussNewton):
 class FieldGaussNewton(SecondOrder):
     """Base class for Gauss-Newton on vector fields"""
 
-    def __init__(self, max_iter=16, factor=1, voxel_size=1,
+    def __init__(self, fmg=2, max_iter=2, factor=1, voxel_size=1,
                  absolute=0, membrane=0, bending=0, marquardt=True,
                  preconditioner=None, **kwargs):
         super().__init__(**kwargs)
@@ -578,14 +571,19 @@ class FieldGaussNewton(SecondOrder):
         self.voxel_size = voxel_size
         self.marquardt = marquardt
         self.max_iter = max_iter
+        self.fmg = fmg
 
     def _get_prm(self):
         prm = dict(absolute=self.absolute,
                    membrane=self.membrane,
                    bending=self.bending,
                    factor=self.factor,
-                   voxel_size=self.voxel_size,
-                   max_iter=self.max_iter)
+                   voxel_size=self.voxel_size)
+        if self.fmg:
+            prm['nb_iter'] = self.max_iter
+            prm['nb_cycles'] = self.fmg
+        else:
+            prm['max_iter'] = self.max_iter
         return prm
 
     def _add_marquardt(self, grad, hess):
@@ -603,8 +601,8 @@ class FieldCG(FieldGaussNewton):
     def step(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
-        step = spatial.solve_field_sym(hess, grad, optim='cg',
-                                       precond=self.preconditioner, **prm)
+        solver = spatial.solve_field_fmg if self.fmg else spatial.solve_field_sym
+        step = solver(hess, grad, optim='cg', **prm)
         step.mul_(-self.lr)
         return step
 
@@ -615,8 +613,8 @@ class FieldRelax(FieldGaussNewton):
     def step(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
-        step = spatial.solve_field_sym(hess, grad, optim='relax',
-                                       precond=self.preconditioner, **prm)
+        solver = spatial.solve_field_fmg if self.fmg else spatial.solve_field_sym
+        step = solver(hess, grad, optim='relax', **prm)
         step.mul_(-self.lr)
         return step
 

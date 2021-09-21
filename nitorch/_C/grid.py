@@ -183,15 +183,16 @@ def inter_to_nitorch(inter, as_type='str'):
 
 enum_type = 'int' if COMPILED_BACKEND == 'TS' else 'enum'
 
+
 class GridPull(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, input, grid, interpolation, bound, extrapolate, abs):
+    def forward(ctx, input, grid, interpolation, bound, extrapolate):
 
         bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
         interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate, abs)
+        opt = (bound, interpolation, extrapolate)
 
         # Pull
         output = grid_pull(input, grid, *opt)
@@ -218,18 +219,18 @@ class GridPull(torch.autograd.Function):
                     grad_grid = grads[1]
             elif ctx.needs_input_grad[1]:
                 grad_grid = grads[0]
-        return grad_input, grad_grid, None, None, None, None
+        return grad_input, grad_grid, None, None, None
 
 
 class GridPush(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, input, grid, shape, interpolation, bound, extrapolate, abs):
+    def forward(ctx, input, grid, shape, interpolation, bound, extrapolate):
 
         bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
         interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate, abs)
+        opt = (bound, interpolation, extrapolate)
 
         # Push
         output = grid_push(input, grid, shape, *opt)
@@ -256,13 +257,13 @@ class GridPush(torch.autograd.Function):
                     grad_grid = grads[1]
             elif ctx.needs_input_grad[1]:
                 grad_grid = grads[0]
-        return grad_input, grad_grid, None, None, None, None, None
+        return grad_input, grad_grid, None, None, None, None
 
 
 class GridCount(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, grid, shape, interpolation, bound, extrapolate, abs):
+    def forward(ctx, grid, shape, interpolation, bound, extrapolate):
 
         bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
         interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
@@ -270,7 +271,7 @@ class GridCount(torch.autograd.Function):
         opt = (bound, interpolation, extrapolate)
 
         # Push
-        output = grid_count(grid, shape, *opt, 0)
+        output = grid_count(grid, shape, *opt)
 
         # Context
         if grid.requires_grad:
@@ -285,19 +286,19 @@ class GridCount(torch.autograd.Function):
         opt = ctx.opt
         grad_grid = None
         if ctx.needs_input_grad[0]:
-            grad_grid = grid_count_backward(grad, *var, *opt, 0)
-        return grad_grid, None, None, None, None, None
+            grad_grid = grid_count_backward(grad, *var, *opt)
+        return grad_grid, None, None, None, None
 
 
 class GridGrad(torch.autograd.Function):
 
     @staticmethod
-    def forward(ctx, input, grid, interpolation, bound, extrapolate, abs):
+    def forward(ctx, input, grid, interpolation, bound, extrapolate):
 
         bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
         interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
         extrapolate = int(extrapolate)
-        opt = (bound, interpolation, extrapolate, abs)
+        opt = (bound, interpolation, extrapolate)
 
         # Pull
         output = grid_grad(input, grid, *opt)
@@ -325,7 +326,7 @@ class GridGrad(torch.autograd.Function):
                         grad_grid = grads[1]
                 elif ctx.needs_input_grad[1]:
                     grad_grid = grads[0]
-        return grad_input, grad_grid, None, None, None, None
+        return grad_input, grad_grid, None, None, None
 
 
 class SplineCoeff(torch.autograd.Function):
