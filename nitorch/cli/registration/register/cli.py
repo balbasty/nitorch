@@ -1,10 +1,9 @@
 from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
 from nitorch.tools.registration import (pairwise, losses, optim,
-                                        utils as regutils, objects,
-                                        experimental_losses)
+                                        utils as regutils, objects)
 from nitorch import io, spatial
-from nitorch.core import utils, py
+from nitorch.core import utils, py, dtypes
 import torch
 import sys
 import os
@@ -77,13 +76,17 @@ def _load_image(fnames, dim=None, device=None, label=False):
     """Load a N-D image from disk"""
     dat, affine = _map_image(fnames, dim)
     if label:
-        dat0 = dat.data(device=device)
+        dtype = dat.dtype
+        if isinstance(dtype, (list, tuple)):
+            dtype = dtype[0]
+        dtype = dtypes.as_torch(dtype, upcast=True)
+        dat0 = dat.data(device=device, dtype=dtype)[0]  # assume single channel
         if label is True:
             label = dat0.unique(sorted=True)
             label = label[label != 0].tolist()
         dat = torch.zeros([len(label), *dat0.shape], device=device)
         for i, l in enumerate(label):
-            dat[i] = label == l
+            dat[i] = dat0 == l
     else:
         dat = dat.fdata(device=device, rand=True)
     affine = affine.to(dat.device, dat.dtype)
@@ -330,8 +333,8 @@ def _main(options):
         image_dict[loss.mov.name or loss.mov.files[0]] = mov
         dim = fix.dim
         if loss.name == 'mi':
-            lossobj = losses.NMI(bins=loss.bins, norm=loss.norm,
-                                 order=loss.order, dim=dim)
+            lossobj = losses.MI(bins=loss.bins, norm=loss.norm,
+                                order=loss.order, dim=dim)
         elif loss.name == 'mse':
             lossobj = losses.MSE(lam=loss.weight, dim=dim)
         elif loss.name == 'mad':
@@ -344,14 +347,14 @@ def _main(options):
             lossobj = losses.LCC(patch=loss.patch, dim=dim, stride=loss.stride,
                                  mode=loss.kernel)
         elif loss.name == 'gmm':
-            lossobj = experimental_losses.GMMH(bins=loss.bins, dim=dim,
-                                               max_iter=loss.max_iter)
+            lossobj = losses.GMMH(bins=loss.bins, dim=dim,
+                                  max_iter=loss.max_iter)
         elif loss.name == 'lgmm':
-            lossobj = experimental_losses.LGMMH(bins=loss.bins, dim=dim,
-                                                max_iter=loss.max_iter,
-                                                patch=loss.patch,
-                                                stride=loss.stride,
-                                                mode=loss.kernel)
+            lossobj = losses.LGMMH(bins=loss.bins, dim=dim,
+                                   max_iter=loss.max_iter,
+                                   patch=loss.patch,
+                                   stride=loss.stride,
+                                   mode=loss.kernel)
         elif loss.name == 'cat':
             lossobj = losses.Cat(dim=dim, log=False)
             # lossobj = losses.AutoCat()

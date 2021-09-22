@@ -1,10 +1,10 @@
 """Experimental losses based on [local] mixtures of Gaussians."""
 
-from nitorch.core import utils, py, math, constants, linalg, kernels
+from nitorch.core import utils, py
 import math as pymath
 import torch
-from .losses import OptimizationLoss
-from .gmm2 import fit_gmm2, fit_lgmm2, sumspatial, Fwd, Bwd
+from nitorch.tools.registration.losses import OptimizationLoss
+from nitorch.tools.registration.losses.utils_gmm2 import fit_gmm2, fit_lgmm2, sumspatial, Fwd, Bwd
 Tensor = torch.Tensor
 pyutils = py
 
