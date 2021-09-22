@@ -41,8 +41,9 @@ def get_weights(grid, bound: List[Bound], spline: List[Spline],
     coords: List[List[Tensor]] = []
     signs: List[List[Optional[Tensor]]] = []
     for g, b, s, n in zip(grid.unbind(-1), bound, spline, shape):
-        grid0 = (g - (s.order-1)/2).floor().long()
+        grid0 = (g - (s.order-1)/2).floor()
         dist0 = g - grid0
+        grid0 = grid0.long()
         nb_nodes = s.order + 1
         subweights: List[Tensor] = []
         subcoords: List[Tensor] = []

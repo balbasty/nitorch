@@ -14,7 +14,7 @@ def get_weights_and_indices(g, n: int, bound: Bound):
     sign0 = bound.transform(g0, n)
     g1 = bound.index(g1, n)
     g0 = bound.index(g0, n)
-    g = g - g0
+    g = g - g.floor()
     return g, g0, g1, sign0, sign1
 
 
@@ -696,7 +696,7 @@ def pull2d(inp, g, bound: List[Bound], extrapolate: int = 1):
     channel = inp.shape[1]
     shape = list(inp.shape[-dim:])
     nx, ny = shape
-
+    
     # mask of inbounds voxels
     mask = inbounds_mask_2d(extrapolate, gx, gy, nx, ny)
 

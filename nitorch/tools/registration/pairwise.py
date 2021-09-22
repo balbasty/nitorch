@@ -144,7 +144,7 @@ class RegisterStep:
         kdim = 3 if dim == 3 else 1
         bdim = min(nb_batch, 3)
         nb_rows = kdim * bdim + 1
-        nb_cols = 4 + (vel is not None)
+        nb_cols = 4 + bool(vel)
 
         if len(self.figure.axes) != nb_rows*nb_cols:
             self.figure.clf()
@@ -171,7 +171,7 @@ class RegisterStep:
                     if b == 0 and k == 0:
                         plt.title('fixed')
                     plt.axis('off')
-                    if vel is not None:
+                    if vel:
                         plt.subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 5)
                         plt.imshow(vel[k][b].cpu())
                         if b == 0 and k == 0:
@@ -603,7 +603,7 @@ class RegisterStep:
 
             is_level0 = True
             for moving, fixed in zip(loss.moving, loss.fixed):  # pyramid
-
+                
                 # build complete warp
                 aff = spatial.affine_matmul(aff00, fixed.affine)
                 aff = spatial.affine_lmdiv(moving.affine, aff)
