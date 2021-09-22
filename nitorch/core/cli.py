@@ -226,13 +226,29 @@ class CommandParser:
                           help='Show this help', default=False)
             self.options.append(hopt)
 
+    def _check_help_arg(self, args):
+        help_tags = None
+        for opt in self.options:
+            if opt.name == 'help':
+                help_tags = opt.tags
+                break
+        if not help_tags:
+            return False
+        for arg in args:
+            if arg in self.groups.tags:
+                return False
+            if arg in help_tags:
+                return True
+        return False
+
     def parse(self, args):
+        if self._check_help_arg(args):
+            return Parsed(help=True)
+
         nargs = len(args)
         alltags = list(self.options.tags) + list(self.groups.tags)
         obj = self.positionals.parse(args, stops=alltags)
         obj.merge(self.options.parse(args, stops=self.groups.tags))
-        if obj.help:
-            return obj
         obj.merge(self.groups.parse(args))
         if args:
             raise ParseError(f"Don't know what to do with '{args[0]}' "
@@ -372,7 +388,7 @@ class Option:
         for nargs_count in range(mn):
             if args:
                 next_arg = args[0]
-                if not next_arg in stops:
+                if next_arg not in stops:
                     try:
                         next_arg = self.convert(next_arg)
                         if self.validation(next_arg):
@@ -390,6 +406,7 @@ class Option:
                 if next_arg in stops:
                     break
                 try:
+                    print(next_arg)
                     next_arg = self.convert(next_arg)
                 except Exception:
                     break
@@ -402,7 +419,7 @@ class Option:
             for nargs_count in range(mn, mx):
                 if args:
                     next_arg = args[0]
-                    if not next_arg in stops:
+                    if next_arg not in stops:
                         try:
                             next_arg = self.convert(next_arg)
                             if self.validation(next_arg):
@@ -440,6 +457,23 @@ class Group:
         self.groups = GroupList()
         self.positionals = PositionalList()
         self.make_default = make_default
+
+    def __repr__(self):
+        if len(self.tags) == 1:
+            pattern = f'{self.tags[0]}'
+        else:
+            pattern = f'{tuple(self.tags)}'
+
+        s = f'{type(self).__name__}[{self.n}]({self.name}): {pattern}'
+        if self.positionals:
+            s = s + ' ' + ' '.join(map(repr, self.positionals))
+        if self.options:
+            s = s + ' ' + ' '.join(map(repr, self.options))
+        if self.groups:
+            s = s + ' ' + ' '.join(map(repr, self.groups))
+        return s
+
+    __str__ = __repr__
 
     def parse(self, args, stops=tuple()):
         stops = list(stops)
@@ -591,9 +625,11 @@ class ListWithTags(TypedList):
         results = Parsed()
         next_arg = args[0] if args else None
         while next_arg in subtags:
+            found = False
             for option in self:
                 mn, mx = _n_to_minmax(option.n)
                 if next_arg in option.tags:
+                    found = True
                     if len(getattr(results, option.name, [])) >= mx:
                         raise ParseError(f'Too many {next_arg}. Expected '
                                          f'{mn} to {mx} but got at least '
@@ -607,7 +643,10 @@ class ListWithTags(TypedList):
                             setattr(results, option.name, [])
                         getattr(results, option.name).append(value)
                     break
-            next_arg = args[0] if args else None
+            if found:
+                next_arg = args[0] if args else None
+            else:
+                break
 
         # set default values / check minimum values
         for option in self:
@@ -615,9 +654,11 @@ class ListWithTags(TypedList):
             if mx > 1 and len(getattr(results, option.name, [])) < mn:
                 cnt = len(getattr(results, option.name, []))
                 raise ParseError(f'Not enough {option.tags[0]}. Expected '
-                                 f'at least {mn} but got {cnt}.')
+                                 f'at least {mn} but got {cnt}. '
+                                 f'(Last unknown argument was {next_arg})')
             elif mn == mx == 1 and not hasattr(results, option.name):
-                raise ParseError(f'No {option.tags[0]}. Expected 1 but got 0.')
+                raise ParseError(f'No {option.tags[0]}. Expected 1 but got 0. '
+                                 f'(Last unknown argument was {next_arg})')
             if not hasattr(results, option.name):
                 default = option.default
                 if mx > 1:
