@@ -334,7 +334,10 @@ def _main(options):
         dim = fix.dim
         if loss.name == 'mi':
             lossobj = losses.MI(bins=loss.bins, norm=loss.norm,
-                                order=loss.order, dim=dim)
+                                spline=loss.order, fwhm=loss.fwhm, dim=dim)
+        elif loss.name == 'ent':
+            lossobj = losses.Entropy(bins=loss.bins, spline=loss.order,
+                                     fwhm=loss.fwhm, dim=dim)
         elif loss.name == 'mse':
             lossobj = losses.MSE(lam=loss.weight, dim=dim)
         elif loss.name == 'mad':

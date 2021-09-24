@@ -197,12 +197,12 @@ def write_data(options):
                     factor = vx0 / vx1
                     disp, mat = spatial.resize_grid(trf.dat[None], factor,
                                                     affine=mat,
-                                                    interpolation=trf.order)
+                                                    interpolation=trf.spline)
                     disp = spatial.grid_inv(disp[0], type='disp')
                     order = 1
                 else:
                     disp = trf.dat
-                    order = trf.order
+                    order = trf.spline
                 imat = spatial.affine_inv(mat)
                 grid = spatial.affine_matvec(imat, grid)
                 grid += helpers.pull_grid(disp, grid, interpolation=order)

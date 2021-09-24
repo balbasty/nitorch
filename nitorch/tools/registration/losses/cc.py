@@ -217,7 +217,6 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
     return tuple(out) if len(out) > 1 else out[0]
 
 
-
 class CC(OptimizationLoss):
     """Pearson's correlation coefficient (squared)"""
 

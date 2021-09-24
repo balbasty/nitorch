@@ -1,11 +1,85 @@
 from nitorch.core import py, linalg
+from nitorch.core._hist import JointHistCount
 import torch
 from .utils_hist import JointHist
 from .base import HistBasedOptimizationLoss
 pyutils = py
 
 
-def mi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
+def entropy(moving, fixed, dim=None, bins=64, order=1, fwhm=2,
+            grad=True, hess=True, minmax=False, mask=None):
+    """(Negative) Entropy
+
+    Parameters
+    ----------
+    moving : (..., K, *spatial) tensor
+        Moving image with K channels.
+    fixed : (..., K, *spatial) tensor
+        Fixed image with K channels.
+    dim : int, default=`fixed.dim() - 1`
+        Number of spatial dimensions.
+    bins : int, default=64
+        Number of bins in the joing histogram.
+    order : int, default=3
+        Order of B-splines encoding the histogram.
+    grad : bool, default=True
+        Compute an return gradient
+    hess : bool, default=True
+        Compute and return approximate Hessian
+
+    Returns
+    -------
+    ll : () tensor
+        Negative Entropy
+    grad : (..., K, *spatial) tensor
+    hess : (..., K, *spatial) tensor
+
+    """
+
+    hist = JointHistCount(bins=bins, order=order, fwhm=fwhm)
+
+    shape = moving.shape
+    dim = dim or fixed.dim() - 1
+    nvox = pyutils.prod(shape[-dim:])
+    moving = moving.reshape([*moving.shape[:-dim], -1])
+    fixed = fixed.reshape([*fixed.shape[:-dim], -1])
+    idx = torch.stack([moving, fixed], -1)
+    if mask is not None:
+        mask = mask.to(fixed.device)
+        mask = mask.reshape([*mask.shape[:-dim], -1])
+
+    if minmax not in (True, False, None):
+        mn, mx = minmax
+        pxy, mn, mx = hist.forward(idx, min=mn, max=mx, w=mask, return_minmax=True)
+    else:
+        pxy, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
+    pxy = pxy.clamp(1e-8)
+    pxy /= nvox
+    hxy = -(pxy * pxy.log()).sum([-1, -2], keepdim=True)
+
+    out = []
+    if grad or hess:
+        if grad:
+            g = pxy.log().add_(1).neg_()
+            g = g.div_(nvox)
+            g = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
+            g = g.reshape(shape)
+            out.append(g)
+
+        if hess:
+            H = pxy.reciprocal()
+            H = H.div_(nvox*nvox)
+            H = hist.backward2(H, idx, w=mask)[..., 0]
+            H = H.reshape(shape)
+            out.append(H)
+
+    out = [hxy, *out]
+    if minmax is True:
+        out.extend([mn, mx])
+    return tuple(out) if len(out) > 1 else out[0]
+
+
+def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
        grad=True, hess=True, minmax=False, mask=None):
     """(Normalized) Mutual Information
 
@@ -44,7 +118,7 @@ def mi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
 
     """
 
-    hist = JointHist(n=bins, order=order, fwhm=fwhm)
+    hist = JointHistCount(bins=bins, order=order, fwhm=fwhm)
 
     shape = moving.shape
     dim = dim or fixed.dim() - 1
@@ -52,104 +126,65 @@ def mi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
     moving = moving.reshape([*moving.shape[:-dim], -1])
     fixed = fixed.reshape([*fixed.shape[:-dim], -1])
     idx = torch.stack([moving, fixed], -1)
+    del moving, fixed
     if mask is not None:
         mask = mask.to(fixed.device)
         mask = mask.reshape([*mask.shape[:-dim], -1])
 
     if minmax not in (True, False, None):
         mn, mx = minmax
-        h, mn, mx = hist.forward(idx, min=mn, max=mx, mask=mask)
+        h, mn, mx = hist.forward(idx, min=mn, max=mx, w=mask, return_minmax=True)
     else:
-        h, mn, mx = hist.forward(idx, mask=mask)
+        h, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
     h = h.clamp(1e-8)
     h /= nvox
 
     pxy = h
-    px = pxy.sum(-2, keepdim=True)
-    py = pxy.sum(-1, keepdim=True)
+    px = pxy.sum(-1, keepdim=True)
+    py = pxy.sum(-2, keepdim=True)
 
     hxy = -(pxy * pxy.log()).sum([-1, -2], keepdim=True)
     hx = -(px * px.log()).sum([-1, -2], keepdim=True)
     hy = -(py * py.log()).sum([-1, -2], keepdim=True)
 
     if norm == 'studholme':
-        nmi = (hx + hy) / hxy  # Studholme's NMI + 1
+        # studholme nmi = mi / hxy = (hx + hy) / hxy - 1
+        nmi = (hx + hy) / hxy
     elif norm == 'arithmetic':
-        nmi = -hxy / (hx + hy)  # 1 - Arithmetic normalization
+        # arithmetic nmi = mi / (hx + hy) = 1 - hxy / (hx + hy)
+        nmi = -hxy / (hx + hy)
     else:
+        # unnormalized mutual info
         nmi = hx + hy - hxy
 
     out = []
-    if grad or hess:
+    if grad:
         if norm == 'studholme':
-            g0 = ((1 + px.log()) + (1 + py.log())) - nmi * (1 + pxy.log())
-            g0 /= hxy
+            g = ((1 + px.log()) + (1 + py.log())) - nmi * (1 + pxy.log())
+            g /= hxy
         elif norm == 'arithmetic':
-            g0 = nmi * ((1 + px.log()) + (1 + py.log())) + (1 + pxy.log())
-            g0 = -g0 / (hx + hy)
+            g = -nmi * ((1 + px.log()) + (1 + py.log())) + (1 + pxy.log())
+            g /= (hx + hy)
         else:
-            g0 = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
-        if grad:
-            g = hist.backward(idx, g0/nvox, mask=mask)[..., 0]
-            g = g.reshape(shape)
-            out.append(g)
+            g = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
+        g = g.div_(nvox)
+        g = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
+        g = g.reshape(shape)
+        out.append(g)
 
-        if hess:
-            # This Hessian is for Studholme's normalization only!
-            # I need to derive one for Arithmetic/None cases
-
-            # True Hessian: not positive definite
-            ones = torch.ones([bins, bins])
-            g0 = g0.flatten(start_dim=-2)
-            pxy = pxy.flatten(start_dim=-2)
-            h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
-            h = h + h.transpose(-1, -2)
-            h = h.abs().sum(-1)
-            tmp = linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed())
-            # h -= tmp
-            tmp += linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones)
-            # h -= tmp
-            h += tmp.abs().sum(-1)
-            # h += (nmi/pxy).flatten(start_dim=-2).diag_embed()
-            h += (nmi/pxy).flatten(start_dim=-2).abs()
-            h /= hxy.flatten(start_dim=-2)
-            # h.neg_()
-            # h = h.abs().sum(-1)
-            # h.diagonal(0, -1, -2).abs()
-            # h = h.reshape([*h.shape[:-1], bins, bins])
-
-            # h = (2 - nmi) * py.reciprocal() / hxy
-            # h = h.diag_embed()
-
-            # Approximate Hessian: positive definite
-            # I take the positive definite majorizer diag(|H|1) of each
-            # term in the sum.
-            #   H = H1 + H2 + H2 + H4
-            #   => P = diag(|H1|1) + diag(|H1|2) + diag(|H1|3) + diag(|H1|4)
-            # ones = torch.ones([bins, bins])
-            # g0 = g0.flatten(start_dim=-2)
-            # pxy = pxy.flatten(start_dim=-2)
-            # # 1) diag(|H1|1)
-            # h = (g0[..., :, None] * (1 + pxy.log()[..., None, :]))
-            # h = h + h.transpose(-1, -2)
-            # h = h.abs_().sum(-1)
-            # # 2) diag(|H2|1)
-            # tmp = linalg.kron2(ones, px[..., 0, :].reciprocal().diag_embed())
-            # tmp = tmp.abs_().sum(-1)
-            # h += tmp
-            # # 3) diag(|H3|1)
-            # tmp = linalg.kron2(py[..., :, 0].reciprocal().diag_embed(), ones)
-            # tmp = tmp.abs_().sum(-1)
-            # h += tmp
-            # # 4) |H4| (already diagonal)
-            # h += (nmi/pxy).flatten(start_dim=-2).abs()
-            # # denominator
-            # h /= hxy.flatten(start_dim=-2).abs()
-
-            # project
-            h = hist.backward(idx, h/nvox, hess=True, mask=mask)[..., 0]
-            h = h.reshape(shape)
-            out.append(h)
+    if hess:
+        if norm == 'studholme':
+            H = (nmi / pxy - 1 / px + 1 / py) / hxy
+        elif norm == 'arithmetic':
+            H = (1 / pxy + nmi * (1 / px + 1 / py)) / (hx + hy)
+        else:
+            H = 1 / pxy - 1 / px - 1 / py
+        H = H.div_(nvox)
+        H = hist.backward2(H, idx, w=mask)[..., 0]
+        H = H.reshape(shape)
+        delta = g/H
+        print(delta.abs().max(), delta.abs().mean())
+        out.append(H)
 
     nmi = -nmi
     if norm == 'studholme':
@@ -163,12 +198,13 @@ def mi(moving, fixed, dim=None, bins=64, order=5, fwhm=2, norm='studholme',
         out.extend([mn, mx])
     return tuple(out) if len(out) > 1 else out[0]
 
-class MI(HistBasedOptimizationLoss):
-    """Normalized cross-correlation"""
 
-    order = 1  # Gradient defined
+class Entropy(HistBasedOptimizationLoss):
+    """entorpy"""
 
-    def __init__(self, dim=None, bins=None, order=3, fwhm=2, norm='studholme'):
+    order = 2  # Gradient defined
+
+    def __init__(self, dim=None, bins=None, spline=1, fwhm=2):
         """
 
         Parameters
@@ -176,7 +212,124 @@ class MI(HistBasedOptimizationLoss):
         dim : int, default=`fixed.dim() - 1`
             Number of spatial dimensions
         """
-        super().__init__(dim, bins, order, fwhm=fwhm)
+        super().__init__(dim, bins, spline, fwhm=fwhm)
+        self.minmax = None
+
+    def loss(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+
+        """
+        dim = kwargs.pop('dim', self.dim)
+        bins = self.bins or self.autobins(fixed, dim)
+        if self.minmax is None:
+            ll, *minmax = entropy(moving, fixed, grad=False, hess=False,
+                                  bins=bins, order=self.spline,
+                                  dim=dim, fwhm=self.fwhm,
+                                  minmax=True, **kwargs)
+            self.minmax = minmax
+            return ll
+        else:
+            return entropy(moving, fixed, grad=False, hess=False,
+                           bins=bins, order=self.spline,
+                           dim=dim, fwhm=self.fwhm,
+                           minmax=self.minmax, **kwargs)
+
+    def loss_grad(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+
+        """
+        dim = kwargs.pop('dim', self.dim)
+        bins = self.bins or self.autobins(fixed, dim)
+        if self.minmax is None:
+            ll, g, *minmax = entropy(moving, fixed, grad=True, hess=False,
+                                     bins=bins, order=self.spline,
+                                     dim=dim, fwhm=self.fwhm,
+                                     minmax=True, **kwargs)
+            self.minmax = minmax
+            return ll, g
+        else:
+            return entropy(moving, fixed, grad=True, hess=False,
+                           bins=bins, order=self.spline,
+                           dim=dim, fwhm=self.fwhm,
+                           minmax=self.minmax, **kwargs)
+
+    def loss_grad_hess(self, moving, fixed, **kwargs):
+        """Compute the [weighted] mse (* 0.5)
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        ll : () tensor
+            Loss
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+        h : (..., K*(K+1)//2, *spatial) tensor, optional
+            Hessian with respect to the moving image.
+            Its spatial dimensions are singleton when `acceleration == 0`.
+
+        """
+        dim = kwargs.pop('dim', self.dim)
+        bins = self.bins or self.autobins(fixed, dim)
+        if self.minmax is None:
+            ll, g, h, *minmax = entropy(moving, fixed, grad=True, hess=True,
+                                        bins=bins, order=self.spline,
+                                        dim=dim, fwhm=self.fwhm,
+                                        minmax=True, **kwargs)
+            self.minmax = minmax
+            return ll, g, h
+        else:
+            return entropy(moving, fixed, grad=True, hess=True,
+                           bins=bins, order=self.spline,
+                           dim=dim, fwhm=self.fwhm,
+                           minmax=self.minmax, **kwargs)
+
+
+class MI(HistBasedOptimizationLoss):
+    """Normalized cross-correlation"""
+
+    order = 2  # Gradient defined
+
+    def __init__(self, dim=None, bins=None, spline=1, fwhm=2, norm='studholme'):
+        """
+
+        Parameters
+        ----------
+        dim : int, default=`fixed.dim() - 1`
+            Number of spatial dimensions
+        """
+        super().__init__(dim, bins, spline, fwhm=fwhm)
         self.norm = norm
         self.minmax = False
 
@@ -198,19 +351,19 @@ class MI(HistBasedOptimizationLoss):
         """
         dim = kwargs.pop('dim', self.dim)
         bins = kwargs.pop('bins', self.bins)
-        order = kwargs.pop('order', self.order)
+        spline = kwargs.pop('spline', self.spline)
         norm = kwargs.pop('norm', self.norm)
         fwhm = kwargs.pop('fwhm', self.fwhm)
         bins = bins or self.autobins(fixed, dim)
         if self.minmax is None:
             ll, *minmax = mi(moving, fixed, grad=False, hess=False,
-                             norm=norm, bins=bins, dim=dim, fwhm=fwhm,
+                             norm=norm, bins=bins, order=spline, dim=dim, fwhm=fwhm,
                              minmax=True, **kwargs)
             self.minmax = minmax
             return ll
         else:
             return mi(moving, fixed, grad=False, hess=False, norm=norm,
-                      bins=bins, order=order, dim=dim, fwhm=fwhm,
+                      bins=bins, order=spline, dim=dim, fwhm=fwhm,
                       minmax=self.minmax, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
@@ -233,17 +386,19 @@ class MI(HistBasedOptimizationLoss):
         """
         dim = kwargs.pop('dim', self.dim)
         bins = kwargs.pop('bins', self.bins)
-        order = kwargs.pop('order', self.order)
+        spline = kwargs.pop('spline', self.spline)
         norm = kwargs.pop('norm', self.norm)
+        fwhm = kwargs.pop('fwhm', self.fwhm)
         bins = bins or self.autobins(fixed, dim)
         if self.minmax is None:
             ll, g, *minmax = mi(moving, fixed, hess=False, norm=norm,
-                                bins=bins, dim=dim, minmax=True, **kwargs)
+                                bins=bins, order=spline, dim=dim, minmax=True,
+                                fwhm=fwhm, **kwargs)
             self.minmax = minmax
             return ll, g
         else:
             return mi(moving, fixed, hess=False, norm=norm,
-                      bins=bins, order=order, dim=dim,
+                      bins=bins, order=spline, dim=dim, fwhm=fwhm,
                       minmax=self.minmax, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
@@ -269,15 +424,17 @@ class MI(HistBasedOptimizationLoss):
         """
         dim = kwargs.pop('dim', self.dim)
         bins = kwargs.pop('bins', self.bins)
-        order = kwargs.pop('order', self.order)
+        spline = kwargs.pop('spline', self.spline)
         norm = kwargs.pop('norm', self.norm)
+        fwhm = kwargs.pop('fwhm', self.fwhm)
         bins = bins or self.autobins(fixed, dim)
         if self.minmax is None:
-            ll, g, h, *minmax = mi(moving, fixed, norm=norm,
-                                   bins=bins, dim=dim, minmax=True, **kwargs)
+            ll, g, h, *minmax = mi(moving, fixed, norm=norm, fwhm=fwhm,
+                                   bins=bins, order=spline, dim=dim,
+                                   minmax=True, **kwargs)
             self.minmax = minmax
             return ll, g, h
         else:
-            return mi(moving, fixed, norm=norm,
-                      bins=bins, order=order, dim=dim,
+            return mi(moving, fixed, norm=norm, fwhm=fwhm,
+                      bins=bins, order=spline, dim=dim,
                       minmax=self.minmax, **kwargs)

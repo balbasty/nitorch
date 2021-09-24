@@ -1,5 +1,6 @@
 from nitorch import spatial
 from nitorch._C import grid as _spatial
+from nitorch.core import py
 import torch
 
 
@@ -22,7 +23,7 @@ class JointHist:
         extrapolate : bool, default=False
 
         """
-        self.n = n
+        self.n = py.make_list(n, 2)
         self.order = order
         self.bound = bound
         self.extrapolate = extrapolate
@@ -84,11 +85,11 @@ class JointHist:
         #   deciding if a coordinate is inbounds.
         extrapolate = self.extrapolate or 2
         if mask is None:
-            h = spatial.grid_count(x[:, None], [self.n, self.n], self.order,
+            h = spatial.grid_count(x[:, None], self.n, self.order,
                                    self.bound, extrapolate)[:, 0]
         else:
             mask = mask.to(x.device, x.dtype)
-            h = spatial.grid_push(mask, x[:, None], [self.n, self.n], self.order,
+            h = spatial.grid_push(mask, x[:, None], self.n, self.order,
                                   self.bound, extrapolate)[:, 0]
         h = h.to(x.dtype)
         h = h.reshape([*shape[:-2], *h.shape[-2:]])
@@ -153,7 +154,6 @@ class JointHist:
             g = _spatial.grid_grad(g[:, None], x[:, None],
                                    bound, order, extrapolate)
             g = g.reshape(shape)
-            g /= nvox*nvox
 
         # adjoint of affine function
         nn = torch.as_tensor(self.n, dtype=x.dtype, device=x.device)

@@ -519,6 +519,12 @@ class GridGaussNewton(SecondOrder):
             hess[..., :dim] += self.marquardt
         return grad, hess
 
+    def __repr__(self):
+        fmg = self.fmg or 'False'
+        return f'{type(self).__name__}(lr={self.lr}, fmg={fmg})'
+
+    __str__ = __repr__
+
 
 class GridCG(GridGaussNewton):
     """Gauss-Newton on displacement grids using Conjugate Gradients"""

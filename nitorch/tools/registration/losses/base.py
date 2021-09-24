@@ -51,11 +51,11 @@ class OptimizationLoss:
 class HistBasedOptimizationLoss(OptimizationLoss):
     """Base class for histogram-bases losses"""
 
-    def __init__(self, dim=None, bins=None, order=3, fwhm=2):
+    def __init__(self, dim=None, bins=None, spline=3, fwhm=2):
         super().__init__()
         self.dim = dim
         self.bins = bins
-        self.order = order
+        self.spline = spline
         self.fwhm = fwhm
 
     def autobins(self, image, dim):

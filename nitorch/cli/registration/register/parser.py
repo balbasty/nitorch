@@ -261,7 +261,8 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 
 # Loss group
 loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
-                'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice'}
+                'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
+                'entropy': 'ent'}
 loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
@@ -295,9 +296,15 @@ loss.add_suboption('mi', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
                    convert=int, help='Number of bins in joint histogram')
 loss.add_suboption('mi', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
                    convert=float, help='Smoothing of the joint histogram, in bins.')
-loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=3,
+loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
                    convert=int, help='Spline order of the joint histogram')
 loss.add_suboption('mi', patch_option)
+loss.add_suboption('ent', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
+                   convert=int, help='Number of bins in joint histogram')
+loss.add_suboption('ent', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
+                   convert=float, help='Smoothing of the joint histogram, in bins.')
+loss.add_suboption('ent', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
+                   convert=int, help='Spline order of the joint histogram')
 loss.add_suboption('lcc', patch_option)
 loss.add_suboption('lcc', stride_option)
 loss.add_suboption('lcc', kernel_option)
@@ -380,7 +387,7 @@ optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  default='wolfe', convert=number_or_str(int),
                  help='Number of backtracking line search')
 optim.add_option('tolerance', ('-t', '--tolerance'), nargs=1,
-                 convert=float, default=1e-4, help='Tolerance for early stopping')
+                 convert=float, default=1e-3, help='Tolerance for early stopping')
 optim.add_suboption('gn', 'marquardt', ('-m', '--marquardt'), nargs=1,
                     default=None, convert=number_or_str(float),
                     help='Levenberg-Marquardt regularization')
@@ -477,7 +484,7 @@ joptim_choices = cli.Positional('name', nargs='?', default='interleaved',
                                 help='Joint optimization strategy ')
 joptim = cli.NamedGroup('optim', joptim_choices, '@optim', n='?')
 joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
-                     default=10, convert=int, help='Maximum number of iterations')
+                     default=5, convert=int, help='Maximum number of iterations')
 joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
                      convert=float, default=1e-5, help='Tolerance for early stopping')
 

@@ -251,6 +251,7 @@ class RegisterStep:
                 bwdloss.symmetric = 'backward'
                 losses.append(bwdloss)
 
+        has_printed = False
         for loss in losses:
 
             factor = loss.factor
@@ -301,9 +302,10 @@ class RegisterStep:
                     else:
                         mask = mask * fixed.mask
 
-                if is_level0 and self.verbose > 1 and not in_line_search \
+                if not has_printed and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
-                    is_level0 = False
+                    # is_level0 = False
+                    has_printed = True
                     init = spatial.affine_lmdiv(moving.affine, fixed.affine)
                     if _almost_identity(init) and moving.shape == fixed.shape:
                         init = moving.dat
@@ -408,6 +410,7 @@ class RegisterStep:
                 bwdloss.symmetric = 'backward'
                 losses.append(bwdloss)
 
+        has_printed = False
         for loss in losses:
 
             factor = loss.factor
@@ -465,9 +468,10 @@ class RegisterStep:
                     else:
                         mask = mask * fixed.mask
 
-                if is_level0 and self.verbose > 1 and not in_line_search \
+                if not has_printed and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
                     is_level0 = False
+                    has_printed = True
                     init = spatial.affine_lmdiv(moving.affine, fixed.affine)
                     if _almost_identity(init) and moving.shape == fixed.shape:
                         init = moving.dat
@@ -589,6 +593,7 @@ class RegisterStep:
                 bwdloss.symmetric = 'backward'
                 losses.append(bwdloss)
 
+        has_printed = False
         for loss in losses:
 
             factor = loss.factor
@@ -619,9 +624,10 @@ class RegisterStep:
                     else:
                         mask = mask * fixed.mask
 
-                if is_level0 and self.verbose > 1 and not in_line_search \
+                if not has_printed and self.verbose > 1 and not in_line_search \
                         and loss.symmetric != 'backward':
                     is_level0 = False
+                    has_printed = True
                     init = spatial.affine_lmdiv(moving.affine, fixed.affine)
                     if _almost_identity(init) and moving.shape == fixed.shape:
                         init = moving.dat
