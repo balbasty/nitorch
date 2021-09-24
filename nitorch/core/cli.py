@@ -228,22 +228,26 @@ class CommandParser:
 
     def _check_help_arg(self, args):
         help_tags = None
+        opt_help = None
         for opt in self.options:
             if opt.name == 'help':
                 help_tags = opt.tags
+                opt_help = opt
                 break
         if not help_tags:
-            return False
-        for arg in args:
+            return None
+        for i, arg in enumerate(args):
             if arg in self.groups.tags:
-                return False
+                return None
             if arg in help_tags:
-                return True
-        return False
+                stops = list(self.options.tags) + list(self.groups.tags)
+                return opt_help.parse(args[i+1:], stops=stops)
+        return None
 
     def parse(self, args):
-        if self._check_help_arg(args):
-            return Parsed(help=True)
+        help_opt = self._check_help_arg(args)
+        if help_opt is not None:
+            return Parsed(help=help_opt)
 
         nargs = len(args)
         alltags = list(self.options.tags) + list(self.groups.tags)
@@ -406,7 +410,6 @@ class Option:
                 if next_arg in stops:
                     break
                 try:
-                    print(next_arg)
                     next_arg = self.convert(next_arg)
                 except Exception:
                     break
