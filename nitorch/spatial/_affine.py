@@ -2176,7 +2176,7 @@ def affine_default(shape, voxel_size=1., layout=None, center=0.,
 
     # compute shift
     lin = layout[:nb_dim, :nb_dim]
-    shift = center - linalg.matvec(lin, shape/2.)
+    shift = center - linalg.matvec(lin, (shape-1)/2.)
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
     return affine_make_homogeneous(as_euclidean(affine))
