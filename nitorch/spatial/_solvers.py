@@ -1660,11 +1660,4 @@ def solve_grid_closedform(hessian, gradient, weights=None,
     if is_diag:
         return gradient / hessian
     else:
-        def solve(h, x):
-            h = h.transpose(-dim-1, -1)
-            x = x.transpose(-dim-1, -1)
-            x = sym_solve(h, x)
-            x = x.transpose(-dim-1, -1)
-            return x
-
-        return solve(hessian, gradient)
+        return sym_solve(hessian, gradient)
