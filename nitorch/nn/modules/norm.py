@@ -61,7 +61,7 @@ class BatchNorm(Module):
             Normalized tensor
 
         """
-        return self.batchnorm(x)
+        return self.norm(x)
 
     in_channels = property(lambda self: self.norm.num_features)
     out_channels = property(lambda self: self.norm.num_features)

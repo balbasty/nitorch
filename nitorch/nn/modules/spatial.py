@@ -230,7 +230,7 @@ class GridPushCount(Module):
 class GridExp(Module):
     """Exponentiate a stationary velocity field."""
 
-    def __init__(self, fwd=True, inv=False, steps=8,
+    def __init__(self, fwd=True, inv=False, steps=8, anagrad=False,
                  interpolation='linear', bound='dft', displacement=False):
         """
 
@@ -245,6 +245,8 @@ class GridExp(Module):
             Use `1` to use a small displacements model instead of a
             diffeomorphic one. Default is an educated guess based on the
             magnitude of the velocity field.
+        anagrad : bool, default=False
+            Use analytical gradients. Uses less memory but less accurate.
         interpolation : {0..7}, default=1
             Interpolation order. Can also be names ('nearest', 'linear', etc.).
         bound : {'dft', 'dct1', 'dct2', 'dst1', 'dst2'}, default='dft'
@@ -260,6 +262,7 @@ class GridExp(Module):
         self.interpolation = interpolation
         self.bound = bound
         self.displacement = displacement
+        self.anagrad = anagrad
 
     def forward(self, velocity, fwd=None, inv=None):
         """
@@ -287,7 +290,8 @@ class GridExp(Module):
             steps=self.steps,
             interpolation=self.interpolation,
             bound=self.bound,
-            displacement=self.displacement)
+            displacement=self.displacement,
+            anagrad=self.anagrad)
 
         output = []
         if fwd:

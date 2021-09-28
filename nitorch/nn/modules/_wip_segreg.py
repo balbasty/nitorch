@@ -14,7 +14,7 @@ class BaseMorph(Module):
     """Secondary base class for model that implement a morph component"""
 
     def __init__(self, dim, interpolation='linear', grid_bound='dft',
-                 image_bound='dct2', downsample_velocity=2, ):
+                 image_bound='dct2', downsample_velocity=2, anagrad=False):
         super().__init__()
         
         resize_factor = py.make_list(downsample_velocity, dim)
@@ -22,9 +22,12 @@ class BaseMorph(Module):
 
         self.resize = GridResize(interpolation=interpolation,
                                  bound=grid_bound,
-                                 factor=resize_factor)
+                                 factor=resize_factor,
+                                 type='displacement')
         self.velexp = GridExp(interpolation=interpolation,
-                              bound=grid_bound)
+                              bound=grid_bound,
+                              displacement=True,
+                              anagrad=anagrad)
         self.pull = GridPull(interpolation=interpolation,
                              bound=image_bound)
         self.dim = dim
@@ -50,12 +53,12 @@ class BaseMorph(Module):
 
         # generate grid
         shape = velocity.shape[1:-1]
-        velocity_small = self.resize(velocity, type='displacement')
+        velocity_small = self.resize(velocity)
         grid = self.velexp(velocity_small)
-        grid = self.resize(grid, shape=shape, type='grid')
+        grid = self.resize(grid, output_shape=shape)
+        if not displacement:
+            grid = spatial.add_identity_grid_(grid)
 
-        if displacement:
-            grid = grid - spatial.identity_grid(grid.shape[1:-1], **backend)
         return grid
 
     def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None,
@@ -397,7 +400,7 @@ class SegMorphUNet(BaseMorph):
     def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
                  kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
                  interpolation='linear', grid_bound='dft', image_bound='dct2',
-                 downsample_velocity=2, batch_norm=True, implicit=True,
+                 downsample_velocity=2, norm='batch', implicit=True,
                  groups=None, stitch=1):
         """
 
@@ -417,7 +420,7 @@ class SegMorphUNet(BaseMorph):
         grid_bound : str, default='dft'
         image_bound : str, default='dct2'
         downsample_velocity : int, default=2
-        batch_norm : bool, default=True
+        norm : bool, default='batch'
         implicit : bool or (bool, bool), default=True
             If the first element is True, the UNet only outputs `output_classes`
             channels (i.e., it does not model the background). The missing
@@ -435,14 +438,14 @@ class SegMorphUNet(BaseMorph):
             downsample_velocity,
         )
 
-        self.implicit = py.make_list(implicit, 2)
+        self.implicit = py.ensure_list(implicit, 2)
         self.output_classes = output_classes
         if not self.implicit[0]:
             output_classes = output_classes + 1
         self.softmax = SoftMax(implicit=implicit)
 
-        groups = py.make_list(groups)
-        stitch = py.make_list(stitch)
+        groups = py.ensure_list(groups)
+        stitch = py.ensure_list(stitch)
         if (groups[-1] or stitch[-1]) == 2:
             out_channels = [output_classes * 2, dim]
         else:
@@ -454,7 +457,7 @@ class SegMorphUNet(BaseMorph):
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=[activation, ..., None],
-                         norm=batch_norm,
+                         norm=norm,
                          groups=groups,
                          stitch=stitch)
 
@@ -1507,7 +1510,8 @@ class SewMorph(BaseMorph):
     def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
                  kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
                  interpolation='linear', grid_bound='dft', image_bound='dct2',
-                 downsample_velocity=2, batch_norm=True, implicit=True, skip=False):
+                 downsample_velocity=2, norm='batch', implicit=True, skip=False,
+                 anagrad=False):
         """
 
         Parameters
@@ -1526,7 +1530,7 @@ class SewMorph(BaseMorph):
         grid_bound : str, default='dft'
         image_bound : str, default='dct2'
         downsample_velocity : int, default=2
-        batch_norm : bool, default=True
+        norm : {'batch', 'instance', 'layer'}, default='batch'
         implicit : bool or (bool, bool), default=True
             If the first element is True, the UNet only outputs `output_classes`
             channels (i.e., it does not model the background). The missing
@@ -1537,14 +1541,15 @@ class SewMorph(BaseMorph):
             activation to the multi-class case.
         """
         super().__init__(
-            dim,
-            interpolation,
-            grid_bound,
-            image_bound,
-            downsample_velocity,
+            dim=dim,
+            interpolation=interpolation,
+            grid_bound=grid_bound,
+            image_bound=image_bound,
+            downsample_velocity=downsample_velocity,
+            anagrad=anagrad,
         )
 
-        self.implicit = py.make_list(implicit, 2)
+        self.implicit = py.ensure_list(implicit, 2)
         self.output_classes = output_classes
         self.softmax = SoftMax(implicit=implicit)
 
@@ -1558,7 +1563,7 @@ class SewMorph(BaseMorph):
                              decoder=decoder,
                              kernel_size=kernel_size,
                              activation=activation,
-                             batch_norm=batch_norm,
+                             norm=norm,
                              skip=skip)
 
         # register losses/metrics
@@ -1606,7 +1611,7 @@ class SewMorph(BaseMorph):
         check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
 
         # apply net
-        velocity, seg = self.sewnet(source, target)
+        velocity, seg = self.sewnet(source, target, return_feat=True)
         source_seg_pred, target_seg_pred = seg
 
         # deformation

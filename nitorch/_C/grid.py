@@ -378,4 +378,4 @@ class SplineCoeffND(torch.autograd.Function):
         # symmetric filter -> backward == forward
         # (I don't know if I can write into grad, so inplace=False to be safe)
         grad = spline_coeff_nd(grad, *ctx.opt[:-1], inplace=False)
-        return [grad] + [None] * 4
+        return grad, None, None, None, None

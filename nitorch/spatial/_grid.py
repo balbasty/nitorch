@@ -93,7 +93,7 @@ def _preproc(grid, input=None, mode=None):
     [..., [channel], *spatial] and [..., *spatial, dim].
 
     This function broadcasts and reshapes the input tensors accordingly.
-            /!\ This *can* trigger large allocations /!\
+            /!\\ This *can* trigger large allocations /!\\
     """
     dim = grid.shape[-1]
     if input is None:
@@ -471,6 +471,17 @@ def identity_grid(shape, dtype=None, device=None, jitter=False):
 
 
 @torch.jit.script
+def _movedim1(x, source: int, destination: int):
+    dim = x.dim()
+    source = dim + source if source < 0 else source
+    destination = dim + destination if destination < 0 else destination
+    permutation = [d for d in range(dim)]
+    permutation = permutation[:source] + permutation[source+1:]
+    permutation = permutation[:destination] + [source] + permutation[destination:]
+    return x.permute(permutation)
+
+
+@torch.jit.script
 def add_identity_grid_(disp):
     """Adds the identity grid to a displacement field, inplace.
 
@@ -490,8 +501,10 @@ def add_identity_grid_(disp):
     mesh1d = [torch.arange(s, dtype=disp.dtype, device=disp.device)
               for s in spatial]
     grid = torch.meshgrid(mesh1d)
-    for disp1, grid1 in zip(disp.unbind(-1), grid):
-        disp1.add_(grid1)
+    disp = _movedim1(disp, -1, 0)
+    for i, grid1 in enumerate(grid):
+        disp[i].add_(grid1)
+    disp = _movedim1(disp, 0, -1)
     return disp
 
 

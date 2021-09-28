@@ -56,7 +56,7 @@ class Dataset:
             dat = io.loadf(fname, dtype=dtype, device=device)
             dat = Dataset.rescale(dat, qmin, qmax)
         else:
-            dat = io.load(fname, dtype=dtype, deviec=device)
+            dat = io.load(fname, dtype=dtype, device=device)
         dat = dat.squeeze()
         dim = dim or dat.dim()
         dat = utils.unsqueeze(dat, -1, max(0, dim - dat.dim()))
@@ -581,4 +581,6 @@ class PairedDatasetWithSeg(Dataset):
                 segrefs.append(channels)
             dats = torch.stack(dats) if len(dats) > 1 else dats[0][None]
             refs = torch.stack(refs) if len(refs) > 1 else refs[0][None]
+            segs = torch.stack(segs) if len(segs) > 1 else segs[0][None]
+            segrefs = torch.stack(segrefs) if len(segrefs) > 1 else segrefs[0][None]
             yield dats, refs, segs, segrefs
