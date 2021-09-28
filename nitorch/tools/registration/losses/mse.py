@@ -110,7 +110,7 @@ class MSE(OptimizationLoss):
         ----------
         lam : (K|1,) tensor_like
             Precision
-        dim : int, default=1fixed.dim() - 1`
+        dim : int, default=`fixed.dim() - 1`
             Number of spatial dimensions
         """
         super().__init__()
