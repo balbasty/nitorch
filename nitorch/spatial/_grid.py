@@ -84,7 +84,7 @@ _ref_coeff = \
 """
 
 
-def _preproc(grid, input=None):
+def _preproc(grid, input=None, mode=None):
     """Preprocess tensors for pull/push/count/grad
 
     Low level C bindings expect inputs of shape
@@ -108,6 +108,9 @@ def _preproc(grid, input=None):
     input_spatial = input.shape[-dim:]
     channel = 0 if input.dim() == dim else input.shape[-dim-1]
     input_batch = input.shape[:-dim-1]
+
+    if mode == 'push':
+        grid_spatial = input_spatial = utils.expanded_shape(grid_spatial, input_spatial)
 
     # broadcast and reshape
     batch = utils.expanded_shape(grid_batch, input_batch)
@@ -232,7 +235,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
         Spatted image.
 
     """
-    grid, input, shape_info = _preproc(grid, input)
+    grid, input, shape_info = _preproc(grid, input, mode='push')
     dim = grid.shape[-1]
 
     if shape is None:
