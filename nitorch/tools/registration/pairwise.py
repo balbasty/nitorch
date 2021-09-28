@@ -781,6 +781,6 @@ class Register:
         if self.verbose:
             print('')
 
-        return
+        return step.loss_value
 
 
