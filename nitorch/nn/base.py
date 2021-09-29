@@ -14,19 +14,21 @@ import inspect
 class Module(tnn.Module):
     """A class that defines methods to manipulate losses, metrics, etc.
 
-    No class actually inherits it. It is only used to hold method
-    definitions that are assigned to other classes by a decorator.
+    Classes can either inherit it, or use the @nitorchmodule decorator.
     """
     _nitorchmodule = True
 
     def __init__(self):
         super().__init__()
-        self.losses = {}
-        self.metrics = {}
+        self.losses = {'train': {}, 'eval': {}}
+        self.metrics = {'train': {}, 'eval': {}}
         self.tags = []
-        self.augmenters = []
+        self.augmenters = {'train': [], 'eval': []}
 
     def __call__(self, *args, **kwargs):
+        mode = 'train' if self.training else 'eval'
+        for augmenter in self.augmenters[mode]:
+            args = augmenter(*args)
         if '_loss' in kwargs.keys():
             if not '_loss' in inspect.signature(self.forward).parameters.keys():
                 kwargs.pop('_loss')
@@ -35,18 +37,27 @@ class Module(tnn.Module):
                 kwargs.pop('_metric')
         return super().__call__(*args, **kwargs)
 
-    def add_augmenter(self, augmenter):
+    def add_augmenter(self, augmenter, only='train'):
         """Add one or more augmenters.
 
         Parameters
         ----------
         augmenter : callable
             Function that applies some augmentation.
+        only : {'train', 'eval', None}, default='train'
 
         """
-        self.augmenters.append(augmenter)
+        if not only:
+            self.augmenters['train'].append(augmenter)
+            self.augmenters['eval'].append(augmenter)
+        elif only.lower() == 'train':
+            self.augmenters['train'].append(augmenter)
+        elif only.lower() == 'eval':
+            self.augmenters['eval'].append(augmenter)
+        else:
+            raise ValueError(f'Unknown `only`: {only}')
 
-    def add_loss(self, tag, *loss_fn, **named_loss_fn):
+    def add_loss(self, tag, *loss_fn, only=None, **named_loss_fn):
         """Add one or more loss functions.
 
         Parameters
@@ -55,20 +66,38 @@ class Module(tnn.Module):
             Tag/category of the loss
         loss_fn, named_loss_fn : callable or [callable, float]
             Function of two arguments that returns a scalar value.
+        only : {'train', 'eval', None}, optional
+            Whether this loss should be computed only in train or eval
+            mode. If None (default), it is computed in both cases.
 
         """
         if tag not in self.tags:
             raise ValueError('Loss tag "{}" not registered. '
                              'Registered tags are {}.'
                              .format(tag, self.tags))
-        if tag not in self.losses.keys():
-            self.losses[tag] = {}
-        if '' not in self.losses[tag].keys():
-            self.losses[tag][''] = []
-        self.losses[tag][''] += list(loss_fn)
-        self.losses[tag].update(dict(named_loss_fn))
+        if tag not in self.losses['train'].keys():
+            self.losses['train'][tag] = {}
+        if tag not in self.losses['eval'].keys():
+            self.losses['eval'][tag] = {}
+        if '' not in self.losses['train'][tag].keys():
+            self.losses['train'][tag][''] = []
+        if '' not in self.losses['eval'][tag].keys():
+            self.losses['eval'][tag][''] = []
+        if not only:
+            self.losses['train'][tag][''] += list(loss_fn)
+            self.losses['train'][tag].update(dict(named_loss_fn))
+            self.losses['eval'][tag][''] += list(loss_fn)
+            self.losses['eval'][tag].update(dict(named_loss_fn))
+        elif only.lower() == 'train':
+            self.losses['train'][tag][''] += list(loss_fn)
+            self.losses['train'][tag].update(dict(named_loss_fn))
+        elif only.lower() == 'eval':
+            self.losses['eval'][tag][''] += list(loss_fn)
+            self.losses['eval'][tag].update(dict(named_loss_fn))
+        else:
+            raise ValueError(f'Unknown `only`: {only}')
 
-    def set_loss(self, tag, *loss_fn, **named_loss_fn):
+    def set_loss(self, tag, *loss_fn, only=None, **named_loss_fn):
         """Set one or more image loss functions.
 
         Parameters
@@ -77,14 +106,28 @@ class Module(tnn.Module):
             Tag/category of the loss
         loss_fn, named_loss_fn : callable or [callable, float]
             Function of two arguments that returns a scalar value.
+        only : {'train', 'eval', None}, optional
+            Whether this loss should be computed only in train or eval
+            mode. If None (default), it is computed in both cases.
 
         """
         if tag not in self.tags:
             raise ValueError('Loss tag "{}" not registered. '
                              'Registered tags are {}.'
                              .format(tag, self.tags))
-        self.losses[tag] = dict(named_loss_fn)
-        self.losses[tag][''] = list(loss_fn)
+        if not only:
+            self.losses['train'][tag] = dict(named_loss_fn)
+            self.losses['train'][tag][''] = list(loss_fn)
+            self.losses['eval'][tag] = dict(named_loss_fn)
+            self.losses['eval'][tag][''] = list(loss_fn)
+        elif only.lower() == 'train':
+            self.losses['train'][tag] = dict(named_loss_fn)
+            self.losses['train'][tag][''] = list(loss_fn)
+        elif only.lower() == 'eval':
+            self.losses['eval'][tag] = dict(named_loss_fn)
+            self.losses['eval'][tag][''] = list(loss_fn)
+        else:
+            raise ValueError(f'Unknown `only`: {only}')
 
     def compute_loss(self, *, prepend=False, **tag_args):
         """Compute all losses.
@@ -107,6 +150,7 @@ class Module(tnn.Module):
         metric : dict
             Dictionary of unweighted loss values
         """
+        mode = 'train' if self.training else 'eval'
         loss = {}
         metric = {}
 
@@ -122,7 +166,7 @@ class Module(tnn.Module):
             metric[key] = val
             loss[key] = val if weight == 1 else weight * val
 
-        for tag, losses in self.losses.items():
+        for tag, losses in self.losses[mode].items():
             if tag not in tag_args:
                 continue
             args = tag_args[tag]
@@ -135,7 +179,7 @@ class Module(tnn.Module):
 
         return loss, metric
 
-    def add_metric(self, tag, **metric_fn):
+    def add_metric(self, tag, only=None, **metric_fn):
         """Add one or more metric functions.
 
         Parameters
@@ -144,19 +188,34 @@ class Module(tnn.Module):
             Tag/category of the metric
         metric_fn : callable or [callable, float]
             Function of two arguments that returns a scalar value.
+        only : {'train', 'eval', None}, optional
+            Whether this loss should be computed only in train or eval
+            mode. If None (default), it is computed in both cases.
 
         """
         if tag not in self.tags:
             raise ValueError('Metric tag "{}" not registered. '
                              'Registered tags are {}.'
                              .format(tag, self.tags))
-        if tag not in self.metrics.keys():
-            self.metrics[tag] = {}
-        if '' not in self.metrics[tag].keys():
-            self.metrics[tag][''] = []
-        self.metrics[tag].update(dict(metric_fn))
+        if tag not in self.metrics['train'].keys():
+            self.metrics['train'][tag] = {}
+        if tag not in self.metrics['eval'].keys():
+            self.metrics['eval'][tag] = {}
+        if '' not in self.metrics['train'][tag].keys():
+            self.metrics['train'][tag][''] = []
+        if '' not in self.metrics['eval'][tag].keys():
+            self.metrics['eval'][tag][''] = []
+        if not only:
+            self.metrics['train'][tag].update(dict(metric_fn))
+            self.metrics['eval'][tag].update(dict(metric_fn))
+        elif only.lower() == 'train':
+            self.metrics['train'][tag].update(dict(metric_fn))
+        elif only.lower() == 'eval':
+            self.metrics['eval'][tag].update(dict(metric_fn))
+        else:
+            raise ValueError(f'Unknown `only`: {only}')
 
-    def set_metric(self, tag, **metric_fn):
+    def set_metric(self, tag, only=None, **metric_fn):
         """Set one or more metric functions.
 
         Parameters
@@ -165,13 +224,24 @@ class Module(tnn.Module):
             Tag/category of the metric
         metric_fn : callable or [callable, float]
             Function of two arguments that returns a scalar value.
+        only : {'train', 'eval', None}, optional
+            Whether this loss should be computed only in train or eval
+            mode. If None (default), it is computed in both cases.
 
         """
         if tag not in self.tags:
             raise ValueError('Metric tag "{}" not registered. '
                              'Registered tags are {}.'
                              .format(tag, self.tags))
-        self.metrics[tag] = dict(metric_fn)
+        if not only:
+            self.metrics['train'][tag] = dict(metric_fn)
+            self.metrics['eval'][tag] = dict(metric_fn)
+        elif only.lower() == 'train':
+            self.metrics['train'][tag] = dict(metric_fn)
+        elif only.lower() == 'eval':
+            self.metrics['eval'][tag] = dict(metric_fn)
+        else:
+            raise ValueError(f'Unknown `only`: {only}')
 
     def compute_metric(self, *, prepend=False, **tag_args):
         """Compute all metrics.
@@ -193,6 +263,7 @@ class Module(tnn.Module):
             Dictionary of metric values
 
         """
+        mode = 'train' if self.training else 'eval'
         metric = {}
 
         def add_metric(type, key, fn, *args):
@@ -205,7 +276,7 @@ class Module(tnn.Module):
             with torch.no_grad():
                 metric[key] = fn(*args)
 
-        for tag, metrics in self.metrics.items():
+        for tag, metrics in self.metrics[mode].items():
             if tag not in tag_args:
                 continue
             args = tag_args[tag]
@@ -294,14 +365,17 @@ def nitorchmodule(klass):
     init = klass.__init__
     def __init__(self, *args, **kwargs):
         init(self, *args, **kwargs)
-        self.losses = {}
-        self.metrics = {}
+        self.losses = {'train': {}, 'eval': {}}
+        self.metrics = {'train': {}, 'eval': {}}
         self.tags = []
-        self.augmenters = []
+        self.augmenters = {'train': [], 'eval': []}
     klass.__init__ = __init__
 
     call = klass.__call__
     def __call__(self, *args, **kwargs):
+        mode = 'train' if self.training else 'eval'
+        for augmenter in self.augmenters[mode]:
+            args = augmenter(*args)
         if '_loss' in kwargs.keys():
             if not '_loss' in inspect.signature(self.forward).parameters.keys():
                 kwargs.pop('_loss')
@@ -310,7 +384,7 @@ def nitorchmodule(klass):
                 kwargs.pop('_metric')
         return call(self, *args, **kwargs)
     klass.__call__ = __call__
-#
+
 # #     _getattr = klass.__getattr__
 # #     def __getattr__(self, name):
 # #         # overload pytorch's getter to allow access to properties
