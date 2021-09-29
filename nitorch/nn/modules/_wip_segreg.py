@@ -158,29 +158,45 @@ class BaseMorph(Module):
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_image(plane, source, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Source')
                     if source_seg is not None:
                         idx += 1
                         ax = fig.add_subplot(nrow, ncol, idx, **prm)
                         ax.imshow(get_label(plane, source_seg, b))
+                        if b == 0 and p == 0:
+                            ax.set_title('Source [seg]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_label(plane, source_pred, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Source [pred]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_image(plane, target, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Target')
                     if target_seg is not None:
                         idx += 1
                         ax = fig.add_subplot(nrow, ncol, idx, **prm)
                         ax.imshow(get_label(plane, target_seg, b))
+                        if b == 0 and p == 0:
+                            ax.set_title('Target [seg]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_label(plane, target_pred, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Target [pred]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_image(plane, source_warped, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Warped')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_velocity(plane, velocity, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Velocity')
             fig.subplots_adjust(wspace=0, hspace=0)
             return fig
 
@@ -1507,10 +1523,20 @@ class SewMorph(BaseMorph):
     Image B ->   "  -> Feat B [+ Image B] -> |
     """
 
-    def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
-                 kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
-                 interpolation='linear', grid_bound='dft', image_bound='dct2',
-                 downsample_velocity=2, norm='batch', implicit=True, skip=False,
+    def __init__(self,
+                 dim,
+                 output_classes=1,
+                 encoder=None,
+                 decoder=None,
+                 kernel_size=3,
+                 activation=torch.nn.LeakyReLU(0.2),
+                 interpolation='linear',
+                 grid_bound='dft',
+                 image_bound='dct2',
+                 downsample_velocity=2,
+                 norm='batch',
+                 implicit=True,
+                 skip=False,
                  anagrad=False):
         """
 
