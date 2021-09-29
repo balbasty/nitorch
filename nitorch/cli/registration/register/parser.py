@@ -219,6 +219,17 @@ def number_or_str(type=float):
     return _number_or_str
 
 
+def bool_or_str(x):
+    if x.lower() in ('true', 'yes'):
+        return True
+    if x.lower() in ('false', 'no'):
+        return False
+    try:
+        return bool(int(x))
+    except ValueError:
+        return x
+
+
 def parse_range(x):
     if ':' not in x:
         return [int(x)]
@@ -326,10 +337,10 @@ file = cli.Group('file', n=1, help='Volume to register')
 file.add_positional('files', nargs='1*', help='File names')
 file.add_option('output', ('-o', '--output'), nargs='?',
                 default='{dir}{sep}{base}.registered{ext}',
-                convert=number_or_str(bool),
+                convert=bool_or_str,
                 help='Path to the output with minimal reslicing')
 file.add_option('resliced', ('-r', '--resliced'), nargs='?',
-                default=False, convert=number_or_str(bool),
+                default=False, convert=bool_or_str,
                 help='Path to the output resliced to the other \'s space')
 file.add_option('pyramid', ('-p', '--pyramid'), nargs='1*',
                 default=[0], convert=parse_range,
@@ -343,7 +354,7 @@ file.add_option('bound', ('-b', '--bound'), nargs=1, default='dct2',
                 help='Boundary condition')
 file.add_option('order', ('-n', '--order'), nargs=1, default=1,
                 convert=int, help='Interpolation order')
-file.add_option('extrapolate', ('-x', '--extrapolate'), nargs=0, default=False,
+file.add_option('extrapolate', ('-x', '--extrapolate'), nargs=0, default=True,
                 convert=bool, help='Extrapolate out-of-bounds')
 file.add_option('affine', ('-a', '--affine'), nargs='+', default=[],
                 help='Path to one or more world-to-world affine transforms to apply')
