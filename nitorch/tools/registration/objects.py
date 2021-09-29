@@ -361,7 +361,19 @@ class ImagePyramid(Image):
         return cls(dat, **kwargs)
 
 
-class Displacement(SpatialTensor):
+class SpatialTransform:
+    pass
+
+
+class AffineTransform(SpatialTransform):
+    pass
+
+
+class DenseTransform(SpatialTransform):
+    pass
+
+
+class Displacement(SpatialTensor, DenseTransform):
     """Data + Metadata (affine) of a displacement or velocity field"""
     def __init__(self, dat, affine=None, dim=None, **backend):
         """
@@ -394,38 +406,46 @@ class Displacement(SpatialTensor):
         return cls(dat, **kwargs)
 
 
-class LogAffine:
+class LogAffine(AffineTransform):
     """Data + Metadata (basis) of a "Lie" affine matrix"""
-    def __init__(self, dat=None, basis=None, dim=None, **backend):
+    def __init__(self, dat=None, basis=None, dim=3, **backend):
         """
         Parameters
         ----------
         [dat : tensor, optional]
             Pre-allocated log-affine
-        basis : tensor or str
-            Pre-computed Lie basis, or its name
+        basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
+            Name of an Affine basis
         dim : int, default=3
             Number of spatial dimensions
         **backend
         """
-        if isinstance(dat, str) or \
-                (torch.is_tensor(dat) and dat.dim() == 3):
+        if isinstance(dat, str):
             if basis is not None:
                 raise ValueError('`basis` provided but `dat` looks like '
                                  'a basis.')
             basis, dat = dat, None
-        if not isinstance(basis, str):
-            dim = dim or basis.shape[-1] - 1
-        else:
-            dim = dim or 3
-            basis = spatial.affine_basis(basis, dim, **backend)
+        elif basis is None:
+            raise ValueError('A basis should be provided')
+        self._basis = None
         self.basis = basis
         self.dim = dim
         if dat is None:
-            dat = torch.zeros(basis.shape[0], **backend)
+            dat = torch.zeros(spatial.affine_basis_size(basis, dim), **backend)
         self.dat = dat
         self._cache = None
         self._icache = None
+
+    @property
+    def basis(self):
+        if self._basis is None:
+            self._basis = spatial.affine_basis(self._basis_name, self.dim,
+                                               **utils.backend(self.dat))
+        return self._basis
+
+    @basis.setter
+    def basis(self, x):
+        self._basis_name = x
 
     def clear_cache(self):
         self._cache = None
@@ -1060,22 +1080,13 @@ class SmallDefModel(NonLinModel):
 class AffineModel:
     """Affine transformation model encoded in a Lie algebra"""
 
-    # translate common names to Lie group names
-    _name_to_basis = {
-        'translation': 'T',
-        'rotation': 'SO',
-        'rigid': 'SE',
-        'similitude': 'CSO',
-        'affine': 'Aff+',
-    }
-
     def __init__(self, basis, factor=1, prm=None, dat=None, position='symmetric'):
         """
 
         Parameters
         ----------
         basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
-            or the name of a Lie group.
+            Affine basis name
         factor : float, default=1
             Regularization factor
         prm : dict(), unused
@@ -1089,7 +1100,7 @@ class AffineModel:
         """
         self.factor = factor
         self.prm = prm or {}  # regutils.defaults_affine()
-        self._basis = self._name_to_basis.get(basis, basis)
+        self._basis = basis
         self.position = position
         if dat is not None:
             self.set_dat(dat)
