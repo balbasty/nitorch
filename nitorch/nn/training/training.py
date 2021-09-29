@@ -497,6 +497,8 @@ class ModelTrainer:
             across all batches.
 
         """
+        getitem = lambda x: x.item() if hasattr(x, 'item') else x
+
         name = 'Train' if mode == 'train' else 'Eval '
         if last:
             pct = 1
@@ -512,15 +514,15 @@ class ModelTrainer:
 
         values = ''
         if mode == 'train':
-            values += '| loss = {:12.6g} '.format(loss.item())
+            values += '| loss = {:12.6g} '.format(getitem(loss))
             if losses and self.show_losses:
                 values += '|'
                 for key, val in losses.items():
-                    values += ' {}: {:12.6g} '.format(key, val.item())
+                    values += ' {}: {:12.6g} '.format(key, getitem(val))
         if metrics and (mode == 'eval' or self.show_metrics):
             values += '|'
             for key, val in metrics.items():
-                values += ' {}: {:12.6g} '.format(key, val.item())
+                values += ' {}: {:12.6g} '.format(key, getitem(val))
 
         print(evolution + values, end='\r', flush=True)
         if last:
@@ -530,10 +532,11 @@ class ModelTrainer:
         """Add losses and metrics to tensorboard."""
         if not self.tensorboard:
             return
+        getitem = lambda x: x.item() if hasattr(x, 'item') else x
         tb = self.tensorboard
-        tb.add_scalars('loss', {mode: loss.item()}, epoch)
+        tb.add_scalars('loss', {mode: getitem(loss)}, epoch)
         for tag, value in epoch_metrics.items():
-            tb.add_scalars(tag, {mode: value.item()}, epoch)
+            tb.add_scalars(tag, {mode: getitem(value)}, epoch)
         tb.flush()
 
     def add_tensorboard_callback(self, func, mode='train', trigger='epoch'):
