@@ -136,8 +136,9 @@ class RegisterStep:
         for f, w in zip(fixed, warped):
             c = f.clone()
             patch = max([s // 8 for s in f.shape])
-            checker_unfold = utils.unfold(c, [patch] * 2, [2 * patch] * 2)
-            warped_unfold = utils.unfold(w, [patch] * 2, [2 * patch] * 2)
+            patch = [min(patch, s) for s in c.shape]
+            checker_unfold = utils.unfold(c, patch, sum(patch) * 2)
+            warped_unfold = utils.unfold(w, patch, sum(patch) * 2)
             checker_unfold.copy_(warped_unfold)
             checker.append(c)
 
