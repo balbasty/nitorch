@@ -1,28 +1,74 @@
 """Mathematical functions."""
-
 # mikael.brudfors@gmail.com
 # yael.balbastre@gmail.com
 
 import torch
 from .constants import inf, ninf
 from nitorch.core import py, utils
-from typing import List, Optional, Tuple
-import math as pymath
 Tensor = torch.Tensor
 
 
 def round(t, decimals=0):
-    """ Round a tensor to the given number of decimals.
+    """Round a tensor to the given number of decimals.
 
-    Args:
-        t (torch.tensor) Tensor.
-        decimals (int, optional): Round to this decimal, defaults to zero.
+    Parameters
+    ----------
+    t : tensor
+        Input tensor.
+    decimals : int, default=0
+        Round to this decimal.
 
-    Returns:
-        t (torch.tensor): Rounded tensor.
+    Returns
+    -------
+    t : tensor
+        Rounded tensor.
 
     """
     return torch.round(t * 10 ** decimals) / (10 ** decimals)
+
+
+# ======================================================================
+#
+#                             REDUCTIONS
+#
+# ======================================================================
+"""
+Reductions
+==========
+
+This first section reimplements several reduction functions (sum, mean,
+max...), with a more consistent API than the native pytorch one:
+- all functions can reduce across multiple dimensions simultaneously
+- min/max/median functions only return the reduced tensor by default
+  (not the original indices of the returned elements).
+  They have a specific argument `return_indices` to request these indices.
+- all functions have an `omitnan` argument, or alternatively a `nan`
+  version (e.g., `nansum`) where `omitnan=True` by default.
+
+The typical API for all functions is:
+```{python}
+def fn(input, dim=None, keepdim=False, omitnan=False, inplace=False, out=None):
+  \"\"\"
+  input   : tensor, Input tensor
+  dim     : int or sequence[int], Dimensions to reduce (default: all)
+  keepdim : bool, Do not sequeeze reduced dimensions (default: False)
+  omitnan : bool, Discard NaNs form the reduction (default: False)
+  inplace : bool, Allow the input tensor to be modified (default: False)
+                  (only useful in conjunction with `omitnan=True`)
+  out     : tensor, Output placeholder
+  \"\"\"
+```
+
+Reduction functions that pick a value from the input tensor (e.g., `max`) 
+have the additional argument:
+```{python}
+def fn(..., return_indices=False):
+  \"\"\"
+  return_indices : bool, Also return indices of the picked elements
+  \"\"\"
+```
+
+"""
 
 
 def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
@@ -653,6 +699,43 @@ def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
     return input
 
 
+# ======================================================================
+#
+#                              SIMPLEX
+#
+# ======================================================================
+"""
+Simplex
+=======
+This section concerns functions that deal with data lying on the simplex,
+i.e., probabilities. Specifically, we implement `softmax`, `log_softmax`,
+`logsumexp` and `logit`. While most of these functions already exist in 
+PyTorch, we define more generic function that accept an "implicit" class.
+This implicit class exists due to the constrained nature of discrete 
+probabilities, which must sum to one, meaning that their space ("the simplex")
+has one less dimensions than the number of classes. Similarly, we can restrain
+the logit (= log probability) space to be of dimension K-1 by forcing one of 
+the classes to have logits of arbitrary value (e.g., zero). This trick 
+makes functions like softmax invertible.
+
+Note that in the 2-class case, it is extremely common to work in this 
+implicit setting by using the sigmoid function over a single logit instead 
+of the softmax function over two logits. 
+
+All functions below accept an argument `implicit` which takes either one 
+(boolean) value or a tuple of two (boolean) values. The first value 
+specifies if the input tensor has an explicit class while the second value 
+specified if the output tensor should have an implicit class. 
+
+Note that to minimize the memory footprint and numerical errors, most 
+backward passes are explicitely reimplemented (rather than relying on 
+autmatic diffentiation). This is because these function involve multiple 
+calls to `log` and `exp`, which must all store their input in order to 
+backpropagate, whereas a single tensor needs to be stored to backpropagate 
+through the entire softmax function.
+"""
+
+
 def _lse_fwd(input, dim=-1, keepdim=False, implicit=False):
     input = torch.as_tensor(input).clone()
 
@@ -730,6 +813,7 @@ def logsumexp(input, dim=-1, keepdim=False, implicit=False):
 def _add_class(x, bg, dim, index):
     # for implicit softmax
     if isinstance(bg, (int, float)):
+        print(bg, utils.backend(x))
         bg = torch.as_tensor(bg, **utils.backend(x))
         bgshape = list(x.shape)
         bgshape[dim] = 1
@@ -831,7 +915,6 @@ class _Softmax(torch.autograd.Function):
 def logit(input, dim=-1, implicit=False, implicit_index=0):
     """(Multiclass) logit function
 
-
     Notes
     -----
     .. logit(x)_k = log(x_k) - log(x_K), where K is an arbitrary channel.
@@ -843,8 +926,6 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
         .. softmax(logit(x, implicit=False), implicit=False) == x
     .. `logit(x, implicit=True)`, with `x.shape[dim] == 1` is equivalent
        to the "classical" binary logit function (inverse of the sigmoid).
-
-
 
     Parameters
     ----------
@@ -1021,6 +1102,13 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
         return input, maxval
     else:
         return input
+
+
+# ======================================================================
+#
+#                           SPECIAL FUNCTIONS
+#
+# ======================================================================
 
 
 if utils.torch_version('>=', (1, 6)):
