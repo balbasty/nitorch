@@ -5,6 +5,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from nitorch.core.utils import benchmark, isin
 from nitorch.core.py import make_tuple
 from nitorch.nn.modules import Module
+from torch.cuda.amp import autocast, GradScaler
 import string
 import math
 import os
@@ -137,6 +138,7 @@ class ModelTrainer:
                  initial_epoch=0,
                  log_interval=None,
                  benchmark=False,
+                 autocast=False,
                  seed=None,
                  tensorboard=None,
                  save_model=None,
@@ -195,6 +197,8 @@ class ModelTrainer:
             pass to compare different convolution algorithms and select the
             best performing one. You should only use this option if the
             spatial shape of your input data is constant across mini batches.
+        autocast : bool, default=False
+            Automatically cast to half-precision when beneficial.
         seed : int, optional
             Manual seed to use for training. The seed is set when
             training starts. A context manager is used so that the global
@@ -223,6 +227,7 @@ class ModelTrainer:
         self.eval_set = eval_set
         self.log_interval = log_interval
         self.benchmark = benchmark
+        self.autocast = autocast
         self.seed = seed
         self.initial_seed = seed
         self.tensorboard = tensorboard
@@ -346,6 +351,9 @@ class ModelTrainer:
 
         self.model.train()
 
+        if self.autocast and not getattr(self, 'grad_scaler', None):
+            self.grad_scaler = GradScaler()
+
         # initialize
         epoch_loss = 0.
         epoch_losses = {}
@@ -368,11 +376,17 @@ class ModelTrainer:
             nb_batches += batch_size
             # forward pass
             self.optimizer.zero_grad()
-            output = self.model(*batch, _loss=losses, _metric=metrics)
-            loss = sum(losses.values())
+            with autocast(self.autocast):
+                output = self.model(*batch, _loss=losses, _metric=metrics)
+                loss = sum(losses.values())
             # backward pass
-            loss.backward()
-            self.optimizer.step()
+            if self.autocast:
+                self.grad_scaler.scale(loss).backward()
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
             # update average across batches
             with torch.no_grad():
                 batch_size = float(batch_size)

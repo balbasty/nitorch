@@ -653,26 +653,7 @@ def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
     return input
 
 
-def logsumexp(input, dim=-1, keepdim=False, implicit=False):
-    """Numerically stabilised log-sum-exp (lse).
-
-    Parameters
-    ----------
-    input : tensor
-        Input tensor.
-    dim : int, defualt=-1
-        The dimension or dimensions to reduce.
-    keepdim : bool, default=False
-        Whether the output tensor has dim retained or not.
-    implicit : bool, default=False
-        Assume that an additional (hidden) channel ith value zero exists.
-
-    Returns
-    -------
-    lse : tensor
-        Output tensor.
-
-    """
+def _lse_fwd(input, dim=-1, keepdim=False, implicit=False):
     input = torch.as_tensor(input).clone()
 
     lse = input.max(dim=dim, keepdim=True)[0]
@@ -691,31 +672,95 @@ def logsumexp(input, dim=-1, keepdim=False, implicit=False):
     return lse
 
 
-def _softmax_fwd(input, dim=-1, implicit=False):
-    """ SoftMax (safe).
+def _lse_bwd(input, output_grad, dim=-1, keepdim=False, implicit=False):
+    input = _softmax_fwd(input, dim, implicit)
+    if not keepdim:
+        output_grad = output_grad.unsqueeze(dim)
+    input *= output_grad
+    return input
+
+
+class _LSE(torch.autograd.Function):
+    """Log-Sum-Exp with implicit class."""
+
+    @staticmethod
+    def forward(ctx, input, dim, keepdim, implicit):
+
+        # Save precomputed components of the backward pass
+        needs_grad = torch.is_tensor(input) and input.requires_grad
+        if needs_grad:
+            ctx.save_for_backward(input)
+            ctx.args = {'dim': dim, 'implicit': implicit, 'keepdim': keepdim}
+
+        return _lse_fwd(input, dim=dim, keepdim=keepdim, implicit=implicit)
+
+    @staticmethod
+    def backward(ctx, output_grad):
+
+        input, = ctx.saved_tensors
+        return _lse_bwd(input, output_grad,
+                        dim=ctx.args['dim'],
+                        keepdim=ctx.args['keepdim'],
+                        implicit=ctx.args['implicit']), None, None, None
+
+
+def logsumexp(input, dim=-1, keepdim=False, implicit=False):
+    """Numerically stabilised log-sum-exp (lse).
 
     Parameters
     ----------
-    input : torch.tensor
-        Tensor with values.
+    input : tensor
+        Input tensor.
     dim : int, default=-1
-        Dimension to take softmax, defaults to last dimensions.
-    implicit : bool or (bool, bool), default=False
-        The first value relates to the input tensor and the second
-        relates to the output tensor.
-        - implicit[0] == True assumes that an additional (hidden) channel
-          with value zero exists.
-        - implicit[1] == True drops the last class from the
-          softmaxed tensor.
+        The dimension or dimensions to reduce.
+    keepdim : bool, default=False
+        Whether the output tensor has dim retained or not.
+    implicit : bool, default=False
+        Assume that an additional (hidden) channel with value zero exists.
 
     Returns
     -------
-    Z : torch.tensor
-        Soft-maxed tensor with values.
+    lse : tensor
+        Output tensor.
 
     """
+    return _LSE.apply(input, dim, keepdim, implicit)
 
-    implicit_in, implicit_out = py.make_list(implicit, 2)
+
+def _add_class(x, bg, dim, index):
+    # for implicit softmax
+    if isinstance(bg, (int, float)):
+        bg = torch.as_tensor(bg, **utils.backend(x))
+        bgshape = list(x.shape)
+        bgshape[dim] = 1
+        bg = bg.expand(bgshape)
+    if index in (-1, x.shape[dim]-1):
+        pieces = [x, bg]
+    elif index in (0, -dim):
+        pieces = [bg, x]
+    else:
+        pieces = [
+            utils.slice_tensor(x, slice(index), dim),
+            bg,
+            utils.slice_tensor(x, slice(index, None), dim)]
+    return torch.cat(pieces, dim=dim)
+
+
+def _remove_class(x, dim, index):
+    # for implicit softmax
+    if index in (-1, x.shape[dim]-1):
+        x = utils.slice_tensor(x, slice(-1), dim)
+    elif index in (0, -dim):
+        x = utils.slice_tensor(x, slice(1, None), dim)
+    else:
+        x = torch.cat([
+            utils.slice_tensor(x, slice(index), dim),
+            utils.slice_tensor(x, slice(index+1, None), dim)])
+    return x
+
+
+def _softmax_fwd(input, dim=-1, implicit=False, implicit_index=0):
+    implicit_in, implicit_out = py.ensure_list(implicit, 2)
 
     maxval, _ = torch.max(input, dim=dim, keepdim=True)
     if implicit_in:
@@ -730,39 +775,15 @@ def _softmax_fwd(input, dim=-1, implicit=False):
 
     if implicit_in and not implicit_out:
         background = input.sum(dim, keepdim=True).neg_().add_(1)
-        input = torch.cat((input, background), dim=dim)
+        input = _add_class(input, background, dim, implicit_index)
     elif implicit_out and not implicit_in:
-        input = utils.slice_tensor(input, slice(-1), dim)
+        input = _remove_class(input, dim, implicit_index)
 
     return input
 
 
-def _softmax_bwd(output, output_grad, dim=-1, implicit=False):
-    """ SoftMax backward pass
-
-    Parameters
-    ----------
-    output : tensor
-        Output of the forward softmax.
-    output_grad : tensor
-        Gradient with respect to the output of the forward pass
-    dim : int, default=-1
-        Dimension to take softmax, defaults to last dimensions.
-    implicit : bool or (bool, bool), default=False
-        The first value relates to the input tensor and the second
-        relates to the output tensor.
-        - implicit[0] == True assumes that an additional (hidden) channel
-          with value zero exists.
-        - implicit[1] == True drops the last class from the
-          softmaxed tensor.
-
-    Returns
-    -------
-    grad : tensor
-        Gradient with respect to the input of the forward pass
-
-    """
-    implicit = py.make_list(implicit, 2)
+def _softmax_bwd(output, output_grad, dim=-1, implicit=False, implicit_index=0):
+    implicit = py.ensure_list(implicit, 2)
     add_dim = implicit[1] and not implicit[0]
     drop_dim = implicit[0] and not implicit[1]
 
@@ -774,7 +795,7 @@ def _softmax_bwd(output, output_grad, dim=-1, implicit=False):
     if add_dim:
         grad_background = output.sum(dim=dim, keepdim=True).neg().add(1)
         grad_background.mul_(gradsum.neg_())
-        grad = torch.cat((grad, grad_background), dim=dim)
+        grad = _add_class(grad, grad_background, dim, implicit_index)
     elif drop_dim:
         grad = utils.slice_tensor(grad, slice(-1), dim)
 
@@ -785,12 +806,13 @@ class _Softmax(torch.autograd.Function):
     """Softmax with implicit class."""
 
     @staticmethod
-    def forward(ctx, input, dim, implicit):
+    def forward(ctx, input, dim, implicit, implicit_index):
 
         # Save precomputed components of the backward pass
         needs_grad = torch.is_tensor(input) and input.requires_grad
         # Compute matrix exponential
-        s = _softmax_fwd(input, dim=dim, implicit=implicit)
+        s = _softmax_fwd(input, dim=dim, implicit=implicit,
+                         implicit_index=implicit_index)
 
         if needs_grad:
             ctx.save_for_backward(s)
@@ -803,15 +825,71 @@ class _Softmax(torch.autograd.Function):
 
         s, = ctx.saved_tensors
         return _softmax_bwd(s, output_grad,  dim=ctx.args['dim'],
-                            implicit=ctx.args['implicit']), None, None
+                            implicit=ctx.args['implicit']), None, None, None
 
 
-def softmax(input, dim=-1, implicit=False):
+def logit(input, dim=-1, implicit=False, implicit_index=0):
+    """(Multiclass) logit function
+
+
+    Notes
+    -----
+    .. logit(x)_k = log(x_k) - log(x_K), where K is an arbitrary channel.
+    .. The logit function is the inverse of the softmax function:
+        .. logit(softmax(x, implicit=True), implicit=True) == x
+        .. softmax(logit(x, implicit=True), implicit=True) == x
+    .. Note that when `implicit=False`, softmax is surjective (many
+       possible logits map to the same simplex value). We only have:
+        .. softmax(logit(x, implicit=False), implicit=False) == x
+    .. `logit(x, implicit=True)`, with `x.shape[dim] == 1` is equivalent
+       to the "classical" binary logit function (inverse of the sigmoid).
+
+
+
+    Parameters
+    ----------
+    input : tensor
+        Tensor of probabilities.
+    dim : int, default=-1
+        Simplex dimension, along which the logit is performed.
+    implicit : bool or (bool, bool), default=False
+        The first value relates to the input tensor and the second
+        relates to the output tensor.
+        - implicit[0] == True assumes that an additional (hidden) channel
+          exists, such as the sum along `dim` is one.
+        - implicit[1] == True drops the implicit channel from the
+          logit tensor.
+    implicit_index : int, default=0
+        Index of the implicit channel. This is the channel whose logits
+        are assumed equal to zero.
+
+    Returns
+    -------
+    output : tensor
+
+    """
+    implicit = py.ensure_list(implicit, 2)
+    if implicit[0]:
+        input_extra = input.sum(dim).neg_().add_(1).clamp_min_(1e-8).log_()
+        input = input.log()
+    else:
+        input = input.log()
+        input_extra = utils.slice_tensor(input, implicit_index, dim)
+        if implicit[1]:
+            input = _remove_class(input, dim, implicit_index)
+    input_extra = input_extra.unsqueeze(dim)
+    input -= input_extra.clone()
+    if implicit[0] and not implicit[1]:
+        input = _add_class(input, 0, dim, implicit_index)
+    return input
+
+
+def softmax(input, dim=-1, implicit=False, implicit_index=0):
     """ SoftMax (safe).
 
     Parameters
     ----------
-    input : torch.tensor
+    input : tensor
         Tensor with values.
     dim : int, default=-1
         Dimension to take softmax, defaults to last dimensions.
@@ -822,23 +900,24 @@ def softmax(input, dim=-1, implicit=False):
           with value zero exists.
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
+    implicit_index : int, default=0
 
     Returns
     -------
-    Z : torch.tensor
+    output : tensor
         Soft-maxed tensor with values.
 
     """
     input = torch.as_tensor(input)
-    return _Softmax.apply(input, dim, implicit)
+    return _Softmax.apply(input, dim, implicit, implicit_index)
 
 
-def log_softmax(input, dim=-1, implicit=False):
+def log_softmax(input, dim=-1, implicit=False, implicit_index=0):
     """ Log(SoftMax).
 
     Parameters
     ----------
-    input : torch.tensor
+    input : tensor
         Tensor with values.
     dim : int, default=-1
         Dimension to take softmax, defaults to last dimensions.
@@ -849,25 +928,23 @@ def log_softmax(input, dim=-1, implicit=False):
           with value zero exists.
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
+    implicit_index : int, default=0
 
     Returns
     -------
-    Z : torch.tensor
+    output : tensor
         Log-Soft-maxed tensor with values.
 
     """
     input = torch.as_tensor(input)
-    implicit = py.make_list(implicit, 2)
+    implicit = py.ensure_list(implicit, 2)
     lse = logsumexp(input, dim=dim, implicit=implicit[0], keepdim=True)
     if implicit[0] and not implicit[1]:
-        new_shape = list(input.shape)
-        new_shape[dim] += 1
-        output = input.new_zeros(new_shape)
-        explicit = utils.slice_tensor(output, slice(-1), dim)
-        explicit.copy_(input)
+        output = _add_class(input, 0, dim, implicit_index)
         output -= lse
     elif implicit[1] and not implicit[0]:
-        output = utils.slice_tensor(input, slice(-1), dim) - lse
+        input = _remove_class(input, dim, implicit_index)
+        output = input - lse
     else:
         output = input - lse
     return output

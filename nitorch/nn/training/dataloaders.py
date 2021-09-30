@@ -94,7 +94,7 @@ class Dataset:
         return channels
 
     @staticmethod
-    def loadseg(fnames, dim=None, segtype='label', label_map=None,
+    def loadseg(fnames, dim=None, segtype='label', lookup=None,
                 device=None, dtype=None):
         """Load a volume from disk
 
@@ -102,8 +102,8 @@ class Dataset:
         ----------
         fnames : str or sequence[str]
         dim : int, optional
-        segtype : [tuple] {'label', 'implicit', 'explicit'}, defualt='label'
-        label_map : list of [list of] int, optional
+        segtype : [tuple] {'label', 'implicit', 'explicit'}, default='label'
+        lookup : list of [list of] int, optional
         device : torch.device, optional
         dtype : torch.dtype, optional
 
@@ -123,15 +123,12 @@ class Dataset:
             channels = torch.cat(channels, 0)
         else:
             channels = channels[0]
+        if insegtype == 'label' and lookup:
+            channels = utils.merge_labels(channels, lookup)
         if insegtype == 'label' and outsegtype != 'label':
-            label_map = label_map or channels.unique().tolist()
-            if outsegtype == 'explicit':
-                label_map = label_map[1:]
-            new_shape = [len(label_map), *channels.shape[1:]]
-            channels, labels = torch.empty(new_shape, dtype=dtype, device=device), channels
-            for index, label in enumerate(label_map):
-                label = py.make_list(label)
-                channels[index] = utils.isin(labels, label)
+            channels = utils.one_hot(channels, dim=0,
+                                     implicit=outsegtype == 'implicit',
+                                     implicit_index=0, dtype=dtype)
             if outsegtype == 'implicit':
                 channels /= len(channels) + 1
             else:
@@ -219,7 +216,7 @@ class UnsupervisedDataset(Dataset):
 class DatasetWithSeg(Dataset):
     """A dataset with ground truth segmentations"""
 
-    def __init__(self, filenames, segnames, segtype='label', label_map=None,
+    def __init__(self, filenames, segnames, segtype='label', lookup=None,
                  batch_size=1, qmin=0, qmax=0.95,
                  dim=None, device=None, dtype=None):
         """
@@ -240,7 +237,7 @@ class DatasetWithSeg(Dataset):
             If a tuple, the first element corresponds to the on-disk
             layout while the second element corresponds to the required
             in-memory layout.
-        label_map : list of [list of] int, optional
+        lookup : list of [list of] int, optional
             Mapping from soft index to label value.
             Only used if `segtype` is ('label', 'implicit' or 'explicit')
         batch_size : int, default=1
@@ -260,7 +257,7 @@ class DatasetWithSeg(Dataset):
         self.segnames = list(segnames)
         self.nb_dat = len(self.filenames)
         self.segtype = segtype
-        self.label_map = label_map
+        self.lookup = lookup
         self.batch_size = batch_size
         self.device = device
         self.dtype = dtype
@@ -310,7 +307,7 @@ class DatasetWithSeg(Dataset):
                 channels = self.loadseg(segnames.pop(0),
                                         dim=self.dim,
                                         segtype=self.segtype,
-                                        label_map=self.label_map,
+                                        lookup=self.lookup,
                                         device=device,
                                         dtype=dtype)
                 segs.append(channels)
@@ -433,8 +430,9 @@ class PairedDatasetWithSeg(Dataset):
     """A dataset made of pairs of images and segmentations"""
 
     def __init__(self, filenames, segnames, refnames=None, segrefnames=None,
-                 pairs=None, batch_size=1, segtype='label', label_map=None,
-                 qmin=0, qmax=0.95, dim=None, device=None, dtype=None):
+                 pairs=None, batch_size=1, segtype='label', segreftype=None,
+                 lookup=None, qmin=0, qmax=0.95, dim=None, device=None,
+                 dtype=None):
         """
 
         Parameters
@@ -466,7 +464,8 @@ class PairedDatasetWithSeg(Dataset):
             If a tuple, the first element corresponds to the on-disk
             layout while the second element corresponds to the required
             in-memory layout.
-        label_map : list of [list of] int, optional
+        segreftype : [tuple] {'implicit', 'explicit', 'label'}, default=`segtype`
+        lookup : list of [list of] int, optional
             Mapping from soft index to label value.
             Only used if `segtype` is ('label', 'implicit' or 'explicit')
         qmin : (0..1), default=0
@@ -510,7 +509,8 @@ class PairedDatasetWithSeg(Dataset):
         self.qmin = qmin
         self.qmax = qmax
         self.segtype = segtype
-        self.label_map = label_map
+        self.segreftype = segreftype or segtype
+        self.lookup = lookup
         self.dim = dim
 
     def iter(self, batch_size=None, device=None, dtype=None):
@@ -559,7 +559,7 @@ class PairedDatasetWithSeg(Dataset):
                 channels = self.loadseg(segnames.pop(0),
                                         dim=self.dim,
                                         segtype=self.segtype,
-                                        label_map=self.label_map,
+                                        lookup=self.lookup,
                                         device=device,
                                         dtype=dtype)
                 segs.append(channels)
@@ -574,8 +574,8 @@ class PairedDatasetWithSeg(Dataset):
 
                 channels = self.loadseg(segrefnames.pop(0),
                                         dim=self.dim,
-                                        segtype=self.segtype,
-                                        label_map=self.label_map,
+                                        segtype=self.segreftype,
+                                        lookup=self.lookup,
                                         device=device,
                                         dtype=dtype)
                 segrefs.append(channels)

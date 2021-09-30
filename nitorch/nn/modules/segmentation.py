@@ -92,7 +92,7 @@ class LogisticHead(ClassificationHead):
 
     def __init__(self, implicit='zero', weighted=False):
         super().__init__(implicit)
-        self.loss = catloss.CategoricalLoss(weighted, log=True, implicit=False)
+        self.loss = catloss.CategoricalLoss(weighted, logit=True, implicit=False)
 
     def posterior(self, score, **overload):
         """Returns posterior distribution (without background class)"""
@@ -132,14 +132,14 @@ class FocalHead(ClassificationHead):
             Weight for each class. If True, use the inverse frequency.
         """
         super().__init__(implicit)
-        self.loss = catloss.FocalLoss(gamma, weighted=weighted, log=True, implicit=False)
+        self.loss = catloss.FocalLoss(gamma, weighted=weighted, logit=True, implicit=False)
 
     def posterior(self, score, **overload):
         """Returns posterior distribution (without background class)"""
         gamma = overload.get('gamma', self.loss.gamma)
         score = self.score(score, **overload)
         score = SoftMax(implicit=(False, False))(score)
-        phi = (1 - score).pow(gamma) - gamma * (1 - score).pow(gamma - 1) * score * score.log()
+        phi = (1 - score).pow(gamma) - gamma * (1 - score).pow(gamma - 1) * score * score.logit()
         score = score / phi
         score = score / score.sum(1, keepdim=True)
         return score[:, :-1]
@@ -152,7 +152,7 @@ class HingeHead(ClassificationHead):
 
     def __init__(self, implicit='sum', weighted=False):
         super().__init__(implicit)
-        self.loss = catloss.HingeLoss(weighted, log=True, implicit=False)
+        self.loss = catloss.HingeLoss(weighted, logit=True, implicit=False)
 
     def posterior(self, score, **overload):
         """Returns posterior distribution (without background class)"""
@@ -167,7 +167,7 @@ class DiceHead(ClassificationHead):
         super().__init__(implicit)
         self.loss = catloss.DiceLoss(weighted=weighted,
                                      exclude_background=exclude_background,
-                                     log=True, implicit=False)
+                                     logit=True, implicit=False)
 
     def posterior(self, score, **overload):
         """Returns posterior distribution (without background class)"""
@@ -230,7 +230,7 @@ class SegNet(Module):
             pool=None,
             unpool=None,
             activation=tnn.LeakyReLU(0.2),
-            batch_norm=True):
+            norm='batch'):
         """
 
         Parameters
@@ -264,8 +264,8 @@ class SegNet(Module):
         unpool : str, default=None
         activation : str or callable, default=LeakyReLU(0.2)
             Activation function in the UNet.
-        batch_norm : bool or callable, default=True
-            Batch normalization layer.
+        norm : {'batch', 'instance', 'layer'} or int, default='batch'
+            Normalization layer.
             Can be a class (typically a Module), which is then instantiated,
             or a callable (an already instantiated class or a more simple
             function).
@@ -287,7 +287,7 @@ class SegNet(Module):
                 pool=pool,
                 unpool=unpool,
                 activation=activation,
-                norm=batch_norm)
+                norm=norm)
             self.to_feat = lambda x: x
             self.from_feat = lambda x: x
         else:

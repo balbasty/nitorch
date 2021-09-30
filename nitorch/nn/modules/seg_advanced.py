@@ -486,7 +486,7 @@ class SegMRFNet(Module):
                            decoder=decoder,
                            kernel_size=kernel_size,
                            activation=[activation, ..., None],
-                           batch_norm=batch_norm_seg,
+                           norm=batch_norm_seg,
                            implicit=False,
                            skip_final_activation=True)
 

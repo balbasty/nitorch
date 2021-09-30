@@ -37,7 +37,8 @@ class SoftMax(nn.Module):
             Softmaxed tensor
 
         """
-        return softmax(input, dim=self.dim, implicit=self.implicit)
+        return softmax(input, dim=self.dim, implicit=self.implicit,
+                       implicit_index=0)
 
 
 class LogSoftMax(nn.Module):
@@ -74,4 +75,5 @@ class LogSoftMax(nn.Module):
             Softmaxed tensor
 
         """
-        return log_softmax(input, dim=self.dim, implicit=self.implicit)
+        return log_softmax(input, dim=self.dim, implicit=self.implicit,
+                           implicit_index=0)

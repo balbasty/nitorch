@@ -253,6 +253,6 @@ class AutoDice(AutoGradLoss):
     def __init__(self, log=False, implicit=True, exclude_background=True,
                  weighted=False):
         from nitorch.nn.losses import DiceLoss
-        dice = DiceLoss(log=log, implicit=implicit, weighted=weighted,
+        dice = DiceLoss(logit=log, implicit=implicit, weighted=weighted,
                         exclude_background=exclude_background)
         super().__init__(dice)

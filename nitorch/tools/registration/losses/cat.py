@@ -157,11 +157,11 @@ def cat_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     moving = moving / moving.sum(-dim-1, keepdim=True).add_(1e-5).clamp_min_(1-1e-5)
     fixed = fixed.clamp_min(0)
     fixed = fixed / fixed.sum(-dim-1, keepdim=True).clamp_min_(1)
-    logmoving = moving.log()
+    logmoving = moving.logit()
     last_fixed = fixed.sum(-dim-1, keepdim=True).neg_().add_(1)
     last_moving = moving.sum(-dim-1, keepdim=True).neg_().add_(1)
     ll = (logmoving*fixed).sum(-dim-1, keepdim=True)
-    ll += last_fixed * last_moving.log()
+    ll += last_fixed * last_moving.logit()
     if mask is not None:
         ll = ll.mul_(mask)
     ll = ll.sum().neg() / nvox
@@ -305,5 +305,5 @@ class AutoCat(AutoGradLoss):
 
     def __init__(self, log=False, implicit=True, weighted=False):
         from nitorch.nn.losses import CategoricalLoss
-        cat = CategoricalLoss(log=log, implicit=implicit, weighted=weighted)
+        cat = CategoricalLoss(logit=log, implicit=implicit, weighted=weighted)
         super().__init__(cat)

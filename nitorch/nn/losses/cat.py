@@ -1,8 +1,8 @@
 """Losses for categorical data."""
 
 import torch
+import torch.nn.functional as F
 from .base import Loss
-from nitorch.nn.base import Module
 from nitorch.core import py, utils, math
 
 
@@ -11,7 +11,7 @@ def _pad_norm(x, implicit=False):
     an implicit background class. Else, ensures that prob sum to one."""
     if not implicit:
         return x / x.sum(dim=1, keepdim=True).clamp_min_(1e-3)
-    x = torch.cat((x, 1 - x.sum(dim=1, keepdim=True)), dim=1)
+    x = torch.cat((1 - x.sum(dim=1, keepdim=True), x), dim=1)
     return x
 
 
@@ -20,31 +20,33 @@ def _log(x, implicit=False):
     an implicit background class. Else, ensures that prob sum to one.
     Then, take the log."""
     x = _pad_norm(x, implicit=implicit)
-    return x.clamp(min=1e-7, max=1-1e-7).log()
+    return x.clamp(min=1e-7, max=1-1e-7).logit()
 
 
-def get_prob_explicit(x, log=False, implicit=False):
+def get_prob_explicit(x, logit=False, implicit=False):
     """Return a tensor of probabilities with all classes explicit"""
-    if log:
-        return math.softmax(x, dim=1, implicit=[implicit, False])
+    if logit:
+        return math.softmax(x, dim=1, implicit=[implicit, False],
+                            implicit_index=0)
     else:
         return _pad_norm(x, implicit=implicit)
 
 
-def get_logprob_explicit(x, log=False, implicit=False):
+def get_logprob_explicit(x, logit=False, implicit=False):
     """Return a tensor of log-probabilities with all classes explicit"""
-    if log:
-        return math.log_softmax(x, dim=1, implicit=[implicit, False])
+    if logit:
+        return math.log_softmax(x, dim=1, implicit=[implicit, False],
+                                implicit_index=0)
     else:
         return _log(x, implicit=implicit)
 
 
-def get_score_explicit(x, log=True, implicit=False):
+def get_score_explicit(x, logit=True, implicit=False):
     """Return a tensor of "scores"" with all classes explicit"""
-    if not log:
-        x = x.log()
+    if not logit:
+        x = x.logit()
     if implicit:
-        x = torch.cat((x, x.sum(dim=1, keepdim=True).neg()), dim=1)
+        x = torch.cat((x.sum(dim=1, keepdim=True).neg(), x), dim=1)
     return x
 
 
@@ -75,11 +77,43 @@ def get_log_confusion(confusion, nb_classes_pred, nb_classes_ref, dim, **backend
     if confusion.dim() < dim + 3:
         confusion = utils.unsqueeze(confusion, 0, 1)  # batch shape
     confusion = confusion / confusion.sum(dim=[-1, -2], keepdim=True)
-    confusion = confusion.clamp(min=1e-7, max=1-1e-7).log()
+    confusion = confusion.clamp(min=1e-7, max=1-1e-7).logit()
     return confusion
 
 
-class CatDotProduct(Module):
+def _process_weights(weighted, dim, nb_classes, **backend):
+    weighted_channelwise = False
+    if weighted is not False:
+        weighted = torch.as_tensor(weighted, **backend)
+        if weighted.dim() == 1:
+            weighted = utils.unsqueeze(weighted, -1, dim)
+        if weighted.numel() == nb_classes:
+            weighted_channelwise = True
+            weighted = weighted.flatten()
+    else:
+        weighted = None
+    return weighted, weighted_channelwise
+
+
+def _auto_weighted_soft(truth):
+    dim = truth.dim() - 2
+    nvox = py.prod(truth.shape[-dim:])
+    weighted = truth.sum(dim=list(range(2, 2 + dim)), keepdim=True)
+    weighted = weighted.clamp_min_(0.5).div_(nvox).reciprocal_()
+    return weighted
+
+
+def _auto_weighted_hard(truth, nb_classes, **backend):
+    dim = truth.dim() - 2
+    nvox = py.prod(truth.shape[-dim:])
+    weighted = [(truth == i).sum(dim=list(range(-dim, 0)), keepdim=True)
+                for i in range(nb_classes)]
+    weighted = torch.cat(weighted, dim=1).to(**backend)
+    weighted = weighted.clamp_min_(0.5).div_(nvox).reciprocal_()
+    return weighted
+
+
+class CatDotProduct(Loss):
     """"Dot product between a vector of (soft or hard) labels and a score.
 
     Returns <phi(score), truth>
@@ -90,7 +124,7 @@ class CatDotProduct(Module):
 
     """
 
-    def __init__(self, weighted=False, one_hot_map=None, *args, **kwargs):
+    def __init__(self, weighted=False, *args, **kwargs):
         """
 
         Parameters
@@ -98,23 +132,13 @@ class CatDotProduct(Module):
         weighted : bool or list[float], default=False
             If True, weight by the inverse class frequency.
             If a list of float, they are user-provided weights.
-        one_hot_map : list[int or list[int] or None], optional
-            Mapping from one-hot to hard index. Default: [1:n] + [None].
-            Each index of the list corresponds to a soft label.
-            Each soft label can be mapped to a hard label or a list of
-            hard labels. Up to one `None` can be used, in which case the
-            corresponding soft label will be considered a background class
-            and will be mapped to all remaining labels. If `len(one_hot_map)`
-            has one less element than the number of soft labels, such a
-            background class will be appended to the right.
         reduction : {'mean', 'sum'} or callable, default='mean'
             Type of reduction to apply.
         """
         super().__init__(*args, **kwargs)
         self.weighted = weighted
-        self.one_hot_map = one_hot_map
 
-    def forward(self, score, truth, **overload):
+    def forward(self, score, truth):
         """
 
         Parameters
@@ -129,11 +153,7 @@ class CatDotProduct(Module):
                   `nb_class` or `nb_class - 1`.
                 * If `obs` has an integer or boolean data type, it is
                   assumed to hold hard labels and its channel dimension
-                  should be 1. Eventually, `one_hot_map` is used to map
-                  one-hot labels to hard labels.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
+                  should be 1.
 
         Returns
         -------
@@ -143,7 +163,7 @@ class CatDotProduct(Module):
 
         """
 
-        weighted = overload.get('weighted', self.weighted)
+        weighted = self.weighted
 
         score = torch.as_tensor(score)
         truth = torch.as_tensor(truth, device=score.device)
@@ -161,47 +181,41 @@ class CatDotProduct(Module):
 
             loss = score * truth
             if weighted is True:
-                dim = truth.dim() - 2
-                weighted = truth.sum(dim=list(range(2, 2 + dim)), keepdim=True)
-                weighted = weighted.float().clamp_min_(0.5)
-                weighted = weighted / py.prod(truth.shape[2:])
-                loss = loss / weighted
+                weighted = _auto_weighted_soft(truth)
+                loss *= weighted
             elif weighted not in (None, False):
                 dim = truth.dim() - 2
-                weighted = utils.make_vector(**utils.backend(loss))
-                loss = loss * utils.unsqueeze(weighted, -1, dim)
+                weighted = utils.make_vector(weighted, nb_classes,
+                                             **utils.backend(loss))
+                loss *= utils.unsqueeze(weighted, -1, dim)
 
         else:
             # hard labels
-            if truth.shape[1] != 1:
-                raise ValueError('Hard label maps cannot be multi-channel.')
-            one_hot_map = overload.get('one_hot_map', self.one_hot_map)
-            one_hot_map = get_one_hot_map(one_hot_map, nb_classes)
+            channelwise = True
+            if weighted is True:
+                channelwise = False
+                weighted = _auto_weighted_hard(truth, nb_classes,
+                                               **utils.backend(score))
+            elif weighted not in (None, False):
+                weighted = utils.make_vector(weighted, **utils.backend(score))
+            else:
+                weighted = None
 
-            loss = torch.empty_like(score)
-            for soft, hard in enumerate(one_hot_map):
-                if hard is None:
-                    # implicit class
-                    all_labels = filter(lambda x: x is not None, one_hot_map)
-                    all_labels = py.flatten(list(all_labels))
-                    truth1 = ~utils.isin(truth, all_labels)
-                else:
-                    truth1 = utils.isin(truth, hard)
-                loss[:, soft] = score[:, soft] * truth1.squeeze()
-                if weighted is True:
-                    dim = truth1.dim() - 2
-                    nvox = py.prod(truth1.shape[2:]) or 1
-                    w = truth1.sum(dim=list(range(2, 2 + dim)), keepdim=True)
-                    w = w.float().clamp_min_(0.5).div_(nvox)
-                    loss[:, soft] = loss[:, soft] / w
-                elif weighted not in (None, False):
-                    w = utils.make_vector(weighted, **utils.backend(loss))
-                    loss[:, soft] = loss[:, soft] * w[soft]
+            truth = truth.squeeze(1).long()
+            # If weights are a list of length C (or none), use nll_loss
+            if channelwise and isinstance(self.reduction, str):
+                return F.nll_loss(score, truth,
+                    weighted, reduction=self.reduction or 'none').neg_()
+            # Otherwise, use our own implementation
+            else:
+                if weighted is not None:
+                    score = score * weighted
+                loss = score.gather(dim=1, index=truth)
 
-        return loss
+        return super().forward(loss)
 
 
-class CategoricalLoss(Loss):
+class CategoricalLoss(CatDotProduct):
     """(Expected) Negative log-likelihood of a Categorical distribution.
 
     This loss loosely corresponds to the categorical cross-entropy loss.
@@ -210,8 +224,7 @@ class CategoricalLoss(Loss):
 
     """
 
-    def __init__(self, weighted=False, one_hot_map=None,
-                 log=True, implicit=False, *args, **kwargs):
+    def __init__(self, weighted=False, logit=True, implicit=False, **kwargs):
         """
 
         Parameters
@@ -219,37 +232,25 @@ class CategoricalLoss(Loss):
         weighted : bool or list[float], default=False
             If True, weight by the inverse class frequency.
             If a list of float, they are user-provided weights.
-        one_hot_map : list[int or list[int] or None], optional
-            Mapping from one-hot to hard index. Default: [1:n] + [None].
-            Each index of the list corresponds to a soft label.
-            Each soft label can be mapped to a hard label or a list of
-            hard labels. Up to one `None` can be used, in which case the
-            corresponding soft label will be considered a background class
-            and will be mapped to all remaining labels. If `len(one_hot_map)`
-            has one less element than the number of soft labels, such a
-            background class will be appended to the right.
-        log : bool, default=True
-            If True, priors are log-probabilities (pre-softmax).
+        logit : bool, default=True
+            If True, priors are logits (pre-softmax).
             Else, they are probabilities and we take their log in the
             forward pass.
         implicit : bool, default=False
             If True, the one-hot tensors only use K-1 channels to encode
             K classes.
-        reduction : {'mean', 'sum'} or callable, default='mean'
+        reduction : {'mean', 'sum', 'none'} or callable, default='mean'
             Type of reduction to apply.
         """
-        super().__init__(*args, **kwargs)
-        self.dot = CatDotProduct(weighted, one_hot_map)
-        self.weighted = weighted
-        self.one_hot_map = one_hot_map
-        self.log = log
+        super().__init__(weighted, **kwargs)
+        self.logit = logit
         self.implicit = implicit
 
-    def posterior(self, score, **overload):
-        implicit = overload.get('implicit', self.implicit)
-        return math.softmax(score, dim=1, implicit=implicit)
+    def posterior(self, score):
+        return math.softmax(score, dim=1, implicit=self.implicit,
+                            implicit_index=self.implicit_index)
 
-    def forward(self, prior, obs, **overload):
+    def forward(self, prior, obs):
         """
 
         Parameters
@@ -266,9 +267,6 @@ class CategoricalLoss(Loss):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
 
         Returns
         -------
@@ -277,60 +275,64 @@ class CategoricalLoss(Loss):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
+        implicit = self.implicit or (prior.shape[1] == 1)
+        nb_classes = prior.shape[1] + implicit
 
-        log = overload.pop('log', self.log)
-        implicit = overload.pop('implicit', self.implicit)
+        # --- preprocess weights ---------------------------------------
+        weighted = self.weighted
+        if weighted is True:
+            weighted = _auto_weighted_hard(obs, nb_classes,
+                                           **utils.backend(prior))
+        elif weighted not in (None, False):
+            weighted = torch.as_tensor(weighted, **utils.backend(prior))
+        else:
+            weighted = None
 
-        prior = torch.as_tensor(prior)
-        prior = get_logprob_explicit(prior, log=log, implicit=implicit)
-
-        loss = self.dot(prior, obs, **overload)
-        loss = loss.sum(dim=1, keepdim=True).neg_()
-
-        return super().forward(loss, **overload)
+        # --- Binary (sigmoid) version ---------------------------------
+        if nb_classes == 2:
+            if prior.shape == 2:
+                prior = prior[:, 1]
+            reduction = self.reduction if isinstance(self.reduction, str) else 'none'
+            if self.logit:
+                obs = obs.to(**utils.backend(prior))
+                loss = F.binary_cross_entropy_with_logits(
+                    prior, obs, weighted, reduction=reduction)
+            else:
+                obs = obs.to(**utils.backend(prior))
+                loss = F.binary_cross_entropy(
+                    prior, obs, weighted, reduction=reduction)
+            if not isinstance(self.reduction, str):
+                loss = self.reduction(loss)
+        # --- Multiclass (softmax) version -----------------------------
+        else:
+            use_native = (self.logit and not obs.dtype.is_floating_point
+                          and weighted is not True and not implicit)
+            if use_native:
+                reduction = self.reduction if isinstance(self.reduction, str) else 'none'
+                obs = obs.squeeze(1)
+                obs = obs.long()
+                loss = F.cross_entropy(
+                    prior, obs, weighted, reduction=reduction)
+                if not isinstance(self.reduction, str):
+                    loss = self.reduction(loss)
+            else:
+                prior = get_logprob_explicit(prior, logit=self.logit,
+                                             implicit=self.implicit)
+                loss = super().forward(prior, obs).neg_()
+        return loss
 
 
 class DiceLoss(Loss):
     """1 - SoftDice.
-
-    Examples
-    --------
-    ```python
-    >> # Predictions are soft probabilities
-    >> loss = Dice()
-    >>
-    >> # Predictions are soft probabilities, with an implicit background
-    >> loss = Dice(implicit=True)
-    >>
-    >> # Dice are pre-softmax log-probabilities
-    >> loss = Dict(log=True)
-    >>
-    >> # Weight Dice of each class by the reference volume
-    >> loss = Dice(weighted=True)
-    >>
-    >> # Predictions are soft probabilities with 5 classes
-    >> # References are hard labels
-    >> # We want the background to be in the last soft class
-    >> loss = Dice(one_hot_map=[1, 2, 3, 4, 0])
-    >>
-    >> # Predictions are soft probabilities with 4 classes
-    >> # References are hard labels with many more classes
-    >> # We want a subset of labels to map to the 3 non-background soft
-    >> # classes and all other labels to map to the background class.
-    >> loss = Dice(one_hot_map=[(1, 3), 5, (10, 12), None])
-    ```
     """
 
-    def __init__(self, one_hot_map=None, log=False, implicit=False,
+    def __init__(self, logit=False, implicit=False,
                  weighted=False, exclude_background=False, *args, **kwargs):
         """
 
         Parameters
         ----------
-        one_hot_map : list[int] or list[list[int]], optional
-            Mapping from one-hot to hard index.
-            By default: identity mapping.
-        log : bool, default=False
+        logit : bool, default=False
             If True, predictions are (pre-softmax) log-probabilities.
         implicit : bool, default=False
             If True, the background class is implicit in the one-hot tensors.
@@ -341,13 +343,12 @@ class DiceLoss(Loss):
             Type of reduction to apply.
         """
         super().__init__(*args, **kwargs)
-        self.one_hot_map = one_hot_map
-        self.log = log
+        self.logit = logit
         self.implicit = implicit
         self.weighted = weighted
         self.exclude_background = exclude_background
 
-    def forward(self, predicted, reference, **overload):
+    def forward(self, predicted, reference):
         """
 
         Parameters
@@ -364,9 +365,6 @@ class DiceLoss(Loss):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
 
         Returns
         -------
@@ -375,10 +373,10 @@ class DiceLoss(Loss):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
-        log = overload.get('log', self.log)
-        implicit = overload.get('implicit', self.implicit)
-        weighted = overload.get('weighted', self.weighted)
-        exclude_background = overload.get('exclude_background', self.exclude_background)
+        logit = self.logit
+        implicit = self.implicit
+        weighted = self.weighted
+        exclude_background = self.exclude_background
 
         predicted = torch.as_tensor(predicted)
         reference = torch.as_tensor(reference, device=predicted.device)
@@ -388,7 +386,7 @@ class DiceLoss(Loss):
         implicit = implicit or (predicted.shape[1] == 1)
 
         # take softmax if needed
-        predicted = get_prob_explicit(predicted, log=log, implicit=implicit)
+        predicted = get_prob_explicit(predicted, logit=logit, implicit=implicit)
 
         nb_classes = predicted.shape[1]
         spatial_dims = list(range(2, predicted.dim()))
@@ -400,9 +398,8 @@ class DiceLoss(Loss):
             weighted = utils.make_vector(weighted, nb_classes, **backend)[None]
 
         # preprocess reference
-        if reference.dtype in (torch.half, torch.float, torch.double):
+        if reference.dtype.is_floating_point:
             # one-hot labels
-            
             reference = reference.to(predicted.dtype)
             implicit_ref = reference.shape[1] == nb_classes-1
             reference = get_prob_explicit(reference, implicit=implicit_ref)
@@ -412,11 +409,12 @@ class DiceLoss(Loss):
                                  nb_classes, nb_classes-1, reference.shape[1]))
 
             if exclude_background:
-                predicted = predicted[:, :-1]
-                reference = reference[:, :-1]
+                predicted = predicted[:, 1:]
+                reference = reference[:, 1:]
             inter = math.nansum(predicted * reference, dim=spatial_dims)
             union = math.nansum(predicted + reference, dim=spatial_dims)
             loss = -2 * inter / union.clamp_min_(1e-5)
+            del inter, union
             if weighted is not False:
                 if weighted is True:
                     weights = math.nansum(reference, dim=spatial_dims)
@@ -427,32 +425,22 @@ class DiceLoss(Loss):
 
         else:
             # hard labels
-            one_hot_map = overload.get('one_hot_map', self.one_hot_map)
-            one_hot_map = get_one_hot_map(one_hot_map, nb_classes)
-
             loss = []
             weights = []
-            for soft, hard in enumerate(one_hot_map):
-                if exclude_background and soft == predicted.shape[-1] - 1:
-                    continue
-                pred1 = predicted[:, None, soft, ...]
-
-                if hard is None:
-                    # implicit class
-                    all_labels = filter(lambda x: x is not None, one_hot_map)
-                    all_labels = py.flatten(list(all_labels))
-                    ref1 = ~utils.isin(reference, all_labels)
-                else:
-                    ref1 = utils.isin(reference, hard)
+            first_index = 1 if exclude_background else 0
+            for index in range(first_index, nb_classes):
+                pred1 = predicted[:, None, index, ...]
+                ref1 = reference == index
 
                 inter = math.sum(pred1 * ref1, dim=spatial_dims)
                 union = math.sum(pred1 + ref1, dim=spatial_dims)
-                loss1 = -2 * inter / union
+                loss1 = -2 * inter / union.clamp_min_(1e-5)
+                del inter, union
                 if weighted is not False:
                     if weighted is True:
                         weight1 = ref1.sum()
                     else:
-                        weight1 = float(weighted[soft])
+                        weight1 = float(weighted[index])
                     loss1 = loss1 * weight1
                     weights.append(weight1)
                 loss.append(loss1)
@@ -463,10 +451,10 @@ class DiceLoss(Loss):
                 loss = loss / weights
 
         loss += 1
-        return super().forward(loss, **overload)
+        return super().forward(loss)
 
 
-class FocalLoss(Loss):
+class FocalLoss(CatDotProduct):
     """Focal loss.
 
     References
@@ -477,8 +465,8 @@ class FocalLoss(Loss):
            https://arxiv.org/abs/1708.02002
     """
 
-    def __init__(self, gamma=2, weighted=False, log=False, implicit=False,
-                 one_hot_map=None, *args, **kwargs):
+    def __init__(self, gamma=2, weighted=False, logit=False, implicit=False,
+                 *args, **kwargs):
         """
 
         Parameters
@@ -488,16 +476,7 @@ class FocalLoss(Loss):
         weighted : bool or list[float], default=False
             If True, weight by the inverse class frequency.
             If a list of float, they are user-provided weights.
-        one_hot_map : list[int or list[int] or None], optional
-            Mapping from one-hot to hard index. Default: identity mapping.
-            Each index of the list corresponds to a soft label.
-            Each soft label can be mapped to a hard label or a list of
-            hard labels. Up to one `None` can be used, in which case the
-            corresponding soft label will be considered a background class
-            and will be mapped to all remaining labels. If `len(one_hot_map)`
-            has one less element than the number of soft labels, such a
-            background class will be appended to the right.
-        log : bool, default=True
+        logit : bool, default=True
             If True, priors are log-probabilities (pre-softmax).
             Else, they are probabilities and we take their log in the
             forward pass.
@@ -507,13 +486,12 @@ class FocalLoss(Loss):
         reduction : {'mean', 'sum'} or callable, default='mean'
             Type of reduction to apply.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(weighted, *args, **kwargs)
         self.gamma = gamma
-        self.log = log
+        self.logit = logit
         self.implicit = implicit
-        self.dot = CatDotProduct(weighted, one_hot_map)
 
-    def forward(self, prior, obs, **overload):
+    def forward(self, prior, obs):
         """
 
         Parameters
@@ -530,9 +508,6 @@ class FocalLoss(Loss):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
 
         Returns
         -------
@@ -542,27 +517,25 @@ class FocalLoss(Loss):
 
         """
 
-        gamma = overload.pop('gamma', self.gamma)
-        log = overload.pop('log', self.log)
-        implicit = overload.pop('implicit', self.implicit)
+        gamma = self.gamma
+        log = self.logit
+        implicit = self.implicit
 
         # take log if needed
         prior = torch.as_tensor(prior)
-        logprior = get_logprob_explicit(prior, log=log, implicit=implicit)
-        prior = get_prob_explicit(prior, log=log, implicit=implicit)
+        logprior = get_logprob_explicit(prior, logit=log, implicit=implicit)
+        prior = get_prob_explicit(prior, logit=log, implicit=implicit)
         prior = logprior * (1 - prior).pow(gamma)
 
-        loss = self.dot(prior, obs)
-        loss = loss.sum(dim=1, keepdim=True).neg_()
-        return super().forward(loss, **overload)
+        return super().forward(prior, obs).neg_()
 
 
-class HingeLoss(Loss):
+class HingeLoss(CatDotProduct):
     """Hinge loss.
     """
 
-    def __init__(self, weighted=False, one_hot_map=None,
-                 log=True, implicit=False, mode='cs', *args, **kwargs):
+    def __init__(self, weighted=False, logit=True, implicit=False,
+                 mode='cs', *args, **kwargs):
         """
 
         Parameters
@@ -572,16 +545,7 @@ class HingeLoss(Loss):
         weighted : bool or list[float], default=False
             If True, weight by the inverse class frequency.
             If a list of float, they are user-provided weights.
-        one_hot_map : list[int or list[int] or None], optional
-            Mapping from one-hot to hard index. Default: identity mapping.
-            Each index of the list corresponds to a soft label.
-            Each soft label can be mapped to a hard label or a list of
-            hard labels. Up to one `None` can be used, in which case the
-            corresponding soft label will be considered a background class
-            and will be mapped to all remaining labels. If `len(one_hot_map)`
-            has one less element than the number of soft labels, such a
-            background class will be appended to the right.
-        log : bool, default=True
+        logit : bool, default=True
             If True, priors are scores (pre-softmax).
             Else, they are probabilities and we take their log in the
             forward pass.
@@ -596,13 +560,13 @@ class HingeLoss(Loss):
         reduction : {'mean', 'sum'} or callable, default='mean'
             Type of reduction to apply.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(weighted, *args, **kwargs)
         self.mode = mode
-        self.log = log
+        self.logit = logit
         self.implicit = implicit
-        self.dot = CatDotProduct(weighted, one_hot_map)
+        self.dot = CatDotProduct(weighted)
 
-    def forward(self, score, obs, **overload):
+    def forward(self, score, obs):
         """
 
         Parameters
@@ -618,9 +582,6 @@ class HingeLoss(Loss):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
 
         Returns
         -------
@@ -630,12 +591,12 @@ class HingeLoss(Loss):
 
         """
 
-        mode = overload.pop('mode', self.mode)
-        log = overload.pop('log', self.log)
-        implicit = overload.pop('implicit', self.implicit)
+        mode = self.mode
+        logit = self.logit
+        implicit = self.implicit
 
         # product between score and target
-        score = get_score_explicit(score, log=log, implicit=implicit)
+        score = get_score_explicit(score, logit=logit, implicit=implicit)
 
         if mode == 'llw':
             score = score.add_(1)
@@ -651,12 +612,10 @@ class HingeLoss(Loss):
                 assert mode == 'ww'
                 score = score.sum(dim=1)
 
-        loss = self.dot(score, obs, **overload)
-        loss = loss.sum(dim=1, keepdim=True)
-        return super().forward(loss, **overload)
+        return super().forward(score, obs)
 
 
-class AlphaLoss(Loss):
+class AlphaLoss(CatDotProduct):
     """Focal loss.
 
     References
@@ -667,8 +626,8 @@ class AlphaLoss(Loss):
            ISIT (2019)
     """
 
-    def __init__(self, alpha=0.5, weighted=False, log=False, implicit=False,
-                 one_hot_map=None, *args, **kwargs):
+    def __init__(self, alpha=0.5, weighted=False, logit=False, implicit=False,
+                 *args, **kwargs):
         """
 
         Parameters
@@ -678,16 +637,7 @@ class AlphaLoss(Loss):
         weighted : bool or list[float], default=False
             If True, weight by the inverse class frequency.
             If a list of float, they are user-provided weights.
-        one_hot_map : list[int or list[int] or None], optional
-            Mapping from one-hot to hard index. Default: identity mapping.
-            Each index of the list corresponds to a soft label.
-            Each soft label can be mapped to a hard label or a list of
-            hard labels. Up to one `None` can be used, in which case the
-            corresponding soft label will be considered a background class
-            and will be mapped to all remaining labels. If `len(one_hot_map)`
-            has one less element than the number of soft labels, such a
-            background class will be appended to the right.
-        log : bool, default=True
+        logit : bool, default=True
             If True, priors are log-probabilities (pre-softmax).
             Else, they are probabilities and we take their log in the
             forward pass.
@@ -697,11 +647,10 @@ class AlphaLoss(Loss):
         reduction : {'mean', 'sum'} or callable, default='mean'
             Type of reduction to apply.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(weighted, *args, **kwargs)
         self.alpha = alpha
-        self.log = log
+        self.logit = logit
         self.implicit = implicit
-        self.dot = CatDotProduct(weighted, one_hot_map)
 
     def forward(self, prior, obs, **overload):
         """
@@ -732,16 +681,14 @@ class AlphaLoss(Loss):
 
         """
 
-        alpha = overload.pop('alpha', self.alpha)
-        log = overload.pop('log', self.log)
-        implicit = overload.pop('implicit', self.implicit)
+        alpha = self.alpha
+        logit = self.logit
+        implicit = self.implicit
 
         ratio = (alpha - 1)/alpha
 
         prior = torch.as_tensor(prior)
-        prior = get_prob_explicit(prior, log=log, implicit=implicit)
+        prior = get_prob_explicit(prior, logit=logit, implicit=implicit)
         prior = prior.pow(ratio).neg_().add_(1).div_(ratio)
 
-        loss = self.dot(prior, obs)
-        loss = loss.sum(dim=1, keepdim=True)
-        return super().forward(loss, **overload)
+        return super().forward(prior, obs)

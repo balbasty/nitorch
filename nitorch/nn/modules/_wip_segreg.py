@@ -5,7 +5,7 @@ from .cnn import UNet, UUNet, WNet, UNet2, SEWNet
 from .spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax
 from nitorch.nn import check
-from nitorch.core import py, utils
+from nitorch.core import py, utils, math
 from nitorch import spatial
 import torch
 
@@ -49,8 +49,6 @@ class BaseMorph(Module):
             Deformation grid (transformation or displacement).
 
         """
-        backend = dict(dtype=velocity.dtype, device=velocity.device)
-
         # generate grid
         shape = velocity.shape[1:-1]
         velocity_small = self.resize(velocity)
@@ -114,20 +112,22 @@ class BaseMorph(Module):
             vol = vol.clip_(0, 1)
             return vol
 
-        def get_label(plane, vol, batch=0):
+        def get_label(plane, vol, batch=0, logit=False):
             vol = get_slice(plane, vol[batch])
             if vol.dim() == 2:
-                vol = vol.float()
-                vol /= vol.max()
+                if logit:
+                    vol = math.softmax(vol[None], dim=0, implicit=True)[0]
+                else:
+                    vol = vol.float()
+                    vol /= vol.max()
             else:
-                if implicit:
+                if logit:
+                    vol = math.softmax(vol, dim=0, implicit=(implicit, False))
+                elif implicit:
                     background = 1 - vol.sum(dim=0, keepdim=True)
-                    vol = torch.cat((vol, background), dim=0)
+                    vol = torch.cat((background, vol), dim=0)
                 nb_classes = vol.shape[0]
-                vol = vol.argmax(dim=0)
-                vol += 1
-                vol[vol == nb_classes] = 0
-                vol = vol.float()
+                vol = vol.argmax(dim=0).float()
                 vol /= float(nb_classes - 1)
             return vol
 
@@ -168,7 +168,7 @@ class BaseMorph(Module):
                             ax.set_title('Source [seg]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
-                    ax.imshow(get_label(plane, source_pred, b))
+                    ax.imshow(get_label(plane, source_pred, b, logit=True))
                     if b == 0 and p == 0:
                         ax.set_title('Source [pred]')
                     idx += 1
@@ -184,7 +184,7 @@ class BaseMorph(Module):
                             ax.set_title('Target [seg]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
-                    ax.imshow(get_label(plane, target_pred, b))
+                    ax.imshow(get_label(plane, target_pred, b, logit=True))
                     if b == 0 and p == 0:
                         ax.set_title('Target [pred]')
                     idx += 1
@@ -1605,9 +1605,9 @@ class SewMorph(BaseMorph):
             Source/moving image
         target : tensor (batch, channel, *spatial)
             Target/fixed image
-        source_seg : tensor (batch, classes, *spatial), optional
+        source_seg : tensor (batch, 1|classes, *spatial), optional
             Source/moving segmentation
-        target_seg : tensor (batch, classes, *spatial), optional
+        target_seg : tensor (batch, 1|classes, *spatial), optional
             Target/fixed segmentation
 
         Other Parameters
@@ -1619,10 +1619,10 @@ class SewMorph(BaseMorph):
 
         Returns
         -------
-        target_seg_pred : tensor (batch, classes, *spatial), optional
-            Predicted target segmentation
-        source_seg_pred : tensor (batch, classes, *spatial), optional
-            Predicted source segmentation
+        target_logits : tensor (batch, classes[-1], *spatial), optional
+            Predicted target logits
+        source_logits : tensor (batch, classes[-1], *spatial), optional
+            Predicted source logits
         deformed_source : tensor (batch, channel, *spatial)
             Deformed source image
         velocity : tensor (batch,, *spatial, len(spatial))
@@ -1637,36 +1637,40 @@ class SewMorph(BaseMorph):
         check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
 
         # apply net
-        velocity, seg = self.sewnet(source, target, return_feat=True)
-        source_seg_pred, target_seg_pred = seg
+        # -> returns velocity and pre-softmax predicted segmentations
+        vel, (src_seg_pred, tgt_seg_pred) = self.sewnet(source, target, return_feat=True)
 
-        # deformation
-        velocity = utils.channel2last(velocity)
-        grid = self.exp(velocity)
-        deformed_source = self.pull(source, grid)
+        # exponentiate deformation and deform source image
+        vel = utils.channel2last(vel)
+        grid = self.exp(vel)
+        wsrc = self.pull(source, grid)
 
+        # deform source segmentation
         if source_seg is not None:
-            deformed_source_seg = self.pull(source_seg, grid)
+            wsrc_seg = source_seg
+            if not wsrc_seg.dtype.is_floating_point:
+                wsrc_seg = wsrc_seg.squeeze(1)
+                wsrc_seg = utils.one_hot(wsrc_seg,
+                                         dim=1,
+                                         implicit=self.implicit[1],
+                                         dtype=wsrc.dtype)
+            wsrc_seg = wsrc_seg.clamp_(1e-5, 1-1e-5)
+            wsrc_seg = math.logit(wsrc_seg, dim=1, implicit=self.implicit[1])
         else:
-            deformed_source_seg = self.pull(source_seg_pred, grid)
-        deformed_source_seg = self.softmax(deformed_source_seg)
-        source_seg_pred = self.softmax(source_seg_pred)
-        target_seg_pred = self.softmax(target_seg_pred)
-        if target_seg is None:
-            target_seg_for_deformed = target_seg_pred
-        else:
-            target_seg_for_deformed = target_seg
+            wsrc_seg = src_seg_pred
+        wsrc_seg = self.pull(wsrc_seg, grid)
+        tgt_seg_w = tgt_seg_pred if target_seg is None else target_seg
 
         # compute loss and metrics
         tensors = dict(
-            image=[deformed_source, target],
-            velocity=[velocity],
-            segmentation=[deformed_source_seg, target_seg_for_deformed])
+            image=[wsrc, target],
+            velocity=[vel],
+            segmentation=[wsrc_seg, tgt_seg_w])
         if source_seg is not None:
-            tensors['source'] = [source_seg_pred, source_seg]
+            tensors['source'] = [src_seg_pred, source_seg]
         if target_seg is not None:
-            tensors['target'] = [target_seg_pred, target_seg]
+            tensors['target'] = [tgt_seg_pred, target_seg]
         self.compute(_loss, _metric, **tensors)
 
-        return source_seg_pred, target_seg_pred, deformed_source, velocity
+        return src_seg_pred, tgt_seg_pred, wsrc, vel
 

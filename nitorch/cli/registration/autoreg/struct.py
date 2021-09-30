@@ -185,7 +185,7 @@ class CatLoss(MatchingLoss):
     name = 'cat'
 
     def call(self, x, y):
-        fn = nn.CategoricalLoss(log=False, implicit=True)
+        fn = nn.CategoricalLoss(logit=False, implicit=True)
         loss = fn(x[None], y[None])
         if self.factor != 1:
             loss = loss * self.factor
