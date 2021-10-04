@@ -926,6 +926,7 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
         # If implicit
         #   maxval = max(max(logit),0)
         #   lse = maxval + log[sum(exp(logit - maxval)) + exp(-maxval)]
+        maxval = maxval.float()
         sumval = sumval.log()
         maxval += sumval
         if weights is not None:
