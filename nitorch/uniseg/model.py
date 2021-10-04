@@ -1,4 +1,5 @@
 import math
+from nitorch.core.utils import isin
 from timeit import default_timer as timer
 from ..core.optim import get_gain, plot_convergence
 from ..core.math import besseli, softmax_lse
@@ -11,19 +12,21 @@ torch.backends.cudnn.benchmark = True
 
 class Mixture:
     # A mixture model.
-    def __init__(self, num_class=2, prior=[]):
+    def __init__(self, num_class=2, mp=None):
         """
-        num_class (int, optional): Number of mixture components. Defaults to 2.
+        num_class (int or sequence[int], optional): Number of mixture components. Defaults to 2.
+            sequence[int] used for case of multiple gaussians per class, e.g. [5,3,3,2,2,1]
         mp (torch.tensor): GMM mixing proportions.
         lam (torch.tensor): Regularisation.
 
         """
         self.K = num_class
-        self.mp = prior
-        if prior == []:
-            self.prior = False
-        else:
+        if mp is not None:
+            self.mp = mp
             self.prior = True
+        else:
+            self.mp = []
+            self.prior = False
         self.lam = []
         self.dev = ''  # PyTorch device
         self.dt = ''  # PyTorch data type
@@ -34,9 +37,10 @@ class Mixture:
         """ Fit mixture model.
 
         Args:
-            X (torch.tensor): Observed data (N, C).
-                N = num observations per channel
+            X (torch.tensor): Observed data (B, C, [Spatial]).
+                B = num batch size of independent patients to process
                 C = num channels
+                [Spatial] = spatial dimensions. Can be [x], [x,y] or [x,y,z]
             verbose (int, optional) Display progress. Defaults to 1.
                 0: None.
                 1: Print summary when finished.
@@ -50,7 +54,7 @@ class Mixture:
             show_fit (bool, optional): Plot mixture fit, defaults to False.
 
         Returns:
-            Z (torch.tensor): Responsibilities (N, K).
+            Z (torch.tensor): Responsibilities (B, C, [Spatial]).
 
         """
         if verbose:
@@ -65,23 +69,25 @@ class Mixture:
         if len(X.shape) == 1:
             X = X[:, None]
 
-        N = X.shape[0]  # Number of observations
+        B = X.shape[0]  # Number of observations
         C = X.shape[1]  # Number of channels
+        N = X.shape[:2]
         K = self.K  # Number of components
 
         if W is not None:  # Observation weights given
-            W = torch.reshape(W, (N, 1))
+            W = torch.reshape(W, N)
 
         # Initialise model parameters
         self._init_par(X)
 
         # Compute a regularisation value
-        self.lam = torch.zeros(C, dtype=self.dt, device=self.dev)
-        for c in range(C):
-            if W is not None:
-                self.lam[c] = (torch.sum(X[:, c] * W.flatten()) / (torch.sum(W) * K)) ** 2
-            else:
-                self.lam[c] = (torch.sum(X[:, c]) / K) ** 2
+        self.lam = torch.zeros((B, C), dtype=self.dt, device=self.dev)
+        for b in range(B):
+            for c in range(C):
+                if W is not None:
+                    self.lam[b, c] = (torch.sum(X[b, c] * W.flatten()) / (torch.sum(W) * K)) ** 2
+                else:
+                    self.lam[b, c] = (torch.sum(X[b, c]) / K) ** 2
 
         # EM loop
         Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W)
@@ -105,68 +111,81 @@ class Mixture:
         """ EM loop for fitting GMM.
 
         Args:
-            X (torch.tensor): (N, C).
+            X (torch.tensor): (B, C, [Spatial]).
             max_iter (int)
             tol (int)
             verbose (int)
-            W (torch.tensor): (N, 1).
+            W (torch.tensor): ([Spatial]).
 
         Returns:
-            Z (torch.tensor): Responsibilities (N, K).
+            Z (torch.tensor): Responsibilities (B, C, [Spatial]).
             lb (list): Lower bound at each iteration.
 
         """
 
         # Init
-        N = X.shape[0]
+        B = X.shape[0]
         C = X.shape[1]
+        N = X.shape[2:]
         K = self.K
+        if len(X.shape)-1 == len(self.mp.shape):
+            self.mp = torch.stack(B*[self.mp], dim=0)
         dtype = self.dt
         device = self.dev
         tiny = torch.tensor(1e-32, dtype=dtype, device=device)
         tinyish = torch.tensor(1e-3, dtype=dtype, device=device)
 
         # Start EM algorithm
-        Z = torch.zeros((N, K), dtype=dtype, device=device)  # responsibility
-        lb = torch.zeros(max_iter, dtype=torch.float64, device=device)
-        for n_iter in range(max_iter):  # EM loop
-            # ==========
-            # E-step
-            # ==========
-            # Product Rule
-            for k in range(K):
-                Z[:, k] = torch.log(self.mp[...,k] + tinyish) + self._log_likelihood(X, k)
-
-            # Get responsibilities
-            Z, dlb = softmax_lse(Z, lse=True, weights=W)
-
-            # Objective function and convergence related
-            lb[n_iter] = dlb
-            gain = get_gain(lb[:n_iter + 1])
-            if verbose >= 2:
-                print('n_iter: {}, lb: {}, gain: {}'
-                      .format(n_iter + 1, lb[n_iter], gain))
-            if gain < tol:
-                break  # Finished
-
-            if W is not None:  # Weight responsibilities
-                Z = Z * W
-
-            # ==========
-            # M-step
-            # ==========
-            # Compute sufficient statistics
-            ss0, ss1, ss2 = self._suffstats(X, Z)
-
-            # Update mixing proportions
-            if not self.prior:
-                if W is not None:
-                    self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
+        if isinstance(K, list):
+            Z = torch.zeros((B, len(K), *N), dtype=dtype, device=device)  # responsibility
+        else:
+            Z = torch.zeros((B, K, *N), dtype=dtype, device=device)  # responsibility
+        lb = torch.zeros((B, max_iter), dtype=torch.float64, device=device)
+        for b in range(B):
+            for n_iter in range(max_iter):  # EM loop
+                # ==========
+                # E-step
+                # ==========
+                # Product Rule
+                if isinstance(K, list):
+                    for k in K:
+                        for j in k:
+                            Z[b, k] += self._log_likelihood(X, j)
+                        Z[b, k] += torch.log(self.mp[b, k] + tinyish)
                 else:
-                    self.mp = ss0 / N
+                    for k in range(K):
+                        Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k)
 
-            # Update model specific parameters
-            self._update(ss0, ss1, ss2)
+                # Get responsibilities
+                Z, dlb = softmax_lse(Z, lse=True, weights=W)
+
+                # Objective function and convergence related
+                lb[b, n_iter] = dlb
+                gain = get_gain(lb[b, :n_iter + 1])
+                if verbose >= 2:
+                    print('n_iter: {}, lb: {}, gain: {}'
+                        .format(n_iter + 1, lb[b, n_iter], gain))
+                if gain < tol:
+                    break  # Finished
+
+                if W is not None:  # Weight responsibilities
+                    Z = Z * W
+
+                # ==========
+                # M-step
+                # ==========
+                # Compute sufficient statistics
+                ss0, ss1, ss2 = self._suffstats(X, Z)
+
+                # Update mixing proportions
+                if not self.prior:
+                    if W is not None:
+                        self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
+                    else:
+                        self.mp = ss0 / N
+
+                # Update model specific parameters
+                self._update(ss0, ss1, ss2)
 
         return Z, lb[:n_iter + 1]
     
@@ -182,43 +201,45 @@ class Mixture:
         """ Compute sufficient statistics.
 
         Args:
-            X (torch.tensor): Observed data (N, C).
-            Z (torch.tensor): Responsibilities (N, K).
+            X (torch.tensor): Observed data (B, C, [Spatial]).
+            Z (torch.tensor): Responsibilities (B, K, [Spatial]).
 
         Returns:
-            ss0 (torch.tensor): 0th moment (K).
-            ss1 (torch.tensor): 1st moment (C, K).
-            ss2 (torch.tensor): 2nd moment (C, C, K).
+            ss0 (torch.tensor): 0th moment (B, K).
+            ss1 (torch.tensor): 1st moment (B, C, K).
+            ss2 (torch.tensor): 2nd moment (B, C, C, K).
 
         """
-        N = X.shape[0]
+        N = X.shape[2:].prod()
+        B = X.shape[0]
         C = X.shape[1]
         K = Z.shape[1]
         device = self.dev
         tiny = torch.tensor(1e-32, dtype=torch.float64, device=device)
 
         # Suffstats
-        ss1 = torch.zeros((C, K), dtype=torch.float64, device=device)
-        ss2 = torch.zeros((C, C, K), dtype=torch.float64, device=device)
+        ss1 = torch.zeros((B, C, K), dtype=torch.float64, device=device)
+        ss2 = torch.zeros((B, C, C, K), dtype=torch.float64, device=device)
 
         # Compute 0th moment
-        ss0 = torch.sum(Z, dim=0, dtype=torch.float64) + tiny
+        ss0 = torch.sum(Z.reshape(B, K, -1), dim=-1, dtype=torch.float64) + tiny
 
         # Compute 1st and 2nd moments
-        for k in range(K):
-            # 1st
-            ss1[:, k] = torch.sum(torch.reshape(Z[:, k], (N, 1)) * X,
-                                  dim=0, dtype=torch.float64)
+        for b in range(B):
+            for k in range(K):
+                # 1st
+                ss1[b, :, k] = torch.sum(torch.reshape(Z[b, k], (N, 1)) * X[b].reshape(C, -1),
+                                    dim=0, dtype=torch.float64)
 
-            # 2nd
-            for c1 in range(C):
-                ss2[c1, c1, k] = \
-                    torch.sum(Z[:, k] * X[:, c1] ** 2, dtype=torch.float64)
-                for c2 in range(c1 + 1, C):
-                    ss2[c1, c2, k] = \
-                        torch.sum(Z[:, k] * (X[:, c1] * X[:, c2]),
-                                  dtype=torch.float64)
-                    ss2[c2, c1, k] = ss2[c1, c2, k]
+                # 2nd
+                for c1 in range(C):
+                    ss2[b, c1, c1, k] = \
+                        torch.sum(Z[b, k] * X[b, c1].reshape(-1) ** 2, dtype=torch.float64)
+                    for c2 in range(c1 + 1, C):
+                        ss2[b, c1, c2, k] = \
+                            torch.sum(Z[b, k] * (X[b, c1] * X[b, c2]).reshape(-1),
+                                    dtype=torch.float64)
+                        ss2[b, c2, c1, k] = ss2[b, c1, c2, k]
 
         return ss0, ss1, ss2
 
@@ -267,27 +288,27 @@ class Mixture:
 
         return X_msk, msk
 
-    @staticmethod
-    def reshape_input(img):
-        """ Reshape image to tensor with dimensions suitable as input to Mixture class.
+    # @staticmethod
+    # def reshape_input(img):
+    #     """ Reshape image to tensor with dimensions suitable as input to Mixture class.
 
-        Args:
-            img (torch.tensor): Input image. (X, Y, Z, C)
+    #     Args:
+    #         img (torch.tensor): Input image. (X, Y, Z, C)
 
-        Returns:
-            X (torch.tensor): Observed data (N0, C).
-            N0 (int): number of voxels in one channel
-            C (int): number of channels.
+    #     Returns:
+    #         X (torch.tensor): Observed data (N0, C).
+    #         N0 (int): number of voxels in one channel
+    #         C (int): number of channels.
 
-        """
-        dm = img.shape
-        if len(dm) == 2:  # 2D
-            dm = (dm[0], dm[1], dm[2])
-        N0 = dm[0]*dm[1]*dm[2]
-        C = dm[3]
-        X = torch.reshape(img, (N0, C))
+    #     """
+    #     dm = img.shape
+    #     if len(dm) == 2:  # 2D
+    #         dm = (dm[0], dm[1], dm[2])
+    #     N0 = dm[0]*dm[1]*dm[2]
+    #     C = dm[3]
+    #     X = torch.reshape(img, (N0, C))
 
-        return X, N0, C
+    #     return X, N0, C
 
     @staticmethod
     def full_resp(Z, msk, dm=[]):
@@ -328,13 +349,13 @@ class Mixture:
 
 class UniSeg(Mixture):
     # Unified Segmentation model, based on multivariate Gaussian Mixture Model (GMM).
-    def __init__(self, num_class=2, prior=[], mu=None, Cov=None):
+    def __init__(self, num_class=2, prior=None, mu=None, Cov=None):
         """
         mu (torch.tensor): GMM means (C, K).
         Cov (torch.tensor): GMM covariances (C, C, K).
 
         """
-        super(GMM, self).__init__(num_class=num_class, prior=prior)
+        super(UniSeg, self).__init__(num_class=num_class, mp=prior)
         self.mu = mu
         self.Cov = Cov
 
@@ -362,16 +383,17 @@ class UniSeg(Mixture):
             log_pdf (torch.tensor): (N, 1).
 
         """
+        B = X.shape[0]
         C = X.shape[1]
         device = X.device
         dtype = X.dtype
         pi = torch.tensor(math.pi, dtype=dtype, device=device)
         if c is not None:
-            Cov = self.Cov[c, c, k].reshape(1, 1).cpu()
-            mu = self.mu[c, k].reshape(1).cpu()
+            Cov = self.Cov[:, c, c, k].reshape(B, 1, 1).cpu()
+            mu = self.mu[:, c, k].reshape(B, 1).cpu()
         else:
-            Cov = self.Cov[:, :, k]
-            mu = self.mu[:, k]
+            Cov = self.Cov[:, :, :, k]
+            mu = self.mu[:, :, k]
         if C == 1:
             chol_Cov = torch.sqrt(Cov)
             log_det_Cov = torch.log(chol_Cov[0, 0])
@@ -393,30 +415,35 @@ class UniSeg(Mixture):
 
         """
         dtype = torch.float64
-        K = self.K
+        if isinstance(self.K, (list, tuple)):
+            K = len(self.K)
+        else:
+            K = self.K
+        B = X.shape[0]
         C = X.shape[1]
-        mn = torch.min(X, dim=0)[0]
-        mx = torch.max(X, dim=0)[0]
+        mn = torch.min(X.reshape(B,C,-1), dim=2)[0]
+        mx = torch.max(X.reshape(B,C,-1), dim=2)[0]
 
         # Init mixing prop
         self._init_mp(dtype)
     
         if self.mu is None:
             # means
-            self.mu = torch.zeros((C, K), dtype=dtype, device=self.dev)
+            self.mu = torch.zeros((B, C, K), dtype=dtype, device=self.dev)
         if self.Cov is None:
             # covariance
-            self.Cov = torch.zeros((C, C, K), dtype=dtype, device=self.dev)
-            for c in range(C):
-                # rng = torch.linspace(start=mn[c], end=mx[c], steps=K, dtype=dtype, device=self.dev)
-                # num_neg = sum(rng < 0)
-                # num_pos = sum(rng > 0)
-                # rng = torch.arange(-num_neg, num_pos, dtype=dtype, device=self.dev)
-                # self.mu[c, :] = torch.reshape((rng * (mx[c] - mn[c]))/(K + 1), (1, K))
-                self.mu[c, :] = torch.reshape(torch.linspace(mn[c], mx[c], K, dtype=dtype, device=self.dev), (1, K))
-                self.Cov[c, c, :] = \
-                    torch.reshape(torch.ones(K, dtype=dtype, device=self.dev)
-                                  * ((mx[c] - mn[c])/(K))**2, (1, 1, K))
+            self.Cov = torch.zeros((B, C, C, K), dtype=dtype, device=self.dev)
+            for b in range(B):
+                for c in range(C):
+                    # rng = torch.linspace(start=mn[c], end=mx[c], steps=K, dtype=dtype, device=self.dev)
+                    # num_neg = sum(rng < 0)
+                    # num_pos = sum(rng > 0)
+                    # rng = torch.arange(-num_neg, num_pos, dtype=dtype, device=self.dev)
+                    # self.mu[c, :] = torch.reshape((rng * (mx[c] - mn[c]))/(K + 1), (1, K))
+                    self.mu[b, c, :] = torch.reshape(torch.linspace(mn[b, c], mx[b, c], K, dtype=dtype, device=self.dev), (1, K))
+                    self.Cov[b, c, c, :] = \
+                        torch.reshape(torch.ones(K, dtype=dtype, device=self.dev)
+                                    * ((mx[b, c] - mn[b, c])/(K))**2, (1, 1, 1, K))
 
     def _update(self, ss0, ss1, ss2):
         """ Update GMM means and variances

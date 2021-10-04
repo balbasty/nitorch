@@ -27,6 +27,7 @@ from . import plot
 from . import spatial
 from . import tools
 from . import vb
+from . import uniseg
 
 from . import _version
 __version__ = _version.get_versions()['version']
