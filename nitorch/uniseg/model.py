@@ -128,10 +128,11 @@ class Mixture:
         C = X.shape[1]
         N = X.shape[2:]
         K = self.K
-        if len(X.shape)-1 == len(self.mp.shape):
-            self.mp = torch.stack(B*[self.mp], dim=0)
         dtype = self.dt
         device = self.dev
+        if len(X.shape)-1 == len(self.mp.shape) or len(self.mp.shape) == 1:
+            self.mp = torch.stack(B*[self.mp], dim=0)
+            # , dtype=dtype, device=device)
         tiny = torch.tensor(1e-32, dtype=dtype, device=device)
         tinyish = torch.tensor(1e-3, dtype=dtype, device=device)
 
@@ -155,6 +156,7 @@ class Mixture:
                 else:
                     for k in range(K):
                         Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k)
+                        print(Z[b, k].min(), Z[b, k].max())
 
                 # Get responsibilities
                 Z, dlb = softmax_lse(Z, lse=True, weights=W)
@@ -182,8 +184,8 @@ class Mixture:
                     if W is not None:
                         self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
                     else:
-                        self.mp = ss0 / N
-
+                        self.mp = ss0 / N.numel()
+                    
                 # Update model specific parameters
                 self._update(ss0, ss1, ss2)
 
@@ -210,7 +212,7 @@ class Mixture:
             ss2 (torch.tensor): 2nd moment (B, C, C, K).
 
         """
-        N = X.shape[2:].prod()
+        N = X.shape[2:].numel()
         B = X.shape[0]
         C = X.shape[1]
         K = Z.shape[1]
@@ -228,16 +230,16 @@ class Mixture:
         for b in range(B):
             for k in range(K):
                 # 1st
-                ss1[b, :, k] = torch.sum(torch.reshape(Z[b, k], (N, 1)) * X[b].reshape(C, -1),
+                ss1[b, :, k] = torch.sum(Z[b, k].reshape(N, 1) * X[b].reshape(-1, C),
                                     dim=0, dtype=torch.float64)
 
                 # 2nd
                 for c1 in range(C):
                     ss2[b, c1, c1, k] = \
-                        torch.sum(Z[b, k] * X[b, c1].reshape(-1) ** 2, dtype=torch.float64)
+                        torch.sum(Z[b, k] * X[b, c1] ** 2, dtype=torch.float64)
                     for c2 in range(c1 + 1, C):
                         ss2[b, c1, c2, k] = \
-                            torch.sum(Z[b, k] * (X[b, c1] * X[b, c2]).reshape(-1),
+                            torch.sum(Z[b, k] * (X[b, c1] * X[b, c2]),
                                     dtype=torch.float64)
                         ss2[b, c2, c1, k] = ss2[b, c1, c2, k]
 
@@ -338,13 +340,13 @@ class Mixture:
         """ Return maximum likelihood map.
 
         Args:
-            Z (torch.tensor): Responsibilities (N, K).
+            Z (torch.tensor): Responsibilities (B, K, [Spatial]).
 
         Returns:
-            (torch.tensor): Maximum likelihood map (N, 1).
+            (torch.tensor): Maximum likelihood map (B, 1, [Spatial]).
 
         """
-        return torch.argmax(Z, dim=3)
+        return torch.argmax(Z, dim=1)
 
 
 class UniSeg(Mixture):
@@ -389,26 +391,35 @@ class UniSeg(Mixture):
         dtype = X.dtype
         pi = torch.tensor(math.pi, dtype=dtype, device=device)
         if c is not None:
-            Cov = self.Cov[:, c, c, k].reshape(B, 1, 1).cpu()
-            mu = self.mu[:, c, k].reshape(B, 1).cpu()
+            Cov = torch.ones((B, 1, 1, 1), device=device, dtype=dtype)
+            mu = torch.ones((B, 1, 1), device=device, dtype=dtype)
         else:
-            Cov = self.Cov[:, :, :, k]
-            mu = self.mu[:, :, k]
-        if C == 1:
-            chol_Cov = torch.sqrt(Cov)
-            log_det_Cov = torch.log(chol_Cov[0, 0])
-        else:
-            chol_Cov = torch.cholesky(Cov)
-            log_det_Cov = torch.sum(torch.log(torch.diag(chol_Cov)))
-            chol_Cov = chol_Cov.inverse()
+            Cov = torch.ones((B, C, C, 1), device=device, dtype=dtype)
+            mu = torch.ones((B, C, 1), device=device, dtype=dtype)
+        chol_Cov = torch.ones_like(Cov, device=device, dtype=dtype)
+        log_det_Cov = torch.ones((B, Cov.shape[-1]), device=device, dtype=dtype)
+        for b in range(B):
+            if c is not None:
+                Cov[b] = self.Cov[b, c, c, k].reshape(1, 1, 1).cpu()
+                mu[b] = self.mu[b, c, k].reshape(1, 1).cpu()
+            else:
+                Cov[b] = self.Cov[b, :, :, k].reshape(C, C, 1) # shape (C, C)
+                mu[b] = self.mu[b, :, k].reshape(C, 1) # shape C
+            if C == 1:
+                chol_Cov[b] = torch.sqrt(Cov[b])
+                log_det_Cov[b] = torch.log(chol_Cov[b, 0, 0])
+            else:
+                chol_Cov[b] = torch.cholesky(Cov[b])
+                log_det_Cov[b] = torch.sum(torch.log(torch.diag(chol_Cov[b])))
+                chol_Cov[b] = chol_Cov[b].inverse()
         chol_Cov = chol_Cov.type(dtype)
         mu = mu.type(dtype)
         if C == 1:
-            diff = (X - mu)/chol_Cov
+            diff = (X.reshape(B, C, -1) - mu)/chol_Cov
         else:
-            diff = torch.tensordot(X - mu, chol_Cov, dims=([1], [0]))
-        log_pdf = - (C / 2) * torch.log(2 * pi) - log_det_Cov - 0.5 * torch.sum(diff**2, dim=1)
-        return log_pdf
+            diff = torch.tensordot(X.reshape(B, C, -1) - mu, chol_Cov, dims=([2], [1]))
+        log_pdf = - (C / 2) * torch.log(2 * pi) - log_det_Cov - 0.5 * torch.sum(diff**2, dim=2)
+        return log_pdf.reshape(X.shape)
 
     def _init_par(self, X):
         """ Initialise GMM specific parameters: mu, Cov
@@ -449,19 +460,21 @@ class UniSeg(Mixture):
         """ Update GMM means and variances
 
         Args:
-            ss0 (torch.tensor): 0th moment (K).
-            ss1 (torch.tensor): 1st moment (C, K).
-            ss2 (torch.tensor): 2nd moment (C, C, K).
+            ss0 (torch.tensor): 0th moment (B, K).
+            ss1 (torch.tensor): 1st moment (B, C, K).
+            ss2 (torch.tensor): 2nd moment (B, C, C, K).
 
         """
-        C = ss1.shape[0]
-        K = ss1.shape[1]
+        B = ss1.shape[0]
+        C = ss1.shape[1]
+        K = ss1.shape[2]
 
         # Update means and covariances
-        for k in range(K):
-            # Update mean
-            self.mu[:, k] = 1/ss0[k] * ss1[:, k]
+        for b in range(B):
+            for k in range(K):
+                # Update mean
+                self.mu[b, :, k] = 1/ss0[b, k] * ss1[b, :, k]
 
-            # Update covariance
-            self.Cov[:, :, k] = ss2[:, :, k] / ss0[k] \
-                - torch.ger(self.mu[:, k], self.mu[:, k])
+                # Update covariance
+                self.Cov[b, :, :, k] = ss2[b, :, :, k] / ss0[b, k] \
+                    - torch.ger(self.mu[b, :, k], self.mu[b, :, k])
