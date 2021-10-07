@@ -84,6 +84,16 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
 
     # --- generic fields ---
 
+    if metadata.get('voxel_size_unit', None) is not None:
+        val = metadata['voxel_size_unit']
+        if hasattr(header, 'set_xyzt_units'):
+            header.set_xyzt_units(val, None)
+        else:
+            format_name = type(header).__name__.split('Header')[0]
+            warn('Format {} does not accept voxel size units. '
+                 'It will be discarded.'.format(format_name),
+                 RuntimeWarning)
+
     if metadata.get('voxel_size', None) is not None:
         val = metadata['voxel_size']
         if isinstance(val, str):
@@ -238,6 +248,12 @@ def header_to_metadata(header, metadata):
 
     if 'voxel_size' in metadata:
         metadata['voxel_size'] = header.get_zooms()[:3]
+        if hasattr(header, 'get_xyzt_units'):
+            metadata['voxel_size_unit'], _ = header.get_xyzt_units()
+        else:
+            metadata['voxel_size_unit'] = 'mm'
+
+    elif 'voxel_size_unit' in metadata:
         if hasattr(header, 'get_xyzt_units'):
             metadata['voxel_size_unit'], _ = header.get_xyzt_units()
         else:
