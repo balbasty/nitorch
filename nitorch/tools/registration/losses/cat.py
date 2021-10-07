@@ -191,8 +191,6 @@ def cat_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     return tuple(out) if len(out) > 1 else out[0]
 
 
-
-
 class Cat(OptimizationLoss):
     """Categorical cross-entropy"""
 
