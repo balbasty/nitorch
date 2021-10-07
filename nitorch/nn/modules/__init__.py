@@ -8,6 +8,7 @@ from . import hyper
 from . import norm
 from . import dropout
 from . import pool
+from . import pretrained
 from . import registration
 from . import resnet
 from . import spatial
@@ -22,6 +23,7 @@ from .hyper import *
 from .norm import *
 from .dropout import *
 from .pool import *
+from .pretrained import *
 from .registration import *
 from .resnet import *
 from .spatial import *

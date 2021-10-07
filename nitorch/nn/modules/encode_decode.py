@@ -127,11 +127,18 @@ class Upsample(Module):
             slicer = [slice(o, o+sz*st) for sz, st, o in
                       zip(x.shape[2:], stride, offset)]
             slicer = [slice(None)]*2 + slicer
-            z[tuple(slicer)].copy_(x)
+            subz = z[tuple(slicer)]
+            slicer = [slice(mx) for mx in subz.shape[2:]]
+            slicer = [slice(None)]*2 + slicer
+            subz.copy_(x[tuple(slicer)])
         else:
             slicer = [slice(o, None, s) for o, s in zip(offset, stride)]
             slicer = [slice(None)]*2 + slicer
-            y[tuple(slicer)] = x
+            suby = y[tuple(slicer)]
+            slicer = [slice(mx) for mx in suby.shape[2:]]
+            slicer = [slice(None)]*2 + slicer
+            suby.copy_(x[tuple(slicer)])
+
         return y
 
     def shape(self, x, output_padding=None, output_shape=None):

@@ -1,4 +1,5 @@
 import torch.nn as tnn
+import inspect
 
 _tnn_activations = [
     # linear units
@@ -124,4 +125,23 @@ def make_activation_from_name(name):
 
     """
     klass = activation_from_name(name)
-    return klass()
+    if klass in (tnn.Softmax, tnn.Softmin, tnn.LogSoftmax):
+        instance = klass(dim=1)
+    else:
+        instance = klass()
+    return instance
+
+
+def make_activation(activation):
+    if not activation:
+        return None
+    if isinstance(activation, str):
+        return make_activation_from_name(activation)
+    if activation in (tnn.Softmax, tnn.Softmin, tnn.LogSoftmax):
+        activation = activation(dim=1)
+    else:
+        activation = (activation() if inspect.isclass(activation)
+                      else activation if callable(activation)
+                      else None)
+    print(activation)
+    return activation
