@@ -4,7 +4,8 @@ keys = [
     'format',        # name of the file format
     'affine',        # orientation matrix (tensor)
     'dtype',         # numpy data type
-    'voxel_size',    # voxel size, in mm
+    'voxel_size',    # voxel size, in voxel_size_unit
+    'voxel_size_unit',  # voxel size unit, default=mm
     'intent',        # nii: type of data/maps stored in the file
     'slope',         # nii: intensity transform
     'inter',         # nii: intensity transform
