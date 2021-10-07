@@ -1,9 +1,9 @@
 import math
 from nitorch.core.utils import isin
 from timeit import default_timer as timer
-from ..core.optim import get_gain, plot_convergence
-from ..core.math import besseli, softmax_lse
-from ..plot import plot_mixture_fit
+from nitorch.core.optim import get_gain, plot_convergence
+from nitorch.core.math import besseli, softmax_lse
+from nitorch.plot import plot_mixture_fit
 import torch
 
 
@@ -62,6 +62,10 @@ class Mixture:
 
         # Set random seed
         torch.manual_seed(1)
+
+        if X.dtype not in [torch.float16, torch.float32, torch.float64]:
+            print('Data type not supported - converting to single-precision float.')
+            X = X.float()
 
         self.dev = X.device
         self.dt = X.dtype
@@ -156,13 +160,12 @@ class Mixture:
                 else:
                     for k in range(K):
                         Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k)
-                        print(Z[b, k].min(), Z[b, k].max())
 
                 # Get responsibilities
-                Z, dlb = softmax_lse(Z, lse=True, weights=W)
+                Z, dlb = softmax_lse(Z+tinyish, lse=True, weights=W, dim=1)
 
                 # Objective function and convergence related
-                lb[b, n_iter] = dlb
+                lb[b, n_iter] = dlb.float()
                 gain = get_gain(lb[b, :n_iter + 1])
                 if verbose >= 2:
                     print('n_iter: {}, lb: {}, gain: {}'
