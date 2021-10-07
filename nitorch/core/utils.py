@@ -1827,7 +1827,7 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
         return version[0] > 2 or (version[0] == 1 and version[1] >= 7)
 
     input, q = to_max_backend(input, q)
-    dim = py.make_list(dim or [])
+    dim = py.make_list([] if dim is None else dim)
     # if torch_is_recent() and len(dim) < 2 and not bins:
     #     dim = dim[0] if dim else None
     #     return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
@@ -1840,13 +1840,12 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
     inshape = input.shape
     if mask is not None:
         mask = mask.expand(inshape)
-    if dim is None:
+    if not dim:
         if mask is not None:
             mask = mask.reshape([1, -1])
         input = input.reshape([1, -1])
         batch = []
     else:
-        dim = py.make_list(dim)
         odim = list(range(-len(dim), 0))
         input = movedim(input, dim, odim)
         batch = input.shape[:-len(dim)]
@@ -1885,9 +1884,12 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
 
     # reshape
     if keepdim:
-        oshape = list(inshape)
-        for d in dim:
-            oshape[d] = 1
+        if not dim:
+            oshape = [1] * len(inshape)
+        else:
+            oshape = list(inshape)
+            for d in dim:
+                oshape[d] = 1
         oshape += [q.shape[-1]]
     else:
         oshape = [*batch, q.shape[-1]]

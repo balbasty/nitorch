@@ -4,7 +4,7 @@ import inspect
 import math
 import torch
 from nitorch.core.py import make_list, make_tuple
-from nitorch.spatial import pool
+from nitorch.spatial import pool, compute_conv_shape
 from nitorch.nn.activations import _map_activations
 from nitorch.nn.base import Module
 
@@ -37,7 +37,7 @@ class Pool(Module):
 
     def __init__(self, dim, kernel_size=3, stride=None, padding=0,
                  dilation=1, reduction=None, activation=None,
-                 return_indices=False):
+                 return_indices=False, ceil=False):
         """
 
         Parameters
@@ -48,7 +48,7 @@ class Pool(Module):
             Kernel/Window size
         stride : int or sequence[int], default=kernel_size
             Step/stride
-        padding : int or sequence[int], default=0
+        padding : {'valid', 'same'} or int or sequence[int], default=0
             Zero-padding
         dilation : int or sequence[int], default=1
             Dilation
@@ -65,15 +65,21 @@ class Pool(Module):
                 * have a non-learnable activation
         return_indices : bool, default=False
             Return indices of the min/max/median elements.
+        ceil : bool, default=False
+            Whether to take the ceil rather than the floor when computing
+            the output shape. Ceil ensures that all input elements
+            belong to at least one tile, but is not implemented with
+            all reduction methods.
         """
         super().__init__()
         self.dim = dim
-        self.kernel_size = kernel_size
-        self.stride = stride
+        self.kernel_size = make_list(kernel_size, dim)
+        self.stride = make_list(stride, dim)
         self.padding = padding
-        self.dilation = dilation
+        self.dilation = make_list(dilation, dim)
         self.reduction = reduction or self.reduction
         self.return_indices = return_indices
+        self.ceil = ceil
 
         # Add activation
         #   an activation can be a class (typically a Module), which is
@@ -109,9 +115,10 @@ class Pool(Module):
         else:
             inshape = x
 
-        return _guess_output_shape(
-            inshape, self.dim, self.kernel_size,
-            stride=self.stride, dilation=self.dilation, padding=self.padding)
+        batch, channel, *inshape = inshape
+        return (batch, channel, *compute_conv_shape(
+            inshape, self.kernel_size, stride=self.stride,
+            dilation=self.dilation, padding=self.padding, ceil=self.ceil))
 
     def forward(self, x, return_indices=None):
         """
@@ -140,11 +147,23 @@ class Pool(Module):
                  dilation=self.dilation,
                  padding=self.padding,
                  reduction=self.reduction,
-                 return_indices=return_indices)
+                 return_indices=return_indices,
+                 ceil=self.ceil)
+        if return_indices:
+            x, ind = x
 
         if self.activation:
             x = self.activation(x)
-        return x
+        return (x, ind) if return_indices else x
+
+    def extra_repr(self):
+        s = [f'kernel_size={list(self.kernel_size)}']
+        if any(x and x != k for x, k in zip(self.stride, self.kernel_size)):
+            s += [f'stride={list(self.stride)}']
+        if any(x > 1 for x in self.dilation):
+            s += [f'dilation={list(self.dilation)}']
+        s = ', '.join(s)
+        return s
 
 
 class MaxPool(Pool):

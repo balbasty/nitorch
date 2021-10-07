@@ -6,14 +6,16 @@ from collections import OrderedDict
 import torch
 from typing import Sequence, Optional, Union, Callable, Type, TypeVar
 from torch import nn as tnn
-from nitorch.core.py import make_list, flatten
-from nitorch.core.linalg import matvec
-from nitorch.core.utils import movedim
-from nitorch.nn.base import nitorchmodule, Module
-from .conv import ConvBlock
-from .pool import Pool
+from nitorch.core import py, utils, linalg
+from nitorch import io, spatial
+from nitorch.nn.base import nitorchmodule, Module, Sequential
+from ..activations import make_activation
+from .conv import ConvBlock, Conv
+from .norm import BatchNorm
+from .pool import Pool, MaxPool
 from .reduction import reductions, Reduction
 from .spatial import Resize
+from .encode_decode import Upsample
 from .. import check
 
 
@@ -134,8 +136,8 @@ class Stitch(Module):
 
         # linear combination
         input = input.unfold(1, input_split, input_split).transpose(1, -1)
-        input = matvec(self.weight.t(), input)
-        input = movedim(input, -1, 1).reshape([batch, out_channels, *spatial])
+        input = linalg.matvec(self.weight.t(), input)
+        input = utils.movedim(input, -1, 1).reshape([batch, out_channels, *spatial])
 
         return input
 
@@ -245,18 +247,18 @@ class StackedConv(tnn.ModuleList):
         self.residual = residual
         self.return_last = return_last
 
-        out_channels = make_list(out_channels)
+        out_channels = py.make_list(out_channels)
         in_channels = [in_channels] + out_channels[:-1]
         nb_layers = len(out_channels)
         
-        stitch = map(lambda x: x or 1, make_list(stitch))
+        stitch = map(lambda x: x or 1, py.make_list(stitch))
         stitch = expand_list(stitch, nb_layers, default=1)
-        groups = expand_list(make_list(groups), nb_layers)
+        groups = expand_list(py.make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
-        activation = expand_list(make_list(activation), nb_layers, default='relu')
-        norm = expand_list(make_list(norm), nb_layers, default=False)
-        dropout = expand_list(make_list(dropout), nb_layers, default=1.0, use_default=True)        
-        bias = expand_list(make_list(bias), nb_layers, default=True)
+        activation = expand_list(py.make_list(activation), nb_layers, default='relu')
+        norm = expand_list(py.make_list(norm), nb_layers, default=False)
+        dropout = expand_list(py.make_list(dropout), nb_layers, default=1.0, use_default=True)        
+        bias = expand_list(py.make_list(bias), nb_layers, default=True)
         
         if pool not in (None, 'up', 'conv') and transposed:
             raise ValueError('Cannot have both `pool` and `transposed`.')
@@ -304,7 +306,7 @@ class StackedConv(tnn.ModuleList):
             if pool == 'up':
                 modules.append(Resize(factor=stride, anchor='f'))
             elif pool == 'down':
-                stride = [1/s for s in make_list(stride)]
+                stride = [1/s for s in py.make_list(stride)]
                 modules.append(Resize(factor=stride, anchor='f', interpolation=0))
             elif pool == 'conv':
                 modules.append(ConvBlock(
@@ -393,7 +395,7 @@ class StackedConv(tnn.ModuleList):
             if isinstance(layer, (Pool, Resize)):
                 return True
             if isinstance(layer, ConvBlock):
-                if not all(s == 1 for s in make_list(layer.stride)):
+                if not all(s == 1 for s in py.make_list(layer.stride)):
                     return True
             return False
 
@@ -610,19 +612,19 @@ class Encoder(tnn.Sequential):
         """
         self.dim = dim
                 
-        out_channels = list(map(make_list, out_channels))
+        out_channels = list(map(py.make_list, out_channels))
         in_channels = [in_channels] + [c[-1] for c in out_channels[:-1]]
         nb_layers = len(out_channels)
         
-        stitch = map(lambda x: x or 1, make_list(stitch))
+        stitch = map(lambda x: x or 1, py.make_list(stitch))
         stitch = expand_list(stitch, nb_layers, default=1)
-        groups = expand_list(make_list(groups), nb_layers)
+        groups = expand_list(py.make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
-        activation = expand_list(make_list(activation), nb_layers, default='relu')
-        norm = expand_list(make_list(norm), nb_layers, default=False)
+        activation = expand_list(py.make_list(activation), nb_layers, default='relu')
+        norm = expand_list(py.make_list(norm), nb_layers, default=False)
 
         # deal with skipped connections (what a nightmare...)
-        skip_channels = make_list(skip_channels or [])
+        skip_channels = py.make_list(skip_channels or [])
         self.skip = len(skip_channels) > 0
         self.skip_groups = []
         for i in range(len(skip_channels)):
@@ -753,20 +755,20 @@ class Decoder(tnn.ModuleList):
         """                     
         self.dim = dim
                 
-        out_channels = list(map(make_list, out_channels))
+        out_channels = list(map(py.make_list, out_channels))
         in_channels = [in_channels]
         in_channels += [c[-1] for c in out_channels[:-1]]
         nb_layers = len(out_channels)
         
-        stitch = map(lambda x: x or 1, make_list(stitch))
+        stitch = map(lambda x: x or 1, py.make_list(stitch))
         stitch = expand_list(stitch, nb_layers, default=1)
-        groups = expand_list(make_list(groups), nb_layers)
+        groups = expand_list(py.make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
-        activation = expand_list(make_list(activation), nb_layers, default='relu')
-        norm = expand_list(make_list(norm), nb_layers, default=False)
+        activation = expand_list(py.make_list(activation), nb_layers, default='relu')
+        norm = expand_list(py.make_list(norm), nb_layers, default=False)
 
         # deal with skipped connections (what a nightmare...)
-        skip_channels = make_list(skip_channels or [])
+        skip_channels = py.make_list(skip_channels or [])
         self.skip = len(skip_channels) > 0
         self.skip_groups = []
         for i in range(len(skip_channels)):
@@ -910,8 +912,8 @@ class UNet(tnn.Sequential):
         """
         self.dim = dim
 
-        in_channels = make_list(in_channels)
-        out_channels = make_list(out_channels)
+        in_channels = py.make_list(in_channels)
+        out_channels = py.make_list(out_channels)
 
         # defaults
         encoder = list(encoder or [16, 32, 32, 32])
@@ -919,23 +921,23 @@ class UNet(tnn.Sequential):
 
         # ensure as many upsampling steps as downsampling steps
         decoder = expand_list(decoder, len(encoder), crop=False)
-        encoder = list(map(make_list, encoder))
+        encoder = list(map(py.make_list, encoder))
         encoder_out = list(map(lambda x: x[-1], reversed(encoder)))
         encoder_out.append(sum(in_channels))
-        decoder = list(map(make_list, decoder))
-        stack = flatten(decoder[len(encoder):])
+        decoder = list(map(py.make_list, decoder))
+        stack = py.flatten(decoder[len(encoder):])
         decoder = decoder[:len(encoder)]
 
         nb_layers = len(encoder) + len(decoder) + len(stack)
         
-        stitch = map(lambda x: x or 1, make_list(stitch))
+        stitch = map(lambda x: x or 1, py.make_list(stitch))
         stitch = expand_list(stitch, nb_layers, default=1)
         stitch[-1] = 1  # do not stitch last layer
-        groups = expand_list(make_list(groups), nb_layers)
+        groups = expand_list(py.make_list(groups), nb_layers)
         groups = [g or s for g, s in zip(groups, stitch)]
         groups[0] = len(in_channels)    # first layer
         groups[-1] = len(out_channels)  # last layer
-        activation = expand_list(make_list(activation), nb_layers, default='relu')
+        activation = expand_list(py.make_list(activation), nb_layers, default='relu')
 
         range_e = slice(len(encoder))
         range_d = slice(len(encoder), len(encoder) + len(decoder))
@@ -1000,7 +1002,7 @@ class UNet(tnn.Sequential):
         modules.append(('stack', stk))
 
         input_final = stack[-1] if stack else last_decoder   
-        input_final = make_list(input_final)
+        input_final = py.make_list(input_final)
         if len(input_final) == 1:
             input_final = [input_final[0]//len(out_channels)] * len(out_channels)
         stk = ConvBlock(dim, input_final, out_channels,
@@ -1121,7 +1123,7 @@ class CNN(tnn.Sequential):
 
         encoder = list(encoder or [16, 32, 32, 32])
         stack = list(stack or [32, 16, 16])
-        last_encoder = make_list(encoder[-1])[-1]
+        last_encoder = py.make_list(encoder[-1])[-1]
         stack = stack + [out_channels]
         if isinstance(reduction, str):
             reduction = reductions.get(reduction, None)
@@ -1134,7 +1136,7 @@ class CNN(tnn.Sequential):
         nb_layers = len(encoder) + len(stack)
         if activation is None:
             activation = ['relu', ..., None]
-        activation = expand_list(make_list(activation), nb_layers, default='relu')
+        activation = expand_list(py.make_list(activation), nb_layers, default='relu')
         activation_encoder = activation[:len(encoder)]
         activation_stack = activation[len(encoder):]
 
@@ -1210,19 +1212,19 @@ class MRF(tnn.Sequential):
 
         # preprocess parameters
 
-        kernel_size = make_list(kernel_size, dim)
+        kernel_size = py.make_list(kernel_size, dim)
         if not all(k % 2 for k in kernel_size):
             raise ValueError(f'MRF kernel size must be odd. Got {kernel_size}.')
 
-        activation = expand_list(make_list(activation), 2 + num_extra,
+        activation = expand_list(py.make_list(activation), 2 + num_extra,
                                  default=tnn.LeakyReLU(0.2))
         mrf_activation, *activation = activation
 
-        batch_norm = expand_list(make_list(batch_norm), 2 + num_extra,
+        batch_norm = expand_list(py.make_list(batch_norm), 2 + num_extra,
                                  default=False)
         mrf_batch_norm, *batch_norm = batch_norm
 
-        bias = expand_list(make_list(bias), 2 + num_extra, default=False)
+        bias = expand_list(py.make_list(bias), 2 + num_extra, default=False)
         mrf_bias, *bias = bias
 
         # make layers
@@ -1263,7 +1265,15 @@ class Cat(Module):
         x = torch.cat(x, 1) if len(x) > 1 else x[0]
         return (x, last) if return_last else x
 
-    
+
+class Add(Module):
+
+    def forward(self, *x, return_last=False, **k):
+        last = x[0]
+        x = sum(x) if len(x) > 1 else x[0]
+        return (x, last) if return_last else x
+
+
 @nitorchmodule
 class UNet2(tnn.Sequential):
     """Alternative U-Net.
@@ -1350,12 +1360,12 @@ class UNet2(tnn.Sequential):
         conv_per_layer = max(1, conv_per_layer)
         encoder = list(encoder or default_encoder)
         nb_scales = len(encoder)
-        decoder = make_list(decoder or default_decoder,
+        decoder = py.make_list(decoder or default_decoder,
                             n=nb_scales-1, crop=False)
         stack = decoder[len(encoder)-1:]
         decoder = encoder[-1:] + decoder[:len(encoder)-1]
 
-        in_channels = make_list(in_channels, n=nb_scales, default=0)
+        in_channels = py.make_list(in_channels, n=nb_scales, default=0)
 
         modules = []
         if not pool:
@@ -1624,11 +1634,11 @@ class UUNet(tnn.Sequential):
         # defaults
         conv_per_layer = max(1, conv_per_layer)
         encoder = list(encoder or [16, 32, 32, 32])
-        decoder = make_list(decoder or list(reversed(encoder[:-1])),
+        decoder = py.make_list(decoder or list(reversed(encoder[:-1])),
                             n=len(encoder)-1, crop=False)
         stack = decoder[len(encoder)-1:]
         decoder = encoder[-1:] + decoder[:len(encoder)]
-        activation, final_activation = make_list(activation, 2)
+        activation, final_activation = py.make_list(activation, 2)
 
         modules = []
         first = ConvBlock(dim,
@@ -1883,20 +1893,20 @@ class WNet(tnn.Sequential):
         default_encoder = [16, 32, 32, 32]
         encoder1 = list(encoder1 or default_encoder)
         default_decoder = list(reversed(encoder1[:-1]))
-        decoder1 = make_list(decoder1 or default_decoder, 
+        decoder1 = py.make_list(decoder1 or default_decoder, 
                              n=len(encoder1) - 1, crop=False)
         default_encoder2 = encoder1[1:]
         encoder2 = list(encoder2 or default_encoder2)
         default_decoder2 = decoder1
-        decoder2 = make_list(decoder2 or default_decoder2, 
+        decoder2 = py.make_list(decoder2 or default_decoder2, 
                              n=len(encoder2), crop=False)
 
         stack1 = decoder1[len(encoder1) - 1:]
         decoder1 = decoder1[:len(encoder1) - 1]
         stack2 = decoder2[len(encoder2):]
         decoder2 = decoder2[:len(encoder2)]
-        activation, final_activation = make_list(activation, 2)
-        kernel_size, final_kernel_size = make_list(kernel_size, 2)
+        activation, final_activation = py.make_list(activation, 2)
+        kernel_size, final_kernel_size = py.make_list(kernel_size, 2)
 
         modules = OrderedDict()
 
@@ -2233,12 +2243,12 @@ class SEWNet(Module):
         default_encoder = [16, 32, 32, 32]
         encoder1 = list(encoder1 or default_encoder)
         default_decoder = list(reversed(encoder1[:-1]))
-        decoder1 = make_list(decoder1 or default_decoder,
+        decoder1 = py.make_list(decoder1 or default_decoder,
                              n=len(encoder1) - 1, crop=False)
         default_encoder2 = encoder1[1:]
         encoder2 = list(encoder2 or default_encoder2)
         default_decoder2 = decoder1
-        decoder2 = make_list(decoder2 or default_decoder2,
+        decoder2 = py.make_list(decoder2 or default_decoder2,
                              n=len(encoder2), crop=False)
         if not feat_channels:
             feat_channels = decoder1.pop()
@@ -2288,7 +2298,7 @@ class SEWNet(Module):
 
         # first unet
         x = self.siamese(x, return_all=self.skip, verbose=verbose)
-        x = make_list(x)
+        x = py.make_list(x)
 
         # convert batch to channels
         x = [xx.chunk(self.nb_twins) for xx in x]
@@ -2301,4 +2311,346 @@ class SEWNet(Module):
         return (x, feat) if return_feat else x
 
 
+class NeuriteResMerge(Sequential):
+    """Residual merge"""
+    def __init__(self, dim, in_channels, out_channels,
+                 kernel_size=3, dilation=1, padding='same', dropout=0,
+                 activation='elu'):
+        res_block = []
+        if (in_channels > 1 and out_channels > 1
+                and (in_channels != out_channels)):
+            res_block.append(['conv', Conv(
+                dim, in_channels, out_channels,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                padding=padding,
+            )])
+            res_block.append(
+                ('activation', make_activation(activation)))
+            if dropout:
+                res_block.append(('dropout', tnn.Dropout(dropout)))
+        res_block.append(('add', Add()))
+        res_block.append(('activation', make_activation(activation)))
+        super().__init__(OrderedDict(res_block))
+
+    def forward(self, identity, branch):
+        for layer in self:
+            if isinstance(layer, Add):
+                identity = layer(identity, branch)
+            else:
+                identity = layer(identity)
+        return identity
+
+
+class NeuriteEncoder(Sequential):
+    def __init__(self,
+                 dim,
+                 in_channels,
+                 nb_levels=5,
+                 kernel_size=3,
+                 nb_feat=16,
+                 feat_mult=1,
+                 pool_size=2,
+                 padding='same',
+                 dilation_rate_mult=1,
+                 activation='elu',
+                 residual=False,
+                 nb_conv_per_level=1,
+                 dropout=0,
+                 batch_norm=None):
+        self._residual = residual
+
+        encoder_module = []
+        lfidx = 0
+        nb_channels_out = in_channels
+        for level in range(nb_levels):
+            level_block = []
+            nb_channels_in_first = nb_channels_in = nb_channels_out
+            if not isinstance(nb_feat, (list, tuple)):
+                nb_channels_out = int(round(nb_feat * feat_mult ** level))
+            dilation = dilation_rate_mult ** level
+
+            conv_blocks = []
+            for conv in range(nb_conv_per_level):
+                conv_block = []
+                if isinstance(nb_feat, (list, tuple)):
+                    nb_channels_out = nb_feat[lfidx]
+                    lfidx += 1
+                conv_block.append(('conv', Conv(
+                    dim, nb_channels_in, nb_channels_out,
+                    kernel_size=kernel_size,
+                    dilation=dilation,
+                    padding=padding,
+                )))
+                nb_channels_in = nb_channels_out
+                if conv < nb_conv_per_level - 1:
+                    # not the last convolution -> activation
+                    conv_block.append(
+                        ('activation', make_activation(activation)))
+                    if dropout:
+                        conv_block.append(
+                            ('dropout', tnn.Dropout(dropout)))
+                elif not residual:
+                    conv_block.append(
+                        ('activation', make_activation(activation)))
+                conv_block = tnn.Sequential(OrderedDict(conv_block))
+                conv_blocks.append(conv_block)
+            conv_blocks = tnn.Sequential(*conv_blocks)
+            level_block.append(['conv', conv_blocks])
+            if dropout:
+                level_block.append(('dropout', tnn.Dropout(dropout)))
+
+            if residual:
+                level_block.append(('res', NeuriteResMerge(
+                     dim, nb_channels_in_first, nb_channels_out,
+                     kernel_size=kernel_size,
+                     dilation=dilation,
+                     padding=padding,
+                     activation=activation,
+                     dropout=dropout,
+                )))
+
+            if batch_norm:
+                level_block.append(('norm', BatchNorm(
+                    dim, nb_channels_out, eps=1e-3, momentum=0.01)))
+
+            if level < nb_levels - 1:
+                level_block.append(('pool', MaxPool(
+                    dim, pool_size, padding=padding, ceil=True)))
+
+            level_block = tnn.Sequential(OrderedDict(level_block))
+            encoder_module.append(level_block)
+
+        super().__init__(*encoder_module)
+
+    def forward(self, x, return_skip=False):
+        out = []
+        for n, level in enumerate(self):
+            identity = x
+            for i, blocks in enumerate(level):
+                if isinstance(blocks, NeuriteResMerge):
+                    x = blocks(identity, x)
+                else:
+                    x = blocks(x)
+                if return_skip and i == 0 and n != len(self) - 1:
+                    # first block is the conv block -> save out
+                    out.append(x)
+        return (x, *reversed(out)) if out else x
+
+
+class NeuriteDecoder(Sequential):
+    def __init__(self,
+                 dim,
+                 in_channels,
+                 out_channels,
+                 nb_levels=5,
+                 kernel_size=3,
+                 nb_feat=16,
+                 feat_mult=1,
+                 pool_size=2,
+                 padding='same',
+                 dilation_rate_mult=1,
+                 activation='elu',
+                 final_activation='softmax',
+                 residual=False,
+                 nb_conv_per_level=1,
+                 dropout=0,
+                 batch_norm=None):
+
+        decoder_module = []
+        lfidx = 0
+        in_channels = py.make_list(in_channels)
+        nb_channels_out = in_channels.pop(0)
+        for level in range(nb_levels-1):
+            level_block = []
+            nb_channels_in_first = nb_channels_in = nb_channels_out
+            if not isinstance(nb_feat, (list, tuple)):
+                nb_channels_out = int(round(nb_feat * feat_mult ** (nb_levels - 2 - level)))
+            dilation = dilation_rate_mult ** (nb_levels - 2 - level)
+
+            # level_block.append(('up', Upsample(stride=pool_size)))
+            level_block.append(('up', Upsample(stride=pool_size)))
+
+            if in_channels:
+                level_block.append(('cat', Cat()))
+                nb_channels_in = nb_channels_in + in_channels.pop(0)
+
+            conv_blocks = []
+            for conv in range(nb_conv_per_level):
+                conv_block = []
+                if isinstance(nb_feat, (list, tuple)):
+                    nb_channels_out = nb_feat[lfidx]
+                    lfidx += 1
+                conv_block.append(('conv', Conv(
+                    dim, nb_channels_in, nb_channels_out,
+                    kernel_size=kernel_size,
+                    dilation=dilation,
+                    padding=padding,
+                )))
+                nb_channels_in = nb_channels_out
+                if (conv < nb_conv_per_level - 1) or not residual:
+                    # not the last convolution -> activation
+                    conv_block.append(
+                        ('activation', make_activation(activation)))
+                if dropout:
+                    conv_block.append(
+                        ('dropout', tnn.Dropout(dropout)))
+                conv_block = tnn.Sequential(OrderedDict(conv_block))
+                conv_blocks.append(conv_block)
+            conv_blocks = tnn.Sequential(*conv_blocks)
+            level_block.append(('conv', conv_blocks))
+
+            if residual:
+                level_block.append(('res', NeuriteResMerge(
+                     dim, nb_channels_in_first, nb_channels_out,
+                     kernel_size=kernel_size,
+                     dilation=dilation,
+                     padding=padding,
+                     activation=activation,
+                     dropout=dropout,
+                )))
+
+            if batch_norm:
+                level_block.append(('norm', BatchNorm(
+                    dim, nb_channels_out, eps=1e-3, momentum=0.01)))
+
+            level_block = tnn.Sequential(OrderedDict(level_block))
+            decoder_module.append(level_block)
+
+        final_module = [
+            ('final_conv', Conv(dim, nb_channels_in, out_channels, kernel_size=1))]
+        if final_activation:
+            final_module.append(
+                ('final_activation', make_activation(final_activation)))
+        final_module = tnn.Sequential(OrderedDict(final_module))
+        decoder_module.append(final_module)
+
+        super().__init__(*decoder_module)
+
+    def forward(self, x, *skip):
+        skip = list(skip)
+        *all_levels, final_conv = self.children()
+        for level in all_levels:
+            for block in level:
+                identity = x
+                if skip and isinstance(block, Upsample):
+                    x = block(x, output_shape=skip[0].shape[2:])
+                elif isinstance(block, Cat):
+                    x = block(skip.pop(0), x)
+                elif isinstance(x, NeuriteResMerge):
+                    x = block(identity, x)
+                else:
+                    x = block(x)
+        x = final_conv(x)
+        return x
+
+
+class NeuriteUNet(Module):
+    """
+    UNet with the exact same architecture as in Neurite, so that we
+    can load pre-trained weights from SynthStuff.
+    """
+    def __init__(self,
+                 dim,
+                 in_channels,
+                 out_channels,
+                 nb_levels=5,
+                 kernel_size=3,
+                 nb_feat=16,
+                 feat_mult=1,
+                 pool_size=2,
+                 padding='same',
+                 dilation_rate_mult=1,
+                 activation='elu',
+                 residual=False,
+                 final_activation='softmax',
+                 nb_conv_per_level=1,
+                 dropout=0,
+                 batch_norm=None):
+        """
+
+        Parameters
+        ----------
+        dim : int
+            Number of spatial dimensions
+        in_channels : int
+            Number of input channels
+        out_channels : int
+            Number of output channels/classes
+        nb_levels : int, default=5
+            Number of levels in the UNet
+        kernel_size : int or sequence[int], default=3
+            Kernel size
+        nb_feat : int or sequence[int], default=16
+            Either the number of channels after each convolution in
+            the UNet (if a sequence) or a fixed number of features
+            that gets multipled by `feat_mult` at each level (if an int).
+        feat_mult : int, default=1
+            How to expand the number of features at each coarser level.
+        pool_size : int, default=2
+            Kernel size of the max pooling operation.
+        padding : {'valid', 'same'} or int or sequence[int], default='same'
+            Padding method used in conv and pool/
+        dilation_rate_mult : int, default=1
+            How to expand the dilation of the kernel at each coarser level.
+        activation : str or class or callable, default='elu'
+            Activation function after each convolution.
+        residual : bool, default=False
+            Make the convolutional blocks residual.
+        final_activation : str or class or callable, default='softmax'
+            Final activation function, after the last convolution.
+        nb_conv_per_level : int, default=1
+            Number of sequential convolutions at each level.
+        dropout : float in (0..1), default=0
+            Channel dropout probability.
+        batch_norm : {'norm', 'instance', 'layer'} or class or callable, default=None
+            Normalization to use.
+        """
+        super().__init__()
+
+        if isinstance(nb_feat, (list, tuple)):
+            nb_feat_encoder = nb_feat[:nb_levels * nb_conv_per_level]
+            nb_feat_decoder = nb_feat[nb_levels * nb_conv_per_level:]
+            in_decoder = nb_feat_encoder[::-nb_conv_per_level]
+        else:
+            nb_feat_encoder = nb_feat_decoder = nb_feat
+            in_decoder = [nb_feat * feat_mult ** (nb_levels - level - 1)
+                          for level in range(nb_levels)]
+
+        self.encoder = NeuriteEncoder(
+            dim,
+            in_channels=in_channels,
+            nb_levels=nb_levels,
+            kernel_size=kernel_size,
+            nb_feat=nb_feat_encoder,
+            feat_mult=feat_mult,
+            pool_size=pool_size,
+            padding=padding,
+            dilation_rate_mult=dilation_rate_mult,
+            activation=activation,
+            residual=residual,
+            nb_conv_per_level=nb_conv_per_level,
+            dropout=dropout,
+            batch_norm=batch_norm)
+
+        self.decoder = NeuriteDecoder(
+            dim,
+            in_channels=in_decoder,
+            out_channels=out_channels,
+            nb_levels=nb_levels,
+            kernel_size=kernel_size,
+            nb_feat=nb_feat_decoder,
+            feat_mult=feat_mult,
+            pool_size=pool_size,
+            padding=padding,
+            dilation_rate_mult=dilation_rate_mult,
+            activation=activation,
+            final_activation=final_activation,
+            residual=residual,
+            nb_conv_per_level=nb_conv_per_level,
+            dropout=dropout,
+            batch_norm=batch_norm)
+
+    def forward(self, x):
+        return self.decoder(*self.encoder(x, return_skip=True))
 

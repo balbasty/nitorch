@@ -1,15 +1,134 @@
 import math as pymath
-import itertools
 import torch
 from torch.nn import functional as F
 from nitorch import core
-from nitorch.core import utils, math
-from nitorch.core.utils import to_max_backend, unsqueeze, movedim
+from nitorch.core import utils, math, py
 from nitorch.core.py import make_list
 from ._affine import affine_conv
 
 
-def pad_same(dim, tensor, kernel_size, dilation=1, bound='zero'):
+def _same_padding(in_size, kernel_size, stride, ceil):
+    if not ceil:
+        # This is equivalent to the formula below, but with floor
+        # instead of ceil. I find this more readable though.
+        padding = (kernel_size - stride - in_size % stride)
+    else:
+        out_size = pymath.ceil(float(in_size) / float(stride))
+        padding = max((out_size - 1) * stride + kernel_size - in_size, 0)
+    padding = max(0, padding)
+    if padding % 2 == 0:
+        return padding // 2
+    else:
+        return (padding // 2, padding - padding // 2)
+
+
+def compute_conv_shape(input_size, kernel_size, padding=0, dilation=1,
+                       stride=1, ceil=False):
+    """Compute the amount of padding to apply
+
+    Parameters
+    ----------
+    input_size : sequence of int
+        Spatial shape of the input tensor.
+    kernel_size : [sequence of] int
+    padding : [sequence of] {'valid', 'same'} or int or (int, int)
+        Padding type (if str) or symmetric amount (if int) or
+        low/high amount (if [int, int]).
+    dilation : [sequence of] int, default=1
+        The effective size of the kernel is
+        `(kernel_size - 1) * dilation + 1`
+    stride : [sequence of] int, default=1
+    ceil : bool, default=False
+        Ceil mode used to compute output shape
+        (tensorflow uses True, pytorch uses False by default)
+
+    Returns
+    -------
+    output_size : tuple of int
+
+    """
+    trunc_fn = pymath.ceil if ceil else pymath.floor
+
+    dim = len(input_size)
+    kernel_size = py.ensure_list(kernel_size, dim)
+    dilation = py.ensure_list(dilation, dim)
+    stride = py.ensure_list(stride, dim)
+
+    padding = compute_conv_padding(input_size, padding, kernel_size,
+                                   dilation, stride, ceil)
+    padding = _normalize_padding(padding)
+    kernel_size = [(k - 1) * d + 1 for (k, d) in zip(kernel_size, dilation)]
+
+    out_size = []
+    for L, S, P, K in zip(input_size, stride, padding, kernel_size):
+        if isinstance(P, (list, tuple)):
+            P = sum(P)
+        out_size += [trunc_fn((L + P - K) / S + 1)]
+    return out_size
+
+
+def compute_conv_padding(input_size, kernel_size, padding, dilation=1,
+                         stride=1, ceil=False):
+    """Compute the amount of padding to apply
+
+    Parameters
+    ----------
+    input_size : sequence of int
+        Spatial shape of the input tensor.
+    kernel_size : [sequence of] int
+    padding : [sequence of] {'valid', 'same'} or int or (int, int)
+        Padding type (if str) or symmetric amount (if int) or
+        low/high amount (if [int, int]).
+    dilation : [sequence of] int, default=1
+        The effective size of the kernel is
+        `(kernel_size - 1) * dilation + 1`
+    stride : [sequence of] int, default=1
+    ceil : bool, default=False
+        Ceil mode used to compute output shape
+        (tensorflow uses True, pytorch uses False by default)
+
+    Returns
+    -------
+    padding : tuple of int or (int, int)
+
+    """
+    # https://stackoverflow.com/questions/37674306/ (Answer by Vaibhav Dixit)
+
+    dim = len(input_size)
+    kernel_size = py.ensure_list(kernel_size, dim)
+    dilation = py.ensure_list(dilation, dim)
+    stride = py.ensure_list(stride, dim)
+    kernel_size = [(k-1) * d + 1 for (k, d) in zip(kernel_size, dilation)]
+    padding = py.ensure_list(padding, dim)
+
+    padding = [0 if p == 'valid'
+               else _same_padding(i, k, s, ceil) if p in ('same', 'auto')
+               else p if isinstance(p, int)
+               else tuple(py.ensure_list(p))
+               for p, i, k, s in zip(padding, input_size, kernel_size, stride)]
+    if not all(isinstance(p, int) or
+               (isinstance(p, tuple) and len(p) == 2
+                and all(isinstance(pp, int) for pp in p)) for p in padding):
+        raise ValueError('Invalid padding', padding)
+    return padding
+
+
+def _normalize_padding(padding):
+    """Ensure that padding has format (left, right, top, bottom, ...)"""
+    if all(isinstance(p, int) for p in padding):
+        return padding
+    else:
+        npadding = []
+        for p in padding:
+            if isinstance(p, (list, tuple)):
+                npadding.extend(p)
+            else:
+                npadding.append(p)
+                npadding.append(p)
+        return npadding
+
+
+def pad_same(dim, tensor, kernel_size, dilation=1, bound='zero', value=0):
     """Applies a padding that preserves the input dimensions when
     followed by a convolution-like (i.e. moving window) operation.
 
@@ -19,7 +138,8 @@ def pad_same(dim, tensor, kernel_size, dilation=1, bound='zero'):
     tensor : (..., *spatial) tensor
     kernel_size : [sequence of] int
     dilation : [sequence f] int, default=1
-    bound : {'zeros', 'dft', 'dct1', 'dct2'}, default='zeros'
+    bound : {'constant', 'dft', 'dct1', 'dct2', ...}, default='constant'
+    value : float, default=0
 
     Returns
     -------
@@ -28,15 +148,11 @@ def pad_same(dim, tensor, kernel_size, dilation=1, bound='zero'):
     """
     kernel_size = make_list(kernel_size, dim)
     dilation = make_list(dilation, dim)
-
-    padding = []
-    for i in range(dim):
-        if kernel_size[i] % 2 == 0:
-            raise ValueError('Cannot compute "same" padding '
-                             'for even-sized kernels.')
-        padding[i] = dilation[i] * (kernel_size[i] // 2)
-    padding = [0] * (tensor.dim() - dim) + padding
-    return utils.pad(tensor, padding, side='both', mode=bound)
+    input_shape = tensor.shape[-dim:]
+    padding = compute_conv_padding(input_shape, kernel_size, 'same', dilation)
+    padding = _normalize_padding(padding)
+    padding = [0] * (2*tensor.dim()-dim) + padding
+    return utils.pad(tensor, padding, mode=bound, value=value)
 
 
 def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
@@ -71,7 +187,7 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
 
     """
     # move everything to the same dtype/device
-    tensor, kernel, bias = to_max_backend(tensor, kernel, bias)
+    tensor, kernel, bias = utils.to_max_backend(tensor, kernel, bias)
 
     # sanity checks + reshape for torch's conv
     if kernel.dim() not in (dim, dim + 2):
@@ -134,8 +250,48 @@ conv2d = lambda *args, **kwargs: conv(2, *args, **kwargs)
 conv3d = lambda *args, **kwargs: conv(3, *args, **kwargs)
 
 
+def _pad_for_ceil(input_size, kernel_size, padding, stride, dilation):
+    new_padding = []
+    for i in range(len(input_size)):
+        L = input_size[i]
+        S = stride[i]
+        P = padding[i]
+        K = kernel_size[i]
+        D = dilation[i]
+        K = D * (K - 1) + 1
+        sumP = P
+        if isinstance(P, (list, tuple)):
+            sumP = sum(P)
+        extra_pad = (L + sumP - K) % S
+        if extra_pad:
+            extra_pad = S - extra_pad
+        if isinstance(P, (list, tuple)):
+            pad = (padding[i][0], padding[i][1] + extra_pad)
+        else:
+            pad = padding[i] + extra_pad
+        new_padding.append(pad)
+    return new_padding
+
+
+def _fill_value(reduction, tensor):
+    if reduction == 'max':
+        if tensor.dtype.is_floating_point:
+            fill_value = -float('inf')
+        else:
+            fill_value = tensor.min()
+    elif reduction == 'min':
+        if tensor.dtype.is_floating_point:
+            fill_value = float('inf')
+        else:
+            fill_value = tensor.max()
+    else:
+        fill_value = 0
+    return fill_value
+
+
 def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
-         bound='zero', reduction='mean', return_indices=False, affine=None):
+         bound='constant', reduction='mean', ceil=False, return_indices=False,
+         affine=None):
     """Perform a pooling
 
     Parameters
@@ -148,16 +304,19 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         Size of the pooling window
     stride : int or sequence[int], default=`kernel_size`
         Strides between output elements.
-    dilation : int or sequece[int], default=1
+    dilation : int or sequence[int], default=1
         Strides between elements of the kernel.
     padding : 'same' or int or sequence[int], default=0
         Padding performed before the convolution.
         If 'same', the padding is chosen such that the shape of the
-        output tensor is `spatial_in // stride`.
-    bound : str, default='zero'
+        output tensor is `floor(spatial_in / stride)` (or
+        `ceil(spatial_in / stride)` if `ceil` is True).
+    bound : str, default='constant'
         Boundary conditions used in the padding.
     reduction : {'mean', 'max', 'min', 'median', 'sum'} or callable, default='mean'
         Function to apply to the elements in a window.
+    ceil : bool, default=False
+        Use ceil instead of floor to compute output shape
     return_indices : bool, default=False
         Return input index of the min/max/median element.
         For other types of reduction, return None.
@@ -179,30 +338,32 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
     spatial_in = tensor.shape[-dim:]
     tensor = tensor.reshape([-1, *spatial_in])
 
-    # Perform padding
+    # compute padding
     kernel_size = make_list(kernel_size, dim)
     stride = make_list(stride or None, dim)
     stride = [st or ks for st, ks in zip(stride, kernel_size)]
     dilation = make_list(dilation or 1, dim)
-    padding = make_list(padding, dim)
-    padding = [0 if p == 'valid' else 'same' if p == 'auto' else p
-               for p in padding]
-    padding0 = padding  # save it to update the affine
-    for i in range(dim):
-        if isinstance(padding[i], str) and padding[i].lower() == 'same':
-            if kernel_size[i] % 2 == 0:
-                raise ValueError('Cannot compute "same" padding '
-                                 'for even-sized kernels.')
-            padding[i] = ((kernel_size[i]-1) * dilation[i] + 1) // 2
+    padding = compute_conv_padding(spatial_in, kernel_size, padding,
+                                   dilation, stride, ceil)
+    if ceil:
+        # ceil mode cannot be obtained using unfold. we may need to
+        # pad the input a bit more
+        padding = _pad_for_ceil(spatial_in, kernel_size, padding, stride, dilation)
 
     use_torch = (reduction in ('mean', 'avg', 'max') and 
                  dim in (1, 2, 3) and
                  dilation == [1] * dim)
 
-    if (not use_torch) or bound != 'zero' and sum(padding) > 0:
+    padding0 = padding
+    sum_padding = sum([sum(p) if isinstance(p, (list, tuple)) else p
+                       for p in padding])
+    if ((not use_torch) or (bound != 'zero' and sum_padding > 0)
+            or any(isinstance(p, (list, tuple)) for p in padding)):
         # torch implementation -> handles zero-padding
         # our implementation -> needs explicit padding
-        tensor = utils.pad(tensor, padding, bound, side='both')
+        padding = _normalize_padding(padding)
+        tensor = utils.pad(tensor, padding, bound,
+                           value=_fill_value(reduction, tensor))
         padding = [0] * dim
 
     return_indices0 = False

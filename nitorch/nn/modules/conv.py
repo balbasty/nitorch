@@ -98,7 +98,7 @@ def _defer_property(prop: str, module: str,
 
 def _guess_output_shape(inshape, kernel_size, stride=1, dilation=1,
                         padding=0, output_padding=0, transposed=False):
-    """Guess the output shape of a convolution"""
+    """Guess the output shape of a (pytorch) convolution"""
     inshape = make_tuple(inshape)
     dim = len(inshape)
     kernel_size = make_tuple(kernel_size, dim)
@@ -145,6 +145,19 @@ def _get_conv_class(dim, transposed=False):
     return ConvKlass
 
 
+def _get_dropout_class(dim):
+    """Return the appropriate torch Dropout class"""
+    if dim == 1:
+        Klass = nitorchmodule(tnn.Dropout)
+    elif dim == 2:
+        Klass = nitorchmodule(tnn.Dropout2d)
+    elif dim == 3:
+        Klass = nitorchmodule(tnn.Dropout3d)
+    else:
+        raise NotImplementedError('ConvDropout is only implemented in 1, 2, or 3D.')
+    return Klass
+
+
 def _get_conv_fn(dim, transposed=False):
     """Return the appropriate torch conv function"""
     if transposed:
@@ -166,6 +179,21 @@ def _get_conv_fn(dim, transposed=False):
         else:
             raise NotImplementedError('Conv is only implemented in 1, 2, or 3D.')
     return conv_fn
+
+
+def _normalize_padding(padding):
+    """Ensure that padding has format (left, right, top, bottom, ...)"""
+    if all(isinstance(p, int) for p in padding):
+        return padding
+    else:
+        npadding = []
+        for p in padding:
+            if isinstance(padding, int):
+                npadding.append(p)
+                npadding.append(p)
+            else:
+                npadding.extend(p)
+        return npadding
 
 
 class Conv(Module):
@@ -226,7 +254,7 @@ class Conv(Module):
             ``'valid'`` is equivalent to ``0``.
             
         bound : bound_like, default='zeros'
-            Padding mode.
+            Padding mode. In transposed mode, only 'zeros' is handled.
             
         dilation : int or tuple[int], default=1
             Spacing between kernel elements.
@@ -258,6 +286,8 @@ class Conv(Module):
                 raise ValueError(
                     "Invalid padding string {!r}, should be one of {}".format(
                         padding, valid_padding_strings))
+        else:
+            padding = py.ensure_list(padding, dim)
 
         # --------------------------------------------------------------
         # Store parameters
@@ -286,11 +316,6 @@ class Conv(Module):
             self.bias = tnn.Parameter(torch.empty(out_channels, **backend))
         else:
             self.register_parameter('bias', None)
-
-        # --------------------------------------------------------------
-        # Compute actual amount of padding
-        # --------------------------------------------------------------
-        self._compute_input_padding()
 
     @property
     def in_channels(self):
@@ -392,19 +417,24 @@ class Conv(Module):
 
         """
         # --------------------------------------------------------------
-        # Compute padding and cropping on the output side when ``transposed``.
+        # Compute padding
+        # . inpad is: padding on the input side if `transposed=False`
+        #             cropping on the output side if `transposed=True`
+        # . outpad is padding on the output side if `transposed=True`
         # --------------------------------------------------------------
-        inpad, outpad, crop = self._compute_padding(x.shape, output_shape)
-        kw = dict(output_padding=outpad) if outpad else {}
+        inpad, outpad = self._compute_padding(x.shape[2:], output_shape)
 
         # --------------------------------------------------------------
         # Perform our own padding
-        #   The underlying torch function only handle symmetric zero-padding.
-        #   All other types of padding must be done by us.
-        #   Note that we never pad the input in the `transposed` case.
+        #   . The underlying torch function only handle symmetric zero-padding.
+        #     All other types of padding must be done by us.
+        #   . Note that we never pad the input in the `transposed` case.
+        #   . We know that we need to do the padding ourselves because
+        #     in that case `_compute_padding` returns left and right
+        #     padding values in alternate order.
         # --------------------------------------------------------------
-        if inpad and self._pre_padding:
-            x = utils.pad(x, inpad, mode=self.bound, side=self._side)
+        if len(inpad) == 2*(x.dim() - 2):
+            x = utils.pad(x, inpad, mode=self.bound)
             inpad = 0
 
         # --------------------------------------------------------------
@@ -415,115 +445,131 @@ class Conv(Module):
         #   therefore be less than the kernel size. Otherwise, an error
         #   is raised.
         # --------------------------------------------------------------
+        kw = dict(output_padding=[max(0, p) for p in outpad]) if outpad else {}
         conv = _get_conv_fn(self.dim, self.transposed)
         x = conv(x, self.weight, self.bias, **kw, stride=self.stride,
                  padding=inpad, dilation=self.dilation, groups=self.groups)
 
         # --------------------------------------------------------------
-        # Crop what had been padded on the conv side.
+        # Crop extra output
+        #   This should only ever happens in 'same' mode, when the
+        #   padding is asymmetric.
         # --------------------------------------------------------------
-        if crop:
-            x = x[(Ellipsis, *crop)]
+        if outpad and any(p < 0 for p in outpad):
+            slicer = [slice(p) if p < 0 else slice(None) for p in outpad]
+            x = x[(Ellipsis, *slicer)]
+
         return x
 
-    def _compute_input_padding(self):
-        # --------------------------------------------------------------
-        # Compute padding on the input side when ``not transposed``.
-        #   . 'same' ensures that the output shape (when stride == 1)
-        #     is the same as the output shape. If the kernel has an odd
-        #     shape, we pad the same amount on the left and right. If it
-        #     has an even shape, we pad by 1 more voxel on the right than
-        #     on the left.
-        #   . By "kernel shape", we mean `(kernel_size - 1) * dilation + 1`.
-        #   . 'auto' is an alias for 'same' that we keep for backward
-        #     compatibility ('auto' was used in nitorch before pytorch
-        #     supported 'same').
-        #   . 'valid' is equivalent to `0`.
-        #   . Note that we support more boundary conditions than pytorch.
-        #     Although only zero-padding is efficient (other boundary
-        #     conditions requires copying the input into a larger
-        #     reallocated tensor.
-        #   . If the kernel shape is even, we are also forced to use an
-        #     inefficient reallocation.
-        # In the `transposed` case, we want to recover the original
-        # input size in the output of the transposed convolution. This
-        # "padding" will therefore effectively be used to *crop* the
-        # output of the convolution.
-        # --------------------------------------------------------------
-        padding = self.padding
-        pre_padding = False    # whether we must use inefficient padding
-        side = 'both'          # whether padding is the same on both sides
-        if padding == 'valid':
-            padding = [0] * self.dim
-        elif padding in ('same', 'auto'):
-            if all([((k - 1) * d) % 2 == 0
-                    for k, d in zip(self.kernel_size, self.dilation)]):
-                padding = [((k - 1) * d) // 2 for k, d
-                           in zip(self.kernel_size, self.dilation)]
-            else:
-                padding = [((k - 1) * d) for k, d
-                           in zip(self.kernel_size, self.dilation)]
-                padding = [x for p in padding for x in (p // 2, p - p // 2)]
-                padding = utils.ensure_list(padding, self.dim)
-                side = None
-                pre_padding = True
-        else:
-            padding = py.ensure_list(padding, self.dim)
-        pre_padding = pre_padding or \
-                      (any(padding) and self.bound not in _native_padding_mode)
-        self._padding = padding
-        self._pre_padding = pre_padding
-        self._side = side
-
     def _compute_padding(self, input_shape, output_shape):
-        # --------------------------------------------------------------
-        # Compute padding and cropping on the output side when ``transposed``.
-        #   . We want ``conv_transposed(conv(x)).shape == x.shape``
-        #   . If padding was used on the `conv` side, cropping must be
-        #     used on the `conv_transposed` side.
-        #   . When strides are used, multiple input shapes can yield the
-        #     same output shape. The transposed component is therefore
-        #     under-determined. To solve this, the `output_shape` argument
-        #     can be used.
-        #     When it is used, some padding can be performed on the
-        #     output side.
-        # --------------------------------------------------------------
-        cropping = None
-        output_padding = None
-        padding = self._padding
-        if self.transposed:
+        # Note: the "padding" argument in pytorch's conv_transposed
+        # function is equivalent to an "output cropping" argument: its
+        # point is to "undo" what conv(padding) did in the forward pass.
+        if not self.transposed:
+            # -----------------------------------------------------------------
+            # Compute padding on the input side when ``not transposed``.
+            #   . 'same' ensures that the output shape (when stride == 1)
+            #     is the same as the output shape. In the general case, it
+            #     ensures that the output shape is input_shape//stride.
+            #     If the amount of padding necessary has an odd shape,
+            #     we pad the same amount on the left and right. If it
+            #     has an even shape, we pad by 1 more voxel on the right than
+            #     on the left.
+            #   . By "kernel shape", we mean `(kernel_size - 1) * dilation + 1`.
+            #   . 'auto' is an alias for 'same' that we keep for backward
+            #     compatibility ('auto' was used in nitorch before pytorch
+            #     supported 'same').
+            #   . 'valid' is equivalent to `0`.
+            #   . Note that we support more boundary conditions than pytorch.
+            #     Although only zero-padding is efficient (other boundary
+            #     conditions requires copying the input into a larger
+            #     reallocated tensor.
+            #   . If the padding is even, we are also forced to use an
+            #     inefficient reallocation.
+            # In the `transposed` case, we want to recover the original
+            # input size in the output of the transposed convolution. This
+            # "padding" will therefore effectively be used to *crop* the
+            # output of the convolution.
+            # -----------------------------------------------------------------
             if output_shape:
-                if self._side == 'both':
-                    sum_pad = [2*p for p in self._padding]
-                else:
-                    sum_pad = [a + b for a, b in zip(self._padding[::2], self._padding[1::2])]
-                shape_pad = [s + p for s, p in zip(output_shape, sum_pad)]
-                shape_nopad = _guess_output_shape(input_shape, self.kernel_size,
-                                                  self.stride, self.dilation,
-                                                  transposed=True)[2:]
-                # output_padding we would add
-                shape_diff = [sp - snp for sp, snp in zip(shape_pad, shape_nopad)]
-                # cropping we would perform
-                shape_diff = [s - p for s, p in zip(shape_diff, sum_pad)]
-                # negative bits -> cropping (crop more on the right)
-                cropping = [slice((-c)//2, -((-c)-(-c)//2) or None)
-                            if c < 0 else slice(None) for c in shape_diff]
-                # positive bits -> padding (always on the right)
-                output_padding = [c if c > 0 else 0 for c in shape_diff]
+                raise ValueError('`output_shape` should only be used in '
+                                 '`transposed` mode.`')
+            if self.padding == 'valid':
+                padding = [0] * self.dim
+            elif self.padding in ('same', 'auto'):
+                padding = []
+                for L, K, D, S in zip(input_shape, self.kernel_size,
+                                      self.dilation, self.stride):
+                    K = (K - 1) * D + 1  # true kernel size
+                    P = max(0, K - S - L % S)  # padding to get oL = floor(L/S)
+                    P = P//2 if P % 2 == 0 else (P//2, P - P//2)
+                    padding.append(P)
             else:
-                if any(self._padding):
-                    if self._side == 'both':
-                        cropping = [slice(a or None, -a or None) for a in self._padding]
-                    else:
-                        cropping = [slice(a or None, -b or None) for a, b
-                                    in zip(self._padding[::2], self._padding[1::2])]
+                padding = self.padding
+            if (any(isinstance(x, (list, tuple)) for x in padding)
+                    or self.bound not in ('zero', 'zeros')):
+                # convert to (left, right, top, bottom, ...)
+                padding = _normalize_padding(padding)
+            return padding, None
+
+        else:  # self.transposed
+            # -----------------------------------------------------------------
+            # Compute padding and cropping on the output side when ``transposed``.
+            #   . We want ``conv_transposed(conv(x)).shape == x.shape``
+            #   . When strides are used, multiple input shapes can yield the
+            #     same output shape. The transposed component is therefore
+            #     under-determined. To solve this, the `output_shape` argument
+            #     can be used.
+            #     When it is used, some padding can be performed on the
+            #     output side.
+            # -----------------------------------------------------------------
+            if self.bound not in ('zero', 'zeros'):
+                import warnings
+                warnings.warn(RuntimeWarning("Bound not supported in mode "
+                                             "transposed. Silently switching "
+                                             "to 'zeros'"))
+            if self.padding == 'valid':
+                sumpadding = [0] * self.dim
+            elif self.padding not in ('same', 'auto'):
+                padding = self.padding
+                sumpadding = [2*p for p in padding]
+            elif not output_shape:
+                assert self.padding in ('same', 'auto')
+                # we don't know exactly how much padding as been done
+                # on the input side. We have to make a guess
+                sumpadding = []
+                for K, S, D in zip(self.kernel_size, self.stride,
+                                   self.dilation):
+                    K = (K - 1) * D + 1
+                    P = K - S
+                    sumpadding.append(P)
+
+            output_padding = [0] * self.dim
+            if output_shape:
+                if self.padding in ('same', 'auto'):
+                    # we now the original input size so we can compute
+                    # the exact padding that was applied
+                    sumpadding = []
+                    for L, K, S, D in zip(output_shape, self.kernel_size,
+                                          self.stride, self.dilation):
+                        K = (K - 1) * D + 1
+                        P = (K - S - L % S)
+                        sumpadding.append(P)
                 else:
-                    cropping = None
-            padding = 0
-        elif output_shape:
-            raise ValueError('`output_shape` should only be used in '
-                             '`transposed` mode.`')
-        return padding, output_padding, cropping
+                    output_padding = []
+                    for oL, iL, K, S, D, Pi in zip(input_shape, self.kernel_size,
+                                                   self.stride, self.dilation,
+                                                   sumpadding):
+                        K = (K - 1) * D + 1
+                        Pe = oL - ((iL - 1) * S + K - Pi)
+                        output_padding.append(Pe)
+
+            padding = []
+            for d, P in enumerate(sumpadding):
+                padding.append(P//2)
+                output_padding[d] -= P % 2
+
+            return padding, output_padding
 
     def shape(self, x, output_shape=None):
         """Compute output shape of the equivalent ``forward`` call.
@@ -545,6 +591,7 @@ class Conv(Module):
         else:
             inshape = x
         batch, _, *inshape = inshape
+        dim = len(inshape)
 
         if output_shape:
             if not self.transposed:
@@ -552,10 +599,16 @@ class Conv(Module):
                                  '`transposed` mode.`')
             return (batch, self.out_channels, *output_shape)
 
-        if self._side == 'both':
-            sum_pad = [2 * p for p in self._padding]
+        if self.padding in ('same', 'auto'):
+            if self.transposed:
+                output_shape = [sz*st for sz, st in zip(inshape, self.stride)]
+            else:
+                output_shape = [sz//st for sz, st in zip(inshape, self.stride)]
+            return (batch, self.out_channels, *output_shape)
+        elif self.padding == 'valid':
+            sum_pad = [0] * dim
         else:
-            sum_pad = [a + b for a, b in zip(self._padding[::2], self._padding[1::2])]
+            sum_pad = [2*p for p in self.padding]
 
         # input padding
         if not self.transposed:
@@ -573,21 +626,19 @@ class Conv(Module):
 
         return (batch, self.out_channels, *output_shape)
 
-    def __str__(self):
+    def extra_repr(self):
         s = [f'{self.in_channels}', f'{self.out_channels}']
-        s += [f'kernel_size={self.kernel_size}']
+        s += [f'kernel_size={list(self.kernel_size)}']
         if self.transposed:
             s += [f'transposed=True']
         if any(x > 1 for x in self.stride):
-            s += [f'stride={self.stride}']
+            s += [f'stride={list(self.stride)}']
         if any(x > 1 for x in self.dilation):
-            s += [f'dilation={self.dilation}']
+            s += [f'dilation={list(self.dilation)}']
         if self.groups > 1:
             s += [f'groups={self.groups}']
         s = ', '.join(s)
-        return f'Conv({s})'
-    
-    __repr__ = __str__
+        return s
 
 
 class Conv1d(Conv):
@@ -954,7 +1005,7 @@ class ConvBlock(Sequential):
         conv = self._build_conv(dim, in_channels, out_channels, groups, **opt_conv)
         norm = self._build_norm(norm, conv, order)
         activation = self._build_activation(activation)
-        dropout = self._build_dropout(dropout)
+        dropout = self._build_dropout(dropout, dim)
 
         # Assign submodules in order so that they are nicely
         # ordered during pretty printing
@@ -1036,10 +1087,10 @@ class ConvBlock(Sequential):
         return activation
 
     @staticmethod
-    def _build_dropout(dropout):
+    def _build_dropout(dropout, dim):
         dropout = (dropout() if inspect.isclass(dropout)
                    else dropout if callable(dropout)
-                   else tnn.Dropout(p=float(dropout)) if dropout
+                   else _get_dropout_class(dim)(p=float(dropout)) if dropout
                    else None)
         return dropout
 
