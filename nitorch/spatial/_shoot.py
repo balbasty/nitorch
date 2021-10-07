@@ -1,5 +1,6 @@
 """Geodesic shooting of initial velocity fields."""
 import torch
+from torch.cuda.amp import custom_fwd, custom_bwd
 from nitorch.core import py, utils, linalg
 from nitorch.core.fft import ifftshift
 from ._finite_differences import diff
@@ -398,6 +399,7 @@ def shoot(vel, greens=None,
 class _ApproximateShoot(torch.autograd.Function):
     
     @staticmethod
+    @custom_fwd
     def forward(ctx, *args):
         has_inverse = args[7]
         displacement = args[8]
@@ -412,11 +414,11 @@ class _ApproximateShoot(torch.autograd.Function):
                     'displacement': displacement,
                     'inverse': has_inverse}
         return outputs
-    
-    
+
     @staticmethod
+    @custom_bwd
     def backward(ctx, grad_output):
-        grids, = ctx.saved_tensors
+        grid, = ctx.saved_tensors
         if ctx.args['inverse']:
             grad_output, igrad_output = grad_output
         pull_prm = dict(bound='dft', interpolation=1, extrapolate=True)

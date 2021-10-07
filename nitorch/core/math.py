@@ -3,6 +3,7 @@
 # yael.balbastre@gmail.com
 
 import torch
+from torch.cuda.amp import custom_fwd, custom_bwd
 from .constants import inf, ninf
 from nitorch.core import py, utils
 Tensor = torch.Tensor
@@ -767,6 +768,7 @@ class _LSE(torch.autograd.Function):
     """Log-Sum-Exp with implicit class."""
 
     @staticmethod
+    @custom_fwd
     def forward(ctx, input, dim, keepdim, implicit):
 
         # Save precomputed components of the backward pass
@@ -778,6 +780,7 @@ class _LSE(torch.autograd.Function):
         return _lse_fwd(input, dim=dim, keepdim=keepdim, implicit=implicit)
 
     @staticmethod
+    @custom_bwd
     def backward(ctx, output_grad):
 
         input, = ctx.saved_tensors
@@ -813,7 +816,6 @@ def logsumexp(input, dim=-1, keepdim=False, implicit=False):
 def _add_class(x, bg, dim, index):
     # for implicit softmax
     if isinstance(bg, (int, float)):
-        print(bg, utils.backend(x))
         bg = torch.as_tensor(bg, **utils.backend(x))
         bgshape = list(x.shape)
         bgshape[dim] = 1
@@ -890,6 +892,7 @@ class _Softmax(torch.autograd.Function):
     """Softmax with implicit class."""
 
     @staticmethod
+    @custom_fwd
     def forward(ctx, input, dim, implicit, implicit_index):
 
         # Save precomputed components of the backward pass
@@ -905,6 +908,7 @@ class _Softmax(torch.autograd.Function):
         return s
 
     @staticmethod
+    @custom_bwd
     def backward(ctx, output_grad):
 
         s, = ctx.saved_tensors
