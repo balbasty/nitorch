@@ -410,7 +410,7 @@ class SynthResolver(SynthSRUNet):
 
         Returns
         -------
-        super : (32, oX, oY, oZ) tensor
+        super : (oX, oY, oZ) tensor
             Super-resolve + synthesized T1w
         resliced : (oX, oY, oZ) tensor
             Input resliced to 1 mm RAS
