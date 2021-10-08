@@ -5,6 +5,7 @@ from nitorch.core.optim import get_gain, plot_convergence
 from nitorch.core.math import besseli, softmax_lse
 from nitorch.plot import plot_mixture_fit
 import torch
+from torch.distributions.multivariate_normal import MultivariateNormal
 
 
 torch.backends.cudnn.benchmark = True
@@ -354,7 +355,7 @@ class Mixture:
 
 class UniSeg(Mixture):
     # Unified Segmentation model, based on multivariate Gaussian Mixture Model (GMM).
-    def __init__(self, num_class=2, prior=None, mu=None, Cov=None):
+    def __init__(self, num_class=2, prior=None, mu=None, Cov=None, alpha=alpha, beta=beta):
         """
         mu (torch.tensor): GMM means (C, K).
         Cov (torch.tensor): GMM covariances (C, C, K).
@@ -363,6 +364,8 @@ class UniSeg(Mixture):
         super(UniSeg, self).__init__(num_class=num_class, mp=prior)
         self.mu = mu
         self.Cov = Cov
+        self.alpha = alpha
+        self.beta = beta
 
     def get_means_variances(self):
         """
@@ -481,3 +484,33 @@ class UniSeg(Mixture):
                 # Update covariance
                 self.Cov[b, :, :, k] = ss2[b, :, :, k] / ss0[b, k] \
                     - torch.ger(self.mu[b, :, k], self.mu[b, :, k])
+
+    def sample(mu=None, cov=None, alpha=None, beta=None, seg=None):
+        """ Sample new image with GMM parameters and (eventually) bias and warp parameters
+        
+        Args:
+            mu (torch.tensor or sequence[torch.tensor]): means (C, K)
+            cov (torch.tensor or sequence[torch.tensor]): covariance (C, C, K)
+            alpha (torch.tensor): warping parameters ()
+            beta (torch.tensor): bias-field parameters ()
+            seg (torch.tensor): tissue class maps to use for image generation
+        
+        """
+        if mu == None:
+            mu = self.mu
+        if cov == None:
+            cov = self.cov
+        if seg == None:
+            seg = self.mp
+        if isinstance(mu, list):
+            X_ = [[MultivariateNormal(mu__, cov__) for (mu__, cov__) in zip(mu_, cov_)] for (mu_, cov_) in zip(mu, cov)]
+            X = torch.stack([torch.stack([d.rsample(seg.shape[1:]) for d in Xcls]).sum(dim=0) for Xcls in X_])
+        else:
+            X_ = [MultivariateNormal(mu_, cov_) for (mu_, cov_) in zip(mu, cov)]
+            X = torch.stack([d.rsample(seg.shape[1:]) for d in X_])
+        X = (X * seg).sum(dim=0) # apply weighting to each channel and sum intensities
+        # if alpha != None:
+        #     ...
+        # if beta != None:
+        #     ...
+        return X
