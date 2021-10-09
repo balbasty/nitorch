@@ -1011,7 +1011,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     value : scalar, default=0
         Value for mode 'constant'
     side : {'pre', 'post', 'both'}, default='post'
-        Side to pad
+        Side to crop/pad
 
     Returns
     -------
@@ -1030,8 +1030,15 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     ndim = len(shape)
 
     # crop
-    index = tuple(slice(min(shape[d], inshape[d])) for d in range(ndim))
-    inp = inp.__getitem__(index)
+    if side == 'both':
+        crop = [max(0, inshape[d] - shape[d]) for d in range(ndim)]
+        index = tuple(slice(c//2, (c//2 - c) or None) for c in crop)
+    elif side == 'pre':
+        crop = [max(0, inshape[d] - shape[d]) for d in range(ndim)]
+        index = tuple(slice(-c or None) for c in crop)
+    else:  # side == 'post'
+        index = tuple(slice(min(shape[d], inshape[d])) for d in range(ndim))
+    inp = inp[index]
 
     # pad
     pad_size = [max(0, shape[d] - inshape[d]) for d in range(ndim)]
