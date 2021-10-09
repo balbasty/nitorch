@@ -53,14 +53,14 @@ class ClassificationHead(Module):
             new_shape = list(score.shape)
             new_shape[1] += 1
             new_score = score.new_zeros(new_shape)
-            new_score[:, :-1] = score
+            new_score[:, 1:] = score
             score, new_score = new_score, None
         elif implicit == 'sum':
             new_shape = list(score.shape)
             new_shape[1] += 1
             new_score = score.new_empty(new_shape)
-            new_score[:, :-1] = score
-            new_score[:, -1] = score.sum(1).neg_()
+            new_score[:, 1:] = score
+            new_score[:, 0] = score.sum(1).neg_()
             score, new_score = new_score, None
         return score
 

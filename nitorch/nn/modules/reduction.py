@@ -42,7 +42,7 @@ class Reduction(Module):
         self.reduction = reduction or type(self).reduction
         if isinstance(self.reduction, str):
             if not self.reduction in reduction_functions:
-                raise ValueError(f'Unknown reducton {reduction}')
+                raise ValueError(f'Unknown reduction {reduction}')
             self.reduction = reduction_functions[self.reduction]
 
     def forward(self, x):
