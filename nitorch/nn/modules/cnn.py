@@ -257,7 +257,7 @@ class StackedConv(tnn.ModuleList):
         groups = [g or s for g, s in zip(groups, stitch)]
         activation = expand_list(py.make_list(activation), nb_layers, default='relu')
         norm = expand_list(py.make_list(norm), nb_layers, default=False)
-        dropout = expand_list(py.make_list(dropout), nb_layers, default=1.0, use_default=True)        
+        dropout = expand_list(py.make_list(dropout), nb_layers, default=0, use_default=True)        
         bias = expand_list(py.make_list(bias), nb_layers, default=True)
         
         if pool not in (None, 'up', 'conv') and transposed:
@@ -1063,7 +1063,7 @@ class CNN(tnn.Sequential):
             reduction='max',
             activation=None,
             norm=None,
-            dropout: float = 1.0):
+            dropout: float = 0):
         """
 
         Parameters
@@ -1114,9 +1114,8 @@ class CNN(tnn.Sequential):
             Normalization before each convolution.
             If an int, group noramlization is used.
 
-        dropout : sequence[float], default=1.0
-            Dropout amount applied to the output of each fully connected layer (before activation).
-            Set to 0.0 or 1.0 to use no dropout.
+        dropout : sequence[float], default=0
+            Dropout probability.
 
         """
         self.dim = dim
@@ -1158,7 +1157,8 @@ class CNN(tnn.Sequential):
                           out_channels=stack,
                           kernel_size=1,
                           activation=activation_stack,
-                          dropout=dropout)
+                          dropout=dropout,
+                         )
         modules.append(('stack', stk))
 
         super().__init__(OrderedDict(modules))
@@ -1485,8 +1485,9 @@ class UNet2(tnn.Sequential):
         modules.append(('final', final))
 
         super().__init__(OrderedDict(modules))
+        self.verbose = False
 
-    def forward(self, *x, return_all=False, verbose=False):
+    def forward(self, *x, return_all=False, verbose=None):
         """
 
         Parameters
@@ -1504,6 +1505,9 @@ class UNet2(tnn.Sequential):
             coarsest scale.
 
         """
+        if verbose is None:
+            verbose = self.verbose
+
         all_x = list(x)
         if hasattr(self, 'first'):
             x = all_x.pop(0)
