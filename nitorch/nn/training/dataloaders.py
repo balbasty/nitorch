@@ -8,8 +8,19 @@ import random
 class Dataset:
     """Base class for datasets"""
 
-    @staticmethod
-    def rescale(image, qmin=0, qmax=0.95):
+    def __init__(self, dim=None, qmin=0, qmax=0.95, shape=None, shape_min=None,
+                 shape_max=None, shape_mult=None, device=None, dtype=None):
+        self.qmin = qmin
+        self.qmax = qmax
+        self.shape = shape
+        self.shape_min = shape_min
+        self.shape_max = shape_max
+        self.shape_mult = shape_mult
+        self.dim = dim
+        self.dtype = dtype
+        self.device = device
+
+    def rescale(self, image):
         """Affine rescaling of an image by mapping quantiles to (0, 1)
 
         Parameters
@@ -27,23 +38,20 @@ class Dataset:
             Rescale image
 
         """
-        if qmin == 0 and qmax == 1:
+        if self.qmin == 0 and self.qmax == 1:
             return image
-        qmin, qmax = utils.quantile(image, [qmin, qmax])
+        qmin, qmax = utils.quantile(image, [self.qmin, self.qmax])
         image -= qmin
         image /= (qmax - qmin)
         return image
 
-    @staticmethod
-    def to_shape(image, shape, bound='zero', side='both'):
+    def to_shape(self, image, bound='zero'):
         """Crop/Pad a volume to match a target shape
 
         Parameters
         ----------
         image : (channel, *spatial) tensor
             Input image
-        shape : sequence[int]
-            Target spatial shape
         bound : str, default='zero'
             Method to fill out-of-bounds.
 
@@ -53,22 +61,28 @@ class Dataset:
             Cropped/padded image
 
         """
-        oshape = (*image.shape[:-len(shape)], *shape)
-        return utils.ensure_shape(image, oshape, mode=bound, side=side)
+        oshape = image.shape[1:]
+        if self.shape:
+            oshape = (*image.shape[:-len(self.shape)], *self.shape)
+            return utils.ensure_shape(image, oshape, mode=bound, side='both')
+        if self.shape_min:
+            shape_min = py.ensure_list(self.shape_min, len(oshape))
+            oshape = [max(s, mn) for s, mn in zip(oshape, shape_min)]
+        if self.shape_max:
+            shape_max = py.ensure_list(self.shape_max, len(oshape))
+            oshape = [min(s, mx) for s, mx in zip(oshape, shape_max)]
+        if self.shape_mult:
+            shape_mult = py.ensure_list(self.shape_mult, len(oshape))
+            oshape = [(s//m)*m for s, m in zip(oshape, shape_mult)]
+        oshape = (*image.shape[:-len(oshape)], *oshape)
+        return utils.ensure_shape(image, oshape, mode=bound, side='both')
 
-    @staticmethod
-    def load(fname, dim=None, qmin=0, qmax=1, shape=None,
-             device=None, dtype=None):
+    def load(self, fname, dtype=None, device=None):
         """Load a volume from disk
 
         Parameters
         ----------
         fname : str
-        dim : int, optional
-        qmin : (0..1), default=0
-        qmax : (0..1), default=1
-        shape : sequence[int]
-        device : torch.device, optional
         dtype : torch.dtype, optional
 
         Returns
@@ -76,33 +90,27 @@ class Dataset:
         dat : (channels, *spatial) tensor
 
         """
-        if dtype.is_floating_point:
+        dtype = dtype or self.dtype
+        device = device or self.device
+        if not dtype or dtype.is_floating_point:
             dat = io.loadf(fname, dtype=dtype, device=device)
-            dat = Dataset.rescale(dat, qmin, qmax)
+            dat = self.rescale(dat)
         else:
             dat = io.load(fname, dtype=dtype, device=device)
         dat = dat.squeeze()
-        dim = dim or dat.dim()
+        dim = self.dim or dat.dim()
         dat = utils.unsqueeze(dat, -1, max(0, dim - dat.dim()))
         dat = dat.reshape([*dat.shape[:dim], -1])
         dat = utils.movedim(dat, -1, 0)
-        if shape:
-            dat = Dataset.to_shape(dat, shape)
+        dat = self.to_shape(dat)
         return dat
 
-    @staticmethod
-    def loadvol(fnames, dim=None, qmin=0, qmax=1, shape=None,
-                device=None, dtype=None):
+    def loadvol(self, fnames, dtype=None, device=None):
         """Load a volume from disk
 
         Parameters
         ----------
         fnames : str or sequence[str]
-        dim : int, optional
-        qmin : (0..1), default=0
-        qmax : (0..1), default=1
-        shape : sequence[int]
-        device : torch.device, optional
         dtype : torch.dtype, optional
 
         Returns
@@ -113,8 +121,7 @@ class Dataset:
         fnames = py.make_list(fnames)
         channels = []
         for fname in fnames:  # loop across channels
-            dat = Dataset.load(fname, dim=dim, qmin=qmin, qmax=qmax,
-                               shape=shape, device=device, dtype=dtype)
+            dat = self.load(fname, dtype=dtype, device=device)
             channels.append(dat)
         if len(channels) > 1:
             channels = torch.cat(channels, 0)
@@ -122,19 +129,15 @@ class Dataset:
             channels = channels[0]
         return channels
 
-    @staticmethod
-    def loadseg(fnames, dim=None, segtype='label', lookup=None,
-                shape=None, device=None, dtype=None):
+    def loadseg(self, fnames, segtype='label', lookup=None,
+                dtype=None, device=None):
         """Load a volume from disk
 
         Parameters
         ----------
         fnames : str or sequence[str]
-        dim : int, optional
         segtype : [tuple] {'label', 'implicit', 'explicit'}, default='label'
         lookup : list of [list of] int, optional
-        shape : sequence[int]
-        device : torch.device, optional
         dtype : torch.dtype, optional
 
         Returns
@@ -147,8 +150,7 @@ class Dataset:
         fnames = py.make_list(fnames)
         channels = []
         for fname in fnames:  # loop across channels
-            dat = Dataset.load(fname, dim=dim, shape=shape,
-                               device=device, dtype=sdtype)
+            dat = self.load(fname, dtype=sdtype, device=device)
             channels.append(dat)
         if len(channels) > 1:
             channels = torch.cat(channels, 0)
@@ -176,8 +178,7 @@ class Dataset:
 class UnsupervisedDataset(Dataset):
     """A simple dataset"""
 
-    def __init__(self, filenames, batch_size=1, qmin=0, qmax=0.95,
-                 dim=None, shape=None, device=None, dtype=None):
+    def __init__(self, filenames, batch_size=1, **kwargs):
         """
 
         Parameters
@@ -200,15 +201,10 @@ class UnsupervisedDataset(Dataset):
         dtype : torch.dtype, optional
             Load the data in a specific data type.
         """
+        super().__init__(**kwargs)
         self.filenames = list(filenames)
         self.nb_dat = len(self.filenames)
         self.batch_size = batch_size
-        self.device = device
-        self.dtype = dtype
-        self.qmin = qmin
-        self.qmax = qmax
-        self.dim = dim
-        self.shape = shape or []
 
     def iter(self, batch_size=None, device=None, dtype=None):
         """Dataset iterator
@@ -227,7 +223,6 @@ class UnsupervisedDataset(Dataset):
 
         """
         batch_size = batch_size or self.batch_size
-        device = device or self.device
         dtype = dtype or self.dtype or torch.get_default_dtype()
         filenames = list(self.filenames)
 
@@ -237,12 +232,8 @@ class UnsupervisedDataset(Dataset):
                 if not filenames:
                     break
                 channels = self.loadvol(filenames.pop(0),
-                                        dim=self.dim,
-                                        qmin=self.qmin,
-                                        qmax=self.qmax,
-                                        shape=self.shape,
-                                        device=device,
-                                        dtype=dtype)
+                                        dtype=dtype,
+                                        device=device)
                 dats.append(channels)
             dats = torch.stack(dats) if len(dats) > 1 else dats[0][None]
             yield dats
@@ -252,8 +243,7 @@ class DatasetWithSeg(Dataset):
     """A dataset with ground truth segmentations"""
 
     def __init__(self, filenames, segnames, segtype='label', lookup=None,
-                 batch_size=1, qmin=0, qmax=0.95,
-                 dim=None, shape=None, device=None, dtype=None):
+                 batch_size=1, **kwargs):
         """
 
         Parameters
@@ -288,18 +278,13 @@ class DatasetWithSeg(Dataset):
         dtype : torch.dtype, optional
             Load the data in a specific data type.
         """
+        super().__init__(**kwargs)
         self.filenames = list(filenames)
         self.segnames = list(segnames)
         self.nb_dat = len(self.filenames)
         self.segtype = segtype
         self.lookup = lookup
         self.batch_size = batch_size
-        self.device = device
-        self.dtype = dtype
-        self.qmin = qmin
-        self.qmax = qmax
-        self.dim = dim
-        self.shape = shape
 
     def iter(self, batch_size=None, device=None, dtype=None):
         """Dataset iterator
@@ -319,7 +304,6 @@ class DatasetWithSeg(Dataset):
 
         """
         batch_size = batch_size or self.batch_size
-        device = device or self.device
         dtype = dtype or self.dtype or torch.get_default_dtype()
         filenames = list(self.filenames)
         segnames = list(self.segnames)
@@ -332,22 +316,16 @@ class DatasetWithSeg(Dataset):
                     break
                 # images
                 channels = self.loadvol(filenames.pop(0),
-                                        dim=self.dim,
-                                        qmin=self.qmin,
-                                        qmax=self.qmax,
-                                        shape=self.shape,
-                                        device=device,
-                                        dtype=dtype)
+                                        dtype=dtype,
+                                        device=device)
                 dats.append(channels)
 
                 # segmentations
                 channels = self.loadseg(segnames.pop(0),
-                                        dim=self.dim,
-                                        shape=self.shape,
                                         segtype=self.segtype,
                                         lookup=self.lookup,
-                                        device=device,
-                                        dtype=dtype)
+                                        dtype=dtype,
+                                        device=device)
                 segs.append(channels)
 
             dats = torch.stack(dats) if len(dats) > 1 else dats[0][None]
@@ -359,8 +337,7 @@ class PairedDataset(Dataset):
     """A dataset made of pairs of images"""
 
     def __init__(self, filenames, refnames=None, pairs=None,
-                 batch_size=1, qmin=0, qmax=0.95,
-                 dim=None, shape=None, device=None, dtype=None):
+                 batch_size=1, **kwargs):
         """
 
         Parameters
@@ -391,6 +368,7 @@ class PairedDataset(Dataset):
         dtype : torch.dtype, optional
             Load the data in a specific data type.
         """
+        super().__init__(**kwargs)
         filenames = list(filenames)
         if refnames:
             self.filenames = filenames
@@ -411,12 +389,6 @@ class PairedDataset(Dataset):
             self.refnames = [filenames[j] for _, j in pairs]
         self.nb_dat = len(self.filenames)
         self.batch_size = batch_size
-        self.device = device
-        self.dtype = dtype
-        self.qmin = qmin
-        self.qmax = qmax
-        self.dim = dim
-        self.shape = shape
 
     def iter(self, batch_size=None, device=None, dtype=None):
         """Dataset iterator
@@ -448,21 +420,13 @@ class PairedDataset(Dataset):
             refs = []
             for _ in range(batch_size):
                 channels = self.loadvol(filenames.pop(0),
-                                        dim=self.dim,
-                                        shape=self.shape,
-                                        qmin=self.qmin,
-                                        qmax=self.qmax,
-                                        device=device,
-                                        dtype=dtype)
+                                        dtype=dtype,
+                                        device=device)
                 dats.append(channels)
 
                 channels = self.loadvol(refnames.pop(0),
-                                        dim=self.dim,
-                                        shape=self.shape,
-                                        qmin=self.qmin,
-                                        qmax=self.qmax,
-                                        device=device,
-                                        dtype=dtype)
+                                        dtype=dtype,
+                                        device=device)
                 refs.append(channels)
             dats = torch.stack(dats) if len(dats) > 1 else dats[0][None]
             refs = torch.stack(refs) if len(refs) > 1 else refs[0][None]
@@ -474,8 +438,7 @@ class PairedDatasetWithSeg(Dataset):
 
     def __init__(self, filenames, segnames, refnames=None, segrefnames=None,
                  pairs=None, batch_size=1, segtype='label', segreftype=None,
-                 lookup=None, qmin=0, qmax=0.95, dim=None, shape=None,
-                 device=None, dtype=None):
+                 lookup=None, **kwargs):
         """
 
         Parameters
@@ -522,6 +485,7 @@ class PairedDatasetWithSeg(Dataset):
         dtype : torch.dtype, optional
             Load the data in a specific data type.
         """
+        super().__init__(**kwargs)
         filenames = list(filenames)
         segnames = list(segnames)
         if refnames:
@@ -547,15 +511,9 @@ class PairedDatasetWithSeg(Dataset):
             self.segrefnames = [segnames[j] for _, j in pairs]
         self.nb_dat = len(self.filenames)
         self.batch_size = batch_size
-        self.device = device
-        self.dtype = dtype
-        self.qmin = qmin
-        self.qmax = qmax
         self.segtype = segtype
         self.segreftype = segreftype or segtype
         self.lookup = lookup
-        self.dim = dim
-        self.shape = shape
 
     def iter(self, batch_size=None, device=None, dtype=None):
         """Dataset iterator
@@ -577,8 +535,6 @@ class PairedDatasetWithSeg(Dataset):
 
         """
         batch_size = batch_size or self.batch_size
-        device = device or self.device
-        dtype = dtype or self.dtype or torch.get_default_dtype()
         filenames = list(self.filenames)
         segnames = list(self.segnames)
         refnames = list(self.refnames)
@@ -593,38 +549,22 @@ class PairedDatasetWithSeg(Dataset):
             segrefs = []
             for _ in range(batch_size):
                 channels = self.loadvol(filenames.pop(0),
-                                        dim=self.dim,
-                                        shape=self.shape,
-                                        qmin=self.qmin,
-                                        qmax=self.qmax,
-                                        device=device,
-                                        dtype=dtype)
+                                        dtype=dtype, device=device)
                 dats.append(channels)
 
                 channels = self.loadseg(segnames.pop(0),
-                                        dim=self.dim,
-                                        shape=self.shape,
                                         segtype=self.segtype,
                                         lookup=self.lookup,
-                                        device=device,
                                         dtype=dtype)
                 segs.append(channels)
 
                 channels = self.loadvol(refnames.pop(0),
-                                        dim=self.dim,
-                                        shape=self.shape,
-                                        qmin=self.qmin,
-                                        qmax=self.qmax,
-                                        device=device,
-                                        dtype=dtype)
+                                        dtype=dtype, device=device)
                 refs.append(channels)
 
                 channels = self.loadseg(segrefnames.pop(0),
-                                        dim=self.dim,
-                                        shape=self.shape,
                                         segtype=self.segreftype,
                                         lookup=self.lookup,
-                                        device=device,
                                         dtype=dtype)
                 segrefs.append(channels)
             dats = torch.stack(dats) if len(dats) > 1 else dats[0][None]
