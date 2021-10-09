@@ -138,7 +138,7 @@ class CatDotProduct(Loss):
         super().__init__(*args, **kwargs)
         self.weighted = weighted
 
-    def forward(self, score, truth):
+    def forward(self, score, truth, mask=None):
         """
 
         Parameters
@@ -154,6 +154,8 @@ class CatDotProduct(Loss):
                 * If `obs` has an integer or boolean data type, it is
                   assumed to hold hard labels and its channel dimension
                   should be 1.
+        mask : (nb_batch, 1, *spatial) tensor, optional
+            Loss mask
 
         Returns
         -------
@@ -180,14 +182,22 @@ class CatDotProduct(Loss):
                                  nb_classes, nb_classes-1, truth.shape[1]))
 
             loss = score * truth
+
             if weighted is True:
                 weighted = _auto_weighted_soft(truth)
+                if mask is not None:
+                    weighted = weighted * mask
                 loss *= weighted
             elif weighted not in (None, False):
                 dim = truth.dim() - 2
                 weighted = utils.make_vector(weighted, nb_classes,
                                              **utils.backend(loss))
-                loss *= utils.unsqueeze(weighted, -1, dim)
+                weighted = utils.unsqueeze(weighted, -1, dim)
+                if mask is not None:
+                    weighted = weighted * mask
+                loss *= weighted
+            elif mask is not None:
+                loss *= mask
 
         else:
             # hard labels
@@ -203,7 +213,7 @@ class CatDotProduct(Loss):
 
             truth = truth.squeeze(1).long()
             # If weights are a list of length C (or none), use nll_loss
-            if channelwise and isinstance(self.reduction, str):
+            if channelwise and isinstance(self.reduction, str) and mask is None:
                 return F.nll_loss(score, truth,
                     weighted, reduction=self.reduction or 'none').neg_()
             # Otherwise, use our own implementation
@@ -211,7 +221,12 @@ class CatDotProduct(Loss):
                 if weighted is not None:
                     score = score * weighted
                 loss = score.gather(dim=1, index=truth)
+                if mask is not None:
+                    mask.squeeze(1)
+                    loss *= mask
 
+        if mask is not None and self.reduction == 'mean':
+            return loss.sum() / mask.sum()
         return super().forward(loss)
 
 
@@ -250,7 +265,7 @@ class CategoricalLoss(CatDotProduct):
         return math.softmax(score, dim=1, implicit=self.implicit,
                             implicit_index=self.implicit_index)
 
-    def forward(self, prior, obs):
+    def forward(self, prior, obs, mask=None):
         """
 
         Parameters
@@ -267,6 +282,8 @@ class CategoricalLoss(CatDotProduct):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
+        mask : (nb_batch, 1, *spatial) tensor, optional
+            Loss mask
 
         Returns
         -------
@@ -293,6 +310,10 @@ class CategoricalLoss(CatDotProduct):
             if prior.shape == 2:
                 prior = prior[:, 1]
             reduction = self.reduction if isinstance(self.reduction, str) else 'none'
+            mask_reduction = False
+            if mask is not None:
+                mask_reduction = reduction
+                reduction = 'none'
             if self.logit:
                 obs = obs.to(**utils.backend(prior))
                 loss = F.binary_cross_entropy_with_logits(
@@ -301,6 +322,13 @@ class CategoricalLoss(CatDotProduct):
                 obs = obs.to(**utils.backend(prior))
                 loss = F.binary_cross_entropy(
                     prior, obs, weighted, reduction=reduction)
+            if mask is not None:
+                mask = mask.squeeze(1)
+                loss *= mask
+                if mask_reduction in ('mean', 'sum'):
+                    loss = loss.sum()
+                if mask_reduction == 'mean':
+                    loss /= mask.sum()
             if not isinstance(self.reduction, str):
                 loss = self.reduction(loss)
         # --- Multiclass (softmax) version -----------------------------
@@ -309,16 +337,27 @@ class CategoricalLoss(CatDotProduct):
                           and weighted is not True and not implicit)
             if use_native:
                 reduction = self.reduction if isinstance(self.reduction, str) else 'none'
+                mask_reduction = False
+                if mask is not None:
+                    mask_reduction = reduction
+                    reduction = 'none'
                 obs = obs.squeeze(1)
                 obs = obs.long()
                 loss = F.cross_entropy(
                     prior, obs, weighted, reduction=reduction)
+                if mask is not None:
+                    mask = mask.squeeze(1)
+                    loss *= mask
+                    if mask_reduction in ('mean', 'sum'):
+                        loss = loss.sum()
+                    if mask_reduction == 'mean':
+                        loss /= mask.sum()
                 if not isinstance(self.reduction, str):
                     loss = self.reduction(loss)
             else:
                 prior = get_logprob_explicit(prior, logit=self.logit,
                                              implicit=self.implicit)
-                loss = super().forward(prior, obs).neg_()
+                loss = super().forward(prior, obs, mask=mask).neg_()
         return loss
 
 
@@ -348,7 +387,7 @@ class DiceLoss(Loss):
         self.weighted = weighted
         self.exclude_background = exclude_background
 
-    def forward(self, predicted, reference):
+    def forward(self, predicted, reference, mask=None):
         """
 
         Parameters
@@ -365,6 +404,8 @@ class DiceLoss(Loss):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
+        mask : (nb_batch, 1, *spatial) tensor, optional
+            Loss mask
 
         Returns
         -------
@@ -411,6 +452,9 @@ class DiceLoss(Loss):
             if exclude_background:
                 predicted = predicted[:, 1:]
                 reference = reference[:, 1:]
+            if mask is not None:
+                predicted = predicted * mask
+                reference = reference * mask
             inter = math.nansum(predicted * reference, dim=spatial_dims)
             union = math.nansum(predicted + reference, dim=spatial_dims)
             loss = -2 * inter / union.clamp_min_(1e-5)
@@ -431,6 +475,9 @@ class DiceLoss(Loss):
             for index in range(first_index, nb_classes):
                 pred1 = predicted[:, None, index, ...]
                 ref1 = reference == index
+                if mask is not None:
+                    pred1 = pred1 * mask
+                    ref1 = ref1 * mask
 
                 inter = math.sum(pred1 * ref1, dim=spatial_dims)
                 union = math.sum(pred1 + ref1, dim=spatial_dims)
@@ -491,7 +538,7 @@ class FocalLoss(CatDotProduct):
         self.logit = logit
         self.implicit = implicit
 
-    def forward(self, prior, obs):
+    def forward(self, prior, obs, mask=None):
         """
 
         Parameters
@@ -508,6 +555,8 @@ class FocalLoss(CatDotProduct):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
+        mask : (nb_batch, 1, *spatial) tensor, optional
+            Loss mask
 
         Returns
         -------
@@ -516,7 +565,6 @@ class FocalLoss(CatDotProduct):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
-
         gamma = self.gamma
         log = self.logit
         implicit = self.implicit
@@ -527,7 +575,7 @@ class FocalLoss(CatDotProduct):
         prior = get_prob_explicit(prior, logit=log, implicit=implicit)
         prior = logprior * (1 - prior).pow(gamma)
 
-        return super().forward(prior, obs).neg_()
+        return super().forward(prior, obs, mask=mask).neg_()
 
 
 class HingeLoss(CatDotProduct):
@@ -566,7 +614,7 @@ class HingeLoss(CatDotProduct):
         self.implicit = implicit
         self.dot = CatDotProduct(weighted)
 
-    def forward(self, score, obs):
+    def forward(self, score, obs, mask=None):
         """
 
         Parameters
@@ -582,6 +630,8 @@ class HingeLoss(CatDotProduct):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
+        mask : (nb_batch, 1, *spatial) tensor, optional
+            Loss mask
 
         Returns
         -------
@@ -590,7 +640,6 @@ class HingeLoss(CatDotProduct):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
-
         mode = self.mode
         logit = self.logit
         implicit = self.implicit
@@ -612,7 +661,7 @@ class HingeLoss(CatDotProduct):
                 assert mode == 'ww'
                 score = score.sum(dim=1)
 
-        return super().forward(score, obs)
+        return super().forward(score, obs, mask=mask)
 
 
 class AlphaLoss(CatDotProduct):
@@ -652,7 +701,7 @@ class AlphaLoss(CatDotProduct):
         self.logit = logit
         self.implicit = implicit
 
-    def forward(self, prior, obs, **overload):
+    def forward(self, prior, obs, mask=None):
         """
 
         Parameters
@@ -669,9 +718,8 @@ class AlphaLoss(CatDotProduct):
                   assumed to hold hard labels and its channel dimension
                   should be 1. Eventually, `one_hot_map` is used to map
                   one-hot labels to hard labels.
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
+        mask : (nb_batch, 1, *spatial) tensor, optional
+            Loss mask
 
         Returns
         -------
@@ -680,7 +728,6 @@ class AlphaLoss(CatDotProduct):
             If 'mean' or 'sum', this function returns a scalar.
 
         """
-
         alpha = self.alpha
         logit = self.logit
         implicit = self.implicit
@@ -691,4 +738,4 @@ class AlphaLoss(CatDotProduct):
         prior = get_prob_explicit(prior, logit=logit, implicit=implicit)
         prior = prior.pow(ratio).neg_().add_(1).div_(ratio)
 
-        return super().forward(prior, obs)
+        return super().forward(prior, obs, mask=mask)
