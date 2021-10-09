@@ -557,9 +557,9 @@ class Conv(Module):
                         sumpadding.append(P)
                 else:
                     output_padding = []
-                    for oL, iL, K, S, D, Pi in zip(input_shape, self.kernel_size,
-                                                   self.stride, self.dilation,
-                                                   sumpadding):
+                    for oL, iL, K, S, D, Pi in zip(output_shape, input_shape,
+                                                   self.kernel_size, self.stride,
+                                                   self.dilation, sumpadding):
                         K = (K - 1) * D + 1
                         Pe = oL - ((iL - 1) * S + K - Pi)
                         output_padding.append(Pe)
