@@ -7,6 +7,7 @@ from nitorch.core.kernels import smooth
 from nitorch.core import utils, py, linalg
 from nitorch import spatial
 from nitorch.nn.base import Module
+from .utils import batch_callable, padshape, call_spatial
 
 
 class RandomField(Module):
@@ -26,7 +27,7 @@ class RandomField(Module):
         shape : sequence[int], optional
             Lattice shape
         mean : callable or tensor, default=0
-            Mean value. Should broadcast to (channel, *shape)
+            Mean value. Should be of shape (channel,) or (channel, *shape)
         amplitude : callable or tensor, default=1
             Amplitude of the squared-exponential kernel.
             Should broadcast to (channel, *shape)
@@ -88,19 +89,20 @@ class RandomField(Module):
         basis = overload.get('basis', self.basis)
         dtype = overload.get('dtype', self.dtype)
         device = overload.get('device', self.device)
+        backend = dict(dtype=dtype, device=device)
 
         # sample if parameters are callable
-        mean = mean() if callable(mean) else mean
-        amplitude = amplitude() if callable(amplitude) else amplitude
-        fwhm = fwhm() if callable(fwhm) else fwhm
+        nb_dim = len(shape)
+        mean = call_spatial(mean, batch, nb_dim)           # ([B], C, *spatial)
+        amplitude = call_spatial(amplitude, batch, nb_dim) # ([B], C, *spatial)
+        fwhm = call_spatial(fwhm, batch, 1)                # ([B], D)
 
         # device/dtype
-        mean = torch.as_tensor(mean, dtype=dtype, device=device)
-        amplitude = torch.as_tensor(amplitude, dtype=dtype, device=device)
-        fwhm = torch.as_tensor(fwhm, dtype=dtype, device=device)
+        mean = torch.as_tensor(mean, **backend)
+        amplitude = torch.as_tensor(amplitude, **backend)
+        fwhm = torch.as_tensor(fwhm, **backend)
 
         # reshape
-        nb_dim = len(shape)
         full_shape = [batch, channel, *shape]
         mean = mean.expand(full_shape)
         amplitude = amplitude.expand(full_shape)
@@ -225,9 +227,10 @@ class RandomFieldSpline(Module):
         backend = dict(dtype=dtype, device=device)
 
         # sample if parameters are callable
-        mean = mean() if callable(mean) else mean
-        amplitude = amplitude() if callable(amplitude) else amplitude
-        fwhm = fwhm() if callable(fwhm) else fwhm
+        nb_dim = len(shape)
+        mean = call_spatial(mean, batch, nb_dim)           # ([B], C, *spatial)
+        amplitude = call_spatial(amplitude, batch, nb_dim) # ([B], C, *spatial)
+        fwhm = call_spatial(fwhm, batch, 1)                # ([B], D)
 
         # device/dtype
         mean = torch.as_tensor(mean, **backend)
@@ -236,16 +239,14 @@ class RandomFieldSpline(Module):
 
         # reshape
         nb_dim = len(shape)
-        full_shape = [batch, channel, *shape]
-        mean = mean.expand(full_shape)
-        amplitude = utils.make_vector(amplitude, channel)
-        amplitude = utils.unsqueeze(amplitude, dim=-1, ndim=len(shape))
         fwhm = utils.make_vector(fwhm, nb_dim)
 
         # sample spline coefficients
         nodes = [(s/f).ceil().int().item() for s, f in zip(shape, fwhm)]
-        sample = torch.randn([batch, channel, *nodes], **backend) * amplitude
-        sample = spatial.resize(sample, shape=shape, interpolation=basis, bound='dct2')
+        sample = torch.randn([batch, channel, *nodes], **backend)
+        sample *= amplitude
+        sample = spatial.resize(sample, shape=shape, interpolation=basis,
+                                bound='dct2')
         sample += mean
 
         return sample
@@ -651,11 +652,11 @@ class BiasFieldTransform(Module):
 
     @staticmethod
     def default_amplitude(*b):
-        return td.Normal(0., math.log(10)/3).sample(*b).exp()
+        return td.Normal(0., math.log(10)/3).sample(b).exp()
 
     @staticmethod
     def default_fwhm(*b):
-        return td.Normal(math.log(32.), math.log(3)/3).sample(*b).exp()
+        return td.Normal(math.log(32.), math.log(3)/3).sample(b).exp()
 
     def to(self, *args, **kwargs):
         self.field.to(*args, **kwargs)

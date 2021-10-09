@@ -182,7 +182,7 @@ class RandomChiNoise(Module):
 
     @classmethod
     def default_sigma(cls, *b, **backend):
-        sd = torch.tensor(1, **backend)
+        sd = torch.tensor(0.1, **backend)
         mean = torch.tensor(-3.5, **backend)
         return td.Normal(mean, sd).sample(b).exp()
 

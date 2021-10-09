@@ -5,7 +5,7 @@ from nitorch.core import utils
 from nitorch.core.utils import channel2last, unsqueeze, make_vector
 from nitorch.core.py import make_list
 from nitorch.core.linalg import matvec
-from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean
+from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean, identity_grid
 from nitorch.nn.base import Module
 from ..modules.spatial import GridExp, GridPull
 from .field import RandomFieldSpline
@@ -180,13 +180,9 @@ class RandomDiffeo(Module):
             'dtype': overload.get('dtype', self.dtype),
             'device': overload.get('device', self.device),
         }
-        opt_exp = {
-            'bound': overload.get('bound', self.bound),
-            'interpolation': overload.get('interpolation', self.interpolation),
-        }
 
         vel = self.velocity(batch, **opt_vel)
-        grid = self.exp(vel, **opt_exp)
+        grid = self.exp(vel)
 
         return (grid, vel) if return_vel else grid
 
@@ -422,7 +418,10 @@ class RandomGrid(Module):
             'dtype': dtype,
             'device': device,
         }
-        grid = self.grid(batch, **opt_grid)
+        if opt_grid['amplitude']:
+            grid = self.grid(batch, **opt_grid)
+        else:
+            grid = identity_grid(opt_grid['shape'], dtype=dtype, device=device)
 
         shape = grid.shape[1:-1]
         dim = len(shape)
@@ -506,7 +505,8 @@ class RandomDeform(Module):
             interpolation=interpolation)
         self.pull = GridPull(
             bound=image_bound,
-            interpolation=interpolation)
+            interpolation=interpolation,
+            extrapolate=True)
 
     translation = property(lambda self: self.grid.translation)
     rotation = property(lambda self: self.grid.rotation)
@@ -518,13 +518,13 @@ class RandomDeform(Module):
     interpolation = property(lambda self: self.grid.interpolation)
     image_bound = property(lambda self: self.pull.bound)
 
-    def forward(self, image, return_grid=False, **overload):
+    def forward(self, *images, return_grid=False, **overload):
         """
 
         Parameters
         ----------
-        image : (batch, channel, *shape) tensor
-            Input image
+        *images : (batch, channel, *shape) tensor
+            Input images
         return_grid : bool, default=False
             Return deformation grid on top of deformed sample.
         overload : dict
@@ -538,9 +538,7 @@ class RandomDeform(Module):
             Resampling grid
 
         """
-
-        image = torch.as_tensor(image)
-        batch, channel, *shape = image.shape
+        batch, channel, *shape = images[0].shape
 
         # get arguments
         opt_grid = {
@@ -553,19 +551,17 @@ class RandomDeform(Module):
             'shear': overload.get('shear', self.shear),
             'bound': overload.get('vel_bound', self.grid.bound),
             'interpolation': overload.get('interpolation', self.grid.interpolation),
-            'dtype': image.dtype,
-            'device': image.device,
-        }
-        opt_pull = {
-            'bound': overload.get('image_bound', self.image_bound),
-            'interpolation': overload.get('interpolation', self.interpolation),
+            'dtype': images[0].dtype,
+            'device': images[0].device,
         }
 
         # pull
         grid = self.grid(batch, **opt_grid)
-        warped = self.pull(image, grid, **opt_pull)
+        warped = []
+        for image in images:
+            warped.append(self.pull(image, grid))
 
-        return (warped, grid) if return_grid else warped
+        return (*warped, grid) if return_grid else tuple(warped)
 
 
 class RandomPatch(Module):

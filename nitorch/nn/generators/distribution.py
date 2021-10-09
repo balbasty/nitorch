@@ -24,3 +24,9 @@ class RandomDistribution(Module, torch.distributions.Distribution):
 
         dist = self.distribution(*args, **kwargs)
         return dist
+
+
+class RandomGaussian(Module):
+
+    def __init__(self, mean=0, variance=1):
+        super().__init__()
