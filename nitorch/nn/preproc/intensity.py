@@ -21,12 +21,6 @@ class AffineQuantiles(Module):
         vmin = overload.get('vmin', self.vmin)
         vmax = overload.get('vmax', self.vmax)
         dim = image.dim() - 2
-        backend = utils.backend(image)
-
-        vmin = torch.as_tensor(vmin, **backend)
-        vmin = utils.unsqueeze(vmin, image.dim() - vmin.dim())
-        vmax = torch.as_tensor(vmax, **backend)
-        vmax = utils.unsqueeze(vmax, image.dim() - vmax.dim())
 
         mn, mx = utils.quantile(image, (qmin, qmax),
                                 dim=range(-dim, 0), keepdim=True).unbind(-1)
