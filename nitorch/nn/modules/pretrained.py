@@ -245,7 +245,7 @@ class SynthPreproc:
     @classmethod
     def preproc_(cls, x):
         mn, mx = utils.quantile(x, [0.005, 0.995], keepdim=True).unbind(-1)
-        x = x.clamp_(mn, mx).sub_(mn).div_(mx - mn)
+        x = x.max(mn).min(mx).sub_(mn).div_(mx - mn)
         return x
 
     @classmethod
