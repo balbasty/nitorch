@@ -1,10 +1,9 @@
 from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
-from nitorch.tools.registration import (joint, losses, optim,
-                                        utils as regutils, objects,
-                                        experimental_losses)
+from nitorch.tools.registration import (pairwise, losses, optim,
+                                        utils as regutils, objects)
 from nitorch import io, spatial
-from nitorch.core import utils, py
+from nitorch.core import utils, py, dtypes
 import torch
 import sys
 import os
@@ -77,13 +76,17 @@ def _load_image(fnames, dim=None, device=None, label=False):
     """Load a N-D image from disk"""
     dat, affine = _map_image(fnames, dim)
     if label:
-        dat0 = dat.data(device=device)
+        dtype = dat.dtype
+        if isinstance(dtype, (list, tuple)):
+            dtype = dtype[0]
+        dtype = dtypes.as_torch(dtype, upcast=True)
+        dat0 = dat.data(device=device, dtype=dtype)[0]  # assume single channel
         if label is True:
             label = dat0.unique(sorted=True)
             label = label[label != 0].tolist()
         dat = torch.zeros([len(label), *dat0.shape], device=device)
         for i, l in enumerate(label):
-            dat[i] = label == l
+            dat[i] = dat0 == l
     else:
         dat = dat.fdata(device=device, rand=True)
     affine = affine.to(dat.device, dat.dtype)
@@ -330,8 +333,11 @@ def _main(options):
         image_dict[loss.mov.name or loss.mov.files[0]] = mov
         dim = fix.dim
         if loss.name == 'mi':
-            lossobj = losses.NMI(bins=loss.bins, norm=loss.norm,
-                                 order=loss.order, dim=dim)
+            lossobj = losses.MI(bins=loss.bins, norm=loss.norm,
+                                spline=loss.order, fwhm=loss.fwhm, dim=dim)
+        elif loss.name == 'ent':
+            lossobj = losses.Entropy(bins=loss.bins, spline=loss.order,
+                                     fwhm=loss.fwhm, dim=dim)
         elif loss.name == 'mse':
             lossobj = losses.MSE(lam=loss.weight, dim=dim)
         elif loss.name == 'mad':
@@ -344,14 +350,14 @@ def _main(options):
             lossobj = losses.LCC(patch=loss.patch, dim=dim, stride=loss.stride,
                                  mode=loss.kernel)
         elif loss.name == 'gmm':
-            lossobj = experimental_losses.GMMH(bins=loss.bins, dim=dim,
-                                               max_iter=loss.max_iter)
+            lossobj = losses.GMMH(bins=loss.bins, dim=dim,
+                                  max_iter=loss.max_iter)
         elif loss.name == 'lgmm':
-            lossobj = experimental_losses.LGMMH(bins=loss.bins, dim=dim,
-                                                max_iter=loss.max_iter,
-                                                patch=loss.patch,
-                                                stride=loss.stride,
-                                                mode=loss.kernel)
+            lossobj = losses.LGMMH(bins=loss.bins, dim=dim,
+                                   max_iter=loss.max_iter,
+                                   patch=loss.patch,
+                                   stride=loss.stride,
+                                   mode=loss.kernel)
         elif loss.name == 'cat':
             lossobj = losses.Cat(dim=dim, log=False)
             # lossobj = losses.AutoCat()
@@ -425,6 +431,8 @@ def _main(options):
             *pad, pad_unit = pad
         else:
             pad_unit = '%'
+        vx = py.make_list(vx, dim)
+        pad = py.make_list(pad, dim)
         space = objects.MeanSpace(
             [image_dict[key] for key in (options.nonlin.fov or image_dict)],
             voxel_size=vx, vx_unit=vx_unit, pad=pad, pad_unit=pad_unit)
@@ -468,19 +476,26 @@ def _main(options):
                                      auto_restart=options.nonlin.optim.restart)
             nonlin_optim.preconditioner = nonlin.greens_apply
         elif options.nonlin.optim.name == 'gn':
+            marquardt = getattr(options.nonlin.optim, 'marquardt', None)
+            sub_iter = getattr(options.nonlin.optim, 'sub_iter', None)
+            if not sub_iter:
+                if options.nonlin.optim.fmg:
+                    sub_iter = 2
+                else:
+                    sub_iter = 16
             prm = {'factor': nonlin.factor / py.prod(nonlin.shape),
                    'voxel_size': nonlin.voxel_size,
                    **nonlin.prm}
             if getattr(options.nonlin.optim, 'solver', 'cg') == 'cg':
                 nonlin_optim = optim.GridCG(
                     lr=options.nonlin.optim.lr,
-                    marquardt=getattr(options.nonlin.optim, 'marquardt', None),
-                    max_iter=getattr(options.nonlin.optim, 'sub_iter', 16),
+                    marquardt=marquardt,
+                    max_iter=sub_iter,
                     **prm)
             elif getattr(options.nonlin.optim, 'solver') == 'relax':
                 nonlin_optim = optim.GridRelax(lr=options.nonlin.optim.lr,
-                                               marquardt=getattr(options.nonlin.optim, 'marquardt', None),
-                                               max_iter=getattr(options.nonlin.optim, 'sub_iter', 16),
+                                               marquardt=marquardt,
+                                               max_iter=sub_iter,
                                                **prm)
             else:
                 raise ValueError(getattr(options.nonlin.optim, 'solver'))
@@ -520,9 +535,13 @@ def _main(options):
         import matplotlib
         matplotlib.use('TkAgg')
 
-    register = joint.Register(loss_list, affine, nonlin, joptim,
-                              verbose=options.verbose,
-                              framerate=options.framerate)
+    # LCC and related losses may benefit from selecting the best conv
+    # torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.enabled = False
+
+    register = pairwise.Register(loss_list, affine, nonlin, joptim,
+                                 verbose=options.verbose,
+                                 framerate=options.framerate)
     register.fit()
 
     if register.affine and options.affine.output:

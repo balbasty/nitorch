@@ -2,17 +2,17 @@ import math
 import torch
 import torch.distributions as td
 from nitorch.core import utils
-from nitorch.core.utils import channel2last, unsqueeze
+from nitorch.core.utils import channel2last, unsqueeze, make_vector
 from nitorch.core.py import make_list
 from nitorch.core.linalg import matvec
-from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean
-from ..modules.base import Module
+from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean, identity_grid
+from nitorch.nn.base import Module
 from ..modules.spatial import GridExp, GridPull
-from .field import RandomFieldSample, RandomSplineSample
+from .field import RandomFieldSpline
 
 
-__all__ = ['VelocitySample', 'DiffeoSample', 'AffineSample', 'GridSample',
-           'DeformedSample', 'PatchSample']
+__all__ = ['RandomVelocity', 'RandomDiffeo', 'RandomAffine', 'RandomGrid',
+           'RandomDeform', 'RandomPatch', 'RandomFlip']
 
 
 defaults = dict(
@@ -21,7 +21,7 @@ defaults = dict(
 )
 
 
-class VelocitySample(Module):
+class RandomVelocity(Module):
     """Sample a random velocity field."""
 
     def __init__(self, shape=None,
@@ -46,9 +46,9 @@ class VelocitySample(Module):
         """
         super().__init__()
         shape = make_list(shape)
-        self.field = RandomSplineSample(shape=shape, channel=len(shape),
-                                        amplitude=amplitude, fwhm=fwhm,
-                                        device=device, dtype=dtype)
+        self.field = RandomFieldSpline(shape=shape, channel=len(shape),
+                                       amplitude=amplitude, fwhm=fwhm,
+                                       device=device, dtype=dtype)
 
     dim = property(lambda self: self.field.channel)
     shape = property(lambda self: self.field.shape)
@@ -108,7 +108,7 @@ class VelocitySample(Module):
         return channel2last(self.field(batch, **opt))
 
 
-class DiffeoSample(Module):
+class RandomDiffeo(Module):
     """Sample a random diffeomorphic transformation field."""
 
     def __init__(self, shape=None,
@@ -137,7 +137,7 @@ class DiffeoSample(Module):
 
         """
         super().__init__()
-        self.velocity = VelocitySample(shape=shape,
+        self.velocity = RandomVelocity(shape=shape,
                                        amplitude=amplitude, fwhm=fwhm,
                                        device=device, dtype=dtype)
         self.exp = GridExp(bound=bound, interpolation=interpolation)
@@ -180,18 +180,14 @@ class DiffeoSample(Module):
             'dtype': overload.get('dtype', self.dtype),
             'device': overload.get('device', self.device),
         }
-        opt_exp = {
-            'bound': overload.get('bound', self.bound),
-            'interpolation': overload.get('interpolation', self.interpolation),
-        }
 
         vel = self.velocity(batch, **opt_vel)
-        grid = self.exp(vel, **opt_exp)
+        grid = self.exp(vel)
 
         return (grid, vel) if return_vel else grid
 
 
-class AffineSample(Module):
+class RandomAffine(Module):
     """Sample an affine transformation matrix"""
 
     def __init__(self, dim=None, translation=True, rotation=True,
@@ -324,7 +320,7 @@ class AffineSample(Module):
         return mat
 
 
-class GridSample(Module):
+class RandomGrid(Module):
     """Random spatial deformation (dense + affine)."""
 
     def __init__(self, shape=None,
@@ -365,14 +361,14 @@ class GridSample(Module):
 
         """
         super().__init__()
-        self.affine = AffineSample(
+        self.affine = RandomAffine(
             translation=translation,
             rotation=rotation,
             zoom=zoom,
             shear=shear,
             device=device,
             dtype=dtype)
-        self.grid = DiffeoSample(
+        self.grid = RandomDiffeo(
             shape=shape,
             amplitude=vel_amplitude,
             fwhm=vel_fwhm,
@@ -422,7 +418,10 @@ class GridSample(Module):
             'dtype': dtype,
             'device': device,
         }
-        grid = self.grid(batch, **opt_grid)
+        if opt_grid['amplitude']:
+            grid = self.grid(batch, **opt_grid)
+        else:
+            grid = identity_grid(opt_grid['shape'], dtype=dtype, device=device)
 
         shape = grid.shape[1:-1]
         dim = len(shape)
@@ -458,7 +457,7 @@ class GridSample(Module):
         return grid
 
 
-class DeformedSample(Module):
+class RandomDeform(Module):
     """Random spatial deformation of an image"""
 
     def __init__(self,
@@ -495,7 +494,7 @@ class DeformedSample(Module):
 
         """
         super().__init__()
-        self.grid = GridSample(
+        self.grid = RandomGrid(
             vel_amplitude=vel_amplitude,
             vel_fwhm=vel_fwhm,
             translation=translation,
@@ -506,7 +505,8 @@ class DeformedSample(Module):
             interpolation=interpolation)
         self.pull = GridPull(
             bound=image_bound,
-            interpolation=interpolation)
+            interpolation=interpolation,
+            extrapolate=True)
 
     translation = property(lambda self: self.grid.translation)
     rotation = property(lambda self: self.grid.rotation)
@@ -518,13 +518,13 @@ class DeformedSample(Module):
     interpolation = property(lambda self: self.grid.interpolation)
     image_bound = property(lambda self: self.pull.bound)
 
-    def forward(self, image, return_grid=False, **overload):
+    def forward(self, *images, return_grid=False, **overload):
         """
 
         Parameters
         ----------
-        image : (batch, channel, *shape) tensor
-            Input image
+        *images : (batch, channel, *shape) tensor
+            Input images
         return_grid : bool, default=False
             Return deformation grid on top of deformed sample.
         overload : dict
@@ -538,9 +538,7 @@ class DeformedSample(Module):
             Resampling grid
 
         """
-
-        image = torch.as_tensor(image)
-        batch, channel, *shape = image.shape
+        batch, channel, *shape = images[0].shape
 
         # get arguments
         opt_grid = {
@@ -553,23 +551,26 @@ class DeformedSample(Module):
             'shear': overload.get('shear', self.shear),
             'bound': overload.get('vel_bound', self.grid.bound),
             'interpolation': overload.get('interpolation', self.grid.interpolation),
-            'dtype': image.dtype,
-            'device': image.device,
-        }
-        opt_pull = {
-            'bound': overload.get('image_bound', self.image_bound),
-            'interpolation': overload.get('interpolation', self.interpolation),
+            'dtype': images[0].dtype,
+            'device': images[0].device,
         }
 
         # pull
         grid = self.grid(batch, **opt_grid)
-        warped = self.pull(image, grid, **opt_pull)
+        warped = []
+        for image in images:
+            warped.append(self.pull(image, grid))
 
-        return (warped, grid) if return_grid else warped
+        return (*warped, grid) if return_grid else tuple(warped)
 
 
-class PatchSample(Module):
-    """Extract a random patch from a tensor."""
+class RandomPatch(Module):
+    """Extract a random patch from a tensor.
+
+    The patch location is different in each batch element.
+    Multiple images of the same shape can be provided, such that identical
+    patches are extracted across all images.
+    """
 
     def __init__(self, shape):
         """
@@ -588,13 +589,12 @@ class PatchSample(Module):
 
         Parameters
         ----------
-        image : (batch, channel, *spatial)
-
-        shape
-        overload
+        *image : (batch, channel, *spatial)
+        **overload : dict
 
         Returns
         -------
+        *image : (batch, channel, *patch_shape)
 
         """
 
@@ -608,18 +608,72 @@ class PatchSample(Module):
 
         # sample shift
         max_shift = [d0 - d1 for d0, d1 in zip(image.shape[2:], shape)]
-        shift = [torch.randint(0, s, [], device=device) if s > 0 else 0
-                 for s in max_shift]
+        shift = [[torch.randint(0, s, [], device=device) if s > 0 else 0
+                  for s in max_shift] for _ in range(len(image))]
 
-        # subslice
-        index = (slice(None), slice(None))  # batch, channel
-        index = index + tuple(slice(s, s+d) for s, d in zip(shift, shape))
-        image = image.__getitem__(index)
-        other_images = [im.__getitem__(index) for im in other_images]
+        output = image.new_empty([*image.shape[:2], *shape])
+        other_outputs = [im.new_empty([*im.shape[:2], *shape])
+                         for im in other_images]
 
-        if len(other_images) > 0:
-            return (image, *other_images)
-        else:
-            return image
+        for b in range(len(image)):
+            # subslice
+            index = (b, slice(None))  # batch, channel
+            index = index + tuple(slice(s, s+d) for s, d in zip(shift[b], shape))
+            output[b] = image[index]
+            for i in range(len(other_images)):
+                other_outputs[i][b] = other_images[i][index]
+
+            if len(other_images) > 0:
+                return (output, *other_outputs)
+            else:
+                return output
 
 
+class RandomFlip(Module):
+    """Apply a random flip to a tensor."""
+
+    def __init__(self, prob=0.5, dim=None):
+        """
+
+        Parameters
+        ----------
+        prob : float or sequence[float]
+            Probability yo flip (per spatial dimension)
+        dim : int or sequence[int], default=all
+            Index of spatial dimension to flip
+        """
+
+        super().__init__()
+        self.prob = prob
+        self.dim = dim
+
+    def forward(self, *image, **overload):
+        """
+
+        Parameters
+        ----------
+        image : (batch, channel, *spatial)
+        overload
+
+        Returns
+        -------
+
+        """
+
+        image = list(image)
+        device = image[0].device
+
+        nb_dim = image[0].dim() - 2
+        prob = make_vector(overload.get('prob', self.prob),
+                           dtype=torch.float, device=device)
+        dim = overload.get('dim', self.dim)
+        dim = make_list(dim or range(-nb_dim, 0), nb_dim)
+
+        # sample shift
+        flip = torch.rand((nb_dim,), device=device) > (1 - prob)
+        dim = [d for d, f in zip(dim, flip) if f]
+
+        if dim:
+            for i, img in enumerate(image):
+                image[i] = img.flip(dim)
+        return image[0] if len(image) == 1 else tuple(image)

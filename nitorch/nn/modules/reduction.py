@@ -1,6 +1,17 @@
-"""Various reduction layers."""
+"""Various reduction layers.
 
-from .base import Module
+Reductions apply a function across one or several dimensions and collapse them.
+
+(Nan)MaxReduction
+(Nan)MinReduction
+(Nan)MedianReduction
+(Nan)SumReduction
+(Nan)MeanReduction
+(Nan)VarReduction
+(Nan)StdReduction
+"""
+
+from nitorch.nn.base import Module
 from nitorch.core import math
 
 
@@ -29,17 +40,18 @@ class Reduction(Module):
         self.keepdim = keepdim
         self.omitnan = omitnan if omitnan is not None else type(self).omitnan
         self.reduction = reduction or type(self).reduction
+        if isinstance(self.reduction, str):
+            if not self.reduction in reduction_functions:
+                raise ValueError(f'Unknown reduction {reduction}')
+            self.reduction = reduction_functions[self.reduction]
 
-    def forward(self, x, **overload):
+    def forward(self, x):
         """
 
         Parameters
         ----------
         x : (batch, channel, *spatial) tensor
             Tensor to reduce
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time.
 
         Returns
         -------
@@ -47,17 +59,7 @@ class Reduction(Module):
             Reduced tensor
 
         """
-
-        dim = overload.get('dim', self.dim)
-        keepdim = overload.get('keepdim', self.keepdim)
-        omitnan = overload.get('omitnan', self.omitnan)
-        reduction = overload.get('reduction', self.reduction)
-
-        if isinstance(reduction, str):
-            if not reduction in reduction_functions:
-                raise ValueError(f'Unknown reducton {reduction}')
-            reduction = reduction_functions[reduction]
-
+        dim = self.dim
         if dim is None:
             dim = list(range(2, x.dim()))
         if isinstance(dim, slice):
@@ -66,7 +68,7 @@ class Reduction(Module):
             step = dim.step if dim.step is not None else 1
             dim = list(range(start, stop, step))
 
-        return reduction(x, dim, keepdim=keepdim, omitnan=omitnan)
+        return self.reduction(x, dim, keepdim=self.keepdim, omitnan=self.omitnan)
 
 
 class MaxReduction(Reduction):

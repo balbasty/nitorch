@@ -219,6 +219,17 @@ def number_or_str(type=float):
     return _number_or_str
 
 
+def bool_or_str(x):
+    if x.lower() in ('true', 'yes'):
+        return True
+    if x.lower() in ('false', 'no'):
+        return False
+    try:
+        return bool(int(x))
+    except ValueError:
+        return x
+
+
 def parse_range(x):
     if ':' not in x:
         return [int(x)]
@@ -261,7 +272,8 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 
 # Loss group
 loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
-                'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice'}
+                'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
+                'entropy': 'ent'}
 loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
@@ -295,9 +307,15 @@ loss.add_suboption('mi', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
                    convert=int, help='Number of bins in joint histogram')
 loss.add_suboption('mi', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
                    convert=float, help='Smoothing of the joint histogram, in bins.')
-loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=3,
+loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
                    convert=int, help='Spline order of the joint histogram')
 loss.add_suboption('mi', patch_option)
+loss.add_suboption('ent', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
+                   convert=int, help='Number of bins in joint histogram')
+loss.add_suboption('ent', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
+                   convert=float, help='Smoothing of the joint histogram, in bins.')
+loss.add_suboption('ent', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
+                   convert=int, help='Spline order of the joint histogram')
 loss.add_suboption('lcc', patch_option)
 loss.add_suboption('lcc', stride_option)
 loss.add_suboption('lcc', kernel_option)
@@ -319,10 +337,10 @@ file = cli.Group('file', n=1, help='Volume to register')
 file.add_positional('files', nargs='1*', help='File names')
 file.add_option('output', ('-o', '--output'), nargs='?',
                 default='{dir}{sep}{base}.registered{ext}',
-                convert=number_or_str(bool),
+                convert=bool_or_str,
                 help='Path to the output with minimal reslicing')
 file.add_option('resliced', ('-r', '--resliced'), nargs='?',
-                default=False, convert=number_or_str(bool),
+                default=False, convert=bool_or_str,
                 help='Path to the output resliced to the other \'s space')
 file.add_option('pyramid', ('-p', '--pyramid'), nargs='1*',
                 default=[0], convert=parse_range,
@@ -336,7 +354,7 @@ file.add_option('bound', ('-b', '--bound'), nargs=1, default='dct2',
                 help='Boundary condition')
 file.add_option('order', ('-n', '--order'), nargs=1, default=1,
                 convert=int, help='Interpolation order')
-file.add_option('extrapolate', ('-x', '--extrapolate'), nargs=0, default=False,
+file.add_option('extrapolate', ('-x', '--extrapolate'), nargs=0, default=True,
                 convert=bool, help='Extrapolate out-of-bounds')
 file.add_option('affine', ('-a', '--affine'), nargs='+', default=[],
                 help='Path to one or more world-to-world affine transforms to apply')
@@ -374,11 +392,13 @@ optim.add_option('lr', ('-l', '--lr'), nargs=1, default=1, convert=float,
                  help='Learning rate')
 optim.add_option('max_iter', ('-n', '--max-iter'), nargs=1, default=None,
                  convert=int, help='Maximum number of iterations')
+optim.add_option('fmg', ('-g', '--fmg'), nargs=1, default=2,
+                 convert=int, help='Number of FMG cycles (do no use FMG if 0)')
 optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  default='wolfe', convert=number_or_str(int),
                  help='Number of backtracking line search')
 optim.add_option('tolerance', ('-t', '--tolerance'), nargs=1,
-                 convert=float, default=1e-4, help='Tolerance for early stopping')
+                 convert=float, default=1e-3, help='Tolerance for early stopping')
 optim.add_suboption('gn', 'marquardt', ('-m', '--marquardt'), nargs=1,
                     default=None, convert=number_or_str(float),
                     help='Levenberg-Marquardt regularization')
@@ -386,7 +406,7 @@ optim.add_suboption('gn', 'solver', ('-a', '--solver'), nargs=1,
                     default='cg', validation=cli.Validations.choice(['cg', 'relax']),
                     help='Linear solver')
 optim.add_suboption('gn', 'sub_iter', ('-j', '--sub-iter'), nargs=1,
-                    default=16, convert=int,
+                    default=None, convert=int,
                     help='Number of linear solver iterations')
 optim.add_suboption('mom', 'momentum', ('-m', '--momentum'), nargs=1,
                     default=0.9, convert=float, help='Momentum factor')
@@ -475,7 +495,7 @@ joptim_choices = cli.Positional('name', nargs='?', default='interleaved',
                                 help='Joint optimization strategy ')
 joptim = cli.NamedGroup('optim', joptim_choices, '@optim', n='?')
 joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
-                     default=10, convert=int, help='Maximum number of iterations')
+                     default=5, convert=int, help='Maximum number of iterations')
 joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
                      convert=float, default=1e-5, help='Tolerance for early stopping')
 

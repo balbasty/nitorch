@@ -1,10 +1,10 @@
 """Experimental losses based on [local] mixtures of Gaussians."""
 
-from nitorch.core import utils, py, math, constants, linalg, kernels
+from nitorch.core import utils, py
 import math as pymath
 import torch
-from .losses import OptimizationLoss
-from .gmm2 import fit_gmm2, fit_lgmm2, sumspatial, Fwd, Bwd
+from nitorch.tools.registration.losses import OptimizationLoss
+from nitorch.tools.registration.losses.utils_gmm2 import fit_gmm2, fit_lgmm2, sumspatial, Fwd, Bwd
 Tensor = torch.Tensor
 pyutils = py
 
@@ -154,7 +154,7 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     fixed = fixed.unsqueeze(-dim-1)
 
     if grad:
-        z0 = fwd(z).clamp_min_(1e-10)
+        z0 = fwd(z, None).clamp_min_(1e-10)
 
         @torch.jit.script
         def make_grad(bwd: Bwd, z, z0, moving, fixed, moving_mean, fixed_mean,

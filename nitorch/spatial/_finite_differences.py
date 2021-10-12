@@ -85,6 +85,13 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
 
     # ensure tensor
     x = torch.as_tensor(x)
+
+    if x.shape[dim] == 1:
+        if out is not None:
+            return out.view(x.shape).copy_(x)
+        else:
+            return x.clone()
+
     shape0 = x.shape
     x = x.transpose(0, dim)
     if out is not None:
@@ -348,6 +355,13 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
 
     # ensure tensor
     x = torch.as_tensor(x)
+
+    if x.shape[dim] == 1:
+        if out is not None:
+            return out.view(x.shape).copy_(x)
+        else:
+            return x.clone()
+
     shape0 = x.shape
     x = x.transpose(0, dim)
     if out is not None:

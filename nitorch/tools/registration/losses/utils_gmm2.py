@@ -6,10 +6,10 @@ The main entry points are:
             patch: int|List[int] = 20,  stride: int|List[int] = 1,
             mode: str = 'g', ...)
 """
-from nitorch.core import utils, py, math, constants, linalg, kernels
+from nitorch.core import utils, py
 import torch
 from torch.nn import functional as F
-from .local import local_mean, prod as script_prod
+from nitorch.tools.registration.losses.utils_local import local_mean, prod as script_prod
 from typing import List, Optional, Dict, Tuple
 Tensor = torch.Tensor
 pyutils = py

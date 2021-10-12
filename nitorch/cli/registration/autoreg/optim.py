@@ -122,7 +122,7 @@ class OGM(Optimizer):
                         grad_prev = 0
                         _dampening = 1
                         delta = grad.mul(-lr)
-                    elif (dampening != 1 and grad_prev is not 0 and
+                    elif (dampening != 1 and torch.is_tensor(grad_prev) and
                           grad.flatten().dot(grad_prev.flatten()) < 0):
                         # Kim & Fessler (2017) 4.3 (27)
                         # consecutive gradients disagree

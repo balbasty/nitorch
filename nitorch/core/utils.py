@@ -11,6 +11,8 @@ from .optionals import numpy as np
 import numbers
 import os
 import random
+from typing import Optional
+Tensor = torch.Tensor
 
 
 def _compare_versions(version1, mode, version2):
@@ -1009,7 +1011,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     value : scalar, default=0
         Value for mode 'constant'
     side : {'pre', 'post', 'both'}, default='post'
-        Side to pad
+        Side to crop/pad
 
     Returns
     -------
@@ -1028,8 +1030,15 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     ndim = len(shape)
 
     # crop
-    index = tuple(slice(min(shape[d], inshape[d])) for d in range(ndim))
-    inp = inp.__getitem__(index)
+    if side == 'both':
+        crop = [max(0, inshape[d] - shape[d]) for d in range(ndim)]
+        index = tuple(slice(c//2, (c//2 - c) or None) for c in crop)
+    elif side == 'pre':
+        crop = [max(0, inshape[d] - shape[d]) for d in range(ndim)]
+        index = tuple(slice(-c or None) for c in crop)
+    else:  # side == 'post'
+        index = tuple(slice(min(shape[d], inshape[d])) for d in range(ndim))
+    inp = inp[index]
 
     # pad
     pad_size = [max(0, shape[d] - inshape[d]) for d in range(ndim)]
@@ -1641,10 +1650,10 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False, weights=None,
         extrapolate = 2
     if weights is None:
         # count == push an image of ones
-        h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate, False)[:, 0, ]
+        h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
     else:
         # push weights
-        h = GridPush.apply(weights[:, None, :], x[:, :, None], [n], order, bound, extrapolate, False)[:, 0, ]
+        h = GridPush.apply(weights[:, None, :], x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
 
     # reshape
     h = h.to(dtype)
@@ -1742,7 +1751,7 @@ def histc2(x, n=64, min=None, max=None, dim=None, keepdim=False,
         # hidden feature: tell pullpush to use +/- 0.5 tolerance when
         # deciding if a coordinate is inbounds.
         extrapolate = 2
-    h = GridCount.apply(x[:, None], n, order, bound, extrapolate, False)[:, 0]
+    h = GridCount.apply(x[:, None], n, order, bound, extrapolate)[:, 0]
 
     # reshape
     h = h.to(dtype)
@@ -1825,7 +1834,7 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
         return version[0] > 2 or (version[0] == 1 and version[1] >= 7)
 
     input, q = to_max_backend(input, q)
-    dim = py.make_list(dim or [])
+    dim = py.make_list([] if dim is None else dim)
     # if torch_is_recent() and len(dim) < 2 and not bins:
     #     dim = dim[0] if dim else None
     #     return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
@@ -1838,13 +1847,12 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
     inshape = input.shape
     if mask is not None:
         mask = mask.expand(inshape)
-    if dim is None:
+    if not dim:
         if mask is not None:
             mask = mask.reshape([1, -1])
         input = input.reshape([1, -1])
         batch = []
     else:
-        dim = py.make_list(dim)
         odim = list(range(-len(dim), 0))
         input = movedim(input, dim, odim)
         batch = input.shape[:-len(dim)]
@@ -1859,14 +1867,14 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
         # sort and sample
         input, _ = input.sort(-1)
         q = q.mul_(input.shape[-1]-1)
-        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0, False)[0]
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
     elif not bins:
         input, index = input.sort(-1)
         mask = mask[:, index]
         mask = mask.cumsum(-1) / mask.sum(-1, keepdim=True)
         mask[:, -1] = 1
         q = _hist_to_quantile(mask, q)
-        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0, False)[0]
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
     else:
         # compute cumulative histogram
         min = input.min(-1).values
@@ -1883,9 +1891,12 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
 
     # reshape
     if keepdim:
-        oshape = list(inshape)
-        for d in dim:
-            oshape[d] = 1
+        if not dim:
+            oshape = [1] * len(inshape)
+        else:
+            oshape = list(inshape)
+            for d in dim:
+                oshape[d] = 1
         oshape += [q.shape[-1]]
     else:
         oshape = [*batch, q.shape[-1]]
@@ -1896,6 +1907,100 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
     if out:
         out.reshape(q.shape).copy_(q)
     return q
+
+
+@torch.jit.script
+def _one_hot_wrapper(x: Tensor, dtype: Optional[torch.dtype] = None):
+    x = x.long()
+    x = torch.nn.functional.one_hot(x)
+    x = x.to(dtype)
+    return x
+
+
+def one_hot(x, dim=-1, exclude_labels=None, exclude_missing=False,
+            implicit=False, implicit_index=0, dtype=None, return_lookup=False):
+    """One-hot encode a volume of labels.
+
+    Parameters
+    ----------
+    x : tensor
+        An integer-type tensor with label values.
+    dim : int, default=-1
+        Dimension in which to insert the one-hot channel.
+    exclude_labels : sequence[int], optional
+        A list of labels to exclude from one-hot encoding.
+    exclude_missing : bool, default=False
+        Exclude missing labels from one-hot encoding
+        (their channel will be squeezed)
+    implicit : bool, default=False
+        Make the returned tensor have an implicit background class.
+        In this case, output probabilities do not sum to one, but to some
+        value smaller than one.
+    implicit_index : int, default=-1
+        Output channel to make implicit
+    dtype : tensor.dtype, optional
+        Output data type.
+    return_lookup : bool, default=False
+        Return lookup table from one-hot indices to labels
+
+    Returns
+    -------
+    y : tensor
+        One-hot tensor.
+        The number of one-hot channels is equal to `x.max() - len(exclude) + 1`
+        if not `implicit` else `x.max() - len(exclude)`.
+
+    """
+    if not exclude_labels and not exclude_missing and not implicit:
+        x = _one_hot_wrapper(x, dtype)
+        x = fast_movedim(x, -1, dim)
+        return x
+
+    nb_classes = int(x.max().item()) + 1
+    exclude_labels = set(py.ensure_list(exclude_labels or []))
+    if exclude_missing:
+        all_labels = x.unique()
+        missing_labels = [i for i in range(nb_classes) if i not in all_labels]
+        exclude_labels = exclude_labels.union(missing_labels)
+
+    dtype = dtype or x.dtype
+    out = torch.zeros([nb_classes-implicit, *x.shape], dtype=dtype, device=x.device)
+    implicit_index = (nb_classes + implicit_index if implicit_index < 0 else
+                      implicit_index)
+    i = 0
+    lookup = []
+    for j in range(nb_classes):
+        if j in exclude_labels:
+            continue
+        if i == implicit_index:
+            implicit_index = None
+            continue
+        out[i] = (x == j)
+        lookup.append(j)
+        i += 1
+
+    out = fast_movedim(out, 0, dim)
+    return (out, lookup) if return_lookup else out
+
+
+def merge_labels(x, lookup):
+    """Relabel a label tensor according to a lookup table
+
+    Parameters
+    ----------
+    x : tensor
+    lookup : sequence of [sequence of] int
+
+    Returns
+    -------
+    x : tensor
+
+    """
+    out = torch.zeros_like(x)
+    for i, j in enumerate(lookup):
+        j = py.make_list(j)
+        out[isin(x, j)] = i
+    return out
 
 
 class benchmark:

@@ -412,6 +412,14 @@ def affine_to_layout(mat):
 
 
 affine_subbasis_choices = ('T', 'R', 'Z', 'Z0', 'I', 'S', 'SC')
+affine_subbasis_aliases = dict(
+    T=['translation', 'translations'],
+    R=['rot', 'rotation', 'rotations'],
+    Z=['zoom', 'zooms', 'scale', 'scales', 'scaling', 'scalings'],
+    Z0=['isovolume', 'isovolumic'],
+    I=['isotropic', 'isozoom', 'isoscale', 'isoscaling'],
+    S=['shear', 'shears'],
+)
 
 
 def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
@@ -489,6 +497,11 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
     mode = mode[0]
 
     if mode not in affine_subbasis_choices:
+        for key, aliases in affine_subbasis_aliases.items():
+            if mode in aliases:
+                mode = key
+                break
+    if mode not in affine_subbasis_choices:
         raise ValueError('mode must be one of {}.'
                          .format(affine_subbasis_choices))
 
@@ -552,7 +565,7 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
                 basis[k, j, i] = isqrt2
                 k += 1
 
-    elif mode == 'SC':
+    elif mode in ('sc', 'classic shear', 'classic shears'):
         nb_shr = dim*(dim-1)//2
         basis = torch.zeros((nb_shr, dim+1, dim+1), dtype=dtype, device=device)
         k = 0
@@ -577,6 +590,26 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
 
 
 affine_basis_choices = ('T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+')
+affine_basis_aliases = {
+    'T': ['translation', 'translations'],
+    'SO': ['rot', 'rotation', 'rotations'],
+    'SE': ['rigid'],
+    'D': ['dilation', 'dilations'],
+    'CSO': ['similitude', 'similitudes'],
+    'SL': [],
+    'GL+': ['linear'],
+    'Aff+': ['affine'],
+}
+affine_basis_components = {
+    'T': ['T'],
+    'SO': ['R'],
+    'SE': ['T', 'R'],
+    'D': ['R', 'I'],
+    'CSO': ['T', 'R', 'I'],
+    'SL': ['R', 'Z0', 'S'],
+    'GL+': ['R', 'Z', 'S'],
+    'Aff+': ['T', 'R', 'Z', 'S'],
+}
 
 
 def affine_basis(group='SE', dim=3, dtype=None, device=None):
@@ -596,15 +629,15 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
     ----------
     group : {'T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+'}, default='SE'
         Group that should be encoded by the basis set:
-            * 'T'   : Translations
-            * 'SO'  : Special Orthogonal (rotations)
-            * 'SE'  : Special Euclidean (translations + rotations)
-            * 'D'   : Dilations (translations + isotropic scalings)
-            * 'CSO' : Conformal Special Orthogonal
-                      (translations + rotations + isotropic scalings)
-            * 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
-            * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
-            * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+            * 'T'    or 'translation' : Translations
+            * 'SO'   or 'rotation'    : Special Orthogonal (rotations)
+            * 'SE'   or 'rigid'       : Special Euclidean (translations + rotations)
+            * 'D'    or 'dilation'    : Dilations (translations + isotropic scalings)
+            * 'CSO'  or 'similitude'  : Conformal Special Orthogonal
+                                        (translations + rotations + isotropic scalings)
+            * 'SL'                    : Special Linear (rotations + isovolumic zooms + shears)
+            * 'GL+'  or 'linear'      : General Linear [det>0] (rotations + zooms + shears)
+            * 'Aff+' or 'affine'      : Affine [det>0] (translations + rotations + zooms + shears)
     dim : {1, 2, 3}, default=3
         Dimension
     dtype : torch.dtype, optional
@@ -627,41 +660,27 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
     # .. Yael Balbastre <yael.balbastre@gmail.com> : Python code
 
     if group not in affine_basis_choices:
+        for key, aliases in affine_basis_aliases.items():
+            if group in aliases:
+                group = key
+                break
+    if group not in affine_basis_choices:
         raise ValueError('group must be one of {}.'
                          .format(affine_basis_choices))
 
-    if group == 'T':
-        return affine_subbasis('T', dim, dtype=dtype, device=device)
-    elif group == 'SO':
-        return affine_subbasis('R', dim, dtype=dtype, device=device)
-    elif group == 'SE':
-        return torch.cat((affine_subbasis('T', dim, dtype=dtype, device=device),
-                          affine_subbasis('R', dim, dtype=dtype, device=device)))
-    elif group == 'D':
-        return torch.cat((affine_subbasis('T', dim, dtype=dtype, device=device),
-                          affine_subbasis('I', dim, dtype=dtype, device=device)))
-    elif group == 'CSO':
-        return torch.cat((affine_subbasis('T', dim, dtype=dtype, device=device),
-                          affine_subbasis('R', dim, dtype=dtype, device=device),
-                          affine_subbasis('I', dim, dtype=dtype, device=device)))
-    elif group == 'SL':
-        return torch.cat((affine_subbasis('R', dim, dtype=dtype, device=device),
-                          affine_subbasis('Z0', dim, dtype=dtype, device=device),
-                          affine_subbasis('S', dim, dtype=dtype, device=device)))
-    elif group == 'GL+':
-        return torch.cat((affine_subbasis('R', dim, dtype=dtype, device=device),
-                          affine_subbasis('Z', dim, dtype=dtype, device=device),
-                          affine_subbasis('S', dim, dtype=dtype, device=device)))
-    elif group == 'Aff+':
-        return torch.cat((affine_subbasis('T', dim, dtype=dtype, device=device),
-                          affine_subbasis('R', dim, dtype=dtype, device=device),
-                          affine_subbasis('Z', dim, dtype=dtype, device=device),
-                          affine_subbasis('S', dim, dtype=dtype, device=device)))
+    subbases = [affine_subbasis(sub, dim, dtype=dtype, device=device)
+                for sub in affine_basis_components[group]]
+    return subbases[0] if len(subbases) == 1 else torch.cat(subbases)
 
     
 def affine_basis_size(group, dim=3):  
     """Return the number of parameters in a given group."""
-    
+
+    if group not in affine_basis_choices:
+        for key, aliases in affine_basis_aliases.items():
+            if group in aliases:
+                group = key
+                break
     if group not in affine_basis_choices:
         raise ValueError('group must be one of {}.'
                          .format(affine_basis_choices))
@@ -681,7 +700,75 @@ def affine_basis_size(group, dim=3):
         return dim*dim
     elif group == 'Aff+':
         return (dim+1)*dim
-    
+
+
+def affine_subbasis_size(basis, dim=3):
+    """Return the number of parameters in a given group."""
+
+    if basis not in affine_subbasis_choices:
+        for key, aliases in affine_subbasis_aliases.items():
+            if basis in aliases:
+                basis = key
+                break
+    if basis not in affine_subbasis_choices:
+        raise ValueError('basis must be one of {}.'
+                         .format(affine_subbasis_choices))
+    if basis in ('T', 'Z'):
+        return dim
+    elif basis in ('S', 'SC', 'R'):
+        return dim*(dim-1)//2
+    elif basis == 'Z0':
+        return dim - 1
+    elif basis == 'I':
+        return 1
+
+
+def switch_basis(x, old_basis, new_basis, dim=3, ortho=False):
+    """Convert Lie parameters from one basis to another.
+
+    In the orthogonal case, this is be equivalent to projecting the
+    log-matrix onto the new basis. Otherwise, we build the exponentiated
+    matrix and invert is using numerical optimization.
+
+    Parameters
+    ----------
+    x : (..., nb_prm)
+        Lie parameters in the old basis
+    old_basis : str,
+        One of the pre-defined bases
+    new_basis : str,
+        One of the pre-defined bases
+    ortho : bool, default=False
+        Assume orthogonal bases.
+
+    Returns
+    -------
+    x : (..., nb_prm_new)
+        Lie parameters in the new basis
+
+    """
+    if ortho:
+        # Assuming orthogonal bases (which is always the case for the
+        # pre-defined bases we care about)
+        #
+        # log-matrix: A = \sum_k B_k x_k
+        # projection: y_l = <C_l, A> = \sum_k <C_l, B_k> x_k = CB * x
+        # (this assumes unit-norm bases. Otherwise, we must normalize
+        #  by the matrix-norm of C_l)
+        old_basis = build_affine_basis(old_basis, dim=dim, **utils.backend(x))
+        new_basis = build_affine_basis(new_basis, dim=dim, **utils.backend(x))
+
+        new_norm = linalg.mdot(new_basis, new_basis).sqrt()
+        proj = linalg.mdot(new_basis[..., :, None, :, :],
+                           old_basis[..., None, :, :, :])
+        new_x = linalg.matvec(proj, x)
+        new_x = new_x / new_norm
+    else:
+        mat = affine_matrix(x, old_basis, dim=dim)
+        new_x = affine_parameters(mat, new_basis)
+
+    return new_x
+
 
 def build_affine_basis(*basis, dim=None, dtype=None, device=None):
     """Transform Affine Lie bases into tensors.
@@ -779,7 +866,6 @@ def multi_dot(x):
     if len(x) == 1:
         return x[0]
     return _multi_dot(x)
-
 
 
 def affine_matrix(prm, *basis, dim=None):
@@ -1675,7 +1761,7 @@ def affine_resize(affine, shape, factor, anchor='c'):
             shifts.append(0)
             scales.append((inshp - 1) / (outshp - 1))
         elif anch == 'e':
-            shifts.append((inshp * (1 / outshp - 1) + (inshp - 1)) / 2)
+            shifts.append(0.5 * (inshp/outshp - 1))
             scales.append(inshp/outshp)
         elif anch == 'f':
             shifts.append(0)
@@ -2090,7 +2176,7 @@ def affine_default(shape, voxel_size=1., layout=None, center=0.,
 
     # compute shift
     lin = layout[:nb_dim, :nb_dim]
-    shift = center - linalg.matvec(lin, shape/2.)
+    shift = center - linalg.matvec(lin, (shape-1)/2.)
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
     return affine_make_homogeneous(as_euclidean(affine))

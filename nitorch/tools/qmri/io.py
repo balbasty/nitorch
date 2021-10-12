@@ -6,7 +6,7 @@ import torch
 # nitorch
 import nitorch as ni
 from nitorch import io
-from nitorch.spatial import affine_default
+from nitorch.spatial import affine_default, voxel_size as get_voxel_size
 from nitorch.core.utils import same_storage
 
 
@@ -84,6 +84,17 @@ class BaseND:
     _fdata: torch.Tensor = None                     # Cached scaled data
     _dtype: torch.dtype = None                      # default dtype
     _device: torch.device = None                    # default device
+    spatial_dim: int = None                         # Number of spatial dimensions
+
+    @property
+    def voxel_size(self):
+        if self.affine is None:
+            return None
+        return get_voxel_size(self.affine)
+
+    @property
+    def spatial_shape(self):
+        return self.shape[-self.spatial_dim:] if self.spatial_dim else None
 
     @property
     def dtype(self):
@@ -125,7 +136,10 @@ class BaseND:
             return cls.from_tensor(input, *args, **kwargs)
         if isinstance(input, BaseND):
             return cls.from_instance(input, *args, **kwargs)
-        return object.__new__(cls).set_attributes(**kwargs)
+        return object.__new__(cls)
+
+    def __init__(self, input=None, *args, **kwargs):
+        self.set_attributes(**kwargs)
 
     def __str__(self):
         if self.volume is None:
@@ -348,7 +362,8 @@ class BaseND:
             raise TypeError('Expected a torch.dtype but got '
                             f'{type(dtype)}')
         self._dtype = dtype or self._dtype
-        self._device = torch.device(device or self._device)
+        device = device or self._device
+        self._device = torch.device(device) if device else None
         backend = dict(dtype=self.dtype, device=self.device)
         if self._fdata is not None:
             self._fdata = self._fdata.to(**backend)
@@ -358,6 +373,8 @@ class BaseND:
 
 
 class Volume3D(BaseND):
+    spatial_dim = 3
+
     @classmethod
     def from_mapped(cls, mapped, **attributes):
         return super().from_mapped(mapped, **attributes).ensure_3d_()
@@ -380,17 +397,23 @@ class GradientEcho(BaseND):
     ti : float                              Inversion time (in sec)
     fa : float                              Flip angle (in deg)
     mt : float or bool                      Off-resonance pulse (in hz, or bool)
+    readout : {0, 1, 2}                     Readout dimension
+    blip : {1, -1}                          Readout direction (up or down)
 
     """
+    spatial_dim = 3
     te: float = None                # Echo time (in sec)
     tr: float = None                # Repetition time (in sec)
     ti: float = None                # Inversion time (in sec)
     fa: float = None                # Flip angle (in deg)
     mt: float or bool = None        # Off-resonance pulse (in hz, or bool)
+    readout: int = None             # Readout dimension
+    blip: int = None                # Readout direction (up or down)
 
     def attributes(self):
         """Return the name of all attributes"""
-        return super().attributes() + ['te', 'tr', 'ti', 'fa', 'mt']
+        return super().attributes() + ['te', 'tr', 'ti', 'fa', 'mt',
+                                       'readout', 'blip']
 
     @classmethod
     def from_mapped(cls, mapped, **attributes):
@@ -425,6 +448,8 @@ class GradientEcho(BaseND):
         new.ti = getattr(instance, 'ti', None)
         new.fa = getattr(instance, 'fa', None)
         new.mt = getattr(instance, 'mt', None)
+        new.readout = getattr(instance, 'readout', None)
+        new.blip = getattr(instance, 'blip', None)
         new.set_attributes(**attributes)
         return new
 
@@ -446,6 +471,8 @@ class GradientEchoMulti(GradientEcho):
     ti : float                              Inversion time (in sec)
     fa : float                              Flip angle (in deg)
     mt : float or bool                      Off-resonance pulse (in hz, or bool)
+    readout : {0, 1, 2}                     Readout dimension
+    blip : list[{1, -1}]                    Readout direction (up or down)
     """
     te: list = None
 
@@ -500,6 +527,15 @@ class GradientEchoMulti(GradientEcho):
             attributes['mt'] = mt
         if 'te' not in attributes:
             attributes['te'] = [echo.te for echo in echoes]
+        if 'readout' not in attributes:
+            rds = set([echo.readout for echo in echoes if echo.readout is not None])
+            rd = rds.pop() if rds else None
+            if len(rds) > 0:
+                warnings.warn(f"readout direection not consistent across "
+                              f"echoes. Using {rd}.")
+            attributes['readout'] = rd
+        if 'blip' not in attributes:
+            attributes['blip'] = [echo.blip for echo in echoes]
         return cls.from_mapped(volume, **attributes)
 
     @classmethod
@@ -510,9 +546,11 @@ class GradientEchoMulti(GradientEcho):
     def echo(self, index):
         volume = self.volume[index, ...]
         te = self.te[index]
+        blip = self.blip[index]
         attributes = {key: getattr(self, key) for key in self.attributes()
-                      if key != 'te'}
+                      if key not in ('te', 'blip')}
         attributes['te'] = te
+        attributes['blip'] = blip
         return GradientEcho.from_mapped(volume, **attributes)
 
     def __getitem__(self, item):

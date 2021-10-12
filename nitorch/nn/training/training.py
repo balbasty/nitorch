@@ -5,6 +5,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from nitorch.core.utils import benchmark, isin
 from nitorch.core.py import make_tuple
 from nitorch.nn.modules import Module
+from torch.cuda.amp import autocast, GradScaler
 import string
 import math
 import os
@@ -86,9 +87,9 @@ def update_loss_dict(old, new, weight=1, inplace=True):
         old = dict(old)
     for key, val in new.items():
         if key in old.keys():
-            old[key] += val * weight
+            old[key] += val.detach() * weight
         else:
-            old[key] = val * weight
+            old[key] = val.detach() * weight
     return old
 
 
@@ -137,6 +138,7 @@ class ModelTrainer:
                  initial_epoch=0,
                  log_interval=None,
                  benchmark=False,
+                 autocast=False,
                  seed=None,
                  tensorboard=None,
                  save_model=None,
@@ -195,6 +197,8 @@ class ModelTrainer:
             pass to compare different convolution algorithms and select the
             best performing one. You should only use this option if the
             spatial shape of your input data is constant across mini batches.
+        autocast : bool, default=False
+            Automatically cast to half-precision when beneficial.
         seed : int, optional
             Manual seed to use for training. The seed is set when
             training starts. A context manager is used so that the global
@@ -223,6 +227,7 @@ class ModelTrainer:
         self.eval_set = eval_set
         self.log_interval = log_interval
         self.benchmark = benchmark
+        self.autocast = autocast
         self.seed = seed
         self.initial_seed = seed
         self.tensorboard = tensorboard
@@ -325,37 +330,69 @@ class ModelTrainer:
         self._eval_set = val
         self._update_nb_steps()
 
+    def _batch_to(self, elem):
+        """Convert a minibatch to correct dtype and device"""
+        if torch.is_tensor(elem):
+            if elem.dtype.is_floating_point:
+                elem = elem.to(dtype=self.dtype, device=self.device)
+            else:
+                elem = elem.to(device=self.device)
+        return elem
+
+    def _get_batch_size(self, batch):
+        """Find a tensor in the batch tuple and return its length"""
+        for elem in batch:
+            if torch.is_tensor(elem):
+                return len(elem)
+        return 1
+
     def _train(self, epoch=0):
         """Train for one epoch"""
 
         self.model.train()
+
+        if self.autocast and not getattr(self, 'grad_scaler', None):
+            self.grad_scaler = GradScaler()
+
+        # initialize
         epoch_loss = 0.
         epoch_losses = {}
         epoch_metrics = {}
         nb_batches = 0
         nb_steps = len(self.train_set)
+
         log_interval = self.log_interval or max(nb_steps // 200, 1)
-        for n_batch, batch in enumerate(self.train_set):
+        if hasattr(self.train_set, 'iter'):
+            iterator = self.train_set.iter(device=self.device)
+        else:
+            iterator = self.train_set.__iter__()
+
+        for n_batch, batch in enumerate(iterator):
             losses = {}
             metrics = {}
+            # load input
+            batch = tuple(map(self._batch_to, make_tuple(batch)))
+            batch_size = self._get_batch_size(batch)
+            nb_batches += batch_size
             # forward pass
-            batch = make_tuple(batch)
-            batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
-            batch = tuple(b.to(dtype=self.dtype) if b.dtype.is_floating_point
-                          else b for b in batch)
-            nb_batches += batch[0].shape[0]
             self.optimizer.zero_grad()
-            output = self.model(*batch, _loss=losses, _metric=metrics)
-            loss = sum(losses.values())
+            with autocast(self.autocast):
+                output = self.model(*batch, _loss=losses, _metric=metrics)
+                loss = sum(losses.values())
             # backward pass
-            loss.backward()
-            self.optimizer.step()
+            if self.autocast:
+                self.grad_scaler.scale(loss).backward()
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
+            else:
+                loss.backward()
+                self.optimizer.step()
             # update average across batches
             with torch.no_grad():
-                weight = float(batch[0].shape[0])
-                epoch_loss += loss * weight
-                update_loss_dict(epoch_losses, losses, weight)
-                update_loss_dict(epoch_metrics, metrics, weight)
+                batch_size = float(batch_size)
+                epoch_loss += loss.detach() * batch_size
+                update_loss_dict(epoch_losses, losses, batch_size)
+                update_loss_dict(epoch_metrics, metrics, batch_size)
                 # print
                 if n_batch % log_interval == 0:
                     self._print('train', epoch, n_batch+1, nb_steps,
@@ -400,24 +437,25 @@ class ModelTrainer:
             nb_batches = 0
             nb_steps = len(self.eval_set)
             log_interval = self.log_interval or max(nb_steps // 200, 1)
-            for n_batch, batch in enumerate(self.eval_set):
+            if hasattr(self.eval_set, 'iter'):
+                iterator = self.eval_set.iter(device=self.device)
+            else:
+                iterator = self.eval_set.__iter__()
+            for n_batch, batch in enumerate(iterator):
                 losses = {}
                 metrics = {}
+                batch = tuple(map(self._batch_to, make_tuple(batch)))
+                batch_size = self._get_batch_size(batch)
+                nb_batches += batch_size
                 # forward pass
-                batch = make_tuple(batch)
-                batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
-                batch = tuple(b.to(dtype=self.dtype)
-                              if b.dtype in (torch.half, torch.float, torch.double)
-                              else b for b in batch)
-                nb_batches += batch[0].shape[0]
                 self.optimizer.zero_grad()
                 output = self.model(*batch, _loss=losses, _metric=metrics)
                 loss = sum(losses.values())
                 # update average across batches
-                weight = float(batch[0].shape[0])
-                epoch_loss += loss * weight
-                update_loss_dict(epoch_losses, losses, weight)
-                update_loss_dict(epoch_metrics, metrics, weight)
+                batch_size = float(batch_size)
+                epoch_loss += loss * batch_size
+                update_loss_dict(epoch_losses, losses, batch_size)
+                update_loss_dict(epoch_metrics, metrics, batch_size)
                 # print
                 if n_batch % log_interval == 0:
                     self._print('eval', epoch, n_batch + 1, nb_steps,
@@ -473,6 +511,8 @@ class ModelTrainer:
             across all batches.
 
         """
+        getitem = lambda x: x.item() if hasattr(x, 'item') else x
+
         name = 'Train' if mode == 'train' else 'Eval '
         if last:
             pct = 1
@@ -488,15 +528,15 @@ class ModelTrainer:
 
         values = ''
         if mode == 'train':
-            values += '| loss = {:12.6g} '.format(loss.item())
+            values += '| loss = {:12.6g} '.format(getitem(loss))
             if losses and self.show_losses:
                 values += '|'
                 for key, val in losses.items():
-                    values += ' {}: {:12.6g} '.format(key, val.item())
+                    values += ' {}: {:12.6g} '.format(key, getitem(val))
         if metrics and (mode == 'eval' or self.show_metrics):
             values += '|'
             for key, val in metrics.items():
-                values += ' {}: {:12.6g} '.format(key, val.item())
+                values += ' {}: {:12.6g} '.format(key, getitem(val))
 
         print(evolution + values, end='\r', flush=True)
         if last:
@@ -506,10 +546,11 @@ class ModelTrainer:
         """Add losses and metrics to tensorboard."""
         if not self.tensorboard:
             return
+        getitem = lambda x: x.item() if hasattr(x, 'item') else x
         tb = self.tensorboard
-        tb.add_scalars('loss', {mode: loss.item()}, epoch)
+        tb.add_scalars('loss', {mode: getitem(loss)}, epoch)
         for tag, value in epoch_metrics.items():
-            tb.add_scalars(tag, {mode: value.item()}, epoch)
+            tb.add_scalars(tag, {mode: getitem(value)}, epoch)
         tb.flush()
 
     def add_tensorboard_callback(self, func, mode='train', trigger='epoch'):
@@ -632,8 +673,7 @@ class ModelTrainer:
                     self._save(self.epoch)
                     # scheduler
                     if isinstance(self.scheduler, ReduceLROnPlateau):
-                        sched_loss = val_loss or train_loss
-                        self.scheduler.step(sched_loss)
+                        self.scheduler.step(val_loss or train_loss)
                     elif self.scheduler:
                         self.scheduler.step()
                         
@@ -717,8 +757,13 @@ class ModelTrainer:
             self.set_random_state()
             self.to(dtype=self.dtype, device=self.device)
             self.epoch += 1
-            self._train(self.epoch)
-            self._eval(self.epoch)
+            train_loss = self._train(self.epoch)
+            eval_loss = self._eval(self.epoch)
+            # scheduler
+            if isinstance(self.scheduler, ReduceLROnPlateau):
+                self.scheduler.step(eval_loss or train_loss)
+            elif self.scheduler:
+                self.scheduler.step()
             self._save(self.epoch)
             self.save_random_state()
 
