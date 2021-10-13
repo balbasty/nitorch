@@ -23,13 +23,14 @@ import itertools
 import torch
 from . import py, utils
 
-_torch_has_complex = utils.torch_version('>=', (1, 6))
-_torch_has_fft_module = utils.torch_version('>=', (1, 7))
-_torch_has_fftshift = utils.torch_version('>=', (1, 8))
-
-
-if _torch_has_fft_module:
+_torch_has_complex = hasattr(torch, 'complex32')
+try:
     import torch.fft as fft_mod
+    _torch_has_fft_module = True
+except ImportError:
+    fft_mod = None
+    _torch_has_fft_module = False
+_torch_has_fftshift = hasattr(fft_mod, 'fftshift')
 
 
 def fftshift(x, dim=None):
