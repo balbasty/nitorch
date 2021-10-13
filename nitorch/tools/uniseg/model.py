@@ -4,6 +4,7 @@ from timeit import default_timer as timer
 from nitorch.core.optim import get_gain, plot_convergence
 from nitorch.core.math import besseli, softmax_lse
 from nitorch.plot import plot_mixture_fit
+from nitorch.spatial import regulariser, solve_field_fmg
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
 
@@ -34,7 +35,7 @@ class Mixture:
 
     # Functions
     def fit(self, X, verbose=1, max_iter=10000, tol=1e-8, fig_num=1, W=None,
-            show_fit=False):
+            show_fit=False, bias=True):
         """ Fit mixture model.
 
         Args:
@@ -65,7 +66,7 @@ class Mixture:
         torch.manual_seed(1)
 
         if X.dtype not in [torch.float16, torch.float32, torch.float64]:
-            print('Data type not supported - converting to single-precision float.')
+            print('Data type {} not supported - converting to single-precision float.'.format(X.dtype))
             X = X.float()
 
         self.dev = X.device
@@ -95,7 +96,7 @@ class Mixture:
                     self.lam[b, c] = (torch.sum(X[b, c]) / K) ** 2
 
         # EM loop
-        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W)
+        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, bias=bias)
 
         # Print algorithm info
         if verbose >= 1:
@@ -112,7 +113,7 @@ class Mixture:
 
         return Z
     
-    def _em(self, X, max_iter, tol, verbose, W):
+    def _em(self, X, max_iter, tol, verbose, W, bias=True):
         """ EM loop for fitting GMM.
 
         Args:
@@ -147,8 +148,16 @@ class Mixture:
         else:
             Z = torch.zeros((B, K, *N), dtype=dtype, device=device)  # responsibility
         lb = torch.zeros((B, max_iter), dtype=torch.float64, device=device)
+        # if bias:
+        #     lb_bias = torch.zeros((B, max_iter), dtype=torch.float64, device=device)
         for b in range(B):
             for n_iter in range(max_iter):  # EM loop
+                if verbose >= 2:
+                    print('n_iter: {}'.format(n_iter+1))
+                # ==========
+                # Segmentation
+                # ==========
+                #
                 # ==========
                 # E-step
                 # ==========
@@ -156,11 +165,11 @@ class Mixture:
                 if isinstance(K, list):
                     for k in K:
                         for j in k:
-                            Z[b, k] += self._log_likelihood(X, j)
+                            Z[b, k] += self._log_likelihood(X, j, b=b, bias=bias)
                         Z[b, k] += torch.log(self.mp[b, k] + tinyish)
                 else:
                     for k in range(K):
-                        Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k)
+                        Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b, bias=bias)
 
                 # Get responsibilities
                 Z, dlb = softmax_lse(Z+tinyish, lse=True, weights=W, dim=1)
@@ -169,8 +178,8 @@ class Mixture:
                 lb[b, n_iter] = dlb.float()
                 gain = get_gain(lb[b, :n_iter + 1])
                 if verbose >= 2:
-                    print('n_iter: {}, lb: {}, gain: {}'
-                        .format(n_iter + 1, lb[b, n_iter], gain))
+                    print('Segmentation - lb: {}, gain: {}'
+                        .format(lb[b, n_iter], gain))
                 if gain < tol:
                     break  # Finished
 
@@ -192,6 +201,36 @@ class Mixture:
                     
                 # Update model specific parameters
                 self._update(ss0, ss1, ss2)
+
+                if bias:
+                    # ==========
+                    # Bias-field
+                    # ==========
+                    #
+                    # ==========
+                    # E-step
+                    # ==========
+                    # Product Rule
+                    if isinstance(K, list):
+                        for k in K:
+                            for j in k:
+                                Z[b, k] += self._log_likelihood(X, j, b=b, bias=bias)
+                            Z[b, k] += torch.log(self.mp[b, k] + tinyish)
+                    else:
+                        for k in range(K):
+                            Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b, bias=bias)
+
+                    # Get responsibilities
+                    Z, dlb = softmax_lse(Z+tinyish, lse=True, weights=W, dim=1)
+
+                    if W is not None:  # Weight responsibilities
+                        Z = Z * W
+
+                    # ==========
+                    # M-step
+                    # ==========
+                    # Update bias field
+                    self._update_bias(X, Z)
 
         return Z, lb[:n_iter + 1]
     
@@ -263,10 +302,13 @@ class Mixture:
 
     def _log_likelihood(self): pass
 
-    def _init_par(self):
-        pass
+    def _init_par(self): pass
 
     def _update(self): pass
+
+    def _update_bias(self): pass
+
+    def _update_warp(self): pass
 
     # Static methods
     @staticmethod
@@ -293,28 +335,6 @@ class Mixture:
             X_msk[:, c] = X[msk, c]
 
         return X_msk, msk
-
-    # @staticmethod
-    # def reshape_input(img):
-    #     """ Reshape image to tensor with dimensions suitable as input to Mixture class.
-
-    #     Args:
-    #         img (torch.tensor): Input image. (X, Y, Z, C)
-
-    #     Returns:
-    #         X (torch.tensor): Observed data (N0, C).
-    #         N0 (int): number of voxels in one channel
-    #         C (int): number of channels.
-
-    #     """
-    #     dm = img.shape
-    #     if len(dm) == 2:  # 2D
-    #         dm = (dm[0], dm[1], dm[2])
-    #     N0 = dm[0]*dm[1]*dm[2]
-    #     C = dm[3]
-    #     X = torch.reshape(img, (N0, C))
-
-    #     return X, N0, C
 
     @staticmethod
     def full_resp(Z, msk, dm=[]):
@@ -355,7 +375,7 @@ class Mixture:
 
 class UniSeg(Mixture):
     # Unified Segmentation model, based on multivariate Gaussian Mixture Model (GMM).
-    def __init__(self, num_class=2, prior=None, mu=None, Cov=None, alpha=alpha, beta=beta):
+    def __init__(self, num_class=2, prior=None, mu=None, Cov=None, alpha=None, beta=None):
         """
         mu (torch.tensor): GMM means (C, K).
         Cov (torch.tensor): GMM covariances (C, C, K).
@@ -378,14 +398,15 @@ class UniSeg(Mixture):
         """
         return self.mu, self.Cov
 
-    def _log_likelihood(self, X, k=0, c=None):
+    def _log_likelihood(self, X, k=0, c=None, b=None, bias=True):
         """ Log-probability density function (pdf) of the standard normal
             distribution, evaluated at the values in X.
 
         Args:
-            X (torch.tensor): Observed data (N, C).
+            X (torch.tensor): Observed data (B, C, Spatial).
             k (int, optional): Index of mixture component. Defaults to 0.
             c (int, optional): Index of channel. Defaults to None.
+            b (int, optional): Index of batch. Defaults to None.
 
         Returns:
             log_pdf (torch.tensor): (N, 1).
@@ -396,36 +417,77 @@ class UniSeg(Mixture):
         device = X.device
         dtype = X.dtype
         pi = torch.tensor(math.pi, dtype=dtype, device=device)
-        if c is not None:
-            Cov = torch.ones((B, 1, 1, 1), device=device, dtype=dtype)
-            mu = torch.ones((B, 1, 1), device=device, dtype=dtype)
-        else:
-            Cov = torch.ones((B, C, C, 1), device=device, dtype=dtype)
-            mu = torch.ones((B, C, 1), device=device, dtype=dtype)
-        chol_Cov = torch.ones_like(Cov, device=device, dtype=dtype)
-        log_det_Cov = torch.ones((B, Cov.shape[-1]), device=device, dtype=dtype)
-        for b in range(B):
+        if bias:
+            X *= self.beta.exp()
+        if b is not None:
             if c is not None:
-                Cov[b] = self.Cov[b, c, c, k].reshape(1, 1, 1).cpu()
-                mu[b] = self.mu[b, c, k].reshape(1, 1).cpu()
+                if bias:
+                    beta = self.beta[b,c]
+                Cov = self.Cov[b, c, c, k].reshape(1, 1).cpu()
+                mu = self.mu[b, c, k].reshape(1).cpu()
             else:
-                Cov[b] = self.Cov[b, :, :, k].reshape(C, C, 1) # shape (C, C)
-                mu[b] = self.mu[b, :, k].reshape(C, 1) # shape C
+                if bias:
+                    beta = self.beta[b]
+                Cov = self.Cov[b, :, :, k].reshape(C, C) # shape (C, C)
+                mu = self.mu[b, :, k].reshape(C) # shape C
             if C == 1:
-                chol_Cov[b] = torch.sqrt(Cov[b])
-                log_det_Cov[b] = torch.log(chol_Cov[b, 0, 0])
+                chol_Cov = torch.sqrt(Cov)
+                log_det_Cov = torch.log(chol_Cov[0, 0])
             else:
-                chol_Cov[b] = torch.cholesky(Cov[b])
-                log_det_Cov[b] = torch.sum(torch.log(torch.diag(chol_Cov[b])))
-                chol_Cov[b] = chol_Cov[b].inverse()
-        chol_Cov = chol_Cov.type(dtype)
-        mu = mu.type(dtype)
-        if C == 1:
-            diff = (X.reshape(B, C, -1) - mu)/chol_Cov
+                chol_Cov = torch.cholesky(Cov)
+                log_det_Cov = torch.sum(torch.log(torch.diag(chol_Cov)))
+                chol_Cov = chol_Cov.inverse()
+            chol_Cov = chol_Cov.type(dtype)
+            mu = mu.type(dtype)
+            if C == 1:
+                diff = (X.reshape(C, -1) - mu.reshape(C, 1))/chol_Cov
+            else:
+                diff = torch.tensordot(X[b].reshape(C, -1) - mu.reshape(C, 1), chol_Cov, dims=([0],[1])).permute(1,0)
+            log_pdf = (- (C / 2) * torch.log(2 * pi) - log_det_Cov.unsqueeze(dim=-1) - 0.5 * torch.sum(diff**2, dim=0, keepdim=True)).reshape((-1,)+tuple(X.shape[2:]))
+            if bias:
+                log_pdf += beta
         else:
-            diff = torch.tensordot(X.reshape(B, C, -1) - mu, chol_Cov, dims=([2], [1]))
-        log_pdf = - (C / 2) * torch.log(2 * pi) - log_det_Cov - 0.5 * torch.sum(diff**2, dim=2)
-        return log_pdf.reshape(X.shape)
+            if c is not None:
+                if bias:
+                    beta = self.beta[:,c]
+                Cov = torch.ones((B, 1, 1), device=device, dtype=dtype)
+                mu = torch.ones((B, 1), device=device, dtype=dtype)
+                chol_Cov = torch.ones((B, 1, 1), device=device, dtype=dtype)
+                log_det_Cov = torch.ones((B, 1), device=device, dtype=dtype)
+                diff = torch.ones((B, 1,)+(X.shape[2:].numel(),), device=device, dtype=dtype)
+            else:
+                if bias:
+                    beta = self.beta
+                Cov = torch.ones((B, C, C), device=device, dtype=dtype)
+                mu = torch.ones((B, C), device=device, dtype=dtype)
+                chol_Cov = torch.ones((B, C, C), device=device, dtype=dtype)
+                log_det_Cov = torch.ones((B, C), device=device, dtype=dtype)
+                diff = torch.ones((B, C,)+(X.shape[2:].numel(),), device=device, dtype=dtype)
+            for b in range(B):
+                if c is not None:
+                    Cov[b] = self.Cov[b, c, c, k].reshape(1, 1).cpu()
+                    mu[b] = self.mu[b, c, k].reshape(1).cpu()
+                else:
+                    Cov[b] = self.Cov[b, :, :, k].reshape(C, C) # shape (C, C)
+                    mu[b] = self.mu[b, :, k].reshape(C) # shape C
+                if C == 1:
+                    chol_Cov[b] = torch.sqrt(Cov[b])
+                    log_det_Cov[b] = torch.log(chol_Cov[b, 0, 0])
+                else:
+                    chol_Cov[b] = torch.cholesky(Cov[b])
+                    log_det_Cov[b] = torch.sum(torch.log(torch.diag(chol_Cov[b])))
+                    chol_Cov[b] = chol_Cov[b].inverse()
+            chol_Cov = chol_Cov.type(dtype)
+            mu = mu.type(dtype)
+            if C == 1:
+                diff = (X.reshape(B, C, -1) - mu.reshape(B, C, 1))/chol_Cov
+            else:
+                for b in range(B):
+                    diff[b] = torch.tensordot(X[b].reshape(C, -1) - mu[b].reshape(C, 1), chol_Cov[b], dims=([0],[1])).permute(1,0)
+            log_pdf = (- (C / 2) * torch.log(2 * pi) - log_det_Cov.unsqueeze(dim=-1) - 0.5 * torch.sum(diff**2, dim=1, keepdim=True)).reshape((B, -1,)+tuple(X.shape[2:]))
+            if bias:
+                log_pdf += beta
+        return log_pdf
 
     def _init_par(self, X):
         """ Initialise GMM specific parameters: mu, Cov
@@ -461,6 +523,12 @@ class UniSeg(Mixture):
                     self.Cov[b, c, c, :] = \
                         torch.reshape(torch.ones(K, dtype=dtype, device=self.dev)
                                     * ((mx[b, c] - mn[b, c])/(K))**2, (1, 1, 1, K))
+        if self.alpha is None:
+            # spatial deformation coefficients
+            self.alpha = torch.zeros_like(X, dtype=dtype, device=self.dev)
+        if self.beta is None:
+            # bias field coefficients
+            self.beta = torch.zeros_like(X, dtype=dtype, device=self.dev)
 
     def _update(self, ss0, ss1, ss2):
         """ Update GMM means and variances
@@ -485,32 +553,111 @@ class UniSeg(Mixture):
                 self.Cov[b, :, :, k] = ss2[b, :, :, k] / ss0[b, k] \
                     - torch.ger(self.mu[b, :, k], self.mu[b, :, k])
 
-    def sample(mu=None, cov=None, alpha=None, beta=None, seg=None):
+    def _update_bias(self, X, Z, penalty=1e7, vx=1):
+        """
+        Update bias field for all channels and images in batch, in-place.
+
+        Args:
+            X (torch.tensor): Image (B, C, Spatial).
+            Z (torch.tensor): Responsibilites (B, C, Spatial).
+            penalty (float, default=1e-7): Penalty on bending energy.
+            vx (int or float, default=1): Voxel size.
+        
+        """
+        B = X.shape[0]
+        C = X.shape[1]
+        if isinstance(self.K, list):
+            K = len(self.K)
+        else:
+            K = self.K
+        beta = self.beta
+        bX = X * beta.exp()
+        for b in range(B):
+            # Extract single item from batch
+            bX_ = bX[b].reshape(-1)
+            Z_ = Z[b].reshape(K, -1)
+            mu = self.mu[b]
+            Cov = self.Cov[b]
+            for c in range(C):
+                # Solve for each channel individually
+                g = 0
+                H = 0
+                for k in range(K):
+                    # Determine each class' contribution to gradient and Hessian
+                    lam = Cov[...,k].inverse()[c]
+                    g += Z_[k] * ((bX_ - mu[...,k]) * lam).sum(dim=-1)
+                    H += Z_[k] * bX_[c].square() * lam[c]
+
+                g *= bX_[c]
+                g += 1
+                H += 1 + g.abs()
+
+                g = g.reshape((1,)+tuple(X.shape[2:]))
+                H = H.reshape((1,)+tuple(X.shape[2:]))
+
+                g += regulariser(beta[b, c].reshape((1,)+tuple(X.shape[2:])),
+                                bending=penalty, voxel_size=vx)             
+
+                print('Bias correction, L1 norm values: Gradient = {:.4g}, Hessian = {:.4g}'.format(g.abs().sum(), H.abs().sum()))
+
+                beta[b, c] -= solve_field_fmg(H, g, bending=penalty, voxel_size=vx).reshape(X.shape[2:])
+
+        # Update bias field in-place
+        self.beta = beta
+
+    def sample(self, mu=None, Cov=None, alpha=False, beta=False, seg=None):
         """ Sample new image with GMM parameters and (eventually) bias and warp parameters
         
         Args:
-            mu (torch.tensor or sequence[torch.tensor]): means (C, K)
-            cov (torch.tensor or sequence[torch.tensor]): covariance (C, C, K)
-            alpha (torch.tensor): warping parameters ()
-            beta (torch.tensor): bias-field parameters ()
-            seg (torch.tensor): tissue class maps to use for image generation
+            mu (torch.tensor or sequence[torch.tensor]): means (B, C, K)
+            Cov (torch.tensor or sequence[torch.tensor]): covariance (B, C, C, K)
+            alpha (torch.tensor): warping parameters (B, C, Spatial)
+            beta (torch.tensor): bias-field parameters (B, C, Spatial)
+            seg (torch.tensor): tissue class maps to use for image generation (B, C, Spatial)
         
         """
         if mu == None:
             mu = self.mu
-        if cov == None:
-            cov = self.cov
+        if Cov == None:
+            Cov = self.Cov
         if seg == None:
             seg = self.mp
-        if isinstance(mu, list):
-            X_ = [[MultivariateNormal(mu__, cov__) for (mu__, cov__) in zip(mu_, cov_)] for (mu_, cov_) in zip(mu, cov)]
-            X = torch.stack([torch.stack([d.rsample(seg.shape[1:]) for d in Xcls]).sum(dim=0) for Xcls in X_])
+        B = mu.shape[0]
+        C = mu.shape[1]
+        K = mu.shape[2]
+        dim = len(seg.shape[2:])
+        device = seg.device
+        dtype = seg.dtype
+        X = torch.zeros((B, C,)+tuple(seg.shape[2:]), device=device, dtype=dtype)
+        if isinstance(self.K, list):
+            for b in range(B):
+                sample = []
+                ix = 0
+                for k_ in range(len(self.K)):
+                    K_ = self.K[k_]
+                    pdf_ = [MultivariateNormal(mu[b,...,ix:ix+k], Cov[b,...,ix:ix+k]) for k in range(K_)]
+                    sample.append(torch.stack([dist.rsample(seg.shape[2:]) for dist in pdf_]).sum(dim=-1)) # expect shape (C, Spatial)
+                    ix += K_
+                sample = torch.stack(sample) # expect shape (K, C, Spatial)
+                if dim==3:
+                    sample = sample.permute(1,0,2,3,4)
+                elif dim==2:
+                    sample = sample.permute(1,0,2,3)
+                X[b] = (seg[b].unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
         else:
-            X_ = [MultivariateNormal(mu_, cov_) for (mu_, cov_) in zip(mu, cov)]
-            X = torch.stack([d.rsample(seg.shape[1:]) for d in X_])
-        X = (X * seg).sum(dim=0) # apply weighting to each channel and sum intensities
-        # if alpha != None:
-        #     ...
-        # if beta != None:
-        #     ...
+            for b in range(B):
+                pdf = [MultivariateNormal(mu[b,...,k], Cov[b,...,k]) for k in range(K)]
+                sample = torch.stack([dist.rsample(seg.shape[2:]) for dist in pdf]) # expect shape (K, Spatial, C)
+                if dim==3:
+                    sample = sample.permute(4,0,1,2,3)
+                elif dim==2:
+                    sample = sample.permute(3,0,1,2)
+                X[b] = (seg[b].unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
+        # if alpha:
+        #     if alpha is None:
+        #         alpha = self.alpha
+        if beta:
+            if beta is None:
+                beta = self.beta
+            X *= beta.exp()
         return X
