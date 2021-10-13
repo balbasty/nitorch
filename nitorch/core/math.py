@@ -1115,7 +1115,7 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
 # ======================================================================
 
 
-if utils.torch_version('>=', (1, 6)):
+if hasattr(torch, 'digamma'):
     @torch.jit.script
     def mvdigamma(input, order: int = 1):
         """Derivative of the log of the Gamma function, eventually multivariate
