@@ -6,8 +6,9 @@ import torch
 # nitorch
 import nitorch as ni
 from nitorch import io
+from nitorch.core import py, utils
+from nitorch.core.dtypes import dtype as dtype_info
 from nitorch.spatial import affine_default, voxel_size as get_voxel_size
-from nitorch.core.utils import same_storage
 
 
 # TODO:
@@ -304,7 +305,8 @@ class BaseND:
             self._fdata[item] = value
         return self
 
-    def fdata(self, dtype=None, device=None, rand=True, cache=False, **kwargs):
+    def fdata(self, dtype=None, device=None, rand=True, missing=None,
+              cache=False, **kwargs):
         """Get scaled floating-point data.
 
         Parameters
@@ -313,6 +315,9 @@ class BaseND:
         device : torch.device, default='cpu'
         rand : bool, default=True
             Add random noise if raw data is integer
+        missing : scalar or sequence, default=0
+            Values that should be considered missing data.
+            All of these values will be transformed to NaNs.
         cache : bool, default=False
             Cache the data in memory so that it does not need to be
             loaded again next time
@@ -325,12 +330,20 @@ class BaseND:
         dtype = dtype or self.dtype
         device = device or self.device
         backend = dict(dtype=dtype, device=device)
+        if missing is not None:
+            missing = py.ensure_list(missing)
 
         if not cache or self._fdata is None:
             if isinstance(self.volume, io.MappedArray):
-                _fdata = self.volume.fdata(rand=rand, **backend)
+                _fdata = self.volume.fdata(**backend)
             else:
-                _fdata = self.volume.to(**backend)
+                _fdata = self.volume.to(**backend, copy=rand or (missing is not None))
+            mask = torch.isfinite(_fdata).bitwise_not_()
+            if missing:
+                mask.bitwise_or_(utils.isin(_fdata, missing))
+            if rand and not dtype_info(self.volume.dtype).is_floating_point:
+                _fdata.add_(torch.rand_like(_fdata))
+            _fdata[mask] = float('nan')
             if cache:
                 self._fdata = _fdata
         else:
@@ -452,6 +465,10 @@ class GradientEcho(BaseND):
         new.blip = getattr(instance, 'blip', None)
         new.set_attributes(**attributes)
         return new
+
+    def fdata(self, *args, **kwargs):
+        kwargs.setdefault('missing', 0)
+        return super().fdata(*args, **kwargs)
 
 
 class GradientEchoSingle(GradientEcho, Volume3D):
