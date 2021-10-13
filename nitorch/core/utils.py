@@ -57,10 +57,12 @@ def torch_version(mode, version):
 
     """
     current_version, *cuda_variant = torch.__version__.split('+')
-    current_version = current_version.split('.')
-    current_version = (int(current_version[0]),
-                       int(current_version[1]),
-                       int(current_version[2]))
+    major, minor, patch, *_ = current_version.split('.')
+    # strip alpha tags
+    for x in 'abcdefghijklmnopqrstuvwxy':
+        if x in patch:
+            patch = patch[:patch.index(x)]
+    current_version = (int(major), int(minor), int(patch))
     version = py.make_list(version)
     return _compare_versions(current_version, mode, version)
 
