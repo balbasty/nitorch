@@ -343,7 +343,7 @@ class BaseND:
                 mask.bitwise_or_(utils.isin(_fdata, missing))
             if rand and not dtype_info(self.volume.dtype).is_floating_point:
                 slope = getattr(self.volume, 'slope', None) or 1
-                _fdata.add_(torch.rand_like(_fdata).mul_(slope_))
+                _fdata.add_(torch.rand_like(_fdata).mul_(slope))
             _fdata[mask] = float('nan')
             if cache:
                 self._fdata = _fdata
