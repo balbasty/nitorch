@@ -151,8 +151,6 @@ class Mixture:
         else:
             Z = torch.zeros((B, K, *N), dtype=dtype, device=device)  # responsibility
         lb = torch.zeros((B, max_iter), dtype=torch.float64, device=device)
-        # if bias:
-        #     lb_bias = torch.zeros((B, max_iter), dtype=torch.float64, device=device)
         for b in range(B):
             for n_iter in range(max_iter):  # EM loop
                 if verbose >= 2:
@@ -168,11 +166,11 @@ class Mixture:
                 if isinstance(K, list):
                     for k in K:
                         for j in k:
-                            Z[b, k] += self._log_likelihood(X, j, b=b, bias=bias)
+                            Z[b, k] += self._log_likelihood(X, j, b=b)
                         Z[b, k] += torch.log(self.mp[b, k] + tinyish)
                 else:
                     for k in range(K):
-                        Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b, bias=bias)
+                        Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b)
 
                 # Get responsibilities
                 Z[b], dlb = softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
@@ -220,11 +218,11 @@ class Mixture:
                     if isinstance(K, list):
                         for k in K:
                             for j in k:
-                                Z[b, k] += self._log_likelihood(X, j, b=b, bias=bias)
+                                Z[b, k] += self._log_likelihood(X, j, b=b)
                             Z[b, k] += torch.log(self.mp[b, k] + tinyish)
                     else:
                         for k in range(K):
-                            Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b, bias=bias)
+                            Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b)
 
                     # Get responsibilities
                     Z[b], dlb = softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
@@ -279,16 +277,16 @@ class Mixture:
         for b in range(B):
             for k in range(K):
                 # 1st
-                ss1[b, :, k] = torch.sum(Z[b, k].reshape(N, 1) * X[b].reshape(-1, C),
+                ss1[b, :, k] = torch.sum(Z[b, k].reshape(N, 1) * (X[b]*self.beta[b].exp()).reshape(-1, C),
                                     dim=0, dtype=torch.float64)
 
                 # 2nd
                 for c1 in range(C):
                     ss2[b, c1, c1, k] = \
-                        torch.sum(Z[b, k] * X[b, c1] ** 2, dtype=torch.float64)
+                        torch.sum(Z[b, k] * (X[b, c1]*self.beta[b, c1].exp()) ** 2, dtype=torch.float64)
                     for c2 in range(c1 + 1, C):
                         ss2[b, c1, c2, k] = \
-                            torch.sum(Z[b, k] * (X[b, c1] * X[b, c2]),
+                            torch.sum(Z[b, k] * ((X[b, c1]*self.beta[b, c1].exp()) * (X[b, c2]*self.beta[b, c2].exp())),
                                     dtype=torch.float64)
                         ss2[b, c2, c1, k] = ss2[b, c1, c2, k]
 
@@ -404,7 +402,7 @@ class UniSeg(Mixture):
         """
         return self.mu, self.Cov
 
-    def _log_likelihood(self, X, k=0, c=None, b=None, bias=True):
+    def _log_likelihood(self, X, k=0, c=None, b=None):
         """ Log-probability density function (pdf) of the standard normal
             distribution, evaluated at the values in X.
 
@@ -423,17 +421,13 @@ class UniSeg(Mixture):
         device = X.device
         dtype = X.dtype
         pi = torch.tensor(math.pi, dtype=dtype, device=device)
-        if bias:
-            X *= self.beta.exp()
         if b is not None:
             if c is not None:
-                if bias:
-                    beta = self.beta[b,c]
+                beta = self.beta[b,c]
                 Cov = self.Cov[b, c, c, k].reshape(1, 1).cpu()
                 mu = self.mu[b, c, k].reshape(1).cpu()
             else:
-                if bias:
-                    beta = self.beta[b]
+                beta = self.beta[b]
                 Cov = self.Cov[b, :, :, k].reshape(C, C) # shape (C, C)
                 mu = self.mu[b, :, k].reshape(C) # shape C
             if C == 1:
@@ -446,24 +440,21 @@ class UniSeg(Mixture):
             chol_Cov = chol_Cov.type(dtype)
             mu = mu.type(dtype)
             if C == 1:
-                diff = (X.reshape(C, -1) - mu.reshape(C, 1))/chol_Cov
+                diff = ((X[b]*self.beta[b].exp()).reshape(C, -1) - mu.reshape(C, 1))/chol_Cov
             else:
-                diff = torch.tensordot(X[b].reshape(C, -1) - mu.reshape(C, 1), chol_Cov, dims=([0],[1])).permute(1,0)
+                diff = torch.tensordot((X[b]*self.beta[b].exp()).reshape(C, -1) - mu.reshape(C, 1), chol_Cov, dims=([0],[1])).permute(1,0)
             log_pdf = (- (C / 2) * torch.log(2 * pi) - log_det_Cov.unsqueeze(dim=-1) - 0.5 * torch.sum(diff**2, dim=0, keepdim=True)).reshape((-1,)+tuple(X.shape[2:]))
-            if bias:
-                log_pdf += beta
+            log_pdf += beta
         else:
             if c is not None:
-                if bias:
-                    beta = self.beta[:,c]
+                beta = self.beta[:,c]
                 Cov = torch.ones((B, 1, 1), device=device, dtype=dtype)
                 mu = torch.ones((B, 1), device=device, dtype=dtype)
                 chol_Cov = torch.ones((B, 1, 1), device=device, dtype=dtype)
                 log_det_Cov = torch.ones((B, 1), device=device, dtype=dtype)
                 diff = torch.ones((B, 1,)+(X.shape[2:].numel(),), device=device, dtype=dtype)
             else:
-                if bias:
-                    beta = self.beta
+                beta = self.beta
                 Cov = torch.ones((B, C, C), device=device, dtype=dtype)
                 mu = torch.ones((B, C), device=device, dtype=dtype)
                 chol_Cov = torch.ones((B, C, C), device=device, dtype=dtype)
@@ -486,13 +477,12 @@ class UniSeg(Mixture):
             chol_Cov = chol_Cov.type(dtype)
             mu = mu.type(dtype)
             if C == 1:
-                diff = (X.reshape(B, C, -1) - mu.reshape(B, C, 1))/chol_Cov
+                diff = ((X*self.beta.exp()).reshape(B, C, -1) - mu.reshape(B, C, 1))/chol_Cov
             else:
                 for b in range(B):
-                    diff[b] = torch.tensordot(X[b].reshape(C, -1) - mu[b].reshape(C, 1), chol_Cov[b], dims=([0],[1])).permute(1,0)
+                    diff[b] = torch.tensordot((X[b]*self.beta[b].exp()).reshape(C, -1) - mu[b].reshape(C, 1), chol_Cov[b], dims=([0],[1])).permute(1,0)
             log_pdf = (- (C / 2) * torch.log(2 * pi) - log_det_Cov.unsqueeze(dim=-1) - 0.5 * torch.sum(diff**2, dim=1, keepdim=True)).reshape((B, -1,)+tuple(X.shape[2:]))
-            if bias:
-                log_pdf += beta
+            log_pdf += beta
         return log_pdf
 
     def _init_par(self, X):
