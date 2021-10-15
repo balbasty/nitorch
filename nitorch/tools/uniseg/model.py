@@ -7,6 +7,8 @@ from nitorch.plot import plot_mixture_fit
 from nitorch.spatial import regulariser, solve_field_fmg
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
+from torch.distributions.categorical import Categorical
+from torch.nn.functional import one_hot
 
 
 torch.backends.cudnn.benchmark = True
@@ -35,7 +37,7 @@ class Mixture:
 
     # Functions
     def fit(self, X, verbose=1, max_iter=10000, tol=1e-8, fig_num=1, W=None,
-            show_fit=False, bias=True):
+            show_fit=False, bias=True, verbose_bias=0, penalty_bias=1e16):
         """ Fit mixture model.
 
         Args:
@@ -61,6 +63,7 @@ class Mixture:
         """
         if verbose:
             t0 = timer()  # Start timer
+        self.verbose_bias = verbose_bias
 
         # Set random seed
         torch.manual_seed(1)
@@ -96,14 +99,14 @@ class Mixture:
                     self.lam[b, c] = (torch.sum(X[b, c]) / K) ** 2
 
         # EM loop
-        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, bias=bias)
+        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, bias=bias, penalty_bias=penalty_bias)
 
         # Print algorithm info
         if verbose >= 1:
             print('Algorithm finished in {} iterations, '
                   'log-likelihood = {}, '
                   'runtime: {:0.1f} s, '
-                  'device: {}'.format(len(lb), lb[-1], timer() - t0, self.dev))
+                  'device: {}'.format(len(lb[-1]), lb[-1,-1], timer() - t0, self.dev))
         if verbose >= 3:
             _ = plot_convergence(lb, xlab='Iteration number',
                                  fig_title='Model lower bound', fig_num=fig_num)
@@ -113,7 +116,7 @@ class Mixture:
 
         return Z
     
-    def _em(self, X, max_iter, tol, verbose, W, bias=True):
+    def _em(self, X, max_iter, tol, verbose, W, bias=True, warp=True, penalty_bias=1e16):
         """ EM loop for fitting GMM.
 
         Args:
@@ -172,7 +175,7 @@ class Mixture:
                         Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b, bias=bias)
 
                 # Get responsibilities
-                Z, dlb = softmax_lse(Z+tinyish, lse=True, weights=W, dim=1)
+                Z[b], dlb = softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
 
                 # Objective function and convergence related
                 lb[b, n_iter] = dlb.float()
@@ -181,10 +184,13 @@ class Mixture:
                     print('Segmentation - lb: {}, gain: {}'
                         .format(lb[b, n_iter], gain))
                 if gain < tol:
+                    last_iter = n_iter
                     break  # Finished
+                elif n_iter+1==max_iter:
+                    last_iter = max_iter
 
                 if W is not None:  # Weight responsibilities
-                    Z = Z * W
+                    Z[b] = Z[b] * W
 
                 # ==========
                 # M-step
@@ -221,18 +227,18 @@ class Mixture:
                             Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b, bias=bias)
 
                     # Get responsibilities
-                    Z, dlb = softmax_lse(Z+tinyish, lse=True, weights=W, dim=1)
+                    Z[b], dlb = softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
 
                     if W is not None:  # Weight responsibilities
-                        Z = Z * W
+                        Z[b] = Z[b] * W
 
                     # ==========
                     # M-step
                     # ==========
                     # Update bias field
-                    self._update_bias(X, Z)
+                    self._update_bias(X, Z, penalty=penalty_bias)
 
-        return Z, lb[:n_iter + 1]
+        return Z, lb[:, :last_iter + 1]
     
     def _init_mp(self, dtype=torch.float64):
         """ Initialise mixing proportions: mp
@@ -553,14 +559,14 @@ class UniSeg(Mixture):
                 self.Cov[b, :, :, k] = ss2[b, :, :, k] / ss0[b, k] \
                     - torch.ger(self.mu[b, :, k], self.mu[b, :, k])
 
-    def _update_bias(self, X, Z, penalty=1e7, vx=1):
+    def _update_bias(self, X, Z, penalty=1e16, vx=1):
         """
         Update bias field for all channels and images in batch, in-place.
 
         Args:
             X (torch.tensor): Image (B, C, Spatial).
             Z (torch.tensor): Responsibilites (B, C, Spatial).
-            penalty (float, default=1e-7): Penalty on bending energy.
+            penalty (float, default=1e16): Penalty on bending energy.
             vx (int or float, default=1): Voxel size.
         
         """
@@ -589,7 +595,7 @@ class UniSeg(Mixture):
                     H += Z_[k] * bX_[c].square() * lam[c]
 
                 g *= bX_[c]
-                g += 1
+                g -= 1
                 H += 1 + g.abs()
 
                 g = g.reshape((1,)+tuple(X.shape[2:]))
@@ -598,14 +604,16 @@ class UniSeg(Mixture):
                 g += regulariser(beta[b, c].reshape((1,)+tuple(X.shape[2:])),
                                 bending=penalty, voxel_size=vx)             
 
-                print('Bias correction, L1 norm values: Gradient = {:.4g}, Hessian = {:.4g}'.format(g.abs().sum(), H.abs().sum()))
+                if self.verbose_bias > 0:
+                    print('Bias correction, L1 norm values: Gradient = {:.4g}, Hessian = {:.4g}'.format(g.abs().sum(), H.abs().sum()))
 
-                beta[b, c] -= solve_field_fmg(H, g, bending=penalty, voxel_size=vx).reshape(X.shape[2:])
+                beta[b, c] -= solve_field_fmg(H, g, bending=penalty, voxel_size=vx, verbose=self.verbose_bias).reshape(X.shape[2:])
 
+        beta -= beta.mean()
         # Update bias field in-place
         self.beta = beta
 
-    def sample(self, mu=None, Cov=None, alpha=False, beta=False, seg=None):
+    def sample(self, mu=None, Cov=None, alpha=False, beta=False, seg=None, label_sampling='cat'):
         """ Sample new image with GMM parameters and (eventually) bias and warp parameters
         
         Args:
@@ -614,6 +622,9 @@ class UniSeg(Mixture):
             alpha (torch.tensor): warping parameters (B, C, Spatial)
             beta (torch.tensor): bias-field parameters (B, C, Spatial)
             seg (torch.tensor): tissue class maps to use for image generation (B, C, Spatial)
+            label_sampling (string): method to sample tissue classes:
+                * 'cat' (default): sample from categorical distribution with segmentation labels as prior
+                * 'pv': mean intensity across all classes, weighted by segmentation labels
         
         """
         if mu == None:
@@ -643,7 +654,19 @@ class UniSeg(Mixture):
                     sample = sample.permute(1,0,2,3,4)
                 elif dim==2:
                     sample = sample.permute(1,0,2,3)
-                X[b] = (seg[b].unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
+                if label_sampling=='pv':
+                    X[b] = (seg[b].unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
+                elif label_sampling=='cat':
+                    if dim==3:
+                        seg_ = seg[b].permute(1,2,3,0)
+                    elif dim==2:
+                        seg_ = seg[b].permute(1,2,0)
+                    seg_ = one_hot(Categorical(seg_).sample()) # (Spatial, K)
+                    if dim==3:
+                        seg_ = seg_.permute(3,0,1,2)
+                    elif dim==2:
+                        seg_ = seg_.permute(2,0,1)
+                    X[b] = (seg_.unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
         else:
             for b in range(B):
                 pdf = [MultivariateNormal(mu[b,...,k], Cov[b,...,k]) for k in range(K)]
@@ -652,11 +675,23 @@ class UniSeg(Mixture):
                     sample = sample.permute(4,0,1,2,3)
                 elif dim==2:
                     sample = sample.permute(3,0,1,2)
-                X[b] = (seg[b].unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
+                if label_sampling=='pv':
+                    X[b] = (seg[b].unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
+                elif label_sampling=='cat':
+                    if dim==3:
+                        seg_ = seg[b].permute(1,2,3,0)
+                    elif dim==2:
+                        seg_ = seg[b].permute(1,2,0)
+                    seg_ = one_hot(Categorical(seg_).sample()) # (Spatial, K)
+                    if dim==3:
+                        seg_ = seg_.permute(3,0,1,2)
+                    elif dim==2:
+                        seg_ = seg_.permute(2,0,1)
+                    X[b] = (seg_.unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
         # if alpha:
         #     if alpha is None:
         #         alpha = self.alpha
-        if beta:
+        if isinstance(beta, (torch.Tensor, type(None))):
             if beta is None:
                 beta = self.beta
             X *= beta.exp()
