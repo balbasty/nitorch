@@ -37,7 +37,7 @@ class Mixture:
 
     # Functions
     def fit(self, X, verbose=1, max_iter=10000, tol=1e-8, fig_num=1, W=None,
-            show_fit=False, bias=True, verbose_bias=0, penalty_bias=1e16):
+            show_fit=False, bias=True, verbose_bias=0, penalty_bias=1e16, class_weight=True, delay=10):
         """ Fit mixture model.
 
         Args:
@@ -82,12 +82,16 @@ class Mixture:
         C = X.shape[1]  # Number of channels
         N = X.shape[:2]
         K = self.K  # Number of components
+        if isinstance(K, list):
+            K = len(K)
 
         if W is not None:  # Observation weights given
             W = torch.reshape(W, N)
 
         # Initialise model parameters
         self._init_par(X)
+
+        self.class_weight = class_weight
 
         # Compute a regularisation value
         self.lam = torch.zeros((B, C), dtype=self.dt, device=self.dev)
@@ -99,7 +103,7 @@ class Mixture:
                     self.lam[b, c] = (torch.sum(X[b, c]) / K) ** 2
 
         # EM loop
-        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, bias=bias, penalty_bias=penalty_bias)
+        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, bias=bias, penalty_bias=penalty_bias, delay=delay)
 
         # Print algorithm info
         if verbose >= 1:
@@ -116,7 +120,7 @@ class Mixture:
 
         return Z
     
-    def _em(self, X, max_iter, tol, verbose, W, bias=True, warp=True, penalty_bias=1e16):
+    def _em(self, X, max_iter, tol, verbose, W, bias=True, warp=True, penalty_bias=1e16, delay=10):
         """ EM loop for fitting GMM.
 
         Args:
@@ -127,7 +131,7 @@ class Mixture:
             W (torch.tensor): ([Spatial]).
 
         Returns:
-            Z (torch.tensor): Responsibilities (B, C, [Spatial]).
+            Z (torch.tensor): Responsibilities (B, K, [Spatial]).
             lb (list): Lower bound at each iteration.
 
         """
@@ -167,10 +171,10 @@ class Mixture:
                     for k in K:
                         for j in k:
                             Z[b, k] += self._log_likelihood(X, j, b=b)
-                        Z[b, k] += torch.log(self.mp[b, k] + tinyish)
+                        Z[b, k] += torch.log(self.gamma[b,k] * self.mp[b, k] + tinyish)
                 else:
                     for k in range(K):
-                        Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b)
+                        Z[b, k] = torch.log(self.gamma[b,k] * self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b)
 
                 # Get responsibilities
                 Z[b], dlb = softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
@@ -196,7 +200,13 @@ class Mixture:
                 # Compute sufficient statistics
                 ss0, ss1, ss2 = self._suffstats(X, Z)
 
-                # Update mixing proportions
+                # Update class weighting
+                if self.class_weight:
+                    self.gamma = (Z.reshape(B, K, -1)/((self.mp+tinyish).reshape(1, 6, -1)/(self.gamma.reshape(1, 6, 1)*(self.mp+tinyish).reshape(1, 6, -1)).sum(1, keepdim=True))).sum(-1)
+                    for b in range(B):
+                        self.gamma[b] /= self.gamma[b].sum()
+
+                # Update prior
                 if not self.prior:
                     if W is not None:
                         self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
@@ -206,7 +216,7 @@ class Mixture:
                 # Update model specific parameters
                 self._update(ss0, ss1, ss2)
 
-                if bias:
+                if bias and n_iter+1>delay:
                     # ==========
                     # Bias-field
                     # ==========
@@ -219,10 +229,10 @@ class Mixture:
                         for k in K:
                             for j in k:
                                 Z[b, k] += self._log_likelihood(X, j, b=b)
-                            Z[b, k] += torch.log(self.mp[b, k] + tinyish)
+                            Z[b, k] += torch.log(self.gamma[b,k] * self.mp[b, k] + tinyish)
                     else:
                         for k in range(K):
-                            Z[b, k] = torch.log(self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b)
+                            Z[b, k] = torch.log(self.gamma[b,k] * self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b)
 
                     # Get responsibilities
                     Z[b], dlb = softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
@@ -379,7 +389,7 @@ class Mixture:
 
 class UniSeg(Mixture):
     # Unified Segmentation model, based on multivariate Gaussian Mixture Model (GMM).
-    def __init__(self, num_class=2, prior=None, mu=None, Cov=None, alpha=None, beta=None):
+    def __init__(self, num_class=2, prior=None, mu=None, Cov=None, alpha=None, beta=None, gamma=None):
         """
         mu (torch.tensor): GMM means (C, K).
         Cov (torch.tensor): GMM covariances (C, C, K).
@@ -390,6 +400,7 @@ class UniSeg(Mixture):
         self.Cov = Cov
         self.alpha = alpha
         self.beta = beta
+        self.gamma = gamma
 
     def get_means_variances(self):
         """
@@ -501,6 +512,9 @@ class UniSeg(Mixture):
 
         # Init mixing prop
         self._init_mp(dtype)
+
+        if self.gamma is None:
+            self.gamma = torch.ones((B,K), dtype=dtype, device=self.dev) / K
     
         if self.mu is None:
             # means
