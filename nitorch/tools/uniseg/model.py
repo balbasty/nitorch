@@ -1,10 +1,10 @@
-import math
+import math as math_
 from nitorch.core.utils import isin
 from timeit import default_timer as timer
 from nitorch.core.optim import get_gain, plot_convergence
-from nitorch.core.math import besseli, softmax_lse
+from nitorch.core import linalg, math
 from nitorch.plot import plot_mixture_fit
-from nitorch.spatial import regulariser, solve_field_fmg
+from nitorch import spatial
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.distributions.categorical import Categorical
@@ -13,6 +13,10 @@ from torch.nn.functional import one_hot
 
 torch.backends.cudnn.benchmark = True
 
+default_warp_reg = { 'absolute': 0,
+                    'membrane': 0.001, 
+                    'bending': 0.5,
+                    'lame': (0.05, 0.2), }
 
 class Mixture:
     # A mixture model.
@@ -37,7 +41,7 @@ class Mixture:
 
     # Functions
     def fit(self, X, verbose=1, max_iter=10000, tol=1e-8, fig_num=1, W=None,
-            show_fit=False, bias=True, verbose_bias=0, penalty_bias=1e16, class_weight=True, delay=10):
+            show_fit=False, bias=True, warp=True, verbose_bias=0, penalty_bias=1e16, class_weight=True, delay=10):
         """ Fit mixture model.
 
         Args:
@@ -103,7 +107,7 @@ class Mixture:
                     self.lam[b, c] = (torch.sum(X[b, c]) / K) ** 2
 
         # EM loop
-        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, bias=bias, penalty_bias=penalty_bias, delay=delay)
+        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, bias=bias, warp=warp, penalty_bias=penalty_bias, delay=delay)
 
         # Print algorithm info
         if verbose >= 1:
@@ -167,17 +171,18 @@ class Mixture:
                 # E-step
                 # ==========
                 # Product Rule
+                tpm_ = self.warp_tpm(tpm=self.mp[b], D=self.alpha[b])
                 if isinstance(K, list):
                     for k in K:
                         for j in k:
                             Z[b, k] += self._log_likelihood(X, j, b=b)
-                        Z[b, k] += torch.log(self.gamma[b,k] * self.mp[b, k] + tinyish)
+                        Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
                 else:
                     for k in range(K):
-                        Z[b, k] = torch.log(self.gamma[b,k] * self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b)
+                        Z[b, k] = torch.log(self.gamma[b,k] * tpm_[k] + tinyish) + self._log_likelihood(X, k, b=b)
 
                 # Get responsibilities
-                Z[b], dlb = softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
+                Z[b], dlb = math.softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
 
                 # Objective function and convergence related
                 lb[b, n_iter] = dlb.float()
@@ -229,13 +234,13 @@ class Mixture:
                         for k in K:
                             for j in k:
                                 Z[b, k] += self._log_likelihood(X, j, b=b)
-                            Z[b, k] += torch.log(self.gamma[b,k] * self.mp[b, k] + tinyish)
+                            Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
                     else:
                         for k in range(K):
-                            Z[b, k] = torch.log(self.gamma[b,k] * self.mp[b,k] + tinyish) + self._log_likelihood(X, k, b=b)
+                            Z[b, k] = torch.log(self.gamma[b,k] * tpm_[k] + tinyish) + self._log_likelihood(X, k, b=b)
 
                     # Get responsibilities
-                    Z[b], dlb = softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
+                    Z[b], dlb = math.softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
 
                     if W is not None:  # Weight responsibilities
                         Z[b] = Z[b] * W
@@ -244,7 +249,37 @@ class Mixture:
                     # M-step
                     # ==========
                     # Update bias field
-                    self._update_bias(X, Z, penalty=penalty_bias)
+                    self._update_bias(X, Z, b=b, penalty=penalty_bias)
+
+                if warp and n_iter+1>delay:
+                    # ==========
+                    # Deformations
+                    # ==========
+                    #
+                    # ==========
+                    # E-step
+                    # ==========
+                    # Product Rule
+                    if isinstance(K, list):
+                        for k in K:
+                            for j in k:
+                                Z[b, k] += self._log_likelihood(X, j, b=b)
+                            Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
+                    else:
+                        for k in range(K):
+                            Z[b, k] = torch.log(self.gamma[b,k] * tpm_[k] + tinyish) + self._log_likelihood(X, k, b=b)
+
+                    # Get responsibilities
+                    Z[b], dlb = math.softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
+
+                    if W is not None:  # Weight responsibilities
+                        Z[b] = Z[b] * W
+
+                    # ==========
+                    # M-step
+                    # ==========
+                    # Update displacement field
+                    self._update_warp(Z, b=b)
 
         return Z, lb[:, :last_iter + 1]
     
@@ -323,6 +358,8 @@ class Mixture:
     def _update_bias(self): pass
 
     def _update_warp(self): pass
+
+    def warp_tpm(self): pass
 
     # Static methods
     @staticmethod
@@ -431,7 +468,7 @@ class UniSeg(Mixture):
         C = X.shape[1]
         device = X.device
         dtype = X.dtype
-        pi = torch.tensor(math.pi, dtype=dtype, device=device)
+        pi = torch.tensor(math_.pi, dtype=dtype, device=device)
         if b is not None:
             if c is not None:
                 beta = self.beta[b,c]
@@ -507,6 +544,7 @@ class UniSeg(Mixture):
             K = self.K
         B = X.shape[0]
         C = X.shape[1]
+        dim = len(X.shape[2:])
         mn = torch.min(X.reshape(B,C,-1), dim=2)[0]
         mx = torch.max(X.reshape(B,C,-1), dim=2)[0]
 
@@ -535,7 +573,7 @@ class UniSeg(Mixture):
                                     * ((mx[b, c] - mn[b, c])/(K))**2, (1, 1, 1, K))
         if self.alpha is None:
             # spatial deformation coefficients
-            self.alpha = torch.zeros_like(X, dtype=dtype, device=self.dev)
+            self.alpha = torch.zeros((B,)+tuple(X.shape[2:])+(dim,), dtype=dtype, device=self.dev)
         if self.beta is None:
             # bias field coefficients
             self.beta = torch.zeros_like(X, dtype=dtype, device=self.dev)
@@ -563,7 +601,7 @@ class UniSeg(Mixture):
                 self.Cov[b, :, :, k] = ss2[b, :, :, k] / ss0[b, k] \
                     - torch.ger(self.mu[b, :, k], self.mu[b, :, k])
 
-    def _update_bias(self, X, Z, penalty=1e16, vx=1):
+    def _update_bias(self, X, Z, penalty=1e16, vx=1, b=None):
         """
         Update bias field for all channels and images in batch, in-place.
 
@@ -582,7 +620,7 @@ class UniSeg(Mixture):
             K = self.K
         beta = self.beta
         bX = X * beta.exp()
-        for b in range(B):
+        if b is not None:
             # Extract single item from batch
             bX_ = bX[b].reshape(-1)
             Z_ = Z[b].reshape(K, -1)
@@ -605,17 +643,203 @@ class UniSeg(Mixture):
                 g = g.reshape((1,)+tuple(X.shape[2:]))
                 H = H.reshape((1,)+tuple(X.shape[2:]))
 
-                g += regulariser(beta[b, c].reshape((1,)+tuple(X.shape[2:])),
+                g += spatial.regulariser(beta[b, c].reshape((1,)+tuple(X.shape[2:])),
                                 bending=penalty, voxel_size=vx)             
 
                 if self.verbose_bias > 0:
-                    print('Bias correction, L1 norm values: Gradient = {:.4g}, Hessian = {:.4g}'.format(g.abs().sum(), H.abs().sum()))
+                    print('Bias correction, L1 norm values: Gradient = {:.4g}, Hessian = {:.4g}'.format(g.abs().mean(), H.abs().mean()))
 
-                beta[b, c] -= solve_field_fmg(H, g, bending=penalty, voxel_size=vx, verbose=self.verbose_bias).reshape(X.shape[2:])
+                beta[b, c] -= spatial.solve_field_fmg(H, g, bending=penalty, voxel_size=vx, verbose=self.verbose_bias).reshape(X.shape[2:])
+            
+            beta[b] -= beta[b].mean()
+        else:
+            for b in range(B):
+                # Extract single item from batch
+                bX_ = bX[b].reshape(-1)
+                Z_ = Z[b].reshape(K, -1)
+                mu = self.mu[b]
+                Cov = self.Cov[b]
+                for c in range(C):
+                    # Solve for each channel individually
+                    g = 0
+                    H = 0
+                    for k in range(K):
+                        # Determine each class' contribution to gradient and Hessian
+                        lam = Cov[...,k].inverse()[c]
+                        g += Z_[k] * ((bX_ - mu[...,k]) * lam).sum(dim=-1)
+                        H += Z_[k] * bX_[c].square() * lam[c]
 
-        beta -= beta.mean()
+                    g *= bX_[c]
+                    g -= 1
+                    H += 1 + g.abs()
+
+                    g = g.reshape((1,)+tuple(X.shape[2:]))
+                    H = H.reshape((1,)+tuple(X.shape[2:]))
+
+                    g += spatial.regulariser(beta[b, c].reshape((1,)+tuple(X.shape[2:])),
+                                    bending=penalty, voxel_size=vx)             
+
+                    if self.verbose_bias > 0:
+                        print('Bias correction, L1 norm values: Gradient = {:.4g}, Hessian = {:.4g}'.format(g.abs().mean(), H.abs().mean()))
+
+                    beta[b, c] -= spatial.solve_field_fmg(H, g, bending=penalty, voxel_size=vx, verbose=self.verbose_bias).reshape(X.shape[2:])
+                
+                beta[b] -= beta[b].mean()
+
         # Update bias field in-place
         self.beta = beta
+
+    def _update_warp(self, Z, aff=None, tpm_aff=None, penalty=None, acc=0.9, vx=1, logit_tpm=False, b=None):
+            """
+            Update warp parameters for all channels and images in batch, in-place.
+
+            Args:
+                Z (torch.tensor): Responsibilites (B, K (or K-1), Spatial).
+                aff (torch.tensor, optional): Orientation matrix of image, (B, 4, 4).
+                tpm_aff (torch.tensor, optional): Orientation matrix of template, (B, 4, 4).
+                penalty (dict, default=None): Dictionary of regularisation penalties, including {'absolute', 'membrane', 'bending', 'lame'}.
+                acc (float, default=0.9): Acceleration (weight of the true Hessian).
+                vx (int or float, default=1): Voxel size.
+                logit_tpm (boolean, default=False): Whether tpm in self.mp is in logits form.
+            
+            """
+
+            aff = None
+
+            tiny = torch.tensor(1e-32, dtype=Z.dtype, device=Z.device)
+
+            B = Z.shape[0]
+            K = self.K
+            if isinstance(self.K, list):
+                K = len(K)
+
+            D = self.alpha # displacement alpha, shape (B, Spatial, dim)
+
+            if penalty is None:
+                penalty = default_warp_reg
+            pull_opt = dict(
+                interpolation=1,
+                bound='dct2',
+                extrapolate=False
+            )
+
+            tpm = self.mp
+            if not logit_tpm:
+                if tpm.shape[1] == K:
+                    tpm = tpm[:,:-1] # assume background in last class (maybe should change in tpm to be consistent with DL background first?)
+                tpm = math.logit(tpm+tiny, dim=1, implicit=True, implicit_index=-1)
+            if Z.shape[1] == K:
+                Z = Z[:,:-1]
+
+            if b is not None:
+                wM = self.warp_tpm(tpm[b], D[b], aff=aff, tpm_aff=tpm_aff, pull_opt=pull_opt)
+                grid = spatial.add_identity_grid(D[b])
+                if aff is not None:
+                    grid = spatial.affine_matvec(aff, grid)
+                gA = spatial.grid_grad(tpm[b], grid.float(), **pull_opt)
+                if aff is not None:
+                    if tpm_aff is not None:
+                        aff = torch.matmul(tpm_aff.inverse(), aff)
+                    gA = linalg.matvec(aff[:3, :3].T, gA)
+                del grid, aff
+                
+                g = 0
+                H = Z[b].new_zeros([*Z.shape[2:], 6])
+                for k in range(K-1):
+                    g += (wM[k] - Z[b, k]).unsqueeze(-1) * gA[k]
+                    H1 = acc * wM[k] * (1 - wM[k]) + (1 - acc) * (1 - 1/K)
+                    H[..., :3] += H1.unsqueeze(-1) * gA[k].square()
+                    H[..., 3] += H1 * (gA[k, ..., 0] * gA[k, ..., 1])
+                    H[..., 4] += H1 * (gA[k, ..., 0] * gA[k, ..., 2])
+                    H[..., 5] += H1 * (gA[k, ..., 1] * gA[k, ..., 2])
+                    # for l in range(k+1, K):
+                    for l in range(k, K-1):
+                        H1 = -(acc * wM[k] * wM[l] + (1 - acc) / K)
+                        H[..., :3] += H1.unsqueeze(-1) * (gA[k] * gA[l])
+                        H[..., 3] += H1 * (gA[k, ..., 0] * gA[l, ..., 1] + 
+                                            gA[l, ..., 0] * gA[k, ..., 1])
+                        H[..., 4] += H1 * (gA[k, ..., 0] * gA[l, ..., 2] + 
+                                            gA[l, ..., 0] * gA[k, ..., 2])
+                        H[..., 5] += H1 * (gA[k, ..., 1] * gA[l, ..., 2] + 
+                                            gA[l, ..., 1] * gA[k, ..., 2])
+                del gA, wM
+
+                g += spatial.regulariser_grid(D[b], **penalty, voxel_size=vx)
+
+                D[b] -= spatial.solve_grid_fmg(H, g, **penalty, voxel_size=vx)
+                
+            else:    
+                for b in range(B):
+                    wM = self.warp_tpm(tpm[b], D[b], aff=aff, tpm_aff=tpm_aff, pull_opt=pull_opt)
+                    grid = spatial.add_identity_grid(D)
+                    if aff is not None:
+                        grid = spatial.affine_matvec(aff, grid)
+                    gA = spatial.grid_grad(tpm[b], grid, **pull_opt)
+                    if aff is not None:
+                        if tpm_aff is not None:
+                            aff = torch.matmul(tpm_aff.inverse(), aff)
+                        gA = linalg.matvec(aff[:3, :3].T, gA)
+                    del grid, aff
+                    
+                    g = 0
+                    H = Z[b].new_zeros([*Z.shape[2:], 6])
+                    for k in range(K):
+                        g += (wM[k] - Z[b, k]).unsqueeze(-1) * gA[k]
+                        H1 = acc * wM[k] * (1 - wM[k]) + (1 - acc) * (1 - 1/K)
+                        H[..., :3] += H1.unsqueeze(-1) * gA[k].square()
+                        H[..., 4] += H1 * (gA[k, ..., 0] * gA[k, ..., 1])
+                        H[..., 5] += H1 * (gA[k, ..., 0] * gA[k, ..., 2])
+                        H[..., 6] += H1 * (gA[k, ..., 1] * gA[k, ..., 2])
+                        for l in range(k+1, K):
+                            H1 = -(acc * wM[k] * wM[l] + (1 - acc) / K)
+                            H[..., :3] += H1.unsqueeze(-1) * (gA[k] * gA[l])
+                            H[..., 4] += H1 * (gA[k, ..., 0] * gA[l, ..., 1] + 
+                                                gA[l, ..., 0] * gA[k, ..., 1])
+                            H[..., 5] += H1 * (gA[k, ..., 0] * gA[l, ..., 2] + 
+                                                gA[l, ..., 0] * gA[k, ..., 2])
+                            H[..., 6] += H1 * (gA[k, ..., 1] * gA[l, ..., 2] + 
+                                                gA[l, ..., 1] * gA[k, ..., 2])
+                        
+                    del gA, wM
+
+                    g += spatial.regulariser_grid(D[b], **penalty, voxel_size=vx)
+
+                    D[b] -= spatial.solve_grid_fmg(H, g, **penalty, voxel_size=vx)
+
+            self.alpha = D
+
+    def warp_tpm(self, tpm, D, aff=None, tpm_aff=None, pull_opt=None, logits=True, implicit=True, softmax=True):
+        """
+        Apply warp D to tpm. Assume single item with no batch dimension.
+
+        Args:
+
+        """
+
+        if pull_opt is None:
+            pull_opt = dict(
+                interpolation=1,
+                bound='dct2',
+                extrapolate=False
+            )
+        
+        tiny = torch.tensor(1e-32, dtype=tpm.dtype, device=tpm.device)
+
+        if not logits:
+            tpm = math.logit(tpm+tiny, dim=0, implicit=implicit, implicit_index=-1)
+
+        if aff is not None:
+            if tpm_aff is not None:
+                aff = torch.matmul(tpm_aff.inverse(), aff)
+
+        grid = spatial.add_identity_grid(D)
+        if aff is not None:
+            grid = spatial.affine_matvec(aff, grid)
+        wM = spatial.grid_pull(tpm, grid, **pull_opt)
+        if softmax:
+            wM = math.softmax(wM, implicit=True)
+        del grid, aff
+        return wM
 
     def sample(self, mu=None, Cov=None, alpha=False, beta=False, seg=None, label_sampling='cat'):
         """ Sample new image with GMM parameters and (eventually) bias and warp parameters
