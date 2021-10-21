@@ -7,6 +7,7 @@ from .losses import *
 from .preproc import *
 from .generators import *
 from .training import *
+from .datasets import *
 
 from . import activations
 from . import modules
@@ -15,3 +16,4 @@ from . import losses
 from . import generators
 from . import training
 from . import experimental
+from . import datasets
