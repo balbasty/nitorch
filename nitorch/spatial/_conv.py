@@ -516,7 +516,7 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
     shape = tensor.shape[-dim:]
     tensor = tensor.reshape([-1, 1, *shape])
     backend = dict(dtype=tensor.dtype, device=tensor.device)
-    fwhm = make_list(fwhm, dim)
+    fwhm = utils.make_vector(fwhm, dim)
     kernels = core.kernels.smooth(type, fwhm, basis, **backend)
     stride = make_list(stride, dim)
     padding = make_list(padding, dim)

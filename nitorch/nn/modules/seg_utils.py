@@ -1,5 +1,5 @@
 from nitorch import spatial
-from ..generators import (BiasFieldTransform, RandomDiffeo)
+from ..generators import (RandomBiasFieldTransform, RandomDiffeo)
 import torch
 from ...core.constants import eps
 
@@ -306,8 +306,7 @@ def augment(method, image, label=None, vx=None):
         fwhm = [f / v for f, v in
                 zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
-        aug = BiasFieldTransform(amplitude=amplitude, fwhm=fwhm, mean=0.0,
-                                 device=image.device, dtype=image.dtype)
+        aug = RandomBiasFieldTransform(amplitude=amplitude, fwhm=fwhm)
         # Augment image
         image = aug(image)
 

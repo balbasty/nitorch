@@ -1,13 +1,10 @@
 import math
 import torch
-import torch.distributions as td
-from nitorch.core.utils import unsqueeze, ensure_shape
 from nitorch.core.constants import pi
-from nitorch.core.kernels import smooth
-from nitorch.core import utils, py, linalg
+from nitorch.core import utils, py, linalg, fft
 from nitorch import spatial
 from nitorch.nn.base import Module
-from .utils import batch_callable, padshape, call_spatial
+from .distribution import _get_dist
 
 
 class RandomField(Module):
@@ -19,28 +16,26 @@ class RandomField(Module):
     """
 
     def __init__(self, shape=None, mean=0, amplitude=1, fwhm=1, channel=1,
-                 basis=1, device='cpu', dtype=None):
+                 basis=1, device=None, dtype=None):
         """
 
         Parameters
         ----------
         shape : sequence[int], optional
             Lattice shape
-        mean : callable or tensor, default=0
-            Mean value. Should be of shape (channel,) or (channel, *shape)
-        amplitude : callable or tensor, default=1
+        mean : float or (channel,) vector_like, default=0
+            Mean value.
+        amplitude : float or (channel,) vector_like, default=1
             Amplitude of the squared-exponential kernel.
-            Should broadcast to (channel, *shape)
-        fwhm : callable or tensor, default=1
+        fwhm : float or (channel,) vector_like, default=1
             Full-width at Half Maximum of the squared-exponential kernel.
-            Should broadcast to (channel, ndim)
         channel : int, default=1
             Number of channels
         basis : {0, 1}, default=1
             See `nitorch.core.kernels.smooth`
-        device : torch.device: default='cpu'
+        device : torch.device, optional
             Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
+        dtype : torch.dtype, optional
             Output tensor datatype.
 
         """
@@ -71,7 +66,13 @@ class RandomField(Module):
         ----------
         batch : int, default=1
             Batch size
-        overload : dict
+
+        Other Parameters
+        ----------------
+        shape : sequence[int], optional
+        channel : int, optional
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         Returns
         -------
@@ -82,73 +83,33 @@ class RandomField(Module):
 
         # get arguments
         shape = overload.get('shape', self.shape)
-        mean = overload.get('mean', self.mean)
-        amplitude = overload.get('amplitude', self.amplitude)
-        fwhm = overload.get('fwhm', self.fwhm)
         channel = overload.get('channel', self.channel)
-        basis = overload.get('basis', self.basis)
         dtype = overload.get('dtype', self.dtype)
         device = overload.get('device', self.device)
         backend = dict(dtype=dtype, device=device)
 
         # sample if parameters are callable
         nb_dim = len(shape)
-        mean = call_spatial(mean, batch, nb_dim)           # ([B], C, *spatial)
-        amplitude = call_spatial(amplitude, batch, nb_dim) # ([B], C, *spatial)
-        fwhm = call_spatial(fwhm, batch, 1)                # ([B], D)
 
         # device/dtype
-        mean = torch.as_tensor(mean, **backend)
-        amplitude = torch.as_tensor(amplitude, **backend)
-        fwhm = torch.as_tensor(fwhm, **backend)
-
-        # reshape
-        full_shape = [batch, channel, *shape]
-        mean = mean.expand(full_shape)
-        amplitude = amplitude.expand(full_shape)
-        fwhm = fwhm.expand([batch, channel, nb_dim])
-
-        conv = torch.nn.functional.conv1d if nb_dim == 1 else \
-               torch.nn.functional.conv2d if nb_dim == 2 else \
-               torch.nn.functional.conv3d if nb_dim == 3 else None
+        mean = utils.make_vector(self.mean, channel, **backend)
+        amplitude = utils.make_vector(self.amplitude, channel, **backend)
+        fwhm = utils.make_vector(self.fwhm, channel, **backend)
         
         # convert SE parameters to noise/kernel parameters
         sigma_se = fwhm / math.sqrt(8*math.log(2))
-        sigma_se = unsqueeze(sigma_se.prod(dim=-1), dim=-1, ndim=nb_dim)
         amplitude = amplitude * (2*pi)**(nb_dim/4) * sigma_se.sqrt()
         fwhm = fwhm * math.sqrt(2)
         
         # smooth
-        samples_b = []
+        out = torch.empty([batch, channel, *shape], **backend)
         for b in range(batch):
-            samples_c = []
             for c in range(channel):
-                kernel = smooth('gauss', fwhm[b, c], basis=basis,
-                                device=device, dtype=dtype)
-
-                # compute input shape
-                pad_shape = [shape[d] + kernel[d].shape[d+2] - 1
-                             for d in range(nb_dim)]
-                mean1 = ensure_shape(mean[b, c], pad_shape,
-                                     mode='reflect2', side='both')
-                amplitude1 = ensure_shape(amplitude[b, c], pad_shape,
-                                          mode='reflect2', side='both')
-
-                # generate sample
-                sample = torch.distributions.Normal(mean1, amplitude1).sample()
-                sample = sample[None, None, ...]
-
-                # convolve
-                for ker in kernel:
-                    sample = conv(sample, ker)
-
-                samples_c.append(sample)
-
-            samples_b.append(torch.cat(samples_c, dim=1))
-
-        sample = torch.cat(samples_b, dim=0)
-
-        return sample
+                sample = torch.distributions.Normal(mean[c], amplitude[c]).sample(shape)
+                out[b, c] = spatial.smooth(
+                    sample, 'gauss', fwhm,
+                    basis=self.basis, bound='dct2', dim=nb_dim, padding='same')
+        return out
 
 
 class RandomFieldSpline(Module):
@@ -167,20 +128,16 @@ class RandomFieldSpline(Module):
         ----------
         shape : sequence[int], optional
             Lattice shape
-        mean : callable or tensor, default=0
-            Mean value. Should broadcast to (channel, *shape)
-        amplitude : callable or tensor, default=1
+        mean : float or (channel,) vector_like, default=0
+            Mean value.
+        amplitude : float or (channel,) vector_like, default=1
             Amplitude of the squared-exponential kernel.
-            Should broadcast to (channel,)
-        fwhm : callable or tensor, default=1
+        fwhm : float or (channel,) vector_like, default=1
             Full-width at Half Maximum of the squared-exponential kernel.
-            Should broadcast to (ndim,)
         channel : int, default=1
             Number of channels
-        basis : {0, 1}, default=1
-            See `nitorch.core.kernels.smooth`
-        order : {0..7}, default=None
-            Use b-spline of this order instead of Gaussian smothing.
+        basis : {0..7}, default=None
+            Use b-spline of this order.
         device : torch.device: default='cpu'
             Output tensor device.
         dtype : torch.dtype, default=torch.get_default_dtype()
@@ -206,7 +163,13 @@ class RandomFieldSpline(Module):
         ----------
         batch : int, default=1
             Batch size
-        overload : dict
+
+        Other Parameters
+        ----------------
+        shape : sequence[int], optional
+        channel : int, optional
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         Returns
         -------
@@ -217,38 +180,25 @@ class RandomFieldSpline(Module):
 
         # get arguments
         shape = overload.get('shape', self.shape)
-        mean = overload.get('mean', self.mean)
-        amplitude = overload.get('amplitude', self.amplitude)
-        fwhm = overload.get('fwhm', self.fwhm)
         channel = overload.get('channel', self.channel)
-        basis = overload.get('basis', self.basis)
         dtype = overload.get('dtype', self.dtype)
         device = overload.get('device', self.device)
         backend = dict(dtype=dtype, device=device)
 
-        # sample if parameters are callable
-        nb_dim = len(shape)
-        mean = call_spatial(mean, batch, nb_dim)           # ([B], C, *spatial)
-        amplitude = call_spatial(amplitude, batch, nb_dim) # ([B], C, *spatial)
-        fwhm = call_spatial(fwhm, batch, 1)                # ([B], D)
-
         # device/dtype
-        mean = torch.as_tensor(mean, **backend)
-        amplitude = torch.as_tensor(amplitude, **backend)
-        fwhm = torch.as_tensor(fwhm, **backend)
-
-        # reshape
         nb_dim = len(shape)
-        fwhm = utils.make_vector(fwhm, nb_dim)
+        mean = utils.make_vector(self.mean, channel, **backend)
+        amplitude = utils.make_vector(self.amplitude, channel, **backend)
+        fwhm = utils.make_vector(self.fwhm, nb_dim, **backend)
 
         # sample spline coefficients
-        nodes = [(s/f).ceil().int().item() for s, f in zip(shape, fwhm)]
+        nodes = [(s/f).ceil().int().item()
+                 for s, f in zip(shape, fwhm)]
         sample = torch.randn([batch, channel, *nodes], **backend)
-        sample *= amplitude
-        sample = spatial.resize(sample, shape=shape, interpolation=basis,
-                                bound='dct2')
-        sample += mean
-
+        sample *= utils.unsqueeze(amplitude, -1, nb_dim)
+        sample = spatial.resize(sample, shape=shape, interpolation=self.basis,
+                                bound='dct2', prefilter=False)
+        sample += utils.unsqueeze(mean, -1, nb_dim)
         return sample
 
 
@@ -264,24 +214,24 @@ class RandomFieldGreens(Module):
         ----------
         shape : sequence[int], optional
             Lattice shape
-        mean : callable or tensor, default=0
-            Mean value. Should broadcast to (channel, *shape)
+        mean : float or (channel,) vector_like, default=0
+            Mean value.
         channel : int, default=1
             Number of channels
-        absolute : callable or tensor, default=1e-4
+        absolute : float or (channel,) vector_like, default=1e-4
             Penalty on absolute displacements.
-            Should broadcast to (channel,)
-        membrane : callable or tensor, default=0.1
+        membrane : float or (channel,) vector_like, default=0.1
             Penalty on membrane energy (first derivatives).
-            Should broadcast to (channel,)
-        bending : callable or tensor, default=0
+        bending : float or (channel,) vector_like, default=0
             Penalty on bending energy (second derivatives).
-            Should broadcast to (channel,)
-        voxel_size : float or sequence[float], default=1
+        voxel_size : float or (dim,) vector_like, default=1
             Voxel size of the lattice.
-        device : torch.device: default='cpu'
+        cache_greens : bool, default=True
+            Keep the last Greens kernel and only recompute if voxel_size
+            changed.
+        device : torch.device, optional
             Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
+        dtype : torch.dtype, optional
             Output tensor datatype.
 
         """
@@ -306,7 +256,14 @@ class RandomFieldGreens(Module):
         ----------
         batch : int, default=1
             Batch size
-        overload : dict
+
+        Other Parameters
+        ----------------
+        shape : sequence[int], optional
+        channel : int, optional
+        voxel_size : float or (dim,) vector_like, optional
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         Returns
         -------
@@ -317,73 +274,59 @@ class RandomFieldGreens(Module):
 
         # get arguments
         shape = overload.get('shape', self.shape)
-        mean = overload.get('mean', self.mean)
         channel = overload.get('channel', self.channel)
-        absolute = overload.get('absolute', self.absolute)
-        membrane = overload.get('membrane', self.membrane)
-        bending = overload.get('bending', self.bending)
         voxel_size = overload.get('voxel_size', self.voxel_size)
         dtype = overload.get('dtype', self.dtype)
         device = overload.get('device', self.device)
         backend = dict(dtype=dtype, device=device)
 
         # sample if parameters are callable
-        mean = mean() if callable(mean) else mean
-        absolute = absolute() if callable(absolute) else absolute
-        membrane = membrane() if callable(membrane) else membrane
-        bending = bending() if callable(bending) else bending
-
-        # reshape
         nb_dim = len(shape)
-        full_shape = [batch, channel, *shape]
-        mean = torch.as_tensor(mean, **backend).expand(full_shape)
-        absolute = utils.make_vector(absolute, channel, **backend)
-        membrane = utils.make_vector(membrane, channel, **backend)
-        bending = utils.make_vector(bending, channel, **backend)
-        if torch.is_tensor(voxel_size):
-            voxel_size = voxel_size.tolist()
-        voxel_size = py.make_list(voxel_size, nb_dim)
+        voxel_size = utils.make_vector(voxel_size, nb_dim, **backend)
+        voxel_size = voxel_size.tolist()
+
+        if (hasattr(self, '_greens')
+                and self._voxel_size == voxel_size
+                and self._channel == channel
+                and self._shape == shape):
+            greens = self._greens.to(dtype=dtype, device=device)
+        else:
+            mean = utils.make_vector(self.mean, channel, **backend)
+            absolute = utils.make_vector(self.absolute, channel, **backend)
+            membrane = utils.make_vector(self.membrane, channel, **backend)
+            bending = utils.make_vector(self.bending, channel, **backend)
+
+            greens = []
+            for c in range(channel):
+                greens.append(spatial.greens(
+                    shape,
+                    absolute=absolute[c],
+                    membrane=membrane[c],
+                    bending=bending[c],
+                    lame=0,
+                    voxel_size=voxel_size,
+                    device=device,
+                    dtype=dtype))
+            greens = torch.stack(greens)
+            greens = greens.sqrt_()
+
+            if self.cache_greens:
+                self._greens = greens
+                self._voxel_size = voxel_size
+                self._shape = shape
 
         # sample white noise
-        sample = torch.randn([batch, channel, *shape, 2], **backend)
-
-        # create greens kernel
-        for c in range(channel):
-            if (hasattr(self, '_greens') and
-                    absolute[c] == self._absolute and
-                    membrane[c] == self._membrane and
-                    bending[c] == self._bending and
-                    voxel_size == self._voxel_size):
-                greens = self._greens.to(dtype=dtype, device=device)
-            else:
-                greens = spatial.greens(shape,
-                                        absolute=absolute[c],
-                                        membrane=membrane[c],
-                                        bending=bending[c],
-                                        lame=0,
-                                        voxel_size=voxel_size,
-                                        device=device,
-                                        dtype=dtype)
-                greens = greens.sqrt()
-                if self.cache_greens:
-                    self._greens = greens
-                    self._absolute = absolute[c]
-                    self._membrane = membrane[c]
-                    self._bending = bending[c]
-                    self._voxel_size = voxel_size
-
-            # multiply by square root of greens
-            sample[:, c] = sample[:, c] * greens[..., None]
+        sample = torch.randn([2, batch, channel, *shape], **backend)
+        sample *= greens.unsqueeze(-1)
+        sample = fft.complex(sample[0], sample[1])
 
         # inverse Fourier transform
-        if utils.torch_version('>=', (1, 8)):
-            sample = torch.fft.ifftn(sample, dim=nb_dim).real()
-        else:
-            sample = torch.ifft(sample, nb_dim)[..., 0]
+        dims = list(range(-nb_dim, 0))
+        sample = fft.real(fft.ifftn(sample, dim=dims))
         sample *= py.prod(shape)
 
         # add mean
-        sample += mean
+        sample += utils.unsqueeze(mean, -1, len(shape))
 
         return sample
 
@@ -400,20 +343,16 @@ class RandomGridGreens(Module):
         ----------
         shape : sequence[int], optional
             Lattice shape
-        mean : callable or tensor, default=0
-            Mean value. Should broadcast to (channel, *shape)
-        absolute : callable or tensor, default=1e-4
+        mean : float, default=0
+            Mean value.
+        absolute : float, default=1e-4
             Penalty on absolute displacements.
-            Should broadcast to (channel,)
-        membrane : callable or tensor, default=1e-3
+        membrane : float, default=1e-3
             Penalty on membrane energy (first derivatives).
-            Should broadcast to (channel,)
-        bending : callable or tensor, default=0.2
+        bending : float, default=0.2
             Penalty on bending energy (second derivatives).
-            Should broadcast to (channel,)
-        lame : pair of [callable or tensor], default=(0.05, 0.2)
+        lame : pair of float, default=(0.05, 0.2)
             Penalty on linear-elastic energy (zooms and shears).
-            Should broadcast to (channel,)
         voxel_size : float or sequence[float], default=1
             Voxel size of the lattice.
         device : torch.device: default='cpu'
@@ -455,86 +394,57 @@ class RandomGridGreens(Module):
         # get arguments
         shape = overload.get('shape', self.shape)
         mean = overload.get('mean', self.mean)
-        absolute = overload.get('absolute', self.absolute)
-        membrane = overload.get('membrane', self.membrane)
-        bending = overload.get('bending', self.bending)
-        lame = overload.get('lame', self.lame)
         voxel_size = overload.get('voxel_size', self.voxel_size)
         dtype = overload.get('dtype', self.dtype)
         device = overload.get('device', self.device)
         backend = dict(dtype=dtype, device=device)
 
         # sample if parameters are callable
-        mean = mean() if callable(mean) else mean
-        absolute = absolute() if callable(absolute) else absolute
-        membrane = membrane() if callable(membrane) else membrane
-        bending = bending() if callable(bending) else bending
-        lame1, lame2 = py.make_list(lame, 2)
-        lame1 = lame1() if callable(lame1) else lame1
-        lame2 = lame2() if callable(lame2) else lame2
-
-        # reshape
         nb_dim = len(shape)
-        full_shape = [batch, *shape, nb_dim]
-        mean = torch.as_tensor(mean, **backend).expand(full_shape)
-        absolute = torch.as_tensor(absolute, **backend).flatten()[0]
-        membrane = torch.as_tensor(membrane, **backend).flatten()[0]
-        bending = torch.as_tensor(bending, **backend).flatten()[0]
-        lame1 = torch.as_tensor(lame1, **backend).flatten()[0]
-        lame2 = torch.as_tensor(lame2, **backend).flatten()[0]
-        if torch.is_tensor(voxel_size):
-            voxel_size = voxel_size.tolist()
         voxel_size = utils.make_vector(voxel_size, nb_dim, **backend)
+        voxel_size = voxel_size.tolist()
+        lame = py.make_list(self.lame, 2)
 
-        # sample white noise
-        sample = torch.randn([2, batch, *shape, nb_dim], **backend)
-
-        # create greens kernel
-        if (hasattr(self, '_greens') and
-                absolute == self._absolute and
-                membrane == self._membrane and
-                bending == self._bending and
-                lame1 == self._lame1 and
-                lame2 == self._lame2 and
-                voxel_size == self._voxel_size):
+        if (hasattr(self, '_greens')
+                and self._voxel_size == voxel_size
+                and self._shape == shape):
             greens = self._greens.to(dtype=dtype, device=device)
         else:
-            greens = spatial.greens(shape,
-                                    absolute=absolute,
-                                    membrane=membrane,
-                                    bending=bending,
-                                    lame=(lame1, lame2),
-                                    voxel_size=voxel_size,
-                                    device=device,
-                                    dtype=dtype)
-            if lame1 or lame2:
-                greens = greens.cholesky(upper=False)
+            greens = spatial.greens(
+                shape,
+                absolute=self.absolute,
+                membrane=self.membrane,
+                bending=self.bending,
+                lame=self.lame,
+                voxel_size=voxel_size,
+                device=device,
+                dtype=dtype)
+            if any(lame):
+                greens, scale, _ = torch.svd(greens)
+                scale = scale.sqrt_()
+                greens *= scale.unsqueeze(-1)
             else:
-                greens = greens.sqrt()
+                greens = greens.sqrt_()
+
             if self.cache_greens:
                 self._greens = greens
-                self._absolute = absolute
-                self._membrane = membrane
-                self._bending = bending
-                self._lame1 = lame1
-                self._lame2 = lame2
                 self._voxel_size = voxel_size
+                self._shape = shape
+
+        sample = torch.randn([2, batch, *shape, nb_dim], **backend)
 
         # multiply by square root of greens
-        if lame1 or lame2:
+        if greens.dim() > nb_dim:  # lame
             sample = linalg.matvec(greens, sample)
         else:
-            sample = sample * greens[..., None]
+            sample = sample * greens.unsqueeze(-1)
+            voxel_size = utils.make_vector(voxel_size, nb_dim, **backend)
             sample = sample / voxel_size.sqrt()
+        sample = fft.complex(sample[0], sample[1])
 
         # inverse Fourier transform
-        sample = utils.movedim(sample, 0, -1)
-        sample = utils.movedim(sample, -2, 1)
-        if utils.torch_version('>=', (1, 8)):
-            sample = torch.fft.ifftn(sample, dim=nb_dim).real()
-        else:
-            sample = torch.ifft(sample, nb_dim)[..., 0]
-        sample = utils.movedim(sample, 1, -1)
+        dims = list(range(-nb_dim-1, -1))
+        sample = fft.real(fft.ifftn(sample, dim=dims))
         sample *= py.prod(shape)
 
         # add mean
@@ -543,54 +453,152 @@ class RandomGridGreens(Module):
         return sample
 
 
-class RandomMultiplicativeField(Module):
+class _HyperRandomField(Module):
+    """A random field whose parameters are randomly sampled"""
 
-    def __init__(self, mean=None, amplitude=None, fwhm=None,
-                 device='cpu', dtype=None):
+    RandomFieldClass = RandomField
+
+    def __init__(self, shape=None,
+                 mean='normal', mean_exp=0, mean_scale=0,
+                 amplitude='lognormal', amplitude_exp=1, amplitude_scale=1,
+                 fwhm='lognormal', fwhm_exp=1, fwhm_scale=1,
+                 channel=1, basis=1, device=None, dtype=None):
+        """
+        The geometry of a random field is controlled by three parameters:
+            - `mean` controls the expected value of the field.
+            - `amplitude` controls the voxel-wise variance of the field.
+            - `fwhm` controls the smoothness of the field.
+
+        Each of these parameter is sampled according to three hyper-parameters:
+            - <param>       : distribution family
+                              {'normal', 'lognormal', 'uniform', 'gamma', None}
+            - <param>_exp   : expected value of the parameter
+            - <param>_scale : standard deviation of the parameter
+
+        Parameters
+        ----------
+        shape : sequence[int]
+        mean : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        mean_exp : float or (channel,) vector_like, default=0
+        mean_scale : float or (channel,) vector_like, default=0
+        amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        amplitude_exp : float or (channel,) vector_like, default=1
+        amplitude_scale : float or (channel,) vector_like, default=1
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        fwhm_exp : float or (channel,) vector_like, default=1
+        fwhm_scale : float or (channel,) vector_like, default=1
+        channel : int, default=1
+        basis : {0, 1}, default=1
+        device : torch.device, optional
+        dtype : torch.dtype, optional
+        """
+        super().__init__()
+        self.mean_exp = mean_exp
+        self.mean_scale = mean_scale
+        self.mean = _get_dist(mean)
+        self.amplitude_exp = amplitude_exp
+        self.amplitude_scale = amplitude_scale
+        self.amplitude = _get_dist(amplitude)
+        self.fwhm_exp = fwhm_exp
+        self.fwhm_scale = fwhm_scale
+        self.fwhm = _get_dist(fwhm)
+        self.shape = shape
+        self.channel = channel
+        self.basis = basis
+        self.device = device
+        self.dtype = dtype
+
+    def _make_sampler(self, name, **backend):
+        exp = getattr(self, name + '_exp')
+        scale = getattr(self, name + '_scale')
+        dist = getattr(self, name)
+        exp = utils.make_vector(exp, **backend)
+        scale = utils.make_vector(scale, **backend)
+        if dist and (scale > 0).all():
+            sampler = dist(exp, scale)
+        else:
+            sampler = _get_dist('dirac')(exp)
+        return sampler
+
+    def forward(self, batch=1, **overload):
         """
 
         Parameters
         ----------
-        mean : callable or tensor, default=0
-            Log-Mean value. Should broadcast to (channel, *shape)
-        amplitude : callable or tensor, default=LogNormal(log(1), log(10)/3)
+        batch : int, default=1
+            Number of batch elements
+
+        Other Parameters
+        ----------------
+        shape : sequence[int]
+        basis : int
+        device : torch.device
+        dtype : torch.dtype
+
+        Returns
+        -------
+        field : (batch, channel, *shape) tensor
+            Smooth random field
+
+        """
+        shape = overload.get('shape', self.shape)
+        channel = overload.get('channel', self.channel)
+        dtype = overload.get('dtype', self.dtype)
+        device = overload.get('device', self.device)
+        dtype = dtype or torch.get_default_dtype()
+        backend = dict(dtype=dtype, device=device)
+
+        mean = self._make_sampler('mean', **backend)
+        amplitude = self._make_sampler('amplitude', **backend)
+        fwhm = self._make_sampler('fwhm', **backend)
+
+        out = torch.empty([batch, channel, *shape], dtype=dtype, device=device)
+        for b in range(batch):
+            mean1 = mean.sample()
+            amplitude1 = amplitude.sample()
+            fwhm1 = fwhm.sample()
+            field = self.RandomFieldClass(
+                shape, mean1, amplitude1, fwhm1, channel,
+                basis=self.basis, dtype=dtype, device=device)
+            out[b] = field(batch=1)[0]
+        return out
+
+
+class HyperRandomField(_HyperRandomField):
+    RandomFieldClass = RandomField
+
+
+class HyperRandomFieldSpline(_HyperRandomField):
+    RandomFieldClass = RandomFieldSpline
+
+
+class RandomMultiplicativeField(Module):
+    """Exponentiated random field with fixed hyper-parameters."""
+
+    def __init__(self, mean=0, amplitude=1, fwhm=5, device=None, dtype=None):
+        """
+        The geometry of a random field is controlled by three parameters:
+            - `mean` controls the expected value of the field.
+            - `amplitude` controls the voxel-wise variance of the field.
+            - `fwhm` controls the smoothness of the field.
+
+        Parameters
+        ----------
+        mean : float or (channel,) vector_like, default=0
+            Log-Mean value.
+        amplitude : float or (channel,) vector_like, default=1
             Amplitude of the squared-exponential kernel.
-            Should broadcast to (channel, *shape)
-        fwhm : callable or tensor, default=LogNormal(log(5), log(2)/3)
+        fwhm : float or (channel,) vector_like, default=5
             Full-width at Half Maximum of the squared-exponential kernel.
-            Should broadcast to (channel, ndim)
-        device : torch.device: default='cpu'
+        device : torch.device, optional
             Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
+        dtype : torch.dtype, optional
             Output tensor datatype.
         """
 
         super().__init__()
-        mean = mean if mean is not None else self.default_mean
-        amplitude = amplitude if amplitude is not None else self.default_amplitude
-        fwhm = fwhm if fwhm is not None else self.default_fwhm
         self.field = RandomFieldSpline(mean=mean, amplitude=amplitude,
                                        fwhm=fwhm, device=device, dtype=dtype)
-
-    # defer properties
-    mean = property(lambda self: self.field.mean)
-    amplitude = property(lambda self: self.field.amplitude)
-    fwhm = property(lambda self: self.field.fwhm)
-
-    # default generators
-    default_mean = staticmethod(lambda *b: torch.zeros(b))
-
-    @staticmethod
-    def default_amplitude(*b):
-        return td.Normal(0., math.log(10)/3).sample(*b).exp()
-
-    @staticmethod
-    def default_fwhm(*b):
-        return td.Normal(math.log(32.), math.log(3)/3).sample(*b).exp()
-
-    def to(self, *args, **kwargs):
-        self.field.to(*args, **kwargs)
-        super().to(*args, **kwargs)
 
     def forward(self, shape, **overload):
         """
@@ -599,68 +607,130 @@ class RandomMultiplicativeField(Module):
         ----------
         shape : sequence[int]
             (batch, channel, *spatial)
-        overload : dict
 
         Returns
         -------
         bias : (batch, channel, *shape)
 
         """
-
         bias = self.field(batch=shape[0], channel=shape[1],
                           shape=shape[2:], **overload)
         return bias.exp()
 
 
-class BiasFieldTransform(Module):
-    """Apply a random multiplicative bias field to an image."""
+class HyperRandomMultiplicativeField(Module):
+    """Exponentiated random field with randomized hyper-parameters."""
 
-    def __init__(self, mean=None, amplitude=None, fwhm=None,
-                 device='cpu', dtype=None):
+    def __init__(self,
+                 mean=None, mean_exp=0, mean_scale=1,
+                 amplitude='lognormal', amplitude_exp=1, amplitude_scale=10,
+                 fwhm='lognormal', fwhm_exp=5, fwhm_scale=2,
+                 device=None, dtype=None):
+        """
+        The geometry of a random field is controlled by three parameters:
+            - `mean` controls the expected value of the field.
+            - `amplitude` controls the voxel-wise variance of the field.
+            - `fwhm` controls the smoothness of the field.
+
+        Each of these parameter is sampled according to three hyper-parameters:
+            - <param>       : distribution family
+                              {'normal', 'lognormal', 'uniform', 'gamma', None}
+            - <param>_exp   : expected value of the parameter
+            - <param>_scale : standard deviation of the parameter
+
+        Parameters
+        ----------
+        mean : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        mean_exp : float or (channel,) vector_like, default=0
+        mean_scale : float or (channel,) vector_like, default=0
+        amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        amplitude_exp : float or (channel,) vector_like, default=1
+        amplitude_scale : float or (channel,) vector_like, default=10
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        fwhm_exp : float or (channel,) vector_like, default=5
+        fwhm_scale : float or (channel,) vector_like, default=2
+        device : torch.device, optional
+        dtype : torch.dtype, optional
+        """
+        super().__init__()
+        self.mean = _get_dist(mean)
+        self.mean_exp = mean_exp
+        self.mean_scale = mean_scale
+        self.amplitude = _get_dist(amplitude)
+        self.amplitude_exp = amplitude_exp
+        self.amplitude_scale = amplitude_scale
+        self.fwhm = _get_dist(fwhm)
+        self.fwhm_exp = fwhm_exp
+        self.fwhm_scale = fwhm_scale
+        self.dtype = dtype or torch.get_default_dtype()
+        self.device = device
+
+    def _make_sampler(self, name, **backend):
+        exp = getattr(self, name + '_exp')
+        scale = getattr(self, name + '_scale')
+        dist = getattr(self, name)
+        exp = utils.make_vector(exp, **backend)
+        scale = utils.make_vector(scale, **backend)
+        if dist and (scale > 0).all():
+            sampler = dist(exp, scale)
+        else:
+            sampler = _get_dist('dirac')(exp)
+        return sampler
+
+    def forward(self, shape, **overload):
         """
 
         Parameters
         ----------
-        mean : callable or tensor, default=0
-            Log-Mean value. Should broadcast to (channel, *shape)
-        amplitude : callable or tensor, default=LogNormal(log(1), log(10)/3)
-            Amplitude of the squared-exponential kernel.
-            Should broadcast to (channel, *shape)
-        fwhm : callable or tensor, default=LogNormal(log(5), log(2)/3)
-            Full-width at Half Maximum of the squared-exponential kernel.
-            Should broadcast to (channel, ndim)
-        device : torch.device: default='cpu'
-            Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
-            Output tensor datatype.
+        shape : sequence[int]
+            (batch, channel, *spatial)
+
+        Returns
+        -------
+        bias : (batch, channel, *shape)
+
         """
+        dtype = overload.get('dtype', self.dtype)
+        device = overload.get('device', self.device)
+        backend = dict(dtype=dtype, device=device)
 
+        mean = self._make_sampler('mean', **backend)
+        amplitude = self._make_sampler('amplitude', **backend)
+        fwhm = self._make_sampler('fwhm', **backend)
+
+        out = torch.empty(shape, dtype=dtype, device=device)
+        for b in range(shape[0]):
+            mean1 = mean.sample()
+            amplitude1 = amplitude.sample()
+            fwhm1 = fwhm.sample()
+
+            sampler = RandomMultiplicativeField(mean1, amplitude1, fwhm1,
+                                                dtype=dtype, device=device)
+            out[b] = sampler([1, *shape[1:]])[0]
+        return out
+
+
+class RandomBiasFieldTransform(Module):
+    """Apply a random multiplicative bias field to an image."""
+
+    def __init__(self, mean=0, amplitude=1, fwhm=5):
+        """
+        The geometry of a random field is controlled by three parameters:
+            - `mean` controls the expected value of the field.
+            - `amplitude` controls the voxel-wise variance of the field.
+            - `fwhm` controls the smoothness of the field.
+
+        Parameters
+        ----------
+        mean : float or (channel,) vector_like, default=0
+            Log-Mean value.
+        amplitude : float or (channel,) vector_like, default=1
+            Amplitude of the squared-exponential kernel.
+        fwhm : float or (channel,) vector_like, default=5
+            Full-width at Half Maximum of the squared-exponential kernel.
+        """
         super().__init__()
-        mean = mean if mean is not None else self.default_mean
-        amplitude = amplitude if amplitude is not None else self.default_amplitude
-        fwhm = fwhm if fwhm is not None else self.default_fwhm
-        self.field = RandomFieldSpline(mean=mean, amplitude=amplitude,
-                                       fwhm=fwhm, device=device, dtype=dtype)
-
-    # defer properties
-    mean = property(lambda self: self.field.mean)
-    amplitude = property(lambda self: self.field.amplitude)
-    fwhm = property(lambda self: self.field.fwhm)
-
-    # default generators
-    default_mean = staticmethod(lambda *b: torch.zeros(b))
-
-    @staticmethod
-    def default_amplitude(*b):
-        return td.Normal(0., math.log(10)/3).sample(b).exp()
-
-    @staticmethod
-    def default_fwhm(*b):
-        return td.Normal(math.log(32.), math.log(3)/3).sample(b).exp()
-
-    def to(self, *args, **kwargs):
-        self.field.to(*args, **kwargs)
-        super().to(*args, **kwargs)
+        self.bias = RandomMultiplicativeField(mean, amplitude, fwhm)
 
     def forward(self, image, **overload):
         """
@@ -669,7 +739,6 @@ class BiasFieldTransform(Module):
         ----------
         image : (batch, channel, *shape)
             Input tensor
-        overload : dict
 
         Returns
         -------
@@ -677,11 +746,71 @@ class BiasFieldTransform(Module):
             Bias-multiplied tensor
 
         """
-
         image = torch.as_tensor(image)
         overload['dtype'] = image.dtype
         overload['device'] = image.device
-        bias = self.field(batch=image.shape[0], channel=image.shape[1],
-                          shape=image.shape[2:], **overload)
-        image = image * bias.exp()
+        bias = self.bias(image.shape, **overload)
+        image = image * bias
+        return image
+
+
+class HyperRandomBiasFieldTransform(Module):
+    """
+    Apply a random multiplicative bias field to an image,
+    with randomized hyper-parameters.
+    """
+
+    def __init__(self,
+                 mean=None, mean_exp=0, mean_scale=1,
+                 amplitude='lognormal', amplitude_exp=1, amplitude_scale=10,
+                 fwhm='lognormal', fwhm_exp=5, fwhm_scale=2):
+        """
+        The geometry of a random field is controlled by three parameters:
+            - `mean` controls the expected value of the field.
+            - `amplitude` controls the voxel-wise variance of the field.
+            - `fwhm` controls the smoothness of the field.
+
+        Each of these parameter is sampled according to three hyper-parameters:
+            - <param>       : distribution family
+                              {'normal', 'lognormal', 'uniform', 'gamma', None}
+            - <param>_exp   : expected value of the parameter
+            - <param>_scale : standard deviation of the parameter
+
+        Parameters
+        ----------
+        mean : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        mean_exp : float or (channel,) vector_like, default=0
+        mean_scale : float or (channel,) vector_like, default=0
+        amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        amplitude_exp : float or (channel,) vector_like, default=1
+        amplitude_scale : float or (channel,) vector_like, default=10
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        fwhm_exp : float or (channel,) vector_like, default=5
+        fwhm_scale : float or (channel,) vector_like, default=2
+        """
+        super().__init__()
+        self.bias = HyperRandomMultiplicativeField(
+            mean, mean_exp, mean_scale,
+            amplitude, amplitude_exp, amplitude_scale,
+            fwhm, fwhm_exp, fwhm_scale)
+
+    def forward(self, image, **overload):
+        """
+
+        Parameters
+        ----------
+        image : (batch, channel, *shape)
+            Input tensor
+
+        Returns
+        -------
+        transformed_image : (batch, channel, *shape)
+            Bias-multiplied tensor
+
+        """
+        image = torch.as_tensor(image)
+        overload['dtype'] = image.dtype
+        overload['device'] = image.device
+        bias = self.bias(image.shape, **overload)
+        image = image * bias
         return image
