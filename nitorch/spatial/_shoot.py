@@ -1,6 +1,6 @@
 """Geodesic shooting of initial velocity fields."""
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
+from nitorch.core.optionals import custom_fwd, custom_bwd
 from nitorch.core import py, utils, linalg, fft
 from ._finite_differences import diff
 from ._regularisers import regulariser, regulariser_grid

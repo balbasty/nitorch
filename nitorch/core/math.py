@@ -3,7 +3,7 @@
 # yael.balbastre@gmail.com
 
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
+from .optionals import custom_fwd, custom_bwd
 from .constants import inf, ninf
 from nitorch.core import py, utils
 Tensor = torch.Tensor

@@ -20,6 +20,14 @@ except ImportError:
     matplotlib = None
 
 
+# torch amp (not there in all versions)
+try:
+    from torch.cuda.amp import custom_fwd, custom_bwd
+except ImportError:
+    custom_fwd = lambda x: x
+    custom_bwd = lambda x: x
+
+
 def try_import(path, keys=None, _as=True):
     """Try to import from a module.
 

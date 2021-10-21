@@ -1,8 +1,13 @@
 """AutoGrad version of pull/push/count/grad"""
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
 import os
 from ._ts import spline_coeff_nd, spline_coeff, BoundType as _TSBoundType
+
+try:
+    from torch.cuda.amp import custom_fwd, custom_bwd
+except ImportError:
+    custom_fwd = lambda x: x
+    custom_bwd = lambda x: x
 
 _compiled_backend = os.environ.get('NI_COMPILED_BACKEND', None)
 COMPILED_BACKEND = None
