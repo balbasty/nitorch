@@ -145,12 +145,10 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
         width = (mx - mn) / bins
         width = (width / slope).ceil() * slope
         mx = mn + bins * width
-    print(mn.item(), mx.item(), bins)
 
     # Histogram bin data
     W, dat = torch.histc(dat, bins=bins, min=mn, max=mx).double(), None
     x = torch.linspace(mn, mx, steps=bins, device=device).double()
-    print(W.tolist())
 
     # fit mixture model
     if mn < 0:  # Make GMM model
