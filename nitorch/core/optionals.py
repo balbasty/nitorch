@@ -4,26 +4,26 @@ import importlib
 # Numpy
 try:
     import numpy
-except ImportError:
+except ImportError, ModuleNotFoundError:
     numpy = None
 
 # Scipy
 try:
     import scipy
-except ImportError:
+except ImportError, ModuleNotFoundError:
     scipy = None
 
 # Matplotlib
 try:
     import matplotlib
-except ImportError:
+except ImportError, ModuleNotFoundError:
     matplotlib = None
 
 
 # torch amp (not there in all versions)
 try:
     from torch.cuda.amp import custom_fwd, custom_bwd
-except ImportError:
+except ImportError, ModuleNotFoundError:
     custom_fwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
     custom_bwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
 
@@ -57,7 +57,7 @@ def try_import(path, keys=None, _as=True):
     pack = path.split('.')[0]
     try:
         __import__(pack)
-    except ImportError:
+    except ImportError, ModuleNotFoundError:
         if keys is None or isinstance(keys, str):
             return None
         else:
