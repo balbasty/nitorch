@@ -453,6 +453,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
 
     # sequence parameters
     lam = 1 / contrast.noise
+    #lam = 1./386.7943 
     print(f"1/lam {contrast.noise}")
     tr = contrast.tr                                # TR is stored in sec
     fa = contrast.fa / 180. * core.constants.pi     # FA is stored in deg
@@ -585,7 +586,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
             res = dat.mul_(xi).neg_().add_(fit)
             del z, xi, logbes
         else:
-            lam= 1./386.7943
             # gaussian log-likelihood
             res = dat.neg_().add_(fit)
             crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
