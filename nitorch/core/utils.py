@@ -1911,12 +1911,18 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
     return q
 
 
-@torch.jit.script
+
 def _one_hot_wrapper(x: Tensor, dtype: Optional[torch.dtype] = None):
     x = x.long()
     x = torch.nn.functional.one_hot(x)
     x = x.to(dtype)
     return x
+
+
+if torch_version('>=', (1, 5)):
+    # jit.script does not accept `dtype` inputs in torch 1.3
+    # I don't know exactly which version started handling it.
+    _one_hot_wrapper = torch.jit.script(_one_hot_wrapper)
 
 
 def one_hot(x, dim=-1, exclude_labels=None, exclude_missing=False, max_label=None,
