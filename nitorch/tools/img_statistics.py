@@ -1,9 +1,9 @@
 """Functions simillar of inspired by the SPM package:
-
 """
 
 import nibabel as nib
 import torch
+import math
 from nitorch.core.kernels import smooth
 from nitorch.vb.mixtures import GMM
 from nitorch.vb.mixtures import RMM
@@ -11,17 +11,17 @@ from nitorch.vb.mixtures import CMM
 from nitorch.spatial import im_gradient
 from nitorch.core.constants import inf
 from nitorch.plot import show_slices
+from nitorch import io
+from nitorch.core.dtypes import dtype as dtype_info
 
 
 def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
     """Estimates full width at half maximum (FWHM) and noise standard
     deviation (sd) of a 2D or 3D image.
-
     It is assumed that the image has been generated as:
         dat = Ky + n,
     where K is Gaussian smoothing with some FWHM and n is
     additive Gaussian noise. FWHM and n are estimated.
-
     Args:
         dat (torch.tensor): Image data (X, Y) | (X, Y, Z).
         vx (float, optional): Voxel size. Defaults to (1, 1, 1).
@@ -32,17 +32,14 @@ def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
             Defaults to 0.
         mn (float, optional): Exclude values in dat below mn, default=-inf.
         mx (float, optional): Exclude values in dat above mx, default=-inf.
-
     Returns:
         fwhm (torch.tensor): Estimated FWHM (2,) | (3,).
         sd (torch.tensor): Estimated noise standard deviation.
-
     Reference:
         Appendix A of:
         Groves AR, Beckmann CF, Smith SM, Woolrich MW.
         Linked independent component analysis for multimodal data fusion.
         Neuroimage. 2011 Feb 1;54(3):2198-217.
-
     """
     if vx is None:
         vx = (1.0,) * 3
@@ -85,14 +82,13 @@ def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
     return fwhm, sd
 
 
-def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
+def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
                    mu_noise=None, max_iter=10000, verbose=0,
                    bins=1024):
     """Estimate noise from a nifti image by fitting either a GMM or an RMM 
     to the image's intensity histogram.
-
     Args:
-        pth (string): Path to nifti file.
+        dat (str or tensor): Tensor or path to nifti file.
         show_fit (bool, optional): Defaults to False.
         fig_num (bool, optional): Defaults to 1.
         num_class (int, optional): Number of mixture classes (only for GMM).
@@ -108,20 +104,24 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
             2: 1 + Log-likelihood plot.
             3: 1 + 2 + print convergence.
         bins (int, optional): Number of histogram bins, default=1024.
-
     Returns:
         sd_noise (torch.Tensor): Standard deviation of background class.
         sd_not_noise (torch.Tensor): Standard deviation of foreground class.
         mu_noise (torch.Tensor): Mean of background class.
         mu_not_noise (torch.Tensor): Mean of foreground class.
-
     """
-    if isinstance(pth, torch.Tensor):
-        dat = pth
-    else:  # Load data from nifti
-        nii = nib.load(pth)
-        dat = torch.tensor(nii.get_fdata())
-        dat = dat.flatten()
+    slope = None
+    if isinstance(dat, str):
+        dat = io.map(dat)
+    if isinstance(dat, io.MappedArray):
+        slope = dat.slope
+        if not slope and not dtype_info(dat.dtype).if_floating_point:
+            slope = 1
+        dat = dat.fdata(rand=True)
+    dat = torch.as_tensor(dat).flatten()
+    if not slope and not dat.dtype.is_floating_point:
+        slope = 1
+        dat = dat.float()
     device = dat.device
     dat[~torch.isfinite(dat)] = 0
     dat = dat.double()
@@ -132,6 +132,11 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     msk &= dat != dat.max()
     dat, msk = dat[msk], None
     mx = torch.max(dat).round()
+    if slope:
+        # ensure bin width aligns with integer width
+        width = (mx - mn) / bins
+        width = (width / slope).ceil() * slope
+        mx = mn + bins * width
 
     # Histogram bin data
     W, dat = torch.histc(dat, bins=bins, min=mn, max=mx).double(), None
@@ -141,8 +146,8 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     if mn < 0:  # Make GMM model
         model = GMM(num_class=num_class)
     else:  # Make RMM model
-        model = RMM(num_class=num_class)
-        #model = CMM(num_class=num_class)
+        #model = RMM(num_class=num_class)
+        model = CMM(num_class=num_class)
 
     # Fit GMM using Numpy
     model.fit(x, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
@@ -155,6 +160,7 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
         sd = torch.sqrt(model.Cov).squeeze()
     else:  # RMM
         sd = model.sig
+    #print(f"model sd: {sd}")
 
     # Get std and mean of noise class
     if mu_noise:
