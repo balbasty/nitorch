@@ -4,26 +4,26 @@ import importlib
 # Numpy
 try:
     import numpy
-except (ImportError, ModuleNotFoundError):
+except ImportError:
     numpy = None
 
 # Scipy
 try:
     import scipy
-except (ImportError, ModuleNotFoundError):
+except ImportError:
     scipy = None
 
 # Matplotlib
 try:
     import matplotlib
-except (ImportError, ModuleNotFoundError):
+except ImportError:
     matplotlib = None
 
 
 # torch amp (not there in all versions)
 try:
     from torch.cuda.amp import custom_fwd, custom_bwd
-except (ImportError, ModuleNotFoundError):
+except ImportError:
     custom_fwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
     custom_bwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
 
@@ -53,20 +53,32 @@ def try_import(path, keys=None, _as=True):
         Return None if import fails.
 
     """
-    # check if the base package exists
-    pack = path.split('.')[0]
-    try:
-        __import__(pack)
-    except (ImportError, ModuleNotFoundError):
+    def fail():
         if keys is None or isinstance(keys, str):
             return None
         else:
             keys = list(keys)
             return [None]*len(keys)
+        
+    def try_import_module(path):
+        try:
+            return importlib.import_module(path)
+        except ModuleNotFoundError:
+            return None
+        
+    
+    # check if the base package exists
+    pack = path.split('.')[0]
+    try:
+        __import__(pack)
+    except ImportError:
+        return fail()
 
     if _as:
         # import a module
-        module = importlib.import_module(path)
+        module = try_import_module(path)
+        if not module:
+            return fail()
         # optional: extract attributes
         if keys is not None:
             if isinstance(keys, str):
@@ -77,10 +89,14 @@ def try_import(path, keys=None, _as=True):
     else:
         # recursive import
         path = path.split('.')
-        mod0 = importlib.import_module(path[0])
+        mod0 = try_import_module(path[0])
+        if not mod0:
+            return fail()
         cursor = mod0
         for i in range(1, len(path)):
-            mod1 = importlib.import_module('.'.join(path[:i+1]))
+            mod1 = try_import_module('.'.join(path[:i+1]))
+            if not mod1:
+                return fail()
             setattr(cursor, path[i], mod1)
             cursor = getattr(cursor, path[i])
         return mod0
