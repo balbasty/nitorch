@@ -6,8 +6,9 @@ import torch
 # nitorch
 import nitorch as ni
 from nitorch import io
-from nitorch.spatial import affine_default
-from nitorch.core.utils import same_storage
+from nitorch.core import py, utils
+from nitorch.core.dtypes import dtype as dtype_info
+from nitorch.spatial import affine_default, voxel_size as get_voxel_size
 
 
 # TODO:
@@ -18,17 +19,14 @@ from nitorch.core.utils import same_storage
 
 def set_same_scanner_position(*images):
     """Set the same unique scanner position to all images.
-
     Parameters
     ----------
     images : sequence[MRI]
-
     Raises
     ------
     ValueError
         If two or more different positions are already present in the
         input set.
-
     """
     uids = [img.scanner_position for img in images
             if img.scanner_position is not None]
@@ -44,16 +42,13 @@ def set_same_scanner_position(*images):
 
 def is_same_scanner_position(*images):
     """Check that all images have the same unique scanner position.
-
     Parameters
     ----------
     images : sequence[MRI]
-
     Returns
     -------
     True if all elements of the input set have the same unique scanner
     position (which is not `None`).
-
     """
     uids = [img.scanner_position for img in images
             if img.scanner_position is not None]
@@ -63,20 +58,17 @@ def is_same_scanner_position(*images):
 
 class BaseND:
     """Represents a ND volume.
-
     Properties
     ----------
     volume : io.MappedArray or tensor       Mapped volume file
     affine : tensor                         Orientation matrix
     scanner_position : UUID                 Allows to link scanner positions
-
     Methods
     -------
     detach_position()                       Detach scanner position (-> None)
     detach_position_()                      > Same but in-place
     fdata(cache=False)                      Load data to memory
     discard()                               Delete cached data
-
     """
     _volume: io.MappedArray or torch.Tensor = None  # Mapped volume file
     affine: torch.Tensor = None                     # Orientation matrix
@@ -84,6 +76,17 @@ class BaseND:
     _fdata: torch.Tensor = None                     # Cached scaled data
     _dtype: torch.dtype = None                      # default dtype
     _device: torch.device = None                    # default device
+    spatial_dim: int = None                         # Number of spatial dimensions
+
+    @property
+    def voxel_size(self):
+        if self.affine is None:
+            return None
+        return get_voxel_size(self.affine)
+
+    @property
+    def spatial_shape(self):
+        return self.shape[-self.spatial_dim:] if self.spatial_dim else None
 
     @property
     def dtype(self):
@@ -125,7 +128,10 @@ class BaseND:
             return cls.from_tensor(input, *args, **kwargs)
         if isinstance(input, BaseND):
             return cls.from_instance(input, *args, **kwargs)
-        return object.__new__(cls).set_attributes(**kwargs)
+        return object.__new__(cls)
+
+    def __init__(self, input=None, *args, **kwargs):
+        self.set_attributes(**kwargs)
 
     def __str__(self):
         if self.volume is None:
@@ -166,7 +172,6 @@ class BaseND:
     @classmethod
     def from_fname(cls, fname, permission='r', keep_open=False, **attributes):
         """Build an MRI object from a file name.
-
         We accept paths of the form 'path/to/file.nii,1,2', which
         mean that only the subvolume `[:, :, :, 1, 2]` should be read.
         The first three (spatial) dimensions are always read.
@@ -290,33 +295,43 @@ class BaseND:
             self._fdata[item] = value
         return self
 
-    def fdata(self, dtype=None, device=None, rand=True, cache=False, **kwargs):
+    def fdata(self, dtype=None, device=None, rand=True, missing=None,
+              cache=False, **kwargs):
         """Get scaled floating-point data.
-
         Parameters
         ----------
         dtype : torch.dtype, default='`torch.get_default_dtype()`
         device : torch.device, default='cpu'
         rand : bool, default=True
             Add random noise if raw data is integer
+        missing : scalar or sequence, default=0
+            Values that should be considered missing data.
+            All of these values will be transformed to NaNs.
         cache : bool, default=False
             Cache the data in memory so that it does not need to be
             loaded again next time
-
         Returns
         -------
         dat : torch.tensor[dtype]
-
         """
         dtype = dtype or self.dtype
         device = device or self.device
         backend = dict(dtype=dtype, device=device)
+        if missing is not None:
+            missing = py.ensure_list(missing)
 
         if not cache or self._fdata is None:
             if isinstance(self.volume, io.MappedArray):
-                _fdata = self.volume.fdata(rand=rand, **backend)
+                _fdata = self.volume.fdata(**backend)
             else:
-                _fdata = self.volume.to(**backend)
+                _fdata = self.volume.to(**backend, copy=rand or (missing is not None))
+            mask = torch.isfinite(_fdata).bitwise_not_()
+            if missing:
+                mask.bitwise_or_(utils.isin(_fdata, missing))
+            if rand and not dtype_info(self.volume.dtype).is_floating_point:
+                slope = getattr(self.volume, 'slope', None) or 1
+                _fdata.add_(torch.rand_like(_fdata).mul_(slope))
+            _fdata[mask] = float('nan')
             if cache:
                 self._fdata = _fdata
         else:
@@ -333,22 +348,20 @@ class BaseND:
 
     def to(self, dtype=None, device=None):
         """Move data to a different dtype/device
-
         Parameters
         ----------
         dtype : torch.dtype
         device : torch.device
-
         Returns
         -------
         self
-
         """
         if dtype is not None and not isinstance(dtype, torch.dtype):
             raise TypeError('Expected a torch.dtype but got '
                             f'{type(dtype)}')
         self._dtype = dtype or self._dtype
-        self._device = torch.device(device or self._device)
+        device = device or self._device
+        self._device = torch.device(device) if device else None
         backend = dict(dtype=self.dtype, device=self.device)
         if self._fdata is not None:
             self._fdata = self._fdata.to(**backend)
@@ -358,6 +371,8 @@ class BaseND:
 
 
 class Volume3D(BaseND):
+    spatial_dim = 3
+
     @classmethod
     def from_mapped(cls, mapped, **attributes):
         return super().from_mapped(mapped, **attributes).ensure_3d_()
@@ -369,7 +384,6 @@ class Volume3D(BaseND):
 
 class GradientEcho(BaseND):
     """Represents a single volume acquired with a Gradient Echo sequence.
-
     Properties
     ----------
     volume : io.MappedArray or tensor       Mapped volume file
@@ -380,17 +394,22 @@ class GradientEcho(BaseND):
     ti : float                              Inversion time (in sec)
     fa : float                              Flip angle (in deg)
     mt : float or bool                      Off-resonance pulse (in hz, or bool)
-
+    readout : {0, 1, 2}                     Readout dimension
+    blip : {1, -1}                          Readout direction (up or down)
     """
+    spatial_dim = 3
     te: float = None                # Echo time (in sec)
     tr: float = None                # Repetition time (in sec)
     ti: float = None                # Inversion time (in sec)
     fa: float = None                # Flip angle (in deg)
     mt: float or bool = None        # Off-resonance pulse (in hz, or bool)
+    readout: int = None             # Readout dimension
+    blip: int = None                # Readout direction (up or down)
 
     def attributes(self):
         """Return the name of all attributes"""
-        return super().attributes() + ['te', 'tr', 'ti', 'fa', 'mt']
+        return super().attributes() + ['te', 'tr', 'ti', 'fa', 'mt',
+                                       'readout', 'blip']
 
     @classmethod
     def from_mapped(cls, mapped, **attributes):
@@ -425,8 +444,14 @@ class GradientEcho(BaseND):
         new.ti = getattr(instance, 'ti', None)
         new.fa = getattr(instance, 'fa', None)
         new.mt = getattr(instance, 'mt', None)
+        new.readout = getattr(instance, 'readout', None)
+        new.blip = getattr(instance, 'blip', None)
         new.set_attributes(**attributes)
         return new
+
+    def fdata(self, *args, **kwargs):
+        kwargs.setdefault('missing', 0)
+        return super().fdata(*args, **kwargs)
 
 
 class GradientEchoSingle(GradientEcho, Volume3D):
@@ -435,7 +460,6 @@ class GradientEchoSingle(GradientEcho, Volume3D):
 
 class GradientEchoMulti(GradientEcho):
     """Multi-Echo Gradient Echo series.
-
     Properties
     ----------
     volume : io.MappedArray or tensor       Mapped volume file
@@ -446,6 +470,8 @@ class GradientEchoMulti(GradientEcho):
     ti : float                              Inversion time (in sec)
     fa : float                              Flip angle (in deg)
     mt : float or bool                      Off-resonance pulse (in hz, or bool)
+    readout : {0, 1, 2}                     Readout dimension
+    blip : list[{1, -1}]                    Readout direction (up or down)
     """
     te: list = None
 
@@ -500,6 +526,15 @@ class GradientEchoMulti(GradientEcho):
             attributes['mt'] = mt
         if 'te' not in attributes:
             attributes['te'] = [echo.te for echo in echoes]
+        if 'readout' not in attributes:
+            rds = set([echo.readout for echo in echoes if echo.readout is not None])
+            rd = rds.pop() if rds else None
+            if len(rds) > 0:
+                warnings.warn(f"readout direection not consistent across "
+                              f"echoes. Using {rd}.")
+            attributes['readout'] = rd
+        if 'blip' not in attributes:
+            attributes['blip'] = [echo.blip for echo in echoes]
         return cls.from_mapped(volume, **attributes)
 
     @classmethod
@@ -510,9 +545,11 @@ class GradientEchoMulti(GradientEcho):
     def echo(self, index):
         volume = self.volume[index, ...]
         te = self.te[index]
+        blip = self.blip[index]
         attributes = {key: getattr(self, key) for key in self.attributes()
-                      if key != 'te'}
+                      if key not in ('te', 'blip')}
         attributes['te'] = te
+        attributes['blip'] = blip
         return GradientEcho.from_mapped(volume, **attributes)
 
     def __getitem__(self, item):
