@@ -63,7 +63,7 @@ def try_import(path, keys=None, _as=True):
     def try_import_module(path):
         try:
             return importlib.import_module(path)
-        except ModuleNotFoundError:
+        except (ImportError, ModuleNotFoundError):
             return None
         
     
@@ -71,7 +71,7 @@ def try_import(path, keys=None, _as=True):
     pack = path.split('.')[0]
     try:
         __import__(pack)
-    except ImportError:
+    except (ImportError, ModuleNotFoundError):
         return fail()
 
     if _as:
