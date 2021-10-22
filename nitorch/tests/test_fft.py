@@ -5,6 +5,7 @@ from nitorch.core import fft as nifft
 pyfft = try_import('torch.fft', _as=True)
 
 
+_torch_has_old_fft = nifft._torch_has_old_fft
 _torch_has_complex = nifft._torch_has_complex
 _torch_has_fft_module = nifft._torch_has_fft_module
 _torch_has_fftshift = nifft._torch_has_fftshift
@@ -15,7 +16,7 @@ ndims = (1, 2, 3, 4)
 
 @pytest.mark.parametrize('norm', norms)
 def test_fft(norm):
-    if not _torch_has_fft_module:
+    if not _torch_has_fft_module or not _torch_has_old_fft:
         return True
     
     nifft._torch_has_complex = False
@@ -43,7 +44,7 @@ def test_fft(norm):
 
 @pytest.mark.parametrize('norm', norms)
 def test_ifft(norm):
-    if not _torch_has_fft_module:
+    if not _torch_has_fft_module or not _torch_has_old_fft:
         return True
     
     nifft._torch_has_complex = False
@@ -73,7 +74,7 @@ def test_ifft(norm):
 @pytest.mark.parametrize('ndim', ndims)
 @pytest.mark.parametrize('shuffle', (True, False))
 def test_fftn(norm, ndim, shuffle):
-    if not _torch_has_fft_module:
+    if not _torch_has_fft_module or not _torch_has_old_fft:
         return True
     
     nifft._torch_has_complex = False
@@ -103,7 +104,7 @@ def test_fftn(norm, ndim, shuffle):
 @pytest.mark.parametrize('ndim', ndims)
 @pytest.mark.parametrize('shuffle', (True, False))
 def test_ifftn(norm, ndim, shuffle):
-    if not _torch_has_fft_module:
+    if not _torch_has_fft_module or not _torch_has_old_fft:
         return True
     
     nifft._torch_has_complex = False
