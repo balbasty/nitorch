@@ -53,7 +53,7 @@ def try_import(path, keys=None, _as=True):
         Return None if import fails.
 
     """
-    def fail():
+    def fail(keys):
         if keys is None or isinstance(keys, str):
             return None
         else:
@@ -72,13 +72,13 @@ def try_import(path, keys=None, _as=True):
     try:
         __import__(pack)
     except (ImportError, ModuleNotFoundError):
-        return fail()
+        return fail(keys)
 
     if _as:
         # import a module
         module = try_import_module(path)
         if not module:
-            return fail()
+            return fail(keys)
         # optional: extract attributes
         if keys is not None:
             if isinstance(keys, str):
@@ -91,12 +91,12 @@ def try_import(path, keys=None, _as=True):
         path = path.split('.')
         mod0 = try_import_module(path[0])
         if not mod0:
-            return fail()
+            return fail(keys)
         cursor = mod0
         for i in range(1, len(path)):
             mod1 = try_import_module('.'.join(path[:i+1]))
             if not mod1:
-                return fail()
+                return fail(keys)
             setattr(cursor, path[i], mod1)
             cursor = getattr(cursor, path[i])
         return mod0
