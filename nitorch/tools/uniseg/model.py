@@ -171,11 +171,15 @@ class Mixture:
                 # E-step
                 # ==========
                 # Product Rule
-                tpm_ = self.warp_tpm(tpm=self.mp[b], D=self.alpha[b])
+                if self.alpha[b].abs().sum() > 0:
+                    tpm_ = self.warp_tpm(tpm=self.mp[b], D=self.alpha[b],
+                                logits=False, implicit=False, softmax=True)
+                else:
+                    tpm_ = self.mp[b]
                 if isinstance(K, list):
                     for k in K:
-                        for j in k:
-                            Z[b, k] += self._log_likelihood(X, j, b=b)
+                        for j in range(k):
+                            Z[b, k] += self._log_likelihood(X, j, b=b)[0]
                         Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
                 else:
                     for k in range(K):
@@ -232,8 +236,8 @@ class Mixture:
                     # Product Rule
                     if isinstance(K, list):
                         for k in K:
-                            for j in k:
-                                Z[b, k] += self._log_likelihood(X, j, b=b)
+                            for j in range(k):
+                                Z[b, k] += self._log_likelihood(X, j, b=b)[0]
                             Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
                     else:
                         for k in range(K):
@@ -262,8 +266,8 @@ class Mixture:
                     # Product Rule
                     if isinstance(K, list):
                         for k in K:
-                            for j in k:
-                                Z[b, k] += self._log_likelihood(X, j, b=b)
+                            for j in range(k):
+                                Z[b, k] += self._log_likelihood(X, j, b=b)[0]
                             Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
                     else:
                         for k in range(K):
@@ -475,7 +479,7 @@ class UniSeg(Mixture):
                 Cov = self.Cov[b, c, c, k].reshape(1, 1).cpu()
                 mu = self.mu[b, c, k].reshape(1).cpu()
             else:
-                beta = self.beta[b]
+                beta = self.beta[b].sum(dim=0)
                 Cov = self.Cov[b, :, :, k].reshape(C, C) # shape (C, C)
                 mu = self.mu[b, :, k].reshape(C) # shape C
             if C == 1:
@@ -502,7 +506,7 @@ class UniSeg(Mixture):
                 log_det_Cov = torch.ones((B, 1), device=device, dtype=dtype)
                 diff = torch.ones((B, 1,)+(X.shape[2:].numel(),), device=device, dtype=dtype)
             else:
-                beta = self.beta
+                beta = self.beta.sum(dim=1, keepdim=True)
                 Cov = torch.ones((B, C, C), device=device, dtype=dtype)
                 mu = torch.ones((B, C), device=device, dtype=dtype)
                 chol_Cov = torch.ones((B, C, C), device=device, dtype=dtype)
@@ -837,7 +841,7 @@ class UniSeg(Mixture):
             grid = spatial.affine_matvec(aff, grid)
         wM = spatial.grid_pull(tpm, grid, **pull_opt)
         if softmax:
-            wM = math.softmax(wM, implicit=True)
+            wM = math.softmax(wM, implicit=implicit)
         del grid, aff
         return wM
 
