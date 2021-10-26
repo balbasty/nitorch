@@ -557,7 +557,7 @@ class SpatialMixture:
             plt.show()
 
     def _lb_parameters(self):
-        return getattr(self, '_lb_warp', 0) + getattr(self, 'lb_bias', 0)
+        return getattr(self, '_lb_warp', 0) + getattr(self, '_lb_bias', 0)
 
     # Implement in child classes
     def get_means_variances(self, *a, **k):
