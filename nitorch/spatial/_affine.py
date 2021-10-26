@@ -2313,7 +2313,7 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
 
     """
     # parse inputs
-    mat = torch.as_tensor(mat)
+    mat = torch.as_tensor(mat).clone()
     dim = mat.shape[-1] - 1
     shape = tensor = None
     if shape_or_tensor is not None:
@@ -2324,7 +2324,7 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
         else:
             shape = shape_or_tensor
             if torch.is_tensor(shape):
-                shape = shape.tolist()
+                shape = shape.tolist()[-dim:]
             shape = tuple(shape)
 
     # find current layout and target layout
