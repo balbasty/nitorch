@@ -84,7 +84,7 @@ def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
 
 def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
                    mu_noise=None, max_iter=10000, verbose=0,
-                   bins=1024):
+                   bins=1024, chi=False):
     """Estimate noise from a nifti image by fitting either a GMM or an RMM 
     to the image's intensity histogram.
     Args:
@@ -146,11 +146,14 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
     if mn < 0:  # Make GMM model
         model = GMM(num_class=num_class)
     else:  # Make RMM model
-        #model = RMM(num_class=num_class)
-        model = CMM(num_class=num_class)
+        if chi:
+            print("chi model")
+            model = CMM(num_class=num_class)
+        else:
+            model = RMM(num_class=num_class)
 
     # Fit GMM using Numpy
-    model.fit(x, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
+    model.fit(x, W=W, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num, chi=chi)
 
     # Get means and mixing proportions
     mu, _ = model.get_means_variances()

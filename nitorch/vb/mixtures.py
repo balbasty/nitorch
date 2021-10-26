@@ -34,7 +34,7 @@ class Mixture:
 
     # Functions
     def fit(self, X, verbose=1, max_iter=10000, tol=1e-8, fig_num=1, W=None,
-            show_fit=False):
+            show_fit=False, chi=False):
         """ Fit mixture model.
 
         Args:
@@ -88,7 +88,7 @@ class Mixture:
                 self.lam[c] = (torch.sum(X[:, c]) / K) ** 2
 
         # EM loop
-        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W)
+        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, chi=chi)
 
         # Print algorithm info
         if verbose >= 1:
@@ -105,7 +105,7 @@ class Mixture:
 
         return Z
     
-    def _em(self, X, max_iter, tol, verbose, W):
+    def _em(self, X, max_iter, tol, verbose, W, chi=False):
         """ EM loop for fitting GMM.
 
         Args:
@@ -155,19 +155,30 @@ class Mixture:
                 break  # Finished
 
             if W is not None:  # Weight responsibilities
+                #print(f"Z*W {Z.shape,W.shape}")
                 Z = Z * W
+                
 
             # ==========
             # M-step
             # ==========
             # Compute sufficient statistics
-            ss0, ss1, ss2 = self._suffstats(X, Z)
+
+            # changing that to the chi version, temporary solution
+            if chi:
+                ss0, ss1, ss2 = self._suffstatschi(X, Z, W)
+            else:
+                ss0, ss1, ss2 = self._suffstats(X, Z)
+            
 
             # Update mixing proportions
-            if W is not None:
-                self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
+            if chi:
+                self.mp = ss0/torch.sum(self.mp)
             else:
-                self.mp = ss0 / N
+                if W is not None:
+                    self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
+                else:
+                    self.mp = ss0 / N
 
             # Update model specific parameters
             self._update(ss0, ss1, ss2)
@@ -181,6 +192,68 @@ class Mixture:
         """
         # Mixing proportions
         self.mp = torch.ones(self.K, dtype=dtype, device=self.dev)/self.K
+
+    def _suffstatschi(self, X, Z, W):
+        """ Compute sufficient statistics.
+
+        Args:
+            X (torch.tensor): Observed data (N, C).
+            Z (torch.tensor): Responsibilities (N, K).
+
+        Returns:
+            ss0 (torch.tensor): 0th moment (K).
+            ss1 (torch.tensor): 1st moment (C, K).
+            ss2 (torch.tensor): 2nd moment (C, C, K).
+
+            % Sufficient statistics
+            s0  = sum(h);
+            s2  = sum(h.*x.^2);
+            sl  = sum(h.*log(max(x,eps)));
+
+        """
+        #Chi_params(h.*r(:,k),x,nu(k),sig2(k));
+        N = X.shape[0]
+        C = X.shape[1]
+        K = Z.shape[1]
+        device = self.dev
+        tiny = torch.tensor(1e-32, dtype=torch.float64, device=device)
+
+        # Suffstats
+        ss0 = torch.zeros(K, dtype=torch.float64, device=device)
+        ss1 = torch.zeros((C, K), dtype=torch.float64, device=device)
+        ss2 = torch.zeros((C, C, K), dtype=torch.float64, device=device)
+
+        #print ("SHAPESSHAPESSHAPES")
+        #print (Z.shape, W.shape, ss0.shape, ss1.shape, ss2.shape)
+
+
+        # Compute 1st and 2nd moments
+        for k in range(K):
+            #0
+            #pom = Z[:,k]
+            pom = Z[:,k]*torch.transpose(W,0,1)
+            ss0[k]=torch.sum(pom)
+            #print(pom.shape)
+            #pomr = torch.reshape(pom, (N, 1))
+            #print(pomr.shape)
+            # 1st  sl  = sum(h.*log(max(x,eps)));
+            ss1[:, k] = torch.sum(torch.reshape(pom, (N, 1)) *torch.log(torch.clamp(X, min=tiny)),
+                                  dim=0, dtype=torch.float64)
+
+            # 2nd    s2  = sum(h.*x.^2);
+            for c1 in range(C):
+                ss2[c1, c1, k] = \
+                    torch.sum(pom * X[:, c1] ** 2, dtype=torch.float64)
+                for c2 in range(c1 + 1, C):
+                    ss2[c1, c2, k] = \
+                        torch.sum(pom * (X[:, c1] * X[:, c2]),
+                                  dtype=torch.float64)
+                    ss2[c2, c1, k] = ss2[c1, c2, k]
+
+        #print(f"ss1 {ss1}")
+        #print(f"ss2 {ss2}")
+
+        return ss0, ss1, ss2
 
     def _suffstats(self, X, Z):
         """ Compute sufficient statistics.
@@ -228,7 +301,7 @@ class Mixture:
         #print(f"ss1 {ss1}")
         #print(f"ss2 {ss2}")
 
-        return ss0, ss1, ss2
+        return ss0, ss1, ss2    
 
     def _plot_fit(self, X, W, fig_num):
         """ Plot mixture fit.
@@ -742,7 +815,7 @@ class CMM(Mixture):
             else:
                 self.sig = 5*torch.sum(W*X)/torch.sum(W)
                 self.sig = torch.sum(W*(self.sig - X)**2)/torch.sum(W)
-                self.sig = torch.sqrt(self.sig/((K+1)*(torch.arange(1, K+1, dtype=dtype, device=self.dev))))
+                self.sig = torch.sqrt(self.sig/(K+1)*(torch.arange(1, K+1, dtype=dtype, device=self.dev)))
 
         
         if self.dof is None:
