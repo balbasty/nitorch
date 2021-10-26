@@ -327,13 +327,12 @@ class SpatialMixture:
         vx = spatial.voxel_size(aff) if aff is not None else None
         nW = W.sum() if W is not None else X[1:].numel()
 
+        M = G = None
         if self.prior is not None:
             if self.warp:
                 M, G = self.warp_tpm(aff=aff, grad=True)
             else:
                 M = self.warp_tpm(aff=aff)
-        else:
-            M = None
 
         all_lb = []
         all_all_lb = []
@@ -406,6 +405,7 @@ class SpatialMixture:
                 # =============
                 # M-step - Warp
                 # =============
+                M = self._modulate_prior_(M)
                 self._update_warp(Z, M, G)
                 M, G = self.warp_tpm(aff=aff, grad=True)
 
@@ -422,6 +422,26 @@ class SpatialMixture:
                 break
 
         return Z, all_lb
+
+    def _modulate_prior_(self, M):
+        """Module non-stationary prior with stationary prior
+
+        /!\ This is done in place
+
+        Parameters
+        ----------
+        M : (K, *spatial) tensor
+
+        Returns
+        -------
+        M : (K, *spatial) tensor
+
+        """
+        M = utils.movedim(M, 0, -1)
+        M *= self.gamma
+        M /= M.sum(-1, keepdim=True)
+        M = utils.movedim(M, 0, -1)
+        return M
 
     def _suffstats(self, X, Z):
         """ Compute sufficient statistics.
