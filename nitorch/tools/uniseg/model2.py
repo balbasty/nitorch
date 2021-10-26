@@ -93,7 +93,7 @@ class SpatialMixture:
             GMM mixing proportions. Stationary and learned by default.
         prior_aff : (D+1, D+1) tensor, optionsl
             Orientation matrix of the prior.
-        lam_bias : float, default=1e16
+        lam_bias : float, default=1e6
             Regularization factor of the bias field.
         lam_warp : dict, default={'membrane': 1e-3,
                                   'bending': 0.5,
@@ -202,11 +202,9 @@ class SpatialMixture:
             Observed data
                 C = num channels
                 *spatial = spatial dimensions. Can be [x], [x,y] or [x,y,z]
-        W : (*spatial) tensor
+        W : (*spatial) tensor, optional
             Observation weights.
-            If multiple channels are provided, the weight tensor will be
-            "product-reduced" along the channel dimension.
-        aff : (D+1, D+1) tensor
+        aff : (D+1, D+1) tensor, optional
             Orientation matrix
 
         Other Parameters
@@ -217,6 +215,8 @@ class SpatialMixture:
             Initial log-bias
         gamma : (K,) tensor, default=1/K
             Initial mixing proportions
+        kappa : (K,) tensor, default=1/Ki
+            Initial within-class mixing proportions
 
         Returns
         -------
@@ -373,12 +373,12 @@ class SpatialMixture:
 
         Parameters
         ----------
-        X : (B, C, *spatial) tensor
-        W : (B, 1, *spatial) tensor or None
+        X : (C, *spatial) tensor
+        W : (*spatial) tensor or None
 
         Returns
         -------
-        Z : (B, K, *spatial) tensor
+        Z : (K, *spatial) tensor
             Responsibilities
         lb : list[float]
             Lower bound at each iteration.
@@ -596,6 +596,7 @@ class SpatialMixture:
                 plt.subplot(4, ncol, c+1)
                 plt.imshow(X1[c], vmin=mn, vmax=0.8*mx)
                 plt.axis('off')
+                plt.title('Original')
                 plt.subplot(4, ncol, ncol+c+1)
                 plt.imshow(X2[c], vmin=mn, vmax=0.8*mx)
                 plt.axis('off')
@@ -616,6 +617,7 @@ class SpatialMixture:
                     plt.subplot(4, ncol, len(X)+c+1)
                     plt.imshow(X1[c], vmin=mn, vmax=0.8*mx)
                     plt.axis('off')
+                    plt.title('Corrected')
                     plt.subplot(4, ncol, ncol+len(X)+c+1)
                     plt.imshow(X2[c], vmin=mn, vmax=0.8*mx)
                     plt.axis('off')
@@ -626,6 +628,7 @@ class SpatialMixture:
                     plt.subplot(4, ncol, len(X)+c+2)
                     plt.imshow(B1[c])
                     plt.axis('off')
+                    plt.title('Bias')
                     plt.subplot(4, ncol, ncol+len(X)+c+2)
                     plt.imshow(B2[c])
                     plt.axis('off')
@@ -638,6 +641,7 @@ class SpatialMixture:
             plt.subplot(4, ncol, len(X)+offset+1)
             plt.imshow(prob_to_rgb(Z1))
             plt.axis('off')
+            plt.title('Resp.')
             plt.subplot(4, ncol, ncol+len(X)+offset+1)
             plt.imshow(prob_to_rgb(Z2))
             plt.axis('off')
@@ -646,12 +650,13 @@ class SpatialMixture:
             plt.axis('off')
 
             if M is not None:
-                M1 = M[:, :, :, M.shape[-1]//2]
-                M2 = M[:, :, M.shape[-2]//2, :]
-                M3 = M[:, M.shape[-3]//2, :, :]
+                M1 = self._modulate_prior_(M[:, :, :, M.shape[-1]//2].clone())
+                M2 = self._modulate_prior_(M[:, :, M.shape[-2]//2, :].clone())
+                M3 = self._modulate_prior_(M[:, M.shape[-3]//2, :, :].clone())
                 plt.subplot(4, ncol, len(X)+2+offset)
                 plt.imshow(prob_to_rgb(M1))
                 plt.axis('off')
+                plt.title('Prior')
                 plt.subplot(4, ncol, ncol+len(X)+2+offset)
                 plt.imshow(prob_to_rgb(M2))
                 plt.axis('off')
