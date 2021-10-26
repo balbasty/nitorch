@@ -72,7 +72,7 @@ class SpatialMixture:
     def __init__(self, nb_classes=6,
                  bias=True, warp=True, mixing=False, prior=None, prior_aff=None,
                  lam_bias=1e6, lam_warp=None, lam_mixing=100,
-                 bias_acceleration=0.9, warp_acceleration=0.9, sampling=3,
+                 bias_acceleration=0.9, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-4, max_iter_intensity=8,
                  max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
                  verbose=1, verbose_bias=0, verbose_warp=0, show_fit=False):
@@ -118,7 +118,7 @@ class SpatialMixture:
             Maximum number of Warp (Gauss-Newton) iterations
         bias_acceleration : float, default=0.9
         warp_acceleration : float, default=0.9
-        sampling : float, default=3
+        spacing : float, default=3
             Distance (in mm) between sampled points when optimizing parameters
         verbose : int, default=1
             0: None.
@@ -156,7 +156,7 @@ class SpatialMixture:
             self.warp = False
 
         # Optimization
-        self.sampling = 3
+        self.spacing = spacing
         self.max_iter = max_iter
         self.max_iter_intensity = max_iter_intensity
         self.max_iter_cluster = max_iter_cluster
@@ -260,9 +260,9 @@ class SpatialMixture:
 
         # Subsample
         X0, W0, aff0 = X, W, aff
-        if self.sampling:
+        if self.spacing:
             vx = spatial.voxel_size(aff)
-            factor = (vx / self.sampling).tolist()
+            factor = (vx / self.spacing).tolist()
             X, aff = spatial.resize(X[None], factor=factor, affine=aff)
             X = X[0]
             while W.dim() < X.dim():
@@ -276,7 +276,7 @@ class SpatialMixture:
         Z, lb = self._em(X, W, aff)
 
         # Estimate Z at highest resolution
-        if self.sampling:
+        if self.spacing:
             X = X0
             W = W0
             M = None
@@ -904,7 +904,7 @@ class SpatialMixture:
             return mask[None]
 
         M = spatial.grid_pull(self.prior, grid, bound='dct2', extrapolate=False)
-        M[:, mask == 0] = M.min()
+        M[:, mask == 0] = M.min()  # uncomment for informative out-of-FOV
         if mode == 'softmax':
             M = math.softmax(M, dim=0, implicit=(True, False))
         elif mode == 'log_softmax':
