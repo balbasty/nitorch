@@ -230,7 +230,9 @@ class SegNet(Module):
             pool=None,
             unpool=None,
             activation=tnn.LeakyReLU(0.2),
-            norm='batch'):
+            norm='batch',
+            to_feat=None,
+            from_feat=None):
         """
 
         Parameters
@@ -291,17 +293,23 @@ class SegNet(Module):
             self.to_feat = lambda x: x
             self.from_feat = lambda x: x
         else:
-            self.to_feat = Conv(
-                dim,
-                in_channels=input_channels,
-                out_channels=unet.in_channels,
-                kernel_size=1)
+            if to_feat is True:
+                self.to_feat = Conv(
+                    dim,
+                    in_channels=input_channels,
+                    out_channels=unet.in_channels,
+                    kernel_size=1)
+            else:
+                self.to_feat = lambda x: x
             self.unet = unet
-            self.from_feat = Conv(
-                dim,
-                in_channels=unet.out_channels,
-                out_channels=output_classes + (not head.implicit),
-                kernel_size=1)
+            if from_feat is True:
+                self.from_feat = Conv(
+                    dim,
+                    in_channels=unet.out_channels,
+                    out_channels=output_classes + (not head.implicit),
+                    kernel_size=1)
+            else:
+                self.from_feat = lambda x: x
         self.head = head
 
         # register loss tag
