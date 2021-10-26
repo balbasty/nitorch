@@ -606,10 +606,10 @@ class RandomPatch(Module):
             for i in range(len(other_images)):
                 other_outputs[i][b] = other_images[i][index]
 
-            if len(other_images) > 0:
-                return (output, *other_outputs)
-            else:
-                return output
+        if len(other_images) > 0:
+            return (output, *other_outputs)
+        else:
+            return output
 
 
 class RandomFlip(Module):
@@ -684,7 +684,7 @@ class RandomSmooth(Module):
 
         out = torch.as_tensor(x)
         for b in range(len(x)):
-            fwhm = self.fwhm(fwhm_exp, fwhm_scale).sample().expand([dim]).clone()
+            fwhm = self.fwhm(fwhm_exp, fwhm_scale).sample().clamp_min_(0).expand([dim]).clone()
             out[b] = smooth(x[b], fwhm=fwhm, dim=dim, padding='same', bound='dct2')
         return out
 

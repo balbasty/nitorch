@@ -224,7 +224,6 @@ class HyperRandomChiNoise(Module):
         out = torch.empty_like(x)
         for b in range(len(x)):
             sigma = self.sigma(self.sigma_exp, self.sigma_scale).sample().clamp_min_(0)
-            print(sigma)
             ncoils = self.ncoils(self.ncoils_exp, self.ncoils_exp).sample().clamp_min_(1)
             sampler = RandomChiNoise(sigma, ncoils)
             if gfactor is not None and gfactor.dim() == x.dim():

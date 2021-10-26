@@ -494,7 +494,7 @@ class HyperRandomGaussianMixture(Module):
         self.background_zero = background_zero
         self.dtype = dtype or torch.get_default_dtype()
 
-    def forward(self, x):
+    def forward(self, x, **overload):
         """
 
         Parameters
@@ -515,8 +515,8 @@ class HyperRandomGaussianMixture(Module):
             dtype = self.dtype
         backend = dict(dtype=dtype, device=device)
 
-        nb_classes = self.nb_classes
-        nb_channels = self.nb_channels
+        nb_classes = overload.get('nb_classes', self.nb_classes)
+        nb_channels = overload.get('nb_channels', self.nb_channels)
         means_exp = torch.as_tensor(self.means_exp, **backend)
         means_scale = torch.as_tensor(self.means_scale, **backend)
         scales_exp = torch.as_tensor(self.scales_exp, **backend)

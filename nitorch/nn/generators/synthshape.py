@@ -36,22 +36,92 @@ from .mixture import HyperRandomGaussianMixture
 from .intensity import RandomGammaCorrection, HyperRandomChiNoise
 
 
-buckner_left = []
-buckner_right = []
-buckner_skullstrip = []
-buckner_csf = []
-buckner_droppable = [
-    buckner_skullstrip,                                  # skullstrip w/ csf
-    [buckner_skullstrip, *buckner_csf],                  # skullstrip no csf
-    [buckner_left, *buckner_skullstrip, *buckner_csf],   # hemi right
-    [buckner_right, *buckner_skullstrip, *buckner_csf],  # hemi left
-]
-buckner_predicted = []
+def buckner32_labels():
+    central = [11, 12, 13]
+    left = [1, 2, 3, 4, 7, 8, 9, 10, 14, 15, 16, 17]
+    right = [18, 19, 20, 21, 24, 25, 26, 27, 28, 29, 30, 31]
+    left_cb = [5, 6]
+    right_cb = [22, 23]
+    nonbrain = []
+    csf = []
+
+    drop_cb = [*left_cb, *right_cb]
+    drop_hemi_left = [*right, *right_cb, *nonbrain, *csf]
+    drop_hemi_left_nocb = [*drop_hemi_left, *right_cb]
+    drop_hemi_right = [*left, *left_cb, *nonbrain, *csf]
+    drop_hemi_right_nocb = [*drop_hemi_right, *left_cb]
+
+    droppable = [
+        drop_cb,
+        drop_hemi_left,
+        drop_hemi_left_nocb,
+        drop_hemi_right,
+        drop_hemi_right_nocb,
+    ]
+    predicted = list(range(1, 32))
+    return droppable, predicted
+
+
+def fs35_labels():
+    central = [11, 12, 13]
+    left = [1, 2, 3, 4, 7, 8, 9, 10, 14, 15, 16, 17, 18, 19]
+    right = [20, 21, 22, 23, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35]
+    left_cb = [5, 6]
+    right_cb = [24, 25]
+
+    nonbrain = []
+    csf = []
+
+    drop_cb = [*left_cb, *right_cb]
+    drop_hemi_left = [*right, *right_cb, *nonbrain, *csf]
+    drop_hemi_left_nocb = [*drop_hemi_left, *right_cb]
+    drop_hemi_right = [*left, *left_cb, *nonbrain, *csf]
+    drop_hemi_right_nocb = [*drop_hemi_right, *left_cb]
+
+    droppable = [
+        drop_cb,
+        drop_hemi_left,
+        drop_hemi_left_nocb,
+        drop_hemi_right,
+        drop_hemi_right_nocb,
+    ]
+    predicted = sorted(central + left_cb + right_cb + left[:-2] + right[:-2])
+    return droppable, predicted
+
+
+def fs32_labels():
+    central = [10, 11, 12]
+    left = [1, 2, 3, 6, 7, 8, 9, 13, 14, 16, 17, 18]
+    right = [19, 20, 21, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+    left_cb = [4, 5]
+    right_cb = [22, 23]
+    nonbrain = []
+    csf = [15]
+
+    drop_skullstrip = nonbrain
+    drop_skullstrip_csf = [*nonbrain, *csf]
+    drop_cb = [*left_cb, *right_cb]
+    drop_hemi_left = [*right, *right_cb, *nonbrain, *csf]
+    drop_hemi_left_nocb = [*drop_hemi_left, *left_cb]
+    drop_hemi_right = [*left, *left_cb, *nonbrain, *csf]
+    drop_hemi_right_nocb = [*drop_hemi_right, *right_cb]
+
+    droppable = [
+        drop_skullstrip,
+        drop_skullstrip_csf,
+        drop_cb,
+        drop_hemi_left,
+        drop_hemi_left_nocb,
+        drop_hemi_right,
+        drop_hemi_right_nocb,
+    ]
+    predicted = sorted(central + left_cb + right_cb + left[:-2] + right[:-2])
+    return droppable, predicted
 
 
 class AddBagClass(Module):
 
-    def __init__(self, kernel=5, label=None):
+    def __init__(self, kernel=10, label=None):
         super().__init__()
         self.kernel = kernel
         self.label = label
@@ -62,8 +132,8 @@ class AddBagClass(Module):
         else:
             fwd = (x == 0).bitwise_not_().float()
         fwd = spatial.smooth(fwd, fwhm=self.kernel, dim=x.dim()-2,
-                             padding='same', bound='nearest')
-        fwd = fwd > 0.1
+                             padding='same', bound='replicate')
+        fwd = fwd > 1e-3
         if x.dtype.is_floating_point:
             bag = x[:, :1] * fwd
             bg = x[:, :1] * fwd.bitwise_not_()
@@ -73,6 +143,7 @@ class AddBagClass(Module):
             bag = (x == 0).bitwise_and_(fwd)
             label = self.label or (x.max() + 1)
             x[bag] = label
+        return x
 
 
 class SynthMRI(Module):
@@ -92,9 +163,14 @@ class SynthMRI(Module):
       acquisition (a single low-res dimension with varying slice thickness
       and slice gap) or a 3D acquisition (isotropic low-res, without slice
       gap)
-    - We model all possible slice thickness in the range (0, resolution),
+    - We model all possible slice thicknesses in the range (0, resolution),
       instead of (1, resolution), although there are minimal differences
       between slice thicknesses in the range (0, 1).
+    - We sample a "bag" class obtained by dilating the brain. It can be used
+      to roughly model the head or to model the embedding medium in ex vivo
+      imaging.
+    - We sample single hemispheres, as well as brains without the cerebellum,
+      again in order to simulate ex vivo imaging.
 
     References
     ----------
@@ -107,7 +183,6 @@ class SynthMRI(Module):
     """
 
     def __init__(self,
-                 classes,
                  channel=1,
                  vel_amplitude=3,
                  vel_fwhm=20,
@@ -119,8 +194,9 @@ class SynthMRI(Module):
                  bias_amplitude=0.5,
                  bias_fwhm=50,
                  gamma=0.6,
+                 motion_fwhm=3,
                  resolution=8,
-                 noise=96,
+                 noise=48,
                  gfactor_amplitude=0.5,
                  gfactor_fwhm=64,
                  gmm_cat='labels',
@@ -136,8 +212,9 @@ class SynthMRI(Module):
         self.predicted_labels = predicted_labels
 
         # label 2 one hot
+        self.pbag = bag
         self.bag = AddBagClass() if bag else (lambda x: x)
-        self.to_onehot = LabelToOneHot(dtype=dtype, nb_classes=classes)
+        self.to_onehot = LabelToOneHot(dtype=dtype)
         # deform
         self.deform = RandomDeform(
             amplitude='uniform',
@@ -159,7 +236,7 @@ class SynthMRI(Module):
         self.to_label = OneHotToLabel()
         # gmm
         self.mixture = HyperRandomGaussianMixture(
-            nb_classes=classes,
+            nb_classes=None,
             nb_channels=channel,
             means='uniform',
             means_exp=125,
@@ -190,7 +267,12 @@ class SynthMRI(Module):
             fwhm_exp=bias_fwhm,
         )
         # smooth (iso)
-        self.smooth = RandomSmooth(iso=True)
+        self.smooth = RandomSmooth(
+            iso=True,
+            fwhm='uniform',
+            fwhm_exp=motion_fwhm/2,
+            fwhm_scale=motion_fwhm/3.46
+        )
         # smooth and downsample
         self.lowres2d = RandomLowRes2D(
             resolution='uniform',
@@ -199,8 +281,8 @@ class SynthMRI(Module):
         )
         self.lowres3d = RandomLowRes3D(
             resolution='uniform',
-            resolution_exp=resolution/2+1,
-            resolution_scale=resolution/3.46
+            resolution_exp=(resolution**0.33)/2+1,
+            resolution_scale=(resolution**0.33)/3.46
         )
         # add noise
         gfactor = HyperRandomMultiplicativeField(
@@ -220,7 +302,39 @@ class SynthMRI(Module):
         # rescale
         self.rescale = AffineQuantiles()
 
-    def forward(self, s):
+    def preprocess_labels(self, s):
+        # s0 <- labels to predict
+        # s  <- labels to model
+        s0 = s
+
+        all_labels = set(s.unique().tolist())
+        if self.droppable_labels:
+            # remove labels that are not modelled
+            # E.g., this could be all non-brain labels (to model skull
+            # stripping) or all left labels (to model hemi).
+            ngroups = len(self.droppable_labels)
+            group = torch.randint(ngroups+1, [])
+            if group > 0:
+                dropped_labels = self.droppable_labels[group-1]
+                s[utils.isin(s, dropped_labels)] = 0
+                all_labels = all_labels.difference(set(dropped_labels))
+        s = utils.merge_labels(s, sorted(all_labels))
+        nb_labels_sampled = len(all_labels)
+
+        if self.predicted_labels:
+            predicted_labels = self.predicted_labels
+            if isinstance(self.predicted_labels, int):
+                predicted_labels = list(range(predicted_labels+1))
+            # remove labels that are not predicted
+            s0[utils.isin(s0, predicted_labels).bitwise_not_()] = 0
+            s0 = utils.merge_labels(s0, sorted([0, *predicted_labels]))
+        else:
+            predicted_labels = list(sorted(s0.unique().tolist()))[1:]
+        nb_labels_predicted = len(predicted_labels) + 1
+
+        return s, s0, nb_labels_sampled, nb_labels_predicted
+
+    def forward(self, s, return_resolution=False):
         """
 
         Parameters
@@ -234,29 +348,16 @@ class SynthMRI(Module):
             Multi-channel image
 
         """
-        # s0 <- labels to predict
-        # s  <- labels to model
-        s0 = s
+        s, s0, n, n0 = self.preprocess_labels(s)
 
-        if self.droppable_labels:
-            # remove labels that are not modelled
-            # E.g., this could be all non-brain labels (to model skull
-            # stripping) or all left labels (to model hemi).
-            ngroups = len(self.droppable_labels)
-            group = torch.randint(ngroups+2, [])
-            if group > 0:
-                dropped_labels = self.droppable_labels[group]
-                s[utils.isin(s, dropped_labels)] = 0
-        if self.predicted_labels:
-            # remove labels that are not predicted
-            s0[utils.isin(s0, self.predicted_labels).bitwise_not_()] = 0
-
-        s = self.bag(s)
+        if self.pbag and torch.rand([]) > 1-self.pbag:
+            s = self.bag(s)
+            n += 1
         s = self.to_onehot(s)
         s, s0 = self.deform(s, s0)
         if self.gmm_cat == 'l':
             s = self.to_label(s)
-        x = self.mixture(s)
+        x = self.mixture(s, nb_classes=n)
         x.clamp_(0, 255)
         x = self.gamma(x)
         x = self.bias(x)
@@ -267,5 +368,8 @@ class SynthMRI(Module):
         else:
             x, vx = self.lowres3d(x, noise=e, return_resolution=True)
         x = self.rescale(x)
-        return x, s0
+        out = [x, s0]
+        if return_resolution:
+            out += [vx]
+        return tuple(out)
 
