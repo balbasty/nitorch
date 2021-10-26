@@ -11,7 +11,7 @@ class LabelToOneHot(Module):
         self.dtype = dtype
         self.nb_classes = nb_classes
 
-    def forward(self, x):
+    def forward(self, x, **overload):
         """
 
         Parameters
@@ -23,8 +23,9 @@ class LabelToOneHot(Module):
         x : (B, C, *spatial)
 
         """
+        nb_classes = overload.get('nb_classes', self.nb_classes)
         dtype = self.dtype or torch.get_default_dtype()
-        if self.nb_classes is None:
+        if nb_classes is None:
             max_label = None
         else:
             max_label = self.nb_classes - 1
