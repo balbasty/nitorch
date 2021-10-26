@@ -588,7 +588,7 @@ class SpatialMixture:
         elif self.bias:
             self.beta = torch.zeros([C, *N], **backend)
         else:
-            self.beta = 0
+            self.beta = None
 
         # mixing prop (extra)
         backend['dtype'] = torch.double
@@ -953,7 +953,8 @@ class UniSeg(SpatialMixture):
             # keeping only terms that depend on sigma
             chol = linalg.cholesky(self.sigma)
             logdet = chol.diagonal(0, -1, -2).log().sum(-1)
-            tr = torch.cholesky_solve(scale, chol).diagonal(0, -1, -2).sum(-1)
+            tr = linalg.trace(torch.matmul(scale, self.sigma.inverse()))
+            # tr = linalg.trace(torch.cholesky_solve(scale, chol))
             ss0 = ss0[..., 0, 0]
             lb = tr * (df + ss0 - sigma.shape[-1] - 1) / (df + ss0) \
                - logdet * (df - sigma.shape[-1] - 1)

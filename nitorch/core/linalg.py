@@ -344,6 +344,24 @@ def cholesky(a):
     return torch.cholesky(a)
 
 
+def trace(a, keepdim=False):
+    """Compute the trace of a matrix (or batch)
+
+    Parameters
+    ----------
+    a : (..., M, M) tensor
+
+    Returns
+    -------
+    t : (...) tensor
+
+    """
+    t = a.diagonal(0, -1, -2).sum(-1)
+    if keepdim:
+        t = t[..., None, None]
+    return t
+
+
 def mdot(a, b):
     """Compute the Frobenius inner product of two matrices
 
