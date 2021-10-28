@@ -1,5 +1,6 @@
 from timeit import default_timer as timer
 import tracemalloc
+import math as pymath
 from nitorch.core.optim import plot_convergence
 from nitorch.core import linalg, math, utils, py
 from nitorch.plot import plot_mixture_fit
@@ -15,8 +16,7 @@ default_warp_reg = {'absolute': 0,
 
 def uniseg(x, w=None, aff=None, bias=True, warp=True, mixing=True,
            nb_classes=2, prior=None, prior_aff=None, lam_bias=1e6, lam_warp=None,
-           max_iter=30, tol=1e-4, max_iter_gmm=8, max_iter_bias=1, max_iter_warp=3,
-           verbose=1, verbose_bias=0, verbose_warp=0, show_fit=False):
+           max_iter=30, tol=1e-4, verbose=1, show_fit=False):
 
     # prepare inputs
     batch, channel, *spatial = x.shape
@@ -51,14 +51,14 @@ def uniseg(x, w=None, aff=None, bias=True, warp=True, mixing=True,
 
     # stack results
     parameters = {}
-    parameters['mean'] = torch.stack(model.mu for model in models)
-    parameters['cov'] = torch.stack(model.Cov for model in models)
+    parameters['mean'] = torch.stack([model.mu for model in models])
+    parameters['cov'] = torch.stack([model.sigma for model in models])
     if warp:
-        parameters['warp'] = torch.stack(model.alpha for model in models)
+        parameters['warp'] = torch.stack([model.alpha for model in models])
     if bias:
-        parameters['bias'] = torch.stack(model.beta.exp() for model in models)
+        parameters['bias'] = torch.stack([model.beta.exp() for model in models])
     if mixing:
-        parameters['mixing'] = torch.stack(model.gamma for model in models)
+        parameters['mixing'] = torch.stack([model.gamma for model in models])
 
     return torch.stack(z), torch.stack(lb), parameters
 
@@ -71,7 +71,7 @@ class SpatialMixture:
 
     def __init__(self, nb_classes=6,
                  bias=True, warp=True, mixing=False, prior=None, prior_aff=None,
-                 lam_bias=1e6, lam_warp=None, lam_mixing=100,
+                 lam_bias=1, lam_warp=1, lam_mixing=100,
                  bias_acceleration=0.9, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-4, max_iter_intensity=8,
                  max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
@@ -93,12 +93,12 @@ class SpatialMixture:
             GMM mixing proportions. Stationary and learned by default.
         prior_aff : (D+1, D+1) tensor, optionsl
             Orientation matrix of the prior.
-        lam_bias : float, default=1e6
+        lam_bias : float, default=1
             Regularization factor of the bias field.
-        lam_warp : dict, default={'membrane': 1e-3,
-                                  'bending': 0.5,
-                                  'lame': (0.05, 0.2)}
+        lam_warp : float or dict, default=1
             Regularization of the warping field.
+            If a scalar, multiplies the default parameters, which are:
+            {'membrane': 1e-3, 'bending': 0.5, 'lame': (0.05, 0.2)}
         lam_mixing : float, default=100
             Dirichlet regularization of the mixing proportions
 
@@ -135,7 +135,7 @@ class SpatialMixture:
             lkp = list(range(nb_classes))
         else:
             nb_classes = py.make_list(nb_classes)
-            lkp = [n for n, k in enumerate(nb_classes) for _ in range(len(k))]
+            lkp = [n for n, k in enumerate(nb_classes) for _ in range(k)]
         self.lkp = lkp
 
         if prior is not None:
@@ -145,8 +145,13 @@ class SpatialMixture:
                 prior_aff = spatial.affine_default(prior.shape[1:])
         self.prior = prior
         self.prior_aff = prior_aff
-        self.lam_bias = lam_bias
-        self.lam_warp = lam_warp or default_warp_reg
+        self.lam_bias = lam_bias * 1e6
+        if isinstance(lam_warp, (int, float)):
+            factor_warp = lam_warp
+            lam_warp = {k: v*factor_warp for k, v in default_warp_reg.items()}
+        elif not lam_warp:
+            lam_warp = default_warp_reg
+        self.lam_warp = lam_warp
         self.lam_mixing = lam_mixing
         self.warp_acceleration = warp_acceleration
         self.bias_acceleration = bias_acceleration
@@ -250,7 +255,7 @@ class SpatialMixture:
             dim = aff.shape[-1] - 1
         else:
             dim = X.dim() - 1
-        if X.dim() == dim - 1:
+        if X.dim() == dim:
             # add a channel dimensions
             X = X[None]
         elif not dim:
@@ -340,7 +345,7 @@ class SpatialMixture:
 
         return Z
 
-    def e_step(self, X, W=None, M=None):
+    def e_step(self, X, W=None, M=None, combine=False):
         """Perform the Expectation step
 
         Parameters
@@ -359,30 +364,45 @@ class SpatialMixture:
         lb : tensor
 
         """
+        if combine:
+            Z, lb = self.e_step(X, W, M)
+            Z = self._z_combine(Z)
+            return Z, lb
+
         if self.verbose >= 3:
             print('compute Z')
 
+        M = M.log() if M is not None else None
+        gamma = self.gamma.log() if self.gamma is not None else None
         N = X.shape[1:]
-        Z = X.new_zeros((self.nb_classes, *N))
+        Z = X.new_zeros((self.nb_clusters, *N))
         # --- likelihood ---
-        cluster = 0
-        for k, K1 in enumerate(self.nb_clusters_per_class):
-            for _ in range(K1):
-                Z[k] += self._log_likelihood(X, cluster=cluster)
-                cluster += 1
+        for k, k0 in enumerate(self.lkp):
+            Z[k] += self._log_likelihood(X, cluster=k)
         # --- observation weight ---
         if W is not None:
             Z *= W
-        # --- prior (stationary component) ---
-        for k in range(self.nb_classes):
-            Z[k] += self.gamma[k].log()
-        # --- prior (nonstationary component) ---
-        if M is not None:
-            Z += M.log()
+        for k, k0 in enumerate(self.lkp):
+            # --- prior (stationary component) ---
+            Z[k] += gamma[k0]
+            # --- prior (nonstationary component) ---
+            if M is not None:
+                Z[k] += M[k0]
         # --- softmax ---
         Z, lb = math.softmax_lse(Z + self._tinyish, lse=True, dim=0)
 
         return Z, lb
+
+    def _z_combine(self, Z0):
+        # Dumb way to compute the "classes" responsibilities.
+        # There might be a better way that combines computing cluster-wise
+        # log-likelihood and combining them.
+        if self.nb_clusters == self.nb_classes:
+            return Z0
+        Z = Z0.new_zeros((self.nb_classes, *Z0.shape[1:]))
+        for k0, k in enumerate(self.lkp):
+            Z[k] += Z0[k0]
+        return Z
 
     def _em(self, X, W=None, aff=None):
         """EM loop for fitting GMM.
@@ -390,7 +410,9 @@ class SpatialMixture:
         Parameters
         ----------
         X : (C, *spatial) tensor
-        W : (*spatial) tensor or None
+            Observed image
+        W : (*spatial) tensor, optional
+            Weights
 
         Returns
         -------
@@ -472,7 +494,7 @@ class SpatialMixture:
                     # M-step - Bias
                     # =============
                     self._update_bias(XB, Z, vx=vx)
-                    XB = self.beta.exp().mul_(X)
+                    XB = self.beta.exp(out=XB).mul_(X)
 
                     if n_iter_bias > 1 and lb-olb < self.tol * nW:
                         break
@@ -485,7 +507,7 @@ class SpatialMixture:
                 # E-step
                 # ======
                 olb = lb
-                Z, lb = self.e_step(XB, W, M)
+                Z, lb = self.e_step(XB, W, M, combine=True)
                 lb += self._lb_parameters()
                 if self.verbose >= 3:
                     print(f'{n_iter:02d} | {n_iter_warp:02d} | {"":2s} | '
@@ -516,7 +538,7 @@ class SpatialMixture:
         return Z, all_lb
 
     def _modulate_prior_(self, M):
-        """Module non-stationary prior with stationary prior
+        r"""Module non-stationary prior with stationary prior
 
         /!\ This is done in place
 
@@ -597,6 +619,7 @@ class SpatialMixture:
     def _plot_lb(self, lb, X, Z, M=None):
         import matplotlib.pyplot as plt
         from nitorch.plot.colormaps import prob_to_rgb
+
         plt.figure(666)
         if X.dim()-1 == 3:
             X1 = X[:, :, :, X.shape[-1]//2]
@@ -605,6 +628,10 @@ class SpatialMixture:
             Z1 = Z[:, :, :, Z.shape[-1]//2]
             Z2 = Z[:, :, Z.shape[-2]//2, :]
             Z3 = Z[:, Z.shape[-3]//2, :, :]
+            if len(Z) > self.nb_classes:
+                Z1 = self._z_combine(Z1)
+                Z2 = self._z_combine(Z2)
+                Z3 = self._z_combine(Z3)
             ncol = len(X) + 1 + (M is not None) + 2*(self.beta is not None)
             for c in range(len(X)):
                 mn = X[c].min()
@@ -944,6 +971,10 @@ class UniSeg(SpatialMixture):
     """
 
     def __init__(self, *args, wishart=True, **kwargs):
+        # wishart : bool or 'preproc8', default=True
+        #   If True, use a Wishart prior derived from global suffstats.
+        #   If 'preproc8', the bottom of the template FOV is discarded
+        #   when estimating these suffstats.
         super().__init__(*args, **kwargs)
         self.wishart = wishart
 
@@ -1097,7 +1128,6 @@ class UniSeg(SpatialMixture):
         # update means
         ss0 = ss0.unsqueeze(-1)
         mu = ss1 / ss0
-        self.mu.copy_(mu)
 
         # update covariances
         ss0 = ss0.unsqueeze(-1)
@@ -1107,6 +1137,29 @@ class UniSeg(SpatialMixture):
             scale, df = self.wishart
             sigma = df * scale + ss2 - linalg.outer(ss1, ss1) / ss0
             sigma /= (ss0 + df)
+
+        if len(mu) < len(self.mu):
+            # Heuristic to split a single Gaussians into multiple Gaussians.
+            # We do this at initialization time, whereas in preproc8, a
+            # full round of GMM+Bias is performed with one Gaussian per class,
+            # before splitting happens.
+            mu0 = mu
+            sigma0 = sigma
+            ss00 = ss0
+            mu = torch.empty_like(self.mu)
+            sigma = torch.empty_like(self.sigma)
+            ss0 = ss00.new_empty([self.nb_clusters, 1, 1])
+            for k in range(self.nb_classes):
+                mask = [k1 == k for k1 in self.lkp]
+                K1 = sum(mask)
+                w = 1. / (1 + pymath.exp(-(K1 - 1) * 0.25)) - 0.5
+                chol = linalg.cholesky(sigma0[k]).diag()
+                noise = torch.randn(K1, **utils.backend(mu)) * w
+                mu[mask] = chol * noise[:, None] + mu0[k]
+                sigma[mask] = sigma0[k] * (1 - w)
+                ss0[mask] = ss00[k] / K1
+
+        self.mu.copy_(mu)
         self.sigma.copy_(sigma)
 
         if self.wishart is not None:
@@ -1142,7 +1195,7 @@ class UniSeg(SpatialMixture):
             print('update bias')
 
         C, *N = X.shape
-        K = self.nb_classes
+        K = self.nb_clusters
 
         X = X.reshape([C, -1]).T
         Z = Z.reshape([K, -1])
