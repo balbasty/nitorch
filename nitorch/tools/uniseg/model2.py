@@ -141,6 +141,8 @@ class SpatialMixture:
         if prior is not None:
             implicit_in = len(prior) < self.nb_classes
             prior = math.logit(prior, implicit=(implicit_in, True), dim=0)
+            if prior_aff is None:
+                prior_aff = spatial.affine_default(prior.shape[1:])
         self.prior = prior
         self.prior_aff = prior_aff
         self.lam_bias = lam_bias
@@ -241,7 +243,18 @@ class SpatialMixture:
                   f'{torch.get_default_dtype()}.')
             X = X.to(torch.get_default_dtype())
 
-        if X.dim():
+        # Try to guess the number of spatial dimensions
+        if self.prior is not None:
+            dim = self.prior.dim() - 1
+        elif aff is not None:
+            dim = aff.shape[-1] - 1
+        else:
+            dim = X.dim() - 1
+        if X.dim() == dim - 1:
+            # add a channel dimensions
+            X = X[None]
+        elif not dim:
+            # can only be 1D -> add a channel dimensions
             X = X[None]
 
         # Prepare mask/weight
@@ -253,6 +266,10 @@ class SpatialMixture:
             X[~W] = 0
         if W0 is not None:
             W = W.to(W.dtype).mul_(W0.to(W.device))
+        if W.dtype is torch.bool:
+            W = W.all(dim=0, keepdim=True)
+        else:
+            W = W.prod(dim=0, keepdim=True)
 
         # default affine
         if aff is None:
@@ -265,8 +282,7 @@ class SpatialMixture:
             factor = (vx / self.spacing).tolist()
             X, aff = spatial.resize(X[None], factor=factor, affine=aff)
             X = X[0]
-            while W.dim() < X.dim():
-                W = W[None]
+            W = utils.unsqueeze(W, 0, max(0, X.dim()-W.dim()))
             W = spatial.resize(W[None].to(X.dtype), factor=factor)[0]
 
         # Initialise model parameters
