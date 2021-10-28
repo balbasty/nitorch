@@ -65,9 +65,9 @@ class SpatialMixture:
     _tinyish = 1e-3
 
     def __init__(self, nb_classes=6,
-                 bias=True, warp=True, mixing=True, prior=None, prior_aff=None,
+                 bias=True, warp=True, mixing=False, prior=None, prior_aff=None,
                  lam_bias=1, lam_warp=1, lam_mixing=100,
-                 bias_acceleration=0.9, warp_acceleration=0.9, spacing=3,
+                 bias_acceleration=0, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-4, max_iter_intensity=8,
                  max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
                  verbose=1, verbose_bias=0, verbose_warp=0, show_fit=False):
@@ -148,8 +148,8 @@ class SpatialMixture:
             lam_warp = default_warp_reg
         self.lam_warp = lam_warp
         self.lam_mixing = lam_mixing
-        self.warp_acceleration = warp_acceleration
-        self.bias_acceleration = bias_acceleration
+        self.warp_acceleration = min(1., max(0., warp_acceleration))
+        self.bias_acceleration = min(1., max(0., bias_acceleration))
         self.bias = bias
         self.warp = warp
         self.mixing = mixing
@@ -287,7 +287,7 @@ class SpatialMixture:
         self._init_parameters(X, W, aff, **kwargs)
 
         # EM loop
-        Z, lb = self._em(X, W, aff)
+        Z, lb, all_lb = self._em(X, W, aff)
 
         # Estimate Z at highest resolution
         if self.spacing:
@@ -311,22 +311,25 @@ class SpatialMixture:
                 self.alpha *= factor
                 M = self.warp_tpm(aff=aff0)
             Z, _ = self.e_step(X, W, M)
+            if self.verbose >= 3:
+                self._plot_lb(all_lb, X, Z, M)
 
         # Print algorithm info
         if self.verbose > 0:
             v = (f'Algorithm finished in {len(lb)} iterations, '
                  f'log-likelihood = {lb[-1].item()}, '
                  f'runtime: {timer() - t0:0.1f} s, '
-                 f'device: {X.device}, ')
+                 f'device: {X.device}')
             if X.device.type == 'cuda':
                 vram_peak = torch.cuda.max_memory_allocated(X.device)
                 vram_peak = int(vram_peak / 2 ** 20)
-                v += f'peak VRAM: {vram_peak} MB'
+                v += f', peak VRAM: {vram_peak} MB'
             print(v)
-        if self.verbose >= 3:
-            _ = plot_convergence(lb, xlab='Iteration number',
-                                 fig_title='Model lower bound',
-                                 fig_num=self.show_fit)
+        # if self.verbose >= 3:
+        #     _ = plot_convergence(lb, xlab='Iteration number',
+        #                          fig_title='Model lower bound',
+        #                          fig_num=self.show_fit)
+
         # Plot mixture fit
         if self.show_fit:
             self._plot_fit(X, W, fig_num=self.show_fit+1)
@@ -403,6 +406,8 @@ class SpatialMixture:
             Responsibilities
         lb : list[float]
             Lower bound at each iteration.
+        all_lb : list[float]
+            Lower bound at each step.
 
         """
         vx = spatial.voxel_size(aff) if aff is not None else None
@@ -437,10 +442,10 @@ class SpatialMixture:
                     olb = lb
                     Z, lb = self.e_step(XB, W, M)
                     lb += self._lb_parameters()
+                    all_all_lb.append(lb)
                     if self.verbose >= 3:
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_cluster:02d} | '
                               f'pre gmm: {lb.item():12.6g}')
-                        all_all_lb.append(lb)
                         self._plot_lb(all_all_lb, X, Z, M)
 
                     # ==================
@@ -466,10 +471,10 @@ class SpatialMixture:
                     olb = lb
                     Z, lb = self.e_step(XB, W, M)
                     lb += self._lb_parameters()
+                    all_all_lb.append(lb)
                     if self.verbose >= 3:
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_bias:02d} | '
                               f'pre bias: {lb.item():12.6g}')
-                        all_all_lb.append(lb)
                         self._plot_lb(all_all_lb, X, Z, M)
 
                     # =============
@@ -491,10 +496,10 @@ class SpatialMixture:
                 olb = lb
                 Z, lb = self.e_step(XB, W, M, combine=True)
                 lb += self._lb_parameters()
+                all_all_lb.append(lb)
                 if self.verbose >= 3:
                     print(f'{n_iter:02d} | {n_iter_warp:02d} | {"":2s} | '
                           f'pre warp: {lb.item():12.6g}')
-                    all_all_lb.append(lb)
                     self._plot_lb(all_all_lb, X, Z, M)
 
                 # =============
@@ -516,8 +521,9 @@ class SpatialMixture:
                     print('converged')
                 break
 
-        all_lb = torch.stack(all_lb)
-        return Z, all_lb
+        all_lb = torch.stack(all_lb)            # per iteration
+        all_all_lb = torch.stack(all_all_lb)    # per step
+        return Z, all_lb, all_all_lb
 
     def _modulate_prior_(self, M):
         r"""Module non-stationary prior with stationary prior
