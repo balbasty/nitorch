@@ -1035,7 +1035,7 @@ def log_softmax(input, dim=-1, implicit=False, implicit_index=0):
     return output
 
 
-def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
+def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False,):
     """ SoftMax (safe).
 
     Parameters
@@ -1091,7 +1091,7 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
         sumval = sumval.log()
         maxval += sumval
         if weights is not None:
-            maxval = maxval * weights
+            maxval *= weights
         maxval = maxval.sum(dtype=torch.float64)
     else:
         maxval = None

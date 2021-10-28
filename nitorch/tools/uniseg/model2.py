@@ -1,12 +1,10 @@
 from timeit import default_timer as timer
-import tracemalloc
 import math as pymath
 from nitorch.core.optim import plot_convergence
 from nitorch.core import linalg, math, utils, py
 from nitorch.plot import plot_mixture_fit
 from nitorch import spatial
 import torch
-
 
 default_warp_reg = {'absolute': 0,
                     'membrane': 0.001,
@@ -38,10 +36,7 @@ def uniseg(x, w=None, aff=None, bias=True, warp=True, mixing=True,
         model = UniSeg(
             dim, nb_classes, bias=bias, warp=warp, mixing=mixing,
             prior=prior, prior_aff=prior_aff, lam_bias=lam_bias, lam_warp=lam_warp,
-            max_iter=max_iter, tol=tol, max_iter_gmm=max_iter_gmm,
-            max_iter_bias=max_iter_bias, max_iter_warp=max_iter_warp,
-            verbose=verbose, verbose_bias=verbose_bias, verbose_warp=verbose_warp,
-            show_fit=show_fit,
+            max_iter=max_iter, tol=tol, verbose=verbose, show_fit=show_fit,
         )
 
         z1, lb1 = model.fit(x[b], w[b], aff=aff[b])
@@ -70,7 +65,7 @@ class SpatialMixture:
     _tinyish = 1e-3
 
     def __init__(self, nb_classes=6,
-                 bias=True, warp=True, mixing=False, prior=None, prior_aff=None,
+                 bias=True, warp=True, mixing=True, prior=None, prior_aff=None,
                  lam_bias=1, lam_warp=1, lam_mixing=100,
                  bias_acceleration=0.9, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-4, max_iter_intensity=8,
@@ -238,9 +233,7 @@ class SpatialMixture:
     def _fit(self, X, W=None, aff=None, **kwargs):
         if self.verbose > 0:
             t0 = timer()  # Start timer
-            if X.device.type == 'cpu':
-                tracemalloc.start()
-            else:
+            if X.device.type == 'cuda':
                 torch.cuda.reset_peak_memory_stats(X.device)
 
         if not X.dtype.is_floating_point:
@@ -265,7 +258,7 @@ class SpatialMixture:
         # Prepare mask/weight
         W0 = W
         W = X.isfinite()
-        W.bitwise_and_(W != 0)
+        W.bitwise_and_(X != 0)
         if not W.all():
             X = X.clone()
             X[~W] = 0
@@ -325,12 +318,7 @@ class SpatialMixture:
                  f'log-likelihood = {lb[-1].item()}, '
                  f'runtime: {timer() - t0:0.1f} s, '
                  f'device: {X.device}, ')
-            if X.device.type == 'cpu':
-                _, ram_peak = tracemalloc.get_traced_memory()
-                ram_peak = int(ram_peak / 2 ** 20)
-                tracemalloc.stop()
-                v += f'peak RAM: {ram_peak} MB'
-            else:
+            if X.device.type == 'cuda':
                 vram_peak = torch.cuda.max_memory_allocated(X.device)
                 vram_peak = int(vram_peak / 2 ** 20)
                 v += f'peak VRAM: {vram_peak} MB'
@@ -379,18 +367,13 @@ class SpatialMixture:
         # --- likelihood ---
         for k, k0 in enumerate(self.lkp):
             Z[k] += self._log_likelihood(X, cluster=k)
-        # --- observation weight ---
-        if W is not None:
-            Z *= W
-        for k, k0 in enumerate(self.lkp):
             # --- prior (stationary component) ---
             Z[k] += gamma[k0]
             # --- prior (nonstationary component) ---
             if M is not None:
                 Z[k] += M[k0]
         # --- softmax ---
-        Z, lb = math.softmax_lse(Z + self._tinyish, lse=True, dim=0)
-
+        Z, lb = math.softmax_lse(Z + self._tinyish, lse=True, weights=W, dim=0)
         return Z, lb
 
     def _z_combine(self, Z0):
@@ -453,7 +436,6 @@ class SpatialMixture:
                     # ======
                     olb = lb
                     Z, lb = self.e_step(XB, W, M)
-                    Z = Z if W is None else Z*W
                     lb += self._lb_parameters()
                     if self.verbose >= 3:
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_cluster:02d} | '
@@ -464,6 +446,7 @@ class SpatialMixture:
                     # ==================
                     # M-step - Intensity
                     # ==================
+                    Z = Z if W is None else Z*W
                     ss0, ss1, ss2 = self._suffstats(XB, Z)
                     self._update_intensity(ss0, ss1, ss2)
 
@@ -471,7 +454,7 @@ class SpatialMixture:
                     # M-step - Mixing proportions
                     # ===========================
                     if self.mixing:
-                        self._update_mixing(ss0, M)
+                        self._update_mixing(ss0, M, W)
 
                     if n_iter_cluster > 1 and lb-olb < self.tol * nW:
                         break
@@ -482,7 +465,6 @@ class SpatialMixture:
                     # ======
                     olb = lb
                     Z, lb = self.e_step(XB, W, M)
-                    Z = Z if W is None else Z*W
                     lb += self._lb_parameters()
                     if self.verbose >= 3:
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_bias:02d} | '
@@ -493,8 +475,8 @@ class SpatialMixture:
                     # =============
                     # M-step - Bias
                     # =============
-                    self._update_bias(XB, Z, vx=vx)
-                    XB = self.beta.exp(out=XB).mul_(X)
+                    self._update_bias(XB, Z, W, vx=vx)
+                    XB = torch.exp(self.beta, out=XB).mul_(X)
 
                     if n_iter_bias > 1 and lb-olb < self.tol * nW:
                         break
@@ -765,7 +747,7 @@ class SpatialMixture:
                 offset = sum(self.nb_clusters_per_class[:k])
                 self.kappa[offset:offset+K1] /= K1
 
-    def _update_mixing(self, ss0, M=None):
+    def _update_mixing(self, ss0, M=None, W=None):
         """
         Parameters
         ----------
@@ -773,11 +755,18 @@ class SpatialMixture:
             Zero-th statistic
         M : (K, *spatial) tensor, optional
             Non-stationary prior
+        W : (*spatial) tensor, optional
+            Observation weights
         """
+        if self.verbose >= 3:
+            print('update mixing')
+
         if M is not None:
             gamma = self.gamma.to(M.dtype)
             M = M.reshape(self.nb_classes, -1)
             ssm = linalg.dot(M.T, gamma).reciprocal_()
+            if W is not None:
+                ssm *= W.flatten()
             ssm = linalg.matvec(M, ssm)
             ssm = ssm.to(self.gamma.dtype)
         else:
@@ -785,16 +774,18 @@ class SpatialMixture:
 
         kappa = ss0.clone()
         gamma = ss0.new_empty(self.nb_classes)
+        Nw = ss0.sum()
         for k in range(self.nb_classes):
             mask = [(l == k) for l in self.lkp]
             mask = torch.as_tensor(mask, dtype=torch.bool, device=kappa.device)
-            norm = kappa[mask].sum().add_(self._tiny)
-            kappa = torch.where(mask, kappa/norm, kappa)
+            norm = kappa[mask].sum()
+            kappa = torch.where(mask, kappa/(norm + self._tiny), kappa)
             if ssm is None:
-                gamma[k] = ss0[mask].sum() / ss0.sum()
+                gamma[k] = norm / Nw
             else:
-                gamma[k] = ss0[mask].sum() + self.lam_mixing
+                gamma[k] = norm + self.lam_mixing
                 gamma[k] /= ssm[k] + self.lam_mixing * self.nb_classes
+        gamma /= gamma.sum()
         self.kappa.copy_(kappa)
         self.gamma.copy_(gamma)
 
@@ -1177,7 +1168,7 @@ class UniSeg(SpatialMixture):
         else:
             self._lb_intensity = 0
 
-    def _update_bias(self, X, Z, vx=None):
+    def _update_bias(self, X, Z, W=None, vx=None):
         """
         Update bias field for all channels and images in batch, in-place.
 
@@ -1186,7 +1177,9 @@ class UniSeg(SpatialMixture):
         X : (C, *spatial) tensor
             Observed image modulated by the current bias field
         Z : (K, *spatial) tensor
-            (Weighted) responsibilities
+            (Unweighted) responsibilities
+        W : (*spatial) tensor, optional
+            Observation weights
         vx : (D,) vector_like
             Voxel size
 
@@ -1199,6 +1192,8 @@ class UniSeg(SpatialMixture):
 
         X = X.reshape([C, -1]).T
         Z = Z.reshape([K, -1])
+        if W is not None:
+            W = W.reshape([-1])
 
         lb = 0
         for c in range(C):
@@ -1218,6 +1213,9 @@ class UniSeg(SpatialMixture):
                 a = 1 - self.bias_acceleration
                 H.add_(g.abs(), alpha=a)  # new robust Hessian
 
+            if W is not None:
+                g *= W
+                H *= W
             g = g.reshape([1, *N])
             H = H.reshape([1, *N])
 
