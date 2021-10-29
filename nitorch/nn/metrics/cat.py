@@ -99,7 +99,7 @@ class Accuracy(Metric):
 class Dice(Metric):
     """Dice/F1 score."""
 
-    def __init__(self, implicit=False, logit = False, weighted=False,
+    def __init__(self, implicit=False, logit=False, weighted=False,
                  exclude_background=True, *args, **kwargs):
         """
 

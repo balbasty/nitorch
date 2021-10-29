@@ -5,7 +5,7 @@
 #   In the meantime, we should use scipy's implementation (which
 #   does not accept batched matrices either) with a (parallel?) loop
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
+from .optionals import custom_fwd, custom_bwd
 from .optionals import numpy as np
 
 

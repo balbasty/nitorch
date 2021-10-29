@@ -1,65 +1,69 @@
 import math
 import torch
-import torch.distributions as td
-from nitorch.core import utils
-from nitorch.core.utils import channel2last, unsqueeze, make_vector
-from nitorch.core.py import make_list
-from nitorch.core.linalg import matvec
-from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean, identity_grid
+from nitorch.core import utils, py, linalg
+from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean, identity_grid, smooth, resize
 from nitorch.nn.base import Module
 from ..modules.spatial import GridExp, GridPull
-from .field import RandomFieldSpline
+from .field import HyperRandomFieldSpline
+from .distribution import _get_dist
 
-
-__all__ = ['RandomVelocity', 'RandomDiffeo', 'RandomAffine', 'RandomGrid',
-           'RandomDeform', 'RandomPatch', 'RandomFlip']
+__all__ = ['RandomVelocity', 'RandomDiffeo', 'RandomAffineMatrix', 'RandomGrid',
+           'RandomDeform', 'RandomPatch', 'RandomFlip', 'RandomSmooth',
+           'RandomLowRes2D', 'RandomLowRes3D']
 
 
 defaults = dict(
-    vel_amplitude=5,
-    vel_fwhm=15
+    vel_amplitude_exp=3,
+    vel_amplitude_scale=1,
+    vel_amplitude='lognormal',
+    vel_fwhm_exp=20,
+    vel_fwhm_scale=10,
+    vel_fwhm='lognormal',
 )
 
 
 class RandomVelocity(Module):
-    """Sample a random velocity field."""
+    """Sample a random velocity field with randomized hyper-parameters."""
 
     def __init__(self, shape=None,
                  amplitude=defaults['vel_amplitude'],
+                 amplitude_exp=defaults['vel_amplitude_exp'],
+                 amplitude_scale=defaults['vel_amplitude_scale'],
                  fwhm=defaults['vel_fwhm'],
-                 device='cpu', dtype=None):
+                 fwhm_exp=defaults['vel_fwhm_exp'],
+                 fwhm_scale=defaults['vel_fwhm_scale'],
+                 device=None, dtype=None):
         """
+        The geometry of a random field is controlled by two parameters:
+            - `amplitude` controls the voxel-wise variance of the field.
+            - `fwhm` controls the smoothness of the field.
+
+        Each of these parameter is sampled according to three hyper-parameters:
+            - <param>       : distribution family
+                              {'normal', 'lognormal', 'uniform', 'gamma', None}
+            - <param>_exp   : expected value of the parameter
+            - <param>_scale : standard deviation of the parameter
 
         Parameters
         ----------
         shape : sequence[int]
-            Spatial shape.
-        amplitude : float or callable or list, optional
-            Amplitude of the random field (per channel).
-        fwhm : float or callable or list, optional
-            Full-width at half-maximum of the random field (per direction).
-        device : torch.device: default='cpu'
-            Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
-            Output tensor datatype.
+        amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        amplitude_exp : float or (dim,) vector_like, default=3
+        amplitude_scale : float or (dim,) vector_like, default=1
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        fwhm_exp : float or (dim,) vector_like, default=20
+        fwhm_scale : float or (dim,) vector_like, default=10
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         """
         super().__init__()
-        shape = make_list(shape)
-        self.field = RandomFieldSpline(shape=shape, channel=len(shape),
-                                       amplitude=amplitude, fwhm=fwhm,
-                                       device=device, dtype=dtype)
-
-    dim = property(lambda self: self.field.channel)
-    shape = property(lambda self: self.field.shape)
-    amplitude = property(lambda self: self.field.amplitude)
-    fwhm = property(lambda self: self.field.fwhm)
-    device = property(lambda self: self.field.device)
-    dtype = property(lambda self: self.field.dtype)
-
-    def to(self, *args, **kwargs):
-        self.field.to(*args, **kwargs)
-        super().to(*args, **kwargs)
+        shape = py.make_list(shape)
+        self.field = HyperRandomFieldSpline(
+            shape=shape, channel=len(shape), amplitude=amplitude,
+            amplitude_exp=amplitude_exp, amplitude_scale=amplitude_scale,
+            fwhm=fwhm, fwhm_exp=fwhm_exp, fwhm_scale=fwhm_scale,
+            device=device, dtype=dtype)
 
     def forward(self, batch=1, **overload):
         """
@@ -68,8 +72,12 @@ class RandomVelocity(Module):
         ----------
         batch : int, default=1
             Batch size
-        overload : dict
-            All parameters defined at build time can be overridden at call time
+
+        Other Parameters
+        ----------------
+        shape : sequence[int], optional
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         Returns
         -------
@@ -77,83 +85,51 @@ class RandomVelocity(Module):
             Velocity field
 
         """
-
-        # get arguments
-        opt = {
-            'shape': overload.get('shape', self.field.shape),
-            'amplitude': overload.get('amplitude', self.field.amplitude),
-            'fwhm': overload.get('fwhm', self.field.fwhm),
-            'dtype': overload.get('dtype', self.field.dtype),
-            'device': overload.get('device', self.field.device),
-        }
-        opt['channel'] = len(opt['shape'])
-
-        # preprocess amplitude
-        # > RandomField broadcast amplitude to (channel, *shape), with
-        #   padding from the left, which means that a 1d amplitude would
-        #   be broadcasted to (1, ..., dim) instead of (dim, ..., 1)
-        # > We therefore reshape amplitude to avoid left-side padding
-        def preprocess(a):
-            a = torch.as_tensor(a)
-            a = unsqueeze(a, dim=-1, ndim=opt['channel']+1-a.dim())
-            return a
-        amplitude = opt['amplitude']
-        if callable(amplitude):
-            amplitude_fn = amplitude
-            amplitude = lambda *args, **kwargs: preprocess(amplitude_fn(*args, **kwargs))
-        else:
-            amplitude = preprocess(amplitude)
-        opt['amplitude'] = amplitude
-
-        return channel2last(self.field(batch, **opt))
+        overload['channel'] = len(overload.get('shape', self.field.shape))
+        return utils.channel2last(self.field(batch, **overload))
 
 
 class RandomDiffeo(Module):
-    """Sample a random diffeomorphic transformation field."""
+    """Sample a random diffeomorphic field with randomized hyper-parameters."""
 
     def __init__(self, shape=None,
                  amplitude=defaults['vel_amplitude'],
+                 amplitude_exp=defaults['vel_amplitude_exp'],
+                 amplitude_scale=defaults['vel_amplitude_scale'],
                  fwhm=defaults['vel_fwhm'],
-                 bound='dft', interpolation=1, device='cpu',
-                 dtype=None):
+                 fwhm_exp=defaults['vel_fwhm_exp'],
+                 fwhm_scale=defaults['vel_fwhm_scale'],
+                 bound='dft', interpolation=1, displacement=False,
+                 device=None, dtype=None):
         """
 
         Parameters
         ----------
         shape : sequence[int]
-            Spatial shape.
-        amplitude : float or callable, optional
-            Amplitude of the random field.
-        fwhm : float or callable or list, optional
-            Full-width at half-maximum of the random field.
+        amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        amplitude_exp : float or (dim,) vector_like, default=3
+        amplitude_scale : float or (dim,) vector_like, default=1
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        fwhm_exp : float or (dim,) vector_like, default=20
+        fwhm_scale : float or (dim,) vector_like, default=10
         bound : BoundType, default='dft'
             Boundary condition when exponentiating the velocity field.
         interpolation : InterpolationType, default=1
             Interpolation order when exponentiating the velocity field
-        device : torch.device: default='cpu'
-            Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
-            Output tensor datatype.
+        displacement : bool, default=False
+            Return a displacement rather than a transformation grid.
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         """
         super().__init__()
-        self.velocity = RandomVelocity(shape=shape,
-                                       amplitude=amplitude, fwhm=fwhm,
-                                       device=device, dtype=dtype)
-        self.exp = GridExp(bound=bound, interpolation=interpolation)
-
-    dim = property(lambda self: self.velocity.dim)
-    shape = property(lambda self: self.velocity.shape)
-    amplitude = property(lambda self: self.velocity.amplitude)
-    fwhm = property(lambda self: self.velocity.fwhm)
-    device = property(lambda self: self.velocity.device)
-    dtype = property(lambda self: self.velocity.dtype)
-    bound = property(lambda self: self.exp.bound)
-    interpolation = property(lambda self: self.exp.interpolation)
-
-    def to(self, *args, **kwargs):
-        self.velocity.to(*args, **kwargs)
-        super().to(*args, **kwargs)
+        self.velocity = RandomVelocity(
+            shape=shape, amplitude=amplitude,
+            amplitude_exp=amplitude_exp, amplitude_scale=amplitude_scale,
+            fwhm=fwhm, fwhm_exp=fwhm_exp, fwhm_scale=fwhm_scale,
+            device=device, dtype=dtype)
+        self.exp = GridExp(bound=bound, interpolation=interpolation,
+                           displacement=displacement)
 
     def forward(self, batch=1, return_vel=False, **overload):
         """
@@ -162,98 +138,107 @@ class RandomDiffeo(Module):
         ----------
         batch : int, default=1
             Batch size
-        overload : dict
-            All parameters defined at build time can be overridden at call time
+        return_vel : bool, default=False
+            Return the velocity on top of the exponentiated grid
+
+        Other Parameters
+        ----------------
+        shape : sequence[int], optional
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         Returns
         -------
         grid : (batch, *shape, dim) tensor
-            Transformation field
+            Transformation or displacement field
 
         """
-
-        # get arguments
-        opt_vel = {
-            'shape': overload.get('shape', self.shape),
-            'amplitude': overload.get('amplitude', self.amplitude),
-            'fwhm': overload.get('fwhm', self.fwhm),
-            'dtype': overload.get('dtype', self.dtype),
-            'device': overload.get('device', self.device),
-        }
-
-        vel = self.velocity(batch, **opt_vel)
+        vel = self.velocity(batch, **overload)
         grid = self.exp(vel)
-
         return (grid, vel) if return_vel else grid
 
 
-class RandomAffine(Module):
+class RandomAffineMatrix(Module):
     """Sample an affine transformation matrix"""
 
-    def __init__(self, dim=None, translation=True, rotation=True,
-                 zoom=True, shear=True, device='cpu', dtype=None):
+    def __init__(self, dim=None,
+                 translation='normal',
+                 translation_exp=0,
+                 translation_scale=5,
+                 rotation='normal',
+                 rotation_exp=0,
+                 rotation_scale=5,
+                 zoom='lognormal',
+                 zoom_exp=1,
+                 zoom_scale=1.2,
+                 shear='normal',
+                 shear_exp=0,
+                 shear_scale=0.1,
+                 device=None, dtype=None):
         """
+        An affine transformation is parameterized by D*(D+1) parameters:
+            - 'translation` : D parameters
+            - `rotation`    : D*(D-1)/2 parameters
+            - `zoom`        : D parameters
+            - `shear`       : D*(D-1)/2 parameters
+
+        Each of these parameter is sampled according to three hyper-parameters:
+            - <param>       : distribution family
+                              {'normal', 'lognormal', 'uniform', 'gamma', None}
+            - <param>_exp   : expected value of the parameter
+            - <param>_scale : standard deviation of the parameter
 
         Parameters
         ----------
-        dim : int, optional
-            Dimension
-        translation : bool or callable or list, default=True
-            Translation parameters in voxels
-            If True -> Normal(0, 5)
-        rotation : bool or callable or list, default=True
-            Rotation parameters in degrees
-            If True -> Normal(0, 5)
-        zoom : bool or callable or list, default=True
-            Zoom parameters (1 == no zoom)
-            If True -> LogNormal(log(1), log(1.2)/3)
-        shear : bool or callable or list, default=True
-            Shear parameters in voxels
-            If True -> Normal(0, 0.1)
-        device : torch.device: default='cpu'
-            Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
-            Output tensor datatype.
+        dim : int, optional, Number of spatial dimensions
+        translation : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        translation_exp : float or vector_like, default=0
+        translation_scale : float or vector_like, default=5
+        rotation : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        rotation_exp : float or vector_like, default=0
+        rotation_scale : float or vector_like, default=5
+        zoom : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        zoom_exp : float or vector_like, default=1
+        zoom_scale : float or vector_like, default=1.2
+        shear : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        shear_exp : float or  vector_like, default=0
+        shear_scale : float or vector_like, default=0.1
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         """
         super().__init__()
         self.dim = dim
-        self.translation = translation
-        self.rotation = rotation
-        self.zoom = zoom
-        self.shear = shear
+        self.translation = _get_dist(translation)
+        self.translation_exp = translation_exp
+        self.translation_scale = translation_scale
+        self.rotation = _get_dist(rotation)
+        self.rotation_exp = rotation_exp
+        self.rotation_scale = rotation_scale
+        self.zoom = _get_dist(zoom)
+        self.zoom_exp = zoom_exp
+        self.zoom_scale = zoom_scale
+        self.shear = _get_dist(shear)
+        self.shear_exp = shear_exp
+        self.shear_scale = shear_scale
         self.device = device
         if dtype is None or not dtype.is_floating_point:
             dtype = torch.get_default_dtype()
         self.dtype = dtype
 
-    def default_translation(self, *b):
-        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
-        one = torch.tensor(1, device=self.device, dtype=self.dtype)
-        return td.Normal(zero, 5*one).sample(*b)
-
-    def default_rotation(self, *b):
-        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
-        one = torch.tensor(1, device=self.device, dtype=self.dtype)
-        return td.Normal(zero, 5*one).sample(*b)
-
-    def default_shear(self, *b):
-        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
-        one = torch.tensor(1, device=self.device, dtype=self.dtype)
-        return td.Normal(zero, 0.1*one).sample(*b)
-
-    def default_zoom(self, *b):
-        zero = torch.tensor(0, device=self.device, dtype=self.dtype)
-        one = torch.tensor(1, device=self.device, dtype=self.dtype)
-        return td.Normal(zero, math.log(1.2)/3*one).sample(*b).exp()
-
-    def to(self, *args, **kwargs):
-        device, dtype, non_blocking, convert_to_format \
-            = torch._C._nn._parse_to(*args, **kwargs)
-
-        self.dtype = dtype or self.dtype
-        self.device = device or self.device
-        super().to(*args, **kwargs)
+    def _make_sampler(self, name, dim, **backend):
+        exp = getattr(self, name + '_exp')
+        scale = getattr(self, name + '_scale')
+        dist = getattr(self, name)
+        ndim = (dim if name in ('translation', 'zoom')
+                else dim*(dim-1)//2)
+        exp = utils.make_vector(exp, ndim, **backend)
+        scale = utils.make_vector(scale, ndim, **backend)
+        if dist and (scale > 0).all():
+            sampler = dist(exp, scale)
+        else:
+            sampler = _get_dist('dirac')(exp)
+        return sampler
 
     def forward(self, batch=1, **overload):
         """
@@ -262,132 +247,130 @@ class RandomAffine(Module):
         ----------
         batch : int, default=1
             Batch size
-        overload : dict
-            All parameters defined at build time can be overridden at call time
+
+        Other Parameters
+        ----------------
+        dim : int, optional
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         Returns
         -------
-        affine : (batch, dim[+1], dim+1) tensor
-            Velocity field
+        affine : (batch, dim+1, dim+1) tensor
+            Affine matrix
 
         """
         dim = overload.get('dim', self.dim)
-        translation = make_list(overload.get('translation', self.translation))
-        rotation = make_list(overload.get('rotation', self.rotation))
-        zoom = make_list(overload.get('zoom', self.zoom))
-        shear = make_list(overload.get('shear', self.shear))
         dtype = overload.get('dtype', self.dtype)
         device = overload.get('device', self.device)
         backend = dict(dtype=dtype, device=device)
 
-        # compute dimension
-        dim = dim or max(len(translation), len(rotation), len(zoom), len(shear))
-        translation = make_list(translation, dim)
-        rotation = make_list(rotation, dim*(dim-1)//2)
-        zoom = make_list(zoom, dim)
-        shear = make_list(shear, dim*(dim-1)//2)
+        # prepare sampler
+        translation = self._make_sampler('translation', dim, **backend)
+        rotation = self._make_sampler('rotation', dim, **backend)
+        zoom = self._make_sampler('zoom', dim, **backend)
+        shear = self._make_sampler('shear', dim, **backend)
 
-        # sample values if needed
-        translation = [x([batch]) if callable(x)
-                       else self.default_translation([batch]) if x is True
-                       else 0. if x is None or x is False
-                       else x for x in translation]
-        rotation = [x([batch]) if callable(x)
-                    else self.default_rotation([batch]) if x is True
-                    else 0. if x is None or x is False
-                    else x for x in rotation]
-        zoom = [x([batch]) if callable(x)
-                else self.default_zoom([batch]) if x is True
-                else 1. if x is None or x is False
-                else x for x in zoom]
-        shear = [x([batch]) if callable(x)
-                 else self.default_shear([batch]) if x is True
-                 else 0. if x is None or x is False
-                 else x for x in shear]
-        rotation = [x * math.pi / 180 for x in rotation]  # degree -> radian
-        prm = [*translation, *rotation, *zoom, *shear]
-        prm = [p.expand(batch) if torch.is_tensor(p) and p.shape[0] != batch
-               else make_list(p, batch) if not torch.is_tensor(p)
-               else p for p in prm]
-
-        prm = utils.as_tensor(prm)
-        prm = prm.transpose(0, 1)
+        # sample parameters
+        prm = torch.cat([
+            translation.sample([batch]),
+            rotation.sample([batch]).mul_(math.pi/180),
+            zoom.sample([batch]),
+            shear.sample([batch]),
+        ], dim=-1)
 
         # generate affine matrix
-        prm = prm.to(**backend)
         mat = affine_matrix_classic(prm, dim=dim)
-
         return mat
+
+
+RandomAffine = RandomAffineMatrix
 
 
 class RandomGrid(Module):
     """Random spatial deformation (dense + affine)."""
 
     def __init__(self, shape=None,
-                 vel_amplitude=defaults['vel_amplitude'],
-                 vel_fwhm=defaults['vel_fwhm'],
-                 translation=True, rotation=True, zoom=True, shear=True,
-                 bound='dft', interpolation=1, device='cpu', dtype=None):
+                 amplitude=defaults['vel_amplitude'],
+                 amplitude_exp=defaults['vel_amplitude_exp'],
+                 amplitude_scale=defaults['vel_amplitude_scale'],
+                 fwhm=defaults['vel_fwhm'],
+                 fwhm_exp=defaults['vel_fwhm_exp'],
+                 fwhm_scale=defaults['vel_fwhm_scale'],
+                 translation='normal',
+                 translation_exp=0,
+                 translation_scale=5,
+                 rotation='normal',
+                 rotation_exp=0,
+                 rotation_scale=5,
+                 zoom='lognormal',
+                 zoom_exp=1,
+                 zoom_scale=1.2,
+                 shear='normal',
+                 shear_exp=0,
+                 shear_scale=0.1,
+                 bound='dft', interpolation=1, displacement=False,
+                 device=None, dtype=None):
         """
 
         Parameters
         ----------
         shape : sequence[int]
-            Spatial shape
-        vel_amplitude : float or callable or list, optional
-            Amplitude of the (velocity) random field.
-        vel_fwhm : float or callable or list, optional
-            Full-width at half-maximum of the (velocity) random field.
-        translation : bool or callable or list, default=True
-            Translation parameters in voxels
-            If True -> Normal(0, 15)
-        rotation : bool or callable or list, default=True
-            Rotation parameters in degrees
-            If True -> Normal(0, 60)
-        zoom : bool or callable or list, default=True
-            Zoom parameters (1 == no zoom)
-            If True -> LogNormal(log(1), log(2)/3)
-        shear : bool or callable or list, default=True
-            Shear parameters in voxels
-            If True -> Normal(0, 10)
+        amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        amplitude_exp : float or (dim,) vector_like, default=3
+        amplitude_scale : float or (dim,) vector_like, default=1
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        fwhm_exp : float or (dim,) vector_like, default=20
+        fwhm_scale : float or (dim,) vector_like, default=10
+        translation : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        translation_exp : float or vector_like, default=0
+        translation_scale : float or vector_like, default=5
+        rotation : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        rotation_exp : float or vector_like, default=0
+        rotation_scale : float or vector_like, default=5
+        zoom : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        zoom_exp : float or vector_like, default=1
+        zoom_scale : float or vector_like, default=1.2
+        shear : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        shear_exp : float or  vector_like, default=0
+        shear_scale : float or vector_like, default=0.1
         bound : BoundType, default='dft'
-            Boundary condition when exponentiating the velocity field.
-        interpolation : int, default=1
-            Interpolation order when exponentiating the velocity field.
-        device : torch.device: default='cpu'
-            Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
-            Output tensor datatype.
+        interpolation : InterpolationType, default=1
+        displacement : bool, default=False
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         """
         super().__init__()
-        self.affine = RandomAffine(
+        self.affine = RandomAffineMatrix(
+            dim=len(shape) if shape else 0,
             translation=translation,
+            translation_exp=translation_exp,
+            translation_scale=translation_scale,
             rotation=rotation,
+            rotation_exp=rotation_exp,
+            rotation_scale=rotation_scale,
             zoom=zoom,
+            zoom_exp=zoom_exp,
+            zoom_scale=zoom_scale,
             shear=shear,
+            shear_exp=shear_exp,
+            shear_scale=shear_scale,
             device=device,
             dtype=dtype)
         self.grid = RandomDiffeo(
             shape=shape,
-            amplitude=vel_amplitude,
-            fwhm=vel_fwhm,
+            amplitude=amplitude,
+            amplitude_exp=amplitude_exp,
+            amplitude_scale=amplitude_scale,
+            fwhm_exp=fwhm_exp,
+            fwhm=fwhm,
+            fwhm_scale=fwhm_scale,
             bound=bound,
             interpolation=interpolation,
             device=device,
             dtype=dtype)
-
-    translation = property(lambda self: self.affine.translation)
-    rotation = property(lambda self: self.affine.rotation)
-    zoom = property(lambda self: self.affine.zoom)
-    shear = property(lambda self: self.affine.shear)
-    vel_amplitude = property(lambda self: self.grid.amplitude)
-    shape = property(lambda self: self.grid.shape)
-    vel_fwhm = property(lambda self: self.grid.fwhm)
-    bound = property(lambda self: self.grid.bound)
-    interpolation = property(lambda self: self.grid.interpolation)
-    dtype = property(lambda self: self.grid.dtype)
-    device = property(lambda self: self.grid.device)
+        self.displacement = displacement
 
     def forward(self, batch=1, **overload):
         """
@@ -396,8 +379,12 @@ class RandomGrid(Module):
         ----------
         batch : int, default=1
             Batch shape.
-        overload : dict
-            All parameters defined at build time can be overridden at call time
+
+        Other Parameters
+        ----------------
+        shape : sequence[int], optional
+        device : torch.device, optional
+        dtype : torch.dtype, optional
 
         Returns
         -------
@@ -405,43 +392,27 @@ class RandomGrid(Module):
             Resampling grid
 
         """
-        dtype = overload.get('dtype', self.dtype)
-        device = overload.get('device', self.device)
+        shape = overload.get('shape', self.grid.velocity.field.shape)
+        dtype = overload.get('dtype', self.grid.velocity.field.dtype)
+        device = overload.get('device', self.grid.velocity.field.device)
+        backend = dict(dtype=dtype, device=device)
 
-        # get arguments
-        opt_grid = {
-            'shape': overload.get('shape', self.shape),
-            'amplitude': overload.get('vel_amplitude', self.vel_amplitude),
-            'fwhm': overload.get('vel_fwhm', self.vel_fwhm),
-            'bound': overload.get('bound', self.bound),
-            'interpolation': overload.get('interpolation', self.interpolation),
-            'dtype': dtype,
-            'device': device,
-        }
-        if opt_grid['amplitude']:
-            grid = self.grid(batch, **opt_grid)
+        if self.grid.velocity.field.amplitude == 0:
+            grid = identity_grid(shape, **backend)
         else:
-            grid = identity_grid(opt_grid['shape'], dtype=dtype, device=device)
+            grid = self.grid(batch, shape=shape, **backend)
+        dtype = grid.dtype
+        device = grid.device
+        backend = dict(dtype=dtype, device=device)
 
         shape = grid.shape[1:-1]
         dim = len(shape)
-        opt_affine = {
-            'dim': dim,
-            'translation': overload.get('translation', self.translation),
-            'rotation': overload.get('rotation', self.rotation),
-            'zoom': overload.get('zoom', self.zoom),
-            'shear': overload.get('shear', self.shear),
-            'dtype': dtype,
-            'device': device,
-        }
-        aff = self.affine(batch, **opt_affine)
-
-        backend = dict(dtype=dtype, device=device)
+        aff = self.affine(batch, dim=dim, **backend)
 
         # shift center of rotation
         aff_shift = torch.cat((
             torch.eye(dim, **backend),
-            -torch.as_tensor(shape, **backend)[:, None]/2),
+            torch.as_tensor(shape, **backend)[:, None].sub_(1).div_(-2)),
             dim=1)
         aff_shift = as_euclidean(aff_shift)
 
@@ -449,10 +420,10 @@ class RandomGrid(Module):
         aff = affine_lmdiv(aff_shift, aff)
 
         # compose
-        aff = unsqueeze(aff, dim=-3, ndim=dim)
+        aff = utils.unsqueeze(aff, dim=-3, ndim=dim)
         lin = aff[..., :dim, :dim]
         off = aff[..., :dim, -1]
-        grid = matvec(lin, grid) + off
+        grid = linalg.matvec(lin, grid) + off
 
         return grid
 
@@ -461,30 +432,48 @@ class RandomDeform(Module):
     """Random spatial deformation of an image"""
 
     def __init__(self,
-                 vel_amplitude=defaults['vel_amplitude'],
-                 vel_fwhm=defaults['vel_fwhm'],
-                 translation=True, rotation=True, zoom=True, shear=True,
+                 amplitude=defaults['vel_amplitude'],
+                 amplitude_exp=defaults['vel_amplitude_exp'],
+                 amplitude_scale=defaults['vel_amplitude_scale'],
+                 fwhm=defaults['vel_fwhm'],
+                 fwhm_exp=defaults['vel_fwhm_exp'],
+                 fwhm_scale=defaults['vel_fwhm_scale'],
+                 translation='normal',
+                 translation_exp=0,
+                 translation_scale=5,
+                 rotation='normal',
+                 rotation_exp=0,
+                 rotation_scale=5,
+                 zoom='lognormal',
+                 zoom_exp=1,
+                 zoom_scale=1.2,
+                 shear='normal',
+                 shear_exp=0,
+                 shear_scale=0.1,
                  vel_bound='dft', image_bound='dct2', interpolation=1):
         """
 
         Parameters
         ----------
-        vel_amplitude : float or callable or list, optional
-            Amplitude of the (velocity) random field.
-        vel_fwhm : float or callable or list, optional
-            Full-width at half-maximum of the (velocity) random field.
-        translation : bool or callable or list, default=True
-            Translation parameters in voxels
-            If True -> Normal(0, 15)
-        rotation : bool or callable or list, default=True
-            Rotation parameters in degrees
-            If True -> Normal(0, 60)
-        zoom : bool or callable or list, default=True
-            Zoom parameters (1 == no zoom)
-            If True -> LogNormal(log(1), log(2)/3)
-        shear : bool or callable or list, default=True
-            Shear parameters in voxels
-            If True -> Normal(0, 10)
+        amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        amplitude_exp : float or (dim,) vector_like, default=3
+        amplitude_scale : float or (dim,) vector_like, default=1
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        fwhm_exp : float or (dim,) vector_like, default=20
+        fwhm_scale : float or (dim,) vector_like, default=10
+        translation : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        translation_exp : float or vector_like, default=0
+        translation_scale : float or vector_like, default=5
+        rotation : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        rotation_exp : float or vector_like, default=0
+        rotation_scale : float or vector_like, default=5
+        zoom : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        zoom_exp : float or vector_like, default=1
+        zoom_scale : float or vector_like, default=1.2
+        shear : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        shear_exp : float or  vector_like, default=0
+        shear_scale : float or vector_like, default=0.1
+        bound : BoundType, default='dft'
         vel_bound : BoundType, default='dft'
             Boundary condition when exponentiating the velocity field.
         image_bound : BoundType, default='dct2'
@@ -495,12 +484,24 @@ class RandomDeform(Module):
         """
         super().__init__()
         self.grid = RandomGrid(
-            vel_amplitude=vel_amplitude,
-            vel_fwhm=vel_fwhm,
+            amplitude=amplitude,
+            amplitude_exp=amplitude_exp,
+            amplitude_scale=amplitude_scale,
+            fwhm=fwhm,
+            fwhm_exp=fwhm_exp,
+            fwhm_scale=fwhm_scale,
             translation=translation,
+            translation_exp=translation_exp,
+            translation_scale=translation_scale,
             rotation=rotation,
+            rotation_exp=rotation_exp,
+            rotation_scale=rotation_scale,
             zoom=zoom,
+            zoom_exp=zoom_exp,
+            zoom_scale=zoom_scale,
             shear=shear,
+            shear_exp=shear_exp,
+            shear_scale=shear_scale,
             bound=vel_bound,
             interpolation=interpolation)
         self.pull = GridPull(
@@ -508,17 +509,7 @@ class RandomDeform(Module):
             interpolation=interpolation,
             extrapolate=True)
 
-    translation = property(lambda self: self.grid.translation)
-    rotation = property(lambda self: self.grid.rotation)
-    zoom = property(lambda self: self.grid.zoom)
-    shear = property(lambda self: self.grid.shear)
-    vel_amplitude = property(lambda self: self.grid.vel_amplitude)
-    vel_fwhm = property(lambda self: self.grid.vel_fwhm)
-    vel_bound = property(lambda self: self.grid.vel_bound)
-    interpolation = property(lambda self: self.grid.interpolation)
-    image_bound = property(lambda self: self.pull.bound)
-
-    def forward(self, *images, return_grid=False, **overload):
+    def forward(self, *images, return_grid=False):
         """
 
         Parameters
@@ -527,14 +518,12 @@ class RandomDeform(Module):
             Input images
         return_grid : bool, default=False
             Return deformation grid on top of deformed sample.
-        overload : dict
-            All parameters defined at build time can be overridden at call time
 
         Returns
         -------
         warped : (batch, channel, *shape) tensor
             Deformed image
-        grid : (batch, *shape, 3) tensor
+        grid : (batch, *shape, 3) tensor, if `return_grid`
             Resampling grid
 
         """
@@ -543,14 +532,6 @@ class RandomDeform(Module):
         # get arguments
         opt_grid = {
             'shape': shape,
-            'vel_amplitude': overload.get('vel_amplitude', self.vel_amplitude),
-            'vel_fwhm': overload.get('vel_fwhm', self.vel_fwhm),
-            'translation': overload.get('translation', self.translation),
-            'rotation': overload.get('rotation', self.rotation),
-            'zoom': overload.get('zoom', self.zoom),
-            'shear': overload.get('shear', self.shear),
-            'bound': overload.get('vel_bound', self.grid.bound),
-            'interpolation': overload.get('interpolation', self.grid.interpolation),
             'dtype': images[0].dtype,
             'device': images[0].device,
         }
@@ -561,7 +542,9 @@ class RandomDeform(Module):
         for image in images:
             warped.append(self.pull(image, grid))
 
-        return (*warped, grid) if return_grid else tuple(warped)
+        return ((*warped, grid) if return_grid
+                else warped[0] if len(warped) == 1
+                else tuple(warped))
 
 
 class RandomPatch(Module):
@@ -603,7 +586,7 @@ class RandomPatch(Module):
         device = image.device
 
         dim = image.dim() - 2
-        shape = make_list(overload.get('shape', self.shape), dim)
+        shape = py.make_list(overload.get('shape', self.shape), dim)
         shape = [min(s0, s1) for s0, s1 in zip(image.shape[2:], shape)]
 
         # sample shift
@@ -623,10 +606,10 @@ class RandomPatch(Module):
             for i in range(len(other_images)):
                 other_outputs[i][b] = other_images[i][index]
 
-            if len(other_images) > 0:
-                return (output, *other_outputs)
-            else:
-                return output
+        if len(other_images) > 0:
+            return (output, *other_outputs)
+        else:
+            return output
 
 
 class RandomFlip(Module):
@@ -664,10 +647,10 @@ class RandomFlip(Module):
         device = image[0].device
 
         nb_dim = image[0].dim() - 2
-        prob = make_vector(overload.get('prob', self.prob),
-                           dtype=torch.float, device=device)
+        prob = utils.make_vector(overload.get('prob', self.prob),
+                                 dtype=torch.float, device=device)
         dim = overload.get('dim', self.dim)
-        dim = make_list(dim or range(-nb_dim, 0), nb_dim)
+        dim = py.make_list(dim or range(-nb_dim, 0), nb_dim)
 
         # sample shift
         flip = torch.rand((nb_dim,), device=device) > (1 - prob)
@@ -677,3 +660,127 @@ class RandomFlip(Module):
             for i, img in enumerate(image):
                 image[i] = img.flip(dim)
         return image[0] if len(image) == 1 else tuple(image)
+
+
+class RandomSmooth(Module):
+
+    def __init__(self,
+                 fwhm='lognormal',
+                 fwhm_exp=1,
+                 fwhm_scale=3,
+                 iso=False):
+        super().__init__()
+        self.fwhm = _get_dist(fwhm)
+        self.fwhm_exp = fwhm_exp
+        self.fwhm_scale = fwhm_scale
+        self.iso = iso
+
+    def forward(self, x):
+        dim = x.dim() - 2
+        backend = dict(dtype=x.dtype, device=x.device)
+
+        fwhm_exp = utils.make_vector(self.fwhm_exp, 1 if self.iso else dim, **backend)
+        fwhm_scale = utils.make_vector(self.fwhm_scale, 1 if self.iso else dim, **backend)
+
+        out = torch.as_tensor(x)
+        for b in range(len(x)):
+            fwhm = self.fwhm(fwhm_exp, fwhm_scale).sample().clamp_min_(0).expand([dim]).clone()
+            out[b] = smooth(x[b], fwhm=fwhm, dim=dim, padding='same', bound='dct2')
+        return out
+
+
+class RandomLowRes2D(Module):
+
+    def __init__(self,
+                 resolution='lognormal',
+                 resolution_exp=3,
+                 resolution_scale=3):
+        super().__init__()
+        self.resolution = _get_dist(resolution)
+        self.resolution_exp = resolution_exp
+        self.resolution_scale = resolution_scale
+
+    def forward(self, x, noise=None, return_resolution=False):
+
+        if noise is not None:
+            noise = noise.expand(x.shape)
+
+        dim = x.dim() - 2
+        backend = utils.backend(x)
+        resolution_exp = utils.make_vector(self.resolution_exp, x.shape[1],
+                                           **backend)
+        resolution_scale = utils.make_vector(self.resolution_scale, x.shape[1],
+                                             **backend)
+
+        all_resolutions = []
+        out = torch.empty_like(x)
+        for b in range(len(x)):
+            for c in range(x.shape[1]):
+                resolution = self.resolution(resolution_exp[c],
+                                             resolution_scale[c]).sample()
+                resolution = resolution.clamp_min(1)
+                axis = torch.randint(dim, [])
+                gap = torch.rand([], **backend)
+                fwhm = [0] * dim
+                fwhm[axis] = resolution * gap
+                y = smooth(x[b, c], fwhm=fwhm, dim=dim, padding='same', bound='dct2')
+                if noise is not None:
+                    y += noise[b, c]
+                factor = [1] * dim
+                factor[axis] = 1/resolution
+                y = y[None, None]  # need batch and channel for resize
+                y = resize(y, factor=factor, anchor='f')
+                factor = [1] * dim
+                factor[axis] = resolution
+                all_resolutions.append(factor)
+                y = resize(y, factor=factor, shape=x.shape[2:], anchor='f')
+                out[b, c] = y[0, 0]
+
+        all_resolutions = utils.as_tensor(all_resolutions, **backend)
+        return (out, all_resolutions) if return_resolution else out
+
+
+class RandomLowRes3D(Module):
+
+    def __init__(self,
+                 resolution='lognormal',
+                 resolution_exp=3,
+                 resolution_scale=3):
+        super().__init__()
+        self.resolution = _get_dist(resolution)
+        self.resolution_exp = resolution_exp
+        self.resolution_scale = resolution_scale
+
+    def forward(self, x, noise=None, return_resolution=False):
+
+        if noise is not None:
+            noise = noise.expand(x.shape)
+
+        dim = x.dim() - 2
+        backend = utils.backend(x)
+        resolution_exp = utils.make_vector(self.resolution_exp, x.shape[1],
+                                           **backend)
+        resolution_scale = utils.make_vector(self.resolution_scale, x.shape[1],
+                                             **backend)
+
+        all_resolutions = []
+        out = torch.empty_like(x)
+        for b in range(len(x)):
+            for c in range(x.shape[1]):
+                resolution = self.resolution(resolution_exp[c],
+                                             resolution_scale[c]).sample()
+                resolution = resolution.clamp_min(1)
+                fwhm = [resolution] * dim
+                y = smooth(x[b, c], fwhm=fwhm, dim=dim, padding='same', bound='dct2')
+                if noise is not None:
+                    y += noise[b, c]
+                factor = [1/resolution] * dim
+                y = y[None, None]  # need batch and channel for resize
+                y = resize(y, factor=factor, anchor='f')
+                factor = [resolution] * dim
+                all_resolutions.append(factor)
+                y = resize(y, factor=factor, shape=x.shape[2:], anchor='f')
+                out[b, c] = y[0, 0]
+
+        all_resolutions = utils.as_tensor(all_resolutions, **backend)
+        return (out, all_resolutions) if return_resolution else out

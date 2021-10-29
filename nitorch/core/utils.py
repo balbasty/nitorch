@@ -57,10 +57,12 @@ def torch_version(mode, version):
 
     """
     current_version, *cuda_variant = torch.__version__.split('+')
-    current_version = current_version.split('.')
-    current_version = (int(current_version[0]),
-                       int(current_version[1]),
-                       int(current_version[2]))
+    major, minor, patch, *_ = current_version.split('.')
+    # strip alpha tags
+    for x in 'abcdefghijklmnopqrstuvwxy':
+        if x in patch:
+            patch = patch[:patch.index(x)]
+    current_version = (int(major), int(minor), int(patch))
     version = py.make_list(version)
     return _compare_versions(current_version, mode, version)
 
@@ -1909,7 +1911,7 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
     return q
 
 
-@torch.jit.script
+
 def _one_hot_wrapper(x: Tensor, dtype: Optional[torch.dtype] = None):
     x = x.long()
     x = torch.nn.functional.one_hot(x)
@@ -1917,7 +1919,13 @@ def _one_hot_wrapper(x: Tensor, dtype: Optional[torch.dtype] = None):
     return x
 
 
-def one_hot(x, dim=-1, exclude_labels=None, exclude_missing=False,
+if torch_version('>=', (1, 5)):
+    # jit.script does not accept `dtype` inputs in torch 1.3
+    # I don't know exactly which version started handling it.
+    _one_hot_wrapper = torch.jit.script(_one_hot_wrapper)
+
+
+def one_hot(x, dim=-1, exclude_labels=None, exclude_missing=False, max_label=None,
             implicit=False, implicit_index=0, dtype=None, return_lookup=False):
     """One-hot encode a volume of labels.
 
@@ -1932,6 +1940,8 @@ def one_hot(x, dim=-1, exclude_labels=None, exclude_missing=False,
     exclude_missing : bool, default=False
         Exclude missing labels from one-hot encoding
         (their channel will be squeezed)
+    max_label : int, optional
+        Maximum label value
     implicit : bool, default=False
         Make the returned tensor have an implicit background class.
         In this case, output probabilities do not sum to one, but to some
@@ -1951,12 +1961,12 @@ def one_hot(x, dim=-1, exclude_labels=None, exclude_missing=False,
         if not `implicit` else `x.max() - len(exclude)`.
 
     """
-    if not exclude_labels and not exclude_missing and not implicit:
+    if not exclude_labels and not exclude_missing and not implicit and not max_label:
         x = _one_hot_wrapper(x, dtype)
         x = fast_movedim(x, -1, dim)
         return x
 
-    nb_classes = int(x.max().item()) + 1
+    nb_classes = (max_label or int(x.max().item())) + 1
     exclude_labels = set(py.ensure_list(exclude_labels or []))
     if exclude_missing:
         all_labels = x.unique()

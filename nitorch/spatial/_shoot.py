@@ -1,8 +1,7 @@
 """Geodesic shooting of initial velocity fields."""
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
-from nitorch.core import py, utils, linalg
-from nitorch.core.fft import ifftshift
+from nitorch.core.optionals import custom_fwd, custom_bwd
+from nitorch.core import py, utils, linalg, fft
 from ._finite_differences import diff
 from ._regularisers import regulariser, regulariser_grid
 from ._grid import identity_grid, grid_pull, grid_push
@@ -157,30 +156,33 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
         subkernel[center] = 1
         subkernel[..., 0, 0] = regulariser(subkernel[None, ..., 0, 0], **prm, dim=dim)[0]
 
-    kernel = ifftshift(kernel, dim=range(dim))
+    kernel = fft.ifftshift(kernel, dim=range(dim))
 
     # fourier transform
     #   symmetric kernel -> real coefficients
 
     dtype = kernel.dtype
     kernel = kernel.double()
-    if utils.torch_version('>=', (1, 8)):
-        kernel = utils.movedim(kernel, [-2, -1], [0, 1])
-        kernel = torch.fft.fftn(kernel, dim=list(range(-dim, 0))).real
-        if callable(kernel):
-            kernel = kernel()
-        kernel = utils.movedim(kernel, [0, 1], [-2, -1])
-    else:
-        kernel = utils.movedim(kernel, [-2, -1], [0, 1])
-        if torch.backends.mkl.is_available:
-            # use rfft
-            kernel = torch.rfft(kernel, dim, onesided=False)
-        else:
-            zero = kernel.new_zeros([]).expand(kernel.shape)
-            kernel = torch.stack([kernel, zero], dim=-1)
-            kernel = torch.fft(kernel, dim)
-        kernel = kernel[..., 0]  # should be real
-        kernel = utils.movedim(kernel, [0, 1], [-2, -1])
+    kernel = fft.real(fft.fftn(kernel, dim=list(range(dim)), real=True))
+
+    # if utils.torch_version('>=', (1, 8)):
+    #     kernel = utils.movedim(kernel, [-2, -1], [0, 1])
+    #     kernel = torch.fft.fftn(kernel, dim=list(range(-dim, 0))).real
+    #     if callable(kernel):
+    #         kernel = kernel()
+    #     kernel = utils.movedim(kernel, [0, 1], [-2, -1])
+    # else:
+    #     kernel = utils.movedim(kernel, [-2, -1], [0, 1])
+    #     if torch.backends.mkl.is_available:
+    #         # use rfft
+    #         kernel = torch.rfft(kernel, dim, onesided=False)
+    #     else:
+    #         zero = kernel.new_zeros([]).expand(kernel.shape)
+    #         kernel = torch.stack([kernel, zero], dim=-1)
+    #         kernel = torch.fft(kernel, dim)
+    #     kernel = kernel[..., 0]  # should be real
+    #     kernel = utils.movedim(kernel, [0, 1], [-2, -1])
+
     kernel = kernel.to(dtype=dtype)
 
     if lame1 or lame2:
@@ -226,44 +228,57 @@ def greens_apply(mom, greens, factor=1, voxel_size=1):
     dim = mom.shape[-1]
 
     # fourier transform
-    mom = utils.movedim(mom, -1, 0)
-    if utils.torch_version('>=', (1, 8)):
-        mom = torch.fft.fftn(mom, dim=list(range(-dim, 0)))
-    else:
-        if torch.backends.mkl.is_available:
-            # use rfft
-            mom = torch.rfft(mom, dim, onesided=False)
-        else:
-            zero = mom.new_zeros([]).expand(mom.shape)
-            mom = torch.stack([mom, zero], dim=-1)
-            mom = torch.fft(mom, dim)
-    mom = utils.movedim(mom, 0, -1)
+    mom = fft.fftn(mom, dim=list(range(-dim-1, -1)), real=True)
+
+    # mom = utils.movedim(mom, -1, 0)
+    # if utils.torch_version('>=', (1, 8)):
+    #     mom = torch.fft.fftn(mom, dim=list(range(-dim, 0)))
+    # else:
+    #     if torch.backends.mkl.is_available:
+    #         # use rfft
+    #         mom = torch.rfft(mom, dim, onesided=False)
+    #     else:
+    #         zero = mom.new_zeros([]).expand(mom.shape)
+    #         mom = torch.stack([mom, zero], dim=-1)
+    #         mom = torch.fft(mom, dim)
+    # mom = utils.movedim(mom, 0, -1)
 
     # voxel-wise matrix multiplication
+    # if greens.dim() == dim:
+    #     voxel_size = utils.make_vector(voxel_size, dim, **utils.backend(mom))
+    #     voxel_size = voxel_size.square()
+    #     if utils.torch_version('<', (1, 8)):
+    #         greens = greens[..., None, None]
+    #     mom = mom * greens
+    #     mom = mom / voxel_size
+    # else:
+    #     if utils.torch_version('<', (1, 8)):
+    #         mom[..., 0, :] = linalg.matvec(greens, mom[..., 0, :])
+    #         mom[..., 1, :] = linalg.matvec(greens, mom[..., 1, :])
+    #     else:
+    #         mom = torch.complex(linalg.matvec(greens, mom.real),
+    #                             linalg.matvec(greens, mom.imag))
+
     if greens.dim() == dim:
         voxel_size = utils.make_vector(voxel_size, dim, **utils.backend(mom))
-        voxel_size = voxel_size.square()
-        if utils.torch_version('<', (1, 8)):
-            greens = greens[..., None, None]
-        mom = mom * greens
-        mom = mom / voxel_size
+        voxel_size = voxel_size.square().reciprocal()
+        greens = greens.unsqueeze(-1)
+        mom = fft.mul(mom, greens, real=(False, True))
+        mom = fft.mul(mom, voxel_size, real=(False, True))
     else:
-        if utils.torch_version('<', (1, 8)):
-            mom[..., 0, :] = linalg.matvec(greens, mom[..., 0, :])
-            mom[..., 1, :] = linalg.matvec(greens, mom[..., 1, :])
-        else:
-            mom = torch.complex(linalg.matvec(greens, mom.real),
-                                linalg.matvec(greens, mom.imag))
+        mom = fft.mul(mom, greens, real=(False, True))
 
     # inverse fourier transform
-    mom = utils.movedim(mom, -1, 0)
-    if utils.torch_version('>=', (1, 8)):
-        mom = torch.fft.ifftn(mom, dim=list(range(-dim, 0))).real
-        if callable(mom):
-            mom = mom()
-    else:
-        mom = torch.ifft(mom, dim)[..., 0]
-    mom = utils.movedim(mom, 0, -1)
+    # mom = utils.movedim(mom, -1, 0)
+    # if utils.torch_version('>=', (1, 8)):
+    #     mom = torch.fft.ifftn(mom, dim=list(range(-dim, 0))).real
+    #     if callable(mom):
+    #         mom = mom()
+    # else:
+    #     mom = torch.ifft(mom, dim)[..., 0]
+    # mom = utils.movedim(mom, 0, -1)
+
+    mom = fft.real(fft.ifftn(mom, dim=list(range(-dim-1, -1))))
     mom /= factor
 
     return mom

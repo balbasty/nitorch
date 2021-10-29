@@ -1,5 +1,5 @@
 from nitorch import spatial
-from ..generators import (BiasFieldTransform, RandomDiffeo)
+from ..generators import (RandomBiasFieldTransform, RandomDiffeo)
 import torch
 from ...core.constants import eps
 
@@ -57,10 +57,10 @@ def board2(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None, mode
         if ref.dtype in (torch.float, torch.double):
             refs = get_orthogonal_slices(ref[0])
         else:
+            mx = ref.max().item()
             refs = get_orthogonal_slices(ref[0, 0])
             refs = [torch.stack
-                ([ref == i for i in range(1, ref.max().item( ) +1)]).float()
-                    for ref in refs]
+                ([ref == i for i in range(1, mx + 1)]).float() for ref in refs]
         refs = [prob_to_rgb(ref, implicit=ref.shape[0] < nk) for ref in refs]
         plt.subplot(3, 3, 1)
         plt.imshow(images[0].detach().cpu())
@@ -306,8 +306,7 @@ def augment(method, image, label=None, vx=None):
         fwhm = [f / v for f, v in
                 zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
-        aug = BiasFieldTransform(amplitude=amplitude, fwhm=fwhm, mean=0.0,
-                                 device=image.device, dtype=image.dtype)
+        aug = RandomBiasFieldTransform(amplitude=amplitude, fwhm=fwhm)
         # Augment image
         image = aug(image)
 

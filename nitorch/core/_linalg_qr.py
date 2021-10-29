@@ -18,7 +18,7 @@ References
       https://en.wikipedia.org/wiki/QR_algorithm#The_implicit_QR_algorithm
 """
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
+from .optionals import custom_fwd, custom_bwd
 from . import utils, py, constants
 
 

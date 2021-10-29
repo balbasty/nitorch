@@ -12,9 +12,10 @@ from ._linalg_logm import logm
 from ._linalg_qr import eig_sym, eig_sym_
 
 
-_torch_has_linalg_solve = utils.torch_version('>=', (1, 8))
-_solve_lu = (torch.linalg.solve if _torch_has_linalg_solve else
-             (lambda A, b: torch.solve(b, A)[0]))
+if hasattr(torch, 'linalg') and hasattr(torch.linalg, 'solve'):
+    _solve_lu = torch.linalg.solve
+else:
+    _solve_lu = lambda A, b: torch.solve(b, A)[0]
 
 
 def meanm(mats, max_iter=1024, tol=1e-20):

@@ -4,12 +4,15 @@
 
 import nibabel as nib
 import torch
+import math
 from nitorch.core.kernels import smooth
 from nitorch.vb.mixtures import GMM
 from nitorch.vb.mixtures import RMM
 from nitorch.spatial import im_gradient
 from nitorch.core.constants import inf
 from nitorch.plot import show_slices
+from nitorch import io
+from nitorch.core.dtypes import dtype as dtype_info
 
 
 def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
@@ -84,14 +87,14 @@ def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
     return fwhm, sd
 
 
-def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
+def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
                    mu_noise=None, max_iter=10000, verbose=0,
                    bins=1024):
     """Estimate noise from a nifti image by fitting either a GMM or an RMM 
     to the image's intensity histogram.
 
     Args:
-        pth (string): Path to nifti file.
+        dat (str or tensor): Tensor or path to nifti file.
         show_fit (bool, optional): Defaults to False.
         fig_num (bool, optional): Defaults to 1.
         num_class (int, optional): Number of mixture classes (only for GMM).
@@ -115,12 +118,18 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
         mu_not_noise (torch.Tensor): Mean of foreground class.
 
     """
-    if isinstance(pth, torch.Tensor):
-        dat = pth
-    else:  # Load data from nifti
-        nii = nib.load(pth)
-        dat = torch.tensor(nii.get_fdata())
-        dat = dat.flatten()
+    slope = None
+    if isinstance(dat, str):
+        dat = io.map(dat)
+    if isinstance(dat, io.MappedArray):
+        slope = dat.slope
+        if not slope and not dtype_info(dat.dtype).if_floating_point:
+            slope = 1
+        dat = dat.fdata(rand=True)
+    dat = torch.as_tensor(dat).flatten()
+    if not slope and not dat.dtype.is_floating_point:
+        slope = 1
+        dat = dat.float()
     device = dat.device
     dat[~torch.isfinite(dat)] = 0
     dat = dat.double()
@@ -131,6 +140,11 @@ def estimate_noise(pth, show_fit=False, fig_num=1, num_class=2,
     msk &= dat != dat.max()
     dat, msk = dat[msk], None
     mx = torch.max(dat).round()
+    if slope:
+        # ensure bin width aligns with integer width
+        width = (mx - mn) / bins
+        width = (width / slope).ceil() * slope
+        mx = mn + bins * width
 
     # Histogram bin data
     W, dat = torch.histc(dat, bins=bins, min=mn, max=mx).double(), None

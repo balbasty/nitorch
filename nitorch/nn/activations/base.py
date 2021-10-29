@@ -143,5 +143,4 @@ def make_activation(activation):
         activation = (activation() if inspect.isclass(activation)
                       else activation if callable(activation)
                       else None)
-    print(activation)
     return activation

@@ -3,7 +3,7 @@
 from ._grid import grid_pull, grid_push, identity_grid, grid_jacobian
 from nitorch.core import utils, py, linalg
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
+from nitorch.core.optionals import custom_fwd, custom_bwd
 
 
 __all__ = ['exp', 'exp_forward', 'exp_backward']

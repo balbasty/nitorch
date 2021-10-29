@@ -5,12 +5,13 @@ from ..base import Module
 
 class LabelToOneHot(Module):
 
-    def __init__(self, implicit=False, dtype=None):
+    def __init__(self, implicit=False, dtype=None, nb_classes=None):
         super().__init__()
         self.implicit = implicit
         self.dtype = dtype
+        self.nb_classes = nb_classes
 
-    def forward(self, x):
+    def forward(self, x, **overload):
         """
 
         Parameters
@@ -22,8 +23,14 @@ class LabelToOneHot(Module):
         x : (B, C, *spatial)
 
         """
+        nb_classes = overload.get('nb_classes', self.nb_classes)
         dtype = self.dtype or torch.get_default_dtype()
-        x = utils.one_hot(x, dim=1, implicit=self.implicit, dtype=dtype)
+        if nb_classes is None:
+            max_label = None
+        else:
+            max_label = self.nb_classes - 1
+        x = utils.one_hot(x, dim=1, implicit=self.implicit, dtype=dtype,
+                          max_label=max_label)
         x = x.squeeze(2)  # previous channel dimension
         return x
 

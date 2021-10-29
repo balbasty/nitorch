@@ -41,7 +41,13 @@ MINIMUM_MSVC_VERSION = (19, 0, 24215)
 
 
 def torch_version(astuple=True):
-    version = torch.__version__.split('+')[0].split('.')
+    version = list(torch.__version__.split('+')[0].split('.'))
+    # strip alpha tags
+    for n, v in enumerate(version):
+        for x in 'abcdefghijklmnopqrstuvwxy':
+            if x in v:
+                v = v[:v.index(x)]
+        version[n] = v
     version = tuple(int(v) for v in version)
     if len(version) == 2:
         version = version + (0,)
@@ -216,10 +222,11 @@ def cuda_arch_flags():
         ('Pascal', '6.0;6.1+PTX'),
         ('Volta', '7.0+PTX'),
         ('Turing', '7.5+PTX'),
+        ('Ampere', '8.0;8.6+PTX'),
     ])
 
     supported_arches = ['3.5', '3.7', '5.0', '5.2', '5.3', '6.0', '6.1', '6.2',
-                        '7.0', '7.2', '7.5']
+                        '7.0', '7.2', '7.5', '8.0', '8.6']
     valid_arch_strings = supported_arches + [s + "+PTX" for s in supported_arches]
 
     # The default is sm_30 for CUDA 9.x and 10.x
