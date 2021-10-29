@@ -5,6 +5,7 @@ from nitorch.core import linalg, math, utils, py
 from nitorch.plot import plot_mixture_fit
 from nitorch import spatial
 import torch
+from .mrf import mrf, update_mrf
 
 default_warp_reg = {'absolute': 0,
                     'membrane': 0.001,
@@ -66,7 +67,7 @@ class SpatialMixture:
 
     def __init__(self, nb_classes=6,
                  bias=True, warp=True, mixing=False, prior=None, prior_aff=None,
-                 lam_bias=0.1, lam_warp=0.1, lam_mixing=100,
+                 mrf=False, lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=100,
                  bias_acceleration=0, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-4, max_iter_intensity=8,
                  max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
@@ -88,6 +89,8 @@ class SpatialMixture:
             GMM mixing proportions. Stationary and learned by default.
         prior_aff : (D+1, D+1) tensor, optionsl
             Orientation matrix of the prior.
+        mrf : bool, default=False
+            Include a Markov Random Field
         lam_bias : float, default=0.1
             Regularization factor of the bias field.
         lam_warp : float or dict, default=0.1
@@ -96,6 +99,8 @@ class SpatialMixture:
             {'membrane': 1e-3, 'bending': 0.5, 'lame': (0.05, 0.2)}
         lam_mixing : float, default=100
             Dirichlet regularization of the mixing proportions
+        lam_mrf : float, default=100
+            Dirichlet regularization of the MRF prior.
 
         Other Parameters
         ----------------
@@ -154,6 +159,20 @@ class SpatialMixture:
         self.bias = bias
         self.warp = warp
         self.mixing = mixing
+
+        self.mrf = mrf
+        self.lam_mrf = lam_mrf
+        if mrf:
+            if self.prior is not None:
+                mrf_prior = math.softmax(self.prior, dim=0, implicit=(True, False))
+                mrf_prior = update_mrf(mrf_prior)
+            else:
+                mrf_prior = torch.ones([self.nb_classes] * 2)
+                mrf_prior.fill_(1/self.nb_classes)
+            self.mrf_prior = mrf_prior
+        else:
+            self.mrf_prior = None
+        self.mrf_fit = self.mrf_prior
 
         if prior is None:
             self.warp = False
@@ -295,6 +314,16 @@ class SpatialMixture:
             X = X0
             W = W0
             M = None
+            factor = spatial.voxel_size(aff) / spatial.voxel_size(aff0)
+            if self.mrf:
+                # volume / surface = length -> increase mrf diagonal
+                dim = X.dim()-1
+                l = factor.prod() ** (1/dim)
+                diag = self.mrf_fit.diag().clone().pow_(l)
+                self.mrf_fit.diag().zero_()
+                self.mrf_fit /= self.mrf_fit.sum(-1, keepdim=True)
+                self.mrf_fit *= 1 - diag
+                self.mrf_fit.diag().copy_(diag)
             if self.beta is not None:
                 self.beta = spatial.reslice(
                     self.beta, aff, aff0, X.shape[1:],
@@ -308,7 +337,6 @@ class SpatialMixture:
                     bound='dft', interpolation=3,
                     prefilter=True, extrapolate=True)
                 self.alpha = utils.movedim(self.alpha, 0, -1)
-                factor = spatial.voxel_size(aff) / spatial.voxel_size(aff0)
                 self.alpha *= factor
                 M = self.warp_tpm(aff=aff0)
             Z, _ = self.e_step(X, W, M)
@@ -337,7 +365,7 @@ class SpatialMixture:
 
         return Z
 
-    def e_step(self, X, W=None, M=None, combine=False):
+    def e_step(self, X, W=None, M=None, Z=None, combine=False):
         """Perform the Expectation step
 
         Parameters
@@ -348,6 +376,8 @@ class SpatialMixture:
             Weights
         M : (K, *spatial) tensor, optional
             Non-stationary prior
+        Z : (K, *spatial) tensor, optional
+            Previous responsibilities (only used for MRF)
 
         Returns
         -------
@@ -357,12 +387,14 @@ class SpatialMixture:
 
         """
         if combine:
-            Z, lb = self.e_step(X, W, M)
+            Z, lb = self.e_step(X, W, M, Z)
             Z = self._z_combine(Z)
             return Z, lb
 
         if self.verbose >= 3:
             print('compute Z')
+
+        Z0 = Z
 
         M = M.log() if M is not None else None
         gamma = self.gamma.log() if self.gamma is not None else None
@@ -376,6 +408,17 @@ class SpatialMixture:
             # --- prior (nonstationary component) ---
             if M is not None:
                 Z[k] += M[k0]
+        if self.mrf:
+            L = math.softmax(Z + self._tinyish, dim=0)
+            L = self._z_combine(L)
+            # if Z0 is None:
+            #     Z0 = L.clone()
+            Z0 = L.clone()
+            L = L.log_()
+            _, Z0 = mrf(Z0, self.mrf_fit, L, W)
+            # Z0 now contains \sum_j log(pi)[j] @ Z[j]
+            for k, k0 in enumerate(self.lkp):
+                Z[k] += Z0[k0]
         # --- softmax ---
         Z, lb = math.softmax_lse(Z + self._tinyish, lse=True, weights=W, dim=0)
         return Z, lb
@@ -424,15 +467,20 @@ class SpatialMixture:
         XB = X
         if self.beta is not None:
             XB = self.beta.exp().mul_(X)
+        Z = None
 
         all_lb = []
         all_all_lb = []
         lb = -float('inf')
         plot_mode = None
+        mrf, self.mrf = self.mrf, False
         for n_iter in range(self.max_iter):  # EM loop
             if self.verbose >= 2:
                 print(f'n_iter: {n_iter + 1}')
             olb_em = lb
+
+            # if n_iter > 5:
+            #     self.mrf = mrf
 
             for n_iter_intensity in range(self.max_iter_intensity):
                 olb_intensity = lb
@@ -442,7 +490,7 @@ class SpatialMixture:
                     # E-step
                     # ======
                     olb = lb
-                    Z, lb = self.e_step(XB, W, M)
+                    Z, lb = self.e_step(XB, W, M, Z)
                     lb += self._lb_parameters()
                     all_all_lb.append(lb)
                     if self.verbose >= 3:
@@ -463,6 +511,12 @@ class SpatialMixture:
                     if self.mixing:
                         self._update_mixing(ss0, M, W)
 
+                    # ============================
+                    # M-step - Markov Random Field
+                    # ============================
+                    # if self.mrf:
+                    #     self._update_mrf(Z, W)
+
                     plot_mode = 'gmm'
 
                     if n_iter_cluster > 1 and lb-olb < self.tol * nW:
@@ -473,7 +527,7 @@ class SpatialMixture:
                     # E-step
                     # ======
                     olb = lb
-                    Z, lb = self.e_step(XB, W, M)
+                    Z, lb = self.e_step(XB, W, M, Z)
                     lb += self._lb_parameters()
                     all_all_lb.append(lb)
                     if self.verbose >= 3:
@@ -499,7 +553,7 @@ class SpatialMixture:
                 # E-step
                 # ======
                 olb = lb
-                Z, lb = self.e_step(XB, W, M, combine=True)
+                Z, lb = self.e_step(XB, W, M, Z, combine=True)
                 lb += self._lb_parameters()
                 all_all_lb.append(lb)
                 if self.verbose >= 3:
@@ -527,6 +581,7 @@ class SpatialMixture:
                     print('converged')
                 break
 
+        self.mrf = mrf
         all_lb = torch.stack(all_lb)            # per iteration
         all_all_lb = torch.stack(all_all_lb)    # per step
         return Z, all_lb, all_all_lb
@@ -801,6 +856,22 @@ class SpatialMixture:
         dim = X.dim() - 1
         backend = utils.backend(X)
 
+        # change backend of pre-allocated tensors
+        if self.prior is not None:
+            self.prior = self.prior.to(**backend)
+        if self.mrf_prior is not None:
+            self.mrf_prior = self.mrf_prior.to(**backend)
+        if self.mrf_fit is not None:
+            self.mrf_fit = self.mrf_fit.to(**backend)
+            if self.prior is not None:
+                l = spatial.voxel_size(aff) / spatial.voxel_size(self.prior_aff)
+                l = l.prod() ** (1/dim)
+                diag = self.mrf_fit.diag().clone().pow_(1/l)
+                self.mrf_fit.diag().zero_()
+                self.mrf_fit /= self.mrf_fit.sum(-1, keepdim=True)
+                self.mrf_fit *= 1 - diag
+                self.mrf_fit.diag().copy_(diag)
+
         # spatial deformation coefficients
         alpha = kwargs.pop('alpha', None)
         if alpha is not None:
@@ -880,6 +951,9 @@ class SpatialMixture:
         gamma /= gamma.sum()
         self.kappa.copy_(kappa)
         self.gamma.copy_(gamma)
+
+    def _update_mrf(self, Z, W=None):
+        self.mrf_fit.copy_(update_mrf(Z, W, self.mrf_prior))
 
     def _update_warp(self, Z, M, G, W=None, aff=None):
         """
@@ -1145,7 +1219,7 @@ class UniSeg(SpatialMixture):
 
         # 2) Estimate the (diagonal) variance of the data, assuming
         #    a single Gaussian.
-        ss0, ss1, ss2 = self._suffstats(X, W)
+        ss0, ss1, ss2 = self._suffstats(X, W[None])
         ss0 = ss0[0]
         ss1 = ss1[0]
         ss2 = ss2[0].diag()
