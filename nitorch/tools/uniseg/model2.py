@@ -340,7 +340,7 @@ class SpatialMixture:
                 self.alpha *= factor
                 M = self.warp_tpm(aff=aff0)
             Z, _ = self.e_step(X, W, M)
-            if self.verbose >= 3:
+            if self.verbose >= 3 or self.verbose == -1:
                 self._plot_lb(all_lb, X, Z, M)
 
         # Print algorithm info
@@ -497,6 +497,8 @@ class SpatialMixture:
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_cluster:02d} | '
                               f'pre gmm: {lb.item():12.6g}')
                         self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                    elif self.verbose == -1:
+                        self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
                     # ==================
                     # M-step - Intensity
@@ -534,6 +536,8 @@ class SpatialMixture:
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_bias:02d} | '
                               f'pre bias: {lb.item():12.6g}')
                         self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                    elif self.verbose == -1:
+                        self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
                     # =============
                     # M-step - Bias
@@ -559,6 +563,8 @@ class SpatialMixture:
                 if self.verbose >= 3:
                     print(f'{n_iter:02d} | {n_iter_warp:02d} | {"":2s} | '
                           f'pre warp: {lb.item():12.6g}')
+                    self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                elif self.verbose == -1:
                     self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
                 # =============
