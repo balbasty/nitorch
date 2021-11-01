@@ -477,11 +477,11 @@ def nansum(input, *args, inplace=False, **kwargs):
     if not inplace:
         input = input.clone()
     mask = torch.isnan(input)
-    if input.requires_grad:
+    if input.requires_grad and input.is_leaf:
         zero = torch.as_tensor(0, dtype=input.dtype, device=input.device)
         input = torch.where(mask, zero, input)
     else:
-        input[mask] = 0
+        input.masked_fill_(mask, 0)
     return torch.sum(input, *args, **kwargs)
 
 
@@ -545,12 +545,12 @@ def nanmean(input, *args, inplace=False, **kwargs):
     if not inplace:
         input = input.clone()
     mask = torch.isnan(input)
-    if input.requires_grad:
+    if input.requires_grad and input.is_leaf:
         zero = torch.as_tensor(0, dtype=input.dtype, device=input.device)
         input = torch.where(mask, zero, input)
     else:
-        input[mask] = 0
-    mask = ~mask
+        input.masked_fill_(mask, 0)
+    mask = mask.bitwise_not_()
     weights = mask.sum(*args, **kwargs).to(kwargs.get('dtype', input.dtype))
     return torch.sum(input, *args, **kwargs) / weights
 
@@ -614,28 +614,20 @@ def nanvar(input, *args, unbiased=True, inplace=False, **kwargs):
 
     input = torch.as_tensor(input)
     requires_grad = input.requires_grad
+    inplace = inplace and not (requires_grad and input.is_leaf)
     if not inplace:
         input = input.clone()
     mask = torch.isnan(input)
-    if requires_grad:
-        zero = torch.as_tensor(0, dtype=input.dtype, device=input.device)
-        input = torch.where(mask, zero, input)
-    else:
-        input[mask] = 0
-    mask = ~mask
+    input.masked_fill_(mask, 0)
+    mask = mask.bitwise_not_()
     weights = mask.sum(*args, **kwargs).to(kwargs.get('dtype', input.dtype))
-    mean = torch.sum(input, *args, **kwargs) / weights
+    mean = torch.sum(input, *args, **kwargs).div_(weights)
     input = input.square() if requires_grad else input.square_()
-    var = torch.sum(input, *args, **kwargs) / weights
-    if requires_grad:
-        var = var - mean
-        if unbiased:
-            var = var * weights / (weights - 1)
-    else:
-        var -= mean
-        if unbiased:
-            weights /= (weights - 1)
-            var *= weights
+    var = torch.sum(input, *args, **kwargs).div_(weights)
+    var -= mean
+    if unbiased:
+        weights /= (weights - 1)
+        var *= weights
     return var
 
 
