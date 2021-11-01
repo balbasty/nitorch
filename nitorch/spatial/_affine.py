@@ -2371,7 +2371,8 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
         tensor = tensor.permute(current_to_target)
         dim_flip = [nb_dim_left + d for d, idx in enumerate(index) 
                     if idx.step == -1]
-        tensor = tensor.flip(dim_flip)
+        if dim_flip:
+            tensor = tensor.flip(dim_flip)
         return mat, tensor
     else:
         return (mat, tuple(shape)) if shape else mat
