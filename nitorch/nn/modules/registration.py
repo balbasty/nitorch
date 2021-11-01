@@ -24,7 +24,7 @@ References
     NeurIPS 2019. eprint arXiv:1908.02738
 """
 
-
+import math as pymath
 import torch
 from torch import nn as tnn
 from nitorch import core, spatial
@@ -57,8 +57,8 @@ class VoxelMorph(Module):
     velocity field). Note that all encoding and decoding convolutions
     have kernel size 3 and stride 2 -- therefore no max-pooling or
     linear upsampling is used. All convolutions are followed by a 
-    leaky ReLU activation sith slope 0.2. The default parameters of 
-    out implementation follow this architecture.
+    leaky ReLU activation with slope 0.2. The default parameters of
+    our implementation follow this architecture.
     
     Note that a slighlty different architecture was proposed in [1], 
     where two convolutions were applied at the second-to-last scale.
@@ -156,7 +156,7 @@ class VoxelMorph(Module):
         exp.setdefault('lame', (0.05, 0.2))
         exp.setdefault('factor', 1)
         do_shoot = exp.pop('shoot')
-        downsample_vel = utils.make_vector(exp.pop('downsample'), dim).tolist()
+        downsample_vel = exp.pop('downsample')
         vel_inter = exp['interpolation']
         vel_bound = exp['bound']
         if do_shoot:
@@ -170,26 +170,30 @@ class VoxelMorph(Module):
             exp.pop('bending')
             exp.pop('lame')
             exp.pop('factor')
+        exp['displacement'] = True
+        unet['skip_decoder_level'] = int(pymath.floor(pymath.log(downsample_vel) / pymath.log(2)))
 
         # prepare layers
         super().__init__()
         self.unet = UNet2(dim, in_channels, dim, **unet,)
-        self.resize = GridResize(interpolation=vel_inter, bound=vel_bound,
-                                 factor=[1/f for f in downsample_vel])
         self.velexp = GridShoot(**exp) if do_shoot else GridExp(**exp)
+        self.resize = GridResize(interpolation=vel_inter, bound=vel_bound,
+                                 factor=downsample_vel, anchor='f',
+                                 type='displacement')
         self.pull = GridPull(**pull)
         self.dim = dim
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation']
 
-    def exp(self, velocity, displacement=False):
+    def exp(self, velocity, shape=None, displacement=False):
         """Generate a deformation grid from tangent parameters.
 
         Parameters
         ----------
         velocity : (batch, *spatial, nb_dim)
             Stationary velocity field
+        shape : sequence[int], optional
         displacement : bool, default=False
             Return a displacement field (voxel to shift) rather than
             a transformation field (voxel to voxel).
@@ -201,11 +205,10 @@ class VoxelMorph(Module):
 
         """
         # generate grid
-        shape = velocity.shape[1:-1]
-        velocity_small = self.resize(velocity, type='displacement')
-        grid = self.velexp(velocity_small, displacement=displacement)
-        grid = self.resize(grid, shape=shape, factor=None,
-                           type='disp' if displacement else 'grid')
+        grid = self.velexp(velocity)
+        grid = self.resize(grid, output_shape=shape)
+        if not displacement:
+            grid = spatial.add_identity_grid_(grid)
         return grid
 
     def forward(self, source, target, source_seg=None, target_seg=None,
@@ -248,15 +251,14 @@ class VoxelMorph(Module):
         check.shape(target_seg, source_seg, dims=range(2, self.dim+2))
 
         # chain operations
+        shape = source.shape[2:]
         source_and_target = torch.cat((source, target), dim=1)
         velocity = self.unet(source_and_target)
         velocity = core.utils.channel2last(velocity)
-        grid = self.exp(velocity)
+        grid = self.exp(velocity, shape=shape)
         deformed_source = self.pull(source, grid)
 
         if source_seg is not None:
-            if source_seg.shape[2:] != source.shape[2:]:
-                grid = spatial.resize_grid(grid, shape=source_seg.shape[2:])
             deformed_source_seg = self.pull(source_seg, grid)
         else:
             deformed_source_seg = None
@@ -401,6 +403,7 @@ class AtlasMorph(Module):
             exp.pop('bending')
             exp.pop('lame')
             exp.pop('factor')
+        exp['displacement'] = True
         template = dict(template or {})
         template.setdefault('shape', (192,)*dim)
         template.setdefault('mom', 100)
@@ -416,7 +419,8 @@ class AtlasMorph(Module):
         self.template = tnn.Parameter(torch.zeros([template_channels, *template['shape']]))
         self.unet = UNet2(dim, template_channels + 1, dim, **unet)
         self.resize = GridResize(interpolation=vel_inter, bound=vel_bound,
-                                 factor=[1 / f for f in downsample_vel])
+                                 factor=[1 / f for f in downsample_vel],
+                                 type='displacement')
         self.velexp = GridShoot(**exp) if do_shoot else GridExp(**exp)
         self.pull = GridPull(**pull)
         self.dim = dim
@@ -516,10 +520,11 @@ class AtlasMorph(Module):
         """
         # generate grid
         shape = velocity.shape[1:-1]
-        velocity_small = self.resize(velocity, type='displacement')
-        grid = self.velexp(velocity_small, displacement=displacement)
-        grid = self.resize(grid, shape=shape, factor=None,
-                           type='disp' if displacement else 'grid')
+        velocity_small = self.resize(velocity)
+        grid = self.velexp(velocity_small)
+        grid = self.resize(grid, output_shape=shape, factor=None)
+        if not displacement:
+            grid = spatial.add_identity_grid_(grid)
         return grid
 
     def update_mean(self, velocity):

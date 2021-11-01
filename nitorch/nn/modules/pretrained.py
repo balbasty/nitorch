@@ -283,6 +283,23 @@ class SynthPreproc:
         ox[tuple(crop)] = x
         return ox
 
+    @classmethod
+    def reorient(cls, x, affine, target='RAS'):
+        affine, x = spatial.affine_reorient(affine, x, target)
+        return x, affine
+
+    @classmethod
+    def resize(cls, x, affine, target_vx=1):
+        target_vx = utils.make_vector(target_vx, x.dim(), **utils.backend(affine))
+        vx = spatial.voxel_size(affine)
+        factor = vx / target_vx
+        fwhm = 0.25 * factor.reciprocal()
+        fwhm[factor > 1] = 0
+        x = spatial.smooth(x, fwhm=fwhm.tolist(), dim=3)
+        x, affine = spatial.resize(x[None, None], factor.tolist(), affine=affine)
+        x = x[0, 0]
+        return x, affine
+
 
 class SynthSegmenter(SynthSegUNet):
     """
