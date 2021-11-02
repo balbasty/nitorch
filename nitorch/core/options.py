@@ -72,7 +72,8 @@ class Option:
     >> print(other_opt.nested_param.param1)
     ```
     """
-    def __new__(cls, *args, **kwargs):
+    # def __new__(cls, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         """
 
         Parameters
@@ -82,11 +83,13 @@ class Option:
         kwargs : dict of `option_name: value`
         """
         # Initial deep-copy from template object
-        obj = super().__new__(cls)
+        # obj = super().__new__(cls)
+        obj = self
+        cls = type(self)
         obj._validators = dict()
 
         for attr in obj.keys():
-            value = getattr(obj, attr)
+            value = getattr(cls, attr)
             if isinstance(value, Validated):
                 validator = value.validator
                 value = value.default
@@ -113,8 +116,6 @@ class Option:
                 raise KeyError(key)
             setattr(obj, key, val)
 
-        return obj
-
     _validators = None
     __protected_fields__ = ('copy', 'keys', 'items', 'values', 'update')
 
@@ -128,7 +129,14 @@ class Option:
             if not validator(value):
                 raise ValueError(f'Value {value} failed validation')
         if isinstance(getattr(self, key), Option):
-            getattr(self, key).update(value)
+            if getattr(self, key) is getattr(type(self), key):
+                # special case -> we are inside __init__ and want to
+                # instantiate a new Option object to avoid writing into
+                # the class instance
+                super().__setattr__(key, value)
+            else:
+                # re-use the existing object (TODO: is this a good idea?)
+                getattr(self, key).update(value)
             return self
         return super().__setattr__(key, value)
 
