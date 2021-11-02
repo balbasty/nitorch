@@ -764,10 +764,9 @@ class AffineGrid(Module):
         shape = shape or self.shape
 
         if self.shift:
-            affine_shift = torch.cat((
-                torch.eye(nb_dim, **backend),
-                -torch.as_tensor(shape, **backend)[:, None]/2),
-                dim=1)
+            affine_shift = torch.eye(nb_dim+1, **backend)
+            affine_shift[:nb_dim, -1] = torch.as_tensor(shape, **backend)
+            affine_shift[:nb_dim, -1].sub(1).div(2).neg()
             affine = spatial.affine_matmul(affine, affine_shift)
             affine = spatial.affine_lmdiv(affine_shift, affine)
 
