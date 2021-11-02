@@ -902,15 +902,16 @@ class Resize(Module):
 
 
 class GridResize(Module):
-    __doc__ = """
+    __doc__ = f"""
     Resize a transformation/displacement grid by a factor.
 
     This module has no learnable parameters.
 
-    {interpolation}
+    {_interpolation_doc}
 
-    {bound}
-    """.format(interpolation=_interpolation_doc, bound=_bound_doc)
+    {_bound_doc}
+    
+    """
 
     def __init__(self, factor=None, shape=None, type='grid', anchor='c',
                  interpolation='linear', bound='dct2', extrapolate=True,
@@ -958,7 +959,7 @@ class GridResize(Module):
         self.extrapolate = extrapolate
         self.prefilter = prefilter
 
-    def forward(self, grid, affine=None, output_shape=None):
+    def forward(self, grid, affine=None, output_shape=None, **overload):
         """
 
         Parameters
@@ -981,7 +982,7 @@ class GridResize(Module):
         """
         output_shape = output_shape or self.shape
         kwargs = {
-            'factor': self.factor,
+            'factor': overload.get('factor', self.factor),
             'shape': output_shape,
             'type': self.type,
             'anchor': self.anchor,

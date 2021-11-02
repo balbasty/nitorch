@@ -301,9 +301,9 @@ def dot(a, b, keepdim=False, out=None):
     b = b[..., :, None]
     ab = torch.matmul(a, b, out=out)
     if keepdim:
-        ab = ab[..., 0, 0]
-    else:
         ab = ab[..., 0]
+    else:
+        ab = ab[..., 0, 0]
     return ab
 
 

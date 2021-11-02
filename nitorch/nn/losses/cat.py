@@ -3,7 +3,7 @@
 import torch
 import torch.nn.functional as F
 from .base import Loss
-from nitorch.core import py, utils, math
+from nitorch.core import py, utils, math, linalg
 
 
 def _pad_norm(x, implicit=False):
@@ -422,6 +422,7 @@ class DiceLoss(Loss):
         predicted = torch.as_tensor(predicted)
         reference = torch.as_tensor(reference, device=predicted.device)
         backend = dict(dtype=predicted.dtype, device=predicted.device)
+        dim = predicted.dim() - 2
 
         # if only one predicted class -> must be implicit
         implicit = implicit or (predicted.shape[1] == 1)
@@ -455,14 +456,20 @@ class DiceLoss(Loss):
             if mask is not None:
                 predicted = predicted * mask
                 reference = reference * mask
-            inter = math.nansum(predicted * reference, dim=spatial_dims)
-            union = math.nansum(predicted + reference, dim=spatial_dims)
+            predicted = predicted.reshape([*predicted.shape[:-dim], -1])
+            reference = reference.reshape([*reference.shape[:-dim], -1])
+            inter = linalg.dot(predicted, reference)
+            sumpred = predicted.sum(-1)
+            sumref = reference.sum(-1)
+            union = sumpred + sumref
+            # inter = math.nansum(predicted * reference, dim=spatial_dims)
+            # union = math.nansum(predicted + reference, dim=spatial_dims)
             loss = -2 * inter / union.clamp_min_(1e-5)
             del inter, union
             if weighted is not False:
                 if weighted is True:
-                    weights = math.nansum(reference, dim=spatial_dims)
-                    weights = weights / weights.sum(dim=1, keepdim=True)
+                    # weights = math.nansum(reference, dim=spatial_dims)
+                    weights = sumref / sumref.sum(dim=1, keepdim=True)
                 else:
                     weights = weighted
                 loss = loss * weights
