@@ -44,8 +44,9 @@ class _LogNormal(_Dist):
     def __init__(self, mean, scale, **backend):
         mean = torch.as_tensor(mean, **backend)
         scale = torch.as_tensor(scale, **backend)
-        scale = (scale/mean).square().add(1).div(2).log()
-        mean = mean.log() - scale.square().div(2)
+        scale = (scale/mean).square().add(1).log()
+        mean = mean.log() - scale.div(2)
+        scale = scale.sqrt()
         self.dist = torch.distributions.LogNormal(mean, scale)
 
 
