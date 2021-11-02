@@ -717,4 +717,4 @@ class SynthDataset(Dataset):
 
             else:
                 dats, segs = self.brain_generator(segs)
-                yield dats, segs, imgs
+                yield dats, segs
