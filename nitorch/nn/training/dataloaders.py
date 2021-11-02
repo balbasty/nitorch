@@ -573,6 +573,7 @@ class PairedDatasetWithSeg(Dataset):
             segrefs = torch.stack(segrefs) if len(segrefs) > 1 else segrefs[0][None]
             yield dats, refs, segs, segrefs
 
+
 class SynthDataset(Dataset):
     """A dataset of segmentations to generate synthetic data, as per SynthSeg methods.
        Also optionally pass paired images for segmentation, e.g. for training SynthSR.
@@ -641,6 +642,7 @@ class SynthDataset(Dataset):
         self.segtype = segtype
         self.lookup = lookup
         self.batch_size = batch_size
+        from nitorch.nn.generators import SynthMRI
         self.brain_generator = SynthMRI(
             channel=channel,
             vel_amplitude=vel_amplitude,
