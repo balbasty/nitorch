@@ -9,7 +9,7 @@ TODO:
 import math
 from timeit import default_timer as timer
 from ..core.optim import get_gain, plot_convergence
-from ..core.math import besseli, softmax_lse
+from ..core.math import besseli_old as besseli, softmax_lse
 from ..plot import plot_mixture_fit
 import torch
 
