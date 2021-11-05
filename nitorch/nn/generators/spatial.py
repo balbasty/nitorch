@@ -829,7 +829,7 @@ class RandomPatchSwap(Module):
     References
     ----------
     ..[1] "Self-supervised learning for medical image analysis using image context restoration"
-            Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa, Michitaka Fujiwara, DanieRueckert
+            Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa, Michitaka Fujiwara, Daniel Rueckert
             Medical Image Analysis 2019
             https://doi.org/10.1016/j.media.2019.101539
 
