@@ -784,3 +784,77 @@ class RandomLowRes3D(Module):
 
         all_resolutions = utils.as_tensor(all_resolutions, **backend)
         return (out, all_resolutions) if return_resolution else out
+
+
+class RandomRubiks(Module):
+    """
+    Shuffle image by cube/squares to re-organise as a self-supervised pretraining task.
+    Also works for anisotropic data with non-regular block shapes.
+
+    References
+    ----------
+    ..[1] "Revisiting Rubik's Cube: Self-supervised Learning with 
+            Volume-wise Transformation for 3D Medical Image Segmentation"
+            Xing Tao, Yuexiang Li, Wenhui Zhou, Kai Ma, Yefeng Zheng
+            MICCAI 2020
+            https://arxiv.org/abs/2007.08826
+
+            
+    """
+    def __init__(self,
+                 kernel=[32,32,32]):
+        """
+        Arguments:
+            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
+                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
+        """
+        
+        super().__init__()
+        self.kernel = kernel
+
+    def forward(self, x):
+        dim = len(x.shape[2:])
+        shape = x.shape[2:]
+        x = utils.unfold(x, self.kernel, dim=dim, collapse=True)
+        x = x[:, :, torch.randperm(x.shape[2])]
+        x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
+        return x
+
+
+class RandomPatchSwap(Module):
+    """
+    Swap random patches in image as self-supervised pretraining task.
+    Also works for anisotropic data with non-regular block shapes.
+
+    References
+    ----------
+    ..[1] "Self-supervised learning for medical image analysis using image context restoration"
+            Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa, Michitaka Fujiwara, DanieRueckert
+            Medical Image Analysis 2019
+            https://doi.org/10.1016/j.media.2019.101539
+
+            
+    """
+    def __init__(self,
+                 kernel=[32,32,32],
+                 nb_swap=4):
+        """
+        Arguments:
+            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
+                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
+            nb_swap (int): Number of times to swap two random patches. Default = 4
+        """
+        
+        super().__init__()
+        self.kernel = kernel
+        self.nb_swap = nb_swap
+
+    def forward(self, x):
+        dim = len(x.shape[2:])
+        shape = x.shape[2:]
+        x = utils.unfold(x, self.kernel, dim=dim, collapse=True)
+        for n in range(self.nb_swap):
+            i1, i2 = randint(0, x.shape[2]-1)
+            x[:,:,i1], x[:,:,i2] = x[:,:,i2], x[:,:,i1]
+        x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
+        return x
