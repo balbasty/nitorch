@@ -9,7 +9,7 @@ from .distribution import _get_dist
 
 __all__ = ['RandomVelocity', 'RandomDiffeo', 'RandomAffineMatrix', 'RandomGrid',
            'RandomDeform', 'RandomPatch', 'RandomFlip', 'RandomSmooth',
-           'RandomLowRes2D', 'RandomLowRes3D']
+           'RandomLowRes2D', 'RandomLowRes3D', 'RandomRubiks', 'RandomPatchSwap']
 
 
 defaults = dict(
