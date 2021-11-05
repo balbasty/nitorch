@@ -1,7 +1,11 @@
+from typing import OrderedDict
+from nitorch.nn.activations.base import make_activation_from_name
 import torch
 from nitorch.nn.base import Module
 from nitorch.core import py, utils, math, linalg
 from nitorch import spatial
+from nitorch.nn.modules.conv import ConvBlock
+from nitorch.nn.activations.base import make_activation_from_name
 
 
 class ConvAttentionLayer(Module):
@@ -201,3 +205,63 @@ class MultiConvAttention(Module):
             del y
         out = utils.movedim(self.linear(utils.movedim(out, 1, -1)), -1, 1)
         return out
+
+
+class AttentionGate(Module):
+    """
+    Attention gating module, as found in Attention U-Net model.
+
+    References
+    ----------
+    ..[1] "Attention U-Net: Learning Where to Look for the Pancreas"
+          Ozan Oktay, Jo Schlemper, Loic Le Folgoc, Matthew Lee, 
+          Mattias Heinrich, Kazunari Misawa, Kensaku Mori, 
+          Steven McDonagh, Nils Y Hammerla, Bernhard Kainz, 
+          Ben Glocker, Daniel Rueckert
+          https://arxiv.org/abs/1804.03999
+    """
+    def __init__(self,
+                 dim,
+                 encoder_channels,
+                 decoder_channels,
+                 intermediate_channels=None,
+                 norm=True,
+                 dropout=None,
+                 activation='ReLU'):
+        """
+
+        Parameters
+        ----------
+
+        dim : {1, 2, 3}
+            Number of spatial dimensions.
+
+        encoder_channels : int
+            Number of input channels from encoder
+
+        decoder_channels : int
+            Number of input channels from decoder (typically will
+            equal 2 * encoder_channels)
+
+        intermediate_channels : int, default=None
+            Number of channels to use in intermediate
+            activations of attention gate. Typically use same
+            value as encoder_channels.
+            If None, will set intermediate_channels=decoder_channels
+
+        """
+        if not intermediate_channels:
+            intermediate_channels = decoder_channels
+        super().__init__(OrderedDict(gate=ConvBlock(dim, decoder_channels, intermediate_channels, kernel_size=1, norm=norm, activation=None, dropout=dropout),
+                                     act=ConvBlock(dim, encoder_channels, intermediate_channels, kernel_size=1, norm=norm, activation=None, dropout=dropout),
+                                     relu=make_activation_from_name(activation),
+                                     psi=ConvBlock(dim, intermediate_channels, 1, kernel_size=1, norm=norm, activation='sigmoid', dropout=dropout)))
+
+    def forward(self, x, x_cat=None):
+        if not x_cat:
+            x, x_cat = x
+        g = self.gate(x)
+        x = self.act(x_cat)
+        x = self.relu(x + g)
+        x = self.psi(x)
+        return x * x_cat
