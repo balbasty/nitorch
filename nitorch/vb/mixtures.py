@@ -77,6 +77,8 @@ class Mixture:
             W = torch.reshape(W, (N, 1))
 
         # Initialise model parameters
+        #print(f"X: {X}")
+        #print(f"W: {W}")
         self._init_par(X, W)
 
         # Compute a regularisation value
@@ -173,7 +175,9 @@ class Mixture:
 
             # Update mixing proportions
             if chi:
-                self.mp = ss0/torch.sum(self.mp)
+                print(f"ss0{ss0}")
+                self.mp = ss0+10**(-4)
+                self.mp = self.mp/torch.sum(self.mp)
             else:
                 if W is not None:
                     self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
@@ -230,14 +234,14 @@ class Mixture:
         # Compute 1st and 2nd moments
         for k in range(K):
             #0
-            #pom = Z[:,k]
-            pom = Z[:,k]*torch.transpose(W,0,1)
+            pom = Z[:,k]
+            #pom = Z[:,k]*torch.transpose(W,0,1)
             ss0[k]=torch.sum(pom)
             #print(pom.shape)
             #pomr = torch.reshape(pom, (N, 1))
             #print(pomr.shape)
             # 1st  sl  = sum(h.*log(max(x,eps)));
-            ss1[:, k] = torch.sum(torch.reshape(pom, (N, 1)) *torch.log(torch.clamp(X, min=tiny)),
+            ss1[:, k] = torch.sum(torch.reshape(pom, (N, 1)) *torch.log(torch.clamp(X, min=2.2204*10**(-16))),
                                   dim=0, dtype=torch.float64)
 
             # 2nd    s2  = sum(h.*x.^2);
@@ -245,11 +249,12 @@ class Mixture:
                 ss2[c1, c1, k] = \
                     torch.sum(pom * X[:, c1] ** 2, dtype=torch.float64)
                 for c2 in range(c1 + 1, C):
+                    print(f"c2 ")
                     ss2[c1, c2, k] = \
                         torch.sum(pom * (X[:, c1] * X[:, c2]),
                                   dtype=torch.float64)
                     ss2[c2, c1, k] = ss2[c1, c2, k]
-
+        #print(f"ss0 {ss0}")
         #print(f"ss1 {ss1}")
         #print(f"ss2 {ss2}")
 
@@ -469,7 +474,7 @@ class GMM(Mixture):
         log_pdf = - (C / 2) * torch.log(2 * pi) - log_det_Cov - 0.5 * torch.sum(diff**2, dim=1)
         return log_pdf
 
-    def _init_par(self, X):
+    def _init_par(self, X, W=None):
         """ Initialise GMM specific parameters: mu, Cov
 
         """
@@ -845,32 +850,70 @@ class CMM(Mixture):
         tiny = torch.tensor(1e-32, dtype=dtype, device=device)
 
 
-
+        print(f"before update dof {self.dof}, sig {self.sig}")
         # Update parameters (using means and variances)
-        for k in range(K):
+        # for k in range(K):
             
-            # sig2 = s2/(nu*s0);                                % Closed form update of sig2
-            # g    = s0*(psi(0,nu/2)/2 + 0.5*log(2*sig2)) - sl; % Gradient w.r.t. nu
-            # H    = s0* psi(1,nu/2)/4;                         % Hessian  w.r.t. nu
-            # nu   = max(nu - H\g, 2);                          % Gauss-newton update (constrained)
-            # if g'*g < eps, break; end  
+        #     # sig2 = s2/(nu*s0);                                % Closed form update of sig2
+        #     # g    = s0*(psi(0,nu/2)/2 + 0.5*log(2*sig2)) - sl; % Gradient w.r.t. nu
+        #     # H    = s0* psi(1,nu/2)/4;                         % Hessian  w.r.t. nu
+        #     # nu   = max(nu - H\g, 2);                          % Gauss-newton update (constrained)
+        #     # if g'*g < eps, break; end  
 
-            #print(f"self.dof[k] before update {self.dof[k]}")
-            #print(f"ss0[k] {ss0[k]}")
-            #print(f"ss2[:, :, k] {ss2[:, :, k]}")
-            for i in range(10000):
+        #     #print(f"self.dof[k] before update {self.dof[k]}")
+        #     #print(f"ss0[k] {ss0[k]}")
+        #     #print(f"ss2[:, :, k] {ss2[:, :, k]}")
+        #     for i in range(50000):
+        #         print(f"self.dof[k] in the loop: {self.dof[k]}")
+        #         self.sig[k] =  torch.sqrt(ss2[:, :, k]/(self.dof[k]*ss0[k]))
+        #         print(f"after update self.dof[k] in the loop: {self.dof[k]}")
+        #         #print(f"self.sig[k] {self.sig[k]}")
+        #         #gkl = ss0[k]*(torch.digamma(self.dof[k]/2)/2+0.5*torch.log(torch.clamp(2*self.sig[k]**2, min=tiny)))-ss1[:, k]
+        #         gkl = ss0[k]*(torch.digamma(self.dof[k]/2)/2+0.5*torch.log(2*self.sig[k]**2))-ss1[:, k]
+        #         print(f"gkl {gkl}")
+        #         #print(f"gkl {gkl}")
+        #         hkl = ss0[k]*torch.polygamma(1, self.dof[k]/2)/4
+        #         print(f"hkl {hkl}")
+        #         #print(f"hkl {hkl}")
+        #         # find max of tensor self.dof[k]-hkl/gkl and scalar 2: (compatible with torch 1.5.1)
+        #         print(f"hkl/gkl {hkl/gkl}")
+        #         self.dof[k] = torch.clamp(self.dof[k]-hkl/gkl, min=2.)
+        #         #print(f"self.dof[k] {self.dof[k]}")
+        #         # if not torch.isfinite(self.dof[k]):
+        #         #     self.dof[k] = 2
+        #         #self.dof[k]=21.4342
+        #         #print(f"gg{gkl*gkl}")
+        #         if gkl*gkl < 2.2204*10**(-16):
+        #            # print("break")
+        #             break
+        #     #print(f"after update dof {self.dof}, sig {self.sig}")
 
-                self.sig[k] =  torch.sqrt(ss2[:, :, k]/(self.dof[k]*ss0[k]))
-                #print(f"self.sig[k] {self.sig[k]}")
-                gkl = ss0[k]*(torch.digamma(self.dof[k]/2)/2+0.5*torch.log(2*self.sig[k]**2+tiny))-ss1[:, k]
-                #print(f"gkl {gkl}")
-                hkl = ss0[k]*torch.polygamma(1, self.dof[k]/2)/4
-                #print(f"hkl {hkl}")
-                # find max of tensor self.dof[k]-hkl/gkl and scalar 2: (compatible with torch 1.5.1)
-                self.dof[k] = torch.clamp(self.dof[k]-hkl/gkl, min=2)
-                #print(f"self.dof[k] {self.dof[k]}")
-                # if not torch.isfinite(self.dof[k]):
-                #     self.dof[k] = 2
-                #self.dof[k]=21.4342
-                if gkl*gkl < 1e-21:
-                    break
+            
+        for i in range(50000):
+            #print(f"self.dof in the loop: {self.dof}")
+            self.sig =  torch.sqrt(ss2/(self.dof*ss0))
+            #print(f"after update self.dof in the loop: {self.dof}")
+            #print(f"self.sig[k] {self.sig[k]}")
+            #gkl = ss0[k]*(torch.digamma(self.dof[k]/2)/2+0.5*torch.log(torch.clamp(2*self.sig[k]**2, min=tiny)))-ss1[:, k]
+            gkl = ss0*(torch.digamma(self.dof/2)/2+0.5*torch.log(2*self.sig**2))-ss1
+            #print(f"gkl {gkl}")
+            #print(f"gkl {gkl}")
+            hkl = ss0*torch.polygamma(1, self.dof/2)/4
+            #print(f"hkl {hkl}")
+            #print(f"hkl {hkl}")
+            # find max of tensor self.dof[k]-hkl/gkl and scalar 2: (compatible with torch 1.5.1)
+            print(f"hkl/gkl {gkl/hkl}")
+            #print(f"hkl size {hkl.shape}")
+            #print(f"gkl size {gkl.shape}")
+            #hkl = torch.reshape(hkl, (2,1))
+            self.dof = torch.clamp(self.dof-gkl/hkl, min=2.)
+            #print(f"self.dof[k] {self.dof[k]}")
+            # if not torch.isfinite(self.dof[k]):
+            #     self.dof[k] = 2
+            #self.dof[k]=21.4342
+            #print(f"gg{gkl*gkl}")
+            if gkl*gkl < 2.2204*10**(-16):
+                # print("break")
+                break
+        #print(f"after update dof {self.dof}, sig {self.sig}")
+        
