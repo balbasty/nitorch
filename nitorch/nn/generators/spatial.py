@@ -813,8 +813,8 @@ class RandomRubiks(Module):
         self.kernel = kernel
 
     def forward(self, x):
-        dim = len(x.shape[2:])
         shape = x.shape[2:]
+        dim = len(shape)
         x = utils.unfold(x, self.kernel, dim=dim, collapse=True)
         x = x[:, :, torch.randperm(x.shape[2])]
         x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
@@ -850,8 +850,8 @@ class RandomPatchSwap(Module):
         self.nb_swap = nb_swap
 
     def forward(self, x):
-        dim = len(x.shape[2:])
         shape = x.shape[2:]
+        dim = len(shape)
         x = utils.unfold(x, self.kernel, dim=dim, collapse=True)
         for n in range(self.nb_swap):
             i1, i2 = randint(0, x.shape[2]-1)
