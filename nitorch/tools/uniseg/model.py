@@ -1,930 +1,1421 @@
-import math as math_
-from nitorch.core.utils import isin
 from timeit import default_timer as timer
-from nitorch.core.optim import get_gain, plot_convergence
-from nitorch.core import linalg, math
+import math as pymath
+from nitorch.core.optim import plot_convergence
+from nitorch.core import linalg, math, utils, py
 from nitorch.plot import plot_mixture_fit
 from nitorch import spatial
 import torch
-from torch.distributions.multivariate_normal import MultivariateNormal
-from torch.distributions.categorical import Categorical
-from torch.nn.functional import one_hot
+from .mrf import mrf, update_mrf
 
-
-torch.backends.cudnn.benchmark = True
-
-default_warp_reg = { 'absolute': 0,
-                    'membrane': 0.001, 
+default_warp_reg = {'absolute': 0,
+                    'membrane': 0.001,
                     'bending': 0.5,
                     'lame': (0.05, 0.2), }
 
-class Mixture:
-    # A mixture model.
-    def __init__(self, num_class=2, mp=None):
+
+def uniseg(x, w=None, aff=None, bias=True, warp=True, mixing=True,
+           nb_classes=2, prior=None, prior_aff=None, lam_bias=0.1, lam_warp=0.1,
+           max_iter=30, tol=1e-4, verbose=1, show_fit=False):
+
+    # prepare inputs
+    batch, channel, *spatial = x.shape
+    dim = (x.dim() - 2)
+    if w is not None:
+        w = w.expand([batch, 1, *spatial])
+    else:
+        w = [None] * batch
+    if aff is not None:
+        aff = aff.expand([batch, dim+1, dim+1])
+    else:
+        aff = [None] * batch
+
+    # loop over batch elements
+    models = []
+    z = []
+    lb = []
+    for b in range(batch):
+        model = UniSeg(
+            dim, nb_classes, bias=bias, warp=warp, mixing=mixing,
+            prior=prior, prior_aff=prior_aff, lam_bias=lam_bias, lam_warp=lam_warp,
+            max_iter=max_iter, tol=tol, verbose=verbose, show_fit=show_fit,
+        )
+
+        z1, lb1 = model.fit(x[b], w[b], aff=aff[b])
+        models.append(model)
+        z.append(z1)
+        lb.append(lb1)
+
+    # stack results
+    parameters = {}
+    parameters['mean'] = torch.stack([model.mu for model in models])
+    parameters['cov'] = torch.stack([model.sigma for model in models])
+    if warp:
+        parameters['warp'] = torch.stack([model.alpha for model in models])
+    if bias:
+        parameters['bias'] = torch.stack([model.beta.exp() for model in models])
+    if mixing:
+        parameters['mixing'] = torch.stack([model.gamma for model in models])
+
+    return torch.stack(z), torch.stack(lb), parameters
+
+
+class SpatialMixture:
+    """Mixture model with spatially varying priors"""
+
+    _tiny = 1e-32
+    _tinyish = 1e-3
+
+    def __init__(self, nb_classes=6,
+                 bias=True, warp=True, mixing=False, prior=None, prior_aff=None,
+                 mrf=False, lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=100,
+                 bias_acceleration=0, warp_acceleration=0.9, spacing=3,
+                 max_iter=30, tol=1e-4, max_iter_intensity=8,
+                 max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
+                 verbose=1, verbose_bias=0, verbose_warp=0, show_fit=False):
         """
-        num_class (int or sequence[int], optional): Number of mixture components. Defaults to 2.
-            sequence[int] used for case of multiple gaussians per class, e.g. [5,3,3,2,2,1]
-        mp (torch.tensor): GMM mixing proportions.
-        lam (torch.tensor): Regularisation.
+        Parameters
+        ----------
+        nb_classes : int or sequence[int], default=2
+            Number of components in the mixture (including background).
+            If a sequence, defines the number of components within each
+            "prior" class; e.g. `[5, 3, 3, 2, 2, 1]`
+        bias : bool, default=True
+            Optimize bias field
+        warp : bool, default=True
+            Optimize warping field
+        mixing : bool, default=True
+            Optimize stationary mixing proportions
+        prior : (nb_classes, [*spatial]) tensor, optional
+            GMM mixing proportions. Stationary and learned by default.
+        prior_aff : (D+1, D+1) tensor, optionsl
+            Orientation matrix of the prior.
+        mrf : bool, default=False
+            Include a Markov Random Field
+        lam_bias : float, default=0.1
+            Regularization factor of the bias field.
+        lam_warp : float or dict, default=0.1
+            Regularization of the warping field.
+            If a scalar, multiplies the default parameters, which are:
+            {'membrane': 1e-3, 'bending': 0.5, 'lame': (0.05, 0.2)}
+        lam_mixing : float, default=100
+            Dirichlet regularization of the mixing proportions
+        lam_mrf : float, default=100
+            Dirichlet regularization of the MRF prior.
+
+        Other Parameters
+        ----------------
+        max_iter : int, default=30
+            Maximum number of outer (coordinate descent) iterations
+        tol : float, default=1e-4
+            Tolerance for early stopping
+        max_iter_intensity : int, default=8
+            Maximum number of GMM+Bias (EM) iterations
+        max_iter_cluster : int, default=20
+            Maximum number of GMM iterations
+        max_iter_bias : int, default=1
+            Maximum number of Bias (Gauss-Newton) iterations
+        max_iter_warp : int, default=3
+            Maximum number of Warp (Gauss-Newton) iterations
+        bias_acceleration : float, default=0.9
+        warp_acceleration : float, default=0.9
+        spacing : float, default=3
+            Distance (in mm) between sampled points when optimizing parameters
+        verbose : int, default=1
+            0: None.
+            1: Print summary when finished.
+            2: 1 + print convergence.
+            3: 1 + 2 + Log-likelihood plot.
+        verbose_bias : int, default=0
+        verbose_warp : int, default=0
+        show_fit : bool or int, default=False
 
         """
-        self.K = num_class
-        if mp is not None:
-            self.mp = mp
-            self.prior = True
+        # Convert nb_classes to a list of cluster indices
+        if isinstance(nb_classes, int):
+            lkp = list(range(nb_classes))
         else:
-            self.mp = []
-            self.prior = False
+            nb_classes = py.make_list(nb_classes)
+            lkp = [n for n, k in enumerate(nb_classes) for _ in range(k)]
+        self.lkp = lkp
+
+        if prior is not None:
+            implicit_in = len(prior) < self.nb_classes
+            prior = math.logit(prior, implicit=(implicit_in, True), dim=0)
+            if prior_aff is None:
+                prior_aff = spatial.affine_default(prior.shape[1:])
+        self.prior = prior
+        self.prior_aff = prior_aff
+        self.lam_bias = lam_bias * 1e6
+        if isinstance(lam_warp, (int, float)):
+            factor_warp = lam_warp
+            lam_warp = {k: [vv*factor_warp for vv in v] if isinstance(v, (list, tuple))
+                        else v*factor_warp for k, v in default_warp_reg.items()}
+        elif not lam_warp:
+            lam_warp = default_warp_reg
+        self.lam_warp = lam_warp
+        self.lam_mixing = lam_mixing
+        self.warp_acceleration = min(1., max(0., warp_acceleration))
+        self.bias_acceleration = min(1., max(0., bias_acceleration))
+        self.bias = bias
+        self.warp = warp
+        self.mixing = mixing
+
+        self.mrf = mrf
+        self.lam_mrf = lam_mrf
+        if mrf:
+            if self.prior is not None:
+                mrf_prior = math.softmax(self.prior, dim=0, implicit=(True, False))
+                mrf_prior = update_mrf(mrf_prior)
+            else:
+                mrf_prior = torch.ones([self.nb_classes] * 2)
+                mrf_prior.fill_(1/self.nb_classes)
+            self.mrf_prior = mrf_prior
+        else:
+            self.mrf_prior = None
+        self.mrf_fit = self.mrf_prior
+
+        if prior is None:
+            self.warp = False
+
+        # Optimization
+        self.spacing = spacing
+        self.max_iter = max_iter
+        self.max_iter_intensity = max_iter_intensity
+        self.max_iter_cluster = max_iter_cluster
+        self.max_iter_bias = max_iter_bias
+        self.max_iter_warp = max_iter_warp
+        self.max_ls_warp = 12
+        self.tol = tol
+
+        if not self.bias:
+            self.max_iter_bias = 0
+        if not self.warp:
+            self.max_iter_warp = 0
+
+        # Verbosity
+        self.verbose = verbose
+        self.verbose_bias = verbose_bias
+        self.verbose_warp = verbose_warp
+        self.show_fit = show_fit
+        if self.show_fit is True:
+            self.show_fit = 1
+
         self.lam = []
-        self.dev = ''  # PyTorch device
-        self.dt = ''  # PyTorch data type
+
+    @property
+    def nb_classes(self):
+        return max(x for x in self.lkp) + 1
+
+    @property
+    def nb_clusters(self):
+        return len(self.lkp)
+
+    @property
+    def nb_clusters_per_class(self):
+        return [self.lkp.count(k) for k in range(self.nb_clusters)]
 
     # Functions
-    def fit(self, X, verbose=1, max_iter=10000, tol=1e-8, fig_num=1, W=None,
-            show_fit=False, bias=True, warp=True, verbose_bias=0, penalty_bias=1e16, class_weight=True, delay=10):
+    def fit(self, X, W=None, aff=None, **kwargs):
         """ Fit mixture model.
 
-        Args:
-            X (torch.tensor): Observed data (B, C, [Spatial]).
-                B = num batch size of independent patients to process
+        Parameters
+        ----------
+        X : (C, *spatial) tensor
+            Observed data
                 C = num channels
-                [Spatial] = spatial dimensions. Can be [x], [x,y] or [x,y,z]
-            verbose (int, optional) Display progress. Defaults to 1.
-                0: None.
-                1: Print summary when finished.
-                2: 1 + print convergence.
-                3: 1 + 2 + Log-likelihood plot.
-            max_iter (int, optional) Maxmimum number of algorithm iterations.
-                Defaults to 10000.
-            tol (int, optional): Convergence threshold. Defaults to 1e-8.
-            fig_num (int, optional): Defaults to 1.
-            W (torch.tensor, optional): Observation weights (N, 1). Defaults to no weights.
-            show_fit (bool, optional): Plot mixture fit, defaults to False.
+                *spatial = spatial dimensions. Can be [x], [x,y] or [x,y,z]
+        W : (*spatial) tensor, optional
+            Observation weights.
+        aff : (D+1, D+1) tensor, optional
+            Orientation matrix
 
-        Returns:
-            Z (torch.tensor): Responsibilities (B, C, [Spatial]).
+        Other Parameters
+        ----------------
+        alpha : (*spatial, D) tensor, default=0
+            Initial displacement
+        beta : (C, *spatial) tensor, default=0
+            Initial log-bias
+        gamma : (K,) tensor, default=1/K
+            Initial mixing proportions
+        kappa : (K,) tensor, default=1/Ki
+            Initial within-class mixing proportions
+
+        Returns
+        -------
+        Z : (K, [*spatial]) tensor
+            Class responsibilities
 
         """
-        if verbose:
+        with torch.random.fork_rng():
+            torch.random.manual_seed(1)
+            return self._fit(X, W, aff, **kwargs)
+
+    def _fit(self, X, W=None, aff=None, **kwargs):
+        self.figure = None
+        if self.verbose > 0:
             t0 = timer()  # Start timer
-        self.verbose_bias = verbose_bias
+            if X.device.type == 'cuda':
+                torch.cuda.reset_peak_memory_stats(X.device)
 
-        # Set random seed
-        torch.manual_seed(1)
+        if not X.dtype.is_floating_point:
+            print(f'Data type {X.dtype} not supported - converting to '
+                  f'{torch.get_default_dtype()}.')
+            X = X.to(torch.get_default_dtype())
 
-        if X.dtype not in [torch.float16, torch.float32, torch.float64]:
-            print('Data type {} not supported - converting to single-precision float.'.format(X.dtype))
-            X = X.float()
+        # Try to guess the number of spatial dimensions
+        if self.prior is not None:
+            dim = self.prior.dim() - 1
+        elif aff is not None:
+            dim = aff.shape[-1] - 1
+        else:
+            dim = X.dim() - 1
+        if X.dim() == dim:
+            # add a channel dimensions
+            X = X[None]
+        elif not dim:
+            # can only be 1D -> add a channel dimensions
+            X = X[None]
 
-        self.dev = X.device
-        self.dt = X.dtype
+        # Prepare mask/weight
+        W0 = W
+        W = X.isfinite()
+        W.bitwise_and_(X != 0)
+        if not W.all():
+            X = X.clone()
+            X[~W] = 0
+        if W0 is not None:
+            W = W.to(W.dtype).mul_(W0.to(W.device))
+        if W.dtype is torch.bool:
+            W = W.all(dim=0)
+        else:
+            W = W.prod(dim=0)
 
-        if len(X.shape) == 1:
-            X = X[:, None]
+        # default affine
+        if aff is None:
+            aff = spatial.affine_default(X.shape[1:])
 
-        B = X.shape[0]  # Number of observations
-        C = X.shape[1]  # Number of channels
-        N = X.shape[:2]
-        K = self.K  # Number of components
-        if isinstance(K, list):
-            K = len(K)
-
-        if W is not None:  # Observation weights given
-            W = torch.reshape(W, N)
+        # Subsample
+        X0, W0, aff0 = X, W, aff
+        if self.spacing:
+            vx = spatial.voxel_size(aff)
+            factor = (vx / self.spacing).tolist()
+            X, aff = spatial.resize(X[None], factor=factor, affine=aff)
+            X = X[0]
+            W = spatial.resize(W[None, None].to(X.dtype), factor=factor)[0, 0]
 
         # Initialise model parameters
-        self._init_par(X)
-
-        self.class_weight = class_weight
-
-        # Compute a regularisation value
-        self.lam = torch.zeros((B, C), dtype=self.dt, device=self.dev)
-        for b in range(B):
-            for c in range(C):
-                if W is not None:
-                    self.lam[b, c] = (torch.sum(X[b, c] * W.flatten()) / (torch.sum(W) * K)) ** 2
-                else:
-                    self.lam[b, c] = (torch.sum(X[b, c]) / K) ** 2
+        self._init_parameters(X, W, aff, **kwargs)
 
         # EM loop
-        Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W, bias=bias, warp=warp, penalty_bias=penalty_bias, delay=delay)
+        Z, lb, all_lb = self._em(X, W, aff)
+
+        # Estimate Z at highest resolution
+        if self.spacing:
+            X = X0
+            W = W0
+            M = None
+            factor = spatial.voxel_size(aff) / spatial.voxel_size(aff0)
+            if self.mrf:
+                # volume / surface = length -> increase mrf diagonal
+                dim = X.dim()-1
+                l = factor.prod() ** (1/dim)
+                diag = self.mrf_fit.diag().clone().pow_(l)
+                self.mrf_fit.diag().zero_()
+                self.mrf_fit /= self.mrf_fit.sum(-1, keepdim=True)
+                self.mrf_fit *= 1 - diag
+                self.mrf_fit.diag().copy_(diag)
+            if self.beta is not None:
+                self.beta = spatial.reslice(
+                    self.beta, aff, aff0, X.shape[1:],
+                    bound='dct2', interpolation=3,
+                    prefilter=True, extrapolate=True)
+                X = self.beta.exp().mul_(X)
+            if self.prior is not None:
+                self.alpha = utils.movedim(self.alpha, -1, 0)
+                self.alpha = spatial.reslice(
+                    self.alpha, aff, aff0, X.shape[1:],
+                    bound='dft', interpolation=3,
+                    prefilter=True, extrapolate=True)
+                self.alpha = utils.movedim(self.alpha, 0, -1)
+                self.alpha *= factor
+                M = self.warp_tpm(aff=aff0)
+            Z, _ = self.e_step(X, W, M)
+            if self.verbose >= 3 or self.verbose == -1:
+                self._plot_lb(all_lb, X, Z, M)
 
         # Print algorithm info
-        if verbose >= 1:
-            print('Algorithm finished in {} iterations, '
-                  'log-likelihood = {}, '
-                  'runtime: {:0.1f} s, '
-                  'device: {}'.format(len(lb[-1]), lb[-1,-1], timer() - t0, self.dev))
-        if verbose >= 3:
-            _ = plot_convergence(lb, xlab='Iteration number',
-                                 fig_title='Model lower bound', fig_num=fig_num)
+        if self.verbose > 0:
+            v = (f'Algorithm finished in {len(lb)} iterations, '
+                 f'log-likelihood = {lb[-1].item()}, '
+                 f'runtime: {timer() - t0:0.1f} s, '
+                 f'device: {X.device}')
+            if X.device.type == 'cuda':
+                vram_peak = torch.cuda.max_memory_allocated(X.device)
+                vram_peak = int(vram_peak / 2 ** 20)
+                v += f', peak VRAM: {vram_peak} MB'
+            print(v)
+        # if self.verbose >= 3:
+        #     _ = plot_convergence(lb, xlab='Iteration number',
+        #                          fig_title='Model lower bound',
+        #                          fig_num=self.show_fit)
+
         # Plot mixture fit
-        if show_fit:
-            self._plot_fit(X, W, fig_num=fig_num + 1)
+        if self.show_fit:
+            self._plot_fit(X, W, fig_num=self.show_fit+1)
 
         return Z
-    
-    def _em(self, X, max_iter, tol, verbose, W, bias=True, warp=True, penalty_bias=1e16, delay=10):
-        """ EM loop for fitting GMM.
 
-        Args:
-            X (torch.tensor): (B, C, [Spatial]).
-            max_iter (int)
-            tol (int)
-            verbose (int)
-            W (torch.tensor): ([Spatial]).
+    def e_step(self, X, W=None, M=None, Z=None, combine=False):
+        """Perform the Expectation step
 
-        Returns:
-            Z (torch.tensor): Responsibilities (B, K, [Spatial]).
-            lb (list): Lower bound at each iteration.
+        Parameters
+        ----------
+        X : (C, *spatial) tensor
+            Observed image
+        W : (*spatial) tensor, optional
+            Weights
+        M : (K, *spatial) tensor, optional
+            Non-stationary prior
+        Z : (K, *spatial) tensor, optional
+            Previous responsibilities (only used for MRF)
+
+        Returns
+        -------
+        Z : (K, *spatial) tensor
+            Responsibilities
+        lb : tensor
 
         """
+        if combine:
+            Z, lb = self.e_step(X, W, M, Z)
+            Z = self._z_combine(Z)
+            return Z, lb
 
-        # Init
-        B = X.shape[0]
-        C = X.shape[1]
-        N = X.shape[2:]
-        K = self.K
-        dtype = self.dt
-        device = self.dev
-        if len(X.shape)-1 == len(self.mp.shape) or len(self.mp.shape) == 1:
-            self.mp = torch.stack(B*[self.mp], dim=0)
-            # , dtype=dtype, device=device)
-        tiny = torch.tensor(1e-32, dtype=dtype, device=device)
-        tinyish = torch.tensor(1e-3, dtype=dtype, device=device)
+        if self.verbose >= 3:
+            print('compute Z')
 
-        # Start EM algorithm
-        if isinstance(K, list):
-            Z = torch.zeros((B, len(K), *N), dtype=dtype, device=device)  # responsibility
-        else:
-            Z = torch.zeros((B, K, *N), dtype=dtype, device=device)  # responsibility
-        lb = torch.zeros((B, max_iter), dtype=torch.float64, device=device)
-        for b in range(B):
-            for n_iter in range(max_iter):  # EM loop
-                if verbose >= 2:
-                    print('n_iter: {}'.format(n_iter+1))
-                # ==========
-                # Segmentation
-                # ==========
-                #
-                # ==========
+        Z0 = Z
+
+        M = M.log() if M is not None else None
+        gamma = self.gamma.log() if self.gamma is not None else None
+        N = X.shape[1:]
+        Z = X.new_zeros((self.nb_clusters, *N))
+        # --- likelihood ---
+        for k, k0 in enumerate(self.lkp):
+            Z[k] += self._log_likelihood(X, cluster=k)
+            # --- prior (stationary component) ---
+            Z[k] += gamma[k0]
+            # --- prior (nonstationary component) ---
+            if M is not None:
+                Z[k] += M[k0]
+        if self.mrf:
+            L = math.softmax(Z + self._tinyish, dim=0)
+            L = self._z_combine(L)
+            # if Z0 is None:
+            #     Z0 = L.clone()
+            Z0 = L.clone()
+            L = L.log_()
+            _, Z0 = mrf(Z0, self.mrf_fit, L, W)
+            # Z0 now contains \sum_j log(pi)[j] @ Z[j]
+            for k, k0 in enumerate(self.lkp):
+                Z[k] += Z0[k0]
+        # --- softmax ---
+        Z, lb = math.softmax_lse(Z + self._tinyish, lse=True, weights=W, dim=0)
+        return Z, lb
+
+    def _z_combine(self, Z0):
+        # Dumb way to compute the "classes" responsibilities.
+        # There might be a better way that combines computing cluster-wise
+        # log-likelihood and combining them.
+        if self.nb_clusters == self.nb_classes:
+            return Z0
+        Z = Z0.new_zeros((self.nb_classes, *Z0.shape[1:]))
+        for k0, k in enumerate(self.lkp):
+            Z[k] += Z0[k0]
+        return Z
+
+    def _em(self, X, W=None, aff=None):
+        """EM loop for fitting GMM.
+
+        Parameters
+        ----------
+        X : (C, *spatial) tensor
+            Observed image
+        W : (*spatial) tensor, optional
+            Weights
+
+        Returns
+        -------
+        Z : (K, *spatial) tensor
+            Responsibilities
+        lb : list[float]
+            Lower bound at each iteration.
+        all_lb : list[float]
+            Lower bound at each step.
+
+        """
+        vx = spatial.voxel_size(aff) if aff is not None else None
+        nW = W.sum() if W is not None else X[1:].numel()
+
+        M = G = None
+        if self.prior is not None:
+            if self.warp:
+                M, G = self.warp_tpm(aff=aff, grad=True)
+            else:
+                M = self.warp_tpm(aff=aff)
+
+        XB = X
+        if self.beta is not None:
+            XB = self.beta.exp().mul_(X)
+        Z = None
+
+        all_lb = []
+        all_all_lb = []
+        lb = -float('inf')
+        plot_mode = None
+        mrf, self.mrf = self.mrf, False
+        for n_iter in range(self.max_iter):  # EM loop
+            if self.verbose >= 2:
+                print(f'n_iter: {n_iter + 1}')
+            olb_em = lb
+
+            # if n_iter > 5:
+            #     self.mrf = mrf
+
+            for n_iter_intensity in range(self.max_iter_intensity):
+                olb_intensity = lb
+
+                for n_iter_cluster in range(self.max_iter_cluster):
+                    # ======
+                    # E-step
+                    # ======
+                    olb = lb
+                    Z, lb = self.e_step(XB, W, M, Z)
+                    lb += self._lb_parameters()
+                    all_all_lb.append(lb)
+                    if self.verbose >= 3:
+                        print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_cluster:02d} | '
+                              f'pre gmm: {lb.item():12.6g}')
+                        self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                    elif self.verbose == -1:
+                        self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+
+                    # ==================
+                    # M-step - Intensity
+                    # ==================
+                    Z = Z if W is None else Z*W
+                    ss0, ss1, ss2 = self._suffstats(XB, Z)
+                    self._update_intensity(ss0, ss1, ss2)
+
+                    # ===========================
+                    # M-step - Mixing proportions
+                    # ===========================
+                    if self.mixing:
+                        self._update_mixing(ss0, M, W)
+
+                    # ============================
+                    # M-step - Markov Random Field
+                    # ============================
+                    # if self.mrf:
+                    #     self._update_mrf(Z, W)
+
+                    plot_mode = 'gmm'
+
+                    if n_iter_cluster > 1 and lb-olb < self.tol * nW:
+                        break
+
+                for n_iter_bias in range(self.max_iter_bias):
+                    # ======
+                    # E-step
+                    # ======
+                    olb = lb
+                    Z, lb = self.e_step(XB, W, M, Z)
+                    lb += self._lb_parameters()
+                    all_all_lb.append(lb)
+                    if self.verbose >= 3:
+                        print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_bias:02d} | '
+                              f'pre bias: {lb.item():12.6g}')
+                        self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                    elif self.verbose == -1:
+                        self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+
+                    # =============
+                    # M-step - Bias
+                    # =============
+                    self._update_bias(XB, Z, W, vx=vx)
+                    XB = torch.exp(self.beta, out=XB).mul_(X)
+                    plot_mode = 'bias'
+
+                    if n_iter_bias > 1 and lb-olb < self.tol * nW:
+                        break
+
+                if n_iter_intensity > 1 and lb - olb_intensity < 2 * self.tol * nW:
+                    break
+
+            for n_iter_warp in range(self.max_iter_warp):
+                # ======
                 # E-step
-                # ==========
-                # Product Rule
-                if self.alpha[b].abs().sum() > 0:
-                    tpm_ = self.warp_tpm(tpm=self.mp[b], D=self.alpha[b],
-                                logits=False, implicit=False, softmax=True)
-                else:
-                    tpm_ = self.mp[b]
-                if isinstance(K, list):
-                    for k in K:
-                        for j in range(k):
-                            Z[b, k] += self._log_likelihood(X, j, b=b)[0]
-                        Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
-                else:
-                    for k in range(K):
-                        Z[b, k] = torch.log(self.gamma[b,k] * tpm_[k] + tinyish) + self._log_likelihood(X, k, b=b)
+                # ======
+                olb = lb
+                Z, lb = self.e_step(XB, W, M, Z, combine=True)
+                lb += self._lb_parameters()
+                all_all_lb.append(lb)
+                if self.verbose >= 3:
+                    print(f'{n_iter:02d} | {n_iter_warp:02d} | {"":2s} | '
+                          f'pre warp: {lb.item():12.6g}')
+                    self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                elif self.verbose == -1:
+                    self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
-                # Get responsibilities
-                Z[b], dlb = math.softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
+                # =============
+                # M-step - Warp
+                # =============
+                M = self._modulate_prior_(M)
+                self._update_warp(Z, M, G, W, aff=aff)
+                M, G = self.warp_tpm(aff=aff, grad=True)
+                plot_mode = 'warp'
 
-                # Objective function and convergence related
-                lb[b, n_iter] = dlb.float()
-                gain = get_gain(lb[b, :n_iter + 1])
-                if verbose >= 2:
-                    print('Segmentation - lb: {}, gain: {}'
-                        .format(lb[b, n_iter], gain))
-                if gain < tol:
-                    last_iter = n_iter
-                    break  # Finished
-                elif n_iter+1==max_iter:
-                    last_iter = max_iter
+                if n_iter_warp > 1 and lb - olb < self.tol * nW:
+                    break
 
-                if W is not None:  # Weight responsibilities
-                    Z[b] = Z[b] * W
+            # ==================
+            # Log-likelihood
+            # ==================
+            all_lb.append(lb)
+            if n_iter > 1 and lb - olb_em < 2 * self.tol * nW:
+                if self.verbose > 0:
+                    print('converged')
+                break
 
-                # ==========
-                # M-step
-                # ==========
-                # Compute sufficient statistics
-                ss0, ss1, ss2 = self._suffstats(X, Z)
+        self.mrf = mrf
+        all_lb = torch.stack(all_lb)            # per iteration
+        all_all_lb = torch.stack(all_all_lb)    # per step
+        return Z, all_lb, all_all_lb
 
-                # Update class weighting
-                if self.class_weight:
-                    self.gamma = (Z.reshape(B, K, -1)/((self.mp+tinyish).reshape(1, 6, -1)/(self.gamma.reshape(1, 6, 1)*(self.mp+tinyish).reshape(1, 6, -1)).sum(1, keepdim=True))).sum(-1)
-                    for b in range(B):
-                        self.gamma[b] /= self.gamma[b].sum()
+    def _modulate_prior_(self, M):
+        r"""Module non-stationary prior with stationary prior
 
-                # Update prior
-                if not self.prior:
-                    if W is not None:
-                        self.mp = ss0 / torch.sum(W, dim=0, dtype=torch.float64)
-                    else:
-                        self.mp = ss0 / N.numel()
-                    
-                # Update model specific parameters
-                self._update(ss0, ss1, ss2)
+        /!\ This is done in place
 
-                if bias and n_iter+1>delay:
-                    # ==========
-                    # Bias-field
-                    # ==========
-                    #
-                    # ==========
-                    # E-step
-                    # ==========
-                    # Product Rule
-                    if isinstance(K, list):
-                        for k in K:
-                            for j in range(k):
-                                Z[b, k] += self._log_likelihood(X, j, b=b)[0]
-                            Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
-                    else:
-                        for k in range(K):
-                            Z[b, k] = torch.log(self.gamma[b,k] * tpm_[k] + tinyish) + self._log_likelihood(X, k, b=b)
+        Parameters
+        ----------
+        M : (K, *spatial) tensor
 
-                    # Get responsibilities
-                    Z[b], dlb = math.softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
-
-                    if W is not None:  # Weight responsibilities
-                        Z[b] = Z[b] * W
-
-                    # ==========
-                    # M-step
-                    # ==========
-                    # Update bias field
-                    self._update_bias(X, Z, b=b, penalty=penalty_bias)
-
-                if warp and n_iter+1>delay:
-                    # ==========
-                    # Deformations
-                    # ==========
-                    #
-                    # ==========
-                    # E-step
-                    # ==========
-                    # Product Rule
-                    if isinstance(K, list):
-                        for k in K:
-                            for j in range(k):
-                                Z[b, k] += self._log_likelihood(X, j, b=b)[0]
-                            Z[b, k] += torch.log(self.gamma[b,k] * tpm_[k] + tinyish)
-                    else:
-                        for k in range(K):
-                            Z[b, k] = torch.log(self.gamma[b,k] * tpm_[k] + tinyish) + self._log_likelihood(X, k, b=b)
-
-                    # Get responsibilities
-                    Z[b], dlb = math.softmax_lse(Z[b]+tinyish, lse=True, weights=W, dim=0)
-
-                    if W is not None:  # Weight responsibilities
-                        Z[b] = Z[b] * W
-
-                    # ==========
-                    # M-step
-                    # ==========
-                    # Update displacement field
-                    self._update_warp(Z, b=b)
-
-        return Z, lb[:, :last_iter + 1]
-    
-    def _init_mp(self, dtype=torch.float64):
-        """ Initialise mixing proportions: mp
+        Returns
+        -------
+        M : (K, *spatial) tensor
 
         """
-        # Mixing proportions
-        if self.mp == []:
-            self.mp = torch.ones(self.K, dtype=dtype, device=self.dev)/self.K
+        M = utils.movedim(M, 0, -1)
+        M *= self.gamma
+        M /= M.sum(-1, keepdim=True)
+        M = utils.movedim(M, -1, 0)
+        return M
 
     def _suffstats(self, X, Z):
         """ Compute sufficient statistics.
 
-        Args:
-            X (torch.tensor): Observed data (B, C, [Spatial]).
-            Z (torch.tensor): Responsibilities (B, K, [Spatial]).
+        Parameters
+        ----------
+        X : (C, *spatial) tensor
+            Observed data modulated by the current bias field
+        Z : (K, *spatial) tensor
+            (Weighted) Responsibilities
 
-        Returns:
-            ss0 (torch.tensor): 0th moment (B, K).
-            ss1 (torch.tensor): 1st moment (B, C, K).
-            ss2 (torch.tensor): 2nd moment (B, C, C, K).
+        Returns
+        -------
+        ss0 : (K,) tensor
+            0th moment (B, K).
+        ss1 : (K, C) tensor
+            1st moment
+        ss2 : (K, C, C) tensor
+            2nd moment
 
         """
-        N = X.shape[2:].numel()
-        B = X.shape[0]
-        C = X.shape[1]
-        K = Z.shape[1]
-        device = self.dev
-        tiny = torch.tensor(1e-32, dtype=torch.float64, device=device)
+        def mul(*x, out=None):
+            x = list(x)
+            out = x.pop(0).clone() if out is None else out.copy_(x.pop(0))
+            while x:
+                out.mul_(x.pop(0))
+            return out
 
-        # Suffstats
-        ss1 = torch.zeros((B, C, K), dtype=torch.float64, device=device)
-        ss2 = torch.zeros((B, C, C, K), dtype=torch.float64, device=device)
+        def reduce(*x, buffer=None):
+            return mul(*x, out=buffer).sum(dtype=torch.double)
+
+        C = X.shape[0]
+        K = Z.shape[0]
+
+        ss1 = X.new_zeros((K, C), dtype=torch.double)
+        ss2 = X.new_zeros((K, C, C), dtype=torch.double)
 
         # Compute 0th moment
-        ss0 = torch.sum(Z.reshape(B, K, -1), dim=-1, dtype=torch.float64) + tiny
+        ss0 = torch.sum(Z.reshape(K, -1), dim=-1, dtype=torch.double)
 
         # Compute 1st and 2nd moments
-        for b in range(B):
-            for k in range(K):
-                # 1st
-                ss1[b, :, k] = torch.sum(Z[b, k].reshape(N, 1) * (X[b]*self.beta[b].exp()).reshape(-1, C),
-                                    dim=0, dtype=torch.float64)
-
-                # 2nd
-                for c1 in range(C):
-                    ss2[b, c1, c1, k] = \
-                        torch.sum(Z[b, k] * (X[b, c1]*self.beta[b, c1].exp()) ** 2, dtype=torch.float64)
-                    for c2 in range(c1 + 1, C):
-                        ss2[b, c1, c2, k] = \
-                            torch.sum(Z[b, k] * ((X[b, c1]*self.beta[b, c1].exp()) * (X[b, c2]*self.beta[b, c2].exp())),
-                                    dtype=torch.float64)
-                        ss2[b, c2, c1, k] = ss2[b, c1, c2, k]
+        buffer = torch.empty_like(X[0])
+        for k in range(K):
+            for c in range(C):
+                ss1[k, c] = reduce(X[c], Z[k], buffer=buffer)
+                ss2[k, c, c] = reduce(X[c], X[c], Z[k], buffer=buffer)
+                for cc in range(c + 1, C):
+                    ss2[k, c, cc] = reduce(X[c], X[cc], Z[k], buffer=buffer)
+                    ss2[k, cc, c] = ss2[k, c, cc]
 
         return ss0, ss1, ss2
 
     def _plot_fit(self, X, W, fig_num):
-        """ Plot mixture fit.
+        """ Plot mixture fit."""
+        if hasattr(self, 'get_means_variances'):
+            mp = self.gamma
+            mu, var = self.get_means_variances()
+            log_pdf = lambda x, k, c: self._log_likelihood(x, k, c)
+            plot_mixture_fit(X, log_pdf, mu, var, mp, fig_num, W)
 
-        """
-        mp = self.mp
-        mu, var = self.get_means_variances()
-        log_pdf = lambda x, k, c: self._log_likelihood(x, k, c)
-        plot_mixture_fit(X, log_pdf, mu, var, mp, fig_num, W)
-    
+    def _plot_lb(self, lb, X, Z, M=None, mode=None):
+        import matplotlib.pyplot as plt
+        first = False
+        if not getattr(self, 'figure', None):
+            self.figure = plt.figure(666)
+            first = True
+        if isinstance(lb, (list, tuple)):
+            lb = torch.stack(lb)
+
+        from nitorch.plot.colormaps import prob_to_rgb
+        if X.dim()-1 == 3:
+            i = 0
+            ncol = len(X) + 1 + (M is not None) + 2*(self.beta is not None)
+            if first:
+                self.figure.clf()
+            else:
+                self.figure.canvas.draw()
+                for elem in self.plt_saved:
+                    self.figure.canvas.restore_region(elem)
+            if not mode or mode == 'bias':
+                X1 = X[:, :, :, X.shape[-1]//2].cpu()
+                X2 = X[:, :, X.shape[-2]//2, :].cpu()
+                X3 = X[:, X.shape[-3]//2, :, :].cpu()
+            if not mode:
+                for c in range(len(X)):
+                    mn = X[c].min()
+                    mx = X[c].max()
+                    if first:
+                        plt.subplot(4, ncol, c+1)
+                        plt.imshow(X1[c], vmin=mn, vmax=0.8*mx)
+                        plt.axis('off')
+                        plt.title('Original')
+                        plt.subplot(4, ncol, ncol+c+1)
+                        plt.imshow(X2[c], vmin=mn, vmax=0.8*mx)
+                        plt.axis('off')
+                        plt.subplot(4, ncol, 2*ncol+c+1)
+                        plt.imshow(X3[c], vmin=mn, vmax=0.8*mx)
+                        plt.axis('off')
+                    else:
+                        self.figure.axes[i].images[0].set_data(X1[c])
+                        # self.figure.axes[c].images[0].set_vmax(0.8*mx)
+                        self.figure.axes[i+1].images[0].set_data(X2[c])
+                        # self.figure.axes[ncol+c].images[0].set_vmax(0.8*mx)
+                        self.figure.axes[i+2].images[0].set_data(X3[c])
+                        # self.figure.axes[2*ncol+c].images[0].set_vmax(0.8*mx)
+                        i += 3
+            else:
+                i += 3 * len(X)
+
+            offset = 0
+            if self.beta is not None:
+                offset = 2*len(self.beta)
+                if not mode or mode == 'bias':
+                    B = self.beta
+                    B1 = B[:, :, :, B.shape[-1]//2].exp().cpu()
+                    B2 = B[:, :, B.shape[-2]//2, :].exp().cpu()
+                    B3 = B[:, B.shape[-3]//2, :, :].exp().cpu()
+                    X1 = X1 * B1
+                    X2 = X2 * B2
+                    X3 = X3 * B3
+                    for c in range(len(B)):
+                        if first:
+                            plt.subplot(4, ncol, len(X)+c+1)
+                            plt.imshow(X1[c], vmin=mn, vmax=0.8*mx)
+                            plt.axis('off')
+                            plt.title('Corrected')
+                            plt.subplot(4, ncol, ncol+len(X)+c+1)
+                            plt.imshow(X2[c], vmin=mn, vmax=0.8*mx)
+                            plt.axis('off')
+                            plt.subplot(4, ncol, 2*ncol+len(X)+c+1)
+                            plt.imshow(X3[c], vmin=mn, vmax=0.8*mx)
+                            plt.axis('off')
+
+                            plt.subplot(4, ncol, len(X)+c+2)
+                            plt.imshow(B1[c])
+                            plt.axis('off')
+                            plt.title('Bias')
+                            plt.subplot(4, ncol, ncol+len(X)+c+2)
+                            plt.imshow(B2[c])
+                            plt.axis('off')
+                            plt.subplot(4, ncol, 2*ncol+len(X)+c+2)
+                            plt.imshow(B3[c])
+                            plt.axis('off')
+                            # plt.colorbar()
+                        else:
+                            self.figure.axes[i].images[0].set_data(X1[c])
+                            # self.figure.axes[c].images[0].set_vmax(0.8*mx)
+                            self.figure.axes[i+1].images[0].set_data(X2[c])
+                            # self.figure.axes[ncol+c].images[0].set_vmax(0.8*mx)
+                            self.figure.axes[i+2].images[0].set_data(X3[c])
+                            # self.figure.axes[2*ncol+c].images[0].set_vmax(0.8*mx)
+                            i += 3
+
+                            self.figure.axes[i].images[0].set_data(B1[c])
+                            self.figure.axes[i].images[0].autoscale()
+                            self.figure.axes[i+1].images[0].set_data(B2[c])
+                            self.figure.axes[i+1].images[0].autoscale()
+                            self.figure.axes[i+2].images[0].set_data(B3[c])
+                            self.figure.axes[i+2].images[0].autoscale()
+                            i += 3
+                else:
+                    i += 6 * len(self.beta)
+
+            Z1 = prob_to_rgb(Z[:, :, :, Z.shape[-1]//2]).cpu()
+            Z2 = prob_to_rgb(Z[:, :, Z.shape[-2]//2, :]).cpu()
+            Z3 = prob_to_rgb(Z[:, Z.shape[-3]//2, :, :]).cpu()
+            if first:
+                plt.subplot(4, ncol, len(X)+offset+1)
+                plt.imshow(Z1)
+                plt.axis('off')
+                plt.title('Resp.')
+                plt.subplot(4, ncol, ncol+len(X)+offset+1)
+                plt.imshow(Z2)
+                plt.axis('off')
+                plt.subplot(4, ncol, 2*ncol+len(X)+offset+1)
+                plt.imshow(Z3)
+                plt.axis('off')
+            else:
+                self.figure.axes[i].images[0].set_data(Z1)
+                self.figure.axes[i+1].images[0].set_data(Z2)
+                self.figure.axes[i+2].images[0].set_data(Z3)
+                i += 3
+
+            if M is not None:
+                if not mode or mode in ('gmm', 'warp'):
+                    M1 = self._modulate_prior_(M[:, :, :, M.shape[-1]//2].clone())
+                    M2 = self._modulate_prior_(M[:, :, M.shape[-2]//2, :].clone())
+                    M3 = self._modulate_prior_(M[:, M.shape[-3]//2, :, :].clone())
+                    M1 = prob_to_rgb(M1).cpu()
+                    M2 = prob_to_rgb(M2).cpu()
+                    M3 = prob_to_rgb(M3).cpu()
+                    if first:
+                        plt.subplot(4, ncol, len(X)+2+offset)
+                        plt.imshow(M1)
+                        plt.axis('off')
+                        plt.title('Prior')
+                        plt.subplot(4, ncol, ncol+len(X)+2+offset)
+                        plt.imshow(M2)
+                        plt.axis('off')
+                        plt.subplot(4, ncol, 2*ncol+len(X)+2+offset)
+                        plt.imshow(M3)
+                        plt.axis('off')
+                    else:
+                        self.figure.axes[i].images[0].set_data(M1)
+                        self.figure.axes[i+1].images[0].set_data(M2)
+                        self.figure.axes[i+2].images[0].set_data(M3)
+                        i += 3
+                else:
+                    i += 3
+
+            if first:
+                plt.subplot(4, 1, 4)
+                plt.plot(range(1, len(lb)+1), lb.cpu())
+                plt.suptitle('# iter. = {}'.format(len(lb)))
+            else:
+                ax = self.figure.axes[-1]
+                ax.lines[0].set_data(range(1, len(lb)+1), lb.cpu())
+                ax.relim()
+                ax.autoscale_view()
+                self.figure._suptitle.set_text('# iter. = {}'.format(len(lb)))
+            if first:
+                self.figure.canvas.draw()
+                self.plt_saved = [self.figure.canvas.copy_from_bbox(ax.bbox)
+                                    for ax in self.figure.axes]
+                self.figure.canvas.flush_events()
+                plt.show(block=False)
+            else:
+                for ax in self.figure.axes[:-1]:
+                    ax.draw_artist(ax.images[0])
+                    self.figure.canvas.blit(ax.bbox)
+                ax = self.figure.axes[-1]
+                ax.draw_artist(ax.lines[0])
+                self.figure.canvas.blit(ax.bbox)
+                self.figure.canvas.flush_events()
+
+    def _lb_parameters(self):
+        return getattr(self, '_lb_warp', 0) + getattr(self, '_lb_bias', 0)
+
     # Implement in child classes
-    def get_means_variances(self): pass
+    def get_means_variances(self, *a, **k):
+        pass
 
-    def _log_likelihood(self): pass
+    def _log_likelihood(self, *a, **k):
+        pass
 
-    def _init_par(self): pass
+    def _init_parameters(self, X, W=None, aff=None, **kwargs):
+        C = X.shape[0]
+        N = X.shape[1:]
+        dim = X.dim() - 1
+        backend = utils.backend(X)
 
-    def _update(self): pass
+        # change backend of pre-allocated tensors
+        if self.prior is not None:
+            self.prior = self.prior.to(**backend)
+        if self.mrf_prior is not None:
+            self.mrf_prior = self.mrf_prior.to(**backend)
+        if self.mrf_fit is not None:
+            self.mrf_fit = self.mrf_fit.to(**backend)
+            if self.prior is not None:
+                l = spatial.voxel_size(aff) / spatial.voxel_size(self.prior_aff)
+                l = l.prod() ** (1/dim)
+                diag = self.mrf_fit.diag().clone().pow_(1/l)
+                self.mrf_fit.diag().zero_()
+                self.mrf_fit /= self.mrf_fit.sum(-1, keepdim=True)
+                self.mrf_fit *= 1 - diag
+                self.mrf_fit.diag().copy_(diag)
 
-    def _update_bias(self): pass
+        # spatial deformation coefficients
+        alpha = kwargs.pop('alpha', None)
+        if alpha is not None:
+            self.alpha = torch.as_tensor(alpha, **backend).expand([*N, dim]).clone()
+        elif self.warp:
+            self.alpha = torch.zeros([*N, dim], **backend)
+        else:
+            self.alpha = None
 
-    def _update_warp(self): pass
+        # bias field coefficients
+        beta = kwargs.pop('beta', None)
+        if beta is not None:
+            self.beta = torch.as_tensor(beta, **backend).expand([C, *N]).clone()
+        elif self.bias:
+            self.beta = torch.zeros([C, *N], **backend)
+        else:
+            self.beta = None
 
-    def warp_tpm(self): pass
+        # mixing prop (extra)
+        backend['dtype'] = torch.double
+        gamma = kwargs.pop('gamma', None)
+        if gamma is not None:
+            self.gamma = torch.as_tensor(gamma, **backend).expand(self.nb_classes).clone()
+        else:
+            self.gamma = torch.ones(self.nb_classes, **backend)
+            self.gamma /= self.nb_classes
 
-    # Static methods
-    @staticmethod
-    def apply_mask(X):
-        """ Mask tensor, removing zeros and non-finite values.
+        # mixing prop (intra)
+        backend['dtype'] = torch.double
+        kappa = kwargs.pop('kappa', None)
+        if kappa is not None:
+            self.kappa = torch.as_tensor(kappa, **backend).expand(self.nb_clusters).clone()
+        else:
+            self.kappa = torch.ones(self.nb_clusters, **backend)
+            for k, K1 in enumerate(self.nb_clusters_per_class):
+                offset = sum(self.nb_clusters_per_class[:k])
+                self.kappa[offset:offset+K1] /= K1
 
-        Args:
-            X (torch.tensor): Observed data (N0, C).
+    def _update_mixing(self, ss0, M=None, W=None):
+        """
+        Parameters
+        ----------
+        ss0 : (K,) tensor
+            Zero-th statistic
+        M : (K, *spatial) tensor, optional
+            Non-stationary prior
+        W : (*spatial) tensor, optional
+            Observation weights
+        """
+        if self.verbose >= 3:
+            print('update mixing')
 
-        Returns:
-            X_msk (torch.tensor): Observed data (N, C), where N < N0.
-            msk (torch.tensor): Logical mask (N, 1).
+        if M is not None:
+            gamma = self.gamma.to(M.dtype)
+            M = M.reshape(self.nb_classes, -1)
+            ssm = linalg.dot(M.T, gamma).reciprocal_()
+            if W is not None:
+                ssm *= W.flatten()
+            ssm = linalg.matvec(M, ssm)
+            ssm = ssm.to(self.gamma.dtype)
+        else:
+            ssm = None
+
+        kappa = ss0.clone()
+        gamma = ss0.new_empty(self.nb_classes)
+        Nw = ss0.sum()
+        for k in range(self.nb_classes):
+            mask = [(l == k) for l in self.lkp]
+            mask = torch.as_tensor(mask, dtype=torch.bool, device=kappa.device)
+            norm = kappa[mask].sum()
+            kappa = torch.where(mask, kappa/(norm + self._tiny), kappa)
+            if ssm is None:
+                gamma[k] = norm / Nw
+            else:
+                gamma[k] = norm + self.lam_mixing
+                gamma[k] /= ssm[k] + self.lam_mixing * self.nb_classes
+        gamma /= gamma.sum()
+        self.kappa.copy_(kappa)
+        self.gamma.copy_(gamma)
+
+    def _update_mrf(self, Z, W=None):
+        self.mrf_fit.copy_(update_mrf(Z, W, self.mrf_prior))
+
+    def _update_warp(self, Z, M, G, W=None, aff=None):
+        """
+
+        Parameters
+        ----------
+        Z : (K, *spatial) tensor
+        M : (K, *spatial) tensor
+        G : (K, *spatial, D) tensor
+        vx : (D,) vector_like, optional
 
         """
-        dtype = X.dtype
-        device = X.device
-        C = X.shape[1]
-        msk = (X != 0) & (torch.isfinite(X))
-        msk = torch.sum(msk, dim=1) == C
+        if self.verbose >= 3:
+            print('update warp')
+        vx = spatial.voxel_size(aff)
 
-        N = torch.sum(msk != 0)
-        X_msk = torch.zeros((N, C), dtype=dtype, device=device)
-        for c in range(C):
-            X_msk[:, c] = X[msk, c]
+        def mul(*x, out=None):
+            x = list(x)
+            if out is None:
+                out = x.pop(0).clone()
+            else:
+                out.copy_(x.pop(0))
+            while x:
+                out.mul_(x.pop(0))
+            return out
 
-        return X_msk, msk
+        M0 = M
+        M = M[1:]
+        if len(Z) == self.nb_classes:
+            Z = Z[1:]
+        if len(G) == self.nb_classes:
+            G = G[1:]
+        shape = Z.shape[1:]
+        dim = len(shape)
+        a = self.warp_acceleration
 
-    @staticmethod
-    def full_resp(Z, msk, dm=[]):
-        """ Converts masked responsibilities to full.
+        g = Z.new_zeros([*shape, dim])
+        H = Z.new_zeros([*shape, dim*(dim+1)//2])
+        H0 = 1 - 1/self.nb_classes
+        H1 = -1/self.nb_classes
+        buffer = torch.empty_like(g)
+        for k in range(self.nb_classes-1):
+            g.addcmul_((M[k] - Z[k]).unsqueeze(-1), G[k])
+            if a:
+                H0 = M[k].clone().addcmul_(M[k], M[k], value=-1).mul_(a)
+                H0 += (1 - a) * (1 - 1/self.nb_classes)
+                H0 = H0.unsqueeze(-1)
+            # --- diagonal K / diagonal D ---
+            H[..., :dim] += mul(G[k], G[k], H0, out=buffer)
+            # --- diagonal K / off-diagonal D ---
+            if a:
+                H0 = H0.squeeze(-1)
+            count = 0
+            for d in range(dim):
+                for dd in range(d+1, dim):
+                    H[..., dim+count] += mul(G[k, ..., d], G[k, ..., dd], H0,
+                                             out=buffer[..., 0])
+                    count += 1
+            # --- off-diagonal K ---
+            for l in range(k+1, self.nb_classes-1):
+                if a:
+                    H1 = (M[k] * M[l]).mul_(a)
+                    H1 += (1 - a) / self.nb_classes
+                    H1.neg_()
+                    H1 = H1.unsqueeze(-1)
+                # --- off-diagonal K / diagonal D ---
+                H[..., :dim].add_(mul(G[k], G[l], H1), alpha=2)
+                # --- off-diagonal K / off-diagonal D ---
+                if a:
+                    H1 = H1.squeeze(-1)
+                count = 0
+                for d in range(dim):
+                    for dd in range(d+1, dim):
+                        H[..., dim+count] += mul(G[k, ..., d], G[l, ..., dd], H1,
+                                                 out=buffer[..., 0])
+                        H[..., dim+count] += mul(G[l, ..., d], G[k, ..., dd], H1,
+                                                 out=buffer[..., 0])
+                        count += 1
 
-        Args:
-            Z (torch.tensor): Masked responsibilities (N, K).
-            msk (torch.tensor): Mask of original data (N0, 1).
-            dm (torch.Size, optional): Reshapes Z_full using dm. Defaults to [].
+        if W is not None:
+            g *= W.unsqueeze(-1)
+            H *= W.unsqueeze(-1)
 
-        Returns:
-            Z_full (torch.tensor): Full responsibilities (N0, K).
+        lam = {'factor': vx.prod(), 'voxel_size': vx, **self.lam_warp}
+        La = spatial.regulariser_grid(self.alpha, **lam)
+        aLa = self.alpha.flatten().dot(La.flatten())
+        g += La
+
+        delta = spatial.solve_grid_fmg(H, g, **lam)
+        if not self.max_ls_warp:
+            self.alpha -= delta
+            self._lb_warp = -0.5 * aLa
+            return
+
+        # line search
+        dLd = spatial.regulariser_grid(delta, **lam)
+        dLd = delta.flatten().dot(dLd.flatten())
+        dLa = delta.flatten().dot(La.flatten())
+        armijo, prev_armijo = 1, 0
+        M = M0.log()
+        if W is not None:
+            ll0 = (W*M[0]).sum() + (M[1:] - M[:1]).mul_(Z).mul_(W).sum()
+        else:
+            ll0 = M[0].sum() + (M[1:] - M[:1]).mul_(Z).sum()
+        success = False
+        for n_ls in range(self.max_ls_warp):
+            self.alpha.sub_(delta, alpha=armijo - prev_armijo)
+            M = self._modulate_prior_(self.warp_tpm(aff=aff)).log_()
+            if W is not None:
+                ll = (W*M[0]).sum() + (M[1:] - M[:1]).mul_(Z).mul_(W).sum()
+            else:
+                ll = M[0].sum() + (M[1:] - M[:1]).mul_(Z).sum()
+            if ll + armijo * (dLa - 0.5 * armijo * dLd) > ll0:
+                success = True
+                break
+            prev_armijo, armijo = armijo, armijo/2
+        if not success:
+            self.alpha.add_(delta, alpha=armijo)
+        else:
+            self._lb_warp = (getattr(self, '_lb_warp', 0) +
+                             armijo * (dLa - 0.5 * armijo * dLd))
+
+    def _update_intensity(self, *a, **k):
+        pass
+
+    def _update_bias(self, *a, **k):
+        pass
+
+    def warp_tpm(self, aff=None, grad=False, mode='softmax'):
+        """
+
+        Parameters
+        ----------
+        aff : (D+1, D+1) tensor, optional
+        grad : bool, default=False
+        mode : {'softmax', 'log_softmax', 'logit', 'mask', 'mask8'}, default='softmax'
+
+        Returns
+        -------
+        mask : (1, *shape) tensor, if mode in ('mask', 'mask8')
+        logit or prob or logprob : (K, *shape) if mode not in ('mask', 'mask8')
+        grad : (K, *shape, D) tensor, if grad is True
 
         """
-        N0 = len(msk)
-        K = Z.shape[1]
-        Z_full = torch.zeros((N0, K), dtype=Z.dtype, device=Z.device)
-        for k in range(K):
-            Z_full[msk, k] = Z[:, k]
-        if len(dm) >= 3:
-            Z_full = torch.reshape(Z_full, (dm[0], dm[1], dm[2], K))
+        bound = 'replicate'
 
-        return Z_full
+        if self.prior is None:
+            return None
+        dim = self.alpha.shape[-1]
+        grid = spatial.add_identity_grid(self.alpha)
+        if aff is not None:
+            aff = torch.matmul(self.prior_aff.inverse(), aff)
+            grid = spatial.affine_matvec(aff, grid)
+        mask = self.prior.new_ones(self.prior.shape[1:])
+        if mode == 'mask8':
+            # remove bottom 5 mm
+            if self.prior_aff is not None:
+                vx = spatial.voxel_size(self.prior_aff)
+            else:
+                vx = grid.new_ones([grid.dim[-1]])
+            offset = (5 / vx).floor().int().tolist()
+            offset = [slice(o, None) for o in offset]
+            mask[(Ellipsis, *offset)] = 0
+        mask = spatial.grid_pull(mask, grid, bound=bound, extrapolate=False)
+        if mode.startswith('mask'):
+            return mask[None]
 
-    @staticmethod
-    def maximum_likelihood(Z):
-        """ Return maximum likelihood map.
+        M = spatial.grid_pull(self.prior, grid, bound=bound, extrapolate=True)
+        # M[:, mask == 0] = M.min()  # uncomment for informative out-of-FOV
+        if mode == 'softmax':
+            M = math.softmax(M, dim=0, implicit=(True, False))
+        elif mode == 'log_softmax':
+            M = math.log_softmax(M, dim=0, implicit=(True, False))
+        if not grad:
+            return M
+        G = spatial.grid_grad(self.prior, grid, bound=bound, extrapolate=True)
+        aff = aff.to(**utils.backend(G))
+        G = linalg.matvec(aff[:dim, :dim].T, G)  # rotate spatial gradients
+        return M, G
 
-        Args:
-            Z (torch.tensor): Responsibilities (B, K, [Spatial]).
 
-        Returns:
-            (torch.tensor): Maximum likelihood map (B, 1, [Spatial]).
+class UniSeg(SpatialMixture):
+    """
+    Unified Segmentation model, based on multivariate Gaussian Mixture Model (GMM).
+    """
 
-        """
-        return torch.argmax(Z, dim=1)
-
-
-class UniSeg(Mixture):
-    # Unified Segmentation model, based on multivariate Gaussian Mixture Model (GMM).
-    def __init__(self, num_class=2, prior=None, mu=None, Cov=None, alpha=None, beta=None, gamma=None):
-        """
-        mu (torch.tensor): GMM means (C, K).
-        Cov (torch.tensor): GMM covariances (C, C, K).
-
-        """
-        super(UniSeg, self).__init__(num_class=num_class, mp=prior)
-        self.mu = mu
-        self.Cov = Cov
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
+    def __init__(self, *args, wishart=True, **kwargs):
+        # wishart : bool or 'preproc8', default=True
+        #   If True, use a Wishart prior derived from global suffstats.
+        #   If 'preproc8', the bottom of the template FOV is discarded
+        #   when estimating these suffstats.
+        super().__init__(*args, **kwargs)
+        self.wishart = wishart
 
     def get_means_variances(self):
-        """
-        Return means and variances.
+        return self.mu, self.sigma
 
-        Returns:
-            (torch.tensor): Means (C, K).
-            (torch.tensor): Covariances (C, C, K).
+    def _lb_parameters(self):
+        return super()._lb_parameters() + getattr(self, '_lb_intensity', 0)
 
-        """
-        return self.mu, self.Cov
-
-    def _log_likelihood(self, X, k=0, c=None, b=None):
+    def _log_likelihood(self, X, cluster=0):
         """ Log-probability density function (pdf) of the standard normal
             distribution, evaluated at the values in X.
 
-        Args:
-            X (torch.tensor): Observed data (B, C, Spatial).
-            k (int, optional): Index of mixture component. Defaults to 0.
-            c (int, optional): Index of channel. Defaults to None.
-            b (int, optional): Index of batch. Defaults to None.
+        Parameters
+        ----------
+        X : (C, *spatial) tensor
+            Observed data modulated by the current bias field
+        cluster : int, default=0
+            Index of mixture component.
 
-        Returns:
-            log_pdf (torch.tensor): (N, 1).
+        Returns
+        -------
+        log_pdf : (*spatial) tensor
 
         """
-        B = X.shape[0]
-        C = X.shape[1]
-        device = X.device
-        dtype = X.dtype
-        pi = torch.tensor(math_.pi, dtype=dtype, device=device)
-        if b is not None:
-            if c is not None:
-                beta = self.beta[b,c]
-                Cov = self.Cov[b, c, c, k].reshape(1, 1).cpu()
-                mu = self.mu[b, c, k].reshape(1).cpu()
-            else:
-                beta = self.beta[b].sum(dim=0)
-                Cov = self.Cov[b, :, :, k].reshape(C, C) # shape (C, C)
-                mu = self.mu[b, :, k].reshape(C) # shape C
-            if C == 1:
-                chol_Cov = torch.sqrt(Cov)
-                log_det_Cov = torch.log(chol_Cov[0, 0])
-            else:
-                chol_Cov = torch.cholesky(Cov)
-                log_det_Cov = torch.sum(torch.log(torch.diag(chol_Cov)))
-                chol_Cov = chol_Cov.inverse()
-            chol_Cov = chol_Cov.type(dtype)
-            mu = mu.type(dtype)
-            if C == 1:
-                diff = ((X[b]*self.beta[b].exp()).reshape(C, -1) - mu.reshape(C, 1))/chol_Cov
-            else:
-                diff = torch.tensordot((X[b]*self.beta[b].exp()).reshape(C, -1) - mu.reshape(C, 1), chol_Cov, dims=([0],[1])).permute(1,0)
-            log_pdf = (- (C / 2) * torch.log(2 * pi) - log_det_Cov.unsqueeze(dim=-1) - 0.5 * torch.sum(diff**2, dim=0, keepdim=True)).reshape((-1,)+tuple(X.shape[2:]))
-            log_pdf += beta
-        else:
-            if c is not None:
-                beta = self.beta[:,c]
-                Cov = torch.ones((B, 1, 1), device=device, dtype=dtype)
-                mu = torch.ones((B, 1), device=device, dtype=dtype)
-                chol_Cov = torch.ones((B, 1, 1), device=device, dtype=dtype)
-                log_det_Cov = torch.ones((B, 1), device=device, dtype=dtype)
-                diff = torch.ones((B, 1,)+(X.shape[2:].numel(),), device=device, dtype=dtype)
-            else:
-                beta = self.beta.sum(dim=1, keepdim=True)
-                Cov = torch.ones((B, C, C), device=device, dtype=dtype)
-                mu = torch.ones((B, C), device=device, dtype=dtype)
-                chol_Cov = torch.ones((B, C, C), device=device, dtype=dtype)
-                log_det_Cov = torch.ones((B, C), device=device, dtype=dtype)
-                diff = torch.ones((B, C,)+(X.shape[2:].numel(),), device=device, dtype=dtype)
-            for b in range(B):
-                if c is not None:
-                    Cov[b] = self.Cov[b, c, c, k].reshape(1, 1).cpu()
-                    mu[b] = self.mu[b, c, k].reshape(1).cpu()
-                else:
-                    Cov[b] = self.Cov[b, :, :, k].reshape(C, C) # shape (C, C)
-                    mu[b] = self.mu[b, :, k].reshape(C) # shape C
-                if C == 1:
-                    chol_Cov[b] = torch.sqrt(Cov[b])
-                    log_det_Cov[b] = torch.log(chol_Cov[b, 0, 0])
-                else:
-                    chol_Cov[b] = torch.cholesky(Cov[b])
-                    log_det_Cov[b] = torch.sum(torch.log(torch.diag(chol_Cov[b])))
-                    chol_Cov[b] = chol_Cov[b].inverse()
-            chol_Cov = chol_Cov.type(dtype)
-            mu = mu.type(dtype)
-            if C == 1:
-                diff = ((X*self.beta.exp()).reshape(B, C, -1) - mu.reshape(B, C, 1))/chol_Cov
-            else:
-                for b in range(B):
-                    diff[b] = torch.tensordot((X[b]*self.beta[b].exp()).reshape(C, -1) - mu[b].reshape(C, 1), chol_Cov[b], dims=([0],[1])).permute(1,0)
-            log_pdf = (- (C / 2) * torch.log(2 * pi) - log_det_Cov.unsqueeze(dim=-1) - 0.5 * torch.sum(diff**2, dim=1, keepdim=True)).reshape((B, -1,)+tuple(X.shape[2:]))
-            log_pdf += beta
+        mu = self.mu[cluster]
+        sigma = self.sigma[cluster]
+
+        C = X.shape[0]
+
+        chol = linalg.cholesky(sigma)
+        log_det = chol.diag().log().sum().mul(2).to(**utils.backend(X))
+        chol = chol.inverse()
+        chol.to(**utils.backend(X))
+        mu.to(**utils.backend(X))
+
+        log_pdf = (X.reshape(C, -1).T - mu)
+        log_pdf = linalg.matvec(chol, log_pdf).square_()
+        log_pdf += log_det
+        log_pdf *= -0.5
+        log_pdf += self.kappa[cluster].log()
+        log_pdf = log_pdf.T.reshape(X.shape[1:])
+
+        # NOTE: I do not include `C * log(2 * pi)`, since it is common
+        #   to all classes and does not have an impact on the softmax or
+        #   any of the lower-bound components.
+
         return log_pdf
 
-    def _init_par(self, X):
-        """ Initialise GMM specific parameters: mu, Cov
+    def _init_wishart(self, X, W=None, aff=None):
+        """Estimate a diagonal wishart prior from sufficient statistics"""
+        if not self.wishart:
+            self.wishart = None
+            return
 
-        """
-        dtype = torch.float64
-        if isinstance(self.K, (list, tuple)):
-            K = len(self.K)
+        # 1) Compute mask of voxels to include
+        # - If a TPM exists, we only use voxels that fall in its FOV
+        # - If, furthermore, self.wishart == 'preproc8', we exclude the
+        #   neck (assumed to be the bottom 5 mm of the FOV)
+        # - Otherwise, we just use the weight map
+        mode = 'mask8' if self.wishart == 'preproc8' else 'mask'
+        if self.prior is not None:
+            M = self.warp_tpm(mode=mode, aff=aff)
+            if W is not None:
+                M *= W
+        elif W is not None:
+            M = W
         else:
-            K = self.K
-        B = X.shape[0]
-        C = X.shape[1]
-        dim = len(X.shape[2:])
-        mn = torch.min(X.reshape(B,C,-1), dim=2)[0]
-        mx = torch.max(X.reshape(B,C,-1), dim=2)[0]
+            M = X.new_ones([1]*X.dim())
+        while M.dim() < X.dim():
+            M = M[None]
 
-        # Init mixing prop
-        self._init_mp(dtype)
+        # 2) Estimate the (diagonal) variance of the data, assuming
+        #    a single Gaussian.
+        ss0, ss1, ss2 = self._suffstats(X, W[None])
+        ss0 = ss0[0]
+        ss1 = ss1[0]
+        ss2 = ss2[0].diag()
+        scale = ss2 / ss0 - (ss1/ss0).square()
 
-        if self.gamma is None:
-            self.gamma = torch.ones((B,K), dtype=dtype, device=self.dev) / K
-    
-        if self.mu is None:
-            # means
-            self.mu = torch.zeros((B, C, K), dtype=dtype, device=self.dev)
-        if self.Cov is None:
-            # covariance
-            self.Cov = torch.zeros((B, C, C, K), dtype=dtype, device=self.dev)
-            for b in range(B):
+        # 3) Fiddle with degrees of freedom
+        scale /= max(self.nb_clusters_per_class) ** 2
+        df = len(X)
+        self.wishart = (scale.diag(), df)
+
+    def _init_parameters(self, X, W=None, aff=None, **kwargs):
+        """Initialise all parameters"""
+        super()._init_parameters(X, W, aff, **kwargs)  # alpha, beta, gamma
+        self._init_wishart(X, W, aff)
+
+        K = self.nb_clusters
+        C = X.shape[0]
+        dim = X.dim() - 1
+        backend = dict(device=X.device, dtype=torch.double)
+
+        if self.prior is not None:
+            # init from suffstats
+            self.mu = torch.empty((K, C), **backend)
+            self.sigma = torch.empty((K, C, C), **backend)
+            M = self.warp_tpm(aff=aff)
+            if W is not None:
+                M *= W
+            ss0, ss1, ss2 = self._suffstats(X, M)
+            self._update_intensity(ss0, ss1, ss2)
+
+            # if user-defined mu/sigma, use them instead
+            mu = kwargs.get('mu', None)
+            if mu is not None:
+                self.mu = torch.as_tensor(mu, **backend).expand(K, C).clone()
+            sigma = kwargs.get('sigma', None)
+            if sigma is not None:
+                self.sigma = torch.as_tensor(sigma, **backend).expand(K, C, C).clone()
+
+        else:
+            reduced_dim = range(-dim, 0)
+            mn, mx = utils.quantile(X, [0.01, 0.99], dim=reduced_dim,
+                                    mask=W, bins=256).double().unbind(-1)
+
+            mu = kwargs.pop('mu', None)
+            if mu is not None:
+                self.mu = torch.as_tensor(mu, **backend).expand(K, C).clone()
+            else:
+                self.mu = torch.empty((K, C), **backend)
                 for c in range(C):
-                    # rng = torch.linspace(start=mn[c], end=mx[c], steps=K, dtype=dtype, device=self.dev)
-                    # num_neg = sum(rng < 0)
-                    # num_pos = sum(rng > 0)
-                    # rng = torch.arange(-num_neg, num_pos, dtype=dtype, device=self.dev)
-                    # self.mu[c, :] = torch.reshape((rng * (mx[c] - mn[c]))/(K + 1), (1, K))
-                    self.mu[b, c, :] = torch.reshape(torch.linspace(mn[b, c], mx[b, c], K, dtype=dtype, device=self.dev), (1, K))
-                    self.Cov[b, c, c, :] = \
-                        torch.reshape(torch.ones(K, dtype=dtype, device=self.dev)
-                                    * ((mx[b, c] - mn[b, c])/(K))**2, (1, 1, 1, K))
-        if self.alpha is None:
-            # spatial deformation coefficients
-            self.alpha = torch.zeros((B,)+tuple(X.shape[2:])+(dim,), dtype=dtype, device=self.dev)
-        if self.beta is None:
-            # bias field coefficients
-            self.beta = torch.zeros_like(X, dtype=dtype, device=self.dev)
+                    self.mu[:, c] = torch.linspace(mn[c], mx[c], K, **backend)
 
-    def _update(self, ss0, ss1, ss2):
+            sigma = kwargs.pop('sigma', None)
+            if sigma is not None:
+                self.sigma = torch.as_tensor(sigma, **backend).expand(K, C, C).clone()
+            else:
+                self.sigma = torch.empty((K, C, C), **backend)
+                for c in range(C):
+                    self.sigma[:, c, c] = (mx[c] - mn[c]) / K**2
+
+    def _update_intensity(self, ss0, ss1, ss2):
         """ Update GMM means and variances
 
-        Args:
-            ss0 (torch.tensor): 0th moment (B, K).
-            ss1 (torch.tensor): 1st moment (B, C, K).
-            ss2 (torch.tensor): 2nd moment (B, C, C, K).
+        Parameters
+        ----------
+        ss0 : (K,) tensor)
+            0th moment
+        ss1 : (K, C) tensor
+            1st moment
+        ss2 : (K, C, C) tensor
+            2nd moment
 
         """
-        B = ss1.shape[0]
-        C = ss1.shape[1]
-        K = ss1.shape[2]
+        if self.verbose >= 3:
+            print('update gmm')
 
-        # Update means and covariances
-        for b in range(B):
-            for k in range(K):
-                # Update mean
-                self.mu[b, :, k] = 1/ss0[b, k] * ss1[b, :, k]
+        # update means
+        ss0 = ss0.unsqueeze(-1)
+        mu = ss1 / ss0
 
-                # Update covariance
-                self.Cov[b, :, :, k] = ss2[b, :, :, k] / ss0[b, k] \
-                    - torch.ger(self.mu[b, :, k], self.mu[b, :, k])
+        # update covariances
+        ss0 = ss0.unsqueeze(-1)
+        if not self.wishart:
+            sigma = ss2 / ss0 - linalg.outer(mu, mu)
+        else:
+            scale, df = self.wishart
+            sigma = df * scale + ss2 - linalg.outer(ss1, ss1) / ss0
+            sigma /= (ss0 + df)
 
-    def _update_bias(self, X, Z, penalty=1e16, vx=1, b=None):
+        if len(mu) < len(self.mu):
+            # Heuristic to split a single Gaussians into multiple Gaussians.
+            # We do this at initialization time, whereas in preproc8, a
+            # full round of GMM+Bias is performed with one Gaussian per class,
+            # before splitting happens.
+            mu0 = mu
+            sigma0 = sigma
+            ss00 = ss0
+            mu = torch.empty_like(self.mu)
+            sigma = torch.empty_like(self.sigma)
+            ss0 = ss00.new_empty([self.nb_clusters, 1, 1])
+            for k in range(self.nb_classes):
+                mask = [k1 == k for k1 in self.lkp]
+                K1 = sum(mask)
+                w = 1. / (1 + pymath.exp(-(K1 - 1) * 0.25)) - 0.5
+                chol = linalg.cholesky(sigma0[k]).diag()
+                noise = torch.randn(K1, **utils.backend(mu)) * w
+                mu[mask] = chol * noise[:, None] + mu0[k]
+                sigma[mask] = sigma0[k] * (1 - w)
+                ss0[mask] = ss00[k] / K1
+
+        self.mu.copy_(mu)
+        self.sigma.copy_(sigma)
+
+        if self.wishart is not None:
+            # update lower bound: KL between inverse wishart,
+            # keeping only terms that depend on sigma
+            chol = linalg.cholesky(self.sigma)
+            logdet = chol.diagonal(0, -1, -2).log().sum(-1)
+            tr = linalg.trace(torch.matmul(scale, self.sigma.inverse()))
+            # tr = linalg.trace(torch.cholesky_solve(scale, chol))
+            ss0 = ss0[..., 0, 0]
+            lb = tr * (df + ss0 - sigma.shape[-1] - 1) / (df + ss0) \
+               - logdet * (df - sigma.shape[-1] - 1)
+            lb = lb.sum()
+            self._lb_intensity = -0.5*lb
+        else:
+            self._lb_intensity = 0
+
+    def _update_bias(self, X, Z, W=None, vx=None):
         """
         Update bias field for all channels and images in batch, in-place.
 
-        Args:
-            X (torch.tensor): Image (B, C, Spatial).
-            Z (torch.tensor): Responsibilites (B, C, Spatial).
-            penalty (float, default=1e16): Penalty on bending energy.
-            vx (int or float, default=1): Voxel size.
-        
-        """
-        B = X.shape[0]
-        C = X.shape[1]
-        if isinstance(self.K, list):
-            K = len(self.K)
-        else:
-            K = self.K
-        beta = self.beta
-        bX = X * beta.exp()
-        if b is not None:
-            # Extract single item from batch
-            bX_ = bX[b].reshape(-1)
-            Z_ = Z[b].reshape(K, -1)
-            mu = self.mu[b]
-            Cov = self.Cov[b]
-            for c in range(C):
-                # Solve for each channel individually
-                g = 0
-                H = 0
-                for k in range(K):
-                    # Determine each class' contribution to gradient and Hessian
-                    lam = Cov[...,k].inverse()[c]
-                    g += Z_[k] * ((bX_ - mu[...,k]) * lam).sum(dim=-1)
-                    H += Z_[k] * bX_[c].square() * lam[c]
-
-                g *= bX_[c]
-                g -= 1
-                H += 1 + g.abs()
-
-                g = g.reshape((1,)+tuple(X.shape[2:]))
-                H = H.reshape((1,)+tuple(X.shape[2:]))
-
-                g += spatial.regulariser(beta[b, c].reshape((1,)+tuple(X.shape[2:])),
-                                bending=penalty, voxel_size=vx)             
-
-                if self.verbose_bias > 0:
-                    print('Bias correction, L1 norm values: Gradient = {:.4g}, Hessian = {:.4g}'.format(g.abs().mean(), H.abs().mean()))
-
-                beta[b, c] -= spatial.solve_field_fmg(H, g, bending=penalty, voxel_size=vx, verbose=self.verbose_bias).reshape(X.shape[2:])
-            
-            beta[b] -= beta[b].mean()
-        else:
-            for b in range(B):
-                # Extract single item from batch
-                bX_ = bX[b].reshape(-1)
-                Z_ = Z[b].reshape(K, -1)
-                mu = self.mu[b]
-                Cov = self.Cov[b]
-                for c in range(C):
-                    # Solve for each channel individually
-                    g = 0
-                    H = 0
-                    for k in range(K):
-                        # Determine each class' contribution to gradient and Hessian
-                        lam = Cov[...,k].inverse()[c]
-                        g += Z_[k] * ((bX_ - mu[...,k]) * lam).sum(dim=-1)
-                        H += Z_[k] * bX_[c].square() * lam[c]
-
-                    g *= bX_[c]
-                    g -= 1
-                    H += 1 + g.abs()
-
-                    g = g.reshape((1,)+tuple(X.shape[2:]))
-                    H = H.reshape((1,)+tuple(X.shape[2:]))
-
-                    g += spatial.regulariser(beta[b, c].reshape((1,)+tuple(X.shape[2:])),
-                                    bending=penalty, voxel_size=vx)             
-
-                    if self.verbose_bias > 0:
-                        print('Bias correction, L1 norm values: Gradient = {:.4g}, Hessian = {:.4g}'.format(g.abs().mean(), H.abs().mean()))
-
-                    beta[b, c] -= spatial.solve_field_fmg(H, g, bending=penalty, voxel_size=vx, verbose=self.verbose_bias).reshape(X.shape[2:])
-                
-                beta[b] -= beta[b].mean()
-
-        # Update bias field in-place
-        self.beta = beta
-
-    def _update_warp(self, Z, aff=None, tpm_aff=None, penalty=None, acc=0.9, vx=1, logit_tpm=False, b=None):
-            """
-            Update warp parameters for all channels and images in batch, in-place.
-
-            Args:
-                Z (torch.tensor): Responsibilites (B, K (or K-1), Spatial).
-                aff (torch.tensor, optional): Orientation matrix of image, (B, 4, 4).
-                tpm_aff (torch.tensor, optional): Orientation matrix of template, (B, 4, 4).
-                penalty (dict, default=None): Dictionary of regularisation penalties, including {'absolute', 'membrane', 'bending', 'lame'}.
-                acc (float, default=0.9): Acceleration (weight of the true Hessian).
-                vx (int or float, default=1): Voxel size.
-                logit_tpm (boolean, default=False): Whether tpm in self.mp is in logits form.
-            
-            """
-
-            aff = None
-
-            tiny = torch.tensor(1e-32, dtype=Z.dtype, device=Z.device)
-
-            B = Z.shape[0]
-            K = self.K
-            if isinstance(self.K, list):
-                K = len(K)
-
-            D = self.alpha # displacement alpha, shape (B, Spatial, dim)
-
-            if penalty is None:
-                penalty = default_warp_reg
-            pull_opt = dict(
-                interpolation=1,
-                bound='dct2',
-                extrapolate=False
-            )
-
-            tpm = self.mp
-            if not logit_tpm:
-                if tpm.shape[1] == K:
-                    tpm = tpm[:,:-1] # assume background in last class (maybe should change in tpm to be consistent with DL background first?)
-                tpm = math.logit(tpm+tiny, dim=1, implicit=True, implicit_index=-1)
-            if Z.shape[1] == K:
-                Z = Z[:,:-1]
-
-            if b is not None:
-                wM = self.warp_tpm(tpm[b], D[b], aff=aff, tpm_aff=tpm_aff, pull_opt=pull_opt)
-                grid = spatial.add_identity_grid(D[b])
-                if aff is not None:
-                    grid = spatial.affine_matvec(aff, grid)
-                gA = spatial.grid_grad(tpm[b], grid.float(), **pull_opt)
-                if aff is not None:
-                    if tpm_aff is not None:
-                        aff = torch.matmul(tpm_aff.inverse(), aff)
-                    gA = linalg.matvec(aff[:3, :3].T, gA)
-                del grid, aff
-                
-                g = 0
-                H = Z[b].new_zeros([*Z.shape[2:], 6])
-                for k in range(K-1):
-                    g += (wM[k] - Z[b, k]).unsqueeze(-1) * gA[k]
-                    H1 = acc * wM[k] * (1 - wM[k]) + (1 - acc) * (1 - 1/K)
-                    H[..., :3] += H1.unsqueeze(-1) * gA[k].square()
-                    H[..., 3] += H1 * (gA[k, ..., 0] * gA[k, ..., 1])
-                    H[..., 4] += H1 * (gA[k, ..., 0] * gA[k, ..., 2])
-                    H[..., 5] += H1 * (gA[k, ..., 1] * gA[k, ..., 2])
-                    # for l in range(k+1, K):
-                    for l in range(k, K-1):
-                        H1 = -(acc * wM[k] * wM[l] + (1 - acc) / K)
-                        H[..., :3] += H1.unsqueeze(-1) * (gA[k] * gA[l])
-                        H[..., 3] += H1 * (gA[k, ..., 0] * gA[l, ..., 1] + 
-                                            gA[l, ..., 0] * gA[k, ..., 1])
-                        H[..., 4] += H1 * (gA[k, ..., 0] * gA[l, ..., 2] + 
-                                            gA[l, ..., 0] * gA[k, ..., 2])
-                        H[..., 5] += H1 * (gA[k, ..., 1] * gA[l, ..., 2] + 
-                                            gA[l, ..., 1] * gA[k, ..., 2])
-                del gA, wM
-
-                g += spatial.regulariser_grid(D[b], **penalty, voxel_size=vx)
-
-                D[b] -= spatial.solve_grid_fmg(H, g, **penalty, voxel_size=vx)
-                
-            else:    
-                for b in range(B):
-                    wM = self.warp_tpm(tpm[b], D[b], aff=aff, tpm_aff=tpm_aff, pull_opt=pull_opt)
-                    grid = spatial.add_identity_grid(D)
-                    if aff is not None:
-                        grid = spatial.affine_matvec(aff, grid)
-                    gA = spatial.grid_grad(tpm[b], grid, **pull_opt)
-                    if aff is not None:
-                        if tpm_aff is not None:
-                            aff = torch.matmul(tpm_aff.inverse(), aff)
-                        gA = linalg.matvec(aff[:3, :3].T, gA)
-                    del grid, aff
-                    
-                    g = 0
-                    H = Z[b].new_zeros([*Z.shape[2:], 6])
-                    for k in range(K):
-                        g += (wM[k] - Z[b, k]).unsqueeze(-1) * gA[k]
-                        H1 = acc * wM[k] * (1 - wM[k]) + (1 - acc) * (1 - 1/K)
-                        H[..., :3] += H1.unsqueeze(-1) * gA[k].square()
-                        H[..., 4] += H1 * (gA[k, ..., 0] * gA[k, ..., 1])
-                        H[..., 5] += H1 * (gA[k, ..., 0] * gA[k, ..., 2])
-                        H[..., 6] += H1 * (gA[k, ..., 1] * gA[k, ..., 2])
-                        for l in range(k+1, K):
-                            H1 = -(acc * wM[k] * wM[l] + (1 - acc) / K)
-                            H[..., :3] += H1.unsqueeze(-1) * (gA[k] * gA[l])
-                            H[..., 4] += H1 * (gA[k, ..., 0] * gA[l, ..., 1] + 
-                                                gA[l, ..., 0] * gA[k, ..., 1])
-                            H[..., 5] += H1 * (gA[k, ..., 0] * gA[l, ..., 2] + 
-                                                gA[l, ..., 0] * gA[k, ..., 2])
-                            H[..., 6] += H1 * (gA[k, ..., 1] * gA[l, ..., 2] + 
-                                                gA[l, ..., 1] * gA[k, ..., 2])
-                        
-                    del gA, wM
-
-                    g += spatial.regulariser_grid(D[b], **penalty, voxel_size=vx)
-
-                    D[b] -= spatial.solve_grid_fmg(H, g, **penalty, voxel_size=vx)
-
-            self.alpha = D
-
-    def warp_tpm(self, tpm, D, aff=None, tpm_aff=None, pull_opt=None, logits=True, implicit=True, softmax=True):
-        """
-        Apply warp D to tpm. Assume single item with no batch dimension.
-
-        Args:
+        Parameters
+        ----------
+        X : (C, *spatial) tensor
+            Observed image modulated by the current bias field
+        Z : (K, *spatial) tensor
+            (Unweighted) responsibilities
+        W : (*spatial) tensor, optional
+            Observation weights
+        vx : (D,) vector_like
+            Voxel size
 
         """
+        if self.verbose >= 3:
+            print('update bias')
 
-        if pull_opt is None:
-            pull_opt = dict(
-                interpolation=1,
-                bound='dct2',
-                extrapolate=False
-            )
-        
-        tiny = torch.tensor(1e-32, dtype=tpm.dtype, device=tpm.device)
+        C, *N = X.shape
+        K = self.nb_clusters
 
-        if not logits:
-            tpm = math.logit(tpm+tiny, dim=0, implicit=implicit, implicit_index=-1)
+        X = X.reshape([C, -1]).T
+        Z = Z.reshape([K, -1])
+        if W is not None:
+            W = W.reshape([-1])
 
-        if aff is not None:
-            if tpm_aff is not None:
-                aff = torch.matmul(tpm_aff.inverse(), aff)
+        lb = 0
+        for c in range(C):
+            # Solve for each channel individually
+            g = X.new_zeros(X.shape[0])
+            H = X.new_zeros(X.shape[0])
+            for k in range(K):
+                sigma = self.sigma[k]
+                mu = self.mu[k].to(**utils.backend(X))
+                # Determine each class' contribution to gradient and Hessian
+                lam = sigma.inverse()[c].to(**utils.backend(X))
+                g.addcmul_(Z[k], linalg.dot(X - mu, lam))
+                H.addcmul_(Z[k], lam[c])
+            g.mul_(X[:, c]).sub_(1)
+            H.mul_(X[:, c].square()).add_(1)
+            if self.bias_acceleration < 1:
+                a = 1 - self.bias_acceleration
+                H.add_(g.abs(), alpha=a)  # new robust Hessian
 
-        grid = spatial.add_identity_grid(D)
-        if aff is not None:
-            grid = spatial.affine_matvec(aff, grid)
-        wM = spatial.grid_pull(tpm, grid, **pull_opt)
-        if softmax:
-            wM = math.softmax(wM, implicit=implicit)
-        del grid, aff
-        return wM
+            if W is not None:
+                g *= W
+                H *= W
+            g = g.reshape([1, *N])
+            H = H.reshape([1, *N])
 
-    def sample(self, mu=None, Cov=None, alpha=False, beta=False, seg=None, label_sampling='cat'):
-        """ Sample new image with GMM parameters and (eventually) bias and warp parameters
-        
-        Args:
-            mu (torch.tensor or sequence[torch.tensor]): means (B, C, K)
-            Cov (torch.tensor or sequence[torch.tensor]): covariance (B, C, C, K)
-            alpha (torch.tensor): warping parameters (B, C, Spatial)
-            beta (torch.tensor): bias-field parameters (B, C, Spatial)
-            seg (torch.tensor): tissue class maps to use for image generation (B, C, Spatial)
-            label_sampling (string): method to sample tissue classes:
-                * 'cat' (default): sample from categorical distribution with segmentation labels as prior
-                * 'pv': mean intensity across all classes, weighted by segmentation labels
-        
-        """
-        if mu == None:
-            mu = self.mu
-        if Cov == None:
-            Cov = self.Cov
-        if seg == None:
-            seg = self.mp
-        B = mu.shape[0]
-        C = mu.shape[1]
-        K = mu.shape[2]
-        dim = len(seg.shape[2:])
-        device = seg.device
-        dtype = seg.dtype
-        X = torch.zeros((B, C,)+tuple(seg.shape[2:]), device=device, dtype=dtype)
-        if isinstance(self.K, list):
-            for b in range(B):
-                sample = []
-                ix = 0
-                for k_ in range(len(self.K)):
-                    K_ = self.K[k_]
-                    pdf_ = [MultivariateNormal(mu[b,...,ix:ix+k], Cov[b,...,ix:ix+k]) for k in range(K_)]
-                    sample.append(torch.stack([dist.rsample(seg.shape[2:]) for dist in pdf_]).sum(dim=-1)) # expect shape (C, Spatial)
-                    ix += K_
-                sample = torch.stack(sample) # expect shape (K, C, Spatial)
-                if dim==3:
-                    sample = sample.permute(1,0,2,3,4)
-                elif dim==2:
-                    sample = sample.permute(1,0,2,3)
-                if label_sampling=='pv':
-                    X[b] = (seg[b].unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
-                elif label_sampling=='cat':
-                    if dim==3:
-                        seg_ = seg[b].permute(1,2,3,0)
-                    elif dim==2:
-                        seg_ = seg[b].permute(1,2,0)
-                    seg_ = one_hot(Categorical(seg_).sample()) # (Spatial, K)
-                    if dim==3:
-                        seg_ = seg_.permute(3,0,1,2)
-                    elif dim==2:
-                        seg_ = seg_.permute(2,0,1)
-                    X[b] = (seg_.unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
-        else:
-            for b in range(B):
-                pdf = [MultivariateNormal(mu[b,...,k], Cov[b,...,k]) for k in range(K)]
-                sample = torch.stack([dist.rsample(seg.shape[2:]) for dist in pdf]) # expect shape (K, Spatial, C)
-                if dim==3:
-                    sample = sample.permute(4,0,1,2,3)
-                elif dim==2:
-                    sample = sample.permute(3,0,1,2)
-                if label_sampling=='pv':
-                    X[b] = (seg[b].unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
-                elif label_sampling=='cat':
-                    if dim==3:
-                        seg_ = seg[b].permute(1,2,3,0)
-                    elif dim==2:
-                        seg_ = seg[b].permute(1,2,0)
-                    seg_ = one_hot(Categorical(seg_).sample()) # (Spatial, K)
-                    if dim==3:
-                        seg_ = seg_.permute(3,0,1,2)
-                    elif dim==2:
-                        seg_ = seg_.permute(2,0,1)
-                    X[b] = (seg_.unsqueeze(dim=0) * sample).sum(dim=1) # multiply (1, K, Spatial) * (C, K, Spatial) and sum over K
-        # if alpha:
-        #     if alpha is None:
-        #         alpha = self.alpha
-        if isinstance(beta, (torch.Tensor, type(None))):
-            if beta is None:
-                beta = self.beta
-            X *= beta.exp()
-        return X
+            # TODO: Should we modulate by the relative voxel size, as we
+            #       do in update_warp? Things seem to be a bit more tricky
+            #       with pure bending, as resizing does not induce that much
+            #       additional curvature.
+            lam = {'bending': self.lam_bias, 'voxel_size': vx}
+            Lb = spatial.regulariser(self.beta[None, c], **lam)
+            lb += self.beta[c].flatten().dot(Lb.flatten())
+            g += Lb
+
+            delta = spatial.solve_field_fmg(H, g, **lam,
+                                            verbose=self.verbose_bias)
+            self.beta[c] -= delta[0]
+
+        self.beta -= self.beta.mean()
+        self._lb_bias = -0.5*lb + self.beta.sum()
