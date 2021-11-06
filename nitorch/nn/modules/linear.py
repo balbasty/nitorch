@@ -122,3 +122,15 @@ class MLP(Module):
                 x = layer(x)
         x = self.final_layer(x)
         return x
+
+
+def add_projection_head(model, model_out_channels=None,
+                        proj_hidden_channels=2048, proj_channels=128, **kwargs):
+    # if not model_out_channels:
+    # TODO: figure out how to determine final channels in model
+    #     model_out_channels = model.modules[-1]
+    model.project = MLP(model_out_channels,
+                        proj_channels,
+                        proj_hidden_channels,
+                        **kwargs)
+    return model
