@@ -19,6 +19,7 @@ class SlidingWindow(Module):
         """
         super().__init__()
         self.patch_size = patch_size
+        self.reduction = reduction
         if overlap < 0.5 and overlap > 0:
             if isinstance(patch_size, list):
                 if isinstance(overlap, list):
@@ -42,6 +43,5 @@ class SlidingWindow(Module):
         x = [model(x_) for x_ in x]
         x = [x_.unsqueeze(dim=2) for x_ in x]
         x = torch.cat(x, dim=2)
-        x = utils.fold(x, dim=dim, stride=self.stride, collapsed=True, shape=shape)
+        x = utils.fold(x, dim=dim, stride=self.stride, collapsed=True, shape=shape, reduction=self.reduction)
         return x
-        
