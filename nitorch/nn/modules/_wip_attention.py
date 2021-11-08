@@ -5,7 +5,6 @@ from nitorch.nn.base import Module
 from nitorch.core import py, utils, math, linalg
 from nitorch import spatial
 from nitorch.nn.modules.conv import ConvBlock
-from nitorch.nn.activations.base import make_activation_from_name
 
 
 class ConvAttentionLayer(Module):
