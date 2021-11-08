@@ -58,10 +58,10 @@ class Linear(Module):
 class LinearBlock(Sequential):
     """
     Block of Linear-Norm-Activation.
-    TODO: Add functionality to actually use dropout, and to use custom order like in Conv
+    TODO: Add functionality to use custom order like in Conv
     """
     def __init__(self, in_channels, out_channels, norm=None, activation=None,
-                 dim=3, linear_dim=1, bias=True, dropout=None):
+                 dim=1, linear_dim=1, bias=True, dropout=None):
         super().__init__()
         self.linear = Linear(in_channels, out_channels, bias, linear_dim)
         
@@ -82,10 +82,11 @@ class LinearBlock(Sequential):
         self.dropout = dropout
 
     def forward(self, x):
-        if self.dropout is not None:
+        if self.dropout:
             x = self.dropout(x)
         x = self.linear(x)
-        x = self.norm(x)
+        if self.norm:
+            x = self.norm(x)
         x = self.activation(x)
         return x
 
