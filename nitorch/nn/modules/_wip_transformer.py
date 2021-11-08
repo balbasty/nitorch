@@ -1,4 +1,4 @@
-from typing import OrderedDict
+from collections import OrderedDict
 import inspect
 import torch
 import torch.utils.checkpoint as checkpoint
@@ -255,10 +255,10 @@ class ViT(Module):
 
         if representation_size and not distilled:
             self.nb_features = representation_size
-            self.pre_logits = Sequential(OrderedDict[
-                ('fc', Linear(embed_dim, representation_size)),
-                ('act', make_activation_from_name('Tanh'))
-            ])
+            self.pre_logits = Sequential(OrderedDict(
+                fc = Linear(embed_dim, representation_size),
+                act = make_activation_from_name('Tanh')
+            ))
         else:
             self.pre_logits = None
 

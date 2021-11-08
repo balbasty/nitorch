@@ -1,4 +1,4 @@
-from typing import OrderedDict
+from collections import OrderedDict
 from nitorch.nn.activations.base import make_activation_from_name
 import torch
 from nitorch.nn.base import Module
