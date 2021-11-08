@@ -82,8 +82,8 @@ class LinearBlock(Sequential):
         self.dropout = dropout
 
     def forward(self, x):
-        # if self.dropout is not None:
-        #     ...
+        if self.dropout is not None:
+            x = self.dropout(x)
         x = self.linear(x)
         x = self.norm(x)
         x = self.activation(x)
