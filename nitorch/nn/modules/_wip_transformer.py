@@ -251,7 +251,14 @@ class ViT(Module):
                      qkv_bias=qkv_bias, dropout=dropout, attn_dropout=attn_dropout,
                      path_dropout=path_dropout_list[i], norm=norm, activation=activation)
         for i in range(depth)])
-        self.norm = make_norm_from_name(norm, 1, embed_dim) # check dim is correct...
+
+        if isinstance(norm, str):
+            self.norm = make_norm_from_name(norm, 1, embed_dim)
+        elif norm:
+            self.norm = norm(embed_dim)
+        else:
+            self.norm = None
+         # check dim is correct...
 
         if representation_size and not distilled:
             self.nb_features = representation_size
@@ -566,7 +573,13 @@ class Swin(Module):
                       norm=norm, downsample=PatchMerge if (i_layer < self.nb_layers - 1) else None,
                       use_checkpoint=use_checkpoint) for i_layer in range(self.nb_layers)])
 
-        self.norm = make_norm_from_name(norm, dim, self.nb_features)
+        if isinstance(norm, str):
+            self.norm = make_norm_from_name(norm, dim, self.nb_features)
+        elif norm:
+            self.norm = norm(self.nb_features)
+        else:
+            self.norm = None
+
         self.pool = torch.nn.AdaptiveAvgPool1d(1) if pool else None
         self.head = Linear(self.nb_features, out_channels) if out_channels > 0 else None
 
