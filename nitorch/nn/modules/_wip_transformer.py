@@ -140,9 +140,9 @@ class Attention(Module):
         head_dim = in_channels // nb_heads
         self.scale = head_dim ** -0.5
 
-        self.qkv = Linear(in_channels, 3 * in_channels, bias=qkv_bias)
+        self.qkv = Linear(in_channels, 3 * in_channels, bias=qkv_bias, dim=-1)
         self.attn_dropout = _build_dropout(attn_dropout, dim)
-        self.proj = Linear(in_channels, in_channels)
+        self.proj = Linear(in_channels, in_channels, dim=-1)
         self.proj_dropout = _build_dropout(proj_dropout, dim)
 
     def forward(self, x):
@@ -186,7 +186,7 @@ class ViTBlock(Module):
         mlp_hidden_dim = int(mlp_ratio * in_channels)
         # note - MLP dim may need correcting
         self.mlp = MLP(in_channels, in_channels, mlp_hidden_dim, 
-                       activation=activation, dropout=dropout, dim=-1)
+                       activation=activation, dropout=dropout, linear_dim=-1)
 
     def forward(self, x):
         xi = x # need to check if this actually works - maybe need deepcopy?
@@ -219,16 +219,16 @@ class ViT(Module):
            Georg Heigold, Sylvain Gelly, Jakob Uszkoreit, Neil Houlsby
            https://arxiv.org/abs/2010.11929
     """
-    def __init__(self, dim, in_channels, out_channels, img_size, patch_size=16, embed_dim=786,
+    def __init__(self, dim, in_channels, out_channels, img_size, patch_size=16, embed_dim=768,
                  depth=12, nb_heads=12,  mlp_ratio=4, qkv_bias=True, 
                  representation_size=None, distilled=False,
                  dropout=None, attn_dropout=None, path_dropout=None, 
                  embed_layer=PatchEmbed, norm='layer', activation='GELU'):
         super().__init__()
         if isinstance(img_size, int):
-            img_size = [img_size]
+            img_size = [img_size] * dim
         if isinstance(patch_size, int):
-            patch_size = [patch_size]
+            patch_size = [patch_size] * dim
 
         self.out_channels = out_channels
         self.nb_features = self.embed_dim = embed_dim
@@ -241,13 +241,13 @@ class ViT(Module):
         self.cls_token = torch.nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.dist_token = torch.nn.Parameter(torch.zeros(1, 1, embed_dim)) if distilled else None
         self.pos_embed = torch.nn.Parameter(torch.zeros(1, nb_patches + self.nb_tokens, embed_dim))
-        self.pos_dropout = _build_dropout(dropout, dim)
+        self.pos_dropout = _build_dropout(dropout, dim=1)
 
         path_dropout_list = [x.item() for x in torch.linspace(0, path_dropout, depth)] \
              if isinstance(path_dropout, (int, float)) else [None] * depth
 
-        self.blocks = Sequential(*[
-            ViTBlock(dim=dim, in_channels=embed_dim, nb_heads=nb_heads, mlp_ratio=mlp_ratio,
+        self.blocks = Sequential(*[ # use dim=1 due to flat patches...
+            ViTBlock(dim=1, in_channels=embed_dim, nb_heads=nb_heads, mlp_ratio=mlp_ratio,
                      qkv_bias=qkv_bias, dropout=dropout, attn_dropout=attn_dropout,
                      path_dropout=path_dropout_list[i], norm=norm, activation=activation)
         for i in range(depth)])
@@ -263,15 +263,17 @@ class ViT(Module):
         if representation_size and not distilled:
             self.nb_features = representation_size
             self.pre_logits = Sequential(OrderedDict(
-                fc = Linear(embed_dim, representation_size),
+                fc = Linear(embed_dim, representation_size, dim=-1),
                 act = make_activation_from_name('Tanh')
             ))
         else:
             self.pre_logits = None
 
-        self.head = Linear(self.nb_features, out_channels) if out_channels > 0 else None
+        self.head = Linear(self.nb_features, out_channels, dim=-1) if out_channels > 0 else None
         if distilled:
-            self.head_dist = Linear(self.embed_dim, self.out_channels) if self.out_channels > 0 else None
+            self.head_dist = Linear(self.embed_dim, self.out_channels, dim=-1) if self.out_channels > 0 else None
+        else:
+            self.head_dist = None
 
     def forward(self, x):
         x = self.patch_embed(x)
@@ -621,7 +623,7 @@ class Swin(Module):
 
 # class UNETR(Module):
 #     """
-#     UNEt-TRansformer model.
+#     UNEt-TRansformer model with ViT-based encoder and convolutional decoder.
 
 #     References
 #     ----------

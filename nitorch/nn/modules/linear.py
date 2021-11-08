@@ -87,7 +87,8 @@ class LinearBlock(Sequential):
         x = self.linear(x)
         if self.norm:
             x = self.norm(x)
-        x = self.activation(x)
+        if self.activation:
+            x = self.activation(x)
         return x
 
 
