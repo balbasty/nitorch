@@ -247,7 +247,7 @@ class ViT(Module):
              if isinstance(path_dropout, (int, float)) else [None] * depth
 
         self.blocks = Sequential(*[
-            ViTBlock(dim=embed_dim, nb_heads=nb_heads, mlp_ratio=mlp_ratio,
+            ViTBlock(dim=dim, in_channels=embed_dim, nb_heads=nb_heads, mlp_ratio=mlp_ratio,
                      qkv_bias=qkv_bias, dropout=dropout, attn_dropout=attn_dropout,
                      path_dropout=path_dropout_list[i], norm=norm, activation=activation)
         for i in range(depth)])
