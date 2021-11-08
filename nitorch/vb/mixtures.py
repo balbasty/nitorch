@@ -175,6 +175,10 @@ class Mixture:
 
             # Update model specific parameters
             self._update(ss0, ss1, ss2)
+        
+        print(f"self.dof: {self.dof}")
+        print(f"self.mp: {self.mp}")
+        print(f"self.sig: {self.sig**2}")
 
         return Z, lb[:n_iter + 1]
     
@@ -186,24 +190,66 @@ class Mixture:
         self.mp = torch.ones(self.K, dtype=dtype, device=self.dev)/self.K
 
     def _suffstatschi(self, X, Z):
+
+        # """ Compute sufficient statistics.
+
+        # Args:
+        #     X (torch.tensor): Observed data (N, C).
+        #     Z (torch.tensor): Responsibilities (N, K).
+
+        # Returns:
+        #     ss0 (torch.tensor): 0th moment (K).
+        #     ss1 (torch.tensor): 1st moment (C, K).
+        #     ss2 (torch.tensor): 2nd moment (C, C, K).
+
+        #     % Sufficient statistics
+        #     s0  = sum(h);
+        #     s2  = sum(h.*x.^2);
+        #     sl  = sum(h.*log(max(x,eps)));
+
+        # """
+        # #Chi_params(h.*r(:,k),x,nu(k),sig2(k));
+        # N = X.shape[0]
+        # C = X.shape[1]
+        # K = Z.shape[1]
+        # device = self.dev
+        # tiny = torch.tensor(1e-32, dtype=torch.float64, device=device)
+
+        # # Suffstats
+        # ss0 = torch.zeros(K, dtype=torch.float64, device=device)
+        # ss1 = torch.zeros((C, K), dtype=torch.float64, device=device)
+        # ss2 = torch.zeros((C, C, K), dtype=torch.float64, device=device)
+
+
+        # # Compute 1st and 2nd moments
+        # for k in range(K):
+
+        #     ss0[k]=torch.sum(Z[:,k])
+        #     ss1[:, k] = torch.sum(torch.reshape(Z[:,k], (N, 1)) *torch.log(torch.clamp(X, min=tiny)),
+        #                           dim=0, dtype=torch.float64)
+
+        #     # 2nd    s2  = sum(h.*x.^2);
+        #     for c1 in range(C):
+        #         ss2[c1, c1, k] = \
+        #             torch.sum(Z[:,k] * X[:, c1] ** 2, dtype=torch.float64)
+        #         for c2 in range(c1 + 1, C):
+        #             # this is porbably wrong
+        #             ss2[c1, c2, k] = \
+        #                 torch.sum(Z[:,k] * (X[:, c1] * X[:, c2]),
+        #                           dtype=torch.float64)
+        #             ss2[c2, c1, k] = ss2[c1, c2, k]
+        # return ss0, ss1, ss2
+    
         """ Compute sufficient statistics.
-
         Args:
-            X (torch.tensor): Observed data (N, C).
+            X (torch.tensor): Observed data (N, 1).
             Z (torch.tensor): Responsibilities (N, K).
-
         Returns:
-            ss0 (torch.tensor): 0th moment (K).
-            ss1 (torch.tensor): 1st moment (C, K).
-            ss2 (torch.tensor): 2nd moment (C, C, K).
-
-            % Sufficient statistics
-            s0  = sum(h);
-            s2  = sum(h.*x.^2);
-            sl  = sum(h.*log(max(x,eps)));
-
+            ss0 (torch.tensor): sum(Z)          (K)
+            ss1 (torch.tensor): sum(Z * log(X)) (C, K)
+            ss2 (torch.tensor): sum(Z * X**2)   (C, C, K)
         """
-        #Chi_params(h.*r(:,k),x,nu(k),sig2(k));
+
         N = X.shape[0]
         C = X.shape[1]
         K = Z.shape[1]
@@ -215,20 +261,15 @@ class Mixture:
         ss1 = torch.zeros((C, K), dtype=torch.float64, device=device)
         ss2 = torch.zeros((C, C, K), dtype=torch.float64, device=device)
 
-
-        # Compute 1st and 2nd moments
+        # Compute sufficient statistics
         for k in range(K):
-
-            ss0[k]=torch.sum(Z[:,k])
+            ss0[k] = torch.sum(Z[:,k])
             ss1[:, k] = torch.sum(torch.reshape(Z[:,k], (N, 1)) *torch.log(torch.clamp(X, min=tiny)),
                                   dim=0, dtype=torch.float64)
-
-            # 2nd    s2  = sum(h.*x.^2);
             for c1 in range(C):
                 ss2[c1, c1, k] = \
                     torch.sum(Z[:,k] * X[:, c1] ** 2, dtype=torch.float64)
                 for c2 in range(c1 + 1, C):
-                    # this is porbably wrong
                     ss2[c1, c2, k] = \
                         torch.sum(Z[:,k] * (X[:, c1] * X[:, c2]),
                                   dtype=torch.float64)
@@ -657,18 +698,18 @@ class RMM(Mixture):
                          *torch.sqrt(mu1[k]**2 + mu2[k]))
 
 
-
 class CMM(Mixture):
-    # Univariate Rician Mixture Model (RMM).
+    # Chi Mixture Model (CMM).
     def __init__(self, num_class=2, dof=None, sig=None):
         """
-        nu (torch.tensor): "mean" parameter of each Rician (K).
-        sig (torch.tensor): "standard deviation" parameter of each Rician (K).
+        dof (torch.tensor): "dof" parameter of each Chi distribution (K).
+        sig (torch.tensor): "standard deviation" parameter of each Chi distribution (K).
 
         """
         super(CMM, self).__init__(num_class=num_class)
         self.dof = dof
         self.sig = sig
+
 
     def get_means_variances(self):
         """ Return means and variances.
@@ -726,15 +767,17 @@ class CMM(Mixture):
         sig = sig.type(dtype)
         dof = dof.to(device)
         sig = sig.to(device)
-       
+        # Use Chi distribution
         log_pdf = torch.zeros((N, 1), dtype=dtype, device=device)
-        msk = (torch.isfinite(torch.log(X+tiny))) & (torch.isfinite(torch.lgamma(dof/2))) & (torch.isfinite(X**2/(2*sig**2+tiny)))
-        log_pdf[msk] = -((dof/2.-1.)*math.log(2.)+(1.-dof)*torch.log(X[msk]+tiny)+X[msk]**2/(2*sig**2+tiny)+ \
+        #msk = (torch.isfinite(torch.log(X+tiny))) & (torch.isfinite(torch.lgamma(dof/2))) & (torch.isfinite(X**2/(2*sig**2+tiny)))
+        #log_pdf[msk] = -((dof/2.-1.)*math.log(2.)+(1.-dof)*torch.log(X[msk]+tiny)+X[msk]**2/(2*sig**2+tiny)+ \
+        #            0.5*dof*torch.log(sig**2+tiny)+torch.lgamma(dof/2.))
+        log_pdf = -((dof/2.-1.)*math.log(2.)+(1.-dof)*torch.log(X+tiny)+X**2/(2*sig**2+tiny)+ \
                     0.5*dof*torch.log(sig**2+tiny)+torch.lgamma(dof/2.))
 
         # Use normal distribution
-        log_pdf[~msk] = torch.log((1. / torch.sqrt(2 * pi * sig**2)) \
-                  * torch.exp((-0.5 / sig**2) * (X[~msk] - dof)**2))
+        #log_pdf[~msk] = torch.log((1. / torch.sqrt(2 * pi * sig**2)) \
+        #          * torch.exp((-0.5 / sig**2) * (X[~msk] - dof)**2))
 
         return log_pdf.flatten()
 
@@ -764,17 +807,12 @@ class CMM(Mixture):
 
     
     def _update(self, ss0, ss1, ss2):
-        """ Update RMM parameters.
+        """ Update CMM parameters.
 
         Args:
-            ss0 (torch.tensor): 0th moment (K).
-            ss1 (torch.tensor): 1st moment (C, K).
-            ss2 (torch.tensor): 2nd moment (C, C, K).
-
-        See also
-            Koay, C.G. and Basser, P. J., Analytically exact correction scheme
-            for signal extraction from noisy magnitude MR signals,
-            Journal of Magnetic Resonance, Volume 179, Issue = 2, p. 317–322, (2006)
+            ss0 (torch.tensor): sum(Z)          (K)
+            ss1 (torch.tensor): sum(Z * log(X)) (C, K)
+            ss2 (torch.tensor): sum(Z * X**2)   (C, C, K)
 
         """
         C = ss1.shape[0]
@@ -784,19 +822,19 @@ class CMM(Mixture):
         tiny = torch.tensor(1e-32, dtype=dtype, device=device)
 
 
-        print(f"before update dof {self.dof}, sig {self.sig}")
+        #print(f"before update dof {self.dof}, sig {self.sig}")
         # Update parameters (using means and variances)
         for k in range(K):
             
-            for i in range(50000):
+            for i in range(10000):
 
                 self.sig[k] =  torch.sqrt(ss2[:, :, k]/(self.dof[k]*ss0[k]))
 
-                gkl = ss0[k]*(torch.polygamma(0, self.dof[k]/2.)/2.+0.5*torch.log(2*self.sig[k]**2))-ss1[:, k]
-                hkl = ss0[k]*torch.polygamma(1, self.dof[k]/2.)/4.
-                
-                self.dof[k] = torch.clamp(self.dof[k]-gkl/hkl, min=1.)
+                gkl = 0.5*ss0[k]*(torch.polygamma(0, 0.5*self.dof[k])+torch.log(torch.clamp(2.*self.sig[k]**2, min=tiny)))-ss1[:, k]
+                hkl = 0.25*ss0[k]*torch.polygamma(1, 0.5*self.dof[k])
 
-                if gkl < tiny:
+                self.dof[k] = torch.clamp(self.dof[k]-gkl/hkl, min=1.0)
+
+                if gkl*gkl < 1e-9:
                     break
-        print(f"after update dof {self.dof}, sig {self.sig}")
+        #print(f"after update dof {self.dof}, sig {self.sig}")
