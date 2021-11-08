@@ -802,6 +802,7 @@ class RandomRubiks(Module):
             
     """
     def __init__(self,
+                 dim,
                  kernel=[32,32,32]):
         """
         Arguments:
@@ -810,6 +811,8 @@ class RandomRubiks(Module):
         """
         
         super().__init__()
+        if isinstance(kernel, int):
+            kernel = [kernel] * dim
         self.kernel = kernel
 
     def forward(self, x):
@@ -836,6 +839,7 @@ class RandomPatchSwap(Module):
             
     """
     def __init__(self,
+                 dim,
                  kernel=[32,32,32],
                  nb_swap=4):
         """
@@ -846,6 +850,8 @@ class RandomPatchSwap(Module):
         """
         
         super().__init__()
+        if isinstance(kernel, int):
+            kernel = [kernel] * dim
         self.kernel = kernel
         self.nb_swap = nb_swap
 
@@ -854,7 +860,7 @@ class RandomPatchSwap(Module):
         dim = len(shape)
         x = utils.unfold(x, self.kernel, collapse=True)
         for n in range(self.nb_swap):
-            i1, i2 = randint(0, x.shape[2]-1)
+            i1, i2 = torch.randint(0, x.shape[2]-1)
             x[:,:,i1], x[:,:,i2] = x[:,:,i2], x[:,:,i1]
         x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
         return x
