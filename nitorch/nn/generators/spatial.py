@@ -1,5 +1,6 @@
 import math
 import torch
+import numpy as np
 from nitorch.core import utils, py, linalg
 from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean, identity_grid, smooth, resize
 from nitorch.nn.base import Module
@@ -860,7 +861,7 @@ class RandomPatchSwap(Module):
         dim = len(shape)
         x = utils.unfold(x, self.kernel, collapse=True)
         for n in range(self.nb_swap):
-            i1, i2 = torch.randint(0, x.shape[2]-1)
+            i1, i2 = np.random.randint(low=0, high=x.shape[2]-1)
             x[:,:,i1], x[:,:,i2] = x[:,:,i2], x[:,:,i1]
         x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
         return x
