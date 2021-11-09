@@ -426,7 +426,7 @@ class BabelArray(MappedArray):
         return self
 
     def data(self, dtype=None, device=None, casting='unsafe', rand=True,
-             cutoff=None, dim=None, numpy=False):
+             missing=None, cutoff=None, dim=None, numpy=False):
 
         # --- sanity check before reading ---
         dtype = self.dtype if dtype is None else dtype
@@ -449,25 +449,42 @@ class BabelArray(MappedArray):
         dat = dat.transpose(perm)[newdim]
         indtype = dtypes.dtype(self.dtype)
 
+        if not numpy:
+            tmpdtype = dtypes.dtype(indtype.torch_upcast)
+            dat = dat.astype(tmpdtype.numpy)
+            dat = torch.as_tensor(dat, dtype=indtype.torch_upcast, device=device)
+
+        # --- mask of missing values ---
+        if missing is not None:
+            missing = volutils.missing(dat, missing)
+            present = ~missing
+        else:
+            present = (Ellipsis,)
+
         # --- cutoff ---
-        dat = volutils.cutoff(dat, cutoff, dim)
+        dat[present] = volutils.cutoff(dat[present], cutoff, dim)
 
         # --- cast + rescale ---
         rand = rand and not indtype.is_floating_point
         tmpdtype = dtypes.float64 if (rand and not dtype.is_floating_point) else dtype
-        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, returns='dat+scale')
+        dat, scale = volutils.cast(dat, tmpdtype, casting, indtype=indtype,
+                                   returns='dat+scale', mask=present)
 
         # --- random sample ---
         # uniform noise in the uncertainty interval
         if rand and not (scale == 1 and not dtype.is_floating_point):
-            dat = volutils.addnoise(dat, scale)
+            dat[present] = volutils.addnoise(dat[present], scale)
 
         # --- final cast ---
-        dat = volutils.cast(dat, dtype.numpy, 'unsafe')
+        dat = volutils.cast(dat, dtype, 'unsafe')
 
-        # convert to torch if needed
-        if not numpy:
-            dat = torch.as_tensor(dat, device=device)
+        # --- replace missing values ---
+        if missing is not None:
+            if dtype.is_floating_point:
+                dat[missing] = float('nan')
+            else:
+                dat[missing] = 0
+
         return dat
 
     def metadata(self, keys=None):
@@ -614,7 +631,8 @@ class BabelArray(MappedArray):
                 dat /= slope
 
         # cast + setdtype
-        dat, s, o = volutils.cast(dat, dtype, casting, returns='dat+scale+offset')
+        dat, s, o = volutils.cast(dat, dtype, casting=casting,
+                                  returns='dat+scale+offset')
         header.set_data_dtype(dat.dtype)
 
         # set scale
