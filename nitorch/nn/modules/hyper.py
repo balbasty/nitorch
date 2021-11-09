@@ -8,6 +8,7 @@ from nitorch.core import py
 from ..base import Module
 from .conv import ActivationLike
 from ..activations import make_activation_from_name
+from .linear import LinearBlock
 
 
 class HyperNet(Module):
@@ -35,6 +36,8 @@ class HyperNet(Module):
                  layers: Sequence[int] = (128,)*6,
                  activation: ActivationLike = 'relu',
                  final_activation: ActivationLike = None,
+                 dropout = None,
+                 norm = None
                  ):
         """
 
@@ -55,6 +58,10 @@ class HyperNet(Module):
             Activation after each layer of the hyper-network.
         final_activation : activation_like, default=None
             Final activation before the generated network weights.
+        dropout : float or sequence[float], default=None
+            dropout probability. if sequence, must match length of layers
+        norm: bool or string, default=None
+            Normalisation to use in Linear blocks
 
         """
         super().__init__()
@@ -67,14 +74,18 @@ class HyperNet(Module):
         layers = [in_features, *layers]
         hyper = []
         for i in range(len(layers)-1):
-            hyper.append(tnn.Linear(layers[i], layers[i+1]))
-            a = self._make_activation(activation)
-            if a:
-                hyper.append(a)
-        hyper.append(tnn.Linear(layers[-1], nb_weights))
-        a = self._make_activation(final_activation)
-        if a:
-            hyper.append(a)
+            hyper.append(LinearBlock(layers[i], layers[i+1],
+                        activation=activation, norm=norm, dropout=dropout))
+            # hyper.append(tnn.Linear(layers[i], layers[i+1]))
+            # a = self._make_activation(activation)
+            # if a:
+            #     hyper.append(a)
+        hyper.append(LinearBlock(layers[-1], nb_weights,
+                    activation=final_activation, norm=norm, dropout=dropout))
+        # hyper.append(tnn.Linear(layers[-1], nb_weights))
+        # a = self._make_activation(final_activation)
+        # if a:
+        #     hyper.append(a)
         self.hyper = tnn.Sequential(*hyper)
 
         # save main network
