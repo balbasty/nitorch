@@ -6,7 +6,7 @@ from nitorch.nn.base import Module
 from nitorch.nn.activations.base import activation_from_name, make_activation_from_name
 
 
-class  MCDropout(Module):
+class MCDropout(Module):
     """
     Class to implement Monte-Carlo dropout for a given model.
     Model must already have dropout layers used during training.

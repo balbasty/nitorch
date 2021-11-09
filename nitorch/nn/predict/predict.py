@@ -38,7 +38,7 @@ class SlidingWindow(Module):
         shape = x.shape[2:]
         dim = len(shape)
         x = utils.unfold(x, kernel_size=self.patch_size, stride=self.stride, collapse=True)
-        x = torch.chunk(x, 1, dim=2)
+        x = torch.split(x, 1, dim=2)
         x = [x_.reshape(tuple(x_.shape[:2])+tuple(x_.shape[3:])) for x_ in x]
         x = [model(x_) for x_ in x]
         x = [x_.unsqueeze(dim=2) for x_ in x]
