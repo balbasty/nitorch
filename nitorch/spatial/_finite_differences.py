@@ -248,7 +248,7 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
 
     """
     # find number of dimensions
-    dim = torch.as_tensor(dim)
+    dim = make_vector(dim, dtype=torch.long)
     voxel_size = make_vector(voxel_size)
     drop_last = dim.dim() == 0 and voxel_size.dim() == 0
     dim = dim.tolist()

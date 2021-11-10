@@ -409,7 +409,7 @@ class MappedArray(MappedFile):
         return self.permute(permutation)
 
     def data(self, dtype=None, device=None, casting='unsafe', rand=True,
-             cutoff=None, dim=None, numpy=False):
+             missing=None, cutoff=None, dim=None, numpy=False):
         """Load the array in memory
 
         Parameters
@@ -421,6 +421,10 @@ class MappedArray(MappedFile):
         rand : bool, default=False
             If the on-disk dtype is not floating point, sample noise
             in the uncertainty interval.
+        missing : float or sequence[float], optional
+            Value(s) that correspond to missing values.
+            No noise is added to them, and they are converted to NaNs
+            (if possible) or zero (otherwise).
         cutoff : float or (float, float), default=(0, 1)
             Percentile cutoff. If only one value is provided, it is
             assumed to relate to the upper percentile.
@@ -462,8 +466,8 @@ class MappedArray(MappedFile):
         """
         pass
 
-    def fdata(self, dtype=None, device=None, rand=False, cutoff=None,
-              dim=None, numpy=False):
+    def fdata(self, dtype=None, device=None, rand=False, missing=None,
+              cutoff=None, dim=None, numpy=False):
         """Load the scaled array in memory
 
         This function differs from `data` in several ways:
@@ -482,6 +486,9 @@ class MappedArray(MappedFile):
         rand : bool, default=False
             If the on-disk dtype is not floating point, sample noise
             in the uncertainty interval.
+        missing : float or sequence[float], optional
+            Value(s) that correspond to missing values.
+            No noise is added to them, and they are converted to NaNs.
         cutoff : float or (float, float), default=(0, 1)
             Percentile cutoff. If only one value is provided, it is
             assumed to relate to the upper percentile.
@@ -504,7 +511,7 @@ class MappedArray(MappedFile):
                             'type but got {}.'.format(dtype))
 
         # --- get unscaled data ---
-        dat = self.data(dtype=dtype, device=device, rand=rand,
+        dat = self.data(dtype=dtype, device=device, rand=rand, missing=missing,
                         cutoff=cutoff, dim=dim, numpy=numpy)
 
         # --- scale ---

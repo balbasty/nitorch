@@ -93,6 +93,17 @@ class HyperNet(Module):
         for param in self._get_weights(self.network):
             param.requires_grad_(False)
 
+    def parameters(self):
+        return self.hyper.parameters()
+    
+    def train(self, mode=True):
+        self.hyper.train(mode)
+        return self
+    
+    def eval(self):
+        self.hyper.train()
+        return self
+            
     @property
     def in_features(self):
         return self.hyper[0].in_features
