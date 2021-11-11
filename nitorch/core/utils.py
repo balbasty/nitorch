@@ -1919,7 +1919,8 @@ def _one_hot_wrapper(x: Tensor, dtype: Optional[torch.dtype] = None):
     return x
 
 
-if torch_version('>=', (1, 5)):
+if torch_version('>=', (1, 6)):
+    print(f"torch version {torch_version('>=', (1, 5))} ")
     # jit.script does not accept `dtype` inputs in torch 1.3
     # I don't know exactly which version started handling it.
     _one_hot_wrapper = torch.jit.script(_one_hot_wrapper)
