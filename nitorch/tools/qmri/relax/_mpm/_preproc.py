@@ -44,7 +44,7 @@ def postproc(maps):
     return maps.pd, maps.r1, maps.r2s
 
 
-def preproc(data, transmit=None, receive=None, opt=None):
+def preproc(data, transmit=None, receive=None, opt=None, chi=False):
     """Estimate noise variance + register + compute recon space + init maps
 
     Parameters
@@ -79,7 +79,7 @@ def preproc(data, transmit=None, receive=None, opt=None):
             if opt.verbose:
                 print(f'Estimate noise: contrast {c+1:d} - echo {e+1:2d}', end='\r')
             dat = echo.fdata(**backend, rand=True, cache=False)
-            sd0, sd1, mu0, mu1 = estimate_noise(dat)
+            sd0, sd1, mu0, mu1, dof = estimate_noise(dat, chi=chi)
             echo.mean = mu1.item()
             echo.sd = sd0.item()
             means.append(mu1)
@@ -179,7 +179,7 @@ def preproc(data, transmit=None, receive=None, opt=None):
     else:
         receive = [None] * len(data)
     
-    return data, transmit, receive, maps
+    return data, transmit, receive, maps, dof
 
 
 def _loglin_minifit(dat, te):

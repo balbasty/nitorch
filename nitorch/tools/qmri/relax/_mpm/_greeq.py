@@ -95,13 +95,14 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         Only returned is MT-weighted data is provided.
 
     """
+    chi = True
     opt = GREEQOptions().update(opt, **kwopt)
     dtype = opt.backend.dtype
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
 
     # --- estimate noise / register / initialize maps ---
-    data, transmit, receive, maps = preproc(data, transmit, receive, opt)
+    data, transmit, receive, maps, dof = preproc(data, transmit, receive, opt, chi=chi)
     has_mt = hasattr(maps, 'mt')
 
     # --- prepare penalty factor ---
@@ -189,7 +190,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 # --- loop over contrasts ---
                 for contrast, b1m, b1p in zip(data, receive, transmit):
                     # compute gradient
-                    crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt)
+                    crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt, chi=True, dof=dof)
 
                     # increment
                     if hasattr(maps, 'mt') and not contrast.mt:
@@ -406,7 +407,7 @@ def _resize(maps, rls, aff, shape):
     return maps, rls
 
 
-def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=False):
+def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=False, dof=None):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
 
@@ -567,8 +568,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
             # nu = 21.4342
             # sig2 = 386.7943
             #dof= torch.as_tensor(21.4342 , dtype=dtype)
-            dof = 21.4342
-            lam= 1./386.7943
+            print(dof)
             z = (dat*fit*lam).clamp_min_(tiny)
             #ndat_np, fit_np = dat.clone().detach().cpu(), fit.clone().detach().cpu()
             #bes_np = ive(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*lam)
