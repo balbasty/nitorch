@@ -410,19 +410,18 @@ class LeWinAttention(Module):
             qrot = qrot.unbind(-1)
             qrot = torch.stack([-qrot[0], qrot[1]], dim=-1)
             qrot = qrot.reshape(*q.shape[:-1], -1)
-            q *= cos
             q = q * cos
-            qrot *= sin
-            q += qrot
+            qrot = qrot * sin
+            q = q + qrot
             q = torch.cat([q, q_pass], dim=-1)
 
             krot = k.reshape(*k.shape[:-1], -1, 2)
             krot = krot.unbind(-1)
             krot = torch.stack([-krot[0], krot[1]], dim=-1)
             krot = krot.reshape(*k.shape[:-1], -1)
-            k *= cos
-            krot *= sin
-            k += krot
+            k = k + cos
+            krot = krot * sin
+            k = k + krot
             k = torch.cat([k, k_pass], dim=-1)
 
         q, k, v = [item.reshape(np.prod(item.shape[:-1]) // np.prod(self.window_size), np.prod(self.window_size), -1) for item in [q,k,v]]
