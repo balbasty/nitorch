@@ -15,7 +15,6 @@ from nitorch.core.linalg import (meanm, _expm)
 
 def _format_input(img, device='cpu', rand=False, cutoff=None):
     """Format preprocessing input data.
-
     """
     if isinstance(img, str):
         img = [img]
@@ -42,7 +41,6 @@ def _format_input(img, device='cpu', rand=False, cutoff=None):
 
 def _process_reg(dat, mat, mat_a, mat_fix, dim_fix, write):
     """Process registration results.
-
     """
     N = len(dat)
     rdat = torch.zeros((N, ) + dim_fix,
@@ -68,18 +66,17 @@ def _process_reg(dat, mat, mat_a, mat_fix, dim_fix, write):
     return dat, mat, write, rdat
 
 
-def _write_output(dat, mat, file=None, prefix='', odir='', nam=''):
+def _write_output(dat, mat, file=None, prefix='', odir=None, nam=None):
     """Write preprocessed output to disk.
-
     """
-    if odir:
+    if odir is not None:
         os.makedirs(odir, exist_ok=True)
     pth = []
     for n in range(len(dat)):
         if file[n] is not None:
             filename = file[n].filename()
         else:
-            filename = ''
+            filename = 'nitorch_file'
         pth.append(file_mod(filename,
             odir=odir, prefix=prefix, nam=nam))
         savef(dat[n], pth[n], like=file[n], affine=mat[n])

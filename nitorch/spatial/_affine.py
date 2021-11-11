@@ -412,6 +412,14 @@ def affine_to_layout(mat):
 
 
 affine_subbasis_choices = ('T', 'R', 'Z', 'Z0', 'I', 'S', 'SC')
+affine_subbasis_aliases = dict(
+    T=['translation', 'translations'],
+    R=['rot', 'rotation', 'rotations'],
+    Z=['zoom', 'zooms', 'scale', 'scales', 'scaling', 'scalings'],
+    Z0=['isovolume', 'isovolumic'],
+    I=['isotropic', 'isozoom', 'isoscale', 'isoscaling'],
+    S=['shear', 'shears'],
+)
 
 
 def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
@@ -489,6 +497,11 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
     mode = mode[0]
 
     if mode not in affine_subbasis_choices:
+        for key, aliases in affine_subbasis_aliases.items():
+            if mode in aliases:
+                mode = key
+                break
+    if mode not in affine_subbasis_choices:
         raise ValueError('mode must be one of {}.'
                          .format(affine_subbasis_choices))
 
@@ -552,7 +565,7 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
                 basis[k, j, i] = isqrt2
                 k += 1
 
-    elif mode == 'SC':
+    elif mode in ('sc', 'classic shear', 'classic shears'):
         nb_shr = dim*(dim-1)//2
         basis = torch.zeros((nb_shr, dim+1, dim+1), dtype=dtype, device=device)
         k = 0
@@ -577,6 +590,26 @@ def affine_subbasis(mode, dim=3, sub=None, dtype=None, device=None):
 
 
 affine_basis_choices = ('T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+')
+affine_basis_aliases = {
+    'T': ['translation', 'translations'],
+    'SO': ['rot', 'rotation', 'rotations'],
+    'SE': ['rigid'],
+    'D': ['dilation', 'dilations'],
+    'CSO': ['similitude', 'similitudes'],
+    'SL': [],
+    'GL+': ['linear'],
+    'Aff+': ['affine'],
+}
+affine_basis_components = {
+    'T': ['T'],
+    'SO': ['R'],
+    'SE': ['T', 'R'],
+    'D': ['R', 'I'],
+    'CSO': ['T', 'R', 'I'],
+    'SL': ['R', 'Z0', 'S'],
+    'GL+': ['R', 'Z', 'S'],
+    'Aff+': ['T', 'R', 'Z', 'S'],
+}
 
 
 def affine_basis(group='SE', dim=3, dtype=None, device=None):
@@ -596,15 +629,15 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
     ----------
     group : {'T', 'SO', 'SE', 'D', 'CSO', 'SL', 'GL+', 'Aff+'}, default='SE'
         Group that should be encoded by the basis set:
-            * 'T'   : Translations
-            * 'SO'  : Special Orthogonal (rotations)
-            * 'SE'  : Special Euclidean (translations + rotations)
-            * 'D'   : Dilations (translations + isotropic scalings)
-            * 'CSO' : Conformal Special Orthogonal
-                      (translations + rotations + isotropic scalings)
-            * 'SL'  : Special Linear (rotations + isovolumic zooms + shears)
-            * 'GL+' : General Linear [det>0] (rotations + zooms + shears)
-            * 'Aff+': Affine [det>0] (translations + rotations + zooms + shears)
+            * 'T'    or 'translation' : Translations
+            * 'SO'   or 'rotation'    : Special Orthogonal (rotations)
+            * 'SE'   or 'rigid'       : Special Euclidean (translations + rotations)
+            * 'D'    or 'dilation'    : Dilations (translations + isotropic scalings)
+            * 'CSO'  or 'similitude'  : Conformal Special Orthogonal
+                                        (translations + rotations + isotropic scalings)
+            * 'SL'                    : Special Linear (rotations + isovolumic zooms + shears)
+            * 'GL+'  or 'linear'      : General Linear [det>0] (rotations + zooms + shears)
+            * 'Aff+' or 'affine'      : Affine [det>0] (translations + rotations + zooms + shears)
     dim : {1, 2, 3}, default=3
         Dimension
     dtype : torch.dtype, optional
@@ -627,41 +660,27 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
     # .. Yael Balbastre <yael.balbastre@gmail.com> : Python code
 
     if group not in affine_basis_choices:
+        for key, aliases in affine_basis_aliases.items():
+            if group in aliases:
+                group = key
+                break
+    if group not in affine_basis_choices:
         raise ValueError('group must be one of {}.'
                          .format(affine_basis_choices))
 
-    if group == 'T':
-        return affine_subbasis('T', dim, dtype=dtype, device=device)
-    elif group == 'SO':
-        return affine_subbasis('R', dim, dtype=dtype, device=device)
-    elif group == 'SE':
-        return torch.cat((affine_subbasis('T', dim, dtype=dtype, device=device),
-                          affine_subbasis('R', dim, dtype=dtype, device=device)))
-    elif group == 'D':
-        return torch.cat((affine_subbasis('T', dim, dtype=dtype, device=device),
-                          affine_subbasis('I', dim, dtype=dtype, device=device)))
-    elif group == 'CSO':
-        return torch.cat((affine_subbasis('T', dim, dtype=dtype, device=device),
-                          affine_subbasis('R', dim, dtype=dtype, device=device),
-                          affine_subbasis('I', dim, dtype=dtype, device=device)))
-    elif group == 'SL':
-        return torch.cat((affine_subbasis('R', dim, dtype=dtype, device=device),
-                          affine_subbasis('Z0', dim, dtype=dtype, device=device),
-                          affine_subbasis('S', dim, dtype=dtype, device=device)))
-    elif group == 'GL+':
-        return torch.cat((affine_subbasis('R', dim, dtype=dtype, device=device),
-                          affine_subbasis('Z', dim, dtype=dtype, device=device),
-                          affine_subbasis('S', dim, dtype=dtype, device=device)))
-    elif group == 'Aff+':
-        return torch.cat((affine_subbasis('T', dim, dtype=dtype, device=device),
-                          affine_subbasis('R', dim, dtype=dtype, device=device),
-                          affine_subbasis('Z', dim, dtype=dtype, device=device),
-                          affine_subbasis('S', dim, dtype=dtype, device=device)))
+    subbases = [affine_subbasis(sub, dim, dtype=dtype, device=device)
+                for sub in affine_basis_components[group]]
+    return subbases[0] if len(subbases) == 1 else torch.cat(subbases)
 
     
 def affine_basis_size(group, dim=3):  
     """Return the number of parameters in a given group."""
-    
+
+    if group not in affine_basis_choices:
+        for key, aliases in affine_basis_aliases.items():
+            if group in aliases:
+                group = key
+                break
     if group not in affine_basis_choices:
         raise ValueError('group must be one of {}.'
                          .format(affine_basis_choices))
@@ -681,7 +700,75 @@ def affine_basis_size(group, dim=3):
         return dim*dim
     elif group == 'Aff+':
         return (dim+1)*dim
-    
+
+
+def affine_subbasis_size(basis, dim=3):
+    """Return the number of parameters in a given group."""
+
+    if basis not in affine_subbasis_choices:
+        for key, aliases in affine_subbasis_aliases.items():
+            if basis in aliases:
+                basis = key
+                break
+    if basis not in affine_subbasis_choices:
+        raise ValueError('basis must be one of {}.'
+                         .format(affine_subbasis_choices))
+    if basis in ('T', 'Z'):
+        return dim
+    elif basis in ('S', 'SC', 'R'):
+        return dim*(dim-1)//2
+    elif basis == 'Z0':
+        return dim - 1
+    elif basis == 'I':
+        return 1
+
+
+def switch_basis(x, old_basis, new_basis, dim=3, ortho=False):
+    """Convert Lie parameters from one basis to another.
+
+    In the orthogonal case, this is be equivalent to projecting the
+    log-matrix onto the new basis. Otherwise, we build the exponentiated
+    matrix and invert is using numerical optimization.
+
+    Parameters
+    ----------
+    x : (..., nb_prm)
+        Lie parameters in the old basis
+    old_basis : str,
+        One of the pre-defined bases
+    new_basis : str,
+        One of the pre-defined bases
+    ortho : bool, default=False
+        Assume orthogonal bases.
+
+    Returns
+    -------
+    x : (..., nb_prm_new)
+        Lie parameters in the new basis
+
+    """
+    if ortho:
+        # Assuming orthogonal bases (which is always the case for the
+        # pre-defined bases we care about)
+        #
+        # log-matrix: A = \sum_k B_k x_k
+        # projection: y_l = <C_l, A> = \sum_k <C_l, B_k> x_k = CB * x
+        # (this assumes unit-norm bases. Otherwise, we must normalize
+        #  by the matrix-norm of C_l)
+        old_basis = build_affine_basis(old_basis, dim=dim, **utils.backend(x))
+        new_basis = build_affine_basis(new_basis, dim=dim, **utils.backend(x))
+
+        new_norm = linalg.mdot(new_basis, new_basis).sqrt()
+        proj = linalg.mdot(new_basis[..., :, None, :, :],
+                           old_basis[..., None, :, :, :])
+        new_x = linalg.matvec(proj, x)
+        new_x = new_x / new_norm
+    else:
+        mat = affine_matrix(x, old_basis, dim=dim)
+        new_x = affine_parameters(mat, new_basis)
+
+    return new_x
+
 
 def build_affine_basis(*basis, dim=None, dtype=None, device=None):
     """Transform Affine Lie bases into tensors.
@@ -766,6 +853,21 @@ def _build_affine_basis(basis, dim=None, dtype=None, device=None):
     basis = torch.cat(basis, dim=0)
 
     return basis
+
+
+# chain_matmul is replaced by linalg.multi_dot in recent versions of pytorch
+if hasattr(torch, 'linalg') and hasattr(torch.linalg, 'multi_dot'):
+    _multi_dot = torch.linalg.multi_dot
+else:
+    _multi_dot = lambda x: torch.chain_matmul(*x)
+
+
+def multi_dot(x):
+    if torch.is_tensor(x):
+        x = x.unbind(0)
+    if len(x) == 1:
+        return x[0]
+    return _multi_dot(x)
 
 
 def affine_matrix(prm, *basis, dim=None):
@@ -854,7 +956,7 @@ def affine_matrix(prm, *basis, dim=None):
 
     # Matrix product
     if len(mats) > 1:
-        affine = torch.chain_matmul(*mats)
+        affine = multi_dot(mats)
     else:
         affine = mats[0]
     return affine
@@ -1048,8 +1150,7 @@ def affine_matrix_classic(prm=None, dim=3, *,
     return mat
 
 
-def affine_parameters(mat, *basis, max_iter=10000, tol=None,
-                      max_line_search=8):
+def affine_parameters(mat, *basis, max_iter=10000, tol=1e-9):
     """Compute the parameters of an affine matrix in a basis of the algebra.
 
     This function finds the matrix closest to ``mat`` (in the least squares
@@ -1066,15 +1167,8 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
     max_iter : int, default=10000
         Maximum number of Gauss-Newton iterations in the least-squares fit.
 
-    tol : float, optional
+    tol : float, default=1e-9
         Tolerance criterion for convergence.
-        Use the data type's machine epsilon by default.
-        It is based on the squared norm of the GN step divided by the
-        squared norm of the input matrix.
-
-    max_line_search: int, default=6
-        Maximum number of line search steps.
-        If zero: no line-search is performed.
 
     Returns
     -------
@@ -1090,14 +1184,11 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
 
     # Format mat
     mat = utils.as_tensor(mat)
-    dtype = mat.dtype
+    backend = dict(dtype=mat.dtype, device=mat.device)
     dim = mat.shape[-1] - 1
 
-    if tol is None:
-        tol = core.dtypes.dtype(dtype).eps
-
     # Format basis
-    basis = build_affine_basis(*basis, dim)
+    basis = build_affine_basis(*basis, dim, **backend)
     basis = py.make_list(basis)
     nb_basis = sum([len(b) for b in basis])
 
@@ -1105,9 +1196,8 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
         # Predefine these values in case max_iter == 0
         n_iter = -1
         # Gauss-Newton optimisation
-        prm = torch.zeros(nb_basis, dtype=dtype)
-        M = torch.eye(dim+1, dtype=dtype)
-        sos = ((M - mat) ** 2).sum()
+        prm = torch.zeros(nb_basis, **backend)
+        M = torch.eye(dim+1, **backend)
         norm = (mat ** 2).sum()
         crit = constants.inf
         for n_iter in range(max_iter):
@@ -1135,19 +1225,19 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             # * dM/dBi = mprod(M[:i, ...]) @ dMi/dBi @ mprod(M[i+1:, ...])
             for n_mat, (dM, hM) in enumerate(zip(dMs, hMs)):
                 if n_mat > 0:
-                    pre = torch.chain_matmul(*M[:n_mat])
+                    pre = multi_dot(M[:n_mat])
                     dM = torch.matmul(pre, dM)
                     hM = torch.matmul(pre, hM)
                 if n_mat < len(M)-1:
-                    post = torch.chain_matmul(*M[(n_mat+1):])
+                    post = multi_dot(M[(n_mat+1):])
                     dM = torch.matmul(dM, post)
                     hM = torch.matmul(hM, post)
                 dMs[n_mat] = dM
                 hMs[n_mat] = hM
             dM = torch.cat(dMs)
+            hMs = [hM.abs().sum(-3) for hM in hMs]  # diagonal majoriser (Fessler)
             hM = torch.cat(hMs)
-            hM = hM.abs().sum(-3)   # diagonal majoriser (see Fessler)
-            M = torch.chain_matmul(*M)
+            M = multi_dot(M)
 
             # Compute gradient/Hessian of the loss (squared residuals)
             diff = M - mat
@@ -1165,35 +1255,6 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=None,
             crit = delta_prm.square().sum() / norm
             if crit < tol:
                 break
-
-            # ---
-            # we don't need a line search anymore
-            # TODO: remove commented part once new algo is well tested
-            # ---
-            # if max_line_search == 0:
-            #     # We trust the Gauss-Newton step
-            #     prm -= delta_prm
-            # else:
-            #     # Line Search
-            #     sos0 = sos
-            #     prm0 = prm
-            #     M0 = M
-            #     armijo = 1
-            #     success = False
-            #     for lsit in range(max_line_search):
-            #         prm = prm0 - armijo * delta_prm
-            #         M = affine_matrix(prm, *basis)
-            #         sos = ((M - mat) ** 2).sum()
-            #         # print(n_iter, lsit, sos, sos < sos0)  ## DEBUG
-            #         if sos < sos0:
-            #             success = True
-            #             break
-            #         else:
-            #             armijo /= 2
-            #     if not success:
-            #         prm = prm0
-            #         M = M0
-            #         break
 
         if crit >= tol:
             warn('Gauss-Newton optimisation did not converge: '
@@ -1702,7 +1763,7 @@ def affine_resize(affine, shape, factor, anchor='c'):
             shifts.append(0)
             scales.append((inshp - 1) / (outshp - 1))
         elif anch == 'e':
-            shifts.append((inshp * (1 / outshp - 1) + (inshp - 1)) / 2)
+            shifts.append(0.5 * (inshp/outshp - 1))
             scales.append(inshp/outshp)
         elif anch == 'f':
             shifts.append(0)
@@ -1767,7 +1828,8 @@ def affine_sub(affine, shape, indices):
     affine = torch.as_tensor(affine)
     nb_dim = affine.shape[-1] - 1
     info = {'dtype': affine.dtype, 'device': affine.device}
-    shape = list(shape)
+    if torch.is_tensor(shape):
+        shape = shape.tolist()
     if len(shape) != nb_dim:
         raise ValueError('Expected shape of length {}. Got {}'
                          .format(nb_dim, len(shape)))
@@ -2051,6 +2113,11 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     offset = []
     for L, S, Pi, D, K, Po in zip(shape, stride, padding,
                                   dilation, kernel_size, output_padding):
+        if Pi == 'auto':
+            if K % 2 == 0:
+                raise ValueError('Cannot compute automatic padding '
+                                 'for even-sized kernels.')
+            Pi = D * (K // 2)
         if transposed:
             oshape += [(L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1]
             scale += [1/S]
@@ -2111,7 +2178,7 @@ def affine_default(shape, voxel_size=1., layout=None, center=0.,
 
     # compute shift
     lin = layout[:nb_dim, :nb_dim]
-    shift = center - linalg.matvec(lin, shape/2.)
+    shift = center - linalg.matvec(lin, (shape-1)/2.)
     affine = torch.cat((lin, shift[:, None]), dim=1)
 
     return affine_make_homogeneous(as_euclidean(affine))
@@ -2219,7 +2286,7 @@ def max_bb(all_mat, all_dim, vx=None):
     # Make output affine matrix and image dimensions
     mat = affine_matrix_classic(torch.cat((mn, torch.zeros(3, dtype=dtype, device=device), vx)))\
         .mm(affine_matrix_classic(-torch.ones(3, dtype=dtype, device=device)))
-    dm = torch.cat((mx, torch.ones(1, dtype=dtype, device=device)))[..., None].solve(mat)[0]
+    dm = torch.linalg.solve(mat, torch.cat((mx, torch.ones(1, dtype=dtype, device=device)))[..., None])    
     dm = dm[:3].round().flatten()
 
     return mat, dm
@@ -2246,7 +2313,7 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
 
     """
     # parse inputs
-    mat = torch.as_tensor(mat)
+    mat = torch.as_tensor(mat).clone()
     dim = mat.shape[-1] - 1
     shape = tensor = None
     if shape_or_tensor is not None:
@@ -2255,7 +2322,10 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
             tensor = shape_or_tensor
             shape = tensor.shape[-dim:]
         else:
-            shape = tuple(shape_or_tensor)
+            shape = shape_or_tensor
+            if torch.is_tensor(shape):
+                shape = shape.tolist()[-dim:]
+            shape = tuple(shape)
 
     # find current layout and target layout
     #   layouts are (dim, 2) tensors where
@@ -2301,7 +2371,8 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
         tensor = tensor.permute(current_to_target)
         dim_flip = [nb_dim_left + d for d, idx in enumerate(index) 
                     if idx.step == -1]
-        tensor = tensor.flip(dim_flip)
+        if dim_flip:
+            tensor = tensor.flip(dim_flip)
         return mat, tensor
     else:
         return (mat, tuple(shape)) if shape else mat
@@ -2367,6 +2438,7 @@ def affine_mean(mats, shapes=None):
 
     # STEP 2: Compute exponential barycentre
     # ------
+    # Compute mean affine
     mat = linalg.meanm(mats)
 
     # STEP 3: Remove spurious shears
@@ -2388,7 +2460,8 @@ def affine_mean(mats, shapes=None):
 _voxel_size = voxel_size  # little alias to avoid the function being shadowed
 
 
-def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
+def mean_space(mats, shapes, voxel_size=None, vx_unit='mm',
+               layout=None, fov='max', **fovopt):
     """Compute a mean space from a set of spaces (= affine + shape).
 
     Gradient *do not* propagate through this function.
@@ -2402,6 +2475,8 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     voxel_size : (dim,) tensor_like, optional
         Output voxel size.
         Uses the mean voxel size of all input matrices by default.
+    vx_unit : {'um', 'mm', ..., '%'}, default='mm'
+        If '%', a percentage of the mean voxel size will be used.
     layout : str or (dim+1, dim+1) array_like, default=None
         Output layout.
         Uses the majority layout of all input matrices by default.
@@ -2463,9 +2538,13 @@ def mean_space(mats, shapes, voxel_size=None, layout=None, fov='max', **fovopt):
     if voxel_size is not None:
         vs0 = torch.as_tensor(voxel_size, **backend)
         voxel_size = _voxel_size(mat)
+        if vx_unit in ('%', 'pct'):
+            vs0 = vs0 / 100
+            vs0 = vs0 * voxel_size
         vs0[~torch.isfinite(vs0)] = voxel_size[~torch.isfinite(vs0)]
         one = torch.ones([1], **backend)
-        mat = mat * torch.diag(torch.cat((vs0 / voxel_size, one)))
+        vs_ratio = torch.cat((vs0 / voxel_size, one))
+        mat = mat * vs_ratio  # == mat @ diag(vs_ratio)
 
     # Field of view
     if fov == 'max':

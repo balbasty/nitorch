@@ -28,12 +28,12 @@ def set_affine(header, affine, shape=None):
             raise ValueError('Expected a (3, 4) or (4, 4) affine matrix. '
                              'Got {}'.format(affine.shape))
         else:
-            Mdc = affine[:3, :3] / vx
+            Mdc = affine[:3, :3] / vx[:3]
             shape = np.asarray(shape[:3])
             c_ras = affine.dot(np.hstack((shape / 2.0, [1])))[:3]
 
             # Assign after we've had a chance to raise exceptions
-            header['delta'] = vx
+            header['delta'] = vx[:3]
             header['Mdc'] = Mdc.T
             header['Pxyz_c'] = c_ras
     elif isinstance(header, Nifti1Header):
@@ -56,7 +56,7 @@ def set_voxel_size(header, vx, shape=None):
     aff = torch.as_tensor(header.get_best_affine())
     vx = torch.as_tensor(vx, dtype=aff.dtype, device=aff.device)
     vx0 = voxel_size(aff)
-    aff[:-1,:] *= vx[:3, None] / vx0[:3, None]
+    aff[:-1, :] *= vx[:3, None] / vx0[:3, None]
     header = set_affine(header, aff, shape)
     return header
     
@@ -83,6 +83,16 @@ def metadata_to_header(header, metadata, shape=None, dtype=None):
         header = header()
 
     # --- generic fields ---
+
+    if metadata.get('voxel_size_unit', None) is not None:
+        val = metadata['voxel_size_unit']
+        if hasattr(header, 'set_xyzt_units'):
+            header.set_xyzt_units(val, None)
+        else:
+            format_name = type(header).__name__.split('Header')[0]
+            warn('Format {} does not accept voxel size units. '
+                 'It will be discarded.'.format(format_name),
+                 RuntimeWarning)
 
     if metadata.get('voxel_size', None) is not None:
         val = metadata['voxel_size']
@@ -238,6 +248,12 @@ def header_to_metadata(header, metadata):
 
     if 'voxel_size' in metadata:
         metadata['voxel_size'] = header.get_zooms()[:3]
+        if hasattr(header, 'get_xyzt_units'):
+            metadata['voxel_size_unit'], _ = header.get_xyzt_units()
+        else:
+            metadata['voxel_size_unit'] = 'mm'
+
+    elif 'voxel_size_unit' in metadata:
         if hasattr(header, 'get_xyzt_units'):
             metadata['voxel_size_unit'], _ = header.get_xyzt_units()
         else:

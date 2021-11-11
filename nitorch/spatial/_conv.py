@@ -1,12 +1,158 @@
 import math as pymath
-import itertools
 import torch
 from torch.nn import functional as F
 from nitorch import core
-from nitorch.core import utils, math
-from nitorch.core.utils import to_max_backend, unsqueeze, movedim
+from nitorch.core import utils, math, py
 from nitorch.core.py import make_list
 from ._affine import affine_conv
+
+
+def _same_padding(in_size, kernel_size, stride, ceil):
+    if not ceil:
+        # This is equivalent to the formula below, but with floor
+        # instead of ceil. I find this more readable though.
+        padding = (kernel_size - stride - in_size % stride)
+    else:
+        out_size = pymath.ceil(float(in_size) / float(stride))
+        padding = max((out_size - 1) * stride + kernel_size - in_size, 0)
+    padding = max(0, padding)
+    if padding % 2 == 0:
+        return padding // 2
+    else:
+        return (padding // 2, padding - padding // 2)
+
+
+def compute_conv_shape(input_size, kernel_size, padding=0, dilation=1,
+                       stride=1, ceil=False):
+    """Compute the amount of padding to apply
+
+    Parameters
+    ----------
+    input_size : sequence of int
+        Spatial shape of the input tensor.
+    kernel_size : [sequence of] int
+    padding : [sequence of] {'valid', 'same'} or int or (int, int)
+        Padding type (if str) or symmetric amount (if int) or
+        low/high amount (if [int, int]).
+    dilation : [sequence of] int, default=1
+        The effective size of the kernel is
+        `(kernel_size - 1) * dilation + 1`
+    stride : [sequence of] int, default=1
+    ceil : bool, default=False
+        Ceil mode used to compute output shape
+        (tensorflow uses True, pytorch uses False by default)
+
+    Returns
+    -------
+    output_size : tuple of int
+
+    """
+    trunc_fn = pymath.ceil if ceil else pymath.floor
+
+    dim = len(input_size)
+    kernel_size = py.ensure_list(kernel_size, dim)
+    dilation = py.ensure_list(dilation, dim)
+    stride = py.ensure_list(stride, dim)
+
+    padding = compute_conv_padding(input_size, padding, kernel_size,
+                                   dilation, stride, ceil)
+    padding = _normalize_padding(padding)
+    kernel_size = [(k - 1) * d + 1 for (k, d) in zip(kernel_size, dilation)]
+
+    out_size = []
+    for L, S, P, K in zip(input_size, stride, padding, kernel_size):
+        if isinstance(P, (list, tuple)):
+            P = sum(P)
+        out_size += [trunc_fn((L + P - K) / S + 1)]
+    return out_size
+
+
+def compute_conv_padding(input_size, kernel_size, padding, dilation=1,
+                         stride=1, ceil=False):
+    """Compute the amount of padding to apply
+
+    Parameters
+    ----------
+    input_size : sequence of int
+        Spatial shape of the input tensor.
+    kernel_size : [sequence of] int
+    padding : [sequence of] {'valid', 'same'} or int or (int, int)
+        Padding type (if str) or symmetric amount (if int) or
+        low/high amount (if [int, int]).
+    dilation : [sequence of] int, default=1
+        The effective size of the kernel is
+        `(kernel_size - 1) * dilation + 1`
+    stride : [sequence of] int, default=1
+    ceil : bool, default=False
+        Ceil mode used to compute output shape
+        (tensorflow uses True, pytorch uses False by default)
+
+    Returns
+    -------
+    padding : tuple of int or (int, int)
+
+    """
+    # https://stackoverflow.com/questions/37674306/ (Answer by Vaibhav Dixit)
+
+    dim = len(input_size)
+    kernel_size = py.ensure_list(kernel_size, dim)
+    dilation = py.ensure_list(dilation, dim)
+    stride = py.ensure_list(stride, dim)
+    kernel_size = [(k-1) * d + 1 for (k, d) in zip(kernel_size, dilation)]
+    padding = py.ensure_list(padding, dim)
+
+    padding = [0 if p == 'valid'
+               else _same_padding(i, k, s, ceil) if p in ('same', 'auto')
+               else p if isinstance(p, int)
+               else tuple(py.ensure_list(p))
+               for p, i, k, s in zip(padding, input_size, kernel_size, stride)]
+    if not all(isinstance(p, int) or
+               (isinstance(p, tuple) and len(p) == 2
+                and all(isinstance(pp, int) for pp in p)) for p in padding):
+        raise ValueError('Invalid padding', padding)
+    return padding
+
+
+def _normalize_padding(padding):
+    """Ensure that padding has format (left, right, top, bottom, ...)"""
+    if all(isinstance(p, int) for p in padding):
+        return padding
+    else:
+        npadding = []
+        for p in padding:
+            if isinstance(p, (list, tuple)):
+                npadding.extend(p)
+            else:
+                npadding.append(p)
+                npadding.append(p)
+        return npadding
+
+
+def pad_same(dim, tensor, kernel_size, dilation=1, bound='zero', value=0):
+    """Applies a padding that preserves the input dimensions when
+    followed by a convolution-like (i.e. moving window) operation.
+
+    Parameters
+    ----------
+    dim : int
+    tensor : (..., *spatial) tensor
+    kernel_size : [sequence of] int
+    dilation : [sequence f] int, default=1
+    bound : {'constant', 'dft', 'dct1', 'dct2', ...}, default='constant'
+    value : float, default=0
+
+    Returns
+    -------
+    padded : (..., *spatial_out) tensor
+
+    """
+    kernel_size = make_list(kernel_size, dim)
+    dilation = make_list(dilation, dim)
+    input_shape = tensor.shape[-dim:]
+    padding = compute_conv_padding(input_shape, kernel_size, 'same', dilation)
+    padding = _normalize_padding(padding)
+    padding = [0] * (2*tensor.dim()-dim) + padding
+    return utils.pad(tensor, padding, mode=bound, value=value)
 
 
 def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
@@ -25,9 +171,9 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
         Bias tensor
     stride : int or sequence[int], default=1
         Strides between output elements,
-    padding : 'auto' or int or sequence[int], default=0
+    padding : 'same' or int or sequence[int], default=0
         Padding performed before the convolution.
-        If 'auto', the padding is chosen such that the shape of the
+        If 'same', the padding is chosen such that the shape of the
         output tensor is `spatial_in // stride`.
     bound : str, default='zero'
         Boundary conditions used in the padding.
@@ -41,7 +187,7 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
 
     """
     # move everything to the same dtype/device
-    tensor, kernel, bias = to_max_backend(tensor, kernel, bias)
+    tensor, kernel, bias = utils.to_max_backend(tensor, kernel, bias)
 
     # sanity checks + reshape for torch's conv
     if kernel.dim() not in (dim, dim + 2):
@@ -70,12 +216,15 @@ def conv(dim, tensor, kernel, bias=None, stride=1, padding=0, bound='zero',
                              channels_out, bias.numel()))
 
     # Perform padding
-    padding = make_list(padding, dim)
     dilation = make_list(dilation, dim)
+    padding = make_list(padding, dim)
+    padding = [0 if p == 'valid' else 'same' if p == 'auto' else p
+               for p in padding]
     for i in range(dim):
-        if padding[i].lower() == 'auto':
+        if isinstance(padding[i], str):
+            assert padding[i].lower() == 'same'
             if kernel_size[i] % 2 == 0:
-                raise ValueError('Cannot compute automatic padding '
+                raise ValueError('Cannot compute "same" padding '
                                  'for even-sized kernels.')
             padding[i] = dilation[i] * (kernel_size[i] // 2)
     if bound != 'zero' and sum(padding) > 0:
@@ -101,8 +250,48 @@ conv2d = lambda *args, **kwargs: conv(2, *args, **kwargs)
 conv3d = lambda *args, **kwargs: conv(3, *args, **kwargs)
 
 
+def _pad_for_ceil(input_size, kernel_size, padding, stride, dilation):
+    new_padding = []
+    for i in range(len(input_size)):
+        L = input_size[i]
+        S = stride[i]
+        P = padding[i]
+        K = kernel_size[i]
+        D = dilation[i]
+        K = D * (K - 1) + 1
+        sumP = P
+        if isinstance(P, (list, tuple)):
+            sumP = sum(P)
+        extra_pad = (L + sumP - K) % S
+        if extra_pad:
+            extra_pad = S - extra_pad
+        if isinstance(P, (list, tuple)):
+            pad = (padding[i][0], padding[i][1] + extra_pad)
+        else:
+            pad = padding[i] + extra_pad
+        new_padding.append(pad)
+    return new_padding
+
+
+def _fill_value(reduction, tensor):
+    if reduction == 'max':
+        if tensor.dtype.is_floating_point:
+            fill_value = -float('inf')
+        else:
+            fill_value = tensor.min()
+    elif reduction == 'min':
+        if tensor.dtype.is_floating_point:
+            fill_value = float('inf')
+        else:
+            fill_value = tensor.max()
+    else:
+        fill_value = 0
+    return fill_value
+
+
 def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
-         bound='zero', reduction='mean', return_indices=False, affine=None):
+         bound='constant', reduction='mean', ceil=False, return_indices=False,
+         affine=None):
     """Perform a pooling
 
     Parameters
@@ -115,16 +304,19 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         Size of the pooling window
     stride : int or sequence[int], default=`kernel_size`
         Strides between output elements.
-    dilation : int or sequece[int], default=1
+    dilation : int or sequence[int], default=1
         Strides between elements of the kernel.
-    padding : 'auto' or int or sequence[int], default=0
+    padding : 'same' or int or sequence[int], default=0
         Padding performed before the convolution.
-        If 'auto', the padding is chosen such that the shape of the
-        output tensor is `spatial_in // stride`.
-    bound : str, default='zero'
+        If 'same', the padding is chosen such that the shape of the
+        output tensor is `floor(spatial_in / stride)` (or
+        `ceil(spatial_in / stride)` if `ceil` is True).
+    bound : str, default='constant'
         Boundary conditions used in the padding.
     reduction : {'mean', 'max', 'min', 'median', 'sum'} or callable, default='mean'
         Function to apply to the elements in a window.
+    ceil : bool, default=False
+        Use ceil instead of floor to compute output shape
     return_indices : bool, default=False
         Return input index of the min/max/median element.
         For other types of reduction, return None.
@@ -146,28 +338,32 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
     spatial_in = tensor.shape[-dim:]
     tensor = tensor.reshape([-1, *spatial_in])
 
-    # Perform padding
+    # compute padding
     kernel_size = make_list(kernel_size, dim)
     stride = make_list(stride or None, dim)
     stride = [st or ks for st, ks in zip(stride, kernel_size)]
     dilation = make_list(dilation or 1, dim)
-    padding = make_list(padding, dim)
-    padding0 = padding  # save it to update the affine
-    for i in range(dim):
-        if isinstance(padding[i], str) and padding[i].lower() == 'auto':
-            if kernel_size[i] % 2 == 0:
-                raise ValueError('Cannot compute automatic padding '
-                                 'for even-sized kernels.')
-            padding[i] = ((kernel_size[i]-1) * dilation[i] + 1) // 2
+    padding = compute_conv_padding(spatial_in, kernel_size, padding,
+                                   dilation, stride, ceil)
+    if ceil:
+        # ceil mode cannot be obtained using unfold. we may need to
+        # pad the input a bit more
+        padding = _pad_for_ceil(spatial_in, kernel_size, padding, stride, dilation)
 
     use_torch = (reduction in ('mean', 'avg', 'max') and 
                  dim in (1, 2, 3) and
                  dilation == [1] * dim)
 
-    if (not use_torch) or bound != 'zero' and sum(padding) > 0:
+    padding0 = padding
+    sum_padding = sum([sum(p) if isinstance(p, (list, tuple)) else p
+                       for p in padding])
+    if ((not use_torch) or (bound != 'zero' and sum_padding > 0)
+            or any(isinstance(p, (list, tuple)) for p in padding)):
         # torch implementation -> handles zero-padding
         # our implementation -> needs explicit padding
-        tensor = utils.pad(tensor, padding, bound, side='both')
+        padding = _normalize_padding(padding)
+        tensor = utils.pad(tensor, padding, bound,
+                           value=_fill_value(reduction, tensor))
         padding = [0] * dim
 
     return_indices0 = False
@@ -275,7 +471,8 @@ pool2d = lambda *args, **kwargs: pool(2, *args, **kwargs)
 pool3d = lambda *args, **kwargs: pool(3, *args, **kwargs)
 
 
-def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
+def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
+           stride=1, padding='same'):
     """Smooth a tensor.
 
     Parameters
@@ -301,6 +498,12 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
         Dimension of the convolution.
         The last `dim` dimensions of `tensor` will
         be smoothed.
+    stride : [sequence of] int, default=1
+        Stride between output elements.
+    padding : [sequence of] int or 'same', default='same'
+        Amount of padding applied to the input volume.
+        'same' ensures that the output dimensions are the same as the
+        input dimensions.
 
     Returns
     -------
@@ -308,247 +511,25 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None):
         The resulting tensor has the same shape as the input tensor.
         This differs from the behaviour of torch's `conv*d`.
     """
-
     dim = dim or tensor.dim()
     batch = tensor.shape[:-dim]
     shape = tensor.shape[-dim:]
     tensor = tensor.reshape([-1, 1, *shape])
     backend = dict(dtype=tensor.dtype, device=tensor.device)
-    fwhm = make_list(fwhm, dim)
+    fwhm = utils.make_vector(fwhm, dim)
     kernels = core.kernels.smooth(type, fwhm, basis, **backend)
-    pad_size = [kernels[i].shape[i + 2] // 2 for i in range(len(kernels))]
-    pad_size = [0, 0] + pad_size
-    bound = ('reflect2' if bound == 'dct2' else
-             'reflect1' if bound == 'dct1' else
-             'circular' if bound == 'dft' else
-             'reflect2')
-    tensor = core.utils.pad(tensor, pad_size, mode=bound, side='both')
-    if dim == 1:
-        conv = torch.nn.functional.conv1d
-    elif dim == 2:
-        conv = torch.nn.functional.conv2d
-    elif dim == 3:
-        conv = torch.nn.functional.conv3d
-    else:
-        raise NotImplementedError
-    for kernel in kernels:
-        tensor = conv(tensor, kernel)
-    tensor = tensor.reshape([*batch, *shape])
+    stride = make_list(stride, dim)
+    padding = make_list(padding, dim)
+    for d, kernel in enumerate(kernels):
+        substride = [1] * dim
+        substride[d] = stride[d]
+        subpadding = [0] * dim
+        subpadding[d] = padding[d]
+        tensor = conv(dim, tensor, kernel, bound=bound,
+                      stride=substride, padding=subpadding)
+    # stride = make_list(stride, dim)
+    # slicer = [Ellipsis] + [slice(None, None, s) for s in stride]
+    # tensor = tensor[tuple(slicer)]
+    tensor = tensor.reshape([*batch, *tensor.shape[-dim:]])
     return tensor
 
-
-def spconv(input, kernel, bound='dct2', dim=None):
-    """Convolution with a sparse kernel.
-
-    Notes
-    -----
-    .. This convolution does not support strides, padding, dilation.
-    .. The output spatial shape is the same as the input spatial shape.
-    .. The output batch shape is the same as the input batch shape.
-    .. Data outside the field-of-view is extrapolated according to `bound`
-    .. It is implemented as a linear combination of views into the input
-       tensor and should therefore be relatively memory-efficient.
-
-    Parameters
-    ----------
-    input : (..., [channel_in], *spatial) tensor
-        Input tensor, to convolve.
-    kernel : ([channel_in, [channel_out]], *kernel_size) sparse tensor
-        Convolution kernel.
-    bound : [sequence of] str, default='dct2'
-        Boundary condition (per spatial dimension).
-    dim : int, default=kernel.dim()
-        Number of spatial dimensions.
-
-    Returns
-    -------
-    output : (..., [channel_out or channel_in], *spatial) tensor
-
-        * If the kernel shape is (channel_in, channel_out, *kernel_size),
-          the output shape is (..., channel_out, *spatial) and cross-channel
-          convolution happens:
-            out[co] = \sum_{ci} conv(inp[ci], ker[ci, co])
-        * If the kernel_shape is (channel_in, *kernel_size), independent
-          single-channel convolutions are applied to each channels::
-            out[c] = conv(inp[c], ker[c])
-        * If the kernel shape is (*kernel_size), the same convolution
-          is applied to all input channels:
-            out[c] = conv(inp[c], ker)
-
-    """
-    # get kernel dimensions
-    dim = dim or kernel.dim()
-    if kernel.dim() == dim + 2:
-        channel_in, channel_out, *kernel_size = kernel.shape
-    elif kernel.dim() == dim + 1:
-        channel_in, *kernel_size = kernel.shape
-        channel_out = None
-    elif kernel.dim() == dim:
-        kernel_size = kernel.shape
-        channel_in = channel_out = None
-    else:
-        raise ValueError('Incompatible kernel shape: too many dimensions')
-
-    import functools
-    def lambda_flip(x, d):
-        if x.shape[d] > 1:
-            x = x.flip(d)
-        return x
-
-    def lambda_iflip(x, d):
-        if x.shape[d] > 1:
-            x = x.flip(d)
-            return x.flip(d).neg()
-
-    def get_lambda_flip(d): return functools.partial(lambda_flip, d=d)
-    def get_lambda_iflip(d): return functools.partial(lambda_iflip, d=d)
-
-    # check input dimensions
-    added_dims = max(0, dim + 1 - input.dim())
-    input = unsqueeze(input, 0, added_dims)
-    if channel_in is not None:
-        if input.shape[-dim-1] not in (1, channel_in):
-            raise ValueError('Incompatible kernel shape: input channels')
-        spatial_shape = input.shape[-dim:]
-        batch_shape = input.shape[:-dim-1]
-        output_shape = tuple([*batch_shape, channel_out, *spatial_shape])
-    else:
-        # add a fake channel dimension
-        spatial_shape = input.shape[-dim:]
-        batch_shape = input.shape[:-dim]
-        input = input.reshape([*batch_shape, 1, *spatial_shape])
-        output_shape = input.shape
-    output = input.new_zeros(output_shape)
-
-    # move channel + spatial dimensions to the front
-    spdim = list(range(input.dim()-dim-1, input.dim()))
-    input = movedim(input, spdim, list(range(dim+1)))
-    output = movedim(output, spdim, list(range(dim+1)))
-
-    # prepare other stuff
-    bound = make_list(bound, dim)
-    shift = torch.LongTensor([int(pymath.floor(k/2)) for k in kernel_size])
-
-    for idx, weight in zip(kernel._indices().t(), kernel._values()):
-        if kernel.dim() == dim + 2:
-            ci, co, *idx = idx
-        elif kernel.dim() == dim + 1:
-            ci, *idx = idx
-            co = ci
-        else:
-            ci = co = 0
-        idx = idx - shift
-
-        inp = input[ci]
-        out = output[co]
-
-        # Prepare slicers for the out-of-bound bits
-        input_side_slice = []
-        output_side_slice = []
-        transfo_side = []
-        for d, (i, s, b) in enumerate(zip(idx, spatial_shape, bound)):
-            if i < 0:
-                if b == 'dst1':
-                    if i < -1:
-                        output_side_slice.append(slice(i+1, None))
-                        input_side_slice.append(slice(None, -i-1))
-                        transfo_side.append(get_lambda_iflip(d))
-                    else:
-                        output_side_slice.append(None)
-                        input_side_slice.append(None)
-                        transfo_side.append(None)
-                    continue
-                output_side_slice.append(slice(None, -i))
-                if b == 'dct1':
-                    input_side_slice.append(slice(1, -i+1))
-                    transfo_side.append(get_lambda_flip(d))
-                elif b == 'dft':
-                    input_side_slice.append(slice(i, None))
-                    transfo_side.append(None)
-                elif b == 'replicate':
-                    input_side_slice.append(slice(None, 1))
-                    transfo_side.append(None)
-                elif b == 'zeros':
-                    input_side_slice.append(None)
-                    transfo_side.append(None)
-                else:
-                    input_side_slice.append(slice(None, -i))
-                    if b == 'dct2':
-                        transfo_side.append(get_lambda_flip(d))
-                    elif b == 'dst2':
-                        transfo_side.append(get_lambda_iflip(d))
-            elif i > 0:
-                if b == 'dst1':
-                    if i > 1:
-                        output_side_slice.append(slice(None, i-1))
-                        input_side_slice.append(slice(-i+1, None))
-                        transfo_side.append(get_lambda_iflip(d))
-                    else:
-                        output_side_slice.append(None)
-                        input_side_slice.append(None)
-                        transfo_side.append(None)
-                    continue
-                output_side_slice.append(slice(-i, None))
-                if b == 'dct1':
-                    input_side_slice.append(slice(-i-1, -1))
-                    transfo_side.append(get_lambda_flip(d))
-                elif b == 'dft':
-                    input_side_slice.append(slice(None, i))
-                    transfo_side.append(None)
-                elif b == 'replicate':
-                    input_side_slice.append(slice(-1, None))
-                    transfo_side.append(None)
-                elif b == 'zeros':
-                    input_side_slice.append(None)
-                    transfo_side.append(None)
-                else:
-                    input_side_slice.append(slice(-i, None))
-                    if b == 'dct2':
-                        transfo_side.append(get_lambda_flip(d))
-                    elif b == 'dst2':
-                        transfo_side.append(get_lambda_iflip(d))
-            else:
-                output_side_slice.append(None)
-                input_side_slice.append(None)
-                transfo_side.append(None)
-
-        # Prepare slicers for the in-bound bits
-        input_center_slice = [slice(max(0, i), min(s + i, s))
-                              for s, i in zip(spatial_shape, idx)]
-        output_center_slice = [slice(max(0, -i), min(s - i, s))
-                               for s, i in zip(spatial_shape, idx)]
-
-        # Iterate all combinations of in/out of bounds
-        sides = itertools.product([True, False], repeat=dim)
-        for side in sides:
-            input_slicer = [input_center_slice[d] if inside
-                            else input_side_slice[d]
-                            for d, inside in enumerate(side)]
-            output_slicer = [output_center_slice[d] if inside
-                             else output_side_slice[d]
-                             for d, inside in enumerate(side)]
-            transfo = [None if inside else transfo_side[d]
-                       for d, inside in enumerate(side)]
-
-            if any(sl is None for sl in input_slicer):
-                continue
-
-            # slice + apply boundary condition + accumulate
-            dat = inp[input_slicer]
-            for trf in transfo:
-                if trf:
-                    dat = trf(dat)
-                if dat is None:
-                    break
-            if dat is not None:
-                out[output_slicer].addcmul_(dat, weight)
-
-    # move spatial dimensions to the back
-    output = movedim(output, list(range(dim+1)), spdim)
-    # remove fake channels
-    if channel_in is None:
-        output = output.squeeze(len(batch_shape))
-    # remove added dimensions
-    for _ in range(added_dims):
-        output = output.squeeze(-dim-1)
-    return output
