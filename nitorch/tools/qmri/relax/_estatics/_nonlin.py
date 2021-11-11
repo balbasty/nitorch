@@ -3,11 +3,35 @@ from nitorch import core, spatial
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag_, hessian_matmul, hessian_solve,
-                     smart_grid, smart_pull, smart_push, smart_grad, )
+                     smart_grid, smart_pull, smart_push, smart_grad)
 from ..utils import rls_maj
 from nitorch.spatial import solve_grid_sym
+from nitorch.core.math import besseli, besseli_ratio
 from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
 from typing import Optional
+
+# Boundary condition used for the distortion field throughout
+DIST_BOUND = 'dct2'
+
+
+def _get_level(level, aff0, shape0):
+    """Get shape and affine of a given resolution level"""
+    return spatial.affine_resize(aff0, shape0, 1/(2 ** (level-1)))
+
+
+def _resize(maps, rls, aff, shape):
+    """Resize (prolong) current maps to a target resolution"""
+    for map in maps:
+        map.volume = spatial.resize(map.volume[None, None, ...],
+                                    shape=shape)[0, 0]
+        map.affine = aff
+    maps.affine = aff
+    if rls is not None:
+        if rls.dim() == len(shape):
+            rls = spatial.resize(rls[None, None], shape=shape)[0, 0]
+        else:
+            rls = spatial.resize(rls[None], shape=shape)[0]
+    return maps, rls
 
 
 def nonlin(data, opt=None):
@@ -44,7 +68,6 @@ def nonlin(data, opt=None):
     # --- estimate noise / register / initialize maps ------------------
     data, maps, dist = preproc(data, opt)
     vx = spatial.voxel_size(maps.affine)
-    print(vx)
     nb_contrasts = len(maps) - 1
 
     # --- prepare regularization factor --------------------------------
@@ -88,7 +111,6 @@ def nonlin(data, opt=None):
         print(f'    - absolute:       {opt.distortion.absolute * opt.distortion.factor}')
         print(f'    - membrane:       {opt.distortion.membrane * opt.distortion.factor}')
         print(f'    - bending:        {opt.distortion.bending * opt.distortion.factor}')
-        print(f'    - te_scaling:     {opt.distortion.te_scaling or "no"}')
 
     else:
         print('Without distortion correction')
@@ -107,14 +129,12 @@ def nonlin(data, opt=None):
     print(f'    - FMG cycles:      2')
     print(f'    - CG iterations:   {opt.optim.max_iter_cg}'
           f' (tolerance: {opt.optim.tolerance_cg})')
+    if opt.optim.nb_levels > 1:
+        print(f'    - Levels:          {opt.optim.nb_levels}')
 
     # ------------------------------------------------------------------
     #                     MAIN OPTIMIZATION LOOP
     # ------------------------------------------------------------------
-
-    # --- allocate derivatives wrt parameter maps ----------------------
-    grad = torch.empty((len(data) + 1,) + mean_shape, **backend)
-    hess = torch.empty((len(data)*2 + 1,) + mean_shape, **backend)
 
     if opt.verbose:
         pstr = f'{"rls":^3s} | {"gn":^3s} | ' 
@@ -128,324 +148,358 @@ def nonlin(data, opt=None):
         print('-' * len(pstr))
 
     # --- initialize tracking of the objective function ----------------
-    ll_rls = []
-    ll_max = -float('inf')
     crit = float('inf')
     vreg = 0
     reg = 0
     sumrls_prev = sumrls
     rls_changed = False
     armijo_dist_prev = [1] * nb_contrasts
+    ll_gn = ll_rls = float('inf')
+    ll_scl = sum(core.py.prod(dat.shape) for dat in data)
 
-    # --- RLS loop -----------------------------------------------------
-    #   > max_iter_rls == 1 if regularization is not (J)TV
-    for n_iter_rls in range(1, opt.optim.max_iter_rls+1):
+    # --- Multi-Resolution loop ----------------------------------------
+    shape0 = shape = maps.shape[1:]
+    aff0 = aff = maps.affine
+    vx0 = vx = spatial.voxel_size(aff0)
+    scl0 = vx0.prod()
+    scl = vx.prod() / scl0
+    for level in range(opt.optim.nb_levels, 0, -1):
 
-        # --- Gauss-Newton ---------------------------------------------
-        # . If distortion correction is enabled, we perform one step of
-        #   parameter update and one step of distortion update per iteration.
-        # . We keep track of the objective within each RLS iteration so
-        #   that we can stop Gauss-Newton early if we it reaches a plateau.
-        ll_gn = []
-        for n_iter_gn in range(1, opt.optim.max_iter_gn+1):
+        if opt.optim.nb_levels > 1:
+            aff, shape = _get_level(level, aff0, shape0)
+            vx = spatial.voxel_size(aff)
+            scl = vx.prod() / scl0
+            maps, rls = _resize(maps, rls, aff, shape)
+            if opt.regularization.norm in ('tv', 'jtv'):
+                sumrls = 0.5 * scl * rls.reciprocal().sum(dtype=torch.double)
 
-            # ----------------------------------------------------------
-            #    Update parameter maps
-            # ----------------------------------------------------------
+        grad = torch.empty((len(data) + 1, *shape), **backend)
+        hess = torch.empty((len(data) * 2 + 1, *shape), **backend)
 
-            crit_prev = crit
-            reg_prev = reg
+        # --- RLS loop -----------------------------------------------------
+        #   > max_iter_rls == 1 if regularization is not (J)TV
+        max_iter_rls = opt.optim.max_iter_rls
+        if level != 1:
+            max_iter_rls = 1
+        for n_iter_rls in range(1, max_iter_rls+1):
 
-            # --- loop over contrasts ----------------------------------
-            crit = 0
-            grad.zero_()
-            hess.zero_()
-            for i, (contrast, intercept, distortion) \
-                    in enumerate(zip(data, maps.intercepts, dist)):
-                # compute gradient
-                crit1, g1, h1 = derivatives_parameters(
-                    contrast, distortion, intercept, maps.decay, opt)
-                # increment
-                gind = [i, -1]
-                grad[gind, ...] += g1
-                hind = [2*i, -1, 2*i+1]
-                hess[hind, ...] += h1
-                crit += crit1
+            # --- Gauss-Newton ---------------------------------------------
+            # . If distortion correction is enabled, we perform one step of
+            #   parameter update and one step of distortion update per iteration.
+            # . We keep track of the objective within each RLS iteration so
+            #   that we can stop Gauss-Newton early if we it reaches a plateau.
+            max_iter_gn = opt.optim.max_iter_gn
+            for n_iter_gn in range(1, max_iter_gn+1):
 
-            # --- regularization ---------------------------------------
-            reg = 0.
-            if opt.regularization.norm:
-                for i, (map, weight, l) \
-                        in enumerate(zip(maps, iter_rls(rls), lam)):
-                    if not l:
-                        continue
-                    g1 = spatial.membrane(map.volume, weights=weight, dim=3,
-                                          voxel_size=vx).mul_(l)
-                    reg1 = 0.5 * dot(map.volume, g1)
-                    reg += reg1
-                    grad[i] += g1
+                # ----------------------------------------------------------
+                #    Update parameter maps
+                # ----------------------------------------------------------
 
-            # --- track RLS improvement --------------------------------
-            # Updating the RLS weights changes `sumrls` and `reg`. Now
-            # that we have the updated value of `reg` (before it is
-            # modified by the map update), we can check that updating the
-            # weights indeed improved the objective.
-            if opt.verbose and rls_changed:
-                rls_changed = False
-                if reg + sumrls <= reg_prev + sumrls_prev:
-                    evol = '<='
-                else:
-                    evol = '>'
-                ll_tmp = crit_prev + reg + vreg + sumrls
-                pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"rls":4s} | '
-                        f'{crit_prev:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
-                if opt.distortion.enable:
-                    pstr += f'+ {vreg:12.6g} '
-                pstr += f'= {ll_tmp:12.6g} | '
-                pstr += f'{evol}'
-                print(pstr)
+                max_iter_prm = opt.optim.max_iter_prm
+                if n_iter_gn == 1 and n_iter_rls == 1:
+                    max_iter_prm = max_iter_prm * 2
+                for n_iter_prm in range(1, max_iter_prm + 1):
 
-            # --- gauss-newton -----------------------------------------
-            # Computing the GN step involves solving H\g
-            hess = check_nans_(hess, warn='hessian')
-            hess = hessian_loaddiag_(hess, 1e-6, 1e-8)
-            deltas = solve_parameters(hess, grad, rls, lam, vx, opt)
-            deltas = check_nans_(deltas, warn='delta')
+                    crit_prev = crit
+                    reg_prev = reg
 
-            if not opt.distortion.enable:
-                # No need for a line search
-                for map, delta in zip(maps, deltas):
-                    map.volume -= delta
-                    if map.min is not None or map.max is not None:
-                        map.volume.clamp_(map.min, map.max)
-
-                # --- track general improvement ------------------------
-                ll = crit + reg + sumrls
-                ll_max = max(ll_max, ll)
-                ll_prev = ll_gn[-1] if ll_gn else float('inf')
-                gain = (ll_prev - ll) / (ll_max - ll_prev)
-                ll_gn.append(ll)
-                if opt.verbose:
-                    pstr = f'{n_iter_rls:3d} | {n_iter_gn:3d} | '
-                    pstr += f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} '
-                    pstr += f'= {ll:12.6g} | gain = {gain:7.2g}'
-                    print(pstr)
-                    _show_maps(maps, dist)
-                if gain < opt.optim.tolerance_gn:
-                    break
-
-            else:  # === distortion.enabled ============================
-
-                # --- line search --------------------------------------
-                # Block coordinate descent makes it a bit less robust
-                # -> we use a line search
-                dd = []
-                if opt.regularization.norm:
-                    for i, (delta, weight, l) \
-                            in enumerate(zip(deltas, iter_rls(rls), lam)):
-                        if not l:
-                            continue
-                        g1 = spatial.membrane(delta, weights=weight,
-                                              dim=3, voxel_size=vx).mul_(l)
-                        dd.append(g1)
-                        del g1
-                dv = sum([dd1.flatten().dot(map.volume.flatten())
-                          for dd1, map in zip(dd, maps)])
-                dd = sum([dd1.flatten().dot(delta.flatten())
-                          for dd1, delta in zip(dd, deltas)])
-                armijo, armijo_prev = 1, 0
-                ok = False
-                for n_ls in range(12):
-                    for map, delta in zip(maps, deltas):
-                        map.volume.sub_(delta, alpha=(armijo - armijo_prev))
-                        # if map.min is not None or map.max is not None:
-                        #     map.volume.clamp_(map.min, map.max)
-                    armijo_prev = armijo
-                    new_reg = 0.5 * armijo * (armijo * dd - 2 * dv)
-                    new_crit = 0
+                    # --- loop over contrasts ------------------------------
+                    crit = 0
+                    grad.zero_()
+                    hess.zero_()
                     for i, (contrast, intercept, distortion) \
                             in enumerate(zip(data, maps.intercepts, dist)):
                         # compute gradient
-                        new_crit += derivatives_parameters(
-                            contrast, distortion, intercept, maps.decay, opt,
-                            do_grad=False)
-                    if new_crit + new_reg <= crit:
-                        ok = True
-                        break
-                    else:
-                        armijo = armijo / 2
-                if not ok:
-                    for map, delta in zip(maps, deltas):
-                        map.volume.add_(delta, alpha=armijo_prev)
-                    new_crit = crit
-                    new_reg = reg
+                        crit1, g1, h1 = derivatives_parameters(
+                            contrast, distortion, intercept, maps.decay, opt)
+                        # increment
+                        gind = [i, -1]
+                        grad[gind, ...] += g1
+                        hind = [2*i, -1, 2*i+1]
+                        hess[hind, ...] += h1
+                        crit += crit1
 
-                new_reg = reg + new_reg
+                    # --- regularization -----------------------------------
+                    reg = 0.
+                    if opt.regularization.norm:
+                        for i, (map, weight, l) \
+                                in enumerate(zip(maps, iter_rls(rls), lam)):
+                            if not l:
+                                continue
+                            g1 = spatial.membrane(map.volume, weights=weight, dim=3,
+                                                  voxel_size=vx).mul_(l*scl)
+                            reg1 = 0.5 * dot(map.volume, g1)
+                            reg += reg1
+                            grad[i] += g1
 
-                # ------------------------------------------------------
-                #    Update distortions
-                # ------------------------------------------------------
-
-                # --- track parameter map improvement ------------------
-                if not ok:
-                    evol = '== (x)'
-                elif new_crit + new_reg <= crit + reg:
-                    evol = f'<= ({n_ls:2d})'
-                else:
-                    evol = f'> ({n_ls:2d})'
-                crit = new_crit
-                reg = new_reg
-                if opt.verbose:
-                    ll_tmp = crit + reg + vreg + sumrls
-                    pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"prm":4s} | '
-                            f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
-                    if opt.distortion.enable:
-                        pstr += f'+ {vreg:12.6g} '
-                    pstr += f'= {ll_tmp:12.6g} | '
-                    pstr += f'{evol}'
-                    print(pstr)
-
-                crit = 0
-                vreg = 0
-                new_crit = 0
-                new_vreg = 0
-                # --- loop over contrasts ------------------------------
-                for i, (contrast, intercept, distortion) \
-                        in enumerate(zip(data, maps.intercepts, dist)):
-                    crit1, g, h = derivatives_distortion(
-                        contrast, distortion, intercept, maps.decay, opt)
-                    crit += crit1
-
-                    # --- regularization -------------------------------
-                    def momentum(vol):
-                        if contrast.readout is None:
-                            g1 = spatial.regulariser_grid(
-                                vol, **lam_dist, bound='dft',
-                                voxel_size=distortion.voxel_size)
+                    # --- track RLS improvement ----------------------------
+                    # Updating the RLS weights changes `sumrls` and `reg`. Now
+                    # that we have the updated value of `reg` (before it is
+                    # modified by the map update), we can check that updating the
+                    # weights indeed improved the objective.
+                    if opt.verbose and rls_changed:
+                        rls_changed = False
+                        if reg + sumrls <= reg_prev + sumrls_prev:
+                            evol = '<='
                         else:
-                            distprm1 = dict(lam_dist)
-                            distprm1['factor'] *= distortion.voxel_size[contrast.readout] ** 2
-                            g1 = spatial.regulariser(
-                                vol[None], **distprm1, dim=3, bound='dft',
-                                voxel_size=distortion.voxel_size)[0]
-                        return g1
-                    
-                    if contrast.readout is None:
-                        vol = distortion.volume
-                    else:
-                        vol = distortion.volume[..., contrast.readout]
-                    g1 = momentum(vol)
-                    vreg1 = 0.5 * vol.flatten().dot(g1.flatten())
-                    vreg += vreg1
-                    g += g1
-                    del g1
+                            evol = '>'
+                        ll_tmp = crit_prev + reg + vreg + sumrls
+                        pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"rls":4s} | '
+                                f'{crit_prev:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
+                        if opt.distortion.enable:
+                            pstr += f'+ {vreg:12.6g} '
+                        pstr += f'= {ll_tmp:12.6g} | '
+                        pstr += f'{evol}'
+                        print(pstr)
 
-                    # --- gauss-newton ---------------------------------
-                    h = check_nans_(h, warn='hessian (distortion)')
-                    if contrast.readout is None:
-                        h = core.utils.movedim(h, -1, -4)
-                        h = hessian_loaddiag_(h, 1e-6, 1e-8)
-                        h = core.utils.movedim(h, -4, -1)
-                        delta = spatial.solve_grid_fmg(
-                            h, g, **lam_dist, bound='dft',
-                            voxel_size=distortion.voxel_size,
-                            verbose=opt.verbose-1,
-                            nb_iter=opt.optim.max_iter_cg,
-                            tolerance=opt.optim.tolerance_cg)
-                    else:
-                        h = hessian_loaddiag_(h[None], 1e-6, 1e-8)[0]
-                        distprm1 = dict(lam_dist)
-                        distprm1['factor'] *= (distortion.voxel_size[contrast.readout] ** 2)
-                        delta = spatial.solve_field_fmg(
-                            h[None], g[None], **distprm1, dim=3,
-                            bound='dft',
-                            voxel_size=distortion.voxel_size,
-                            nb_iter=opt.optim.max_iter_cg,
-                            tolerance=opt.optim.tolerance_cg,
-                            verbose=opt.verbose-1)[0]
-                    delta = check_nans_(delta, warn='delta (distortion)')
-                            
-                    # --- line search ----------------------------------
-                    armijo, armijo_prev = armijo_dist_prev[i], 0
-                    ok = False
-                    dd = momentum(delta)
-                    dv = dd.flatten().dot(vol.flatten())
-                    dd = dd.flatten().dot(dd.flatten())
-                    for n_ls in range(12):
-                        vol.sub_(delta, alpha=(armijo - armijo_prev))
-                        armijo_prev = armijo
-                        new_vreg1 = 0.5 * armijo * (armijo * dd - 2 * dv)
-                        new_crit1 = derivatives_parameters(
-                            contrast, distortion, intercept, maps.decay, opt,
-                            do_grad=False)
-                        if new_crit1 + new_vreg1 <= crit1:
-                            ok = True
+                    # --- gauss-newton -------------------------------------
+                    # Computing the GN step involves solving H\g
+                    hess = check_nans_(hess, warn='hessian')
+                    hess = hessian_loaddiag_(hess, 1e-6, 1e-8)
+                    lam_ = [l*scl for l in lam]
+                    deltas = solve_parameters(hess, grad, rls, lam_, vx, opt)
+                    deltas = check_nans_(deltas, warn='delta')
+
+                    if not opt.distortion.enable:
+                        # No need for a line search
+                        for map, delta in zip(maps, deltas):
+                            map.volume -= delta
+                            if map.min is not None or map.max is not None:
+                                map.volume.clamp_(map.min, map.max)
+
+                    else:  # === distortion.enabled ========================
+
+                        # --- line search ----------------------------------
+                        # Block coordinate descent makes it a bit less robust
+                        # -> we use a line search
+                        dd = []
+                        if opt.regularization.norm:
+                            for i, (delta, weight, l) \
+                                    in enumerate(zip(deltas, iter_rls(rls), lam)):
+                                if not l:
+                                    continue
+                                g1 = spatial.membrane(delta, weights=weight,
+                                                      dim=3, voxel_size=vx).mul_(l*scl)
+                                dd.append(g1)
+                                del g1
+                        dv = sum([dd1.flatten().dot(map.volume.flatten())
+                                  for dd1, map in zip(dd, maps)])
+                        dd = sum([dd1.flatten().dot(delta.flatten())
+                                  for dd1, delta in zip(dd, deltas)])
+                        armijo, armijo_prev = 1, 0
+                        ok = False
+                        for n_ls in range(12):
+                            for map, delta in zip(maps, deltas):
+                                map.volume.sub_(delta, alpha=(armijo - armijo_prev))
+                                # if map.min is not None or map.max is not None:
+                                #     map.volume.clamp_(map.min, map.max)
+                            armijo_prev = armijo
+                            new_reg = 0.5 * armijo * (armijo * dd - 2 * dv)
+                            new_crit = 0
+                            for i, (contrast, intercept, distortion) \
+                                    in enumerate(zip(data, maps.intercepts, dist)):
+                                # compute gradient
+                                new_crit += derivatives_parameters(
+                                    contrast, distortion, intercept, maps.decay, opt,
+                                    do_grad=False)
+                            if new_crit + new_reg <= crit:
+                                ok = True
+                                break
+                            else:
+                                armijo = armijo / 2
+                        if not ok:
+                            for map, delta in zip(maps, deltas):
+                                map.volume.add_(delta, alpha=armijo_prev)
+                            new_crit = crit
+                            new_reg = 0
+                        
+                        for map in maps:
+                            if map.min is not None or map.max is not None:
+                                map.volume.clamp_(map.min, map.max)
+
+                        new_reg = reg + new_reg
+
+                        # --- track parameter map improvement --------------
+                        if not ok:
+                            evol = '== (x)'
+                        elif new_crit + new_reg <= crit + reg:
+                            evol = f'<= ({n_ls:2d})'
+                        else:
+                            evol = f'> ({n_ls:2d})'
+                        gain = (crit + reg) - (new_crit + new_reg)
+                        crit = new_crit
+                        reg = new_reg
+                        if opt.verbose:
+                            ll_tmp = crit + reg + vreg + sumrls
+                            pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"prm":4s} | '
+                                    f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
+                            if opt.distortion.enable:
+                                pstr += f'+ {vreg:12.6g} '
+                            pstr += f'= {ll_tmp:12.6g} | gain = {gain/ll_scl:7.2g} | '
+                            pstr += f'{evol}'
+                            print(pstr)
+                            if opt.plot:
+                                _show_maps(maps, dist, data)
+                        if not ok:
                             break
+                        if n_iter_prm > 1 and gain < opt.optim.tolerance * ll_scl:
+                            break
+
+                # ----------------------------------------------------------
+                #    Update distortions
+                # ----------------------------------------------------------
+                max_iter_dist = opt.optim.max_iter_dist
+                if not opt.distortion.enable:
+                    max_iter_dist = 0
+                for n_iter_dist in range(1, max_iter_dist + 1):
+
+                    crit = 0
+                    vreg = 0
+                    new_crit = 0
+                    new_vreg = 0
+                    # --- loop over contrasts ------------------------------
+                    for i, (contrast, intercept, distortion) \
+                            in enumerate(zip(data, maps.intercepts, dist)):
+                        crit1, g, h = derivatives_distortion(
+                            contrast, distortion, intercept, maps.decay, opt)
+                        crit += crit1
+
+                        # --- regularization -------------------------------
+                        def momentum(vol):
+                            if contrast.readout is None:
+                                g1 = spatial.regulariser_grid(
+                                    vol, **lam_dist, bound=DIST_BOUND,
+                                    voxel_size=distortion.voxel_size)
+                            else:
+                                distprm1 = dict(lam_dist)
+                                distprm1['factor'] *= distortion.voxel_size[contrast.readout] ** 2
+                                g1 = spatial.regulariser(
+                                    vol[None], **distprm1, dim=3, bound=DIST_BOUND,
+                                    voxel_size=distortion.voxel_size)[0]
+                            return g1
+
+                        if contrast.readout is None:
+                            vol = distortion.volume
                         else:
-                            armijo = armijo / 2
-                    armijo_dist_prev[i] = armijo * 1.5
+                            vol = distortion.volume[..., contrast.readout]
+                        g1 = momentum(vol)
+                        vreg1 = 0.5 * vol.flatten().dot(g1.flatten())
+                        vreg += vreg1
+                        g += g1
+                        del g1
+
+                        # --- gauss-newton ---------------------------------
+                        h = check_nans_(h, warn='hessian (distortion)')
+                        if contrast.readout is None:
+                            h = core.utils.movedim(h, -1, -4)
+                            h = hessian_loaddiag_(h, 1e-32, 1e-32)
+                            h = core.utils.movedim(h, -4, -1)
+                            delta = spatial.solve_grid_fmg(
+                                h, g, **lam_dist, bound=DIST_BOUND,
+                                voxel_size=distortion.voxel_size,
+                                verbose=opt.verbose-1,
+                                nb_iter=opt.optim.max_iter_cg,
+                                tolerance=opt.optim.tolerance_cg)
+                        else:
+                            h = hessian_loaddiag_(h[None], 1e-32, 1e-32)[0]
+                            distprm1 = dict(lam_dist)
+                            distprm1['factor'] *= (distortion.voxel_size[contrast.readout] ** 2)
+                            delta = spatial.solve_field_fmg(
+                                h[None], g[None], **distprm1, dim=3,
+                                bound=DIST_BOUND,
+                                voxel_size=distortion.voxel_size,
+                                nb_iter=opt.optim.max_iter_cg,
+                                tolerance=opt.optim.tolerance_cg,
+                                verbose=opt.verbose-1)[0]
+                        delta = check_nans_(delta, warn='delta (distortion)')
+
+                        # --- line search ----------------------------------
+                        armijo, armijo_prev = 1, 0 # armijo_dist_prev[i], 0
+                        ok = False
+                        dd = momentum(delta)
+                        dv = dd.flatten().dot(vol.flatten())
+                        dd = dd.flatten().dot(delta.flatten())
+                        for n_ls in range(12):
+                            vol.sub_(delta, alpha=(armijo - armijo_prev))
+                            armijo_prev = armijo
+                            new_vreg1 = 0.5 * armijo * (armijo * dd - 2 * dv)
+                            new_crit1 = derivatives_parameters(
+                                contrast, distortion, intercept, maps.decay, opt,
+                                do_grad=False)
+                            if new_crit1 + new_vreg1 <= crit1:
+                                ok = True
+                                break
+                            else:
+                                armijo = armijo / 2
+                        armijo_dist_prev[i] = armijo * 2
+                        if not ok:
+                            vol.add_(delta, alpha=armijo_prev)
+                            new_crit1 = crit1
+                            new_vreg1 = 0
+                        del delta, g, h
+
+                        new_crit += new_crit1
+                        new_vreg += vreg1 + new_vreg1
+
+                    # --- track distortion improvement ---------------------
                     if not ok:
-                        vol.add_(delta, alpha=armijo_prev)
-                        new_crit1 = crit1
-                        new_vreg1 = vreg1
-                    del delta, g, h
+                        evol = '== (x)'
+                    elif new_crit + new_vreg <= crit + vreg:
+                        evol = f'<= ({n_ls:2d})'
+                    else:
+                        evol = f'> ({n_ls:2d})'
+                    gain = (crit + vreg) - (new_crit + new_vreg)
+                    crit = new_crit
+                    vreg = new_vreg
+                    if opt.verbose:
+                        ll_tmp = crit + reg + vreg + sumrls
+                        pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"dist":4s} | '
+                                f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
+                        pstr += f'+ {vreg:12.6g} '
+                        pstr += f'= {ll_tmp:12.6g} | gain = {gain/ll_scl:7.2g} | '
+                        pstr += f'{evol}'
+                        print(pstr)
+                        if opt.plot:
+                            _show_maps(maps, dist, data)
+                    if not ok:
+                        break
 
-                    new_crit += new_crit1
-                    new_vreg += vreg1 + new_vreg1
-
-                # --- track distortion improvement ---------------------
-                if not ok:
-                    evol = '== (x)'
-                elif new_crit + new_vreg <= crit + vreg:
-                    evol = f'<= ({n_ls:2d})'
-                else:
-                    evol = f'> ({n_ls:2d})'
-                crit = new_crit
-                vreg = new_vreg
-                if opt.verbose:
-                    ll_tmp = crit + reg + vreg + sumrls
-                    pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"dist":4s} | '
-                            f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
-                    pstr += f'+ {vreg:12.6g} '
-                    pstr += f'= {ll_tmp:12.6g} | '
-                    pstr += f'{evol}'
-                    print(pstr)
+                    if n_iter_dist > 1 and gain < opt.optim.tolerance * ll_scl:
+                        break
 
                 # --- compute GN (maps + distortion) gain --------------
                 ll = crit + reg + vreg + sumrls
-                ll_max = max(ll_max, ll)
-                ll_prev = ll_gn[-1] if ll_gn else float('inf')
-                gain = (ll_prev - ll) / (ll_max - ll_prev)
-                ll_gn.append(ll)
+                ll_gn_prev = ll_gn
+                ll_gn = ll
+                gain = ll_gn_prev - ll_gn
                 if opt.verbose:
                     pstr = f'{n_iter_rls:3d} | {n_iter_gn:3d} | '
                     pstr += f'{"----":4s} | '
-                    pstr += f'{"-"*72:72s} | gain = {gain:7.2g}'
+                    pstr += f'{"-"*72:72s} | gain = {gain/ll_scl:7.2g}'
                     print(pstr)
                     if opt.plot:
-                        _show_maps(maps, dist)
-                if abs(gain) < opt.optim.tolerance_gn:
+                        _show_maps(maps, dist, data)
+                if gain < opt.optim.tolerance * ll_scl:
                     break
 
-        # --------------------------------------------------------------
-        #    Update RLS weights
-        # --------------------------------------------------------------
-        if opt.regularization.norm in ('tv', 'jtv'):
-            rls_changed = True
-            sumrls_prev = sumrls
-            rls, sumrls = update_rls(maps, lam, opt.regularization.norm)
-            sumrls = 0.5 * sumrls
+            # --------------------------------------------------------------
+            #    Update RLS weights
+            # --------------------------------------------------------------
+            if level == 1 and opt.regularization.norm in ('tv', 'jtv'):
+                rls_changed = True
+                sumrls_prev = sumrls
+                rls, sumrls = update_rls(maps, lam, opt.regularization.norm)
+                sumrls = 0.5 * sumrls
 
-            # --- compute gain -----------------------------------------
-            # (we are late by one full RLS iteration when computing the
-            #  gain but we save some computations)
-            ll = ll_gn[-1]
-            ll_prev = ll_rls[-1][-1] if ll_rls else float('inf')
-            ll_rls.append(ll_gn)
-            gain = (ll_prev - ll) / (ll_max - ll_prev)
-            if abs(gain) < opt.optim.tolerance_rls:
-                print(f'Converged ({gain:7.2g})')
-                break
+                # --- compute gain -----------------------------------------
+                # (we are late by one full RLS iteration when computing the
+                #  gain but we save some computations)
+                ll_rls_prev = ll_rls
+                ll_rls = ll_gn
+                gain = ll_rls_prev - ll_rls
+                if gain < opt.optim.tolerance * ll_scl:
+                    print(f'Converged ({gain/ll_scl:7.2g})')
+                    break
 
     # --- prepare output -----------------------------------------------
     out = postproc(maps, data)
@@ -508,6 +562,86 @@ def check_nans_(x, warn: Optional[str] = None, value: float = 0):
     return x
 
 
+def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
+    """Negative log-likelihood of the noncentral Chi distribution
+
+    Parameters
+    ----------
+    dat : tensor
+        Observed data (should be zero where not observed)
+    fit : tensor
+        Signal fit (should be zero where not observed)
+    msk : tensor
+        Mask of observed values
+    lam : float
+        Noise precision
+    df : float
+        Degrees of freedom
+    return_residuals : bool
+        Return residuals (gradient) on top of nll
+
+    Returns
+    -------
+    nll : () tensor
+        Negative log-likelihood
+    res : tensor, if `return_residuals`
+        Residuals
+
+    """
+    z = (dat * fit * lam).clamp_min_(1e-32)
+    xi = besseli_ratio(df / 2 - 1, z)
+    logbes = besseli(df / 2 - 1, z, 'log')
+    logbes = logbes[msk].sum(dtype=torch.double)
+
+    # chi log-likelihood
+    fitm = fit[msk]
+    sumlogfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+    sumfit2 = fitm.flatten().dot(fitm.flatten())
+    del fitm
+    datm = dat[msk]
+    sumlogdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+    sumdat2 = datm.flatten().dot(datm.flatten())
+    del datm
+
+    crit = (df / 2 - 1) * sumlogfit - (df / 2) * sumlogdat - logbes
+    crit += 0.5 * lam * (sumfit2 + sumdat2)
+    if not return_residuals:
+        return crit
+    res = dat.mul_(xi).neg_().add_(fit)
+    return crit, res
+
+
+def nll_gauss(dat, fit, msk, lam, return_residuals=True):
+    """Negative log-likelihood of the noncentral Chi distribution
+
+    Parameters
+    ----------
+    dat : tensor
+        Observed data (should be zero where not observed)
+    fit : tensor
+        Signal fit (should be zero where not observed)
+    msk : tensor
+        Mask of observed values
+    lam : float
+        Noise precision
+    nu : float
+        Degrees of freedom
+    return_residuals : bool
+        Return residuals (gradient) on top of nll
+
+    Returns
+    -------
+    nll : () tensor
+        Negative log-likelihood
+    res : tensor, if `return_residuals`
+        Residuals
+
+    """
+    res = dat.neg_().add_(fit)
+    crit = 0.5 * lam * ssq(res[msk])
+    return (crit, res) if return_residuals else crit
+
+
 # if core.utils.torch_version('>', (1, 4)):
     # For some reason, the output of torch.isfinite is not understood
     # as a tensor by TS. I am disabling TS for these functions until
@@ -517,7 +651,8 @@ def check_nans_(x, warn: Optional[str] = None, value: float = 0):
     # check_nans_ = torch.jit.script(check_nans_)
 
 
-def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=True):
+def derivatives_parameters(contrast, distortion, intercept, decay, opt,
+                           do_grad=True):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
 
@@ -558,17 +693,19 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=
     recon_shape = intercept.volume.shape
     aff = core.linalg.lmdiv(intercept.affine, contrast.affine)
     aff = aff.to(**backend)
-    lam = 1/contrast.noise
+    lam = 1 / contrast.noise
+    df = 2 * contrast.ncoils
+    chi = opt.likelihood[0].lower() == 'c'
+    readout = contrast.readout
 
     # pull parameter maps to observed space
     grid = smart_grid(aff, obs_shape, recon_shape)
     inter = smart_pull(intercept.fdata(**backend), grid)
     slope = smart_pull(decay.fdata(**backend), grid)
-    if distortion and opt.distortion.te_scaling != 'pre':
-        grid_up, grid_down = distortion.exp2(
-            add_identity=not opt.distortion.te_scaling)
-    else:
-        grid_up = grid_down = None
+    grid_up, grid_down, jac_up, jac_down = distortion.exp2(
+        add_identity=True, jacobian=True)
+    jac_up = jac_up[..., readout, readout]
+    jac_down = jac_down[..., readout, readout]
         
     crit = 0
     grad = torch.zeros((2,) + obs_shape, **backend) if do_grad else None
@@ -581,34 +718,37 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=
         te0 = te0 or te
         blip = echo.blip or (2*(e % 2) - 1)
         grid_blip = grid_up if blip > 0 else grid_down
-        if distortion:
-            vscl = te / te0
-            if opt.distortion.te_scaling == 'pre':
-                vexp = distortion.iexp if blip < 0 else distortion.exp
-                grid_blip = vexp(add_identity=True, alpha=vscl)
-            elif opt.distortion.te_scaling == 'post':
-                grid_blip = spatial.add_identity_grid_(vscl * grid_blip)
+        jac_blip = jac_up if blip > 0 else jac_down
 
         # compute residuals
         dat = echo.fdata(**backend, rand=True, cache=False)
         fit = recon_fit(inter, slope, te)
-        pull_fit = smart_pull(fit, grid_blip, bound='dft', extrapolate=True)
-        msk = get_mask_missing(dat, pull_fit)
+        # push_fit = smart_push(fit, grid_blip, bound='dft', extrapolate=True)
+        push_fit = smart_pull(fit, grid_blip, bound='dft', extrapolate=True)
+        push_fit = push_fit * jac_blip
+        msk = get_mask_missing(dat, push_fit)
         dat.masked_fill_(msk, 0)
-        pull_fit.masked_fill_(msk, 0)
-        res = dat.neg_().add_(pull_fit)
-        msk = msk.bitwise_not_().to(fit.dtype)
-        del dat, pull_fit
+        push_fit.masked_fill_(msk, 0)
+        msk = msk.bitwise_not_()
 
-        # compute log-likelihood
-        crit = crit + 0.5 * lam * ssq(res)
+        if chi:
+            crit1, res = nll_chi(dat, push_fit, msk, lam, df)
+        else:
+            crit1, res = nll_gauss(dat, push_fit, msk, lam)
+        del dat, push_fit
+        crit += crit1
 
         if do_grad:
+            msk = msk.to(fit.dtype)
             if grid_blip is not None:
                 res0 = res
-                res = smart_push(res0, grid_blip, bound='dft', extrapolate=True)
-                abs_res = smart_push(res0.abs_(), grid_blip, bound='dft', extrapolate=True)
+                # res = smart_pull(res0, grid_blip, bound='dft', extrapolate=True)
+                res = smart_push(res0*jac_blip, grid_blip, bound='dft', extrapolate=True)
+                # abs_res = smart_pull(res0.abs_(), grid_blip, bound='dft', extrapolate=True)
+                abs_res = smart_push(res0.abs_().mul_(jac_blip), grid_blip, bound='dft', extrapolate=True)
                 abs_res.mul_(fit)
+                # msk = smart_pull(msk, grid_blip, bound='dft', extrapolate=True)
+                msk = msk.mul_(jac_blip).mul_(jac_blip)
                 msk = smart_push(msk, grid_blip, bound='dft', extrapolate=True)
                 del res0
 
@@ -638,7 +778,6 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=
             fit2.add_(abs_res)
             hess[0].add_(fit2, alpha=lam)
             hess[1].add_(fit2, alpha=lam*(te*te))
-            
             del res, fit, abs_res, fit2
 
     if not do_grad:
@@ -654,7 +793,8 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt, do_grad=
     return crit, grad, hess
 
 
-def derivatives_distortion(contrast, distortion, intercept, decay, opt, do_grad=True):
+def derivatives_distortion(contrast, distortion, intercept, decay, opt,
+                           do_grad=True):
     """Compute the gradient and Hessian of the distortion field.
 
     Parameters
@@ -687,17 +827,18 @@ def derivatives_distortion(contrast, distortion, intercept, decay, opt, do_grad=
     aff = core.linalg.lmdiv(intercept.affine, contrast.affine)
     aff = aff.to(**backend)
     lam = 1/contrast.noise
+    df = 2*contrast.ncoils
+    chi = opt.likelihood[0].lower() == 'c'
+    readout = contrast.readout
 
     # pull parameter maps to observed space
     grid = smart_grid(aff, obs_shape, recon_shape)
     inter = smart_pull(intercept.fdata(**backend), grid)
     slope = smart_pull(decay.fdata(**backend), grid)
-    readout = contrast.readout
-    if opt.distortion.te_scaling != 'pre':
-        grid_up, grid_down = distortion.exp2(
-            add_identity=not opt.distortion.te_scaling)
-    else:
-        grid_up = grid_down = None
+    grid_up, grid_down, jac_up, jac_down = distortion.exp2(
+        add_identity=True, jacobian=True)
+    jac_up = jac_up[..., readout, readout]
+    jac_down = jac_down[..., readout, readout]
 
     crit = 0
     grad = torch.zeros(obs_shape + (3,), **backend) if do_grad else None
@@ -710,35 +851,34 @@ def derivatives_distortion(contrast, distortion, intercept, decay, opt, do_grad=
         te0 = te0 or te
         blip = echo.blip or (2*(e % 2) - 1)
         grid_blip = grid_up if blip > 0 else grid_down
-        vscl = te / te0
-        if opt.distortion.te_scaling == 'pre':
-            vexp = distortion.iexp if blip < 0 else distortion.exp
-            grid_blip = vexp(add_identity=True, alpha=vscl)
-        elif opt.distortion.te_scaling:
-            grid_blip = spatial.add_identity_grid_(vscl * grid_blip)
+        jac_blip = jac_up if blip > 0 else jac_down
 
         # compute residuals
         dat = echo.fdata(**backend, rand=True, cache=False)  # observed
         fit = recon_fit(inter, slope, te)                    # fitted
         if do_grad and isinstance(distortion, DenseDeformation):
             # D(fit) o phi
-            if not (grid_blip == 0).any():
-                gfit = spatial.diff(fit, bound='dft', dim=[-3, -2, -1])
-            else:
-                gfit = smart_grad(fit, grid_blip, bound='dft', extrapolate=True)
+            # gfit = smart_grad(fit, igrid_blip, bound='dft', extrapolate=True).neg_()
+            gfit = smart_grad(fit, grid_blip, bound='dft', extrapolate=True)
+            gfit *= jac_blip.unsqueeze(-1)
+        # fit = smart_push(fit, grid_blip, bound='dft', extrapolate=True)
         fit = smart_pull(fit, grid_blip, bound='dft', extrapolate=True)
+        fit.mul_(jac_blip)
+        msk = get_mask_missing(dat, fit)    # mask of missing values
         if do_grad and isinstance(distortion, SVFDeformation):
             # D(fit o phi)
             gfit = spatial.diff(fit, bound='dft', dim=[-3, -2, -1])
-        msk = get_mask_missing(dat, fit)    # mask of missing values
+            gfit.masked_fill_(msk.unsqueeze(-1), 0)
         dat.masked_fill_(msk, 0)
         fit.masked_fill_(msk, 0)
-        gfit.masked_fill_(msk.unsqueeze(-1), 0)
-        res = dat.neg_().add_(fit)
-        del dat, fit, msk
+        msk = msk.bitwise_not_()
 
-        # compute log-likelihood
-        crit = crit + 0.5 * lam * ssq(res)
+        if chi:
+            crit1, res = nll_chi(dat, fit, msk, lam, df)
+        else:
+            crit1, res = nll_gauss(dat, fit, msk, lam)
+        del dat, fit, msk
+        crit += crit1
 
         if do_grad:
             g1 = res.unsqueeze(-1).mul(gfit)
@@ -754,18 +894,12 @@ def derivatives_distortion(contrast, distortion, intercept, decay, opt, do_grad=
             # propagate backward
             if isinstance(distortion, SVFDeformation):
                 vel = distortion.volume
-                if opt.distortion.te_scaling == 'pre':
-                    vel = ((-vscl) * vel) if blip < 0 else (vscl * vel)
-                elif blip < 0:
+                if blip < 0:
                     vel = -vel
                 g1, h1 = spatial.exp_backward(vel, g1, h1, steps=distortion.steps)
-            if blip < 0:
-                g1 = g1.neg_()
 
             alpha_g = alpha_h = lam
-            if opt.distortion.te_scaling == 'pre':
-                alpha_g = alpha_g * vscl
-                alpha_h = alpha_h * (vscl * vscl)
+            alpha_g = alpha_g * blip
             grad.add_(g1, alpha=alpha_g)
             hess.add_(h1, alpha=alpha_h)
 
@@ -827,7 +961,7 @@ def solve_parameters(hess, grad, rls, lam, vx, opt):
 
     # # ----------------------------------------------------------------
     # # In the 'Model-based MPM` paper, we used to solve the linear
-    # # system using PCG. I know use a multi-grid version of it, which
+    # # system using PCG. I now use a multi-grid version of it, which
     # # I found to yield lower residual errors.
     # # Uncomment this line to use vanilla PCG instead.
     # # ----------------------------------------------------------------
@@ -942,22 +1076,60 @@ def update_rls(maps, lam=1., norm='jtv'):
     return rls, sumrls
 
 
-def _show_maps(maps, dist):
+def _show_maps(maps, dist, data):
     import matplotlib.pyplot as plt
+    from nitorch.plot.colormaps import disp_to_rgb
     has_dist = any([d is not None for d in dist])
     ncol = max(len(maps), len(dist))
     for i, map in enumerate(maps):
         plt.subplot(1 + has_dist, ncol, i+1)
-        plt.imshow(map.volume[:, :, map.shape[-1]//2].cpu())
+        vol = map.volume[:, :, map.shape[-1]//2]
+        if i < len(maps) - 1:
+            vol = vol.exp()
+        plt.imshow(vol.cpu())
         plt.axis('off')
         plt.colorbar()
     if has_dist:
-        for i, dst in enumerate(dist):
+        for i, (dat, dst) in enumerate(zip(data, dist)):
             if dst is None:
                 continue
+            readout = dat.readout
             vol = dst.volume
             plt.subplot(1 + has_dist, ncol, i+1+ncol)
-            plt.imshow(vol[:, :, dst.shape[-2]//2, :].square().sum(-1).sqrt().cpu())
+            vol = vol[:, :, dst.shape[-2]//2]
+            if readout is not None:
+                vol = vol[..., readout]
+            else:
+                vol = vol.square().sum(-1).sqrt()
+            plt.imshow(vol.cpu())
             plt.axis('off')
             plt.colorbar()
+    plt.show()
+
+    
+def _show_grad_dist(grad, hess, delta):
+    import matplotlib.pyplot as plt
+
+    grad = grad[:, :, grad.shape[-1]//2]
+    hess = hess[:, :, hess.shape[-1]//2]
+    delta = delta[:, :, delta.shape[-1]//2]
+    delta0 = grad/hess
+    delta0[hess < 1e-6] = 0
+
+    plt.subplot(1, 4, 1)
+    plt.imshow(grad.cpu())
+    plt.axis('off')
+    plt.colorbar()
+    plt.subplot(1, 4, 2)
+    plt.imshow(hess.cpu())
+    plt.axis('off')
+    plt.colorbar()
+    plt.subplot(1, 4, 3)
+    plt.imshow(delta0.cpu())
+    plt.axis('off')
+    plt.colorbar()
+    plt.subplot(1, 4, 4)
+    plt.imshow(delta.cpu())
+    plt.axis('off')
+    plt.colorbar()
     plt.show()
