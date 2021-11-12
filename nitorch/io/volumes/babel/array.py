@@ -425,66 +425,16 @@ class BabelArray(MappedArray):
                 self._write_data_raw_partial(dat, slicer, fileobj=f)
         return self
 
-    def data(self, dtype=None, device=None, casting='unsafe', rand=True,
-             missing=None, cutoff=None, dim=None, numpy=False):
-
-        # --- sanity check before reading ---
-        dtype = self.dtype if dtype is None else dtype
-        dtype = dtypes.dtype(dtype)
-        if not numpy and dtype.torch is None:
-            raise TypeError('Data type {} does not exist in PyTorch.'
-                            .format(dtype))
-
+    def raw_data(self):
         # --- check that view is not empty ---
         if py.prod(self.shape) == 0:
-            if numpy:
-                return np.zeros(self.shape, dtype=dtype.numpy)
-            else:
-                return torch.zeros(self.shape, dtype=dtype.torch, device=device)
+            return np.zeros(self.shape, dtype=self.dtype)
 
         # --- read native data ---
         slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
         with self.fileobj('image', 'r') as f:
             dat = self._read_data_raw(slicer, fileobj=f)
         dat = dat.transpose(perm)[newdim]
-        indtype = dtypes.dtype(self.dtype)
-
-        if not numpy:
-            tmpdtype = dtypes.dtype(indtype.torch_upcast)
-            dat = dat.astype(tmpdtype.numpy)
-            dat = torch.as_tensor(dat, dtype=indtype.torch_upcast, device=device)
-
-        # --- mask of missing values ---
-        if missing is not None:
-            missing = volutils.missing(dat, missing)
-            present = ~missing
-        else:
-            present = (Ellipsis,)
-
-        # --- cutoff ---
-        dat[present] = volutils.cutoff(dat[present], cutoff, dim)
-
-        # --- cast + rescale ---
-        rand = rand and not indtype.is_floating_point
-        tmpdtype = dtypes.float64 if (rand and not dtype.is_floating_point) else dtype
-        dat, scale = volutils.cast(dat, tmpdtype, casting, indtype=indtype,
-                                   returns='dat+scale', mask=present)
-
-        # --- random sample ---
-        # uniform noise in the uncertainty interval
-        if rand and not (scale == 1 and not dtype.is_floating_point):
-            dat[present] = volutils.addnoise(dat[present], scale)
-
-        # --- final cast ---
-        dat = volutils.cast(dat, dtype, 'unsafe')
-
-        # --- replace missing values ---
-        if missing is not None:
-            if dtype.is_floating_point:
-                dat[missing] = float('nan')
-            else:
-                dat[missing] = 0
-
         return dat
 
     def metadata(self, keys=None):

@@ -408,6 +408,20 @@ class MappedArray(MappedFile):
         permutation[dim1] = dim0
         return self.permute(permutation)
 
+    def raw_data(self):
+        """Load the (raw) array in memory
+
+        This function always returns a numpy array, since not all
+        data types exist in torch.
+
+        Returns
+        -------
+        dat : np.ndarray[self.dtype]
+
+        """
+        raise NotImplementedError(f'It looks like {type(self).__name__} '
+                                  f'does not implement its data loader.')
+
     def data(self, dtype=None, device=None, casting='unsafe', rand=True,
              missing=None, cutoff=None, dim=None, numpy=False):
         """Load the array in memory
@@ -462,9 +476,56 @@ class MappedArray(MappedFile):
         -------
         dat : tensor[dtype]
 
-
         """
-        pass
+        # --- sanity check before reading ---
+        dtype = self.dtype if dtype is None else dtype
+        dtype = dtypes.dtype(dtype)
+        if not numpy and dtype.torch is None:
+            raise TypeError('Data type {} does not exist in PyTorch.'
+                            .format(dtype))
+
+        # --- load raw data ---
+        dat = self.raw_data()
+
+        # --- move to tensor ---
+        indtype = dtypes.dtype(self.dtype)
+        if not numpy:
+            tmpdtype = dtypes.dtype(indtype.torch_upcast)
+            dat = dat.astype(tmpdtype.numpy)
+            dat = torch.as_tensor(dat, dtype=indtype.torch_upcast, device=device)
+
+        # --- mask of missing values ---
+        if missing is not None:
+            missing = volutils.missing(dat, missing)
+            present = ~missing
+        else:
+            present = (Ellipsis,)
+
+        # --- cutoff ---
+        dat[present] = volutils.cutoff(dat[present], cutoff, dim)
+        dat[present] = volutils.cutoff(dat[present], cutoff, dim)
+
+        # --- cast + rescale ---
+        rand = rand and not indtype.is_floating_point
+        tmpdtype = dtypes.float64 if (rand and not dtype.is_floating_point) else dtype
+        dat, scale = volutils.cast(dat, tmpdtype, casting, indtype=indtype,
+                                   returns='dat+scale', mask=present)
+
+        # --- random sample ---
+        # uniform noise in the uncertainty interval
+        if rand and not (scale == 1 and not dtype.is_floating_point):
+            dat[present] = volutils.addnoise(dat[present], scale)
+
+        # --- final cast ---
+        dat = volutils.cast(dat, dtype, 'unsafe')
+
+        # --- replace missing values ---
+        if missing is not None:
+            if dtype.is_floating_point:
+                dat[missing] = float('nan')
+            else:
+                dat[missing] = 0
+        return dat
 
     def fdata(self, dtype=None, device=None, rand=False, missing=None,
               cutoff=None, dim=None, numpy=False):
