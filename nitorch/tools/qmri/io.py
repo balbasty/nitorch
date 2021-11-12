@@ -19,14 +19,17 @@ from nitorch.spatial import affine_default, voxel_size as get_voxel_size
 
 def set_same_scanner_position(*images):
     """Set the same unique scanner position to all images.
+
     Parameters
     ----------
     images : sequence[MRI]
+
     Raises
     ------
     ValueError
         If two or more different positions are already present in the
         input set.
+
     """
     uids = [img.scanner_position for img in images
             if img.scanner_position is not None]
@@ -42,13 +45,16 @@ def set_same_scanner_position(*images):
 
 def is_same_scanner_position(*images):
     """Check that all images have the same unique scanner position.
+
     Parameters
     ----------
     images : sequence[MRI]
+
     Returns
     -------
     True if all elements of the input set have the same unique scanner
     position (which is not `None`).
+
     """
     uids = [img.scanner_position for img in images
             if img.scanner_position is not None]
@@ -58,17 +64,20 @@ def is_same_scanner_position(*images):
 
 class BaseND:
     """Represents a ND volume.
+
     Properties
     ----------
     volume : io.MappedArray or tensor       Mapped volume file
     affine : tensor                         Orientation matrix
     scanner_position : UUID                 Allows to link scanner positions
+
     Methods
     -------
     detach_position()                       Detach scanner position (-> None)
     detach_position_()                      > Same but in-place
     fdata(cache=False)                      Load data to memory
     discard()                               Delete cached data
+
     """
     _volume: io.MappedArray or torch.Tensor = None  # Mapped volume file
     _mask: io.MappedArray or torch.Tensor = None    # Mapped mask file
@@ -188,6 +197,7 @@ class BaseND:
     @classmethod
     def from_fname(cls, fname, permission='r', keep_open=False, **attributes):
         """Build an MRI object from a file name.
+
         We accept paths of the form 'path/to/file.nii,1,2', which
         mean that only the subvolume `[:, :, :, 1, 2]` should be read.
         The first three (spatial) dimensions are always read.
@@ -336,6 +346,7 @@ class BaseND:
         Returns
         -------
         dat : torch.tensor[dtype]
+
         """
         dtype = dtype or self.dtype
         device = device or self.device
@@ -381,13 +392,16 @@ class BaseND:
 
     def to(self, dtype=None, device=None):
         """Move data to a different dtype/device
+
         Parameters
         ----------
         dtype : torch.dtype
         device : torch.device
+
         Returns
         -------
         self
+
         """
         if dtype is not None and not isinstance(dtype, torch.dtype):
             raise TypeError('Expected a torch.dtype but got '
@@ -417,6 +431,7 @@ class Volume3D(BaseND):
 
 class GradientEcho(BaseND):
     """Represents a single volume acquired with a Gradient Echo sequence.
+
     Properties
     ----------
     volume : io.MappedArray or tensor       Mapped volume file
@@ -500,6 +515,7 @@ class GradientEchoSingle(GradientEcho, Volume3D):
 
 class GradientEchoMulti(GradientEcho):
     """Multi-Echo Gradient Echo series.
+
     Properties
     ----------
     volume : io.MappedArray or tensor       Mapped volume file

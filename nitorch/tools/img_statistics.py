@@ -15,6 +15,7 @@ import math as pymath
 def estimate_fwhm(dat, vx=None, verbose=0, mn=-inf, mx=inf):
     """Estimates full width at half maximum (FWHM) and noise standard
     deviation (sd) of a 2D or 3D image.
+
     It is assumed that the image has been generated as:
         dat = Ky + n,
     where K is Gaussian smoothing with some FWHM and n is
