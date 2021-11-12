@@ -188,10 +188,7 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
     elif chi:
         model = CMM(num_class=num_class)
     else:  # Make RMM model
-        if chi:
-            model = CMM(num_class=num_class)
-        else:
-            model = RMM(num_class=num_class)
+        model = RMM(num_class=num_class)
 
     # Fit GMM using Numpy
     model.fit(x, W=dat, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
