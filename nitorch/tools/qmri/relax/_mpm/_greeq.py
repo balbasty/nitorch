@@ -656,6 +656,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
                 hess1[5] = grad1[1] * grad1[2]
             hess1 *= lam
             hess1[:, ~msk] = 0
+            # offdiag (and diag) not used later, causes memory overload
             #diag = hess1[:(3+has_mt)]
             torch.cuda.empty_cache()
             #diag[~torch.isfinite(diag)] = 1e-3
