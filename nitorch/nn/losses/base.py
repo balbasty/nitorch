@@ -5,36 +5,36 @@ Reduction mecanisms are implemented here.
 """
 
 import torch.nn as tnn
-from nitorch.core.math import nansum, nanmean
+from nitorch.core.math import nansum, nanmean, sum, mean
 
 
 class Loss(tnn.Module):
     """Base class for losses."""
 
-    def __init__(self, reduction='mean', *args, **kwargs):
+    def __init__(self, reduction='mean'):
         """
 
         Parameters
         ----------
-        reduction : {'mean', 'sum'} or callable, default='mean'
+        reduction : {'mean', 'sum', 'none'} or callable, default='mean'
             Type of reduction to apply.
 
 
         """
-        super().__init__(*args, **kwargs)
-        self.reduction = reduction
+        super().__init__()
+        self.reduction = reduction or 'none'
 
-    def reduce(self, x, **kwargs):
-        reduction = kwargs.get('reduction', self.reduction)
+    def reduce(self, x):
+        reduction = self.reduction
         if reduction is None:
             return x
         elif isinstance(reduction, str):
             reduction = reduction.lower()
             if reduction == 'mean':
-                return nanmean(x)
+                return mean(x)
             elif reduction == 'sum':
-                return nansum(x)
-            elif reduction in ('none', None):
+                return sum(x)
+            elif reduction == 'none':
                 return x
             else:
                 raise ValueError('Unknown reduction {}'.format(reduction))
@@ -45,5 +45,5 @@ class Loss(tnn.Module):
                             "('none', 'sum', 'mean'). Got {}."
                             .format(type(reduction)))
 
-    def forward(self, x, **kwargs):
-        return self.reduce(x, **kwargs)
+    def forward(self, x):
+        return self.reduce(x)

@@ -1,4 +1,3 @@
-import numpy as np
 from warnings import warn
 import os
 import torch
@@ -9,6 +8,7 @@ from nitorch.io.mapping import AccessType
 from nitorch.io.loadsave import map as map_affine
 from nitorch.io.utils.volutils import cast
 from nitorch.io.utils.opener import Opener
+from nitorch.core.optionals import numpy as np
 from ..readers import reader_classes
 from ..writers import writer_classes
 

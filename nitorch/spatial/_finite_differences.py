@@ -2,8 +2,8 @@
 
 import torch
 from nitorch.core import utils, linalg
-from nitorch.core.utils import expand, slice_tensor, same_storage, make_vector
-from nitorch.core.py import make_list
+from nitorch.core.utils import fast_slice_tensor, same_storage, make_vector
+from nitorch.core.py import make_list, ensure_list
 from ._conv import smooth
 
 
@@ -86,99 +86,95 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     # ensure tensor
     x = torch.as_tensor(x)
 
-    # build "light" zero using zero strides
-    edge_shape = list(x.shape)
-    edge_shape[dim] = 1
+    if x.shape[dim] == 1:
+        if out is not None:
+            return out.view(x.shape).copy_(x)
+        else:
+            return x.clone()
+
+    shape0 = x.shape
+    x = x.transpose(0, dim)
+    if out is not None:
+        out = out.view(shape0)
+        out = out.transpose(0, dim)
 
     if order == 1:
-        diff = torch.empty_like(x) if out is None else out.reshape(x.shape)
+
+        if out is None:
+            diff = torch.empty_like(x)
+        else:
+            diff = out
 
         if side == 'f':  # forward -> diff[i] = x[i+1] - x[i]
-            pre = slice_tensor(x, slice(None, -1), dim)
-            post = slice_tensor(x, slice(1, None), dim)
-            subto(post, pre, out=slice_tensor(diff, slice(None, -1), dim))
+            subto(x[1:], x[:-1], out=diff[:-1])
             if bound in ('dct2', 'replicate'):
                 # x[end+1] = x[end] => diff[end] = 0
-                slice_tensor(diff, -1, dim).zero_()
+                diff[-1].zero_()
             elif bound == 'dct1':
                 # x[end+1] = x[end-1] => diff[end] = -diff[end-1]
-                last = slice_tensor(diff, -2, dim)
-                slice_tensor(diff, -1, dim).copy_(last).neg_()
+                diff[-1] = diff[-2]
+                diff[-1].neg_()
             elif bound == 'dst2':
                 # x[end+1] = -x[end] => diff[end] = -2*x[end]
-                last = 2*slice_tensor(x, -1, dim)
-                slice_tensor(diff, -1, dim).copy_(last).neg_()
+                diff[-1] = x[-1]
+                diff[-1].mul_(-2)
             elif bound in ('dst1', 'zero'):
                 # x[end+1] = 0 => diff[end] = -x[end]
-                last = slice_tensor(x, -1, dim)
-                slice_tensor(diff, -1, dim).copy_(last).neg_()
+                diff[-1] = x[-1]
+                diff[-1].neg_()
             else:
                 assert bound == 'dft'
                 # x[end+1] = x[0] => diff[end] = x[0] - x[end]
-                subto(slice_tensor(x, 0, dim), slice_tensor(x, -1, dim),
-                      out=slice_tensor(diff, -1, dim))
+                subto(x[0], x[-1], out=diff[-1])
 
         elif side == 'b':  # backward -> diff[i] = x[i] - x[i-1]
-            pre = slice_tensor(x, slice(None, -1), dim)
-            post = slice_tensor(x, slice(1, None), dim)
-            subto(post, pre, out=slice_tensor(diff, slice(1, None), dim))
+            subto(x[1:], x[:-1], out=diff[1:])
             if bound in ('dct2', 'replicate'):
                 # x[-1] = x[0] => diff[0] = 0
-                slice_tensor(diff, 0, dim).zero_()
+                diff[0].zero_()
             elif bound == 'dct1':
                 # x[-1] = x[1] => diff[0] = -diff[1]
-                first = slice_tensor(diff, 1, dim)
-                slice_tensor(diff, 0, dim).copy_(first).neg_()
+                diff[0] = diff[1]
+                diff[0].neg_()
             elif bound == 'dst2':
                 # x[-1] = -x[0] => diff[0] = 2*x[0]
-                first = 2*slice_tensor(x, 0, dim)
-                slice_tensor(diff, 0, dim).copy_(first)
+                diff[0] = x[0]
+                diff[0].mul_(2)
             elif bound in ('dst1', 'zero'):
                 # x[-1] = 0 => diff[0] = x[0]
-                first = slice_tensor(x, 0, dim)
-                slice_tensor(diff, 0, dim).copy_(first)
+                diff[0] = x[0]
             else:
                 assert bound == 'dft'
                 # x[-1] = x[end] => diff[0] = x[0] - x[end]
-                subto(slice_tensor(x, 0, dim), slice_tensor(x, -1, dim),
-                      out=slice_tensor(diff, 0, dim))
+                subto(x[0], x[-1], out=diff[0])
 
         elif side == 'c':  # central -> diff[i] = (x[i+1] - x[i-1])/2
-            pre = slice_tensor(x, slice(None, -2), dim)
-            post = slice_tensor(x, slice(2, None), dim)
-            subto(post, pre, out=slice_tensor(diff, slice(1, -1), dim))
+            subto(x[2:], x[:-2], out=diff[1:-1])
             if bound in ('dct2', 'replicate'):
-                subto(slice_tensor(x, 1, dim), slice_tensor(x, 0, dim),
-                      out=slice_tensor(diff, 0, dim))
-                subto(slice_tensor(x, -1, dim), slice_tensor(x, -2, dim),
-                      out=slice_tensor(diff, -1, dim))
+                subto(x[1], x[0], out=diff[0])
+                subto(x[-1], x[-2], out=diff[-1])
             elif bound == 'dct1':
                 # x[-1]    = x[1]     => diff[0]   = 0
                 # x[end+1] = x[end-1] => diff[end] = 0
-                slice_tensor(diff, 0, dim).zero_()
-                slice_tensor(diff, -1, dim).zero_()
+                diff[0].zero_()
+                diff[-1].zero_()
             elif bound == 'dst2':
                 # x[-1]    = -x[0]   => diff[0]   = x[1] + x[0]
                 # x[end+1] = -x[end] => diff[end] = -(x[end] + x[end-1])
-                addto(slice_tensor(x, 1, dim), slice_tensor(x, 0, dim),
-                      out=slice_tensor(diff, 0, dim))
-                addto(slice_tensor(x, -1, dim), slice_tensor(x, -2, dim),
-                      out=slice_tensor(diff, -1, dim)).neg_()
+                addto(x[1], x[0], out=diff[0])
+                addto(x[-1], x[-2], out=diff[-1]).neg_()
             elif bound in ('dst1', 'zero'):
                 # x[-1]    = 0 => diff[0]   = x[1]
                 # x[end+1] = 0 => diff[end] = -x[end-1]
-                first = slice_tensor(x, 1, dim)
-                slice_tensor(diff, 0, dim).copy_(first)
-                last = slice_tensor(x, -2, dim)
-                slice_tensor(diff, -1, dim).copy_(last).neg_()
+                diff[0] = x[1]
+                diff[-1] = x[-2]
+                diff[-1].neg_()
             else:
                 assert bound == 'dft'
                 # x[-1]    = x[end] => diff[0]   = x[1] - x[end]
                 # x[end+1] = x[0]   => diff[end] = x[0] - x[end-1]
-                subto(slice_tensor(x, 1, dim), slice_tensor(x, -1, dim),
-                      out=slice_tensor(diff, 0, dim))
-                subto(slice_tensor(x, 0, dim), slice_tensor(x, -2, dim),
-                      out=slice_tensor(diff, -1, dim))
+                subto(x[1], x[-1], out=diff[0])
+                subto(x[0], x[-2], out=diff[-1])
         if side == 'c':
             if voxel_size != 1:
                 diff = diff.div_(voxel_size * 2)
@@ -196,27 +192,28 @@ def diff1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
         #    as possible and then (eventually) deal with the remaining
         #    1st order using the approximate implementation.
         if order == 2:
-            fwd = diff1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
+            fwd = diff1d(x, order=order-1, dim=0, voxel_size=voxel_size,
                          side='f', bound=bound, out=out)
-            bwd = diff1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
+            bwd = diff1d(x, order=order-1, dim=0, voxel_size=voxel_size,
                          side='b', bound=bound)
             diff = fwd.sub_(bwd)
             if voxel_size != 1:
                 diff = diff.div_(voxel_size)
         else:
-            diff = diff1d(x, order=2, dim=dim, voxel_size=voxel_size,
+            diff = diff1d(x, order=2, dim=0, voxel_size=voxel_size,
                           side=side, bound=bound)
-            diff = diff1d(diff, order=order-2, dim=dim, voxel_size=voxel_size,
+            diff = diff1d(diff, order=order-2, dim=0, voxel_size=voxel_size,
                           side=side, bound=bound, out=out)
 
     else:
-        diff = diff1d(x, order=1, dim=dim, voxel_size=voxel_size,
+        diff = diff1d(x, order=1, dim=0, voxel_size=voxel_size,
                       side=side, bound=bound)
-        diff = diff1d(diff, order=order-1, dim=dim, voxel_size=voxel_size,
+        diff = diff1d(diff, order=order-1, dim=0, voxel_size=voxel_size,
                       side=side, bound=bound, out=out)
 
+    diff = diff.transpose(0, dim)
     if out is not None and not utils.same_storage(out, diff):
-        out = out.reshape(diff.shape).copy_(diff)
+        out = out.view(diff.shape).copy_(diff)
         diff = out
     return diff
 
@@ -251,24 +248,25 @@ def diff(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
 
     """
     # find number of dimensions
-    dim = torch.as_tensor(dim)
+    dim = make_vector(dim, dtype=torch.long)
     voxel_size = make_vector(voxel_size)
     drop_last = dim.dim() == 0 and voxel_size.dim() == 0
-    dim = make_list(dim.tolist())
-    voxel_size = make_list(voxel_size.tolist())
+    dim = dim.tolist()
+    voxel_size = voxel_size.tolist()
     nb_dim = max(len(dim), len(voxel_size))
-    dim = make_list(dim, nb_dim)
-    voxel_size = make_list(voxel_size, nb_dim)
+    dim = ensure_list(dim, nb_dim)
+    voxel_size = ensure_list(voxel_size, nb_dim)
 
     # compute diffs in each dimension
     if out is not None:
-        diffs = out.view([nb_dim, *x.shape])
+        diffs = out.view([*x.shape, nb_dim])
+        diffs = utils.fast_movedim(diffs, -1, 0)
     else:
         diffs = x.new_empty([nb_dim, *x.shape])
-    diffs = utils.movedim(diffs, 0, -1)
     # ^ ensures that sliced dim is the least rapidly changing one
     for i, (d, v) in enumerate(zip(dim, voxel_size)):
-        diff1d(x, order, d, v, side, bound, out=diffs[..., i])
+        diff1d(x, order, d, v, side, bound, out=diffs[i])
+    diffs = utils.fast_movedim(diffs, 0, -1)
 
     # return
     if drop_last:
@@ -316,7 +314,6 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
         Divergence tensor, with same shape as the input tensor.
 
     """
-
     def subto(x, y, out):
         """Smart sub"""
         if ((torch.is_tensor(x) and x.requires_grad) or
@@ -359,112 +356,97 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
     # ensure tensor
     x = torch.as_tensor(x)
 
+    if x.shape[dim] == 1:
+        if out is not None:
+            return out.view(x.shape).copy_(x)
+        else:
+            return x.clone()
+
+    shape0 = x.shape
+    x = x.transpose(0, dim)
+    if out is not None:
+        out = out.view(shape0)
+        out = out.transpose(0, dim)
+
     if order == 1:
 
-        div = torch.empty_like(x) if out is None else out.reshape(x.shape)
+        if out is None:
+            div = torch.empty_like(x)
+        else:
+            div = out
 
         if side == 'f':
             # forward -> diff[i] = x[i+1] - x[i]
             #            div[i]  = x[i-1] - x[i]
-            first = slice_tensor(x, 0, dim)
-            pre = slice_tensor(x, slice(None, -1), dim)
-            post = slice_tensor(x, slice(1, None), dim)
-            subto(pre, post, out=slice_tensor(div, slice(1, None), dim))
-            slice_tensor(div, 0, dim).copy_(first).neg_()
+            subto(x[:-1], x[1:], out=div[1:])
+            div[0] = x[0]
+            div[0].neg_()
             if bound in ('dct2', 'replicate'):
-                ante = slice_tensor(x, -2, dim)
-                slice_tensor(div, -1, dim).copy_(ante)
+                div[-1] = x[-2]
             elif bound == 'dct1':
-                last = slice_tensor(x, -1, dim)
-                slice_tensor(div, -2, dim).add_(last)
+                div[-2] += x[-1]
             elif bound == 'dst2':
-                last = slice_tensor(x, -1, dim)
-                slice_tensor(div, -1, dim).sub_(last)
+                div[-1] -= x[-1]
             elif bound in ('dst1', 'zero'):
                 pass
             else:
                 assert bound == 'dft'
-                last = slice_tensor(x, -1, dim)
-                first = slice_tensor(x, 0, dim)
-                subto(last, first, out=slice_tensor(div, 0, dim))
+                subto(x[-1], x[0], out=div[0])
 
         elif side == 'b':
             # backward -> diff[i] = x[i] - x[i-1]
             #             div[i]  = x[i+1] - x[i]
-            pre = slice_tensor(x, slice(None, -1), dim)
-            post = slice_tensor(x, slice(1, None), dim)
-            subto(pre, post, out=slice_tensor(div, slice(None, -1), dim))
-            slice_tensor(div, -1, dim).copy_(slice_tensor(x, -1, dim))
+            subto(x[:-1], x[1:], out=div[:-1])
+            div[-1] = x[-1]
             if bound in ('dct2', 'replicate'):
-                second = slice_tensor(x, 1, dim)
-                slice_tensor(div, 0, dim).copy_(second).neg_()
+                div[0] = x[1]
+                div[0].neg_()
             elif bound == 'dct1':
-                first = slice_tensor(x, 0, dim)
-                slice_tensor(div, 1, dim).sub_(first)
+                div[1] -= x[0]
             elif bound == 'dst2':
-                first = slice_tensor(x, 0, dim)
-                slice_tensor(div, 0, dim).add_(first)
+                div[0] += x[0]
             elif bound in ('dst1', 'zero'):
                 pass
             else:
                 assert bound == 'dft'
-                last = slice_tensor(x, -1, dim)
-                first = slice_tensor(x, 0, dim)
-                subto(last, first, out=slice_tensor(div, -1, dim))
+                subto(x[-1], x[0], out=div[-1])
 
         else:
             assert side == 'c'
             # central -> diff[i] = (x[i+1] - x[i-1])/2
             #         -> div[i]  = (x[i-1] - x[i+1])/2
-            pre = slice_tensor(x, slice(None, -2), dim)
-            post = slice_tensor(x, slice(2, None), dim)
-            subto(pre, post, out=slice_tensor(div, slice(1, -1), dim))
+            subto(x[:-2], x[2:], out=div[1:-1])
             if bound in ('dct2', 'replicate'):
                 # x[-1]    = x[0]   => diff[0]   = x[1] - x[0]
                 # x[end+1] = x[end] => diff[end] = x[end] - x[end-1]
-                first = slice_tensor(x, 0, dim)
-                second = slice_tensor(x, 1, dim)
-                last = slice_tensor(x, -1, dim)
-                ante = slice_tensor(x, -2, dim)
-                addto(first, second, out=slice_tensor(div, 0, dim)).neg_()
-                addto(last, ante, out=slice_tensor(div, -1, dim))
+                addto(x[0], x[1], out=div[0]).neg_()
+                addto(x[-1], x[-2], out=div[-1])
             elif bound == 'dct1':
                 # x[-1]    = x[1]     => diff[0]   = 0
                 # x[end+1] = x[end-1] => diff[end] = 0
-                first = slice_tensor(x, 1, dim)
-                second = slice_tensor(x, 2, dim)
-                last = slice_tensor(x, -2, dim)
-                secondlast = slice_tensor(x, -3, dim)
-                slice_tensor(div, 0, dim).copy_(first).neg_()
-                slice_tensor(div, 1, dim).copy_(second).neg_()
-                slice_tensor(div, -2, dim).copy_(secondlast)
-                slice_tensor(div, -1, dim).copy_(last)
+                div[0] = x[1]
+                div[0].neg_()
+                div[1] = x[2]
+                div[1].neg_()
+                div[-2] = x[-3]
+                div[-1] = x[-2]
             elif bound == 'dst2':
                 # x[-1]    = -x[0]   => diff[0]   = x[1] + x[0]
                 # x[end+1] = -x[end] => diff[end] = -(x[end] + x[end-1])
-                first = slice_tensor(x, 0, dim)
-                second = slice_tensor(x, 1, dim)
-                secondlast = slice_tensor(x, -2, dim)
-                last = slice_tensor(x, -1, dim)
-                subto(first, second, out=slice_tensor(div, 0, dim))
-                subto(secondlast, last, out=slice_tensor(div, -1, dim))
+                subto(x[0], x[1], out=div[0])
+                subto(x[-2], x[-1], out=div[-1])
             elif bound in ('dst1', 'zero'):
                 # x[-1]    = 0 => diff[0]   = x[1]
                 # x[end+1] = 0 => diff[end] = -x[end-1]
-                second = slice_tensor(x, 1, dim)
-                secondlast = slice_tensor(x, -2, dim)
-                slice_tensor(div, 0, dim).copy_(second).neg_()
-                slice_tensor(div, -1, dim).copy_(secondlast)
+                div[0] = x[1]
+                div[0].neg_()
+                div[-1] = x[-2]
             else:
                 assert bound == 'dft'
                 # x[-1]    = x[end] => diff[0]   = x[1] - x[end]
                 # x[end+1] = x[0]   => diff[end] = x[0] - x[end-1]
-                first = slice_tensor(x, 0, dim)
-                second = slice_tensor(x, 1, dim)
-                last = slice_tensor(x, -1, dim)
-                secondlast = slice_tensor(x, -2, dim)
-                subto(last, second, out=slice_tensor(div, 0, dim))
-                subto(secondlast, first, out=slice_tensor(div, -1, dim))
+                subto(x[-1], x[1], out=div[0])
+                subto(x[-2], x[0], out=div[-1])
 
         if side == 'c':
             if voxel_size != 1:
@@ -488,34 +470,35 @@ def div1d(x, order=1, dim=-1, voxel_size=1, side='c', bound='dct2', out=None):
             # (I use the forward and backward implementations to save
             #  code, but it could be reimplemented exactly to
             #  save speed)
-            fwd = div1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
-                         side='f', bound=bound, out=out)
-            bwd = div1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
-                         side='b', bound=bound)
+            fwd = div1d(x, order=order-1, dim=0, voxel_size=voxel_size,
+                        side='f', bound=bound, out=out)
+            bwd = div1d(x, order=order-1, dim=0, voxel_size=voxel_size,
+                        side='b', bound=bound)
             div = fwd.sub_(bwd)
             if voxel_size != 1:
                 div = div_(div, voxel_size)
         elif order % 2:
             # odd order -> start with a first order
-            div = div1d(x, order=1, dim=dim, voxel_size=voxel_size,
-                          side=side, bound=bound)
-            div = div1d(div, order=order-1, dim=dim, voxel_size=voxel_size,
-                          side=side, bound=bound, out=out)
+            div = div1d(x, order=1, dim=0, voxel_size=voxel_size,
+                        side=side, bound=bound)
+            div = div1d(div, order=order-1, dim=0, voxel_size=voxel_size,
+                        side=side, bound=bound, out=out)
         else:
             # even order -> recursive call
-            div = div1d(x, order=2, dim=dim, voxel_size=voxel_size,
+            div = div1d(x, order=2, dim=0, voxel_size=voxel_size,
                           side=side, bound=bound)
-            div = div1d(div, order=order-2, dim=dim, voxel_size=voxel_size,
+            div = div1d(div, order=order-2, dim=0, voxel_size=voxel_size,
                           side=side, bound=bound, out=out)
 
     else:
-        div = div1d(x, order=order-1, dim=dim, voxel_size=voxel_size,
+        div = div1d(x, order=order-1, dim=0, voxel_size=voxel_size,
                     side=side, bound=bound)
-        div = div1d(div, order=1, dim=dim, voxel_size=voxel_size,
+        div = div1d(div, order=1, dim=0, voxel_size=voxel_size,
                     side=side, bound=bound, out=out)
 
+    div = div.transpose(0, dim)
     if out is not None and not utils.same_storage(out, div):
-        out = out.reshape(div.shape).copy_(div)
+        out = out.view(div.shape).copy_(div)
         div = out
     return div
 
@@ -557,11 +540,11 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', out=None):
     dim = torch.as_tensor(dim)
     voxel_size = make_vector(voxel_size)
     has_last = (dim.dim() > 0 or voxel_size.dim() > 0)
-    dim = make_list(dim.tolist())
-    voxel_size = make_list(voxel_size.tolist())
+    dim = dim.tolist()
+    voxel_size = voxel_size.tolist()
     nb_dim = max(len(dim), len(voxel_size))
-    dim = make_list(dim, nb_dim)
-    voxel_size = make_list(voxel_size, nb_dim)
+    dim = ensure_list(dim, nb_dim)
+    voxel_size = ensure_list(voxel_size, nb_dim)
 
     if has_last and x.shape[-1] != nb_dim:
         raise ValueError('Last dimension of `x` should be {} but got {}'
@@ -1007,7 +990,7 @@ def _lincomb(slices, weights, dim, ref=None):
             offset = 0
             for chunk in new_chunks:
                 index = slice(offset, offset+chunk.shape[dim])
-                view = slice_tensor(result, index, dim)
+                view = fast_slice_tensor(result, index, dim)
                 view += chunk
                 offset += chunk.shape[dim]
 
@@ -1064,45 +1047,45 @@ def _window1d(x, dim, offsets, bound='dct2', value=0):
     for i in offsets:
         nb_pre = max(0, -i)
         nb_post = max(0, i)
-        central = slice_tensor(x, slice(nb_post or None, -nb_pre or None), dim)
+        central = fast_slice_tensor(x, slice(nb_post or None, -nb_pre or None), dim)
         if bound == 'dct2':
-            pre = slice_tensor(x, slice(None, nb_pre), dim)
+            pre = fast_slice_tensor(x, slice(None, nb_pre), dim)
             pre = torch.flip(pre, [dim])
-            post = slice_tensor(x, slice(length-nb_post, None), dim)
+            post = fast_slice_tensor(x, slice(length-nb_post, None), dim)
             post = torch.flip(post, [dim])
             slices.append(tuple([pre, central, post]))
         elif bound == 'dct1':
-            pre = slice_tensor(x, slice(1, nb_pre+1), dim)
+            pre = fast_slice_tensor(x, slice(1, nb_pre+1), dim)
             pre = torch.flip(pre, [dim])
-            post = slice_tensor(x, slice(length-nb_post-1, -1), dim)
+            post = fast_slice_tensor(x, slice(length-nb_post-1, -1), dim)
             post = torch.flip(post, [dim])
             slices.append(tuple([pre, central, post]))
         elif bound == 'dst2':
-            pre = slice_tensor(x, slice(None, nb_pre), dim)
+            pre = fast_slice_tensor(x, slice(None, nb_pre), dim)
             pre = -torch.flip(pre, [dim])
-            post = slice_tensor(x, slice(-nb_post, None), dim)
+            post = fast_slice_tensor(x, slice(-nb_post, None), dim)
             post = -torch.flip(post, [dim])
             slices.append(tuple([pre, central, post]))
         elif bound == 'dst1':
-            pre = slice_tensor(x, slice(None, nb_pre-1), dim)
+            pre = fast_slice_tensor(x, slice(None, nb_pre-1), dim)
             pre = -torch.flip(pre, [dim])
-            post = slice_tensor(x, slice(length-nb_post+1, None), dim)
+            post = fast_slice_tensor(x, slice(length-nb_post+1, None), dim)
             post = -torch.flip(post, [dim])
             shape1 = list(x.shape)
             shape1[dim] = 1
             zero = torch.zeros([], **backend).expand(shape1)
             slices.append(tuple([pre, zero, central, zero, post]))
         elif bound == 'dft':
-            pre = slice_tensor(x, slice(length-nb_pre, None), dim)
-            post = slice_tensor(x, slice(None, nb_post), dim)
+            pre = fast_slice_tensor(x, slice(length-nb_pre, None), dim)
+            post = fast_slice_tensor(x, slice(None, nb_post), dim)
             slices.append(tuple([pre, central, post]))
         elif bound == 'replicate':
             shape_pre = list(x.shape)
             shape_pre[dim] = nb_pre
             shape_post = list(x.shape)
             shape_post[dim] = nb_post
-            pre = slice_tensor(x, slice(None, 1), dim).expand(shape_pre)
-            post = slice_tensor(x, slice(-1, None), dim).expand(shape_post)
+            pre = fast_slice_tensor(x, slice(None, 1), dim).expand(shape_pre)
+            post = fast_slice_tensor(x, slice(-1, None), dim).expand(shape_post)
             slices.append(tuple([pre, central, post]))
         elif bound == 'zero':
             shape_pre = list(x.shape)

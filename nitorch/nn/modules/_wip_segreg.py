@@ -1,9 +1,11 @@
-from .base import Module
+"""Work In Progress: joint segmentation and registration"""
+
+from nitorch.nn.base import Module
 from .cnn import UNet, UUNet, WNet, UNet2, SEWNet
 from .spatial import GridResize, GridExp, GridPull
 from nitorch.nn.activations import SoftMax
 from nitorch.nn import check
-from nitorch.core import py, utils
+from nitorch.core import py, utils, math
 from nitorch import spatial
 import torch
 
@@ -12,7 +14,7 @@ class BaseMorph(Module):
     """Secondary base class for model that implement a morph component"""
 
     def __init__(self, dim, interpolation='linear', grid_bound='dft',
-                 image_bound='dct2', downsample_velocity=2, ):
+                 image_bound='dct2', downsample_velocity=2, anagrad=False):
         super().__init__()
         
         resize_factor = py.make_list(downsample_velocity, dim)
@@ -20,9 +22,12 @@ class BaseMorph(Module):
 
         self.resize = GridResize(interpolation=interpolation,
                                  bound=grid_bound,
-                                 factor=resize_factor)
+                                 factor=resize_factor,
+                                 type='displacement')
         self.velexp = GridExp(interpolation=interpolation,
-                              bound=grid_bound)
+                              bound=grid_bound,
+                              displacement=True,
+                              anagrad=anagrad)
         self.pull = GridPull(interpolation=interpolation,
                              bound=image_bound)
         self.dim = dim
@@ -44,16 +49,14 @@ class BaseMorph(Module):
             Deformation grid (transformation or displacement).
 
         """
-        backend = dict(dtype=velocity.dtype, device=velocity.device)
-
         # generate grid
         shape = velocity.shape[1:-1]
-        velocity_small = self.resize(velocity, type='displacement')
+        velocity_small = self.resize(velocity)
         grid = self.velexp(velocity_small)
-        grid = self.resize(grid, shape=shape, type='grid')
+        grid = self.resize(grid, output_shape=shape)
+        if not displacement:
+            grid = spatial.add_identity_grid_(grid)
 
-        if displacement:
-            grid = grid - spatial.identity_grid(grid.shape[1:-1], **backend)
         return grid
 
     def board(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None,
@@ -109,20 +112,22 @@ class BaseMorph(Module):
             vol = vol.clip_(0, 1)
             return vol
 
-        def get_label(plane, vol, batch=0):
+        def get_label(plane, vol, batch=0, logit=False):
             vol = get_slice(plane, vol[batch])
             if vol.dim() == 2:
-                vol = vol.float()
-                vol /= vol.max()
+                if logit:
+                    vol = math.softmax(vol[None], dim=0, implicit=True)[0]
+                else:
+                    vol = vol.float()
+                    vol /= vol.max()
             else:
-                if implicit:
+                if logit:
+                    vol = math.softmax(vol, dim=0, implicit=(implicit, False))
+                elif implicit:
                     background = 1 - vol.sum(dim=0, keepdim=True)
-                    vol = torch.cat((vol, background), dim=0)
+                    vol = torch.cat((background, vol), dim=0)
                 nb_classes = vol.shape[0]
-                vol = vol.argmax(dim=0)
-                vol += 1
-                vol[vol == nb_classes] = 0
-                vol = vol.float()
+                vol = vol.argmax(dim=0).float()
                 vol /= float(nb_classes - 1)
             return vol
 
@@ -153,29 +158,45 @@ class BaseMorph(Module):
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_image(plane, source, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Source')
                     if source_seg is not None:
                         idx += 1
                         ax = fig.add_subplot(nrow, ncol, idx, **prm)
                         ax.imshow(get_label(plane, source_seg, b))
+                        if b == 0 and p == 0:
+                            ax.set_title('Source [seg]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
-                    ax.imshow(get_label(plane, source_pred, b))
+                    ax.imshow(get_label(plane, source_pred, b, logit=True))
+                    if b == 0 and p == 0:
+                        ax.set_title('Source [pred]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_image(plane, target, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Target')
                     if target_seg is not None:
                         idx += 1
                         ax = fig.add_subplot(nrow, ncol, idx, **prm)
                         ax.imshow(get_label(plane, target_seg, b))
+                        if b == 0 and p == 0:
+                            ax.set_title('Target [seg]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
-                    ax.imshow(get_label(plane, target_pred, b))
+                    ax.imshow(get_label(plane, target_pred, b, logit=True))
+                    if b == 0 and p == 0:
+                        ax.set_title('Target [pred]')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_image(plane, source_warped, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Warped')
                     idx += 1
                     ax = fig.add_subplot(nrow, ncol, idx, **prm)
                     ax.imshow(get_velocity(plane, velocity, b))
+                    if b == 0 and p == 0:
+                        ax.set_title('Velocity')
             fig.subplots_adjust(wspace=0, hspace=0)
             return fig
 
@@ -395,7 +416,7 @@ class SegMorphUNet(BaseMorph):
     def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
                  kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
                  interpolation='linear', grid_bound='dft', image_bound='dct2',
-                 downsample_velocity=2, batch_norm=True, implicit=True,
+                 downsample_velocity=2, norm='batch', implicit=True,
                  groups=None, stitch=1):
         """
 
@@ -415,7 +436,7 @@ class SegMorphUNet(BaseMorph):
         grid_bound : str, default='dft'
         image_bound : str, default='dct2'
         downsample_velocity : int, default=2
-        batch_norm : bool, default=True
+        norm : bool, default='batch'
         implicit : bool or (bool, bool), default=True
             If the first element is True, the UNet only outputs `output_classes`
             channels (i.e., it does not model the background). The missing
@@ -433,14 +454,14 @@ class SegMorphUNet(BaseMorph):
             downsample_velocity,
         )
 
-        self.implicit = py.make_list(implicit, 2)
+        self.implicit = py.ensure_list(implicit, 2)
         self.output_classes = output_classes
         if not self.implicit[0]:
             output_classes = output_classes + 1
         self.softmax = SoftMax(implicit=implicit)
 
-        groups = py.make_list(groups)
-        stitch = py.make_list(stitch)
+        groups = py.ensure_list(groups)
+        stitch = py.ensure_list(stitch)
         if (groups[-1] or stitch[-1]) == 2:
             out_channels = [output_classes * 2, dim]
         else:
@@ -452,7 +473,7 @@ class SegMorphUNet(BaseMorph):
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=[activation, ..., None],
-                         batch_norm=batch_norm,
+                         norm=norm,
                          groups=groups,
                          stitch=stitch)
 
@@ -635,7 +656,7 @@ class SegMorphRUNet(BaseMorph):
                           kernel_size=kernel_size,
                           conv_per_layer=conv_per_layer,
                           activation=[activation, None],
-                          batch_norm=batch_norm,
+                          norm=batch_norm,
                           nb_iter=nb_iter,
                           residual=residual)
 
@@ -808,7 +829,7 @@ class SegMorphRWNet(BaseMorph):
                            decoder=decoder,
                            kernel_size=kernel_size,
                            activation=[activation, ..., None],
-                           batch_norm=batch_norm)
+                           norm=batch_norm)
 
         in_channels = int('image' in unet_inputs) \
                          + int('seg' in unet_inputs) \
@@ -820,7 +841,7 @@ class SegMorphRWNet(BaseMorph):
                          decoder=decoder,
                          kernel_size=kernel_size,
                          activation=[activation, ..., None],
-                         batch_norm=batch_norm)
+                         norm=batch_norm)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target',
@@ -1074,7 +1095,7 @@ class SegMorphWNet2(BaseMorph):
                          skip=skip,
                          kernel_size=kernel_size,
                          activation=[activation, None],
-                         batch_norm=batch_norm)
+                         norm=batch_norm)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
@@ -1235,7 +1256,7 @@ class SegMorphWNet3(BaseMorph):
                          skip=skip,
                          kernel_size=kernel_size,
                          activation=[activation, None],
-                         batch_norm=batch_norm)
+                         norm=batch_norm)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
@@ -1386,7 +1407,7 @@ class SegMorphWNet4(BaseMorph):
                             decoder=decoder,
                             kernel_size=kernel_size,
                             activation=activation,
-                            batch_norm=batch_norm)
+                            norm=batch_norm)
 
         nb_feat = self.segnet.final.in_channels
         in_channels = int('image' in unet_inputs) \
@@ -1400,7 +1421,7 @@ class SegMorphWNet4(BaseMorph):
                           decoder=decoder,
                           kernel_size=kernel_size,
                           activation=activation,
-                          batch_norm=batch_norm)
+                          norm=batch_norm)
 
         # register losses/metrics
         self.tags = ['image', 'velocity', 'segmentation', 'source', 'target']
@@ -1502,10 +1523,21 @@ class SewMorph(BaseMorph):
     Image B ->   "  -> Feat B [+ Image B] -> |
     """
 
-    def __init__(self, dim, output_classes=1, encoder=None, decoder=None,
-                 kernel_size=3, activation=torch.nn.LeakyReLU(0.2),
-                 interpolation='linear', grid_bound='dft', image_bound='dct2',
-                 downsample_velocity=2, batch_norm=True, implicit=True, skip=False):
+    def __init__(self,
+                 dim,
+                 output_classes=1,
+                 encoder=None,
+                 decoder=None,
+                 kernel_size=3,
+                 activation=torch.nn.LeakyReLU(0.2),
+                 interpolation='linear',
+                 grid_bound='dft',
+                 image_bound='dct2',
+                 downsample_velocity=2,
+                 norm='batch',
+                 implicit=True,
+                 skip=False,
+                 anagrad=False):
         """
 
         Parameters
@@ -1524,7 +1556,7 @@ class SewMorph(BaseMorph):
         grid_bound : str, default='dft'
         image_bound : str, default='dct2'
         downsample_velocity : int, default=2
-        batch_norm : bool, default=True
+        norm : {'batch', 'instance', 'layer'}, default='batch'
         implicit : bool or (bool, bool), default=True
             If the first element is True, the UNet only outputs `output_classes`
             channels (i.e., it does not model the background). The missing
@@ -1535,14 +1567,15 @@ class SewMorph(BaseMorph):
             activation to the multi-class case.
         """
         super().__init__(
-            dim,
-            interpolation,
-            grid_bound,
-            image_bound,
-            downsample_velocity,
+            dim=dim,
+            interpolation=interpolation,
+            grid_bound=grid_bound,
+            image_bound=image_bound,
+            downsample_velocity=downsample_velocity,
+            anagrad=anagrad,
         )
 
-        self.implicit = py.make_list(implicit, 2)
+        self.implicit = py.ensure_list(implicit, 2)
         self.output_classes = output_classes
         self.softmax = SoftMax(implicit=implicit)
 
@@ -1550,13 +1583,13 @@ class SewMorph(BaseMorph):
         self.sewnet = SEWNet(dim,
                              nb_twins=2,
                              in_channels=1,
-                             mid_channels=mid_channels,
+                             feat_channels=mid_channels,
                              out_channels=dim,
                              encoder=encoder,
                              decoder=decoder,
                              kernel_size=kernel_size,
                              activation=activation,
-                             batch_norm=batch_norm,
+                             norm=norm,
                              skip=skip)
 
         # register losses/metrics
@@ -1572,9 +1605,9 @@ class SewMorph(BaseMorph):
             Source/moving image
         target : tensor (batch, channel, *spatial)
             Target/fixed image
-        source_seg : tensor (batch, classes, *spatial), optional
+        source_seg : tensor (batch, 1|classes, *spatial), optional
             Source/moving segmentation
-        target_seg : tensor (batch, classes, *spatial), optional
+        target_seg : tensor (batch, 1|classes, *spatial), optional
             Target/fixed segmentation
 
         Other Parameters
@@ -1586,10 +1619,10 @@ class SewMorph(BaseMorph):
 
         Returns
         -------
-        target_seg_pred : tensor (batch, classes, *spatial), optional
-            Predicted target segmentation
-        source_seg_pred : tensor (batch, classes, *spatial), optional
-            Predicted source segmentation
+        target_logits : tensor (batch, classes[-1], *spatial), optional
+            Predicted target logits
+        source_logits : tensor (batch, classes[-1], *spatial), optional
+            Predicted source logits
         deformed_source : tensor (batch, channel, *spatial)
             Deformed source image
         velocity : tensor (batch,, *spatial, len(spatial))
@@ -1604,36 +1637,40 @@ class SewMorph(BaseMorph):
         check.shape(target_seg, source_seg, dims=range(2, self.dim + 2))
 
         # apply net
-        velocity, seg = self.sewnet(source, target)
-        source_seg_pred, target_seg_pred = seg
+        # -> returns velocity and pre-softmax predicted segmentations
+        vel, (src_seg_pred, tgt_seg_pred) = self.sewnet(source, target, return_feat=True)
 
-        # deformation
-        velocity = utils.channel2last(velocity)
-        grid = self.exp(velocity)
-        deformed_source = self.pull(source, grid)
+        # exponentiate deformation and deform source image
+        vel = utils.channel2last(vel)
+        grid = self.exp(vel)
+        wsrc = self.pull(source, grid)
 
+        # deform source segmentation
         if source_seg is not None:
-            deformed_source_seg = self.pull(source_seg, grid)
+            wsrc_seg = source_seg
+            if not wsrc_seg.dtype.is_floating_point:
+                wsrc_seg = wsrc_seg.squeeze(1)
+                wsrc_seg = utils.one_hot(wsrc_seg,
+                                         dim=1,
+                                         implicit=self.implicit[1],
+                                         dtype=wsrc.dtype)
+            wsrc_seg = wsrc_seg.clamp_(1e-5, 1-1e-5)
+            wsrc_seg = math.logit(wsrc_seg, dim=1, implicit=self.implicit[1])
         else:
-            deformed_source_seg = self.pull(source_seg_pred, grid)
-        deformed_source_seg = self.softmax(deformed_source_seg)
-        source_seg_pred = self.softmax(source_seg_pred)
-        target_seg_pred = self.softmax(target_seg_pred)
-        if target_seg is None:
-            target_seg_for_deformed = target_seg_pred
-        else:
-            target_seg_for_deformed = target_seg
+            wsrc_seg = src_seg_pred
+        wsrc_seg = self.pull(wsrc_seg, grid)
+        tgt_seg_w = tgt_seg_pred if target_seg is None else target_seg
 
         # compute loss and metrics
         tensors = dict(
-            image=[deformed_source, target],
-            velocity=[velocity],
-            segmentation=[deformed_source_seg, target_seg_for_deformed])
+            image=[wsrc, target],
+            velocity=[vel],
+            segmentation=[wsrc_seg, tgt_seg_w])
         if source_seg is not None:
-            tensors['source'] = [source_seg_pred, source_seg]
+            tensors['source'] = [src_seg_pred, source_seg]
         if target_seg is not None:
-            tensors['target'] = [target_seg_pred, target_seg]
+            tensors['target'] = [tgt_seg_pred, target_seg]
         self.compute(_loss, _metric, **tensors)
 
-        return source_seg_pred, target_seg_pred, deformed_source, velocity
+        return src_seg_pred, tgt_seg_pred, wsrc, vel
 

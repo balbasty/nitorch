@@ -85,6 +85,7 @@ def max(dat, dim=None):
 
 
 def cat(dats, dim=None):
+    """Concatenate tensors or arrays along an axis"""
     if any(torch.is_tensor(dat) for dat in dats):
         dtype = utils.max_dtype(dats)
         device = utils.max_device(dats)
@@ -111,7 +112,7 @@ def copy(dat):
         return np.copy(dat)
 
 
-def cast(dat, dtype, casting='unsafe', returns='dat'):
+def cast(dat, dtype, casting='unsafe', returns='dat', indtype=None, mask=None):
     """Cast an array to a given type.
 
     Parameters
@@ -120,6 +121,8 @@ def cast(dat, dtype, casting='unsafe', returns='dat'):
         Input array
     dtype : dtype
         Output data type (should have the proper on-disk byte order)
+    indtype : dtype, default=dat.dtype
+        Original input dtype
     casting : {'no', 'equiv', 'safe', 'same_kind', 'unsafe',
                'rescale', 'rescale_zero'}, default='unsafe'
         Casting method:
@@ -130,25 +133,30 @@ def cast(dat, dtype, casting='unsafe', returns='dat'):
         * all other options are implemented in numpy. See `np.can_cast`.
     returns : [combination of] {'dat', 'scale', 'offset'}, default='dat'
         Return the scaling/offset applied, if any.
+    mask : tensor or ndarray, optional
+        Mask of voxels to use to compute min/max
 
     Returns
     -------
     dat : tensor or ndarray, if 'dat' in `returns`
     scale : float, if 'scale' in `returns`
-    scale : float, if 'offset' in `returns`
+    offset : float, if 'offset' in `returns`
 
     """
     scale = 1.
     offset = 0.
-    indtype = dtypes.dtype(dat.dtype)
+    indtype = dtypes.dtype(indtype or dat.dtype)
     outdtype = dtypes.dtype(dtype)
+
+    if mask is None:
+        mask = (Ellipsis,)
 
     if casting.startswith('rescale') and not outdtype.is_floating_point:
         # rescale
         # TODO: I am using float64 as an intermediate to cast
         #       Maybe I can do things in a nicer / more robust way
-        minval = astype(min(dat), dtypes.float64)
-        maxval = astype(max(dat), dtypes.float64)
+        minval = astype(min(dat[mask]), dtypes.float64)
+        maxval = astype(max(dat[mask]), dtypes.float64)
         if 'dat' in returns:
             if not dtypes.equivalent(indtype, dtypes.float64):
                 dat = dat.astype(np.float64)
@@ -193,7 +201,7 @@ def cutoff(dat, cutoff, dim=None):
 
     Parameters
     ----------
-    dat : np.ndarray
+    dat : tensor or ndarray
         Input data
     cutoff : max or (min, max)
         Percentile cutoffs (in [0, 1])
@@ -202,7 +210,7 @@ def cutoff(dat, cutoff, dim=None):
 
     Returns
     -------
-    dat : np.ndarray
+    dat : tensor or ndarray
         Clipped data
 
     """
@@ -212,12 +220,20 @@ def cutoff(dat, cutoff, dim=None):
     if len(cutoff) > 2:
         raise ValueError('Maximum to percentiles (min, max) should'
                          ' be provided. Got {}.'.format(len(cutoff)))
-    pct = np.nanpercentile(dat, cutoff, axis=dim, keepdims=True)
-    if len(pct) == 1:
-        dat = np.clip(dat, a_min=None, a_max=pct[0])
+    if torch.is_tensor(dat):
+        cutoff = [val/100 for val in cutoff]
+        pct = utils.quantile(dat, cutoff)
+        if len(pct) == 1:
+            dat.clamp_max_(pct[0])
+        else:
+            dat.clamp_(pct[0], pct[1])
     else:
-        dat = np.clip(dat, a_min=pct[0], a_max=pct[1])
-    return dat
+        pct = np.nanpercentile(dat, cutoff, axis=dim, keepdims=True)
+        if len(pct) == 1:
+            dat = np.clip(dat, a_min=None, a_max=pct[0])
+        else:
+            dat = np.clip(dat, a_min=pct[0], a_max=pct[1])
+        return dat
 
 
 def addnoise(dat, amplitude=1, seed=0):
@@ -259,7 +275,7 @@ def _np_addnoise(dat, amplitude=1, seed=0):
 
 
 def _torch_addnoise(dat, amplitude=1, seed=0):
-    with torch.random.fork_rng(dat.device):
+    with torch.random.fork_rng([dat.device]):
         torch.random.manual_seed(seed)
         noise = torch.rand_like(dat)
     if amplitude != 1:
@@ -269,45 +285,12 @@ def _torch_addnoise(dat, amplitude=1, seed=0):
     return dat
 
 
-def _torch_cutoff(dat, cutoff=(0.0005, 0.9995), nh=4000):
-    """Torch clip data when outside of a range, defined by percentiles.
+def missing(dat, missing):
+    """Return a mask of missing data"""
+    missing = py.ensure_list(missing)
+    if torch.is_tensor(dat):
+        mask = utils.isin(dat, missing)
+    else:
+        mask = np.isin(dat, missing)
+    return mask
 
-     Parameters
-    ----------
-    dat : tensor
-        Input data.
-    cutoff : (min, max), default=(0.0005, 0.9995)
-        Percentile cutoffs.
-    nh : int, default=4000
-        Number of histogram bins.
-
-    Returns
-    -------
-    dat : tensor
-        Clipped data.
-
-    """
-    device = dat.device
-    dtype = dat.dtype
-    # Rescale intensities between 1 and nh
-    mn = torch.tensor([dat.min(), 1],
-        dtype=dtype, device=device)[None, ...]
-    mx = torch.tensor([dat.max(), 1],
-        dtype=dtype, device=device)[None, ...]
-    mc = torch.cat((mn, mx), dim=0)
-    mc = torch.tensor([1, nh],
-        dtype=dtype, device=device)[..., None].solve(mc)[0].squeeze()
-    p = dat[(dat != 0)]
-    p = (p * mc[0] + mc[1])
-    # Make histogram
-    p = p.round().long()
-    h = torch.zeros(nh + 1, device=device, dtype=p.dtype)
-    h.put_(p, torch.ones(1, dtype=p.dtype, device=device).
-        expand_as(p), accumulate=True)
-    h = h.type(dtype)
-    h = h.cumsum(0)/h.sum()
-    # Find percentiles
-    mn_out = ((h <= cutoff[0]).sum(dim=0) - mc[1]) / mc[0]
-    mx_out = ((h <= cutoff[1]).sum(dim=0) - mc[1]) / mc[0]
-
-    return torch.clamp(dat, min=mn_out, max=mx_out)

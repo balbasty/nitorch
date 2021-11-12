@@ -32,7 +32,7 @@ def plot_mixture_fit(X, log_pdf, mu, var, mp, fig_num=1, W=None, title=''):
     var = var.detach().cpu()
     mp = mp.detach().cpu()
     # Parameters
-    num_sd = torch.tensor(5)
+    num_sd = 5
     steps = 100
     nN = 128
     inf = torch.tensor(float('inf'))
@@ -50,7 +50,9 @@ def plot_mixture_fit(X, log_pdf, mu, var, mp, fig_num=1, W=None, title=''):
         # Weights and observation range given
         W = torch.reshape(W, (N, 1))
         W = W / torch.sum(W)
-        H = [1]
+        H = X[1:] - X[:-1]
+        H = 0.5*(H[1:] + H[:-1])
+        H = torch.cat([H[:1], H, H[-1:]])
     else:
         # Make weights and observation range from data
         nX = torch.zeros(nN, C)
