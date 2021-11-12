@@ -71,6 +71,7 @@ class BaseND:
     discard()                               Delete cached data
     """
     _volume: io.MappedArray or torch.Tensor = None  # Mapped volume file
+    _mask: io.MappedArray or torch.Tensor = None    # Mapped mask file
     affine: torch.Tensor = None                     # Orientation matrix
     scanner_position: UUID = None                   # Link positions in scanner
     _fdata: torch.Tensor = None                     # Cached scaled data
@@ -113,6 +114,21 @@ class BaseND:
     @volume.setter
     def volume(self, val):
         self._volume = val
+        self._fdata = None
+        if isinstance(val, io.MappedArray):
+            self.affine = val.affine
+        if isinstance(self.affine, (list, tuple)):
+            self.affine = self.affine[0]
+
+    @property
+    def mask(self):
+        # just in case mask is modified
+        self._fdata = None
+        return self._mask
+
+    @mask.setter
+    def mask(self, val):
+        self._mask = val
         self._fdata = None
 
     @property
@@ -296,8 +312,12 @@ class BaseND:
         return self
 
     def fdata(self, dtype=None, device=None, rand=True, missing=None,
-              cache=False, **kwargs):
+              cache=False, copy=False, **kwargs):
         """Get scaled floating-point data.
+
+        Note that if a mask is registered in the object, all voxels
+        outside of this mask will be set to NaNs.
+
         Parameters
         ----------
         dtype : torch.dtype, default='`torch.get_default_dtype()`
@@ -310,6 +330,9 @@ class BaseND:
         cache : bool, default=False
             Cache the data in memory so that it does not need to be
             loaded again next time
+        copy : bool, default=False
+            Ensure that a copy of the original data is performed.
+
         Returns
         -------
         dat : torch.tensor[dtype]
@@ -328,7 +351,17 @@ class BaseND:
             mask = torch.isfinite(_fdata).bitwise_not_()
             if missing:
                 mask.bitwise_or_(utils.isin(_fdata, missing))
-            if rand and not dtype_info(self.volume.dtype).is_floating_point:
+            if self._mask is not None:
+                if isinstance(self._mask, io.MappedArray):
+                    _mask = self._mask.data(dtype=torch.bool, device=mask.device)
+                else:
+                    _mask = self._mask.to(dtype=torch.bool, device=mask.device, copy=True)
+                _mask.bitwise_not_()
+                mask.bitwise_or_(_mask)
+            disk_dtype = self.volume.dtype
+            if isinstance(disk_dtype, (list, tuple)):
+                disk_dtype = disk_dtype[0]
+            if rand and not dtype_info(disk_dtype).is_floating_point:
                 slope = getattr(self.volume, 'slope', None) or 1
                 _fdata.add_(torch.rand_like(_fdata).mul_(slope))
             _fdata[mask] = float('nan')
@@ -336,7 +369,7 @@ class BaseND:
                 self._fdata = _fdata
         else:
             _fdata = self._fdata
-        return _fdata.to(**backend)
+        return _fdata.to(**backend, copy=copy)
 
     def savef(self, fname, *args, **kwargs):
         """Save to disk"""
@@ -396,6 +429,9 @@ class GradientEcho(BaseND):
     mt : float or bool                      Off-resonance pulse (in hz, or bool)
     readout : {0, 1, 2}                     Readout dimension
     blip : {1, -1}                          Readout direction (up or down)
+    noise : float                           Variance of the noise
+    ncoils : int                            Number of coils
+
     """
     spatial_dim = 3
     te: float = None                # Echo time (in sec)
@@ -405,11 +441,13 @@ class GradientEcho(BaseND):
     mt: float or bool = None        # Off-resonance pulse (in hz, or bool)
     readout: int = None             # Readout dimension
     blip: int = None                # Readout direction (up or down)
+    noise: float = None             # Variance of the noise
+    ncoils: int = None              # Number of coils
 
     def attributes(self):
         """Return the name of all attributes"""
         return super().attributes() + ['te', 'tr', 'ti', 'fa', 'mt',
-                                       'readout', 'blip']
+                                       'readout', 'blip', 'noise', 'ncoils']
 
     @classmethod
     def from_mapped(cls, mapped, **attributes):
@@ -446,6 +484,8 @@ class GradientEcho(BaseND):
         new.mt = getattr(instance, 'mt', None)
         new.readout = getattr(instance, 'readout', None)
         new.blip = getattr(instance, 'blip', None)
+        new.noise = getattr(instance, 'ncoils', None)
+        new.ncoils = getattr(instance, 'ncoils', None)
         new.set_attributes(**attributes)
         return new
 
@@ -535,11 +575,35 @@ class GradientEchoMulti(GradientEcho):
             attributes['readout'] = rd
         if 'blip' not in attributes:
             attributes['blip'] = [echo.blip for echo in echoes]
+        if 'noise' not in attributes:
+            noises = set([echo.noise for echo in echoes if echo.noise is not None])
+            noise = noises.pop() if noises else None
+            if len(noises) > 0:
+                warnings.warn("noise not consistent across echoes. Using {}."
+                              .format(noise))
+            attributes['noise'] = noise
+        if 'ncoils' not in attributes:
+            ncoilss = set([echo.ncoils for echo in echoes if echo.ncoils is not None])
+            ncoils = ncoilss.pop() if ncoilss else None
+            if len(ncoilss) > 0:
+                warnings.warn("Number of coils not consistent across echoes. Using {}."
+                              .format(ncoils))
+            attributes['ncoils'] = ncoils
         return cls.from_mapped(volume, **attributes)
 
     @classmethod
     def from_fnames(cls, fnames, **attributes):
         echoes = [GradientEchoSingle.from_fname(fname) for fname in fnames]
+        return cls.from_instances(echoes, **attributes)
+
+    @classmethod
+    def from_maps(cls, fs, **attributes):
+        if isinstance(fs, (list, tuple)):
+            echoes = [GradientEchoSingle.from_mapped(f) for f in fs]
+        else:
+            ne = fs.shape[-1]
+            echoes = [GradientEchoSingle.from_mapped(fs[..., i])
+                      for i in range(ne)]
         return cls.from_instances(echoes, **attributes)
 
     def echo(self, index):
@@ -550,7 +614,16 @@ class GradientEchoMulti(GradientEcho):
                       if key not in ('te', 'blip')}
         attributes['te'] = te
         attributes['blip'] = blip
-        return GradientEcho.from_mapped(volume, **attributes)
+        if isinstance(volume, io.MappedArray):
+            e = GradientEcho.from_mapped(volume, **attributes)
+        else:
+            e = GradientEcho.from_tensor(volume, **attributes)
+        if self._mask is not None:
+            if self._mask.dim() == self.spatial_dim + 1:
+                e.mask = self._mask[index]
+            else:
+                e.mask = self._mask
+        return e
 
     def __getitem__(self, item):
         item = ni.core.py.make_tuple(item)

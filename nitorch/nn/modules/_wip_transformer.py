@@ -3,13 +3,14 @@ import inspect
 import torch
 import torch.utils.checkpoint as checkpoint
 import numpy as np
+import math as pymath
 from nitorch.nn.base import Module, Sequential, ModuleList
 from nitorch.core import py, utils, math, linalg
 from nitorch.nn.activations.base import make_activation_from_name
 from .norm import make_norm_from_name
 from nitorch import spatial
-from .linear import Linear, MLP
-from .conv import ConvBlock, _get_dropout_class
+from .linear import Linear, MLP, LinearBlock
+from .conv import ConvBlock, _get_dropout_class, Conv
 from .dropout import DropPath
 from .encode_decode import DownStep
 
@@ -23,6 +24,42 @@ def _build_dropout(dropout, dim, path=False):
                     else _get_dropout_class(dim)(p=float(dropout)) if dropout
                     else None)
         return dropout
+
+
+def _build_activation(activation):
+        #   an activation can be a class (typically a Module), which is
+        #   then instantiated, or a callable (an already instantiated
+        #   class or a more simple function).
+        #   it is useful to accept both these cases as they allow to either:
+        #       * have a learnable activation specific to this module
+        #       * have a learnable activation shared with other modules
+        #       * have a non-learnable activation
+        if not activation:
+            return None
+        if isinstance(activation, str):
+            return make_activation_from_name(activation)
+        activation = (activation() if inspect.isclass(activation)
+                      else activation if callable(activation)
+                      else None)
+        return activation
+
+
+def _build_norm(norm, in_channels, dim, groups=1):
+        #   an normalization can be a class (typically a Module), which is
+        #   then instantiated, or a callable (an already instantiated
+        #   class or a more simple function).
+        if not norm:
+            return None
+        if isinstance(norm, bool) and norm:
+            norm = 'batch'
+        if isinstance(norm, str):
+            if norm.lower() == 'group':
+                norm = groups
+            return make_norm_from_name(norm, dim, in_channels)
+        norm = (norm(dim, in_channels) if inspect.isclass(norm)
+                else norm if callable(norm)
+                else None)
+        return norm
 
 
 def window_partition(x, window_size, dim=3):
@@ -78,8 +115,94 @@ class PatchEmbed(Module):
         return x
 
 
+class RotaryEmbed(Module):
+    """
+    (Axial) rotary embedding for images/volumes in transformers.
+
+    References
+    ----------
+    ..[1] "RoFormer: Enhanced Transformer with Rotary Position Embedding"
+           Jianlin Su, Yu Lu, Shengfeng Pan, Bo Wen, Yunfeng Liu
+           https://arxiv.org/abs/2104.09864
+    """
+    def __init__(self, dim, in_channels, max_freq=10):
+        super().__init__()
+        self.dim = dim
+        self.in_channels = in_channels
+        scales = torch.linspace(1., max_freq / dim, in_channels // (dim**2)) # need to double check for 3D...
+        # scales = torch.linspace(1., max_freq / 2, in_channels // 4)
+        self.register_buffer('scales', scales)
+
+    def forward(self, x):
+        if self.dim==2:
+            H, W = x.shape[2:]
+        elif self.dim==3:
+            H, W, D = x.shape[2:]
+        device = x.device
+        dtype = x.dtype
+
+        seq_x = torch.linspace(-1., 1., steps=H, device=device)
+        seq_x = seq_x.unsqueeze(-1)
+        scales = self.scales[(*((None,) * (len(seq_x.shape) - 1)), Ellipsis)]
+        scales = scales.to(x)
+        seq_x = seq_x * scales * pymath.pi
+        x_sinu = seq_x[:,None].repeat(1, W, 1) # H, W, N
+
+        seq_y = torch.linspace(-1., 1., steps=W, device=device)
+        seq_y = seq_y.unsqueeze(-1)
+        scales = self.scales[(*((None,) * (len(seq_y.shape) - 1)), Ellipsis)]
+        scales = scales.to(x)
+        seq_y = seq_y * scales * pymath.pi
+        y_sinu = seq_y[None].repeat(H, 1, 1) # H, W, N
+
+        if self.dim==3:
+            seq_z = torch.linspace(-1., 1., steps=D, device=device)
+            seq_z = seq_z.unsqueeze(-1)
+            scales = self.scales[(*((None,) * (len(seq_z.shape) - 1)), Ellipsis)]
+            scales = scales.to(x)
+            seq_z = seq_z * scales * pymath.pi
+            z_sinu = seq_z[None, None].repeat(H, W, 1, 1) # H, W, D, N
+            x_sinu = x_sinu[:,:,None].repeat(1, 1, D, 1) # H, W, D, N
+            y_sinu = y_sinu[:,:,None].repeat(1, 1, D, 1) # H, W, D, N
+            sinu = torch.cat([x_sinu, y_sinu, z_sinu], dim=-1)
+        else:
+            sinu = torch.cat([x_sinu, y_sinu], dim=-1)
+
+        sin = sinu.sin()
+        cos = sinu.cos()
+
+        if self.dim==3:
+            sin = sin[None].repeat(1,1,1,1,self.dim)
+            cos = cos[None].repeat(1,1,1,1,self.dim)
+        else:
+            sin = sin[None].repeat(1,1,1,self.dim)
+            cos = cos[None].repeat(1,1,1,self.dim)
+
+        return sin, cos
+
+
+class TimeEmbed(Module):
+    """
+    Useful for DDPM and score-based modelling.
+    """
+    def __init__(self, in_channels):
+        super().__init__()
+        self.in_channels = in_channels
+    
+    def forward(self, x):
+        device = x.device
+        half_channels = self.in_channels // 2
+        embed = pymath.log(1000) / (half_channels - 1)
+        embed = (torch.arange(half_channels, device=device) * -embed).exp()
+        # embed = torch.outer(x, embed)
+        embed = torch.einsum('i, j -> i j', x, embed) # should be independent of dim - just outer product
+        embed = torch.cat([embed.sin(), embed.cos()], dim=-1)
+        return embed
+
+
 class PatchMerge(Module):
     def __init__(self, input_resolution, in_channels, dim=3, norm='layer'):
+        super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
         # need to check if dim**2 vs 2**dim...
@@ -160,6 +283,193 @@ class Attention(Module):
         if self.proj_dropout:
             x = self.proj_dropout
 
+        return x
+
+
+class WindowAttention(Attention):
+    def __init__(self, dim, in_channels, window_size,
+                 nb_heads=8, qkv_bias=False,
+                 attn_dropout=None, proj_dropout=None):
+        super().__init__(dim, in_channels, nb_heads, qkv_bias, 
+                         attn_dropout, proj_dropout)
+        self.window_size = window_size
+        self.dim = dim
+
+        coords = torch.stack(torch.meshgrid([torch.arange(w) for w in self.window_size]))
+        print(coords.shape)
+        coords_flat = coords.flatten(1) # should be of shape [dim, prod(*Spatial)]
+        print(coords_flat.shape)
+
+        self.pos_bias_table = torch.nn.Parameter(
+            torch.zeros(tuple([2*w-1 for w in self.window_size]) + (nb_heads,)))
+
+        # TODO: figure out how to generalise coordinates to 3D...
+        if dim==2:
+            coords_rel = coords_flat[:, :, None] - coords_flat[:, None, :]
+            print(coords_rel.shape)
+            coords_rel = coords_rel.permute(1, 2, 0).contiguous()
+            print(coords_rel.shape)
+            coords_rel[:, :, 0] += self.window_size[0] - 1
+            coords_rel[:, :, 1] += self.window_size[1] - 1
+            coords_rel[:, :, 0] *= 2 * self.window_size[1] - 1
+            pos_index = coords_rel.sum(-1)
+            print(pos_index.shape)
+        self.register_buffer('pos_index', pos_index)
+        print()
+        print()
+
+    def forward(self, x, mask=None):
+        print('Window Attn')
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.nb_heads, C // self.nb_heads).permute(2,0,3,1,4)
+        q, k, v = qkv.unbind(0)
+
+        if self.scale:
+            q = q * self.scale
+        attn = (q @ k.transpose(-2,-1))
+
+        print(self.pos_bias_table.shape, self.pos_index.shape, self.pos_index.view(-1).shape, self.window_size)
+        pos_bias = self.pos_bias_table[self.pos_index.view(-1)].view(tuple([np.prod(self.window_size) \
+             for i in self.window_size]) + (-1,)) 
+        if self.dim==2:
+            pos_bias = pos_bias.permute(2, 0, 1).contiguous() 
+        elif self.dim==3:
+            pos_bias = pos_bias.permute(3, 0, 1, 2).contiguous() 
+        attn = attn + pos_bias.unsqueeze(0)
+
+        if mask is not None:
+            nW = mask.shape[0]
+            attn = attn.view(B // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
+            attn = attn.view(-1, self.num_heads, N, N).softmax(-1)
+        else:
+            attn = attn.softmax(-1)
+        
+        if self.attn_dropout:
+            attn = self.attn_dropout(attn)
+
+        x = (attn @ v).transpose(1,2).reshape(B, N, C)
+        x = self.proj(x)
+        if self.proj_dropout:
+            x = self.proj_dropout
+
+        return x
+
+
+class LeWinAttention(Module):
+    """
+    LeWin attention module based on Phil Wang (lucidrains)'s implementation
+    """
+    def __init__(self, dim, in_channels, hidden_channels=64, nb_heads=8, window_size=16, norm='layer'):
+        super().__init__()
+        self.dim = dim
+        if isinstance(norm, str):
+            self.norm = make_norm_from_name(norm, dim, in_channels)
+        elif norm:
+            self.norm = norm(in_channels)
+        else:
+            self.norm = None
+        self.scale = hidden_channels ** -0.5
+        self.nb_heads = nb_heads
+        if isinstance(window_size, int):
+            window_size = [window_size] * dim 
+        self.window_size = window_size
+        inner_channels = hidden_channels * nb_heads
+
+        self.to_q = Conv(dim, in_channels, inner_channels, 1, bias=False)
+        self.to_kv = Conv(dim, in_channels, 2 * inner_channels, 1, bias=False)
+        self.to_out = Conv(dim, inner_channels, in_channels, 1, bias=False)
+
+    def forward(self, x, skip=None, time_embed=None, pos_embed=None):
+        B = x.shape[0]
+        if self.norm:
+            x = self.norm(x)
+        if time_embed:
+            if self.dim==2:
+                x+= time_embed[..., None, None]
+            elif self.dim==3:
+                x+= time_embed[..., None, None, None]
+        
+        q = self.to_q(x)
+
+        kv_input = x
+
+        if skip is not None:
+            kv_input = torch.cat([kv_input, skip], dim=0)
+        
+        k, v = self.to_kv(kv_input).chunk(2, dim=1)
+        q, k, v = [item.reshape(self.nb_heads*item.shape[0], *x.shape[2:], -1) for item in [q,k,v]]
+        # may need permute rather than straight reshape for channel dim moving to last axis
+
+        if pos_embed:
+            sin, cos = pos_embed
+            rot_degs = sin.shape[-1]
+            q, q_pass = q[..., :rot_degs], q[..., rot_degs:]
+            k, k_pass = k[..., :rot_degs], k[..., rot_degs:]
+
+            qrot = q.reshape(*q.shape[:-1], -1, 2)
+            qrot = qrot.unbind(-1)
+            qrot = torch.stack([-qrot[0], qrot[1]], dim=-1)
+            qrot = qrot.reshape(*q.shape[:-1], -1)
+            q = q * cos
+            qrot = qrot * sin
+            q = q + qrot
+            q = torch.cat([q, q_pass], dim=-1)
+
+            krot = k.reshape(*k.shape[:-1], -1, 2)
+            krot = krot.unbind(-1)
+            krot = torch.stack([-krot[0], krot[1]], dim=-1)
+            krot = krot.reshape(*k.shape[:-1], -1)
+            k = k + cos
+            krot = krot * sin
+            k = k + krot
+            k = torch.cat([k, k_pass], dim=-1)
+
+        q, k, v = [item.reshape(np.prod(item.shape[:-1]) // np.prod(self.window_size), np.prod(self.window_size), -1) for item in [q,k,v]]
+
+        if skip is not None:
+            k, v = [item.reshape(item.shape[0]//2, 2*item.shape[1], item.shape[2]) for item in [k,v]]
+
+        sim = torch.einsum('b i d, b j d -> b i j', q, k) * self.scale
+        attn = sim.softmax(-1)
+        out = torch.einsum('b i j, b j d -> b i d', attn, v)
+
+        # out = out.reshape(B, self.nb_heads*out.shape[2], *[a*b for a,b in zip(x.shape[2:], self.window_size)])
+        out = out.reshape(B, self.nb_heads*out.shape[2], *x.shape[2:])
+
+        out = self.to_out(out)
+
+        return out
+
+
+class LeFF(Module):
+    """
+    Feed-forward model for LeWin / UFormer architecture.
+    """
+    def __init__(self, dim, in_channels, ff_mult=4, norm='layer', activation='GELU'):
+        super().__init__()
+        self.dim = dim
+        if isinstance(norm, str):
+            self.norm = make_norm_from_name(norm, dim, in_channels)
+        elif norm:
+            self.norm = norm(in_channels)
+        else:
+            self.norm = None
+        hidden_channels = in_channels * ff_mult
+        self.proj_in = Conv(dim, in_channels, hidden_channels, 1)
+        self.proj_inter = Conv(dim, hidden_channels, hidden_channels, 3, padding=1)
+        self.proj_out = ConvBlock(dim, hidden_channels, in_channels, 1, activation=activation, order='acnd')
+
+    def forward(self, x, time_embed=None):
+        if self.norm:
+            x = self.norm(x)
+        x = self.proj_in(x)
+        if time_embed:
+            if self.dim==2:
+                x+= time_embed[..., None, None]
+            elif self.dim==3:
+                x+= time_embed[..., None, None, None]
+        x = self.proj_inter(x)
+        x = self.proj_out(x)
         return x
 
 
@@ -308,69 +618,13 @@ class ViT(Module):
         elif self.head:
             x = self.head(x)
         return x
-        
-
-class WindowAttention(Attention):
-    def __init__(self, dim, window_size,
-                 nb_heads=8, qkv_bias=False,
-                 attn_dropout=None, proj_dropout=None):
-        super().__init__(dim, nb_heads, qkv_bias, 
-                         attn_dropout, proj_dropout)
-        self.window_size = window_size
-
-        coords = torch.stack(torch.meshgrid([torch.arange(w) for w in self.window_size]))
-        coords_flat = coords.flatten(1) # should be of shape [dim, prod(*Spatial)]
-
-        self.pos_bias_table = torch.nn.Parameter(
-            torch.zeros(tuple([2*w-1 for w in self.window_size]) + (nb_heads,)))
-
-        # TODO: figure out how to generalise coordinates to 3D...
-        if dim==2:
-            coords_rel = coords_flat[:, :, None] - coords_flat[:, None, :]
-            coords_rel = coords_rel.permute(1, 2, 0).contiguous()
-            coords_rel[:, :, 0] += self.window_size[0] - 1
-            coords_rel[:, :, 1] += self.window_size[1] - 1
-            coords_rel[:, :, 0] *= 2 * self.window_size[1] - 1
-            pos_index = coords_rel.sum(-1)
-        self.register_buffer('pos_index', pos_index)
-
-    def forward(self, x, mask=None):
-        B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.nb_heads, C // self.nb_heads).permute(2,0,3,1,4)
-        q, k, v = qkv.unbind(0)
-
-        q *= self.scale
-        attn = (q @ k.transpose(-2,-1))
-
-        pos_bias = self.pos_bias_table[self.pos_index.view(-1)].view(tuple([np.prod(self.window_size) \
-             for i in self.window_size]) + (-1,)) 
-        if self.dim==2:
-            pos_bias = pos_bias.permute(2, 0, 1).contiguous() 
-        attn = attn + pos_bias.unsqueeze(0)
-
-        if mask is not None:
-            nW = mask.shape[0]
-            attn = attn.view(B // nW, nW, self.num_heads, N, N) + mask.unsqueeze(1).unsqueeze(0)
-            attn = attn.view(-1, self.num_heads, N, N).softmax(-1)
-        else:
-            attn = attn.softmax(-1)
-        
-        if self.attn_dropout:
-            attn = self.attn_dropout(attn)
-
-        x = (attn @ v).transpose(1,2).reshape(B, N, C)
-        x = self.proj(x)
-        if self.proj_dropout:
-            x = self.proj_dropout
-
-        return x
 
 
 class SwinBlock(Module):
     def __init__(self, dim, in_channels, input_resolution, nb_heads, window_size=7, shift_size=0,
                  mlp_ratio=4, qkv_bias=True, qk_scale=None, dropout=None, attn_dropout=None, 
                  path_dropout=None, activation='GELU', norm='layer'):
-        # TODO: make compatible with anisotropic window
+        # TODO: make compatible with anisotropic window and 3D
         super().__init__()
         self.dim = dim
         if isinstance(input_resolution, int):
@@ -388,7 +642,7 @@ class SwinBlock(Module):
             self.shift_size = [0] * dim
             self.window_size = [min(self.input_resolution)] * dim
         for i in range(dim):
-            assert 0 <= self.shift_size[0] < self.window_size[0], "shift_size must in range [0, window_size]"
+            assert 0 <= self.shift_size[i] < self.window_size[i], "shift_size must be in range [0, window_size]"
 
         if isinstance(norm, str):
             self.norm1 = make_norm_from_name(norm, dim, in_channels)
@@ -399,7 +653,7 @@ class SwinBlock(Module):
         else:
             self.norm1 = self.norm2 = None
 
-        self.attn = WindowAttention(dim, self.window_size, nb_heads, qkv_bias,
+        self.attn = WindowAttention(dim, in_channels, self.window_size, nb_heads, qkv_bias,
                                     attn_dropout, dropout)
         self.path_dropout = _build_dropout(path_dropout, dim, path=True)
 
@@ -407,11 +661,11 @@ class SwinBlock(Module):
         self.mlp = MLP(in_channels, in_channels, mlp_hidden_dim, 
                        activation=activation, dropout=dropout, dim=-1)
 
-        if self.shift_size > 0:
-            img_mask = torch.zeros((1,) + tuple(self.input_resolution) + tuple(1,))
+        if max(self.shift_size) > 0:
+            img_mask = torch.zeros((1,) + tuple(self.input_resolution) + (1,))
             slices = [(slice(0, -self.window_size[i]),
-                      slice(-self.window_size[i], -self.shift_size[i]),
-                      slice(-self.shift_size[i], None)) for i in range(dim)]
+                       slice(-self.window_size[i], -self.shift_size[i]),
+                       slice(-self.shift_size[i], None)) for i in range(dim)]
             cnt = 0
             if dim==2:
                 for h in slices[0]:
@@ -508,11 +762,14 @@ class SwinLayer(Module):
             self.downsample = None
 
     def forward(self, x):
+        print('SwinLayer')
+        print(x.shape)
         for blk in self.blocks:
             if not torch.jit.is_scripting() and self.use_checkpoint:
                 x = checkpoint.checkpoint(blk, x)
             else:
                 x = blk(x)
+                print(x.shape)
         if self.downsample is not None:
             x = self.downsample(x)
         return x
@@ -540,6 +797,8 @@ class Swin(Module):
             img_size = [img_size] * dim
         if isinstance(patch_size, int):
             patch_size = [patch_size] * dim
+        if isinstance(window_size, int):
+            window_size = [window_size] * dim
 
         self.in_channels = in_channels
         self.nb_layers = len(depths)
@@ -566,7 +825,7 @@ class Swin(Module):
              if isinstance(path_dropout, (int, float)) else [None] * len(depths)
 
         self.layers = Sequential(*[
-            SwinLayer(dim, in_channels,
+            SwinLayer(dim, in_channels=int(embed_dim * 2 ** i_layer),
                       input_resolution=[p // (2 ** i_layer) for p in self.patch_grid],
                       depth=depths[i_layer], nb_heads=nb_heads[i_layer],
                       window_size=window_size, mlp_ratio=self.mlp_ratio,
@@ -586,11 +845,14 @@ class Swin(Module):
         self.head = Linear(self.nb_features, out_channels) if out_channels > 0 else None
 
     def forward(self, x):
+        print(x.shape)
         x = self.patch_embed(x)
+        print(x.shape)
         if self.abs_pos_embed is not None:
             x += self.abs_pos_embed
         if self.pos_dropout:
             x = self.pos_dropout(x)
+        print(x.shape)
         x = self.layers(x)
         if self.norm:
             x = self.norm(x)
@@ -601,14 +863,281 @@ class Swin(Module):
         return x
 
 
-# class UFormer(Module):
-#     """
-#     UFormer model with ViT-based encoder and decoder.
+class LeWinBlock(Module):
+    def __init__(self, dim, in_channels, depth,
+                 hidden_channels=64, nb_heads=8, ff_mult=4, norm='layer',
+                 window_size=16, time_embed=None, rotary_embed=True, activation='GELU'):
+        super().__init__()
+        self.attn_time = None
+        self.ff_time = None
+        assert hidden_channels % dim**2 == 0, 'For dim={}, hidden channels {} must be a multiple of {}.'.format(dim, hidden_channels, dim**2)
+        if time_embed:
+            self.attn_time = LinearBlock(time_embed, in_channels, activation=activation, dim=dim, linear_dim=-1) # need to edit so activation is before linear
+            self.ff_time = LinearBlock(time_embed, ff_mult * in_channels, activation=activation, dim=dim, linear_dim=-1)
 
-#     References
-#     ----------
-#     ..[1] ""
-#     """
+        if rotary_embed:
+            self.pos_embed = RotaryEmbed(dim, hidden_channels)
+
+        self.layers = ModuleList([ModuleList([
+                LeWinAttention(dim, in_channels, hidden_channels, nb_heads,
+                window_size, norm=norm),
+                LeFF(dim, in_channels, ff_mult, norm, activation=activation)
+            ]) for d in range(depth)])
+
+    def forward(self, x, skip=None, time=None):
+        attn_time_embed = None
+        ff_time_embed = None
+        if time:
+            attn_time_embed = self.attn_time(time)
+            ff_time_embed = self.ff_time(time)
+
+        pos_embed = None
+        if self.pos_embed:
+            pos_embed = self.pos_embed(x)
+
+        for attn, ff in self.layers:
+            x += attn(x, skip, attn_time_embed, pos_embed)
+            x += ff(x, ff_time_embed)
+        return x
+
+
+class LeWinEncoder(Module):
+    """
+    Made for UFormer but could also have use for classifier, VAE or other architecture.
+    """
+    def __init__(self, dim, in_channels=None, out_channels=None, hidden_channels=64, depth=4, 
+                 nb_blocks=2, head_channels=64, window_size=16, rotary_embed=True,
+                 nb_heads=8, ff_mult=4, time_embed=False, activation='GELU', norm='layer', time_from_uform=False
+                 ):
+        super().__init__()
+        self.to_time_embed = None
+        time_embed_channels = None
+        if isinstance(window_size, int):
+            window_size = [window_size] * dim
+            window_size = [window_size] * depth
+        elif isinstance(window_size, list):
+            if len(window_size) == depth:
+                if isinstance(window_size[0], int):
+                    window_size = [[w] * dim for w in window_size] # should also handle case where depth==dim
+            elif len(window_size) == dim:
+                window_size = [window_size] * depth
+        if isinstance(nb_heads, int):
+            nb_heads = [nb_heads] * depth
+        if isinstance(head_channels, int):
+            head_channels = [head_channels] * depth
+        if isinstance(nb_blocks, int):
+            nb_blocks = [nb_blocks] * depth
+        assert len(window_size) == len(nb_heads) == len(head_channels) == len(nb_blocks) == depth, 'If passing layer-specific LeWin parameters, length must match depth.'
+
+        if time_embed:
+            time_embed_channels = hidden_channels
+            if not time_from_uform:
+                self.to_time_embed = Sequential(
+                    TimeEmbed(hidden_channels),
+                    LinearBlock(hidden_channels, hidden_channels*4, activation=activation),
+                    Linear(hidden_channels*4, hidden_channels)
+                )
+            else:
+                self.to_time_embed = None
+
+        if in_channels and in_channels > 0:
+            self.proj_in = ConvBlock(dim, in_channels, hidden_channels, 3, padding=1, activation=activation)
+        else:
+            self.proj_in = None
+
+        self.encoder = ModuleList([
+            ModuleList([
+                LeWinBlock(dim, hidden_channels * 2**(i), nb_heads[i],  head_channels[i],
+                           nb_heads[i], ff_mult, norm, window_size[i], time_embed_channels, rotary_embed, activation),
+                Conv(dim, hidden_channels * 2**(i), 2 * hidden_channels * 2**(i), 4, 2, 1)
+            ]) for i in range(depth)
+        ])
+
+        if out_channels and out_channels > 0:
+            self.proj_out = ConvBlock(dim, hidden_channels * 2**(depth - 1), out_channels, 3, padding=1, activation=activation)
+        else:
+            self.proj_out = None
+
+    def forward(self, x, time=None, return_last=False):
+        if time:
+            time = time.to(x)
+            if self.to_time_embed:
+                time = self.to_time_embed(time)
+        
+        if self.proj_in:
+            x = self.proj_in(x)
+
+        skips = []
+        for block, down in self.encoder:
+            x = block(x, time=time)
+            x = down(x)
+
+        if self.proj_out:
+            x = self.proj_out(x)
+
+        if return_last:
+            return x, skips
+        else:
+            return x
+
+
+class LeWinDecoder(Module):
+    def __init__(self, dim, in_channels=None, out_channels=None, hidden_channels=64, depth=4, 
+                 nb_blocks=2, head_channels=64, window_size=16, rotary_embed=True,
+                 nb_heads=8, ff_mult=4, time_embed=False, activation='GELU', norm='layer', time_from_uform=False
+                 ):
+        super().__init__()
+        self.to_time_embed = None
+        time_embed_channels = None
+        if isinstance(window_size, int):
+            window_size = [window_size] * dim
+            window_size = [window_size] * depth
+        elif isinstance(window_size, list):
+            if len(window_size) == depth:
+                if isinstance(window_size[0], int):
+                    window_size = [[w] * dim for w in window_size] # should also handle case where depth==dim
+            elif len(window_size) == dim:
+                window_size = [window_size] * depth
+        if isinstance(nb_heads, int):
+            nb_heads = [nb_heads] * depth
+        if isinstance(head_channels, int):
+            head_channels = [head_channels] * depth
+        if isinstance(nb_blocks, int):
+            nb_blocks = [nb_blocks] * depth
+        assert len(window_size) == len(nb_heads) == len(head_channels) == len(nb_blocks) == depth, 'If passing layer-specific LeWin parameters, length must match depth.'
+
+        if time_embed:
+            time_embed_channels = hidden_channels
+            if not time_from_uform:
+                self.to_time_embed = Sequential(
+                    TimeEmbed(hidden_channels),
+                    LinearBlock(hidden_channels, hidden_channels*4, activation=activation),
+                    Linear(hidden_channels*4, hidden_channels)
+                )
+            else:
+                self.to_time_embed = None
+
+        if in_channels and in_channels > 0:
+            self.proj_in = ConvBlock(dim, in_channels, hidden_channels * 2**(depth - 1), 3, padding=1, activation=activation)
+        else:
+            self.proj_in = None
+
+        self.decoder = ModuleList([
+            ModuleList([
+                Conv(dim, 2 * hidden_channels * 2**(depth - i - 1), hidden_channels * 2**(depth - i - 1), 2, 2, transposed=True),
+                LeWinBlock(dim, hidden_channels * 2**(depth - i - 1), nb_heads[i],  head_channels[i],
+                           nb_heads[i], ff_mult, norm, window_size[i], time_embed_channels, rotary_embed, activation)
+            ]) for i in range(depth)
+        ])
+
+        if out_channels and out_channels > 0:
+            self.proj_out = ConvBlock(dim, hidden_channels, out_channels, 3, padding=1, activation=activation)
+        else:
+            self.proj_out = None
+
+    def forward(self, x, time=None, skips=None):
+        if time:
+            time = time.to(x)
+            if self.to_time_embed:
+                time = self.to_time_embed(time)
+        
+        if self.proj_in:
+            x = self.proj_in(x)
+
+        if skips:
+            for skip, (up, block) in zip(skips, self.decoder):
+                x = up(x)
+                x = block(x, skip=skip, time=time)
+        else:
+            for up, block in self.decoder:
+                x = up(x)
+                x = block(x, time=time)
+
+        if self.proj_out:
+            x = self.proj_out(x)
+
+        return x
+
+
+class UFormer(Module):
+    """
+    UFormer model with ViT-based encoder and decoder.
+    Directly adapted from Phil Wang's model with rotary embeddings and time-encoding.
+    Can be used down the line for Score-based models e.g. https://openreview.net/forum?id=vaRCHVj0uGI
+
+    References
+    ----------
+    ..[1] ""
+    """
+    def __init__(self, dim, in_channels, out_channels=None, hidden_channels=64, depth=4, 
+                 nb_blocks=2, head_channels=64, window_size=16, rotary_embed=True,
+                 nb_heads=8, ff_mult=4, time_embed=False, activation='GELU', norm='layer',
+                 ):
+        super().__init__()
+        self.to_time_embed = None
+        time_embed_channels = None
+        if isinstance(window_size, int):
+            window_size = [window_size] * dim
+            window_size = [window_size] * depth
+        elif isinstance(window_size, list):
+            if len(window_size) == depth:
+                if isinstance(window_size[0], int):
+                    window_size = [[w] * dim for w in window_size] # should also handle case where depth==dim
+            elif len(window_size) == dim:
+                window_size = [window_size] * depth
+        if isinstance(nb_heads, int):
+            nb_heads = [nb_heads] * depth
+        if isinstance(head_channels, int):
+            head_channels = [head_channels] * depth
+        if isinstance(nb_blocks, int):
+            nb_blocks = [nb_blocks] * depth
+        assert len(window_size) == len(nb_heads) == len(head_channels) == len(nb_blocks) == depth, 'If passing layer-specific LeWin parameters, length must match depth.'
+
+        if time_embed:
+            time_embed_channels = hidden_channels
+            self.to_time_embed = Sequential(
+                TimeEmbed(hidden_channels),
+                LinearBlock(hidden_channels, hidden_channels*4, activation=activation),
+                Linear(hidden_channels*4, hidden_channels)
+            )
+
+        self.proj_in = ConvBlock(dim, in_channels, hidden_channels, 3, padding=1, activation=activation)
+
+        if out_channels and out_channels > 0:
+            self.proj_out = ConvBlock(dim, hidden_channels, out_channels, 3, padding=1, activation=activation)
+        else:
+            self.proj_out = None
+
+        self.encoder = LeWinEncoder(dim, in_channels, None, hidden_channels, depth-1, nb_blocks[:-1],
+                                    head_channels[:-1], window_size[:-1], rotary_embed, nb_heads[:-1], ff_mult,
+                                    time_embed, activation, norm, True)
+
+        self.bottleneck = LeWinBlock(dim, hidden_channels * 2**(depth - 1), nb_blocks[-1], head_channels[-1], nb_heads[-1],
+                                     ff_mult, norm, window_size[-1], time_embed_channels, rotary_embed, activation)
+
+        # TODO: reverse the lists, put them into the decoder and then write a forward function
+
+        window_size = window_size[:-1][::-1]
+        nb_heads = nb_heads[:-1][::-1]
+        head_channels = head_channels[:-1][::-1]
+        nb_blocks = nb_blocks[:-1][::-1]
+
+        self.decoder = LeWinDecoder(dim, None, out_channels, hidden_channels, depth-1, nb_blocks,
+                                    head_channels, window_size, rotary_embed, nb_heads, ff_mult,
+                                    time_embed, activation, norm, True)
+
+    def forward(self, x, time=None):
+        if time:
+            time = time.to(x)
+            if self.to_time_embed:
+                time = self.to_time_embed(time)
+
+        x, skips = self.encoder(x, time=time, return_last=True)
+        skips = skips[::-1]
+        x = self.bottleneck(x, time=time)
+        x = self.decoder(x, time=time, skips=skips)
+
+        return x
 
 
 # class LinFormer(Module):

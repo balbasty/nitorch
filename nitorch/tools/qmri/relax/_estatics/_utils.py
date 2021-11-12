@@ -182,10 +182,13 @@ def smart_grad(tensor, grid, **opt):
         Sampled volume
 
     """
+    # if grid is None:
+    #     opt.pop('extrapolate', None)
+    #     opt.pop('interpolation', None)
+    #     return spatial.diff(tensor, dim=3, **opt)
     if grid is None:
-        opt.pop('extrapolate', None)
-        opt.pop('interpolation', None)
-        return spatial.diff(tensor, dim=3, **opt)
+        grid = spatial.identity_grid(tensor.shape[-3:],
+                                     dtype=tensor.dtype, device=tensor.device)
     out = spatial.grid_grad(tensor, grid, **opt)
     return out
 

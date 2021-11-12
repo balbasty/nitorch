@@ -295,3 +295,96 @@ class GeodesicDeformation(ParameterizedDeformation):
                 grid = self.add_identity(grid)
                 igrid = self.add_identity(igrid)
             return grid, igrid
+
+
+def _argmax(x):
+    i = None
+    v = -float('inf')
+    for j, e in enumerate(x):
+        if e > v:
+            i = j
+    return i
+
+
+class DistortionMap(_ParameterMap):
+    spatial_dim = 3
+
+    def __new__(cls, input=None, fill=None, dtype=None, device=None,
+                readout=None, **kwargs):
+        if isinstance(input, (list, tuple)):
+            input = list(input)
+        if readout is None:
+            if isinstance(input, list):
+                shape = input[-cls.spatial_dim:]
+            else:
+                shape = input.shape[-cls.spatial_dim:]
+            readout = _argmax(shape)
+        if readout >= 0:
+            readout = -cls.spatial_dim + readout - 1
+        obj = super().__new__(cls, input, fill, dtype, device,
+                              readout=readout, **kwargs)
+        obj.log = True
+        return obj
+
+    @property
+    def spatial_shape(self):
+        return self.volume.shape[-self.spatial_dim:]
+
+    def add_identity(self, disp):
+        return self.add_identity_(disp.clone())
+
+    def add_identity_(self, disp):
+        disp = disp.movedim(self.readout, -1).unsqueeze(-1)
+        grid = spatial.add_identity_grid_(disp)
+        grid = grid.squeeze(-1).movedim(-1, self.readout)
+        return grid
+
+    def jacobian(self, disp):
+        disp = disp.movedim(self.readout, -1).unsqueeze(-1)
+        jac = spatial.grid_jacobian(disp, type='displacement')
+        jac = jac.squeeze(-1).squeeze(-1).movedim(-1, self.readout)
+        return jac
+
+    def exp(self, jacobian=False, add_identity=False, alpha=None):
+        """Exponentiate forward transform"""
+        grid = self.fdata(copy=True)
+        if alpha:
+            grid += alpha
+        if self.log:
+            grid = grid.exp_()
+        if jacobian:
+            jac = self.jacobian(grid)
+        if add_identity:
+            grid = self.add_identity_(grid)
+        return (grid, jac) if jacobian else grid
+
+    def iexp(self, jacobian=False, add_identity=False, alpha=None):
+        """Exponentiate inverse transform"""
+        grid = -self.fdata(copy=True)
+        if alpha:
+            grid += alpha
+        if self.log:
+            grid = grid.exp_()
+        if jacobian:
+            jac = self.jacobian(grid)
+        if add_identity:
+            grid = self.add_identity_(grid)
+        return (grid, jac) if jacobian else grid
+
+    def exp2(self, jacobian=False, add_identity=False, alpha=None):
+        """Exponentiate both forward and inverse transforms"""
+        grid = self.fdata(copy=True)
+        igrid = -grid
+        if alpha:
+            grid += alpha
+            igrid -= alpha
+        if self.log:
+            grid = grid.exp_()
+            igrid = igrid.exp_()
+        if jacobian:
+            jac = self.jacobian(grid)
+            ijac = self.jacobian(igrid)
+        if add_identity:
+            grid = self.add_identity_(grid)
+            igrid = self.add_identity_(igrid)
+        return (grid, igrid, jac, ijac) if jacobian else (grid, igrid)

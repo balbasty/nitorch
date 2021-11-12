@@ -205,52 +205,16 @@ class TiffArray(MappedArray):
         with self.tiffobj() as f:
             return f.filename
 
-    def data(self, dtype=None, device=None, casting='unsafe', rand=True,
-             cutoff=None, dim=None, numpy=False):
-
-        # --- sanity check before reading ---
-        dtype = self.dtype if dtype is None else dtype
-        dtype = dtypes.dtype(dtype)
-        if not numpy and dtype.torch is None:
-            raise TypeError('Data type {} does not exist in PyTorch.'
-                            .format(dtype))
-
+    def raw_data(self):
         # --- check that view is not empty ---
         if py.prod(self.shape) == 0:
-            if numpy:
-                return np.zeros(self.shape, dtype=dtype.numpy)
-            else:
-                return torch.zeros(self.shape, dtype=dtype.torch, device=device)
+            return np.zeros(self.shape, dtype=self.dtype)
 
         # --- read native data ---
         slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
         with self.tiffobj() as f:
             dat = self._read_data_raw(slicer, tiffobj=f)
         dat = dat.transpose(perm)[newdim]
-        indtype = dtypes.dtype(self.dtype)
-
-        # --- cutoff ---
-        dat = volutils.cutoff(dat, cutoff, dim)
-
-        # --- cast ---
-        rand = rand and not indtype.is_floating_point
-        if rand and not dtype.is_floating_point:
-            tmpdtype = dtypes.float64
-        else:
-            tmpdtype = dtype
-        dat, scale = volutils.cast(dat, tmpdtype.numpy, casting, returns='dat+scale')
-
-        # --- random sample ---
-        # uniform noise in the uncertainty interval
-        if rand and not (scale == 1 and not dtype.is_floating_point):
-            dat = volutils.addnoise(dat, scale)
-
-        # --- final cast ---
-        dat = volutils.cast(dat, dtype.numpy, 'unsafe')
-
-        # convert to torch if needed
-        if not numpy:
-            dat = torch.as_tensor(dat, device=device)
         return dat
 
     # --------------
