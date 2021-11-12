@@ -349,6 +349,43 @@ class MappedArray(MappedFile):
         new.affine = affine
         return new
 
+    def movedim(self, source, destination):
+
+        dim = self.dim
+        source = make_list(source)
+        destination = make_list(destination)
+        if len(destination) == 1:
+            # we assume that the user wishes to keep moved dimensions
+            # in the order they were provided
+            destination = destination[0]
+            if destination >= 0:
+                destination = list(range(destination, destination + len(source)))
+            else:
+                destination = list(range(destination + 1 - len(source), destination + 1))
+        if len(source) != len(destination):
+            raise ValueError('Expected as many source as destination positions.')
+        source = [dim + src if src < 0 else src for src in source]
+        destination = [dim + dst if dst < 0 else dst for dst in destination]
+        if len(set(source)) != len(source):
+            raise ValueError(f'Expected source positions to be unique but got '
+                             f'{source}')
+        if len(set(destination)) != len(destination):
+            raise ValueError(f'Expected destination positions to be unique but got '
+                             f'{destination}')
+
+        # compute permutation
+        positions_in = list(range(dim))
+        positions_out = [None] * dim
+        for src, dst in zip(source, destination):
+            positions_out[dst] = src
+            positions_in[src] = None
+        positions_in = filter(lambda x: x is not None, positions_in)
+        for i, pos in enumerate(positions_out):
+            if pos is None:
+                positions_out[i], *positions_in = positions_in
+
+        return self.permute(positions_out)
+
     def transpose(self, dim0, dim1):
         """Transpose two dimensions
 
@@ -372,7 +409,7 @@ class MappedArray(MappedFile):
         return self.permute(permutation)
 
     def data(self, dtype=None, device=None, casting='unsafe', rand=True,
-             cutoff=None, dim=None, numpy=False):
+             missing=None, cutoff=None, dim=None, numpy=False):
         """Load the array in memory
 
         Parameters
@@ -384,6 +421,10 @@ class MappedArray(MappedFile):
         rand : bool, default=False
             If the on-disk dtype is not floating point, sample noise
             in the uncertainty interval.
+        missing : float or sequence[float], optional
+            Value(s) that correspond to missing values.
+            No noise is added to them, and they are converted to NaNs
+            (if possible) or zero (otherwise).
         cutoff : float or (float, float), default=(0, 1)
             Percentile cutoff. If only one value is provided, it is
             assumed to relate to the upper percentile.
@@ -425,8 +466,8 @@ class MappedArray(MappedFile):
         """
         pass
 
-    def fdata(self, dtype=None, device=None, rand=False, cutoff=None,
-              dim=None, numpy=False):
+    def fdata(self, dtype=None, device=None, rand=False, missing=None,
+              cutoff=None, dim=None, numpy=False):
         """Load the scaled array in memory
 
         This function differs from `data` in several ways:
@@ -445,6 +486,9 @@ class MappedArray(MappedFile):
         rand : bool, default=False
             If the on-disk dtype is not floating point, sample noise
             in the uncertainty interval.
+        missing : float or sequence[float], optional
+            Value(s) that correspond to missing values.
+            No noise is added to them, and they are converted to NaNs.
         cutoff : float or (float, float), default=(0, 1)
             Percentile cutoff. If only one value is provided, it is
             assumed to relate to the upper percentile.
@@ -467,7 +511,7 @@ class MappedArray(MappedFile):
                             'type but got {}.'.format(dtype))
 
         # --- get unscaled data ---
-        dat = self.data(dtype=dtype, device=device, rand=rand,
+        dat = self.data(dtype=dtype, device=device, rand=rand, missing=missing,
                         cutoff=cutoff, dim=dim, numpy=numpy)
 
         # --- scale ---
@@ -675,7 +719,7 @@ class MappedArray(MappedFile):
         raise cls.FailedWriteError("Method not implemented in class {}."
                                    .format(cls.__name__))
 
-    def unsqueeze(self, dim):
+    def unsqueeze(self, dim, ndim=1):
         """Add a dimension of size 1 in position `dim`.
 
         Parameters
@@ -692,7 +736,7 @@ class MappedArray(MappedFile):
         index = [slice(None)] * self.dim
         if dim < 0:
             dim = self.dim + dim + 1
-        index = index[:dim] + [None] + index[dim:]
+        index = index[:dim] + ([None] * ndim) + index[dim:]
         return self[tuple(index)]
 
     def squeeze(self, dim):

@@ -1,17 +1,18 @@
 """PyTorch utilities."""
 
 import torch
-import torch.nn.functional as F
 from . import py
-from .py import make_list, make_tuple
+from .py import make_list, make_tuple, ensure_list
 from .constants import inf, eps
 from .dtypes import as_torch as dtype_astorch
 from . import dtypes
-from nitorch._C.grid import GridCount, GridPull
+from nitorch._C.grid import GridCount, GridPull, GridPush
+from .optionals import numpy as np
 import numbers
 import os
-import numpy as np
 import random
+from typing import Optional
+Tensor = torch.Tensor
 
 
 def _compare_versions(version1, mode, version2):
@@ -56,10 +57,12 @@ def torch_version(mode, version):
 
     """
     current_version, *cuda_variant = torch.__version__.split('+')
-    current_version = current_version.split('.')
-    current_version = (int(current_version[0]),
-                       int(current_version[1]),
-                       int(current_version[2]))
+    major, minor, patch, *_ = current_version.split('.')
+    # strip alpha tags
+    for x in 'abcdefghijklmnopqrstuvwxy':
+        if x in patch:
+            patch = patch[:patch.index(x)]
+    current_version = (int(major), int(minor), int(patch))
     version = py.make_list(version)
     return _compare_versions(current_version, mode, version)
 
@@ -74,7 +77,8 @@ def reproducible(seed=1234):
 
     """	
     random.seed(seed)
-    np.random.seed(seed)
+    if np:
+        np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -293,6 +297,18 @@ def shiftdim(x, n=None):
         n = n % x.dim()
         x = x.permute(tuple(range(n, x.dim())) + tuple(range(n)))
     return x
+
+
+def fast_movedim(input, source, destination):
+    """Move the position of exactly one dimension"""
+    dim = input.dim()
+
+    source = dim + source if source < 0 else source
+    destination = dim + destination if destination < 0 else destination
+    permutation = list(range(dim))
+    del permutation[source]
+    permutation.insert(destination, source)
+    return input.permute(*permutation)
 
 
 def movedim(input, source, destination):
@@ -719,6 +735,36 @@ def requires_grad(ctx, name):
     return False
 
 
+def fast_slice_tensor(x, index, dim=-1):
+    """Index a tensor along one dimensions.
+
+    This function is relatively similar to `torch.index_select`, except
+    that it uses the native indexing mechanism and can therefore
+    returns a tensor that use the same storage as the input tensor.
+
+    It is faster but less versatile than `slice_tensor`.
+
+    Parameters
+    ----------
+    x : tensor
+        Input tensor.
+    index : int or list[int] or slice
+        Indices to select along `dim`.
+    dim : int, default=last
+        Dimension to index.
+
+    Returns
+    -------
+    y : tensor
+        Output tensor.
+
+    """
+    slicer = [slice(None)] * x.dim()
+    slicer[dim] = index
+    slicer = tuple(slicer)
+    return x[slicer]
+
+
 def slice_tensor(x, index, dim=None):
     """Index a tensor along one or several dimensions.
 
@@ -753,10 +799,10 @@ def slice_tensor(x, index, dim=None):
         index = (index,)
     if dim is None:
         dim = list(range(-len(index), 0))
-    dim = make_list(dim)
+    dim = ensure_list(dim)
     nb_dim = max(len(index), len(dim))
-    dim = make_list(dim, nb_dim)
-    index = make_tuple(index, nb_dim)
+    dim = ensure_list(dim, nb_dim)
+    index = tuple(ensure_list(index, nb_dim))
 
     # build index
     full_index = [slice(None)] * x.dim()
@@ -967,7 +1013,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     value : scalar, default=0
         Value for mode 'constant'
     side : {'pre', 'post', 'both'}, default='post'
-        Side to pad
+        Side to crop/pad
 
     Returns
     -------
@@ -986,8 +1032,15 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     ndim = len(shape)
 
     # crop
-    index = tuple(slice(min(shape[d], inshape[d])) for d in range(ndim))
-    inp = inp.__getitem__(index)
+    if side == 'both':
+        crop = [max(0, inshape[d] - shape[d]) for d in range(ndim)]
+        index = tuple(slice(c//2, (c//2 - c) or None) for c in crop)
+    elif side == 'pre':
+        crop = [max(0, inshape[d] - shape[d]) for d in range(ndim)]
+        index = tuple(slice(-c or None) for c in crop)
+    else:  # side == 'post'
+        index = tuple(slice(min(shape[d], inshape[d])) for d in range(ndim))
+    inp = inp[index]
 
     # pad
     pad_size = [max(0, shape[d] - inshape[d]) for d in range(ndim)]
@@ -1272,6 +1325,15 @@ def sub2ind(subs, shape, out=None):
     return ind
 
 
+# floor_divide returns wrong results for negative values, because it truncates
+# instead of performing a proper floor. In recent version of pytorch, it is
+# advised to use div(..., rounding_mode='trunc'|'floor') instead.
+# Here, we only use floor_divide on positive values so we do not care.
+_trunc_div = ((lambda *a, **k: torch.div(*a, **k, rounding_mode='trunc'))
+              if torch_version('>=', (1, 8)) else torch.floor_divide
+              if torch_version('>=', (1, 5)) else (lambda x, y, **k: x // y))
+
+
 def ind2sub(ind, shape, out=None):
     """Convert linear indices into sub indices (i, j, k).
 
@@ -1304,7 +1366,7 @@ def ind2sub(ind, shape, out=None):
     for d in range(len(shape)):
         if d > 0:
             torch.remainder(sub[d], torch.as_tensor(stride[d-1], **bck), out=sub[d])
-        torch.floor_divide(sub[d], stride[d], out=sub[d])
+        sub[d] = _trunc_div(sub[d], stride[d], out=sub[d])
     return sub
 
 
@@ -1319,8 +1381,11 @@ def unfold(inp, kernel_size, stride=None, collapse=False):
         Patch shape.
     stride : [sequence of] int, default=`kernel_size`
         Stride.
-    collapse : bool, default=False
-        Collapse the original spatial dimensions
+    collapse : bool or 'view', default=False
+        Collapse the original spatial dimensions.
+        If 'view', forces collapsing to use the view mechanism, which ensures
+        that no data copy is triggered. This can fail if the tensor's
+        strides do not allow these dimensions to be collapsed.
 
     Returns
     -------
@@ -1393,6 +1458,8 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
         return x
 
     inp = torch.as_tensor(inp)
+    if torch.is_tensor(shape):
+        shape = shape.tolist()
     dim = dim or (len(shape) if shape else None)
     if not dim:
         raise ValueError('Cannot guess dim from inputs')
@@ -1497,7 +1564,7 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
     return out
 
 
-def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
+def histc(x, n=64, min=None, max=None, dim=None, keepdim=False, weights=None,
           order=1, bound='replicate', extrapolate=False, dtype=None):
     """Batched + differentiable histogram computation
 
@@ -1517,6 +1584,8 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
         Dimensions along which to compute the histogram
     keepdim : bool, default=False
         Keep singleton dimensions.
+    weights : tensor, optional
+        Observation weights
     order : {0..7}, default=1
         B-spline order encoding the histogram
     bound : bound_like, default='replicate'
@@ -1537,9 +1606,14 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
     """
     # reshape as [batch, pool]]
     x = torch.as_tensor(x)
+    if weights is not None:
+        dtype = x.dtype if x.dtype.is_floating_point else torch.get_default_dtype()
+        weights = torch.as_tensor(weights, dtype=dtype, device=x.device).expand(x.shape)
     if dim is None:
         x = x.reshape([1, -1])
         batch = []
+        if weights is not None:
+            weights = weights.reshape([1, -1])
     else:
         dim = py.make_list(dim)
         odim = list(range(-len(dim), 0))
@@ -1548,6 +1622,8 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
         batch = x.shape[:-len(dim)]
         pool = x.shape[-len(dim):]
         x = x.reshape([-1, py.prod(pool)])
+        if weights is not None:
+            weights = weights.reshape([-1, py.prod(pool)])
 
     # compute limits
     if min is None:
@@ -1574,7 +1650,12 @@ def histc(x, n=64, min=None, max=None, dim=None, keepdim=False,
         # hidden feature: tell pullpush to use +/- 0.5 tolerance when
         # deciding if a coordinate is inbounds.
         extrapolate = 2
-    h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
+    if weights is None:
+        # count == push an image of ones
+        h = GridCount.apply(x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
+    else:
+        # push weights
+        h = GridPush.apply(weights[:, None, :], x[:, :, None], [n], order, bound, extrapolate)[:, 0, ]
 
     # reshape
     h = h.to(dtype)
@@ -1724,7 +1805,7 @@ def _hist_to_quantile(hist, q):
     return q
 
 
-def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
+def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=None):
     """Compute quantiles.
 
     Parameters
@@ -1755,10 +1836,10 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
         return version[0] > 2 or (version[0] == 1 and version[1] >= 7)
 
     input, q = to_max_backend(input, q)
-    dim = py.make_list(dim or [])
-    if torch_is_recent() and len(dim) < 2 and not bins:
-        dim = dim[0] if dim else None
-        return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
+    dim = py.make_list([] if dim is None else dim)
+    # if torch_is_recent() and len(dim) < 2 and not bins:
+    #     dim = dim[0] if dim else None
+    #     return torch.quantile(input, q, dim=dim, keepdim=keepdim, out=out)
 
     # ------------------
     # our implementation
@@ -1766,30 +1847,42 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
 
     # reshape as (batch, pool)
     inshape = input.shape
-    if dim is None:
+    if mask is not None:
+        mask = mask.expand(inshape)
+    if not dim:
+        if mask is not None:
+            mask = mask.reshape([1, -1])
         input = input.reshape([1, -1])
         batch = []
     else:
-        dim = py.make_list(dim)
         odim = list(range(-len(dim), 0))
         input = movedim(input, dim, odim)
         batch = input.shape[:-len(dim)]
         pool = input.shape[-len(dim):]
         input = input.reshape([-1, py.prod(pool)])
+        if mask is not None:
+            mask = movedim(mask, dim, odim).reshape([-1, py.prod(pool)])
 
     q_scalar = q.dim() == 0
     q = q.reshape([-1]).clone()
-    if not bins:
+    if not bins and mask is None:
         # sort and sample
         input, _ = input.sort(-1)
         q = q.mul_(input.shape[-1]-1)
+        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
+    elif not bins:
+        input, index = input.sort(-1)
+        mask = mask[:, index]
+        mask = mask.cumsum(-1) / mask.sum(-1, keepdim=True)
+        mask[:, -1] = 1
+        q = _hist_to_quantile(mask, q)
         q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
     else:
         # compute cumulative histogram
         min = input.min(-1).values
         max = input.max(-1).values
         bin_width = (max-min)/bins
-        hist = histc(input, bins, dim=-1, min=min, max=max)
+        hist = histc(input, bins, dim=-1, min=min, max=max, weights=mask)
         del max, input
         hist += eps(hist.dtype)  # ensures monotonicity
         hist = hist.cumsum(-1) / hist.sum(-1, keepdim=True)
@@ -1800,9 +1893,12 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
 
     # reshape
     if keepdim:
-        oshape = list(inshape)
-        for d in dim:
-            oshape[d] = 1
+        if not dim:
+            oshape = [1] * len(inshape)
+        else:
+            oshape = list(inshape)
+            for d in dim:
+                oshape[d] = 1
         oshape += [q.shape[-1]]
     else:
         oshape = [*batch, q.shape[-1]]
@@ -1813,6 +1909,109 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, *, out=None):
     if out:
         out.reshape(q.shape).copy_(q)
     return q
+
+
+
+def _one_hot_wrapper(x: Tensor, dtype: Optional[torch.dtype] = None):
+    x = x.long()
+    x = torch.nn.functional.one_hot(x)
+    x = x.to(dtype)
+    return x
+
+
+if torch_version('>=', (1, 6)):
+    print(f"torch version {torch_version('>=', (1, 5))} ")
+    # jit.script does not accept `dtype` inputs in torch 1.3
+    # I don't know exactly which version started handling it.
+    _one_hot_wrapper = torch.jit.script(_one_hot_wrapper)
+
+
+def one_hot(x, dim=-1, exclude_labels=None, exclude_missing=False, max_label=None,
+            implicit=False, implicit_index=0, dtype=None, return_lookup=False):
+    """One-hot encode a volume of labels.
+
+    Parameters
+    ----------
+    x : tensor
+        An integer-type tensor with label values.
+    dim : int, default=-1
+        Dimension in which to insert the one-hot channel.
+    exclude_labels : sequence[int], optional
+        A list of labels to exclude from one-hot encoding.
+    exclude_missing : bool, default=False
+        Exclude missing labels from one-hot encoding
+        (their channel will be squeezed)
+    max_label : int, optional
+        Maximum label value
+    implicit : bool, default=False
+        Make the returned tensor have an implicit background class.
+        In this case, output probabilities do not sum to one, but to some
+        value smaller than one.
+    implicit_index : int, default=-1
+        Output channel to make implicit
+    dtype : tensor.dtype, optional
+        Output data type.
+    return_lookup : bool, default=False
+        Return lookup table from one-hot indices to labels
+
+    Returns
+    -------
+    y : tensor
+        One-hot tensor.
+        The number of one-hot channels is equal to `x.max() - len(exclude) + 1`
+        if not `implicit` else `x.max() - len(exclude)`.
+
+    """
+    if not exclude_labels and not exclude_missing and not implicit and not max_label:
+        x = _one_hot_wrapper(x, dtype)
+        x = fast_movedim(x, -1, dim)
+        return x
+
+    nb_classes = (max_label or int(x.max().item())) + 1
+    exclude_labels = set(py.ensure_list(exclude_labels or []))
+    if exclude_missing:
+        all_labels = x.unique()
+        missing_labels = [i for i in range(nb_classes) if i not in all_labels]
+        exclude_labels = exclude_labels.union(missing_labels)
+
+    dtype = dtype or x.dtype
+    out = torch.zeros([nb_classes-implicit, *x.shape], dtype=dtype, device=x.device)
+    implicit_index = (nb_classes + implicit_index if implicit_index < 0 else
+                      implicit_index)
+    i = 0
+    lookup = []
+    for j in range(nb_classes):
+        if j in exclude_labels:
+            continue
+        if i == implicit_index:
+            implicit_index = None
+            continue
+        out[i] = (x == j)
+        lookup.append(j)
+        i += 1
+
+    out = fast_movedim(out, 0, dim)
+    return (out, lookup) if return_lookup else out
+
+
+def merge_labels(x, lookup):
+    """Relabel a label tensor according to a lookup table
+
+    Parameters
+    ----------
+    x : tensor
+    lookup : sequence of [sequence of] int
+
+    Returns
+    -------
+    x : tensor
+
+    """
+    out = torch.zeros_like(x)
+    for i, j in enumerate(lookup):
+        j = py.make_list(j)
+        out[isin(x, j)] = i
+    return out
 
 
 class benchmark:

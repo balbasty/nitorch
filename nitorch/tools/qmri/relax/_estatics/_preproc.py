@@ -6,7 +6,7 @@ from nitorch.tools.qmri import io as qio
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
 from ._options import ESTATICSOptions
-from nitorch.tools.qmri.param import ParameterMap
+from nitorch.tools.qmri.param import ParameterMap, GeodesicDeformation, SVFDeformation, DenseDeformation
 from ._param import ESTATICSParameterMaps
 
 
@@ -52,6 +52,7 @@ def preproc(data, opt):
     -------
     data : sequence[GradientEchoMulti]
     maps : ParametersMaps
+    dist : sequence[ParameterizedDeformation]
 
     """
 
@@ -126,13 +127,40 @@ def preproc(data, opt):
         mean_shape = tuple(opt.recon.fov)
 
     # --- allocate maps ---
-    maps = ESTATICSParameterMaps()
-    maps.intercepts = [ParameterMap(mean_shape, fill=inter[c], affine=mean_affine, **backend)
-                       for c in range(len(data))]
-    maps.decay = ParameterMap(mean_shape, fill=decay, affine=mean_affine, min=0, **backend)
-    maps.affine = mean_affine
+    maps = ESTATICSParameterMaps(len(data), mean_shape, **backend, affine=mean_affine)
+    for c in range(len(data)):
+        maps.intercepts[c].volume.fill_(inter[c])
+    maps.decay.volume.fill_(decay)
 
-    return data, maps
+    # --- allocate distortions ---
+    if opt.distortion.enable:
+        dist = []
+        for c, contrast in enumerate(data):
+            if opt.distortion.model == 'smalldef':
+                dist1 = DenseDeformation(contrast.spatial_shape,
+                                         affine=contrast.affine,
+                                         **backend)
+            elif opt.distortion.model == 'svf':
+                dist1 = SVFDeformation(contrast.spatial_shape,
+                                       affine=contrast.affine,
+                                       steps=opt.distortion.steps,
+                                       **backend)
+            elif opt.distortion.model == 'shoot':
+                dist1 = GeodesicDeformation(contrast.spatial_shape,
+                                            affine=contrast.affine,
+                                            steps=opt.distortion.steps,
+                                            factor=opt.distortion.factor,
+                                            absolute=opt.distortion.absolute,
+                                            membrane=opt.distortion.membrane,
+                                            bending=opt.distortion.bending,
+                                            **backend)
+            else:
+                dist1 = None
+            dist.append(dist1)
+    else:
+        dist = [None] * len(data)
+
+    return data, maps, dist
 
 
 def _loglin_minifit(dat, te):

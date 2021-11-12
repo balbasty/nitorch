@@ -12,12 +12,13 @@ class ESTATICSParameterMaps:
     decay: ParameterMap             Apparent transverse relaxation rate (R2*)
     shape: tuple[int]               (nb_prm, *spatial) Shape
     affine: (4, 4) tensor           Affine orientation matrix
+    volume : tensor                 Stacked maps
 
     Methods
     -------
     Iteration over `[*intercepts, decay]` is implemented:
     ```python
-    >> maps = ESTATICSParameterMaps()
+    >> maps = ESTATICSParameterMaps(2, [128, 128, 128])
     >> for prm in maps:
     >>    do_something(prm)
     ```
@@ -25,6 +26,26 @@ class ESTATICSParameterMaps:
 
     intercepts: list = None
     decay: ParameterMap = None
+    volume: torch.Tensor = None
+
+    def __init__(self, nb_contrasts, shape, dtype=None, device=None, affine=None):
+        """
+
+        Parameters
+        ----------
+        nb_contrasts : int
+        shape : sequence[int]
+        dtype : torch.dtype, optional
+        device : torch.device, optional
+        affine : (D+1, D+1) tensor, optional
+        """
+        full_shape = (nb_contrasts+1, *shape)
+        volume = torch.zeros(full_shape, dtype=dtype, device=device)
+        volume[-1].fill_(1)
+        self.intercepts = [ParameterMap(volume[c], affine=affine)
+                           for c in range(nb_contrasts)]
+        self.decay = ParameterMap(volume[-1], affine=affine, min=0)
+        self.volume = volume
 
     def __len__(self):
         return len(self.intercepts) + 1

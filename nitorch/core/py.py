@@ -4,25 +4,26 @@ import functools
 from types import GeneratorType as generator
 import warnings
 from collections import Counter
+from typing import List, Tuple, Iterable
 
 
-def file_mod(s, nam='', prefix='', suffix='', odir='', ext=''):
+def file_mod(s, nam=None, prefix='', suffix='', odir=None, ext=None):
     """Modify a file path.
 
     Parameters
     ----------
     s : str
         File path.
-    nam : str, default=''
-        Filename, if empty string, unchanged.
+    nam : str, optional
+        New basename (without extension). Default: same as input.
     prefix : str, default=''
         Filename prefix.
     suffix : str, default=''
         Filename suffix.
-    odir : str, default=''
-        Output directory, if empty string, unchanged.
-    ext : str, default=''
-        Extension, if empty string, unchanged.
+    odir : str, optional
+        Output directory. Default: same as input.
+    ext : str, optional
+        New extension (with leading dot). Default: same as input.
 
     Returns
     ----------
@@ -100,7 +101,7 @@ def fileparts(fname):
     return dir, base, ext
 
 
-def make_sequence(input, n=None, crop=True, *args, **kwargs):
+def make_sequence(input, n=None, crop=True, *args, **kwargs) -> Iterable:
     """Ensure that the input is a sequence and pad/crop if necessary.
 
     Parameters
@@ -166,7 +167,7 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs):
         return return_type(input)
 
 
-def make_list(*args, **kwargs) -> list:
+def make_list(*args, **kwargs) -> List:
     """Ensure that the input is a list and pad/crop if necessary.
 
     Parameters
@@ -187,7 +188,25 @@ def make_list(*args, **kwargs) -> list:
         Output arguments.
 
     """
-    return list(make_sequence(*args, **kwargs))
+    return [elem for elem in make_sequence(*args, **kwargs)]
+
+
+def ensure_list(x, dim=None):
+    """Ensure that an object is a list (of size at last dim)
+
+    If x is a list, nothing is done (no copy triggered).
+    If it is a tuple, it is converted into a list.
+    Otherwise, it is placed inside a list.
+
+    This function is less versatile (but much faster) than `make_list`.
+    """
+    if not isinstance(x, (list, tuple)):
+        x = [x]
+    elif isinstance(x, tuple):
+        x = list(x)
+    if dim and len(x) < dim:
+        x += x[-1:] * (dim - len(x))
+    return x
 
 def ensure_list(x, dim=None):
     """Ensure that an object is a list (of size at last dim)
@@ -205,7 +224,7 @@ def ensure_list(x, dim=None):
     return x
 
 
-def make_tuple(*args, **kwargs) -> tuple:
+def make_tuple(*args, **kwargs) -> Tuple:
     """Ensure that the input is a tuple and pad/crop if necessary.
 
     Parameters
@@ -226,7 +245,7 @@ def make_tuple(*args, **kwargs) -> tuple:
         Output arguments.
 
     """
-    return tuple(make_sequence(*args, **kwargs))
+    return tuple(elem for elem in make_sequence(*args, **kwargs))
 
 
 def make_set(input) -> set:

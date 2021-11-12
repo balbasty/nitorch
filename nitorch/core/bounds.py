@@ -17,7 +17,15 @@ dst2                                                        antireflect, dirichl
 dst1                                                        antimirror               -a  0 | a b c d |  0 -d
 """
 import torch
-from nitorch._C.spatial import BoundType
+from nitorch._C.grid import BoundType
+
+
+nitorch_bounds = ('replicate', 'zero', 'dct2', 'dct1', 'dst2', 'dst1', 'dft')
+scipy_bounds = ('border', 'constant', 'reflect', 'mirror', 'wrap')
+pytorch_bounds = ('nearest', 'zero', 'reflection')
+other_bounds = ('repeat', 'zeros', 'neumann', 'circular',
+                'antireflect', 'dirichlet', 'antimirror')
+all_bounds = (*nitorch_bounds, *scipy_bounds, *pytorch_bounds, *other_bounds)
 
 
 def to_nitorch(bound, as_enum=False):

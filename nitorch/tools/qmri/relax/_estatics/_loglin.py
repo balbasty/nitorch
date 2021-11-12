@@ -2,7 +2,7 @@ import torch
 from nitorch import core
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
-from ._utils import (hessian_loaddiag, hessian_solve,
+from ._utils import (hessian_loaddiag_, hessian_solve,
                      smart_grid, smart_pull, smart_push)
 
 
@@ -64,7 +64,7 @@ def loglin(data, opt=None):
         msk = hess[:-1:2] == 0
 
         # --- load diagonal of the Hessian ---
-        hess = hessian_loaddiag(hess, 1e-6, 1e-8)
+        hess = hessian_loaddiag_(hess, 1e-6, 1e-8)
         
         # --- gauss-newton ---
         deltas = hessian_solve(hess, grad)

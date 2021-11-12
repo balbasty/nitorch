@@ -4,9 +4,9 @@ import inspect
 import math
 import torch
 from nitorch.core.py import make_list, make_tuple
-from nitorch.spatial import pool
+from nitorch.spatial import pool, compute_conv_shape
 from nitorch.nn.activations import _map_activations
-from .base import Module
+from nitorch.nn.base import Module
 
 
 def _guess_output_shape(inshape, dim, kernel_size, stride=1, dilation=1,
@@ -37,7 +37,7 @@ class Pool(Module):
 
     def __init__(self, dim, kernel_size=3, stride=None, padding=0,
                  dilation=1, reduction=None, activation=None,
-                 return_indices=False):
+                 return_indices=False, ceil=False):
         """
 
         Parameters
@@ -48,7 +48,7 @@ class Pool(Module):
             Kernel/Window size
         stride : int or sequence[int], default=kernel_size
             Step/stride
-        padding : int or sequence[int], default=0
+        padding : {'valid', 'same'} or int or sequence[int], default=0
             Zero-padding
         dilation : int or sequence[int], default=1
             Dilation
@@ -65,15 +65,21 @@ class Pool(Module):
                 * have a non-learnable activation
         return_indices : bool, default=False
             Return indices of the min/max/median elements.
+        ceil : bool, default=False
+            Whether to take the ceil rather than the floor when computing
+            the output shape. Ceil ensures that all input elements
+            belong to at least one tile, but is not implemented with
+            all reduction methods.
         """
         super().__init__()
         self.dim = dim
-        self.kernel_size = kernel_size
-        self.stride = stride
+        self.kernel_size = make_list(kernel_size, dim)
+        self.stride = make_list(stride, dim)
         self.padding = padding
-        self.dilation = dilation
+        self.dilation = make_list(dilation, dim)
         self.reduction = reduction or self.reduction
         self.return_indices = return_indices
+        self.ceil = ceil
 
         # Add activation
         #   an activation can be a class (typically a Module), which is
@@ -89,17 +95,14 @@ class Pool(Module):
                            else activation if callable(activation)
                            else None)
             
-    def shape(self, x, **overload):
+    def shape(self, x):
         """Compute output shape of the equivalent ``forward`` call.
 
         Parameters
         ----------
         x : tuple or (batch, in_channel, *in_spatial) tensor
             Input tensor or its shape
-        overload : dict
-            All parameters defined at build time can be overridden
-            at call time, except `dim`, `in_channels`, `out_channels`
-            and `kernel_size`.
+            (Only used by min/max/median)
 
         Returns
         -------
@@ -111,31 +114,20 @@ class Pool(Module):
             inshape = tuple(x.shape)
         else:
             inshape = x
-        
-        stride = overload.get('stride', self.stride)
-        padding = overload.get('padding', self.padding)
-        dilation = overload.get('dilation', self.dilation)
-        kernel_size = overload.get('kernel_size', self.kernel_size)
 
-        stride = make_tuple(stride, self.dim)
-        padding = make_tuple(padding, self.dim)
-        kernel_size = make_tuple(kernel_size, self.dim)
-        dilation = make_tuple(dilation, self.dim)
+        batch, channel, *inshape = inshape
+        return (batch, channel, *compute_conv_shape(
+            inshape, self.kernel_size, stride=self.stride,
+            dilation=self.dilation, padding=self.padding, ceil=self.ceil))
 
-        return _guess_output_shape(
-            inshape, self.dim, kernel_size,
-            stride=stride, dilation=dilation, padding=padding)
-
-    def forward(self, x, **overload):
+    def forward(self, x, return_indices=None):
         """
 
         Parameters
         ----------
         x : (batch, channel, *spatial) tensor
             Tensor to pool
-        overload : dict
-            Most parameters defined at build time can be overriden at
-            call time
+        return_indices : bool, default=self.return_indices
 
         Returns
         -------
@@ -145,37 +137,36 @@ class Pool(Module):
             Indices of input elements.
 
         """
+        return_indices = self.return_indices
+        if return_indices is None:
+            return_indices = self.return_indices
 
-        dim = self.dim
-        kernel_size = make_list(overload.get('kernel_size', self.kernel_size), dim)
-        stride = make_list(overload.get('stride', self.stride), dim)
-        padding = make_list(overload.get('padding', self.padding), dim)
-        dilation = make_list(overload.get('dilation', self.dilation), dim)
-        reduction = overload.get('reduction', self.reduction)
-        return_indices = overload.get('return_indices', self.return_indices)
+        x = pool(self.dim, x,
+                 kernel_size=self.kernel_size,
+                 stride=self.stride,
+                 dilation=self.dilation,
+                 padding=self.padding,
+                 reduction=self.reduction,
+                 return_indices=return_indices,
+                 ceil=self.ceil)
+        if return_indices:
+            x, ind = x
 
-        # Activation
-        activation = overload.get('activation', self.activation)
-        if isinstance(activation, str):
-            activation = _map_activations.get(activation.lower(), None)
-        activation = (activation() if inspect.isclass(activation)
-                      else activation if callable(activation)
-                      else None)
+        if self.activation:
+            x = self.activation(x)
+        return (x, ind) if return_indices else x
 
-        x = pool(dim, x,
-                 kernel_size=kernel_size,
-                 stride=stride,
-                 dilation=dilation,
-                 padding=padding,
-                 reduction=reduction,
-                 return_indices=return_indices)
-
-        if activation:
-            x = activation(x)
-        return x
+    def extra_repr(self):
+        s = [f'kernel_size={list(self.kernel_size)}']
+        if any(x and x != k for x, k in zip(self.stride, self.kernel_size)):
+            s += [f'stride={list(self.stride)}']
+        if any(x > 1 for x in self.dilation):
+            s += [f'dilation={list(self.dilation)}']
+        s = ', '.join(s)
+        return s
 
 
-class MaxPool(Module):
+class MaxPool(Pool):
     """Generic max pooling layer"""
     reduction = 'max'
 
@@ -195,11 +186,11 @@ class MedianPool(Pool):
     reduction = 'median'
 
 
-class MeanPool(Module):
+class MeanPool(Pool):
     """Generic mean pooling layer"""
     reduction = 'mean'
 
-    def forward(self, x, w=None, **overload):
+    def forward(self, x, w=None):
         """
 
         Parameters
@@ -209,9 +200,7 @@ class MeanPool(Module):
         w : (batch, channel, *spatial) tensor, optional
             Tensor of weights. Its shape must be broadcastable to the
             shape of `x`.
-        overload : dict
-            Most parameters defined at build time can be overriden at
-            call time
+        return_indices : bool, default=self.return_indices
 
         Returns
         -------
@@ -219,25 +208,25 @@ class MeanPool(Module):
             Pooled tensor
 
         """
-
         if w is None:
-            return super().forward(x, **overload)
+            return super().forward(x)
         else:
-            overload['reduction'] = 'sum'
-            activation = overload.pop('activation', self.activation)
-            overload['activation'] = 'None'
-            sumpool = lambda t: super().forward(t, **overload)
+            sumpool = SumPool(self.dim, kernel_size=self.kernel_size,
+                              stride=self.stride, padding=self.padding,
+                              dilation=self.dilation)
             w = w.expand(x.shape)
             x = sumpool(x*w) / sumpool(w)
 
-            if isinstance(activation, str):
-                activation = _map_activations.get(activation.lower(), None)
-            activation = (activation() if inspect.isclass(activation)
-                          else activation if callable(activation)
-                          else None)
-            if activation is not None:
-                x = activation(x)
+            if self.activation is not None:
+                x = self.activation(x)
 
             return x
 
 
+pool_map = {
+    'max': MaxPool,
+    'mean': MeanPool,
+    'median': MedianPool,
+    'sum': SumPool,
+    'min': MinPool,
+}

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as tnn
-from ..modules.base import Module
+from nitorch.nn.base import Module
 from ..modules.cnn import UNet, CNN
 from ..modules.spatial import GridPull, GridExp, GridResize, AffineGrid, \
     AffineExp, AffineLog, AffineClassic, \
@@ -565,7 +565,7 @@ class AffineMorphFromDense(Module):
                          output_channels=dim,
                          encoder=unet['encoder'],
                          decoder=unet['decoder'],
-                         batch_norm=unet['batch_norm'],
+                         norm=unet['batch_norm'],
                          kernel_size=unet['kernel_size'],
                          activation=unet['activation'])
         if encoder == 'leastsquares':
@@ -582,7 +582,7 @@ class AffineMorphFromDense(Module):
                            output_channels=nb_prm,
                            encoder=cnn['encoder'],
                            stack=cnn['stack'],
-                           batch_norm=cnn['batch_norm'],
+                           norm=cnn['batch_norm'],
                            kernel_size=cnn['kernel_size'],
                            reduction=cnn['reduction'],
                            activation=cnn['activation'],

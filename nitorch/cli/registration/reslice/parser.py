@@ -5,7 +5,7 @@ help = r"""[nitorch] Reslice volumes
 
 usage:
     nitorch reslice *FILES <*TRF> FILE [-t FILE] [-o *FILE] 
-                    [-inter ORDER] [-bnd BND] [-ex] [-cpu|gpu]
+                    [-i ORDER] [-b BND] [-p] [-x] [-cpu|gpu]
     
     <TRF> can take values (with additional options):
     -l, --linear            Linear transform (i.e., affine matrix)
@@ -21,16 +21,18 @@ usage:
     -iv, --velocity-inverse          Inverse of a diffeomorphic velocity field
    
     Other tags are:
-    -t,     --target            Defines the target space.
-                                If not provided, minimal reslicing is performed.
-    -o,     --output            Name of the output file (default: '*.resliced*')
-    -inter, --interpolation     Interpolation order (1)
-    -bnd,   --bound             Boundary conditions (dct2)
-    -ex,    --extrapolate       Extrapolate out-of-bounds data (no)
-    -cpu, -gpu                  Device to use (cpu)
+    -t, --target            Defines the target space.
+                            If not provided, minimal reslicing is performed.
+    -o, --output            Name of the output file (default: '*.resliced*')
+    -i, --interpolation     Interpolation order (1)
+    -p, --prefilter         Apply spline prefilter (yes)
+    -b, --bound             Boundary conditions (dct2)
+    -x, --extrapolate       Extrapolate out-of-bounds data (no)
+    -v, --voxel-size        Voxel size of the resliced space (default: from target)
+    -cpu, -gpu              Device to use (cpu)
    
    The output image is
-    input_dat(inv(input_aff) o trf[0] o trf[1] o ... trf[-1] o target_aff)
+    input_dat(inv(inpt_aff) o trf[0] o trf[1] o ... trf[-1] o target_aff)
     
     For example, if `autoreg` has been run to register 'mov.nii' to 'fix.nii'
     and has generated transforms 'affine.lta' and 'velocity.nii':
@@ -124,16 +126,23 @@ def parse(args):
             while cli.next_isvalue(args):
                 val, *args = args
                 options.output.append(val)
-        elif tag in ('-inter', '--interpolation'):
+        elif tag in ('-i', '-inter', '--interpolation'):
             cli.check_next_isvalue(args, tag)
             options.interpolation, *args = args
             options.interpolation = int(options.interpolation)
-        elif tag in ('-bnd', '--bound'):
+        elif tag in ('-b', '-bnd', '--bound'):
             cli.check_next_isvalue(args, tag)
             options.bound, *args = args
-        elif tag in ('-ex', '--extrapolate'):
+        elif tag in ('-p', '--prefilter'):
+            cli.check_next_isvalue(args, tag)
+            options.prefilter, *args = args
+            options.prefilter = (
+                True if options.prefilter.lower()[0] in 'ty' else
+                False if options.prefilter.lower()[0] in 'fn' else
+                bool(int(options.prefilter)))
+        elif tag in ('-x', '-ex', '--extrapolate'):
             options.extrapolate = False
-        elif tag in ('-vx', '--voxel-size'):
+        elif tag in ('-v', '-vx', '--voxel-size'):
             options.voxel_size = []
             while cli.next_isvalue(args):
                 val, *args = args

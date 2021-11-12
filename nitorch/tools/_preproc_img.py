@@ -8,7 +8,44 @@ from nitorch.spatial import (affine_matrix_classic, voxel_size)
 from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d)
 
 
-def _world_reslice(dat, mat, interpolation=1):
+def _reslice2ref(dat, mat, interpolation=1, ref=0):
+    """Reslice images to reference.
+
+    Parameters
+    ----------
+    dat : [N, ] list, tensor_like
+        Image data.
+    mat : [N, ] list, tensor_like
+        Affine matrix
+    interpolation : int, default=1 (linear)
+        Interpolation order.
+    ref : int, default=0
+        Index of reference image.
+
+    Returns
+    -------
+    dat : [N, ] list, tensor_like
+        Resliced image data.
+    mat_ref : [N, ] list, tensor_like
+        Resliced affine matrix.
+
+    """
+    # reference
+    mat_ref = mat[ref]
+    dm_ref = dat[ref].shape
+    # reslice
+    for i in range(len(dat)):
+        if i == ref:  continue
+        mat_res = torch.linalg.solve(mat[i], mat_ref)
+        dat[i] = _reslice_dat_3d(dat[i], mat_res, dm_ref, 
+            interpolation=interpolation)
+    # replicate reference affine
+    mat_ref = [mat_ref for i in range(len(dat))]
+
+    return dat, mat_ref
+
+
+def _world_reslice(dat, mat, interpolation=1, vx=None):
     """Reslice image data to world space.
 
     Parameters
@@ -19,6 +56,8 @@ def _world_reslice(dat, mat, interpolation=1):
         Affine matrix.
     interpolation : int, default=1 (linear)
         Interpolation order.
+    vx : float | [float,] *3, optional
+        Output voxel size.
 
     Returns
     -------
@@ -30,7 +69,12 @@ def _world_reslice(dat, mat, interpolation=1):
     """
     device = dat.device
     # Get voxel size
-    vx = voxel_size(mat).type(torch.float64).to(device)
+    if vx is None:
+        vx = voxel_size(mat).type(torch.float64).to(device)
+    else:
+        if not isinstance(vx, (list, tuple)):
+            vx = (vx,) * 3
+        vx = torch.as_tensor(vx).type(torch.float64).to(device)
     # Get corners
     c = _get_corners_3d(dat.shape).type(torch.float64).to(device)
     c = c.t()
