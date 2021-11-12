@@ -163,10 +163,6 @@ class Mixture:
             # Update model specific parameters
             self._update(ss0, ss1, ss2)
 
-        print(f"self.dof: {self.dof}")
-        print(f"self.mp: {self.mp}")
-        print(f"self.sig: {self.sig**2}")
-
         return Z, lb[:n_iter + 1]
     
     def _init_mp(self, dtype=torch.float64):

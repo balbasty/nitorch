@@ -202,9 +202,11 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
     mp = model.mp
     if mn < 0:  # GMM
         sd = torch.sqrt(model.Cov).squeeze()
-    else:  # RMM/CMM
+    elif chi:  # RMM/CMM
         sd = model.sig.squeeze()
         dof = model.dof
+    else:
+        sd = model.sig.squeeze()
 
     # Get std and mean of noise class
     dof_noise=None

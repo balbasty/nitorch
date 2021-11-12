@@ -46,7 +46,7 @@ import numpy as np
 #   the residuals).
 
 
-def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
+def greeq(data, transmit=None, receive=None, opt=None, chi=False, **kwopt):
     """Fit a non-linear relaxometry model to multi-echo Gradient-Echo data.
 
     Parameters
@@ -95,7 +95,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         Only returned is MT-weighted data is provided.
 
     """
-    chi = True
     opt = GREEQOptions().update(opt, **kwopt)
     dtype = opt.backend.dtype
     device = opt.backend.device
@@ -188,9 +187,15 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 grad.zero_()
                 hess.zero_()
                 # --- loop over contrasts ---
+                # temporary solution
+                contrast_number = 0
                 for contrast, b1m, b1p in zip(data, receive, transmit):
-                    # compute gradient
-                    crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt, chi=True, dof=dof)
+                    if chi:
+                        crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt, chi=chi, dof=dof[contrast_number])
+                    else:
+                        # compute gradient
+                        crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt, chi=chi)
+                    contrast_number+=1
 
                     # increment
                     if hasattr(maps, 'mt') and not contrast.mt:
@@ -407,7 +412,7 @@ def _resize(maps, rls, aff, shape):
     return maps, rls
 
 
-def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=False, dof=None):
+def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=False, dof=None ):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
 
@@ -454,8 +459,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
 
     # sequence parameters
     lam = 1 / contrast.noise
-    #lam = 1./386.7943 
-    print(f"1/lam {contrast.noise}")
     tr = contrast.tr                                # TR is stored in sec
     fa = contrast.fa / 180. * core.constants.pi     # FA is stored in deg
     
@@ -565,14 +568,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
 
 
         if chi:
-            # nu = 21.4342
-            # sig2 = 386.7943
-            #dof= torch.as_tensor(21.4342 , dtype=dtype)
-            print(dof)
             z = (dat*fit*lam).clamp_min_(tiny)
-            #ndat_np, fit_np = dat.clone().detach().cpu(), fit.clone().detach().cpu()
-            #bes_np = ive(dof/2.-1., ndat_np.numpy()*fit_np.numpy()*lam)
-            #bes = torch.as_tensor(bes_np, dtype=dtype, device=dat.device) 
             xi = besseli_ratio(dat*fit*lam+tiny, dof/2.-1., N=2, K=4)
             logbes = log_modified_bessel_first(z, dof/2.-1.)
 
@@ -589,32 +585,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
             # gaussian log-likelihood
             res = dat.neg_().add_(fit)
             crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
-
-
-        #     res = fit+xi*dat.neg()
-        #     res[~msk] = 0
-        #     del bes_np, xi, ndat_np, fit_np
-        #     torch.cuda.empty_cache()
-        # else:
-        #     res = fit+dat.neg()
-        
-
-        # # chi log likelihood
-        # if chi:
-        #     critn = (dof/2.-1.)*torch.log(fit+tiny)\
-        #         -(dof/2.)*torch.log(dat+tiny)\
-        #             +((fit.square()+dat.square())*lam)/2.\
-        #                 - torch.log(bes+tiny) - torch.abs(fit*dat*lam)
-        #                 # ive(v, z) = iv(v, z) * exp(-abs(z.real))
-        #     critn[~msk] = 0
-        #     crit = crit + torch.sum(critn, dtype=torch.double)
-        #     del critn
-        # else:
-        #     #compute log-likelihood
-        #     crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
-        # del dat
-        # torch.cuda.empty_cache()
-
 
 
 
