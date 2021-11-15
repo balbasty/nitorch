@@ -20,7 +20,7 @@ except ImportError:
     matplotlib = None
 
 
-def try_import(path, keys=None, _as=True):
+def try_import(path, keys=None, _as=False):
     """Try to import from a module.
 
     Parameters
@@ -77,3 +77,6 @@ def try_import(path, keys=None, _as=True):
             cursor = getattr(cursor, path[i])
         return mod0
 
+
+def try_import_as(path, keys=None):
+    return try_import(path, keys, _as=True)

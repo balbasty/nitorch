@@ -23,7 +23,7 @@ def _inplace_softmax(Z, W=None, dim=0):
     return lse
 
 
-def mrf(Z, P, L=None, W=None, max_iter=5, tol=1e-4):
+def mrf(Z, P, L=None, W=None, max_iter=5, tol=1e-4, inplace=False):
     """Apply a Markov Random Field using a mean-field approximation
     (= variational Bayes)
 
@@ -41,6 +41,8 @@ def mrf(Z, P, L=None, W=None, max_iter=5, tol=1e-4):
         Maximum number of iterations
     tol : float, default=1e-4
         Tolerance for early stopping
+    inplace : bool, default=False
+        Write into Z in-place.
 
     Returns
     -------
@@ -49,6 +51,9 @@ def mrf(Z, P, L=None, W=None, max_iter=5, tol=1e-4):
     lZ : (K, *spatial) tensor
         MRF log-term
     """
+
+    if not inplace:
+        Z = Z.clone()
 
     P = P.log()
     dim = Z.dim() - 1
@@ -114,7 +119,7 @@ def mrf(Z, P, L=None, W=None, max_iter=5, tol=1e-4):
                 # normalize by number of neighbors to decrease a bit
                 # the strength of the MRF (I feel that might be the
                 # correct way to normalize the joint probability...)
-                Z0.div_(2*dim)
+                # Z0.div_(2*dim)
                 lZ[slicer0].copy_(Z0)
 
                 # add likelihood
@@ -125,7 +130,6 @@ def mrf(Z, P, L=None, W=None, max_iter=5, tol=1e-4):
                 ll += _inplace_softmax(Z0, W[slicer0], dim)
 
         # gain
-        print(ll.item())
         if ll - oll < tol * Nw:
             break
 

@@ -1,62 +1,17 @@
 from timeit import default_timer as timer
 import math as pymath
-from nitorch.core.optim import plot_convergence
 from nitorch.core import linalg, math, utils, py
 from nitorch.plot import plot_mixture_fit
 from nitorch import spatial
 import torch
-from .mrf import mrf, update_mrf
+from ._mrf import mrf, update_mrf
+from ._plot import plot_lb, plot_images_and_lb
+
 
 default_warp_reg = {'absolute': 0,
                     'membrane': 0.001,
                     'bending': 0.5,
                     'lame': (0.05, 0.2), }
-
-
-def uniseg(x, w=None, aff=None, bias=True, warp=True, mixing=True,
-           nb_classes=2, prior=None, prior_aff=None, lam_bias=0.1, lam_warp=0.1,
-           max_iter=30, tol=1e-4, verbose=1, show_fit=False):
-
-    # prepare inputs
-    batch, channel, *spatial = x.shape
-    dim = (x.dim() - 2)
-    if w is not None:
-        w = w.expand([batch, 1, *spatial])
-    else:
-        w = [None] * batch
-    if aff is not None:
-        aff = aff.expand([batch, dim+1, dim+1])
-    else:
-        aff = [None] * batch
-
-    # loop over batch elements
-    models = []
-    z = []
-    lb = []
-    for b in range(batch):
-        model = UniSeg(
-            dim, nb_classes, bias=bias, warp=warp, mixing=mixing,
-            prior=prior, prior_aff=prior_aff, lam_bias=lam_bias, lam_warp=lam_warp,
-            max_iter=max_iter, tol=tol, verbose=verbose, show_fit=show_fit,
-        )
-
-        z1, lb1 = model.fit(x[b], w[b], aff=aff[b])
-        models.append(model)
-        z.append(z1)
-        lb.append(lb1)
-
-    # stack results
-    parameters = {}
-    parameters['mean'] = torch.stack([model.mu for model in models])
-    parameters['cov'] = torch.stack([model.sigma for model in models])
-    if warp:
-        parameters['warp'] = torch.stack([model.alpha for model in models])
-    if bias:
-        parameters['bias'] = torch.stack([model.beta.exp() for model in models])
-    if mixing:
-        parameters['mixing'] = torch.stack([model.gamma for model in models])
-
-    return torch.stack(z), torch.stack(lb), parameters
 
 
 class SpatialMixture:
@@ -66,12 +21,12 @@ class SpatialMixture:
     _tinyish = 1e-3
 
     def __init__(self, nb_classes=6,
-                 bias=True, warp=True, mixing=False, prior=None, prior_aff=None,
-                 mrf=False, lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=100,
+                 bias=True, warp=True, mixing=False, prior=None, affine_prior=None,
+                 mrf='once', lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=100,
                  bias_acceleration=0, warp_acceleration=0.9, spacing=3,
-                 max_iter=30, tol=1e-4, max_iter_intensity=8,
+                 max_iter=30, tol=1e-3, max_iter_intensity=8,
                  max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
-                 verbose=1, verbose_bias=0, verbose_warp=0, show_fit=False):
+                 verbose=1, plot=0):
         """
         Parameters
         ----------
@@ -87,9 +42,9 @@ class SpatialMixture:
             Optimize stationary mixing proportions
         prior : (nb_classes, [*spatial]) tensor, optional
             GMM mixing proportions. Stationary and learned by default.
-        prior_aff : (D+1, D+1) tensor, optionsl
+        affine_prior : (D+1, D+1) tensor, optionsl
             Orientation matrix of the prior.
-        mrf : bool, default=False
+        mrf : {False, 'once' or True, 'always'}, default='once'
             Include a Markov Random Field
         lam_bias : float, default=0.1
             Regularization factor of the bias field.
@@ -106,7 +61,7 @@ class SpatialMixture:
         ----------------
         max_iter : int, default=30
             Maximum number of outer (coordinate descent) iterations
-        tol : float, default=1e-4
+        tol : float, default=1e-3
             Tolerance for early stopping
         max_iter_intensity : int, default=8
             Maximum number of GMM+Bias (EM) iterations
@@ -121,13 +76,16 @@ class SpatialMixture:
         spacing : float, default=3
             Distance (in mm) between sampled points when optimizing parameters
         verbose : int, default=1
-            0: None.
-            1: Print summary when finished.
-            2: 1 + print convergence.
-            3: 1 + 2 + Log-likelihood plot.
-        verbose_bias : int, default=0
-        verbose_warp : int, default=0
-        show_fit : bool or int, default=False
+            0: None
+            1: Print summary when finished
+            2: Print convergence (excluding gmm)
+            3: Print convergence (including gmm)
+        plot : bool or int, default=False
+            0: None
+            1: Show lower bound and images at the end
+            2: Show live lower bound
+            3: Show live images (excluding gmm)
+            4: Show live images (including gmm)
 
         """
         # Convert nb_classes to a list of cluster indices
@@ -141,10 +99,10 @@ class SpatialMixture:
         if prior is not None:
             implicit_in = len(prior) < self.nb_classes
             prior = math.logit(prior, implicit=(implicit_in, True), dim=0)
-            if prior_aff is None:
-                prior_aff = spatial.affine_default(prior.shape[1:])
+            if affine_prior is None:
+                affine_prior = spatial.affine_default(prior.shape[1:])
         self.prior = prior
-        self.prior_aff = prior_aff
+        self.affine_prior = affine_prior
         self.lam_bias = lam_bias * 1e6
         if isinstance(lam_warp, (int, float)):
             factor_warp = lam_warp
@@ -194,11 +152,7 @@ class SpatialMixture:
 
         # Verbosity
         self.verbose = verbose
-        self.verbose_bias = verbose_bias
-        self.verbose_warp = verbose_warp
-        self.show_fit = show_fit
-        if self.show_fit is True:
-            self.show_fit = 1
+        self.plot = plot
 
         self.lam = []
 
@@ -244,6 +198,8 @@ class SpatialMixture:
         -------
         Z : (K, [*spatial]) tensor
             Class responsibilities
+        lb : () tensor
+            Final lower bound
 
         """
         with torch.random.fork_rng():
@@ -310,10 +266,12 @@ class SpatialMixture:
         Z, lb, all_lb = self._em(X, W, aff)
 
         # Estimate Z at highest resolution
-        if self.spacing:
+        M = None
+        if self.spacing or self.mrf:
+            if self.verbose > 0:
+                print('Post processing...')
             X = X0
             W = W0
-            M = None
             factor = spatial.voxel_size(aff) / spatial.voxel_size(aff0)
             if self.mrf:
                 # volume / surface = length -> increase mrf diagonal
@@ -327,21 +285,21 @@ class SpatialMixture:
             if self.beta is not None:
                 self.beta = spatial.reslice(
                     self.beta, aff, aff0, X.shape[1:],
-                    bound='dct2', interpolation=3,
-                    prefilter=True, extrapolate=True)
-                X = self.beta.exp().mul_(X)
+                    bound='dct2', interpolation=2,
+                    prefilter=False, extrapolate=True)
+                XB = self.beta.exp().mul_(X)
+            else:
+                XB = X
             if self.prior is not None:
                 self.alpha = utils.movedim(self.alpha, -1, 0)
                 self.alpha = spatial.reslice(
                     self.alpha, aff, aff0, X.shape[1:],
-                    bound='dft', interpolation=3,
-                    prefilter=True, extrapolate=True)
+                    bound='dft', interpolation=2,
+                    prefilter=False, extrapolate=True)
                 self.alpha = utils.movedim(self.alpha, 0, -1)
                 self.alpha *= factor
                 M = self.warp_tpm(aff=aff0)
-            Z, _ = self.e_step(X, W, M)
-            if self.verbose >= 3:
-                self._plot_lb(all_lb, X, Z, M)
+            Z, _ = self.e_step(XB, W, M)
 
         # Print algorithm info
         if self.verbose > 0:
@@ -354,16 +312,12 @@ class SpatialMixture:
                 vram_peak = int(vram_peak / 2 ** 20)
                 v += f', peak VRAM: {vram_peak} MB'
             print(v)
-        # if self.verbose >= 3:
-        #     _ = plot_convergence(lb, xlab='Iteration number',
-        #                          fig_title='Model lower bound',
-        #                          fig_num=self.show_fit)
 
-        # Plot mixture fit
-        if self.show_fit:
-            self._plot_fit(X, W, fig_num=self.show_fit+1)
+        if self.plot > 0:
+            M = self.warp_tpm(aff=aff0)
+            self._plot_lb(all_lb, X, Z, M, mode='final')
 
-        return Z
+        return Z, all_lb[-1]
 
     def e_step(self, X, W=None, M=None, Z=None, combine=False):
         """Perform the Expectation step
@@ -391,11 +345,6 @@ class SpatialMixture:
             Z = self._z_combine(Z)
             return Z, lb
 
-        if self.verbose >= 3:
-            print('compute Z')
-
-        Z0 = Z
-
         M = M.log() if M is not None else None
         gamma = self.gamma.log() if self.gamma is not None else None
         N = X.shape[1:]
@@ -409,16 +358,15 @@ class SpatialMixture:
             if M is not None:
                 Z[k] += M[k0]
         if self.mrf:
-            L = math.softmax(Z + self._tinyish, dim=0)
-            L = self._z_combine(L)
-            # if Z0 is None:
-            #     Z0 = L.clone()
-            Z0 = L.clone()
-            L = L.log_()
-            _, Z0 = mrf(Z0, self.mrf_fit, L, W)
+            if self.nb_clusters != self.nb_classes:
+                L = math.softmax(Z + self._tinyish, dim=0)
+                L = self._z_combine(L).log_()
+            else:
+                L = Z
+            _, L = mrf(Z, self.mrf_fit, L, W)
             # Z0 now contains \sum_j log(pi)[j] @ Z[j]
             for k, k0 in enumerate(self.lkp):
-                Z[k] += Z0[k0]
+                Z[k] += L[k0]
         # --- softmax ---
         Z, lb = math.softmax_lse(Z + self._tinyish, lse=True, weights=W, dim=0)
         return Z, lb
@@ -457,6 +405,7 @@ class SpatialMixture:
         vx = spatial.voxel_size(aff) if aff is not None else None
         nW = W.sum() if W is not None else X[1:].numel()
 
+        # --- prepare warped template and its gradients ----------------
         M = G = None
         if self.prior is not None:
             if self.warp:
@@ -464,23 +413,26 @@ class SpatialMixture:
             else:
                 M = self.warp_tpm(aff=aff)
 
+        # --- bias corrected volume ------------------------------------
         XB = X
         if self.beta is not None:
             XB = self.beta.exp().mul_(X)
         Z = None
 
+        # --- deactivate MRF if needed ---------------------------------
+        mrf = self.mrf
+        if self.mrf != 'always':
+            mrf, self.mrf = self.mrf, False
+
         all_lb = []
         all_all_lb = []
         lb = -float('inf')
         plot_mode = None
-        mrf, self.mrf = self.mrf, False
         for n_iter in range(self.max_iter):  # EM loop
-            if self.verbose >= 2:
-                print(f'n_iter: {n_iter + 1}')
             olb_em = lb
 
-            # if n_iter > 5:
-            #     self.mrf = mrf
+            if mrf == 'always' and n_iter > 5:
+                self.mrf = mrf
 
             for n_iter_intensity in range(self.max_iter_intensity):
                 olb_intensity = lb
@@ -495,7 +447,8 @@ class SpatialMixture:
                     all_all_lb.append(lb)
                     if self.verbose >= 3:
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_cluster:02d} | '
-                              f'pre gmm: {lb.item():12.6g}')
+                              f'pre gmm: {lb.item()/nW:12.6g}')
+                    if self.plot >= 4:
                         self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
                     # ==================
@@ -514,6 +467,7 @@ class SpatialMixture:
                     # ============================
                     # M-step - Markov Random Field
                     # ============================
+                    # Not used for now
                     # if self.mrf:
                     #     self._update_mrf(Z, W)
 
@@ -530,10 +484,10 @@ class SpatialMixture:
                     Z, lb = self.e_step(XB, W, M, Z)
                     lb += self._lb_parameters()
                     all_all_lb.append(lb)
-                    if self.verbose >= 3:
+                    if self.verbose >= 2:
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_bias:02d} | '
-                              f'pre bias: {lb.item():12.6g}')
-                        self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                              f'pre bias: {lb.item()/nW:12.6g}')
+                    self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
                     # =============
                     # M-step - Bias
@@ -556,10 +510,10 @@ class SpatialMixture:
                 Z, lb = self.e_step(XB, W, M, Z, combine=True)
                 lb += self._lb_parameters()
                 all_all_lb.append(lb)
-                if self.verbose >= 3:
+                if self.verbose >= 2:
                     print(f'{n_iter:02d} | {n_iter_warp:02d} | {"":2s} | '
-                          f'pre warp: {lb.item():12.6g}')
-                    self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                          f'pre warp: {lb.item()/nW:12.6g}')
+                self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
                 # =============
                 # M-step - Warp
@@ -657,188 +611,20 @@ class SpatialMixture:
 
         return ss0, ss1, ss2
 
-    def _plot_fit(self, X, W, fig_num):
-        """ Plot mixture fit."""
-        if hasattr(self, 'get_means_variances'):
-            mp = self.gamma
-            mu, var = self.get_means_variances()
-            log_pdf = lambda x, k, c: self._log_likelihood(x, k, c)
-            plot_mixture_fit(X, log_pdf, mu, var, mp, fig_num, W)
-
     def _plot_lb(self, lb, X, Z, M=None, mode=None):
-        import matplotlib.pyplot as plt
-        first = False
-        if not getattr(self, 'figure', None):
-            self.figure = plt.figure(666)
-            first = True
-        if isinstance(lb, (list, tuple)):
-            lb = torch.stack(lb)
-
-        from nitorch.plot.colormaps import prob_to_rgb
-        if X.dim()-1 == 3:
-            i = 0
-            ncol = len(X) + 1 + (M is not None) + 2*(self.beta is not None)
-            if first:
-                self.figure.clf()
-            else:
-                self.figure.canvas.draw()
-                for elem in self.plt_saved:
-                    self.figure.canvas.restore_region(elem)
-            if not mode or mode == 'bias':
-                X1 = X[:, :, :, X.shape[-1]//2].cpu()
-                X2 = X[:, :, X.shape[-2]//2, :].cpu()
-                X3 = X[:, X.shape[-3]//2, :, :].cpu()
-            if not mode:
-                for c in range(len(X)):
-                    mn = X[c].min()
-                    mx = X[c].max()
-                    if first:
-                        plt.subplot(4, ncol, c+1)
-                        plt.imshow(X1[c], vmin=mn, vmax=0.8*mx)
-                        plt.axis('off')
-                        plt.title('Original')
-                        plt.subplot(4, ncol, ncol+c+1)
-                        plt.imshow(X2[c], vmin=mn, vmax=0.8*mx)
-                        plt.axis('off')
-                        plt.subplot(4, ncol, 2*ncol+c+1)
-                        plt.imshow(X3[c], vmin=mn, vmax=0.8*mx)
-                        plt.axis('off')
-                    else:
-                        self.figure.axes[i].images[0].set_data(X1[c])
-                        # self.figure.axes[c].images[0].set_vmax(0.8*mx)
-                        self.figure.axes[i+1].images[0].set_data(X2[c])
-                        # self.figure.axes[ncol+c].images[0].set_vmax(0.8*mx)
-                        self.figure.axes[i+2].images[0].set_data(X3[c])
-                        # self.figure.axes[2*ncol+c].images[0].set_vmax(0.8*mx)
-                        i += 3
-            else:
-                i += 3 * len(X)
-
-            offset = 0
-            if self.beta is not None:
-                offset = 2*len(self.beta)
-                if not mode or mode == 'bias':
-                    B = self.beta
-                    B1 = B[:, :, :, B.shape[-1]//2].exp().cpu()
-                    B2 = B[:, :, B.shape[-2]//2, :].exp().cpu()
-                    B3 = B[:, B.shape[-3]//2, :, :].exp().cpu()
-                    X1 = X1 * B1
-                    X2 = X2 * B2
-                    X3 = X3 * B3
-                    for c in range(len(B)):
-                        if first:
-                            plt.subplot(4, ncol, len(X)+c+1)
-                            plt.imshow(X1[c], vmin=mn, vmax=0.8*mx)
-                            plt.axis('off')
-                            plt.title('Corrected')
-                            plt.subplot(4, ncol, ncol+len(X)+c+1)
-                            plt.imshow(X2[c], vmin=mn, vmax=0.8*mx)
-                            plt.axis('off')
-                            plt.subplot(4, ncol, 2*ncol+len(X)+c+1)
-                            plt.imshow(X3[c], vmin=mn, vmax=0.8*mx)
-                            plt.axis('off')
-
-                            plt.subplot(4, ncol, len(X)+c+2)
-                            plt.imshow(B1[c])
-                            plt.axis('off')
-                            plt.title('Bias')
-                            plt.subplot(4, ncol, ncol+len(X)+c+2)
-                            plt.imshow(B2[c])
-                            plt.axis('off')
-                            plt.subplot(4, ncol, 2*ncol+len(X)+c+2)
-                            plt.imshow(B3[c])
-                            plt.axis('off')
-                            # plt.colorbar()
-                        else:
-                            self.figure.axes[i].images[0].set_data(X1[c])
-                            # self.figure.axes[c].images[0].set_vmax(0.8*mx)
-                            self.figure.axes[i+1].images[0].set_data(X2[c])
-                            # self.figure.axes[ncol+c].images[0].set_vmax(0.8*mx)
-                            self.figure.axes[i+2].images[0].set_data(X3[c])
-                            # self.figure.axes[2*ncol+c].images[0].set_vmax(0.8*mx)
-                            i += 3
-
-                            self.figure.axes[i].images[0].set_data(B1[c])
-                            self.figure.axes[i].images[0].autoscale()
-                            self.figure.axes[i+1].images[0].set_data(B2[c])
-                            self.figure.axes[i+1].images[0].autoscale()
-                            self.figure.axes[i+2].images[0].set_data(B3[c])
-                            self.figure.axes[i+2].images[0].autoscale()
-                            i += 3
-                else:
-                    i += 6 * len(self.beta)
-
-            Z1 = prob_to_rgb(Z[:, :, :, Z.shape[-1]//2]).cpu()
-            Z2 = prob_to_rgb(Z[:, :, Z.shape[-2]//2, :]).cpu()
-            Z3 = prob_to_rgb(Z[:, Z.shape[-3]//2, :, :]).cpu()
-            if first:
-                plt.subplot(4, ncol, len(X)+offset+1)
-                plt.imshow(Z1)
-                plt.axis('off')
-                plt.title('Resp.')
-                plt.subplot(4, ncol, ncol+len(X)+offset+1)
-                plt.imshow(Z2)
-                plt.axis('off')
-                plt.subplot(4, ncol, 2*ncol+len(X)+offset+1)
-                plt.imshow(Z3)
-                plt.axis('off')
-            else:
-                self.figure.axes[i].images[0].set_data(Z1)
-                self.figure.axes[i+1].images[0].set_data(Z2)
-                self.figure.axes[i+2].images[0].set_data(Z3)
-                i += 3
-
-            if M is not None:
-                if not mode or mode in ('gmm', 'warp'):
-                    M1 = self._modulate_prior_(M[:, :, :, M.shape[-1]//2].clone())
-                    M2 = self._modulate_prior_(M[:, :, M.shape[-2]//2, :].clone())
-                    M3 = self._modulate_prior_(M[:, M.shape[-3]//2, :, :].clone())
-                    M1 = prob_to_rgb(M1).cpu()
-                    M2 = prob_to_rgb(M2).cpu()
-                    M3 = prob_to_rgb(M3).cpu()
-                    if first:
-                        plt.subplot(4, ncol, len(X)+2+offset)
-                        plt.imshow(M1)
-                        plt.axis('off')
-                        plt.title('Prior')
-                        plt.subplot(4, ncol, ncol+len(X)+2+offset)
-                        plt.imshow(M2)
-                        plt.axis('off')
-                        plt.subplot(4, ncol, 2*ncol+len(X)+2+offset)
-                        plt.imshow(M3)
-                        plt.axis('off')
-                    else:
-                        self.figure.axes[i].images[0].set_data(M1)
-                        self.figure.axes[i+1].images[0].set_data(M2)
-                        self.figure.axes[i+2].images[0].set_data(M3)
-                        i += 3
-                else:
-                    i += 3
-
-            if first:
-                plt.subplot(4, 1, 4)
-                plt.plot(range(1, len(lb)+1), lb.cpu())
-                plt.suptitle('# iter. = {}'.format(len(lb)))
-            else:
-                ax = self.figure.axes[-1]
-                ax.lines[0].set_data(range(1, len(lb)+1), lb.cpu())
-                ax.relim()
-                ax.autoscale_view()
-                self.figure._suptitle.set_text('# iter. = {}'.format(len(lb)))
-            if first:
-                self.figure.canvas.draw()
-                self.plt_saved = [self.figure.canvas.copy_from_bbox(ax.bbox)
-                                    for ax in self.figure.axes]
-                self.figure.canvas.flush_events()
-                plt.show(block=False)
-            else:
-                for ax in self.figure.axes[:-1]:
-                    ax.draw_artist(ax.images[0])
-                    self.figure.canvas.blit(ax.bbox)
-                ax = self.figure.axes[-1]
-                ax.draw_artist(ax.lines[0])
-                self.figure.canvas.blit(ax.bbox)
-                self.figure.canvas.flush_events()
+        if self.plot >= 1 and mode == 'final':
+            self.plt_saved = None
+            plot_images_and_lb(lb, X, Z, self.beta, M, self.alpha, self.gamma,
+                               fig=getattr(self, 'figure', None))
+        elif self.plot >= 3:
+            self.figure, self.plt_saved = \
+            plot_images_and_lb(lb, X, Z, self.beta, M, self.alpha, self.gamma,
+                               mode=mode, fig=getattr(self, 'figure', None),
+                               saved_elem=getattr(self, 'plt_saved', []))
+        elif self.plot >= 2:
+            self.figure, self.plt_saved = \
+            plot_lb(lb, fig=getattr(self, 'figure', None),
+                    saved_elem=getattr(self, 'plt_saved', []))
 
     def _lb_parameters(self):
         return getattr(self, '_lb_warp', 0) + getattr(self, '_lb_bias', 0)
@@ -864,7 +650,11 @@ class SpatialMixture:
         if self.mrf_fit is not None:
             self.mrf_fit = self.mrf_fit.to(**backend)
             if self.prior is not None:
-                l = spatial.voxel_size(aff) / spatial.voxel_size(self.prior_aff)
+                # I modulate the MRF weights so that it is more likely
+                # to be next to the same label if the voxel size is
+                # smaller (there are lots of flat regions ==
+                # the volume of a cube grows faster than its surface)
+                l = spatial.voxel_size(aff) / spatial.voxel_size(self.affine_prior)
                 l = l.prod() ** (1/dim)
                 diag = self.mrf_fit.diag().clone().pow_(1/l)
                 self.mrf_fit.diag().zero_()
@@ -921,9 +711,6 @@ class SpatialMixture:
         W : (*spatial) tensor, optional
             Observation weights
         """
-        if self.verbose >= 3:
-            print('update mixing')
-
         if M is not None:
             gamma = self.gamma.to(M.dtype)
             M = M.reshape(self.nb_classes, -1)
@@ -966,8 +753,6 @@ class SpatialMixture:
         vx : (D,) vector_like, optional
 
         """
-        if self.verbose >= 3:
-            print('update warp')
         vx = spatial.voxel_size(aff)
 
         def mul(*x, out=None):
@@ -1105,13 +890,13 @@ class SpatialMixture:
         dim = self.alpha.shape[-1]
         grid = spatial.add_identity_grid(self.alpha)
         if aff is not None:
-            aff = torch.matmul(self.prior_aff.inverse(), aff)
+            aff = torch.matmul(self.affine_prior.inverse(), aff)
             grid = spatial.affine_matvec(aff, grid)
         mask = self.prior.new_ones(self.prior.shape[1:])
         if mode == 'mask8':
             # remove bottom 5 mm
-            if self.prior_aff is not None:
-                vx = spatial.voxel_size(self.prior_aff)
+            if self.affine_prior is not None:
+                vx = spatial.voxel_size(self.affine_prior)
             else:
                 vx = grid.new_ones([grid.dim[-1]])
             offset = (5 / vx).floor().int().tolist()
@@ -1292,9 +1077,6 @@ class UniSeg(SpatialMixture):
             2nd moment
 
         """
-        if self.verbose >= 3:
-            print('update gmm')
-
         # update means
         ss0 = ss0.unsqueeze(-1)
         mu = ss1 / ss0
@@ -1363,9 +1145,6 @@ class UniSeg(SpatialMixture):
             Voxel size
 
         """
-        if self.verbose >= 3:
-            print('update bias')
-
         C, *N = X.shape
         K = self.nb_clusters
 
@@ -1407,8 +1186,7 @@ class UniSeg(SpatialMixture):
             lb += self.beta[c].flatten().dot(Lb.flatten())
             g += Lb
 
-            delta = spatial.solve_field_fmg(H, g, **lam,
-                                            verbose=self.verbose_bias)
+            delta = spatial.solve_field_fmg(H, g, **lam)
             self.beta[c] -= delta[0]
 
         self.beta -= self.beta.mean()

@@ -1,16 +1,12 @@
 """For querying NITorch data."""
 import os
-import pathlib
+from tempfile import gettempdir
 from .optionals import try_import
 wget = try_import('wget')
 appdirs = try_import('appdirs')
 
-
 # Download NITorch data to OS cache
-if appdirs is not None:
-    dir_os_cache = pathlib.Path(appdirs.user_cache_dir('nitorch'))
-else:
-    dir_os_cache = None
+cache_dir = appdirs.user_cache_dir('nitorch') if appdirs else gettempdir()
 
 # NITorch data dictionary.
 # Keys are data names, values are list of FigShare URL and filename.
@@ -25,6 +21,7 @@ data['atlas_pd_mni'] = ['https://ndownloader.figshare.com/files/25438337', 'mb_m
 
 def fetch_data(name, dir_download=None, speak=False):
     """Get nitorch package data.
+
     Parameters
     ----------
     name : str
@@ -44,27 +41,30 @@ def fetch_data(name, dir_download=None, speak=False):
     pth_data : str
         Absolute path to requested nitorch data.
     """
-    dir_download = dir_download or dir_os_cache or '.'
+    dir_download = dir_download or cache_dir or '.'
     fname = data[name][1]
     pth_data = os.path.join(dir_download, fname)
     if not os.path.exists(pth_data):        
         if not os.path.exists(dir_download):
             os.makedirs(dir_download, exist_ok=True)        
         url = data[name][0]        
-        pth_data = download_url(url, pth_download=pth_data, speak=speak)
+        pth_data = download(url, fname=pth_data, verbose=speak)
 
     return pth_data
 
 
-def download_url(url, pth_download=None, speak=False):
+def bar(url, fname):
+    def _bar(current, total, width=80):
+        print("Downloading %s to %s | Progress: %d%% (%d/%d bytes)"
+              % (url, fname, current / total * 100, current, total))
+    return _bar
+
+
+def download(url, fname=None, verbose=False):
     """Download data from URL."""
     if wget is None:
         raise ImportError('wget not available')
-    bar = None
-    if speak:
-        def bar(current, total, width=80):
-            print("Downloading %s to %s | Progress: %d%% (%d/%d bytes)" 
-                  % (url, pth_download, current / total * 100, current, total))
-    pth_data = wget.download(url, pth_download, bar=bar)
+    my_bar = bar(url, fname) if verbose else None
+    pth_data = wget.download(url, fname, bar=my_bar)
     
     return pth_data
