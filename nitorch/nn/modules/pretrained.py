@@ -117,6 +117,8 @@ class SynthUNet(NeuriteUNet):
         if not h5py:
             raise ImportError('h5py must be installed to load tf weights')
         with h5py.File(path_to_h5, 'r') as f, torch.no_grad():
+            if 'model_weights' in list(f.keys()):
+                f = f['model_weights']
             # The SynthSeg unet only has conv and batch norm weights
             down_conv_keys = sorted([key for key in f if 'conv_downarm' in key])
             up_conv_keys = sorted([key for key in f if 'conv_uparm' in key])
