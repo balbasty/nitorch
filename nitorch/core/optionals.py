@@ -19,6 +19,13 @@ try:
 except ImportError:
     matplotlib = None
 
+# torch amp (not there in all versions)
+try:
+    from torch.cuda.amp import custom_fwd, custom_bwd
+except ImportError:
+    custom_fwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
+    custom_bwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
+
 
 def try_import(path, keys=None, _as=False):
     """Try to import from a module.
@@ -45,20 +52,31 @@ def try_import(path, keys=None, _as=False):
         Return None if import fails.
 
     """
-    # check if the base package exists
-    pack = path.split('.')[0]
-    try:
-        __import__(pack)
-    except ImportError:
+    def fail(keys):
         if keys is None or isinstance(keys, str):
             return None
         else:
             keys = list(keys)
             return [None]*len(keys)
+        
+    def try_import_module(path):
+        try:
+            return importlib.import_module(path)
+        except (ImportError, ModuleNotFoundError):
+            return None
+
+    # check if the base package exists
+    pack = path.split('.')[0]
+    try:
+        __import__(pack)
+    except (ImportError, ModuleNotFoundError):
+        return fail(keys)
 
     if _as:
         # import a module
-        module = importlib.import_module(path)
+        module = try_import_module(path)
+        if not module:
+            return fail(keys)
         # optional: extract attributes
         if keys is not None:
             if isinstance(keys, str):
@@ -69,10 +87,14 @@ def try_import(path, keys=None, _as=False):
     else:
         # recursive import
         path = path.split('.')
-        mod0 = importlib.import_module(path[0])
+        mod0 = try_import_module(path[0])
+        if not mod0:
+            return fail(keys)
         cursor = mod0
         for i in range(1, len(path)):
-            mod1 = importlib.import_module('.'.join(path[:i+1]))
+            mod1 = try_import_module('.'.join(path[:i+1]))
+            if not mod1:
+                return fail(keys)
             setattr(cursor, path[i], mod1)
             cursor = getattr(cursor, path[i])
         return mod0

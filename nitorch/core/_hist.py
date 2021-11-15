@@ -10,7 +10,7 @@ from nitorch._C._ts.bounds import Bound
 from nitorch._C.grid import bound_to_nitorch, inter_to_nitorch
 from nitorch.spatial import smooth, grid_grad
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
+from .optionals import custom_fwd, custom_bwd
 from typing import List
 from . import py, dtypes
 

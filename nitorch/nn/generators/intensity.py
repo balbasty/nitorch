@@ -4,6 +4,7 @@ from nitorch.core.utils import unsqueeze
 from nitorch.core import utils
 from nitorch.nn.base import Module
 from . import field
+from .distribution import _get_dist
 
 
 class RandomOperation(Module):
@@ -61,55 +62,56 @@ class RandomAdditive(RandomOperation):
     op = torch.add
 
 
-class RandomGammaCorrection(RandomOperation):
+class RandomGammaCorrection(Module):
     """Perform a random Gamma correction"""
 
-    def __init__(self, factor=None, vmin=None, vmax=None):
+    def __init__(self, factor='lognormal', factor_exp=1, factor_scale=1,
+                 vmin=None, vmax=None):
         """
 
         Parameters
         ----------
-        factor : tensor_like or callable(sequence[int]) -> tensor
-            Either a fixed factor or a function that returns a factor of
-            a given shape. Note that the output factor gets singleton
-            dimensions added to its *right* before being multiplied with
-            the image.
+        factor : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        factor_exp : float or (channel,) vector_like, default=1
+        factor_scale : float or (channel,) vector_like, default=1
         vmin : Value used as the "zero" fixed point, optional
         vmax : Value used as the "one" fixed point, optional
         """
-        super().__init__(factor)
+        super().__init__()
+        self.factor = _get_dist(factor)
+        self.factor_exp = factor_exp
+        self.factor_scale = factor_scale
         self.vmin = vmin
         self.vmax = vmax
 
-    @classmethod
-    def default_factor(cls, *b, **backend):
-        zero = torch.tensor(0, **backend)
-        one = torch.tensor(1, **backend)
-        return td.Normal(zero, one).sample(b).exp()
+    def forward(self, x):
 
-    def forward(self, image, **overload):
-        factor = overload.get('factor', self.factor)
-        vmin = overload.get('vmin', self.vmin)
-        vmax = overload.get('vmax', self.vmax)
-        if factor is None:
-            factor = self.default_factor(len(image), **utils.backend(image))
-        if callable(factor):
-            factor = factor(image.shape[0])
-        factor = torch.as_tensor(factor, **utils.backend(image))
-        factor = unsqueeze(factor, -1, image.dim() - factor.dim())
+        backend = utils.backend(x)
 
+        # compute intensity bounds
+        vmin = self.vmin
         if vmin is None:
-            vmin = image.reshape([image.shape[0], -1]).min(dim=-1).values
-            vmax = image.reshape([image.shape[0], -1]).max(dim=-1).values
-        vmin = torch.as_tensor(vmin, **utils.backend(image))
-        vmin = unsqueeze(vmin, -1, image.dim() - vmin.dim())
-        vmax = torch.as_tensor(vmax, **utils.backend(image))
-        vmax = unsqueeze(vmax, -1, image.dim() - vmax.dim())
+            vmin = x.reshape([x.shape[:2], -1]).min(dim=-1).values
+        vmax = self.vmax
+        if vmax is None:
+            vmax = x.reshape([x.shape[:2], -1]).max(dim=-1).values
+        vmin = torch.as_tensor(vmin, **backend).expand(x.shape[:2])
+        vmin = unsqueeze(vmin, -1, x.dim() - vmin.dim())
+        vmax = torch.as_tensor(vmax, **backend).expand(x.shape[:2])
+        vmax = unsqueeze(vmax, -1, x.dim() - vmax.dim())
 
-        image = (image - vmin) / (vmax - vmin)
-        image = image.pow(factor)
-        image = image * (vmax - vmin) + vmin
-        return image
+        # sample factor
+        factor_exp = utils.make_vector(self.factor_exp, x.shape[1], **backend)
+        factor_scale = utils.make_vector(self.factor_scale, x.shape[1], **backend)
+        factor = self.factor(factor_exp, factor_scale)
+        factor = factor.sample([len(x)])
+        factor = unsqueeze(factor, -1, x.dim() - 2)
+
+        # apply correction
+        x = (x - vmin) / (vmax - vmin)
+        x = x.pow(factor)
+        x = x * (vmax - vmin) + vmin
+        return x
 
 
 class RandomGaussianNoise(Module):
@@ -159,79 +161,76 @@ class RandomGaussianNoise(Module):
 class RandomChiNoise(Module):
     """Add random Chi-distributed noise."""
 
-    def __init__(self, sigma=None, gfactor=False, ncoils=None):
+    def __init__(self, sigma=1, ncoils=1):
         """
 
         Parameters
         ----------
-        sigma : (batch, channel) tensor_like or callable, optional
+        sigma : float or (channel,) vector_like, default=1
             Base standard deviation of the noise.
-            By default, sample from a Log-Normal distribution with mean 0.03.
-        gfactor : tensor_like or callable, optional
-            Nonstationary modulation of the noise.
-            Do not use by default (False).
-            If True, sample a smooth random multiplicative field.
-        ncoils : (batch) tensor_like or callable, optional
+        ncoils : float or (channel,) vector_like, default=1
             Number of coils = degrees of freedom / 2
-            By default, sample uniformly in {1, 2, 4, 8, 16, 32, 64, 128}.
         """
         super().__init__()
         self.sigma = sigma
-        self.gfactor = gfactor
         self.ncoils = ncoils
 
-    @classmethod
-    def default_sigma(cls, *b, **backend):
-        sd = torch.tensor(0.1, **backend)
-        mean = torch.tensor(-3.5, **backend)
-        return td.Normal(mean, sd).sample(b).exp()
-
-    @classmethod
-    def default_ncoils(cls, *b, **backend):
-        backend.pop('dtype', None)
-        ncoils = torch.randint(0, 7, b, **backend)
-        ncoils = 2 ** ncoils
-        return ncoils
-
-    def forward(self, image, **overload):
+    def forward(self, image, gfactor=None):
         backend = utils.backend(image)
-        sigma = overload.get('sigma', self.sigma)
-        gfactor = overload.get('gfactor', self.gfactor)
-        ncoils = overload.get('ncoils', self.ncoils)
 
-        # sample sigma
-        if sigma is None:
-            sigma = self.default_sigma(*image.shape[:2], **backend)
-        if callable(sigma):
-            sigma = sigma(image.shape[:2])
-        sigma = torch.as_tensor(sigma, **backend)
-        sigma = unsqueeze(sigma, -1, 2 - sigma.dim())
+        sigma = utils.make_vector(self.sigma, image.shape[1], **backend)
+        ncoils = utils.make_vector(self.ncoils, image.shape[1],
+                                   device=backend['device'], dtype=torch.int)
 
-        # sample gfactor
-        if gfactor is True:
-            gfactor = field.RandomMultiplicativeField()
-        if callable(gfactor):
-            gfactor = gfactor(image.shape)
-
-        # sample number coils
-        if ncoils is None:
-            ncoils = self.default_ncoils(*image.shape[:1], **backend)
-        if callable(ncoils):
-            ncoils = ncoils(image.shape[:1])
-        ncoils = torch.as_tensor(ncoils, device=backend['device'], dtype=torch.int)
+        zero = torch.tensor(0, **backend)
+        def sampler():
+            shape = [len(image), *image.shape[2:]]
+            noise = td.Normal(zero, sigma).sample(shape).square_()
+            return utils.movedim(noise, -1, 1)
 
         # sample noise
-        zero = torch.tensor(0, **backend)
-        sampler = lambda: utils.movedim(td.Normal(zero, sigma).sample(image.shape[2:]).square_(), [-2, -1], [0, 1])
         noise = sampler()
         for n in range(2*ncoils.max()-1):
             tmp = sampler()
-            tmp[2*ncoils + 1 >= n + 1, ...] = 0
+            tmp[:, 2*ncoils + 1 >= n + 1, ...] = 0
             noise += tmp
         noise = noise.sqrt_()
 
-        if torch.is_tensor(gfactor):
+        if gfactor is not None:
             noise *= gfactor
 
         image = image + noise
         return image
+
+
+class HyperRandomChiNoise(Module):
+
+    def __init__(self,
+                 sigma='gamma',
+                 sigma_exp=1,
+                 sigma_scale=2,
+                 ncoils='duniform',
+                 ncoils_exp=8,
+                 ncoils_scale=4/3.464):
+        super().__init__()
+        self.sigma = _get_dist(sigma)
+        self.sigma_exp = sigma_exp
+        self.sigma_scale = sigma_scale
+        self.ncoils = _get_dist(ncoils)
+        self.ncoils_exp = ncoils_exp
+        self.ncoils_scale = ncoils_scale
+
+    def forward(self, x, gfactor=None):
+        out = torch.empty_like(x)
+        for b in range(len(x)):
+            sigma = self.sigma(self.sigma_exp, self.sigma_scale).sample().clamp_min_(0)
+            print(sigma)
+            ncoils = self.ncoils(self.ncoils_exp, self.ncoils_exp).sample().clamp_min_(1)
+            sampler = RandomChiNoise(sigma, ncoils)
+            if gfactor is not None and gfactor.dim() == x.dim():
+                gfactor1 = gfactor[b]
+            else:
+                gfactor1 = None
+            out[b] = sampler(x[None, b], gfactor1)[0]
+
+        return out

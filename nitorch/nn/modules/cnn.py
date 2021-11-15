@@ -2316,10 +2316,40 @@ class SEWNet(Module):
 
 
 class NeuriteResMerge(Sequential):
-    """Residual merge"""
-    def __init__(self, dim, in_channels, out_channels,
-                 kernel_size=3, dilation=1, padding='same', dropout=0,
+    """Residual merge
+
+    This is a utility class for flexible residual paths:
+        - If `in_channels` and `out_channels` are equal, this is a simple
+          add + activation.
+        - If `in_channels` and `out_channels` differ, the identity
+          path goes through a convolution that matches the number of
+          output channels.
+    """
+    def __init__(self,
+                 dim,
+                 in_channels,
+                 out_channels,
+                 kernel_size=3,
+                 dilation=1,
+                 padding='same',
+                 dropout=0,
                  activation='elu'):
+        """
+
+        Parameters
+        ----------
+        dim : int
+            Number of spatial dimensions
+        in_channels : int
+            Number of channels in the identity path
+        out_channels : int
+            Number of channels in the conv path
+        kernel_size : int or sequence[int], default=3
+        dilation : int or sequence[int], default=1
+        padding : {'same', 'valid'} or int ir sequence[int], default='same'
+        dropout : float in 0..1, default=0
+        activation : str or class or callable, default='elu'
+        """
         res_block = []
         if (in_channels > 1 and out_channels > 1
                 and (in_channels != out_channels)):
@@ -2329,21 +2359,189 @@ class NeuriteResMerge(Sequential):
                 dilation=dilation,
                 padding=padding,
             )])
-            res_block.append(
-                ('activation', make_activation(activation)))
+            if activation:
+                res_block.append(
+                    ('activation', make_activation(activation)))
             if dropout:
                 res_block.append(('dropout', tnn.Dropout(dropout)))
         res_block.append(('add', Add()))
-        res_block.append(('activation', make_activation(activation)))
+        if activation:
+            res_block.append(('activation', make_activation(activation)))
         super().__init__(OrderedDict(res_block))
 
     def forward(self, identity, branch):
+        """
+
+        Parameters
+        ----------
+        identity : (batch, in_channels, *spatial)
+        branch : (batch, out_channels, *spatial)
+
+        Returns
+        -------
+        out : (batch, out_channels, *spatial)
+
+        """
         for layer in self:
             if isinstance(layer, Add):
                 identity = layer(identity, branch)
             else:
                 identity = layer(identity)
         return identity
+
+
+class NeuriteConv(Sequential):
+    """A single convolutional "sandwich". """
+    def __init__(self,
+                 dim,                           # int
+                 in_channels,                   # int
+                 out_channels,                  # int
+                 kernel_size=3,                 # int or sequence[int]
+                 dilation=1,                    # int
+                 padding='same',                # {'valid', 'same'} or int or sequence[int]
+                 activation='elu',              # str or class or callable
+                 residual=False,                # bool
+                 dropout=0,                     # float in 0..1
+                 batch_norm=None,               # bool or 'str' or class or callable
+                 ):
+
+        conv_block = []
+        # --------------------------------------------------------------
+        # Convolution
+        # --------------------------------------------------------------
+        conv_block.append(('conv', Conv(
+            dim, in_channels, out_channels,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            padding=padding,
+        )))
+        # --------------------------------------------------------------
+        # Residual path
+        # --------------------------------------------------------------
+        # Voxelmorph variant of the residual path:
+        # `out = Activation(Conv(x) + [Conv](x))`
+        if residual:
+            conv_block.append(('residual', NeuriteResMerge(
+                dim, in_channels, out_channels,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                padding=padding,
+                activation=None,
+                dropout=0,
+            )))
+        # --------------------------------------------------------------
+        # Activation
+        # --------------------------------------------------------------
+        if activation:
+            conv_block.append(
+                ('activation', make_activation(activation)))
+        # --------------------------------------------------------------
+        # Dropout
+        # --------------------------------------------------------------
+        if dropout:
+            conv_block.append(
+                ('dropout', tnn.Dropout(dropout)))
+        # --------------------------------------------------------------
+        # Batch Norm
+        # --------------------------------------------------------------
+        if batch_norm:
+            conv_block.append(('norm', BatchNorm(
+                dim, out_channels, eps=1e-3, momentum=0.01)))
+        super().__init__(OrderedDict(conv_block))
+
+    def forward(self, x):
+        children_names = [name for name, _ in self.named_children()]
+        identity = x if ('residual' in children_names) else None
+        for layer in self:
+            if isinstance(layer, NeuriteResMerge):
+                x, identity = layer(identity, x), None
+            else:
+                x = layer(x)
+        return x
+
+
+class NeuriteConvMulti(Sequential):
+    """Multiple sequential convolutions"""
+    def __init__(self,
+                 dim,                           # int
+                 in_channels,                   # int
+                 out_channels,                  # int or sequence[int]
+                 nb_conv=1,                     # int
+                 kernel_size=3,                 # int or sequence[int]
+                 dilation=1,                    # int
+                 padding='same',                # {'valid', 'same'} or int or sequence[int]
+                 activation='elu',              # str or class or callable
+                 residual=False,                # bool or 'vxm'
+                 dropout=0,                     # float in 0..1
+                 batch_norm=None,               # bool or 'str' or class or callable
+                 ):
+        all_out_channels = list(py.ensure_list(out_channels, nb_conv))
+
+        # --------------------------------------------------------------
+        # Choose residual variant
+        # --------------------------------------------------------------
+        # . VoxelMorph's UNet performs residual connections around each
+        #   convolution.
+        # . Neurite's UNet performs residual connections around blocks
+        #   of sequential convolutions.
+        residual_inner = residual == 'vxm'
+        residual_outer = residual and not residual_inner
+        in_channels_first = in_channels
+
+        blocks = []
+        for i in range(nb_conv):
+            # ----------------------------------------------------------
+            # One convolution
+            # ----------------------------------------------------------
+            out_channels = all_out_channels.pop(0)
+            has_activation = i < nb_conv-1 or not residual_outer
+            blocks.append(NeuriteConv(
+                dim=dim,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                padding=padding,
+                activation=activation if has_activation else None,
+                residual=residual_inner,
+                dropout=dropout,
+            ))
+            in_channels = out_channels
+        blocks = [('conv_multi', tnn.Sequential(*blocks))]
+        # --------------------------------------------------------------
+        # Global residual path
+        # --------------------------------------------------------------
+        # This type of residual connection is used in Neurite's UNet
+        if residual_outer:
+            blocks.append(('residual', NeuriteResMerge(
+                dim=dim,
+                in_channels=in_channels_first,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                padding=padding,
+                dropout=dropout,
+                activation=activation,
+            )))
+        # --------------------------------------------------------------
+        # Batch Norm
+        # --------------------------------------------------------------
+        # We do as in Neurite and only perform one BatchNorm for the
+        # whole block
+        if batch_norm:
+            blocks.append(('norm', BatchNorm(
+                dim, out_channels, eps=1e-3, momentum=0.01)))
+        super().__init__(OrderedDict(blocks))
+
+    def forward(self, x):
+        children_names = [name for name, _ in self.named_children()]
+        identity = x if ('residual' in children_names) else None
+        for layer in self:
+            if isinstance(layer, NeuriteResMerge):
+                x, identity = layer(identity, x), None
+            else:
+                x = layer(x)
+        return x
 
 
 class NeuriteEncoder(Sequential):
@@ -2362,80 +2560,63 @@ class NeuriteEncoder(Sequential):
                  nb_conv_per_level=1,
                  dropout=0,
                  batch_norm=None):
-        self._residual = residual
+
+        if isinstance(nb_feat, (list, tuple)):
+            nb_feat = list(nb_feat)  # trigger a copy + ensure popable
 
         encoder_module = []
-        lfidx = 0
-        nb_channels_out = in_channels
         for level in range(nb_levels):
             level_block = []
-            nb_channels_in_first = nb_channels_in = nb_channels_out
-            if not isinstance(nb_feat, (list, tuple)):
-                nb_channels_out = int(round(nb_feat * feat_mult ** level))
+
+            # ----------------------------------------------------------
+            # Sequential convolutions (with activation, norm, dropout)
+            # ----------------------------------------------------------
+            if not isinstance(nb_feat, list):
+                out_channels = int(round(nb_feat * feat_mult ** level))
+            else:
+                out_channels = nb_feat[:nb_conv_per_level]
+                nb_feat = nb_feat[nb_conv_per_level:]
             dilation = dilation_rate_mult ** level
 
-            conv_blocks = []
-            for conv in range(nb_conv_per_level):
-                conv_block = []
-                if isinstance(nb_feat, (list, tuple)):
-                    nb_channels_out = nb_feat[lfidx]
-                    lfidx += 1
-                conv_block.append(('conv', Conv(
-                    dim, nb_channels_in, nb_channels_out,
-                    kernel_size=kernel_size,
-                    dilation=dilation,
-                    padding=padding,
-                )))
-                nb_channels_in = nb_channels_out
-                if conv < nb_conv_per_level - 1:
-                    # not the last convolution -> activation
-                    conv_block.append(
-                        ('activation', make_activation(activation)))
-                    if dropout:
-                        conv_block.append(
-                            ('dropout', tnn.Dropout(dropout)))
-                elif not residual:
-                    conv_block.append(
-                        ('activation', make_activation(activation)))
-                conv_block = tnn.Sequential(OrderedDict(conv_block))
-                conv_blocks.append(conv_block)
-            conv_blocks = tnn.Sequential(*conv_blocks)
-            level_block.append(['conv', conv_blocks])
-            if dropout:
-                level_block.append(('dropout', tnn.Dropout(dropout)))
-
-            if residual:
-                level_block.append(('res', NeuriteResMerge(
-                     dim, nb_channels_in_first, nb_channels_out,
-                     kernel_size=kernel_size,
-                     dilation=dilation,
-                     padding=padding,
-                     activation=activation,
-                     dropout=dropout,
-                )))
-
+            level_block.append(('conv_block', NeuriteConvMulti(
+                dim=dim,
+                in_channels=in_channels,
+                out_channels=out_channels,
+                nb_conv=nb_conv_per_level,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                padding=padding,
+                activation=activation,
+                residual=residual,
+                dropout=dropout,
+            )))
+            if isinstance(out_channels, list):
+                in_channels = out_channels[-1]
+            else:
+                in_channels = out_channels
             if batch_norm:
-                level_block.append(('norm', BatchNorm(
-                    dim, nb_channels_out, eps=1e-3, momentum=0.01)))
+                # Batch Norm must be done after the conv because
+                # we propagate pre-norm features in the skip connection
+                level_block.append(('batch_norm', BatchNorm(
+                    dim, in_channels, eps=1e-3, momentum=0.01
+                )))
 
+            # ----------------------------------------------------------
+            # Max pooling
+            # ----------------------------------------------------------
             if level < nb_levels - 1:
                 level_block.append(('pool', MaxPool(
                     dim, pool_size, padding=padding, ceil=True)))
 
             level_block = tnn.Sequential(OrderedDict(level_block))
             encoder_module.append(level_block)
-
         super().__init__(*encoder_module)
 
     def forward(self, x, return_skip=False):
         out = []
         for n, level in enumerate(self):
-            identity = x
             for i, blocks in enumerate(level):
-                if isinstance(blocks, NeuriteResMerge):
-                    x = blocks(identity, x)
-                else:
-                    x = blocks(x)
+                x = blocks(x)
                 if return_skip and i == 0 and n != len(self) - 1:
                     # first block is the conv block -> save out
                     out.append(x)
@@ -2444,108 +2625,126 @@ class NeuriteEncoder(Sequential):
 
 class NeuriteDecoder(Sequential):
     def __init__(self,
-                 dim,
-                 in_channels,
-                 out_channels,
-                 nb_levels=5,
-                 kernel_size=3,
-                 nb_feat=16,
-                 feat_mult=1,
-                 pool_size=2,
-                 padding='same',
-                 dilation_rate_mult=1,
-                 activation='elu',
-                 final_activation='softmax',
-                 residual=False,
-                 nb_conv_per_level=1,
-                 dropout=0,
-                 batch_norm=None):
+                 dim,                           # int
+                 in_channels,                   # int or list[int]
+                 out_channels,                  # int
+                 nb_levels=5,                   # int
+                 kernel_size=3,                 # int or sequence[int]
+                 nb_feat=16,                    # int or sequence[int]
+                 feat_mult=1,                   # int
+                 pool_size=2,                   # int or sequence[int]
+                 padding='same',                # {'valid', 'same'} or int or sequence[int]
+                 dilation_rate_mult=1,          # int
+                 activation='elu',              # str or class or callable
+                 final_activation='softmax',    # str ot class or callable
+                 final_kernel_size=1,           # int or sequence[int]
+                 residual=False,                # bool or 'vxm'
+                 nb_conv_per_level=1,           # int
+                 dropout=0,                     # float in 0..1
+                 batch_norm=None,               # bool or 'str' or class or callable
+                 ):
+
+        if isinstance(nb_feat, (list, tuple)):
+            nb_feat = list(nb_feat)  # trigger a copy + ensure popable
 
         decoder_module = []
-        lfidx = 0
-        in_channels = py.make_list(in_channels)
-        nb_channels_out = in_channels.pop(0)
+        in_channels = list(py.ensure_list(in_channels))
+        nb_channels_in = in_channels.pop(0)
+
+        # --------------------------------------------------------------
+        # Decoding blocks
+        # --------------------------------------------------------------
         for level in range(nb_levels-1):
             level_block = []
-            nb_channels_in_first = nb_channels_in = nb_channels_out
-            if not isinstance(nb_feat, (list, tuple)):
-                nb_channels_out = int(round(nb_feat * feat_mult ** (nb_levels - 2 - level)))
-            dilation = dilation_rate_mult ** (nb_levels - 2 - level)
 
-            # level_block.append(('up', Upsample(stride=pool_size)))
+            # ----------------------------------------------------------
+            # Upsample and Concatenate
+            # ----------------------------------------------------------
             level_block.append(('up', Upsample(stride=pool_size)))
-
             if in_channels:
                 level_block.append(('cat', Cat()))
                 nb_channels_in = nb_channels_in + in_channels.pop(0)
 
-            conv_blocks = []
-            for conv in range(nb_conv_per_level):
-                conv_block = []
-                if isinstance(nb_feat, (list, tuple)):
-                    nb_channels_out = nb_feat[lfidx]
-                    lfidx += 1
-                conv_block.append(('conv', Conv(
-                    dim, nb_channels_in, nb_channels_out,
-                    kernel_size=kernel_size,
-                    dilation=dilation,
-                    padding=padding,
-                )))
+            # ----------------------------------------------------------
+            # Convolution blocks
+            # ----------------------------------------------------------
+            if not isinstance(nb_feat, list):
+                nb_channels_out = int(round(nb_feat * feat_mult ** (nb_levels - 2 - level)))
+            else:
+                nb_channels_out = nb_feat[:nb_conv_per_level]
+                nb_feat = nb_feat[nb_conv_per_level:]
+            dilation = dilation_rate_mult ** (nb_levels - 2 - level)
+
+            level_block.append(('conv_block', NeuriteConvMulti(
+                dim=dim,
+                in_channels=nb_channels_in,
+                out_channels=nb_channels_out,
+                nb_conv=nb_conv_per_level,
+                kernel_size=kernel_size,
+                dilation=dilation,
+                padding=padding,
+                activation=activation,
+                residual=residual,
+                dropout=dropout,
+                batch_norm=batch_norm,
+            )))
+            if isinstance(nb_channels_out, list):
+                nb_channels_in = nb_channels_out[-1]
+            else:
                 nb_channels_in = nb_channels_out
-                if (conv < nb_conv_per_level - 1) or not residual:
-                    # not the last convolution -> activation
-                    conv_block.append(
-                        ('activation', make_activation(activation)))
-                if dropout:
-                    conv_block.append(
-                        ('dropout', tnn.Dropout(dropout)))
-                conv_block = tnn.Sequential(OrderedDict(conv_block))
-                conv_blocks.append(conv_block)
-            conv_blocks = tnn.Sequential(*conv_blocks)
-            level_block.append(('conv', conv_blocks))
-
-            if residual:
-                level_block.append(('res', NeuriteResMerge(
-                     dim, nb_channels_in_first, nb_channels_out,
-                     kernel_size=kernel_size,
-                     dilation=dilation,
-                     padding=padding,
-                     activation=activation,
-                     dropout=dropout,
-                )))
-
-            if batch_norm:
-                level_block.append(('norm', BatchNorm(
-                    dim, nb_channels_out, eps=1e-3, momentum=0.01)))
 
             level_block = tnn.Sequential(OrderedDict(level_block))
             decoder_module.append(level_block)
+        decoder_module = [('down_path', tnn.Sequential(*decoder_module))]
 
-        final_module = [
-            ('final_conv', Conv(dim, nb_channels_in, out_channels, kernel_size=1))]
-        if final_activation:
-            final_module.append(
-                ('final_activation', make_activation(final_activation)))
-        final_module = tnn.Sequential(OrderedDict(final_module))
-        decoder_module.append(final_module)
+        # --------------------------------------------------------------
+        # Additional convolutions
+        # --------------------------------------------------------------
+        # This is not handled in Neurite, but it commonly used in
+        # voxelmorph's UNet.
+        if isinstance(nb_feat, list) and nb_feat:
+            # take care of remaining convolutions
+            decoder_module.append(('conv_block', NeuriteConvMulti(
+                dim=dim,
+                in_channels=nb_channels_in,
+                out_channels=nb_feat,
+                nb_conv=len(nb_feat),
+                kernel_size=kernel_size,
+                dilation=dilation,
+                padding=padding,
+                activation=activation,
+                residual=residual,
+                dropout=dropout,
+                batch_norm=batch_norm,
+            )))
+            nb_channels_in = nb_feat[-1]
 
-        super().__init__(*decoder_module)
+        # --------------------------------------------------------------
+        # Final convolution (features to output channels)
+        # --------------------------------------------------------------
+        decoder_module.append(('final_conv', NeuriteConv(
+            dim=dim,
+            in_channels=nb_channels_in,
+            out_channels=out_channels,
+            kernel_size=final_kernel_size,
+            padding=padding,
+            activation=final_activation,
+        )))
+        super().__init__(OrderedDict(decoder_module))
 
     def forward(self, x, *skip):
         skip = list(skip)
-        *all_levels, final_conv = self.children()
-        for level in all_levels:
+        down_path, *final_convs = self.children()
+        for level in down_path:
             for block in level:
-                identity = x
                 if skip and isinstance(block, Upsample):
                     x = block(x, output_shape=skip[0].shape[2:])
                 elif isinstance(block, Cat):
                     x = block(skip.pop(0), x)
-                elif isinstance(x, NeuriteResMerge):
-                    x = block(identity, x)
                 else:
                     x = block(x)
-        x = final_conv(x)
+        for layer in final_convs:
+            x = layer(x)
         return x
 
 
@@ -2559,6 +2758,7 @@ class NeuriteUNet(Module):
                  in_channels,
                  out_channels,
                  nb_levels=5,
+                 skip_decoder_levels=0,
                  kernel_size=3,
                  nb_feat=16,
                  feat_mult=1,
@@ -2568,6 +2768,7 @@ class NeuriteUNet(Module):
                  activation='elu',
                  residual=False,
                  final_activation='softmax',
+                 final_kernel_size=1,
                  nb_conv_per_level=1,
                  dropout=0,
                  batch_norm=None):
@@ -2583,6 +2784,9 @@ class NeuriteUNet(Module):
             Number of output channels/classes
         nb_levels : int, default=5
             Number of levels in the UNet
+        skip_decoder_levels : int, default=0
+            Number of levels to skip during decoding.
+            If used, effectively reduces the size of the output tensor.
         kernel_size : int or sequence[int], default=3
             Kernel size
         nb_feat : int or sequence[int], default=16
@@ -2641,7 +2845,7 @@ class NeuriteUNet(Module):
             dim,
             in_channels=in_decoder,
             out_channels=out_channels,
-            nb_levels=nb_levels,
+            nb_levels=nb_levels - skip_decoder_levels,
             kernel_size=kernel_size,
             nb_feat=nb_feat_decoder,
             feat_mult=feat_mult,
@@ -2650,6 +2854,7 @@ class NeuriteUNet(Module):
             dilation_rate_mult=dilation_rate_mult,
             activation=activation,
             final_activation=final_activation,
+            final_kernel_size=final_kernel_size,
             residual=residual,
             nb_conv_per_level=nb_conv_per_level,
             dropout=dropout,

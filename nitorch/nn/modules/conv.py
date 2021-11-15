@@ -317,6 +317,11 @@ class Conv(Module):
         else:
             self.register_parameter('bias', None)
 
+        # --------------------------------------------------------------
+        # Initialize weights
+        # --------------------------------------------------------------
+        self.reset_parameters()
+
     @property
     def in_channels(self):
         return (self.weight.shape[0] if self.transposed else

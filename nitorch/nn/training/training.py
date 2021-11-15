@@ -5,11 +5,24 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from nitorch.core.utils import benchmark, isin
 from nitorch.core.py import make_tuple
 from nitorch.nn.modules import Module
-from torch.cuda.amp import autocast, GradScaler
 import string
 import math
 import os
 import random
+
+
+try:
+    from torch.cuda.amp import autocast, GradScaler
+except ImportError:
+    class autocast:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): pass
+        def __exit__(self, exc_type, exc_val, exc_tb): pass
+
+    class GradScaler:
+        def scale(self, loss): return loss
+        def step(self, optimizer): return optimizer.step()
+        def update(self): pass
 
 
 try:

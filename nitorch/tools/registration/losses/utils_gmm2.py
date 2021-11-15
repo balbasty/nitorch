@@ -15,10 +15,7 @@ Tensor = torch.Tensor
 pyutils = py
 
 
-if utils.torch_version('>=', (1, 7)):
-    _maximum = torch.maximum
-else:
-    _maximum = torch.max
+_maximum = getattr(torch, 'maximum', torch.max)
 
 
 @torch.jit.script

@@ -9,7 +9,7 @@ object of future work.
 """
 import torch
 import torch.nn.functional as F
-from torch.cuda.amp import custom_fwd, custom_bwd
+from .optionals import custom_fwd, custom_bwd
 from . import utils
 
 

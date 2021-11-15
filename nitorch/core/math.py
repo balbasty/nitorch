@@ -3,7 +3,7 @@
 # yael.balbastre@gmail.com
 
 import torch
-from torch.cuda.amp import custom_fwd, custom_bwd
+from .optionals import custom_fwd, custom_bwd
 from .constants import inf, ninf
 from nitorch.core import py, utils
 Tensor = torch.Tensor
@@ -1115,7 +1115,7 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False,):
 # ======================================================================
 
 
-if utils.torch_version('>=', (1, 6)):
+if hasattr(torch, 'digamma'):
     @torch.jit.script
     def mvdigamma(input, order: int = 1):
         """Derivative of the log of the Gamma function, eventually multivariate

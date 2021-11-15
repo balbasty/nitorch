@@ -1,9 +1,10 @@
 import torch
+from nitorch import spatial
 from nitorch.core.utils import expand, channel2last
 from nitorch.core import py, utils, math
 from nitorch.nn.base import Module
-from .distribution import RandomDistribution
-from .field import RandomFieldSpline
+from .distribution import RandomDistribution, _get_dist
+from .field import RandomFieldSpline, HyperRandomFieldSpline
 
 
 class RandomSmoothSimplexMap(Module):
@@ -19,17 +20,17 @@ class RandomSmoothSimplexMap(Module):
             Output shape
         nb_classes : int, optional
             Number of classes (excluding background)
-        amplitude : float or callable or list, default=5
+        amplitude : float or (channel,) vector_like, default=5
             Amplitude of the random field (per channel).
-        fwhm : float or callable or list, default=15
+        fwhm : float or (channel,) vector_like, default=15
             Full-width at half-maximum of the random field (per channel).
         logits : bool, default=False
-            Input priors are log-odds instead of probabilities
+            Outputs are log-odds instead of probabilities
         implicit : bool, default=False
-            Input priors have an implicit K+1-th class.
-        device : torch.device: default='cpu'
+            Outputs have an implicit K+1-th class.
+        device : torch.device, optional
             Output tensor device.
-        dtype : torch.dtype, default=torch.get_default_dtype()
+        dtype : torch.dtype, optional
             Output tensor datatype.
         """
 
@@ -37,20 +38,9 @@ class RandomSmoothSimplexMap(Module):
         self.logits = logits
         self.implicit = implicit
         shape = py.make_list(shape)
-        self.field = RandomFieldSpline(shape=shape, channel=nb_classes,
+        self.field = RandomFieldSpline(shape=shape, channel=nb_classes+1,
                                        amplitude=amplitude, fwhm=fwhm,
                                        device=device, dtype=dtype)
-
-    nb_classes = property(lambda self: self.field.channel)
-    shape = property(lambda self: self.field.shape)
-    amplitude = property(lambda self: self.field.amplitude)
-    fwhm = property(lambda self: self.field.fwhm)
-    device = property(lambda self: self.field.device)
-    dtype = property(lambda self: self.field.dtype)
-
-    def to(self, *args, **kwargs):
-        self.field.to(*args, **kwargs)
-        super().to(*args, **kwargs)
 
     def forward(self, batch=1, **overload):
         """
@@ -58,54 +48,104 @@ class RandomSmoothSimplexMap(Module):
         Parameters
         ----------
         batch : int, default=1
-            Batch size
-        overload : dict
-            All parameters defined at build time can be overridden at call time
+
+        Other Parameters
+        ----------------
+        shape : sequence[int], optional
+        dtype : torch.dtype, optional
+        device : torch.device, optional
 
         Returns
         -------
         prob : (batch, nb_classes[+1], *shape) tensor
-            Probabilities
+            Logits or Probabilities
 
         """
 
         # get arguments
         opt = {
-            'shape': overload.get('shape', self.shape),
-            'channel': overload.get('nb_classes', self.nb_classes),
-            'amplitude': overload.get('amplitude', self.amplitude),
-            'fwhm': overload.get('fwhm', self.fwhm),
-            'dtype': overload.get('dtype', self.dtype),
-            'device': overload.get('device', self.device),
+            'shape': overload.get('shape', self.field.shape),
+            'dtype': overload.get('dtype', self.field.dtype),
+            'device': overload.get('device', self.field.device),
         }
-        implicit = overload.get('implicit', self.implicit)
-        logits = overload.get('logits', self.logits)
-        if not implicit:
-            opt['channel'] = opt['channel'] + 1
-
-        # preprocess amplitude
-        # > RandomField broadcast amplitude to (channel, *shape), with
-        #   padding from the left, which means that a 1d amplitude would
-        #   be broadcasted to (1, ..., dim) instead of (dim, ..., 1)
-        # > We therefore reshape amplitude to avoid left-side padding
-        def preprocess(a):
-            a = torch.as_tensor(a)
-            a = utils.unsqueeze(a, dim=-1, ndim=opt['channel']+1-a.dim())
-            return a
-        amplitude = opt['amplitude']
-        if callable(amplitude):
-            amplitude_fn = amplitude
-            amplitude = lambda *args, **kwargs: preprocess(amplitude_fn(*args, **kwargs))
-        else:
-            amplitude = preprocess(amplitude)
-        opt['amplitude'] = amplitude
 
         sample = self.field(batch, **opt)
-        if logits:
-            sample = math.log_softmax(sample, 1, implicit=implicit)
-        else:
-            sample = math.softmax(sample, 1, implicit=implicit)
+        softmax = math.log_softmax if self.logits else math.softmax
+        sample = softmax(sample, 1, implicit=(False, self.implicit))
+        return sample
 
+
+class HyperRandomSmoothSimplexMap(Module):
+    """Sample a smooth categorical prior"""
+
+    def __init__(self, shape=None, nb_classes=None,
+                 amplitude='lognormal', amplitude_exp=5, amplitude_scale=2,
+                 fwhm='lognormal', fwhm_exp=15, fwhm_scale=5,
+                 logits=False, implicit=False, device=None, dtype=None):
+        """
+
+        Parameters
+        ----------
+        shape : sequence[int], optional
+            Output shape
+        nb_classes : int, optional
+            Number of classes (excluding background)
+        amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        amplitude_exp : float or (channel,) vector_like, default=5
+        amplitude_scale : float or (channel,) vector_like, default=2
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        fwhm_exp : float or (channel,) vector_like, default=15
+        fwhm_scale : float or (channel,) vector_like, default=5
+        logits : bool, default=False
+            Outputs are log-odds instead of probabilities
+        implicit : bool, default=False
+            Outputs have an implicit K+1-th class.
+        device : torch.device, optional
+            Output tensor device.
+        dtype : torch.dtype, optional
+            Output tensor datatype.
+        """
+
+        super().__init__()
+        self.logits = logits
+        self.implicit = implicit
+        shape = py.make_list(shape)
+        self.field = HyperRandomFieldSpline(
+            shape=shape, channel=nb_classes+1, amplitude=amplitude,
+            amplitude_exp=amplitude_exp, amplitude_scale=amplitude_scale,
+            fwhm=fwhm, fwhm_exp=fwhm_exp, fwhm_scale=fwhm_scale,
+            device=device, dtype=dtype)
+
+    def forward(self, batch=1, **overload):
+        """
+
+        Parameters
+        ----------
+        batch : int, default=1
+
+        Other Parameters
+        ----------------
+        shape : sequence[int], optional
+        dtype : torch.dtype, optional
+        device : torch.device, optional
+
+        Returns
+        -------
+        prob : (batch, nb_classes[+1], *shape) tensor
+            Logits or Probabilities
+
+        """
+
+        # get arguments
+        opt = {
+            'shape': overload.get('shape', self.field.shape),
+            'dtype': overload.get('dtype', self.field.dtype),
+            'device': overload.get('device', self.field.device),
+        }
+
+        sample = self.field(batch, **opt)
+        softmax = math.log_softmax if self.logits else math.softmax
+        sample = softmax(sample, 1, implicit=(False, self.implicit))
         return sample
 
 
@@ -144,17 +184,6 @@ class RandomSmoothLabelMap(Module):
             fwhm=fwhm,
             device=device,
             dtype=dtype)
-
-    nb_classes = property(lambda self: self.prob.nb_classes)
-    shape = property(lambda self: self.prob.shape)
-    amplitude = property(lambda self: self.prob.amplitude)
-    fwhm = property(lambda self: self.prob.fwhm)
-    device = property(lambda self: self.prob.device)
-    dtype = property(lambda self: self.prob.dtype)
-
-    def to(self, *args, **kwargs):
-        self.field.to(*args, **kwargs)
-        super().to(*args, **kwargs)
 
     def forward(self, batch=1, **overload):
         """
@@ -331,3 +360,182 @@ class RandomMixture(Module):
         return sample
 
 
+class RandomGaussianMixture(Module):
+    """Sample from a Gaussian mixture with known label/responsibilities.
+
+    A FWHM can be provided to model the effect of a conditional random field.
+    """
+
+    def __init__(self,
+                 means=tuple(range(10)),
+                 scales=1,
+                 fwhm=0,
+                 dtype=None):
+        """
+
+        Parameters
+        ----------
+        means : ([C], K) tensor_like, default=`0:10`
+        scales : float or ([C], K) tensor_like, default=1
+        fwhm : float or (C,) vector_like, default=0
+        dtype : torch.dtype, optional
+        """
+        super().__init__()
+        self.means = means
+        self.scales = scales
+        self.fwhm = fwhm
+        self.dtype = dtype or torch.get_default_dtype()
+
+    def forward(self, x):
+        """
+
+        Parameters
+        ----------
+        x : (batch, 1 or classes[-1], *shape) tensor
+            Labels or probabilities
+
+        Returns
+        -------
+        x : (batch, channel, *shape) tensor
+
+        """
+        batch, _, *shape = x.shape
+        device = x.device
+        dtype = x.dtype
+        if not dtype.is_floating_point:
+            dtype = self.dtype
+        backend = dict(dtype=dtype, device=device)
+
+        means = torch.as_tensor(self.means, **backend)
+        scales = torch.as_tensor(self.scales, **backend)
+        nb_classes = means.shape[-1]
+        if means.dim() == 2:
+            channel = len(means)
+        elif scales.dim() == 2:
+            channel = len(scales)
+        else:
+            channel = 1
+        means = means.expand([channel, nb_classes]).clone()
+        scales = scales.expand([channel, nb_classes]).clone()
+        fwhm = utils.make_vector(self.fwhm, nb_classes, **backend)
+
+        implicit = x.shape[1] < nb_classes
+        out = torch.zeros([batch, channel, *shape], **backend)
+        for k in range(nb_classes):
+            sampler = _get_dist('normal')(means[:, k], scales[:, k])
+            if x.dtype.is_floating_point:
+                y1 = sampler.sample([batch, *shape])
+                y1 = utils.movedim(y1, -1, 1)
+                for c, f in enumerate(fwhm):
+                    if f > 0:
+                        y1[:, c] = spatial.smooth(
+                            y1[:, c], fwhm=f, dim=len(shape),
+                            padding='same', bound='dct2')
+                if not implicit:
+                    x1 = x[:, k, None]
+                elif k > 0:
+                    x1 = x[:, k-1, None]
+                else:
+                    x1 = x.sum(1, keepdim=True).neg_().add_(1)
+                out.addcmul(y1, x1)
+            else:
+                mask = (x.squeeze(1) == k)
+                y1 = sampler.sample([mask.sum().long()])
+                out = utils.movedim(out, 1, -1)
+                out[mask, :] = y1
+                out = utils.movedim(out, -1, 1)
+
+        return out
+
+
+class HyperRandomGaussianMixture(Module):
+    """Sample from a Gaussian mixture with randomized hyper-parameters."""
+
+    def __init__(self,
+                 nb_classes,
+                 nb_channels=1,
+                 means='normal',
+                 means_exp=0,
+                 means_scale=10,
+                 scales='gamma',
+                 scales_exp=1,
+                 scales_scale=5,
+                 fwhm='lognormal',
+                 fwhm_exp=3,
+                 fwhm_scale=5,
+                 background_zero=False,
+                 dtype=None):
+        """
+
+        Parameters
+        ----------
+        nb_classes : int
+        nb_channels : int, default=1
+        means : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
+        means_exp : ([[C], K]) tensor_like, default=0
+        means_scale : ([[C], K]) tensor_like, default=10
+        scales : {'normal', 'lognormal', 'uniform', 'gamma'}, default='gamma'
+        scales_exp : float or ([[C], K]) tensor_like, default=1
+        scales_scale : float or ([[C], K]) tensor_like, default=5
+        dtype : torch.dtype, optional
+        """
+        super().__init__()
+        self.nb_classes = nb_classes
+        self.nb_channels = nb_channels
+        self.means = _get_dist(means)
+        self.means_exp = means_exp
+        self.means_scale = means_scale
+        self.scales = _get_dist(scales)
+        self.scales_exp = scales_exp
+        self.scales_scale = scales_scale
+        self.fwhm = _get_dist(fwhm)
+        self.fwhm_exp = fwhm_exp
+        self.fwhm_scale = fwhm_scale
+        self.background_zero = background_zero
+        self.dtype = dtype or torch.get_default_dtype()
+
+    def forward(self, x):
+        """
+
+        Parameters
+        ----------
+        x : (batch, 1 or classes[-1], *shape) tensor
+            Labels or probabilities
+
+        Returns
+        -------
+        x : (batch, channel, *shape) tensor
+
+        """
+        batch, _, *shape = x.shape
+
+        device = x.device
+        dtype = x.dtype
+        if not dtype.is_floating_point:
+            dtype = self.dtype
+        backend = dict(dtype=dtype, device=device)
+
+        nb_classes = self.nb_classes
+        nb_channels = self.nb_channels
+        means_exp = torch.as_tensor(self.means_exp, **backend)
+        means_scale = torch.as_tensor(self.means_scale, **backend)
+        scales_exp = torch.as_tensor(self.scales_exp, **backend)
+        scales_scale = torch.as_tensor(self.scales_scale, **backend)
+        means_exp = means_exp.expand([nb_channels, nb_classes]).clone()
+        means_scale = means_scale.expand([nb_channels, nb_classes]).clone()
+        scales_exp = scales_exp.expand([nb_channels, nb_classes]).clone()
+        scales_scale = scales_scale.expand([nb_channels, nb_classes]).clone()
+        fwhm_exp = utils.make_vector(self.fwhm_exp, nb_channels, **backend)
+        fwhm_scale = utils.make_vector(self.fwhm_scale, nb_channels, **backend)
+
+        out = torch.zeros([batch, nb_channels, *shape], **backend)
+        for b in range(batch):
+            means = self.means(means_exp, means_scale).sample()
+            scales = self.scales(scales_exp, scales_scale).sample().clamp_min_(0)
+            if self.background_zero:
+                means[:, 0] = 0
+                scales[:, 0] = 0.1
+            fwhm = self.fwhm(fwhm_exp, fwhm_scale).sample().clamp_min_(0)
+            sampler = RandomGaussianMixture(means, scales, fwhm=fwhm)
+            out[b] = sampler(x[None, b])[0]
+        return out

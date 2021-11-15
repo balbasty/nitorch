@@ -856,8 +856,10 @@ def _build_affine_basis(basis, dim=None, dtype=None, device=None):
 
 
 # chain_matmul is replaced by linalg.multi_dot in recent versions of pytorch
-_multi_dot = (torch.linalg.multi_dot if utils.torch_version('>=', (1, 8)) else
-              lambda x: torch.chain_matmul(*x))
+if hasattr(torch, 'linalg') and hasattr(torch.linalg, 'multi_dot'):
+    _multi_dot = torch.linalg.multi_dot
+else:
+    _multi_dot = lambda x: torch.chain_matmul(*x)
 
 
 def multi_dot(x):
