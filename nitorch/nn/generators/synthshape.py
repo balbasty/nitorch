@@ -334,7 +334,7 @@ class SynthMRI(Module):
 
         return s, s0, nb_labels_sampled, nb_labels_predicted
 
-    def forward(self, s, return_resolution=False):
+    def forward(self, s, img=None, return_resolution=False):
         """
 
         Parameters
@@ -354,7 +354,10 @@ class SynthMRI(Module):
             s = self.bag(s)
             n += 1
         s = self.to_onehot(s)
-        s, s0 = self.deform(s, s0)
+        if img is not None:
+            s, s0, img = self.deform(s, s0, img)
+        else:
+            s, s0 = self.deform(s, s0)
         if self.gmm_cat == 'l':
             s = self.to_label(s)
         x = self.mixture(s, nb_classes=n)
@@ -369,6 +372,8 @@ class SynthMRI(Module):
             x, vx = self.lowres3d(x, noise=e, return_resolution=True)
         x = self.rescale(x)
         out = [x, s0]
+        if img is not None:
+            out += [img]
         if return_resolution:
             out += [vx]
         return tuple(out)

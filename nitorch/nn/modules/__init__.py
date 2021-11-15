@@ -2,7 +2,11 @@
 
 from . import cnn
 from . import conv
+from . import _wip_attention
 from . import _wip_densenet
+from . import _wip_hyperu
+from . import _wip_segreg
+from . import _wip_transformer
 from . import encode_decode
 from . import hyper
 from . import norm
@@ -14,10 +18,15 @@ from . import resnet
 from . import spatial
 from . import segmentation
 from . import seg_advanced
+from . import vae
 
 from .cnn import *
 from .conv import *
+from ._wip_attention import *
 from ._wip_densenet import *
+from ._wip_hyperu import *
+from ._wip_segreg import *
+from ._wip_transformer import *
 from .encode_decode import *
 from .hyper import *
 from .norm import *
@@ -29,3 +38,4 @@ from .resnet import *
 from .spatial import *
 from .segmentation import *
 from .seg_advanced import *
+from .vae import *

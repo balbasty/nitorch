@@ -1301,6 +1301,7 @@ class UNet2(tnn.Sequential):
             out_channels: int,
             encoder: Optional[Sequence[int]] = None,
             decoder: Optional[Sequence[int]] = None,
+            skip_decoder_level: int = 0,
             conv_per_layer: int = 1,
             kernel_size: Union[int, Sequence[int]] = 3,
             stride: Union[int, Sequence[int]] = 2,
@@ -1362,8 +1363,8 @@ class UNet2(tnn.Sequential):
         nb_scales = len(encoder)
         decoder = py.make_list(decoder or default_decoder,
                             n=nb_scales-1, crop=False)
-        stack = decoder[len(encoder)-1:]
-        decoder = encoder[-1:] + decoder[:len(encoder)-1]
+        stack = decoder[len(encoder)-1-skip_decoder_level:]
+        decoder = encoder[-1:] + decoder[:len(encoder)-1-skip_decoder_level]
 
         in_channels = py.make_list(in_channels, n=nb_scales, default=0)
 
@@ -1441,7 +1442,7 @@ class UNet2(tnn.Sequential):
                 cin = decoder[n]
                 cout = decoder[n+1]
                 cout = [decoder[n]] * (conv_per_layer - 1) + [cout]
-            cin += encoder[-n-1]
+            cin += encoder.pop(-1)
             modules_decoder.append(DecodingLayer(
                 dim,
                 in_channels=cin,
@@ -1461,7 +1462,7 @@ class UNet2(tnn.Sequential):
         else:
             cin = decoder[-1]
             cout = [decoder[-1]] * (conv_per_layer - 1)
-        cin += encoder[0]
+        cin += encoder.pop(-1)
         for s in stack:
             cout += [s] * conv_per_layer
         if cout:

@@ -6,7 +6,7 @@ from nitorch.tools.qmri import io as qio
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
 from ._options import ESTATICSOptions
-from nitorch.tools.qmri.param import ParameterMap, GeodesicDeformation, SVFDeformation, DenseDeformation
+from nitorch.tools.qmri.param import ParameterMap, GeodesicDeformation, SVFDeformation, DenseDeformation, DistortionMap
 from ._param import ESTATICSParameterMaps
 
 
@@ -40,6 +40,15 @@ def postproc(maps, contrasts):
     return intercepts, decay
 
 
+def _argmax(x):
+    i = None
+    v = -float('inf')
+    for j, e in enumerate(x):
+        if e > v:
+            i = j
+    return i
+
+
 def preproc(data, opt):
     """Estimate noise variance + register + compute recon space + init maps
 
@@ -63,6 +72,14 @@ def preproc(data, opt):
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
 
+    # --- guess readout/blip if not provided ---
+    for contrast in data:
+        shape = contrast.spatial_shape
+        if contrast.readout is None:
+            contrast.readout = _argmax(shape)
+        if contrast.readout >= 0:
+            contrast.readout = contrast.readout - (len(shape) + 1)
+
     # --- estimate hyper parameters ---
     logmeans = []
     te = []
@@ -72,8 +89,8 @@ def preproc(data, opt):
         for e, echo in enumerate(contrast):
             if opt.verbose:
                 print(f'Estimate noise: contrast {c+1:d} - echo {e+1:2d}', end='\r')
-            dat = echo.fdata(**backend, rand=True, cache=False)
-            sd0, sd1, mu0, mu1 = estimate_noise(dat)
+            dat = echo.fdata(**backend, rand=True, cache=False, missing=0)
+            sd0, sd1, mu0, mu1 = estimate_noise(dat, chi=True)
             echo.mean = mu1.item()
             echo.sd = sd0.item()
             means.append(mu1)
@@ -81,12 +98,17 @@ def preproc(data, opt):
         means = torch.stack(means)
         vars = torch.stack(vars)
         var = (means*vars).sum() / means.sum()
-        contrast.noise = var.item()
+        if not getattr(contrast, 'noise', 0):
+            contrast.noise = var.item()
+        if not getattr(contrast, 'ncoils', 0):
+            contrast.ncoils = 1
 
         te.append(contrast.te)
         logmeans.append(means.log())
     if opt.verbose:
         print('')
+        sds = [c.noise ** 0.5 for c in data]
+        print('    - standard deviation:  [' + ', '.join([f'{s:.2f}' for s in sds]) + ']')
 
     # --- initial minifit ---
     print('Compute initial parameters')
@@ -136,6 +158,10 @@ def preproc(data, opt):
     if opt.distortion.enable:
         dist = []
         for c, contrast in enumerate(data):
+            # dist1 = DistortionMap(contrast.spatial_shape,
+            #                       affine=contrast.affine,
+            #                       readout=contrast.readout,
+            #                       **backend)
             if opt.distortion.model == 'smalldef':
                 dist1 = DenseDeformation(contrast.spatial_shape,
                                          affine=contrast.affine,

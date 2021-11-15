@@ -204,7 +204,7 @@ class GroupNorm(Module):
 
         # Store dimension
         self.dim = dim
-        self.norm = nitorchmodule(tnn.GroupNorm(groups, nb_channels, *args, **kwargs))
+        self.norm = nitorchmodule(tnn.GroupNorm)(groups, nb_channels, *args, **kwargs)
 
     def forward(self, x):
         """Forward pass.

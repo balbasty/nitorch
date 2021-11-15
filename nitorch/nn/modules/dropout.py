@@ -1,4 +1,5 @@
 """Dropout layer"""
+import torch
 from torch import nn as tnn
 from ..base import Module, nitorchmodule
 
@@ -68,3 +69,30 @@ class Dropout(Module):
         return s
 
     __repr__ = __str__
+
+
+class DropPath(Module):
+    """
+    Stochastic depth dropout.
+
+    References
+    ----------
+    ..[1] ""
+    https://arxiv.org/abs/1603.09382
+    """
+    def __init__(self, dropout=None):
+        super().__init__()
+        self.dropout = dropout
+        
+    def forward(self, x):
+        if self.dropout is not None and self.training and self.dropout > 0:
+            dtype = x.dtype
+            device = x.device
+            keep_prob = 1 - self.dropout
+            shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+            rand = keep_prob + torch.rand(shape, dtype=dtype, device=device)
+            rand = rand.floor()
+            x /= keep_prob
+            x *= rand
+        return x
+        

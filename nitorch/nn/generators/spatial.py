@@ -10,7 +10,7 @@ from .distribution import _get_dist
 
 __all__ = ['RandomVelocity', 'RandomDiffeo', 'RandomAffineMatrix', 'RandomGrid',
            'RandomDeform', 'RandomPatch', 'RandomFlip', 'RandomSmooth',
-           'RandomLowRes2D', 'RandomLowRes3D']
+           'RandomLowRes2D', 'RandomLowRes3D', 'RandomRubiks', 'RandomPatchSwap']
 
 
 defaults = dict(
@@ -803,6 +803,7 @@ class RandomRubiks(Module):
             
     """
     def __init__(self,
+                 dim,
                  kernel=[32,32,32]):
         """
         Arguments:
@@ -811,12 +812,14 @@ class RandomRubiks(Module):
         """
         
         super().__init__()
+        if isinstance(kernel, int):
+            kernel = [kernel] * dim
         self.kernel = kernel
 
     def forward(self, x):
-        dim = len(x.shape[2:])
         shape = x.shape[2:]
-        x = utils.unfold(x, self.kernel, dim=dim, collapse=True)
+        dim = len(shape)
+        x = utils.unfold(x, self.kernel, collapse=True)
         x = x[:, :, torch.randperm(x.shape[2])]
         x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
         return x
@@ -830,13 +833,14 @@ class RandomPatchSwap(Module):
     References
     ----------
     ..[1] "Self-supervised learning for medical image analysis using image context restoration"
-            Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa, Michitaka Fujiwara, DanieRueckert
+            Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa, Michitaka Fujiwara, Daniel Rueckert
             Medical Image Analysis 2019
             https://doi.org/10.1016/j.media.2019.101539
 
             
     """
     def __init__(self,
+                 dim,
                  kernel=[32,32,32],
                  nb_swap=4):
         """
@@ -847,16 +851,17 @@ class RandomPatchSwap(Module):
         """
         
         super().__init__()
+        if isinstance(kernel, int):
+            kernel = [kernel] * dim
         self.kernel = kernel
         self.nb_swap = nb_swap
 
     def forward(self, x):
-        dim = len(x.shape[2:])
         shape = x.shape[2:]
-        x = utils.unfold(x, self.kernel, dim=dim, collapse=True)
+        dim = len(shape)
+        x = utils.unfold(x, self.kernel, collapse=True)
         for n in range(self.nb_swap):
-            i1, i2 = randint(0, x.shape[2]-1)
+            i1, i2 = torch.randint(low=0, high=x.shape[2]-1, size=(2,)).tolist()
             x[:,:,i1], x[:,:,i2] = x[:,:,i2], x[:,:,i1]
         x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
         return x
-
