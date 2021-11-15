@@ -57,10 +57,10 @@ def board2(self, tb, inputs=None, outputs=None, epoch=None, minibatch=None, mode
         if ref.dtype in (torch.float, torch.double):
             refs = get_orthogonal_slices(ref[0])
         else:
+            mx = ref.max().item()
             refs = get_orthogonal_slices(ref[0, 0])
             refs = [torch.stack
-                ([ref == i for i in range(1, ref.max().item( ) +1)]).float()
-                    for ref in refs]
+                ([ref == i for i in range(1, mx + 1)]).float() for ref in refs]
         refs = [prob_to_rgb(ref, implicit=ref.shape[0] < nk) for ref in refs]
         plt.subplot(3, 3, 1)
         plt.imshow(images[0].detach().cpu())

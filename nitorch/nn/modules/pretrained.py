@@ -245,6 +245,20 @@ class SynthSegUNet(SynthUNet):
 class SynthPreproc:
 
     @classmethod
+    def addnoise(cls, x):
+        return cls.addnoise_(x.clone())
+
+    @classmethod
+    def addnoise_(cls, x):
+        v = x.unique().sort().values
+        v = v[1:] - v[:-1]
+        v = utils.quantile(v, 0.005).item()
+        mask = torch.isfinite(x).bitwise_not_().bitwise_or_(x == 0)
+        x.masked_fill_(mask, 0)
+        x.addcmul_(mask.to(x.dtype), torch.rand_like(x), value=v)
+        return x
+
+    @classmethod
     def preproc(cls, x):
         return cls.preproc_(x.clone())
 
@@ -255,14 +269,14 @@ class SynthPreproc:
         return x
 
     @classmethod
-    def _crop(cls, x):
+    def crop(cls, x):
         crop = [s % 2**5 for s in x.shape]
         crop = tuple(slice(c//2, (c//2-c) or None) for c in crop)
         x = x[crop]
         return x, crop
 
     @classmethod
-    def _pad(cls, x, oshape, crop):
+    def pad(cls, x, oshape, crop):
         if oshape == x.shape:
             return x
         ox = x.new_zeros(oshape)
@@ -311,14 +325,18 @@ class SynthSegmenter(SynthSegUNet):
                 affine = x.affine
                 x = x.fdata()
                 x = x.reshape(x.shape[:3])
+        x = SynthPreproc.addnoise(x)
         if affine is not None:
             affine, x = spatial.affine_reorient(affine, x, 'RAS')
             vx = spatial.voxel_size(affine)
+            fwhm = 0.25*vx.reciprocal()
+            fwhm[vx > 1] = 0
+            x = spatial.smooth(x, fwhm=fwhm.tolist(), dim=3)
             x, affine = spatial.resize(x[None, None], vx.tolist(),
                                        affine=affine)
             x = x[0, 0]
         oshape = x.shape
-        x, crop = SynthPreproc._crop(x)
+        x, crop = SynthPreproc.crop(x)
         x = SynthPreproc.preproc(x)[None, None]
         if self.verbose:
             print('done.', flush=True)
@@ -326,9 +344,12 @@ class SynthSegmenter(SynthSegUNet):
         s, x = super().forward(x)[0], x[0, 0]
         if self.verbose:
             print('done.', flush=True)
+            print('Postprocessing... ', end='', flush=True)
         s = self.relabel(s.argmax(0))
-        x = SynthPreproc._pad(x, oshape, crop)
-        s = SynthPreproc._pad(s, oshape, crop)
+        x = SynthPreproc.pad(x, oshape, crop)
+        s = SynthPreproc.pad(s, oshape, crop)
+        if self.verbose:
+            print('done.', flush=True)
         return s, x, affine
 
 
@@ -435,6 +456,7 @@ class SynthResolver(SynthSRUNet):
                 affine = x.affine
                 x = x.fdata()
                 x = x.reshape(x.shape[:3])
+        x = SynthPreproc.addnoise(x)
         if affine is not None:
             affine, x = spatial.affine_reorient(affine, x, 'RAS')
             vx = spatial.voxel_size(affine)
@@ -445,7 +467,7 @@ class SynthResolver(SynthSRUNet):
                                        affine=affine, anchor='f')
             x = x[0, 0]
         oshape = x.shape
-        x, crop = SynthPreproc._crop(x)
+        x, crop = SynthPreproc.crop(x)
         x = SynthPreproc.preproc(x)[None, None]
         if self.verbose:
             print('done.', flush=True)
@@ -453,8 +475,8 @@ class SynthResolver(SynthSRUNet):
         s, x = super().forward(x)[0, 0], x[0, 0]
         if self.verbose:
             print('done.', flush=True)
-        s = SynthPreproc._pad(s, oshape, crop)
-        x = SynthPreproc._pad(x, oshape, crop)
+        s = SynthPreproc.pad(s, oshape, crop)
+        x = SynthPreproc.pad(x, oshape, crop)
         return s, x, affine
 
 
