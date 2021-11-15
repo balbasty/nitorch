@@ -23,14 +23,14 @@ class SlidingWindow(Module):
         if overlap < 0.5 and overlap > 0:
             if isinstance(patch_size, list):
                 if isinstance(overlap, list):
-                    self.stride = [(1-overlap[i])*p for i, p in enumerate(patch_size)]
+                    self.stride = [int((1-overlap[i])*p) for i, p in enumerate(patch_size)]
                 else:
-                    self.stride = [(1-overlap)*p for p in patch_size]
+                    self.stride = [int((1-overlap)*p) for p in patch_size]
             else:
                 if isinstance(overlap, list):
-                    self.stride = [(1-o)*patch_size for o in overlap]
+                    self.stride = [int((1-o)*patch_size) for o in overlap]
                 else:
-                    self.stride = (1-overlap)*patch_size
+                    self.stride = int((1-overlap)*patch_size)
         else:
             self.stride = None
 
