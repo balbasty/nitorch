@@ -37,11 +37,22 @@ class SlidingWindow(Module):
     def forward(self, x, model):
         shape = x.shape[2:]
         dim = len(shape)
+        if isinstance(self.patch_size, int):
+            patch_size = [self.patch_size] * dim
+        else:
+            patch_size = self.patch_size
+        if isinstance(self.stride, int):
+            stride = [self.stride] * dim
+        else:
+            stride = self.stride
+        pshape = [x+(k-x%s) for x,k,s in zip(shape,patch_size,stride)]
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(pshape))
         x = utils.unfold(x, kernel_size=self.patch_size, stride=self.stride, collapse=True)
         x = torch.split(x, 1, dim=2)
         x = [x_.reshape(tuple(x_.shape[:2])+tuple(x_.shape[3:])) for x_ in x]
         x = [model(x_) for x_ in x]
         x = [x_.unsqueeze(dim=2) for x_ in x]
         x = torch.cat(x, dim=2)
-        x = utils.fold(x, dim=dim, stride=self.stride, collapsed=True, shape=shape, reduction=self.reduction)
+        x = utils.fold(x, dim=dim, stride=self.stride, collapsed=True, shape=pshape, reduction=self.reduction)
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(shape))
         return x
