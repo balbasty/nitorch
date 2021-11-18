@@ -1,4 +1,4 @@
-from nitorch.core.math import besseli_ratio, log_modified_bessel_first
+from nitorch.core.math import besseli_ratio, besseli,  log_modified_bessel_first
 import torch
 from nitorch import core, spatial
 from ._options import GREEQOptions
@@ -6,7 +6,6 @@ from ._preproc import preproc, postproc
 from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul,
                      hessian_sym_solve, hessian_sym_inv, rls_maj,
                      smart_grid, smart_pull, smart_push)
-from scipy.special import jve, jv, ive, iv
 from nitorch.tools.qmri.param import ParameterMap
 import numpy as np
 
@@ -46,7 +45,7 @@ import numpy as np
 #   the residuals).
 
 
-def greeq(data, transmit=None, receive=None, opt=None, chi=False, **kwopt):
+def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     """Fit a non-linear relaxometry model to multi-echo Gradient-Echo data.
 
     Parameters
@@ -98,10 +97,11 @@ def greeq(data, transmit=None, receive=None, opt=None, chi=False, **kwopt):
     opt = GREEQOptions().update(opt, **kwopt)
     dtype = opt.backend.dtype
     device = opt.backend.device
+    chi = opt.likelihood[0].lower() == 'c'
     backend = dict(dtype=dtype, device=device)
 
     # --- estimate noise / register / initialize maps ---
-    data, transmit, receive, maps, dof = preproc(data, transmit, receive, opt, chi=chi)
+    data, transmit, receive, maps = preproc(data, transmit, receive, opt)
     has_mt = hasattr(maps, 'mt')
 
     # --- prepare penalty factor ---
@@ -188,14 +188,8 @@ def greeq(data, transmit=None, receive=None, opt=None, chi=False, **kwopt):
                 hess.zero_()
                 # --- loop over contrasts ---
                 # temporary solution
-                contrast_number = 0
                 for contrast, b1m, b1p in zip(data, receive, transmit):
-                    if chi:
-                        crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt, chi=chi, dof=dof[contrast_number])
-                    else:
-                        # compute gradient
-                        crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt, chi=chi)
-                    contrast_number+=1
+                    crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt)
 
                     # increment
                     if hasattr(maps, 'mt') and not contrast.mt:
@@ -218,7 +212,6 @@ def greeq(data, transmit=None, receive=None, opt=None, chi=False, **kwopt):
                         crit += crit1
                     
                     del g1, h1, crit1
-                    torch.cuda.empty_cache()
                 # --- penalty ---
                 reg = 0.
                 if opt.penalty.norm:
@@ -412,7 +405,7 @@ def _resize(maps, rls, aff, shape):
     return maps, rls
 
 
-def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=False, dof=None ):
+def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
     """Compute the gradient and Hessian of the parameter maps with
     respect to one contrast.
 
@@ -455,12 +448,14 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
 
     dtype = opt.backend.dtype
     device = opt.backend.device
+    chi = opt.likelihood[0].lower() == 'c'
     backend = dict(dtype=dtype, device=device)
 
     # sequence parameters
     lam = 1 / contrast.noise
     tr = contrast.tr                                # TR is stored in sec
     fa = contrast.fa / 180. * core.constants.pi     # FA is stored in deg
+    dof = contrast.dof
     
     obs_shape = contrast.shape[1:]
     recon_shape = maps.shape[1:]
@@ -569,8 +564,9 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
 
         if chi:
             z = (dat*fit*lam).clamp_min_(tiny)
-            xi = besseli_ratio(dat*fit*lam+tiny, dof/2.-1., N=2, K=4)
+            xi = besseli_ratio(dof/2.-1., dat*fit*lam+tiny, N=2, K=4)
             logbes = log_modified_bessel_first(z, dof/2.-1.)
+            #logbes = besseli(dof/2.-1., z, 'log')
 
             critn = ((dof/2.-1.) * fit.clamp_min(tiny).log_()
                     - (dof/2.) * dat.clamp_min(tiny).log_()
@@ -601,7 +597,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
             #   so we initialize them with fit
             grad1[...] = fit[None].expand((3+has_mt, *fit.shape))
             del fit
-            torch.cuda.empty_cache()
             grad1[1] *= -tr * r1 * (omt_x_cosfa - 1) * e1
             grad1[1] /= (1 - e1) * (1 - omt_x_cosfa * e1)
             grad1[2] *= -echo.te * r2s
@@ -641,7 +636,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
             if has_mt:
                 hess1[3] = grad1[3].square().add_(hess0[3])
                 del hess0
-                torch.cuda.empty_cache()
                 hess1[4] = grad1[0] * grad1[1]
                 hess1[5] = grad1[0] * grad1[2]
                 hess1[6] = grad1[0] * grad1[3]
@@ -650,29 +644,28 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
                 hess1[9] = grad1[2] * grad1[3]
             else:
                 del hess0
-                torch.cuda.empty_cache()
                 hess1[3] = grad1[0] * grad1[1]
                 hess1[4] = grad1[0] * grad1[2]
                 hess1[5] = grad1[1] * grad1[2]
             hess1 *= lam
             hess1[:, ~msk] = 0
-            # offdiag (and diag) not used later, causes memory overload
-            #diag = hess1[:(3+has_mt)]
-            torch.cuda.empty_cache()
+            diag = hess1[:(3+has_mt)]
+            diag.masked_fill_(torch.isfinite(diag).bitwise_not_(), 1e-3)
             #diag[~torch.isfinite(diag)] = 1e-3
-            #offdiag = hess1[(3+has_mt):]
+            offdiag = hess1[(3+has_mt):]
             #offdiag[~torch.isfinite(offdiag)] = 0
+            offdiag.masked_fill_(torch.isfinite(offdiag).bitwise_not_(), 0)
             hess += hess1
             del hess1
 
             # grad_crit: multiply by residuals
             grad1 *= res
             grad1 *= lam
-            grad1[~torch.isfinite(grad1)] = 0
+            #grad1[~torch.isfinite(grad1)] = 0
+            grad1.masked_fill_(torch.isfinite(grad1).bitwise_not_(), 0)
             grad += grad1
             del grad1
         del res
-        torch.cuda.empty_cache()
     del r1, r2s, omt, e1, fit0, omt_x_cosfa
     if do_grad:
         # push gradient and Hessian to recon space
@@ -680,7 +673,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True, chi=F
         grad = smart_push(grad, grid, recon_shape)
         hess = smart_push(hess, grid, recon_shape)
         return crit, grad, hess
-    torch.cuda.empty_cache()
     return crit
 
 

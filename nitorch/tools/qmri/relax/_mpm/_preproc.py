@@ -44,7 +44,7 @@ def postproc(maps):
     return maps.pd, maps.r1, maps.r2s
 
 
-def preproc(data, transmit=None, receive=None, opt=None, chi=False):
+def preproc(data, transmit=None, receive=None, opt=None):
     """Estimate noise variance + register + compute recon space + init maps
 
     Parameters
@@ -64,6 +64,7 @@ def preproc(data, transmit=None, receive=None, opt=None, chi=False):
     opt = GREEQOptions().update(opt)
     dtype = opt.backend.dtype
     device = opt.backend.device
+    chi = opt.likelihood[0].lower() == 'c'
     backend = dict(dtype=dtype, device=device)
     
     # --- estimate hyper parameters ---
@@ -72,7 +73,6 @@ def preproc(data, transmit=None, receive=None, opt=None, chi=False):
     tr = []
     fa = []
     mt = []
-    dof = []
     for c, contrast in enumerate(data):
         means = []
         vars = []
@@ -81,6 +81,7 @@ def preproc(data, transmit=None, receive=None, opt=None, chi=False):
             if opt.verbose:
                 print(f'Estimate noise: contrast {c+1:d} - echo {e+1:2d}', end='\r')
             dat = echo.fdata(**backend, rand=True, cache=False)
+            # currently doesn't work with likelihood 'gauss'
             sd0, sd1, mu0, mu1, dof0 = estimate_noise(dat, chi=chi)
             echo.mean = mu1.item()
             echo.sd = sd0.item()
@@ -104,7 +105,8 @@ def preproc(data, transmit=None, receive=None, opt=None, chi=False):
         fa.append(contrast.fa / 180 * core.constants.pi)
         mt.append(contrast.mt)
         logmeans.append(means.log())
-        dof.append(dofc)
+        if not getattr(contrast, 'dof', 0):
+            contrast.dof = dofc if chi else 2
     if opt.verbose:
         print('')
 
@@ -190,7 +192,7 @@ def preproc(data, transmit=None, receive=None, opt=None, chi=False):
     else:
         receive = [None] * len(data)
     
-    return data, transmit, receive, maps, dof
+    return data, transmit, receive, maps
 
 
 def _loglin_minifit(dat, te):
