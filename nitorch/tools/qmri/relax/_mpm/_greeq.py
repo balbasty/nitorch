@@ -12,7 +12,7 @@ import numpy as np
 
 
 # NOTE:
-#   In our model, we first deform the parameter maps and then apply  
+#   In our model, we first deform the parameter maps and then apply the
 #   FLASH signal equation. The objective function is therefore
 #                   L = l2(flash(phi @ y) - x) / 2
 #   where phi is the deformation encoded in a large matrix.
@@ -181,13 +181,11 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
             # --- Gauss Newton loop ---
             ll_gn = []
             for n_iter_gn in range(opt.optim.max_iter_gn):
-                # print(n_iter_gn)
                 printer.gn = n_iter_gn
                 crit = 0
                 grad.zero_()
                 hess.zero_()
                 # --- loop over contrasts ---
-                # temporary solution
                 for contrast, b1m, b1p in zip(data, receive, transmit):
                     crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt)
 
