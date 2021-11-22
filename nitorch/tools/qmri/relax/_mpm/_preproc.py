@@ -81,13 +81,27 @@ def preproc(data, transmit=None, receive=None, opt=None):
             if opt.verbose:
                 print(f'Estimate noise: contrast {c+1:d} - echo {e+1:2d}', end='\r')
             dat = echo.fdata(**backend, rand=True, cache=False)
-            # currently doesn't work with likelihood 'gauss'
-            sd0, sd1, mu0, mu1, dof0 = estimate_noise(dat, chi=chi)
+
+            #dictionary version
+            mix_par = estimate_noise(dat, chi=chi)
+            sd0 = mix_par['sd_noise']
+            sd1 = mix_par['sd_not_noise']
+            mu0 = mix_par['mu_noise']
+            mu1 = mix_par['mu_not_noise']
+            dof0 = mix_par['dof_noise']
+
+            # # variable return version
+            # if chi:
+            #     sd0, sd1, mu0, mu1, dof0 = estimate_noise(dat, chi=chi)
+            # else:
+            #     sd0, sd1, mu0, mu1 = estimate_noise(dat, chi=chi)
+
             echo.mean = mu1.item()
             echo.sd = sd0.item()
             means.append(mu1)
             vars.append(sd0.square())
-            dofc.append(dof0)
+            if chi:
+                dofc.append(dof0)
         means = torch.stack(means)
         vars = torch.stack(vars)
         

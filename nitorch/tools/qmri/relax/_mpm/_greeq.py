@@ -1,4 +1,4 @@
-from nitorch.core.math import besseli_ratio, besseli,  log_modified_bessel_first
+from nitorch.core.math import besseli_ratio, besseli
 import torch
 from nitorch import core, spatial
 from ._options import GREEQOptions
@@ -562,9 +562,9 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
 
         if chi:
             z = (dat*fit*lam).clamp_min_(tiny)
-            xi = besseli_ratio(dof/2.-1., dat*fit*lam+tiny, N=2, K=4)
-            logbes = log_modified_bessel_first(z, dof/2.-1.)
-            #logbes = besseli(dof/2.-1., z, 'log')
+            xi = besseli_ratio(dof/2.-1., z, N=2, K=4)
+            #logbes = log_modified_bessel_first(z, dof/2.-1.)
+            logbes = besseli(dof/2.-1., z, 'log')   
 
             critn = ((dof/2.-1.) * fit.clamp_min(tiny).log_()
                     - (dof/2.) * dat.clamp_min(tiny).log_()

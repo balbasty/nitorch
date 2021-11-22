@@ -204,6 +204,7 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
         sd = model.sig.squeeze()
 
     # Get std and mean of noise class
+    dof_noise=None
     if mu_noise:
         # Closest to mu_bg
         _, ix_noise = torch.min(torch.abs(mu - mu_noise), dim=0)
@@ -225,7 +226,14 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
     mu_not_noise = sum(w * mu1)
     sd_not_noise = sum(w * sd1)
 
-    if chi:
-        return sd_noise, sd_not_noise, mu_noise, mu_not_noise, dof_noise
-    else:
-        return sd_noise, sd_not_noise, mu_noise, mu_not_noise
+    return {
+        'sd_noise': sd_noise,
+        'sd_not_noise': sd_not_noise,
+        'mu_noise': mu_noise,
+        'mu_not_noise': mu_not_noise,
+        'dof_noise': dof_noise}
+    
+    #if chi:
+    #    return sd_noise, sd_not_noise, mu_noise, mu_not_noise, dof_noise
+    #else:
+    #    return sd_noise, sd_not_noise, mu_noise, mu_not_noise
