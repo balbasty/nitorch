@@ -8,6 +8,7 @@ from typing import List
 from .optionals import custom_fwd, custom_bwd
 from .constants import inf, ninf
 from nitorch.core import py, utils
+from math import lgamma as pylgamma
 Tensor = torch.Tensor
 
 
@@ -1553,3 +1554,37 @@ def besseli_old(X, order=0, Nk=64):
                        (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1, dtype=torch.float64)
     return i
 
+@torch.jit.script
+def log_modified_bessel_first(x, alpha: float = 0., max_iter: int = 32, tol: float = 1e-9):
+    """ Log of the Modified Bessel function of the first kind of real order
+
+    Notes
+    -----
+    .. This function only works on real inputs.
+    .. It uses scaling by exp(-x) internally for numerical stability.
+
+    Parameters
+    ----------
+    x : tensor
+        Input tensor
+    alpha : float, default=0
+        Order
+    max_iter : int, default=32
+        Maximum number of elements in the sum
+    tol : float, default=1e-9
+        Tolerance for early stopping
+    """
+    # !! x should be positive !!
+    y = x * (alpha / 2) - pylgamma(alpha + 1)
+    y = y.sub_(x).clamp_max_(80).exp_()
+    yy = y.flatten().dot(y.flatten())
+    for m in range(1, max_iter):
+        y1 = x * (m + alpha / 2) - pylgamma(m) - pylgamma(m + alpha + 1)
+        y1 = y1.sub_(x).clamp_max_(80).exp_()
+        y += y1
+        yy1 = y1.flatten().dot(y1.flatten())
+        if yy1/yy < tol:
+            break
+        yy = yy1
+    y = y.log_().add_(x)
+    return y

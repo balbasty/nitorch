@@ -191,7 +191,7 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
     else:  # Make RMM model
         model = RMM(num_class=num_class)
 
-    # Fit GMM using Numpy
+    # Fit GMM/RMM/CMM using Numpy
     model.fit(x, W=dat, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
 
     # Get means and mixing proportions
@@ -204,6 +204,7 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
         sd = model.sig.squeeze()
 
     # Get std and mean of noise class
+    dof_noise=None
     if mu_noise:
         # Closest to mu_bg
         _, ix_noise = torch.min(torch.abs(mu - mu_noise), dim=0)
@@ -213,6 +214,8 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
         # With smallest sd
         sd_noise, ix_noise = torch.min(sd, dim=0)
         mu_noise = mu[ix_noise]
+    if chi:
+        dof_noise = model.dof[ix_noise]
     # Get std and mean of other classes (means and sds weighted by mps)
     rng = torch.arange(0, num_class, device=device)
     rng = torch.cat([rng[0:ix_noise], rng[ix_noise + 1:]])
@@ -223,4 +226,14 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
     mu_not_noise = sum(w * mu1)
     sd_not_noise = sum(w * sd1)
 
-    return sd_noise, sd_not_noise, mu_noise, mu_not_noise
+    return {
+        'sd_noise': sd_noise,
+        'sd_not_noise': sd_not_noise,
+        'mu_noise': mu_noise,
+        'mu_not_noise': mu_not_noise,
+        'dof_noise': dof_noise}
+    
+    #if chi:
+    #    return sd_noise, sd_not_noise, mu_noise, mu_not_noise, dof_noise
+    #else:
+    #    return sd_noise, sd_not_noise, mu_noise, mu_not_noise

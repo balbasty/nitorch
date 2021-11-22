@@ -64,6 +64,7 @@ def preproc(data, transmit=None, receive=None, opt=None):
     opt = GREEQOptions().update(opt)
     dtype = opt.backend.dtype
     device = opt.backend.device
+    chi = opt.likelihood[0].lower() == 'c'
     backend = dict(dtype=dtype, device=device)
     
     # --- estimate hyper parameters ---
@@ -75,25 +76,51 @@ def preproc(data, transmit=None, receive=None, opt=None):
     for c, contrast in enumerate(data):
         means = []
         vars = []
+        dofc=[]
         for e, echo in enumerate(contrast):
             if opt.verbose:
                 print(f'Estimate noise: contrast {c+1:d} - echo {e+1:2d}', end='\r')
             dat = echo.fdata(**backend, rand=True, cache=False)
-            sd0, sd1, mu0, mu1 = estimate_noise(dat)
+
+            #dictionary version
+            mix_par = estimate_noise(dat, chi=chi)
+            sd0 = mix_par['sd_noise']
+            sd1 = mix_par['sd_not_noise']
+            mu0 = mix_par['mu_noise']
+            mu1 = mix_par['mu_not_noise']
+            dof0 = mix_par['dof_noise']
+
+            # # variable return version
+            # if chi:
+            #     sd0, sd1, mu0, mu1, dof0 = estimate_noise(dat, chi=chi)
+            # else:
+            #     sd0, sd1, mu0, mu1 = estimate_noise(dat, chi=chi)
+
             echo.mean = mu1.item()
             echo.sd = sd0.item()
             means.append(mu1)
             vars.append(sd0.square())
+            if chi:
+                dofc.append(dof0)
         means = torch.stack(means)
         vars = torch.stack(vars)
+        
         var = (means*vars).sum() / means.sum()
         contrast.noise = var.item()
+        if chi:
+            dofc = torch.stack(dofc)
+            # degrees of freedom weighted by the mean of each echo
+            # later echoes contribute less to the average dof
+            # could be changed to weigthing by the noise standard deviation
+            dofc = (dofc*means).sum() / means.sum()
 
         te.append(contrast.te)
         tr.append(contrast.tr)
         fa.append(contrast.fa / 180 * core.constants.pi)
         mt.append(contrast.mt)
         logmeans.append(means.log())
+        if not getattr(contrast, 'dof', 0):
+            contrast.dof = dofc if chi else 2
     if opt.verbose:
         print('')
 

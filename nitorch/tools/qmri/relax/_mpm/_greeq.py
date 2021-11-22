@@ -1,3 +1,4 @@
+from nitorch.core.math import besseli_ratio, besseli
 import torch
 from nitorch import core, spatial
 from ._options import GREEQOptions
@@ -6,6 +7,8 @@ from ..utils import (hessian_sym_loaddiag, hessian_sym_matmul,
                      hessian_sym_solve, hessian_sym_inv, rls_maj,
                      smart_grid, smart_pull, smart_push)
 from nitorch.tools.qmri.param import ParameterMap
+import numpy as np
+
 
 
 # NOTE:
@@ -94,6 +97,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     opt = GREEQOptions().update(opt, **kwopt)
     dtype = opt.backend.dtype
     device = opt.backend.device
+    chi = opt.likelihood[0].lower() == 'c'
     backend = dict(dtype=dtype, device=device)
 
     # --- estimate noise / register / initialize maps ---
@@ -181,10 +185,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 crit = 0
                 grad.zero_()
                 hess.zero_()
-
                 # --- loop over contrasts ---
                 for contrast, b1m, b1p in zip(data, receive, transmit):
-                    # compute gradient
                     crit1, g1, h1 = _nonlin_gradient(contrast, maps, b1m, b1p, opt)
 
                     # increment
@@ -207,8 +209,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                         hess += h1
                         crit += crit1
                     
-                    del g1, h1
-
+                    del g1, h1, crit1
                 # --- penalty ---
                 reg = 0.
                 if opt.penalty.norm:
@@ -218,7 +219,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                         reg1, g1 = _nonlin_reg(map.fdata(**backend), vx, weight, l * vol)
                         reg += reg1
                         grad[i] += g1
-                        del g1
+                        del g1, reg1
 
                 # --- gauss-newton ---
                 if not torch.isfinite(hess).all():
@@ -238,6 +239,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                     map.volume -= delta
                     if map.min is not None or map.max is not None:
                         map.volume.clamp_(map.min, map.max)
+                    del delta
                 del deltas
 
                 # --- Compute gain ---
@@ -250,7 +252,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 if gain < opt.optim.tolerance_gn:
                     print('GN converged: ', ll_prev.item(), '->', ll.item())
                     break
-
             # --- Update RLS weights ---
             if opt.penalty.norm in ('tv', 'jtv'):
                 del multi_rls
@@ -445,12 +446,14 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
 
     dtype = opt.backend.dtype
     device = opt.backend.device
+    chi = opt.likelihood[0].lower() == 'c'
     backend = dict(dtype=dtype, device=device)
 
     # sequence parameters
     lam = 1 / contrast.noise
     tr = contrast.tr                                # TR is stored in sec
     fa = contrast.fa / 180. * core.constants.pi     # FA is stored in deg
+    dof = contrast.dof
     
     obs_shape = contrast.shape[1:]
     recon_shape = maps.shape[1:]
@@ -483,7 +486,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         b1m = smart_pull(receive.fdata(**backend)[None], grid1)[0]
         if receive.unit in ('%', 'pct', 'p.u.'):
             b1m = b1m.div(100.) if grid1 is None else b1m.div_(100.)
-        del grid1
+        del grid1, aff1
 
     if transmit is not None:
         aff1 = core.linalg.lmdiv(transmit.affine, contrast.affine)
@@ -494,7 +497,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             b1p = b1p.clone()
         if transmit.unit in ('%', 'pct', 'p.u.'):
             b1p /= 100.
-        del grid1
+        del grid1, aff1
 
     # exponentiate
     pd = pd.exp() if grid is None else pd.exp_()
@@ -546,15 +549,38 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         # compute residuals
         dat = echo.fdata(**backend)                          # observed
         fit = fit0 * (-echo.te * r2s).exp_()                 # fitted
-        msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0)    # mask of observed
-        dat[~msk] = 0
-        fit[~msk] = 0
-        res = dat.neg_()
-        res += fit
-        del dat
+        if chi:
+            msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0) & (fit > 0)
+            tiny = torch.tensor(1e-32, dtype=dtype, device=device)
+            dat[~msk] = tiny
+            fit[~msk] = tiny
+        else:
+            msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0) 
+            dat[~msk] = 0
+            fit[~msk] = 0
 
-        # compute log-likelihood
-        crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
+
+        if chi:
+            z = (dat*fit*lam).clamp_min_(tiny)
+            xi = besseli_ratio(dof/2.-1., z, N=2, K=4)
+            #logbes = log_modified_bessel_first(z, dof/2.-1.)
+            logbes = besseli(dof/2.-1., z, 'log')   
+
+            critn = ((dof/2.-1.) * fit.clamp_min(tiny).log_()
+                    - (dof/2.) * dat.clamp_min(tiny).log_()
+                    + 0.5 * lam * (fit.square() + dat.square())
+                    - logbes)
+            critn[~msk] = 0
+            critn = torch.sum(critn, dtype=torch.double)
+            crit = crit + critn
+            res = dat.mul_(xi).neg_().add_(fit)
+            del z, xi, logbes
+        else:
+            # gaussian log-likelihood
+            res = dat.neg_().add_(fit)
+            crit = crit + 0.5 * lam * res.square().sum(dtype=torch.double)
+
+
 
         if do_grad:
 
@@ -568,7 +594,7 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             #   all gradients are multiplied by fit at some point
             #   so we initialize them with fit
             grad1[...] = fit[None].expand((3+has_mt, *fit.shape))
-
+            del fit
             grad1[1] *= -tr * r1 * (omt_x_cosfa - 1) * e1
             grad1[1] /= (1 - e1) * (1 - omt_x_cosfa * e1)
             grad1[2] *= -echo.te * r2s
@@ -622,19 +648,22 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
             hess1 *= lam
             hess1[:, ~msk] = 0
             diag = hess1[:(3+has_mt)]
-            diag[~torch.isfinite(diag)] = 1e-3
+            diag.masked_fill_(torch.isfinite(diag).bitwise_not_(), 1e-3)
+            #diag[~torch.isfinite(diag)] = 1e-3
             offdiag = hess1[(3+has_mt):]
-            offdiag[~torch.isfinite(offdiag)] = 0
+            #offdiag[~torch.isfinite(offdiag)] = 0
+            offdiag.masked_fill_(torch.isfinite(offdiag).bitwise_not_(), 0)
             hess += hess1
             del hess1
 
             # grad_crit: multiply by residuals
             grad1 *= res
             grad1 *= lam
-            grad1[~torch.isfinite(grad1)] = 0
+            #grad1[~torch.isfinite(grad1)] = 0
+            grad1.masked_fill_(torch.isfinite(grad1).bitwise_not_(), 0)
             grad += grad1
             del grad1
-
+        del res
     del r1, r2s, omt, e1, fit0, omt_x_cosfa
     if do_grad:
         # push gradient and Hessian to recon space
@@ -642,7 +671,6 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         grad = smart_push(grad, grid, recon_shape)
         hess = smart_push(hess, grid, recon_shape)
         return crit, grad, hess
-
     return crit
 
 
