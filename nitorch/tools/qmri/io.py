@@ -445,7 +445,7 @@ class GradientEcho(BaseND):
     readout : {0, 1, 2}                     Readout dimension
     blip : {1, -1}                          Readout direction (up or down)
     noise : float                           Variance of the noise
-    ncoils : int                            Number of coils
+    dof : float                             Degrees of freedom of the noise
 
     """
     spatial_dim = 3
@@ -457,12 +457,12 @@ class GradientEcho(BaseND):
     readout: int = None             # Readout dimension
     blip: int = None                # Readout direction (up or down)
     noise: float = None             # Variance of the noise
-    ncoils: int = None              # Number of coils
+    dof: float = None               # DOF of coils
 
     def attributes(self):
         """Return the name of all attributes"""
         return super().attributes() + ['te', 'tr', 'ti', 'fa', 'mt',
-                                       'readout', 'blip', 'noise', 'ncoils']
+                                       'readout', 'blip', 'noise', 'dof']
 
     @classmethod
     def from_mapped(cls, mapped, **attributes):
@@ -499,8 +499,8 @@ class GradientEcho(BaseND):
         new.mt = getattr(instance, 'mt', None)
         new.readout = getattr(instance, 'readout', None)
         new.blip = getattr(instance, 'blip', None)
-        new.noise = getattr(instance, 'ncoils', None)
-        new.ncoils = getattr(instance, 'ncoils', None)
+        new.noise = getattr(instance, 'noise', None)
+        new.dof = getattr(instance, 'dof', None)
         new.set_attributes(**attributes)
         return new
 
@@ -598,13 +598,13 @@ class GradientEchoMulti(GradientEcho):
                 warnings.warn("noise not consistent across echoes. Using {}."
                               .format(noise))
             attributes['noise'] = noise
-        if 'ncoils' not in attributes:
-            ncoilss = set([echo.ncoils for echo in echoes if echo.ncoils is not None])
-            ncoils = ncoilss.pop() if ncoilss else None
-            if len(ncoilss) > 0:
-                warnings.warn("Number of coils not consistent across echoes. Using {}."
-                              .format(ncoils))
-            attributes['ncoils'] = ncoils
+        if 'dof' not in attributes:
+            dofs = set([echo.dof for echo in echoes if echo.dof is not None])
+            dof = dofs.pop() if dofs else None
+            if len(dofs) > 0:
+                warnings.warn("Degrees of freedom not consistent across echoes. Using {}."
+                              .format(dof))
+            attributes['dof'] = dof
         return cls.from_mapped(volume, **attributes)
 
     @classmethod

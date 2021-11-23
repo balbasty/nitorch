@@ -66,6 +66,7 @@ def preproc(data, transmit=None, receive=None, opt=None):
     device = opt.backend.device
     chi = opt.likelihood[0].lower() == 'c'
     backend = dict(dtype=dtype, device=device)
+    chi = opt.likelihood[0].lower() == 'c'
     
     # --- estimate hyper parameters ---
     logmeans = []
@@ -76,53 +77,49 @@ def preproc(data, transmit=None, receive=None, opt=None):
     for c, contrast in enumerate(data):
         means = []
         vars = []
-        dofc=[]
+        dofs = []
         for e, echo in enumerate(contrast):
             if opt.verbose:
                 print(f'Estimate noise: contrast {c+1:d} - echo {e+1:2d}', end='\r')
             dat = echo.fdata(**backend, rand=True, cache=False)
 
-            #dictionary version
-            mix_par = estimate_noise(dat, chi=chi)
-            sd0 = mix_par['sd_noise']
-            sd1 = mix_par['sd_not_noise']
-            mu0 = mix_par['mu_noise']
-            mu1 = mix_par['mu_not_noise']
-            dof0 = mix_par['dof_noise']
-
-            # # variable return version
-            # if chi:
-            #     sd0, sd1, mu0, mu1, dof0 = estimate_noise(dat, chi=chi)
-            # else:
-            #     sd0, sd1, mu0, mu1 = estimate_noise(dat, chi=chi)
+            prm_noise, prm_not_noise = estimate_noise(dat, chi=chi)
+            sd0 = prm_noise['sd_noise']
+            mu1 = prm_not_noise['mu_not_noise']
+            dof0 = prm_noise.get('dof_noise', 0)
 
             echo.mean = mu1.item()
-            echo.sd = sd0.item()
             means.append(mu1)
             vars.append(sd0.square())
-            if chi:
-                dofc.append(dof0)
+            dofs.append(dof0)
         means = torch.stack(means)
         vars = torch.stack(vars)
         
         var = (means*vars).sum() / means.sum()
-        contrast.noise = var.item()
         if chi:
-            dofc = torch.stack(dofc)
+            dofs = torch.stack(dofs)
             # degrees of freedom weighted by the mean of each echo
             # later echoes contribute less to the average dof
             # could be changed to weigthing by the noise standard deviation
-            dofc = (dofc*means).sum() / means.sum()
+            dofs = (dofs*means).sum() / means.sum()
+
+        if not getattr(contrast, 'noise', 0):
+            contrast.noise = var.item()
+        if not getattr(contrast, 'dof', 0):
+            contrast.dof = dofs.item() if chi else 2
 
         te.append(contrast.te)
         tr.append(contrast.tr)
         fa.append(contrast.fa / 180 * core.constants.pi)
         mt.append(contrast.mt)
         logmeans.append(means.log())
-        if not getattr(contrast, 'dof', 0):
-            contrast.dof = dofc if chi else 2
     if opt.verbose:
         print('')
+        sds = [c.noise ** 0.5 for c in data]
+        print('    - standard deviation:  [' + ', '.join([f'{s:.2f}' for s in sds]) + ']')
+        if chi:
+            dofs = [c.dof for c in data]
+            print('    - degrees of freedom:  [' + ', '.join([f'{s:.2f}' for s in dofs]) + ']')
 
     print('Estimating maps from volumes:')
     for i in range(len(data)):

@@ -1159,16 +1159,23 @@ def besseli(nu, z, mode=None):
           NASA, Langley Research Center (1993)
     """
     z = torch.as_tensor(z)
+    is_scalar = z.dim() == 0
+    if is_scalar:
+        z = z[None]
     if not isinstance(mode, int):
         code = (2 if mode == 'log' else 1 if mode == 'norm' else 0)
     else:
         code = mode
     if nu == 0:
-        return besseli0(z, code)
+        z = besseli0(z, code)
     elif nu == 1:
-        return besseli1(z, code)
+        z = besseli1(z, code)
     else:
-        return besseli_any(nu, z, code)
+        z = besseli_any(nu, z, code)
+    if is_scalar:
+        z = z[0]
+    return z
+
 
 
 @torch.jit.script
@@ -1191,28 +1198,30 @@ def besseli0(z, code: int = 0):
     msk = z < 15.0/4.0
 
     # --- branch 1 ---
-    zm = z[msk]
-    t = (zm*(4.0/15.0))**2
-    t = 1 + t*(3.5156229+t*(3.0899424+t*(1.2067492+t*(0.2659732+t*(0.0360768+t*0.0045813)))))
-    if code == 2:
-        f[msk] = t.log()
-    else:
-        if code == 1:
-            t = t / zm.exp()
-        f[msk] = t
+    if msk.any():
+        zm = z[msk]
+        t = (zm*(4.0/15.0))**2
+        t = 1 + t*(3.5156229+t*(3.0899424+t*(1.2067492+t*(0.2659732+t*(0.0360768+t*0.0045813)))))
+        if code == 2:
+            f[msk] = t.log()
+        else:
+            if code == 1:
+                t = t / zm.exp()
+            f[msk] = t
 
     # --- branch 2 ---
     msk.bitwise_not_()
-    zm = z[msk]
-    t = (15.0/4.0)/zm
-    t = (0.39894228+t*(0.01328592+t*(0.00225319+t*(-0.00157565+t*(0.00916281+t*(-0.02057706+t*(0.02635537+t*(-0.01647633+t*0.0039237))))))))
-    t.clamp_min_(1e-32)
-    if code == 2:
-        f[msk] = zm - 0.5 * zm.log() + t.log()
-    elif code == 1:
-        f[msk] = t / zm.sqrt()
-    else:
-        f[msk] = zm.exp() * t / zm.sqrt()
+    if msk.any():
+        zm = z[msk]
+        t = (15.0/4.0)/zm
+        t = (0.39894228+t*(0.01328592+t*(0.00225319+t*(-0.00157565+t*(0.00916281+t*(-0.02057706+t*(0.02635537+t*(-0.01647633+t*0.0039237))))))))
+        t.clamp_min_(1e-32)
+        if code == 2:
+            f[msk] = zm - 0.5 * zm.log() + t.log()
+        elif code == 1:
+            f[msk] = t / zm.sqrt()
+        else:
+            f[msk] = zm.exp() * t / zm.sqrt()
 
     return f
 
@@ -1237,27 +1246,29 @@ def besseli1(z, code: int = 0):
     msk = z < 15.0/4.0
 
     # --- branch 1 ---
-    zm = z[msk]
-    t = (zm*(4.0/15.0))**2
-    t = 0.5+t*(0.87890594+t*(0.51498869+t*(0.15084934+t*(0.02658733+t*(0.00301532+t*0.00032411)))))
-    if code == 2:
-        f[msk] = zm.log() + t.log()
-    elif code == 0:
-        f[msk] = zm * t
-    else:
-        f[msk] = zm * t / zm.exp()
+    if msk.any():
+        zm = z[msk]
+        t = (zm*(4.0/15.0))**2
+        t = 0.5+t*(0.87890594+t*(0.51498869+t*(0.15084934+t*(0.02658733+t*(0.00301532+t*0.00032411)))))
+        if code == 2:
+            f[msk] = zm.log() + t.log()
+        elif code == 0:
+            f[msk] = zm * t
+        else:
+            f[msk] = zm * t / zm.exp()
 
     # --- branch 2 ---
     msk.bitwise_not_()
-    zm = z[msk]
-    t = (15.0/4.0)/zm
-    t = 0.398942281+t*(-0.03988024+t*(-0.00362018+t*(0.00163801+t*(-0.01031555+t*(0.02282967+t*(-0.02895312+t*(0.01787654-t*0.00420059)))))))
-    if code == 2:
-        f[msk] = zm - 0.5 * zm.log() + t.log()
-    elif code == 0:
-        f[msk] = zm.exp() * t / zm.sqrt()
-    else:
-        f[msk] = t / zm.sqrt()
+    if msk.any():
+        zm = z[msk]
+        t = (15.0/4.0)/zm
+        t = 0.398942281+t*(-0.03988024+t*(-0.00362018+t*(0.00163801+t*(-0.01031555+t*(0.02282967+t*(-0.02895312+t*(0.01787654-t*0.00420059)))))))
+        if code == 2:
+            f[msk] = zm - 0.5 * zm.log() + t.log()
+        elif code == 0:
+            f[msk] = zm.exp() * t / zm.sqrt()
+        else:
+            f[msk] = t / zm.sqrt()
     return f
 
 
@@ -1316,13 +1327,16 @@ def besseli_large(nu: float, z, code: int = 0):
     t = torch.zeros_like(f)
 
     # -- branch 1 ---
-    tmp = torch.sqrt(1.0+1.0/f[msk])
-    t[msk] = z[msk]*tmp/nu
-    f[msk] = nu*(t[msk] + torch.log(1.0/(nu/z[msk]+tmp)))
+    if msk.any():
+        tmp = torch.sqrt(1.0+1.0/f[msk])
+        t[msk] = z[msk]*tmp/nu
+        f[msk] = nu*(t[msk] + torch.log(1.0/(nu/z[msk]+tmp)))
     # -- branch 2 ---
-    tmp = torch.sqrt(1.0+f[~msk])
-    t[~msk] = tmp.clamp_max(1)
-    f[~msk] = nu*(t[~msk] + torch.log(z[~msk]/(nu*(1.0+tmp))))
+    msk = msk.bitwise_not_()
+    if msk.any():
+        tmp = torch.sqrt(1.0+f[msk])
+        t[msk] = tmp.clamp_max(1)
+        f[msk] = nu*(t[msk] + torch.log(z[msk]/(nu*(1.0+tmp))))
 
     t = t.reciprocal()
     tt = t*t
@@ -1380,8 +1394,11 @@ def besseli_any(nu: float, z, code: int = 0):
         thr = 5.0 * pymath.sqrt(15.0 - nu) * pymath.sqrt(nu + 15.0) / 3.0
         msk = z < 2.0 * thr
         f = torch.zeros_like(z)
-        f[msk] = besseli_small(nu, z[msk], int(pymath.ceil(thr*1.9+2.0)), code)
-        f[~msk] = besseli_large(nu, z[~msk], code)
+        if msk.any():
+            f[msk] = besseli_small(nu, z[msk], int(pymath.ceil(thr*1.9+2.0)), code)
+        msk = msk.bitwise_not_()
+        if msk.any():
+            f[msk] = besseli_large(nu, z[msk], code)
     return f
 
 
