@@ -8,7 +8,6 @@ from typing import List
 from .optionals import custom_fwd, custom_bwd
 from .constants import inf, ninf
 from nitorch.core import py, utils
-from math import lgamma as pylgamma
 Tensor = torch.Tensor
 
 
@@ -1162,6 +1161,9 @@ def besseli(nu, z, mode=None):
     is_scalar = z.dim() == 0
     if is_scalar:
         z = z[None]
+
+    nu = abs(nu)
+    z = torch.as_tensor(z).abs()
     if not isinstance(mode, int):
         code = (2 if mode == 'log' else 1 if mode == 'norm' else 0)
     else:
@@ -1196,6 +1198,7 @@ def besseli0(z, code: int = 0):
     """
     f = torch.zeros_like(z)
     msk = z < 15.0/4.0
+    tiny = 1.4014e-45
 
     # --- branch 1 ---
     if msk.any():
@@ -1203,7 +1206,7 @@ def besseli0(z, code: int = 0):
         t = (zm*(4.0/15.0))**2
         t = 1 + t*(3.5156229+t*(3.0899424+t*(1.2067492+t*(0.2659732+t*(0.0360768+t*0.0045813)))))
         if code == 2:
-            f[msk] = t.log()
+            f[msk] = t.clamp_min(tiny).log()
         else:
             if code == 1:
                 t = t / zm.exp()
@@ -1215,9 +1218,9 @@ def besseli0(z, code: int = 0):
         zm = z[msk]
         t = (15.0/4.0)/zm
         t = (0.39894228+t*(0.01328592+t*(0.00225319+t*(-0.00157565+t*(0.00916281+t*(-0.02057706+t*(0.02635537+t*(-0.01647633+t*0.0039237))))))))
-        t.clamp_min_(1e-32)
+        t.clamp_min_(tiny)
         if code == 2:
-            f[msk] = zm - 0.5 * zm.log() + t.log()
+            f[msk] = zm - 0.5 * zm.clamp_min(tiny).log() + t.clamp_min(tiny).log()
         elif code == 1:
             f[msk] = t / zm.sqrt()
         else:
@@ -1244,6 +1247,7 @@ def besseli1(z, code: int = 0):
     """
     f = torch.zeros_like(z)
     msk = z < 15.0/4.0
+    tiny = 1.4014e-45
 
     # --- branch 1 ---
     if msk.any():
@@ -1251,7 +1255,7 @@ def besseli1(z, code: int = 0):
         t = (zm*(4.0/15.0))**2
         t = 0.5+t*(0.87890594+t*(0.51498869+t*(0.15084934+t*(0.02658733+t*(0.00301532+t*0.00032411)))))
         if code == 2:
-            f[msk] = zm.log() + t.log()
+            f[msk] = zm.clamp_min(tiny).log() + t.clamp_min(tiny).log()
         elif code == 0:
             f[msk] = zm * t
         else:
@@ -1264,11 +1268,11 @@ def besseli1(z, code: int = 0):
         t = (15.0/4.0)/zm
         t = 0.398942281+t*(-0.03988024+t*(-0.00362018+t*(0.00163801+t*(-0.01031555+t*(0.02282967+t*(-0.02895312+t*(0.01787654-t*0.00420059)))))))
         if code == 2:
-            f[msk] = zm - 0.5 * zm.log() + t.log()
+            f[msk] = zm - 0.5 * zm.clamp_min(tiny).log() + t.clamp_min(tiny).log()
         elif code == 0:
-            f[msk] = zm.exp() * t / zm.sqrt()
+            f[msk] = zm.exp() * t / zm.clamp_min(tiny).sqrt()
         else:
-            f[msk] = t / zm.sqrt()
+            f[msk] = t / zm.clamp_min(tiny).sqrt()
     return f
 
 
@@ -1290,12 +1294,13 @@ def besseli_small(nu: float, z, M: int = 64, code: int = 0):
         besseli(nu,z)/exp(z) if code==1 ('norm')
         log(besseli(nu,z))   if code==2 ('log')
     """
-    x = torch.log(0.5*z)
+    tiny = 1.4014e-45
+    x = (0.5*z).clamp_min(tiny).log()
     f = torch.exp(x * nu - pymath.lgamma(nu + 1.0) - z)
     for m in range(1, M):
         f = f + torch.exp(x * (2.0*m + nu) - (pymath.lgamma(m+1.0) + pymath.lgamma(m+1.0 + nu)) - z)
     if code == 2:
-        return f.log() + z
+        return f.clamp_min(tiny).log() + z
     elif code == 1:
         return f
     else:
@@ -1321,6 +1326,7 @@ def besseli_large(nu: float, z, code: int = 0):
         log(besseli(nu,z))   if code==2 ('log')
     """
 
+    tiny = 1.4014e-45
     f = z/nu
     f = f*f
     msk = f > 4.0
@@ -1328,15 +1334,15 @@ def besseli_large(nu: float, z, code: int = 0):
 
     # -- branch 1 ---
     if msk.any():
-        tmp = torch.sqrt(1.0+1.0/f[msk])
+        tmp = torch.sqrt(1.0+1.0/f[msk].clamp_min(tiny))
         t[msk] = z[msk]*tmp/nu
-        f[msk] = nu*(t[msk] + torch.log(1.0/(nu/z[msk]+tmp)))
+        f[msk] = nu*(t[msk] + (1.0/(nu/z[msk].clamp_min(tiny)+tmp)).clamp_min(tiny).log())
     # -- branch 2 ---
     msk = msk.bitwise_not_()
     if msk.any():
-        tmp = torch.sqrt(1.0+f[msk])
-        t[msk] = tmp.clamp_max(1)
-        f[msk] = nu*(t[msk] + torch.log(z[msk]/(nu*(1.0+tmp))))
+        tmp = torch.sqrt(1.0+f[~msk])
+        t[~msk] = tmp.clamp_max(1)
+        f[~msk] = nu*(t[~msk] + (z[~msk]/(nu*(1.0+tmp))).clamp_min(tiny).log())
 
     t = t.reciprocal()
     tt = t*t
@@ -1360,8 +1366,8 @@ def besseli_large(nu: float, z, code: int = 0):
                tt*212.5701300392171))))))/den
 
     if code == 2:
-        f = f + 0.5*(torch.log(t)-pymath.log(nu)) - 0.918938533204673 # 0.5*log(2*pi)
-        f = f + torch.log(us)
+        f = f + 0.5*(t.clamp_min(tiny).log()-pymath.log(nu)) - 0.918938533204673 # 0.5*log(2*pi)
+        f = f + us.clamp_min(tiny).log()
     elif code == 0:
         f = torch.exp(f)*torch.sqrt(t)*us*(0.398942280401433/pymath.sqrt(nu))
     else:
@@ -1553,38 +1559,3 @@ def besseli_old(X, order=0, Nk=64):
             0.5 * X * ((0.25 * X ** 2) ** K /
                        (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1, dtype=torch.float64)
     return i
-
-@torch.jit.script
-def log_modified_bessel_first(x, alpha: float = 0., max_iter: int = 32, tol: float = 1e-9):
-    """ Log of the Modified Bessel function of the first kind of real order
-
-    Notes
-    -----
-    .. This function only works on real inputs.
-    .. It uses scaling by exp(-x) internally for numerical stability.
-
-    Parameters
-    ----------
-    x : tensor
-        Input tensor
-    alpha : float, default=0
-        Order
-    max_iter : int, default=32
-        Maximum number of elements in the sum
-    tol : float, default=1e-9
-        Tolerance for early stopping
-    """
-    # !! x should be positive !!
-    y = x * (alpha / 2) - pylgamma(alpha + 1)
-    y = y.sub_(x).clamp_max_(80).exp_()
-    yy = y.flatten().dot(y.flatten())
-    for m in range(1, max_iter):
-        y1 = x * (m + alpha / 2) - pylgamma(m) - pylgamma(m + alpha + 1)
-        y1 = y1.sub_(x).clamp_max_(80).exp_()
-        y += y1
-        yy1 = y1.flatten().dot(y1.flatten())
-        if yy1/yy < tol:
-            break
-        yy = yy1
-    y = y.log_().add_(x)
-    return y

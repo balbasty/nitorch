@@ -552,8 +552,8 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         if chi:
             msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0) & (fit > 0)
             tiny = torch.tensor(1e-32, dtype=dtype, device=device)
-            dat[~msk] = tiny
-            fit[~msk] = tiny
+            dat[~msk] = 0
+            fit[~msk] = 0
         else:
             msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0) 
             dat[~msk] = 0
@@ -826,3 +826,46 @@ def _nonlin_rls(maps, lam=1., norm='jtv'):
         rls = rls.sqrt_()
 
     return rls
+
+# def nll_chi(dat, fit, msk, lam, dof, return_residuals=True):
+#     """Negative log-likelihood of the noncentral Chi distribution
+
+#     Parameters
+#     ----------
+#     dat : tensor
+#         Observed data (should be zero where not observed)
+#     fit : tensor
+#         Signal fit (should be zero where not observed)
+#     msk : tensor
+#         Mask of observed values
+#     lam : float
+#         Noise precision
+#     df : float
+#         Degrees of freedom
+#     return_residuals : bool
+#         Return residuals (gradient) on top of nll
+
+#     Returns
+#     -------
+#     nll : () tensor
+#         Negative log-likelihood
+#     res : tensor, if `return_residuals`
+#         Residuals
+
+#     """
+
+#     z = (dat*fit*lam).clamp_min_(t1e-32)
+#     xi = besseli_ratio(dof/2.-1., dat*fit*lam+tiny, N=2, K=4)
+#     logbes = log_modified_bessel_first(z, dof/2.-1.)
+#     #logbes = besseli(dof/2.-1., z, 'log')
+
+#     critn = ((dof/2.-1.) * fit.clamp_min(tiny).log_()
+#             - (dof/2.) * dat.clamp_min(tiny).log_()
+#             + 0.5 * lam * (fit.square() + dat.square())
+#             - logbes)
+#     critn[~msk] = 0
+#     critn = torch.sum(critn, dtype=torch.double)
+#     crit = crit + critn
+#     res = dat.mul_(xi).neg_().add_(fit)
+#     del z, xi, logbes
+#     return crit, res
