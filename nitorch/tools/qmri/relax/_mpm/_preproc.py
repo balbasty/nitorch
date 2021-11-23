@@ -64,7 +64,7 @@ def preproc(data, transmit=None, receive=None, opt=None):
     opt = GREEQOptions().update(opt)
     dtype = opt.backend.dtype
     device = opt.backend.device
-    chi = opt.likelihood[0].lower() == 'c'
+
     backend = dict(dtype=dtype, device=device)
     chi = opt.likelihood[0].lower() == 'c'
     
@@ -94,7 +94,6 @@ def preproc(data, transmit=None, receive=None, opt=None):
             dofs.append(dof0)
         means = torch.stack(means)
         vars = torch.stack(vars)
-        
         var = (means*vars).sum() / means.sum()
         if chi:
             dofs = torch.stack(dofs)
