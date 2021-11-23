@@ -84,9 +84,9 @@ def preproc(data, transmit=None, receive=None, opt=None):
             dat = echo.fdata(**backend, rand=True, cache=False)
 
             prm_noise, prm_not_noise = estimate_noise(dat, chi=chi)
-            sd0 = prm_noise['sd_noise']
-            mu1 = prm_not_noise['mu_not_noise']
-            dof0 = prm_noise.get('dof_noise', 0)
+            sd0 = prm_noise['sd']
+            mu1 = prm_not_noise['mean']
+            dof0 = prm_noise.get('dof', 0)
 
             echo.mean = mu1.item()
             means.append(mu1)
