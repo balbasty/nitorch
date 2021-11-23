@@ -39,7 +39,9 @@ def _data_loader(dat, mat, opt):
         dat[n][~torch.isfinite(dat[n])] = 0.0
         if opt['cost_fun'] in _costs_edge:
             # Get gradient scaling values
-            _, _, mu_bg, mu_fg = estimate_noise(dat[n], show_fit=False)
+            prm0, prm1 = estimate_noise(dat[n], show_fit=False)
+            mu_bg = prm0['mean']
+            mu_fg = prm1['mean']
             scl = 1.0 / torch.abs(mu_fg.float() - mu_bg.float())
             if not torch.isfinite(scl):
                 scl = 1.0

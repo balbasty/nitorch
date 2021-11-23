@@ -105,7 +105,8 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
                    mu_noise=None, max_iter=10000, verbose=0,
                    bins=1024, chi=False):
     """Estimate the noise distribution in an image by fitting either a
-    Gaussian or Rician mixture model to the image's intensity histogram.
+    Gaussian, Rician or noncentral Chi mixture model to the image's
+    intensity histogram.
 
     The Gaussian model is only used if negative values are found in the
     image (e.g., if it is a CT scan).
@@ -134,17 +135,17 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
             * 3: 1 + 2 + print convergence.
     bins : int, default=1024
         Number of histogram bins.
+    chi : bool, default=False
+        Fit a noncentral Chi rather than a Rice model.
 
     Returns
     -------
-    sd_noise : scalar tensor
-        Standard deviation of background class.
-    sd_not_noise : scalar tensor
-        Standard deviation of foreground class.
-    mu_noise : scalar tensor
-        Mean of background class.
-    mu_not_noise : scalar tensor
-        Mean of foreground class.
+    prm_noise : dict
+        Parameters of the distribution of the background (noise) class
+        With fields 'sd', 'mean' and (if `chi`) 'dof'
+    prm_not_noise : dict
+        Parameters of the distribution of the foreground (tissue) class
+        With fields 'sd', 'mean' and (if `chi`) 'dof'
 
     """
     DTYPE = torch.double  # use double for accuracy (maybe single would work?)
@@ -181,7 +182,7 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
 
     # Histogram bin data
     dat = torch.histc(dat, bins=bins, min=mn, max=mx).to(DTYPE)
-    x = torch.linspace(mn, mx, steps=bins, device=device).double()
+    x = torch.linspace(mn, mx, steps=bins, device=device, dtype=DTYPE)
 
     # fit mixture model
     if mn < 0:  # Make GMM model
@@ -192,7 +193,8 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
         model = RMM(num_class=num_class)
 
     # Fit GMM/RMM/CMM using Numpy
-    model.fit(x, W=dat, verbose=verbose, max_iter=max_iter, show_fit=show_fit, fig_num=fig_num)
+    model.fit(x, W=dat, verbose=verbose, max_iter=max_iter,
+              show_fit=show_fit, fig_num=fig_num)
 
     # Get means and mixing proportions
     mu, _ = model.get_means_variances()
@@ -204,36 +206,34 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
         sd = model.sig.squeeze()
 
     # Get std and mean of noise class
-    dof_noise=None
     if mu_noise:
         # Closest to mu_bg
         _, ix_noise = torch.min(torch.abs(mu - mu_noise), dim=0)
-        mu_noise = mu[ix_noise]
-        sd_noise = sd[ix_noise]
     else:
         # With smallest sd
-        sd_noise, ix_noise = torch.min(sd, dim=0)
-        mu_noise = mu[ix_noise]
+        _, ix_noise = torch.min(sd, dim=0)
+    mu_noise = mu[ix_noise]
+    sd_noise = sd[ix_noise]
     if chi:
         dof_noise = model.dof[ix_noise]
+
     # Get std and mean of other classes (means and sds weighted by mps)
-    rng = torch.arange(0, num_class, device=device)
-    rng = torch.cat([rng[0:ix_noise], rng[ix_noise + 1:]])
-    mu1 = mu[rng]
-    sd1 = sd[rng]
+    rng = list(range(num_class))
+    del rng[ix_noise]
+    mu = mu[rng]
+    sd = sd[rng]
     w = mp[rng]
     w = w / torch.sum(w)
-    mu_not_noise = sum(w * mu1)
-    sd_not_noise = sum(w * sd1)
+    mu_not_noise = sum(w * mu)
+    sd_not_noise = sum(w * sd)
+    if chi:
+        dof = model.dof[rng]
+        dof_not_noise = sum(w * dof)
 
-    return {
-        'sd_noise': sd_noise,
-        'sd_not_noise': sd_not_noise,
-        'mu_noise': mu_noise,
-        'mu_not_noise': mu_not_noise,
-        'dof_noise': dof_noise}
-    
-    #if chi:
-    #    return sd_noise, sd_not_noise, mu_noise, mu_not_noise, dof_noise
-    #else:
-    #    return sd_noise, sd_not_noise, mu_noise, mu_not_noise
+    # return dictionaries of parameters
+    prm_noise = dict(sd=sd_noise, mean=mu_noise)
+    prm_not_noise = dict(sd=sd_not_noise, mean=mu_not_noise)
+    if chi:
+        prm_noise['dof'] = dof_noise
+        prm_not_noise['dof'] = dof_not_noise
+    return prm_noise, prm_not_noise

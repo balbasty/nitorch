@@ -694,7 +694,7 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt,
     aff = core.linalg.lmdiv(intercept.affine, contrast.affine)
     aff = aff.to(**backend)
     lam = 1 / contrast.noise
-    df = 2 * contrast.ncoils
+    df = contrast.dof
     chi = opt.likelihood[0].lower() == 'c'
     readout = contrast.readout
 
@@ -827,7 +827,7 @@ def derivatives_distortion(contrast, distortion, intercept, decay, opt,
     aff = core.linalg.lmdiv(intercept.affine, contrast.affine)
     aff = aff.to(**backend)
     lam = 1/contrast.noise
-    df = 2*contrast.ncoils
+    df = contrast.dof
     chi = opt.likelihood[0].lower() == 'c'
     readout = contrast.readout
 

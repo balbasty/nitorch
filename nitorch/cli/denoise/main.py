@@ -70,7 +70,9 @@ def denoise_mri(*dat_x, affine_x=None, lam_scl=opt.lam_scl, lr=opt.learning_rate
     tau = torch.zeros(dat_x.shape[0], device=device, dtype=dtype)
     lam = torch.zeros(dat_x.shape[0], device=device, dtype=dtype)
     for i in range(dat_x.shape[0]):
-        sd_bg, _, _, mean_fg = estimate_noise(dat_x[i, ...], show_fit=False)
+        prm0, prm1 = estimate_noise(dat_x[i, ...], show_fit=False)
+        sd_bg = prm0['sd']
+        mean_fg = prm1['mean']
         tau[i] = 1 / sd_bg.float() ** 2
         lam[i] = math.sqrt(1 / dat_x.shape[0]) / mean_fg.float()  # modulates with number of channels (as in JTV reg)
     # print("tau={:}".format(tau))
