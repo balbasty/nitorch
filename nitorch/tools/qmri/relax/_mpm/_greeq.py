@@ -552,8 +552,8 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
         if chi:
             msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0) & (fit > 0)
             tiny = torch.tensor(1e-32, dtype=dtype, device=device)
-            dat[~msk] = tiny
-            fit[~msk] = tiny
+            dat[~msk] = 0
+            fit[~msk] = 0
         else:
             msk = torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0) 
             dat[~msk] = 0
@@ -561,20 +561,18 @@ def _nonlin_gradient(contrast, maps, receive, transmit, opt, do_grad=True):
 
 
         if chi:
-            z = (dat*fit*lam).clamp_min_(tiny)
-            xi = besseli_ratio(dof/2.-1., z, N=2, K=4)
-            #logbes = log_modified_bessel_first(z, dof/2.-1.)
-            logbes = besseli(dof/2.-1., z, 'log')   
-
-            critn = ((dof/2.-1.) * fit.clamp_min(tiny).log_()
-                    - (dof/2.) * dat.clamp_min(tiny).log_()
-                    + 0.5 * lam * (fit.square() + dat.square())
-                    - logbes)
-            critn[~msk] = 0
+            z = (dat[msk]*fit[msk]*lam).clamp_min_(tiny)
+            critn = ((dof/2.-1.) * fit[msk].log()
+                    - (dof/2.) * dat[msk].log()
+                    + 0.5 * lam * (fit[msk].square() + dat[msk].square())
+                    - besseli(dof/2.-1., z, 'log'))
             critn = torch.sum(critn, dtype=torch.double)
             crit = crit + critn
-            res = dat.mul_(xi).neg_().add_(fit)
-            del z, xi, logbes
+
+            z = besseli_ratio(dof/2.-1., z, N=2, K=4)
+            res = torch.zeros(obs_shape, **backend) # unsure
+            res[msk] = z.mul_(dat[msk]).neg_().add_(fit[msk])     
+            del z       
         else:
             # gaussian log-likelihood
             res = dat.neg_().add_(fit)
