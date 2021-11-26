@@ -178,7 +178,7 @@ def uniseg(x, w=None, affine=None, device=None, nb_classes=None,
             nb_classes = len(prior) + 1
 
     model = UniSeg(
-        dim, nb_classes, bias=bias, warp=warp, mixing=mixing, mrf=mrf,
+        nb_classes, bias=bias, warp=warp, mixing=mixing, mrf=mrf,
         prior=prior, affine_prior=affine_prior, spacing=spacing,
         lam_bias=lam_bias, lam_warp=lam_warp,
         max_iter=max_iter, tol=tol, verbose=verbose, plot=plot,

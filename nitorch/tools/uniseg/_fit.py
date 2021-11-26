@@ -4,7 +4,7 @@ from nitorch.core import linalg, math, utils, py
 from nitorch.plot import plot_mixture_fit
 from nitorch import spatial
 import torch
-from ._mrf import mrf, update_mrf
+from ._mrf import mrf, update_mrf, modulate_mrf_
 from ._plot import plot_lb, plot_images_and_lb
 
 
@@ -272,16 +272,13 @@ class SpatialMixture:
                 print('Post processing...')
             X = X0
             W = W0
-            factor = spatial.voxel_size(aff) / spatial.voxel_size(aff0)
+            factor = spatial.voxel_size(aff0) / spatial.voxel_size(aff)
             if self.mrf:
                 # volume / surface = length -> increase mrf diagonal
                 dim = X.dim()-1
                 l = factor.prod() ** (1/dim)
-                diag = self.mrf_fit.diag().clone().pow_(l)
-                self.mrf_fit.diag().zero_()
-                self.mrf_fit /= self.mrf_fit.sum(-1, keepdim=True)
-                self.mrf_fit *= 1 - diag
-                self.mrf_fit.diag().copy_(diag)
+                l = l / (2*dim)
+                modulate_mrf_(self.mrf_fit, l)
             if self.beta is not None:
                 self.beta = spatial.reslice(
                     self.beta, aff, aff0, X.shape[1:],
@@ -656,11 +653,8 @@ class SpatialMixture:
                 # the volume of a cube grows faster than its surface)
                 l = spatial.voxel_size(aff) / spatial.voxel_size(self.affine_prior)
                 l = l.prod() ** (1/dim)
-                diag = self.mrf_fit.diag().clone().pow_(1/l)
-                self.mrf_fit.diag().zero_()
-                self.mrf_fit /= self.mrf_fit.sum(-1, keepdim=True)
-                self.mrf_fit *= 1 - diag
-                self.mrf_fit.diag().copy_(diag)
+                l = l / (2*dim)
+                modulate_mrf_(self.mrf_fit, l)
 
         # spatial deformation coefficients
         alpha = kwargs.pop('alpha', None)

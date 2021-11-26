@@ -177,3 +177,33 @@ def update_mrf(Z, W=None, prior=None):
     P += 1e-8
     P /= P.sum(-1, keepdim=True)
     return P
+
+
+def modulate_mrf(P, l):
+    """
+
+    Parameters
+    ----------
+    P : (K, K) tensor
+        Conditional MRF prior
+    l : float
+        Change of resolution ratio
+
+
+    Returns
+    -------
+    P : (K, K) tensor
+        Modulated prior
+
+    """
+    return modulate_mrf_(P.clone(), l)
+
+
+def modulate_mrf_(P, l):
+    diag = P.diagonal(0, -1, -2).pow(l)
+    P.diagonal(0, -1, -2).zero_()
+    P /= P.sum(-1, keepdim=True)
+    P *= 1 - diag
+    P.diagonal(0, -1, -2).copy_(diag)
+    P /= P.sum(-1, keepdim=True)
+    return P

@@ -118,7 +118,10 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
     first = False
     if not isinstance(fig, plt.Figure):
         fig = plt.figure(fig)
+    if not saved_elem:
         first = True
+    if first:
+        mode = ''
 
     if isinstance(lb, (list, tuple)):
         lb = torch.stack(lb)
@@ -269,7 +272,7 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
                     plt.subplot(4, ncol, len(X) + 3 + offset)
                     plt.imshow(V1)
                     plt.axis('off')
-                    plt.title('Prior')
+                    plt.title('Disp.')
                     plt.subplot(4, ncol, ncol + len(X) + 3 + offset)
                     plt.imshow(V2)
                     plt.axis('off')
