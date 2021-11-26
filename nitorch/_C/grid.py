@@ -345,8 +345,8 @@ class SplineCoeff(torch.autograd.Function):
     @custom_fwd
     def forward(ctx, input, bound, interpolation, dim, inplace):
 
-        bound = bound_to_nitorch(make_list(bound), as_type='int')
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type='int')
+        bound = bound_to_nitorch(bound, as_type='int')
+        interpolation = inter_to_nitorch(interpolation, as_type='int')
         opt = (bound, interpolation, dim, inplace)
 
         # Pull
