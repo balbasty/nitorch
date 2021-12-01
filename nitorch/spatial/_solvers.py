@@ -80,6 +80,8 @@ def prolong(x, shape=None, bound='dct2', order=2, dim=None):
     y : (..., *out_spatial, K) tensor
     
     """
+    if not x.dtype.is_floating_point:
+        x = x.to(torch.get_default_dtype())
     backend = utils.backend(x)
     dim = dim or (x.dim() - 1)
     in_spatial = x.shape[-dim-1:-1]
@@ -114,6 +116,8 @@ def restrict(x, shape=None, bound='dct2', order=1, dim=None):
     y : (..., *out_spatial, K) tensor
     
     """
+    if not x.dtype.is_floating_point:
+        x = x.to(torch.get_default_dtype())
     backend = utils.backend(x)
     dim = dim or (x.dim() - 1)
     out_spatial = x.shape[-dim-1:-1]

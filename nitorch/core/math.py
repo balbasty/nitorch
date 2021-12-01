@@ -8,25 +8,21 @@ from typing import List
 from .optionals import custom_fwd, custom_bwd
 from .constants import inf, ninf
 from nitorch.core import py, utils
-from math import lgamma as pylgamma
 Tensor = torch.Tensor
 
 
 def round(t, decimals=0):
     """Round a tensor to the given number of decimals.
-
     Parameters
     ----------
     t : tensor
         Input tensor.
     decimals : int, default=0
         Round to this decimal.
-
     Returns
     -------
     t : tensor
         Rounded tensor.
-
     """
     return torch.round(t * 10 ** decimals) / (10 ** decimals)
 
@@ -39,7 +35,6 @@ def round(t, decimals=0):
 """
 Reductions
 ==========
-
 This first section reimplements several reduction functions (sum, mean,
 max...), with a more consistent API than the native pytorch one:
 - all functions can reduce across multiple dimensions simultaneously
@@ -48,7 +43,6 @@ max...), with a more consistent API than the native pytorch one:
   They have a specific argument `return_indices` to request these indices.
 - all functions have an `omitnan` argument, or alternatively a `nan`
   version (e.g., `nansum`) where `omitnan=True` by default.
-
 The typical API for all functions is:
 ```{python}
 def fn(input, dim=None, keepdim=False, omitnan=False, inplace=False, out=None):
@@ -62,7 +56,6 @@ def fn(input, dim=None, keepdim=False, omitnan=False, inplace=False, out=None):
   out     : tensor, Output placeholder
   \"\"\"
 ```
-
 Reduction functions that pick a value from the input tensor (e.g., `max`) 
 have the additional argument:
 ```{python}
@@ -71,7 +64,6 @@ def fn(..., return_indices=False):
   return_indices : bool, Also return indices of the picked elements
   \"\"\"
 ```
-
 """
 
 
@@ -79,13 +71,11 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
                   inplace=False, return_indices=False, out=None,
                   nanfn=lambda x: x):
     """Multi-dimensional reduction for min/max/median.
-
     Signatures
     ----------
     fn(input) -> Tensor
     fn(input, dim) -> Tensor
     fn(input, dim, return_indices=True) -> (Tensor, Tensor)
-
     Parameters
     ----------
     fn : callable
@@ -107,7 +97,6 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
         Output placeholder
     nanfn : callable, optional
         Preprocessing function for removing nans
-
     Returns
     -------
     output : tensor
@@ -115,7 +104,6 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
     indices : (..., [len(dim)]) tensor
         Indices of the min/max/median values.
         If `dim` is a scalar, the last dimension is dropped.
-
     """
     if omitnan:
         # If omitnan, we call a function that does the pre and post processing
@@ -175,18 +163,15 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
 def max(input, dim=None, keepdim=False, omitnan=False, inplace=False,
         return_indices=False, out=None):
     """Multi-dimensional max reduction.
-
     Signatures
     ----------
     max(input) -> Tensor
     max(input, dim) -> Tensor
     max(input, dim, return_indices=True) -> (Tensor, Tensor)
-
     Notes
     -----
     .. This function cannot compute the maximum of two tensors, it only
        computes the maximum of one tensor (along a dimension).
-
     Parameters
     ----------
     input : tensor_like
@@ -204,7 +189,6 @@ def max(input, dim=None, keepdim=False, omitnan=False, inplace=False,
         Return index of the max value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
-
     Returns
     -------
     output : tensor
@@ -212,7 +196,6 @@ def max(input, dim=None, keepdim=False, omitnan=False, inplace=False,
     indices : (..., [len(dim)]) tensor
         Indices of the max values.
         If `dim` is a scalar, the last dimension is dropped.
-
     """
     opt = dict(dim=dim, keepdim=keepdim, omitnan=omitnan, inplace=inplace,
                return_indices=return_indices, out=out)
@@ -222,18 +205,15 @@ def max(input, dim=None, keepdim=False, omitnan=False, inplace=False,
 def min(input, dim=None, keepdim=False, omitnan=False, inplace=False,
         return_indices=False, out=None):
     """Multi-dimensional min reduction.
-
     Signatures
     ----------
     min(input) -> Tensor
     min(input, dim) -> Tensor
     min(input, dim, return_indices=True) -> (Tensor, Tensor)
-
     Notes
     -----
     .. This function cannot compute the minimum of two tensors, it only
        computes the minimum of one tensor (along a dimension).
-
     Parameters
     ----------
     input : tensor_like
@@ -251,7 +231,6 @@ def min(input, dim=None, keepdim=False, omitnan=False, inplace=False,
         Return index of the min value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
-
     Returns
     -------
     output : tensor
@@ -259,7 +238,6 @@ def min(input, dim=None, keepdim=False, omitnan=False, inplace=False,
     indices : (..., [len(dim)]) tensor
         Indices of the min values.
         If `dim` is a scalar, the last dimension is dropped.
-
     """
     opt = dict(dim=dim, keepdim=keepdim, omitnan=omitnan, inplace=inplace,
                return_indices=return_indices, out=out)
@@ -281,18 +259,15 @@ def _nanmax(fn, input, inplace=False):
 def nanmax(input, dim=None, keepdim=False, inplace=False,
            return_indices=False, out=None):
     """Multi-dimensional max reduction, excluding NaNs.
-
     Signatures
     ----------
     nanmax(input) -> Tensor
     nanmax(input, dim) -> Tensor
     nanmax(input, dim, return_indices=True) -> (Tensor, Tensor)
-
     Notes
     -----
     .. This function cannot compute the minimum of two tensors, it only
        computes the minimum of one tensor (along a dimension).
-
     Parameters
     ----------
     input : tensor_like
@@ -308,7 +283,6 @@ def nanmax(input, dim=None, keepdim=False, inplace=False,
         Return index of the max value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
-
     Returns
     -------
     output : tensor
@@ -316,7 +290,6 @@ def nanmax(input, dim=None, keepdim=False, inplace=False,
     indices : (..., [len(dim)]) tensor
         Indices of the max values.
         If `dim` is a scalar, the last dimension is dropped.
-
     """
     opt = dict(dim=dim, keepdim=keepdim, inplace=inplace,
                return_indices=return_indices, out=out)
@@ -338,18 +311,15 @@ def _nanmin(fn, input, inplace=False):
 def nanmin(input, dim=None, keepdim=False, inplace=False,
            return_indices=False, out=None):
     """Multi-dimensional min reduction, excluding NaNs.
-
     Signatures
     ----------
     nanmin(input) -> Tensor
     nanmin(input, dim) -> Tensor
     nanmin(input, dim, return_indices=True) -> (Tensor, Tensor)
-
     Notes
     -----
     .. This function cannot compute the minimum of two tensors, it only
        computes the minimum of one tensor (along a dimension).
-
     Parameters
     ----------
     input : tensor_like
@@ -365,7 +335,6 @@ def nanmin(input, dim=None, keepdim=False, inplace=False,
         Return index of the min value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
-
     Returns
     -------
     output : tensor
@@ -373,7 +342,6 @@ def nanmin(input, dim=None, keepdim=False, inplace=False,
     indices : (..., [len(dim)]) tensor
         Indices of the min values.
         If `dim` is a scalar, the last dimension is dropped.
-
     """
     opt = dict(dim=dim, keepdim=keepdim, inplace=inplace,
                return_indices=return_indices, out=out)
@@ -383,17 +351,14 @@ def nanmin(input, dim=None, keepdim=False, inplace=False,
 def median(input, dim=None, keepdim=False, omitnan=None, inplace=None,
            return_indices=False, out=None):
     """Multi-dimensional median reduction.
-
     Signatures
     ----------
     median(input) -> Tensor
     median(input, dim) -> Tensor
     median(input, dim, return_indices=True) -> (Tensor, Tensor)
-
     Note
     ----
     .. This function omits NaNs by default
-
     Parameters
     ----------
     input : tensor_like
@@ -406,7 +371,6 @@ def median(input, dim=None, keepdim=False, omitnan=None, inplace=None,
         Return index of the median value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
-
     Returns
     -------
     output : tensor
@@ -414,7 +378,6 @@ def median(input, dim=None, keepdim=False, omitnan=None, inplace=None,
     indices : (..., [len(dim)]) tensor
         Indices of the median values.
         If `dim` is a scalar, the last dimension is dropped.
-
     """
     opt = dict(dim=dim, keepdim=keepdim, return_indices=return_indices, out=out)
     return _reduce_index(torch.median, input, **opt)
@@ -422,7 +385,6 @@ def median(input, dim=None, keepdim=False, omitnan=None, inplace=None,
 
 def sum(input, *args, omitnan=False, inplace=False, **kwargs):
     """Compute the sum of a tensor.
-
     Parameters
     ----------
     input : tensor
@@ -439,12 +401,10 @@ def sum(input, *args, omitnan=False, inplace=False, **kwargs):
         Accumulator data type
     out : tensor, optional
         Output placeholder.
-
     Returns
     -------
     out : tensor
         Output tensor
-
     """
     if omitnan:
         return nansum(input, *args, inplace=inplace, **kwargs)
@@ -454,7 +414,6 @@ def sum(input, *args, omitnan=False, inplace=False, **kwargs):
 
 def nansum(input, *args, inplace=False, **kwargs):
     """Compute the sum of a tensor, excluding nans.
-
     Parameters
     ----------
     input : tensor
@@ -469,12 +428,10 @@ def nansum(input, *args, inplace=False, **kwargs):
         Accumulator data type
     out : tensor, optional
         Output placeholder.
-
     Returns
     -------
     out : tensor
         Output tensor
-
     """
     input = torch.as_tensor(input)
     if not inplace:
@@ -490,7 +447,6 @@ def nansum(input, *args, inplace=False, **kwargs):
 
 def mean(input, *args, omitnan=False, inplace=False, **kwargs):
     """Compute the mean of a tensor.
-
     Parameters
     ----------
     input : tensor
@@ -507,12 +463,10 @@ def mean(input, *args, omitnan=False, inplace=False, **kwargs):
         Accumulator data type
     out : tensor, optional
         Output placeholder.
-
     Returns
     -------
     out : tensor
         Output tensor
-
     """
     if omitnan:
         return nanmean(input, *args, inplace=inplace, **kwargs)
@@ -522,7 +476,6 @@ def mean(input, *args, omitnan=False, inplace=False, **kwargs):
 
 def nanmean(input, *args, inplace=False, **kwargs):
     """Compute the mean of a tensor, excluding nans.
-
     Parameters
     ----------
     input : tensor
@@ -537,12 +490,10 @@ def nanmean(input, *args, inplace=False, **kwargs):
         Accumulator data type
     out : tensor, optional
         Output placeholder.
-
     Returns
     -------
     out : tensor
         Output tensor
-
     """
     input = torch.as_tensor(input)
     if not inplace:
@@ -560,7 +511,6 @@ def nanmean(input, *args, inplace=False, **kwargs):
 
 def var(input, *args, omitnan=False, inplace=False, **kwargs):
     """Compute the variance of a tensor, excluding nans.
-
     Parameters
     ----------
     input : tensor
@@ -577,12 +527,10 @@ def var(input, *args, omitnan=False, inplace=False, **kwargs):
         Authorize working inplace.
     dtype : dtype, default=input.dtype
         Accumulator data type
-
     Returns
     -------
     out : tensor
         Output tensor
-
     """
     if omitnan:
         return nanvar(input, *args, inplace=inplace, **kwargs)
@@ -592,7 +540,6 @@ def var(input, *args, omitnan=False, inplace=False, **kwargs):
 
 def nanvar(input, *args, unbiased=True, inplace=False, **kwargs):
     """Compute the variance of a tensor, excluding nans.
-
     Parameters
     ----------
     input : tensor
@@ -607,12 +554,10 @@ def nanvar(input, *args, unbiased=True, inplace=False, **kwargs):
         Authorize working inplace.
     dtype : dtype, default=input.dtype
         Accumulator data type
-
     Returns
     -------
     out : tensor
         Output tensor
-
     """
 
     input = torch.as_tensor(input)
@@ -636,7 +581,6 @@ def nanvar(input, *args, unbiased=True, inplace=False, **kwargs):
 
 def std(input, *args, omitnan=False, inplace=False, **kwargs):
     """Compute the standard deviation of a tensor, excluding nans.
-
     Parameters
     ----------
     input : tensor
@@ -653,12 +597,10 @@ def std(input, *args, omitnan=False, inplace=False, **kwargs):
         Authorize working inplace.
     dtype : dtype, default=input.dtype
         Accumulator data type
-
     Returns
     -------
     out : tensor
         Output tensor
-
     """
     if omitnan:
         return nanstd(input, *args, inplace=inplace, **kwargs)
@@ -668,7 +610,6 @@ def std(input, *args, omitnan=False, inplace=False, **kwargs):
 
 def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
     """Compute the standard deviation of a tensor, excluding nans.
-
     Parameters
     ----------
     input : tensor
@@ -683,12 +624,10 @@ def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
         Authorize working inplace.
     dtype : dtype, default=input.dtype
         Accumulator data type
-
     Returns
     -------
     out : tensor
         Output tensor
-
     """
     input = nanvar(input, *args, unbiased=unbiased, inplace=inplace, **kwargs)
     input = input.sqrt_() if not input.requires_grad else input.sqrt()
@@ -713,16 +652,13 @@ has one less dimensions than the number of classes. Similarly, we can restrain
 the logit (= log probability) space to be of dimension K-1 by forcing one of 
 the classes to have logits of arbitrary value (e.g., zero). This trick 
 makes functions like softmax invertible.
-
 Note that in the 2-class case, it is extremely common to work in this 
 implicit setting by using the sigmoid function over a single logit instead 
 of the softmax function over two logits. 
-
 All functions below accept an argument `implicit` which takes either one 
 (boolean) value or a tuple of two (boolean) values. The first value 
 specifies if the input tensor has an explicit class while the second value 
 specified if the output tensor should have an implicit class. 
-
 Note that to minimize the memory footprint and numerical errors, most 
 backward passes are explicitely reimplemented (rather than relying on 
 autmatic diffentiation). This is because these function involve multiple 
@@ -787,7 +723,6 @@ class _LSE(torch.autograd.Function):
 
 def logsumexp(input, dim=-1, keepdim=False, implicit=False):
     """Numerically stabilised log-sum-exp (lse).
-
     Parameters
     ----------
     input : tensor
@@ -798,12 +733,10 @@ def logsumexp(input, dim=-1, keepdim=False, implicit=False):
         Whether the output tensor has dim retained or not.
     implicit : bool, default=False
         Assume that an additional (hidden) channel with value zero exists.
-
     Returns
     -------
     lse : tensor
         Output tensor.
-
     """
     return _LSE.apply(input, dim, keepdim, implicit)
 
@@ -913,7 +846,6 @@ class _Softmax(torch.autograd.Function):
 
 def logit(input, dim=-1, implicit=False, implicit_index=0):
     """(Multiclass) logit function
-
     Notes
     -----
     .. logit(x)_k = log(x_k) - log(x_K), where K is an arbitrary channel.
@@ -925,7 +857,6 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
         .. softmax(logit(x, implicit=False), implicit=False) == x
     .. `logit(x, implicit=True)`, with `x.shape[dim] == 1` is equivalent
        to the "classical" binary logit function (inverse of the sigmoid).
-
     Parameters
     ----------
     input : tensor
@@ -942,11 +873,9 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
     implicit_index : int, default=0
         Index of the implicit channel. This is the channel whose logits
         are assumed equal to zero.
-
     Returns
     -------
     output : tensor
-
     """
     implicit = py.ensure_list(implicit, 2)
     if implicit[0]:
@@ -966,7 +895,6 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
 
 def softmax(input, dim=-1, implicit=False, implicit_index=0):
     """ SoftMax (safe).
-
     Parameters
     ----------
     input : tensor
@@ -981,12 +909,10 @@ def softmax(input, dim=-1, implicit=False, implicit_index=0):
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
     implicit_index : int, default=0
-
     Returns
     -------
     output : tensor
         Soft-maxed tensor with values.
-
     """
     input = torch.as_tensor(input)
     return _Softmax.apply(input, dim, implicit, implicit_index)
@@ -994,7 +920,6 @@ def softmax(input, dim=-1, implicit=False, implicit_index=0):
 
 def log_softmax(input, dim=-1, implicit=False, implicit_index=0):
     """ Log(SoftMax).
-
     Parameters
     ----------
     input : tensor
@@ -1009,12 +934,10 @@ def log_softmax(input, dim=-1, implicit=False, implicit_index=0):
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
     implicit_index : int, default=0
-
     Returns
     -------
     output : tensor
         Log-Soft-maxed tensor with values.
-
     """
     input = torch.as_tensor(input)
     implicit = py.ensure_list(implicit, 2)
@@ -1032,7 +955,6 @@ def log_softmax(input, dim=-1, implicit=False, implicit_index=0):
 
 def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
     """ SoftMax (safe).
-
     Parameters
     ----------
     input : torch.tensor
@@ -1050,12 +972,10 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
           with value zero exists.
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
-
     Returns
     -------
     Z : torch.tensor
         Soft-maxed tensor with values.
-
     """
     def sumto(x, *a, out=None, **k):
         if out is None or x.requires_grad:
@@ -1114,16 +1034,13 @@ if hasattr(torch, 'digamma'):
     @torch.jit.script
     def mvdigamma(input, order: int = 1):
         """Derivative of the log of the Gamma function, eventually multivariate
-
         Parameters
         ----------
         input : tensor
         order : int, default=1
-
         Returns
         -------
         tensor
-
         """
         dg = torch.digamma(input)
         for p in range(2, order + 1):
@@ -1137,20 +1054,17 @@ if hasattr(torch, 'digamma'):
 
 def besseli(nu, z, mode=None):
     """Modified Bessel function of the first kind
-
     Parameters
     ----------
     nu : float
     z  : tensor
     mode : {0 or None, 1 or 'norm', 2 or 'log'}
-
     Returns
     -------
     b : tensor
         besseli(nu,z)        if mode is None
         besseli(ni,z)/exp(z) if mode == 'norm'
         log(besseli(nu,z))   if mode == 'log'
-
     References
     ----------
     ..[1] "On the use of the noncentral chi-square density function
@@ -1181,12 +1095,10 @@ def besseli(nu, z, mode=None):
 @torch.jit.script
 def besseli0(z, code: int = 0):
     """Modified Bessel function of the first kind
-
     Parameters
     ----------
     z : tensor
     code : {0, 1, 2}
-
     Returns
     -------
     b : tensor
@@ -1229,12 +1141,10 @@ def besseli0(z, code: int = 0):
 @torch.jit.script
 def besseli1(z, code: int = 0):
     """Modified Bessel function of the first kind
-
     Parameters
     ----------
     z : tensor
     code : {0, 1, 2}
-
     Returns
     -------
     b : tensor
@@ -1275,14 +1185,12 @@ def besseli1(z, code: int = 0):
 @torch.jit.script
 def besseli_small(nu: float, z, M: int = 64, code: int = 0):
     """Modified Bessel function of the first kind - series computation
-
     Parameters
     ----------
     nu : float
     z  : tensor
     M  : int, series length (bigger is more accurate, but slower)
     code : {0, 1, 2}
-
     Returns
     -------
     b : tensor
@@ -1306,13 +1214,11 @@ def besseli_small(nu: float, z, M: int = 64, code: int = 0):
 def besseli_large(nu: float, z, code: int = 0):
     """Modified Bessel function of the first kind
     Uniform asymptotic approximation (Abramowitz and Stegun p 378)
-
     Parameters
     ----------
     nu   : scalar float
     z    : torch tensor
     code : 0, 1 or 2
-
     Returns
     -------
     b : tensor
@@ -1373,13 +1279,11 @@ def besseli_large(nu: float, z, code: int = 0):
 def besseli_any(nu: float, z, code: int = 0):
     """
     Modified Bessel function of the first kind
-
     Parameters
     ----------
     nu : float
     z  : tensor
     code : {0, 1, 2}
-
     Returns
     -------
     b : tensor
@@ -1406,24 +1310,20 @@ def besseli_any(nu: float, z, code: int = 0):
 def besseli_ratio(nu: float, X, N: int = 4, K: int = 10):
     """Approximates ratio of the modified Bessel functions of the first kind:
        besseli(nu+1,x)/besseli(nu,x)
-
     Parameters
     ----------
     nu : float
     X : tensor
     N, K :  int
         Terms in summation, higher number, better approximation.
-
     Returns
     -------
     I : tensor
         Ratio of the modified Bessel functions of the first kind.
-
     References
     ----------
     ..[1] Amos DE. "Computation of modified Bessel functions and their ratios."
           Mathematics of Computation. 1974;28(125):239-251.
-
     """
 
     # Begin by computing besseli(nu+1+N,x)/besseli(nu+N,x)
@@ -1478,13 +1378,10 @@ from scipy.linalg import logm as logm_scipy
 
 def expm(M):
     """ Computes the matrix exponential of M.
-
     Args:
         M (torch.tensor): Square matrix (N, N)
-
     Returns:
         M (torch.tensor): Matrix exponential (N, N)
-
     """
     device = M.device
     dtype = M.dtype
@@ -1496,13 +1393,10 @@ def expm(M):
 
 def logm(M):
     """ Computes the real matrix logarithm of M.
-
     Args:
         M (torch.tensor): Square matrix (N, N)
-
     Returns:
         M (torch.tensor): Matrix logarithm (N, N)
-
     """
     device = M.device
     dtype = M.dtype
@@ -1516,21 +1410,16 @@ def logm(M):
 def besseli_old(X, order=0, Nk=64):
     """ Approximates the modified Bessel function of the first kind,
         of either order zero or one.
-
         OBS: Inputing float32 can lead to numerical issues.
-
     Args:
         X (torch.tensor): Input (N, 1).
         order (int, optional): 0 or 1, defaults to 0.
         Nk (int, optional): Terms in summation, higher number, better approximation.
             Defaults to 50.
-
     Returns:
         I (torch.tensor): Modified Bessel function of the first kind (N, 1).
-
     See also:
         https://mathworld.wolfram.com/ModifiedBesselFunctionoftheFirstKind.html
-
     """
     device = X.device
     dtype = X.dtype
@@ -1553,38 +1442,3 @@ def besseli_old(X, order=0, Nk=64):
             0.5 * X * ((0.25 * X ** 2) ** K /
                        (K_factorial * torch.exp(torch.lgamma(K + 2)))), dim=1, dtype=torch.float64)
     return i
-
-@torch.jit.script
-def log_modified_bessel_first(x, alpha: float = 0., max_iter: int = 32, tol: float = 1e-9):
-    """ Log of the Modified Bessel function of the first kind of real order
-
-    Notes
-    -----
-    .. This function only works on real inputs.
-    .. It uses scaling by exp(-x) internally for numerical stability.
-
-    Parameters
-    ----------
-    x : tensor
-        Input tensor
-    alpha : float, default=0
-        Order
-    max_iter : int, default=32
-        Maximum number of elements in the sum
-    tol : float, default=1e-9
-        Tolerance for early stopping
-    """
-    # !! x should be positive !!
-    y = x * (alpha / 2) - pylgamma(alpha + 1)
-    y = y.sub_(x).clamp_max_(80).exp_()
-    yy = y.flatten().dot(y.flatten())
-    for m in range(1, max_iter):
-        y1 = x * (m + alpha / 2) - pylgamma(m) - pylgamma(m + alpha + 1)
-        y1 = y1.sub_(x).clamp_max_(80).exp_()
-        y += y1
-        yy1 = y1.flatten().dot(y1.flatten())
-        if yy1/yy < tol:
-            break
-        yy = yy1
-    y = y.log_().add_(x)
-    return y

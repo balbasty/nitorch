@@ -64,6 +64,7 @@ def preproc(data, transmit=None, receive=None, opt=None):
     opt = GREEQOptions().update(opt)
     dtype = opt.backend.dtype
     device = opt.backend.device
+
     backend = dict(dtype=dtype, device=device)
     chi = opt.likelihood[0].lower() == 'c'
     
@@ -111,7 +112,6 @@ def preproc(data, transmit=None, receive=None, opt=None):
         fa.append(contrast.fa / 180 * core.constants.pi)
         mt.append(contrast.mt)
         logmeans.append(means.log())
-
     if opt.verbose:
         print('')
         sds = [c.noise ** 0.5 for c in data]
