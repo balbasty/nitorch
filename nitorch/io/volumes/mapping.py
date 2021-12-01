@@ -1173,6 +1173,13 @@ class CatArray(MappedArray):
         new.shape = tuple(self.shape[d] for d in dims)
         return new
 
+    def flip(self, dim):
+        dim = make_list(dim)
+        slicer = [slice(None)] * self.dim
+        for d in dim:
+            slicer[d] = slice(None, None, -1)
+        return self[tuple(slicer)]
+
     def data(self, *args, **kwargs):
         # read individual arrays and concatenate them
         # TODO: it would be more efficient to preallocate the whole

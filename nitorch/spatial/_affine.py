@@ -2300,7 +2300,7 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
     mat : (dim[+1], dim+1) tensor_like
         Orientation matrix
     shape_or_tensor : (dim,) sequence[int] or (..., *shape) tensor_like, optional
-        Shape or Volume
+        Shape or Volume or MappedArray
     layout : layout_like, optional
         Target layout. Defaults to a directed layout (equivalent to 'RAS').
 
@@ -2312,13 +2312,19 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
         Reoriented shape or volume
 
     """
+    # NOTE: some of the code is a bit weird (no use of tensor.dim(),
+    # no torch.as_tensor()) so that we can work with MappedArray inputs
+    # without having to import the MappedArray class. Methods `permute`
+    # and `flip` are implemented in MappedArray so we're good.
+
     # parse inputs
     mat = torch.as_tensor(mat).clone()
     dim = mat.shape[-1] - 1
     shape = tensor = None
     if shape_or_tensor is not None:
-        shape_or_tensor = torch.as_tensor(shape_or_tensor)
-        if shape_or_tensor.dim() > 1:
+        if not hasattr(shape_or_tensor, 'shape'):
+            shape_or_tensor = torch.as_tensor(shape_or_tensor)
+        if len(shape_or_tensor.shape) > 1:
             tensor = shape_or_tensor
             shape = tensor.shape[-dim:]
         else:
@@ -2364,15 +2370,23 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
                 mat[:, d].neg_()
 
     if tensor is not None:
+        is_numpy = not hasattr(tensor, 'permute')
         # we need to append stuff to take into account batch dimensions
-        nb_dim_left = tensor.dim() - len(index)
+        nb_dim_left = len(tensor.shape) - len(index)
         current_to_target = current_to_target + nb_dim_left
         current_to_target = list(range(nb_dim_left)) + current_to_target.tolist()
-        tensor = tensor.permute(current_to_target)
+        if is_numpy:
+            import numpy as np
+            tensor = np.transpose(current_to_target)
+        else:
+            tensor = tensor.permute(current_to_target)
         dim_flip = [nb_dim_left + d for d, idx in enumerate(index) 
                     if idx.step == -1]
         if dim_flip:
-            tensor = tensor.flip(dim_flip)
+            if is_numpy:
+                tensor = np.flip(tensor, dim_flip)
+            else:
+                tensor = tensor.flip(dim_flip)
         return mat, tensor
     else:
         return (mat, tuple(shape)) if shape else mat
