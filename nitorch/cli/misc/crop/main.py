@@ -17,7 +17,7 @@ def _crop_to_param(aff0, aff, shape):
     layout = None
     unit = 'vox'
 
-    center = torch.as_tensor(shape, dtype=torch.float) * 0.5
+    center = torch.as_tensor(shape, dtype=torch.float).sub_(1).mul_(0.5)
     like_aff = spatial.affine_lmdiv(aff0, aff)
     center = spatial.affine_matvec(like_aff, center)
 
@@ -86,13 +86,18 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.fdata() if use_bbox else f.data(numpy=True), f.affine)
+        inp = (f.data(numpy=True) if use_bbox else f, f.affine)
         if output is None:
             output = '{dir}{sep}{base}.crop{ext}'
         dir, base, ext = py.fileparts(fname)
     dat, aff0 = inp
     dim = aff0.shape[-1] - 1
     shape0 = dat.shape[:dim]
+    layout0 = spatial.affine_to_layout(aff0)
+
+    # save input space in case we reorient later
+    aff00 = aff0
+    shape00 = shape0
 
     if bool(size) + bool(like) + bool(bbox or isinstance(bbox, float)) > 1:
         raise ValueError('Can only use one of `size`, `like` and `bbox`.')
@@ -104,21 +109,26 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
             f = io.volumes.map(like)
             like = (f.shape, f.affine)
         like_shape, like_aff = like
+        like_layout = spatial.affine_to_layout(like_aff)
+        if (layout0 != like_layout).any():
+            aff0, dat = spatial.affine_reorient(aff0, dat, like_layout)
+            shape0 = dat.shape[:dim]
         if torch.is_tensor(like_shape):
             like_shape = like_shape.shape
         size, center, unit, layout = _crop_to_param(aff0, like_aff, like_shape)
+        space = 'vox'
 
     elif bbox or isinstance(bbox, float):
         if bbox is True:
             bbox = 0.
-        dat = dat > bbox
-        while dat.dim() > 3:
-            dat = dat.any(dim=-1)
+        mask = torch.as_tensor(dat > bbox)
+        while mask.dim() > 3:
+            mask = mask.any(dim=-1)
         mins = []
         maxs = []
         for d in range(dim):
-            n = dat.shape[d]
-            idx = utils.movedim(dat, d, 0).reshape([n, -1]).any(-1).nonzero(as_tuple=False)
+            n = mask.shape[d]
+            idx = utils.movedim(mask, d, 0).reshape([n, -1]).any(-1).nonzero(as_tuple=False)
             mins.append(idx.min())
             maxs.append(idx.max())
         mins = utils.as_tensor(mins)
@@ -126,6 +136,7 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
         size = maxs + 1 - mins
         center = (maxs + 1 + mins).float()/2
         space = 'vox'
+        del mask
 
     # --- Open transformation file and compute size/center ---
     elif not size:
@@ -141,7 +152,8 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
 
     # --- use center of the FOV ---
     if not torch.is_tensor(center) and not center:
-        center = torch.as_tensor(shape0[:dim], dtype=torch.float) * 0.5
+        center = torch.as_tensor(shape0[:dim], dtype=torch.float)
+        center = center.sub_(1).mul_(0.5)
 
     # --- convert size/center to voxels ---
     size = utils.make_vector(size, dim, dtype=torch.long)
@@ -157,7 +169,8 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
     # --- compute first/last ---
     center = center.float()
     size = (size.ceil() if size.dtype.is_floating_point else size).long()
-    first = (center - size.float()/2).round().long()
+    first = center - size.float().sub_(1).mul_(0.5)
+    first = first.round().long()
     last = (first + size).tolist()
     first = [max(f, 0) for f in first.tolist()]
     last = [min(l, s) for l, s in zip(last, shape0[:dim])]
@@ -169,8 +182,10 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
 
     # --- do crop ---
     if use_bbox:
-        dat = io.volumes.load(fname, numpy=True)
+        dat = dat.numpy()
     dat = dat[slicer]
+    if not torch.is_tensor(dat):
+        dat = dat.data(numpy=True)
     aff, _ = spatial.affine_sub(aff0, shape0[:dim], slicer)
     shape = dat.shape[:dim]
 
@@ -190,7 +205,7 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
         else:
             transform = transform.format(sep=os.path.sep)
         trf = io.transforms.LinearTransformArray(transform, 'w')
-        trf.set_source_space(aff0, shape0)
+        trf.set_source_space(aff00, shape00)
         trf.set_destination_space(aff, shape)
         trf.set_metadata({'src': {'filename': fname},
                           'dst': {'filename': output},
