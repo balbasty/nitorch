@@ -23,7 +23,7 @@ def cli(args=None):
 
 
 def _cli(args):
-    """Command-line interface for `nireorient` without exception handling"""
+    """Command-line interface for `reorient` without exception handling"""
     args = args or sys.argv[1:]
 
     options = parse(args)

@@ -1,6 +1,7 @@
 from nitorch import spatial, io
-from nitorch.core import utils
+from nitorch.core import utils, py
 import torch
+import numpy as np
 import os
 
 
@@ -28,6 +29,24 @@ def fileparts(fname):
         base, ext0 = os.path.splitext(base)
         ext = ext0 + ext
     return dir, base, ext
+
+
+def movedim(x, source, target):
+    if isinstance(x, np.ndarray):
+        return np.moveaxis(x, source, target)
+    elif torch.is_tensor(x):
+        return utils.movedim(x, source, target)
+    else:  # MappedArray?
+        return x.movedim(source, target)
+
+
+def ndim(x):
+    if isinstance(x, np.ndarray):
+        return x.ndim
+    elif torch.is_tensor(x):
+        return x.dim()
+    else:  # MappedArray?
+        return x.dim
 
 
 def reorient(inp, layout='RAS', output=None, transform=None):
@@ -68,16 +87,20 @@ def reorient(inp, layout='RAS', output=None, transform=None):
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f.data(), f.affine)
+        inp = (f, f.affine)
         if output is None:
             output = '{dir}{sep}{base}.{layout}{ext}'
         dir, base, ext = fileparts(fname)
 
     dat, aff0 = inp
     dim = aff0.shape[-1] - 1
-    dat = utils.movedim(dat, range(dim, dat.dim()), 0)
+    datdim = ndim(dat)
+    dat = movedim(dat, range(dim, datdim), range(datdim-dim))
     aff, dat = spatial.affine_reorient(aff0, dat, layout)
-    dat = utils.movedim(dat, range(dat.dim()-dim), -1)
+    dat = movedim(dat, range(datdim-dim), range(dim, datdim))
+
+    if isinstance(dat, io.MappedArray):
+        dat = dat.data(numpy=True)
 
     if output:
         layout = spatial.volume_layout_to_name(layout)

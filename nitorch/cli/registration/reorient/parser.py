@@ -23,7 +23,7 @@ letters:
 !! CORRECT. It then shuffles the data to match a layout and updates the  !!
 !! orientation matrix so that the world-space mapping is PRESERVED.      !!
 !! If you wish to overwrite the orientation matrix and preserve the      !!
-!! input data layout, use `niorient` instead.                            !!
+!! input data layout, use `orient` instead.                              !!
 
 usage:
     nitorch reorient *FILES [-l LAYOUT] [-o *FILES] [-t *FILES] 
