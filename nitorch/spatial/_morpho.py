@@ -345,3 +345,54 @@ def dilate_likely_voxels(labels, intensity, label=None, nb_iter=1,
         labels = labels.clone()
         labels[foreground] = label
     return labels
+
+
+def geodesic_dist(x, w, conn=1, nb_iter=1, dim=None):
+    """Geodesic distance to a label
+
+    Parameters
+    ----------
+    x : (..., *spatial) tensor
+    w : (..., *spatial) tensor
+    conn : int
+    nb_iter : int
+    dim : int
+
+    Returns
+    -------
+    y : (..., *spatial) tensor
+
+    """
+    in_dtype = x.dtype
+    if in_dtype is not torch.bool:
+        x = x > 0
+    x = x.to(torch.uint8)
+    dim = dim or x.dim()
+
+    d = torch.full(x.shape, float('inf'), **utils.backend(w))
+    d[x > 0] = 0
+    crop = (Ellipsis,  *([slice(1, -1)]*dim))
+    dcrop = utils.unfold(d, [3]*dim, stride=1)
+    w = utils.unfold(w, [3]*dim, stride=1)
+    for n_iter in range(1, nb_iter+1):
+        w0 = w[(Ellipsis, *([1]*dim))]
+        for coord in itertools.product([0, 1], repeat=dim):
+            if sum(coord) == 0 or sum(coord) > conn:
+                continue
+            mini_dist = sum(c*c for c in coord) ** 0.5
+            coords = set()
+            for sgn in itertools.product([-1, 1], repeat=dim):
+                coord1 = [1 + c*s for c, s in zip(coord, sgn)]
+                if tuple(coord1) in coords:
+                    continue
+                coords.add(tuple(coord1))
+                coord1 = (Ellipsis, *coord1)
+                new_dist = (w[coord1] - w0).abs() * (dcrop[coord1] + mini_dist)
+                new_dist.masked_fill_(torch.isfinite(new_dist).bitwise_not_(), float('inf'))
+                msk = new_dist < d[crop]
+                d[crop][msk] = new_dist[msk]
+                print(d[crop].isfinite().sum())
+
+    msk = torch.isfinite(d).bitwise_not_()
+    d[msk] = d[~msk].max()
+    return d
