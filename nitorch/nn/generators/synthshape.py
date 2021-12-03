@@ -31,9 +31,9 @@ from nitorch.core import utils
 from ..base import Module
 from ..preproc import LabelToOneHot, OneHotToLabel, AffineQuantiles
 from .spatial import RandomDeform, RandomSmooth, RandomLowRes2D, RandomLowRes3D
-from .field import HyperRandomBiasFieldTransform, HyperRandomMultiplicativeField
+from .field import HyperRandomMultiplicativeField
 from .mixture import HyperRandomGaussianMixture
-from .intensity import RandomGammaCorrection, HyperRandomChiNoise
+from .intensity import RandomGammaCorrection, HyperRandomChiNoise, HyperRandomBiasFieldTransform
 
 
 def buckner32_labels():

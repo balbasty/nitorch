@@ -621,7 +621,7 @@ class RandomFlip(Module):
         Parameters
         ----------
         prob : float or sequence[float]
-            Probability yo flip (per spatial dimension)
+            Probability to flip (per spatial dimension)
         dim : int or sequence[int], default=all
             Index of spatial dimension to flip
         """
@@ -663,12 +663,26 @@ class RandomFlip(Module):
 
 
 class RandomSmooth(Module):
+    """Sample a random smoothing FWHM and smooth the image accordingly"""
 
     def __init__(self,
                  fwhm='lognormal',
                  fwhm_exp=1,
                  fwhm_scale=3,
                  iso=False):
+        """
+
+        Parameters
+        ----------
+        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+            Probability distribution of the full-width at half-maximum
+        fwhm_exp : float or (dim,) vector_like, default=1
+            Expected value of the FWHM
+        fwhm_scale : float or (dim,) vector_like, default=3
+            Standard deviation of the FWHM
+        iso : bool, default=True
+            If False, sample a different FWHM for each dimension.
+        """
         super().__init__()
         self.fwhm = _get_dist(fwhm)
         self.fwhm_exp = fwhm_exp
@@ -679,8 +693,10 @@ class RandomSmooth(Module):
         dim = x.dim() - 2
         backend = dict(dtype=x.dtype, device=x.device)
 
-        fwhm_exp = utils.make_vector(self.fwhm_exp, 1 if self.iso else dim, **backend)
-        fwhm_scale = utils.make_vector(self.fwhm_scale, 1 if self.iso else dim, **backend)
+        fwhm_exp = utils.make_vector(self.fwhm_exp, 1 if self.iso else dim,
+                                     **backend)
+        fwhm_scale = utils.make_vector(self.fwhm_scale, 1 if self.iso else dim,
+                                       **backend)
 
         out = torch.as_tensor(x)
         for b in range(len(x)):
@@ -690,11 +706,25 @@ class RandomSmooth(Module):
 
 
 class RandomLowRes2D(Module):
+    """Synthesize a low-resolution scan along a single dimension
+    (i.e. a "2D acquisition" in MRI)
+    """
 
     def __init__(self,
                  resolution='lognormal',
                  resolution_exp=3,
                  resolution_scale=3):
+        """
+
+        Parameters
+        ----------
+        resolution : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+            Probability distribution of the slice thickness
+        resolution_exp : float, default=3
+            Expected value of the slice thickness
+        resolution_scale : float, default=3
+            Standard deviation of the slice thickness
+        """
         super().__init__()
         self.resolution = _get_dist(resolution)
         self.resolution_exp = resolution_exp
@@ -741,11 +771,25 @@ class RandomLowRes2D(Module):
 
 
 class RandomLowRes3D(Module):
+    """Synthesize a low-resolution scan along all three dimensions
+    (i.e. a "3D acquisition" in MRI)
+    """
 
     def __init__(self,
                  resolution='lognormal',
                  resolution_exp=3,
                  resolution_scale=3):
+        """
+
+        Parameters
+        ----------
+        resolution : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+            Probability distribution of the voxel size
+        resolution_exp : float, default=3
+            Expected value of the voxel size
+        resolution_scale : float, default=3
+            Standard deviation of the voxel size
+        """
         super().__init__()
         self.resolution = _get_dist(resolution)
         self.resolution_exp = resolution_exp
@@ -803,17 +847,17 @@ class RandomRubiks(Module):
     """
     def __init__(self,
                  dim,
-                 kernel=[32,32,32]):
+                 kernel=32):
         """
-        Arguments:
-            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
-                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
+        Parameters
+        ----------
+        kernel : int or sequence[int], default=32
+            Kernel size for blocks to shuffle.
+            Can be single int (isotropic) or specified in all dimensions.
         """
         
         super().__init__()
-        if isinstance(kernel, int):
-            kernel = [kernel] * dim
-        self.kernel = kernel
+        self.kernel = py.make_list(kernel, dim)
 
     def forward(self, x):
         shape = x.shape[2:]
@@ -831,28 +875,30 @@ class RandomPatchSwap(Module):
 
     References
     ----------
-    ..[1] "Self-supervised learning for medical image analysis using image context restoration"
-            Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa, Michitaka Fujiwara, Daniel Rueckert
-            Medical Image Analysis 2019
-            https://doi.org/10.1016/j.media.2019.101539
+    ..[1] "Self-supervised learning for medical image analysis using
+           image context restoration"
+          Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa,
+          Michitaka Fujiwara, Daniel Rueckert
+          Medical Image Analysis 2019
+          https://doi.org/10.1016/j.media.2019.101539
 
-            
     """
     def __init__(self,
                  dim,
-                 kernel=[32,32,32],
+                 kernel=32,
                  nb_swap=4):
         """
-        Arguments:
-            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
-                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
-            nb_swap (int): Number of times to swap two random patches. Default = 4
+        Parameters
+        ----------
+        kernel : int or sequence[int], default=32
+            Kernel size for blocks to shuffle.
+            Can be single int (isotropic) or specified in all dimensions.
+        nb_swap : int. default=4
+            Number of times to swap two random patches.
         """
         
         super().__init__()
-        if isinstance(kernel, int):
-            kernel = [kernel] * dim
-        self.kernel = kernel
+        self.kernel = py.make_list(kernel, dim)
         self.nb_swap = nb_swap
 
     def forward(self, x):
@@ -861,6 +907,6 @@ class RandomPatchSwap(Module):
         x = utils.unfold(x, self.kernel, collapse=True)
         for n in range(self.nb_swap):
             i1, i2 = torch.randint(low=0, high=x.shape[2]-1, size=(2,)).tolist()
-            x[:,:,i1], x[:,:,i2] = x[:,:,i2], x[:,:,i1]
+            x[:, :, i1], x[:, :, i2] = x[:, :, i2], x[:, :, i1]
         x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
         return x

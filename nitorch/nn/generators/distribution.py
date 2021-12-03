@@ -65,8 +65,8 @@ class _Gamma(_Dist):
         mean = torch.as_tensor(mean, **backend)
         scale = torch.as_tensor(scale, **backend)
         scale = scale.square()  # variance
-        concentration = mean / scale
-        rate = mean.square() / scale
+        rate = mean / scale
+        concentration = mean.square() / scale
         self.dist = torch.distributions.Gamma(concentration, rate)
 
 
