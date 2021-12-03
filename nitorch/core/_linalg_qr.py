@@ -991,7 +991,7 @@ class EigSym(torch.autograd.Function):
         if compute_u_:
             val, vec = val
             if a.requires_grad:
-                ctx.save_for_backward([vec, val])
+                ctx.save_for_backward(val, vec)
 
         return (val, vec) if compute_u else val
 
@@ -1014,6 +1014,6 @@ class EigSym(torch.autograd.Function):
             F *= U.transpose(-1, -2).matmul(gU)
             gD = F if gD is None else gD + F
 
-        gD = smart_conj(gD.matmul(U.transpose(-1, -2)))
+        gD = smart_conj(gD.unsqueeze(-1) * U.transpose(-1, -2))
         gD = U.matmul(gD)
         return (gD,) + (None,) * 4

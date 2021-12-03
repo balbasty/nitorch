@@ -8,6 +8,7 @@ import torch.nn as tnn
 from nitorch.core.py import make_list, prod
 from nitorch.core.utils import slice_tensor
 from nitorch.spatial import diff1d
+from nitorch.core import py, utils, math, linalg
 from nitorch import spatial
 from .base import Loss
 
@@ -656,3 +657,78 @@ class LameZoomLoss(Loss):
             loss = loss * factor
 
         return loss
+
+
+class FrangiLoss(Loss):
+    """
+    Vesselness loss based on the soft-sorted eigenvalues of the Hessian filter
+    - The two largest eigenvalues (in magnitude) are encouraged to be large+
+    - The ratio between the smallest and the second smallest absolute
+      eigenvalues is encouraged to be close to zero
+    - The ratio between the second largest and largest eigenvalues is
+      encouraged to be close to one.
+    """
+
+    def __init__(self, radii=1, pradii=1,
+                 tau_sort=1, tau_large=1, tau_ratio0=1, tau_ratio1=1):
+        """
+
+        Parameters
+        ----------
+        radii : [sequence of] float, defualt=1
+            List of possible vessel radii (= FWHM of the Gaussian filter)
+        pradii : [sequence of] float, default=1
+            Prior probability of each radius. Will be normalized to one.
+        tau_sort : float, default=1
+            Temperature of the soft-sorting operation
+        tau_large : float, default=1
+            Penalty that encourages the two main eigenvalues to be
+            very large (= very curved) and negative (= white ridges)
+        tau_ratio0 : float, default=1
+            Penalty that encourages the smallest eigenvalue to be much
+            smaller than the two main eigenvalues (= plate-like)
+        tau_ratio1 : float, default=1
+            Penalty that encourages the two main eigenvalues to be similar
+            (= tube-like)
+        """
+        super().__init__()
+        self.radii = utils.make_vector(radii)
+        pradii = utils.make_vector(pradii, len(self.radii))
+        self.pradii = pradii / pradii.sum()
+        self.tau_sort = tau_sort
+        self.tau_large = tau_large
+        self.tau_ratio0 = tau_ratio0
+        self.tau_ratio1 = tau_ratio1
+
+    def forward(self, x, v=None):
+
+        dim = x.dim() - 2
+        radii = self.radii.to(**utils.backend(x))
+        pradii = self.pradii.to(**utils.backend(x)).log()
+
+        # compute log-likelihood (vessel | radius, x)
+        loss = x.new_zeros([len(radii), *x.shape])
+        for i, (p, r) in enumerate(zip(pradii, radii)):
+            # compute unsorted eigenvalues
+            e = spatial.hessian_eig(x, r, dim=dim, sort=None)
+            # soft sort
+            P = math.softsort(e.abs(), tau=self.tau_sort, descending=True)
+            e = linalg.matvec(P, e)
+            e = utils.movedim(e, -1, 0)
+            # compute penalties
+            loss[i] = -self.tau_large * e[1:].sum(0)         # white ridges
+            e = e.square().clamp_min_(1e-32).log()
+            if dim == 3:
+                loss[i] += self.tau_ratio1 * (e[1] - e[2])   # tubes
+            loss[i] += self.tau_ratio0 * (e[1] - e[0])       # not plates
+            loss[i] += pradii                                # radius prior
+
+        # compute (stable) log-sum-exp (== model evidence)
+        loss = math.logsumexp(loss, dim=0)
+
+        # weight by probability to be a vessel and return
+        if v is None:
+            v = x
+        return - (loss * v).sum() / (v.sum() + 1e-3)
+
+

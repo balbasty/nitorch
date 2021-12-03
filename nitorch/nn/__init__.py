@@ -14,6 +14,7 @@ from . import activations
 from . import modules
 from . import preproc
 from . import losses
+from . import metrics
 from . import predict
 from . import generators
 from . import training

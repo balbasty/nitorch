@@ -8,7 +8,7 @@ from ._conv import smooth
 
 
 __all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',
-           'sobel', 'frangi']
+           'sobel', 'frangi', 'hessian_eig']
 
 
 # Converts from nitorch.utils.pad boundary naming to
@@ -569,7 +569,7 @@ def frangi(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
     x : (*batch_shape, *spatial_shape) tensor_like
         Input (batched) tensor.
     a : float or tensor, default=0.5
-        First Frangi vesselness constant (deviation from line)
+        First Frangi vesselness constant (deviation from plate-like)
         Only used in 3D.
     b : float or tensor, default=0.5
         Second Frangi vesselness constant (deviation from blob-like)
@@ -619,9 +619,9 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2
     if not dim in (2, 3):
         raise ValueError('Frangi filter is only implemented in 2D or 3D')
 
-    a = 2*(a**2)
-    b = 2*(b**2)
-    c = 2*(c**2)
+    a = -0.5/(a**2)
+    b = -0.5/(b**2)
+    c = -0.5/(c**2)
 
     # allocate buffers
     h = x.new_empty([*x.shape, dim, dim])   # hessian
@@ -642,9 +642,11 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2
             fwd = diff1d(x, order=1, dim=-d-1, side='f', bound=bound, out=buf1)
             bwd = diff1d(x, order=1, dim=-d-1, side='b', bound=bound, out=buf2)
             torch.sub(fwd, bwd, out=h[..., d, d])  # central 2nd order
+            # ctr = diff1d(x, order=1, dim=-d-1, side='c', bound=bound, out=buf1)
             for dd in range(d+1, dim):
                 # only fill upper part
                 hh = h[..., d, dd]
+                # diff1d(ctr, order=1, dim=-dd - 1, side='c', bound=bound, out=hh)
                 diff1d(fwd, order=1, dim=-dd - 1, side='f', bound=bound, out=hh)
                 hh += diff1d(fwd, order=1, dim=-dd - 1, side='b', bound=bound, out=buf3)
                 hh += diff1d(bwd, order=1, dim=-dd - 1, side='b', bound=bound, out=buf3)
@@ -692,8 +694,8 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2
             torch.div(lam1, lam2, out=buf2)                 # < Rb ** 2
             torch.sum(v, dim=-1, out=buf3)                  # < S ** 2
 
-            buf2.div_(-b).exp_()                            # < exp(Rb**2)
-            buf3.div_(-c).exp_().neg_().add_(1)             # < 1-exp(S**2)
+            buf2.mul_(b).exp_()                            # < exp(Rb**2)
+            buf3.mul_(c).exp_().neg_().add_(1)             # < 1-exp(S**2)
 
             buf2.mul_(buf3)
 
@@ -709,9 +711,9 @@ def frangi_nodiff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2
             torch.div(lam1, buf2, out=buf2)                 # < Rb ** 2
             torch.sum(v, dim=-1, out=buf3)                  # < S ** 2
 
-            buf1.div_(-a).exp_().neg_().add_(1)             # < 1-exp(Ra**2)
-            buf2.div_(-b).exp_()                            # <   exp(Rb**2)
-            buf3.div_(-c).exp_().neg_().add_(1)             # < 1-exp(S**2)
+            buf1.mul_(a).exp_().neg_().add_(1)             # < 1-exp(Ra**2)
+            buf2.mul_(b).exp_()                            # <   exp(Rb**2)
+            buf3.mul_(c).exp_().neg_().add_(1)             # < 1-exp(S**2)
 
             buf1.mul_(buf2).mul_(buf3)
 
@@ -747,7 +749,7 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
     x = torch.as_tensor(x)
     is_on_cpu = x.device == torch.device('cpu')
     dim = dim or x.dim()
-    if not dim in (2, 3):
+    if dim not in (2, 3):
         raise ValueError('Frangi filter is only implemented in 2D or 3D')
 
     a = 2*(a**2)
@@ -789,7 +791,7 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
         if is_on_cpu:
             eig = torch.symeig(h, eigenvectors=True)[0]
         else:
-            eig = linalg.eig_sym_(h).sort(-1)[0]
+            eig = linalg.eig_sym_(h)
         _, perm = eig.abs().sort()
         eig = eig.gather(-1, perm)
         lam1, lam2, *lam3 = eig.unbind(-1)
@@ -868,6 +870,77 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
             v0 = torch.max(v0, v1)
 
     return (v0, scale) if return_scale else v0
+
+
+def hessian_eig(x, fwhm=1, dim=None, bound='replicate', sort='abs', verbose=False):
+    """Sorted eigenvalues of the Hessian .
+
+    Parameters
+    ----------
+    x : (*batch_shape, *spatial_shape) tensor_like
+        Input (batched) tensor.
+    fwhm : float, default=1
+        Full width half max of the Gaussian filter
+    dim : int
+        Length of `spatial_shape`.
+    bound : bound_like, default='replicate'
+        Boundary condition.
+    sort : {'val', 'abs', None}, default='abs'
+        Sort by value, absolute value or not at all.
+    verbose : bool, default=False
+
+    Returns
+    -------
+    vessels : (*batch_shape, *spatial_shape, dim) tensor
+        Sorted eigenvalues of the Hessian.
+
+    """
+    x = torch.as_tensor(x)
+    is_on_cpu = x.device == torch.device('cpu')
+    dim = dim or x.dim()
+    if dim not in (2, 3):
+        raise ValueError('HessianEig is only implemented in 2D or 3D')
+
+    # Smooth
+    x = smooth(x, fwhm=fwhm, dim=dim, bound=bound) if fwhm else x
+
+    # Hessian
+    h = x.new_empty([*x.shape, dim, dim])   # hessian
+    if verbose:
+        print('Hessian...')
+    for d in range(dim):
+        # diagonal elements
+        fwd = diff1d(x, order=1, dim=-d-1, side='f', bound=bound)
+        bwd = diff1d(x, order=1, dim=-d-1, side='b', bound=bound)
+        h[..., d, d].copy_(fwd).sub_(bwd)
+        for dd in range(d+1, dim):
+            # only fill upper part
+            hh = h[..., d, dd]
+            diff1d(fwd, order=1, dim=-dd - 1, side='f', bound=bound, out=hh)
+            hh += diff1d(fwd, order=1, dim=-dd - 1, side='b', bound=bound)
+            hh += diff1d(bwd, order=1, dim=-dd - 1, side='b', bound=bound)
+            hh += diff1d(bwd, order=1, dim=-dd - 1, side='f', bound=bound)
+            hh /= 4.
+
+    # Correct for scale
+    if fwhm:
+        sig2 = (fwhm / 2.355)**2
+        h.mul_(sig2)
+
+    # Eigenvalues
+    if verbose:
+        print('Eigen...')
+    if is_on_cpu:
+        eig = torch.symeig(h, eigenvectors=True)[0]
+    else:
+        eig = linalg.eig_sym_(h)
+    if sort:
+        val = eig
+        if sort.lower()[0] == 'a':
+            val = val.abs()
+        perm = val.sort().indices
+        eig = eig.gather(-1, perm)
+    return eig
 
 
 def sobel(x, dim=None, bound='replicate', value=0):

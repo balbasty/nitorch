@@ -1023,6 +1023,114 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False):
         return input
 
 
+def softsort(x, tau=1, hard=False, descending=False, apply=False, pow=1):
+    """SoftSort of a vector
+
+    Parameters
+    ----------
+    x : (..., K) tensor
+    tau : float, default=1
+        Temperature
+    hard : bool, default=False
+        Perform (hard) sort based on the softsort
+        (similar to applying argmax to a softmax)
+    descending : bool, default=False
+        Sort in descending order
+    apply : bool, default=False
+        Return the soft-sorted vector insteas of the sort-sorting weights
+    pow : float, default=1
+        Power of the norm
+
+    Returns
+    -------
+    P : (..., K, K) tensor /or/ x : (..., K) if `apply`
+        Soft sorting weights, normalized across the last dimension.
+        /or/
+        Sort-sorted input vector: `matvec(P, x)`
+
+    References
+    ----------
+    .. [1] "SoftSort: A Continuous Relaxation for the argsort Operator"
+           Sebastian Prillo & Julian Martin Eisenschlos
+           ICML (2020)
+           https://arxiv.org/abs/2006.16038
+           https://github.com/sprillo/softsort (MIT license)
+
+    """
+    norm = ((lambda x: x.abs_()) if pow == 1 else
+            (lambda x: x.square()) if pow == 2 else
+            (lambda x: x.abs_().pow(pow)))
+
+    x = x.unsqueeze(-1)
+    sorted = x.sort(descending=True, dim=-2).values
+    pairwise_diff = norm(sorted - x.transpose(-1, -2)).div_(-tau)
+    P_hat = softmax(pairwise_diff, -1)
+
+    if hard:
+        P = torch.zeros_like(P_hat)
+        P.scatter_(-1, torch.topk(P_hat, 1, -1).values, value=1)
+        P_hat += P.sub_(P_hat).detach()
+    if descending:
+        P_hat = P_hat.flip(-2)
+    if apply:
+        return P_hat.matmul(x).squeeze(-1)
+    return P_hat
+
+
+def neuralsort(x, tau=1, hard=False, descending=False, apply=False):
+    """SoftSort of a vector
+
+    Parameters
+    ----------
+    x : (..., K) tensor
+    tau : float, default=1
+        Temperature
+    hard : bool, default=False
+        Perform (hard) sort based on the softsort
+        (similar to applying argmax to a softmax)
+    descending : bool, default=False
+        Sort in descending order
+    apply : bool, default=False
+        Return the soft-sorted vector insteas of the sort-sorting weights
+
+    Returns
+    -------
+    P : (..., K, K) tensor /or/ x : (..., K) if `apply`
+        Soft sorting weights, normalized across the last dimension.
+        /or/
+        Sort-sorted input vector: `matvec(P, x)`
+
+    References
+    ----------
+    .. [1] "Stochastic Optimization of Sorting Networks via Continuous Relaxations"
+           Aditya Grover, Eric Wang, Aaron Zweig & Stefano Ermon
+           ICLR (2019)
+           https://arxiv.org/abs/1903.08850
+           https://github.com/ermongroup/neuralsort (MIT license)
+
+    """
+    dim = x.shape[-1]
+    dims = torch.arange(dim, **utils.backend(x))
+    x = x.unsqueeze(-1)
+    A = (x - x.transpose(-1, -2)).abs_()
+    B = A.sum(-1, keepdim=True)
+    scaling = dims.add_(1).mul_(-2).add_(dim+1)
+    C = x * scaling
+
+    P_max = C.sub_(B).transpose(-1, -2).div_(tau)
+    P_hat = softmax(P_max, -1)
+
+    if hard:
+        P = torch.zeros_like(P_hat)
+        P.scatter_(-1, torch.topk(P_hat, 1, -1).values, value=1)
+        P_hat += P.sub_(P_hat).detach()
+    if descending:
+        P_hat = P_hat.flip(-2)
+    if apply:
+        return P_hat.matmul(x).squeeze(-1)
+    return P_hat
+
+
 # ======================================================================
 #
 #                           SPECIAL FUNCTIONS
