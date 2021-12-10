@@ -1,5 +1,5 @@
 import torch
-from nitorch.core import utils
+from nitorch.core import utils, math
 from nitorch.plot.colormaps import prob_to_rgb, disp_to_rgb
 from nitorch.core.optionals import try_import_as
 plt = try_import_as('matplotlib.pyplot')
@@ -13,6 +13,14 @@ def modulate_prior(M, G):
     M /= M.sum(-1, keepdim=True)
     M = utils.movedim(M, -1, 0)
     return M
+
+
+def softmax_prior(M, G):
+    if G is not None:
+        M = utils.movedim(M, 0, -1)
+        M = M + G
+        M = utils.movedim(M, -1, 0)
+    return math.softmax(M, 0, implicit=(True, False))
 
 
 def plot_lb(lb, fig=None, saved_elem=None):
@@ -244,9 +252,9 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
         # --- Update warped and warp -----------------------------------
         if M is not None:
             if not mode or mode in ('gmm', 'warp'):
-                M1 = modulate_prior(M[:, :, :, M.shape[-1] // 2], G)
-                M2 = modulate_prior(M[:, :, M.shape[-2] // 2, :], G)
-                M3 = modulate_prior(M[:, M.shape[-3] // 2, :, :], G)
+                M1 = softmax_prior(M[:, :, :, M.shape[-1] // 2], G)
+                M2 = softmax_prior(M[:, :, M.shape[-2] // 2, :], G)
+                M3 = softmax_prior(M[:, M.shape[-3] // 2, :, :], G)
                 M1 = prob_to_rgb(M1).cpu()
                 M2 = prob_to_rgb(M2).cpu()
                 M3 = prob_to_rgb(M3).cpu()
@@ -354,7 +362,7 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
         # --- Update warped and warp -----------------------------------
         if M is not None:
             if not mode or mode in ('gmm', 'warp'):
-                M1 = modulate_prior(M, G)
+                M1 = softmax_prior(M, G)
                 M1 = prob_to_rgb(M1).cpu()
                 V = utils.movedim(V, -1, 0)
                 V1 = disp_to_rgb(V).cpu()
@@ -382,7 +390,7 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
         plt.suptitle('# iter. = {}'.format(len(lb)))
     else:
         ax = fig.axes[-1]
-        ax.lines[0].set_data(range(1, len(lb) + 1), lb.cpu())
+        ax.lines[0].set_data(list(range(1, len(lb) + 1)), lb.cpu())
         ax.relim()
         ax.autoscale_view()
         fig._suptitle.set_text('# iter. = {}'.format(len(lb)))
