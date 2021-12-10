@@ -478,7 +478,7 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
 
 def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 fig_num=1, colorbar=False, figsize=None, aspect='auto',
-                title_img=None, ijk=None):
+                title_img=None, ijk=None, channel='last'):
     """ Display a multi-channel 2D or 3D image.
 
     Allows for real-time plotting if giving returned fig_ax objects as input.
@@ -495,6 +495,7 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
         aspect (str, optional): matplotlib imshow aspect, default='auto'.
         title_img (str, optional): title for each individual image.
         ijk ([int,] * 3, optional): slice indices to visualise, if not given uses midline in all axes.
+        channel (str, optional): position of channel dimension in image. default='last'
 
     Returns:
         fig_ax ([matplotlib.figure, matplotlib.axes])
@@ -520,10 +521,15 @@ def show_slices(img, fig_ax=None, title='', cmap='gray', flip=True,
                 ix.append(ijk)
     else:
         img = img[..., None, None]
+        is_3d = img.shape[2] > 1
+        if channel == 'first':
+            if is_3d:
+                img = img.permute(1,2,3,0,4,5)
+            else:
+                img = img.permute(1,2,0,3,4)
         dm = img.shape
         num_chan = dm[3]  # Number of channels
         dm = torch.tensor(dm)
-        is_3d = dm[2] > 1
         if ijk is None:
             ix = torch.floor(0.5 * dm).int().tolist()
 

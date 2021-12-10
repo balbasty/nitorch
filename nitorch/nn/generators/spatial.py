@@ -1,4 +1,5 @@
 import math
+from random import randint
 import torch
 from nitorch.core import utils, py, linalg
 from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean, identity_grid, smooth, resize

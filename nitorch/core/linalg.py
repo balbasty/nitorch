@@ -282,6 +282,25 @@ def matvec(mat, vec, out=None):
     return mv
 
 
+def outer(a, b, out=None):
+    """Outer product of two (batched) tensors
+
+    Parameters
+    ----------
+    a : (..., N) tensor
+    b : (..., M) tensor
+    out : (..., N, M) tensor, optional
+
+    Returns
+    -------
+    out : (..., N, M) tensor
+
+    """
+    a = a.unsqueeze(-1)
+    b = b.unsqueeze(-2)
+    return torch.matmul(a, b)
+
+
 def dot(a, b, keepdim=False, out=None):
     """(Batched) dot product
 
@@ -305,6 +324,43 @@ def dot(a, b, keepdim=False, out=None):
     else:
         ab = ab[..., 0, 0]
     return ab
+
+
+def cholesky(a):
+    """Compute the Choleksy decomposition of a positive-definite matrix
+
+    Parameters
+    ----------
+    a : (..., M, M) tensor
+        Positive-definite matrix
+
+    Returns
+    -------
+    l : (..., M, M) tensor
+        Lower-triangular cholesky factor
+
+    """
+    if hasattr(torch, 'linalg') and hasattr(torch.linalg, 'cholesky'):
+        return torch.linalg.cholesky(a)
+    return torch.cholesky(a)
+
+
+def trace(a, keepdim=False):
+    """Compute the trace of a matrix (or batch)
+
+    Parameters
+    ----------
+    a : (..., M, M) tensor
+
+    Returns
+    -------
+    t : (...) tensor
+
+    """
+    t = a.diagonal(0, -1, -2).sum(-1)
+    if keepdim:
+        t = t[..., None, None]
+    return t
 
 
 def mdot(a, b):

@@ -19,7 +19,6 @@ try:
 except ImportError:
     matplotlib = None
 
-
 # torch amp (not there in all versions)
 try:
     from torch.cuda.amp import custom_fwd, custom_bwd
@@ -28,7 +27,7 @@ except ImportError:
     custom_bwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
 
 
-def try_import(path, keys=None, _as=True):
+def try_import(path, keys=None, _as=False):
     """Try to import from a module.
 
     Parameters
@@ -65,8 +64,7 @@ def try_import(path, keys=None, _as=True):
             return importlib.import_module(path)
         except (ImportError, ModuleNotFoundError):
             return None
-        
-    
+
     # check if the base package exists
     pack = path.split('.')[0]
     try:
@@ -101,3 +99,6 @@ def try_import(path, keys=None, _as=True):
             cursor = getattr(cursor, path[i])
         return mod0
 
+
+def try_import_as(path, keys=None):
+    return try_import(path, keys, _as=True)
