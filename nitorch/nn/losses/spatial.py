@@ -703,10 +703,14 @@ class FrangiLoss(Loss):
     def forward(self, x, v=None):
 
         dim = x.dim() - 2
+        if dim not in (2, 3):
+            raise ValueError(f'{type(self).__name__} only implemented '
+                             f'in 2D or 3D.')
+
         radii = self.radii.to(**utils.backend(x))
         pradii = self.pradii.to(**utils.backend(x)).log()
 
-        # compute log-likelihood (vessel | radius, x)
+        # compute joint log-likelihood `ln p(x, radius | v)`
         loss = x.new_zeros([len(radii), *x.shape])
         for i, (p, r) in enumerate(zip(pradii, radii)):
             # compute unsorted eigenvalues
@@ -721,7 +725,62 @@ class FrangiLoss(Loss):
             if dim == 3:
                 loss[i] += self.tau_ratio1 * (e[1] - e[2])   # tubes
             loss[i] += self.tau_ratio0 * (e[1] - e[0])       # not plates
-            loss[i] += pradii                                # radius prior
+            loss[i] += p                                     # radius prior
+
+        # compute (stable) log-sum-exp (== model evidence `ln p(x | v)`)
+        loss = math.logsumexp(loss, dim=0)
+
+        # weight by probability to be a vessel and return `E_v[ln p(x | v)]`
+        if v is None:
+            v = x
+        return - (loss * v).sum() / (v.sum() + 1e-3)
+
+
+class FischlVesselness(Loss):
+
+    def __init__(self, radii=1, pradii=1):
+        """
+
+        Parameters
+        ----------
+        radii : [sequence of] float, defualt=1
+            List of possible vessel radii (= FWHM of the Gaussian filter)
+        pradii : [sequence of] float, default=1
+            Prior probability of each radius. Will be normalized to one.
+        """
+        super().__init__()
+        self.radii = utils.make_vector(radii)
+        pradii = utils.make_vector(pradii, len(self.radii))
+        self.pradii = pradii / pradii.sum()
+
+    @classmethod
+    def _vesselness3d(cls, e1, e2, e3):
+         return e1.square().neg().exp() * e2 * e3 / (e2 - e3).square().add_(1e-4)
+
+    @classmethod
+    def vesselness3d(cls, e1, e2, e3):
+        return (cls._vesselness3d(e1, e2, e3) +
+                cls._vesselness3d(e2, e1, e3) +
+                cls._vesselness3d(e3, e1, e2))
+
+    def forward(self, x, v=None):
+
+        dim = x.dim() - 2
+        if dim not in (2, 3):
+            raise ValueError(f'{type(self).__name__} only implemented '
+                             f'in 2D or 3D.')
+
+        radii = self.radii.to(**utils.backend(x))
+        pradii = self.pradii.to(**utils.backend(x)).log()
+
+        # compute log-likelihood (vessel | radius, x)
+        loss = x.new_zeros([len(radii), *x.shape])
+        for i, (p, r) in enumerate(zip(pradii, radii)):
+            # compute unsorted eigenvalues
+            e = spatial.hessian_eig(x, r, dim=dim, sort=None)
+            e = utils.movedim(e, -1, 0)
+            if dim == 3:
+                loss[i] = self.vesselness3d(e[0], e[1], e[2])
 
         # compute (stable) log-sum-exp (== model evidence)
         loss = math.logsumexp(loss, dim=0)
@@ -730,5 +789,3 @@ class FrangiLoss(Loss):
         if v is None:
             v = x
         return - (loss * v).sum() / (v.sum() + 1e-3)
-
-
