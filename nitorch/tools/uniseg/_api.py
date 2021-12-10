@@ -43,8 +43,11 @@ def uniseg(x, w=None, affine=None, device=None,
         Optimize a nonlinear warp of the spatial prior
     do_mixing : bool, default=True
         Optimize global missing proportions
-    do_mrf : {False, 'once' or True, 'always'}, default=True
+    do_mrf : {False, 'once', 'always', 'learn' or True}, default='learn'
         Include a Markov Random Field in the model.
+        - 'once' : only at the end
+        - 'always' : at each iteration
+        - 'learn' : at each iteration and optimize its weights
     cleanup : bool, optional
         Perform an ad-hoc clean-up procedure at the end.
         By default, it is activated if the SPM template is used else
@@ -67,11 +70,16 @@ def uniseg(x, w=None, affine=None, device=None,
     Verbosity
     ---------
     verbose : int, default=1
-    plot : int, default=0
-        0 : nothing
-        1 : show lower bound, images and histogram fit at then end
-        2 : 1 + show live lower bound
-        3 : 2 + show live lower bound and images
+        0: None
+        1: Print summary when finished
+        2: Print convergence (excluding gmm)
+        3: Print convergence (including gmm)
+    plot : bool or int, default=False
+        0: None
+        1: Show lower bound and images at the end
+        2: Show live lower bound
+        3: Show live images (excluding gmm)
+        4: Show live images (including gmm)
     return_parameters : bool, default=False
         Return all fitted parameters (GMM, bias, warp...)
 
