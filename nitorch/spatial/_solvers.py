@@ -40,6 +40,7 @@ All functions are implemented in a "field" (for vector fields) or "grid"
 
 import torch
 import math
+import gc
 from nitorch.core import utils, py
 from nitorch.core import optim as optimizers
 from nitorch.core.linalg import sym_matvec, sym_solve
@@ -918,7 +919,11 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
                    bound=bound, optim=optim, nb_cycles=nb_cycles,
                    nb_iter=nb_iter, verbose=verbose, tolerance=tolerance)
     FMG.set_data(hessian, gradient, weights=weights)
-    return FMG.solve()
+    result = FMG.solve()
+    # FMG allocates a lot of objects: better to force garbage collection
+    del FMG, gradient, hessian
+    gc.collect()
+    return result
 
 
 def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
@@ -975,7 +980,11 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
                     nb_iter=nb_iter, verbose=verbose, tolerance=tolerance,
                     matvec=matvec, matsolve=matsolve, matdiag=matdiag)
     FMG.set_data(hessian, gradient, weights=weights, dim=dim)
-    return FMG.solve()
+    result = FMG.solve()
+    # FMG allocates a lot of objects: better to force garbage collection
+    del FMG, gradient, hessian
+    gc.collect()
+    return result
 
 
 # ======================================================================

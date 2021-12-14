@@ -154,11 +154,20 @@ def preproc(data, opt):
         opt.recon.affine = opt.recon.space
     if opt.recon.fov is None:
         opt.recon.fov = opt.recon.space
-    if isinstance(opt.recon.affine, int):
+    if isinstance(opt.recon.affine, str):
+        assert opt.recon.affine == 'mean'
+        mean_affine, _ = spatial.mean_space([dat.affine for dat in data],
+                                            [dat.shape[1:] for dat in data])
+    elif isinstance(opt.recon.affine, int):
         mean_affine = affines[opt.recon.affine]
     else:
         mean_affine = torch.as_tensor(opt.recon.affine)
-    if isinstance(opt.recon.fov, int):
+    if isinstance(opt.recon.affine, str):
+        assert opt.recon.affine in ('mean', 'bb')
+        mean_affine, mean_shape = spatial.fov_max(mean_affine,
+                                                  [dat.affine for dat in data],
+                                                  [dat.shape[1:] for dat in data])
+    elif isinstance(opt.recon.fov, int):
         mean_shape = shapes[opt.recon.fov]
     else:
         mean_shape = tuple(opt.recon.fov)

@@ -2593,10 +2593,10 @@ def compute_fov(mat, affines, shapes, pad=0, pad_unit='%'):
         Maximum coordinates, in voxels (without floor/ceil)
 
     """
-    mat = torch.as_tensor(mat)
+    mat = utils.as_tensor(mat)
     backend = dict(device=mat.device, dtype=mat.dtype)
-    affines = torch.as_tensor(affines, **backend)
-    shapes = torch.as_tensor(shapes, **backend)
+    affines = utils.as_tensor(affines, **backend)
+    shapes = utils.as_tensor(shapes, **backend)
     affines.reshape([-1, *affines.shape[-2:]])
     shapes.reshape([-1, shapes.shape[-1]])
     shapes = shapes.expand([len(affines), shapes.shape[-1]])
@@ -2644,7 +2644,7 @@ def fov_max(mat, affines, shapes, pad=0, pad_unit='%'):
     shape : (D,) tuple
 
     """
-    mat = torch.as_tensor(mat)
+    mat = utils.as_tensor(mat)
     backend = dict(device=mat.device, dtype=mat.dtype)
     dim = mat.shape[-1] - 1
 

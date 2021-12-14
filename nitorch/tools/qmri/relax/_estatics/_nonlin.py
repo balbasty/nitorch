@@ -4,8 +4,6 @@ from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag_, hessian_matmul, hessian_solve,
                      smart_grid, smart_pull, smart_push, smart_grad)
-from ..utils import rls_maj
-from nitorch.spatial import solve_grid_sym
 from nitorch.core.math import besseli, besseli_ratio
 from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
 from typing import Optional
@@ -120,26 +118,29 @@ def nonlin(data, opt=None):
         # no reweighting -> do more gauss-newton updates instead
         opt.optim.max_iter_gn *= opt.optim.max_iter_rls
         opt.optim.max_iter_rls = 1
+    if not opt.distortion.enable:
+        opt.optim.max_iter_gn *= opt.optim.max_iter_prm
+        opt.optim.max_iter_prm = 1
     print('Optimization:')
+    print(f'    - Tolerance:        {opt.optim.tolerance}')
     if opt.regularization.norm.endswith('tv'):
-        print(f'    - IRLS iterations: {opt.optim.max_iter_rls}'
-              f' (tolerance: {opt.optim.tolerance_rls})')
-    print(f'    - GN iterations:   {opt.optim.max_iter_gn}'
-          f' (tolerance: {opt.optim.tolerance_gn})')
-    print(f'    - FMG cycles:      2')
-    print(f'    - CG iterations:   {opt.optim.max_iter_cg}'
+        print(f'    - IRLS iterations:  {opt.optim.max_iter_rls}')
+    print(f'    - GN iterations:    {opt.optim.max_iter_gn}')
+    if opt.distortion.enable:
+        print(f'    - Param iterations: {opt.optim.max_iter_prm}')
+        print(f'    - Dist iterations:  {opt.optim.max_iter_dist}')
+    print(f'    - FMG cycles:       2')
+    print(f'    - CG iterations:    {opt.optim.max_iter_cg}'
           f' (tolerance: {opt.optim.tolerance_cg})')
     if opt.optim.nb_levels > 1:
-        print(f'    - Levels:          {opt.optim.nb_levels}')
+        print(f'    - Levels:           {opt.optim.nb_levels}')
 
     # ------------------------------------------------------------------
     #                     MAIN OPTIMIZATION LOOP
     # ------------------------------------------------------------------
 
     if opt.verbose:
-        pstr = f'{"rls":^3s} | {"gn":^3s} | ' 
-        if opt.distortion.enable:
-            pstr += f'{"step":^4s} | ' 
+        pstr = f'{"rls":^3s} | {"gn":^3s} | {"step":^4s} | '
         pstr += f'{"fit":^12s} + {"reg":^12s} + {"rls":^12s} '
         if opt.distortion.enable:
             pstr += f'+ {"dist":^12s} '
@@ -218,6 +219,7 @@ def nonlin(data, opt=None):
                         hind = [2*i, -1, 2*i+1]
                         hess[hind, ...] += h1
                         crit += crit1
+                    del g1, h1
 
                     # --- regularization -----------------------------------
                     reg = 0.
@@ -231,6 +233,7 @@ def nonlin(data, opt=None):
                             reg1 = 0.5 * dot(map.volume, g1)
                             reg += reg1
                             grad[i] += g1
+                        del g1
 
                     # --- track RLS improvement ----------------------------
                     # Updating the RLS weights changes `sumrls` and `reg`. Now
@@ -266,6 +269,7 @@ def nonlin(data, opt=None):
                             map.volume -= delta
                             if map.min is not None or map.max is not None:
                                 map.volume.clamp_(map.min, map.max)
+                        del deltas
 
                     else:  # === distortion.enabled ========================
 
@@ -397,7 +401,7 @@ def nonlin(data, opt=None):
                             delta = spatial.solve_grid_fmg(
                                 h, g, **lam_dist, bound=DIST_BOUND,
                                 voxel_size=distortion.voxel_size,
-                                verbose=opt.verbose-1,
+                                verbose=max(0, opt.verbose-1),
                                 nb_iter=opt.optim.max_iter_cg,
                                 tolerance=opt.optim.tolerance_cg)
                         else:
@@ -410,7 +414,7 @@ def nonlin(data, opt=None):
                                 voxel_size=distortion.voxel_size,
                                 nb_iter=opt.optim.max_iter_cg,
                                 tolerance=opt.optim.tolerance_cg,
-                                verbose=opt.verbose-1)[0]
+                                verbose=max(0, opt.verbose-1))[0]
                         delta = check_nans_(delta, warn='delta (distortion)')
 
                         # --- line search ----------------------------------
@@ -474,8 +478,14 @@ def nonlin(data, opt=None):
                 gain = ll_gn_prev - ll_gn
                 if opt.verbose:
                     pstr = f'{n_iter_rls:3d} | {n_iter_gn:3d} | '
-                    pstr += f'{"----":4s} | '
-                    pstr += f'{"-"*72:72s} | gain = {gain/ll_scl:7.2g}'
+                    if opt.distortion.enable:
+                        pstr += f'{"----":4s} | '
+                        pstr += f'{"-"*72:72s} | '
+                    else:
+                        pstr += f'{"prm":4s} | '
+                        pstr += f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} '
+                        pstr += f'= {ll:12.6g} | '
+                    pstr += f'gain = {gain/ll_scl:7.2g}'
                     print(pstr)
                     if opt.plot:
                         _show_maps(maps, dist, data)
@@ -588,7 +598,7 @@ def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
         Residuals
 
     """
-    z = (dat * fit * lam).clamp_min_(1e-32)
+    z = (dat * fit).mul_(lam).clamp_min_(1e-32)
     xi = besseli_ratio(df / 2 - 1, z)
     logbes = besseli(df / 2 - 1, z, 'log')
     logbes = logbes[msk].sum(dtype=torch.double)
@@ -702,10 +712,13 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt,
     grid = smart_grid(aff, obs_shape, recon_shape)
     inter = smart_pull(intercept.fdata(**backend), grid)
     slope = smart_pull(decay.fdata(**backend), grid)
-    grid_up, grid_down, jac_up, jac_down = distortion.exp2(
-        add_identity=True, jacobian=True)
-    jac_up = jac_up[..., readout, readout]
-    jac_down = jac_down[..., readout, readout]
+    if distortion:
+        grid_up, grid_down, jac_up, jac_down = distortion.exp2(
+            add_identity=True, jacobian=True)
+        jac_up = jac_up[..., readout, readout]
+        jac_down = jac_down[..., readout, readout]
+    else:
+        grid_up = grid_down = jac_up = jac_down = None
         
     crit = 0
     grad = torch.zeros((2,) + obs_shape, **backend) if do_grad else None
@@ -725,7 +738,8 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt,
         fit = recon_fit(inter, slope, te)
         # push_fit = smart_push(fit, grid_blip, bound='dft', extrapolate=True)
         push_fit = smart_pull(fit, grid_blip, bound='dft', extrapolate=True)
-        push_fit = push_fit * jac_blip
+        if jac_blip is not None:
+            push_fit = push_fit * jac_blip
         msk = get_mask_missing(dat, push_fit)
         dat.masked_fill_(msk, 0)
         push_fit.masked_fill_(msk, 0)
@@ -954,7 +968,7 @@ def solve_parameters(hess, grad, rls, lam, vx, opt):
         return m[..., ::2]
 
     return spatial.solve_field_fmg(hess, grad, rls, factor=lam, membrane=1,
-                                   voxel_size=vx, verbose=opt.verbose - 1,
+                                   voxel_size=vx, verbose=max(0, opt.verbose - 1),
                                    nb_iter=opt.optim.max_iter_cg,
                                    tolerance=opt.optim.tolerance_cg,
                                    matvec=matvec, matsolve=matsolve, matdiag=matdiag)

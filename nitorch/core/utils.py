@@ -697,6 +697,40 @@ def same_storage(x, y):
     return x.storage().data_ptr() == y.storage().data_ptr()
 
 
+def all_resident_tensors(no_duplicates=True):
+    """Return all tensors currently allocated"""
+    import gc
+    objs = []
+
+    def already_in(x):
+        for i, obj in enumerate(objs):
+            if same_storage(obj, x):
+                if x.numel() > obj.numel():
+                    del objs[i]
+                    return False
+                return True
+        return False
+
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj):
+                if not (no_duplicates and already_in(obj)):
+                    objs.append(obj)
+                if (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+                    if not already_in(obj.data):
+                        objs.append(obj.data)
+        except:
+            pass
+
+    return objs
+
+
+def print_all_resident_tensors(no_duplicates=True):
+    """Print all tensors currently allocated"""
+    for obj in all_resident_tensors(no_duplicates):
+        print(type(obj), obj.shape)
+
+
 def broadcast_backward(input, shape):
     """Sum a tensor across dimensions that have been broadcasted.
 
