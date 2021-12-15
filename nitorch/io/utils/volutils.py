@@ -227,6 +227,7 @@ def cutoff(dat, cutoff, dim=None):
             dat.clamp_max_(pct[0])
         else:
             dat.clamp_(pct[0], pct[1])
+        return dat
     else:
         pct = np.nanpercentile(dat, cutoff, axis=dim, keepdims=True)
         if len(pct) == 1:

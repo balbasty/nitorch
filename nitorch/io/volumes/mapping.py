@@ -503,7 +503,6 @@ class MappedArray(MappedFile):
 
         # --- cutoff ---
         dat[present] = volutils.cutoff(dat[present], cutoff, dim)
-        dat[present] = volutils.cutoff(dat[present], cutoff, dim)
 
         # --- cast + rescale ---
         rand = rand and not indtype.is_floating_point
