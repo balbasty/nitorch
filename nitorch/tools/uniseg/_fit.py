@@ -369,7 +369,7 @@ class SpatialMixture:
                 bound='dft', interpolation=2,
                 prefilter=False, extrapolate=True)
             self.alpha = utils.movedim(self.alpha, 0, -1)
-            self.alpha *= factor
+            self.alpha *= factor.to(self.alpha.device)
 
     def _final_e_step(self, X, W, aff):
         """Perform the final Expectation step"""
@@ -751,8 +751,8 @@ class SpatialMixture:
             self.psi = math.logit(self.psi, 0, implicit=(False, True))
         elif self.do_mrf:
             self.psi = torch.eye(self.nb_classes, **backend)
-            self.psi -= self.psi[:1]
-            self.psi = self.psi[1:]
+            # self.psi -= self.psi[:1]
+            self.psi = self.psi[1:] - self.psi[:1]
         else:
             self.psi = None
 

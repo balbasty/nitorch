@@ -275,7 +275,7 @@ def get_data(x, w, affine, dim, **backend):
             if affine is None:
                 affine = f.affine
             if f.dim > dim:
-                if f.dim[dim] == 1:
+                if f.shape[dim] == 1:
                     f = f.squeeze(dim)
                 if f.dim > dim + 1:
                     raise ValueError('Too many dimensions')
