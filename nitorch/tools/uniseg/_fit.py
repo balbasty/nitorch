@@ -369,7 +369,7 @@ class SpatialMixture:
                 bound='dft', interpolation=2,
                 prefilter=False, extrapolate=True)
             self.alpha = utils.movedim(self.alpha, 0, -1)
-            self.alpha *= factor
+            self.alpha *= factor.to(self.alpha.device)
 
     def _final_e_step(self, X, W, aff):
         """Perform the final Expectation step"""

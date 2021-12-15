@@ -812,3 +812,194 @@ class ModelTrainer:
             for k, v in state.items():
                 if torch.is_tensor(v):
                     state[k] = v.to(dtype=dtype, device=device)
+
+
+class SynthTrainer(ModelTrainer):
+    def __init__(self, model, train_set=None, test_set=None,
+                pretrain_crit=torch.nn.MSELoss(reduce=True), nb_epoch_pretrain=None, type='seg',
+                tf_weights=False, download_weights=False, model_url=None,
+                **kwargs):
+        if not train_set:
+            if test_set:
+                train_set = test_set
+            else:
+                raise RuntimeError('Must provide training data for training and/or test data for testing.')
+            
+        super().__init__(model=model, train_set=train_set, **kwargs)
+        self.test_set = test_set
+        self.pretrain_crit = pretrain_crit
+        if download_weights:
+            self.model.download_tf_weights(model_url=model_url)
+        elif tf_weights:
+            self.model.load_tf_weights(path_to_h5=tf_weights)
+
+        if nb_epoch_pretrain:
+            self.pretrain(nb_epoch_pretrain)
+            
+    def pretrain(self, nb_epoch_pretrain, verbose=False):
+        if verbose:
+            print('Pretraining using L2 loss on forward pass of labels.')
+
+        self.model.train()
+
+        if self.autocast and not getattr(self, 'grad_scaler', None):
+            self.grad_scaler = GradScaler()
+
+        nb_steps = len(self.train_set)
+
+        if hasattr(self.train_set, 'iter'):
+            iterator = self.train_set.iter(device=self.device)
+        else:
+            iterator = self.train_set.__iter__()
+
+        for epch in range(nb_epoch_pretrain):
+            epoch_loss = []
+            for _, labels in iterator:
+                # forward pass
+                self.optimizer.zero_grad()
+                with autocast(self.autocast):
+                    output = self.model(labels)
+                    losses = self.pretrain_crit(output, labels)
+                    loss = sum(losses.values())
+                # backward pass
+                if self.autocast:
+                    self.grad_scaler.scale(loss).backward()
+                    self.grad_scaler.step(self.optimizer)
+                    self.grad_scaler.update()
+                else:
+                    loss.backward()
+                    self.optimizer.step()
+
+                epoch_loss.append(loss)
+
+            epoch_loss = sum(epoch_loss) / len(epoch_loss)
+            if verbose:
+                print('Epoch #{} - L2 Loss = {:.3f}'.format(epch, epoch_loss))
+
+
+# from nitorch.nn.losses._wip_adversarial import Wasserstein, R1
+# class AdvTrainer(ModelTrainer):
+#     def __init__(self, model, discrim, train_set, eval_set=None,
+#                  optimizer=None,
+#                  optimizer_discrim=None,
+#                  nb_epoch=100,
+#                  nb_steps=None,
+#                  gradient_penalty=None,
+#                  lambda_gp=1,
+#                  softplus=False,
+#                  *, # the remaining parameters *must be* keywords
+#                  device=None,
+#                  dtype=None,
+#                  initial_epoch=0,
+#                  log_interval=None,
+#                  benchmark=False,
+#                  autocast=False,
+#                  seed=None,
+#                  tensorboard=None,
+#                  save_model=None,
+#                  save_optimizer=None,
+#                  load_model=None,
+#                  load_optimizer=None,
+#                  save_model_discrim=None,
+#                  save_optimizer_discrim=None,
+#                  load_model_discrim=None,
+#                  load_optimizer_discrim=None,
+#                  show_losses=True,
+#                  show_metrics=False,
+#                  scheduler=ReduceLROnPlateau):
+#         """
+#         Inherits from ModelTrainer, with additional parameters for discriminator
+#         """
+#         super().__init__()
+#         self.discrim = discrim
+#         if optimizer_discrim is None:
+#             optimizer_discrim = torch.optim.Adam(model.parameters())
+#         self.optimizer_discrim = optimizer_discrim
+#         self.save_model_discrim = save_model_discrim
+#         self.save_optimizer_discrim = save_optimizer_discrim
+#         self.load_model_discrim = load_model_discrim
+#         self.load_optimizer_discrim = load_optimizer_discrim
+
+#         if self.load_model_discrim:
+#             self.discrim.load_state_dict(torch.load(self.load_model_discrim))
+#         if self.load_optimizer_discrim:
+#             self.optimizer_discrim.load_state_dict(torch.load(self.load_optimizer_discrim))
+
+#         self.gradient_penalty = gradient_penalty
+#         self.softplus = softplus
+#         self.lambda_gp = lambda_gp
+
+#     def _train_discrim(self, epoch=0):
+#         """Train discriminator for one epoch"""
+
+#         self.model.eval()
+#         self.discrim.train()
+#         epoch_loss = 0.
+#         epoch_losses = {}
+#         epoch_metrics = {}
+#         nb_batches = 0
+#         nb_steps = len(self.train_set)
+#         for n_batch, batch in enumerate(self.train_set):
+#             losses = {}
+#             metrics = {}
+#             # forward pass
+#             batch = make_tuple(batch)
+#             batch = tuple(torch.as_tensor(b, device=self.device) for b in batch)
+#             batch = tuple(b.to(dtype=self.dtype)
+#                           if b.dtype in (torch.half, torch.float, torch.double)
+#                           else b for b in batch)
+#             nb_batches += batch[0].shape[0]
+#             self.optimizer_discrim.zero_grad()
+#             output = self.model(*batch)
+#             output_real = self.discrim(*batch)
+#             output_fake = self.discrim(output)
+#             if self.gradient_penalty == 'wasserstein' or 'Wasserstein' or 'wgan' or 'WGAN':
+#                 gp = Wasserstein(self.discrim, *batch, fake=output)
+#             elif self.gradient_penalty == 'r1' or 'R1':
+#                 gp = R1(self.discrim, *batch)
+#             else:
+#                 gp = 0
+#             if self.softplus:
+#                 losses['adv'] = torch.mean(torch.nn.functional.softplus(-output_real)) + torch.mean(torch.nn.functional.softplus(output_fake)) + self.lambda_gp * gp
+#             else:
+#                 losses['adv'] = - torch.mean(output_real) + torch.mean(output_fake) + self.lambda_gp * gp
+#             loss = sum(losses.values())
+#             # backward pass
+#             loss.backward()
+#             self.optimizer_discrim.step()
+#             # update average across batches
+#             with torch.no_grad():
+#                 weight = float(batch[0].shape[0])
+#                 epoch_loss += loss * weight
+#                 update_loss_dict(epoch_losses, losses, weight)
+#                 update_loss_dict(epoch_metrics, metrics, weight)
+#                 # print
+#                 if n_batch % self.log_interval == 0:
+#                     self._print('train', epoch, n_batch+1, nb_steps,
+#                                 loss, losses, metrics)
+#                 # tb callback
+#                 if self.tensorboard:
+#                     tbopt = dict(inputs=batch, outputs=output,
+#                                  epoch=epoch, minibatch=n_batch, mode='train',
+#                                  loss=loss, losses=losses, metrics=metrics)
+#                     self.model.board(self.tensorboard, **tbopt)
+#                     for func in self._tensorboard_callbacks['train']['step']:
+#                         func(self.tensorboard, **tbopt)
+#                     del tbopt
+#         # print summary
+#         with torch.no_grad():
+#             epoch_loss /= nb_batches
+#             normalize_loss_dict(epoch_losses, nb_batches)
+#             normalize_loss_dict(epoch_metrics, nb_batches)
+#             self._print('train', epoch, nb_steps, nb_steps,
+#                         epoch_loss, epoch_losses, epoch_metrics, last=True)
+#             self._board('train', epoch, epoch_loss, epoch_metrics)
+#             # tb callback
+#             if self.tensorboard:
+#                 tbopt = dict(epoch=epoch, loss=epoch_loss, mode='train',
+#                              losses=epoch_losses, metrics=epoch_metrics)
+#                 self.model.board(self.tensorboard, **tbopt)
+#                 for func in self._tensorboard_callbacks['train']['epoch']:
+#                     func(self.tensorboard, **tbopt)
+
+#         return epoch_loss
