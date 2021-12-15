@@ -751,8 +751,8 @@ class SpatialMixture:
             self.psi = math.logit(self.psi, 0, implicit=(False, True))
         elif self.do_mrf:
             self.psi = torch.eye(self.nb_classes, **backend)
-            self.psi -= self.psi[:1]
-            self.psi = self.psi[1:]
+            # self.psi -= self.psi[:1]
+            self.psi = self.psi[1:] - self.psi[:1]
         else:
             self.psi = None
 
