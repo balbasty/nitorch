@@ -2,8 +2,8 @@ import torch
 from nitorch import core, spatial
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
-from ._utils import (hessian_loaddiag_, hessian_matmul, hessian_solve,
-                     smart_grid, smart_pull, smart_push, smart_grad)
+from ._utils import (hessian_loaddiag_, hessian_matmul, hessian_solve)
+from ..utils import smart_pull, smart_push, smart_grad, smart_grid
 from nitorch.core.math import besseli, besseli_ratio
 from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
 from typing import Optional
@@ -59,7 +59,12 @@ def nonlin(data, opt=None):
     backend = dict(dtype=opt.backend.dtype, device=opt.backend.device)
 
     # --- be polite ----------------------------------------------------
-    print(f'Fitting a (multi) exponential decay model with {len(data)} contrasts. Echo times:')
+    if len(data) > 1:
+        pstr = f'Fitting a (shared) exponential decay model with {len(data)} contrasts.'
+    else:
+        pstr = f'Fitting an exponential decay model.'
+    print(pstr)
+    print('Echo times:')
     for i, contrast in enumerate(data):
         print(f'    - contrast {i:2d}: [' + ', '.join([f'{te*1e3:.1f}' for te in contrast.te]) + '] ms')
 
@@ -67,6 +72,18 @@ def nonlin(data, opt=None):
     data, maps, dist = preproc(data, opt)
     vx = spatial.voxel_size(maps.affine)
     nb_contrasts = len(maps) - 1
+
+    if opt.distortion.enable:
+        print('Readout directions:')
+        for i, contrast in enumerate(data):
+            layout = spatial.affine_to_layout(contrast.affine)
+            layout = spatial.volume_layout_to_name(layout)
+            readout = layout[contrast.readout]
+            readout = ('left-right' if 'L' in readout or 'R' in readout else
+                       'infra-supra' if 'I' in readout or 'S' in readout else
+                       'antero-posterior' if 'A' in readout or 'P' in readout else
+                       'unknown')
+            print(f'    - contrast {i:2d}: {readout}')
 
     # --- prepare regularization factor --------------------------------
     # 1. Parameter maps regularization
@@ -119,6 +136,7 @@ def nonlin(data, opt=None):
         opt.optim.max_iter_gn *= opt.optim.max_iter_rls
         opt.optim.max_iter_rls = 1
     if not opt.distortion.enable:
+        # no distortion -> merge inner and outer loops
         opt.optim.max_iter_gn *= opt.optim.max_iter_prm
         opt.optim.max_iter_prm = 1
     print('Optimization:')
@@ -578,9 +596,9 @@ def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
     Parameters
     ----------
     dat : tensor
-        Observed data (should be zero where not observed)
+        Observed data -- will be modified in-place
     fit : tensor
-        Signal fit (should be zero where not observed)
+        Signal fit
     msk : tensor
         Mask of observed values
     lam : float
@@ -598,26 +616,30 @@ def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
         Residuals
 
     """
-    z = (dat * fit).mul_(lam).clamp_min_(1e-32)
-    xi = besseli_ratio(df / 2 - 1, z)
-    logbes = besseli(df / 2 - 1, z, 'log')
-    logbes = logbes[msk].sum(dtype=torch.double)
-
-    # chi log-likelihood
     fitm = fit[msk]
+    datm = dat[msk]
+
+    # components of the log-likelihood
     sumlogfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
     sumfit2 = fitm.flatten().dot(fitm.flatten())
-    del fitm
-    datm = dat[msk]
     sumlogdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
     sumdat2 = datm.flatten().dot(datm.flatten())
-    del datm
 
+    # reweighting
+    z = (fitm * datm).mul_(lam).clamp_min_(1e-32)
+    xi = besseli_ratio(df / 2 - 1, z)
+    logbes = besseli(df / 2 - 1, z, 'log')
+    logbes = logbes.sum(dtype=torch.double)
+
+    # sum parts
     crit = (df / 2 - 1) * sumlogfit - (df / 2) * sumlogdat - logbes
     crit += 0.5 * lam * (sumfit2 + sumdat2)
     if not return_residuals:
         return crit
-    res = dat.mul_(xi).neg_().add_(fit)
+
+    # compute residuals
+    res = dat.zero_()
+    res[msk] = datm.mul_(xi).neg_().add_(fitm)
     return crit, res
 
 

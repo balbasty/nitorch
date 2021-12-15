@@ -2,8 +2,8 @@ import torch
 from nitorch import core
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
-from ._utils import (hessian_loaddiag_, hessian_solve,
-                     smart_grid, smart_pull, smart_push)
+from ._utils import hessian_loaddiag_, hessian_solve
+from ..utils import smart_grid, smart_pull, smart_push
 
 
 def loglin(data, opt=None):
