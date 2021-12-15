@@ -1,6 +1,8 @@
 import torch
 from nitorch import core, spatial
-import math
+from nitorch.core import math
+import math as pymath
+from typing import Optional
 
 
 def hessian_sym_matmul(hess, grad):
@@ -98,7 +100,7 @@ def hessian_sym_loaddiag(hess, eps=None, eps2=None):
     """
     if eps is None:
         eps = core.constants.eps(hess.dtype)
-    nb_prm = int((math.sqrt(1 + 8 * len(hess)) - 1)//2)
+    nb_prm = int((pymath.sqrt(1 + 8 * len(hess)) - 1)//2)
     weight = hess[:nb_prm].max(dim=0, keepdim=True).values
     weight.clamp_min_(eps)
     weight *= eps
@@ -132,7 +134,7 @@ def hessian_sym_inv(hess, diag=False):
     result : (P*(P+1)//2, ...) tensor
 
     """
-    nb_prm = int((math.sqrt(1 + 8 * len(hess)) - 1)//2)
+    nb_prm = int((pymath.sqrt(1 + 8 * len(hess)) - 1)//2)
     if diag:
         out = hess.new_empty([nb_prm, *hess.shape[1:]])
     else:
@@ -343,7 +345,7 @@ def smart_grid(aff, shape, inshape=None, force=False):
     return spatial.affine_grid(aff, shape)
 
 
-def smart_pull(tensor, grid):
+def smart_pull(tensor, grid, **opt):
     """Pull iff grid is defined (+ add/remove batch dim).
 
     Parameters
@@ -361,10 +363,10 @@ def smart_pull(tensor, grid):
     """
     if grid is None:
         return tensor
-    return spatial.grid_pull(tensor[None, ...], grid[None, ...])[0]
+    return spatial.grid_pull(tensor, grid, **opt)
 
 
-def smart_push(tensor, grid, shape=None):
+def smart_push(tensor, grid, shape=None, **opt):
     """Pull iff grid is defined (+ add/remove batch dim).
 
     Parameters
@@ -384,7 +386,34 @@ def smart_push(tensor, grid, shape=None):
     """
     if grid is None:
         return tensor
-    return spatial.grid_push(tensor[None, ...], grid[None, ...], shape)[0]
+    return spatial.grid_push(tensor, grid, shape, **opt)
+
+
+def smart_grad(tensor, grid, **opt):
+    """Pull gradients iff grid is defined (+ add/remove batch dim).
+
+    Parameters
+    ----------
+    tensor : (channels, *input_shape) tensor
+        Input volume
+    grid : (*output_shape, D) tensor or None
+        Sampling grid
+
+    Returns
+    -------
+    pulled : (channels, *output_shape) tensor
+        Sampled volume
+
+    """
+    # if grid is None:
+    #     opt.pop('extrapolate', None)
+    #     opt.pop('interpolation', None)
+    #     return spatial.diff(tensor, dim=3, **opt)
+    if grid is None:
+        grid = spatial.identity_grid(tensor.shape[-3:],
+                                     dtype=tensor.dtype, device=tensor.device)
+    out = spatial.grid_grad(tensor, grid, **opt)
+    return out
 
 
 def reg(tensor, vx=1., rls=None, lam=1., do_grad=True):
@@ -625,3 +654,120 @@ def min_intensity_step(x, max_points=1e6):
     x = x[1:] - x[:-1]
     x = x[x > 0].min().item()
     return x
+
+
+@torch.jit.script
+def ssq(x):
+    """Sum of squares"""
+    return (x*x).sum(dtype=torch.double)
+
+
+@torch.jit.script
+def dot(x, y):
+    """Dot product"""
+    return (x*y).sum(dtype=torch.double)
+
+
+def get_mask_missing(dat, fit):
+    """Mask of voxels excluded from the objective"""
+    return ~(torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0))
+
+
+def mask_nan_(x, value: float = 0.):
+    """Mask out all non-finite values"""
+    return x.masked_fill_(torch.isfinite(x).bitwise_not(), value)
+
+
+def check_nans_(x, warn: Optional[str] = None, value: float = 0):
+    """Mask out all non-finite values + warn if `warn is not None`"""
+    msk = torch.isfinite(x)
+    if warn is not None:
+        if ~(msk.all()):
+            print(f'WARNING: NaNs in {warn}')
+    x.masked_fill_(msk.bitwise_not(), value)
+    return x
+
+
+def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
+    """Negative log-likelihood of the noncentral Chi distribution
+
+    Parameters
+    ----------
+    dat : tensor
+        Observed data -- will be modified in-place
+    fit : tensor
+        Signal fit
+    msk : tensor
+        Mask of observed values
+    lam : float
+        Noise precision
+    df : float
+        Degrees of freedom
+    return_residuals : bool
+        Return residuals (gradient) on top of nll
+
+    Returns
+    -------
+    nll : () tensor
+        Negative log-likelihood
+    res : tensor, if `return_residuals`
+        Residuals
+
+    """
+    fitm = fit[msk]
+    datm = dat[msk]
+
+    # components of the log-likelihood
+    sumlogfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+    sumfit2 = fitm.flatten().dot(fitm.flatten())
+    sumlogdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+    sumdat2 = datm.flatten().dot(datm.flatten())
+
+    # reweighting
+    z = (fitm * datm).mul_(lam).clamp_min_(1e-32)
+    xi = math.besseli_ratio(df / 2 - 1, z)
+    logbes = math.besseli(df / 2 - 1, z, 'log')
+    logbes = logbes.sum(dtype=torch.double)
+
+    # sum parts
+    crit = (df / 2 - 1) * sumlogfit - (df / 2) * sumlogdat - logbes
+    crit += 0.5 * lam * (sumfit2 + sumdat2)
+    if not return_residuals:
+        return crit
+
+    # compute residuals
+    res = dat.zero_()
+    res[msk] = datm.mul_(xi).neg_().add_(fitm)
+    return crit, res
+
+
+def nll_gauss(dat, fit, msk, lam, return_residuals=True):
+    """Negative log-likelihood of the noncentral Chi distribution
+
+    Parameters
+    ----------
+    dat : tensor
+        Observed data -- will be modified in-place
+        (should be zero where not observed)
+    fit : tensor
+        Signal fit (should be zero where not observed)
+    msk : tensor
+        Mask of observed values
+    lam : float
+        Noise precision
+    nu : float
+        Degrees of freedom
+    return_residuals : bool
+        Return residuals (gradient) on top of nll
+
+    Returns
+    -------
+    nll : () tensor
+        Negative log-likelihood
+    res : tensor, if `return_residuals`
+        Residuals
+
+    """
+    res = dat.neg_().add_(fit)
+    crit = 0.5 * lam * ssq(res[msk])
+    return (crit, res) if return_residuals else crit

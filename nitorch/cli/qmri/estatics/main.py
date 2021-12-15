@@ -1,7 +1,8 @@
 from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
 from nitorch.tools.qmri import estatics, ESTATICSOptions, io as qio
-from nitorch import io
+from nitorch.tools.qmri.relax.utils import smart_pull
+from nitorch import io, spatial
 from nitorch.core import py
 import torch
 import sys
@@ -36,7 +37,7 @@ def _cli(args):
     if not options:
         return
     if options.help:
-        print(help[options.help])
+        print(help)
         return
 
     if options.verbose > 3:
@@ -100,10 +101,21 @@ def _main(options):
         # map volumes
         contrasts.append(qio.GradientEchoMulti.from_fnames(c.echoes, **meta))
 
+        if c.readout:
+            layout = spatial.affine_to_layout(contrasts[-1].affine)
+            layout = spatial.volume_layout_to_name(layout)
+            readout = None
+            for j, l in enumerate(layout):
+                if l.lower() in c.readout.lower():
+                    readout = j - 3
+            contrasts[-1].readout = readout
+
     # run algorithm
     [te0, r2s, *b0] = estatics(contrasts, estatics_opt)
 
     # write results
+
+    # --- intercepts ---
     odir0 = options.odir
     for i, te1 in enumerate(te0):
         ifname = contrasts[i].echo(0).volume.fname
@@ -112,17 +124,51 @@ def _main(options):
         obase = obase + '_TE0'
         ofname = os.path.join(odir, obase + oext)
         io.savef(te1.volume, ofname, affine=te1.affine, like=ifname, te=0, dtype='float32')
+
+    # --- decay ---
     ifname = contrasts[0].echo(0).volume.fname
     odir, obase, oext = py.fileparts(ifname)
     odir = odir0 or odir
     io.savef(r2s.volume, os.path.join(odir, 'R2star' + oext), affine=r2s.affine, dtype='float32')
-    for i, b0 in enumerate(b0):
-        ifname = contrasts[i].echo(0).volume.fname
-        odir, obase, oext = py.fileparts(ifname)
-        odir = odir0 or odir
-        obase = obase + '_B0'
-        ofname = os.path.join(odir, obase + oext)
-        io.savef(te1.volume, ofname, affine=te1.affine, like=ifname, te=0, dtype='float32')
 
-
+    # --- fieldmap + undistorted ---
+    if b0:
+        b0 = b0[0]
+        for i, b01 in enumerate(b0):
+            ifname = contrasts[i].echo(0).volume.fname
+            odir, obase, oext = py.fileparts(ifname)
+            odir = odir0 or odir
+            obase = obase + '_B0'
+            ofname = os.path.join(odir, obase + oext)
+            io.savef(b01.volume, ofname, affine=b01.affine, like=ifname, te=0, dtype='float32')
+        for i, (c, b) in enumerate(zip(contrasts, b0)):
+            readout = c.readout
+            grid_up, grid_down, jac_up, jac_down = b.exp2(
+                add_identity=True, jacobian=True)
+            jac_up = jac_up[..., readout, readout]
+            jac_down = jac_down[..., readout, readout]
+            for j, e in enumerate(c):
+                blip = e.blip or (2*(j % 2) - 1)
+                grid_blip = grid_down if blip > 0 else grid_up  # inverse of
+                jac_blip = jac_down if blip > 0 else jac_up     # forward model
+                ifname = e.volume.fname
+                odir, obase, oext = py.fileparts(ifname)
+                odir = odir0 or odir
+                obase = obase + '_unwrapped'
+                ofname = os.path.join(odir, obase + oext)
+                d = e.fdata(device=device)
+                d = smart_pull(d, grid_blip, bound='dft', extrapolate=True)
+                d *= jac_blip
+                io.savef(d, ofname, affine=e.affine, like=ifname)
+                del d
+            del grid_up, grid_down, jac_up, jac_down
+    if options.register:
+        for i, c in enumerate(contrasts):
+            for j, e in enumerate(c):
+                ifname = e.volume.fname
+                odir, obase, oext = py.fileparts(ifname)
+                odir = odir0 or odir
+                obase = obase + '_registered'
+                ofname = os.path.join(odir, obase + oext)
+                io.save(e.volume, ofname, affine=e.affine)
 

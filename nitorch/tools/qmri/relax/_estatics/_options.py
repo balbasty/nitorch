@@ -15,7 +15,7 @@ class ReconOptions(Option):
 class RegularizationOptions(Option):
     """Options for the regularization"""
     norm: str = 'jtv'                       # Norm to optimize: {'jtv', 'tv', 'tkh', None}
-    factor: float or list = [1, 5e-4]       # Regularization factor
+    factor: float or list = [50, 0.05]      # Regularization factor
 
 
 class DistortionOption(Option):
@@ -32,11 +32,11 @@ class DistortionOption(Option):
 class OptimOptions(Option):
     """Options for the optimizer(s)"""
     max_iter_gn: int = 3                   # Number of prm+dist Gauss-Newton iterations
-    max_iter_prm: int = 4                  # Number of prm Gauss-Newton iterations
+    max_iter_prm: int = 2                  # Number of prm Gauss-Newton iterations
     max_iter_dist: int = 1                 # Number of dist Gauss-Newton iterations
     max_iter_cg: int = 2                   # Number of Conjugate Gradient iteration
     max_iter_rls: int = 10                 # Number of Reweighted LS iterations
-    tolerance: float = 1e-5                # Tolerance for early stopping
+    tolerance: float = 1e-3                # Tolerance for early stopping
     tolerance_gn: float = 1e-5             # Tolerance for GN early stopping
     tolerance_cg: float = 0                # Tolerance for CG early stopping (advised to be zero now that we use FMG)
     tolerance_rls: float = 1e-5            # Tolerance for RLS early stopping
