@@ -221,14 +221,26 @@ def cutoff(dat, cutoff, dim=None):
         raise ValueError('Maximum to percentiles (min, max) should'
                          ' be provided. Got {}.'.format(len(cutoff)))
     if torch.is_tensor(dat):
+        dat_for_quantile = dat
         if not dat.dtype.is_floating_point:
-            dat = dat.float()
+            dat_for_quantile = dat_for_quantile.float()
+
         cutoff = [val/100 for val in cutoff]
-        pct = utils.quantile(dat, cutoff)
+        pct = utils.quantile(dat_for_quantile, cutoff)
+
         if len(pct) == 1:
-            dat.clamp_max_(pct[0])
+            mn, mx = None, pct[0]
         else:
-            dat.clamp_(pct[0], pct[1])
+            mn, mx = pct[0], pct[1]
+        if not dat.dtype.is_floating_point:
+            mx = mx.ceil()
+            if mn is not None:
+                mn = mn.floor()
+
+        mx = mx.to(dat.dtype)
+        if mn is not None:
+            mn = mn.to(dat.dtype)
+        dat.clamp_(mn, mx)
         return dat
     else:
         pct = np.nanpercentile(dat, cutoff, axis=dim, keepdims=True)
