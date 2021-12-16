@@ -178,7 +178,7 @@ def affine_align(img, write=None, nam=None, odir=None, prefix='aa_',
 
 
 def atlas_align(img, rigid=True, write=None, nam=None, odir=None, prefix='aa_',
-                device='cpu', pth_atlas=None):
+                device='cpu', pth_atlas=None, default_atlas='atlas_t1'):
     """Affinely align an image to some atlas space.
 
     Parameters
@@ -204,6 +204,8 @@ def atlas_align(img, rigid=True, write=None, nam=None, odir=None, prefix='aa_',
         then the device of those tensors will be used.
     pth_atlas : str, optional
         Path to atlas image to match to. Uses Brain T1w atlas by default.
+    default_atlas : str, optional
+        Name of an atlas available in the collection of default nitorch atlases.
 
     Returns
     -------
@@ -224,7 +226,7 @@ def atlas_align(img, rigid=True, write=None, nam=None, odir=None, prefix='aa_',
         raise ValueError('Only one input image should be given!')
     # Do preprocessing
     mat_a, mat_fix, dim_fix, mat_cso = _atlas_align(dat, mat, rigid=rigid,
-                                                    pth_atlas=pth_atlas)
+                                                    pth_atlas=pth_atlas, default_atlas=default_atlas)
     # Get original data
     dat = _format_input(img, device=device)[0]
     # Process registration results
