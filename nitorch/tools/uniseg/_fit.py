@@ -308,6 +308,7 @@ class SpatialMixture:
         # default affine
         if aff is None:
             aff = spatial.affine_default(X.shape[1:])
+        aff = aff.to(X.dtype)
 
         # Subsample
         X0, W0, aff0 = X, W, aff
