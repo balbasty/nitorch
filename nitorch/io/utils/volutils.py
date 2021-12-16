@@ -221,6 +221,8 @@ def cutoff(dat, cutoff, dim=None):
         raise ValueError('Maximum to percentiles (min, max) should'
                          ' be provided. Got {}.'.format(len(cutoff)))
     if torch.is_tensor(dat):
+        if not dat.dtype.is_floating_point:
+            dat = dat.float()
         cutoff = [val/100 for val in cutoff]
         pct = utils.quantile(dat, cutoff)
         if len(pct) == 1:
