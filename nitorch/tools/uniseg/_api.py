@@ -237,7 +237,7 @@ def get_spm_prior(**backend):
     f = io.map(fname).movedim(-1, 0)[:-1]  # drop background
     aff = f.affine
     dat = f.fdata(**backend)
-    aff = aff.to(**utils.backend(dat))
+    aff = aff.to(**utils.backend(dat)).type(torch.float64)
     return dat, aff
 
 
