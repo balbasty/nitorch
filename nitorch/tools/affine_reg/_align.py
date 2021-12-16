@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from nitorch.plot import show_slices
 from nitorch.core.datasets import fetch_data
+from nitorch.core.datasets import data as available_atlases
 from nitorch.spatial import (affine_basis, voxel_size)
 from nitorch.core.linalg import expm
 from ._costs import (_costs_hist, _compute_cost)
@@ -156,7 +157,7 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
     return mat_a, mat_fix, dim_fix, q
 
 
-def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
+def _atlas_align(dat, mat, rigid=True, pth_atlas=None, default_atlas='atlas_t1'):
     """Affinely align image to some atlas space.
 
     Parameters
@@ -169,6 +170,8 @@ def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
         Do rigid alignment, else does rigid+isotropic scaling.
     pth_atlas : str, optional
         Path to atlas image to match to. Uses Brain T1w atlas by default.
+    default_atlas : str, optional
+        Name of an atlas available in the collection of default nitorch atlases.
 
     Returns
     ----------
@@ -182,9 +185,14 @@ def _atlas_align(dat, mat, rigid=True, pth_atlas=None):
         CSO transformation.
 
     """
+    if default_atlas not in available_atlases:
+        raise ValueError(
+            "Default atlas {:} not in available atlases: {:}". \
+            format(default_atlas, list(available_atlases.keys()))
+        )
     if pth_atlas is None:
         # Get path to nitorch's T1w intensity atlas
-        pth_atlas = fetch_data('atlas_t1')
+        pth_atlas = fetch_data(default_atlas)
     # Get number of input images
     N = len(dat)
     # Append atlas at the end of input data
