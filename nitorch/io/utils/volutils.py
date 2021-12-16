@@ -275,8 +275,8 @@ def _np_addnoise(dat, amplitude=1, seed=0):
     return dat
 
 
-def _torch_addnoise(dat, amplitude=1, seed=0):
-    with torch.random.fork_rng([dat.device]):
+def _torch_addnoise(dat, amplitude=1, seed=0):    
+    with torch.random.fork_rng(None if dat.device.type == 'cpu' else [dat.device]):
         torch.random.manual_seed(seed)
         noise = torch.rand_like(dat)
     if amplitude != 1:
