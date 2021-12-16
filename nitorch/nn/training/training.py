@@ -816,7 +816,7 @@ class ModelTrainer:
 
 class SynthTrainer(ModelTrainer):
     def __init__(self, model, train_set=None, test_set=None,
-                pretrain_crit=torch.nn.MSELoss(reduce=True), nb_epoch_pretrain=None, type='seg',
+                pretrain_crit=torch.nn.MSELoss(), nb_epoch_pretrain=None, type='seg',
                 tf_weights=False, download_weights=False, model_url=None,
                 **kwargs):
         if not train_set:
