@@ -5,7 +5,7 @@ from . import spatial
 from . import cat
 from . import intensity
 from . import _wip_adversarial
-from . import _wip_adversarial
+from . import _wip_contrastive
 
 from .base import *
 from .spatial import *
