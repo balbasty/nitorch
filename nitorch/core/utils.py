@@ -1227,6 +1227,9 @@ def channel2last(tensor):
 
     . Channel ordering is: (Batch, Channel, X, Y, Z)
     . Last ordering is: (Batch, X, Y, Z, Channel))
+
+    /!\ This function changes the *shape* of the tensor but
+    does not change its *memory layout* (no reallocation).
     """
     tensor = torch.as_tensor(tensor)
     tensor = tensor.permute((0,) + tuple(range(2, tensor.dim())) + (1,))
@@ -1238,10 +1241,61 @@ def last2channel(tensor):
 
     . Channel ordering is: (Batch, Channel, X, Y, Z)
     . Last ordering is: (Batch, X, Y, Z, Channel))
+
+    /!\ This function changes the *shape* of the tensor but
+    does not change its *memory layout* (no reallocation).
     """
     tensor = torch.as_tensor(tensor)
     tensor = tensor.permute((0, - 1) + tuple(range(1, tensor.dim()-1)))
     return tensor
+
+
+def ensure_channel_last(x, dim=1):
+    """Ensure that the channel dimension is the most rapidly changing one
+
+    /!\ This function does not change the *shape* of the tensor but
+    may change its *memory layout*.
+
+    Parameters
+    ----------
+    x : tensor
+        Input tensor
+    dim : int, default=1
+        Index of the channel dimension
+
+    Returns
+    -------
+    x : tensor
+        Tensor where dimension `dim` has stride 1
+
+    """
+    strides = x.strides()
+    if strides[dim] != 1:
+        x = movedim(x, dim, -1)
+        x = x.to(memory_format=torch.contiguous_format)
+        x = movedim(x, -1, dim)
+    return x
+
+
+def ensure_contiguous(x):
+    """Ensure that the tensor is contiguous, with the most rapidly
+    changing dimension on the right.
+
+    /!\ This function does not change the *shape* of the tensor but
+    may change its *memory layout*.
+
+    Parameters
+    ----------
+    x : tensor
+        Input tensor
+
+    Returns
+    -------
+    x : tensor
+        Tensor with a contiguous layout
+
+    """
+    return x.to(memory_format=torch.contiguous_format)
 
 
 def isin(tensor, labels):
