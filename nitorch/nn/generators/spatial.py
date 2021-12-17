@@ -1,5 +1,4 @@
 import math
-from random import randint
 import torch
 from nitorch.core import utils, py, linalg
 from nitorch.spatial import affine_matrix_classic, affine_matmul, affine_lmdiv, as_euclidean, identity_grid, smooth, resize
@@ -10,7 +9,9 @@ from .distribution import _get_dist
 
 __all__ = ['RandomVelocity', 'RandomDiffeo', 'RandomAffineMatrix', 'RandomGrid',
            'RandomDeform', 'RandomPatch', 'RandomFlip', 'RandomSmooth',
-           'RandomLowRes2D', 'RandomLowRes3D', 'RandomRubiks', 'RandomPatchSwap']
+           'RandomLowRes2D', 'RandomLowRes3D', 'RandomRubiks', 'RandomPatchSwap',
+           'RandomInpaint', 'HyperRandomRubiks', 'HyperRandomPatchSwap',
+           'HyperRandomInpaint']
 
 
 defaults = dict(
@@ -622,7 +623,7 @@ class RandomFlip(Module):
         Parameters
         ----------
         prob : float or sequence[float]
-            Probability to flip (per spatial dimension)
+            Probability yo flip (per spatial dimension)
         dim : int or sequence[int], default=all
             Index of spatial dimension to flip
         """
@@ -664,26 +665,12 @@ class RandomFlip(Module):
 
 
 class RandomSmooth(Module):
-    """Sample a random smoothing FWHM and smooth the image accordingly"""
 
     def __init__(self,
                  fwhm='lognormal',
                  fwhm_exp=1,
                  fwhm_scale=3,
                  iso=False):
-        """
-
-        Parameters
-        ----------
-        fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
-            Probability distribution of the full-width at half-maximum
-        fwhm_exp : float or (dim,) vector_like, default=1
-            Expected value of the FWHM
-        fwhm_scale : float or (dim,) vector_like, default=3
-            Standard deviation of the FWHM
-        iso : bool, default=True
-            If False, sample a different FWHM for each dimension.
-        """
         super().__init__()
         self.fwhm = _get_dist(fwhm)
         self.fwhm_exp = fwhm_exp
@@ -694,10 +681,8 @@ class RandomSmooth(Module):
         dim = x.dim() - 2
         backend = dict(dtype=x.dtype, device=x.device)
 
-        fwhm_exp = utils.make_vector(self.fwhm_exp, 1 if self.iso else dim,
-                                     **backend)
-        fwhm_scale = utils.make_vector(self.fwhm_scale, 1 if self.iso else dim,
-                                       **backend)
+        fwhm_exp = utils.make_vector(self.fwhm_exp, 1 if self.iso else dim, **backend)
+        fwhm_scale = utils.make_vector(self.fwhm_scale, 1 if self.iso else dim, **backend)
 
         out = torch.as_tensor(x)
         for b in range(len(x)):
@@ -707,25 +692,11 @@ class RandomSmooth(Module):
 
 
 class RandomLowRes2D(Module):
-    """Synthesize a low-resolution scan along a single dimension
-    (i.e. a "2D acquisition" in MRI)
-    """
 
     def __init__(self,
                  resolution='lognormal',
                  resolution_exp=3,
                  resolution_scale=3):
-        """
-
-        Parameters
-        ----------
-        resolution : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
-            Probability distribution of the slice thickness
-        resolution_exp : float, default=3
-            Expected value of the slice thickness
-        resolution_scale : float, default=3
-            Standard deviation of the slice thickness
-        """
         super().__init__()
         self.resolution = _get_dist(resolution)
         self.resolution_exp = resolution_exp
@@ -772,25 +743,11 @@ class RandomLowRes2D(Module):
 
 
 class RandomLowRes3D(Module):
-    """Synthesize a low-resolution scan along all three dimensions
-    (i.e. a "3D acquisition" in MRI)
-    """
 
     def __init__(self,
                  resolution='lognormal',
                  resolution_exp=3,
                  resolution_scale=3):
-        """
-
-        Parameters
-        ----------
-        resolution : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
-            Probability distribution of the voxel size
-        resolution_exp : float, default=3
-            Expected value of the voxel size
-        resolution_scale : float, default=3
-            Standard deviation of the voxel size
-        """
         super().__init__()
         self.resolution = _get_dist(resolution)
         self.resolution_exp = resolution_exp
@@ -848,24 +805,77 @@ class RandomRubiks(Module):
     """
     def __init__(self,
                  dim,
-                 kernel=32):
+                 kernel=[32,32,32]):
         """
-        Parameters
-        ----------
-        kernel : int or sequence[int], default=32
-            Kernel size for blocks to shuffle.
-            Can be single int (isotropic) or specified in all dimensions.
+        Arguments:
+            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
+                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
         """
         
         super().__init__()
-        self.kernel = py.make_list(kernel, dim)
+        if isinstance(kernel, int):
+            kernel = [kernel] * dim
+        self.kernel = kernel
 
     def forward(self, x):
         shape = x.shape[2:]
         dim = len(shape)
+        pshape = [x+(k-x%k) for x,k in zip(shape,self.kernel)]
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(pshape))
         x = utils.unfold(x, self.kernel, collapse=True)
         x = x[:, :, torch.randperm(x.shape[2])]
-        x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
+        x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=pshape)
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(shape))
+        return x
+
+
+class HyperRandomRubiks(Module):
+    """
+    Shuffle image by cube/squares to re-organise as a self-supervised pretraining task.
+    Also works for anisotropic data with non-regular block shapes.
+
+    References
+    ----------
+    ..[1] "Revisiting Rubik's Cube: Self-supervised Learning with 
+            Volume-wise Transformation for 3D Medical Image Segmentation"
+            Xing Tao, Yuexiang Li, Wenhui Zhou, Kai Ma, Yefeng Zheng
+            MICCAI 2020
+            https://arxiv.org/abs/2007.08826
+
+            
+    """
+    def __init__(self,
+                 kernel='normal',
+                 kernel_exp=32,
+                 kernel_scale=16):
+        """
+        Arguments:
+            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
+                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
+        """
+        
+        super().__init__()
+        self.kernel = _get_dist(kernel)
+        self.kernel_exp = kernel_exp
+        self.kernel_scale = kernel_scale
+
+    def forward(self, x):
+        dim = x.dim() - 2
+        backend = utils.backend(x)
+        kernel_exp = utils.make_vector(self.kernel_exp, dim,
+                                           **backend)
+        kernel_scale = utils.make_vector(self.kernel_scale, dim,
+                                             **backend)
+
+        kernel = [self.kernel(k_e, k_s).sample() for k_e,k_s in zip(kernel_exp, kernel_scale)]
+        shape = x.shape[2:]
+        kernel = [torch.clamp(k, min=4, max=shape[i]).int().item() for i,k in enumerate(kernel)]
+        pshape = [x+(k-x%k) for x,k in zip(shape,kernel)]
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(pshape))
+        x = utils.unfold(x, kernel, collapse=True)
+        x = x[:, :, torch.randperm(x.shape[2])]
+        x = utils.fold(x, dim=dim, stride=kernel, collapsed=True, shape=pshape)
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(shape))
         return x
 
 
@@ -876,38 +886,186 @@ class RandomPatchSwap(Module):
 
     References
     ----------
-    ..[1] "Self-supervised learning for medical image analysis using
-           image context restoration"
-          Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa,
-          Michitaka Fujiwara, Daniel Rueckert
-          Medical Image Analysis 2019
-          https://doi.org/10.1016/j.media.2019.101539
+    ..[1] "Self-supervised learning for medical image analysis using image context restoration"
+            Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa, Michitaka Fujiwara, Daniel Rueckert
+            Medical Image Analysis 2019
+            https://doi.org/10.1016/j.media.2019.101539
 
+            
     """
     def __init__(self,
                  dim,
-                 kernel=32,
+                 kernel=[32,32,32],
                  nb_swap=4):
         """
-        Parameters
-        ----------
-        kernel : int or sequence[int], default=32
-            Kernel size for blocks to shuffle.
-            Can be single int (isotropic) or specified in all dimensions.
-        nb_swap : int. default=4
-            Number of times to swap two random patches.
+        Arguments:
+            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
+                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
+            nb_swap (int): Number of times to swap two random patches. Default = 4
         """
         
         super().__init__()
-        self.kernel = py.make_list(kernel, dim)
+        if isinstance(kernel, int):
+            kernel = [kernel] * dim
+        self.kernel = kernel
         self.nb_swap = nb_swap
 
     def forward(self, x):
         shape = x.shape[2:]
         dim = len(shape)
+        pshape = [x+(k-x%k) for x,k in zip(shape,self.kernel)]
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(pshape))
         x = utils.unfold(x, self.kernel, collapse=True)
         for n in range(self.nb_swap):
             i1, i2 = torch.randint(low=0, high=x.shape[2]-1, size=(2,)).tolist()
-            x[:, :, i1], x[:, :, i2] = x[:, :, i2], x[:, :, i1]
-        x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=shape)
+            x[:,:,i1], x[:,:,i2] = x[:,:,i2], x[:,:,i1]
+        x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=pshape)
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(shape))
+        return x
+
+
+class HyperRandomPatchSwap(Module):
+    """
+    Swap random patches in image as self-supervised pretraining task.
+    Also works for anisotropic data with non-regular block shapes.
+
+    References
+    ----------
+    ..[1] "Self-supervised learning for medical image analysis using image context restoration"
+            Liang Chen, Paul Bentley, Kensaku Mori, Kazunari Misawa, Michitaka Fujiwara, Daniel Rueckert
+            Medical Image Analysis 2019
+            https://doi.org/10.1016/j.media.2019.101539
+
+            
+    """
+    def __init__(self,
+                 kernel='normal',
+                 kernel_exp=32,
+                 kernel_scale=16,
+                 nb_swap=4):
+        """
+        Arguments:
+            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
+                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
+            nb_swap (int): Number of times to swap two random patches. Default = 4
+        """
+        
+        super().__init__()
+        self.kernel = _get_dist(kernel)
+        self.kernel_exp = kernel_exp
+        self.kernel_scale = kernel_scale
+        self.nb_swap = nb_swap
+
+    def forward(self, x):
+        dim = x.dim() - 2
+        backend = utils.backend(x)
+        kernel_exp = utils.make_vector(self.kernel_exp, dim,
+                                           **backend)
+        kernel_scale = utils.make_vector(self.kernel_scale, dim,
+                                             **backend)
+
+        kernel = [self.kernel(k_e, k_s).sample() for k_e,k_s in zip(kernel_exp, kernel_scale)]
+        shape = x.shape[2:]
+        kernel = [torch.clamp(k, min=4, max=shape[i]).int().item() for i,k in enumerate(kernel)]
+        pshape = [x+(k-x%k) for x,k in zip(shape,kernel)]
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(pshape))
+        x = utils.unfold(x, kernel, collapse=True)
+        for n in range(self.nb_swap):
+            i1, i2 = torch.randint(low=0, high=x.shape[2]-1, size=(2,)).tolist()
+            x[:,:,i1], x[:,:,i2] = x[:,:,i2], x[:,:,i1]
+        x = utils.fold(x, dim=dim, stride=kernel, collapsed=True, shape=pshape)
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(shape))
+        return x
+
+
+class RandomInpaint(Module):
+    """
+    Set random patches to zero in image as self-supervised pretraining task.
+    Also works for anisotropic data with non-regular block shapes.
+    TODO: Allow custom mask input to generate random shapes with e.g. spline or topology descriptions.
+
+    References
+    ----------
+    ..[1] 
+
+            
+    """
+    def __init__(self,
+                 dim,
+                 kernel=[32,32,32],
+                 nb_drop=4):
+        """
+        Arguments:
+            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
+                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
+            nb_swap (int): Number of times to swap two random patches. Default = 4
+        """
+        
+        super().__init__()
+        if isinstance(kernel, int):
+            kernel = [kernel] * dim
+        self.kernel = kernel
+        self.nb_drop = nb_drop
+
+    def forward(self, x):
+        shape = x.shape[2:]
+        dim = len(shape)
+        pshape = [x+(k-x%k) for x,k in zip(shape,self.kernel)]
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(pshape))
+        for n in range(self.nb_drop):
+            x = utils.unfold(x, self.kernel, collapse=True)
+            i1 = torch.randint(low=0, high=x.shape[2]-1, size=(1,)).item()
+            x[:,:,i1] = 0
+            x = utils.fold(x, dim=dim, stride=self.kernel, collapsed=True, shape=pshape)
+        x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(shape))
+        return x
+
+
+class HyperRandomInpaint(Module):
+    """
+    Set random patches to zero in image as self-supervised pretraining task.
+    Also works for anisotropic data with non-regular block shapes.
+    TODO: Allow custom mask input to generate random shapes with e.g. spline or topology descriptions.
+
+    References
+    ----------
+    ..[1] 
+
+            
+    """
+    def __init__(self,
+                 kernel='normal',
+                 kernel_exp=32,
+                 kernel_scale=16,
+                 nb_drop=4):
+        """
+        Arguments:
+            kernel (int or sequence[int]): Kernel size for blocks to shuffle. Can be
+                single int (isotropic) or specified in all dimensions. Default = [32,32,32]
+            nb_swap (int): Number of times to swap two random patches. Default = 4
+        """
+        
+        super().__init__()
+        self.kernel = _get_dist(kernel)
+        self.kernel_exp = kernel_exp
+        self.kernel_scale = kernel_scale
+        self.nb_drop = nb_drop
+
+    def forward(self, x):
+        dim = x.dim() - 2
+        backend = utils.backend(x)
+        kernel_exp = utils.make_vector(self.kernel_exp, dim, **backend)
+        kernel_scale = utils.make_vector(self.kernel_scale, dim, **backend)
+
+        shape = x.shape[2:]
+        for n in range(self.nb_drop):
+            kernel = [self.kernel(k_e, k_s).sample() for k_e,k_s in zip(kernel_exp, kernel_scale)]
+            kernel = [torch.clamp(k, min=4, max=shape[i]).int().item() for i,k in enumerate(kernel)]
+            pshape = [x+(k-x%k) for x,k in zip(shape,kernel)]
+            x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(pshape))
+            x = utils.unfold(x, kernel, collapse=True)
+            i1 = torch.randint(low=0, high=x.shape[2]-1, size=(1,)).item()
+            x[:,:,i1] = 0
+            x = utils.fold(x, dim=dim, stride=kernel, collapsed=True, shape=pshape)
+            x = utils.ensure_shape(x, (x.shape[0],x.shape[1],) + tuple(shape))
         return x
