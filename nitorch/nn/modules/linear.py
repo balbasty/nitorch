@@ -5,6 +5,7 @@ from ..base import Module, Sequential, ModuleList
 from ..activations import make_activation_from_name
 from .norm import make_norm_from_name
 from .conv import _get_dropout_class
+from .pool import Pool
 
 
 def _defer_property(prop, module, setter=False):
@@ -97,11 +98,14 @@ class MLP(Module):
     Simple Multi-Layer Perceptron. Useful for projection head in contrastive learning.
     """
     def __init__(self, in_channels, out_channels, hidden_channels=[2048], 
-                 dim=3, linear_dim=1, bias=True, norm=None, 
+                 dim=3, linear_dim=1, bias=True, norm=None, prepool=False,
                  activation=None, dropout=None, final_activation=None, final_norm=None):
         super().__init__()
         if isinstance(hidden_channels, int):
             hidden_channels = [hidden_channels]
+        self.prepool = prepool
+        if prepool:
+            dim=1
         self.first_layer = LinearBlock(in_channels, hidden_channels[0], norm=norm,
                                         activation=activation, dim=dim, linear_dim=linear_dim,
                                         bias=bias, dropout=dropout)
@@ -109,7 +113,7 @@ class MLP(Module):
             self.hidden_layers = ModuleList([
                 LinearBlock(hidden_channels[i], hidden_channels[i+1], norm=norm,
                             activation=activation, dim=dim, linear_dim=linear_dim,
-                            bias=bias, dropout=dropout) for i in len(hidden_channels)
+                            bias=bias, dropout=dropout) for i in range(len(hidden_channels)-1)
             ])
         else:
             self.hidden_layers = None
@@ -118,6 +122,8 @@ class MLP(Module):
                                         bias=bias, dropout=dropout)
 
     def forward(self, x):
+        if self.prepool:
+            x = x.reshape(x.shape[0], x.shape[1], -1).mean(-1, keepdim=True)
         x = self.first_layer(x)
         if self.hidden_layers:
             for layer in self.hidden_layers:
