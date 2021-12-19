@@ -2,7 +2,7 @@ import torch
 from nitorch.core import utils, py, constants, linalg
 
 
-def is_inside(points, vertices, faces):
+def is_inside(points, vertices, faces=None):
     """Test if a point is inside a polygon/surface.
 
     The polygon or surface *must* be closed.
@@ -15,6 +15,7 @@ def is_inside(points, vertices, faces):
         Vertex coordinates
     faces : (nf, dim) tensor[int]
         Faces are encoded by the indices of its vertices.
+        By default, assume that vertices are ordered and define a closed curve
 
     Returns
     -------
@@ -32,6 +33,13 @@ def is_inside(points, vertices, faces):
     #   all lines and each face in a batched fashion. We only want to
     #   send these rays in one direction, so we keep aside points whose
     #   intersection have a positive coordinate along the ray.
+
+    points = torch.as_tensor(points)
+    vertices = torch.as_tensor(vertices)
+    if faces is None:
+        faces = [(i, i+1) for i in range(len(vertices)-1)]
+        faces += [(len(vertices)-1, 0)]
+        faces = utils.as_tensor(faces, dtype=torch.long)
 
     points, vertices = utils.to_max_dtype(points, vertices)
     points, vertices, faces = utils.to_max_device(points, vertices, faces)

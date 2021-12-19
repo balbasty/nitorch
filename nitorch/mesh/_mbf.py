@@ -73,6 +73,12 @@ def read_contours_xml(fname):
                  ] }
             ... ] },
         }
+
+    markers : list[dict]
+        ```
+        [{'type': str <type>, 'section': str <section>,
+          'site': [int <nx>, int <ny>], 'point', (<x>, <y>, <z>) }, ...]
+        ```
     """
     ET = ElementTree
     with open(fname) as file:
@@ -128,7 +134,28 @@ def read_contours_xml(fname):
                         values.append(float(subelem))
                         break
 
-    return sections, contours
+    # parse markers
+    markers = []
+    for marker in root.iterfind('marker'):
+        marker1 = dict()
+        marker1['type'] = marker.get('name')
+        for property in marker.iterfind('property'):
+            if property.get('name') == 'Site':
+                values = []
+                for elem in property.iter():
+                    if elem.tag == 'n':
+                        for subelem in elem.itertext():
+                            values.append(int(subelem))
+                            break
+                marker1['site'] = values
+        for point in marker.iterfind('point'):
+            marker1['point'] = [float(point.get('x')),
+                                float(point.get('y')),
+                                float(point.get('z'))]
+            marker1['section'] = point.get('sid')
+        markers.append(marker1)
+
+    return sections, contours, markers
 
 
 def read_markers(fname, vx=1e-3, split_groups=False):
