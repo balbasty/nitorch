@@ -108,7 +108,7 @@ def cg(A, b, x=None, precond=None, max_iter=None,
         x = x.clone()
 
     # Create functor if A is a tensor
-    if isinstance(A, torch.Tensor):
+    if torch.is_tensor(A):
         A_tensor = A
         def A_function(x):
             return A_tensor.mm(x)
@@ -239,12 +239,12 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
         x = x.clone()
 
     # Create functor if A is a tensor
-    if isinstance(A, torch.Tensor):
+    if torch.is_tensor(A):
         A_tensor = A
         A = lambda x: A_tensor.mm(x)
 
     # Create functor if D is a tensor
-    if isinstance(precond, torch.Tensor):
+    if torch.is_tensor(precond):
         D_tensor = precond
         precond = lambda x: x * D_tensor
 

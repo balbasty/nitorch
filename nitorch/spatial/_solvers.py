@@ -62,7 +62,7 @@ from ._spconv import spconv
 # ======================================================================
 
 
-def prolong(x, shape=None, bound='dct2', order=2, dim=None):
+def prolong(x, shape=None, bound='dct2', order=2, dim=None, grid=None):
     """Prolongation of a tensor to a finer grid.
     
     Uses the pulling operator (2nd order by default).
@@ -83,22 +83,23 @@ def prolong(x, shape=None, bound='dct2', order=2, dim=None):
     """
     if not x.dtype.is_floating_point:
         x = x.to(torch.get_default_dtype())
-    backend = utils.backend(x)
     dim = dim or (x.dim() - 1)
-    in_spatial = x.shape[-dim-1:-1]
-    out_spatial = shape or [2*s for s in in_spatial]
-    shifts = [0.5 * (inshp / outshp - 1)
-              for inshp, outshp in zip(in_spatial, out_spatial)]
-    grid = [torch.arange(0., outshp, **backend).mul_(inshp/outshp).add_(shift)
-            for inshp, outshp, shift in zip(in_spatial, out_spatial, shifts)]
-    grid = torch.stack(torch.meshgrid(*grid), dim=-1)
+    if grid is None:
+        backend = utils.backend(x)
+        in_spatial = x.shape[-dim-1:-1]
+        out_spatial = shape or [2*s for s in in_spatial]
+        shifts = [0.5 * (inshp / outshp - 1)
+                  for inshp, outshp in zip(in_spatial, out_spatial)]
+        grid = [torch.arange(0., outshp, **backend).mul_(inshp/outshp).add_(shift)
+                for inshp, outshp, shift in zip(in_spatial, out_spatial, shifts)]
+        grid = torch.stack(torch.meshgrid(*grid), dim=-1)
     x = utils.fast_movedim(x, -1, -dim-1)
     x = grid_pull(x, grid, bound=bound, interpolation=order, extrapolate=True)
     x = utils.fast_movedim(x, -dim-1, -1)
     return x
-    
-    
-def restrict(x, shape=None, bound='dct2', order=1, dim=None):
+
+
+def restrict(x, shape=None, bound='dct2', order=1, dim=None, grid=None):
     """Restriction of a tensor to a coarser grid.
     
     Uses the pushing operator (1st order by default).
@@ -119,15 +120,16 @@ def restrict(x, shape=None, bound='dct2', order=1, dim=None):
     """
     if not x.dtype.is_floating_point:
         x = x.to(torch.get_default_dtype())
-    backend = utils.backend(x)
     dim = dim or (x.dim() - 1)
     out_spatial = x.shape[-dim-1:-1]
     in_spatial = shape or [math.ceil(s/2) for s in out_spatial]
-    shifts = [0.5 * (inshp / outshp - 1)
-              for inshp, outshp in zip(in_spatial, out_spatial)]
-    grid = [torch.arange(0., outshp, **backend).mul_(inshp/outshp).add_(shift)
-            for inshp, outshp, shift in zip(in_spatial, out_spatial, shifts)]
-    grid = torch.stack(torch.meshgrid(*grid), dim=-1)
+    if grid is None:
+        backend = utils.backend(x)
+        shifts = [0.5 * (inshp / outshp - 1)
+                  for inshp, outshp in zip(in_spatial, out_spatial)]
+        grid = [torch.arange(0., outshp, **backend).mul_(inshp/outshp).add_(shift)
+                for inshp, outshp, shift in zip(in_spatial, out_spatial, shifts)]
+        grid = torch.stack(torch.meshgrid(*grid), dim=-1)
     x = utils.fast_movedim(x, -1, -dim-1)
     x = grid_push(x, grid, in_spatial, bound=bound, interpolation=order,
                   extrapolate=True)
@@ -136,6 +138,20 @@ def restrict(x, shape=None, bound='dct2', order=1, dim=None):
     # normalize by change or resolution
     x = x.mul_(py.prod(in_spatial)/py.prod(out_spatial))
     return x
+
+
+def make_grid(highshape=None, lowshape=None, **backend):
+    if highshape is None:
+        highshape = [2 * s for s in lowshape]
+    elif lowshape is None:
+        lowshape = [math.ceil(s / 2) for s in highshape]
+    shifts = [0.5 * (lowshp / highshp - 1)
+              for lowshp, highshp in zip(lowshape, highshape)]
+    grid = [
+        torch.arange(0., highshp, **backend).mul_(lowshp / highshp).add_(shift)
+        for lowshp, highshp, shift in zip(lowshape, highshape, shifts)]
+    grid = torch.stack(torch.meshgrid(*grid), dim=-1)
+    return grid
 
 
 class _FMG:
@@ -179,11 +195,11 @@ class _FMG:
     def pullopt(self):
         return dict(bound=self.bound, dim=self.dim)
 
-    def prolong(self, x, shape):
-        return prolong(x, shape, bound=self.bound, dim=self.dim)
+    def prolong(self, x, grid, shape):
+        return prolong(x, shape, bound=self.bound, dim=self.dim, grid=grid)
 
-    def restrict(self, x, shape):
-        return restrict(x, shape, bound=self.bound, dim=self.dim)
+    def restrict(self, x, grid, shape):
+        return restrict(x, shape, bound=self.bound, dim=self.dim, grid=grid)
 
     prolong_h = prolong
     prolong_g = prolong
@@ -202,6 +218,8 @@ class _FMG:
         if init_zero:
             self.init = torch.zeros_like(self.gradient)
 
+        backend = utils.backend(self.gradient)
+        pyrt = []                      # transformations for restrict/prolong
         pyrh = [self.hessian]          # hessians / matrix
         pyrg = [self.gradient]         # gradients / target
         pyrx = [self.init]             # solutions
@@ -214,20 +232,21 @@ class _FMG:
             spatial1 = [math.ceil(s/2) for s in pyrn[-1]]
             if all(s == 1 for s in spatial1):
                 break
+            pyrt.append(make_grid(pyrn[-1], spatial1, **backend))
             pyrn.append(spatial1)
             pyrv.append([n0/n for n, n0 in zip(spatial1, pyrn[0])])
-            pyrh.append(self.restrict_h(pyrh[-1], spatial1))
-            pyrg.append(self.restrict_g(pyrg[-1], spatial1))
+            pyrh.append(self.restrict_h(pyrh[-1], pyrt[-1], spatial1))
+            pyrg.append(self.restrict_g(pyrg[-1], pyrt[-1], spatial1))
             if init_zero:
                 pyrx.append(torch.zeros_like(pyrg[-1]))
             else:
-                pyrx.append(self.restrict_g(pyrx[-1], spatial1))
+                pyrx.append(self.restrict_g(pyrx[-1], pyrt[-1], spatial1))
             if isinstance(self.weights, dict):
-                pyrw.append({key: self.restrict_w(val, spatial1)
+                pyrw.append({key: self.restrict_w(val, pyrt[-1], spatial1)
                              if val is not None else None
                              for key, val in pyrw[-1].items()})
             elif self.weights is not None:
-                pyrw.append(self.restrict_w(pyrw[-1], spatial1))
+                pyrw.append(self.restrict_w(pyrw[-1], pyrt[-1], spatial1))
             else:
                 pyrw.append(None)
 
@@ -237,6 +256,7 @@ class _FMG:
         self.pyrw = pyrw
         self.pyrn = pyrn
         self.pyrv = pyrv
+        self.pyrt = pyrt
 
     def trace(self, *a, **k):
         if self.verbose:
@@ -249,6 +269,7 @@ class _FMG:
         d = self.pyrn       # shape
         h = self.forward    # full hessian (H + L)
         ih = self.solvers   # inverse of the hessian:  ih(g, x) <=> x = h\g
+        t = self.pyrt       # restrict/prolong transforms
 
         # Initial solution at coarsest grid
         self.trace(f'(fmg) solve [{self.nb_levels - 1}]')
@@ -260,7 +281,7 @@ class _FMG:
 
         for n_base in reversed(range(self.nb_levels-1)):
             self.trace(f'(fmg) prolong to level [{n_base + 1} -> {n_base}]')
-            x[n_base] = self.prolong_g(x[n_base+1], d[n_base])
+            x[n_base] = self.prolong_g(x[n_base+1], t[n_base], d[n_base])
 
             for n_cycle in range(self.nb_cycles):
                 self.trace(f'(fmg) - V cycle {n_cycle}')
@@ -269,7 +290,7 @@ class _FMG:
                     x[n] = ih[n](g[n], x[n])
                     res = h[n](x[n]).neg_().add_(g[n])
                     self.trace(f'(fmg) -- restrict residuals [{n} -> {n + 1}]')
-                    g[n+1] = self.restrict_g(res, d[n+1])
+                    g[n+1] = self.restrict_g(res, t[n], d[n+1])
                     del res
                     x[n+1].zero_()
 
@@ -278,7 +299,7 @@ class _FMG:
 
                 for n in reversed(range(n_base, self.nb_levels-1)):
                     self.trace(f'(fmg) -- prolong residuals [{n + 1} -> {n}]')
-                    x[n] += self.prolong_g(x[n+1], d[n])
+                    x[n] += self.prolong_g(x[n+1], t[n], d[n])
                     self.trace(f'(fmg) -- solve full [{n}]')
                     x[n] = ih[n](g[n], x[n])
 
@@ -287,7 +308,8 @@ class _FMG:
         return x
 
     def clear_data(self):
-        self.pyrh = self.pyrg = self.pyrx = self.pyrw = self.pyrn = self.pyrv = []
+        self.pyrh = self.pyrg = self.pyrx = self.pyrw = []
+        self.pyrn = self.pyrv = self.pyrt = []
         self.hessian = self.gradient = self.weights = self.init = None
         if hasattr(self, '_optim'):
             self.optim = self._optim
@@ -592,17 +614,19 @@ class _GridFMG(_FMG):
         self.factor = factor
         self.voxel_size = voxel_size
 
-    def prolong_g(self, x, shape):
+    def prolong_g(self, x, grid, shape):
         shape0 = x.shape[-self.dim-1:-1]
         scale = [s/s0 for s0, s in zip(shape0, shape)]
         scale = torch.as_tensor(scale, **utils.backend(x))
-        return prolong(x, shape, bound=self.bound, dim=self.dim).mul_(scale)
+        x = prolong(x, shape, bound=self.bound, dim=self.dim, grid=grid)
+        x = x.mul_(scale)
+        return x
 
-    def prolong_h(self, x, shape):
+    def prolong_h(self, x, grid, shape):
         shape0 = x.shape[-self.dim-1:-1]
         scale = [s/s0 for s0, s in zip(shape0, shape)]
         scale = torch.as_tensor(scale, **utils.backend(x))
-        x = prolong(x, shape, bound=self.bound, dim=self.dim)
+        x = prolong(x, shape, bound=self.bound, dim=self.dim, grid=grid)
         x[..., :self.dim].mul_(scale.square())
         c = 0
         for i in range(self.dim):
@@ -611,17 +635,19 @@ class _GridFMG(_FMG):
                 c = c + 1
         return x
 
-    def restrict_g(self, x, shape):
+    def restrict_g(self, x, grid, shape):
         shape0 = x.shape[-self.dim-1:-1]
         scale = [s0/s for s0, s in zip(shape0, shape)]
         scale = torch.as_tensor(scale, **utils.backend(x))
-        return restrict(x, shape, bound=self.bound, dim=self.dim).mul_(scale)
+        x = restrict(x, shape, bound=self.bound, dim=self.dim, grid=grid)
+        x = x.mul_(scale)
+        return x
 
-    def restrict_h(self, x, shape):
+    def restrict_h(self, x, grid, shape):
         shape0 = x.shape[-self.dim-1:-1]
         scale = [s0/s for s0, s in zip(shape0, shape)]
         scale = torch.as_tensor(scale, **utils.backend(x))
-        x = restrict(x, shape, bound=self.bound, dim=self.dim)
+        x = restrict(x, shape, bound=self.bound, dim=self.dim, grid=grid)
         x[..., :self.dim].mul_(scale.square())
         c = 0
         for i in range(self.dim):

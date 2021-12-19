@@ -566,7 +566,7 @@ def affine_grid(mat, shape, jitter=False):
 
 
 def resize(image, factor=None, shape=None, affine=None, anchor='c',
-           *args, **kwargs):
+           dim=None, *args, **kwargs):
     """Resize an image by a factor or to a specific shape.
 
     Notes
@@ -611,6 +611,10 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
           This case with an integer factor corresponds to subslicing
           the volume (e.g., `vol[::f, ::f, ::f]`).
         * A list of anchors (one per dimension) can also be provided.
+    dim : int, optional
+        Number of spatial dimensions.
+        By default, it is guessed from the length of `shape` (if provided)
+        or from `image.dim() - 2`.
     **kwargs : dict
         Parameters of `grid_pull`.
         Note that here, `prefilter=True` by default, whereas in
@@ -629,8 +633,11 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
 
     # read parameters
     image = torch.as_tensor(image)
-    nb_dim = image.dim() - 2
-    inshape = image.shape[2:]
+    if shape is not None:
+        nb_dim = dim or len(shape)
+    else:
+        nb_dim = dim or (image.dim() - 2)
+    inshape = image.shape[-nb_dim:]
     info = {'dtype': image.dtype, 'device': image.device}
     factor = make_vector(factor or 0., nb_dim).tolist()
     outshape = make_list(shape or [None], nb_dim)
@@ -672,7 +679,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
             shifts.append(shift)
         else:
             raise ValueError('Unknown anchor {}'.format(anch))
-    grid = torch.stack(torch.meshgrid(*lin), dim=-1)[None, ...]
+    grid = torch.stack(torch.meshgrid(*lin), dim=-1)
 
     # resize input image
     kwargs.setdefault('prefilter', True)

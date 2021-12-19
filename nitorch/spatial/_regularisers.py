@@ -1135,7 +1135,7 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     if bending:
         y.add_(_bending(x, weights=wb, **fdopt), alpha=bending)
 
-    pad_spatial = (Ellipsis,) + (None,) * nb_prm
+    pad_spatial = (Ellipsis,) + (None,) * dim
     return y.mul_(factor[pad_spatial])
 
 
