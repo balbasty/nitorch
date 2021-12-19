@@ -426,7 +426,7 @@ def fft(input, n=None, dim=-1, norm='backward', real=None):
 
     # Make complex and move back dimension to its original position
     if _torch_has_complex:
-        output = output.view_as_complex()
+        output = torch.view_as_complex(output)
         output = utils.movedim(output, -1, dim)
     else:
         output = utils.movedim(output, -2, dim if dim >= 0 else dim - 1)
@@ -530,7 +530,7 @@ def fftn(input, s=None, dim=None, norm='backward', real=None):
     newdim = list(range(-ndim-1, -1))
     output = utils.movedim(output, newdim, dim)
     if _torch_has_complex:
-        output = output.view_as_complex()
+        output = torch.view_as_complex(output)
 
     return output
 
@@ -611,7 +611,7 @@ def ifft(input, n=None, dim=-1, norm='backward', real=None):
 
     # Make complex and move back dimension to its original position
     if _torch_has_complex:
-        output = output.view_as_complex()
+        output = torch.view_as_complex(output)
         output = utils.movedim(output, -1, dim)
     else:
         output = utils.movedim(output, -2, dim if dim >= 0 else dim - 1)
@@ -722,7 +722,7 @@ def ifftn(input, s=None, dim=-1, norm='backward', real=None):
     newdim = list(range(-ndim-1, -1))
     output = utils.movedim(output, newdim, dim)
     if _torch_has_complex:
-        output = output.view_as_complex()
+        output = torch.view_as_complex(output)
 
     return output
 
@@ -787,7 +787,7 @@ def rfft(input, n=None, dim=-1, norm='backward'):
 
     # Make complex and move back dimension to its original position
     if _torch_has_complex:
-        output = torch.view_as_complex()
+        output = torch.view_as_complex(output)
         output = utils.movedim(output, -1, dim)
     else:
         output = utils.movedim(output, -2, dim if dim > 0 else dim - 1)
