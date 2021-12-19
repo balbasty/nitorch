@@ -1306,10 +1306,52 @@ def besseli_small(nu: float, z, M: int = 64, code: int = 0):
         besseli(nu,z)/exp(z) if code==1 ('norm')
         log(besseli(nu,z))   if code==2 ('log')
     """
+    # The previous implementation of this function (`besseli_small_old`)
+    # used `z` as a stabilizing pivot in the log-sum-exp. However,
+    # this lead to underflows (`exp` returned zero). Instead, this new
+    # implementation uses the first term in the sum (m=0) as pivot.
+    # We therefore start with the second term and add 1 (= exp(0)) at the end.
+
+    # NOTE: lgamma(3) = 0.693147180559945
+    lgamma_nu_1 = pymath.lgamma(nu + 1)
+    M = max(M, 2)
+    x = torch.log(0.5*z)
+    f = torch.exp(x * 2 - (0.693147180559945 + pymath.lgamma(nu + 2) - lgamma_nu_1))
+    for m in range(2, M):
+        f = f + torch.exp(x * (2*m) - (pymath.lgamma(m + 1) + pymath.lgamma(m + 1 + nu) - lgamma_nu_1))
+    f = f + 1
+
+    if code == 2:
+        return f.log() + x * nu - lgamma_nu_1
+    elif code == 1:
+        return f * (x * nu - lgamma_nu_1 - z).exp()
+    else:
+        return f * (x * nu - lgamma_nu_1).exp()
+
+
+# DEPRECATED
+@torch.jit.script
+def besseli_small_old(nu: float, z, M: int = 64, code: int = 0):
+    """Modified Bessel function of the first kind - series computation
+    Parameters
+    ----------
+    nu : float
+    z  : tensor
+    M  : int, series length (bigger is more accurate, but slower)
+    code : {0, 1, 2}
+    Returns
+    -------
+    b : tensor
+        besseli(nu,z)        if code==0
+        besseli(nu,z)/exp(z) if code==1 ('norm')
+        log(besseli(nu,z))   if code==2 ('log')
+    """
+    M = max(M, 2)
     x = torch.log(0.5*z)
     f = torch.exp(x * nu - pymath.lgamma(nu + 1.0) - z)
     for m in range(1, M):
         f = f + torch.exp(x * (2.0*m + nu) - (pymath.lgamma(m+1.0) + pymath.lgamma(m+1.0 + nu)) - z)
+
     if code == 2:
         return f.log() + z
     elif code == 1:
@@ -1342,9 +1384,9 @@ def besseli_large(nu: float, z, code: int = 0):
 
     # -- branch 1 ---
     if msk.any():
-        tmp = torch.sqrt(1.0+1.0/f[msk])
+        tmp = torch.sqrt(1.0+f[msk].reciprocal())
         t[msk] = z[msk]*tmp/nu
-        f[msk] = nu*(t[msk] + torch.log(1.0/(nu/z[msk]+tmp)))
+        f[msk] = nu*(t[msk] + torch.log((nu/z[msk]+tmp).reciprocal()))
     # -- branch 2 ---
     msk = msk.bitwise_not_()
     if msk.any():
