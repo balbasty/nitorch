@@ -101,7 +101,7 @@ class HyperNet(Module):
         return self
     
     def eval(self):
-        self.hyper.train()
+        self.hyper.eval()
         return self
             
     @property
@@ -157,17 +157,17 @@ class HyperNet(Module):
         for node in nodes:
             if not isinstance(node, str):
                 continue
-            prefix = prefix.split('.')
+            prefix_ = prefix.split('.')
             node = node.split('.')
             if '**' in node:
                 node = (node[:node.index('**')]
-                        + ['*'] * max(0, len(prefix)-len(nodes))
+                        + ['*'] * max(0, len(prefix_)-len(nodes))
                         + node[node.index('**')+1:])
             if '**' in node:
                 raise ValueError('There can be only one ** ellipsis in pattern')
-            if len(node) != len(prefix):
+            if len(node) != len(prefix_):
                 continue
-            if all(_isequal(x, y) for x, y in zip(prefix, node)):
+            if all(_isequal(x, y) for x, y in zip(prefix_, node)):
                 return True
         return False
 

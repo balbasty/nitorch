@@ -14,7 +14,7 @@ class InfoNCE(Loss):
           https://arxiv.org/abs/2002.05709
 
     """
-    def __init__(self, temp=1, crit=None, nb_views=4):
+    def __init__(self, temp=1, crit=None, nb_views=2):
         super().__init__()
         self.temp = temp
         self.nb_views = nb_views
@@ -58,24 +58,30 @@ class BarlowTwins(Loss):
           https://arxiv.org/abs/2103.03230
     """
     def __init__(self, lambda_=1, temp=1):
+        super().__init__()
         self.lambda_ = lambda_
         self.temp = temp
 
+    def norm(self, x):
+        x = (x - x.mean(0)) / x.std(0)
+        return x
+
     def forward(self, x1, x2):
-        B = x1.shape[0]
-        dim = x1.shape[1]
+        N = x1.shape[0]
+        D = x1.shape[1]
+        x1, x2 = x1.reshape(N, D), x2.reshape(N, D)
         device = x1.device
 
-        x1 = torch.nn.functional.normalize(x1)
-        x2 = torch.nn.functional.normalize(x2)
+        x1 = self.norm(x1)
+        x2 = self.norm(x2)
 
         correlation = x1.T @ x2
-        correlation /= B
+        correlation /= N
 
-        correlation -= torch.eye(dim, device=device)
+        correlation -= torch.eye(D, device=device)
         correlation = correlation ** 2
 
-        correlation[torch.eye(dim)==0] *= self.lambda_
+        correlation[torch.eye(D)==0] *= self.lambda_
         correlation /= self.temp
 
         return correlation
