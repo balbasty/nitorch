@@ -105,6 +105,7 @@ def uniseg(x, w=None, affine=None, device=None,
     prior, affine_prior = get_prior(prior, affine_prior, **backend)
     dim = prior.dim() - 1
     x, w, affine = get_data(x, w, affine, dim, **backend)
+    affine_prior = affine_prior.to(x.dtype)
 
     if not nb_classes:
         if len(prior) == 5:
