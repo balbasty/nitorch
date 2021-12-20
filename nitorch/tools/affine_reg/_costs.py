@@ -79,7 +79,7 @@ def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
         # Get affine matrix
         mat_a = expm(q[torch.arange(i*Nq,i*Nq + Nq)], B)
         # Compose matrices
-        M = mat_a.mm(mat_fix).solve(mat[m])[0].type(torch.float32)  # mat_mov\mat_a*mat_fix
+        M = torch.linalg.solve(mat[m], mat_a.mm(mat_fix)).type(torch.float32)  # mat_mov\mat_a*mat_fix
         # Transform fixed grid
         grid = affine_matvec(M, grid0)
         # Resample to fixed grid
@@ -217,7 +217,7 @@ def _hist_2d(img0, img1, mx_int, fwhm):
                  device=img0.device, dtype=torch.float32, sep=True)
     # Pad
     p = (smo[0].shape[2], smo[1].shape[3])
-    p = (torch.tensor(p) - 1) // 2
+    p = torch.div(torch.tensor(p) - 1, 2, rounding_mode='floor')
     p = tuple(p.int().tolist())
     H = pad(H, p, side='both')
     # Smooth

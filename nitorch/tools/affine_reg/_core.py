@@ -68,7 +68,7 @@ def _rescale(dat, mn_out=0, mx_out=511):
     mn = torch.tensor([dat.min(), 1], dtype=dtype, device=device)[None, ...]
     mx = torch.tensor([dat.max(), 1], dtype=dtype, device=device)[None, ...]
     sf = torch.cat((mn, mx), dim=0)
-    sf = torch.tensor([mn_out, mx_out], dtype=dtype, device=device)[..., None].solve(sf)[0].squeeze()
+    sf = torch.linalg.solve(sf, torch.tensor([mn_out, mx_out], dtype=dtype, device=device)[..., None]).squeeze()
     # Rescale
     dat = dat*sf[0] + sf[1]
     # Clamp
@@ -319,7 +319,7 @@ def _smooth_for_reg(dat, mat, samp):
         fwhm=fwhm, device=dat.device, dtype=dat.dtype, sep=True)
     # Padding amount for subsequent convolution
     size_pad = (smo[0].shape[2], smo[1].shape[3], smo[2].shape[4])
-    size_pad = (torch.tensor(size_pad) - 1) // 2
+    size_pad = torch.div(torch.tensor(size_pad) - 1, 2, rounding_mode='floor')
     size_pad = tuple(size_pad.int().tolist())
     # Smooth deformation with Gaussian kernel (by separable convolution)
     dat = pad(dat, size_pad, side='both')

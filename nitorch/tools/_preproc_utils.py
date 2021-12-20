@@ -50,13 +50,13 @@ def _process_reg(dat, mat, mat_a, mat_fix, dim_fix, write):
                      torch.eye(4, device=mat_a[n,...].device) == 0):
             rdat[n, ...] = dat[n]
         else:
-            mat_r = mat_a[n, ...].mm(mat_fix).solve(mat[n])[0]
+            mat_r = torch.linalg.solve(mat[n], mat_a[n, ...].mm(mat_fix))
             rdat[n, ...] = _reslice_dat_3d(dat[n], mat_r, dim_fix)
         if write == 'reslice':
             dat[n] = rdat[n, ...]
             mat[n] = mat_fix
         elif write == 'affine':
-            mat[n] = mat[n].solve(mat_a[n, ...])[0]
+            mat[n] = torch.linalg.solve(mat_a[n, ...], mat[n])
     # Write output to disk?
     if write in ['reslice', 'affine']:
         write = True
@@ -108,7 +108,7 @@ def _msk_fov(dat, mat, mat0, dim0):
 
     """
     dim = dat.shape
-    M = mat.solve(mat0)[0]  # mat0\mat1
+    M = torch.linalg.solve(mat0, mat)  # mat0\mat1
     grid = affine_grid(M, dim)
     msk = (grid[..., 0] >= 1) & (grid[..., 0] <= dim0[0]) & \
           (grid[..., 1] >= 1) & (grid[..., 1] <= dim0[1]) & \
@@ -286,7 +286,9 @@ def _mean_space(Mat, Dim, vx=None):
                     minR = R2
         rdim = torch.abs(minR.mm(Dim[n, ...][..., None]-1))
         R2 = minR.inverse()
-        R22 = R2.mm((torch.sum(R2, dim=0, keepdim=True).t()//2 - 1)*rdim)
+        R22 = R2.mm(
+            (torch.div(torch.sum(R2, dim=0, keepdim=True).t(), 2, rounding_mode='floor') - 1)*rdim            
+        )
         minR = torch.cat((R2, R22), dim=1)
         minR = torch.cat((minR, torch.tensor([0, 0, 0, 1], device=device, dtype=dtype)[None, ...]), dim=0)
         Mat[n, ...] = Mat[n, ...].mm(minR)
@@ -322,7 +324,7 @@ def _mean_space(Mat, Dim, vx=None):
             d = M.flatten() - mat.flatten()
             gr = dM.t().mm(d[..., None])
             Hes = dM.t().mm(dM)
-            p = p - gr.solve(Hes)[0][:, 0]
+            p = p - torch.linalg.solve(Hes, gr)[:, 0]
             if torch.sum(gr**2) < 1e-8:
                 break
         mat = M.clone()
@@ -344,7 +346,7 @@ def _mean_space(Mat, Dim, vx=None):
                                 [1, 1, 1, 1, dm[2], dm[2], dm[2], dm[2]],
                                 [1, 1, 1, 1, 1, 1, 1, 1]],
                                device=device, dtype=dtype)
-        M = Mat0[n, ...].solve(mat)[0]
+        M = torch.linalg.solve(mat, Mat0[n, ...])
         vx1 = M[:-1,:].mm(corners)
         mx_all[..., n] = torch.max(vx1, dim=1)[0]
         mn_all[..., n] = torch.min(vx1, dim=1)[0]
@@ -382,7 +384,7 @@ def _imatrix(M):
     one = torch.tensor(1.0, device=device, dtype=dtype)
     # Translations and Zooms
     R = M[:-1, :-1]
-    C = torch.cholesky(R.t().mm(R))
+    C = torch.linalg.cholesky(R.t().mm(R))
     C = C.t()
     d = torch.diag(C)
     P = torch.tensor([M[0, 3], M[1, 3], M[2, 3], 0, 0, 0, d[0], d[1], d[2], 0, 0, 0],
@@ -390,7 +392,7 @@ def _imatrix(M):
     if R.det() < 0:  # Fix for -ve determinants
         P[6] = -P[6]
     # Shears
-    C = C.solve(torch.diag(torch.diag(C)))[0]
+    C = torch.linalg.solve(torch.diag(torch.diag(C)), C)
     P[9] = C[0, 1]
     P[10] = C[0, 2]
     P[11] = C[1, 2]
