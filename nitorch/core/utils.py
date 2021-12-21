@@ -12,6 +12,7 @@ import numbers
 import os
 import random
 from typing import Optional, List
+import contextlib
 Tensor = torch.Tensor
 
 
@@ -65,24 +66,6 @@ def torch_version(mode, version):
     current_version = (int(major), int(minor), int(patch))
     version = py.make_list(version)
     return _compare_versions(current_version, mode, version)
-
-
-def reproducible(seed=1234):
-    """Ensure reproducible results.
-
-    Parameters
-    ----------
-    seed : int, default=1234
-        Seed for random number generators.
-
-    """	
-    random.seed(seed)
-    if np:
-        np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    torch.backends.cudnn.deterministic = True
 
 
 def as_tensor(input, dtype=None, device=None):
@@ -2133,6 +2116,77 @@ class benchmark:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         torch.backends.cudnn.benchmark = self.prev_value
+
+
+@contextlib.contextmanager
+def reproducible(seed=1234, enabled=True, devices=None):
+    """Context manager for a reproducible environment
+
+    Parameters
+    ----------
+    seed : int, default=1234
+        Initial seed to use in all forked RNGs
+    enabled : bool, default=True
+        Set to False to disable the context manager
+    devices : [list of] int or str or torch.device, optional
+        CUDA devices. All devices are forked by default.
+
+    Example
+    -------
+    ```python
+    from nitorch.core.utils import reproducible
+    with reproducible():
+        train_my_model(model)
+    ```
+
+    """
+    if not enabled:
+        yield
+        return
+
+    # save initial states
+    py_state = random.getstate()
+    py_hash_seed = os.environ.get('PYTHONHASHSEED', None)
+    cudnn = torch.backends.cudnn.deterministic
+    cpu_state = torch.random.get_rng_state()
+    devices = py.make_list(devices or [])
+    devices = [torch.device(device) for device in devices
+               if torch.device(device).type == 'cuda']
+    cuda_state = [torch.cuda.get_rng_state(device) for device in devices]
+    np_state = np.random.get_state() if np else None
+
+    try:  # fork states
+        random.seed(seed)
+        os.environ['PYTHONHASHSEED'] = str(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.random.manual_seed(seed)
+        if np:
+            np.random.seed(seed)
+        yield
+
+    finally:   # reset initial states
+        random.setstate(py_state)
+        if 'PYTHONHASHSEED' in os.environ:
+            if py_hash_seed is not None:
+                os.environ['PYTHONHASHSEED'] = py_hash_seed
+            else:
+                del os.environ['PYTHONHASHSEED']
+        torch.backends.cudnn.deterministic = cudnn
+        torch.random.set_rng_state(cpu_state)
+        for device, state in zip(devices, cuda_state):
+            torch.cuda.set_rng_state(state, device)
+        if np:
+            np.random.set_state(np_state)
+
+
+def manual_seed_all(seed=1234):
+    """Set all possible random seeds to a fixed value"""
+    if np:
+        np.random.seed(seed)
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.random.manual_seed(seed)
 
 
 if torch_version('>=', (1, 10)):
