@@ -1,5 +1,4 @@
 from nitorch.core import utils, math, linalg
-from nitorch.spatial import spconv
 import itertools
 import torch
 
@@ -55,6 +54,8 @@ def mrf_suffstat(Z, W=None, vx=1):
     ivx = vx.reciprocal_().tolist()
 
     S = torch.zeros_like(Z)
+    if W is not None:
+        W = W.to(Z.dtype)
 
     # iterate across first order neighbors
     for d in range(dim):
@@ -195,14 +196,20 @@ def mrf_covariance(Z, W=None, vx=1):
         V = V.transpose(d, 0)
     if W is not None:
         V *= W
-        V *= W
-        V *= W
+        if W.dtype is not torch.bool:
+            V *= W
+            V *= W
     V *= 2  # overcounting
 
     # Compute (weighted) covariance
     V = reduce(Z, Z*V).neg_()
     Vdiag = V.diagonal(0, -1, -2)
-    Vdiag += Z.reshape([len(Z), -1]).matmul(W.reshape([-1, 1]))[:, 0]
+    if W is None:
+        Vdiag += Z.reshape([len(Z), -1]).sum(-1)
+    elif W.dtype is torch.bool:
+        Vdiag += Z[:, W].sum(-1)
+    else:
+        Vdiag += Z.reshape([len(Z), -1]).matmul(W.reshape([-1, 1]))[:, 0]
     return V
 
 
@@ -333,3 +340,36 @@ def mrf(Z, logP, L=None, W=None, vx=1, max_iter=5, tol=1e-4, inplace=False):
     Z = utils.fast_movedim(Z, -1, 0)
     lZ = utils.fast_movedim(lZ, -1, 0)
     return Z, lZ
+
+
+# TODO
+# def mrf_sample(logP, shape=None, M=None, vx=1, nb_iter=100):
+#     """Sample from a MRF using Gibbs conclique sampling
+#
+#     Parameters
+#     ----------
+#     logP: (K, K) tensor
+#         MRF log-probabilities (do not need to be normalized)
+#     shape : sequence[int], optional if M is provided
+#         Shape of the lattice
+#     M : (K, *spatial) tensor, optional
+#         Voxel-wise log-probability (do not need to be normalized)
+#     vx : [list of] float, default=1
+#         Voxel size
+#     nb_iter : int, default=100
+#         Number of Gibbs iterations
+#
+#     Returns
+#     -------
+#     Z : (*shape) tensor[long]
+#         Sample
+#
+#     References
+#     ----------
+#     ..[1] "Simulating Markov random fields with a conclique-based Gibbs sampler"
+#           Andee Kaplan, Mark S. Kaiser, Soumendra N. Lahiri, Daniel J. Nordman
+#           Journal of Computational and Graphical Statistics (2020)
+#           https://arxiv.org/abs/1808.04739
+#
+#     """
+#     raise NotImplementedError

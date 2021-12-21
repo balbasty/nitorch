@@ -156,6 +156,8 @@ class SpatialMixture:
         self.do_warp = do_warp
         self.do_mixing = do_mixing
         self.do_mrf = do_mrf
+        if self.do_mrf is True:
+            self.do_mrf = 'learn'
 
         if prior is None:
             self.do_warp = False
@@ -532,7 +534,7 @@ class SpatialMixture:
                     # ===========================
                     # M-step - Mixing proportions
                     # ===========================
-                    if self.do_mixing:
+                    if self.do_mixing and n_iter_intensity > 0:
                         self._update_mixing(ss0, W, S)
                         S, lse = self._make_prior(M, L, W)
 
