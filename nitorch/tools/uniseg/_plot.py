@@ -258,13 +258,14 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
                 M1 = prob_to_rgb(M1).cpu()
                 M2 = prob_to_rgb(M2).cpu()
                 M3 = prob_to_rgb(M3).cpu()
-                V = utils.movedim(V, -1, 0)
-                V1 = disp_to_rgb(V[:, :, :, V.shape[-1] // 2],
-                                 amplitude='saturation').cpu()
-                V2 = disp_to_rgb(V[:, :, V.shape[-2] // 2, :],
-                                 amplitude='saturation').cpu()
-                V3 = disp_to_rgb(V[:, V.shape[-3] // 2, :, :],
-                                 amplitude='saturation').cpu()
+                if V is not None:
+                    V = utils.movedim(V, -1, 0)
+                    V1 = disp_to_rgb(V[:, :, :, V.shape[-1] // 2],
+                                     amplitude='saturation').cpu()
+                    V2 = disp_to_rgb(V[:, :, V.shape[-2] // 2, :],
+                                     amplitude='saturation').cpu()
+                    V3 = disp_to_rgb(V[:, V.shape[-3] // 2, :, :],
+                                     amplitude='saturation').cpu()
                 if first:
                     plt.subplot(4, ncol, len(X) + 2 + offset)
                     plt.imshow(M1)
@@ -277,23 +278,25 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
                     plt.imshow(M3)
                     plt.axis('off')
 
-                    plt.subplot(4, ncol, len(X) + 3 + offset)
-                    plt.imshow(V1)
-                    plt.axis('off')
-                    plt.title('Disp.')
-                    plt.subplot(4, ncol, ncol + len(X) + 3 + offset)
-                    plt.imshow(V2)
-                    plt.axis('off')
-                    plt.subplot(4, ncol, 2 * ncol + len(X) + 3 + offset)
-                    plt.imshow(V3)
-                    plt.axis('off')
+                    if V is not None:
+                        plt.subplot(4, ncol, len(X) + 3 + offset)
+                        plt.imshow(V1)
+                        plt.axis('off')
+                        plt.title('Disp.')
+                        plt.subplot(4, ncol, ncol + len(X) + 3 + offset)
+                        plt.imshow(V2)
+                        plt.axis('off')
+                        plt.subplot(4, ncol, 2 * ncol + len(X) + 3 + offset)
+                        plt.imshow(V3)
+                        plt.axis('off')
                 else:
                     fig.axes[i].images[0].set_data(M1)
                     fig.axes[i + 1].images[0].set_data(M2)
                     fig.axes[i + 2].images[0].set_data(M3)
-                    fig.axes[i + 3].images[0].set_data(V1)
-                    fig.axes[i + 4].images[0].set_data(V2)
-                    fig.axes[i + 5].images[0].set_data(V3)
+                    if V is not None:
+                        fig.axes[i + 3].images[0].set_data(V1)
+                        fig.axes[i + 4].images[0].set_data(V2)
+                        fig.axes[i + 5].images[0].set_data(V3)
                     i += 6
             else:
                 i += 6

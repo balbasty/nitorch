@@ -348,7 +348,7 @@ class SpatialMixture:
             print(v)
 
         if self.plot > 0:
-            M = self.warp_tpm(aff=aff0, mode='logit')
+            M = self.warp_tpm(aff=aff0, mode='logit', shape=X0.shape[1:])
             self._plot_lb(all_lb, X0, Z, M, mode='final')
 
         return Z, all_lb[-1]
@@ -379,7 +379,7 @@ class SpatialMixture:
             XB = self.beta.exp().mul_(XB)
         M = None
         if self.log_prior is not None:
-            M = self.warp_tpm(aff=aff, mode='logit')
+            M = self.warp_tpm(aff=aff, mode='logit', shape=X.shape[1:])
         vx = spatial.voxel_size(aff)
         Z, _, _ = self.e_step(XB, W, M, vx=vx, combine=True)
         return Z
@@ -425,19 +425,19 @@ class SpatialMixture:
                 L[k] += M[k0-1]
         if self.do_mrf:
             if self.nb_clusters != self.nb_classes:
-                Z = math.softmax(L + self._tinyish, dim=0)
+                Z = math.softmax(L, dim=0)
                 Z = self._z_combine(Z)
                 Lcomb = Z.log()
             else:
                 Lcomb = L
-                Z = math.softmax(Lcomb + self._tinyish, dim=0)
+                Z = math.softmax(Lcomb, dim=0)
             Z, LMRF = mrf(Z, self.psi, Lcomb, W, vx=vx, inplace=True)
             # Z0 now contains \sum_j log(pi)[j] @ Z[j]
             for k, k0 in enumerate(self.lkp):
                 L[k] += LMRF[k0]
         # --- softmax ---
-        Z, lb = math.softmax_lse(L + self._tinyish, lse=True, weights=W, dim=0)
-        return Z, LMRF, lb
+        Z, lb = math.softmax_lse(L, lse=True, weights=W, dim=0)
+        return Z, LMRF, lb.cpu()
 
     def _z_combine(self, Z0):
         # Dumb way to compute the "classes" responsibilities.
@@ -471,15 +471,16 @@ class SpatialMixture:
 
         """
         vx = spatial.voxel_size(aff) if aff is not None else None
-        nW = W.sum() if W is not None else X[1:].numel()
+        nW = W.sum().cpu() if W is not None else X[1:].numel()
 
         # --- prepare warped template and its gradients ----------------
         M = G = None
         if self.log_prior is not None:
             if self.do_warp:
-                M, G = self.warp_tpm(aff=aff, grad=True, mode='logit')
+                M, G = self.warp_tpm(aff=aff, mode='logit', shape=X.shape[1:],
+                                     grad=True)
             else:
-                M = self.warp_tpm(aff=aff, mode='logit')
+                M = self.warp_tpm(aff=aff, mode='logit', shape=X.shape[1:])
 
         # --- bias corrected volume ------------------------------------
         XB = X
@@ -593,7 +594,8 @@ class SpatialMixture:
                 # M-step - Warp
                 # =============
                 self._update_warp(Z, S, G, L, W, aff=aff)
-                M, G = self.warp_tpm(aff=aff, grad=True, mode='logit')
+                M, G = self.warp_tpm(aff=aff, mode='logit', shape=X.shape[1:],
+                                     grad=True)
                 plot_mode = 'warp'
 
                 if n_iter_warp > 1 and lb - olb < self.tol * nW:
@@ -629,7 +631,7 @@ class SpatialMixture:
         else:
             L = self.gamma.clone()
         L, lse = _softmax_lse(L, 0, W)
-        return L, lse
+        return L, lse.cpu()
 
     def _suffstats(self, X, Z, W=None):
         """ Compute sufficient statistics.
@@ -644,7 +646,7 @@ class SpatialMixture:
         Returns
         -------
         ss0 : (K,) tensor
-            0th moment (B, K).
+            0th moment
         ss1 : (K, C) tensor
             1st moment
         ss2 : (K, C, C) tensor
@@ -851,7 +853,10 @@ class SpatialMixture:
         if M.dim() == 1:
             M = N*M
         elif W is not None:
-            M = M.reshape([K-1, -1]).matmul(W.reshape([-1, 1]))[:, 0]
+            if W.dtype is torch.bool:
+                M = M[:, W].sum(-1)
+            else:
+                M = M.reshape([K-1, -1]).matmul(W.reshape([-1, 1]))[:, 0]
         else:
             M = M.reshape([K-1, -1]).sum(-1)
 
@@ -865,7 +870,7 @@ class SpatialMixture:
         self.gamma -= delta_gamma
 
         if self.lam_mixing:
-            self._lb_mixing = -0.5 * self.lam_mixing * self.gamma.square().sum()
+            self._lb_mixing = -0.5 * self.lam_mixing * self.gamma.square().sum().cpu()
 
     def _update_mrf(self, Z, W=None, M=None, vx=1):
         """
@@ -911,7 +916,7 @@ class SpatialMixture:
         self.psi -= delta_psi
 
         if self.lam_mrf:
-            self._lb_mrf = -0.5 * self.lam_mrf * self.psi.square().sum()
+            self._lb_mrf = -0.5 * self.lam_mrf * self.psi.square().sum().cpu()
 
     # TODO: it seems that I could get rid of the line search
     def _update_warp(self, Z, M, G, L, W=None, aff=None):
@@ -1013,7 +1018,7 @@ class SpatialMixture:
 
         lam = {'factor': vx.prod(), 'voxel_size': vx, **self.lam_warp}
         La = spatial.regulariser_grid(self.alpha, **lam)
-        aLa = self.alpha.flatten().dot(La.flatten())
+        aLa = self.alpha.flatten().dot(La.flatten()).cpu()
         g += La
 
         delta = spatial.solve_grid_fmg(H, g, **lam)
@@ -1023,9 +1028,9 @@ class SpatialMixture:
             return
 
         # line search
-        dLd = spatial.regulariser_grid(delta, **lam)
-        dLd = delta.flatten().dot(dLd.flatten())
-        dLa = delta.flatten().dot(La.flatten())
+        dLd = spatial.regulariser_grid(delta, **lam).cpu()
+        dLd = delta.flatten().dot(dLd.flatten()).cpu()
+        dLa = delta.flatten().dot(La.flatten()).cpu()
         armijo, prev_armijo = 1, 0
         success = False
         for n_ls in range(self.max_ls_warp):
@@ -1038,6 +1043,7 @@ class SpatialMixture:
                 ll = (W * logM0).sum() + logM.mul_(Z).mul_(W).sum()
             else:
                 ll = logM0.sum() + logM.mul_(Z).sum()
+            ll = ll.cpu()
             if ll + armijo * (dLa - 0.5 * armijo * dLd) > ll0:
                 success = True
                 print('success', n_ls)
@@ -1056,7 +1062,7 @@ class SpatialMixture:
     def _update_bias(self, *a, **k):
         pass
 
-    def warp_tpm(self, aff=None, grad=False, mode='softmax'):
+    def warp_tpm(self, aff=None, grad=False, mode='softmax', shape=None):
         """
 
         Parameters
@@ -1076,11 +1082,14 @@ class SpatialMixture:
 
         if self.log_prior is None:
             return None
-        dim = self.alpha.shape[-1]
-        grid = spatial.add_identity_grid(self.alpha)
+        dim = self.log_prior.dim() - 1
+        if self.alpha is not None:
+            grid = spatial.add_identity_grid(self.alpha)
+        else:
+            grid = spatial.identity_grid(shape, **utils.backend(self.log_prior))
         if aff is not None:
-            aff = torch.matmul(self.affine_prior.inverse(), aff)
-            grid = spatial.affine_matvec(aff, grid)
+            aff = torch.matmul(self.affine_prior.inverse().to(aff), aff)
+            grid = spatial.affine_matvec(aff.to(grid), grid)
         mask = self.log_prior.new_ones(self.log_prior.shape[1:])
         if mode == 'mask8':
             # remove bottom 5 mm
@@ -1114,13 +1123,14 @@ class UniSeg(SpatialMixture):
     Unified Segmentation model, based on multivariate Gaussian Mixture Model (GMM).
     """
 
-    def __init__(self, *args, wishart=True, **kwargs):
+    def __init__(self, *args, wishart=True, lam_wishart=0.01, **kwargs):
         # wishart : bool or 'preproc8', default=True
         #   If True, use a Wishart prior derived from global suffstats.
         #   If 'preproc8', the bottom of the template FOV is discarded
         #   when estimating these suffstats.
         super().__init__(*args, **kwargs)
         self.wishart = wishart
+        self.lam_wishart = lam_wishart
 
     @property
     def mean(self):
@@ -1186,7 +1196,7 @@ class UniSeg(SpatialMixture):
         # - Otherwise, we just use the weight map
         mode = 'mask8' if self.wishart == 'preproc8' else 'mask'
         if self.log_prior is not None:
-            M = self.warp_tpm(mode=mode, aff=aff)
+            M = self.warp_tpm(mode=mode, aff=aff, shape=X.shape[1:])
             if W is not None:
                 M *= W
         elif W is not None:
@@ -1199,14 +1209,16 @@ class UniSeg(SpatialMixture):
         # 2) Estimate the (diagonal) variance of the data, assuming
         #    a single Gaussian.
         ss0, ss1, ss2 = self._suffstats(X, W[None])
-        ss0 = ss0[0]
-        ss1 = ss1[0]
-        ss2 = ss2[0].diag()
+        ss0 = ss0[0].cpu()
+        ss1 = ss1[0].cpu()
+        ss2 = ss2[0].cpu().diag()
         scale = ss2 / ss0 - (ss1/ss0).square()
 
         # 3) Fiddle with degrees of freedom
-        scale /= max(self.nb_clusters_per_class) ** 2
-        df = len(X)
+        scale /= sum(self.nb_clusters_per_class) ** 2
+        df = len(X) * ss0 * self.lam_wishart
+        # NOTE[YB]: In US, Wishart regularization is much lower (df = len(X))
+        # It would be ice to find why we need much more.
         self.wishart = (scale.diag(), df)
 
     def _init_parameters(self, X, W=None, aff=None, **kwargs):
@@ -1223,7 +1235,7 @@ class UniSeg(SpatialMixture):
             # init from suffstats
             self.mu = torch.empty((K, C), **backend)
             self.sigma = torch.empty((K, C, C), **backend)
-            M = self.warp_tpm(aff=aff)
+            M = self.warp_tpm(aff=aff, shape=X.shape[1:])
             if W is not None:
                 M *= W
             ss0, ss1, ss2 = self._suffstats(X, M)
@@ -1271,6 +1283,12 @@ class UniSeg(SpatialMixture):
             2nd moment
 
         """
+        device = self.mu.device
+
+        ss0 = ss0.cpu()
+        ss1 = ss1.cpu()
+        ss2 = ss2.cpu()
+
         # update means
         ss0 = ss0.unsqueeze(-1)
         mu = ss1 / ss0
@@ -1292,8 +1310,8 @@ class UniSeg(SpatialMixture):
             mu0 = mu
             sigma0 = sigma
             ss00 = ss0
-            mu = torch.empty_like(self.mu)
-            sigma = torch.empty_like(self.sigma)
+            mu = torch.empty_like(self.mu, device='cpu')
+            sigma = torch.empty_like(self.sigma, device='cpu')
             ss0 = ss00.new_empty([self.nb_clusters, 1, 1])
             for k in range(self.nb_classes):
                 mask = [k1 == k for k1 in self.lkp]
@@ -1305,20 +1323,23 @@ class UniSeg(SpatialMixture):
                 sigma[mask] = sigma0[k] * (1 - w)
                 ss0[mask] = ss00[k] / K1
 
-        self.mu.copy_(mu)
-        self.sigma.copy_(sigma)
+        self.mu.copy_(mu.to(self.mu))
+        self.sigma.copy_(sigma.to(self.sigma))
 
         if self.wishart is not None:
             # update lower bound: KL between inverse wishart,
             # keeping only terms that depend on sigma
-            chol = linalg.cholesky(self.sigma)
-            logdet = chol.diagonal(0, -1, -2).log().sum(-1)
-            tr = linalg.trace(torch.matmul(scale, self.sigma.inverse()))
-            # tr = linalg.trace(torch.cholesky_solve(scale, chol))
+            chol = linalg.cholesky(sigma)
+            logdet = chol.diagonal(0, -1, -2).log().sum(-1).mul_(2)
+            tr = linalg.trace(torch.matmul(scale, sigma.inverse()))
             ss0 = ss0[..., 0, 0]
             lb = tr * (df + ss0 - sigma.shape[-1] - 1) / (df + ss0) \
-               - logdet * (df - sigma.shape[-1] - 1)
-            lb = lb.sum()
+               + logdet * (df - sigma.shape[-1] - 1) \
+               + (df - 1) * (ss0 + df).log() \
+               - 2 * (ss0 - 1) * math.mvdigamma((ss0 + df)/2, sigma.shape[-1]) \
+               - 2 * torch.mvlgamma((ss0 + df)/2, sigma.shape[-1]) \
+               - (df + ss0 - sigma.shape[-1] - 1) * sigma.shape[-1]
+            lb = lb.sum().cpu()
             self._lb_intensity = -0.5*lb
         else:
             self._lb_intensity = 0
@@ -1384,4 +1405,4 @@ class UniSeg(SpatialMixture):
             self.beta[c] -= delta[0]
 
         self.beta -= self.beta.mean()
-        self._lb_bias = -0.5*lb + self.beta.sum()
+        self._lb_bias = -0.5*lb.cpu() + self.beta.sum().cpu()

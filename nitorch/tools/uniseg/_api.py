@@ -10,7 +10,8 @@ from nitorch import io
 def uniseg(x, w=None, affine=None, device=None,
            nb_classes=None, prior=None, affine_prior=None,
            do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
-           cleanup=None, spacing=3, lam_bias=0.1, lam_warp=0.1,
+           cleanup=None, spacing=3, lam_bias=0.1, lam_warp=0.1, lam_mixing=100,
+           lam_mrf=100, wishart=None, lam_wishart=1,
            max_iter=30, tol=1e-3, verbose=1, plot=0, return_parameters=False):
     """Unified Segmentation using a deformable spatial prior.
 
@@ -100,6 +101,8 @@ def uniseg(x, w=None, affine=None, device=None,
     """
     if cleanup is None:
         cleanup = (prior is None)  # only cleanup if (default) SPM template
+    if wishart is None:
+        wishart = 'preproc8' if (prior is None) else True
 
     backend = get_backend(x, prior, device)
     prior, affine_prior = get_prior(prior, affine_prior, **backend)
@@ -116,8 +119,9 @@ def uniseg(x, w=None, affine=None, device=None,
     model = UniSeg(
         nb_classes, prior=prior, affine_prior=affine_prior,
         do_bias=do_bias, do_warp=do_warp, do_mixing=do_mixing, do_mrf=do_mrf,
-        lam_bias=lam_bias, lam_warp=lam_warp, spacing=spacing,
-        max_iter=max_iter, tol=tol, verbose=verbose, plot=plot,
+        lam_bias=lam_bias, lam_warp=lam_warp, lam_mixing=lam_mixing, lam_mrf=lam_mrf,
+        spacing=spacing, max_iter=max_iter, tol=tol, verbose=verbose, plot=plot,
+        wishart=wishart, lam_wishart=lam_wishart,
     )
     z, lb = model.fit(x, w, aff=affine)
     if cleanup:
@@ -284,12 +288,12 @@ def get_data(x, w, affine, dim, **backend):
                 f = f.movedim(-1, 0)
             else:
                 f = f[None]
-            x = f.fdata(**backend, missing=0)
+            x = f.fdata(**backend, rand=True, missing=0)
         else:
             f = io.stack([io.map(x1) for x1 in x])
             if affine is None:
                 f = f.affine[0]
-            x = f.fdata(**backend, missing=0)
+            x = f.fdata(**backend, rand=True, missing=0)
 
     if x.dim() > dim + 1:
         x = x.unsqeeze(-1)
