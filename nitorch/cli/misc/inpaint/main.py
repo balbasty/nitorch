@@ -200,9 +200,8 @@ def do_inpaint(dat, voxel_size=1, max_iter_rls=50, max_iter_cg=32,
             m = torch.masked_select(m, mask, out=forward_buf)
             return m
 
-        delta = optim.cg(forward, grad, precond=precond,
-                         max_iter=max_iter_cg, tolerance=tol_cg,
-                         verbose=verbose > 1, stop='norm')
+        delta = optim.cg(forward, grad, precond=precond, max_iter=max_iter_cg,
+                         tolerance=tol_cg, verbose=verbose > 1)
         subdat = torch.masked_select(dat, mask, out=forward_buf)
         subdat -= delta
         dat.masked_scatter_(mask, subdat)

@@ -158,7 +158,7 @@ class _FMG:
     """Base class for multi-grid solvers"""
 
     def __init__(self, bound='dct2', nb_cycles=2, nb_iter=2, max_levels=16,
-                 optim='cg', tolerance=0, stop='e', verbose=False,
+                 pool=2, optim='cg', tolerance=0, stop='max_gain', verbose=False,
                  matvec=None, matsolve=None, matdiag=None):
         self.bound = bound
         self.nb_cycles = nb_cycles
@@ -168,6 +168,7 @@ class _FMG:
         self.optim = optim
         self.tolerance = tolerance
         self.stop = stop
+        self.pool = pool
 
         # These function understand how sparse Hessians are stored.
         # By default, they suit sparse Hessian where the diagonal is
@@ -229,7 +230,7 @@ class _FMG:
         for i in range(1, self.max_levels+1):
             self.trace(f'(fmg) - prolong [{i - 1} -> {i}]')
 
-            spatial1 = [math.ceil(s/2) for s in pyrn[-1]]
+            spatial1 = [math.ceil(s/self.pool) for s in pyrn[-1]]
             if all(s == 1 for s in spatial1):
                 break
             pyrt.append(make_grid(pyrn[-1], spatial1, **backend))
@@ -894,7 +895,7 @@ class _GridFMG(_FMG):
 
 def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
                    lame=0, factor=1, voxel_size=1, bound='dft', weights=None,
-                   optim='cg', nb_cycles=2, nb_iter=2, tolerance=0,
+                   optim='cg', nb_cycles=2, nb_iter=2, tolerance=0, pool=2,
                    verbose=False):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
@@ -928,6 +929,7 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
     nb_cycles : int, default=2
     nb_iter : int, default=2
     tolerance : float, default=0
+    pool : int, default=2
     verbose : int, default=0
 
     Returns
@@ -942,19 +944,19 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
 
     FMG = _GridFMG(absolute=absolute, membrane=membrane, bending=bending,
                    lame=lame, factor=factor, voxel_size=voxel_size,
-                   bound=bound, optim=optim, nb_cycles=nb_cycles,
+                   bound=bound, optim=optim, nb_cycles=nb_cycles, pool=pool,
                    nb_iter=nb_iter, verbose=verbose, tolerance=tolerance)
     FMG.set_data(hessian, gradient, weights=weights)
     result = FMG.solve()
     # FMG allocates a lot of objects: better to force garbage collection
-    del FMG, gradient, hessian
+    del FMG, gradient, hessian, weights
     gc.collect()
     return result
 
 
 def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
                     absolute=0, membrane=0, bending=0, factor=1, dim=None,
-                    optim='cg', nb_cycles=2, nb_iter=2, tolerance=0,
+                    optim='cg', nb_cycles=2, nb_iter=2, tolerance=0, pool=2,
                     verbose=False, matvec=None, matsolve=None, matdiag=None):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
@@ -988,6 +990,7 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
     nb_cycles : int, default=2
     nb_iter : int, default=2
     tolerance : float, default=1e-5
+    pool : int, default=2
     verbose : int, default=0
 
     Returns
@@ -1002,13 +1005,13 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
 
     FMG = _FieldFMG(absolute=absolute, membrane=membrane, bending=bending,
                     factor=factor, voxel_size=voxel_size,
-                    bound=bound, optim=optim, nb_cycles=nb_cycles,
+                    bound=bound, optim=optim, nb_cycles=nb_cycles, pool=pool,
                     nb_iter=nb_iter, verbose=verbose, tolerance=tolerance,
                     matvec=matvec, matsolve=matsolve, matdiag=matdiag)
     FMG.set_data(hessian, gradient, weights=weights, dim=dim)
     result = FMG.solve()
     # FMG allocates a lot of objects: better to force garbage collection
-    del FMG, gradient, hessian
+    del FMG, gradient, hessian, weights
     gc.collect()
     return result
 
@@ -1026,7 +1029,7 @@ _bending = bending
 def solve_field(hessian, gradient, weights=None, dim=None,
                 absolute=0, membrane=0, bending=0, factor=1,
                 voxel_size=1, bound='dct2',
-                optim='cg', max_iter=16, tolerance=1e-5, stop='e',
+                optim='cg', max_iter=16, tolerance=1e-5, stop='max_gain',
                 verbose=False, matvec=None, matsolve=None, matdiag=None):
     """Solve a positive-definite linear system of the form (H + L)x = g
 

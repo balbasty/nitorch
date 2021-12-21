@@ -1,6 +1,4 @@
-# -*- coding: utf-8 -*-
 """Optimisers."""
-
 import torch
 import itertools
 
@@ -11,17 +9,18 @@ import itertools
 #     (again) by CG
 
 
-# def dot(x, y):
-#     return x.flatten().dot(y.flatten())
-
 @torch.jit.script
-def dot(x, y):
+def _dot(x, y):
     return (x*y).sum()
 
 
-def cg(A, b, x=None, precond=None, max_iter=None,
-       tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
-       inplace=True, stop='E'):
+@torch.jit.script
+def _ssq(x):
+    return _dot(x, x)
+
+
+def cg(A, b, x=None, precond=None, max_iter=None, tolerance=1e-5,
+       verbose=False, inplace=True, stop='diff'):
     """ Solve A*x = b by the conjugate gradient method.
 
         The method of conjugate gradients solves linear systems of
@@ -45,20 +44,11 @@ def cg(A, b, x=None, precond=None, max_iter=None,
         Tolerance for early-stopping.
     verbose : bool, default = False
         Write something at each iteration.
-    sum_dtype : torch.dtype, default=float64
-        Choose `float32` for speed or `float64` for precision.
     inplace : bool, default=True
         Perform computations inplace (saves performance but overrides
         `x` and may break the computational graph).
-    stop : {'E', 'A'}, default='E'
-        What (squared) norm to use a stopping criterion:
-            - 'E': (squared) Euclidean norm of the residuals
-            - 'A': (squared) A-norm of the error
-                   <=> A^{-1}-norm of the residuals
-        The Euclidean norm is not motonically decreasing,
-        whilst the norm induced by the A-weighted scalar product ('norm') is.
-        If monotonicity is important then select 'norm'. However, this requires
-        an additional evaluation of A.
+    stop : {'max_gain', 'gain', 'diff'}, default='max_gain'
+        Criterion for early stopping
 
     Returns
     -------
@@ -90,7 +80,7 @@ def cg(A, b, x=None, precond=None, max_iter=None,
     >>> print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
     >>> # Solve by CG
     >>> t0 = timer()
-    >>> x2 = cg(A, b, verbose=True, sum_dtype=torch.float32)
+    >>> x2 = cg(A,b,verbose=True)
     >>> print('cg(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
     >>> # Inspect errors
     >>> e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
@@ -117,26 +107,19 @@ def cg(A, b, x=None, precond=None, max_iter=None,
     precond = precond or (lambda y: y)
 
     # Initialisation
-    r = A(x).neg_().add_(b)     # Residual: b - A*x
+    Ax = A(x)
+    r = b - Ax                  # Residual: b - A*x
     z = precond(r)              # Preconditioned residual
-    rz = dot(r, z)              # Inner product of r and z
+    rz = _dot(r, z)              # Inner product of r and z
     p = z.clone()               # Initial conjugate directions p
 
     if tolerance or verbose:
-        if stop == 'residual':
-            stop = 'e'
-        elif stop == 'norm':
-            stop = 'a'
-        stop = stop[0].lower()
-        if stop == 'e':
-            obj0 = torch.sqrt(rz)
-        else:
-            obj0 = A(x).sub_(b, alpha=2).mul_(x)
-            obj0 = 0.5 * torch.sum(obj0)
-
+        Ax = Ax.sub_(b, alpha=2)  # Ax now stores `A(x) - 2*b`
+        obj0 = 0.5 * _dot(Ax, x)
         if verbose:
-            s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g}'
-            print(s.format(0, stop, obj0))
+            space = str(len(str(max_iter + 1)))
+            s = '{:' + space + '} | a = {:12.6g}'
+            print(s.format(0, obj0))
         obj = obj0.new_zeros(max_iter+1)
         obj[0] = obj0
 
@@ -144,7 +127,7 @@ def cg(A, b, x=None, precond=None, max_iter=None,
     for n_iter in range(1, max_iter+1):
         # Find the step size of the conj. gradient descent
         Ap = A(p)
-        alpha = dot(p, Ap).clamp_min_(1e-12).reciprocal_().mul_(rz)
+        alpha = _dot(p, Ap).clamp_min_(1e-12).reciprocal_().mul_(rz)
         # Perform conj. gradient descent, obtaining updated X and R, using the
         # calculated P and alpha
         x.add_(p, alpha=alpha)
@@ -153,22 +136,19 @@ def cg(A, b, x=None, precond=None, max_iter=None,
         z = precond(r)
         # Finds the step size for updating P
         rz0 = rz
-        rz = dot(r, z)
+        rz = _dot(r, z)
         beta = rz / rz0.clamp_min_(1e-12)
         
         # Check convergence
         if tolerance or verbose:
-            if stop == 'e':
-                obj1 = torch.sqrt(rz)
-            else:
-                obj1 = A(x).sub_(b, alpha=2).mul_(x)
-                obj1 = 0.5 * torch.sum(obj1)
+            Ax = Ax.add_(Ap, alpha=alpha)
+            obj1 = 0.5 * _dot(Ax, x)
             obj[n_iter] = obj1
-            gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
+            gain = get_gain(obj[:n_iter + 1], monotonicity='<', type=stop)
             if verbose:
-                s = '{:' + str(len(str(max_iter+1))) + '} | {} = {:12.6g} | gain = {:12.6g}'
-                print(s.format(n_iter, stop, obj[n_iter], gain))
-            if gain.abs() < tolerance:
+                s = '{:' + space + '} | a = {:12.6g} | gain = {:12.6g}'
+                print(s.format(n_iter, obj[n_iter], gain / tolerance))
+            if abs(gain) < tolerance:
                 break
 
         # Calculate conjugate directions P (descent direction)
@@ -178,8 +158,7 @@ def cg(A, b, x=None, precond=None, max_iter=None,
 
 
 def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
-           tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
-           inplace=True, stop='residuals'):
+           tolerance=1e-5, verbose=False, inplace=True, stop='max_gain'):
     """Solve `A*x = b` by the Jacobi method.
 
     The Jacobi method solves linear systems of the form `A*x = b`,
@@ -208,17 +187,11 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
         Tolerance for early-stopping.
     verbose : bool, default = False
         Write something at each iteration.
-    sum_dtype : torch.dtype, default=float64
-        Choose `float32` for speed or `float64` for precision.
     inplace : bool, default=True
         Perform computations inplace (saves performance but overrides
         `x` and may break the computational graph).
-    stop : {'residuals', 'norm'}, default='residuals'
-        What stopping criteria to use.
-        The squared residuals ('residuals') are not motonically decreasing,
-        whilst the norm induced by the A-weighted scalar product ('norm') is.
-        If monotonicity is important then select 'norm'. However, this requires
-        an additional evaluation of A.
+    stop : {'max_gain', 'gain', 'diff'}, default='max_gain'
+        Criterion for early stopping
 
     Returns
     -------
@@ -241,32 +214,23 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
     # Create functor if A is a tensor
     if torch.is_tensor(A):
         A_tensor = A
-        A = lambda x: A_tensor.mm(x)
+        A = lambda x: torch.matmul(A_tensor, x)
 
     # Create functor if D is a tensor
     if torch.is_tensor(precond):
         D_tensor = precond
         precond = lambda x: x * D_tensor
 
-    # Initialisation
+    # Initialization
     r = b - A(x)
 
     if tolerance or verbose:
-        if stop == 'residual':
-            stop = 'e'
-        elif stop == 'norm':
-            stop = 'a'
-        stop = stop[0].lower()
-        if stop == 'e':
-            obj0 = torch.sqrt(r.square().sum(dtype=sum_dtype))
-        else:
-            obj0 = A(x).sub_(2 * b).mul_(x)
-            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+        obj = x.new_zeros(max_iter + 1)
+        obj[0] = 0.5 * _ssq(r)
         if verbose:
-            s = '{:' + str(len(str(max_iter + 1))) + '} | {} = {:12.6g}'
-            print(s.format(0, stop, obj0))
-        obj = obj0.new_zeros(max_iter + 1)
-        obj[0] = obj0
+            space = str(len(str(max_iter + 1)))
+            s = '{:' + space + '} | e = {:12.6g}'
+            print(s.format(0, obj[0]))
 
     # Run algorithm
     for n_iter in range(1, max_iter + 1):
@@ -276,17 +240,11 @@ def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
 
         # Check convergence
         if tolerance or verbose:
-            if stop == 'e':
-                obj1 = torch.sqrt(r.square().sum(dtype=sum_dtype))
-            else:
-                obj1 = A(x).sub_(2 * b).mul_(x)
-                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
-            obj[n_iter] = obj1
-            gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
+            obj[n_iter] = 0.5 * _ssq(r)
+            gain = get_gain(obj[:n_iter + 1], monotonicity='<', type=stop)
             if verbose:
-                width = str(len(str(max_iter + 1)))
-                s = '{:' + width + '} | {} = {:12.6g} | gain = {:12.6g}'
-                print(s.format(n_iter, stop, obj[n_iter], gain))
+                s = '{:' + space + '} | e = {:12.6g} | gain = {:12.6g}'
+                print(s.format(n_iter, obj[n_iter], gain / tolerance))
             if gain.abs() < tolerance:
                 break
 
@@ -343,8 +301,8 @@ def relax_slicers(shape, scheme='checkerboard'):
 
 
 def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
-          dim=None, tolerance=1e-5, verbose=False, sum_dtype=torch.float64,
-          inplace=True, stop='E', mode=1):
+          dim=None, tolerance=1e-5, verbose=False, inplace=True,
+          stop='max_gain', mode=1):
     """Solve `A*x = b` by block-relaxation (e.g., checkerboard Gauss-Seidel).
 
     The Gauss-Seidel method solves linear systems of the form `A*x = b`,
@@ -384,16 +342,11 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
         Tolerance for early-stopping.
     verbose : bool, default = False
         Write something at each iteration.
-    sum_dtype : torch.dtype, default=float64
-        Choose `float32` for speed or `float64` for precision.
     inplace : bool, default=True
         Perform computations inplace (saves performance but overrides
         `x` and may break the computational graph).
-    stop : {'E', 'A'}, default='E'
-        What (squared) norm to use a stopping criterion:
-            - 'E': (squared) Euclidean norm of the residuals
-            - 'A': (squared) A-norm of the error
-                   <=> A^{-1}-norm of the residuals
+    stop : {'max_gain', 'gain', 'diff'}, default='max_gain'
+        Criterion for early stopping
 
     Returns
     -------
@@ -414,21 +367,11 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
     r = b - A(x)
 
     if tolerance or verbose:
-        if stop == 'residual':
-            stop = 'e'
-        elif stop == 'norm':
-            stop = 'a'
-        stop = stop[0].lower()
-        if stop == 'e':
-            obj0 = r.square().sum(dtype=sum_dtype).sqrt()
-        else:
-            obj0 = A(x).sub_(2 * b).mul_(x)
-            obj0 = 0.5 * torch.sum(obj0, dtype=sum_dtype)
+        obj = x.new_zeros(max_iter + 1)
+        obj[0] = 0.5 * _ssq(r)
         if verbose:
-            s = '{:' + str(len(str(max_iter + 1))) + '} | {} = {:12.6g}'
-            print(s.format(0, stop, obj0))
-        obj = torch.zeros(max_iter + 1, dtype=sum_dtype, device=obj0.device)
-        obj[0] = obj0
+            s = '{:' + str(len(str(max_iter + 1))) + '} | e = {:12.6g}'
+            print(s.format(0, obj[0]))
 
     slicers = relax_slicers(shape, scheme)
     for n_iter in range(1, max_iter+1):
@@ -449,44 +392,61 @@ def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
 
         # Check convergence
         if tolerance or verbose:
-            if stop == 'e':
-                obj1 = r.square().sum(dtype=sum_dtype).sqrt()
-            else:
-                obj1 = A(x).sub_(2 * b).mul_(x)
-                obj1 = 0.5 * torch.sum(obj1, dtype=sum_dtype)
-            obj[n_iter] = obj1
-            gain = get_gain(obj[:n_iter + 1], monotonicity='decreasing')
+            obj[n_iter] = 0.5 * _ssq(r)
+            gain = get_gain(obj[:n_iter + 1], monotonicity='<', type=stop)
             if verbose:
                 width = str(len(str(max_iter + 1)))
-                s = '{:' + width + '} | {} = {:12.6g} | gain = {:12.6g}'
-                print(s.format(n_iter, stop, obj[n_iter], gain))
+                s = '{:' + width + '} | e = {:12.6g} | gain = {:12.6g}'
+                print(s.format(n_iter, obj[n_iter], gain / tolerance))
             if gain.abs() < tolerance:
                 break
 
     return x
 
 
-def get_gain(obj, monotonicity='increasing'):
+def get_gain(obj, monotonicity='increasing', type='max_gain'):
     """ Compute gain of some objective function.
 
-    Args:
-        obj (torch.tensor): Vector of values (e.g., loss).
-        direction (string, optional): Monotonicity of values ('increasing'/'decreasing'),
-            defaults to 'increasing'.
+    Parameters
+    ----------
+    obj : (N,) tensor-like
+        Vector of values (e.g., loss).
+    monotonicity : {'increasing', 'decreasing'}, default='increasing
+        Expected monotonicity of values
+    type : {'diff', 'gain', 'max_gain'}, defualt='max_gain'
+        Type of objective:
+        - 'diff' : difference between the two last values: x[-1] - x[-2]
+        - 'gain' : relative between the two last values: (x[-1] - x[-2]) / x[-2]
+        - 'max_gain' : gain normalized by min/max values:  (x[-1] - x[-2]) / (max(x) - min(x))
 
-    Returns:
-        gain (torch.tensor): Computed gain.
+    Returns
+    -------
+    gain : scalar-like
+        Computed gain.
+        The sign of the difference is chosen so that the returned objective is
+        positive if values respect the expected monotonicity.
 
     """
     if len(obj) <= 1:
-        return torch.tensor(float('inf'), dtype=obj.dtype, device=obj.device)
-    if monotonicity == 'increasing':
+        gain = float('inf')
+        if torch.is_tensor(obj):
+            gain = torch.as_tensor(gain, dtype=obj.dtype, device=obj.device)
+        return gain
+
+    if monotonicity in ('>', 'increasing'):
         gain = (obj[-1] - obj[-2])
-    elif monotonicity == 'decreasing':
+    elif monotonicity in ('<', 'decreasing'):
         gain = (obj[-2] - obj[-1])
     else:
-        raise ValueError('Undefined monotonicity')
-    gain = gain / max(torch.max(obj) - torch.min(obj), 1e-12)
+        raise ValueError(f'Unknown monotonicity "{monotonicity}"')
+
+    if type == 'gain':
+        gain = gain / abs(obj[-2])
+    elif type == 'max_gain':
+        gain = gain / max(max(obj) - min(obj), 1e-12)
+    elif type != 'diff':
+        raise ValueError(f'Unknown type "{type}"')
+
     return gain
 
 
