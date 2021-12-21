@@ -63,30 +63,30 @@ def cg(A, b, x=None, precond=None, max_iter=None, tolerance=1e-5,
     Example
     -------
     ```python
-    >>> # Let's solve Ax = b using both regular inversion and CG
-    >>> import torch
-    >>> from nitorch.core.optim import cg
-    >>> from timeit import default_timer as timer
-    >>> # Simulate A and b
-    >>> N = 100
-    >>> A = torch.randn(N, N)
-    >>> b = torch.randn(N, 1)
-    >>> # Make A symmetric and pos. def.
-    >>> U, S, _ = torch.svd(A)
-    >>> A = U.matmul((S + S.max()).diag().matmul(U.t()))
-    >>> # Solve by inversion
-    >>> t0 = timer()
-    >>> x1 = torch.solve(b, A)[0]
-    >>> print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
-    >>> # Solve by CG
-    >>> t0 = timer()
-    >>> x2 = cg(A,b,verbose=True)
-    >>> print('cg(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
-    >>> # Inspect errors
-    >>> e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
-    >>> print(e1)
-    >>> e2 = torch.sqrt(torch.sum((b - A.matmul(x2)) ** 2))
-    >>> print(e2)
+    # Let's solve Ax = b using both regular inversion and CG
+    import torch
+    from nitorch.core.optim import cg
+    from timeit import default_timer as timer
+    # Simulate A and b
+    N = 100
+    A = torch.randn(N, N)
+    b = torch.randn(N, 1)
+    # Make A symmetric and pos. def.
+    U, S, _ = torch.svd(A)
+    A = U.matmul((S + S.max()).diag().matmul(U.t()))
+    # Solve by inversion
+    t0 = timer()
+    x1 = torch.solve(b, A)[0]
+    print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
+    # Solve by CG
+    t0 = timer()
+    x2 = cg(A,b,verbose=True)
+    print('cg(A, b) | elapsed time: {:0.4f} seconds'.format(timer() - t0))
+    # Inspect errors
+    e1 = torch.sqrt(torch.sum((x1 - x2) ** 2))
+    print(e1)
+    e2 = torch.sqrt(torch.sum((b - A.matmul(x2)) ** 2))
+    print(e2)
     ```
 
     """
