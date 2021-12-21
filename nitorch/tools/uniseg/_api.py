@@ -105,10 +105,18 @@ def uniseg(x, w=None, affine=None, device=None,
         wishart = 'preproc8' if (prior is None) else True
 
     backend = get_backend(x, prior, device)
-    prior, affine_prior = get_prior(prior, affine_prior, **backend)
-    dim = prior.dim() - 1
+    if prior is not False:
+        prior, affine_prior = get_prior(prior, affine_prior, **backend)
+        dim = prior.dim() - 1
+    else:
+        prior = affine_prior = None
+        if torch.is_tensor(x):
+            dim = x.dim() - 1
+        else:
+            dim = 3
     x, w, affine = get_data(x, w, affine, dim, **backend)
-    affine_prior = affine_prior.to(x.dtype)
+    if affine_prior is not None:
+        affine_prior = affine_prior.to(x.dtype)
 
     if not nb_classes:
         if len(prior) == 5:

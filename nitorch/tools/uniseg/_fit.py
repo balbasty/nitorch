@@ -27,8 +27,8 @@ def _softmax_lse(x, dim=-1, W=None):
     sumval = sumval.log_()
     lse += sumval
     if W is not None:
-        if not lse.dim():
-            lse = lse * W.sum()
+        if lse.numel() == 1:
+            lse = lse.sum() * W.sum()
             return x, lse
         lse *= W
     lse = lse.sum(dtype=torch.float64)
