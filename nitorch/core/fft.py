@@ -18,7 +18,7 @@ functions when they are available. In PyTorch <= 1.5, the old convention
 is used to represent complex tensors.
 
 """
-
+import functools
 import torch
 from . import py, utils
 
@@ -161,121 +161,130 @@ def mul(x, y, real=False):
                        _real(x) * imag(y) + imag(x) * _real(y))
 
 
-def fftshift(x, dim=None, real=False):
-    """Move the first value to the center of the tensor.
+if _torch_has_fftshift:
+    fftshift = lambda x, dim, real=False: fft_mod.fftshift(torch.as_tensor(x), dim)
+else:
+    def fftshift(x, dim=None, real=False):
+        """Move the first value to the center of the tensor.
 
-    Notes
-    -----
-    .. If the dimension has an even shape, the center is the first
-        position *after* the middle of the tensor: `c = s//2`
-    .. This function triggers a copy of the data.
-    .. If the dimension has an even shape, `fftshift` and `ifftshift`
-       are equivalent.
+        Notes
+        -----
+        .. If the dimension has an even shape, the center is the first
+            position *after* the middle of the tensor: `c = s//2`
+        .. This function triggers a copy of the data.
+        .. If the dimension has an even shape, `fftshift` and `ifftshift`
+           are equivalent.
 
-    Parameters
-    ----------
-    x : tensor
-        Input tensor
-    dim : [sequence of] int, optional
-        Dimensions to shift.
-        The "complex" dimension does not count
+        Parameters
+        ----------
+        x : tensor
+            Input tensor
+        dim : [sequence of] int, optional
+            Dimensions to shift.
+            The "complex" dimension does not count
 
-    Returns
-    -------
-    x : tensor
-        Shifted tensor
+        Returns
+        -------
+        x : tensor
+            Shifted tensor
 
-    """
-    x = torch.as_tensor(x)
-    if _torch_has_fftshift:
-        return fft_mod.fftshift(x, dim)
+        """
+        x = torch.as_tensor(x)
 
-    if dim is None:
-        dim = list(range(x.dim()))
-    dim = py.make_list(dim)
-    if not _torch_has_complex and not real:
-        dim = [d-(not real) if d < 0 else d for d in dim]
-    if len(dim) > 1:
-        x = x.clone()  # clone to get an additional buffer
+        if dim is None:
+            dim = list(range(x.dim()))
+        dim = py.make_list(dim)
+        if not _torch_has_complex and not real:
+            dim = [d-(not real) if d < 0 else d for d in dim]
+        if len(dim) > 1:
+            x = x.clone()  # clone to get an additional buffer
 
-    y = torch.empty_like(x)
-    slicer = [slice(None)] * x.dim()
-    for d in dim:
-        # move front to back
-        pre = list(slicer)
-        pre[d] = slice(None, (x.shape[d]+1)//2)
-        post = list(slicer)
-        post[d] = slice(x.shape[d]//2, None)
-        y[tuple(post)] = x[tuple(pre)]
-        # move back to front
-        pre = list(slicer)
-        pre[d] = slice(None, x.shape[d]//2)
-        post = list(slicer)
-        post[d] = slice((x.shape[d]+1)//2, None)
-        y[tuple(pre)] = x[tuple(post)]
-        # exchange buffers
-        x, y = y, x
+        y = torch.empty_like(x)
+        slicer = [slice(None)] * x.dim()
+        for d in dim:
+            # move front to back
+            pre = list(slicer)
+            pre[d] = slice(None, (x.shape[d]+1)//2)
+            post = list(slicer)
+            post[d] = slice(x.shape[d]//2, None)
+            y[tuple(post)] = x[tuple(pre)]
+            # move back to front
+            pre = list(slicer)
+            pre[d] = slice(None, x.shape[d]//2)
+            post = list(slicer)
+            post[d] = slice((x.shape[d]+1)//2, None)
+            y[tuple(pre)] = x[tuple(post)]
+            # exchange buffers
+            x, y = y, x
 
-    return x
+        return x
 
 
-def ifftshift(x, dim=None):
-    """Move the center value to the front of the tensor.
-
-    Notes
-    -----
-    .. If the dimension has an even shape, the center is the first
-        position *after* the middle of the tensor: `c = s//2`
-    .. This function triggers a copy of the data.
-    .. If the dimension has an even shape, `fftshift` and `ifftshift`
-       are equivalent.
-
-    Parameters
-    ----------
-    x : tensor
-        Input tensor
-    dim : [sequence of] int, default=all
-        Dimensions to shift
-
-    Returns
-    -------
-    x : tensor
-        Shifted tensor
-
-    """
-    x = torch.as_tensor(x)
-    if _torch_has_fftshift:
+if _torch_has_fftshift:
+    @functools.wraps(fft_mod.ifftshift)
+    def ifftshift(x, dim=None):
+        x = torch.as_tensor(x)
         if isinstance(dim, range):
             dim = tuple(dim)
         return fft_mod.ifftshift(x, dim)
+else:
+    def ifftshift(x, dim=None):
+        """Move the center value to the front of the tensor.
 
-    if dim is None:
-        dim = list(range(x.dim()))
-    dim = py.make_list(dim)
-    if not _torch_has_complex and not real:
-        dim = [d-(not real) if d < 0 else d for d in dim]
-    if len(dim) > 1:
-        x = x.clone()  # clone to get an additional buffer
+        Notes
+        -----
+        .. If the dimension has an even shape, the center is the first
+            position *after* the middle of the tensor: `c = s//2`
+        .. This function triggers a copy of the data.
+        .. If the dimension has an even shape, `fftshift` and `ifftshift`
+           are equivalent.
 
-    y = torch.empty_like(x)
-    slicer = [slice(None)] * x.dim()
-    for d in dim:
-        # move back to front
-        pre = list(slicer)
-        pre[d] = slice(None, (x.shape[d]+1)//2)
-        post = list(slicer)
-        post[d] = slice(x.shape[d]//2, None)
-        y[tuple(pre)] = x[tuple(post)]
-        # move front to back
-        pre = list(slicer)
-        pre[d] = slice(None, x.shape[d]//2)
-        post = list(slicer)
-        post[d] = slice((x.shape[d]+1)//2, None)
-        y[tuple(post)] = x[tuple(pre)]
-        # exchange buffers
-        x, y = y, x
+        Parameters
+        ----------
+        x : tensor
+            Input tensor
+        dim : [sequence of] int, default=all
+            Dimensions to shift
 
-    return x
+        Returns
+        -------
+        x : tensor
+            Shifted tensor
+
+        """
+        x = torch.as_tensor(x)
+        if _torch_has_fftshift:
+            if isinstance(dim, range):
+                dim = tuple(dim)
+            return fft_mod.ifftshift(x, dim)
+
+        if dim is None:
+            dim = list(range(x.dim()))
+        dim = py.make_list(dim)
+        if not _torch_has_complex and not real:
+            dim = [d-(not real) if d < 0 else d for d in dim]
+        if len(dim) > 1:
+            x = x.clone()  # clone to get an additional buffer
+
+        y = torch.empty_like(x)
+        slicer = [slice(None)] * x.dim()
+        for d in dim:
+            # move back to front
+            pre = list(slicer)
+            pre[d] = slice(None, (x.shape[d]+1)//2)
+            post = list(slicer)
+            post[d] = slice(x.shape[d]//2, None)
+            y[tuple(pre)] = x[tuple(post)]
+            # move front to back
+            pre = list(slicer)
+            pre[d] = slice(None, x.shape[d]//2)
+            post = list(slicer)
+            post[d] = slice((x.shape[d]+1)//2, None)
+            y[tuple(post)] = x[tuple(pre)]
+            # exchange buffers
+            x, y = y, x
+
+        return x
 
 
 def fftfreq(n, d=1.0, *,
@@ -353,621 +362,627 @@ def rfftfreq(n, d=1.0, *,
     return f
 
 
-def fft(input, n=None, dim=-1, norm='backward', real=None):
-    """One dimensional discrete Fourier transform.
+if _torch_has_fft_module:
+    fft = lambda *a, real=None, **k: fft_mod(*a, **k)
+else:
+    def fft(input, n=None, dim=-1, norm='backward', real=None):
+        """One dimensional discrete Fourier transform.
 
-    Parameters
-    ----------
-    input : tensor
-        Input signal.
-        If torch <= 1.5, the last dimension must be of length 2 and
-        contain the real and imaginary parts of the signal, unless
-        `real is True`.
-    n : int, optional
-        Signal length. If given, the input will either be zero-padded
-        or trimmed to this length before computing the FFT.
-    dim : int, default=-1
-        Dimension along which to take the Fourier transform.
-        If torch <= 1.5, the dimension encoding the real and imaginary
-        parts are not taken into account in dimension indexing.
-    norm : {'forward', 'backward', 'ortho'}, default='backward'
-        forward : normalize by 1/n
-        backward : no normalization
-        ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
-    real : bool, default=False
-        Only used if torch <= 1.5.
-        If True, the input signal has no imaginary component and the
-        dimension encoding the real and imaginary parts does not exist.
+        Parameters
+        ----------
+        input : tensor
+            Input signal.
+            If torch <= 1.5, the last dimension must be of length 2 and
+            contain the real and imaginary parts of the signal, unless
+            `real is True`.
+        n : int, optional
+            Signal length. If given, the input will either be zero-padded
+            or trimmed to this length before computing the FFT.
+        dim : int, default=-1
+            Dimension along which to take the Fourier transform.
+            If torch <= 1.5, the dimension encoding the real and imaginary
+            parts are not taken into account in dimension indexing.
+        norm : {'forward', 'backward', 'ortho'}, default='backward'
+            forward : normalize by 1/n
+            backward : no normalization
+            ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
+        real : bool, default=False
+            Only used if torch <= 1.5.
+            If True, the input signal has no imaginary component and the
+            dimension encoding the real and imaginary parts does not exist.
 
-    Returns
-    -------
-    output : tensor
-        Fourier transform of the input signal. Complex tensor.
-        If torch <= 1.5,  the last dimension is of length 2 and
-        contain the real and imaginary parts of the signal.
+        Returns
+        -------
+        output : tensor
+            Fourier transform of the input signal. Complex tensor.
+            If torch <= 1.5,  the last dimension is of length 2 and
+            contain the real and imaginary parts of the signal.
 
-    """
-    if _torch_has_fft_module:
-        return fft_mod.fft(input, n, dim, norm=norm)
+        """
+        if _torch_has_fft_module:
+            return fft_mod.fft(input, n, dim, norm=norm)
 
-    # Make real and move processed dimension to the right
-    if _torch_has_complex:
-        input = utils.movedim(input, dim, -1)
-        if input.is_complex():
-            input = torch.view_as_real(input)
-            real = False
+        # Make real and move processed dimension to the right
+        if _torch_has_complex:
+            input = utils.movedim(input, dim, -1)
+            if input.is_complex():
+                input = torch.view_as_real(input)
+                real = False
+            else:
+                real = True
+        elif real:
+            input = utils.movedim(input, dim, -1)
         else:
-            real = True
-    elif real:
-        input = utils.movedim(input, dim, -1)
-    else:
-        input = utils.movedim(input, dim if dim >= 0 else dim - 1, -2)
+            input = utils.movedim(input, dim if dim >= 0 else dim - 1, -2)
 
-    # Crop/pad
-    dim1 = -1 - (not real)
-    if n:
-        if input.shape[dim1] > n:
-            input = utils.slice_tensor(input, slice(n), dim1)
-        elif input.shape[dim1] < n:
-            pad = [0] * (dim1-1) + [n - input.shape[dim1]]
-            input = utils.pad(input, pad, side='post')
-    else:
-        n = input.shape[dim1]
-
-    # Do fft
-    print(input.shape, n)
-    if real:
-        output = torch.rfft(input, 1, normalized=(norm == 'ortho'),
-                            onesided=False)
-    else:
-        output = _fft(input, 1, normalized=(norm == 'ortho'))
-    if norm == 'forward':
-        output /= float(n)
-
-    # Make complex and move back dimension to its original position
-    if _torch_has_complex:
-        output = torch.view_as_complex(output)
-        output = utils.movedim(output, -1, dim)
-    else:
-        output = utils.movedim(output, -2, dim if dim >= 0 else dim - 1)
-
-    return output
-
-
-def fftn(input, s=None, dim=None, norm='backward', real=None):
-    """N-dimensional discrete Fourier transform.
-
-    Parameters
-    ----------
-    input : tensor
-        Input signal.
-        If torch <= 1.5, the last dimension must be of length 2 and
-        contain the real and imaginary parts of the signal, unless
-        `real is True`.
-    s : sequence[int], optional
-        Signal size in the transformed dimensions.
-        If given, each dimension dim[i] will either be zero-padded or
-        trimmed to the length s[i] before computing the FFT.
-        If a length -1 is specified, no padding is done in that dimension.
-        Default: s = [input.size(d) for d in input.dim()]
-    dim : sequence[int], optional
-        Dimensions to be transformed.
-        Default: all dimensions, or the last len(s) dimensions if s is given.
-        If torch <= 1.5, the dimension encoding the real and imaginary
-        parts are not taken into account in dimension indexing.
-    norm : {'forward', 'backward', 'ortho'}, default='backward'
-        forward : normalize by 1/n
-        backward : no normalization
-        ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
-    real : bool, default=False
-        Only used if torch <= 1.5.
-        If True, the input signal has no imaginary component and the
-        dimension encoding the real and imaginary parts does not exist.
-
-    Returns
-    -------
-    output : tensor
-        Fourier transform of the input signal. Complex tensor.
-        If torch <= 1.5,  the last dimension is of length 2 and
-        contain the real and imaginary parts of the signal.
-
-    """
-    if _torch_has_fft_module:
-        return fft_mod.fftn(input, s, dim, norm=norm)
-
-    # Output shape
-    oldcomplex = not (real or _torch_has_complex)
-    if dim:
-        ndim = len(dim)
-    elif s:
-        ndim = len(s)
-    else:
-        ndim = input.dim() - oldcomplex
-    s = s or [-1] * ndim
-    dim = dim or list(range(input.dim()-oldcomplex-len(s), input.dim()-oldcomplex))
-    dim = [input.dim()-oldcomplex+d if d < 0 else d for d in dim]
-    ndim = len(dim)
-    input = utils.movedim(input, dim, -1-oldcomplex)
-
-    # Make real and move processed dimension to the right
-    if _torch_has_complex:
-        if input.is_complex():
-            input = torch.view_as_real(input)
-            real = False
-        else:
-            real = True
-
-    # Crop/pad
-    newdim = list(range(-ndim-(not real), -(not real)))
-    for j, (s1, d1) in enumerate(zip(s, newdim)):
-        if s1 is None or s1 < 0:
-            s[j] = input.shape[d1]
-        else:
-            if input.shape[d1] > s1:
-                input = utils.slice_tensor(input, slice(s1), d1)
-            elif input.shape[d1] < s1:
-                pad = [0] * (d1-1) + [s1 - input.shape[d1]]
+        # Crop/pad
+        dim1 = -1 - (not real)
+        if n:
+            if input.shape[dim1] > n:
+                input = utils.slice_tensor(input, slice(n), dim1)
+            elif input.shape[dim1] < n:
+                pad = [0] * (dim1-1) + [n - input.shape[dim1]]
                 input = utils.pad(input, pad, side='post')
-
-    # Do fft
-    if real:
-        fft_fn = lambda x, d: torch.rfft(x, d,
-                                         normalized=(norm == 'ortho'),
-                                         onesided=False)
-        output = fft_fn(input, min(ndim, 3))
-    else:
-        fft_fn = lambda x, d: _fft(x, d,  normalized=(norm == 'ortho'))
-        output = fft_fn(input, min(ndim, 3))
-    fft_fn = lambda x, d: _fft(x, d,  normalized=(norm == 'ortho'))
-    for j in range(max(0, ndim-3)):
-        output = utils.movedim(output, -j-ndim-1, -2)
-        output = fft_fn(output, 1)
-        output = utils.movedim(output, -2, -j-ndim-1)
-    if norm == 'forward':
-        output /= py.prod(s)
-
-    # Make complex and move back dimension to its original position
-    newdim = list(range(-ndim-1, -1))
-    output = utils.movedim(output, newdim, dim)
-    if _torch_has_complex:
-        output = torch.view_as_complex(output)
-
-    return output
-
-
-def ifft(input, n=None, dim=-1, norm='backward', real=None):
-    """One dimensional discrete inverse Fourier transform.
-
-    Parameters
-    ----------
-    input : tensor
-        Input signal.
-        If torch <= 1.5, the last dimension must be of length 2 and
-        contain the real and imaginary parts of the signal, unless
-        `real is True`.
-    n : int, optional
-        Signal length. If given, the input will either be zero-padded
-        or trimmed to this length before computing the FFT.
-    dim : int, default=-1
-        Dimension along which to take the Fourier transform.
-        If torch <= 1.5, the dimension encoding the real and imaginary
-        parts are not taken into account in dimension indexing.
-    norm : {'forward', 'backward', 'ortho'}, default='backward'
-        forward : no normalization
-        backward : normalize by 1/n
-        ortho :  normalize by 1/sqrt(n) (making the IFFT orthonormal)
-    real : bool, default=False
-        Only used if torch <= 1.5.
-        If True, the input signal has no imaginary component and the
-        dimension encoding the real and imaginary parts does not exist.
-
-    Returns
-    -------
-    output : tensor
-        Inverse Fourier transform of the input signal. Complex tensor.
-        If torch <= 1.5,  the last dimension is of length 2 and
-        contain the real and imaginary parts of the signal.
-
-    """
-    if _torch_has_fft_module:
-        return fft_mod.ifft(input, n, dim, norm=norm)
-
-    # Make real and move processed dimension to the right
-    if _torch_has_complex:
-        input = utils.movedim(input, dim, -1)
-        if input.is_complex():
-            input = torch.view_as_real(input)
-            real = False
         else:
-            real = True
-    elif real:
+            n = input.shape[dim1]
+
+        # Do fft
+        print(input.shape, n)
+        if real:
+            output = torch.rfft(input, 1, normalized=(norm == 'ortho'),
+                                onesided=False)
+        else:
+            output = _fft(input, 1, normalized=(norm == 'ortho'))
+        if norm == 'forward':
+            output /= float(n)
+
+        # Make complex and move back dimension to its original position
+        if _torch_has_complex:
+            output = torch.view_as_complex(output)
+            output = utils.movedim(output, -1, dim)
+        else:
+            output = utils.movedim(output, -2, dim if dim >= 0 else dim - 1)
+
+        return output
+
+
+if _torch_has_fft_module:
+    fftn = lambda *a, real=None, **k: fft_mod.fftn(*a, **k)
+else:
+    def fftn(input, s=None, dim=None, norm='backward', real=None):
+        """N-dimensional discrete Fourier transform.
+
+        Parameters
+        ----------
+        input : tensor
+            Input signal.
+            If torch <= 1.5, the last dimension must be of length 2 and
+            contain the real and imaginary parts of the signal, unless
+            `real is True`.
+        s : sequence[int], optional
+            Signal size in the transformed dimensions.
+            If given, each dimension dim[i] will either be zero-padded or
+            trimmed to the length s[i] before computing the FFT.
+            If a length -1 is specified, no padding is done in that dimension.
+            Default: s = [input.size(d) for d in input.dim()]
+        dim : sequence[int], optional
+            Dimensions to be transformed.
+            Default: all dimensions, or the last len(s) dimensions if s is given.
+            If torch <= 1.5, the dimension encoding the real and imaginary
+            parts are not taken into account in dimension indexing.
+        norm : {'forward', 'backward', 'ortho'}, default='backward'
+            forward : normalize by 1/n
+            backward : no normalization
+            ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
+        real : bool, default=False
+            Only used if torch <= 1.5.
+            If True, the input signal has no imaginary component and the
+            dimension encoding the real and imaginary parts does not exist.
+
+        Returns
+        -------
+        output : tensor
+            Fourier transform of the input signal. Complex tensor.
+            If torch <= 1.5,  the last dimension is of length 2 and
+            contain the real and imaginary parts of the signal.
+
+        """
+        if _torch_has_fft_module:
+            return fft_mod.fftn(input, s, dim, norm=norm)
+
+        # Output shape
+        oldcomplex = not (real or _torch_has_complex)
+        if dim:
+            ndim = len(dim)
+        elif s:
+            ndim = len(s)
+        else:
+            ndim = input.dim() - oldcomplex
+        s = s or [-1] * ndim
+        dim = dim or list(range(input.dim()-oldcomplex-len(s), input.dim()-oldcomplex))
+        dim = [input.dim()-oldcomplex+d if d < 0 else d for d in dim]
+        ndim = len(dim)
+        input = utils.movedim(input, dim, -1-oldcomplex)
+
+        # Make real and move processed dimension to the right
+        if _torch_has_complex:
+            if input.is_complex():
+                input = torch.view_as_real(input)
+                real = False
+            else:
+                real = True
+
+        # Crop/pad
+        newdim = list(range(-ndim-(not real), -(not real)))
+        for j, (s1, d1) in enumerate(zip(s, newdim)):
+            if s1 is None or s1 < 0:
+                s[j] = input.shape[d1]
+            else:
+                if input.shape[d1] > s1:
+                    input = utils.slice_tensor(input, slice(s1), d1)
+                elif input.shape[d1] < s1:
+                    pad = [0] * (d1-1) + [s1 - input.shape[d1]]
+                    input = utils.pad(input, pad, side='post')
+
+        # Do fft
+        if real:
+            fft_fn = lambda x, d: torch.rfft(x, d,
+                                             normalized=(norm == 'ortho'),
+                                             onesided=False)
+            output = fft_fn(input, min(ndim, 3))
+        else:
+            fft_fn = lambda x, d: _fft(x, d,  normalized=(norm == 'ortho'))
+            output = fft_fn(input, min(ndim, 3))
+        fft_fn = lambda x, d: _fft(x, d,  normalized=(norm == 'ortho'))
+        for j in range(max(0, ndim-3)):
+            output = utils.movedim(output, -j-ndim-1, -2)
+            output = fft_fn(output, 1)
+            output = utils.movedim(output, -2, -j-ndim-1)
+        if norm == 'forward':
+            output /= py.prod(s)
+
+        # Make complex and move back dimension to its original position
+        newdim = list(range(-ndim-1, -1))
+        output = utils.movedim(output, newdim, dim)
+        if _torch_has_complex:
+            output = torch.view_as_complex(output)
+
+        return output
+
+
+if _torch_has_fft_module:
+    ifft = lambda *a, real=None, **k: fft_mod(*a, **k)
+else:
+    def ifft(input, n=None, dim=-1, norm='backward', real=None):
+        """One dimensional discrete inverse Fourier transform.
+
+        Parameters
+        ----------
+        input : tensor
+            Input signal.
+            If torch <= 1.5, the last dimension must be of length 2 and
+            contain the real and imaginary parts of the signal, unless
+            `real is True`.
+        n : int, optional
+            Signal length. If given, the input will either be zero-padded
+            or trimmed to this length before computing the FFT.
+        dim : int, default=-1
+            Dimension along which to take the Fourier transform.
+            If torch <= 1.5, the dimension encoding the real and imaginary
+            parts are not taken into account in dimension indexing.
+        norm : {'forward', 'backward', 'ortho'}, default='backward'
+            forward : no normalization
+            backward : normalize by 1/n
+            ortho :  normalize by 1/sqrt(n) (making the IFFT orthonormal)
+        real : bool, default=False
+            Only used if torch <= 1.5.
+            If True, the input signal has no imaginary component and the
+            dimension encoding the real and imaginary parts does not exist.
+
+        Returns
+        -------
+        output : tensor
+            Inverse Fourier transform of the input signal. Complex tensor.
+            If torch <= 1.5,  the last dimension is of length 2 and
+            contain the real and imaginary parts of the signal.
+
+        """
+        # Make real and move processed dimension to the right
+        if _torch_has_complex:
+            input = utils.movedim(input, dim, -1)
+            if input.is_complex():
+                input = torch.view_as_real(input)
+                real = False
+            else:
+                real = True
+        elif real:
+            input = utils.movedim(input, dim, -1)
+        else:
+            input = utils.movedim(input, dim if dim >= 0 else dim - 1, -2)
+            input = utils.movedim(input, dim if dim >= 0 else dim - 1, -2)
+
+        # Crop/pad
+        dim1 = -1 - (not real)
+        if n:
+            if input.shape[dim1] > n:
+                input = utils.slice_tensor(input, slice(n), dim1)
+            elif input.shape[dim1] < n:
+                pad = [0] * (dim1-1) + [n - input.shape[dim1]]
+                input = utils.pad(input, pad, side='post')
+        else:
+            n = input.shape[dim1]
+
+        # Do ifft
+        if real:
+            output = torch.rfft(input, 1, normalized=(norm == 'ortho'),
+                                onesided=False)
+            output[..., -1].neg_()  # conjugate
+            if norm == 'backward':
+                output /= float(n)
+        else:
+            output = torch.ifft(input, 1, normalized=(norm == 'ortho'))
+            if norm == 'forward':
+                output *= float(n)
+
+        # Make complex and move back dimension to its original position
+        if _torch_has_complex:
+            output = torch.view_as_complex(output)
+            output = utils.movedim(output, -1, dim)
+        else:
+            output = utils.movedim(output, -2, dim if dim >= 0 else dim - 1)
+
+        return output
+
+
+if _torch_has_fft_module:
+    ifftn = lambda *a, real=None, **k: fft_mod.ifftn(*a, **k)
+else:
+    def ifftn(input, s=None, dim=-1, norm='backward', real=None):
+        """N-dimensional discrete inverse Fourier transform.
+
+        Parameters
+        ----------
+        input : tensor
+            Input signal.
+            If torch <= 1.5, the last dimension must be of length 2 and
+            contain the real and imaginary parts of the signal, unless
+            `real is True`.
+        s : sequence[int], optional
+            Signal size in the transformed dimensions.
+            If given, each dimension dim[i] will either be zero-padded or
+            trimmed to the length s[i] before computing the IFFT.
+            If a length -1 is specified, no padding is done in that dimension.
+            Default: s = [input.size(d) for d in input.dim()]
+        dim : sequence[int], optional
+            Dimensions to be transformed. Default: all dimensions, or the
+            last len(s) dimensions if s is given.
+            If torch <= 1.5, the dimension encoding the real and imaginary
+            parts are not taken into account in dimension indexing.
+        norm : {'forward', 'backward', 'ortho'}, default='backward'
+            forward : no normalization
+            backward : normalize by 1/n
+            ortho :  normalize by 1/sqrt(n) (making the IFFT orthonormal)
+        real : bool, default=False
+            Only used if torch <= 1.5.
+            If True, the input signal has no imaginary component and the
+            dimension encoding the real and imaginary parts does not exist.
+
+        Returns
+        -------
+        output : tensor
+            Inverse Fourier transform of the input signal. Complex tensor.
+            If torch <= 1.5,  the last dimension is of length 2 and
+            contain the real and imaginary parts of the signal.
+
+        """
+        # Output shape
+        oldcomplex = not (real or _torch_has_complex)
+        if dim:
+            ndim = len(dim)
+        elif s:
+            ndim = len(s)
+        else:
+            ndim = input.dim() - oldcomplex
+        s = s or [-1] * ndim
+        dim = dim or list(range(input.dim()-oldcomplex-len(s), input.dim()-oldcomplex))
+        dim = [input.dim()-oldcomplex+d if d < 0 else d for d in dim]
+        ndim = len(dim)
+        input = utils.movedim(input, dim, -1-oldcomplex)
+
+        # Make real and move processed dimension to the right
+        if _torch_has_complex:
+            if input.is_complex():
+                input = torch.view_as_real(input)
+                real = False
+            else:
+                real = True
+
+        # Crop/pad
+        newdim = list(range(-ndim-(not real), -(not real)))
+        for j, (s1, d1) in enumerate(zip(s, newdim)):
+            if s1 is None or s1 < 0:
+                s[j] = input.shape[d1]
+            else:
+                if input.shape[d1] > s1:
+                    input = utils.slice_tensor(input, slice(s1), d1)
+                elif input.shape[d1] < s1:
+                    pad = [0] * (d1-1) + [s1 - input.shape[d1]]
+                    input = utils.pad(input, pad, side='post')
+
+        # do fft
+        if real:
+            fft_fn = lambda x, d: torch.rfft(x, d,
+                                             normalized=(norm == 'ortho'),
+                                             onesided=False)
+            output = fft_fn(input, min(ndim, 3))
+            output[..., -1].neg_()  # conjugate
+            if norm == 'backward':
+                output /= py.prod(s[-3:])
+        else:
+            fft_fn = lambda x, d: torch.ifft(x, d, normalized=(norm == 'ortho'))
+            output = fft_fn(input, min(ndim, 3))
+            if norm == 'forward':
+                output *= py.prod(s[-3:])
+
+        # remaining dimensions
+        fft_fn = lambda x, d: torch.ifft(x, d, normalized=(norm == 'ortho'))
+        for j in range(max(0, ndim-3)):
+            output = utils.movedim(output, -j-ndim-1, -2)
+            output = fft_fn(output, 1)
+            output = utils.movedim(output, -2, -j-ndim-1)
+        if norm == 'forward' and ndim > 3:
+            output *= py.prod(s[:-3])
+
+        # Make complex and move back dimension to its original position
+        newdim = list(range(-ndim-1, -1))
+        output = utils.movedim(output, newdim, dim)
+        if _torch_has_complex:
+            output = torch.view_as_complex(output)
+
+        return output
+
+
+if _torch_has_fft_module:
+    rfft = fft_mod.rfft
+else:
+    def rfft(input, n=None, dim=-1, norm='backward'):
+        """One dimensional real-to-complex inverse Fourier transform.
+
+        The FFT of a real signal is Hermitian-symmetric, X[i] = conj(X[-i])
+        so the output contains only the positive frequencies below the
+        Nyquist frequency. To compute the full output, use fft()
+        (or fft(real=True) in torch <= 1.5).
+
+        Parameters
+        ----------
+        input : tensor
+            Input real signal.
+        n : int, optional
+            Signal length. If given, the input will either be zero-padded
+            or trimmed to this length before computing the FFT.
+        dim : int, default=-1
+            Dimension along which to take the Fourier transform.
+            If torch <= 1.5, the dimension encoding the real and imaginary
+            parts are not taken into account in dimension indexing.
+        norm : {'forward', 'backward', 'ortho'}, default='backward'
+            forward : normalize by 1/n
+            backward : no normalization
+            ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
+
+        Returns
+        -------
+        output : tensor
+            Fourier transform of the input signal. Complex tensor.
+            Only positive frequencies are returned.
+            If torch <= 1.5,  the last dimension is of length 2 and
+            contain the real and imaginary parts of the signal.
+
+        """
+        # Move processed dimension to the right
         input = utils.movedim(input, dim, -1)
-    else:
-        input = utils.movedim(input, dim if dim >= 0 else dim - 1, -2)
-        input = utils.movedim(input, dim if dim >= 0 else dim - 1, -2)
 
-    # Crop/pad
-    dim1 = -1 - (not real)
-    if n:
-        if input.shape[dim1] > n:
-            input = utils.slice_tensor(input, slice(n), dim1)
-        elif input.shape[dim1] < n:
-            pad = [0] * (dim1-1) + [n - input.shape[dim1]]
-            input = utils.pad(input, pad, side='post')
-    else:
-        n = input.shape[dim1]
+        # Crop/pad
+        dim1 = dim
+        if dim1 < 0:
+            dim1 += input.dim()
+        if n:
+            if input.shape[dim1] > n:
+                input = utils.slice_tensor(input, slice(n), dim1)
+            elif input.shape[dim1] < n:
+                pad = [0] * (dim1-1) + [n - input.shape[dim1]]
+                input = utils.pad(input, pad, side='post')
+        else:
+            n = input.shape[dim1]
 
-    # Do ifft
-    if real:
+        # Do fft
         output = torch.rfft(input, 1, normalized=(norm == 'ortho'),
-                            onesided=False)
-        output[..., -1].neg_()  # conjugate
+                            onesided=True)
+        if norm == 'forward':
+            output /= float(n)
+
+        # Make complex and move back dimension to its original position
+        if _torch_has_complex:
+            output = torch.view_as_complex(output)
+            output = utils.movedim(output, -1, dim)
+        else:
+            output = utils.movedim(output, -2, dim if dim > 0 else dim - 1)
+
+        return output
+
+
+if _torch_has_fft_module:
+    irfft = lambda *a, real=None, **k: fft_mod.irfft(*a, **k)
+else:
+    def irfft(input, n=None, dim=-1, norm='backward', real=None):
+        """One dimensional complex-to-real inverse Fourier transform.
+
+        The input is interpreted as a one-sided Hermitian signal in the
+        Fourier domain, as produced by rfft(). By the Hermitian property,
+        the output will be real-valued.
+
+        Notes
+        -----
+        .. The correct interpretation of the Hermitian input depends on the
+           length of the original data, as given by `n`. This is because each
+           input shape could correspond to either an odd or even length signal.
+           By default, the signal is assumed to be even length and odd signals
+           will not round-trip properly. So, it is recommended to always pass
+           the signal length `n`.
+
+        Parameters
+        ----------
+        input : tensor
+            Input signal, containing only positive frequencies.
+        n : int, optional
+            Output signal length. If given, the input will either be
+            zero-padded or trimmed to this length before computing the real
+            IFFT. Defaults to even output: n=2*(input.size(dim) - 1).
+        dim : int, default=-1
+            Dimension along which to take the Fourier transform.
+            If torch <= 1.5, the dimension encoding the real and imaginary
+            parts are not taken into account in dimension indexing.
+        norm : {'forward', 'backward', 'ortho'}, default='backward'
+            forward : normalize by 1/n
+            backward : no normalization
+            ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
+        real : bool, default=False
+            Only used if torch <= 1.5.
+            If True, the input signal has no imaginary component and the
+            dimension encoding the real and imaginary parts does not exist.
+
+        Returns
+        -------
+        output : tensor
+            Fourier transform of the input signal. Real tensor.
+
+        """
+        # Make real and move processed dimension to the right
+        if _torch_has_complex:
+            input = utils.movedim(input, dim, -1)
+            if input.is_complex():
+                input = torch.view_as_real(input)
+            else:
+                real = True
+        elif real:
+            input = utils.movedim(input, dim, -1)
+        else:
+            input = utils.movedim(input, dim if dim > 0 else dim - 1, -2)
+
+        if real:
+            # The output should be real *and* symmetric.
+            # I can either allocate an empty imaginary component and
+            # call irfft or build the full signal and call rfft + normalize
+            zero = input.new_zeros([]).expand(input.shape)
+            input = torch.stack([input, zero])
+
+        # Do fft
+        output = torch.irfft(input, 1, normalized=(norm == 'ortho'),
+                             onesided=True, signal_sizes=[n])
+        n = output.shape[-1]
         if norm == 'backward':
             output /= float(n)
-    else:
-        output = torch.ifft(input, 1, normalized=(norm == 'ortho'))
-        if norm == 'forward':
-            output *= float(n)
 
-    # Make complex and move back dimension to its original position
-    if _torch_has_complex:
-        output = torch.view_as_complex(output)
+        # Move back dimension to its original position
         output = utils.movedim(output, -1, dim)
-    else:
-        output = utils.movedim(output, -2, dim if dim >= 0 else dim - 1)
 
-    return output
+        return output
 
 
-def ifftn(input, s=None, dim=-1, norm='backward', real=None):
-    """N-dimensional discrete inverse Fourier transform.
+if _torch_has_fft_module:
+    hfft = lambda *a, real=None, **k: fft_mod.hfft(*a, **k)
+else:
+    def hfft(input, n=None, dim=-1, norm='backward', real=None):
+        """One dimensional complex-to-real Fourier transform.
 
-    Parameters
-    ----------
-    input : tensor
-        Input signal.
-        If torch <= 1.5, the last dimension must be of length 2 and
-        contain the real and imaginary parts of the signal, unless
-        `real is True`.
-    s : sequence[int], optional
-        Signal size in the transformed dimensions.
-        If given, each dimension dim[i] will either be zero-padded or
-        trimmed to the length s[i] before computing the IFFT.
-        If a length -1 is specified, no padding is done in that dimension.
-        Default: s = [input.size(d) for d in input.dim()]
-    dim : sequence[int], optional
-        Dimensions to be transformed. Default: all dimensions, or the
-        last len(s) dimensions if s is given.
-        If torch <= 1.5, the dimension encoding the real and imaginary
-        parts are not taken into account in dimension indexing.
-    norm : {'forward', 'backward', 'ortho'}, default='backward'
-        forward : no normalization
-        backward : normalize by 1/n
-        ortho :  normalize by 1/sqrt(n) (making the IFFT orthonormal)
-    real : bool, default=False
-        Only used if torch <= 1.5.
-        If True, the input signal has no imaginary component and the
-        dimension encoding the real and imaginary parts does not exist.
+        Computes the one dimensional discrete Fourier transform of a
+        Hermitian symmetric input signal.
+        hfft('backward') is equivalent to irfft('forward').
 
-    Returns
-    -------
-    output : tensor
-        Inverse Fourier transform of the input signal. Complex tensor.
-        If torch <= 1.5,  the last dimension is of length 2 and
-        contain the real and imaginary parts of the signal.
+        Notes
+        -----
+        .. The correct interpretation of the Hermitian input depends on the
+           length of the original data, as given by `n`. This is because each
+           input shape could correspond to either an odd or even length signal.
+           By default, the signal is assumed to be even length and odd signals
+           will not round-trip properly. So, it is recommended to always pass
+           the signal length `n`.
 
-    """
-    if _torch_has_fft_module:
-        return fft_mod.ifftn(input, s, dim, norm=norm)
+        Parameters
+        ----------
+        input : tensor
+            Input signal, containing only positive frequencies.
+        n : int, optional
+            Output signal length. If given, the input will either be
+            zero-padded or trimmed to this length before computing the real
+            IFFT. Defaults to even output: n=2*(input.size(dim) - 1).
+        dim : int, default=-1
+            Dimension along which to take the Fourier transform.
+            If torch <= 1.5, the dimension encoding the real and imaginary
+            parts are not taken into account in dimension indexing.
+        norm : {'forward', 'backward', 'ortho'}, default='backward'
+            forward : normalize by 1/n
+            backward : no normalization (equivalent to irfft('forward'))
+            ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
+        real : bool, default=False
+            Only used if torch <= 1.5.
+            If True, the input signal has no imaginary component and the
+            dimension encoding the real and imaginary parts does not exist.
 
-    # Output shape
-    oldcomplex = not (real or _torch_has_complex)
-    if dim:
-        ndim = len(dim)
-    elif s:
-        ndim = len(s)
-    else:
-        ndim = input.dim() - oldcomplex
-    s = s or [-1] * ndim
-    dim = dim or list(range(input.dim()-oldcomplex-len(s), input.dim()-oldcomplex))
-    dim = [input.dim()-oldcomplex+d if d < 0 else d for d in dim]
-    ndim = len(dim)
-    input = utils.movedim(input, dim, -1-oldcomplex)
+        Returns
+        -------
+        output : tensor
+            Fourier transform of the input signal. Real tensor.
 
-    # Make real and move processed dimension to the right
-    if _torch_has_complex:
-        if input.is_complex():
-            input = torch.view_as_real(input)
-            real = False
-        else:
-            real = True
-
-    # Crop/pad
-    newdim = list(range(-ndim-(not real), -(not real)))
-    for j, (s1, d1) in enumerate(zip(s, newdim)):
-        if s1 is None or s1 < 0:
-            s[j] = input.shape[d1]
-        else:
-            if input.shape[d1] > s1:
-                input = utils.slice_tensor(input, slice(s1), d1)
-            elif input.shape[d1] < s1:
-                pad = [0] * (d1-1) + [s1 - input.shape[d1]]
-                input = utils.pad(input, pad, side='post')
-
-    # do fft
-    if real:
-        fft_fn = lambda x, d: torch.rfft(x, d,
-                                         normalized=(norm == 'ortho'),
-                                         onesided=False)
-        output = fft_fn(input, min(ndim, 3))
-        output[..., -1].neg_()  # conjugate
-        if norm == 'backward':
-            output /= py.prod(s[-3:])
-    else:
-        fft_fn = lambda x, d: torch.ifft(x, d, normalized=(norm == 'ortho'))
-        output = fft_fn(input, min(ndim, 3))
-        if norm == 'forward':
-            output *= py.prod(s[-3:])
-
-    # remaining dimensions
-    fft_fn = lambda x, d: torch.ifft(x, d, normalized=(norm == 'ortho'))
-    for j in range(max(0, ndim-3)):
-        output = utils.movedim(output, -j-ndim-1, -2)
-        output = fft_fn(output, 1)
-        output = utils.movedim(output, -2, -j-ndim-1)
-    if norm == 'forward' and ndim > 3:
-        output *= py.prod(s[:-3])
-
-    # Make complex and move back dimension to its original position
-    newdim = list(range(-ndim-1, -1))
-    output = utils.movedim(output, newdim, dim)
-    if _torch_has_complex:
-        output = torch.view_as_complex(output)
-
-    return output
+        """
+        norm = ('forward' if norm == 'backward' else
+                'backward' if norm == 'forward' else
+                'ortho')
+        return irfft(input, n, dim, norm=norm, real=real)
 
 
-def rfft(input, n=None, dim=-1, norm='backward'):
-    """One dimensional real-to-complex inverse Fourier transform.
+if _torch_has_fft_module:
+    ihfft = fft_mod.ihfft
+else:
+    def ihfft(input, n=None, dim=-1, norm='backward'):
+        """One dimensional real-to-complex inverse Fourier transform.
 
-    The FFT of a real signal is Hermitian-symmetric, X[i] = conj(X[-i])
-    so the output contains only the positive frequencies below the
-    Nyquist frequency. To compute the full output, use fft()
-    (or fft(real=True) in torch <= 1.5).
+        The input must be a real-valued signal, interpreted in the Fourier
+        domain. The IFFT of a real signal is Hermitian-symmetric,
+        X[i] = conj(X[-i]). ihfft() represents this in the one-sided form
+        where only the positive frequencies below the Nyquist frequency are
+        included. To compute the full output, use ifft().
 
-    Parameters
-    ----------
-    input : tensor
-        Input real signal.
-    n : int, optional
-        Signal length. If given, the input will either be zero-padded
-        or trimmed to this length before computing the FFT.
-    dim : int, default=-1
-        Dimension along which to take the Fourier transform.
-        If torch <= 1.5, the dimension encoding the real and imaginary
-        parts are not taken into account in dimension indexing.
-    norm : {'forward', 'backward', 'ortho'}, default='backward'
-        forward : normalize by 1/n
-        backward : no normalization
-        ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
+        ihfft('backward') is equivalent to rfft('forward').
 
-    Returns
-    -------
-    output : tensor
-        Fourier transform of the input signal. Complex tensor.
-        Only positive frequencies are returned.
-        If torch <= 1.5,  the last dimension is of length 2 and
-        contain the real and imaginary parts of the signal.
+        Parameters
+        ----------
+        input : tensor
+            Input real signal.
+        n : int, optional
+            Signal length. If given, the input will either be zero-padded
+            or trimmed to this length before computing the FFT.
+        dim : int, default=-1
+            Dimension along which to take the Fourier transform.
+            If torch <= 1.5, the dimension encoding the real and imaginary
+            parts are not taken into account in dimension indexing.
+        norm : {'forward', 'backward', 'ortho'}, default='backward'
+            forward : normalize by 1/n
+            backward : no normalization
+            ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
 
-    """
-    if _torch_has_fft_module:
-        return fft_mod.rfft(input, n, dim, norm=norm)
+        Returns
+        -------
+        output : tensor
+            Fourier transform of the input signal. Complex tensor.
+            Only positive frequencies are returned.
+            If torch <= 1.5,  the last dimension is of length 2 and
+            contain the real and imaginary parts of the signal.
 
-    # Move processed dimension to the right
-    input = utils.movedim(input, dim, -1)
-
-    # Crop/pad
-    dim1 = dim
-    if dim1 < 0:
-        dim1 += input.dim()
-    if n:
-        if input.shape[dim1] > n:
-            input = utils.slice_tensor(input, slice(n), dim1)
-        elif input.shape[dim1] < n:
-            pad = [0] * (dim1-1) + [n - input.shape[dim1]]
-            input = utils.pad(input, pad, side='post')
-    else:
-        n = input.shape[dim1]
-
-    # Do fft
-    output = torch.rfft(input, 1, normalized=(norm == 'ortho'),
-                        onesided=True)
-    if norm == 'forward':
-        output /= float(n)
-
-    # Make complex and move back dimension to its original position
-    if _torch_has_complex:
-        output = torch.view_as_complex(output)
-        output = utils.movedim(output, -1, dim)
-    else:
-        output = utils.movedim(output, -2, dim if dim > 0 else dim - 1)
-
-    return output
-
-
-def irfft(input, n=None, dim=-1, norm='backward', real=None):
-    """One dimensional complex-to-real inverse Fourier transform.
-
-    The input is interpreted as a one-sided Hermitian signal in the
-    Fourier domain, as produced by rfft(). By the Hermitian property,
-    the output will be real-valued.
-
-    Notes
-    -----
-    .. The correct interpretation of the Hermitian input depends on the
-       length of the original data, as given by `n`. This is because each
-       input shape could correspond to either an odd or even length signal.
-       By default, the signal is assumed to be even length and odd signals
-       will not round-trip properly. So, it is recommended to always pass
-       the signal length `n`.
-
-    Parameters
-    ----------
-    input : tensor
-        Input signal, containing only positive frequencies.
-    n : int, optional
-        Output signal length. If given, the input will either be
-        zero-padded or trimmed to this length before computing the real
-        IFFT. Defaults to even output: n=2*(input.size(dim) - 1).
-    dim : int, default=-1
-        Dimension along which to take the Fourier transform.
-        If torch <= 1.5, the dimension encoding the real and imaginary
-        parts are not taken into account in dimension indexing.
-    norm : {'forward', 'backward', 'ortho'}, default='backward'
-        forward : normalize by 1/n
-        backward : no normalization
-        ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
-    real : bool, default=False
-        Only used if torch <= 1.5.
-        If True, the input signal has no imaginary component and the
-        dimension encoding the real and imaginary parts does not exist.
-
-    Returns
-    -------
-    output : tensor
-        Fourier transform of the input signal. Real tensor.
-
-    """
-    if _torch_has_fft_module:
-        return fft_mod.irfft(input, n, dim, norm=norm)
-
-    # Make real and move processed dimension to the right
-    if _torch_has_complex:
-        input = utils.movedim(input, dim, -1)
-        if input.is_complex():
-            input = torch.view_as_real(input)
-        else:
-            real = True
-    elif real:
-        input = utils.movedim(input, dim, -1)
-    else:
-        input = utils.movedim(input, dim if dim > 0 else dim - 1, -2)
-
-    if real:
-        # The output should be real *and* symmetric.
-        # I can either allocate an empty imaginary component and
-        # call irfft or build the full signal and call rfft + normalize
-        zero = input.new_zeros([]).expand(input.shape)
-        input = torch.stack([input, zero])
-
-    # Do fft
-    output = torch.irfft(input, 1, normalized=(norm == 'ortho'),
-                         onesided=True, signal_sizes=[n])
-    n = output.shape[-1]
-    if norm == 'backward':
-        output /= float(n)
-
-    # Move back dimension to its original position
-    output = utils.movedim(output, -1, dim)
-
-    return output
-
-
-def hfft(input, n=None, dim=-1, norm='backward', real=None):
-    """One dimensional complex-to-real Fourier transform.
-
-    Computes the one dimensional discrete Fourier transform of a
-    Hermitian symmetric input signal.
-    hfft('backward') is equivalent to irfft('forward').
-
-    Notes
-    -----
-    .. The correct interpretation of the Hermitian input depends on the
-       length of the original data, as given by `n`. This is because each
-       input shape could correspond to either an odd or even length signal.
-       By default, the signal is assumed to be even length and odd signals
-       will not round-trip properly. So, it is recommended to always pass
-       the signal length `n`.
-
-    Parameters
-    ----------
-    input : tensor
-        Input signal, containing only positive frequencies.
-    n : int, optional
-        Output signal length. If given, the input will either be
-        zero-padded or trimmed to this length before computing the real
-        IFFT. Defaults to even output: n=2*(input.size(dim) - 1).
-    dim : int, default=-1
-        Dimension along which to take the Fourier transform.
-        If torch <= 1.5, the dimension encoding the real and imaginary
-        parts are not taken into account in dimension indexing.
-    norm : {'forward', 'backward', 'ortho'}, default='backward'
-        forward : normalize by 1/n
-        backward : no normalization (equivalent to irfft('forward'))
-        ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
-    real : bool, default=False
-        Only used if torch <= 1.5.
-        If True, the input signal has no imaginary component and the
-        dimension encoding the real and imaginary parts does not exist.
-
-    Returns
-    -------
-    output : tensor
-        Fourier transform of the input signal. Real tensor.
-
-    """
-    if _torch_has_fft_module:
-        return fft_mod.hfft(input, n, dim, norm=norm)
-
-    norm = ('forward' if norm == 'backward' else
-            'backward' if norm == 'forward' else
-            'ortho')
-    return irfft(input, n, dim, norm=norm, real=real)
-
-
-def ihfft(input, n=None, dim=-1, norm='backward'):
-    """One dimensional real-to-complex inverse Fourier transform.
-
-    The input must be a real-valued signal, interpreted in the Fourier
-    domain. The IFFT of a real signal is Hermitian-symmetric,
-    X[i] = conj(X[-i]). ihfft() represents this in the one-sided form
-    where only the positive frequencies below the Nyquist frequency are
-    included. To compute the full output, use ifft().
-
-    ihfft('backward') is equivalent to rfft('forward').
-
-    Parameters
-    ----------
-    input : tensor
-        Input real signal.
-    n : int, optional
-        Signal length. If given, the input will either be zero-padded
-        or trimmed to this length before computing the FFT.
-    dim : int, default=-1
-        Dimension along which to take the Fourier transform.
-        If torch <= 1.5, the dimension encoding the real and imaginary
-        parts are not taken into account in dimension indexing.
-    norm : {'forward', 'backward', 'ortho'}, default='backward'
-        forward : normalize by 1/n
-        backward : no normalization
-        ortho :  normalize by 1/sqrt(n) (making the FFT orthonormal)
-
-    Returns
-    -------
-    output : tensor
-        Fourier transform of the input signal. Complex tensor.
-        Only positive frequencies are returned.
-        If torch <= 1.5,  the last dimension is of length 2 and
-        contain the real and imaginary parts of the signal.
-
-    """
-    if _torch_has_fft_module:
-        return fft_mod.ihfft(input, n, dim, norm=norm)
-
-    norm = ('forward' if norm == 'backward' else
-            'backward' if norm == 'forward' else
-            'ortho')
-    return rfft(input, n, dim, norm=norm)
+        """
+        norm = ('forward' if norm == 'backward' else
+                'backward' if norm == 'forward' else
+                'ortho')
+        return rfft(input, n, dim, norm=norm)
 
 
 def hpart(x, dim=-1, shift=False, real=None):
