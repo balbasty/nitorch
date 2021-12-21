@@ -3,10 +3,10 @@ from nitorch import core, spatial
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
 from ._utils import (hessian_loaddiag_, hessian_matmul, hessian_solve)
-from ..utils import smart_pull, smart_push, smart_grad, smart_grid
-from nitorch.core.math import besseli, besseli_ratio
+from ..utils import (smart_pull, smart_push, smart_grad, smart_grid,
+                     nll_chi, nll_gauss, dot, ssq,
+                     get_mask_missing, mask_nan_, check_nans_)
 from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
-from typing import Optional
 
 # Boundary condition used for the distortion field throughout
 DIST_BOUND = 'dct2'
@@ -558,131 +558,6 @@ def recon_fit(inter, slope, te: float):
     return inter.add(slope, alpha=-te).exp()
 
 
-@torch.jit.script
-def ssq(x):
-    """Sum of squares"""
-    return (x*x).sum(dtype=torch.double)
-
-
-@torch.jit.script
-def dot(x, y):
-    """Dot product"""
-    return (x*y).sum(dtype=torch.double)
-
-
-def get_mask_missing(dat, fit):
-    """Mask of voxels excluded from the objective"""
-    return ~(torch.isfinite(fit) & torch.isfinite(dat) & (dat > 0))
-
-
-def mask_nan_(x, value: float = 0.):
-    """Mask out all non-finite values"""
-    return x.masked_fill_(torch.isfinite(x).bitwise_not(), value)
-
-
-def check_nans_(x, warn: Optional[str] = None, value: float = 0):
-    """Mask out all non-finite values + warn if `warn is not None`"""
-    msk = torch.isfinite(x)
-    if warn is not None:
-        if ~(msk.all()):
-            print(f'WARNING: NaNs in {warn}')
-    x.masked_fill_(msk.bitwise_not(), value)
-    return x
-
-
-def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
-    """Negative log-likelihood of the noncentral Chi distribution
-
-    Parameters
-    ----------
-    dat : tensor
-        Observed data -- will be modified in-place
-    fit : tensor
-        Signal fit
-    msk : tensor
-        Mask of observed values
-    lam : float
-        Noise precision
-    df : float
-        Degrees of freedom
-    return_residuals : bool
-        Return residuals (gradient) on top of nll
-
-    Returns
-    -------
-    nll : () tensor
-        Negative log-likelihood
-    res : tensor, if `return_residuals`
-        Residuals
-
-    """
-    fitm = fit[msk]
-    datm = dat[msk]
-
-    # components of the log-likelihood
-    sumlogfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
-    sumfit2 = fitm.flatten().dot(fitm.flatten())
-    sumlogdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
-    sumdat2 = datm.flatten().dot(datm.flatten())
-
-    # reweighting
-    z = (fitm * datm).mul_(lam).clamp_min_(1e-32)
-    xi = besseli_ratio(df / 2 - 1, z)
-    logbes = besseli(df / 2 - 1, z, 'log')
-    logbes = logbes.sum(dtype=torch.double)
-
-    # sum parts
-    crit = (df / 2 - 1) * sumlogfit - (df / 2) * sumlogdat - logbes
-    crit += 0.5 * lam * (sumfit2 + sumdat2)
-    if not return_residuals:
-        return crit
-
-    # compute residuals
-    res = dat.zero_()
-    res[msk] = datm.mul_(xi).neg_().add_(fitm)
-    return crit, res
-
-
-def nll_gauss(dat, fit, msk, lam, return_residuals=True):
-    """Negative log-likelihood of the noncentral Chi distribution
-
-    Parameters
-    ----------
-    dat : tensor
-        Observed data (should be zero where not observed)
-    fit : tensor
-        Signal fit (should be zero where not observed)
-    msk : tensor
-        Mask of observed values
-    lam : float
-        Noise precision
-    nu : float
-        Degrees of freedom
-    return_residuals : bool
-        Return residuals (gradient) on top of nll
-
-    Returns
-    -------
-    nll : () tensor
-        Negative log-likelihood
-    res : tensor, if `return_residuals`
-        Residuals
-
-    """
-    res = dat.neg_().add_(fit)
-    crit = 0.5 * lam * ssq(res[msk])
-    return (crit, res) if return_residuals else crit
-
-
-# if core.utils.torch_version('>', (1, 4)):
-    # For some reason, the output of torch.isfinite is not understood
-    # as a tensor by TS. I am disabling TS for these functions until
-    # I find a better solution.
-    # get_mask_missing = torch.jit.script(get_mask_missing)
-    # mask_nan_ = torch.jit.script(mask_nan_)
-    # check_nans_ = torch.jit.script(check_nans_)
-
-
 def derivatives_parameters(contrast, distortion, intercept, decay, opt,
                            do_grad=True):
     """Compute the gradient and Hessian of the parameter maps with
@@ -756,7 +631,7 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt,
         jac_blip = jac_up if blip > 0 else jac_down
 
         # compute residuals
-        dat = echo.fdata(**backend, rand=True, cache=False)
+        dat = echo.fdata(**backend, rand=True, missing=0)
         fit = recon_fit(inter, slope, te)
         # push_fit = smart_push(fit, grid_blip, bound='dft', extrapolate=True)
         push_fit = smart_pull(fit, grid_blip, bound='dft', extrapolate=True)

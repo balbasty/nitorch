@@ -24,24 +24,34 @@ def postproc(maps):
     mt : ParameterMap, optional
 
     """
-    maps.r1.volume = maps.r1.fdata().exp_()
-    maps.r1.name = 'R1'
-    maps.r1.unit = '1/s'
-    maps.r2s.volume = maps.r2s.fdata().exp_()
-    maps.r2s.name = 'R2*'
-    maps.r2s.unit = '1/s'
-    maps.pd.volume = maps.pd.fdata().exp_()
-    maps.r2s.name = 'PD'
-    maps.r2s.unit = 'a.u.'
+    # TODO:
+    #   I could also convert the log-space uncertainty into
+    #   "exponentiated" uncertainty. PD/R1/R2* are log-normal distirbuted
+    #   under the Laplace approximation, so that's easy. But MTsat
+    #   is logit-normal distributed, and that's harder (there's no
+    #   analytical solution for its mean and variance).
+    #   https://en.wikipedia.org/wiki/Log-normal_distribution
+    #   https://en.wikipedia.org/wiki/Logit-normal_distribution
+
+    pd = maps.pd
+    r1 = maps.r1
+    r2s = maps.r2s
+    r1.volume = r1.fdata().exp_()
+    r1.name = 'R1'
+    r1.unit = '1/s'
+    r2s.volume = r2s.fdata().exp_()
+    r2s.name = 'R2*'
+    r2s.unit = '1/s'
+    pd.volume = maps.pd.fdata().exp_()
+    pd.name = 'PD'
+    pd.unit = 'a.u.'
     if hasattr(maps, 'mt'):
-        maps.mt.volume = maps.mt.fdata().neg_().exp_()
-        maps.mt.volume += 1
-        maps.mt.volume = maps.mt.fdata().reciprocal_()
-        maps.mt.volume *= 100
-        maps.mt.name = 'MTsat'
-        maps.mt.unit = 'p.u.'
-        return maps.pd, maps.r1, maps.r2s, maps.mt
-    return maps.pd, maps.r1, maps.r2s
+        mt = maps.mt
+        mt.volume = mt.fdata().neg_().exp_().add_(1).reciprocal_().mul_(100)
+        mt.name = 'MTsat'
+        mt.unit = 'p.u.'
+        return pd, r1, r2s, mt
+    return pd, r1, r2s
 
 
 def preproc(data, transmit=None, receive=None, opt=None):
@@ -152,17 +162,19 @@ def preproc(data, transmit=None, receive=None, opt=None):
         data_reg = [(contrast.echo(0).fdata(rand=True, cache=False, **backend),
                      contrast.affine) for contrast in data]
         data_reg += [(map.magnitude.fdata(rand=True, cache=False, **backend),
-                      map.magnitude.affine) for map in transmit]
+                      map.magnitude.affine) for map in transmit
+                     if map and map.magnitude is not None]
         data_reg += [(map.magnitude.fdata(rand=True, cache=False, **backend),
-                      map.magnitude.affine) for map in receive]
+                      map.magnitude.affine) for map in receive
+                     if map and map.magnitude is not None]
         dats, affines, _ = affine_align(data_reg, device=device)
-        if opt.verbose > 1 and plt:
-            plt.figure()
-            for i in range(len(dats)):
-                plt.subplot(1, len(dats), i+1)
-                plt.imshow(dats[i, :, dats.shape[2]//2, :].cpu())
-                plt.axis('off')
-            plt.show()
+        # if opt.verbose > 1 and plt:
+        #     plt.figure()
+        #     for i in range(len(dats)):
+        #         plt.subplot(1, len(dats), i+1)
+        #         plt.imshow(dats[i, :, dats.shape[2]//2, :].cpu())
+        #         plt.axis('off')
+        #     plt.show()
         for contrast, aff in zip(data + transmit + receive, affines):
             aff, contrast.affine = core.utils.to_max_device(aff, contrast.affine)
             contrast.affine = torch.matmul(aff.inverse(), contrast.affine)
@@ -174,23 +186,32 @@ def preproc(data, transmit=None, receive=None, opt=None):
         opt.recon.affine = opt.recon.space
     if opt.recon.fov is None:
         opt.recon.fov = opt.recon.space
-    if isinstance(opt.recon.affine, int):
+    if isinstance(opt.recon.affine, str):
+        assert opt.recon.affine == 'mean'
+        mean_affine, _ = spatial.mean_space([dat.affine for dat in data],
+                                            [dat.shape[1:] for dat in data])
+    elif isinstance(opt.recon.affine, int):
         mean_affine = affines[opt.recon.affine]
     else:
         mean_affine = torch.as_tensor(opt.recon.affine)
-    if isinstance(opt.recon.fov, int):
+    if isinstance(opt.recon.affine, str):
+        assert opt.recon.affine in ('mean', 'bb')
+        mean_affine, mean_shape = spatial.fov_max(mean_affine,
+                                                  [dat.affine for dat in data],
+                                                  [dat.shape[1:] for dat in data])
+    elif isinstance(opt.recon.fov, int):
         mean_shape = shapes[opt.recon.fov]
     else:
         mean_shape = tuple(opt.recon.fov)
 
     # --- allocate maps ---
-    maps = GREEQParameterMaps()
-    maps.pd = ParameterMap(mean_shape, fill=pd, affine=mean_affine, **backend)
-    maps.r1 = ParameterMap(mean_shape, fill=r1, affine=mean_affine, **backend)
-    maps.r2s = ParameterMap(mean_shape, fill=r2s, affine=mean_affine, **backend)
+    maps = GREEQParameterMaps([3+(mt is not None), *mean_shape],
+                              affine=mean_affine, **backend)
+    maps.pd.volume.fill_(pd)
+    maps.r1.volume.fill_(r1)
+    maps.r2s.volume.fill_(r2s)
     if mt is not None:
-        maps.mt = ParameterMap(mean_shape, fill=mt, affine=mean_affine, **backend)
-    maps.affine = mean_affine
+        maps.mt.volume.fill_(mt)
 
     # --- repeat fields if not enough ---
     if transmit:

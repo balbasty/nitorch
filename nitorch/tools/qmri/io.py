@@ -217,29 +217,31 @@ class BaseND:
         if not isinstance(mapped, io.MappedArray):
             raise TypeError('Expected a MappedArray but got a {}.'
                             .format(type(mapped)))
-        new = cls()
+        new = BaseND.__new__(cls)
         new.volume = mapped
         new.reset_attributes()
         new.set_attributes(**attributes)
         new.atleast_3d_()
+        cls.__init__(new)
         return new
 
     @classmethod
     def from_tensor(cls, tensor, **attributes):
         """Build an MRI object from a mapped array"""
         tensor = torch.as_tensor(tensor)
-        new = cls()
+        new = BaseND.__new__(cls)
         new.volume = tensor
         new.reset_attributes()
         new.set_attributes(**attributes)
         new.atleast_3d_()
         new.device = tensor.device
+        cls.__init__(new)
         return new
 
     @classmethod
     def from_instance(cls, instance, **attributes):
         """Build an MRI object from an other instance"""
-        new = cls()
+        new = BaseND.__new__(cls)
         new.volume = instance.volume
         new.affine = instance.affine
         new.scanner_position = instance.scanner_position
@@ -249,6 +251,7 @@ class BaseND:
         old_attributes.update(attributes)
         new.set_attributes(**old_attributes)
         new.atleast_3d_()
+        cls.__init__(new)
         return new
 
     def atleast_nd_(self, dim):
@@ -321,7 +324,7 @@ class BaseND:
             self._fdata[item] = value
         return self
 
-    def fdata(self, dtype=None, device=None, rand=True, missing=None,
+    def fdata(self, dtype=None, device=None, rand=False, missing=None,
               cache=False, copy=False, **kwargs):
         """Get scaled floating-point data.
 
@@ -354,11 +357,14 @@ class BaseND:
         if missing is not None:
             missing = py.ensure_list(missing)
 
+        do_copy = copy or rand or (missing is not None)
+
         if not cache or self._fdata is None:
             if isinstance(self.volume, io.MappedArray):
                 _fdata = self.volume.fdata(**backend)
             else:
-                _fdata = self.volume.to(**backend, copy=rand or (missing is not None))
+                _fdata = self.volume.to(**backend, copy=do_copy)
+            do_copy = False
             mask = torch.isfinite(_fdata).bitwise_not_()
             if missing:
                 mask.bitwise_or_(utils.isin(_fdata, missing))
@@ -378,9 +384,10 @@ class BaseND:
             _fdata[mask] = float('nan')
             if cache:
                 self._fdata = _fdata
+                do_copy = copy
         else:
             _fdata = self._fdata
-        return _fdata.to(**backend, copy=copy)
+        return _fdata.to(**backend, copy=do_copy)
 
     def savef(self, fname, *args, **kwargs):
         """Save to disk"""

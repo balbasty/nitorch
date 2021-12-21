@@ -719,9 +719,9 @@ def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
 
     # components of the log-likelihood
     sumlogfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
-    sumfit2 = fitm.flatten().dot(fitm.flatten())
+    sumfit2 = ssq(fitm)
     sumlogdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
-    sumdat2 = datm.flatten().dot(datm.flatten())
+    sumdat2 = ssq(datm)
 
     # reweighting
     z = (fitm * datm).mul_(lam).clamp_min_(1e-32)
