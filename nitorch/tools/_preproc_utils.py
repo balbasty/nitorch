@@ -1,8 +1,6 @@
 """Pre-processing utility functions.
 
 """
-
-
 import os
 import torch
 from nitorch.spatial import (affine_grid, affine_basis, affine_matrix_classic,
@@ -10,7 +8,7 @@ from nitorch.spatial import (affine_grid, affine_basis, affine_matrix_classic,
 from nitorch.io import map, savef
 from nitorch.core.py import file_mod
 from nitorch.core.constants import pi
-from nitorch.core.linalg import (meanm, _expm)
+from nitorch.core.linalg import (meanm, _expm, lmdiv, cholesky)
 
 
 def _format_input(img, device='cpu', rand=False, cutoff=None):
@@ -44,19 +42,18 @@ def _process_reg(dat, mat, mat_a, mat_fix, dim_fix, write):
     """
     N = len(dat)
     rdat = torch.zeros((N, ) + dim_fix,
-        dtype=dat[0].dtype, device=dat[0].device)
+                       dtype=dat[0].dtype, device=dat[0].device)
     for n in range(N):  # loop over input images
-        if torch.all(mat_a[n, ...] -
-                     torch.eye(4, device=mat_a[n,...].device) == 0):
-            rdat[n, ...] = dat[n]
+        if torch.all(mat_a[n] - torch.eye(4, device=mat_a[n].device) == 0):
+            rdat[n] = dat[n]
         else:
-            mat_r = torch.linalg.solve(mat[n], mat_a[n, ...].mm(mat_fix))
-            rdat[n, ...] = _reslice_dat_3d(dat[n], mat_r, dim_fix)
+            mat_r = lmdiv(mat[n], mat_a[n].mm(mat_fix))
+            rdat[n] = _reslice_dat_3d(dat[n], mat_r, dim_fix)
         if write == 'reslice':
-            dat[n] = rdat[n, ...]
+            dat[n] = rdat[n]
             mat[n] = mat_fix
         elif write == 'affine':
-            mat[n] = torch.linalg.solve(mat_a[n, ...], mat[n])
+            mat[n] = lmdiv(mat_a[n], mat[n])
     # Write output to disk?
     if write in ['reslice', 'affine']:
         write = True
@@ -108,7 +105,7 @@ def _msk_fov(dat, mat, mat0, dim0):
 
     """
     dim = dat.shape
-    M = torch.linalg.solve(mat0, mat)  # mat0\mat1
+    M = lmdiv(mat0, mat)  # mat0\mat1
     grid = affine_grid(M, dim)
     msk = (grid[..., 0] >= 1) & (grid[..., 0] <= dim0[0]) & \
           (grid[..., 1] >= 1) & (grid[..., 1] <= dim0[1]) & \
@@ -324,7 +321,7 @@ def _mean_space(Mat, Dim, vx=None):
             d = M.flatten() - mat.flatten()
             gr = dM.t().mm(d[..., None])
             Hes = dM.t().mm(dM)
-            p = p - torch.linalg.solve(Hes, gr)[:, 0]
+            p = p - lmdiv(Hes, gr)[:, 0]
             if torch.sum(gr**2) < 1e-8:
                 break
         mat = M.clone()
@@ -346,8 +343,8 @@ def _mean_space(Mat, Dim, vx=None):
                                 [1, 1, 1, 1, dm[2], dm[2], dm[2], dm[2]],
                                 [1, 1, 1, 1, 1, 1, 1, 1]],
                                device=device, dtype=dtype)
-        M = torch.linalg.solve(mat, Mat0[n, ...])
-        vx1 = M[:-1,:].mm(corners)
+        M = lmdiv(mat, Mat0[n])
+        vx1 = M[:-1, :].mm(corners)
         mx_all[..., n] = torch.max(vx1, dim=1)[0]
         mn_all[..., n] = torch.min(vx1, dim=1)[0]
     mx = mx_all.max(dim=1)[0]
@@ -384,7 +381,7 @@ def _imatrix(M):
     one = torch.tensor(1.0, device=device, dtype=dtype)
     # Translations and Zooms
     R = M[:-1, :-1]
-    C = torch.linalg.cholesky(R.t().mm(R))
+    C = cholesky(R.t().mm(R))
     C = C.t()
     d = torch.diag(C)
     P = torch.tensor([M[0, 3], M[1, 3], M[2, 3], 0, 0, 0, d[0], d[1], d[2], 0, 0, 0],
@@ -392,7 +389,7 @@ def _imatrix(M):
     if R.det() < 0:  # Fix for -ve determinants
         P[6] = -P[6]
     # Shears
-    C = torch.linalg.solve(torch.diag(torch.diag(C)), C)
+    C = lmdiv(torch.diag(torch.diag(C)), C)
     P[9] = C[0, 1]
     P[10] = C[0, 2]
     P[11] = C[1, 2]

@@ -457,7 +457,7 @@ def identity_grid(shape, dtype=None, device=None, jitter=False):
     """
     mesh1d = [torch.arange(float(s), dtype=dtype, device=device)
               for s in shape]
-    grid = torch.meshgrid(*mesh1d)
+    grid = utils.meshgrid_ij(*mesh1d)
     grid = torch.stack(grid, dim=-1)
     if jitter:
         reproducible = jitter == 'reproducible'
@@ -500,7 +500,7 @@ def add_identity_grid_(disp):
     spatial = disp.shape[-dim-1:-1]
     mesh1d = [torch.arange(s, dtype=disp.dtype, device=disp.device)
               for s in spatial]
-    grid = torch.meshgrid(mesh1d, indexing='ij')
+    grid = utils.meshgrid_script_ij(mesh1d)
     disp = _movedim1(disp, -1, 0)
     for i, grid1 in enumerate(grid):
         disp[i].add_(grid1)

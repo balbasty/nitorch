@@ -7,6 +7,7 @@ from scipy.optimize._constraints import Bounds
 import torch
 from torch.nn import functional as F
 from nitorch.plot import show_slices
+from nitorch.core import linalg
 from nitorch.core.kernels import smooth
 from nitorch.core.utils import pad
 from nitorch.spatial import identity_grid, im_gradient, voxel_size
@@ -61,18 +62,18 @@ def _rescale(dat, mn_out=0, mx_out=511):
     """ Rescales image intensities between mn_out and mx_out.
 
     """
-    dtype = dat.dtype
-    device = dat.device
-    dat[(dat == dat.min()) | ~torch.isfinite(dat) | (dat == dat.max())] = 0
+    backend = dict(dtype=dat.dtype, device=dat.device)
+    msk = torch.isfinite(dat).bitwise_not_()
+    msk = msk.bitwise_or_(dat == dat.min()).bitwise_or_(dat == dat.max())
+    dat = dat.masked_fill_(msk, 0)
     # Make scaling to set image intensities between mn_out and mx_out
-    mn = torch.tensor([dat.min(), 1], dtype=dtype, device=device)[None, ...]
-    mx = torch.tensor([dat.max(), 1], dtype=dtype, device=device)[None, ...]
-    sf = torch.cat((mn, mx), dim=0)
-    sf = torch.linalg.solve(sf, torch.tensor([mn_out, mx_out], dtype=dtype, device=device)[..., None]).squeeze()
+    mnmx_in = torch.as_tensor([[dat.min(), 1], [dat.max(), 1]], **backend)
+    mnmx_out = torch.as_tensor([mn_out, mx_out], **backend)
+    sf = linalg.lmdiv(mnmx_in, mnmx_out.unsqueeze(-1)).squeeze(-1)
     # Rescale
-    dat = dat*sf[0] + sf[1]
+    dat = dat.mul_(sf[0]).add_(sf[1])
     # Clamp
-    dat = dat.clamp_min(mn_out).clamp_max(mx_out)
+    dat = dat.clamp_(mn_out, mx_out)
 
     return dat
 
@@ -319,14 +320,13 @@ def _smooth_for_reg(dat, mat, samp):
         fwhm=fwhm, device=dat.device, dtype=dat.dtype, sep=True)
     # Padding amount for subsequent convolution
     size_pad = (smo[0].shape[2], smo[1].shape[3], smo[2].shape[4])
-    size_pad = torch.div(torch.tensor(size_pad) - 1, 2, rounding_mode='floor')
-    size_pad = tuple(size_pad.int().tolist())
+    size_pad = tuple(map(lambda x: (x - 1)//2, size_pad))
     # Smooth deformation with Gaussian kernel (by separable convolution)
     dat = pad(dat, size_pad, side='both')
-    dat = dat[None, None, ...]
+    dat = dat[None, None]
     dat = F.conv3d(dat, smo[0])
     dat = F.conv3d(dat, smo[1])
-    dat = F.conv3d(dat, smo[2])[0, 0, ...]
+    dat = F.conv3d(dat, smo[2])[0, 0]
 
     return dat
 

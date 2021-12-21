@@ -11,7 +11,7 @@ from .optionals import numpy as np
 import numbers
 import os
 import random
-from typing import Optional
+from typing import Optional, List
 Tensor = torch.Tensor
 
 
@@ -299,16 +299,19 @@ def shiftdim(x, n=None):
     return x
 
 
-def fast_movedim(input, source, destination):
-    """Move the position of exactly one dimension"""
-    dim = input.dim()
+if hasattr(torch, 'movedim'):
+    fast_movedim = torch.movedim
+else:
+    def fast_movedim(input, source, destination):
+        """Move the position of exactly one dimension"""
+        dim = input.dim()
 
-    source = dim + source if source < 0 else source
-    destination = dim + destination if destination < 0 else destination
-    permutation = list(range(dim))
-    del permutation[source]
-    permutation.insert(destination, source)
-    return input.permute(*permutation)
+        source = dim + source if source < 0 else source
+        destination = dim + destination if destination < 0 else destination
+        permutation = list(range(dim))
+        del permutation[source]
+        permutation.insert(destination, source)
+        return input.permute(*permutation)
 
 
 def movedim(input, source, destination):
@@ -2130,3 +2133,34 @@ class benchmark:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         torch.backends.cudnn.benchmark = self.prev_value
+
+
+if torch_version('>=', (1, 10)):
+    @torch.jit.script
+    def meshgrid_script_ij(x: List[torch.Tensor]) -> List[Tensor]:
+        return torch.meshgrid(x, indexing='ij')
+    @torch.jit.script
+    def meshgrid_script_xy(x: List[torch.Tensor]) -> List[Tensor]:
+        return torch.meshgrid(x, indexing='xy')
+    meshgrid_ij = lambda *x: torch.meshgrid(*x, indexing='ij')
+    meshgrid_xy = lambda *x: torch.meshgrid(*x, indexing='xy')
+else:
+    @torch.jit.script
+    def meshgrid_script_ij(x: List[torch.Tensor]) -> List[Tensor]:
+        return torch.meshgrid(x)
+    @torch.jit.script
+    def meshgrid_script_xy(x: List[torch.Tensor]) -> List[Tensor]:
+        grid = torch.meshgrid(x)
+        if len(grid) > 1:
+            grid[0] = grid[0].transpose(0, 1)
+            grid[1] = grid[1].transpose(0, 1)
+        return grid
+    meshgrid_ij = lambda *x: torch.meshgrid(*x)
+    def meshgrid_xy(*x):
+        grid = list(torch.meshgrid(*x))
+        if len(grid) > 1:
+            grid[0] = grid[0].transpose(0, 1)
+            grid[1] = grid[1].transpose(0, 1)
+        return grid
+
+

@@ -27,6 +27,14 @@ def round(t, decimals=0):
     return torch.round(t * 10 ** decimals) / (10 ** decimals)
 
 
+if utils.torch_version('>=', (1, 8)):
+    def floor_div(x, y):
+        return torch.div(x, y, rounding_mode='floor')
+else:
+    def floor_div(x, y):
+        return (x / y).floor_()
+
+
 # ======================================================================
 #
 #                             REDUCTIONS

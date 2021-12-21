@@ -8,7 +8,7 @@ from torch.nn import functional as F
 from nitorch.core.kernels import smooth
 from nitorch.core.utils import pad
 from nitorch.spatial import (affine_matvec, grid_pull)
-from nitorch.core.linalg import expm
+from nitorch.core.linalg import expm, lmdiv
 from nitorch.plot import show_slices
 
 
@@ -65,7 +65,7 @@ def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
     was_numpy = False
     if isinstance(q, np.ndarray):
         was_numpy = True
-        q = torch.from_numpy(q).to(device) # To torch tensor
+        q = torch.from_numpy(q).to(device)  # To torch tensor
     dm_fix = dat_fix.shape
     Nq = B.shape[0]
     N = torch.tensor(len(dat), device=device, dtype=torch.float32)  # For modulating NJTV cost
@@ -77,14 +77,13 @@ def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
 
     for i, m in enumerate(mov):  # Loop over moving images
         # Get affine matrix
-        mat_a = expm(q[torch.arange(i*Nq,i*Nq + Nq)], B)
+        mat_a = expm(q[torch.arange(i*Nq, i*Nq + Nq)], B)
         # Compose matrices
-        M = torch.linalg.solve(mat[m], mat_a.mm(mat_fix)).type(torch.float32)  # mat_mov\mat_a*mat_fix
+        M = lmdiv(mat[m], mat_a.mm(mat_fix)).to(grid0.dtype)  # mat_mov\mat_a*mat_fix
         # Transform fixed grid
         grid = affine_matvec(M, grid0)
         # Resample to fixed grid
-        dat_new = grid_pull(dat[m][None, None, ...], grid[None, ...],
-            bound='dft', extrapolate=False, interpolation=1)[0, 0, ...]
+        dat_new = grid_pull(dat[m], grid, bound='dft', extrapolate=False, interpolation=1)
         if cost_fun in _costs_edge:
             jtv += dat_new
             if cost_fun == 'njtv':
@@ -217,8 +216,7 @@ def _hist_2d(img0, img1, mx_int, fwhm):
                  device=img0.device, dtype=torch.float32, sep=True)
     # Pad
     p = (smo[0].shape[2], smo[1].shape[3])
-    p = torch.div(torch.tensor(p) - 1, 2, rounding_mode='floor')
-    p = tuple(p.int().tolist())
+    p = tuple(map(lambda x: (x-1) // 2, p))
     H = pad(H, p, side='both')
     # Smooth
     H = H[None, None, ...]
