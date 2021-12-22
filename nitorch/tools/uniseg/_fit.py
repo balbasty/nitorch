@@ -1142,7 +1142,7 @@ class UniSeg(SpatialMixture):
     Unified Segmentation model, based on multivariate Gaussian Mixture Model (GMM).
     """
 
-    def __init__(self, *args, wishart=True, lam_wishart=0.01, **kwargs):
+    def __init__(self, *args, wishart=True, lam_wishart=1, **kwargs):
         # wishart : bool or 'preproc8', default=True
         #   If True, use a Wishart prior derived from global suffstats.
         #   If 'preproc8', the bottom of the template FOV is discarded

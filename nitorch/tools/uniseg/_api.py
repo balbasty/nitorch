@@ -10,8 +10,8 @@ from nitorch import io
 def uniseg(x, w=None, affine=None, device=None,
            nb_classes=None, prior=None, affine_prior=None,
            do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
-           cleanup=None, spacing=3, lam_bias=0.1, lam_warp=0.1, lam_mixing=100,
-           lam_mrf=100, wishart=None, lam_wishart=1,
+           wishart=None, cleanup=None, spacing=3,
+           lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=100, lam_wishart=1,
            max_iter=30, tol=1e-3, verbose=1, plot=0, return_parameters=False):
     """Unified Segmentation using a deformable spatial prior.
 
@@ -29,7 +29,7 @@ def uniseg(x, w=None, affine=None, device=None,
     prior : (K|K-1, *spatial_prior) tensor | str, optional
         Deformable template. If it contains only K-1 channels, the
         first channel is implicitly defined such that probabilities sum to one.
-        The SPM template is used by default
+        If None (default), the SPM template is used.
     affine_prior : (D+1, D+1) tensor, optional
         Orientation matrix of the prior.
 
@@ -49,12 +49,17 @@ def uniseg(x, w=None, affine=None, device=None,
         - 'once' : only at the end
         - 'always' : at each iteration
         - 'learn' : at each iteration and optimize its weights
+    wishart : {False, True, 'preproc8'}, default='preproc8' or True
+        Regularises the estimated covariances using statistics derived
+        from the image. If 'preproc8', a coarser mask derived from the TPM
+        is used to compute these statistics; only works with the SPM prior.
+        If the SPM prior is used, 'preproc8' is activated by default.
     cleanup : bool, optional
         Perform an ad-hoc clean-up procedure at the end.
         By default, it is activated if the SPM template is used else
         it is not used.
     spacing : float, default=3
-        Space (in mm) between sampled points.
+        Space (in mm) between sampled points. None (or 0) uses all the voxels.
         Smaller is more accurate but slower.
 
     Optimization
@@ -63,6 +68,12 @@ def uniseg(x, w=None, affine=None, device=None,
         Regularization of the bias field: larger == stiffer
     lam_warp : float, default=0.1
         Regularization of the warp field: larger == stiffer
+    lam_mixing : float, default=100
+        Regularization of the mixing proportions: larger == closer to atlas
+    lam_mrf : float, default=100
+        Regularization of the MRF weights: larger == less smooth
+    lam_wishart : float, default=1
+        Modulation of the Wishart degrees of freedom: larger == fixed variances
     max_iter : int, default=30
         Maximum  number of EM iterations
     tol : float, default=1-e3
