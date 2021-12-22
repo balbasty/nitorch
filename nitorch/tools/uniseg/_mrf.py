@@ -342,34 +342,109 @@ def mrf(Z, logP, L=None, W=None, vx=1, max_iter=5, tol=1e-4, inplace=False):
     return Z, lZ
 
 
-# TODO
-# def mrf_sample(logP, shape=None, M=None, vx=1, nb_iter=100):
-#     """Sample from a MRF using Gibbs conclique sampling
-#
-#     Parameters
-#     ----------
-#     logP: (K, K) tensor
-#         MRF log-probabilities (do not need to be normalized)
-#     shape : sequence[int], optional if M is provided
-#         Shape of the lattice
-#     M : (K, *spatial) tensor, optional
-#         Voxel-wise log-probability (do not need to be normalized)
-#     vx : [list of] float, default=1
-#         Voxel size
-#     nb_iter : int, default=100
-#         Number of Gibbs iterations
-#
-#     Returns
-#     -------
-#     Z : (*shape) tensor[long]
-#         Sample
-#
-#     References
-#     ----------
-#     ..[1] "Simulating Markov random fields with a conclique-based Gibbs sampler"
-#           Andee Kaplan, Mark S. Kaiser, Soumendra N. Lahiri, Daniel J. Nordman
-#           Journal of Computational and Graphical Statistics (2020)
-#           https://arxiv.org/abs/1808.04739
-#
-#     """
-#     raise NotImplementedError
+def mrf_sample(logP, shape=None, M=None, vx=1, nb_iter=100, implicit=False):
+    """Sample from a MRF using Gibbs conclique sampling
+
+    Parameters
+    ----------
+    logP: (K, K) tensor
+        MRF log-probabilities (do not need to be normalized)
+    shape : sequence[int], optional if M is provided
+        Shape of the lattice
+    M : (K, *shape) tensor, optional
+        Voxel-wise log-probability (do not need to be normalized)
+    vx : [list of] float, default=1
+        Voxel size
+    nb_iter : int, default=100
+        Number of Gibbs iterations
+    implicit : bool, default=False
+
+    Returns
+    -------
+    Z : (*shape) tensor[long]
+        Sample
+
+    References
+    ----------
+    ..[1] "Simulating Markov random fields with a conclique-based Gibbs sampler"
+          Andee Kaplan, Mark S. Kaiser, Soumendra N. Lahiri, Daniel J. Nordman
+          Journal of Computational and Graphical Statistics (2020)
+          https://arxiv.org/abs/1808.04739
+
+    """
+    Cat = torch.distributions.Categorical
+
+    if shape is None and M is None:
+        raise ValueError('Either M or shape must be provided')
+    if shape is None:
+        shape = M.shape[1:]
+    dim = len(shape)
+    K = len(logP)
+    if implicit:
+        K = K + 1
+        logP_ = logP
+        logP = logP_.new_zeros([K, logP_.shape[-1]])
+        logP[1:] = logP_
+    P = logP.new_zeros([K, *shape])             # log-prior
+    if M is None:
+        L = Cat(logits=logP.sum(-1)).sample(shape)
+    elif len(M) == K-1:
+        M0 = M.new_zeros([K, *M.shape[1:]])
+        M0[1:] = M
+        L = Cat(logits=utils.movedim(M0, 0, -1)).sample()
+        del M0
+    else:
+        L = Cat(logits=utils.movedim(M, 0, -1)).sample()
+
+    vx = utils.make_vector(vx, dim, dtype=logP.dtype, device='cpu')
+    ivx = vx.reciprocal_().tolist()
+
+    redblack = list(itertools.product([0, 1], repeat=dim))
+    red = [x for x in redblack if sum(x) % 2]
+    black = [x for x in redblack if not sum(x) % 2]
+
+    for n_iter in range(nb_iter):
+
+        for color in (red, black):
+
+            for offset in color:
+
+                # extract center voxel
+                slicer0 = tuple(slice(o, None, 2) for o in offset)
+                L0 = L[slicer0]
+                P0 = P[(Ellipsis, *slicer0)]
+                if M is not None:
+                    if implicit:
+                        P0[1:].copy_(M(Ellipsis, *slicer0))
+                    else:
+                        P0.copy_(M(Ellipsis, *slicer0))
+                else:
+                    P0.zero_()
+
+                # iterate across first order neighbors
+                for d in range(dim):
+                    ivx1 = ivx[d]
+                    slicer_pre = list(slicer0)
+                    slicer_pre[d] = slice(1 - offset[d], None, 2)
+                    pre = L[tuple(slicer_pre)]
+                    slicer_pre = [slice(None)] * dim
+                    slicer_pre[d] = slice(L0.shape[d]+offset[d]-1)
+                    pre = pre[tuple(slicer_pre)]
+                    slicer_pre[d] = slice(1 - offset[d], None)
+
+                    slicer_post = list(slicer0)
+                    slicer_post[d] = slice(offset[d]+1, None, 2)
+                    post = L[tuple(slicer_post)]
+                    slicer_post = [slice(None)] * dim
+                    slicer_post[d] = slice(post.shape[d])
+
+                    for ko in range(K):
+                        for ki in range(K):
+                            logP1 = (logP[ko, ki] * ivx1).item()
+                            P0[(ko, *slicer_pre)].add_(pre == ki, alpha=logP1)
+                            P0[(ko, *slicer_post)].add_(post == ki, alpha=logP1)
+
+            sampler = Cat(logits=utils.movedim(P0, 0, -1))
+            L0.copy_(sampler.sample())
+
+    return L
