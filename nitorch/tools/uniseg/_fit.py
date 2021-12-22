@@ -327,7 +327,9 @@ class SpatialMixture:
             X = X[(Ellipsis, *slicer)]
             W = W[tuple(slicer)].to(X.dtype)
 
-        # Initialise model parameters
+        # Initialise model parameters (one gaussian per class)
+        self._lkp = self.lkp
+        self.lkp = list(range(self.nb_classes))
         self._init_parameters(X, W, aff, **kwargs)
 
         # EM loop
@@ -499,11 +501,19 @@ class SpatialMixture:
         all_all_lb = []
         lb = -float('inf')
         plot_mode = None
+        do_split = self.lkp != self._lkp
         for n_iter in range(self.max_iter):  # EM loop
             olb_em = lb
 
             for n_iter_intensity in range(self.max_iter_intensity):
                 olb_intensity = lb
+
+                if n_iter_intensity == 1 and do_split:
+                    do_split = False
+                    self.lkp = self._lkp
+                    self._split_clusters()
+                    all_lb = []
+                    all_all_lb = []
 
                 for n_iter_cluster in range(self.max_iter_cluster):
                     # ======
@@ -516,8 +526,9 @@ class SpatialMixture:
                     lb += self._lb_parameters()
                     all_all_lb.append(lb)
                     if self.verbose >= 3:
+                        gain = (lb - olb) / (self.tol * nW)
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_cluster:02d} | '
-                              f'pre gmm: {lb.item()/nW:12.6g}')
+                              f'pre gmm:  {lb.item()/nW:12.6g} ({gain:.6g})')
 
                     # ==================
                     # M-step - Intensity
@@ -560,8 +571,9 @@ class SpatialMixture:
                     lb += self._lb_parameters()
                     all_all_lb.append(lb)
                     if self.verbose >= 2:
+                        gain = (lb - olb) / (self.tol * nW)
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_bias:02d} | '
-                              f'pre bias: {lb.item()/nW:12.6g}')
+                              f'pre bias: {lb.item()/nW:12.6g} ({gain:.6g})')
                     self._plot_lb(all_all_lb, X, self._z_combine(Z), M, mode=plot_mode)
 
                     # =============
@@ -588,8 +600,9 @@ class SpatialMixture:
                 lb += self._lb_parameters()
                 all_all_lb.append(lb)
                 if self.verbose >= 2:
+                    gain = (lb - olb) / (self.tol * nW)
                     print(f'{n_iter:02d} | {n_iter_warp:02d} | {"":2s} | '
-                          f'pre warp: {lb.item()/nW:12.6g}')
+                          f'pre warp: {lb.item()/nW:12.6g} ({gain:.6g})')
                 self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
                 # =============
@@ -718,6 +731,10 @@ class SpatialMixture:
     # Implement in child classes
     def _log_likelihood(self, *a, **k):
         raise NotImplementedError('The observation log-likelihood must '
+                                  'be implemented in concrete child classes')
+
+    def _split_cluters(self):
+        raise NotImplementedError('The method to split clusters must '
                                   'be implemented in concrete child classes')
 
     def _init_parameters(self, X, W=None, aff=None, **kwargs):
@@ -1235,6 +1252,7 @@ class UniSeg(SpatialMixture):
 
         if self.log_prior is not None:
             # init from suffstats
+            self.df = torch.empty((K,), **backend)
             self.mu = torch.empty((K, C), **backend)
             self.sigma = torch.empty((K, C, C), **backend)
             M = self.warp_tpm(aff=aff, shape=X.shape[1:])
@@ -1272,6 +1290,62 @@ class UniSeg(SpatialMixture):
                 for c in range(C):
                     self.sigma[:, c, c] = (mx[c] - mn[c]) / K**2
 
+            df = self.zeros(K, **backend)
+
+    def _split_clusters(self):
+        # Heuristic to split a single Gaussians into multiple Gaussians.
+
+        if len(self.mu) == self.nb_clusters:
+            return
+
+        mu0 = self.mu.cpu()
+        sigma0 = self.sigma.cpu()
+        df0 = self.df.cpu()
+        kappa0 = self.kappa.cpu()
+        K = self.nb_clusters
+
+        mu = mu0.new_empty([K, *mu0.shape[1:]])
+        sigma = sigma0.new_empty([K, *sigma0.shape[1:]])
+        df = df0.new_empty([K, *df0.shape[1:]])
+        kappa = kappa0.new_ones([K, *kappa0.shape[1:]])
+        for k in range(self.nb_classes):
+            mask = [k1 == k for k1 in self.lkp]
+            K1 = sum(mask)
+            w = 1. / (1 + pymath.exp(-(K1 - 1) * 0.25)) - 0.5
+            chol = linalg.cholesky(sigma0[k]).diag()
+            noise = torch.randn(K1, **utils.backend(mu)) * w
+            mu[mask] = chol * noise[:, None] + mu0[k]
+            sigma[mask] = sigma0[k] * (1 - w)
+            df[mask] = df0[k] / K1
+            kappa[mask] /= kappa[mask].sum(0, keepdim=True)
+
+        self.mu = mu.to(self.mu)
+        self.sigma = sigma.to(self.sigma)
+        self.df = df.to(self.df)
+        self.kappa = kappa.to(self.kappa)
+        self._update_lb_wishart()
+
+    def _update_lb_wishart(self):
+        if not self.wishart:
+            self._lb_intensity = 0
+            return
+        # update lower bound: KL between inverse wishart,
+        # keeping only terms that depend on sigma
+        sigma = self.sigma.cpu()
+        df = self.df.cpu()  # zero-th order suffstat (not true posterior df)
+        scale, df0 = self.wishart
+
+        chol = linalg.cholesky(sigma)
+        logdet = chol.diagonal(0, -1, -2).log().sum(-1).mul_(2)
+        tr = linalg.trace(torch.matmul(scale, sigma.inverse()))
+        lb = tr * df0 \
+             + logdet * df0 \
+             + sigma.shape[-1] * (df0 + 1) * (df + df0).log() \
+             + (df - 1) * math.mvdigamma((df + df0) / 2, sigma.shape[-1]) \
+             - 2 * torch.mvlgamma((df + df0) / 2, sigma.shape[-1])
+        lb = lb.sum().cpu()
+        self._lb_intensity = -0.5 * lb
+
     def _update_intensity(self, ss0, ss1, ss2):
         """ Update GMM means and variances
 
@@ -1299,52 +1373,16 @@ class UniSeg(SpatialMixture):
         ss0 = ss0.unsqueeze(-1)
         if not self.wishart:
             sigma = ss2 / ss0 - linalg.outer(mu, mu)
+            df = ss0
         else:
-            scale, df = self.wishart
-            sigma = df * scale + ss2 - linalg.outer(ss1, ss1) / ss0
-            sigma /= (ss0 + df)
-
-        if len(mu) < len(self.mu):
-            # Heuristic to split a single Gaussians into multiple Gaussians.
-            # We do this at initialization time, whereas in preproc8, a
-            # full round of GMM+Bias is performed with one Gaussian per class,
-            # before splitting happens.
-            mu0 = mu
-            sigma0 = sigma
-            ss00 = ss0
-            mu = torch.empty_like(self.mu, device='cpu')
-            sigma = torch.empty_like(self.sigma, device='cpu')
-            ss0 = ss00.new_empty([self.nb_clusters, 1, 1])
-            for k in range(self.nb_classes):
-                mask = [k1 == k for k1 in self.lkp]
-                K1 = sum(mask)
-                w = 1. / (1 + pymath.exp(-(K1 - 1) * 0.25)) - 0.5
-                chol = linalg.cholesky(sigma0[k]).diag()
-                noise = torch.randn(K1, **utils.backend(mu)) * w
-                mu[mask] = chol * noise[:, None] + mu0[k]
-                sigma[mask] = sigma0[k] * (1 - w)
-                ss0[mask] = ss00[k] / K1
+            scale, df0 = self.wishart
+            sigma = df0 * scale + ss2 - linalg.outer(ss1, ss1) / ss0
+            sigma /= (ss0 + df0)
 
         self.mu.copy_(mu.to(self.mu))
         self.sigma.copy_(sigma.to(self.sigma))
-
-        if self.wishart is not None:
-            # update lower bound: KL between inverse wishart,
-            # keeping only terms that depend on sigma
-            chol = linalg.cholesky(sigma)
-            logdet = chol.diagonal(0, -1, -2).log().sum(-1).mul_(2)
-            tr = linalg.trace(torch.matmul(scale, sigma.inverse()))
-            ss0 = ss0[..., 0, 0]
-            lb = tr * (df + ss0 - sigma.shape[-1] - 1) / (df + ss0) \
-               + logdet * (df - sigma.shape[-1] - 1) \
-               + (df - 1) * (ss0 + df).log() \
-               - 2 * (ss0 - 1) * math.mvdigamma((ss0 + df)/2, sigma.shape[-1]) \
-               - 2 * torch.mvlgamma((ss0 + df)/2, sigma.shape[-1]) \
-               - (df + ss0 - sigma.shape[-1] - 1) * sigma.shape[-1]
-            lb = lb.sum().cpu()
-            self._lb_intensity = -0.5*lb
-        else:
-            self._lb_intensity = 0
+        self.df.copy_(ss0[:, 0, 0].to(self.df))
+        self._update_lb_wishart()
 
     def _update_bias(self, X, Z, W=None, vx=None):
         """
