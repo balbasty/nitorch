@@ -50,6 +50,9 @@ class Linear(Module):
         x = utils.fast_movedim(x, -1, self.dim)
         return x
 
+    def __repr__(self):
+        return self.linear.__repr__()
+
     in_channels = _defer_property('in_features', 'linear')
     out_channels = _defer_property('out_features', 'linear')
     bias = _defer_property('bias', 'linear')
