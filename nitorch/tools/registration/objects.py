@@ -39,7 +39,7 @@ class SpatialTensor:
         self.dat = dat
         if affine is None:
             affine = spatial.affine_default(self.shape, **utils.backend(dat))
-        self.affine = affine.to(**utils.backend(self.dat))
+        self.affine = affine.to(utils.backend(self.dat)['device'])
 
     def to(self, *args, **kwargs):
         return copy.copy(self).to_(*args, **kwargs)

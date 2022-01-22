@@ -90,6 +90,7 @@ class RegisterStep:
 
         import matplotlib.pyplot as plt
 
+
         warped = warped.detach()
         if vel is not None:
             vel = vel.detach()
@@ -107,25 +108,38 @@ class RegisterStep:
         nb_channels = fixed.shape[-dim - 1]
         nb_batch = len(fixed)
 
+        mov_mn, mov_mx = utils.quantile(moving, [0.005, 0.995],
+                                        dim=range(-dim, 0), bins=1024).unbind(-1)
+        mov_mx = mov_mx.max(mov_mn + 1e-8)
+        fix_mn, fix_mx = utils.quantile(fixed.to(moving.dtype), [0.005, 0.995],
+                                        dim=range(-dim, 0), bins=1024).unbind(-1)
+        fix_mx = fix_mx.max(fix_mn + 1e-8)
+
         if dim == 3:
             fixed = [fixed[..., fixed.shape[-1] // 2],
                      fixed[..., fixed.shape[-2] // 2, :],
                      fixed[..., fixed.shape[-3] // 2, :, :]]
+            fixed = [f.sub(fix_mn[..., None, None]).div_((fix_mx-fix_mn)[..., None, None])
+                     for f in fixed]
             moving = [moving[..., moving.shape[-1] // 2],
                       moving[..., moving.shape[-2] // 2, :],
                       moving[..., moving.shape[-3] // 2, :, :]]
+            moving = [f.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])
+                     for f in moving]
             warped = [warped[..., warped.shape[-1] // 2],
                       warped[..., warped.shape[-2] // 2, :],
                       warped[..., warped.shape[-3] // 2, :, :]]
+            warped = [f.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])
+                     for f in warped]
             if vel is not None:
                 vel = [vel[..., vel.shape[-2] // 2, :],
                        vel[..., vel.shape[-3] // 2, :, :],
                        vel[..., vel.shape[-4] // 2, :, :, :]]
                 vel = [v.square().sum(-1).sqrt() for v in vel]
         else:
-            fixed = [fixed]
-            moving = [moving]
-            warped = [warped]
+            fixed = [fixed.sub(fix_mn[..., None, None]).div_((fix_mx-fix_mn)[..., None, None])]
+            moving = [moving.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])]
+            warped = [warped.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])]
             vel = [vel.square().sum(-1).sqrt()] if vel is not None else []
 
         if cat:
@@ -134,13 +148,15 @@ class RegisterStep:
 
         checker = []
         for f, w in zip(fixed, warped):
-            c = f.clone()
             patch = max([s // 8 for s in f.shape])
-            patch = [min(patch, s) for s in c.shape]
-            checker_unfold = utils.unfold(c, patch, [2*p for p in patch])
+            patch = [min(patch, s) for s in f.shape]
+            broad_shape = utils.expanded_shape(f.shape, w.shape)
+            f = f.expand(broad_shape).clone()
+            w = w.expand(broad_shape)
+            checker_unfold = utils.unfold(f, patch, [2*p for p in patch])
             warped_unfold = utils.unfold(w, patch, [2*p for p in patch])
             checker_unfold.copy_(warped_unfold)
-            checker.append(c)
+            checker.append(f)
 
         kdim = 3 if dim == 3 else 1
         bdim = min(nb_batch, 3)
@@ -176,7 +192,7 @@ class RegisterStep:
                         plt.subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 5)
                         plt.imshow(vel[k][b].cpu())
                         if b == 0 and k == 0:
-                            plt.title('velocity')
+                            plt.title('displacement')
                         plt.axis('off')
                         plt.colorbar()
             plt.subplot(nb_rows, 1, nb_rows)
@@ -241,6 +257,8 @@ class RegisterStep:
                                    recompute=True,
                                    cache_result=not in_line_search)
             iphi0 = ivel0 = None
+        aff0 = aff0.to(phi0.dtype)
+        iaff0 = iaff0.to(phi0.dtype)
 
         # register temporary "backward" loss for symmetric losses
         losses = []
@@ -287,9 +305,11 @@ class RegisterStep:
                     aff_right = None
                     phi = spatial.identity_grid(fixed.shape, **utils.backend(phi00))
                     phi += phi00
+                    disp = phi00
                 else:
                     phi = spatial.affine_grid(aff_right, fixed.shape)
-                    phi += regutils.smart_pull_grid(phi00, phi)
+                    disp = regutils.smart_pull_grid(phi00, phi)
+                    phi += disp
                 if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
                     aff_left = None
                 else:
@@ -313,7 +333,7 @@ class RegisterStep:
                     else:
                         init = spatial.affine_grid(init, fixed.shape)
                         init = moving.pull(init)
-                    self.mov2fix(fixed.dat, init, warped, vel0,
+                    self.mov2fix(fixed.dat, init, warped, disp,
                                  dim=fixed.dim,
                                  title=f'(nonlin) {self.n_iter:03d}')
 
@@ -733,15 +753,17 @@ class Register:
         return self.fit()
 
     def fit(self):
-        backend = dict(device=self.losses[0].fixed.device,
-                       dtype=self.losses[0].fixed.dtype)
-        if self.affine is not None and self.affine.dat is None:
+        backend = dict(device=self.losses[0].moving.device,
+                       dtype=self.losses[0].moving.dtype)
+        if self.affine and not self.affine.dat:
             self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
                                               **backend)
-        if self.nonlin is not None and self.nonlin.dat is None:
+            self.affine.dat.dat.fill_(1e-12)
+        if self.nonlin and not self.nonlin.dat:
             space = MeanSpace([loss.fixed for loss in self.losses] +
                               [loss.moving for loss in self.losses])
             self.nonlin.set_dat(space.shape, affine=space.affine, **backend)
+            self.nonlin.dat.dat.fill_(1e-12)
 
         if self.verbose > 1:
             for loss in self.losses:

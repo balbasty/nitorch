@@ -342,9 +342,6 @@ def compute_uncertainty(hess, rls, lam, vx, opt):
                 reg = reg[None]
             diag.transpose(0, -1).addcmul_(reg.transpose(0, -1), lam)
 
-        # for i, (weight, l) in enumerate(zip(rls, lam)):
-        #     uncertainty[i] += l * (rls_maj(weight, vx) if weight is not None
-        #                            else 4 * smo)
     return sym_inv(uncertainty.transpose(0, -1), diag=True).transpose(0, -1)
 
 
@@ -427,10 +424,7 @@ def resize(maps, rls, aff, shape):
     maps.volume = spatial.resize(maps.volume, shape=shape)
     maps.affine = aff
     if rls is not None:
-        if rls.dim() == len(shape):
-            rls = spatial.resize(rls, shape=shape)
-        else:
-            rls = spatial.resize(rls, shape=shape)
+        rls = spatial.resize(rls, shape=shape)
     return maps, rls
 
 

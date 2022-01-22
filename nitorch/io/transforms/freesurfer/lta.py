@@ -21,9 +21,9 @@ A bit must be said on the FreeSurfer space conventions:
   transform that brings the two dissociate spaces in alignment.
 - The LTA file stores such a world-to-world transform, along with the
   orientation matrices of the original source and destination images.
-  The voxel-t-physical and physical-to-ras components of these
+  The voxel-to-physical and physical-to-ras components of these
   orientation matrices are stored as well.
-- However, the LTA can also need transforms between different kinds of
+- However, the LTA can also store transforms between different kinds of
   spaces (voxel-to-voxel, physical-to-physical, ras-to-ras or even
   rsa-to-rsa).
 """

@@ -90,7 +90,7 @@ contrast = cli.Group('contrast', ('-c', '--contrast'), n='+',
 contrast.add_positional('name', nargs='?', help='Name of the contrast')
 contrast.add_option('bandwidth', ('-bw', '--bandwidth'), nargs='+2',
                     convert=number_or_str(float), help='Bandwidth [and unit]')
-contrast.add_option('echo_spacing', ('-es', '--echo-spacing'), nargs='+2',
+contrast.add_option('echo_spacing', ('-sp', '--echo-spacing'), nargs='+2',
                     convert=number_or_str(float), help='Echo spacing [and unit]')
 contrast.add_option('te', ('-te', '--echo-time'), nargs='+',
                     convert=number_or_str(float), help='Echo time(s) [and unit]')
