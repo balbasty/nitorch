@@ -59,4 +59,6 @@ from ._mrfield import *
 from ._regularisers import *
 from ._solvers import *
 from ._svf import *
+from ._svf1d import *
 from ._shoot import *
+from ._distances import *
