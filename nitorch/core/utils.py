@@ -2,7 +2,6 @@
 
 import torch
 from . import py
-from .py import make_list, make_tuple, ensure_list
 from .constants import inf, eps
 from .dtypes import as_torch as dtype_astorch
 from . import dtypes
@@ -326,40 +325,28 @@ def movedim(input, source, destination):
 
     """
     input = torch.as_tensor(input)
-    dim = input.dim()
-    source = make_list(source)
-    destination = make_list(destination)
-    if len(destination) == 1:
-        # we assume that the user wishes to keep moved dimensions
-        # in the order they were provided
-        destination = destination[0]
-        if destination >= 0:
-            destination = list(range(destination, destination+len(source)))
-        else:
-            destination = list(range(destination+1-len(source), destination+1))
-    if len(source) != len(destination):
-        raise ValueError('Expected as many source as destination positions.')
-    source = [dim + src if src < 0 else src for src in source]
-    destination = [dim + dst if dst < 0 else dst for dst in destination]
-    if len(set(source)) != len(source):
-        raise ValueError(f'Expected source positions to be unique but got '
-                         f'{source}')
-    if len(set(destination)) != len(destination):
-        raise ValueError(f'Expected destination positions to be unique but got '
-                         f'{destination}')
+    perm = py.move_to_permutation(input.dim(), source, destination)
+    return input.permute(*perm)
 
-    # compute permutation
-    positions_in = list(range(dim))
-    positions_out = [None] * dim
-    for src, dst in zip(source, destination):
-        positions_out[dst] = src
-        positions_in[src] = None
-    positions_in = filter(lambda x: x is not None, positions_in)
-    for i, pos in enumerate(positions_out):
-        if pos is None:
-            positions_out[i], *positions_in = positions_in
 
-    return input.permute(*positions_out)
+def moveelem(input, source, destination, dim=-1):
+    """Move elements in a tensor
+
+    Parameters
+    ----------
+    input : tensor
+    source : [sequence of] int
+    destination : [sequence of] int
+    dim : int, default=-1
+
+    Returns
+    -------
+    output : tensor
+
+    """
+    perm = py.move_to_permutation(input.shape[dim], source, destination)
+    perm = torch.as_tensor(perm, dtype=torch.long, device=input.device)
+    return input.index_select(dim, perm)
 
 
 def to(*args, dtype=None, device=None):
@@ -819,10 +806,10 @@ def slice_tensor(x, index, dim=None):
         index = (index,)
     if dim is None:
         dim = list(range(-len(index), 0))
-    dim = ensure_list(dim)
+    dim = py.ensure_list(dim)
     nb_dim = max(len(index), len(dim))
-    dim = ensure_list(dim, nb_dim)
-    index = tuple(ensure_list(index, nb_dim))
+    dim = py.ensure_list(dim, nb_dim)
+    index = tuple(py.ensure_list(index, nb_dim))
 
     # build index
     full_index = [slice(None)] * x.dim()
@@ -1042,7 +1029,7 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
 
     """
     inp = torch.as_tensor(inp)
-    shape = make_list(shape)
+    shape = py.make_list(shape)
     shape = shape + [1] * max(0, inp.dim() - len(shape))
     if inp.dim() < len(shape):
         inp = inp.reshape(inp.shape + (1,) * max(0, len(shape) - inp.dim()))
@@ -1538,7 +1525,7 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
     if not dim:
         raise ValueError('Cannot guess dim from inputs')
     kernel_size = inp.shape[-dim:]
-    stride = make_list(stride, len(kernel_size))
+    stride = py.make_list(stride, len(kernel_size))
     stride = [st or sz for st, sz in zip(stride, kernel_size)]
     if any(sz > 2*st for st, sz in zip(stride, kernel_size)):
         # I only support overlapping of two patches (along a given dim).

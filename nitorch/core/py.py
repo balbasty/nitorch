@@ -602,3 +602,61 @@ def expand_list(x, n, crop=False, default=None):
     if crop:
         x = x[:n]
     return x
+
+
+def move_to_permutation(length, source, destination):
+
+    source = make_list(source)
+    destination = make_list(destination)
+    if len(destination) == 1:
+        # we assume that the user wishes to keep moved dimensions
+        # in the order they were provided
+        destination = destination[0]
+        if destination >= 0:
+            destination = list(range(destination, destination+len(source)))
+        else:
+            destination = list(range(destination+1-len(source), destination+1))
+    if len(source) != len(destination):
+        raise ValueError('Expected as many source as destination positions.')
+    source = [length + src if src < 0 else src for src in source]
+    destination = [length + dst if dst < 0 else dst for dst in destination]
+    if len(set(source)) != len(source):
+        raise ValueError(f'Expected source positions to be unique but got '
+                         f'{source}')
+    if len(set(destination)) != len(destination):
+        raise ValueError(f'Expected destination positions to be unique but got '
+                         f'{destination}')
+
+    # compute permutation
+    positions_in = list(range(length))
+    positions_out = [None] * length
+    for src, dst in zip(source, destination):
+        positions_out[dst] = src
+        positions_in[src] = None
+    positions_in = filter(lambda x: x is not None, positions_in)
+    for i, pos in enumerate(positions_out):
+        if pos is None:
+            positions_out[i], *positions_in = positions_in
+
+    return positions_out
+
+
+def move_elem(x, source, destination):
+    """Move the location of one or several elements in a list
+
+    Parameters
+    ----------
+    x : list
+        Input list
+    source : [sequence of] int
+        Input indices
+    destination : [sequence of] int
+        Output indices
+
+    Returns
+    -------
+    x : list
+        Permuted list
+
+    """
+    return [x[i] for i in move_to_permutation(len(x), source, destination)]
