@@ -155,8 +155,8 @@ def preproc(data, transmit=None, receive=None, opt=None):
         mt = mt.log() - (1 - mt).log()
 
     # --- initial align ---
-    transmit = core.utils.make_list(transmit or [])
-    receive = core.utils.make_list(receive or [])
+    transmit = core.py.make_list(transmit or [])
+    receive = core.py.make_list(receive or [])
     if opt.preproc.register and len(data) > 1:
         print('Register volumes')
         data_reg = [(contrast.echo(0).fdata(rand=True, cache=False, **backend),
