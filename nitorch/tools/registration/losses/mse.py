@@ -171,7 +171,8 @@ class MSE(OptimizationLoss):
         if lam is None:
             lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
             lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
-        llx, g = mse(moving, fixed, dim=dim, lam=lam, hess=False, **kwargs)
+        llx, g = mse(moving, fixed, dim=dim, lam=lam, hess=False, mask=mask,
+                     **kwargs)
         return llx + lll, g
 
     def loss_grad_hess(self, moving, fixed, **kwargs):

@@ -1354,8 +1354,11 @@ class IterateOptim(Optim):
         Parameters
         ----------
         optim : Optim or IterationStep
+            Optimizer
         max_iter : int, default=20
+            Maximum number of iterations
         tol : float, default=1e-9
+            Tolerance for early stopping
         ls : int or 'wolfe' or callable(Optim), default=0
             If an int, use `StepSizeLineSearch` if optim is a SecondOrder
             optimizer or `BacktrackingLineSearch` if optim is FirstOrder
@@ -1406,11 +1409,15 @@ class IterateOptim(Optim):
         closure : callable(tensor, [grad=False], [hess=False]) -> Tensor, *Tensor
             Function that takes a parameter and returns the objective and
             its (optionally) gradient evaluated at that point.
+        derivatives : bool, default=False
+            Return gradient on top of parameter
 
         Returns
         -------
         param : tensor
             Updated parameter
+        grad : tensor, if `derivatives`
+            Gradient
 
         """
         if not self.keep_state:
@@ -1451,11 +1458,20 @@ class IterateOptimInterleaved(IterateOptim):
         Parameters
         ----------
         optim : list[IterateOptim]
+            Optimizer for each variable
         max_iter : int, default=20
+            Maximum number of outer loops
         tol : float, default=1e-9
+            Outer loop tolerance for early stopping
+
+        Other Parameters (only used if input optimizers are not `IterateOptim`)
+        ----------------
         sub_iter : int, optional
+            Maximum number of inner loops
         sub_tol : float, optional
-        ls : int, optional
+            Inner loop tolerance for early stopping
+        ls : int or 'wolfe', optional
+            Maximum number of backtracking line-search iterations
         """
         # no super call
         self.optim = list(optim)
@@ -1476,14 +1492,18 @@ class IterateOptimInterleaved(IterateOptim):
         ----------
         param : list of tensor
             Initial guess (will be modified inplace)
-        closure : list of callable(tensor, [grad=False], [hess=False]) -> Tensor, *Tensor
+        closure : list of callable(tensor, [grad=False], [hess=False]) -> tensor, *tensor
             Function that takes a parameter and returns the objective and
-            its (optionally) gradient evaluated at that point.
+            (optionally) its gradient evaluated at that point.
+        derivatives : bool, default=False
+            Return gradient on top of parameter
 
         Returns
         -------
         param : list of tensor
             Updated parameter
+        grad : list of tensor, if `derivatives`
+            Gradients
 
         """
         gg_prev = float('inf')
@@ -1499,13 +1519,14 @@ class IterateOptimInterleaved(IterateOptim):
             # check convergence
             gg = [g.flatten().dot(g.flatten()) for og in ograd for g in og]
             gg = sum(gg)
-            if abs((gg_prev-gg)/max(abs(gg_max-gg), 1e-9)) < self.tol:
+            gain = abs((gg_prev-gg)/max(abs(gg_max-gg), 1e-9))
+            if gain < self.tol:
                 break
             gg_prev = gg
             gg_max = max(gg, gg_max)
 
         if derivatives:
-            return (oparam, ograd)
+            return oparam, ograd
         return oparam
 
     def __repr__(self):

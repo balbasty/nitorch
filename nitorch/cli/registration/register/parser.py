@@ -118,15 +118,17 @@ usage:
 @@fix/mov options:
     *FILES must be one or several filenames, which will be concatenated 
     across the channel dimension.
-    -o, --output                    Path to the output with minimal reslicing: [True={base}.registered.{ext}]
-    -r, --resliced                  Path to the output resliced to the other image's space: [False], True={base}.resliced.{ext}
-    -p, --pyramid                   Pyramid levels. Can be a range [start]:stop[:step]
-    -b, --bound                     Boundary conditions [dct2]
-    -n, --order                     Interpolation order [1]
-    -a, --affine                    Path to one or more affine transforms to apply
-    -w, --world                     Path to an orientation matrix. Overrides the one form the data file.
-    -f, --fwhm                      Smooth image before using it.
+    -o, --output [PATH]             Path to the output with minimal reslicing: [True={base}.registered.{ext}]
+    -r, --resliced [PATH]           Path to the output resliced to the other image's space: [False], True={base}.resliced.{ext}
+    -p, --pyramid *LVL              Pyramid levels. Can be a range [start]:stop[:step]
+    -b, --bound BND                 Boundary conditions [dct2]
+    -n, --order N                   Interpolation order [1]
+    -a, --affine *PATH              Path to one or more affine transforms to apply
+    -w, --world PATH                Path to an orientation matrix. Overrides the one form the data file.
+    -f, --fwhm *F                   Smooth image before using it.
+    -z, --pad *P                    Pad image before using it.
     -s, --rescale [[MN], MX]        Rescale image so that its MN/MX percentiles match (0, 1). [0, 95]
+    -d, --discretize [N]            Discretize the image into N [default: 256] bins. [False]
     -l, --label *VAL                Specifies that the file is a label map [False]
                                     If no argument given, labels are [all but zero]
     -m, --mask FILE                 Path to a mask of voxels to *include* [all]
@@ -232,7 +234,7 @@ def bool_or_str(x):
 
 def parse_range(x):
     if ':' not in x:
-        return [int(x)]
+        return int(x)
     x = x.split(':')
     if len(x) == 2:
         x = [*x, '']
@@ -273,8 +275,8 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 # Loss group
 loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
-                'entropy': 'ent'}
-loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm']
+                'entropy': 'ent', 'sqz': 'squeezed'}
+loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emi', 'prod', 'normprod', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -322,6 +324,7 @@ loss.add_suboption('lcc', kernel_option)
 loss.add_suboption('mse', weight_option)
 loss.add_suboption('mad', weight_option)
 loss.add_suboption('tuk', weight_option)
+loss.add_suboption('sqz', weight_option)
 loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=False,
                    convert=float, action=cli.Actions.store_true,
                    help='Weight of each class')
@@ -349,6 +352,9 @@ file.add_option('fwhm', ('-f', '--fwhm'), nargs='0*',
                 default=[0], convert=number_or_str(float),
                 action=cli.Actions.store_value([1, 'vox']),
                 help='Smooth the image. A unit can be provided (default: vox)')
+file.add_option('pad', ('-z', '--pad'), nargs='0*',
+                default=[0], convert=number_or_str(float),
+                help='Pad the image. A unit can be provided (default: vox)')
 file.add_option('bound', ('-b', '--bound'), nargs=1, default='dct2',
                 validation=cli.Validations.choice(['dct2', 'dct1', 'dft', 'dst2', 'dst1', 'zero', 'replicate']),
                 help='Boundary condition')
@@ -367,6 +373,9 @@ file.add_option('name', '--name', nargs=1,
 file.add_option('label', ('-l', '--label'), nargs='*', default=False,
                 action=cli.Actions.store_true, convert=int,
                 help='The file is a label map (and specify labels)')
+file.add_option('discretize', ('-d', '--discretize'), nargs='?', convert=int,
+                action=cli.Actions.store_value(256),
+                default=0, help='Discretize the image into N discrete bins')
 file.add_option('mask', ('-m', '--mask'), nargs=1, default=None,
                 help='Path to a mask of voxels to include')
 fix = cli.Group('fix', '@@fix', n=1)

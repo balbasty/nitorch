@@ -108,38 +108,52 @@ class RegisterStep:
         nb_channels = fixed.shape[-dim - 1]
         nb_batch = len(fixed)
 
-        mov_mn, mov_mx = utils.quantile(moving, [0.005, 0.995],
-                                        dim=range(-dim, 0), bins=1024).unbind(-1)
-        mov_mx = mov_mx.max(mov_mn + 1e-8)
-        fix_mn, fix_mx = utils.quantile(fixed.to(moving.dtype), [0.005, 0.995],
-                                        dim=range(-dim, 0), bins=1024).unbind(-1)
-        fix_mx = fix_mx.max(fix_mn + 1e-8)
+        # mov_mn, mov_mx = utils.quantile(moving, [0.005, 0.995],
+        #                                 dim=range(-dim, 0), bins=1024).unbind(-1)
+        # mov_mx = mov_mx.max(mov_mn + 1e-8)
+        # fix_mn, fix_mx = utils.quantile(fixed.to(moving.dtype), [0.005, 0.995],
+        #                                 dim=range(-dim, 0), bins=1024).unbind(-1)
+        # fix_mx = fix_mx.max(fix_mn + 1e-8)
+
+        def rescale2d(x):
+            mn, mx = utils.quantile(x, [0.005, 0.995],
+                                    dim=range(-2, 0), bins=1024).unbind(-1)
+            mx = mx.max(mn + 1e-8)
+            mn, mx = mn[..., None, None], mx[..., None, None]
+            x = x.sub(mn).div_(mx-mn).clamp_(0, 1)
+            return x
 
         if dim == 3:
             fixed = [fixed[..., fixed.shape[-1] // 2],
                      fixed[..., fixed.shape[-2] // 2, :],
                      fixed[..., fixed.shape[-3] // 2, :, :]]
-            fixed = [f.sub(fix_mn[..., None, None]).div_((fix_mx-fix_mn)[..., None, None])
-                     for f in fixed]
+            # fixed = [f.sub(fix_mn[..., None, None]).div_((fix_mx-fix_mn)[..., None, None])
+            #          for f in fixed]
+            fixed = [rescale2d(f) for f in fixed]
             moving = [moving[..., moving.shape[-1] // 2],
                       moving[..., moving.shape[-2] // 2, :],
                       moving[..., moving.shape[-3] // 2, :, :]]
-            moving = [f.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])
-                     for f in moving]
+            # moving = [f.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])
+            #          for f in moving]
+            moving = [rescale2d(f) for f in moving]
             warped = [warped[..., warped.shape[-1] // 2],
                       warped[..., warped.shape[-2] // 2, :],
                       warped[..., warped.shape[-3] // 2, :, :]]
-            warped = [f.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])
-                     for f in warped]
+            # warped = [f.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])
+            #          for f in warped]
+            warped = [rescale2d(f) for f in warped]
             if vel is not None:
                 vel = [vel[..., vel.shape[-2] // 2, :],
                        vel[..., vel.shape[-3] // 2, :, :],
                        vel[..., vel.shape[-4] // 2, :, :, :]]
                 vel = [v.square().sum(-1).sqrt() for v in vel]
         else:
-            fixed = [fixed.sub(fix_mn[..., None, None]).div_((fix_mx-fix_mn)[..., None, None])]
-            moving = [moving.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])]
-            warped = [warped.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])]
+            # fixed = [fixed.sub(fix_mn[..., None, None]).div_((fix_mx-fix_mn)[..., None, None])]
+            # moving = [moving.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])]
+            # warped = [warped.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])]
+            fixed = [rescale2d(f) for f in fixed]
+            moving = [rescale2d(f) for f in moving]
+            warped = [rescale2d(f) for f in warped]
             vel = [vel.square().sum(-1).sqrt()] if vel is not None else []
 
         if cat:

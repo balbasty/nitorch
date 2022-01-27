@@ -89,7 +89,7 @@ def _load_image(fnames, dim=None, device=None, label=False):
             dat[i] = dat0 == l
     else:
         dat = dat.fdata(device=device, rand=True)
-    affine = affine.to(dat.device, dat.dtype)
+    affine = affine.to(dat.device, torch.float32)
     return dat, affine
 
 
@@ -112,6 +112,15 @@ def _rescale_image(dat, quantiles):
     return dat
 
 
+def _discretize_image(dat, nbins=256):
+    """Discretize an image into a number of bins"""
+    dim = dat.dim() - 1
+    mn, mx = utils.quantile(dat, (0.0005, 0.9995), dim=range(-dim, 0), keepdim=True).unbind(-1)
+    dat = dat.sub_(mn).div_(mx - mn).clamp_(0, 1).mul_(nbins-1)
+    dat = dat.long()
+    return dat
+
+
 def _make_image(option, dim=None, device=None):
     """Return an ImagePyramid object"""
     dat, affine = _load_image(option.files, dim=dim, device=device,
@@ -130,8 +139,26 @@ def _make_image(option, dim=None, device=None):
     for transform in (option.affine or []):
         transform = io.transforms.map(transform).fdata()
         affine = spatial.affine_lmdiv(transform, affine)
-    if option.rescale:
+    if not option.discretize and option.rescale:
         dat = _rescale_image(dat, option.rescale)
+    if option.pad:
+        pad = option.pad
+        if isinstance(pad[-1], str):
+            *pad, unit = pad
+        else:
+            unit = 'vox'
+        if unit == 'mm':
+            voxel_size = spatial.voxel_size(affine)
+            pad = torch.as_tensor(pad, **utils.backend(voxel_size))
+            pad = pad / voxel_size
+            pad = pad.floor().int().tolist()
+        else:
+            pad = [int(p) for p in pad]
+        pad = py.make_list(pad, dim)
+        affine = spatial.affine_pad(affine, dat.shape[-dim:], pad, side='both')
+        dat = utils.pad(dat, pad, side='both', mode=option.bound)
+        if mask is not None:
+            mask = utils.pad(mask, pad, side='both', mode=option.bound)
     if option.fwhm:
         fwhm = option.fwhm
         if isinstance(fwhm[-1], str):
@@ -152,6 +179,9 @@ def _make_image(option, dim=None, device=None):
     image = objects.ImagePyramid(dat, levels=pyramid, affine=affine,
                                  dim=dim, bound=option.bound, mask=mask,
                                  extrapolate=option.extrapolate)
+    if not option.label and option.discretize:
+        for level in image:
+            level.dat = _discretize_image(level.dat, option.discretize)
     return image
 
 
@@ -324,9 +354,16 @@ def _main(options):
     image_dict = {}
     loss_list = []
     for loss in options.loss:
+        if not loss.fix.rescale[-1]:
+            loss.fix.rescale = False
+        if not loss.mov.rescale[-1]:
+            loss.mov.rescale = False
         if loss.name in ('cat', 'dice'):
             loss.fix.rescale = False
             loss.mov.rescale = False
+        if loss.name == 'emi':
+            loss.mov.rescale = False
+            loss.fix.discretize = loss.fix.discretize or 256
         fix = _make_image(loss.fix, dim=options.dim, device=device)
         mov = _make_image(loss.mov, dim=options.dim, device=device)
         image_dict[loss.fix.name or loss.fix.files[0]] = fix
@@ -363,6 +400,20 @@ def _main(options):
             # lossobj = losses.AutoCat()
         elif loss.name == 'dice':
             lossobj = losses.Dice(weighted=loss.weight, log=False)
+        elif loss.name == 'prod':
+            lossobj = losses.ProdLoss(dim=dim)
+        elif loss.name == 'normprod':
+            lossobj = losses.NormProdLoss(dim=dim)
+        elif loss.name == 'sqz':
+            lossobj = losses.SqueezedProdLoss(dim=dim, lam=loss.weight)
+        elif loss.name == 'emi':
+            fwhm = None
+            if not loss.fix.label:
+                fwhm = loss.fix.discretize // 64
+            lossobj = losses.EMI(dim=dim, fwhm=fwhm)
+        elif loss.name == 'extra':
+            # Not a proper loss, we just want to warp these images at the end
+            continue
         else:
             raise ValueError(loss.name)
         lossobj = objects.LossComponent(lossobj, mov, fix, factor=loss.factor,
@@ -370,11 +421,20 @@ def _main(options):
         loss_list.append(lossobj)
 
     # build affine
-    affine = None
+    affine = []
     affine_optim = None
     if options.affine:
-        affine = objects.AffineModel(options.affine.name, options.affine.factor,
-                                     position=options.affine.position)
+        make_affine = lambda name: objects.AffineModel(
+            name, options.affine.factor, position=options.affine.position)
+        name = options.affine.name
+        while name:
+            affine = [make_affine(name), *affine]
+            if name == 'affine':
+                name = 'similitude'
+            elif name == 'similitude':
+                name = 'rigid'
+            else:
+                name = ''
         max_iter = options.affine.optim.max_iter
         if not max_iter:
             if options.nonlin and options.optim.name == 'interleaved':
@@ -515,20 +575,7 @@ def _main(options):
                 tol=options.nonlin.optim.tolerance,
                 ls=options.nonlin.optim.line_search)
 
-    # build joint optimizer
-    if affine and nonlin:
-        if options.optim.name == 'sequential':
-            joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
-                                                   max_iter=1, tol=0)
-        else:
-            joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
-                                                   max_iter=options.optim.max_iter,
-                                                   tol=options.optim.tolerance)
-    elif affine:
-        joptim = affine_optim
-    elif nonlin:
-        joptim = nonlin_optim
-    else:
+    if not affine and not nonlin:
         raise ValueError('At least one of @affine or @nonlin must be used.')
 
     if options.verbose > 1:
@@ -539,10 +586,39 @@ def _main(options):
     # torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.enabled = False
 
-    register = pairwise.Register(loss_list, affine, nonlin, joptim,
-                                 verbose=options.verbose,
-                                 framerate=options.framerate)
-    register.fit()
+    if affine:  # start with a few rounds of progressive affine
+        affines = affine
+        affine_prev = None
+        for i, affine in enumerate(affines):
+            if affine_prev:
+                n = len(affine_prev.dat.dat)
+                affine.set_dat(dim=dim, device=affine_prev.dat.dat.device)
+                affine.dat.dat[:n] = affine_prev.dat.dat
+                if i == 2: # similitude -> affine
+                    affine.dat.dat[n:n+2] = affine_prev.dat.dat[-1]
+            register = pairwise.Register(loss_list, affine, None, affine_optim,
+                                         verbose=options.verbose,
+                                         framerate=options.framerate)
+            register.fit()
+            affine_prev = affine
+
+    if nonlin:  # now do joint optimization
+        # build joint optimizer
+        if affine:
+            if options.optim.name == 'sequential':
+                joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
+                                                       max_iter=1, tol=0)
+            else:
+                joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
+                                                       max_iter=options.optim.max_iter,
+                                                       tol=options.optim.tolerance)
+        else:
+            joptim = nonlin_optim
+
+        register = pairwise.Register(loss_list, affine, nonlin, joptim,
+                                     verbose=options.verbose,
+                                     framerate=options.framerate)
+        register.fit()
 
     if register.affine and options.affine.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'

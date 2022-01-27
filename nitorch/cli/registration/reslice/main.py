@@ -223,7 +223,7 @@ def write_data(options):
                      bound=options.bound,
                      dim=3,
                      inplace=True)
-    output = utils.make_list(options.output, len(options.files))
+    output = py.make_list(options.output, len(options.files))
     for file, ofname in zip(options.files, output):
         ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext)
         print(f'Reslicing:   {file.fname}\n'
