@@ -1,5 +1,6 @@
 from nitorch.cli.cli import commands
-from .parser import parser, help, ParseError
+from nitorch.core.cli import ParseError
+from .parser import parser, help
 from nitorch.tools.registration import (pairwise, losses, optim,
                                         utils as regutils, objects)
 from nitorch import io, spatial
@@ -155,10 +156,11 @@ def _make_image(option, dim=None, device=None):
         else:
             pad = [int(p) for p in pad]
         pad = py.make_list(pad, dim)
-        affine = spatial.affine_pad(affine, dat.shape[-dim:], pad, side='both')
-        dat = utils.pad(dat, pad, side='both', mode=option.bound)
-        if mask is not None:
-            mask = utils.pad(mask, pad, side='both', mode=option.bound)
+        if any(pad):
+            affine, _ = spatial.affine_pad(affine, dat.shape[-dim:], pad, side='both')
+            dat = utils.pad(dat, pad, side='both', mode=option.bound)
+            if mask is not None:
+                mask = utils.pad(mask, pad, side='both', mode=option.bound)
     if option.fwhm:
         fwhm = option.fwhm
         if isinstance(fwhm[-1], str):
