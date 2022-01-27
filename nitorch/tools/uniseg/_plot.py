@@ -136,7 +136,7 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
 
     # --- Restore figure elements --------------------------------------
     dim = X.dim() - 1
-    ncol = len(X) + 1 + 2 * (M is not None) + 2 * (B is not None)
+    ncol = len(X) + 1 + 2 * (M is not None) + 2 * len(X) * (B is not None)
     i = 0
     if first:
         fig.clf()
@@ -201,14 +201,14 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
                         plt.imshow(X3[c], vmin=mn, vmax=0.8 * mx)
                         plt.axis('off')
 
-                        plt.subplot(4, ncol, len(X) + c + 2)
+                        plt.subplot(4, ncol, 2*len(X) + c + 1)
                         plt.imshow(B1[c])
                         plt.axis('off')
                         plt.title('Bias')
-                        plt.subplot(4, ncol, ncol + len(X) + c + 2)
+                        plt.subplot(4, ncol, ncol + 2*len(X) + c + 1)
                         plt.imshow(B2[c])
                         plt.axis('off')
-                        plt.subplot(4, ncol, 2 * ncol + len(X) + c + 2)
+                        plt.subplot(4, ncol, 2 * ncol + 2*len(X) + c + 1)
                         plt.imshow(B3[c])
                         plt.axis('off')
                         # plt.colorbar()

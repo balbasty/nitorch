@@ -30,6 +30,7 @@ def uniseg(x, w=None, affine=None, device=None,
         Deformable template. If it contains only K-1 channels, the
         first channel is implicitly defined such that probabilities sum to one.
         If None (default), the SPM template is used.
+        If False, no prior is used.
     affine_prior : (D+1, D+1) tensor, optional
         Orientation matrix of the prior.
 
@@ -130,6 +131,9 @@ def uniseg(x, w=None, affine=None, device=None,
         affine_prior = affine_prior.to(x.dtype)
 
     if not nb_classes:
+        if prior is None:
+            raise ValueError('If no prior is provided, the number of '
+                             'classes must be provided.')
         if len(prior) == 5:
             nb_classes = (2, 1, 1, 2, 3, 4)
         else:

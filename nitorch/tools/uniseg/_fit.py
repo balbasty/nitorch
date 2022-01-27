@@ -1190,7 +1190,7 @@ class UniSeg(SpatialMixture):
         mu = mu.to(**backend)
 
         log_pdf = (X.reshape(C, -1).T - mu)
-        log_pdf = linalg.matvec(chol, log_pdf).square_()
+        log_pdf = linalg.matvec(chol, log_pdf).square_().sum(-1)
         log_pdf += log_det
         log_pdf *= -0.5
         log_pdf += self.kappa[cluster].log().to(**backend)
@@ -1290,7 +1290,7 @@ class UniSeg(SpatialMixture):
                 for c in range(C):
                     self.sigma[:, c, c] = (mx[c] - mn[c]) / K**2
 
-            df = self.zeros(K, **backend)
+            self.df = torch.zeros(K, **backend)
 
     def _split_clusters(self):
         # Heuristic to split a single Gaussians into multiple Gaussians.
