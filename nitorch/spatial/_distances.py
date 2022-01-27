@@ -1,7 +1,7 @@
 import torch
 from nitorch.core import utils
 from nitorch._C._ts.utils import movedim1, list_reverse_int
-from typing import List, Optional
+from typing import List
 Tensor = torch.Tensor
 
 
@@ -48,16 +48,11 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
     if f.shape[dim] == 1:
         return f
 
-    w = w*w
-
-    dtype: torch.dtype = f.dtype
-    if dtype not in (torch.half, torch.float, torch.double):
-        dtype = torch.float
-
-    f = movedim1(f, dim, 0)                                              # input function
-    k = f.new_zeros(f.shape[1:], dtype=torch.long)                       # index of rightmost parabola in lower envelope
-    v = f.new_zeros(f.shape, dtype=torch.long)                           # locations of parabolas in lower envelope
-    z = f.new_empty([len(f)+1] + f.shape[1:], dtype=dtype)               # location of boundaries between parabolas
+    w = w * w                                       # unit length (squared)
+    f = movedim1(f, dim, 0)                         # input function
+    k = f.new_zeros(f.shape[1:], dtype=torch.long)  # index of rightmost parabola in lower envelope
+    v = f.new_zeros(f.shape, dtype=torch.long)      # locations of parabolas in lower envelope
+    z = f.new_empty([len(f)+1] + f.shape[1:])       # location of boundaries between parabolas
 
     # compute lower envelope
     z[0] = -float('inf')
