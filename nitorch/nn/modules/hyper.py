@@ -1,23 +1,19 @@
 """Utilities to build hyper-networks"""
 from typing import Sequence, Optional
-import inspect
 import copy
 import torch
 import torch.nn as tnn
 from nitorch.core import py
 from ..base import Module
-from .conv import ActivationLike
-from ..activations import make_activation_from_name
+from .conv import ActivationLike, NormalizationLike
 from .linear import LinearBlock
 
 
 class HyperNet(Module):
     """
     Generic hypernetwork.
-
     An hyper-network is a network whose weights are generated dynamically
     by a meta-network from a set of input features.
-
     Its forward pass is: HyperNet(x, feat) = SubNet(MetaNet(feat))(x)
     """
 
@@ -36,11 +32,10 @@ class HyperNet(Module):
                  layers: Sequence[int] = (128,)*6,
                  activation: ActivationLike = 'relu',
                  final_activation: ActivationLike = None,
-                 dropout = None,
-                 norm = None
+                 dropout: float = 0.,
+                 norm: NormalizationLike = None
                  ):
         """
-
         Parameters
         ----------
         in_features : int
@@ -52,6 +47,7 @@ class HyperNet(Module):
             Names or references of sub-modules, whose weights are
             hyper-generated. Names can include global patterns such as
             '*' or '**'.
+            By default, all parameters of the subnetwork are hyper-generated.
         layers : sequence[int], default=(128,)*6
             Number of output channels after each layer of the hyper-network.
         activation : activation_like, default='relu'
@@ -62,12 +58,15 @@ class HyperNet(Module):
             dropout probability. if sequence, must match length of layers
         norm: bool or string, default=None
             Normalisation to use in Linear blocks
-
         """
         super().__init__()
         if nodes is not None and isinstance(nodes, (str, tnn.Module)):
             nodes = [nodes]
         self.nodes = set(nodes) if nodes is not None else None
+
+        # convert parameters to buffers
+        self.network = network
+        self.preprocess_network_(self.network)
 
         # make hypernetwork
         nb_weights = sum(w.numel() for w in self._get_weights(network))
@@ -75,70 +74,19 @@ class HyperNet(Module):
         hyper = []
         for i in range(len(layers)-1):
             hyper.append(LinearBlock(layers[i], layers[i+1],
-                        activation=activation, norm=norm, dropout=dropout))
-            # hyper.append(tnn.Linear(layers[i], layers[i+1]))
-            # a = self._make_activation(activation)
-            # if a:
-            #     hyper.append(a)
+                         activation=activation, norm=norm, dropout=dropout))
         hyper.append(LinearBlock(layers[-1], nb_weights,
-                    activation=final_activation, norm=norm, dropout=dropout))
-        # hyper.append(tnn.Linear(layers[-1], nb_weights))
-        # a = self._make_activation(final_activation)
-        # if a:
-        #     hyper.append(a)
+                     activation=final_activation, norm=norm, dropout=dropout))
         self.hyper = tnn.Sequential(*hyper)
 
-        # save main network
-        self.network = network
-        for param in self._get_weights(self.network):
-            param.requires_grad_(False)
-
-    def parameters(self):
-        return self.hyper.parameters()
-    
-    def train(self, mode=True):
-        self.hyper.train(mode)
-        return self
-    
-    def eval(self):
-        self.hyper.eval()
-        return self
-            
     @property
     def in_features(self):
         return self.hyper[0].in_features
 
-    @classmethod
-    def detach_(cls, network):
-        """Detach all weights of a generated network.
-
-        Parameters
-        ----------
-        network : Module
-
-        Returns
-        -------
-        network : Module
-
-        """
-        for param in network.parameters():
-            param.detach_()
-        return network
-
-    @classmethod
-    def _make_activation(cls, activation):
-        if not activation:
-            return None
-        if isinstance(activation, str):
-            return make_activation_from_name(activation)
-        return (activation() if inspect.isclass(activation)
-                else activation if callable(activation)
-                else None)
-
     def _make_chunks(self, x):
         """Cut output of hypernetwork into weights with correct shape"""
         offset = 0
-        all_shapes = [p.shape for p in self.network.parameters()]
+        all_shapes = [p.shape for p in self._get_weights(self.network)]
         for shape in all_shapes:
             numel = py.prod(shape)
             w = x[offset:offset+numel].reshape(shape)
@@ -157,84 +105,33 @@ class HyperNet(Module):
         for node in nodes:
             if not isinstance(node, str):
                 continue
-            prefix_ = prefix.split('.')
+            prefix = prefix.split('.')
             node = node.split('.')
             if '**' in node:
                 node = (node[:node.index('**')]
-                        + ['*'] * max(0, len(prefix_)-len(nodes))
+                        + ['*'] * max(0, len(prefix)-len(nodes))
                         + node[node.index('**')+1:])
             if '**' in node:
                 raise ValueError('There can be only one ** ellipsis in pattern')
-            if len(node) != len(prefix_):
+            if len(node) != len(prefix):
                 continue
-            if all(_isequal(x, y) for x, y in zip(prefix_, node)):
+            if all(_isequal(x, y) for x, y in zip(prefix, node)):
                 return True
         return False
 
-    def _get_weights(self, x, memo=None, nodes=None, prefix=''):
-        """Get all hyper-generated weights of the main module
-
+    def preprocess_network_(self, x, memo=None, nodes=None, prefix=''):
+        """Convert all "generated" parameters into buffers
         Parameters
         ----------
         x : Module
-            Current module whose weights can be mutated.
+            Module to explore.
         memo : set[Module]
             Sub-modules that have already been visited.
         nodes : set[str or Module]
             Set of nodes, whose parameters can be mutated.
         prefix : str
             Full name of the current module.
-
-        Yields
-        ------
-        Parameter
-
         """
-        if memo is None:
-            memo = set()
-        if x in memo:
-            return
-        if nodes is None:
-            if self.nodes is None:
-                nodes = None
-            else:
-                nodes = set(self.nodes)
-
-        if nodes is None or x in nodes or self._prefix_in_nodes(prefix, nodes):
-            if nodes is not None:
-                nodes = nodes.union(set(x.children()))
-            for param in x.parameters(recurse=False):
-                yield param
-
-        memo.add(x)
-        for name, module in x.named_children():
-            subprefix = prefix + ('.' if prefix else '') + name
-            for param in self._get_weights(module, memo, nodes, subprefix):
-                yield param
-
-    def _set_weights(self, x, w, memo=None, nodes=None, prefix=''):
-        """Sets the weights of the main module
-
-        Parameters
-        ----------
-        x : Module
-            Current module whose weights must be mutated.
-        w : iterator[tensor]
-            Iterator over new weights.
-        memo : set[Module]
-            Sub-modules that have already been visited.
-        nodes : set[str or Module]
-            Set of nodes, whose parameters must be mutated.
-        prefix : str
-            Full name of the current module.
-
-        """
-        # It's a bit tricky to mutate the network weights without breaking the
-        # computational graph. The current implementation is probably less
-        # efficient than something where we define lots of Meta Modules,
-        # but I think that this one is easier to play with (we can just pass
-        # it any "classic" network)
-
         if memo is None:
             memo = set()
         if x in memo:
@@ -250,58 +147,139 @@ class HyperNet(Module):
                 nodes = nodes.union(set(x.children()))
             param_names = [p[0] for p in x.named_parameters(recurse=False)]
             for name in param_names:
-                w1 = next(w)
                 old = getattr(x, name)
                 delattr(x, name)
-                new = tnn.Parameter(old.detach().clone(), requires_grad=False)
-                setattr(x, name, new)
-                getattr(x, name).copy_(w1)
+                x.register_buffer(name, torch.Tensor(old.detach()))
+                if not hasattr(x, 'generated_parameters'):
+                    setattr(x, 'generated_parameters', [])
+                x.generated_parameters.append(name)
 
         memo.add(x)
         for name, module in x.named_children():
             subprefix = prefix + ('.' if prefix else '') + name
-            self._set_weights(module, w, memo, nodes, subprefix)
+            self.preprocess_network_(module, memo, nodes, subprefix)
 
-    def make_networks(self, feat, detach=False):
+    def postprocess_network_(self, x, memo=None):
+        """Convert all "generated" buffers into parameters
+        Parameters
+        ----------
+        x : Module
+            Module to explore.
+        memo : set[Module]
+            Sub-modules that have already been visited.
+        """
+        if memo is None:
+            memo = set()
+        if x in memo:
+            return
+
+        for name in getattr(x, 'generated_parameters', []):
+            old = getattr(x, name)
+            delattr(x, name)
+            setattr(x, name, torch.nn.Parameter(old.detach()))
+        if hasattr(x, 'generated_parameters'):
+            delattr(x, 'generated_parameters')
+
+        memo.add(x)
+        for name, module in x.named_children():
+            self.postprocess_network_(module, memo)
+
+    def _get_weights(self, x, memo=None):
+        """Get all hyper-generated weights of the main module
+        This method assumes that `preprocess_network_` has been called before.
+        Parameters
+        ----------
+        x : Module
+            Module to explore.
+        memo : set[Module]
+            Sub-modules that have already been visited.
+        Yields
+        ------
+        Tensor
+        """
+        if memo is None:
+            memo = set()
+        if x in memo:
+            return
+
+        for name in getattr(x, 'generated_parameters', []):
+            yield getattr(x, name)
+
+        memo.add(x)
+        for name, module in x.named_children():
+            for param in self._get_weights(module, memo):
+                yield param
+
+    def _set_weights(self, x, w, memo=None):
+        """Sets the hyper-generated weights of the main module
+        Parameters
+        ----------
+        x : Module
+            Module to explore.
+        w : iterator[tensor]
+            Iterator over new weights.
+        memo : set[Module]
+            Sub-modules that have already been visited.
+        """
+        if memo is None:
+            memo = set()
+        if x in memo:
+            return
+
+        for name in getattr(x, 'generated_parameters', []):
+            setattr(x, name, next(w))
+
+        memo.add(x)
+        for name, module in x.named_children():
+            self._set_weights(module, w, memo)
+
+    def detach_buffers_(self, x, memo=None):
+        """Detach all buffers in a network"""
+        if memo is None:
+            memo = set()
+        if x in memo:
+            return
+
+        for name, buffer in x.named_buffers(recurse=False):
+            setattr(x, name, getattr(x, name).detach())
+
+        memo.add(x)
+        for name, module in x.named_children():
+            self.detach_buffers_(module, memo)
+
+
+    def make_networks(self, feat):
         """Generate networks from features
-
         Parameters
         ----------
         feat : (batch, in_features) tensor
             Input features
-        detach : bool, default=False
-            Detach all weights in the returned gradients.
-
         Returns
         -------
         networks : list[Module]
-
         """
+        self.detach_buffers_(self.network)
         weights = self.hyper(feat)
         networks = []
         for batch_weights in weights:
             network = copy.deepcopy(self.network)
             self._set_weights(network, self._make_chunks(batch_weights))
-            if detach:
-                network = self.detach_(network)
+            self.postprocess_network_(network)
             networks.append(network)
         return networks
 
     def forward(self, x, feat):
         """
-
         Parameters
         ----------
         x : (batch, ...)
             Input of the main network
         feat : (batch, in_features) tensor
             Input to the hyper-network
-
         Returns
         -------
         y : (batch, ...) tensor
             Output of the main network
-
         """
         # generate hyper weights
         weights = self.hyper(feat)
