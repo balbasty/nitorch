@@ -7,45 +7,50 @@ from .base import Loss
 class InfoNCE(Loss):
     """
     InfoNCE loss used in SimCLR.
-
     References
     ----------
     ..[1] ""
           https://arxiv.org/abs/2002.05709
-
     """
-    def __init__(self, temp=1, crit=None, nb_views=2):
+    def __init__(self, temp=1, crit=None, sim=None):
         super().__init__()
         self.temp = temp
-        self.nb_views = nb_views
         # maybe change CE to .cat.CategoricalLoss ?
-        self.crit = crit if crit else torch.nn.CrossEntropyLoss()
+        self.crit = crit or torch.nn.CrossEntropyLoss(reduction="sum")
+        self.sim = sim or torch.nn.CosineSimilarity(dim=2)
 
-    def forward(self, x):
-        B = x.shape[0]
-        device = x.device
+    def mask_correlated_samples(self, batch_size):
+        N = 2 * batch_size
+        mask = torch.ones((N, N), dtype=bool)
+        mask = mask.fill_diagonal_(0)
+        for i in range(batch_size):
+            mask[i, batch_size + i] = 0
+            mask[batch_size + i, i] = 0
+        return mask
 
-        labels = torch.cat([torch.arange(x.shape[0]) for i in range(self.nb_views)])
-        labels = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
-        labels = labels.to(device)
+    def forward(self, x1, x2):
+        B = x1.shape[0]
+        N = 2 * B
 
-        x = torch.nn.functional.normalize(x)
+        mask = self.mask_correlated_samples(B)
 
-        similarity = x @ x.T
+        x = torch.cat((x1, x2), dim=0)
+        if len(x.shape)==3:
+            x = x[...,0]
 
-        mask = torch.eye(labels.shape[0], dtype=torch.bool).to(device)
-        labels = labels[~mask].view(labels.shape[0], -1)
-        similarity = similarity[~mask].view(similarity[0], -1)
+        sim = self.sim(x.unsqueeze(1), x.unsqueeze(0)) / self.temp
 
-        pos = similarity[labels.bool()].view(labels.shape[0], -1)
-        neg = similarity[~labels.bool()].view(similarity.shape[0], -1)
+        sim1 = torch.diag(sim, B)
+        sim2 = torch.diag(sim, -B)
 
-        logits = torch.cat([pos, neg], 1)
-        labels = torch.zeros(logits.shape[0], dtype=torch.long).to(device)
+        pos = torch.cat((sim1, sim2), dim=0).reshape(N, 1)
+        neg = sim[mask].reshape(N, -1)
 
-        logits /= self.temp
-
-        return self.crit(logits, labels)
+        labels = torch.zeros(N).to(pos.device).long()
+        logits = torch.cat((pos, neg), dim=1)
+        loss = self.crit(logits, labels)
+        loss /= N
+        return loss
 
 
 class BarlowTwins(Loss):
@@ -57,16 +62,20 @@ class BarlowTwins(Loss):
     ..[1] ""
           https://arxiv.org/abs/2103.03230
     """
-    def __init__(self, lambda_=1, temp=1):
+    def __init__(self, lambda_=1, temp=0.005):
         super().__init__()
         self.lambda_ = lambda_
         self.temp = temp
+        self.tiny = 1e-8
 
     def norm(self, x):
-        x = (x - x.mean(0)) / x.std(0)
+        if (x.std(0)==0).sum() != 0:
+            x = (x - x.mean(0)) / (x.std(0) + self.tiny)
+        else:
+            x = (x - x.mean(0)) / x.std(0)
         return x
 
-    def forward(self, x1, x2):
+    def forward(self, x1, x2, reduction=None):
         N = x1.shape[0]
         D = x1.shape[1]
         x1, x2 = x1.reshape(N, D), x2.reshape(N, D)
@@ -84,19 +93,12 @@ class BarlowTwins(Loss):
         correlation[torch.eye(D)==0] *= self.lambda_
         correlation /= self.temp
 
+        if reduction == 'mean':
+            correlation = correlation.mean()
+        elif reduction == 'sum':
+            correlation = correlation.sum()
+
         return correlation
-
-
-# class BYOL(Loss):
-#     """
-#     Bootstrap your own latent (BYOL) loss.
-
-#     References
-#     ----------
-#     ..[1] ""
-#           https://arxiv.org/abs/2006.07733
-#     """
-#     def __init__(self, ):
 
 
 # class DetCon(Loss):
@@ -107,17 +109,5 @@ class BarlowTwins(Loss):
 #     ----------
 #     ..[1] ""
 #           https://arxiv.org/abs/2103.10957
-#     """
-#     def __init__(self, ):
-
-
-# class MoCo(Loss):
-#     """
-#     Momentum contrast loss (as in MoCo v1).
-
-#     References
-#     ----------
-#     ..[1] ""
-#           https://arxiv.org/abs/1911.05722
 #     """
 #     def __init__(self, ):
