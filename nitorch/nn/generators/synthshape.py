@@ -24,10 +24,15 @@ References
       MIDL 2020
       https://arxiv.org/abs/2003.01995
 """
+from typing import Sequence
 import torch
+from torch.functional import Tensor
 
+import nitorch as ni
 from nitorch import spatial
 from nitorch.core import utils
+from nitorch.tools import qmri
+from nitorch.nn.generators.spatial import RandomPatch
 from ..base import Module
 from ..preproc import LabelToOneHot, OneHotToLabel, AffineQuantiles
 from .spatial import RandomDeform, RandomSmooth, RandomLowRes2D, RandomLowRes3D
@@ -203,6 +208,7 @@ class SynthMRI(Module):
                  bag=0.5,
                  droppable_labels=None,
                  predicted_labels=None,
+                 patch_size=None,
                  dtype=None):
         super().__init__()
         self.gmm_cat = gmm_cat[0].lower()
@@ -232,6 +238,7 @@ class SynthMRI(Module):
             shear_scale=shear*2/3.4,
             image_bound='nearest',
         )
+        self.patch = RandomPatch(patch_size) if patch_size else None
         # one hot 2 label
         self.to_label = OneHotToLabel()
         # gmm
@@ -356,8 +363,12 @@ class SynthMRI(Module):
         s = self.to_onehot(s)
         if img is not None:
             s, s0, img = self.deform(s, s0, img)
+            if self.patch:
+                s, s0, img = self.patch(s, s0, img)
         else:
             s, s0 = self.deform(s, s0)
+            if self.patch:
+                s, s0 = self.patch(s, s0)
         if self.gmm_cat == 'l':
             s = self.to_label(s)
         x = self.mixture(s, nb_classes=n)
@@ -378,3 +389,262 @@ class SynthMRI(Module):
             out += [vx]
         return tuple(out)
 
+
+
+# default_params = {
+#     'flair':
+#     {
+#         'te':0.02,
+#         'tr':5,
+#         'ti':1
+#     },
+#     'fse':
+#     {
+#         'te':0.02,
+#         'tr':5
+#     },
+#     'mp2rage':
+#     {
+#         'tr':6.25,
+#         'ti1':0.8,
+#         'ti2':2.2,
+#         'tx':None,
+#         'te':None,
+#         'fa':(4,5),
+#         'pe_steps':160,
+#         'inv_eff':0.96
+#     },
+#     'mprage':
+#     {
+#         'tr':2.3,
+#         'ti':0.9,
+#         'tx':6e-3,
+#         'te':3e-3,
+#         'fa':9,
+#         'pe_steps':160,
+#         'inv_eff':0.96
+#     },
+#     'spgr':
+#     {
+#         'te':0,
+#         'tr':25e-3,
+#         'fa':20
+#     },
+#     'gre':
+#     {
+#         'te':0,
+#         'tr':25e-3,
+#         'fa':20,
+        
+#     }
+# }
+
+
+# class SynthQMRI(SynthMRI):
+#     """
+#     Modified version of SynthMRI generator, where a set of labels of associated parameters (R1/R2s etc)
+#     are used to generate synthetic QMRI maps which can then generate physically plausible synthetic scans.
+#     """
+#     def __init__(self, pd=None, mt=None, r1=None, r2s=None, sequence='mprage',
+#                  receive_exp=None,
+#                  receive_scale=None,
+#                  te_exp=None,
+#                  te_scale=None,
+#                  tr_exp=None,
+#                  tr_scale=None,
+#                  ti_exp=None, # can be tuple for mp2rage
+#                  ti_scale=None,
+#                  fa_exp=None,
+#                  fa_scale=None,
+#                  transmit_exp=None,
+#                  transmit_scale=None,
+#                  tx_exp=None,
+#                  tx_scale=None,
+#                  pe_steps_exp=None,
+#                  pe_steps_scale=None,
+#                  inv_eff_exp=None,
+#                  inv_eff_scale=None,
+#                  channel=1,
+#                  vel_amplitude=3,
+#                  vel_fwhm=20,
+#                  translation=20,
+#                  rotation=15,
+#                  zoom=0.15,
+#                  shear=0.012,
+#                  gmm_fwhm=10,
+#                  bias_amplitude=0.5,
+#                  bias_fwhm=50,
+#                  gamma=0.01,
+#                  motion_fwhm=3,
+#                  resolution=8,
+#                  noise=48,
+#                  gfactor_amplitude=0.5,
+#                  gfactor_fwhm=64,
+#                  gmm_cat='labels',
+#                  bag=0.5,
+#                  droppable_labels=None,
+#                  predicted_labels=None,
+#                  dtype=None):
+
+#         super().__init__(channel=1,
+#                         vel_amplitude=vel_amplitude,
+#                         vel_fwhm=vel_fwhm,
+#                         translation=translation,
+#                         rotation=rotation,
+#                         zoom=zoom,
+#                         shear=shear,
+#                         gmm_fwhm=gmm_fwhm,
+#                         bias_amplitude=bias_amplitude,
+#                         bias_fwhm=bias_fwhm,
+#                         gamma=gamma,
+#                         motion_fwhm=motion_fwhm,
+#                         resolution=resolution,
+#                         noise=noise,
+#                         gfactor_amplitude=gfactor_amplitude,
+#                         gfactor_fwhm=gfactor_fwhm,
+#                         gmm_cat=gmm_cat,
+#                         bag=bag,
+#                         droppable_labels=droppable_labels,
+#                         predicted_labels=predicted_labels,
+#                         dtype=dtype)
+
+#         # now change self.mixture, either to HyperRandomMixture or to RandomMixture and add self.qmri generator from ni.tools.qmri...
+#         # currently ditching sigma values and just using fixed mu with random fwhm 
+#         self.sequence = sequence
+#         self.mixture = None
+#         self.mixture_pd = HyperRandomGaussianMixture(
+#             nb_classes=None,
+#             nb_channels=channel,
+#             means='uniform',
+#             means_exp=pd,
+#             means_scale=1e-5*pd,
+#             scales='uniform',
+#             scales_exp=1e-1*pd,
+#             scales_scale=1e-5*pd,
+#             fwhm='uniform',
+#             fwhm_exp=gmm_fwhm/2,
+#             fwhm_scale=gmm_fwhm/3.46,
+#             background_zero=True,
+#             dtype=dtype,
+#         )
+#         self.mixture_mt = HyperRandomGaussianMixture(
+#             nb_classes=None,
+#             nb_channels=channel,
+#             means='uniform',
+#             means_exp=mt,
+#             means_scale=1e-5*mt,
+#             scales='uniform',
+#             scales_exp=1e-1*mt,
+#             scales_scale=1e-5*mt,
+#             fwhm='uniform',
+#             fwhm_exp=gmm_fwhm/2,
+#             fwhm_scale=gmm_fwhm/3.46,
+#             background_zero=True,
+#             dtype=dtype,
+#         )
+#         self.mixture_r1 = HyperRandomGaussianMixture(
+#             nb_classes=None,
+#             nb_channels=channel,
+#             means='uniform',
+#             means_exp=r1,
+#             means_scale=1e-5*r1,
+#             scales='uniform',
+#             scales_exp=1e-1*r1,
+#             scales_scale=1e-5*r1,
+#             fwhm='uniform',
+#             fwhm_exp=gmm_fwhm/2,
+#             fwhm_scale=gmm_fwhm/3.46,
+#             background_zero=True,
+#             dtype=dtype,
+#         )
+#         self.mixture_r2s = HyperRandomGaussianMixture(
+#             nb_classes=None,
+#             nb_channels=channel,
+#             means='uniform',
+#             means_exp=r2s,
+#             means_scale=1e-5*r2s,
+#             scales='uniform',
+#             scales_exp=1e-1*r2s,
+#             scales_scale=1e-5*r2s,
+#             fwhm='uniform',
+#             fwhm_exp=gmm_fwhm/2,
+#             fwhm_scale=gmm_fwhm/3.46,
+#             background_zero=True,
+#             dtype=dtype,
+#         )
+
+#     def forward(self, s, img=None, return_resolution=False):
+#         """
+
+#         Parameters
+#         ----------
+#         s : (batch, 1, *shape) tensor
+#             Tensor of labels
+
+#         Returns
+#         -------
+#         x : (batch, channel, *shape) tensor
+#             Multi-channel image
+
+#         """
+#         s, s0, n, n0 = self.preprocess_labels(s)
+#         # if self.pbag and torch.rand([]) > 1-self.pbag:
+#         #     s = self.bag(s)
+#         #     n += 1
+#         s = self.to_onehot(s)
+#         if img is not None:
+#             s, s0, img = self.deform(s, s0, img)
+#         else:
+#             s, s0 = self.deform(s, s0)
+#         if self.gmm_cat == 'l':
+#             s = self.to_label(s)
+#         pd = self.mixture_pd(s, nb_classes=n)
+#         mt = self.mixture_mt(s, nb_classes=n)
+#         r1 = self.mixture_r1(s, nb_classes=n)
+#         r2s = self.mixture_r2s(s, nb_classes=n)
+#         ni.plot.show_slices(torch.cat([pd,mt,r1,r2s],1)[0].permute(1,2,3,0))
+#         # if isinstance(self.sequence, list):
+#         #     pick one randomly
+#         # else:
+#         #     sequence = self.sequence
+#         sequence = self.sequence
+#         if sequence == 'mprage':
+#             x = qmri.generators.mprage(pd, r1, r2s,
+#             # add here the random sampled parameters
+#             )
+#         elif sequence == 'mp2rage':
+#             x = qmri.generators.mp2rage(pd, r1, r2s,
+#             # add here the random sampled parameters
+#             )
+#         # elif sequence == 'gre':
+#         #     x = qmri.gre(pd, r1, r2s, mt,
+#         #     # add here the random sampled parameters
+#         #     )
+#         elif sequence == 'fse':
+#             x = qmri.generators.fse(pd, r1, r2s, mt,
+#             # add here the random sampled parameters
+#             )
+#         elif sequence == 'flair':
+#             x = qmri.generators.flair(pd, r1, r2s, mt,
+#             # add here the random sampled parameters
+#             )
+#         elif sequence == 'spgr' or sequence == 'flash':
+#             x = qmri.generators.spgr(pd, r1, r2s, mt,
+#             # add here the random sampled parameters
+#             )
+#         x.clamp_(0, 255)
+#         x = self.gamma(x)
+#         x = self.bias(x)
+#         x = self.smooth(x)
+#         e = self.noise(x)
+#         if torch.rand([]) > 0.5:
+#             x, vx = self.lowres2d(x, noise=e, return_resolution=True)
+#         else:
+#             x, vx = self.lowres3d(x, noise=e, return_resolution=True)
+#         x = self.rescale(x)
+#         out = [x, s0]
+#         if img is not None:
+#             out += [img]
+#         if return_resolution:
+#             out += [vx]
+#         return tuple(out)

@@ -80,25 +80,49 @@ class SynthUNet(NeuriteUNet):
                 else:
                     # we might have reached the final "feat 2 class" conv
                     key = 'unet_likelihood'
-                kernel = torch.as_tensor(f[key][key]['kernel:0'],
+                try:
+                    kernel = torch.as_tensor(f[key][key]['kernel:0'],
+                                         **utils.backend(module.weight))
+                except:
+                    kernel = torch.as_tensor(f[key][key+'_1']['kernel:0'],
                                          **utils.backend(module.weight))
                 kernel = utils.movedim(kernel, [-1, -2], [0, 1])
                 module.weight.copy_(kernel)
-                bias = torch.as_tensor(f[key][key]['bias:0'],
+                try:
+                    bias = torch.as_tensor(f[key][key]['bias:0'],
+                                       **utils.backend(module.bias))
+                except:
+                    bias = torch.as_tensor(f[key][key+'_1']['bias:0'],
                                        **utils.backend(module.bias))
                 module.bias.copy_(bias)
             elif isinstance(module, BatchNorm):
                 key = bn_keys.pop(0)
-                beta = torch.as_tensor(f[key][key]['beta:0'],
+                try:
+                    beta = torch.as_tensor(f[key][key]['beta:0'],
+                                       **utils.backend(module.norm.bias))
+                except:
+                    beta = torch.as_tensor(f[key][key+'_1']['beta:0'],
                                        **utils.backend(module.norm.bias))
                 module.norm.bias.copy_(beta)
-                gamma = torch.as_tensor(f[key][key]['gamma:0'],
+                try:
+                    gamma = torch.as_tensor(f[key][key]['gamma:0'],
+                                        **utils.backend(module.norm.weight))
+                except:
+                    gamma = torch.as_tensor(f[key][key+'_1']['gamma:0'],
                                         **utils.backend(module.norm.weight))
                 module.norm.weight.copy_(gamma)
-                mean = torch.as_tensor(f[key][key]['moving_mean:0'],
+                try:
+                    mean = torch.as_tensor(f[key][key]['moving_mean:0'],
+                                       **utils.backend(module.norm.running_mean))
+                except:
+                    mean = torch.as_tensor(f[key][key+'_1']['moving_mean:0'],
                                        **utils.backend(module.norm.running_mean))
                 module.norm.running_mean.copy_(mean)
-                var = torch.as_tensor(f[key][key]['moving_variance:0'],
+                try:
+                    var = torch.as_tensor(f[key][key]['moving_variance:0'],
+                                      **utils.backend(module.norm.running_var))
+                except:
+                    var = torch.as_tensor(f[key][key+'_1']['moving_variance:0'],
                                       **utils.backend(module.norm.running_var))
                 module.norm.running_var.copy_(var)
             else:
@@ -253,7 +277,8 @@ class SynthPreproc:
     @classmethod
     def addnoise_(cls, x):
         v = x.unique().sort().values
-        v = v[1:] - v[:-1]
+        if v.shape[0] > 1:
+            v = v[1:] - v[:-1]
         v = utils.quantile(v, 0.005).item()
         mask = torch.isfinite(x).bitwise_not_().bitwise_or_(x == 0)
         x.masked_fill_(mask, 0)
@@ -309,8 +334,8 @@ class SynthSegmenter(SynthSegUNet):
     SynthSeg.
     """
 
-    def __init__(self, weights=None, tf_weights=None, verbose=True):
-        super().__init__(verbose=verbose)
+    def __init__(self, weights=None, tf_weights=None, verbose=True, **kwargs):
+        super().__init__(verbose=verbose, **kwargs)
         self.eval()
         if weights:
             self.load_state_dict(weights)
@@ -581,12 +606,19 @@ class SynthMorphUNet(NeuriteUNet):
                 else:
                     # we might have reached the final "feat 2 class" conv
                     key = 'vxm_dense_flow'
-                kernel = torch.as_tensor(f[key][key]['kernel:0'],
+                try:
+                    kernel = torch.as_tensor(f[key][key]['kernel:0'],
+                                         **utils.backend(module.weight))
+                except:
+                    kernel = torch.as_tensor(f[key][key+'_1']['kernel:0'],
                                          **utils.backend(module.weight))
                 kernel = utils.movedim(kernel, [-1, -2], [0, 1])
-                # print(key, module.weight.shape, kernel.shape)
                 module.weight.copy_(kernel)
-                bias = torch.as_tensor(f[key][key]['bias:0'],
+                try:
+                    bias = torch.as_tensor(f[key][key]['bias:0'],
+                                       **utils.backend(module.bias))
+                except:
+                    bias = torch.as_tensor(f[key][key+'_1']['bias:0'],
                                        **utils.backend(module.bias))
                 module.bias.copy_(bias)
             else:

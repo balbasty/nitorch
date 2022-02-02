@@ -263,7 +263,7 @@ def augment(method, image, label=None, vx=None):
         fwhm = [f / v for f, v in
                 zip(fwhm, vx)]  # modulate FWHM with voxel size
         # Instantiate augmenter
-        aug = RandomDiffeo(amplitude=amplitude, fwhm=fwhm, bound='zero',
+        aug = RandomDiffeo(amplitude_exp=amplitude, fwhm_exp=fwhm, bound='zero',
                            device=image.device, dtype=image.dtype)
         # Get random grid
         grid = aug(batch=nbatch, shape=dim)
