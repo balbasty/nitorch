@@ -7,6 +7,8 @@ from nitorch.core import py
 from ..base import Module
 from .conv import ActivationLike, NormalizationLike
 from .linear import LinearBlock
+from nitorch.core.optionals import try_import
+functorch = try_import('functorch')
 
 
 class HyperNet(Module):
@@ -373,7 +375,12 @@ class HyperNetV2(Module):
                      activation=final_activation, norm=norm, dropout=dropout))
         self.hyper = tnn.Sequential(*hyper)
 
-        self.vmap = vmap if hasattr(torch, 'vmap') else False
+        if vmap and not functorch:
+            self.vmap = False
+            print("Selected 'vmap=True' flag but functorch not installed. To use vmap,\
+                please follow instructions at https://github.com/pytorch/functorch#installing-functorch-preview-with-pytorch-110")
+        else:
+            self.vmap = vmap
 
     @property
     def in_features(self):
@@ -595,7 +602,7 @@ class HyperNetV2(Module):
         elif self.vmap:
             # input - feat [B, Weights]; x [B, C, Spatial]
             # in vmap want x -> [B, 1, C, Spatial]
-            output = torch.vmap(self.load_and_forward)(weights, x[:,None])[:,0]
+            output = functorch.vmap(self.load_and_forward)(weights, x[:,None])[:,0]
 
         else:
             # we have to loop over batches because network weights cannot have
