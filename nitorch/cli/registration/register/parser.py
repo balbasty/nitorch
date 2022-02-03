@@ -1,6 +1,4 @@
 from nitorch.core import cli
-from nitorch.core.cli import ParseError
-from copy import copy, deepcopy
 
 
 help1 = r"""[nitorch] register
@@ -132,6 +130,7 @@ usage:
     -l, --label *VAL                Specifies that the file is a label map [False]
                                     If no argument given, labels are [all but zero]
     -m, --mask FILE                 Path to a mask of voxels to *include* [all]
+        --name NAME                 A name to use with `@nonlin --fov`
 
 @affine options:
     FACTOR must be a scalar value [1] and is a global penalty factor
@@ -248,6 +247,7 @@ def parse_range(x):
 
 
 # Main options
+
 parser = cli.CommandParser('register', help=help1, add_help=False)
 parser.add_option('verbose', ('-v', '--verbose'),
                   nargs='?', default=0, convert=int,

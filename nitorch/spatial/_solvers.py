@@ -1053,7 +1053,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
     absolute : float, default=0
     membrane : float, default=0
     bending : float, default=0
-    factor : float, default=1
+    factor : float or sequence[float], default=1
     voxel_size : float or sequence[float], default=1
     bound : str, default='dct2'
 
@@ -1102,15 +1102,38 @@ def solve_field(hessian, gradient, weights=None, dim=None,
         wa = wm = wb = weights
     has_weights = (wa is not None or wm is not None or wb is not None)
 
-    def regulariser(x):
-        y = torch.zeros_like(x)
-        if absolute:
-            y.add_(_absolute(x, weights=wa), alpha=absolute)
-        if membrane:
-            y.add_(_membrane(x, weights=wm, **fdopt), alpha=membrane)
-        if bending:
-            y.add_(_bending(x, weights=wb, **fdopt), alpha=bending)
-        return y.mul_(factor)
+    if not absolute and not membrane:
+        def regulariser(x):
+            return _bending(x, weights=wb, **fdopt).mul_(bending).mul_(factor)
+    elif not absolute and not bending:
+        def regulariser(x):
+            return _membrane(x, weights=wm, **fdopt).mul_(membrane).mul_(factor)
+    elif membrane:
+        def regulariser(x):
+            y = _membrane(x, weights=wm, **fdopt).mul_(membrane)
+            if absolute:
+                y.add_(_absolute(x, weights=wa), alpha=absolute)
+            if bending:
+                y.add_(_bending(x, weights=wb, **fdopt), alpha=bending)
+            return y.mul_(factor)
+    elif bending:
+        def regulariser(x):
+            y = _bending(x, weights=wb, **fdopt).mul_(bending)
+            if absolute:
+                y.add_(_absolute(x, weights=wa), alpha=absolute)
+            if membrane:
+                y.add_(_membrane(x, weights=wm, **fdopt), alpha=membrane)
+            return y.mul_(factor)
+    else:
+        def regulariser(x):
+            y = torch.zeros_like(x)
+            if absolute:
+                y.add_(_absolute(x, weights=wa), alpha=absolute)
+            if membrane:
+                y.add_(_membrane(x, weights=wm, **fdopt), alpha=membrane)
+            if bending:
+                y.add_(_bending(x, weights=wb, **fdopt), alpha=bending)
+            return y.mul_(factor)
 
     # diagonal of the regulariser
     if has_weights:
@@ -1156,8 +1179,8 @@ def solve_field(hessian, gradient, weights=None, dim=None,
         x = x.transpose(-dim-1, -1)
         return x
 
-    forward = ((lambda x: x * hessian + regulariser(x)) if is_diag else
-               (lambda x: _matvec(hessian, x) + regulariser(x)))
+    forward = ((lambda x: regulariser(x).addcmul_(x, hessian)) if is_diag else
+               (lambda x: regulariser(x).add_(_matvec(hessian, x))))
     precond = ((lambda x, s=Ellipsis: x[s] / hessian_smo[s2h(s)]) if is_diag else
                (lambda x, s=Ellipsis: _solve(hessian_smo[s2h(s)], x[s])))
 

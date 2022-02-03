@@ -112,7 +112,7 @@ parser.add_option('b0', ('-b0', '--b0-field'), nargs='+3', help='B0 field')
 
 # recon options
 parser.add_option('likelihood', '--likelihood', nargs=1, default='chi',
-                  convert=cli.Validations.choice(['chi', 'gauss']))
+                  validation=cli.Validations.choice(['chi', 'gauss']))
 parser.add_option('register', '--register', nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
 parser.add_option('uncertainty', ('-u', '--uncertainty'), nargs='?', default=False,
@@ -120,7 +120,7 @@ parser.add_option('uncertainty', ('-u', '--uncertainty'), nargs='?', default=Fal
 parser.add_option('space', '--recon-space', nargs=1, default='mean',
                   convert=number_or_str(int))
 parser.add_option('regularization', '--regularization', nargs=1, default='jtv',
-                  convert=cli.Validations.choice(['no', 'tkh', 'tv', 'jtv']))
+                  validation=cli.Validations.choice(['no', 'tkh', 'tv', 'jtv']))
 parser.add_option('meetup', '--meetup', nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
 parser.add_option('lam', '--lam', nargs=1, default=10., convert=float)
@@ -135,7 +135,7 @@ parser.add_option('levels', '--nb-levels', nargs=1, default=1, convert=int)
 parser.add_option('iter', '--max-iter', nargs=1, default=10, convert=int)
 parser.add_option('tol', '--tolerance', nargs=1, default=1e-4, convert=float)
 parser.add_option('solver', '--solver', nargs=1, default='cg',
-                  convert=cli.Validations.choice(['fmg', 'cg']))
+                  validation=cli.Validations.choice(['fmg', 'cg']))
 
 # generic options
 parser.add_option('verbose', ('-v', '--verbose'),

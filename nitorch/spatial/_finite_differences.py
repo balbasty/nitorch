@@ -554,8 +554,9 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', out=None):
 
     # compute divergence in each dimension
     div = out.view(x.shape[:-1]).zero_() if out is not None else 0
+    tmp = torch.zeros_like(x[..., 0])
     for diff, d, v in zip(x.unbind(-1), dim, voxel_size):
-        div += div1d(diff, order, d, v, side, bound)
+        div += div1d(diff, order, d, v, side, bound, out=tmp)
 
     return div
 
