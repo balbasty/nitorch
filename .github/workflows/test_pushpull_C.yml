@@ -32,7 +32,7 @@ jobs:
       matrix:
         os: [ ubuntu-18.04 ]                # we only run tests on ubuntu/cpu
         python-version: [ '3.6' ]           # smallest version supported
-        pytorch-version: [ '1.4', '1.9' ]   # smallest and biggest versions
+        pytorch-version: [ '1.4', '1.10' ]  # smallest and biggest versions
 
     steps:
 
