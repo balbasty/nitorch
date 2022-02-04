@@ -309,9 +309,9 @@ def _bending_l2(field, voxel_size=1, bound='dct2', dim=None):
                     dj = div1d(dj, **opti, out=bufij)
                     if i != j:
                         # off diagonal -> x2  (upper + lower element)
-                        dj.mul_(2)
+                        dj = dj.mul_(2)
                     mom += dj
-    mom.div_(4.)
+    mom = mom.div_(4.)
     return mom
 
 

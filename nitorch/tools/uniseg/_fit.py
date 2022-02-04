@@ -771,9 +771,11 @@ class SpatialMixture:
             psi_shape = [self.nb_classes] * 2
             self.psi = torch.as_tensor(mrf, **backend).expand(psi_shape)
             self.psi = math.logit(self.psi, 0, implicit=(False, True))
+        elif self.do_mrf == 'learn':
+            psi_shape = [self.nb_classes - 1, self.nb_classes]
+            self.psi = torch.zeros(psi_shape, **backend)
         elif self.do_mrf:
             self.psi = torch.eye(self.nb_classes, **backend)
-            # self.psi -= self.psi[:1]
             self.psi = self.psi[1:] - self.psi[:1]
         else:
             self.psi = None
@@ -1235,9 +1237,7 @@ class UniSeg(SpatialMixture):
 
         # 3) Fiddle with degrees of freedom
         scale /= sum(self.nb_clusters_per_class) ** 2
-        df = len(X) * ss0 * self.lam_wishart
-        # NOTE[YB]: In US, Wishart regularization is much lower (df = len(X))
-        # It would be ice to find why we need much more.
+        df = len(X) * self.lam_wishart
         self.wishart = (scale.diag(), df)
 
     def _init_parameters(self, X, W=None, aff=None, **kwargs):
@@ -1359,11 +1359,11 @@ class UniSeg(SpatialMixture):
             2nd moment
 
         """
-        device = self.mu.device
 
         ss0 = ss0.cpu()
         ss1 = ss1.cpu()
         ss2 = ss2.cpu()
+        ss0.clamp_min_(1e-6)
 
         # update means
         ss0 = ss0.unsqueeze(-1)

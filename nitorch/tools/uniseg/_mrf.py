@@ -51,7 +51,7 @@ def mrf_suffstat(Z, W=None, vx=1):
     dim = Z.dim() - 1
     K = len(Z)
     vx = utils.make_vector(vx, dim, dtype=Z.dtype, device='cpu')
-    ivx = vx.reciprocal_().tolist()
+    ivx = vx.reciprocal().tolist()
 
     S = torch.zeros_like(Z)
     if W is not None:
@@ -113,7 +113,7 @@ def mrf_logprior(Z, logP, W=None, vx=1):
     dim = Z.dim() - 1
     K = len(Z)
     vx = utils.make_vector(vx, dim, dtype=Z.dtype, device='cpu')
-    ivx = vx.reciprocal_().tolist()
+    ivx = vx.reciprocal().tolist()
 
     S = torch.zeros_like(Z)
 
@@ -185,7 +185,7 @@ def mrf_covariance(Z, W=None, vx=1):
 
     dim = Z.dim() - 1
     vx = utils.make_vector(vx, dim, dtype=Z.dtype, device='cpu')
-    ivx2 = vx.reciprocal_().square_()
+    ivx2 = vx.reciprocal().square_()
 
     # build weights responsibilities
     V = Z.new_zeros(Z.shape[1:])
@@ -251,7 +251,7 @@ def mrf(Z, logP, L=None, W=None, vx=1, max_iter=5, tol=1e-4, inplace=False):
     dim = Z.dim() - 1
 
     vx = utils.make_vector(vx, dim, dtype=Z.dtype, device='cpu')
-    ivx = vx.reciprocal_().tolist()
+    ivx = vx.reciprocal().tolist()
 
     K = len(Z)
     Nw = W.sum() if W is not None else Z[0].numel()
@@ -397,7 +397,7 @@ def mrf_sample(logP, shape=None, M=None, vx=1, nb_iter=100, implicit=False):
         L = Cat(logits=utils.movedim(M, 0, -1)).sample()
 
     vx = utils.make_vector(vx, dim, dtype=logP.dtype, device='cpu')
-    ivx = vx.reciprocal_().tolist()
+    ivx = vx.reciprocal().tolist()
 
     redblack = list(itertools.product([0, 1], repeat=dim))
     red = [x for x in redblack if sum(x) % 2]

@@ -403,15 +403,18 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
         fig.canvas.draw()
         saved_elem = [fig.canvas.copy_from_bbox(ax.bbox)
                       for ax in fig.axes]
-        fig.canvas.flush_events()
         plt.show(block=False)
     else:
+        fig.canvas.draw()
         for ax in fig.axes[:-1]:
             ax.draw_artist(ax.images[0])
-            fig.canvas.blit(ax.bbox)
         ax = fig.axes[-1]
         ax.draw_artist(ax.lines[0])
-        fig.canvas.blit(ax.bbox)
+
+        saved_elem = []
+        for ax in fig.axes:
+            fig.canvas.blit(ax.bbox)
+            saved_elem.append(fig.canvas.copy_from_bbox(ax.bbox))
         fig.canvas.flush_events()
 
     return fig, saved_elem
