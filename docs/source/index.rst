@@ -40,7 +40,7 @@ utilities for solving inverse problems in Magnetic Resonance Imaging.
    getting_started
 
 .. toctree::
-   :maxdepth: 4
+   :maxdepth: 1
    :caption: API Documentation
 
    nitorch.cli
