@@ -135,7 +135,7 @@ def uniseg(x, w=None, affine=None, device=None,
             raise ValueError('If no prior is provided, the number of '
                              'classes must be provided.')
         if len(prior) == 5:
-            nb_classes = (2, 1, 1, 2, 3, 4)
+            nb_classes = (2, 2, 2, 2, 3, 4)
         else:
             nb_classes = len(prior) + 1
 
@@ -334,4 +334,7 @@ def get_data(x, w, affine, dim, **backend):
         if x.dim() > dim:
             raise ValueError('Too many dimensions')
 
+    x = x.contiguous()
+    if w is not None:
+        w = w.contiguous()
     return x, w, affine

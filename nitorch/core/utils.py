@@ -2074,6 +2074,19 @@ def merge_labels(x, lookup):
     return out
 
 
+def min_intensity_step(x, max_points=1e6):
+    """Detect empty steps in the data distribution"""
+    nb_points = x.numel()
+    ratio = 1/min(1, max_points / nb_points)
+    ratio = max(1, int((ratio ** (1/3)) // 1))
+    x = x[..., ::ratio, ::ratio, ::ratio].flatten().clone()
+    x[~torch.isfinite(x)] = 0
+    x = x.sort().values
+    x = x[1:] - x[:-1]
+    x = x[x > 0].min().item()
+    return x
+
+
 class benchmark:
     """Context manager for the convolution benchmarking utility
     from pytorch.

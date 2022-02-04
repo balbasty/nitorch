@@ -263,7 +263,8 @@ class SpatialMixture:
             Final lower bound
 
         """
-        with torch.random.fork_rng():
+        with torch.random.fork_rng([] if X.device.type == 'cpu' else
+                                   [X.device]):
             torch.random.manual_seed(1)
             return self._fit(X, W, aff, **kwargs)
 
@@ -683,25 +684,20 @@ class SpatialMixture:
         C = X.shape[0]
         K = Z.shape[0]
 
+        ss0 = X.new_zeros((K,), dtype=torch.double)
         ss1 = X.new_zeros((K, C), dtype=torch.double)
         ss2 = X.new_zeros((K, C, C), dtype=torch.double)
-
-        # Compute 0th moment
-        if W is not None:
-            ss0 = torch.sum(Z.reshape(K, -1) * W.flatten(), dim=-1,
-                            dtype=torch.double)
-        else:
-            ss0 = torch.sum(Z.reshape(K, -1), dim=-1, dtype=torch.double)
 
         # Compute 1st and 2nd moments
         buffer = torch.empty_like(X[0])
         for k in range(K):
+            ss0[k] += reduce(Z[k], W, buffer=buffer)
             for c in range(C):
-                ss1[k, c] = reduce(X[c], Z[k], W, buffer=buffer)
-                ss2[k, c, c] = reduce(X[c], X[c], Z[k], W, buffer=buffer)
+                ss1[k, c] += reduce(X[c], Z[k], W, buffer=buffer)
+                ss2[k, c, c] += reduce(X[c], X[c], Z[k], W, buffer=buffer)
                 for cc in range(c + 1, C):
-                    ss2[k, c, cc] = reduce(X[c], X[cc], Z[k], W, buffer=buffer)
-                    ss2[k, cc, c] = ss2[k, c, cc]
+                    ss2[k, c, cc] += reduce(X[c], X[cc], Z[k], W, buffer=buffer)
+                    ss2[k, cc, c] += ss2[k, c, cc]
 
         return ss0, ss1, ss2
 
