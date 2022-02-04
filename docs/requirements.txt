@@ -1,0 +1,4 @@
+sphinx_pdj_theme
+sphinx-copybutton
+sphinx-gallery
+sphinx
