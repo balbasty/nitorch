@@ -61,7 +61,8 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
         vk = v.gather(0, k[None])[0]
         fvk = f.gather(0, vk[None])[0]
         fq = f[q]
-        s = (fq - fvk + w * (q * q - vk * vk)).true_divide(2 * w * (q - vk))
+        s = torch.true_divide(fq - fvk + w * (q * q - vk * vk),
+                              2 * w * (q - vk))
         zk = z.gather(0, k[None])[0]
         mask = (k > 0) & (s <= zk)
         k[mask] -= 1
@@ -71,7 +72,8 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
             fvk = f.gather(0, vk[None])[0]
             vk, fvk = vk[mask], fvk[mask]
             fq = f[q, mask]
-            s[mask] = (fq - fvk + w * (q*q - vk*vk)).true_divide(2*w*(q - vk))
+            s[mask] = torch.true_divide(fq - fvk + w * (q*q - vk*vk),
+                                        2*w*(q - vk))
             zk = z.gather(0, k[None])[0]
             mask = (k > 0) & (s <= zk)
             k[mask] -= 1
@@ -128,6 +130,9 @@ def euclidean_distance_transform(x, dim=None, vx=1):
           Theory of Computing (2012)
           https://www.theoryofcomputing.org/articles/v008a019/v008a019.pdf
     """
+    import warnings
+    warnings.warn('This function seems to be buggy. Don\'t trust for now.')
+
     dtype = x.dtype if x.dtype.is_floating_point else torch.get_default_dtype()
     x = x.to(dtype, copy=True)
     x[x > 0] = float('inf')
