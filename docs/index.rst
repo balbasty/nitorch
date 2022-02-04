@@ -3,14 +3,54 @@
    You can adapt this file completely to your liking, but it should at least
    contain the root `toctree` directive.
 
+:github_url: https://github.com/balbasty/nitorch
+
+
 Welcome to NITorch's documentation!
 ===================================
 
+NITorch is a library written in 'PyTorch <httyp://pytorch.org/>'_
+ aimed at medical image processing and analysis, with a focus on neuroimaging.
+
+It is a versatile package that implements low-level tools and high-level algorithms 
+for deep learning and optimization-based algorithms. It implements low level differentiable functions, 
+layers, backbones, optimizers, but also high level algorithms for registration and inverse problems 
+as well as a set of command line utilities for manipulating medical images.
+
+Much of the current implementation targets image registration tasks, 
+and many differentiable transformation models are implemented 
+(classic and Lie-encoded affine matrices, B-spline-encoded deformation fields, 
+dense deformation fields, stationary velocity fields, geodesic shooting). 
+All of these models can be used as layers in neural networks, 
+and we showcase them by reimplementing popular registration networks such as VoxelMorph. 
+We also provide generic augmentation layers and easy-to-use and 
+highly-parameterized backbone models (U-Nets, ResNets, etc.).
+
+We also provide optimization-based registration tools that can be 
+easily applied from the command line, as well as algorithms and 
+utilities for solving inverse problems in Magnetic Resonance Imaging.
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Getting Started
+
+   getting_started
+   command_line_tools
+
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
+   :caption: API Documentation
 
-
+   nitorch._C
+   nitorch.cli
+   nitorch.core
+   nitorch.io
+   nitorch.mesh
+   nitorch.nn
+   nitorch.plot
+   nitorch.spatial
+   nitorch.tools
+   nitorch.vb
 
 Indices and tables
 ==================
