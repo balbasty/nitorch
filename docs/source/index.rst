@@ -35,6 +35,12 @@ utilities for solving inverse problems in Magnetic Resonance Imaging.
 
 .. toctree::
    :maxdepth: 1
+   :caption: Home
+
+   index
+
+.. toctree::
+   :maxdepth: 1
    :caption: Getting Started
 
    getting_started
