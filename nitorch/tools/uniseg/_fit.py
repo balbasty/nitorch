@@ -43,7 +43,7 @@ class SpatialMixture:
 
     def __init__(self, nb_classes=6, prior=None, affine_prior=None,
                  do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
-                 lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=100,
+                 lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10,
                  bias_acceleration=0, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-3, max_iter_intensity=8,
                  max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
@@ -84,7 +84,7 @@ class SpatialMixture:
             {'membrane': 1e-3, 'bending': 0.5, 'lame': (0.05, 0.2)}
         lam_mixing : float, default=100
             Dirichlet regularization of the mixing proportions
-        lam_mrf : float, default=100
+        lam_mrf : float, default=10
             Dirichlet regularization of the MRF prior.
 
         Performance

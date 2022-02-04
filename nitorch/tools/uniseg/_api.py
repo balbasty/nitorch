@@ -11,7 +11,7 @@ def uniseg(x, w=None, affine=None, device=None,
            nb_classes=None, prior=None, affine_prior=None,
            do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
            wishart=None, cleanup=None, spacing=3,
-           lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=100, lam_wishart=1,
+           lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10, lam_wishart=1,
            max_iter=30, tol=1e-3, verbose=1, plot=0, return_parameters=False):
     """Unified Segmentation using a deformable spatial prior.
 
@@ -71,7 +71,7 @@ def uniseg(x, w=None, affine=None, device=None,
         Regularization of the warp field: larger == stiffer
     lam_mixing : float, default=100
         Regularization of the mixing proportions: larger == closer to atlas
-    lam_mrf : float, default=100
+    lam_mrf : float, default=10
         Regularization of the MRF weights: larger == less smooth
     lam_wishart : float, default=1
         Modulation of the Wishart degrees of freedom: larger == fixed variances
@@ -171,7 +171,8 @@ def uniseg(x, w=None, affine=None, device=None,
 def uniseg_batch(x, w=None, affine=None, device=None,
                  nb_classes=None, prior=None, affine_prior=None,
                  do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
-                 cleanup=None, spacing=3, lam_bias=0.1, lam_warp=0.1,
+                 wishart=None, cleanup=None, spacing=3, lam_bias=0.1,
+                 lam_warp=0.1, lam_mixing=100, lam_mrf=10, lam_wishart=1,
                  max_iter=30, tol=1e-3, verbose=1, plot=0,
                  return_parameters=False):
     """Batched Unified Segmentation using a deformable spatial prior.
@@ -235,6 +236,7 @@ def uniseg_batch(x, w=None, affine=None, device=None,
             nb_classes=nb_classes, prior=prior, affine_prior=affine_prior,
             do_bias=do_bias, do_warp=do_warp, do_mixing=do_mixing, do_mrf=do_mrf,
             spacing=spacing, cleanup=cleanup, lam_bias=lam_bias, lam_warp=lam_warp,
+            wishart=wishart, lam_mrf=lam_mrf, lam_wishart=lam_wishart, lam_mixing=lam_mixing,
             max_iter=max_iter, tol=tol, verbose=verbose, plot=plot,
             return_parameters=return_parameters)
         z.append(out1[0])
