@@ -35,13 +35,11 @@ utilities for solving inverse problems in Magnetic Resonance Imaging.
    :caption: Getting Started
 
    getting_started
-   command_line_tools
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 4
    :caption: API Documentation
 
-   nitorch._C
    nitorch.cli
    nitorch.core
    nitorch.io
@@ -49,6 +47,7 @@ utilities for solving inverse problems in Magnetic Resonance Imaging.
    nitorch.nn
    nitorch.plot
    nitorch.spatial
+   nitorch.tests
    nitorch.tools
    nitorch.vb
 
