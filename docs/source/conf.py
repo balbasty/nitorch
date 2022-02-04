@@ -12,7 +12,7 @@ version = '0.1.0'
 # -- General configuration
 
 extensions = [
-    # 'nitorch._C',
+    'nitorch._C',
     'nitorch.cli',
     'nitorch.core',
     'nitorch.io',
