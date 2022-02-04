@@ -3,12 +3,14 @@ Getting Started
 
 
 **Clone and install `nitorch`**
+
 .. code-block:: console
-  > pip install git+https://github.com/balbasty/nitorch
-  > 
-  > # Or, alternatively
-  > git clone git@github.com:balbasty/nitorch.git
-  > pip install ./nitorch
+
+        pip install git+https://github.com/balbasty/nitorch
+
+        # Or, alternatively
+        git clone git@github.com:balbasty/nitorch.git
+        pip install ./nitorch
 
 However, this only installs the core dependencies (torch and numpy). 
 If you wish to automatically install dependencies used by, /e.g./, 
@@ -82,21 +84,21 @@ install it beforehand and call `pip install` with the option
 
 #. Build a wheel file
 
-.. code-block:: console
+  .. code-block:: console
 
-        git clone git@github.com:balbasty/nitorch.git
-        cd nitorch
-        ./setup.py bdist_wheel
-        # or alternatively
-        # NI_COMPILED_BACKEND="C" ./setup.py bdist_wheel
+          git clone git@github.com:balbasty/nitorch.git
+          cd nitorch
+          ./setup.py bdist_wheel
+          # or alternatively
+          # NI_COMPILED_BACKEND="C" ./setup.py bdist_wheel
 
-This will create a wheel file in a `dist/` directory:
+  This will create a wheel file in a `dist/` directory:
 
-.. code-block:: console
+  .. code-block:: console
 
-        .
-        ├── dist
-        │   ├── nitorch-[*].whl
+          .
+          ├── dist
+          │   ├── nitorch-[*].whl
 
 #. Install wheel file using `pip`
 
