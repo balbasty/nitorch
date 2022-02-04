@@ -1,14 +1,14 @@
 Getting Started
 ===============
 
-*Clone and install `nitorch`*
-.. code-block:: console
-    > pip install git+https://github.com/balbasty/nitorch
+**Clone and install `nitorch`**
+```shell
+pip install git+https://github.com/balbasty/nitorch
 
-Or, alternatively
-.. code-block:: console
-    > git clone git@github.com:balbasty/nitorch.git
-    > pip install ./nitorch
+# Or, alternatively
+git clone git@github.com:balbasty/nitorch.git
+pip install ./nitorch
+```
 
 However, this only installs the core dependencies (torch and numpy). 
 If you wish to automatically install dependencies used by, /e.g./, 
@@ -16,23 +16,24 @@ readers and writers, plotters and/or dataset loaders, you can specify
 the extra tags `io`, `plot`, `data`. Alternatively, the tag `all` 
 combines all of these dependencies.
 
-.. code-block:: console
-    > pip install git+https://github.com/balbasty/nitorch#egg=nitorch[all]
+```shell
+pip install git+https://github.com/balbasty/nitorch#egg=nitorch[all]
 
-Or, alternatively
-.. code-block:: console
-    > git clone git@github.com:balbasty/nitorch.git
-    > pip install -e "./nitorch[all]"
+# Or, alternatively
+git clone git@github.com:balbasty/nitorch.git
+pip install -e "./nitorch[all]"
+```
 
 You may then start using NITorch in a Python program:
-.. code-block:: console
-    > python
-    > import nitorch as ni
-    > # my cool script
+```python
+import nitorch as ni
+# my cool script
+```
 
 Or use high-level tools from the command line:
-.. code-block:: console
-    > nitorch --help
+```shell
+nitorch --help
+```
 
 *Demo code*
 
@@ -40,9 +41,10 @@ The demo folder contains various Jupyter notebooks that showcase some of NITorch
 
 * `Affine Registration <https://colab.research.google.com/drive/13eSBtEvAp1wIJD0Rlvq5Q9kJWnuEc7WI?usp=sharing>`_
 * `Spatial Tools <https://colab.research.google.com/drive/1-dfCosj9XoesFt7byIhp84p2JMUuHxby?usp=sharing>`_
+* **Affine Registration** <br /> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/13eSBtEvAp1wIJD0Rlvq5Q9kJWnuEc7WI?usp=sharing "NITorch Affine Registration Demo")
+* **Spatial Tools** <br /> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1-dfCosj9XoesFt7byIhp84p2JMUuHxby?usp=sharing "NITorch Spatial Tools Demo")
 
-
-*Compiling C++/CUDA extensions*
+**Compiling C++/CUDA extensions**
 
 By default, a pure PyTorch implementation is used. However, we also 
 provide a version of our image resampling tools written in C++/CUDA, 
@@ -72,7 +74,7 @@ pip install torch==1.9.0+cu111
 NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
 ```
 
-## Compiling your own wheel
+**Compiling your own wheel**
 
 1. Build a wheel file
 ```{bash}
@@ -101,7 +103,7 @@ You must therefore be careful about what packages are present in your
 environment.
 
 
-*Troubleshooting*
+**Troubleshooting**
 
 CUDA
 

@@ -9,6 +9,9 @@
 Welcome to NITorch's documentation!
 ===================================
 
+.. image:: ../images/nitorch_logo_v0.1.png
+   :width: 400
+
 NITorch is a library written in `PyTorch
 <http://pytorch.org/>`_ aimed at medical image processing and analysis, with a focus on neuroimaging.
 
@@ -50,6 +53,19 @@ utilities for solving inverse problems in Magnetic Resonance Imaging.
    nitorch.tests
    nitorch.tools
    nitorch.vb
+
+**Authors**
+
+NITorch has been mostly written by Yael Balbastre and Mikael Brudfors, while post-docs 
+in John Ashburner's group at the FIL (or *Wellcome Centre for Human Neuroimaging* as it 
+is officially known). It is therefore conceptually related to SPM.
+
+All contributions are welcome 
+(though no nicely drafted guidelines exist, we'll try to get better).
+
+**License**
+
+NITorch is released under the MIT license.
 
 Indices and tables
 ==================
