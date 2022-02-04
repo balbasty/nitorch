@@ -37,6 +37,12 @@ def _l1dt_1d(f, dim: int = -1, w: float = 1.):
     return _l1dt_1d_(f.clone(), dim, w)
 
 
+if hasattr(torch, 'true_divide'):
+    _true_div = torch.true_divide
+else:
+    _true_div = torch.div
+
+
 @torch.jit.script
 def _edt_1d(f, dim: int = -1, w: float = 1.):
     """Algorithm 1 in "Distance Transforms of Sampled Functions"
@@ -61,8 +67,8 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
         vk = v.gather(0, k[None])[0]
         fvk = f.gather(0, vk[None])[0]
         fq = f[q]
-        s = torch.true_divide(fq - fvk + w * (q * q - vk * vk),
-                              2 * w * (q - vk))
+        s = _true_div(fq - fvk + w * (q * q - vk * vk),
+                      2 * w * (q - vk))
         zk = z.gather(0, k[None])[0]
         mask = (k > 0) & (s <= zk)
         k[mask] -= 1
@@ -72,8 +78,8 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
             fvk = f.gather(0, vk[None])[0]
             vk, fvk = vk[mask], fvk[mask]
             fq = f[q, mask]
-            s[mask] = torch.true_divide(fq - fvk + w * (q*q - vk*vk),
-                                        2*w*(q - vk))
+            s[mask] = _true_div(fq - fvk + w * (q*q - vk*vk),
+                                2 * w * (q - vk))
             zk = z.gather(0, k[None])[0]
             mask = (k > 0) & (s <= zk)
             k[mask] -= 1
