@@ -684,20 +684,20 @@ class SpatialMixture:
         C = X.shape[0]
         K = Z.shape[0]
 
-        ss0 = X.new_zeros((K,), dtype=torch.double)
-        ss1 = X.new_zeros((K, C), dtype=torch.double)
-        ss2 = X.new_zeros((K, C, C), dtype=torch.double)
+        ss0 = X.new_empty((K,), dtype=torch.double)
+        ss1 = X.new_empty((K, C), dtype=torch.double)
+        ss2 = X.new_empty((K, C, C), dtype=torch.double)
 
         # Compute 1st and 2nd moments
         buffer = torch.empty_like(X[0])
         for k in range(K):
-            ss0[k] += reduce(Z[k], W, buffer=buffer)
+            ss0[k] = reduce(Z[k], W, buffer=buffer)
             for c in range(C):
-                ss1[k, c] += reduce(X[c], Z[k], W, buffer=buffer)
-                ss2[k, c, c] += reduce(X[c], X[c], Z[k], W, buffer=buffer)
+                ss1[k, c] = reduce(X[c], Z[k], W, buffer=buffer)
+                ss2[k, c, c] = reduce(X[c], X[c], Z[k], W, buffer=buffer)
                 for cc in range(c + 1, C):
-                    ss2[k, c, cc] += reduce(X[c], X[cc], Z[k], W, buffer=buffer)
-                    ss2[k, cc, c] += ss2[k, c, cc]
+                    ss2[k, c, cc] = reduce(X[c], X[cc], Z[k], W, buffer=buffer)
+                    ss2[k, cc, c] = ss2[k, c, cc]
 
         return ss0, ss1, ss2
 
