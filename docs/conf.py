@@ -14,9 +14,11 @@ import os
 import sys
 
 # source code directory, relative to this file, for sphinx-autobuild
-sys.path.insert(0, os.path.abspath('..'))
+sys.path.insert(0, os.path.abspath('../nitorch/'))
 
 source_suffix = ['.rst']
+
+import sphinx_rtd_theme
 
 
 # -- Project information -----------------------------------------------------
@@ -39,6 +41,7 @@ extensions = [
     'sphinx.ext.intersphinx',
     'sphinx.ext.viewcode',
     'sphinx.ext.napoleon',
+    'sphinx_rtd_theme',
     # 'sphinxarg.ext',
 ]
 
