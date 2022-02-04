@@ -49,7 +49,6 @@ templates_path = ['_templates']
 master_doc = 'index'
 
 # github doc root
-
 github_doc_root = 'https://github.com/balbasty/nitorch/tree/readthedocs/docs/'
 
 # List of patterns, relative to source directory, that match files and

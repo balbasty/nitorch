@@ -9,8 +9,8 @@
 Welcome to NITorch's documentation!
 ===================================
 
-NITorch is a library written in 'PyTorch <httyp://pytorch.org/>'_
- aimed at medical image processing and analysis, with a focus on neuroimaging.
+NITorch is a library written in `PyTorch
+<http://pytorch.org/>`_ aimed at medical image processing and analysis, with a focus on neuroimaging.
 
 It is a versatile package that implements low-level tools and high-level algorithms 
 for deep learning and optimization-based algorithms. It implements low level differentiable functions, 
