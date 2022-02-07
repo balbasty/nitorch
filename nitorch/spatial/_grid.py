@@ -461,7 +461,7 @@ def identity_grid(shape, dtype=None, device=None, jitter=False):
     grid = torch.stack(grid, dim=-1)
     if jitter:
         reproducible = jitter == 'reproducible'
-        device_ids = [grid.device.index] if grid.device.type == 'cuda' else None
+        device_ids = [grid.device.index] if grid.device.type == 'cuda' else []
         with torch.random.fork_rng(device_ids, enabled=reproducible):
             if reproducible:
                 torch.manual_seed(0)
