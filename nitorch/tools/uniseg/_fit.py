@@ -45,9 +45,9 @@ class SpatialMixture:
                  do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
                  lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10,
                  bias_acceleration=0, warp_acceleration=0.9, spacing=3,
-                 max_iter=30, tol=1e-3, max_iter_intensity=8,
+                 max_iter=30, tol=1e-3, max_iter_intensity=8, max_iter_mrf=50,
                  max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
-                 verbose=1, plot=0):
+                 max_iter_mixing=10, verbose=1, plot=0):
         """
         Parameters
         ----------
@@ -96,7 +96,11 @@ class SpatialMixture:
         max_iter_intensity : int, default=8
             Maximum number of GMM+Bias (EM) iterations
         max_iter_cluster : int, default=20
-            Maximum number of GMM iterations
+            Maximum number of GMM (EM) iterations
+        max_iter_mrf : int, default=50
+            Maximum number of MRF (EM) iterations
+        max_iter_mixing : int, default=10
+            Maximum number of Mixing (EM) iterations
         max_iter_bias : int, default=1
             Maximum number of Bias (Gauss-Newton) iterations
         max_iter_warp : int, default=3
@@ -169,6 +173,8 @@ class SpatialMixture:
         self.max_iter_cluster = max_iter_cluster
         self.max_iter_bias = max_iter_bias
         self.max_iter_warp = max_iter_warp
+        self.max_iter_mrf = max_iter_mrf
+        self.max_iter_mixing = max_iter_mixing
         self.max_ls_warp = 0  # 12
         self.tol = tol
 
@@ -176,6 +182,10 @@ class SpatialMixture:
             self.max_iter_bias = 0
         if not self.do_warp:
             self.max_iter_warp = 0
+        if not self.do_mixing:
+            self.max_iter_mixing = 0
+        if self.do_mrf != 'learn':
+            self.max_iter_mrf = 0
 
         # Verbosity
         self.verbose = verbose
@@ -537,20 +547,35 @@ class SpatialMixture:
                     ss0, ss1, ss2 = self._suffstats(XB, Z, W)
                     self._update_intensity(ss0, ss1, ss2)
 
-                    Z = self._z_combine(Z)
-
                     if self.plot >= 4:
                         # plot after responsibilities have been combined
+                        Z = self._z_combine(Z)
                         self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+                    plot_mode = 'gmm'
 
                     # ===========================
                     # M-step - Mixing proportions
                     # ===========================
-                    if self.do_mixing and n_iter_intensity > 0:
-                        self._update_mixing(ss0, W, S)
-                        S, lse = self._make_prior(M, L, W)
+                    if n_iter_intensity > 0:
+                        for n_iter_mrf in range(self.max_iter_mixing):
+                            if n_iter_mrf > 0:
+                                olb = lb
+                                Z, L, lb = self.e_step(XB, W, M, vx=vx, combine=True)
+                                S, lse = self._make_prior(M, L, W)
+                                lb -= lse
+                                lb += self._lb_parameters()
+                                all_all_lb.append(lb)
+                                if self.verbose >= 3:
+                                    gain = (lb - olb) / (self.tol * nW)
+                                    print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_mrf:02d} | '
+                                          f'pre mixing: {lb.item()/nW:12.6g} ({gain:.6g})')
+                                if self.plot >= 4:
+                                    self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
-                    plot_mode = 'gmm'
+                            self._update_mixing(ss0, W, S)
+
+                            if n_iter_mrf > 1 and lb-olb < 0.5 * self.tol * nW:
+                                break
 
                     if n_iter_cluster > 1 and lb-olb < self.tol * nW:
                         break
@@ -558,8 +583,26 @@ class SpatialMixture:
                 # ============================
                 # M-step - Markov Random Field
                 # ============================
-                if self.do_mrf == 'learn' and n_iter_intensity >= 2:
-                    self._update_mrf(Z, W, S, vx)
+                if n_iter_intensity > 1:
+                    for n_iter_mrf in range(self.max_iter_mrf):
+                        if n_iter_mrf > 0:
+                            olb = lb
+                            Z, L, lb = self.e_step(XB, W, M, vx=vx, combine=True)
+                            S, lse = self._make_prior(M, L, W)
+                            lb -= lse
+                            lb += self._lb_parameters()
+                            all_all_lb.append(lb)
+                            if self.verbose >= 3:
+                                gain = (lb - olb) / (self.tol * nW)
+                                print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_mrf:02d} | '
+                                      f'pre mrf: {lb.item()/nW:12.6g} ({gain:.6g})')
+                            if self.plot >= 4:
+                                self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+
+                        self._update_mrf(Z, W, S, vx)
+
+                        if n_iter_mrf > 1 and lb-olb < 0.5 * self.tol * nW:
+                            break
 
                 for n_iter_bias in range(self.max_iter_bias):
                     # ======
@@ -767,9 +810,9 @@ class SpatialMixture:
             psi_shape = [self.nb_classes] * 2
             self.psi = torch.as_tensor(mrf, **backend).expand(psi_shape)
             self.psi = math.logit(self.psi, 0, implicit=(False, True))
-        elif self.do_mrf == 'learn':
-            psi_shape = [self.nb_classes - 1, self.nb_classes]
-            self.psi = torch.zeros(psi_shape, **backend)
+        # elif self.do_mrf == 'learn':
+        #     psi_shape = [self.nb_classes - 1, self.nb_classes]
+        #     self.psi = torch.zeros(psi_shape, **backend)
         elif self.do_mrf:
             self.psi = torch.eye(self.nb_classes, **backend)
             self.psi = self.psi[1:] - self.psi[:1]
