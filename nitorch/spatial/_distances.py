@@ -54,11 +54,11 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
     if f.shape[dim] == 1:
         return f
 
-    w = w * w                                       # unit length (squared)
-    f = movedim1(f, dim, 0)                         # input function
-    k = f.new_zeros(f.shape[1:], dtype=torch.long)  # index of rightmost parabola in lower envelope
-    v = f.new_zeros(f.shape, dtype=torch.long)      # locations of parabolas in lower envelope
-    z = f.new_empty([len(f)+1] + f.shape[1:])       # location of boundaries between parabolas
+    w = w * w                                        # unit length (squared)
+    f = movedim1(f, dim, 0)                          # input function
+    k = f.new_zeros(f.shape[1:], dtype=torch.long)   # index of rightmost parabola in lower envelope
+    v = f.new_zeros(f.shape, dtype=torch.long)       # locations of parabolas in lower envelope
+    z = f.new_empty([len(f)+1] + list(f.shape[1:]))  # location of boundaries between parabolas
 
     # compute lower envelope
     z.scatter_(0, k[None], -float('inf'))
@@ -74,12 +74,13 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
         mask = (k > 0) & (s <= zk)
 
         while mask.any():
-            k[mask] -= 1
+            k.add_(mask, alpha=-1)
             vk = v.gather(0, k[None])[0]
             fvk = f.gather(0, vk[None])[0]
-            fq, vk, fvk = f[q, mask], vk[mask], fvk[mask]
+            fq = f[q]
             a, b = q - vk, q + vk
-            s[mask] = _true_div((fq - fvk) + w * (a * b), 2 * (w * a))
+            new_s = _true_div((fq - fvk) + w * (a * b), 2 * (w * a))
+            s = torch.where(mask, new_s, s)
             zk = z.gather(0, k[None])[0]
             mask = (k > 0) & (s <= zk)
         s.masked_fill_(torch.isnan(s), -float('inf'))  # is this correct?
@@ -98,7 +99,7 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
         mask = zk < q
 
         while mask.any():
-            k[mask] += 1
+            k.add_(mask)
             zk = z.gather(0, k[None] + 1)[0]
             mask = zk < q
 
