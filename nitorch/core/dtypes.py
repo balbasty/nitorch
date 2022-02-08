@@ -1028,9 +1028,9 @@ class Float32(Real):
     significand_max = property(lambda cls: 16777215)
     significand_min = property(lambda cls: 0)
     normalized_min = property(lambda cls: 2**-126)
-    min = property(lambda cls: -3.4028235e+38)
-    max = property(lambda cls: 3.4028235e+38)
-    eps = property(lambda cls: 1e-06)
+    min = property(lambda cls: float(np.finfo(np.float32).min))  # -3.4028235e+38
+    max = property(lambda cls: float(np.finfo(np.float32).max))  # 3.4028235e+38
+    eps = property(lambda cls: float(np.finfo(np.float32).eps))  # 1e-6
     numpy = property(lambda cls: np.dtype('f4') if np else None)
     torch = property(lambda cls: _torch.float32)
     python = property(lambda cls: None)
@@ -1098,9 +1098,9 @@ class Float64(Real):
     significand_max = property(lambda cls: 9007199254740991)
     significand_min = property(lambda cls: 0)
     normalized_min = property(lambda cls: 2**-1022)
-    min = property(lambda cls: -1.7976931348623157e+308)
-    max = property(lambda cls: 1.7976931348623157e+308)
-    eps = property(lambda cls: 1e-15)
+    min = property(lambda cls: float(np.finfo(np.float64).min))  # -1.7976931348623157e+308
+    max = property(lambda cls: float(np.finfo(np.float64).max))  # 1.7976931348623157e+308
+    eps = property(lambda cls: float(np.finfo(np.float64).eps))  # 1e-15
     numpy = property(lambda cls: np.dtype('f8') if np else None)
     torch = property(lambda cls: _torch.float64)
     python = property(lambda cls: float)

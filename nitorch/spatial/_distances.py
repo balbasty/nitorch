@@ -61,48 +61,46 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
     z = f.new_empty([len(f)+1] + f.shape[1:])       # location of boundaries between parabolas
 
     # compute lower envelope
-    z[0] = -float('inf')
+    z.scatter_(0, k[None], -float('inf'))
+    z.scatter_(0, k[None] + 1, float('inf'))
     for q in range(1, len(f)):
 
         vk = v.gather(0, k[None])[0]
         fvk = f.gather(0, vk[None])[0]
         fq = f[q]
-        s = _true_div(fq - fvk + w * (q * q - vk * vk),
-                      2 * w * (q - vk))
+        a, b = q - vk, q + vk
+        s = _true_div((fq - fvk) + w * (a * b), 2 * (w * a))
         zk = z.gather(0, k[None])[0]
         mask = (k > 0) & (s <= zk)
-        k[mask] -= 1
 
         while mask.any():
+            k[mask] -= 1
             vk = v.gather(0, k[None])[0]
             fvk = f.gather(0, vk[None])[0]
-            vk, fvk = vk[mask], fvk[mask]
-            fq = f[q, mask]
-            s[mask] = _true_div(fq - fvk + w * (q*q - vk*vk),
-                                2 * w * (q - vk))
+            fq, vk, fvk = f[q, mask], vk[mask], fvk[mask]
+            a, b = q - vk, q + vk
+            s[mask] = _true_div((fq - fvk) + w * (a * b), 2 * (w * a))
             zk = z.gather(0, k[None])[0]
             mask = (k > 0) & (s <= zk)
-            k[mask] -= 1
+        s.masked_fill_(torch.isnan(s), -float('inf'))  # is this correct?
 
         k += 1
         v.scatter_(0, k[None], q)
         z.scatter_(0, k[None], s[None])
         z.scatter_(0, k[None] + 1, float('inf'))
-    z[torch.isnan(z)] = -float('inf')
 
     # fill in values of distance transform
     k.zero_()
-    d = torch.empty_like(f)
+    d = f.clone()
     for q in range(len(f)):
 
         zk = z.gather(0, k[None] + 1)[0]
         mask = zk < q
-        k[zk < q] += 1
 
         while mask.any():
+            k[mask] += 1
             zk = z.gather(0, k[None] + 1)[0]
             mask = zk < q
-            k[zk < q] += 1
 
         vk = v.gather(0, k[None])[0]
         fvk = f.gather(0, vk[None])[0]
@@ -136,12 +134,9 @@ def euclidean_distance_transform(x, dim=None, vx=1):
           Theory of Computing (2012)
           https://www.theoryofcomputing.org/articles/v008a019/v008a019.pdf
     """
-    import warnings
-    warnings.warn('This function seems to be buggy. Don\'t trust for now.')
-
     dtype = x.dtype if x.dtype.is_floating_point else torch.get_default_dtype()
     x = x.to(dtype, copy=True)
-    x[x > 0] = float('inf')
+    x.masked_fill_(x > 0, float('inf'))
     dim = dim or x.dim()
     vx = utils.make_vector(vx, dim, dtype=torch.float).tolist()
     x = _l1dt_1d_(x, -dim, vx[0]).square_()
@@ -177,7 +172,7 @@ def l1_distance_transform(x, dim=None, vx=1):
     """
     dtype = x.dtype if x.dtype.is_floating_point else torch.get_default_dtype()
     x = x.to(dtype, copy=True)
-    x[x > 0] = float('inf')
+    x.masked_fill_(x > 0, float('inf'))
     dim = dim or x.dim()
     vx = utils.make_vector(vx, dim, dtype=torch.float).tolist()
     for d, w in enumerate(vx):
