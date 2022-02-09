@@ -1,11 +1,60 @@
 import torch
 from nitorch import spatial
-from nitorch.core import utils, math, py, constants
+from nitorch.core import utils, math, py, constants, linalg
 from nitorch.core.utils import _hist_to_quantile
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
 mcolors = try_import('matplotlib.colors', _as=True)
 from warnings import warn
+
+
+def _get_colormap_cat(colormap, nb_classes, dtype=None, device=None):
+    if colormap is None:
+        if not plt:
+            raise ImportError('Matplotlib not available')
+        if nb_classes <= 10:
+            colormap = plt.get_cmap('tab10')
+        elif nb_classes <= 20:
+            colormap = plt.get_cmap('tab20')
+        else:
+            warn('More than 20 classes: multiple classes will share'
+                 'the same color.')
+            colormap = plt.get_cmap('tab20')
+    elif isinstance(colormap, str):
+        colormap = plt.get_cmap(colormap)
+    if isinstance(colormap, mcolors.Colormap):
+        n = nb_classes
+        colormap = [colormap(i/(n-1))[:3] for i in range(n)]
+    colormap = torch.as_tensor(colormap, dtype=dtype, device=device)
+    return colormap
+
+
+def _get_colormap_intensity(colormap, n=256, dtype=None, device=None):
+    if colormap is None:
+        if not plt:
+            raise ImportError('Matplotlib not available')
+        colormap = plt.get_cmap('gray')
+    elif isinstance(colormap, str):
+        colormap = plt.get_cmap(colormap)
+    if isinstance(colormap, mcolors.Colormap):
+        colormap = [colormap(i/(n-1))[:3] for i in range(n)]
+    colormap = torch.as_tensor(colormap, dtype=dtype, device=device)
+    return colormap
+
+
+def _get_colormap_depth(colormap, n=256, dtype=None, device=None):
+    if colormap is None:
+        if not plt:
+            raise ImportError('Matplotlib not available')
+        colormap = plt.get_cmap('rainbow')
+    elif plt and isinstance(colormap, str):
+        colormap = plt.get_cmap(colormap)
+    if mcolors and isinstance(colormap, mcolors.Colormap):
+        colormap = [colormap(i/(n-1))[:3] for i in range(n)]
+    else:
+        raise ImportError('Matplotlib not available')
+    colormap = torch.as_tensor(colormap, dtype=dtype, device=device)
+    return colormap
 
 
 def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
@@ -79,39 +128,6 @@ def disp_to_rgb(image, vmax=None, scale=1, amplitude='value'):
     return cimage
 
 
-def _get_colormap_cat(colormap, nb_classes, dtype=None, device=None):
-    if colormap is None:
-        if not plt:
-            raise ImportError('Matplotlib not available')
-        if nb_classes <= 10:
-            colormap = plt.get_cmap('tab10')
-        elif nb_classes <= 20:
-            colormap = plt.get_cmap('tab20')
-        else:
-            warn('More than 20 classes: multiple classes will share'
-                 'the same color.')
-            colormap = plt.get_cmap('tab20')
-    elif isinstance(colormap, str):
-        colormap = plt.get_cmap(colormap)
-    if isinstance(colormap, mcolors.Colormap):
-        colormap = [colormap(i)[:3] for i in range(nb_classes)]
-    colormap = torch.as_tensor(colormap, dtype=dtype, device=device)
-    return colormap
-
-
-def _get_colormap_intensity(colormap, n=256, dtype=None, device=None):
-    if colormap is None:
-        if not plt:
-            raise ImportError('Matplotlib not available')
-        colormap = plt.get_cmap('gray')
-    elif isinstance(colormap, str):
-        colormap = plt.get_cmap(colormap)
-    if isinstance(colormap, mcolors.Colormap):
-        colormap = [colormap(i)[:3] for i in range(n)]
-    colormap = torch.as_tensor(colormap, dtype=dtype, device=device)
-    return colormap
-
-
 def prob_to_rgb(image, implicit=False, colormap=None):
     """Convert soft probabilities to an RGB image.
 
@@ -137,29 +153,41 @@ def prob_to_rgb(image, implicit=False, colormap=None):
 
     *batch, nb_classes, height, width = image.shape
     shape = (height, width)
-
-    if colormap is None:
-        if not plt:
-            raise ImportError('Matplotlib not available')
-        if nb_classes <= 10:
-            colormap = plt.get_cmap('tab10')
-        elif nb_classes <= 20:
-            colormap = plt.get_cmap('tab20')
-        else:
-            warn('More than 20 classes: multiple classes will share '
-                 'the same color.')
-            colormap = plt.get_cmap('tab20')
-    elif isinstance(colormap, str):
-        colormap = plt.get_cmap(colormap)
-    if isinstance(colormap, mcolors.Colormap):
-        colormap = [colormap(i)[:3] for i in range(colormap.N)]
-    colormap = torch.as_tensor(colormap, dtype=image.dtype, device=image.device)
+    colormap = _get_colormap_cat(colormap, nb_classes, image.dtype, image.device)
 
     cimage = image.new_zeros([*batch, *shape, 3])
     for i in range(nb_classes):
         cimage += image[..., i, :, :, None] * colormap[i % len(colormap)]
 
-    return cimage
+    return cimage.clamp_(0, 1)
+
+
+def depth_to_rgb(image, colormap=None):
+    """Convert soft probabilities to an RGB image.
+
+    Parameters
+    ----------
+    image : (*batch, D, H, W)
+        A (batch of) 3D image, with depth along the 'D' dimension.
+    colormap : (D, 3) tensor or str, optional
+        A colormap or the name of a matplotlib colormap.
+
+    Returns
+    -------
+    image : (*batch, H, W, 3)
+        A (batch of) RGB image.
+
+    """
+
+    *batch, depth, height, width = image.shape
+    colormap = _get_colormap_depth(colormap, depth, image.dtype, image.device)
+
+    image = utils.movedim(image, -3, -1)
+    cimage = linalg.dot(image.unsqueeze(-2), colormap.T)
+    cimage /= image.sum(-1, keepdim=True)
+    cimage *= image.max(-1, keepdim=True).values
+
+    return cimage.clamp_(0, 1)
 
 
 def intensity_to_rgb(image, min=None, max=None, colormap='gray', n=256, eq=False):

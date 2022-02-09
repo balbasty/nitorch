@@ -531,10 +531,18 @@ class RandomDeform(Module):
         """
         batch, channel, *shape = images[0].shape
 
+        dtype = None
+        for image in images:
+            if image.dtype.is_floating_point:
+                dtype = image.dtype
+                break
+        if dtype is None:
+            dtype = torch.get_default_dtype()
+
         # get arguments
         opt_grid = {
             'shape': shape,
-            'dtype': images[0].dtype,
+            'dtype': dtype,
             'device': images[0].device,
         }
 

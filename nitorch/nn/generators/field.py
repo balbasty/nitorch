@@ -575,7 +575,8 @@ class HyperRandomFieldSpline(_HyperRandomField):
 class RandomMultiplicativeField(Module):
     """Exponentiated random field with fixed hyper-parameters."""
 
-    def __init__(self, mean=0, amplitude=1, fwhm=5, device=None, dtype=None):
+    def __init__(self, mean=0, amplitude=1, fwhm=5, device=None, dtype=None,
+                 sigmoid=False):
         """
         The geometry of a random field is controlled by three parameters:
             - `mean` controls the expected value of the field.
@@ -599,6 +600,7 @@ class RandomMultiplicativeField(Module):
         super().__init__()
         self.field = RandomFieldSpline(mean=mean, amplitude=amplitude,
                                        fwhm=fwhm, device=device, dtype=dtype)
+        self.sigmoid = sigmoid
 
     def forward(self, shape, **overload):
         """
@@ -615,7 +617,11 @@ class RandomMultiplicativeField(Module):
         """
         bias = self.field(batch=shape[0], channel=shape[1],
                           shape=shape[2:], **overload)
-        return bias.exp()
+        if self.sigmoid:
+            bias = bias.neg_().exp_().add_(1).reciprocal_()
+        else:
+            bias = bias.exp_()
+        return bias
 
 
 class HyperRandomMultiplicativeField(Module):
@@ -625,7 +631,7 @@ class HyperRandomMultiplicativeField(Module):
                  mean=None, mean_exp=0, mean_scale=1,
                  amplitude='lognormal', amplitude_exp=1, amplitude_scale=10,
                  fwhm='lognormal', fwhm_exp=5, fwhm_scale=2,
-                 device=None, dtype=None):
+                 sigmoid=False, device=None, dtype=None):
         """
         The geometry of a random field is controlled by three parameters:
             - `mean` controls the expected value of the field.
@@ -664,6 +670,7 @@ class HyperRandomMultiplicativeField(Module):
         self.fwhm_scale = fwhm_scale
         self.dtype = dtype or torch.get_default_dtype()
         self.device = device
+        self.sigmoid = sigmoid
 
     def _make_sampler(self, name, **backend):
         exp = getattr(self, name + '_exp')
@@ -705,6 +712,7 @@ class HyperRandomMultiplicativeField(Module):
             fwhm1 = fwhm.sample()
 
             sampler = RandomMultiplicativeField(mean1, amplitude1, fwhm1,
-                                                dtype=dtype, device=device)
+                                                dtype=dtype, device=device,
+                                                sigmoid=self.sigmoid)
             out[b] = sampler([1, *shape[1:]])[0]
         return out

@@ -10,7 +10,7 @@ from .distribution import _get_dist
 class RandomBiasFieldTransform(Module):
     """Apply a random multiplicative bias field to an image."""
 
-    def __init__(self, mean=0, amplitude=1, fwhm=5):
+    def __init__(self, mean=0, amplitude=1, fwhm=5, sigmoid=False):
         """
         The geometry of a random field is controlled by three parameters:
             - `mean` controls the expected value of the field.
@@ -27,7 +27,8 @@ class RandomBiasFieldTransform(Module):
             Full-width at Half Maximum of the squared-exponential kernel.
         """
         super().__init__()
-        self.bias = field.RandomMultiplicativeField(mean, amplitude, fwhm)
+        self.bias = field.RandomMultiplicativeField(mean, amplitude, fwhm,
+                                                    sigmoid=sigmoid)
 
     def forward(self, image, **overload):
         """
@@ -60,7 +61,7 @@ class HyperRandomBiasFieldTransform(Module):
     def __init__(self,
                  mean=None, mean_exp=0, mean_scale=1,
                  amplitude='lognormal', amplitude_exp=1, amplitude_scale=10,
-                 fwhm='lognormal', fwhm_exp=5, fwhm_scale=2):
+                 fwhm='lognormal', fwhm_exp=5, fwhm_scale=2, sigmoid=False):
         """
         The geometry of a random field is controlled by three parameters:
             - `mean` controls the expected value of the field.
@@ -89,7 +90,7 @@ class HyperRandomBiasFieldTransform(Module):
         self.bias = field.HyperRandomMultiplicativeField(
             mean, mean_exp, mean_scale,
             amplitude, amplitude_exp, amplitude_scale,
-            fwhm, fwhm_exp, fwhm_scale)
+            fwhm, fwhm_exp, fwhm_scale, sigmoid=sigmoid)
 
     def forward(self, image, **overload):
         """

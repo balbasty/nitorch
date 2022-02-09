@@ -357,7 +357,7 @@ def radius_to_prec_(r):
     return r
 
 
-def draw_curve(shape, s, mode='gaussian', tiny=0):
+def draw_curve(shape, s, mode='gaussian', tiny=0, **kwargs):
     """Draw a BSpline curve
 
     Parameters
@@ -373,7 +373,7 @@ def draw_curve(shape, s, mode='gaussian', tiny=0):
 
     """
     x = identity_grid(shape, **utils.backend(s.waypoints))
-    t, d = min_dist(x, s)
+    t, d = min_dist(x, s, **kwargs)
     r = s.eval_radius(t)
     if mode[0].lower() == 'b':
         return d <= r
@@ -381,7 +381,7 @@ def draw_curve(shape, s, mode='gaussian', tiny=0):
         return dist_to_prob(d, r, tiny)
 
 
-def draw_curves(shape, s, mode='gaussian', tiny=0):
+def draw_curves(shape, s, mode='gaussian', tiny=0, **kwargs):
     """Draw multiple BSpline curves
 
     Parameters
@@ -402,22 +402,22 @@ def draw_curves(shape, s, mode='gaussian', tiny=0):
     tiny = tiny / n
     if mode[0].lower() == 'b':
         s1 = s.pop(0)
-        t, d = min_dist(x, s1)
+        t, d = min_dist(x, s1, **kwargs)
         r = s1.eval_radius(t)
         c = d <= r
         while s:
             s1 = s.pop(0)
-            t, d = min_dist(x, s1)
+            t, d = min_dist(x, s1, **kwargs)
             r = s1.eval_radius(t)
             c.bitwise_or_(d <= r)
     else:
         s1 = s.pop(0)
-        t, d = min_dist(x, s1)
+        t, d = min_dist(x, s1, **kwargs)
         r = s1.eval_radius(t)
         c = dist_to_prob(d, r, tiny).neg_().add_(1)
         while s:
             s1 = s.pop(0)
-            t, d = min_dist(x, s1)
+            t, d = min_dist(x, s1, **kwargs)
             r = s1.eval_radius(t)
             c.mul_(dist_to_prob(d, r, tiny).neg_().add_(1))
         c = c.neg_().add_(1)
