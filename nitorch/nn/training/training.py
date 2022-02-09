@@ -262,6 +262,7 @@ class ModelTrainer:
         self.scheduler = scheduler
 
         if self.load_model:
+            print('load model')
             self.model.load_state_dict(torch.load(self.load_model))
         if optimizer is None:
             optimizer = torch.optim.Adam
@@ -271,6 +272,7 @@ class ModelTrainer:
             optimizer = optimizer(model)
         self.optimizer = optimizer
         if self.load_optimizer:
+            print('load optim')
             self.optimizer.load_state_dict(torch.load(self.load_optimizer))
         if self.scheduler is not None:
             self.scheduler = self.scheduler(self.optimizer, verbose=True)
@@ -359,6 +361,15 @@ class ModelTrainer:
                 return len(elem)
         return 1
 
+    def _backward(self, loss):
+        if self.autocast:
+            self.grad_scaler.scale(loss).backward()
+            self.grad_scaler.step(self.optimizer)
+            self.grad_scaler.update()
+        else:
+            loss.backward()
+            self.optimizer.step()
+
     def _train(self, epoch=0):
         """Train for one epoch"""
 
@@ -393,13 +404,7 @@ class ModelTrainer:
                 output = self.model(*batch, _loss=losses, _metric=metrics)
                 loss = sum(losses.values())
             # backward pass
-            if self.autocast:
-                self.grad_scaler.scale(loss).backward()
-                self.grad_scaler.step(self.optimizer)
-                self.grad_scaler.update()
-            else:
-                loss.backward()
-                self.optimizer.step()
+            self._backward(loss)
             # update average across batches
             with torch.no_grad():
                 batch_size = float(batch_size)
@@ -461,8 +466,8 @@ class ModelTrainer:
                 batch_size = self._get_batch_size(batch)
                 nb_batches += batch_size
                 # forward pass
-                self.optimizer.zero_grad()
-                output = self.model(*batch, _loss=losses, _metric=metrics)
+                with autocast(self.autocast):
+                    output = self.model(*batch, _loss=losses, _metric=metrics)
                 loss = sum(losses.values())
                 # update average across batches
                 batch_size = float(batch_size)
