@@ -1289,6 +1289,8 @@ def isin(tensor, labels):
     """
 
     tensor = torch.as_tensor(tensor)
+    if isinstance(labels, set):
+        labels = list(labels)
     labels = torch.as_tensor(labels)
 
     if labels.shape[-1] == 1:
