@@ -28,7 +28,7 @@
 // ? other types of basis functions (gauss, sinc)
 
 #include "common.h"
-#include "interpolation.h"
+#include "../interpolation.h"
 #include <cstdint>
 #include <cmath>
 #include <iostream>

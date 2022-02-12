@@ -1,5 +1,9 @@
 #include <torch/extension.h>
-#include "pushpull.h"
+#include "src/pushpull.h"
+#include "src/wip_regulariser.h"
+#include "src/wip_regulariser_grid.h"
+// #include "src'wip_relax.h"
+#include "src/wip_relax_grid.h"
 
 using namespace ni;
 namespace pya = pybind11;
@@ -70,4 +74,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("grid_count_backward", &ni::grid_count_backward, "GridCount backward");
   m.def("grid_grad",           &ni::grid_grad,           "GridGrad");
   m.def("grid_grad_backward",  &ni::grid_grad_backward,  "GridGrad backward");
+
+  m.def("regulariser",               &ni::regulariser,                "Field regulariser");
+  m.def("regulariser_backward",      &ni::regulariser_backward,       "Field regulariser backward");
+  m.def("regulariser_grid",          &ni::regulariser_grid,           "Grid regulariser");
+  m.def("regulariser_grid_backward", &ni::regulariser_grid_backward,  "Grid regulariser backward");
+  // m.def("relax",                 &ni::relax,                      "Field relax");
+  m.def("relax_grid",                &ni::relax_grid,                 "Grid relax");
 }
