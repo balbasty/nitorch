@@ -5,10 +5,10 @@
 
 #define NI_RELAX_DECLARE(space) \
   namespace space { \
-    at::Tensor relax( \
-      Tensor hessian, const Tensor& gradient, Tensor solution, Tensor weight, bool grid, \
-      double absolute, double membrane, double bending, double lame_shear, double lame_div, \
-      ArrayRef<double> factor, ArrayRef<double> voxel_size, BoundVectorRef bound); \
+    at::Tensor relax_impl( \
+      at::Tensor hessian, const at::Tensor& gradient, at::Tensor solution, at::Tensor weight, \
+      c10::ArrayRef<double> absolute, c10::ArrayRef<double> membrane, c10::ArrayRef<double> bending, \
+      c10::ArrayRef<double> voxel_size, BoundVectorRef bound, int64_t nb_iter); \
   }
 
 

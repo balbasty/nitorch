@@ -3,6 +3,7 @@
 #include "allocator.h"
 #include <ATen/ATen.h>
 #include <limits>
+#include <vector>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // CPU/GPU -specific parameters
@@ -24,6 +25,7 @@
 using at::Tensor;
 using c10::IntArrayRef;
 using c10::ArrayRef;
+using std::vector;
 
 // Required for stability. Value is currently about 1+8*eps
 #define OnePlusTiny 1.000001
@@ -31,6 +33,7 @@ using c10::ArrayRef;
 // Macro to cleanly invoke a pointer to member function
 #define CALL_MEMBER_FN(object,ptrToMember)  ((object).*(ptrToMember))
 #define MIN(a,b) (a < b ? a : b)
+#define MAX(a,b) (a > b ? a : b)
 
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
   ONAME##0(INAME.size() > 0 ? INAME[0] : DEFAULT),  \
@@ -73,12 +76,9 @@ public:
     membrane(membrane),
     bending(bending)
   {
-    vx0 *= vx0;
-    vx1 *= vx1;
-    vx2 *= vx2;
-    vx0 = 1. / vx0;
-    vx1 = 1. / vx1;
-    vx2 = 1. / vx2;
+    vx0 = 1. / (vx0*vx0);
+    vx1 = 1. / (vx1*vx1);
+    vx2 = 1. / (vx2*vx2);
   }
 
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -224,12 +224,21 @@ void RelaxAllocator::init_weight(const Tensor& weight)
 /*                                ALGORITHM                                   */
 /*                                                                            */
 /* ========================================================================== */
+
+NI_HOST NI_INLINE bool any(const ArrayRef<double> & v) {
+  for (auto it = v.cbegin(); it < v.cend(); ++it) {
+    if (*it) return true;
+  }
+  return false;
+}
+
 template <typename scalar_t, typename offset_t>
 class RelaxImpl {
 
   typedef RelaxImpl Self;
   typedef void (Self::*RelaxFn)(offset_t x, offset_t y, offset_t z, offset_t n) const;
-  typedef void (Self::*InvertFn)(scalar_t *, double *, double *, double *) const;
+  typedef void (Self::*InvertFn)(scalar_t *, double *, double *, const double *) const;
+  typedef void (Self::*GetHFn)(scalar_t *, double *) const;
 
 public:
 
@@ -307,57 +316,61 @@ public:
 
   NI_HOST NI_INLINE void set_relax() 
   {
+    bool has_bending  = any(bending);
+    bool has_membrane = any(membrane);
+    bool has_absolute = any(absolute);
+
     if (wgt_ptr)
     {
-      if (bending)
+      if (has_bending)
         throw std::logic_error("RLS only implemented for absolute/membrane.");
       else if (dim == 1) {
-        if (membrane)
+        if (has_membrane)
             relax_ = &Self::relax1d_rls_membrane;
-        else if (absolute)
+        else if (has_absolute)
             relax_ = &Self::relax1d_rls_absolute;
         else
             relax_ = &Self::solve1d;
       } else if (dim == 2) {
-        if (membrane)
+        if (has_membrane)
             relax_ = &Self::relax2d_rls_membrane;
-        else if (absolute)
+        else if (has_absolute)
             relax_ = &Self::relax2d_rls_absolute;
         else
             relax_ = &Self::solve2d;
       } else if (dim == 3) {
-        if (membrane)
+        if (has_membrane)
             relax_ = &Self::relax3d_rls_membrane;
-        else if (absolute)
+        else if (has_absolute)
             relax_ = &Self::relax3d_rls_absolute;
         else
             relax_ = &Self::solve3d;
       }
     }
     else if (dim == 1) {
-        if (bending)
+        if (has_bending)
             relax_ = &Self::relax1d_bending;
-        else if (membrane)
+        else if (has_membrane)
             relax_ = &Self::relax1d_membrane;
-        else if (absolute)
+        else if (has_absolute)
             relax_ = &Self::relax1d_absolute;
         else
             relax_ = &Self::solve1d;
     } else if (dim == 2) {
-        if (bending)
+        if (has_bending)
             relax_ = &Self::relax2d_bending;
-        else if (membrane)
+        else if (has_membrane)
             relax_ = &Self::relax2d_membrane;
-        else if (absolute)
+        else if (has_absolute)
             relax_ = &Self::relax2d_absolute;
         else
             relax_ = &Self::solve2d;
     } else if (dim == 3) {
-        if (bending)
+        if (has_bending)
             relax_ = &Self::relax3d_bending;
-        else if (membrane)
+        else if (has_membrane)
             relax_ = &Self::relax3d_membrane;
-        else if (absolute)
+        else if (has_absolute)
             relax_ = &Self::relax3d_absolute;
         else
             relax_ = &Self::solve3d;
@@ -367,9 +380,9 @@ public:
 
   NI_HOST NI_INLINE void set_bandwidth() 
   { 
-    if (bending)
+    if (any(bending))
       bandwidth = 3;
-    else if (membrane)
+    else if (any(membrane))
       bandwidth = 0; // checkerboard
     else
       bandwidth = 1;
@@ -392,34 +405,18 @@ public:
   {
     if (hes_ptr) {
       if (CC == 1) {
-        if (dim == 1)
-          invert_ = &Self::invert1d;
-        else if (dim == 2)
-          invert_ = &Self::invert2d_const;
-        else
-          invert_ = &Self::invert3d_const;
+        invert_ = &Self::invert_const;
+        get_h_  = &Self::get_h_const;
       } else if (CC == C) {
-        if (dim == 1)
-          invert_ = &Self::invert1d;
-        else if (dim == 2)
-          invert_ = &Self::invert2d_diag;
-        else
-          invert_ = &Self::invert3d_diag;
+        invert_ = &Self::invert_diag;
+        get_h_  = &Self::get_h_diag;
       } else {
-        if (dim == 1)
-          invert_ = &Self::invert1d;
-        else if (dim == 2)
-          invert_ = &Self::invert2d_sym;
-        else
-          invert_ = &Self::invert3d_sym;
+        invert_ = &Self::invert_sym;
+        get_h_  = &Self::get_h_sym;
       }
     } else {
-      if (dim == 1)
-        invert_ = &Self::invert1d_none;
-      else if (dim == 2)
-        invert_ = &Self::invert2d_none;
-      else
-        invert_ = &Self::invert3d_none;
+      invert_ = &Self::invert_none;
+        get_h_  = &Self::get_h_none;
     }
   }
 
@@ -488,17 +485,25 @@ private:
   DEFINE_relax_DIM(2)
   DEFINE_relax_DIM(3)
 
-  NI_DEVICE void invert(
-    scalar_t *, scalar_t *, double, double, double) const;
-  NI_DEVICE void invert_sym(
-    scalar_t *, scalar_t *, double, double, double) const;
-  NI_DEVICE void invert_diag(
-    scalar_t *, scalar_t *, double, double, double) const;
-  NI_DEVICE void invert_const(
-    scalar_t *, scalar_t *, double, double, double) const;
-  NI_DEVICE void invert_none(
-    scalar_t *, scalar_t *, double, double, double) const;
+  NI_DEVICE void get_h(scalar_t * , double *) const;
+  NI_DEVICE void get_h_sym(scalar_t * , double *) const;
+  NI_DEVICE void get_h_diag(scalar_t * , double *) const;
+  NI_DEVICE void get_h_const(scalar_t * , double *) const;
+  NI_DEVICE void get_h_none(scalar_t * , double *) const;
 
+  NI_DEVICE void invert(
+    scalar_t *, scalar_t *, double *, const double *) const;
+  NI_DEVICE void invert_sym(
+    scalar_t *, double *, double *, const double *) const;
+  NI_DEVICE void invert_diag(
+    scalar_t *, double *, double *, const double *) const;
+  NI_DEVICE void invert_const(
+    scalar_t *, double *, double *, const double *) const;
+  NI_DEVICE void invert_none(
+    scalar_t *, double *, double *, const double *) const;
+
+  NI_DEVICE void cholesky(double a[], double p[]) const;
+  NI_DEVICE void cholesky_solve(double a[], double p[], double x[]) const;
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   int               dim;            // dimensionality (2 or 3)
@@ -513,6 +518,7 @@ private:
   vector<double>    bending;        // penalty on second derivatives
   RelaxFn           relax_;         // Pointer to relax function
   InvertFn          invert_;        // Pointer to inversion function
+  GetHFn            get_h_;         // Pointer to inversion function
 
   vector<double>  w000;
   vector<double>  w100;
@@ -696,7 +702,7 @@ void RelaxImpl<scalar_t,offset_t>::loop_band()
 // @param[inout]  a: CxC matrix
 // @param[out]    p: C vector
 template <typename scalar_t, typename offset_t> NI_DEVICE
-static void RelaxImpl<scalar_t,offset_t>::cholesky(double a[], double p[])
+void RelaxImpl<scalar_t,offset_t>::cholesky(double a[], double p[]) const
 {
     double sm, sm0;
 
@@ -707,7 +713,7 @@ static void RelaxImpl<scalar_t,offset_t>::cholesky(double a[], double p[])
 
     for (offset_t c = 0; c < C; ++c)
     {
-        for (b = c; b < C; ++b)
+        for (offset_t b = c; b < C; ++b)
         {
             sm = a[c*C+b];
             for(offset_t d = c-1; d >= 0; --d)
@@ -728,22 +734,22 @@ static void RelaxImpl<scalar_t,offset_t>::cholesky(double a[], double p[])
 // @param[in]    p: C vector
 // @param[inout] x: C vector
 template <typename scalar_t, typename offset_t> NI_DEVICE
-static void RelaxImpl<scalar_t,offset_t>::cholesky_solve(
-    double a[], double p[], double x[])
+void RelaxImpl<scalar_t,offset_t>::cholesky_solve(
+    double a[], double p[], double x[]) const
 {
     double sm;
 
-    for (c = 0; c < C; ++c)
+    for (offset_t c = 0; c < C; ++c)
     {
         sm = x[c];
-        for (cc = c-1; cc >= 0; --cc)
+        for (offset_t cc = c-1; cc >= 0; --cc)
             sm -= a[c*C+cc] * x[cc];
         x[c] = sm / p[c];
     }
-    for(c = C-1; c >= 0; --c)
+    for(offset_t c = C-1; c >= 0; --c)
     {
         sm = x[c];
-        for(cc = c+1; cc < C; ++cc)
+        for(offset_t cc = c+1; cc < C; ++cc)
             sm -= a[cc*C+c] * x[cc];
         x[c] = sm / p[c];
     }
@@ -753,7 +759,7 @@ static void RelaxImpl<scalar_t,offset_t>::cholesky_solve(
 //                             Invert
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // Our relaxation routines perform
-//      x += (H + w*I) \ ( g - (H + L) * x )
+//      x += (H + diag(w)) \ ( g - (H + L) * x )
 // Often, g is the gradient, (H+L) is the Hessian where H is easy
 // to invert, x is the previous estimate and w is a stabilizing
 // constant (in our case, the diagonal of L)
@@ -761,19 +767,21 @@ static void RelaxImpl<scalar_t,offset_t>::cholesky_solve(
 //      v = g - L * x
 // and performs
 //      v -= H * x
-//      x += (H + w) \ v
+//      x += (H + diag(w)) \ v
 // (k is a placeholder to store cholesky coefficients)
 
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RelaxGridImpl<scalar_t,offset_t>::invert(
-    scalar_t * x, double * h, double * v, double * k) const {
-  CALL_MEMBER_FN(*this, invert_)(x, h, c, k);
+void RelaxImpl<scalar_t,offset_t>::invert(
+    scalar_t * x, scalar_t * h, double * v, const double * w) const {
+  double m[NI_MAX_NUM_CHANNELS*NI_MAX_NUM_CHANNELS];
+  get_h(h, m);
+  CALL_MEMBER_FN(*this, invert_)(x, m, v, w);
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::invert_sym(
-    scalar_t * x, double * h, double * v, double * k) const {
+    scalar_t * x, double * h, double * v, const double * w) const {
 
   for (offset_t c = 0; c < C; ++c) {
     // matvec (part of the forward pass)
@@ -781,44 +789,52 @@ void RelaxImpl<scalar_t,offset_t>::invert_sym(
     for (offset_t cc = c+1; cc < C; ++cc)
       v[c] -= h[c*C+cc] * x[cc*sol_sC];
     // load diagonal
-    h[c+C*c] += w000[c];
+    h[c+C*c] += w[c];
   }
+  double k[NI_MAX_NUM_CHANNELS];
   cholesky(h, k);            // cholesky decomposition
   cholesky_solve(h, k, v);   // solve linear system inplace
   for (offset_t c = 0; c < C; ++c)
-    x[c*sol_sC] += val[c];
+    x[c*sol_sC] += v[c];
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::invert_diag(
-    scalar_t * x, double * h, double * v, double * k) const {
+    scalar_t * x, double * h, double * v, const double * w) const {
 
   for (offset_t c = 0; c < C; ++c) {
     v[c] -= h[c] * x[c*sol_sC];
-    x[c*sol_sC] += v[c] / (h[c] + w000[c]);
+    x[c*sol_sC] += v[c] / (h[c] + w[c]);
   }
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::invert_const(
-    scalar_t * x, double * h, double * v, double * k) const {
-  double hh = h[0]
+    scalar_t * x, double * h, double * v, const double * w) const {
+  double hh = h[0];
   for (offset_t c = 0; c < C; ++c) {
     v[c] -= hh * x[c*sol_sC];
-    x[c*sol_sC] += v[c] / (hh + w000[c]);
+    x[c*sol_sC] += v[c] / (hh + w[c]);
   }
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::invert_none(
-    scalar_t * x, double * h, double * v, double * k) const {
+    scalar_t * x, double * h, double * v, const double * w) const {
   for (offset_t c = 0; c < C; ++c)
-    x[c*sol_sC] += v[c] / w000[c];
+    x[c*sol_sC] += v[c] / w[c];
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                             GetH
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t>::get_h(
+    scalar_t * h, double * m) const {
+  CALL_MEMBER_FN(*this, get_h_)(h, m);
+}
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::get_h_sym(
@@ -909,12 +925,13 @@ void RelaxImpl<scalar_t,offset_t>::get_h_none(
   GET_WARP1_RLS_(z, Z, 2)
 
 #define GET_POINTERS \
-  scalar_t *out = out_ptr + (x*out_sX + y*out_sY + z*out_sZ); \
-  scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ);
+  scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ); \
+  scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ); \
+  scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ);
 
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_bending(
+void RelaxImpl<scalar_t,offset_t>::relax3d_bending(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
@@ -925,12 +942,10 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_bending(
   GET_WARP2
   GET_POINTERS
 
-  double val[NI_MAX_NUM_CHANNELS], 
-         chol[NI_MAX_NUM_CHANNELS], 
-         mat[NI_MAX_NUM_CHANNELS*NI_MAX_NUM_CHANNELS];
+  double val[NI_MAX_NUM_CHANNELS];
 
   for (offset_t c = 0; c < C; 
-       ++c, sol += sol_sC, out += out_sC)
+       ++c, sol += sol_sC, grd += grd_sC)
   {
     scalar_t center = *sol; 
     auto get = [center](scalar_t * x, offset_t o, int8_t s)
@@ -955,14 +970,13 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_bending(
     );
   }
 
-  get_h(hes, mat);
-  sol -= C*out_sC;
-  invert(sol, mat, chol, val);
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000.data());
 }
 
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_membrane(
+void RelaxImpl<scalar_t,offset_t>::relax3d_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
@@ -970,8 +984,10 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_membrane(
   GET_WARP1 
   GET_POINTERS
 
+  double val[NI_MAX_NUM_CHANNELS];
+
   for (offset_t c = 0; c < C; 
-       ++c, sol += sol_sC, out += out_sC)
+       ++c, sol += sol_sC, grd += grd_sC)
   {
     scalar_t center = *sol; 
     auto get = [center](scalar_t * x, offset_t o, int8_t s)
@@ -987,30 +1003,29 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_membrane(
     );
   }
 
-  get_h(hes, mat);
-  sol -= C*out_sC;
-  invert(sol, mat, chol, val);
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000.data());
 }
 
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_absolute(
+void RelaxImpl<scalar_t,offset_t>::relax3d_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_POINTERS
+  double val[NI_MAX_NUM_CHANNELS];
   for (offset_t c = 0; c < C; 
-       ++c, sol += sol_sC, out += out_sC)
+       ++c, sol += sol_sC, grd += grd_sC)
     val[c] = (*grd) - ( absolute[c] * (*sol) );
 
-  get_h(hes, mat);
-  sol -= C*out_sC;
-  invert(sol, mat, chol, val);
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000.data());
 }
 
 
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_rls_membrane(
+void RelaxImpl<scalar_t,offset_t>::relax3d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
@@ -1018,10 +1033,12 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_rls_membrane(
   GET_WARP1_RLS
   GET_POINTERS
 
+  double val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
   for (offset_t c = 0; c < C; 
-       ++c, sol += sol_sC, out += out_sC, wgt += wgt_sC)
+       ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
     double w1m00 = w100[c] * (wcenter + bound::get(wgt, wx0, sx0));
@@ -1046,28 +1063,33 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_rls_membrane(
       + w001m * get(sol, z0, sz0)
       + w001p * get(sol, z1, sz1)
     );
+
+    wval[c] = ( absolute[c] * wcenter
+              + w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p );
   }
 
-  get_h(hes, mat);
-  sol -= C*out_sC;
-  invert(sol, mat, chol, val);
+  sol -= C*sol_sC;
+  invert(sol, hes, val, wval);
 }
 
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_rls_absolute(
+void RelaxImpl<scalar_t,offset_t>::relax3d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_POINTERS
+  double val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
   for (offset_t c = 0; c < C; 
-       ++c, sol += sol_sC, out += out_sC, wgt += wgt_sC)
-    val[c] = (*grd) - ( absolute[c] * (*wgt) * (*sol) );
+       ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC) {
+    scalar_t wcenter = *wgt;
+    val[c]  = (*grd) - ( absolute[c] * wcenter * (*sol) );
+    wval[c] = absolute[c] * wcenter;
+  }
 
-  get_h(hes, mat);
-  sol -= C*out_sC;
-  invert(sol, mat, chol, val);
+  sol -= C*sol_sC;
+  invert(sol, hes, val, wval);
 }
 
 

@@ -71,12 +71,9 @@ public:
     membrane(membrane),
     bending(bending)
   {
-    vx0 *= vx0;
-    vx1 *= vx1;
-    vx2 *= vx2;
-    vx0 = 1. / vx0;
-    vx1 = 1. / vx1;
-    vx2 = 1. / vx2;
+    vx0 = 1. / (vx0*vx0);
+    vx1 = 1. / (vx1*vx1);
+    vx2 = 1. / (vx2*vx2);
   }
 
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
