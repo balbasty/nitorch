@@ -3,28 +3,42 @@ from setuptools import Extension
 from buildtools import *
 import torch
 import os
+from glob import glob as glob_
 
 
-# ~~~ libnitorch files
-# Note that sources are identical between libnitorch_cpu and libnitorch_cuda.
-# The same code is compiled in two different ways to generate native and cuda
-# code. This trick allows to minimize code duplication.
-# Finally, libnitorch links to both these sub-libraries and dispatches
-# according to the Tensor's device type.
-libnitorch_cpu_sources = ['pushpull_common.cpp']
-libnitorch_cuda_sources = ['pushpull_common.cpp']
-libnitorch_sources = ['pushpull.cpp']
+# # ~~~ libnitorch files
+# # Note that sources are identical between libnitorch_cpu and libnitorch_cuda.
+# # The same code is compiled in two different ways to generate native and cuda
+# # code. This trick allows to minimize code duplication.
+# # Finally, libnitorch links to both these sub-libraries and dispatches
+# # according to the Tensor's device type.
+# libnitorch_cpu_sources = ['pushpull_common.cpp', 'wip_regulariser_grid_common.cpp']
+# libnitorch_cuda_sources = ['pushpull_common.cpp', 'wip_regulariser_grid_common.cpp']
+# libnitorch_sources = ['pushpull.cpp', 'wip_regularisers.cpp']
+# ext_spatial_sources = ['spatial.cpp']
+
+# # That's a bit ugly. TODO: use config files?
+# libnitorch_cpu_headers = ['common.h', 'allocator.h',
+#                           'interpolation.h', 'interpolation_common.h',
+#                           'bounds.h', 'bounds_common.h']
+# libnitorch_cuda_headers = ['common.h', 'allocator.h',
+#                            'interpolation.h', 'interpolation_common.h',
+#                            'bounds.h', 'bounds_common.h']
+# libnitorch_headers = ['pushpull_common.h', 'wip_regularisers_common.h',
+#                       'interpolation.h', 'bounds.h']
+# ext_spatial_headers = ['pushpull.h', 'wip_regularisers.h',
+#                        'interpolation.h', 'bounds.h']
+
+libnitorch_cpu_sources = ['src/impl/*.cpp']
+libnitorch_cuda_sources = ['src/impl/*.cpp']
+libnitorch_sources = ['src/*.cpp']
 ext_spatial_sources = ['spatial.cpp']
 
 # That's a bit ugly. TODO: use config files?
-libnitorch_cpu_headers = ['common.h',
-                          'interpolation.h', 'interpolation_common.h',
-                          'bounds.h', 'bounds_common.h']
-libnitorch_cuda_headers = ['common.h',
-                           'interpolation.h', 'interpolation_common.h',
-                           'bounds.h', 'bounds_common.h']
-libnitorch_headers = ['pushpull_common.h', 'interpolation.h', 'bounds.h']
-ext_spatial_headers = ['pushpull.h', 'interpolation.h', 'bounds.h']
+libnitorch_cpu_headers = ['**.h']
+libnitorch_cuda_headers = ['**.h']
+libnitorch_headers = ['**.h']
+ext_spatial_headers = ['**.h']
 
 # TODO
 # . There is still quite a lot to do in setup and buildtools in order to make
@@ -482,11 +496,14 @@ def cuda_flags():
     return flags
 
 
-def abspathC(files):
+def abspathC(files, glob=False):
     scriptdir = os.path.abspath(os.path.dirname(__file__))
     sourcedir = os.path.join(scriptdir, 'nitorch', '_C')
-    return [os.path.join(sourcedir, f) for f in files]
-
+    files = [os.path.join(sourcedir, f) for f in files]
+    if glob:
+        files = [list(glob_(f)) for f in files]
+        files = [f for file in files for f in file]
+    return files
 
 def prepare_extensions():
     build_extensions = []
@@ -501,8 +518,8 @@ def prepare_extensions():
     # ~~~ setup libraries
     NiTorchCPULibrary = SharedLibrary(
         name='lib.nitorch_cpu',
-        sources=abspathC(libnitorch_cpu_sources),
-        depends=abspathC(libnitorch_cpu_headers),
+        sources=abspathC(libnitorch_cpu_sources, glob=True),
+        depends=abspathC(libnitorch_cpu_headers, glob=True),
         libraries=torch_libraries(),
         library_dirs=torch_library_dirs(),
         include_dirs=torch_include_dirs(),
@@ -516,8 +533,8 @@ def prepare_extensions():
     if use_cuda:
         NiTorchCUDALibrary = SharedLibrary(
             name='lib.nitorch_cuda',
-            sources=abspathC(libnitorch_cuda_sources),
-            depends=abspathC(libnitorch_cuda_headers),
+            sources=abspathC(libnitorch_cuda_sources, glob=True),
+            depends=abspathC(libnitorch_cuda_headers, glob=True),
             libraries=torch_libraries(use_cuda),
             library_dirs=torch_library_dirs(use_cuda, use_cudnn),
             include_dirs=torch_include_dirs(use_cuda, use_cudnn),
@@ -530,8 +547,8 @@ def prepare_extensions():
         nitorch_lib += ['nitorch_cuda']
     NiTorchLibrary = SharedLibrary(
         name='lib.nitorch',
-        sources=abspathC(libnitorch_sources),
-        depends=nitorch_libext + abspathC(libnitorch_headers),
+        sources=abspathC(libnitorch_sources, glob=True),
+        depends=nitorch_libext + abspathC(libnitorch_headers, glob=True),
         libraries=torch_libraries() + nitorch_lib,
         library_dirs=torch_library_dirs(),
         include_dirs=torch_include_dirs(),
@@ -547,8 +564,8 @@ def prepare_extensions():
     python_library_dirs = [os.path.join(sys.exec_prefix, 'lib')]
     SpatialExtension = Extension(
         name='_C.spatial',
-        sources=abspathC(ext_spatial_sources),
-        depends=nitorch_libext + abspathC(ext_spatial_headers),
+        sources=abspathC(ext_spatial_sources, glob=True),
+        depends=nitorch_libext + abspathC(ext_spatial_headers, glob=True),
         libraries=torch_libraries(use_cuda) + nitorch_lib,
         library_dirs=torch_library_dirs(use_cuda, use_cudnn) + python_library_dirs,
         include_dirs=torch_include_dirs(use_cuda, use_cudnn),
