@@ -1,4 +1,4 @@
-#include "impl/wip_regulariser_common.h"
+#include "impl/regulariser_common.h"
 #include "checks.h"
 #include <ATen/ATen.h>
 #include <vector>
@@ -17,7 +17,7 @@ using c10::ArrayRef;
 namespace ni {
 
 Tensor regulariser(
-    const Tensor& input, const at::Tensor& output, const Tensor& weight,
+    const Tensor& input, const at::Tensor& output, const Tensor& weight, const Tensor& hessian,
     const std::vector<double> & absolute, const std::vector<double> & membrane, const std::vector<double> & bending,
     const std::vector<double> & voxel_size, const std::vector<BoundType> & bound) {
 
@@ -48,12 +48,22 @@ Tensor regulariser(
     NI_CHECK_NOT_EMPTY(weight)
   }
 
+  if (hessian.defined() && hessian.numel() > 0)
+  {
+    auto hessian_opt  = hessian.options();
+    NI_CHECK_OPT_STRIDED(hessian_opt)
+    NI_CHECK_OPT_SAME_DEVICE(input_opt, hessian_opt)
+    NI_CHECK_OPT_SAME_DTYPE(input_opt, hessian_opt)
+    NI_CHECK_1D_2D_OR_3D(hessian)
+    NI_CHECK_NOT_EMPTY(hessian)
+  }
+
   if (input.is_cuda())
-    return cuda::regulariser_impl(input, output, weight,
+    return cuda::regulariser_impl(input, output, weight, hessian,
         ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
         ArrayRef<double>(voxel_size), BoundVectorRef(bound));
   else
-    return cpu::regulariser_impl(input, output, weight,
+    return cpu::regulariser_impl(input, output, weight, hessian,
         ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
         ArrayRef<double>(voxel_size), BoundVectorRef(bound));
 }
@@ -61,7 +71,7 @@ Tensor regulariser(
 
 
 std::pair<Tensor,Tensor> regulariser_backward(
-    const Tensor& grad, const Tensor& input, const Tensor& weight, 
+    const Tensor& grad, const Tensor& input, const Tensor& weight, const Tensor& hessian, 
     const std::vector<double> & absolute, const std::vector<double> & membrane, const std::vector<double> & bending,
     const std::vector<double> & voxel_size, const std::vector<BoundType> & bound, bool do_input, bool do_weight) {
 
@@ -74,12 +84,12 @@ std::pair<Tensor,Tensor> regulariser_backward(
 
   if (do_input) {
       grad_input = regulariser(
-        grad, Tensor(), weight, absolute, membrane, bending, 
+        grad, Tensor(), weight, hessian, absolute, membrane, bending, 
         voxel_size, bound);
   }
-  if (do_weight) {
+  if (do_weight) { // FIXME
       grad_weight = regulariser(
-        grad, Tensor(), input, absolute, membrane, bending, 
+        grad, Tensor(), input, hessian, absolute, membrane, bending, 
         voxel_size, bound);
   }
   return std::pair<Tensor, Tensor>(grad_input, grad_weight);

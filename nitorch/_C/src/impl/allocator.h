@@ -3,10 +3,9 @@
 
 
 class Allocator {
+protected:
 
   static constexpr int64_t max_int32 = std::numeric_limits<int32_t>::max();
-
-protected:
 
   // Copied from aten/src/ATen/native/IndexingUtils.cpp in PyTorch 1.6.
   // It is used to decide to which pointer type we should dispatch to.

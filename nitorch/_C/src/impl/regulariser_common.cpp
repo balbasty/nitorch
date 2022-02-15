@@ -1,6 +1,7 @@
 #include "common.h"
 #include "bounds_common.h"
 #include "allocator.h"
+#include "../defines.h"
 #include <ATen/ATen.h>
 #include <limits>
 #include <vector>
@@ -79,18 +80,19 @@ public:
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
   NI_HOST void ioset
-  (const Tensor& input, const Tensor& output, const Tensor& weight)
+  (const Tensor& input, const Tensor& output, const Tensor& weight, const Tensor& hessian)
   {
     init_all();
     init_input(input);
     init_weight(weight);
     init_output(output);
+    init_hessian(hessian);
   }
 
   // We just check that all tensors that we own are compatible with 32b math
   bool canUse32BitIndexMath(int64_t max_elem=max_int32) const
   {
-    return inp_32b_ok && wgt_32b_ok && out_32b_ok;
+    return inp_32b_ok && wgt_32b_ok && out_32b_ok && hes_32b_ok;
   }
 
 private:
@@ -100,6 +102,7 @@ private:
   NI_HOST void init_input(const Tensor&);
   NI_HOST void init_weight(const Tensor&);
   NI_HOST void init_output(const Tensor&);
+  NI_HOST void init_hessian(const Tensor&);
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   int               dim;            // dimensionality (1 or 2 or 3)
@@ -115,7 +118,7 @@ private:
 
   /* ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-#define DEFINE_ALLOC_INFO_5D(NAME)  \
+#define DECLARE_ALLOC_INFO_5D(NAME)  \
   int64_t NAME##_sN;                \
   int64_t NAME##_sC;                \
   int64_t NAME##_sX;                \
@@ -126,12 +129,14 @@ private:
 
   int64_t N;
   int64_t C;
+  int64_t CC;
   int64_t X;
   int64_t Y;
   int64_t Z;
-  DEFINE_ALLOC_INFO_5D(inp)
-  DEFINE_ALLOC_INFO_5D(wgt)
-  DEFINE_ALLOC_INFO_5D(out)
+  DECLARE_ALLOC_INFO_5D(inp)
+  DECLARE_ALLOC_INFO_5D(wgt)
+  DECLARE_ALLOC_INFO_5D(out)
+  DECLARE_ALLOC_INFO_5D(hes)
 
   // Allow RegulariserImpl's constructor to access RegulariserAllocator's
   // private members.
@@ -143,12 +148,13 @@ private:
 NI_HOST
 void RegulariserAllocator::init_all()
 {
-  N = C = X = Y = Z = 1L;
+  N = C = CC = X = Y = Z = 1L;
   inp_sN  = inp_sC   = inp_sX   = inp_sY  = inp_sZ   = 0L;
   wgt_sN  = wgt_sC   = wgt_sX   = wgt_sY  = wgt_sZ   = 0L;
   out_sN  = out_sC   = out_sX   = out_sY  = out_sZ   = 0L;
-  inp_ptr = wgt_ptr = out_ptr = static_cast<float*>(0);
-  inp_32b_ok = wgt_32b_ok = out_32b_ok = true;
+  hes_sN  = hes_sC   = hes_sX   = hes_sY  = hes_sZ   = 0L;
+  inp_ptr = wgt_ptr = out_ptr = hes_ptr = static_cast<float*>(0);
+  inp_32b_ok = wgt_32b_ok = out_32b_ok = hes_32b_ok = true;
 }
 
 NI_HOST
@@ -194,6 +200,21 @@ void RegulariserAllocator::init_output(const Tensor& output)
   out_32b_ok = tensorCanUse32BitIndexMath(output);
 }
 
+NI_HOST
+void RegulariserAllocator::init_hessian(const Tensor& hessian)
+{
+  if (!hessian.defined() || hessian.numel() == 0)
+    return;
+  CC      = hessian.size(1);
+  hes_sN  = hessian.stride(0);
+  hes_sC  = hessian.stride(1);
+  hes_sX  = hessian.stride(2);
+  hes_sY  = dim < 2 ? 0L : hessian.stride(3);
+  hes_sZ  = dim < 3 ? 0L : hessian.stride(4);
+  hes_ptr = hessian.data_ptr();
+  hes_32b_ok = tensorCanUse32BitIndexMath(hessian);
+}
+
 /* ========================================================================== */
 /*                                                                            */
 /*                                ALGORITHM                                   */
@@ -212,6 +233,8 @@ class RegulariserImpl {
 
   typedef RegulariserImpl Self;
   typedef void (Self::*Vel2MomFn)(offset_t x, offset_t y, offset_t z, offset_t n) const;
+  typedef void (Self::*GetHFn)(const scalar_t * , double *) const;
+  typedef void (Self::*MatVecFn)(scalar_t *, const double *, const double *) const;
 
 public:
 
@@ -220,11 +243,9 @@ public:
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
     vx0(info.vx0), vx1(info.vx1), vx2(info.vx2),
-    absolute(info.C), membrane(info.C), bending(info.C),
-    w000(info.C), w100(info.C), w010(info.C), w001(info.C), w200(info.C), 
-    w020(info.C), w002(info.C), w110(info.C), w101(info.C), w011(info.C), 
     N(static_cast<offset_t>(info.N)),
     C(static_cast<offset_t>(info.C)),
+    CC(static_cast<offset_t>(info.CC)),
     X(static_cast<offset_t>(info.X)),
     Y(static_cast<offset_t>(info.Y)),
     Z(static_cast<offset_t>(info.Z)),
@@ -239,14 +260,16 @@ public:
 
     INIT_ALLOC_INFO_5D(inp),
     INIT_ALLOC_INFO_5D(wgt),
-    INIT_ALLOC_INFO_5D(out)
+    INIT_ALLOC_INFO_5D(out),
+    INIT_ALLOC_INFO_5D(hes)
   {
     set_factors(info.absolute, info.membrane, info.bending);
     set_kernel();
     set_vel2mom();
+    set_matvec();
   }
 
-  NI_HOST void set_factors(ArrayRef<double> a, ArrayRef<double> m, ArrayRef<double> b)
+  NI_HOST NI_INLINE void set_factors(ArrayRef<double> a, ArrayRef<double> m, ArrayRef<double> b)
   {
     for (offset_t c = 0; c < C; ++c)
     {
@@ -256,20 +279,20 @@ public:
       membrane[c] = (m.size() == 0                       ? 0. : 
                      static_cast<offset_t>(m.size()) > c ? m[c] 
                                                          : membrane[c-1]);
-      bending[c]  = (bending.size()  == 0                ? 0. : 
+      bending[c]  = (b.size()  == 0                      ? 0. : 
                      static_cast<offset_t>(b.size()) > c ? b[c]  
                                                          : bending[c-1]);
     }
   } 
 
-  NI_HOST void set_kernel() 
+  NI_HOST NI_INLINE void set_kernel() 
   {
     double lam0, lam1, lam2;
     for (offset_t c = 0; c < C; ++c)
     {
-      lam0     = absolute[c];
-      lam1     = membrane[c];
-      lam2     = bending[c]; 
+      lam0    = absolute[c];
+      lam1    = membrane[c];
+      lam2    = bending[c]; 
       w000[c] = lam2*(6.0*(vx0*vx0+vx1*vx1+vx2*vx2) + 8*(vx0*vx1+vx0*vx2+vx1*vx2)) + lam1*2*(vx0+vx1+vx2) + lam0;
       w100[c] = lam2*(-4.0*vx0*(vx0+vx1+vx2)) -lam1*vx0;
       w010[c] = lam2*(-4.0*vx1*(vx0+vx1+vx2)) -lam1*vx1;
@@ -347,6 +370,25 @@ public:
         throw std::logic_error("RLS only implemented for dimension 1/2/3.");
   }
 
+  NI_HOST NI_INLINE void set_matvec() 
+  {
+    if (hes_ptr) {
+      if (CC == 1) {
+        matvec_ = &Self::matvec_eye;
+        get_h_  = &Self::get_h_eye;
+      } else if (CC == C) {
+        matvec_ = &Self::matvec_diag;
+        get_h_  = &Self::get_h_diag;
+      } else {
+        matvec_ = &Self::matvec_sym;
+        get_h_  = &Self::get_h_sym;
+      }
+    } else {
+      matvec_ = &Self::matvec_none;
+      get_h_  = &Self::get_h_none;
+    }
+  }
+
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
 #if __CUDACC__
@@ -368,21 +410,39 @@ private:
   NI_DEVICE NI_INLINE void dispatch(
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 
-#define DEFINE_VEL2MOM(SUFFIX) \
+#define DECLARE_ALLOC_INFO_5D_VEL2MOM(SUFFIX) \
   NI_DEVICE void vel2mom##SUFFIX( \
     offset_t x, offset_t y, offset_t z, offset_t n) const;
-#define DEFINE_VEL2MOM_DIM(DIM)      \
-  DEFINE_VEL2MOM(DIM##d_absolute)  \
-  DEFINE_VEL2MOM(DIM##d_membrane)  \
-  DEFINE_VEL2MOM(DIM##d_bending)   \
-  DEFINE_VEL2MOM(DIM##d_rls_absolute)  \
-  DEFINE_VEL2MOM(DIM##d_rls_membrane)  \
+#define DECLARE_ALLOC_INFO_5D_VEL2MOM_DIM(DIM)      \
+  DECLARE_ALLOC_INFO_5D_VEL2MOM(DIM##d_absolute)  \
+  DECLARE_ALLOC_INFO_5D_VEL2MOM(DIM##d_membrane)  \
+  DECLARE_ALLOC_INFO_5D_VEL2MOM(DIM##d_bending)   \
+  DECLARE_ALLOC_INFO_5D_VEL2MOM(DIM##d_rls_absolute)  \
+  DECLARE_ALLOC_INFO_5D_VEL2MOM(DIM##d_rls_membrane)  \
   NI_DEVICE void copy##DIM##d(             \
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 
-  DEFINE_VEL2MOM_DIM(1)
-  DEFINE_VEL2MOM_DIM(2)
-  DEFINE_VEL2MOM_DIM(3)
+  DECLARE_ALLOC_INFO_5D_VEL2MOM_DIM(1)
+  DECLARE_ALLOC_INFO_5D_VEL2MOM_DIM(2)
+  DECLARE_ALLOC_INFO_5D_VEL2MOM_DIM(3)
+
+
+  NI_DEVICE void get_h(const scalar_t * , double *) const;
+  NI_DEVICE void get_h_sym(const scalar_t * , double *) const;
+  NI_DEVICE void get_h_diag(const scalar_t * , double *) const;
+  NI_DEVICE void get_h_eye(const scalar_t * , double *) const;
+  NI_DEVICE void get_h_none(const scalar_t * , double *) const;
+
+  NI_DEVICE void matvec(
+    scalar_t *, const scalar_t *, const scalar_t *) const;
+  NI_DEVICE void matvec_sym(
+    scalar_t *, const double *, const double *) const;
+  NI_DEVICE void matvec_diag(
+    scalar_t *, const double *, const double *) const;
+  NI_DEVICE void matvec_eye(
+    scalar_t *, const double *, const double *) const;
+  NI_DEVICE void matvec_none(
+    scalar_t *, const double *, const double *) const;
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   int               dim;            // dimensionality (2 or 3)
@@ -392,25 +452,27 @@ private:
   double            vx0;            // voxel size // x|W
   double            vx1;            // voxel size // y|H
   double            vx2;            // voxel size // z|D
-  vector<double>    absolute;       // penalty on absolute values
-  vector<double>    membrane;       // penalty on first derivatives
-  vector<double>    bending;        // penalty on second derivatives
+  double            absolute[NI_MAX_NUM_CHANNELS];       // penalty on absolute values
+  double            membrane[NI_MAX_NUM_CHANNELS];       // penalty on first derivatives
+  double            bending[NI_MAX_NUM_CHANNELS];        // penalty on second derivatives
   Vel2MomFn         vel2mom;        // Pointer to vel2mom function
+  MatVecFn          matvec_;        // Pointer to matvec function
+  GetHFn            get_h_;         // Pointer to geth function
 
-  vector<double>  w000;
-  vector<double>  w100;
-  vector<double>  w010;
-  vector<double>  w001;
-  vector<double>  w200;
-  vector<double>  w020;
-  vector<double>  w002;
-  vector<double>  w110;
-  vector<double>  w101;
-  vector<double>  w011;
+  double  w000[NI_MAX_NUM_CHANNELS];
+  double  w100[NI_MAX_NUM_CHANNELS];
+  double  w010[NI_MAX_NUM_CHANNELS];
+  double  w001[NI_MAX_NUM_CHANNELS];
+  double  w200[NI_MAX_NUM_CHANNELS];
+  double  w020[NI_MAX_NUM_CHANNELS];
+  double  w002[NI_MAX_NUM_CHANNELS];
+  double  w110[NI_MAX_NUM_CHANNELS];
+  double  w101[NI_MAX_NUM_CHANNELS];
+  double  w011[NI_MAX_NUM_CHANNELS];
 
   /* ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-#define DEFINE_STRIDE_INFO_5D(NAME)   \
+#define DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(NAME)   \
   offset_t NAME##_sN;               \
   offset_t NAME##_sC;               \
   offset_t NAME##_sX;               \
@@ -420,12 +482,14 @@ private:
 
   offset_t N;
   offset_t C;
+  offset_t CC;
   offset_t X;
   offset_t Y;
   offset_t Z;
-  DEFINE_STRIDE_INFO_5D(inp)
-  DEFINE_STRIDE_INFO_5D(wgt)
-  DEFINE_STRIDE_INFO_5D(out)
+  DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(inp)
+  DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(wgt)
+  DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(out)
+  DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(hes)
 };
 
 
@@ -489,6 +553,114 @@ void RegulariserImpl<scalar_t,offset_t>::loop() const
 
 #endif
 
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                             MatVec
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::matvec(
+    scalar_t * x, const scalar_t * h, const scalar_t * y) const {
+  if (!hes_ptr) return;
+  double m[NI_MAX_NUM_CHANNELS*NI_MAX_NUM_CHANNELS];
+  get_h(h, m);
+  double v[NI_MAX_NUM_CHANNELS];
+  double * vv = v;
+  for (offset_t c = 0; c < C; ++c, ++vv, y += inp_sC)
+    *vv = *y;
+  CALL_MEMBER_FN(*this, matvec_)(x, m, v);
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::matvec_sym(
+    scalar_t * x, const double * h, const double * v) const 
+{
+  double o[NI_MAX_NUM_CHANNELS];
+  double * oo = o;
+  for (offset_t c = 0; c < C; ++c, ++oo, ++v, h+=C+1)
+    (*o) = (*h) * (*v);
+  v -= C;
+  h -= C*C;
+  oo = o;
+  for (offset_t c = 0; c < C; ++c, ++oo, ++v, h += C)
+  {
+    double v_ = (*v);
+    double * ooo = oo + 1;
+    const double * vv = v + 1;
+    const double * hh = h;
+    for (offset_t cc = c+1; cc < C; ++cc, ++ooo, ++vv, ++hh) 
+    {
+      double h_ = (*hh);
+      (*ooo) += h_ * v_;
+      (*oo)  += h_ * (*vv);
+    }
+  }
+  oo = o;
+  for (offset_t c = 0; c < C; ++c, ++oo, x += out_sC)
+    (*x) += (*oo);
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::matvec_diag(
+    scalar_t * x, const double * h, const double * v) const 
+{
+  for (offset_t c = 0; c < C; ++c, ++v, ++h, x += out_sC)
+    (*x) += (*v) * (*h);
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::matvec_eye(
+    scalar_t * x, const double * h, const double * v) const 
+{
+  double hh = h[0];
+  for (offset_t c = 0; c < C; ++c, ++v, x += out_sC)
+    (*x) += (*v) * hh;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::matvec_none(
+    scalar_t * x, const double * h, const double * v) const {}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                             GetH
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::get_h(
+    const scalar_t * h, double * m) const {
+  CALL_MEMBER_FN(*this, get_h_)(h, m);
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::get_h_sym(
+    const scalar_t * hessian, double * mat) const {
+  for (offset_t c = 0; c < C; ++c, hessian += hes_sC)
+    mat[c+C*c] = *hessian;
+  for (offset_t c = 0; c < C; ++c)
+    for (offset_t cc = c+1; c < C; ++c, hessian += hes_sC)
+      mat[c+C*cc] = mat[cc+C*c] = *hessian;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::get_h_diag(
+    const scalar_t * hessian, double * mat) const {
+  for (offset_t c = 0; c < C; ++c, ++mat, hessian += hes_sC)
+    *mat = *hessian;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::get_h_eye(
+    const scalar_t * hessian, double * mat) const {
+  *mat = *hessian;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t>::get_h_none(
+    const scalar_t * hessian, double * mat) const 
+{}
+
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
@@ -549,7 +721,8 @@ void RegulariserImpl<scalar_t,offset_t>::loop() const
   GET_WARP1_RLS_(z, Z, 2)
 #define GET_POINTERS \
   scalar_t *out = out_ptr + (x*out_sX + y*out_sY + z*out_sZ); \
-  scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ);
+  scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ); \
+  scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ);
 
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
@@ -589,6 +762,10 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_bending(
         + w002[c]*(get(inp, z00,   sz00)    + get(inp, z11,   sz11))
     );
   }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
 }
 
 
@@ -617,6 +794,10 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_membrane(
         + w001[c]*(get(inp, z0, sz0) + get(inp, z1, sz1)) 
     );
   }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
 }
 
 
@@ -628,6 +809,10 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_absolute(
   for (offset_t c = 0; c < C; 
        ++c, inp += inp_sC, out += out_sC)
     *out = static_cast<scalar_t>( absolute[c] * (*inp) );
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
 }
 
 
@@ -670,6 +855,10 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_rls_membrane(
       + w001p * get(inp, z1, sz1)
     );
   }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
 }
 
 
@@ -683,6 +872,10 @@ void RegulariserImpl<scalar_t,offset_t>::vel2mom3d_rls_absolute(
   for (offset_t c = 0; c < C; 
        ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
     *out = static_cast<scalar_t>( absolute[c] * (*wgt) * (*inp) );
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
 }
 
 
@@ -747,8 +940,8 @@ __global__ void regulariser_kernel(RegulariserImpl<scalar_t,offset_t> f) {
 //                    ALLOCATE OUTPUT // RESHAPE WEIGHT
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-NI_HOST std::tuple<Tensor, Tensor>
-prepare_tensors(const Tensor & input, Tensor output, Tensor weight)
+NI_HOST std::tuple<Tensor, Tensor, Tensor>
+prepare_tensors(const Tensor & input, Tensor output, Tensor weight, Tensor hessian)
 {
   if (!(output.defined() && output.numel() > 0))
     output = at::empty_like(input);
@@ -758,7 +951,23 @@ prepare_tensors(const Tensor & input, Tensor output, Tensor weight)
   if (weight.defined() && weight.numel() > 0)
     weight = weight.expand_as(input);
 
-  return std::tuple<Tensor, Tensor>(output, weight);
+  if (hessian.defined() && hessian.numel() > 0)
+  {
+    int64_t dim = input.dim() - 2;
+    int64_t N   = input.size(0);
+    int64_t CC  = hessian.size(1);
+    int64_t X   = input.size(2);
+    int64_t Y   = dim > 1 ? input.size(3) : 1L;
+    int64_t Z   = dim > 2 ? input.size(4) : 1L;
+    if (dim == 1)
+      hessian = hessian.expand({N, CC, X});
+    if (dim == 2)
+      hessian = hessian.expand({N, CC, X, Y});
+    else
+      hessian = hessian.expand({N, CC, X, Y, Z});
+  }
+
+  return std::tuple<Tensor, Tensor, Tensor>(output, weight);
 }
 
 } // namespace
@@ -773,16 +982,17 @@ prepare_tensors(const Tensor & input, Tensor output, Tensor weight)
 
 // Two arguments (input, weight)
 NI_HOST Tensor regulariser_impl(
-  const Tensor& input, Tensor output, Tensor weight,
+  const Tensor& input, Tensor output, Tensor weight, Tensor hessian, 
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending,
   ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
-  auto tensors = prepare_tensors(input, output, weight);
+  auto tensors = prepare_tensors(input, output, weight, hessian);
   output       = std::get<0>(tensors);
   weight       = std::get<1>(tensors);
+  hessian      = std::get<2>(tensors);
 
   RegulariserAllocator info(input.dim()-2, absolute, membrane, bending, voxel_size, bound);
-  info.ioset(input, output, weight);
+  info.ioset(input, output, weight, hessian);
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "regulariser_impl", [&] {
     if (info.canUse32BitIndexMath())
@@ -807,16 +1017,17 @@ NI_HOST Tensor regulariser_impl(
 
 // Two arguments (input, weight)
 NI_HOST Tensor regulariser_impl(
-  const Tensor& input, Tensor output, Tensor weight, 
+  const Tensor& input, Tensor output, Tensor weight, Tensor hessian, 
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending,
   ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
-  auto tensors = prepare_tensors(input, output, weight);
+  auto tensors = prepare_tensors(input, output, weight, hessian);
   output       = std::get<0>(tensors);
   weight       = std::get<1>(tensors);
+  hessian      = std::get<2>(tensors);
 
   RegulariserAllocator info(input.dim()-2, absolute, membrane, bending, voxel_size, bound);
-  info.ioset(input, output, weight);
+  info.ioset(input, output, weight, hessian);
 
   AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "regulariser_impl", [&] {
     RegulariserImpl<scalar_t, int64_t> algo(info);
@@ -834,7 +1045,7 @@ NI_HOST Tensor regulariser_impl(
 namespace notimplemented {
 
 NI_HOST Tensor regulariser_impl(
-  const Tensor& input, Tensor output, Tensor weight, 
+  const Tensor& input, Tensor output, Tensor weight, Tensor hessian, 
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending,
   ArrayRef<double> voxel_size, BoundVectorRef bound)
 {

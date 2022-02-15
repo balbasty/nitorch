@@ -1,6 +1,7 @@
 #include "common.h"
 #include "bounds_common.h"
 #include "allocator.h"
+#include "../defines.h"
 #include <ATen/ATen.h>
 #include <limits>
 
@@ -80,12 +81,13 @@ public:
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
   NI_HOST void ioset
-  (const Tensor& input, const Tensor& output, const Tensor& weight)
+  (const Tensor& input, const Tensor& output, const Tensor& weight, const Tensor& hessian)
   {
     init_all();
     init_input(input);
     init_weight(weight);
     init_output(output);
+    init_hessian(hessian);
   }
 
   // We just check that all tensors that we own are compatible with 32b math
@@ -101,6 +103,7 @@ private:
   NI_HOST void init_input(const Tensor&);
   NI_HOST void init_weight(const Tensor&);
   NI_HOST void init_output(const Tensor&);
+  NI_HOST void init_hessian(const Tensor&);
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   int               dim;            // dimensionality (1 or 2 or 3)
@@ -129,12 +132,14 @@ private:
 
   int64_t N;
   int64_t C;
+  int64_t CC;
   int64_t X;
   int64_t Y;
   int64_t Z;
   DEFINE_ALLOC_INFO_5D(inp)
   DEFINE_ALLOC_INFO_5D(wgt)
   DEFINE_ALLOC_INFO_5D(out)
+  DEFINE_ALLOC_INFO_5D(hes)
 
   // Allow RegulariserGridImpl's constructor to access RegulariserGridAllocator's
   // private members.
@@ -146,12 +151,13 @@ private:
 NI_HOST
 void RegulariserGridAllocator::init_all()
 {
-  N = C = X = Y = Z = 1L;
-  inp_sN  = inp_sC   = inp_sX   = inp_sY  = inp_sZ   = 0L;
-  wgt_sN  = wgt_sC   = wgt_sX   = wgt_sY  = wgt_sZ   = 0L;
-  out_sN  = out_sC   = out_sX   = out_sY  = out_sZ   = 0L;
-  inp_ptr = wgt_ptr = out_ptr = static_cast<float*>(0);
-  inp_32b_ok = wgt_32b_ok = out_32b_ok = true;
+  N = C = CC = X = Y = Z = 1L;
+  inp_sN  = inp_sC  = inp_sX  = inp_sY  = inp_sZ   = 0L;
+  wgt_sN  = wgt_sC  = wgt_sX  = wgt_sY  = wgt_sZ   = 0L;
+  out_sN  = out_sC  = out_sX  = out_sY  = out_sZ   = 0L;
+  hes_sN  = hes_sC  = hes_sX  = hes_sY  = hes_sZ   = 0L;
+  inp_ptr = wgt_ptr = out_ptr = hes_ptr = static_cast<float*>(0);
+  inp_32b_ok = wgt_32b_ok = out_32b_ok = hes_32b_ok = true;
 }
 
 NI_HOST
@@ -197,6 +203,21 @@ void RegulariserGridAllocator::init_output(const Tensor& output)
   out_32b_ok = tensorCanUse32BitIndexMath(output);
 }
 
+NI_HOST
+void RegulariserGridAllocator::init_hessian(const Tensor& hessian)
+{
+  if (!hessian.defined() || hessian.numel() == 0)
+    return;
+  CC      = hessian.size(1);
+  hes_sN  = hessian.stride(0);
+  hes_sC  = hessian.stride(1);
+  hes_sX  = hessian.stride(2);
+  hes_sY  = dim < 2 ? 0L : hessian.stride(3);
+  hes_sZ  = dim < 3 ? 0L : hessian.stride(4);
+  hes_ptr = hessian.data_ptr();
+  hes_32b_ok = tensorCanUse32BitIndexMath(hessian);
+}
+
 /* ========================================================================== */
 /*                                                                            */
 /*                                ALGORITHM                                   */
@@ -207,6 +228,7 @@ class RegulariserGridImpl {
 
   typedef RegulariserGridImpl Self;
   typedef void (Self::*Vel2MomFn)(offset_t x, offset_t y, offset_t z, offset_t n) const;
+  typedef void (Self::*MatVecFn)(const scalar_t *, const scalar_t *, scalar_t *) const;
 
 public:
 
@@ -219,6 +241,7 @@ public:
     lame_shear(info.lame_shear), lame_div(info.lame_div),
     N(static_cast<offset_t>(info.N)),
     C(static_cast<offset_t>(info.C)),
+    CC(static_cast<offset_t>(info.CC)),
     X(static_cast<offset_t>(info.X)),
     Y(static_cast<offset_t>(info.Y)),
     Z(static_cast<offset_t>(info.Z)),
@@ -233,10 +256,12 @@ public:
 
     INIT_ALLOC_INFO_5D(inp),
     INIT_ALLOC_INFO_5D(wgt),
-    INIT_ALLOC_INFO_5D(out)
+    INIT_ALLOC_INFO_5D(out),
+    INIT_ALLOC_INFO_5D(hes)
   {
     set_kernel();
     set_vel2mom();
+    set_matvec();
   }
 
   NI_HOST NI_INLINE void set_kernel() 
@@ -287,21 +312,21 @@ public:
         else if (absolute)
             vel2mom = &Self::vel2mom1d_rls_absolute;
         else
-            vel2mom = &Self::copy1d;
+            vel2mom = &Self::zeros;
       } else if (dim == 2) {
         if (membrane)
             vel2mom = &Self::vel2mom2d_rls_membrane;
         else if (absolute)
             vel2mom = &Self::vel2mom2d_rls_absolute;
         else
-            vel2mom = &Self::copy2d;
+            vel2mom = &Self::zeros;
       } else if (dim == 3) {
         if (membrane)
             vel2mom = &Self::vel2mom3d_rls_membrane;
         else if (absolute)
             vel2mom = &Self::vel2mom3d_rls_absolute;
         else
-            vel2mom = &Self::copy3d;
+            vel2mom = &Self::zeros;
       }
     }
     else if (dim == 1) {
@@ -316,7 +341,7 @@ public:
         else if (absolute)
             vel2mom = &Self::vel2mom1d_absolute;
         else
-            vel2mom = &Self::copy1d;
+            vel2mom = &Self::zeros;
     } else if (dim == 2) {
         if ((lame_shear or lame_div) and bending)
             vel2mom = &Self::vel2mom2d_all;
@@ -329,7 +354,7 @@ public:
         else if (absolute)
             vel2mom = &Self::vel2mom2d_absolute;
         else
-            vel2mom = &Self::copy2d;
+            vel2mom = &Self::zeros;
     } else if (dim == 3) {
         if ((lame_shear or lame_div) and bending)
             vel2mom = &Self::vel2mom3d_all;
@@ -342,9 +367,39 @@ public:
         else if (absolute)
             vel2mom = &Self::vel2mom3d_absolute;
         else
-            vel2mom = &Self::copy3d;
+            vel2mom = &Self::zeros;
     } else
         throw std::logic_error("RLS only implemented for dimension 1/2/3.");
+  }
+
+  NI_HOST NI_INLINE void set_matvec() 
+  {
+    if (hes_ptr) {
+      if (CC == 1) {
+        if (dim == 1)
+          matvec_ = &Self::matvec1d;
+        else if (dim == 2)
+          matvec_ = &Self::matvec2d_eye;
+        else
+          matvec_ = &Self::matvec3d_eye;
+      } else if (CC == C) {
+        if (dim == 1)
+          matvec_ = &Self::matvec1d;
+        else if (dim == 2)
+          matvec_ = &Self::matvec2d_diag;
+        else
+          matvec_ = &Self::matvec3d_diag;
+      } else {
+        if (dim == 1)
+          matvec_ = &Self::matvec1d;
+        else if (dim == 2)
+          matvec_ = &Self::matvec2d_sym;
+        else
+          matvec_ = &Self::matvec3d_sym;
+      }
+    }
+    else
+      matvec_ = &Self::matvec_none;
   }
 
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -367,6 +422,8 @@ private:
   /* ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   NI_DEVICE NI_INLINE void dispatch(
     offset_t x, offset_t y, offset_t z, offset_t n) const;
+  NI_DEVICE NI_INLINE void zeros(
+    offset_t x, offset_t y, offset_t z, offset_t n) const;
 
 #define DEFINE_VEL2MOM(SUFFIX) \
   NI_DEVICE void vel2mom##SUFFIX( \
@@ -378,13 +435,26 @@ private:
   DEFINE_VEL2MOM(DIM##d_lame)      \
   DEFINE_VEL2MOM(DIM##d_all)       \
   DEFINE_VEL2MOM(DIM##d_rls_absolute)  \
-  DEFINE_VEL2MOM(DIM##d_rls_membrane)  \
-  NI_DEVICE void copy##DIM##d(             \
-    offset_t x, offset_t y, offset_t z, offset_t n) const;
+  DEFINE_VEL2MOM(DIM##d_rls_membrane)
 
   DEFINE_VEL2MOM_DIM(1)
   DEFINE_VEL2MOM_DIM(2)
   DEFINE_VEL2MOM_DIM(3)
+
+
+NI_DEVICE void matvec(const scalar_t *, const scalar_t *, scalar_t *) const;
+
+#define DEFINE_MATVEC(SUFFIX) \
+  NI_DEVICE void matvec##SUFFIX(const scalar_t *, const scalar_t *, scalar_t *) const;
+#define DEFINE_MATVEC_DIM(DIM)        \
+  DEFINE_MATVEC(DIM##d_sym)           \
+  DEFINE_MATVEC(DIM##d_diag)          \
+  DEFINE_MATVEC(DIM##d_eye)
+
+  DEFINE_MATVEC(1d)
+  DEFINE_MATVEC(_none)
+  DEFINE_MATVEC_DIM(2)
+  DEFINE_MATVEC_DIM(3)
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   int               dim;            // dimensionality (2 or 3)
@@ -400,6 +470,7 @@ private:
   double            lame_shear;     // penalty on symmetric part of Jacobian
   double            lame_div;       // penalty on trace of Jacobian
   Vel2MomFn         vel2mom;        // Pointer to vel2mom function
+  MatVecFn          matvec_;        // Pointer to matvec function
 
   double  w000;
   double  w100;
@@ -438,12 +509,14 @@ private:
 
   offset_t N;
   offset_t C;
+  offset_t CC;
   offset_t X;
   offset_t Y;
   offset_t Z;
   DEFINE_STRIDE_INFO_5D(inp)
   DEFINE_STRIDE_INFO_5D(wgt)
   DEFINE_STRIDE_INFO_5D(out)
+  DEFINE_STRIDE_INFO_5D(hes)
 };
 
 
@@ -506,6 +579,97 @@ void RegulariserGridImpl<scalar_t,offset_t>::loop() const
 }
 
 #endif
+
+
+/* ========================================================================== */
+/*                                   MATVEC                                   */
+/* ========================================================================== */
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const {
+    CALL_MEMBER_FN(*this, matvec_)(h, x, s);
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec3d_sym(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const 
+{
+  double h00 = h[0],        h11 = h[  hes_sC], h22 = h[2*hes_sC],
+         h01 = h[3*hes_sC], h02 = h[4*hes_sC], h12 = h[5*hes_sC],
+         x0  = x[0],        x1  = x[  inp_sC], x2  = x[2*inp_sC];
+
+  s[       0] += x0*h00 + x1*h01 + x2*h02;
+  s[  out_sC] += x0*h01 + x1*h11 + x2*h12;
+  s[2*out_sC] += x0*h02 + x1*h12 + x2*h22;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec2d_sym(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const 
+{
+  double h00 = h[0], h11 = h[hes_sC], h01 = h[2*hes_sC],
+         x0  = x[0], x1  = x[inp_sC];
+
+  s[       0] += x0*h00 + x1*h01;
+  s[  out_sC] += x0*h01 + x1*h11;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec3d_diag(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const 
+{
+  double h00 = h[0], h11 = h[hes_sC], h22 = h[2*hes_sC],
+         x0  = x[0], x1  = x[inp_sC], x2  = x[2*inp_sC];
+
+  s[       0] += x0*h00;
+  s[  out_sC] += x1*h11;
+  s[2*out_sC] += x2*h22;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec2d_diag(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const 
+{
+  double h00 = h[0], h11 = h[hes_sC],
+         x0  = x[0], x1  = x[inp_sC];
+
+  s[       0] += x0*h00;
+  s[  out_sC] += x1*h11;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec3d_eye(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const 
+{
+  double h00 = *h, x0  = x[0], x1  = x[inp_sC], x2  = x[2*inp_sC];
+
+  s[       0] += h00 * x0;
+  s[  out_sC] += h00 * x1;
+  s[2*out_sC] += h00 * x2;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec2d_eye(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const 
+{
+  double h00 = *h, x0  = x[0], x1  = x[inp_sC];
+
+  s[       0] += h00 * x0;
+  s[  out_sC] += h00 * x1;
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec1d(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const 
+{
+  (*s) += (*h) * (*x);
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t>::matvec_none(
+    const scalar_t * h, const scalar_t * x, scalar_t * s) const 
+{}
 
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
@@ -570,7 +734,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::loop() const
   scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + z*out_sZ);  \
   scalar_t *out1 = out0 + out_sC, *out2 = out0 + 2 * out_sC;    \
   scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ);  \
-  scalar_t *inp1 = inp0 + inp_sC, *inp2 = inp0 + 2 * inp_sC;
+  scalar_t *inp1 = inp0 + inp_sC, *inp2 = inp0 + 2 * inp_sC; \
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ);
 
  
 template <typename scalar_t, typename offset_t> NI_DEVICE
@@ -672,6 +837,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_all(
         + w002*(get(inp2, z00,   sz00)    + get(inp2, z11,   sz11)) ) / vx2 
       );
   }
+
+  matvec(hes0, inp0, out0);
 }
 
  
@@ -759,6 +926,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_lame(
                 get(inp2, y0+z1, sy1*sz1) + get(inp2, y1+z1, sy1*sz1)) ) / vx2 
       );
   }
+
+  matvec(hes0, inp0, out0);
 }
 
 
@@ -847,6 +1016,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_bending(
         + w002*(get(inp2, z00,   sz00)    + get(inp2, z11,   sz11)) ) / vx2 
       );
   }
+
+  matvec(hes0, inp0, out0);
 }
 
 
@@ -904,6 +1075,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_membrane(
         + w001*(get(inp2, z0, sz0) + get(inp2, z1, sz1)) ) / vx2 
       );
   }
+
+  matvec(hes0, inp0, out0);
 }
 
 
@@ -925,6 +1098,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_absolute(
     scalar_t c = *inp2;
     *out2 = static_cast<scalar_t>(  absolute * c / vx2 );
   }
+
+  matvec(hes0, inp0, out0);
 }
 
 
@@ -1004,6 +1179,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_rls_membrane(
       + w001p * get(inp2, z1, sz1) ) / vx2
     );
   }
+
+  matvec(hes0, inp0, out0);
 }
 
 
@@ -1026,6 +1203,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_rls_absolute(
     scalar_t c = *inp2;
     *out2 = static_cast<scalar_t>( c * w  / vx2 );
   }
+
+  matvec(hes0, inp0, out0);
 }
 
 
@@ -1070,15 +1249,11 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom1d_rls_absolute(offset_t x, 
 
 
 /* ========================================================================== */
-/*                                     COPY                                   */
+/*                                     ZEROS                                  */
 /* ========================================================================== */
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t>::copy1d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t>::copy2d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t>::copy3d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t>::zeros(offset_t x, offset_t y, offset_t z, offset_t n) const {}
 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1099,8 +1274,8 @@ __global__ void regulariser_kernel(RegulariserGridImpl<scalar_t,offset_t> f) {
 //                    ALLOCATE OUTPUT // RESHAPE WEIGHT
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-NI_HOST std::tuple<Tensor, Tensor>
-prepare_tensors(const Tensor & input, Tensor output, Tensor weight)
+NI_HOST std::tuple<Tensor, Tensor, Tensor>
+prepare_tensors(const Tensor & input, Tensor output, Tensor weight, Tensor hessian)
 {
   if (!(output.defined() && output.numel() > 0))
     output = at::empty_like(input);
@@ -1110,7 +1285,23 @@ prepare_tensors(const Tensor & input, Tensor output, Tensor weight)
   if (weight.defined() && weight.numel() > 0)
     weight = weight.expand_as(input);
 
-  return std::tuple<Tensor, Tensor>(output, weight);
+  if (hessian.defined() && hessian.numel() > 0)
+  {
+    int64_t dim = input.dim() - 2;
+    int64_t N   = input.size(0);
+    int64_t CC  = hessian.size(1);
+    int64_t X   = input.size(2);
+    int64_t Y   = dim > 1 ? input.size(3) : 1L;
+    int64_t Z   = dim > 2 ? input.size(4) : 1L;
+    if (dim == 1)
+      hessian = hessian.expand({N, CC, X});
+    else if (dim == 2)
+      hessian = hessian.expand({N, CC, X, Y});
+    else
+      hessian = hessian.expand({N, CC, X, Y, Z});
+  }
+
+  return std::tuple<Tensor, Tensor, Tensor>(output, weight, hessian);
 }
 
 } // namespace
@@ -1125,17 +1316,18 @@ prepare_tensors(const Tensor & input, Tensor output, Tensor weight)
 
 // Two arguments (input, weight)
 NI_HOST Tensor regulariser_grid_impl(
-  const Tensor& input, Tensor output, Tensor weight,
+  const Tensor& input, Tensor output, Tensor weight, Tensor hessian,
   double absolute, double membrane, double bending, double lame_shear, double lame_div,
   ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
-  auto tensors = prepare_tensors(input, output, weight);
+  auto tensors = prepare_tensors(input, output, weight, hessian);
   output       = std::get<0>(tensors);
   weight       = std::get<1>(tensors);
+  hessian      = std::get<2>(tensors);
 
   RegulariserGridAllocator info(input.dim()-2, absolute, membrane, bending,
                             lame_shear, lame_div, voxel_size, bound);
-  info.ioset(input, output, weight);
+  info.ioset(input, output, weight, hessian);
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "regulariser_grid_impl", [&] {
     if (info.canUse32BitIndexMath())
@@ -1160,17 +1352,18 @@ NI_HOST Tensor regulariser_grid_impl(
 
 // Two arguments (input, weight)
 NI_HOST Tensor regulariser_grid_impl(
-  const Tensor& input, Tensor output, Tensor weight, 
+  const Tensor& input, Tensor output, Tensor weight, Tensor hessian,
   double absolute, double membrane, double bending, double lame_shear, double lame_div,
   ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
-  auto tensors = prepare_tensors(input, output, weight);
+  auto tensors = prepare_tensors(input, output, weight, hessian);
   output       = std::get<0>(tensors);
   weight       = std::get<1>(tensors);
+  hessian      = std::get<2>(tensors);
 
   RegulariserGridAllocator info(input.dim()-2, absolute, membrane, bending,
                             lame_shear, lame_div, voxel_size, bound);
-  info.ioset(input, output, weight);
+  info.ioset(input, output, weight, hessian);
 
   AT_DISPATCH_FLOATING_TYPES(input.scalar_type(), "regulariser_grid_impl", [&] {
     RegulariserGridImpl<scalar_t, int64_t> algo(info);
@@ -1188,7 +1381,7 @@ NI_HOST Tensor regulariser_grid_impl(
 namespace notimplemented {
 
 NI_HOST Tensor regulariser_grid_impl(
-  const Tensor& input, Tensor output, Tensor weight, 
+  const Tensor& input, Tensor output, Tensor weight, Tensor hessian,
   double absolute, double membrane, double bending, double lame_shear, double lame_div,
   ArrayRef<double> voxel_size, BoundVectorRef bound)
 {

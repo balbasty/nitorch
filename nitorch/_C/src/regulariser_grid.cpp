@@ -1,4 +1,4 @@
-#include "impl/wip_regulariser_grid_common.h"
+#include "impl/regulariser_grid_common.h"
 #include "checks.h"
 #include <ATen/ATen.h>
 #include <vector>
@@ -16,7 +16,7 @@ using c10::ArrayRef;
 namespace ni {
 
 Tensor regulariser_grid(
-    const Tensor& input, const Tensor& output, const Tensor& weight, 
+    const Tensor& input, const Tensor& output, const Tensor& weight, const Tensor& hessian, 
     double absolute, double membrane, double bending, double lame_shear, double lame_div,
     const std::vector<double> & voxel_size, const std::vector<BoundType> & bound) 
 {
@@ -48,12 +48,22 @@ Tensor regulariser_grid(
     NI_CHECK_NOT_EMPTY(weight)
   }
 
+  if (hessian.defined() && hessian.numel() > 0)
+  {
+    auto hessian_opt  = hessian.options();
+    NI_CHECK_OPT_STRIDED(hessian_opt)
+    NI_CHECK_OPT_SAME_DEVICE(input_opt, hessian_opt)
+    NI_CHECK_OPT_SAME_DTYPE(input_opt, hessian_opt)
+    NI_CHECK_1D_2D_OR_3D(hessian)
+    NI_CHECK_NOT_EMPTY(hessian)
+  }
+
   if (input.is_cuda())
-    return cuda::regulariser_grid_impl(input, output, weight,
+    return cuda::regulariser_grid_impl(input, output, weight, hessian,
         absolute, membrane, bending, lame_shear, lame_div,
         ArrayRef<double>(voxel_size), BoundVectorRef(bound));
   else
-    return cpu::regulariser_grid_impl(input, output, weight,
+    return cpu::regulariser_grid_impl(input, output, weight, hessian,
       absolute, membrane, bending, lame_shear, lame_div,
       ArrayRef<double>(voxel_size), BoundVectorRef(bound));
 }
@@ -61,7 +71,7 @@ Tensor regulariser_grid(
 
 
 std::pair<Tensor,Tensor> regulariser_grid_backward(
-    const Tensor& grad, const Tensor& input, const Tensor& weight,
+    const Tensor& grad, const Tensor& input, const Tensor& weight, const Tensor& hessian, 
     double absolute, double membrane, double bending, double lame_shear, double lame_div,
     const std::vector<double> & voxel_size, const std::vector<BoundType> & bound, 
     bool do_input, bool do_weight) {
@@ -75,13 +85,13 @@ std::pair<Tensor,Tensor> regulariser_grid_backward(
 
   if (do_input) {
       grad_input = regulariser_grid(
-        grad, Tensor(), weight, 
+        grad, Tensor(), weight, hessian,
         absolute, membrane, bending, lame_shear, lame_div,
         voxel_size, bound);
   }
   if (do_weight) {
-      grad_weight = regulariser_grid(
-        grad, Tensor(), input, 
+      grad_weight = regulariser_grid( // FIXME
+        grad, Tensor(), input, hessian,
         absolute, membrane, bending, lame_shear, lame_div,
         voxel_size, bound);
   }

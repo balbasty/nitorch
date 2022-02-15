@@ -404,9 +404,9 @@ public:
         if (dim == 1)
           invert_ = &Self::invert1d;
         else if (dim == 2)
-          invert_ = &Self::invert2d_const;
+          invert_ = &Self::invert2d_eye;
         else
-          invert_ = &Self::invert3d_const;
+          invert_ = &Self::invert3d_eye;
       } else if (CC == C) {
         if (dim == 1)
           invert_ = &Self::invert1d;
@@ -508,7 +508,7 @@ NI_DEVICE void invert(
 #define DEFINE_invert_DIM(DIM)        \
   DEFINE_invert(DIM##d_sym)           \
   DEFINE_invert(DIM##d_diag)          \
-  DEFINE_invert(DIM##d_const)         \
+  DEFINE_invert(DIM##d_eye)         \
   DEFINE_invert(DIM##d_none)
 
   DEFINE_invert(1d)
@@ -807,7 +807,7 @@ void RelaxGridImpl<scalar_t,offset_t>::invert2d_diag(
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RelaxGridImpl<scalar_t,offset_t>::invert3d_const(
+void RelaxGridImpl<scalar_t,offset_t>::invert3d_eye(
     scalar_t * h, scalar_t * s, double v0, double v1, double v2, double w0, double w1, double w2) const 
 {
   double h00 = *h, s0  = s[0], s1  = s[sol_sC], s2  = s[2*sol_sC];
@@ -824,7 +824,7 @@ void RelaxGridImpl<scalar_t,offset_t>::invert3d_const(
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RelaxGridImpl<scalar_t,offset_t>::invert2d_const(
+void RelaxGridImpl<scalar_t,offset_t>::invert2d_eye(
     scalar_t * h, scalar_t * s, double v0, double v1, double /*unused*/, double w0, double w1, double  /*unused*/) const 
 {
   double h00 = *h, s0  = s[0], s1  = s[sol_sC];
@@ -1491,11 +1491,6 @@ NI_HOST std::tuple<Tensor, Tensor, Tensor>
 prepare_tensors(const Tensor & gradient,
                 Tensor hessian, Tensor solution, Tensor weight)
 {
-  int64_t dim = gradient.dim() - 2;
-  int64_t N = gradient.size(0);
-  int64_t X = gradient.size(2);
-  int64_t Y = dim > 1 ? gradient.size(3) : 1L;
-  int64_t Z = dim > 2 ? gradient.size(4) : 1L;
 
   if (!(solution.defined() && solution.numel() > 0))
     solution = at::zeros_like(gradient);
@@ -1504,10 +1499,15 @@ prepare_tensors(const Tensor & gradient,
 
   if (hessian.defined() && hessian.numel() > 0)
   {
-    int64_t CC = hessian.size(1);
+    int64_t dim = gradient.dim() - 2;
+    int64_t N   = gradient.size(0);
+    int64_t CC  = hessian.size(1);
+    int64_t X   = gradient.size(2);
+    int64_t Y   = dim > 1 ? gradient.size(3) : 1L;
+    int64_t Z   = dim > 2 ? gradient.size(4) : 1L;
     if (dim == 1)
       hessian = hessian.expand({N, CC, X});
-    if (dim == 2)
+    else if (dim == 2)
       hessian = hessian.expand({N, CC, X, Y});
     else
       hessian = hessian.expand({N, CC, X, Y, Z});

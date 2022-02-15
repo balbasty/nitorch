@@ -1,9 +1,11 @@
 #include <torch/extension.h>
 #include "src/pushpull.h"
-#include "src/wip_regulariser.h"
-#include "src/wip_regulariser_grid.h"
-#include "src/wip_relax.h"
-#include "src/wip_relax_grid.h"
+#include "src/regulariser.h"
+#include "src/regulariser_grid.h"
+#include "src/relax.h"
+#include "src/relax_grid.h"
+#include "src/resize.h"
+#include "src/fmg.h"
 
 using namespace ni;
 namespace pya = pybind11;
@@ -40,19 +42,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 
 
   py::enum_<BoundType>(m, "BoundType", bound_doc)
-    .value("replicate",   BoundType::Replicate, "a a a | a b c d | d d d")
-    .value("nearest",     BoundType::Replicate, "a a a | a b c d | d d d")
-    .value("dct1",        BoundType::DCT1,      "d c b | a b c d | c b a")
-    .value("mirror",      BoundType::DCT1,      "d c b | a b c d | c b a")
-    .value("dct2",        BoundType::DCT2,      "c b a | a b c d | d c b")
-    .value("reflect",     BoundType::DCT2,      "c b a | a b c d | d c b")
-    .value("dst1",        BoundType::DST1,      "-b -a 0 | a b c d | 0 -d -c")
-    .value("antimirror",  BoundType::DST1,      "-b -a 0 | a b c d | 0 -d -c")
+    .value("replicate",   BoundType::Replicate, " a  a  a | a b c d |  d  d  d")
+    .value("nearest",     BoundType::Replicate, " a  a  a | a b c d |  d  d  d")
+    .value("dct1",        BoundType::DCT1,      " d  c  b | a b c d |  c  b  a")
+    .value("mirror",      BoundType::DCT1,      " d  c  b | a b c d |  c  b  a")
+    .value("dct2",        BoundType::DCT2,      " c  b  a | a b c d |  d  c  b")
+    .value("reflect",     BoundType::DCT2,      " c  b  a | a b c d |  d  c  b")
+    .value("dst1",        BoundType::DST1,      "-b -a  0 | a b c d |  0 -d -c")
+    .value("antimirror",  BoundType::DST1,      "-b -a  0 | a b c d |  0 -d -c")
     .value("dst2",        BoundType::DST2,      "-c -b -a | a b c d | -d -c -b")
     .value("antireflect", BoundType::DST2,      "-c -b -a | a b c d | -d -c -b")
-    .value("dft",         BoundType::DFT,       "b c d | a b c d | a b c")
-    .value("wrap",        BoundType::DFT,       "b c d | a b c d | a b c")
-    .value("zero",        BoundType::Zero,      "0 0 0 | a b c d | 0 0 0")
+    .value("dft",         BoundType::DFT,       " b  c  d | a b c d |  a  b  c")
+    .value("wrap",        BoundType::DFT,       " b  c  d | a b c d |  a  b  c")
+    .value("zero",        BoundType::Zero,      " 0  0  0 | a b c d |  0  0  0")
     .export_values();
 
   py::enum_<InterpolationType>(m, "InterpolationType")
@@ -64,6 +66,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     .value("fifth",     InterpolationType::FifthOrder)
     .value("sixth",     InterpolationType::SixthOrder)
     .value("seventh",   InterpolationType::SeventhOrder)
+    .export_values();
+
+  py::enum_<GridAlignType>(m, "GridAlignType")
+    .value("edge",      GridAlignType::Edge)
+    .value("center",    GridAlignType::Center)
+    .value("first",     GridAlignType::First)
+    .value("last",      GridAlignType::Last)
     .export_values();
 
   m.def("grid_pull",           &ni::grid_pull,           "GridPull");
@@ -81,4 +90,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("regulariser_grid_backward", &ni::regulariser_grid_backward,  "Grid regulariser backward");
   m.def("relax",                     &ni::relax,                      "Field relax");
   m.def("relax_grid",                &ni::relax_grid,                 "Grid relax");
+  m.def("resize",                    &ni::resize,                     "resize");
+  m.def("resize_backward",           &ni::resize_backward,            "resize backward");
+  m.def("prolong",                   &ni::prolong,                    "prolong");
+  m.def("prolong_backward",          &ni::prolong_backward,           "prolong backward");
+  m.def("restrict",                  &ni::restrict,                   "restrict");
+  m.def("restrict_backward",         &ni::restrict_backward,          "restrict backward");
+  m.def("fmg",                       &ni::fmg,                        "fmg");
 }

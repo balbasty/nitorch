@@ -405,8 +405,8 @@ public:
   {
     if (hes_ptr) {
       if (CC == 1) {
-        invert_ = &Self::invert_const;
-        get_h_  = &Self::get_h_const;
+        invert_ = &Self::invert_eye;
+        get_h_  = &Self::get_h_eye;
       } else if (CC == C) {
         invert_ = &Self::invert_diag;
         get_h_  = &Self::get_h_diag;
@@ -488,7 +488,7 @@ private:
   NI_DEVICE void get_h(scalar_t * , double *) const;
   NI_DEVICE void get_h_sym(scalar_t * , double *) const;
   NI_DEVICE void get_h_diag(scalar_t * , double *) const;
-  NI_DEVICE void get_h_const(scalar_t * , double *) const;
+  NI_DEVICE void get_h_eye(scalar_t * , double *) const;
   NI_DEVICE void get_h_none(scalar_t * , double *) const;
 
   NI_DEVICE void invert(
@@ -497,7 +497,7 @@ private:
     scalar_t *, double *, double *, const double *) const;
   NI_DEVICE void invert_diag(
     scalar_t *, double *, double *, const double *) const;
-  NI_DEVICE void invert_const(
+  NI_DEVICE void invert_eye(
     scalar_t *, double *, double *, const double *) const;
   NI_DEVICE void invert_none(
     scalar_t *, double *, double *, const double *) const;
@@ -809,7 +809,7 @@ void RelaxImpl<scalar_t,offset_t>::invert_diag(
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t>::invert_const(
+void RelaxImpl<scalar_t,offset_t>::invert_eye(
     scalar_t * x, double * h, double * v, const double * w) const {
   double hh = h[0];
   for (offset_t c = 0; c < C; ++c) {
@@ -854,7 +854,7 @@ void RelaxImpl<scalar_t,offset_t>::get_h_diag(
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t>::get_h_const(
+void RelaxImpl<scalar_t,offset_t>::get_h_eye(
     scalar_t * hessian, double * mat) const {
   *mat = *hessian;
 }
@@ -1154,11 +1154,6 @@ NI_HOST std::tuple<Tensor, Tensor, Tensor>
 prepare_tensors(const Tensor & gradient,
                 Tensor hessian, Tensor solution, Tensor weight)
 {
-  int64_t dim = gradient.dim() - 2;
-  int64_t N = gradient.size(0);
-  int64_t X = gradient.size(2);
-  int64_t Y = dim > 1 ? gradient.size(3) : 1L;
-  int64_t Z = dim > 2 ? gradient.size(4) : 1L;
 
   if (!(solution.defined() && solution.numel() > 0))
     solution = at::zeros_like(gradient);
@@ -1167,7 +1162,13 @@ prepare_tensors(const Tensor & gradient,
 
   if (hessian.defined() && hessian.numel() > 0)
   {
-    int64_t CC = hessian.size(1);
+
+    int64_t dim = gradient.dim() - 2;
+    int64_t N   = gradient.size(0);
+    int64_t CC  = hessian.size(1);
+    int64_t X   = gradient.size(2);
+    int64_t Y   = dim > 1 ? gradient.size(3) : 1L;
+    int64_t Z   = dim > 2 ? gradient.size(4) : 1L;
     if (dim == 1)
       hessian = hessian.expand({N, CC, X});
     if (dim == 2)

@@ -1,4 +1,4 @@
-#include "impl/wip_relax_common.h"
+#include "impl/relax_grid_common.h"
 #include "checks.h"
 #include <ATen/ATen.h>
 #include <vector>
@@ -16,12 +16,12 @@ using c10::ArrayRef;
 
 namespace ni {
 
-Tensor relax(
+Tensor relax_grid(
     const Tensor& hessian, const Tensor& gradient,
     const Tensor& solution, const Tensor& weight,
-    const std::vector<double> & absolute, const std::vector<double> & membrane, 
-    const std::vector<double> & bending, const std::vector<double> & voxel_size, 
-    const std::vector<BoundType> & bound, int64_t nb_iter) {
+    double absolute, double membrane, double bending, double lame_shear, double lame_div,
+    const std::vector<double> & voxel_size, const std::vector<BoundType> & bound,
+    int64_t nb_iter) {
 
   NI_CHECK_DEFINED(gradient)
   auto gradient_opt = gradient.options();
@@ -61,13 +61,13 @@ Tensor relax(
   }
 
   if (gradient.is_cuda())
-    return cuda::relax_impl(hessian, gradient, solution, weight,
-        ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
+    return cuda::relax_grid_impl(hessian, gradient, solution, weight,
+        absolute, membrane, bending, lame_shear, lame_div,
         ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
   else
-    return cpu::relax_impl(hessian, gradient, solution, weight,
-        ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
-        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
+    return cpu::relax_grid_impl(hessian, gradient, solution, weight,
+      absolute, membrane, bending, lame_shear, lame_div,
+      ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
 }
 
 }
