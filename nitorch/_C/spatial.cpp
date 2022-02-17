@@ -96,5 +96,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("prolong_backward",          &ni::prolong_backward,           "prolong backward");
   m.def("restrict",                  &ni::restrict,                   "restrict");
   m.def("restrict_backward",         &ni::restrict_backward,          "restrict backward");
-  m.def("fmg",                       &ni::fmg,                        "fmg");
+  m.def("fmg",                       &ni::fmg,                        "Field Full MultiGrid");
+  m.def("fmg_grid",                  &ni::fmg_grid,                   "Grid Full MultiGrid");
 }

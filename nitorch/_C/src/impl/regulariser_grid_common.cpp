@@ -689,8 +689,8 @@ void RegulariserGridImpl<scalar_t,offset_t>::matvec_none(
   x##00  = (bound::index(bound##i, x##00,  X) - x) * inp_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * inp_s##X;
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x) * inp_s##X; \
-  x##1  = (bound::index(bound##i, x##1,  X) - x) * inp_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x); \
+  x##1  = (bound::index(bound##i, x##1,  X) - x); \
   offset_t w##x##0 = x##0 * wgt_s##X; \
   offset_t w##x##1 = x##1 * wgt_s##X; \
   x##0 *= inp_s##X; \
@@ -731,10 +731,10 @@ void RegulariserGridImpl<scalar_t,offset_t>::matvec_none(
   GET_WARP1_RLS_(z, Z, 2)
 
 #define GET_POINTERS \
-  scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + z*out_sZ);  \
+  scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);  \
   scalar_t *out1 = out0 + out_sC, *out2 = out0 + 2 * out_sC;    \
   scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ);  \
-  scalar_t *inp1 = inp0 + inp_sC, *inp2 = inp0 + 2 * inp_sC; \
+  scalar_t *inp1 = inp0 + inp_sC, *inp2 = inp0 + 2 * inp_sC + n*inp_sN; \
   scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ);
 
  
@@ -1114,7 +1114,7 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_rls_membrane(
   GET_WARP1_RLS
   GET_POINTERS
 
-  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN);
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
@@ -1189,7 +1189,7 @@ void RegulariserGridImpl<scalar_t,offset_t>::vel2mom3d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_POINTERS
-  scalar_t w = *(wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ));
+  scalar_t w = *(wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN));
   w *= absolute;
   {
     scalar_t c = *inp0;

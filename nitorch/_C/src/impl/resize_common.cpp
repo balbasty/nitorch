@@ -78,7 +78,7 @@ public:
     VEC_UNFOLD(bound,         bound,         BoundType::Replicate),
     VEC_UNFOLD(interpolation, interpolation, InterpolationType::Linear),
     VEC_UNFOLD(shift,         shift,         0.),
-    VEC_UNFOLD(scale,         shift,         1.),
+    VEC_UNFOLD(scale,         scale,         1.),
     do_adjoint(do_adjoint)
   {
     iso = interpolation0 == interpolation1 &&
@@ -224,6 +224,8 @@ public:
     COPY_FROM_INFO3(scale),
     COPY_FROM_INFO(iso),
     COPY_FROM_INFO(do_adjoint),
+    COPY_FROM_INFO(N),
+    COPY_FROM_INFO(C),
 
 #define INIT_ALLOC_INFO_5D(NAME) \
     NAME##_X(static_cast<offset_t>(info.NAME##_X)),   \
@@ -272,25 +274,25 @@ public:
     } else {
       if (dim == 1) {
         if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::restrict1d_nearest;
+          resize_ = &Self::resize1d_nearest;
         else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::restrict1d_linear;
+          resize_ = &Self::resize1d_linear;
         else
           resize_ = &Self::restrict1d;
       } else if (dim == 2) {
         if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::restrict2d_nearest;
+          resize_ = &Self::resize2d_nearest;
         else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::restrict2d_linear;
+          resize_ = &Self::resize2d_linear;
         else
-          resize_ = &Self::restrict2d;
+          resize_ = &Self::resize2d;
       } else if (dim == 3) {
         if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::restrict3d_nearest;
+          resize_ = &Self::resize3d_nearest;
         else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::restrict3d_linear;
+          resize_ = &Self::resize3d_linear;
         else
-          resize_ = &Self::restrict3d;
+          resize_ = &Self::resize3d;
       } else
           throw std::logic_error("Resize only implemented for dimension 1/2/3.");
     }
@@ -311,6 +313,37 @@ public:
   NI_HOST NI_DEVICE int64_t voxcount() const { 
     return N * tgt_X * tgt_Y * tgt_Z;
   }
+
+#if 0
+  NI_HOST NI_DEVICE void printInfo() const {
+    printf("dim: %d\n", dim);
+    printf("bound:         [%d %d %d]\n", static_cast<int>(bound0), 
+      static_cast<int>(bound1), static_cast<int>(bound2));
+    printf("interpolation: [%d %d %d]\n", static_cast<int>(interpolation0), 
+      static_cast<int>(interpolation1), static_cast<int>(interpolation2));
+    printf("shift:         [%f %f %f]\n", static_cast<float>(shift0), 
+      static_cast<float>(shift1), static_cast<float>(shift2));
+    printf("scale:         [%f %f %f]\n", static_cast<float>(scale0), 
+      static_cast<float>(scale1), static_cast<float>(scale2));
+    printf("src:  [%d %d %d]\n", src_Z, src_Y, src_X);
+    printf("tgt:  [%d %d %d]\n", tgt_Z, tgt_Y, tgt_X);
+    printf("N: %d\n", N);
+    printf("C: %d\n", C);
+    printf("src  -> %lu\n", reinterpret_cast<std::uintptr_t>(src_ptr));
+    printf("tgt  -> %lu\n", reinterpret_cast<std::uintptr_t>(tgt_ptr));
+  }
+
+
+  NI_HOST NI_DEVICE void printInfo1(offset_t  w, offset_t  h, offset_t  d,
+                                    scalar_t  x, scalar_t  y, scalar_t  z,
+                                    offset_t iw, offset_t ih, offset_t id) const {
+    printf("src:  [%d %d %d]\n", w, h, d);
+    printf("tgt:  [%f %f %f]\n", w, y, z);
+    printf("tgt:  [%d %d %d]\n", iw, ih, id);
+    printf("src  -> %lu\n", reinterpret_cast<std::uintptr_t>(src_ptr));
+    printf("tgt  -> %lu\n", reinterpret_cast<std::uintptr_t>(tgt_ptr));
+  }
+#endif
 
 private:
 
@@ -399,7 +432,7 @@ template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
-  offset_t index = blockIdx * blockDim + threadIdx;
+  offset_t index    = blockIdx * blockDim + threadIdx;
   offset_t tgt_YZ   =   tgt_Z * tgt_Y;
   offset_t tgt_XYZ  =  tgt_YZ * tgt_X;
   offset_t tgt_NXYZ = tgt_XYZ * tgt_N;
@@ -482,8 +515,8 @@ void ResizeImpl<scalar_t,offset_t>::loop() const
 #undef  GET_INDEX
 #define GET_INDEX \
   scalar_t x = scale0 * w + shift0;                               \
-  scalar_t y = scale1 * w + shift1;                               \
-  scalar_t z = scale2 * w + shift2;                               \
+  scalar_t y = scale1 * h + shift1;                               \
+  scalar_t z = scale2 * d + shift2;                               \
   offset_t bx0, bx1, by0, by1, bz0, bz1;                          \
   interpolation::bounds(interpolation0, x, bx0, bx1);             \
   interpolation::bounds(interpolation1, y, by0, by1);             \
@@ -614,8 +647,8 @@ void ResizeImpl<scalar_t,offset_t>::restrict1d(offset_t w, offset_t h, offset_t 
 #undef  GET_INDEX
 #define GET_INDEX \
   scalar_t x = scale0 * w + shift0; \
-  scalar_t y = scale1 * w + shift1; \
-  scalar_t z = scale2 * w + shift2; \
+  scalar_t y = scale1 * h + shift1; \
+  scalar_t z = scale2 * d + shift2; \
   offset_t ix0 = static_cast<offset_t>(std::floor(x)); \
   offset_t iy0 = static_cast<offset_t>(std::floor(y)); \
   offset_t iz0 = static_cast<offset_t>(std::floor(z)); \
@@ -723,8 +756,8 @@ void ResizeImpl<scalar_t,offset_t>::restrict1d_linear(offset_t w, offset_t h, of
 #undef  GET_INDEX
 #define GET_INDEX \
   offset_t ix = static_cast<offset_t>(std::round(scale0 * w + shift0)); \
-  offset_t iy = static_cast<offset_t>(std::round(scale1 * w + shift1)); \
-  offset_t iz = static_cast<offset_t>(std::round(scale2 * w + shift1)); \
+  offset_t iy = static_cast<offset_t>(std::round(scale1 * h + shift1)); \
+  offset_t iz = static_cast<offset_t>(std::round(scale2 * d + shift1)); \
   int8_t   sx = bound::sign(bound0, ix, src_X);                         \
   int8_t   sy = bound::sign(bound1, iy, src_Y);                         \
   int8_t   sz = bound::sign(bound2, iz, src_Z);                         \
@@ -788,10 +821,16 @@ __global__ void resize_kernel(ResizeImpl<scalar_t,offset_t> f) {
 NI_HOST NI_INLINE void
 check_same_nonspatial(Tensor source, Tensor target)
 {
-  if (!(source.dim() == target.dim()     &&
-        source.size(0) == target.size(0) &&
-        source.size(1) == target.size(1)))
-      throw std::invalid_argument("Source and target should have the same batch and channel shapes.");
+  bool same_nonspatial = (source.dim()   == target.dim())    &&
+                         (source.size(0) == target.size(0))  &&
+                         (source.size(1) == target.size(1));
+  if (!same_nonspatial) {
+    std::string const msg = "Source and target should have the same batch and channel shapes but found dims "
+                          + std::to_string(source.dim()) + " vs " + std::to_string(target.dim()) + " and shapes ["
+                          + std::to_string(source.size(0)) + " " + std::to_string(source.size(1)) + "] vs ["
+                          + std::to_string(target.size(0)) + " " + std::to_string(target.size(1)) + "].";
+    throw std::invalid_argument(msg);
+  }
 }
 
 NI_HOST NI_INLINE std::tuple<Tensor, Tensor>
@@ -802,6 +841,8 @@ prepare_tensors(Tensor source, Tensor target, ArrayRef<double> factor, bool do_a
 
   if (source_defined && target_defined) {
     check_same_nonspatial(source, target);
+    if (do_adjoint)
+      source.zero_();
     return std::tuple<Tensor, Tensor>(source, target);
   }
 

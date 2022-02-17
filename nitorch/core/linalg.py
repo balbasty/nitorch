@@ -560,7 +560,7 @@ def sym_matvec(mat, vec):
     elif nb_prm == 4:
         mm = _sym_matvec4(mat, vec)
     else:
-        mm = _sym_matvecn(mat, vec)
+        mm = _sym_matvecn(mat, vec, nb_prm)
 
     return utils.fast_movedim(mm, 0, -1)
 

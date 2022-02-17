@@ -46,8 +46,8 @@ Tensor resize(const Tensor                     & input,
     NI_CHECK_NOT_EMPTY(output)
   }
 
-  at::Tensor source = do_adjoint ? input  : output;
-  at::Tensor target = do_adjoint ? output : input;
+  at::Tensor source = do_adjoint ? output : input;
+  at::Tensor target = do_adjoint ? input  : output;
 
   ResizeFn resize_impl = input.is_cuda() ? cuda::resize_impl : cpu::resize_impl;
 

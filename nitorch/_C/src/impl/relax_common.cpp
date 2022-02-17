@@ -225,9 +225,10 @@ void RelaxAllocator::init_weight(const Tensor& weight)
 /*                                                                            */
 /* ========================================================================== */
 
-NI_HOST NI_INLINE bool any(const ArrayRef<double> & v) {
-  for (auto it = v.cbegin(); it < v.cend(); ++it) {
-    if (*it) return true;
+template <typename offset_t>
+NI_HOST NI_INLINE bool any(const double * v, offset_t C) {
+  for (offset_t c = 0; c < C; ++c, ++v) {
+    if (*v) return true;
   }
   return false;
 }
@@ -238,18 +239,13 @@ class RelaxImpl {
   typedef RelaxImpl Self;
   typedef void (Self::*RelaxFn)(offset_t x, offset_t y, offset_t z, offset_t n) const;
   typedef void (Self::*InvertFn)(scalar_t *, double *, double *, const double *) const;
-  typedef void (Self::*GetHFn)(scalar_t *, double *) const;
+  typedef void (Self::*GetHFn)(const scalar_t *, double *) const;
 
 public:
 
   /* ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   RelaxImpl(const RelaxAllocator & info):
-    dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
-    vx0(info.vx0), vx1(info.vx1), vx2(info.vx2),
-    absolute(info.C), membrane(info.C), bending(info.C),
-    w000(info.C), w100(info.C), w010(info.C), w001(info.C), w200(info.C), 
-    w020(info.C), w002(info.C), w110(info.C), w101(info.C), w011(info.C), 
     N(static_cast<offset_t>(info.N)),
     C(static_cast<offset_t>(info.C)),
     CC(static_cast<offset_t>(info.CC)),
@@ -271,8 +267,8 @@ public:
     INIT_ALLOC_INFO_5D(wgt)
   {
     set_factors(info.absolute, info.membrane, info.bending);
-    set_kernel();
-    set_relax();
+    set_kernel(info.dim, info.vx0, info.vx1, info.vx2);
+    set_relax(info.dim);
     set_bandwidth();
     set_invert();
   }
@@ -287,38 +283,37 @@ public:
       membrane[c] = (m.size() == 0                       ? 0. : 
                      static_cast<offset_t>(m.size()) > c ? m[c] 
                                                          : membrane[c-1]);
-      bending[c]  = (bending.size()  == 0                ? 0. : 
+      bending[c]  = (b.size()  == 0                      ? 0. : 
                      static_cast<offset_t>(b.size()) > c ? b[c]  
                                                          : bending[c-1]);
     }
   } 
 
-  NI_HOST NI_INLINE void set_kernel() 
+  NI_HOST NI_INLINE void set_kernel(int64_t dim, double vx0, double vx1, double vx2) 
   {
-    double lam0, lam1, lam2;
-    for (offset_t c = 0; c < C; ++c)
-    {
-      lam0    = absolute[c];
-      lam1    = membrane[c];
-      lam2    = bending[c]; 
-      w000[c] = lam2*(6.0*(vx0*vx0+vx1*vx1+vx2*vx2) + 8*(vx0*vx1+vx0*vx2+vx1*vx2)) + lam1*2*(vx0+vx1+vx2) + lam0;
-      w100[c] = lam2*(-4.0*vx0*(vx0+vx1+vx2)) -lam1*vx0;
-      w010[c] = lam2*(-4.0*vx1*(vx0+vx1+vx2)) -lam1*vx1;
-      w001[c] = lam2*(-4.0*vx2*(vx0+vx1+vx2)) -lam1*vx2;
-      w200[c] = lam2*vx0*vx0;
-      w020[c] = lam2*vx1*vx1;
-      w002[c] = lam2*vx2*vx2;
-      w110[c] = lam2*2.0*vx0*vx1;
-      w101[c] = lam2*2.0*vx0*vx2;
-      w011[c] = lam2*2.0*vx1*vx2;
-    }
+    for (offset_t c=0; c < C; ++c)
+      w000[c] = bending[c]  * (6.0*(vx0*vx0+vx1*vx1+vx2*vx2) + 8*(vx0*vx1+vx0*vx2+vx1*vx2)) + 
+                membrane[c] * 2*(vx0+vx1+vx2) + 
+                absolute[c];
+    m100 = -vx0;
+    m010 = -vx1;
+    m001 = -vx2;
+    b100 = -4.0*vx0*(vx0+vx1+vx2);
+    b010 = -4.0*vx1*(vx0+vx1+vx2);
+    b001 = -4.0*vx2*(vx0+vx1+vx2);
+    b200 = vx0*vx0;
+    b020 = vx1*vx1;
+    b002 = vx2*vx2;
+    b110 = 2.0*vx0*vx1;
+    b101 = 2.0*vx0*vx2;
+    b011 = 2.0*vx1*vx2;
   }
 
-  NI_HOST NI_INLINE void set_relax() 
+  NI_HOST NI_INLINE void set_relax(int64_t dim) 
   {
-    bool has_bending  = any(bending);
-    bool has_membrane = any(membrane);
-    bool has_absolute = any(absolute);
+    bool has_membrane = any(membrane, C);
+    bool has_absolute = any(absolute, C);
+    bool has_bending  = any(bending, C);
 
     if (wgt_ptr)
     {
@@ -380,9 +375,9 @@ public:
 
   NI_HOST NI_INLINE void set_bandwidth() 
   { 
-    if (any(bending))
+    if (any(bending, C))
       bandwidth = 3;
-    else if (any(membrane))
+    else if (any(membrane, C))
       bandwidth = 0; // checkerboard
     else
       bandwidth = 1;
@@ -395,9 +390,9 @@ public:
       Fz = MIN(Z, bandwidth);
 
       // size of the fold
-      Xf = (X + Fx - 1) / Fx;
-      Yf = (Y + Fy - 1) / Fy;
-      Zf = (Z + Fz - 1) / Fz;
+      Xf = 1 + (X - 1) / Fx;
+      Yf = 1 + (Y - 1) / Fy;
+      Zf = 1 + (Z - 1) / Fz;
     }
   }
 
@@ -416,7 +411,7 @@ public:
       }
     } else {
       invert_ = &Self::invert_none;
-        get_h_  = &Self::get_h_none;
+      get_h_  = &Self::get_h_none;
     }
   }
 
@@ -457,8 +452,12 @@ public:
     else {
       // index of the fold (lin2sub)
       fx = i/(Fy*Fz);
-      fy = (i/Fz)  % Y;
-      fz = i % Z;
+      fy = (i/Fz)  % Fy;
+      fz = i % Fz;
+
+      Xf = 1 + (X - fx - 1) / Fx;
+      Yf = 1 + (Y - fy - 1) / Fy;
+      Zf = 1 + (Z - fz - 1) / Fz;
     }
   }
  
@@ -485,14 +484,16 @@ private:
   DEFINE_relax_DIM(2)
   DEFINE_relax_DIM(3)
 
-  NI_DEVICE void get_h(scalar_t * , double *) const;
-  NI_DEVICE void get_h_sym(scalar_t * , double *) const;
-  NI_DEVICE void get_h_diag(scalar_t * , double *) const;
-  NI_DEVICE void get_h_eye(scalar_t * , double *) const;
-  NI_DEVICE void get_h_none(scalar_t * , double *) const;
+  NI_DEVICE void get_h(const scalar_t * , double *) const;
+  NI_DEVICE void get_h_sym(const scalar_t * , double *) const;
+  NI_DEVICE void get_h_diag(const scalar_t * , double *) const;
+  NI_DEVICE void get_h_eye(const scalar_t * , double *) const;
+  NI_DEVICE void get_h_none(const scalar_t * , double *) const;
 
   NI_DEVICE void invert(
-    scalar_t *, scalar_t *, double *, const double *) const;
+    scalar_t *, const scalar_t *, double *, const double *) const;
+  // NI_DEVICE void invert3(
+  //   scalar_t *, const scalar_t *, double *, const double *) const;
   NI_DEVICE void invert_sym(
     scalar_t *, double *, double *, const double *) const;
   NI_DEVICE void invert_diag(
@@ -503,33 +504,33 @@ private:
     scalar_t *, double *, double *, const double *) const;
 
   NI_DEVICE void cholesky(double a[], double p[]) const;
-  NI_DEVICE void cholesky_solve(double a[], double p[], double x[]) const;
+  NI_DEVICE void cholesky_solve(const double a[], const double p[], double x[]) const;
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-  int               dim;            // dimensionality (2 or 3)
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
-  double            vx0;            // voxel size // x|W
-  double            vx1;            // voxel size // y|H
-  double            vx2;            // voxel size // z|D
-  vector<double>    absolute;       // penalty on absolute values
-  vector<double>    membrane;       // penalty on first derivatives
-  vector<double>    bending;        // penalty on second derivatives
+  double            absolute[NI_MAX_NUM_CHANNELS];       // penalty on absolute values
+  double            membrane[NI_MAX_NUM_CHANNELS];       // penalty on first derivatives
+  double            bending[NI_MAX_NUM_CHANNELS];        // penalty on second derivatives
   RelaxFn           relax_;         // Pointer to relax function
   InvertFn          invert_;        // Pointer to inversion function
   GetHFn            get_h_;         // Pointer to inversion function
 
-  vector<double>  w000;
-  vector<double>  w100;
-  vector<double>  w010;
-  vector<double>  w001;
-  vector<double>  w200;
-  vector<double>  w020;
-  vector<double>  w002;
-  vector<double>  w110;
-  vector<double>  w101;
-  vector<double>  w011;
+  double w000[NI_MAX_NUM_CHANNELS];
+  double m100;
+  double m010;
+  double m001;
+  double b100;
+  double b010;
+  double b001;
+  double b200;
+  double b020;
+  double b002;
+  double b110;
+  double b101;
+  double b011;
+
 
   // ~~~ FOLD NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -704,29 +705,31 @@ void RelaxImpl<scalar_t,offset_t>::loop_band()
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::cholesky(double a[], double p[]) const
 {
-    double sm, sm0;
+  double sm, sm0;
 
-    sm0  = 1e-40;
-    for(offset_t c = 0; c < C; ++c) sm0 += a[c*C+c];
-    sm0 *= 1e-7;
-    sm0 *= sm0;
+  
+  sm0  = 1e-40;
+  for(offset_t c = 0; c < C; ++c) sm0 += a[c*C+c];
+  sm0 *= 1e-7;
+  sm0 *= sm0;
+  // sm0 = MAX(sm0, 1e-16);
 
-    for (offset_t c = 0; c < C; ++c)
+  for (offset_t c = 0; c < C; ++c)
+  {
+    for (offset_t b = c; b < C; ++b)
     {
-        for (offset_t b = c; b < C; ++b)
-        {
-            sm = a[c*C+b];
-            for(offset_t d = c-1; d >= 0; --d)
-               sm -= a[c*C+d] * a[b*C+d];
-            if (c == b)
-            {
-                sm = MAX(sm, sm0);
-                p[c] = std::sqrt(sm);
-            }
-            else
-                a[b*C+c] = sm / p[c];
-        }
+      sm = a[c*C+b];
+      for(offset_t d = c-1; d >= 0; --d)
+        sm -= a[c*C+d] * a[b*C+d];
+      if (c == b)
+      {
+        sm = MAX(sm, sm0);
+        p[c] = std::sqrt(sm);
+      }
+      else 
+        a[b*C+c] = sm / p[c];
     }
+  }
 }
 
 // Cholesky solver (inplace)
@@ -735,24 +738,24 @@ void RelaxImpl<scalar_t,offset_t>::cholesky(double a[], double p[]) const
 // @param[inout] x: C vector
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::cholesky_solve(
-    double a[], double p[], double x[]) const
+    const double a[], const double p[], double x[]) const
 {
-    double sm;
+  double sm;
 
-    for (offset_t c = 0; c < C; ++c)
-    {
-        sm = x[c];
-        for (offset_t cc = c-1; cc >= 0; --cc)
-            sm -= a[c*C+cc] * x[cc];
-        x[c] = sm / p[c];
-    }
-    for(offset_t c = C-1; c >= 0; --c)
-    {
-        sm = x[c];
-        for(offset_t cc = c+1; cc < C; ++cc)
-            sm -= a[cc*C+c] * x[cc];
-        x[c] = sm / p[c];
-    }
+  for (offset_t c = 0; c < C; ++c)
+  {
+    sm = x[c];
+    for (offset_t cc = c-1; cc >= 0; --cc)
+      sm -= a[c*C+cc] * x[cc];
+    x[c] = sm / p[c];
+  }
+  for(offset_t c = C-1; c >= 0; --c)
+  {
+    sm = x[c];
+    for(offset_t cc = c+1; cc < C; ++cc)
+      sm -= a[cc*C+c] * x[cc];
+    x[c] = sm / p[c];
+  }
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -773,11 +776,38 @@ void RelaxImpl<scalar_t,offset_t>::cholesky_solve(
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::invert(
-    scalar_t * x, scalar_t * h, double * v, const double * w) const {
+    scalar_t * x, const scalar_t * h, double * v, const double * w) const {
   double m[NI_MAX_NUM_CHANNELS*NI_MAX_NUM_CHANNELS];
   get_h(h, m);
   CALL_MEMBER_FN(*this, invert_)(x, m, v, w);
 }
+
+#if 0
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t>::invert3(
+    scalar_t * x, const scalar_t * h, double * v, const double * w) const 
+{
+
+  double h00 = h[0],        h11 = h[  hes_sC], h22 = h[2*hes_sC],
+         h01 = h[3*hes_sC], h02 = h[4*hes_sC], h12 = h[5*hes_sC],
+         x0  = x[0],        x1  = x[  sol_sC], x2  = x[2*sol_sC],
+         idt;
+
+  // matvec
+  v[0] -= (h00*x0 + h01*x1 + h02*x2);
+  v[1] -= (h01*x0 + h11*x1 + h12*x2);
+  v[2] -= (h02*x0 + h12*x1 + h22*x2);
+
+  // solve
+  h00  = h00 * OnePlusTiny + w[0];
+  h11  = h11 * OnePlusTiny + w[1];
+  h22  = h22 * OnePlusTiny + w[2];
+  idt  = 1.0/(h00*h11*h22 - h00*h12*h12 - h11*h02*h02 - h22*h01*h01 + 2*h01*h02*h12);
+  x[       0] += idt*(v[0]*(h11*h22-h12*h12) + v[1]*(h02*h12-h01*h22) + v[2]*(h01*h12-h02*h11));
+  x[  sol_sC] += idt*(v[0]*(h02*h12-h01*h22) + v[1]*(h00*h22-h02*h02) + v[2]*(h01*h02-h00*h12));
+  x[2*sol_sC] += idt*(v[0]*(h01*h12-h02*h11) + v[1]*(h01*h02-h00*h12) + v[2]*(h00*h11-h01*h01));
+}
+#endif
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::invert_sym(
@@ -822,7 +852,7 @@ template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::invert_none(
     scalar_t * x, double * h, double * v, const double * w) const {
   for (offset_t c = 0; c < C; ++c)
-    x[c*sol_sC] += v[c] / w[c];
+    x[c*sol_sC] += *(v++) / *(w++);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -832,44 +862,44 @@ void RelaxImpl<scalar_t,offset_t>::invert_none(
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::get_h(
-    scalar_t * h, double * m) const {
+    const scalar_t * h, double * m) const {
   CALL_MEMBER_FN(*this, get_h_)(h, m);
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::get_h_sym(
-    scalar_t * hessian, double * mat) const {
+    const scalar_t * hessian, double * mat) const {
   for (offset_t c = 0; c < C; ++c, hessian += hes_sC)
     mat[c+C*c] = *hessian;
   for (offset_t c = 0; c < C; ++c)
-    for (offset_t cc = c+1; c < C; ++c, hessian += hes_sC)
+    for (offset_t cc = c+1; cc < C; ++cc, hessian += hes_sC)
       mat[c+C*cc] = mat[cc+C*c] = *hessian;
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::get_h_diag(
-    scalar_t * hessian, double * mat) const {
+    const scalar_t * hessian, double * mat) const {
   for (offset_t c = 0; c < C; ++c, hessian += hes_sC)
     mat[c] = *hessian;
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::get_h_eye(
-    scalar_t * hessian, double * mat) const {
+    const scalar_t * hessian, double * mat) const {
   *mat = *hessian;
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t>::get_h_none(
-    scalar_t * hessian, double * mat) const 
+    const scalar_t * hessian, double * mat) const 
 {}
 
 
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
 /* ========================================================================== */
-#define GET_COORD1_(x) offset_t x##0  = x - 1, x##1 = x + 1;
-#define GET_COORD2_(x) offset_t x##00  = x - 2, x##11 = x + 2;
+#define GET_COORD1_(x) offset_t x##0  = x - 1, x##1  = x + 1;
+#define GET_COORD2_(x) offset_t x##00 = x - 2, x##11 = x + 2;
 #define GET_SIGN1_(x, X, i)  \
   int8_t   s##x##0 = bound::sign(bound##i, x##0,  X); \
   int8_t   s##x##1 = bound::sign(bound##i, x##1,  X);
@@ -883,8 +913,8 @@ void RelaxImpl<scalar_t,offset_t>::get_h_none(
   x##00  = (bound::index(bound##i, x##00,  X) - x) * sol_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * sol_s##X;
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x) * sol_s##X; \
-  x##1  = (bound::index(bound##i, x##1,  X) - x) * sol_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x); \
+  x##1  = (bound::index(bound##i, x##1,  X) - x); \
   offset_t w##x##0 = x##0 * wgt_s##X; \
   offset_t w##x##1 = x##1 * wgt_s##X; \
   x##0 *= sol_s##X; \
@@ -925,9 +955,9 @@ void RelaxImpl<scalar_t,offset_t>::get_h_none(
   GET_WARP1_RLS_(z, Z, 2)
 
 #define GET_POINTERS \
-  scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ); \
-  scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ); \
-  scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ);
+  const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN); \
+        scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN); \
+  const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
 
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
@@ -943,35 +973,46 @@ void RelaxImpl<scalar_t,offset_t>::relax3d_bending(
   GET_POINTERS
 
   double val[NI_MAX_NUM_CHANNELS];
+  const double *a = absolute, *m = membrane, *b = bending;
+  double aa, mm, bb;
 
   for (offset_t c = 0; c < C; 
        ++c, sol += sol_sC, grd += grd_sC)
   {
     scalar_t center = *sol; 
-    auto get = [center](scalar_t * x, offset_t o, int8_t s)
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
     {
       return bound::get(x, o, s) - center;
     };
 
+    aa = *(a++);
+    mm = *(m++);
+    bb = *(b++);
+
+    double w100 = mm * m100 + bb * b100;
+    double w010 = mm * m010 + bb * b010;
+    double w001 = mm * m001 + bb * b001;
+
     val[c] = (*grd) - (
-          absolute[c]*center
-        + w100[c]*(get(sol, x0,    sx0)     + get(sol, x1,    sx1))
-        + w010[c]*(get(sol, y0,    sy0)     + get(sol, y1,    sy1))
-        + w001[c]*(get(sol, z0,    sz0)     + get(sol, z1,    sz1))
-        + w110[c]*(get(sol, x0+y0, sx0*sy0) + get(sol, x1+y0, sx1*sy0) +
-                   get(sol, x0+y1, sx1*sy1) + get(sol, x1+y1, sx1*sy1))
-        + w101[c]*(get(sol, x0+z0, sx0*sz0) + get(sol, x1+z0, sx1*sz0) +
-                   get(sol, x0+z1, sx1*sz1) + get(sol, x1+z1, sx1*sz1))
-        + w011[c]*(get(sol, y0+z0, sy0*sz0) + get(sol, y1+z0, sy1*sz0) +
-                   get(sol, y0+z1, sy1*sz1) + get(sol, y1+z1, sy1*sz1))
-        + w200[c]*(get(sol, x00,   sx00)    + get(sol, x11,   sx11))
-        + w020[c]*(get(sol, y00,   sy00)    + get(sol, y11,   sy11))
-        + w002[c]*(get(sol, z00,   sz00)    + get(sol, z11,   sz11))
+          aa * center
+        + w100*(get(sol, x0,    sx0)     + get(sol, x1,    sx1))
+        + w010*(get(sol, y0,    sy0)     + get(sol, y1,    sy1))
+        + w001*(get(sol, z0,    sz0)     + get(sol, z1,    sz1))
+        + bb * (
+            b110*(get(sol, x0+y0, sx0*sy0) + get(sol, x1+y0, sx1*sy0) +
+                  get(sol, x0+y1, sx1*sy1) + get(sol, x1+y1, sx1*sy1))
+          + b101*(get(sol, x0+z0, sx0*sz0) + get(sol, x1+z0, sx1*sz0) +
+                  get(sol, x0+z1, sx1*sz1) + get(sol, x1+z1, sx1*sz1))
+          + b011*(get(sol, y0+z0, sy0*sz0) + get(sol, y1+z0, sy1*sz0) +
+                  get(sol, y0+z1, sy1*sz1) + get(sol, y1+z1, sy1*sz1))
+          + b200*(get(sol, x00,   sx00)    + get(sol, x11,   sx11))
+          + b020*(get(sol, y00,   sy00)    + get(sol, y11,   sy11))
+          + b002*(get(sol, z00,   sz00)    + get(sol, z11,   sz11)) )
     );
   }
 
   sol -= C*sol_sC;
-  invert(sol, hes, val, w000.data());
+  invert(sol, hes, val, w000);
 }
 
 
@@ -985,26 +1026,29 @@ void RelaxImpl<scalar_t,offset_t>::relax3d_membrane(
   GET_POINTERS
 
   double val[NI_MAX_NUM_CHANNELS];
+  const double *a = absolute, *m = membrane;
 
   for (offset_t c = 0; c < C; 
        ++c, sol += sol_sC, grd += grd_sC)
   {
     scalar_t center = *sol; 
-    auto get = [center](scalar_t * x, offset_t o, int8_t s)
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
     {
       return bound::get(x, o, s) - center;
     };
 
     val[c] = (*grd) - (
-          absolute[c]*center
-        + w100[c]*(get(sol, x0, sx0) + get(sol, x1, sx1))
-        + w010[c]*(get(sol, y0, sy0) + get(sol, y1, sy1))
-        + w001[c]*(get(sol, z0, sz0) + get(sol, z1, sz1)) 
+          (*(a++)) * center
+        + (*(m++)) * (
+            m100*(get(sol, x0, sx0) + get(sol, x1, sx1))
+          + m010*(get(sol, y0, sy0) + get(sol, y1, sy1))
+          + m001*(get(sol, z0, sz0) + get(sol, z1, sz1)) )
     );
   }
 
   sol -= C*sol_sC;
-  invert(sol, hes, val, w000.data());
+  invert(sol, hes, val, w000);
+
 }
 
 
@@ -1019,7 +1063,7 @@ void RelaxImpl<scalar_t,offset_t>::relax3d_absolute(
     val[c] = (*grd) - ( absolute[c] * (*sol) );
 
   sol -= C*sol_sC;
-  invert(sol, hes, val, w000.data());
+  invert(sol, hes, val, w000);
 }
 
 
@@ -1034,6 +1078,8 @@ void RelaxImpl<scalar_t,offset_t>::relax3d_rls_membrane(
   GET_POINTERS
 
   double val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  const double *a = absolute, *m = membrane;
+  double aa, mm;
 
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
@@ -1041,31 +1087,35 @@ void RelaxImpl<scalar_t,offset_t>::relax3d_rls_membrane(
        ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
-    double w1m00 = w100[c] * (wcenter + bound::get(wgt, wx0, sx0));
-    double w1p00 = w100[c] * (wcenter + bound::get(wgt, wx1, sx1));
-    double w01m0 = w010[c] * (wcenter + bound::get(wgt, wy0, sy0));
-    double w01p0 = w010[c] * (wcenter + bound::get(wgt, wy1, sy1));
-    double w001m = w001[c] * (wcenter + bound::get(wgt, wz0, sz0));
-    double w001p = w001[c] * (wcenter + bound::get(wgt, wz1, sz1));
+    double w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
+    double w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+    double w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
+    double w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+    double w001m = m001 * (wcenter + bound::get(wgt, wz0, sz0));
+    double w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
 
     scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
-    auto get = [center](scalar_t * x, offset_t o, int8_t s)
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
     {
       return bound::get(x, o, s) - center;
     };
 
+    aa = *(a++);
+    mm = *(m++);
+
     val[c] = (*grd) - (
-        absolute[c] * wcenter * center
-      + w1m00 * get(sol, x0, sx0)
-      + w1p00 * get(sol, x1, sx1)
-      + w01m0 * get(sol, y0, sy0)
-      + w01p0 * get(sol, y1, sy1)
-      + w001m * get(sol, z0, sz0)
-      + w001p * get(sol, z1, sz1)
+        aa * wcenter * center
+      + mm * (
+          w1m00 * get(sol, x0, sx0)
+        + w1p00 * get(sol, x1, sx1)
+        + w01m0 * get(sol, y0, sy0)
+        + w01p0 * get(sol, y1, sy1)
+        + w001m * get(sol, z0, sz0)
+        + w001p * get(sol, z1, sz1) )
     );
 
-    wval[c] = ( absolute[c] * wcenter
-              + w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p );
+    wval[c] = ( aa * wcenter
+              + mm * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p) );
   }
 
   sol -= C*sol_sC;

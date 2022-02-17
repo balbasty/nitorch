@@ -893,8 +893,8 @@ void RelaxGridImpl<scalar_t,offset_t>::invert1d_none(
   x##00  = (bound::index(bound##i, x##00,  X) - x) * sol_s##X; \
   x##11  = (bound::index(bound##i, x##11,  X) - x) * sol_s##X;
 #define GET_WARP1_RLS_(x, X, i) \
-  x##0  = (bound::index(bound##i, x##0,  X) - x) * sol_s##X; \
-  x##1  = (bound::index(bound##i, x##1,  X) - x) * sol_s##X; \
+  x##0  = (bound::index(bound##i, x##0,  X) - x); \
+  x##1  = (bound::index(bound##i, x##1,  X) - x); \
   offset_t w##x##0 = x##0 * wgt_s##X; \
   offset_t w##x##1 = x##1 * wgt_s##X; \
   x##0 *= sol_s##X; \
@@ -1325,7 +1325,7 @@ void RelaxGridImpl<scalar_t,offset_t>::relax3d_rls_membrane(
   GET_POINTERS
   double val0, val1, val2;
 
-  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN);
 
   // In `grid` mode, the weight map is single channel
   scalar_t wcenter = *wgt;
@@ -1402,7 +1402,7 @@ void RelaxGridImpl<scalar_t,offset_t>::relax3d_rls_absolute(
 {
   GET_POINTERS
   double val0, val1, val2;
-  scalar_t w = *(wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ));
+  scalar_t w = *(wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN));
   w *= absolute;
   {
     scalar_t c = *sol0;
