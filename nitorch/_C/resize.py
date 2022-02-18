@@ -57,11 +57,11 @@ if COMPILED_BACKEND == 'C':
 
     from .spatial import (
         resize as _c_resize,
-        prolong as _c_prolong,
-        restrict as _c_restrict)
+        prolongation as _c_prolongation,
+        restriction as _c_restriction)
 
     def c_resize(input, factor=None, bound='dct2', interpolation=1, mode='center',
-                 shape=None, output=None, adjoint=False):
+                 shape=None, output=None, adjoint=False, normalize=False):
         """Resize a spatial tensor
 
         Parameters
@@ -92,10 +92,11 @@ if COMPILED_BACKEND == 'C':
         if not factor and not shape:
             raise ValueError('At least one of factor or shape must be provided')
         factor = make_list(factor or [1.])
-        return _c_resize(input, output, factor, bound, interpolation, mode, adjoint)
+        return _c_resize(input, output, factor, bound, interpolation,
+                         mode, adjoint, normalize)
 
-    def c_prolong(input, factor=2., bound='dct2', interpolation=2,
-                  shape=None, output=None):
+    def c_prolongation(input, factor=2., bound='dct2', interpolation=2,
+                       shape=None, output=None):
         """Prolongation of a spatial tensor
 
         Parameters
@@ -122,10 +123,10 @@ if COMPILED_BACKEND == 'C':
                 output = input.new_zeros([*input.shape[:2], *shape])
             else:
                 output = torch.Tensor()
-        return _c_prolong(input, output, bound, interpolation)
+        return _c_prolongation(input, output, bound, interpolation)
 
-    def c_restrict(input, factor=2., bound='dct2', interpolation=1,
-                   shape=None, output=None):
+    def c_restriction(input, factor=2., bound='dct2', interpolation=1,
+                      shape=None, output=None):
         """Restriction of a spatial tensor
 
         Parameters
@@ -152,4 +153,4 @@ if COMPILED_BACKEND == 'C':
                 output = input.new_zeros([*input.shape[:2], *shape])
             else:
                 output = torch.Tensor()
-        return _c_restrict(input, output, bound, interpolation)
+        return _c_restriction(input, output, bound, interpolation)

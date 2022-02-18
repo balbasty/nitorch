@@ -14,15 +14,16 @@ at::Tensor resize(
   const std::vector<BoundType>          & bound         = std::vector<BoundType>(), 
   const std::vector<InterpolationType>  & interpolation = std::vector<InterpolationType>(), 
   const std::vector<GridAlignType>      & mode          = std::vector<GridAlignType>(),
-  bool                                    do_adjoint    = false);
+  bool                                    do_adjoint    = false,
+  bool                                    normalize     = false);
 
-at::Tensor prolong(
+at::Tensor prolongation(
   const at::Tensor                      & input, 
   const at::Tensor                      & output        = at::Tensor(),
   const std::vector<BoundType>          & bound         = std::vector<BoundType>(),
   const std::vector<InterpolationType>  & interpolation = std::vector<InterpolationType>());
 
-at::Tensor restrict(
+at::Tensor restriction(
   const at::Tensor                      & input, 
   const at::Tensor                      & source        = at::Tensor(),
   const std::vector<BoundType>          & bound         = std::vector<BoundType>(),
@@ -35,15 +36,16 @@ at::Tensor resize_backward(
   const std::vector<BoundType>          & bound         = std::vector<BoundType>(), 
   const std::vector<InterpolationType>  & interpolation = std::vector<InterpolationType>(), 
   const std::vector<GridAlignType>      & mode          = std::vector<GridAlignType>(),
-  bool                                    do_adjoint    = false);
+  bool                                    do_adjoint    = false,
+  bool                                    normalize     = false);
 
-at::Tensor prolong_backward(
+at::Tensor prolongation_backward(
   const at::Tensor                      & grad, 
   const at::Tensor                      & output        = at::Tensor(),
   const std::vector<BoundType>          & bound         = std::vector<BoundType>(),
   const std::vector<InterpolationType>  & interpolation = std::vector<InterpolationType>());
 
-at::Tensor restrict_backward(
+at::Tensor restriction_backward(
   const at::Tensor                      & grad, 
   const at::Tensor                      & source        = at::Tensor(),
   const std::vector<BoundType>          & bound         = std::vector<BoundType>(),

@@ -24,6 +24,12 @@
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+// maximum number of channels
+// > not used in mode isotropic nearest/linear
+// We override the (small) default
+#undef  NI_MAX_NUM_CHANNELS
+#define NI_MAX_NUM_CHANNELS 1024
+
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
   ONAME##0(INAME.size() > 0 ? INAME[0] : DEFAULT),  \
   ONAME##1(INAME.size() > 1 ? INAME[1] :            \
@@ -1000,7 +1006,7 @@ NI_HOST
 Tensor resize_impl(
   Tensor source, Tensor target, ArrayRef<double> factor,
   BoundVectorRef bound, InterpolationVectorRef interpolation, 
-  GridAlignVectorRef mode, bool do_adjoint)
+  GridAlignVectorRef mode, bool do_adjoint, bool normalize)
 {
   auto tensors = prepare_tensors(source, target, factor, do_adjoint);
   source = std::get<0>(tensors);
@@ -1009,7 +1015,7 @@ Tensor resize_impl(
   ArrayRef<double> shifts(std::get<0>(affines));
   ArrayRef<double> scales(std::get<1>(affines));
 
-  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint);
+  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint > 0);
   info.ioset(source, target);
   auto stream = at::cuda::getCurrentCUDAStream();
 
@@ -1017,19 +1023,27 @@ Tensor resize_impl(
     if (info.canUse32BitIndexMath())
     {
       ResizeImpl<scalar_t, int32_t> algo(info);
-      auto palgo = copy_to_device(algo, stream);
+      auto palgo = alloc_and_copy_to_device(algo, stream);
       resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }
     else
     {
       ResizeImpl<scalar_t, int64_t> algo(info);
-      auto palgo = copy_to_device(algo, stream);
+      auto palgo = alloc_and_copy_to_device(algo, stream);
       resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }
   });
-  return do_adjoint ? source : target;
+
+  Tensor out = do_adjoint ? source : target;
+  if (normalize)
+    switch (out.dim() - 2) {
+      case 1:  out *= scales[0];
+      case 2:  out *= scales[0] * scales[1];
+      default: out *= scales[0] * scales[1] * scales[2];
+    }
+  return out;
 }
 
 #else
@@ -1040,7 +1054,7 @@ NI_HOST
 Tensor resize_impl(
   Tensor source, Tensor target, ArrayRef<double> factor,
   BoundVectorRef bound, InterpolationVectorRef interpolation,  
-  GridAlignVectorRef mode, bool do_adjoint)
+  GridAlignVectorRef mode, bool do_adjoint, bool normalize)
 {
   auto tensors = prepare_tensors(source, target, factor, do_adjoint);
   source = std::get<0>(tensors);
@@ -1049,14 +1063,22 @@ Tensor resize_impl(
   ArrayRef<double> shifts(std::get<0>(affines));
   ArrayRef<double> scales(std::get<1>(affines));
 
-  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint);
+  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint > 0);
   info.ioset(source, target);
 
   AT_DISPATCH_FLOATING_TYPES(source.scalar_type(), "resize_impl", [&] {
     ResizeImpl<scalar_t, int64_t> algo(info);
     algo.loop();
   });
-  return do_adjoint ? source : target;
+
+  Tensor out = do_adjoint ? source : target;
+  if (normalize)
+    switch (out.dim() - 2) {
+      case 1:  out *= scales[0];
+      case 2:  out *= scales[0] * scales[1];
+      default: out *= scales[0] * scales[1] * scales[2];
+    }
+  return out;
 }
 
 #endif // __CUDACC__

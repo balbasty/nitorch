@@ -20,7 +20,7 @@ typedef at::Tensor (*ResizeFn)( \
       Tensor source, Tensor target, \
       ArrayRef<double> factor, BoundVectorRef bound,  \
       InterpolationVectorRef interpolation, GridAlignVectorRef mode, \
-      bool do_adjoint);
+      bool do_adjoint, bool normalize);
 
 Tensor resize(const Tensor                     & input, 
               const Tensor                     & output,
@@ -28,7 +28,8 @@ Tensor resize(const Tensor                     & input,
               const vector<BoundType>          & bound, 
               const vector<InterpolationType>  & interpolation, 
               const vector<GridAlignType>      & mode,
-              bool                             do_adjoint) 
+              bool                               do_adjoint,
+              bool                               normalize) 
 {
   NI_CHECK_DEFINED(input)
   auto input_opt = input.options();
@@ -56,33 +57,33 @@ Tensor resize(const Tensor                     & input,
       BoundVectorRef(         bound.size()         ? bound         : vector<BoundType>({BoundType::DCT2})), 
       InterpolationVectorRef( interpolation.size() ? interpolation : vector<InterpolationType>({InterpolationType::Linear})),
       GridAlignVectorRef(     mode.size()          ? mode          : vector<GridAlignType>({GridAlignType::Center})), 
-      do_adjoint);
+      do_adjoint, normalize);
 }
 
-Tensor prolong(const Tensor                     & input, 
-               const Tensor                     & output,
-               const vector<BoundType>          & bound, 
-               const vector<InterpolationType>  & interpolation) 
+Tensor prolongation(const Tensor                     & input, 
+                    const Tensor                     & output,
+                    const vector<BoundType>          & bound, 
+                    const vector<InterpolationType>  & interpolation) 
 {
   return resize(input, output,
                 vector<double>({1.}),
                 bound.size()          ? bound         : vector<BoundType>({BoundType::DCT2}),
                 interpolation.size()  ? interpolation : vector<InterpolationType>({InterpolationType::Quadratic}),
                 vector<GridAlignType>({GridAlignType::Edge}),
-                false);
+                false, false);
 }
 
-Tensor restrict(const Tensor                     & input, 
-                const Tensor                     & output,
-                const vector<BoundType>          & bound, 
-                const vector<InterpolationType>  & interpolation) 
+Tensor restriction(const Tensor                     & input, 
+                   const Tensor                     & output,
+                   const vector<BoundType>          & bound, 
+                   const vector<InterpolationType>  & interpolation) 
 {
   return resize(input, output,
                 vector<double>({1.}),
                 bound.size()          ? bound         : vector<BoundType>({BoundType::DCT2}),
                 interpolation.size()  ? interpolation : vector<InterpolationType>({InterpolationType::Linear}),
                 vector<GridAlignType>({GridAlignType::Edge}),
-                true);
+                true, true);
 }
 
 Tensor resize_backward(const Tensor                     & grad, 
@@ -91,34 +92,39 @@ Tensor resize_backward(const Tensor                     & grad,
                        const vector<BoundType>          & bound, 
                        const vector<InterpolationType>  & interpolation, 
                        const vector<GridAlignType>      & mode,
-                       bool                             do_adjoint) 
+                       bool                             do_adjoint,
+                       bool                             normalize) 
 {
   std::vector<double> ifactor(factor);
   for (auto it = ifactor.begin(); it != ifactor.end(); ++it)
     *it = 1./ (*it);
-  return resize(grad, output, ifactor, bound, interpolation, mode, !do_adjoint);
+  return resize(grad, output, ifactor, bound, interpolation, mode, !do_adjoint, normalize);
 }
 
-Tensor prolong_backward(const Tensor                     & grad, 
-                        const Tensor                     & output,
-                        const vector<BoundType>          & bound, 
-                        const vector<InterpolationType>  & interpolation) 
+Tensor prolongation_backward(const Tensor                     & grad, 
+                             const Tensor                     & output,
+                             const vector<BoundType>          & bound, 
+                             const vector<InterpolationType>  & interpolation) 
 {
-  vector<InterpolationType> same_inter({InterpolationType::Quadratic});
-  if (interpolation.size())
-    same_inter = interpolation;
-  return restrict(grad, output, bound, same_inter);
+  return resize(grad, output,
+                vector<double>({1.}),
+                bound.size()          ? bound         : vector<BoundType>({BoundType::DCT2}),
+                interpolation.size()  ? interpolation : vector<InterpolationType>({InterpolationType::Quadratic}),
+                vector<GridAlignType>({GridAlignType::Edge}),
+                true, false);
 }
 
-Tensor restrict_backward(const Tensor                     & grad, 
-                         const Tensor                     & output,
-                         const vector<BoundType>          & bound, 
-                         const vector<InterpolationType>  & interpolation) 
+Tensor restriction_backward(const Tensor                     & grad, 
+                            const Tensor                     & output,
+                            const vector<BoundType>          & bound, 
+                            const vector<InterpolationType>  & interpolation) 
 {
-  vector<InterpolationType> same_inter({InterpolationType::Linear});
-  if (interpolation.size())
-    same_inter = interpolation;
-  return prolong(grad, output, bound, same_inter);
+  return resize(grad, output,
+                vector<double>({1.}),
+                bound.size()          ? bound         : vector<BoundType>({BoundType::DCT2}),
+                interpolation.size()  ? interpolation : vector<InterpolationType>({InterpolationType::Linear}),
+                vector<GridAlignType>({GridAlignType::Edge}),
+                false, true);
 }
 
 } // namespace ni

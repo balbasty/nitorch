@@ -561,8 +561,6 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::dispatch(
       return vel2mom2d_all(x, y, z, n);
     case 3 + BENDING + LAME:
       return vel2mom3d_all(x, y, z, n);
-    case 1 + LAME:
-      return vel2mom1d_bending(x, y, z, n);
     case 1 + BENDING:
       return vel2mom1d_bending(x, y, z, n);
     case 2 + BENDING:
@@ -658,24 +656,24 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::matvec(
   if (hes_ptr == 0) return matvec_none(h, x, s);
   if (CC == 1)
     switch (dim) {
-      case 3:  return invert3d_eye(h, x, s);
-      case 2:  return invert2d_eye(h, x, s);
-      case 1:  return invert1d_eye(h, x, s);
-      default: return invert3d_eye(h, x, s);
+      case 3:  return matvec3d_eye(h, x, s);
+      case 2:  return matvec2d_eye(h, x, s);
+      case 1:  return matvec1d(h, x, s);
+      default: return matvec3d_eye(h, x, s);
     }
   else if (CC == C)
     switch (dim) {
-      case 3:  return invert3d_diag(h, x, s);
-      case 2:  return invert2d_diag(h, x, s);
-      case 1:  return invert1d_diag(h, x, s);
-      default: return invert3d_diag(h, x, s);
+      case 3:  return matvec3d_diag(h, x, s);
+      case 2:  return matvec2d_diag(h, x, s);
+      case 1:  return matvec1d(h, x, s);
+      default: return matvec3d_diag(h, x, s);
     }
   else
     switch (dim) {
-      case 3:  return invert3d_sym(h, x, s);
-      case 2:  return invert2d_sym(h, x, s);
-      case 1:  return invert1d_sym(h, x, s);
-      default: return invert3d_sym(h, x, s);
+      case 3:  return matvec3d_sym(h, x, s);
+      case 2:  return matvec2d_sym(h, x, s);
+      case 1:  return matvec1d(h, x, s);
+      default: return matvec3d_sym(h, x, s);
     }
 #else
     CALL_MEMBER_FN(*this, matvec_)(h, x, s);

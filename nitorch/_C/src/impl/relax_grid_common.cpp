@@ -639,8 +639,6 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax(
       return relax2d_all(x, y, z, n);
     case 3 + BENDING + LAME:
       return relax3d_all(x, y, z, n);
-    case 1 + LAME:
-      return relax1d_bending(x, y, z, n);
     case 1 + BENDING:
       return relax1d_bending(x, y, z, n);
     case 2 + BENDING:
@@ -804,13 +802,33 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert(
 {
 #ifdef __CUDACC__
   if (hes_ptr == 0)
-    invert_none(h, s, v0, v1, v2, w0, w1, w2);
+    switch (dim) {
+      case 3:  return invert3d_none(h, s, v0, v1, v2, w0, w1, w2);
+      case 2:  return invert2d_none(h, s, v0, v1, v2, w0, w1, w2);
+      case 1:  return invert1d_none(h, s, v0, v1, v2, w0, w1, w2);
+      default: return invert3d_none(h, s, v0, v1, v2, w0, w1, w2);
+    }
   else if (CC == 1)
-    invert_eye(h, s, v0, v1, v2, w0, w1, w2);
+    switch (dim) {
+      case 3:  return invert3d_eye(h, s, v0, v1, v2, w0, w1, w2);
+      case 2:  return invert2d_eye(h, s, v0, v1, v2, w0, w1, w2);
+      case 1:  return invert1d(h, s, v0, v1, v2, w0, w1, w2);
+      default: return invert3d_eye(h, s, v0, v1, v2, w0, w1, w2);
+    }
   else if (CC == C)
-    invert_diag(h, s, v0, v1, v2, w0, w1, w2);
+    switch (dim) {
+      case 3:  return invert3d_diag(h, s, v0, v1, v2, w0, w1, w2);
+      case 2:  return invert2d_diag(h, s, v0, v1, v2, w0, w1, w2);
+      case 1:  return invert1d(h, s, v0, v1, v2, w0, w1, w2);
+      default: return invert3d_diag(h, s, v0, v1, v2, w0, w1, w2);
+    }
   else
-    invert_sym(h, s, v0, v1, v2, w0, w1, w2);
+    switch (dim) {
+      case 3:  return invert3d_sym(h, s, v0, v1, v2, w0, w1, w2);
+      case 2:  return invert2d_sym(h, s, v0, v1, v2, w0, w1, w2);
+      case 1:  return invert1d(h, s, v0, v1, v2, w0, w1, w2);
+      default: return invert3d_sym(h, s, v0, v1, v2, w0, w1, w2);;
+    }
 #else
   CALL_MEMBER_FN(*this, invert_)(h, s, v0, v1, v2, w0, w1, w2);
 #endif

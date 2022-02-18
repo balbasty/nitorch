@@ -49,9 +49,9 @@
 
 // maximum number of channels
 // > not used in mode isotropic nearest/linear
-#ifndef NI_MAX_NUM_CHANNELS
-# define NI_MAX_NUM_CHANNELS 1024
-#endif
+// We override the (small) default
+#undef  NI_MAX_NUM_CHANNELS
+#define NI_MAX_NUM_CHANNELS 1024
 
 // This parameter allows for a little bit of tolerance when considering 
 // a coordinate as "out-of-bound" (if !extrapolate)

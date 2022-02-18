@@ -506,6 +506,25 @@ private:
   NI_DEVICE void cholesky(reduce_t a[], reduce_t p[]) const;
   NI_DEVICE void cholesky_solve(const reduce_t a[], const reduce_t p[], reduce_t x[]) const;
 
+  /* ~~~ FOLD NAVIGATORS  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+  // This is super hacky!!!
+  // I make sure that [fx fy fz Xf Yf Zf redblack] are the first fields in 
+  // the object so tht I can easily access them from the adress of the 
+  // englobing object. This is so I can mutate these fields when we change fold
+  // without having to move the whole object again from host to device.
+
+  offset_t fx; // Index of the fold
+  offset_t fy;
+  offset_t fz;
+  offset_t Xf; // Size of the fold
+  offset_t Yf;
+  offset_t Zf;
+  offset_t redblack;  // Index of the fold for checkerboard scheme
+  offset_t bandwidth;
+  offset_t Fx; // Fold window
+  offset_t Fy;
+  offset_t Fz;
+
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;
   uint8_t           mode;
@@ -539,21 +558,6 @@ private:
   reduce_t b110;
   reduce_t b101;
   reduce_t b011;
-
-
-  // ~~~ FOLD NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-  offset_t bandwidth;
-  offset_t Fx; // Fold window
-  offset_t Fy;
-  offset_t Fz;
-  offset_t fx; // Index of the fold
-  offset_t fy;
-  offset_t fz;
-  offset_t Xf; // Size of the fold
-  offset_t Yf;
-  offset_t Zf;
-  offset_t redblack;  // Index of the fold for checkerboard scheme
 
   /* ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
@@ -1321,6 +1325,19 @@ prepare_tensors(const Tensor & gradient,
 
 #ifdef __CUDACC__
 
+template <typename offset_t, typename T, typename Stream>
+void copy_fold_info_to_device(const T & obj, T * ptr, Stream stream)
+{
+  // Super hacky !!!
+  // we copy the first 7 fields of the object to device
+  // [fx fy fz Xf Yf Zf redblack]
+  auto field_ptr_in  = reinterpret_cast<const offset_t *>(&obj);
+  auto field_ptr_out = reinterpret_cast<offset_t *>(ptr);
+  
+  cudaMemcpyAsync(field_ptr_out, field_ptr_in, 7*sizeof(offset_t), 
+                  cudaMemcpyHostToDevice, stream);
+}
+
 // ~~~ CUDA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 NI_HOST Tensor relax_impl(
@@ -1343,12 +1360,12 @@ NI_HOST Tensor relax_impl(
     {
       using Impl = RelaxImpl<scalar_t, int32_t, double>;
       Impl   algo(info);
-      Impl * palgo = static_cast<Impl*>(0);
+      Impl * palgo = alloc_and_copy_to_device(algo, stream);
       for (int32_t i=0; i < nb_iter; ++i)
         for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
             algo.set_fold(fold);
-            if (palgo) cudaFree(palgo);
-            palgo = copy_to_device(algo, stream);
+            //copy_to_device(algo, palgo, stream);
+            copy_fold_info_to_device<int32_t>(algo, palgo, stream);
             relax_kernel
               <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
               (palgo);
@@ -1360,12 +1377,12 @@ NI_HOST Tensor relax_impl(
     {
       using Impl = RelaxImpl<scalar_t, int64_t, double>;
       Impl   algo(info);
-      Impl * palgo = static_cast<Impl*>(0);
+      Impl * palgo = alloc_and_copy_to_device(algo, stream);
       for (int64_t i=0; i < nb_iter; ++i)
         for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
             algo.set_fold(fold);
-            if (palgo) cudaFree(palgo);
-            palgo = copy_to_device(algo, stream);
+            // copy_to_device(algo, palgo, stream);
+            copy_fold_info_to_device<int64_t>(algo, palgo, stream);
             relax_kernel
               <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
               (palgo);

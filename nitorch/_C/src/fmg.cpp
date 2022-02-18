@@ -7,7 +7,6 @@
 #include "regulariser.h"
 #include "relax_grid.h"
 #include "regulariser_grid.h"
-#include <cstdio>
 
 
 using at::Tensor;
@@ -77,6 +76,13 @@ namespace {
     return vector<T>(v.cbegin() + i0, v.cbegin() + i1);
   }
 
+  inline void restrict_vx(double * vx0, double * vx1, 
+                          int64_t * shape0, int64_t * shape1, int64_t dim)
+  {
+    for (int64_t d = 0; d < dim; ++d)
+      vx1[d] = vx0[d] * (static_cast<double>(shape0[d]) / static_cast<double>(shape1[d]));
+  }
+
 #ifdef NI_DEBUG
   inline bool allfinite(const Tensor & x) {
     return at::all(at::isfinite(x)).item<bool>();
@@ -90,6 +96,7 @@ namespace {
     const Tensor & x, 
     const Tensor & w,
     Tensor out[],
+    double vx[],
     RestrictFn  restrict,
     RestrictHFn restrict_h,
     int64_t max_levels)
@@ -120,7 +127,10 @@ namespace {
       // compute shape
       if (restrict_shape(shapes.data() + (n-1)*5, shapes.data() + n*5, dim))
         break;
-      vector<int64_t> shape1 = slice(shapes, n*5, n*5 + dim + 2);
+      auto shape1 = slice(shapes, n*5, n*5 + dim + 2);
+      // voxel size
+      restrict_vx(vx + (n-1)*3, vx + n*3, 
+                  shapes.data() + (n-1)*5 + 2, shapes.data() + n*5 + 2, dim);
       // hessian
       if (has_h) {
         shape1[1] = h.size(1);
@@ -150,45 +160,36 @@ namespace {
                 
 template <typename RelaxFn, typename ProlongFn, typename RestrictFn, typename ResidualsFn>
 inline void do_fmg(Tensor * h, Tensor * g, Tensor * x, Tensor * w, Tensor * r,
-                   int64_t N, int64_t nb_cycles,
-                   RelaxFn relax, ProlongFn prolong, RestrictFn restrict, ResidualsFn residuals) 
+                   double * vx, int64_t N, int64_t nb_cycles,
+                   RelaxFn relax, ProlongFn prolongation, RestrictFn restriction, ResidualsFn residuals) 
 {
-  NI_TRACE("min %f\n", at::min(x[N-1]).item<float>());
+  int64_t dim = h[0].dim() - 2;
+  auto v = [vx, dim](int64_t n) { return vector<double>(vx + 3*n, vx + 3*n + dim); };
 
-  NI_TRACE("init | %2d | %2d | %2d | init     | finite = %d\n", N-1, 0, 0, (int)allfinite(x[N-1]));
-  relax(h[N-1], g[N-1], x[N-1], w[N-1]);
-  NI_TRACE("init | %2d | %2d | %2d | relax    | finite = %d\n", N-1, 0, 0, (int)allfinite(x[N-1]));
+  relax(h[N-1], g[N-1], x[N-1], w[N-1], v(N-1));
 
   for (int64_t n_base = N - 2; n_base >= 0; --n_base)
   {
-    prolong(x[n_base+1], x[n_base]);
-    NI_TRACE("bttm | %2d | %2d | %2d | prolong  | finite = %d\n", n_base, 0, 0, (int)allfinite(x[n_base]));
+    prolongation(x[n_base+1], x[n_base]);
 
     for (int64_t n_cycle = 0; n_cycle < nb_cycles; ++n_cycle) 
     {
 
       for (int64_t n = n_base; n < N-1; ++n) 
       {
-        relax(h[n], g[n], x[n], w[n]);
-        NI_TRACE("up   | %2d | %2d | %2d | relax    | finite = %d\n", n_base, n_cycle, n, (int)allfinite(x[n]));
-        residuals(h[n], g[n], x[n], w[n], r[n]);
-        NI_TRACE("up   | %2d | %2d | %2d | resid    | finite = %d\n", n_base, n_cycle, n, (int)allfinite(r[n]));
-        restrict(r[n], g[n+1]);
-        NI_TRACE("up   | %2d | %2d | %2d | restrict | finite = %d\n", n_base, n_cycle, n, (int)allfinite(g[n+1]));
+        relax(h[n], g[n], x[n], w[n], v(n));
+        residuals(h[n], g[n], x[n], w[n], r[n], v(n));
+        restriction(r[n], g[n+1]);
         x[n+1].zero_();
       }
 
-      relax(h[N-1], g[N-1], x[N-1], w[N-1]);
-      NI_TRACE("top    | %2d | %2d | %2d | relax    | finite = %d\n", n_base, n_cycle, N-1, (int)allfinite(x[N-1]));
+      relax(h[N-1], g[N-1], x[N-1], w[N-1], v(N-1));
 
       for (int64_t n = N-2; n >= n_base; --n) 
       {
-        prolong(x[n+1], r[n]);
-        NI_TRACE("down | %2d | %2d | %2d | prolong  | finite = %d\n", n_base, n_cycle, n, (int)allfinite(r[n]));
+        prolongation(x[n+1], r[n]);
         at::add_out(x[n], x[n], r[n]);
-        NI_TRACE("down | %2d | %2d | %2d | add      | finite = %d\n", n_base, n_cycle, n, (int)allfinite(x[n]));
-        relax(h[n], g[n], x[n], w[n]);
-        NI_TRACE("down | %2d | %2d | %2d | relax    | finite = %d\n", n_base, n_cycle, n, (int)allfinite(x[n]));
+        relax(h[n], g[n], x[n], w[n], v(n));
       }
     }
   }
@@ -237,27 +238,30 @@ Tensor fmg(const Tensor & hessian,
            int64_t nb_iter,
            int64_t max_levels)
 {
+  int64_t dim = gradient.dim() - 2;
 
   /* ---------------- function handles ---------------------- */
-  auto relax_ = [absolute, membrane, bending, bound, voxel_size, nb_iter]
+  auto relax_ = [absolute, membrane, bending, bound, nb_iter]
                 (const Tensor & hessian, const Tensor & gradient,
-                 const Tensor & solution, const Tensor & weight)
+                 const Tensor & solution, const Tensor & weight,
+                 const vector<double> & voxel_size)
   {
     relax(hessian, gradient, solution, weight, 
           absolute, membrane, bending, voxel_size, bound, nb_iter);
   };
   auto prolong_ = [bound](const Tensor & x, const Tensor & o)
   {
-    prolong(x, o, bound);
+    prolongation(x, o, bound);
   };
   auto restrict_ = [bound](const Tensor & x, const Tensor & o)
   {
-    restrict(x, o, bound);
+    restriction(x, o, bound);
   };
-  auto residuals_ = [absolute, membrane, bending, bound, voxel_size]
+  auto residuals_ = [absolute, membrane, bending, bound]
                     (const Tensor & hessian,  const Tensor & gradient,
                      const Tensor & solution, const Tensor & weight,
-                           Tensor & res)
+                           Tensor & res,
+                     const vector<double> & voxel_size)
   {
     residuals(hessian, gradient, solution, weight, res,
               absolute, membrane, bending, voxel_size, bound);
@@ -267,8 +271,13 @@ Tensor fmg(const Tensor & hessian,
   /* ---------------- initialize pyramid -------------------- */
   solution = init_solution(solution, gradient);
   vector<Tensor> tensors(max_levels*5);
+  vector<double> vx(max_levels*3);
+  for (size_t d=0; d<(size_t)dim; ++d) 
+    vx[d] = (voxel_size.size() == 0 ? 1.0 :
+             voxel_size.size() > d  ? voxel_size[d] : vx[d-1]);
+
   int64_t N = prepare_tensors(hessian, gradient, solution, weight, 
-                              tensors.data(), restrict_, restrict_, 
+                              tensors.data(), vx.data(), restrict_, restrict_, 
                               max_levels);
   Tensor * h = tensors.data();
   Tensor * g = h + max_levels;
@@ -277,7 +286,7 @@ Tensor fmg(const Tensor & hessian,
   Tensor * r = w + max_levels;
 
   /* ------------------------ FMG algorithm ------------------ */
-  do_fmg(h, g, x, w, r, N, nb_cycles, 
+  do_fmg(h, g, x, w, r, vx.data(), N, nb_cycles, 
          relax_, prolong_, restrict_, residuals_);
 
   return solution;
@@ -330,9 +339,10 @@ Tensor fmg_grid(const Tensor & hessian,
 
   /* ---------------- function handles ---------------------- */
   auto relax_ = [absolute, membrane, bending, lame_shear, lame_div, 
-                 bound, voxel_size, nb_iter]
+                 bound, nb_iter]
                 (const Tensor & hessian, const Tensor & gradient,
-                 const Tensor & solution, const Tensor & weight)
+                 const Tensor & solution, const Tensor & weight,
+                 const vector<double> & voxel_size)
   {
     relax_grid(hessian, gradient, solution, weight, 
                absolute, membrane, bending, lame_shear, lame_div,
@@ -340,7 +350,7 @@ Tensor fmg_grid(const Tensor & hessian,
   };
   auto prolong_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
-    prolong(x, o, bound);
+    prolongation(x, o, bound);
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
@@ -358,7 +368,7 @@ Tensor fmg_grid(const Tensor & hessian,
   };
   auto prolong_h_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
-    prolong(x, o, bound);
+    prolongation(x, o, bound);
     Tensor view;
     double f0 = 1., f1 = 1., f2 = 1.;
     switch (dim) {  // there are no breaks on purpose
@@ -393,7 +403,7 @@ Tensor fmg_grid(const Tensor & hessian,
   };
   auto restrict_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
-    restrict(x, o, bound);
+    restriction(x, o, bound);
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
@@ -411,7 +421,7 @@ Tensor fmg_grid(const Tensor & hessian,
   };
   auto restrict_h_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
-    restrict(x, o, bound);
+    restriction(x, o, bound);
     Tensor view;
     double f0 = 1., f1 = 1., f2 = 1.;
     switch (dim) {  // there are no breaks on purpose
@@ -445,10 +455,10 @@ Tensor fmg_grid(const Tensor & hessian,
     }
   };
   auto residuals_ = [absolute, membrane, bending, lame_shear, lame_div,
-                     bound, voxel_size]
+                     bound]
                     (const Tensor & hessian,  const Tensor & gradient,
                      const Tensor & solution, const Tensor & weight,
-                           Tensor & res)
+                           Tensor & res, const vector<double> & voxel_size)
   {
     residuals_grid(hessian, gradient, solution, weight, res,
                    absolute, membrane, bending, lame_shear, lame_div, 
@@ -459,8 +469,12 @@ Tensor fmg_grid(const Tensor & hessian,
   /* ---------------- initialize pyramid -------------------- */
   solution = init_solution(solution, gradient);
   vector<Tensor> tensors(max_levels*5);
+  vector<double> vx(max_levels*3);
+  for (size_t d=0; d<(size_t)dim; ++d) 
+    vx[d] = (voxel_size.size() == 0 ? 1.0 :
+             voxel_size.size() > d  ? voxel_size[d] : vx[d-1]);
   auto N = prepare_tensors(hessian, gradient, solution, weight, 
-                           tensors.data(), restrict_, restrict_h_, 
+                           tensors.data(), vx.data(), restrict_, restrict_h_, 
                            max_levels);
   Tensor * h = tensors.data();
   Tensor * g = h + max_levels;
@@ -469,7 +483,7 @@ Tensor fmg_grid(const Tensor & hessian,
   Tensor * r = w + max_levels;
 
   /* ------------------------ FMG algorithm ------------------ */
-  do_fmg(h, g, x, w, r, N, nb_cycles, 
+  do_fmg(h, g, x, w, r, vx.data(), N, nb_cycles, 
          relax_, prolong_, restrict_, residuals_);
 
   return solution;

@@ -12,7 +12,7 @@
       at::Tensor source, at::Tensor target, \
       c10::ArrayRef<double> factor, BoundVectorRef bound,  \
       InterpolationVectorRef interpolation, GridAlignVectorRef mode, \
-      bool do_adjoint); \
+      bool do_adjoint, bool normalize); \
   }
 
 
