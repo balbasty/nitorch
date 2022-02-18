@@ -48,7 +48,7 @@ TV-like penalties by iterative reweighting.
 which took me *a day* to understand. What happened is I store a couple of 
 arrays to store channel-related stuff in my objects. These arrays have a 
 statically fixed size so that they use stack space. This size was arbitrarily 
-fixed to 128 (I think copied form the `sample_grid` code in pytorch,
+fixed to 1024 (I think copied form the `sample_grid` code in pytorch,
 whereas JA sets 128 in SPM). This causes my objects to be way too big 
 and I think it causes weird side effects because (I think...) they take 
 up all the stack. But the stack does not say "out of memory". Amyway,
