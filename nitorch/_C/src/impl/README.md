@@ -6,7 +6,7 @@ core algorithms in a device-independent manner.
 To do so, I make use of a small sets of macros defined in `common.h`, 
 as well as a few `#ifdef __CUDACC__` in the code.
 
-The first algorithms I implemented were the set of interpolation/splatting 
+The first algorithms I implemented were the interpolation/splatting 
 functions (`grid_pull`, `_grid_push`), implemented in `pushpull_common.cpp`.
 I made a few dumb-ish design choices that carry over to the more recently 
 implemented algorithms.
@@ -28,9 +28,9 @@ offset type (GPU code can be faster if navigation uses only 32 bit offsets).
 The second batch of algorithms I implemented relate to the full multigrid solver
 (`relax`, `regulariser`, `resize`). At first, I tried to be smart and used 
 member function pointers instead of if/else cases to dispatch to the correct 
-specialized implementation, but I painfully found out that cuda (and openmp?) 
-deals poorly with member function pointers. I therefore went back to an old 
-switch statement. The other difference is my `Impl` classes grew too
+specialized implementation, but I painfully found out that cuda 
+deals poorly with member function pointers. Now two dispatch systems coexist:
+function pointers on CPU and a switch statement on GPU. The other difference is my `Impl` classes grew too
 large and could not be passed to the kernel by copy anymore (cuda kernels
 cannot take more than 256 bytes of arguments). So now I manually move 
 the object to device and give a pointer to the object to the kernel.
@@ -43,6 +43,11 @@ fields, where the images would use a membrane energy and the smooth fields a
 bending energy. The other difference is that my code accepts channel-specific
 maps to modulate the energies on a voxel-wise manner. I use them to implement 
 TV-like penalties by iterative reweighting.
+
+Lately, I have started templating the reduction type (which used to be 
+double hardcoded). It's still fixed to double at instantiation, but on the 
+GPU we could easily try to use float when the data is float. If it's stable
+enough, it might give some performance gains.
 
 **WARNING:** I had troubles because of a completely unexpected segfault
 which took me *a day* to understand. What happened is I store a couple of 
