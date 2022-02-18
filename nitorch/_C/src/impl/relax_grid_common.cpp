@@ -1482,7 +1482,7 @@ void RelaxGridImpl<scalar_t,offset_t>::solve3d(offset_t x, offset_t y, offset_t 
 // CUDA Kernel
 template <typename scalar_t, typename offset_t>
 C10_LAUNCH_BOUNDS_1(1024)
-__global__ void regulariser_kernel(RelaxGridImpl<scalar_t,offset_t> f) {
+__global__ void relax_kernel(RelaxGridImpl<scalar_t,offset_t> f) {
   f.loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
 #endif
@@ -1547,8 +1547,8 @@ NI_HOST Tensor relax_grid_impl(
     if (info.canUse32BitIndexMath())
     {
       RelaxGridImpl<scalar_t, int32_t> algo(info);
-      for (int64_t i=0; i < nb_iter; ++i)
-        for (offset_t fold = 0; fold < algo.foldcount(); ++fold) {
+      for (int32_t i=0; i < nb_iter; ++i)
+        for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
             algo.set_fold(fold);
             relax_kernel<<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0,
                            at::cuda::getCurrentCUDAStream()>>>(algo);
@@ -1558,7 +1558,7 @@ NI_HOST Tensor relax_grid_impl(
     {
       RelaxGridImpl<scalar_t, int64_t> algo(info);
       for (int64_t i=0; i < nb_iter; ++i)
-        for (offset_t fold = 0; fold < algo.foldcount(); ++fold) {
+        for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
             algo.set_fold(fold);
             relax_kernel<<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0,
                            at::cuda::getCurrentCUDAStream()>>>(algo);

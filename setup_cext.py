@@ -12,29 +12,12 @@ from glob import glob as glob_
 # # code. This trick allows to minimize code duplication.
 # # Finally, libnitorch links to both these sub-libraries and dispatches
 # # according to the Tensor's device type.
-# libnitorch_cpu_sources = ['pushpull_common.cpp', 'wip_regulariser_grid_common.cpp']
-# libnitorch_cuda_sources = ['pushpull_common.cpp', 'wip_regulariser_grid_common.cpp']
-# libnitorch_sources = ['pushpull.cpp', 'wip_regularisers.cpp']
-# ext_spatial_sources = ['spatial.cpp']
-
-# # That's a bit ugly. TODO: use config files?
-# libnitorch_cpu_headers = ['common.h', 'allocator.h',
-#                           'interpolation.h', 'interpolation_common.h',
-#                           'bounds.h', 'bounds_common.h']
-# libnitorch_cuda_headers = ['common.h', 'allocator.h',
-#                            'interpolation.h', 'interpolation_common.h',
-#                            'bounds.h', 'bounds_common.h']
-# libnitorch_headers = ['pushpull_common.h', 'wip_regularisers_common.h',
-#                       'interpolation.h', 'bounds.h']
-# ext_spatial_headers = ['pushpull.h', 'wip_regularisers.h',
-#                        'interpolation.h', 'bounds.h']
 
 libnitorch_cpu_sources = ['src/impl/*.cpp']
 libnitorch_cuda_sources = ['src/impl/*.cpp']
 libnitorch_sources = ['src/*.cpp']
 ext_spatial_sources = ['spatial.cpp']
 
-# That's a bit ugly. TODO: use config files?
 libnitorch_cpu_headers = ['**.h']
 libnitorch_cuda_headers = ['**.h']
 libnitorch_headers = ['**.h']
@@ -489,9 +472,13 @@ def cuda_flags():
     flags = nvcc_flags() + cuda_arch_flags()
     if is_windows():
         for flag in common_flags():
+            # if flag == '-fPIC':
+            #     continue
             flags = ['-Xcompiler', flag] + flags
     else:
         for flag in common_flags():
+            # if flag == '-fPIC':
+            #     continue
             flags += ['--compiler-options', flag]
     return flags
 

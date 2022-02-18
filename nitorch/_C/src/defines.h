@@ -2,8 +2,13 @@
 
 
 #ifndef NI_MAX_NUM_CHANNELS
-# 	define NI_MAX_NUM_CHANNELS 1024
+# 	define NI_MAX_NUM_CHANNELS 128
 #endif
+
+#define CALL_MEMBER_FN(object,ptrToMember) ((object).*(ptrToMember))
+
+#define MIN(a,b) (a < b ? a : b)
+#define MAX(a,b) (a > b ? a : b)
 
 #define CAT(a, ...) PRIMITIVE_CAT(a, __VA_ARGS__)
 #define PRIMITIVE_CAT(a, ...) a ## __VA_ARGS__

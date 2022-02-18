@@ -27,6 +27,10 @@ _all__ = [
     'build_ext',
 ]
 
+# ======================================================================
+# We start with a few exported utilities that inform about the
+# current system (os, location of the cuda install, ...)
+# ======================================================================
 
 def is_windows():
     return sys.platform == 'win32'
@@ -124,7 +128,26 @@ def cudnn_version():
     return tuple(version)
 
 
+# ======================================================================
+# Here, we monkey-patch distutils to:
+# 1) Compile "shared library extensions", which are not python extensions
+#    but dynamic libraries that python extensions will link against.
+#    For this, we define a `SharedLibrary` extension class and write our
+#    a specialized `build_ext` that knows about it.
+# 2) Compile cuda code.
+#    For this, we define and register a new `NVCCompiler` class.
+# 3) Parallelize compilation at the .cpp level.
+#    Python is used to deal with extensions that are made of a single
+#    (or a few) source, so parallelize at the extension level. We're
+#    starting to get a bunch of source files per extension, so we
+#    parallelize at the source level instead.
+#    To do this, we monkey-patch the `compile` method of the compilers.
+#    Currently, we always use as many workers as cpu cores. Maybe we should
+#    hack/add the -j option somehow so that it can be user-defined.
+# ======================================================================
+
 def link_relative(path):
+    # find the correct way to set a relative path to a shared library
     if is_windows():
         return None
     elif is_darwin():
@@ -147,6 +170,10 @@ class SharedLibrary(stExtension):
 
 
 def customize_compiler_for_shared_lib(self):
+    # Monkey patch compilers when they are compiling a shared lib.
+    # - on MacOS, we need the lib to find its dependencies in a relative
+    #   manner.
+
     def _link(objects, libpath, *args, **kwargs):
         def add_install_name(extra_args, libpath):
             has_install_name = any([a.startswith('-install_name')
@@ -170,6 +197,7 @@ def customize_compiler_for_shared_lib(self):
 
 
 def fix_compiler_rpath(self):
+    # On MacOS, the rpath option is a bit different
     if isinstance(self, unixccompiler.UnixCCompiler):
         func_original = self.runtime_library_dir_option
 
@@ -181,6 +209,45 @@ def fix_compiler_rpath(self):
                 return func_original(dir)
 
         self.runtime_library_dir_option = func_fixed
+
+
+def fix_compile_parallel(self):
+    # Patch `compile` so that it parallelizes compilation of cpp sources
+    def compile_parallel(
+            sources, output_dir=None, macros=None,
+            include_dirs=None, debug=0, extra_preargs=None,
+            extra_postargs=None, depends=None):
+        macros, objects, extra_postargs, pp_opts, build = \
+                self._setup_compile(output_dir, macros, include_dirs, sources,
+                                    depends, extra_postargs)
+        cc_args = self._get_cc_args(pp_opts, debug, extra_preargs)
+
+        workers = os.cpu_count()  # may return None
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+        except ImportError:
+            workers = None
+
+        def compile1(obj):
+            try:
+                src, ext = build[obj]
+            except KeyError:
+                return
+            self._compile(obj, src, ext, cc_args, extra_postargs, pp_opts)
+
+        if workers is None:
+            for obj in objects:
+                compile1(obj)
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(compile1, obj) for obj in objects]
+                for fut in futures:
+                    fut.result()
+
+        # Return *all* object filenames, not just the ones we just built.
+        return objects
+
+    self.compile = compile_parallel
 
 
 class build_ext(build_ext_base.build_ext):
@@ -339,6 +406,9 @@ class build_ext(build_ext_base.build_ext):
 
 
 class NVCCompiler(unixccompiler.UnixCCompiler):
+    # Define a cuda compiler
+    # Main difference is it uses `nvcc` instead of `$CC` and
+    # knows about .cu files.
     compiler_type = 'nvcc'
 
     def __init__(self, verbose=0, dry_run=0, force=0):
@@ -355,6 +425,10 @@ class NVCCompiler(unixccompiler.UnixCCompiler):
                              linker_so='{} -shared'.format(nvcc))
         self.src_extensions += ['.cu']
 
+
+# Below stuff is because we need to use our own `make_compiler` function
+# that knows about nvcc. I didn't find a nice way to register the
+# new NVCCompiler into the existing distutils stuff.
 
 def get_compiler_type(compiler, plat=None):
     if plat is None:
@@ -418,5 +492,6 @@ def make_compiler(plat=None, compiler=None, language=None,
                "in module '%s'" % (class_name, module_name))
 
     compiler_object = klass(None, dry_run, force)
+    fix_compile_parallel(compiler_object)
 
     return compiler_object

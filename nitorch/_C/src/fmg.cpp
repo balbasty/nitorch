@@ -360,7 +360,7 @@ Tensor fmg_grid(const Tensor & hessian,
   {
     prolong(x, o, bound);
     Tensor view;
-    double f0, f1, f2;
+    double f0 = 1., f1 = 1., f2 = 1.;
     switch (dim) {  // there are no breaks on purpose
       case 3:
         f2 = static_cast<double>(o.size(4)) / static_cast<double>(x.size(4));
@@ -413,7 +413,7 @@ Tensor fmg_grid(const Tensor & hessian,
   {
     restrict(x, o, bound);
     Tensor view;
-    double f0, f1, f2;
+    double f0 = 1., f1 = 1., f2 = 1.;
     switch (dim) {  // there are no breaks on purpose
       case 3:
         f2 = static_cast<double>(o.size(4)) / static_cast<double>(x.size(4));

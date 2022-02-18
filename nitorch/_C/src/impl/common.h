@@ -47,6 +47,17 @@ namespace ni {
 #   endif
   }
 }
+namespace ni {
+template <typename T, typename Stream>
+NI_HOST NI_INLINE 
+T * copy_to_device(T & obj, Stream stream)
+{
+  T * pointer_device;
+  cudaMalloc((void **)&pointer_device, sizeof(T));
+  cudaMemcpyAsync(pointer_device, &obj, sizeof(T), cudaMemcpyHostToDevice, stream);
+  return pointer_device;
+}
+}
 // === CPU =============================================================
 #else
 // --- DEFINES ---------------------------------------------------------

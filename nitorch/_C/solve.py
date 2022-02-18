@@ -49,6 +49,8 @@ if COMPILED_BACKEND == 'C':
         absolute = vector_to_list(absolute, float) or [0.]
         membrane = vector_to_list(membrane, float) or [0.]
         bending = vector_to_list(bending, float) or [0.]
+        if any(bending) and weight.numel():
+            raise ValueError('RLS only implemented for membrane or absolute')
         return _c_regulariser(input, output, weight, hessian,
                               absolute, membrane, bending, voxel_size, bound)
 
@@ -99,6 +101,8 @@ if COMPILED_BACKEND == 'C':
         lame_shear, lame_div = make_list(lame, 2) or [0., 0.]
         lame_shear = float(lame_shear)
         lame_div = float(lame_div)
+        if (bending or lame_shear or lame_div) and weight.numel():
+            raise ValueError('RLS only implemented for membrane or absolute')
         output = _c_regulariser_grid(input, output, weight, hessian, absolute,
                                      membrane, bending, lame_shear, lame_div,
                                      voxel_size, bound)
@@ -140,9 +144,11 @@ if COMPILED_BACKEND == 'C':
         absolute = vector_to_list(absolute, float) or [0.]
         membrane = vector_to_list(membrane, float) or [0.]
         bending = vector_to_list(bending, float) or [0.]
+        if any(bending) and weight.numel():
+            raise ValueError('RLS only implemented for membrane or absolute')
         return _c_relax(hessian, gradient, output, weight,
                         absolute, membrane, bending, voxel_size,
-                        bound, nb_iter)
+                        bound, int(nb_iter))
 
     def c_fmg(hessian, gradient, weight=None,
               absolute=0, membrane=0, bending=0,
@@ -183,6 +189,8 @@ if COMPILED_BACKEND == 'C':
         absolute = vector_to_list(absolute, float) or [0.]
         membrane = vector_to_list(membrane, float) or [0.]
         bending = vector_to_list(bending, float) or [0.]
+        if any(bending) and weight.numel():
+            raise ValueError('RLS only implemented for membrane or absolute')
         return _c_fmg(hessian, gradient, output, weight,
                       absolute, membrane, bending, voxel_size,
                       bound, int(nb_iter), int(nb_cycles), int(max_levels))
@@ -237,6 +245,8 @@ if COMPILED_BACKEND == 'C':
         lame_shear, lame_div = make_list(lame, 2) or [0., 0.]
         lame_shear = float(lame_shear)
         lame_div = float(lame_div)
+        if (bending or lame_shear or lame_div) and weight.numel():
+            raise ValueError('RLS only implemented for membrane or absolute')
         output = _c_fmg(hessian, gradient, output, weight, absolute,
                         membrane, bending, lame_shear, lame_div, voxel_size,
                         bound, int(nb_iter), int(nb_cycles), int(max_levels))

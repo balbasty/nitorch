@@ -1,12 +1,11 @@
-#include "common.h"
-#include "bounds_common.h"
-#include "interpolation_common.h"
-#include "../grid_align.h"
-#include "allocator.h"
-#include <ATen/ATen.h>
-#include <tuple>
-#include <limits>
-//#include <cstdio>
+#include "common.h"                // write C++/CUDA compatible code
+#include "../defines.h"            // useful macros
+#include "../grid_align.h"         // enum type for align mode
+#include "bounds_common.h"         // boundary conditions + enum
+#include "interpolation_common.h"  // interpolation weights + enum
+#include "allocator.h"             // base class handling offset sizes
+#include <ATen/ATen.h>             // tensors
+#include <tuple>                   // needed by prepare_tensors
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // CPU/GPU -specific parameters
@@ -25,17 +24,6 @@
 #endif
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// maximum number of channels
-// > not used in mode isotropic nearest/linear
-#ifndef NI_MAX_NUM_CHANNELS
-# define NI_MAX_NUM_CHANNELS 1024
-#endif
-
-#define CALL_MEMBER_FN(object,ptrToMember)  ((object).*(ptrToMember))
-
-#define MIN(a,b) (a < b ? a : b)
-#define MAX(a,b) (a > b ? a : b)
-
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
   ONAME##0(INAME.size() > 0 ? INAME[0] : DEFAULT),  \
   ONAME##1(INAME.size() > 1 ? INAME[1] :            \
@@ -44,15 +32,10 @@
            INAME.size() > 1 ? INAME[1] :            \
            INAME.size() > 0 ? INAME[0] : DEFAULT)
 
-// This parameter allows for a little bit of tolerance when considering 
-// a coordinate as "out-of-bound" (if !extrapolate)
-#define TINY 5e-2
-
 using at::Tensor;
 using at::TensorOptions;
 using c10::IntArrayRef;
 using c10::ArrayRef;
-using std::vector;
 
 namespace ni {
 NI_NAMESPACE_DEVICE { // cpu / cuda / ...
@@ -127,7 +110,6 @@ private:
   bool              do_adjoint;     // push instead of pull
 
   // ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
 
 #define DECLARE_ALLOC_INFO_5D(NAME)  \
   int64_t NAME##_X;                 \
@@ -241,12 +223,18 @@ public:
     INIT_ALLOC_INFO_5D(src),
     INIT_ALLOC_INFO_5D(tgt)
   {
-    set_resize();
+#if __CUDACC__
+      // Cannot work with member function pointers
+      // -> we dispatch on device
+#else
+      set_resize();
+#endif
   }
 
+#if __CUDACC__
+#else
   NI_HOST NI_INLINE void set_resize() 
   {
-
     if (do_adjoint) {
       if (dim == 1) {
         if (iso && interpolation0 == InterpolationType::Nearest)
@@ -262,15 +250,14 @@ public:
           resize_ = &Self::restrict2d_linear;
         else
           resize_ = &Self::restrict2d;
-      } else if (dim == 3) {
+      } else {
         if (iso && interpolation0 == InterpolationType::Nearest)
           resize_ = &Self::restrict3d_nearest;
         else if (iso && interpolation0 == InterpolationType::Linear)
           resize_ = &Self::restrict3d_linear;
         else
           resize_ = &Self::restrict3d;
-      } else
-          throw std::logic_error("Resize only implemented for dimension 1/2/3.");
+      }
     } else {
       if (dim == 1) {
         if (iso && interpolation0 == InterpolationType::Nearest)
@@ -286,17 +273,17 @@ public:
           resize_ = &Self::resize2d_linear;
         else
           resize_ = &Self::resize2d;
-      } else if (dim == 3) {
+      } else {
         if (iso && interpolation0 == InterpolationType::Nearest)
           resize_ = &Self::resize3d_nearest;
         else if (iso && interpolation0 == InterpolationType::Linear)
           resize_ = &Self::resize3d_linear;
         else
           resize_ = &Self::resize3d;
-      } else
-          throw std::logic_error("Resize only implemented for dimension 1/2/3.");
+      }
     }
   }
+#endif
 
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -313,37 +300,6 @@ public:
   NI_HOST NI_DEVICE int64_t voxcount() const { 
     return N * tgt_X * tgt_Y * tgt_Z;
   }
-
-#if 0
-  NI_HOST NI_DEVICE void printInfo() const {
-    printf("dim: %d\n", dim);
-    printf("bound:         [%d %d %d]\n", static_cast<int>(bound0), 
-      static_cast<int>(bound1), static_cast<int>(bound2));
-    printf("interpolation: [%d %d %d]\n", static_cast<int>(interpolation0), 
-      static_cast<int>(interpolation1), static_cast<int>(interpolation2));
-    printf("shift:         [%f %f %f]\n", static_cast<float>(shift0), 
-      static_cast<float>(shift1), static_cast<float>(shift2));
-    printf("scale:         [%f %f %f]\n", static_cast<float>(scale0), 
-      static_cast<float>(scale1), static_cast<float>(scale2));
-    printf("src:  [%d %d %d]\n", src_Z, src_Y, src_X);
-    printf("tgt:  [%d %d %d]\n", tgt_Z, tgt_Y, tgt_X);
-    printf("N: %d\n", N);
-    printf("C: %d\n", C);
-    printf("src  -> %lu\n", reinterpret_cast<std::uintptr_t>(src_ptr));
-    printf("tgt  -> %lu\n", reinterpret_cast<std::uintptr_t>(tgt_ptr));
-  }
-
-
-  NI_HOST NI_DEVICE void printInfo1(offset_t  w, offset_t  h, offset_t  d,
-                                    scalar_t  x, scalar_t  y, scalar_t  z,
-                                    offset_t iw, offset_t ih, offset_t id) const {
-    printf("src:  [%d %d %d]\n", w, h, d);
-    printf("tgt:  [%f %f %f]\n", w, y, z);
-    printf("tgt:  [%d %d %d]\n", iw, ih, id);
-    printf("src  -> %lu\n", reinterpret_cast<std::uintptr_t>(src_ptr));
-    printf("tgt  -> %lu\n", reinterpret_cast<std::uintptr_t>(tgt_ptr));
-  }
-#endif
 
 private:
 
@@ -381,7 +337,7 @@ private:
   DECLARE_RESIZE(restrict3d_linear)
 
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  int               dim;            // dimensionality (2 or 3)
+  int               dim;            // dimensionality (1 or 2 or 3)
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
@@ -396,7 +352,11 @@ private:
   double            scale2;         // scale               // z|D
   bool              iso;            // isotropic interpolation?
   bool              do_adjoint;     // push instead of pull
-  ResizeFn          resize_;        // Pointer to relax function
+#if __CUDACC__
+  // We cannot work with member function pointers
+#else
+  ResizeFn          resize_;        // Pointer to resize function
+#endif
 
   // ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 #define DECLARE_STRIDE_INFO_5D(NAME) \
@@ -423,7 +383,86 @@ private:
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::resize(
     offset_t x, offset_t y, offset_t z, offset_t n) const {
+#if __CUDACC__
+    // dispatch
+#   define ADJ 4
+#   define ISO 8
+#   define NN  InterpolationType::Nearest
+#   define LIN InterpolationType::Linear
+    uint8_t mode = dim + 4 * do_adjoint + 8 * iso;
+    switch (mode) {
+      case 1:
+        return resize1d(x, y, z, n);
+      case 2:
+        return resize2d(x, y, z, n);
+      case 3:
+        return resize3d(x, y, z, n);
+      case 1+ADJ:
+        return restrict1d(x, y, z, n); 
+      case 2+ADJ:
+        return restrict2d(x, y, z, n);
+      case 3+ADJ:
+        return restrict3d(x, y, z, n);
+      case 1+ISO:
+        switch (interpolation0) {
+          case NN:
+            return resize1d_nearest(x, y, z, n);
+          case LIN:
+            return resize1d_linear(x, y, z, n);
+          default:
+            return resize1d(x, y, z, n);
+        }
+      case 2+ISO:
+        switch (interpolation0) {
+          case NN:
+            return resize2d_nearest(x, y, z, n);
+          case LIN:
+            return resize2d_linear(x, y, z, n);
+          default:
+            return resize2d(x, y, z, n);
+        }
+      case 3+ISO:
+        switch (interpolation0) {
+          case NN:
+            return resize3d_nearest(x, y, z, n);
+          case LIN:
+            return resize3d_linear(x, y, z, n);
+          default:
+            return resize3d(x, y, z, n);
+        }
+      case 1+ADJ+ISO:
+        switch (interpolation0) {
+          case NN:
+            return restrict1d_nearest(x, y, z, n);
+          case LIN:
+            return restrict1d_linear(x, y, z, n);
+          default:
+            return restrict1d(x, y, z, n);
+        }
+      case 2+ADJ+ISO:
+        switch (interpolation0) {
+          case NN:
+            return restrict2d_nearest(x, y, z, n);
+          case LIN:
+            return restrict2d_linear(x, y, z, n);
+          default:
+            return restrict2d(x, y, z, n);
+        }
+      case 3+ADJ+ISO: 
+        switch (interpolation0) {
+          case NN:
+            return restrict3d_nearest(x, y, z, n);
+          case LIN:
+            return restrict3d_linear(x, y, z, n);
+          default:
+            return restrict3d(x, y, z, n);
+        }
+      default:
+        return resize3d(x, y, z, n);
+    }
+#else
     CALL_MEMBER_FN(*this, resize_)(x, y, z, n);
+#endif
 }
 
 #if __CUDACC__
@@ -435,7 +474,7 @@ void ResizeImpl<scalar_t,offset_t>::loop(
   offset_t index    = blockIdx * blockDim + threadIdx;
   offset_t tgt_YZ   =   tgt_Z * tgt_Y;
   offset_t tgt_XYZ  =  tgt_YZ * tgt_X;
-  offset_t tgt_NXYZ = tgt_XYZ * tgt_N;
+  offset_t tgt_NXYZ = tgt_XYZ * N;
   offset_t n, w, h, d;
   for (offset_t i=index; index < tgt_NXYZ; index += blockDim*gridDim, i=index)
   {
@@ -487,9 +526,9 @@ void ResizeImpl<scalar_t,offset_t>::loop() const
   }
 
   // Parallelize across voxels   
-  offset_t tgt_NXYZ = tgt_Z * tgt_Y * tgt_X * N;
-  offset_t tgt_XYZ  = tgt_Z * tgt_Y * tgt_X;
-  offset_t tgt_YZ   = tgt_Z * tgt_Y;
+  offset_t tgt_YZ   =   tgt_Z * tgt_Y;
+  offset_t tgt_XYZ  =  tgt_YZ * tgt_X;
+  offset_t tgt_NXYZ = tgt_XYZ * N;
   at::parallel_for(0, tgt_NXYZ, GRAIN_SIZE,
                    [&](offset_t start, offset_t end) {
     offset_t n, w, h, d;
@@ -808,8 +847,8 @@ void ResizeImpl<scalar_t,offset_t>::restrict1d_nearest(offset_t w, offset_t h, o
 // CUDA Kernel
 template <typename scalar_t, typename offset_t>
 C10_LAUNCH_BOUNDS_1(1024)
-__global__ void resize_kernel(ResizeImpl<scalar_t,offset_t> f) {
-  f.loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
+__global__ void resize_kernel(ResizeImpl<scalar_t,offset_t> * f) {
+  f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
 #endif
 
@@ -825,10 +864,14 @@ check_same_nonspatial(Tensor source, Tensor target)
                          (source.size(0) == target.size(0))  &&
                          (source.size(1) == target.size(1));
   if (!same_nonspatial) {
-    std::string const msg = "Source and target should have the same batch and channel shapes but found dims "
-                          + std::to_string(source.dim()) + " vs " + std::to_string(target.dim()) + " and shapes ["
-                          + std::to_string(source.size(0)) + " " + std::to_string(source.size(1)) + "] vs ["
-                          + std::to_string(target.size(0)) + " " + std::to_string(target.size(1)) + "].";
+    std::string const msg = "Source and target should have the same "
+                            "batch and channel shapes but found dims "
+                          + std::to_string(source.dim()) + " vs " 
+                          + std::to_string(target.dim()) + " and shapes ["
+                          + std::to_string(source.size(0)) + " " 
+                          + std::to_string(source.size(1)) + "] vs ["
+                          + std::to_string(target.size(0)) + " " 
+                          + std::to_string(target.size(1)) + "].";
     throw std::invalid_argument(msg);
   }
 }
@@ -968,19 +1011,22 @@ Tensor resize_impl(
 
   ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint);
   info.ioset(source, target);
+  auto stream = at::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(source.scalar_type(), "resize_impl", [&] {
     if (info.canUse32BitIndexMath())
     {
       ResizeImpl<scalar_t, int32_t> algo(info);
-      resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
-                        at::cuda::getCurrentCUDAStream()>>>(algo);
+      auto palgo = copy_to_device(algo, stream);
+      resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
+      cudaFree(palgo);
     }
     else
     {
       ResizeImpl<scalar_t, int64_t> algo(info);
-      resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
-                        at::cuda::getCurrentCUDAStream()>>>(algo);
+      auto palgo = copy_to_device(algo, stream);
+      resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
+      cudaFree(palgo);
     }
   });
   return do_adjoint ? source : target;

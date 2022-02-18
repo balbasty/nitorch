@@ -1,11 +1,9 @@
-#include "common.h"
-#include "bounds_common.h"
-#include "allocator.h"
-#include "utils.h"
-#include "../defines.h"
-#include <ATen/ATen.h>
-#include <limits>
-#include <vector>
+#include "common.h"                // write C++/CUDA compatible code
+#include "../defines.h"            // useful macros
+#include "bounds_common.h"         // boundary conditions + enum
+#include "allocator.h"             // base class handling offset sizes
+// #include "utils.h"                 // unrolled for loop.h"
+#include <ATen/ATen.h>             // tensors
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // CPU/GPU -specific parameters
@@ -27,14 +25,6 @@
 using at::Tensor;
 using c10::IntArrayRef;
 using c10::ArrayRef;
-using std::vector;
-
-// Required for stability. Value is currently about 1+8*eps
-#define OnePlusTiny 1.000001
-
-// Macro to cleanly invoke a pointer to member function
-#define CALL_MEMBER_FN(object,ptrToMember)  ((object).*(ptrToMember))
-#define MIN(a,b) (a < b ? a : b)
 
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
   ONAME##0(INAME.size() > 0 ? INAME[0] : DEFAULT),  \
@@ -57,8 +47,6 @@ namespace { // anonymous namespace > everything inside has internal linkage
 /* ========================================================================== */
 class RegulariserAllocator: public Allocator {
 public:
-
-  static constexpr int64_t max_int32 = std::numeric_limits<int32_t>::max();
 
   /* ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
@@ -222,9 +210,10 @@ void RegulariserAllocator::init_hessian(const Tensor& hessian)
 /*                                                                            */
 /* ========================================================================== */
 
-NI_HOST NI_INLINE bool any(const ArrayRef<double> & v) {
-  for (auto it = v.cbegin(); it < v.cend(); ++it) {
-    if (*it) return true;
+template <typename offset_t>
+NI_HOST NI_INLINE bool any(const double * v, offset_t C) {
+  for (offset_t c = 0; c < C; ++c, ++v) {
+    if (*v) return true;
   }
   return false;
 }
@@ -240,6 +229,7 @@ public:
 
   /* ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   RegulariserImpl(const RegulariserAllocator & info):
+    dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
     N(static_cast<offset_t>(info.N)),
     C(static_cast<offset_t>(info.C)),
@@ -263,8 +253,10 @@ public:
   {
     set_factors(info.absolute, info.membrane, info.bending);
     set_kernel(info.dim, info.vx0, info.vx1, info.vx2);
+#ifndef __CUDACC__
     set_vel2mom(info.dim);
     set_matvec();
+#endif
   }
 
   NI_HOST NI_INLINE void set_factors(ArrayRef<double> a, ArrayRef<double> m, ArrayRef<double> b)
@@ -281,6 +273,9 @@ public:
                      static_cast<offset_t>(b.size()) > c ? b[c]  
                                                          : bending[c-1]);
     }
+    has_absolute = any(absolute, C);
+    has_membrane = any(membrane, C);
+    has_bending  = any(bending, C);
   } 
 
   NI_HOST NI_INLINE void set_kernel(int64_t dim, double vx0, double vx1, double vx2) 
@@ -299,11 +294,10 @@ public:
     b011 = 2.0*vx1*vx2;
   }
 
+#ifdef __CUDACC__
+#else
   NI_HOST NI_INLINE void set_vel2mom(int64_t dim) 
   {
-    bool has_bending  = any(bending);
-    bool has_membrane = any(membrane);
-    bool has_absolute = any(absolute);
     if (wgt_ptr)
     {
       if (has_bending)
@@ -376,10 +370,11 @@ public:
     else
       matvec_ = &Self::matvec_none;
   }
+#endif
 
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-#if __CUDACC__
+#ifdef __CUDACC__
   // Loop over voxels that belong to one CUDA block
   // This function is called by the CUDA kernel
   NI_DEVICE void loop(int threadIdx, int blockIdx,
@@ -426,15 +421,22 @@ private:
     scalar_t *, const scalar_t *, const scalar_t *) const;
 
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
+  int               dim;            // dimensionality (1 or 2 or 3)
   BoundType         bound0;         // boundary condition  // x|W
   BoundType         bound1;         // boundary condition  // y|H
   BoundType         bound2;         // boundary condition  // z|D
-  double            absolute[NI_MAX_NUM_CHANNELS];       // penalty on absolute values
-  double            membrane[NI_MAX_NUM_CHANNELS];       // penalty on first derivatives
-  double            bending[NI_MAX_NUM_CHANNELS];        // penalty on second derivatives
+  double            absolute[NI_MAX_NUM_CHANNELS]; // penalty on absolute values
+  double            membrane[NI_MAX_NUM_CHANNELS]; // penalty on first derivatives
+  double            bending[NI_MAX_NUM_CHANNELS];  // penalty on second derivatives
+
+#ifndef __CUDACC__ // We cannot work with member function pointers in cuda
   Vel2MomFn         vel2mom;        // Pointer to vel2mom function
   MatVecFn          matvec_;        // Pointer to matvec function
+#endif
 
+  bool has_absolute;
+  bool has_membrane;
+  bool has_bending;
   double m100;
   double m010;
   double m001;
@@ -450,7 +452,7 @@ private:
 
   /* ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
-#define DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(NAME)   \
+#define DECLARE_STRIDE_INFO_5D(NAME)   \
   offset_t NAME##_sN;               \
   offset_t NAME##_sC;               \
   offset_t NAME##_sX;               \
@@ -464,10 +466,10 @@ private:
   offset_t X;
   offset_t Y;
   offset_t Z;
-  DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(inp)
-  DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(wgt)
-  DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(out)
-  DECLARE_ALLOC_INFO_5D_STRIDE_INFO_5D(hes)
+  DECLARE_STRIDE_INFO_5D(inp)
+  DECLARE_STRIDE_INFO_5D(wgt)
+  DECLARE_STRIDE_INFO_5D(out)
+  DECLARE_STRIDE_INFO_5D(hes)
 };
 
 
@@ -478,11 +480,56 @@ private:
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RegulariserImpl<scalar_t,offset_t>::dispatch(
     offset_t x, offset_t y, offset_t z, offset_t n) const {
+#ifdef __CUDACC__
+    // dispatch
+#   define ABSOLUTE 4
+#   define MEMBRANE 8
+#   define BENDING  12
+#   define RLS      16
+    uint8_t mode = dim 
+                 + (has_bending ? 12 : has_membrane ? 8 : has_absolute ? 4 : 0)
+                 + 16 * (wgt_ptr != 0);
+    switch (mode) {
+      case 1 + MEMBRANE + RLS:
+        return vel2mom1d_rls_membrane(x, y, z, n);
+      case 2 + MEMBRANE + RLS:
+        return vel2mom2d_rls_membrane(x, y, z, n);
+      case 3 + MEMBRANE + RLS:
+        return vel2mom3d_rls_membrane(x, y, z, n);
+      case 1 + ABSOLUTE + RLS:
+        return vel2mom1d_rls_absolute(x, y, z, n);
+      case 2 + ABSOLUTE + RLS:
+        return vel2mom2d_rls_absolute(x, y, z, n);
+      case 3 + ABSOLUTE + RLS:
+        return vel2mom3d_rls_absolute(x, y, z, n);
+      case 1 + BENDING:
+        return vel2mom1d_bending(x, y, z, n);
+      case 2 + BENDING:
+        return vel2mom2d_bending(x, y, z, n);
+      case 3 + BENDING:
+        return vel2mom3d_bending(x, y, z, n);
+      case 1 + MEMBRANE:
+        return vel2mom1d_membrane(x, y, z, n);
+      case 2 + MEMBRANE:
+        return vel2mom2d_membrane(x, y, z, n);
+      case 3 + MEMBRANE:
+        return vel2mom3d_membrane(x, y, z, n);
+      case 1 + ABSOLUTE:
+        return vel2mom1d_absolute(x, y, z, n);
+      case 2 + ABSOLUTE:
+        return vel2mom2d_absolute(x, y, z, n);
+      case 3 + ABSOLUTE:
+        return vel2mom3d_absolute(x, y, z, n);
+      default:
+        return zeros(x, y, z, n);
+    }
+#else
     CALL_MEMBER_FN(*this, vel2mom)(x, y, z, n);
+#endif
 }
 
 
-#if __CUDACC__
+#ifdef __CUDACC__
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void RegulariserImpl<scalar_t,offset_t>::loop(
@@ -606,7 +653,16 @@ template <typename scalar_t, typename offset_t> NI_DEVICE
 void RegulariserImpl<scalar_t,offset_t>::matvec(
     scalar_t * x, const scalar_t * h, const scalar_t * y) const {
   if (!hes_ptr) return;
+#ifdef __CUDACC__
+  if (CC == 1)
+    return matvec_eye(x, h, y);
+  else if (CC == C)
+    return matvec_diag(x, h, y);
+  else
+    return matvec_sym(x, h, y);
+#else
   CALL_MEMBER_FN(*this, matvec_)(x, h, y);
+#endif
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
@@ -973,14 +1029,17 @@ void RegulariserImpl<scalar_t,offset_t>::zeros(offset_t x, offset_t y, offset_t 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 #ifdef __CUDACC__
+
 // CUDA Kernel
+
 template <typename scalar_t, typename offset_t>
 C10_LAUNCH_BOUNDS_1(1024)
-__global__ void regulariser_kernel(RegulariserImpl<scalar_t,offset_t> f) {
-  f.loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
+__global__ void regulariser_kernel(RegulariserImpl<scalar_t, offset_t> * f)
+{
+  f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
-#endif
 
+#endif
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                    ALLOCATE OUTPUT // RESHAPE WEIGHT
@@ -1026,7 +1085,6 @@ prepare_tensors(const Tensor & input, Tensor output, Tensor weight, Tensor hessi
 
 // ~~~ CUDA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Two arguments (input, weight)
 NI_HOST Tensor regulariser_impl(
   const Tensor& input, Tensor output, Tensor weight, Tensor hessian, 
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending,
@@ -1039,19 +1097,26 @@ NI_HOST Tensor regulariser_impl(
 
   RegulariserAllocator info(input.dim()-2, absolute, membrane, bending, voxel_size, bound);
   info.ioset(input, output, weight, hessian);
+  auto stream = at::cuda::getCurrentCUDAStream();
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(input.scalar_type(), "regulariser_impl", [&] {
     if (info.canUse32BitIndexMath())
     {
       RegulariserImpl<scalar_t, int32_t> algo(info);
-      regulariser_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
-                           at::cuda::getCurrentCUDAStream()>>>(algo);
+      auto palgo = copy_to_device(algo, stream);
+      regulariser_kernel
+          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
+          (palgo);
+      cudaFree(palgo);
     }
     else
     {
       RegulariserImpl<scalar_t, int64_t> algo(info);
-      regulariser_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
-                           at::cuda::getCurrentCUDAStream()>>>(algo);
+      auto palgo = copy_to_device(algo, stream);
+      regulariser_kernel
+          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
+          (palgo);
+      cudaFree(palgo);
     }
   });
   return output;
@@ -1061,7 +1126,6 @@ NI_HOST Tensor regulariser_impl(
 
 // ~~~ CPU ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Two arguments (input, weight)
 NI_HOST Tensor regulariser_impl(
   const Tensor& input, Tensor output, Tensor weight, Tensor hessian, 
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending,

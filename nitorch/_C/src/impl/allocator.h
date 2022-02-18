@@ -1,6 +1,6 @@
 #pragma once
 #include <ATen/ATen.h>
-
+#include <limits>
 
 class Allocator {
 protected:
