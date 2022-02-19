@@ -26,6 +26,9 @@ using at::Tensor;
 using c10::IntArrayRef;
 using c10::ArrayRef;
 
+// Required for stability. Value is currently about 1+8*eps
+#define OnePlusTiny 1.000001
+
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
   ONAME##0(INAME.size() > 0 ? INAME[0] : DEFAULT),  \
   ONAME##1(INAME.size() > 1 ? INAME[1] :            \
@@ -288,11 +291,11 @@ public:
   NI_HOST NI_INLINE void set_kernel(double vx0, double vx1, double vx2) 
   {
     for (offset_t c = 0; c < C; ++c)
-      w000[c] = static_cast<reduce_t>(
+      w000[c] = static_cast<reduce_t>((
                     bending[c]  * (6.0*(vx0*vx0+vx1*vx1+vx2*vx2) + 
                                    8.0*(vx0*vx1+vx0*vx2+vx1*vx2))
                   + membrane[c] * (2.0*(vx0+vx1+vx2))
-                  + absolute[c]);
+                  + absolute[c]) * OnePlusTiny);
 
     m100 = static_cast<reduce_t>(-vx0);
     m010 = static_cast<reduce_t>(-vx1);
@@ -735,10 +738,9 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::loop_band()
   for (offset_t fold = 0; fold < Fx*Fy*Fz; ++fold) {
     // Index of the fold
     set_fold(fold);
-    offset_t YZf   =   Zf * Yf;
-    offset_t XYZf  =  YZf * Xf;
+    offset_t   YZf =   Zf * Yf;
+    offset_t  XYZf =  YZf * Xf;
     offset_t NXYZf = XYZf * N;
-
     at::parallel_for(0, NXYZf, GRAIN_SIZE, [&](offset_t start, offset_t end) {
       offset_t n, x, y, z;
       for (offset_t i = start; i < end; ++i) {
@@ -1085,11 +1087,11 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_bending(
         + w001*(get(sol, z0,    sz0)     + get(sol, z1,    sz1))
         + bb * (
             b110*(get(sol, x0+y0, sx0*sy0) + get(sol, x1+y0, sx1*sy0) +
-                  get(sol, x0+y1, sx1*sy1) + get(sol, x1+y1, sx1*sy1))
+                  get(sol, x0+y1, sx0*sy1) + get(sol, x1+y1, sx1*sy1))
           + b101*(get(sol, x0+z0, sx0*sz0) + get(sol, x1+z0, sx1*sz0) +
-                  get(sol, x0+z1, sx1*sz1) + get(sol, x1+z1, sx1*sz1))
+                  get(sol, x0+z1, sx0*sz1) + get(sol, x1+z1, sx1*sz1))
           + b011*(get(sol, y0+z0, sy0*sz0) + get(sol, y1+z0, sy1*sz0) +
-                  get(sol, y0+z1, sy1*sz1) + get(sol, y1+z1, sy1*sz1))
+                  get(sol, y0+z1, sy0*sz1) + get(sol, y1+z1, sy1*sz1))
           + b200*(get(sol, x00,   sx00)    + get(sol, x11,   sx11))
           + b020*(get(sol, y00,   sy00)    + get(sol, y11,   sy11))
           + b002*(get(sol, z00,   sz00)    + get(sol, z11,   sz11)) )

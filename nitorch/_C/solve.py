@@ -193,7 +193,7 @@ if COMPILED_BACKEND == 'C':
             raise ValueError('RLS only implemented for membrane or absolute')
         return _c_fmg(hessian, gradient, output, weight,
                       absolute, membrane, bending, voxel_size,
-                      bound, int(nb_iter), int(nb_cycles), int(max_levels))
+                      bound, int(nb_cycles), int(nb_iter), int(max_levels))
 
     def c_fmg_grid(hessian, gradient, weight=None,
                   absolute=0, membrane=0, bending=0, lame=0,
@@ -249,5 +249,5 @@ if COMPILED_BACKEND == 'C':
             raise ValueError('RLS only implemented for membrane or absolute')
         output = _c_fmg(hessian, gradient, output, weight, absolute,
                         membrane, bending, lame_shear, lame_div, voxel_size,
-                        bound, int(nb_iter), int(nb_cycles), int(max_levels))
+                        bound, int(nb_cycles), int(nb_iter), int(max_levels))
         return movedim(output, 1, -1)

@@ -812,11 +812,11 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
         + w001*(get(inp, z0,    sz0)     + get(inp, z1,    sz1))
         + bb * (
             b110*(get(inp, x0+y0, sx0*sy0) + get(inp, x1+y0, sx1*sy0) +
-                  get(inp, x0+y1, sx1*sy1) + get(inp, x1+y1, sx1*sy1))
+                  get(inp, x0+y1, sx0*sy1) + get(inp, x1+y1, sx1*sy1))
           + b101*(get(inp, x0+z0, sx0*sz0) + get(inp, x1+z0, sx1*sz0) +
-                  get(inp, x0+z1, sx1*sz1) + get(inp, x1+z1, sx1*sz1))
+                  get(inp, x0+z1, sx0*sz1) + get(inp, x1+z1, sx1*sz1))
           + b011*(get(inp, y0+z0, sy0*sz0) + get(inp, y1+z0, sy1*sz0) +
-                  get(inp, y0+z1, sy1*sz1) + get(inp, y1+z1, sy1*sz1))
+                  get(inp, y0+z1, sy0*sz1) + get(inp, y1+z1, sy1*sz1))
           + b200*(get(inp, x00,   sx00)    + get(inp, x11,   sx11))
           + b020*(get(inp, y00,   sy00)    + get(inp, y11,   sy11))
           + b002*(get(inp, z00,   sz00)    + get(inp, z11,   sz11)) )
