@@ -664,7 +664,7 @@ public:
 
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#if __CUDACC__
+#ifdef __CUDACC__
   // Loop over voxels that belong to one CUDA block
   // This function is called by the CUDA kernel
   NI_DEVICE void loop(int threadIdx, int blockIdx, 
@@ -797,7 +797,7 @@ private:
 //                             LOOP
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#if __CUDACC__
+#ifdef __CUDACC__
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>::loop(

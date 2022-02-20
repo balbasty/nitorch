@@ -16,7 +16,8 @@ at::Tensor fmg(
   const std::vector<BoundType> & bound      = std::vector<BoundType>(),
   int64_t nb_cycles  = 2,
   int64_t nb_iter    = 2,
-  int64_t max_levels = 16);
+  int64_t max_levels = 16,
+  bool    use_cg     = false);
 
 at::Tensor fmg_grid(
   const at::Tensor             & hessian, 

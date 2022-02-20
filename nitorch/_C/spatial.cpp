@@ -5,6 +5,7 @@
 #include "src/relax.h"
 #include "src/relax_grid.h"
 #include "src/resize.h"
+#include "src/pcg.h"
 #include "src/fmg.h"
 
 using namespace ni;
@@ -98,4 +99,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("restriction_backward",      &ni::restriction_backward,       "restriction backward");
   m.def("fmg",                       &ni::fmg,                        "Field Full MultiGrid");
   m.def("fmg_grid",                  &ni::fmg_grid,                   "Grid Full MultiGrid");
+  m.def("pcg",                       &ni::pcg,                        "Field Preconditioned Conjugate Gradient");
 }

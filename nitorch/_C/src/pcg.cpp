@@ -2,14 +2,13 @@
 #include <vector>
 #include "defines.h"
 #include "bounds.h"
-#include "resize.h"
-#include "relax.h"
-#include "relax_grid.h"
+#include "precond.h"
 #include "regulariser.h"
 #include "regulariser_grid.h"
 
 using c10::IntArrayRef;
 using at::Tensor;
+using std::vector;
 
 namespace ni {
 
@@ -27,9 +26,9 @@ namespace {
     int64_t dim = a.dim() - 2;
     a = a.reshape({a.size(0), 1, -1});
     b = b.reshape({b.size(0), -1, 1});
-    a = at::matmul(a, b)
-    for (d = 0; d < dim; ++d) a = a.unsqueeze(-1);
-    return a
+    a = at::matmul(a, b);
+    while (a.dim() < dim+2) a = a.unsqueeze(-1);
+    return a;
   }
 
   template <typename ForwardFn, typename PrecondFn>
@@ -44,20 +43,20 @@ namespace {
       forward(h, x, w, r);       // r  = (H + KWK) * x
       at::sub_out(r, g, r);      // r  = g - r
       precond(h, r, w, z);       // z  = (H + diag(W)) \ r
-      rz = dot(r, z)             // rz = r' * z
-      Tensor p = z.clone()       // Initial conjugate directions p
+      rz = ni::dot(r, z);        // rz = r' * z
+      Tensor p = z.clone();      // Initial conjugate directions p
 
-      for (n = 0;  n < nb_iter; ++n)
+      for (int64_t n = 0;  n < nb_iter; ++n)
       {
         forward(h, p, w, z);                      // Ap = (H + KWK) * p
-        alpha = dot(p, Ap);                       // alpha = p' * Ap
-        alpha = rz / at::clamp_min(alpha, 1e-12)  // alpha = (r' * z) / (p' * Ap)
+        alpha = ni::dot(p, z);                    // alpha = p' * Ap
+        alpha = rz / at::clamp_min(alpha, 1e-12); // alpha = (r' * z) / (p' * Ap)
         at::addcmul_out(x, x, p, alpha);          // x += alpha * p
         at::addcmul_out(r, r, z, alpha, -1);      // r -= alpha * Ap
         precond(h, r, w, z);                      // z  = (H + diag(W)) \ r
-        rz0 = rz
-        rz = dot(r, z)
-        beta = rz / at::clamp_min_(rz0, 1e-12)
+        rz0 = rz;
+        rz = ni::dot(r, z);
+        beta = rz / at::clamp_min_(rz0, 1e-12);
         at::addcmul_out(p, z, p, beta);           // p = z + beta * p
       }
   }
@@ -67,7 +66,7 @@ namespace {
 
 Tensor pcg(const Tensor & hessian, 
            const Tensor & gradient,
-           Tensor solution,
+                 Tensor   solution,
            const Tensor & weight,
            const vector<double> &  absolute, 
            const vector<double> &  membrane, 
@@ -85,30 +84,17 @@ Tensor pcg(const Tensor & hessian,
     regulariser(input, output, weight, hessian,
                 absolute, membrane, bending, voxel_size, bound);
   };
-  auto precond = [absolute, membrane, bending, bound, voxel_size, nb_iter]
-                (const Tensor & hessian, const Tensor & gradient,
-                 const Tensor & solution, const Tensor & weight)
+  auto precond_ = [absolute, membrane, bending, bound, voxel_size]
+                  (const Tensor & hessian, const Tensor & gradient,
+                   const Tensor & weight, const Tensor & output)
   {
-    relax(hessian, gradient, solution, weight, 
-          absolute, membrane, bending, voxel_size, bound, nb_iter);
+    precond(hessian, gradient, output, weight, 
+            absolute, membrane, bending, voxel_size, bound);
   };
 
-
-  /* ---------------- initialize pyramid -------------------- */
+  /* ------------------------ PCG algorithm ------------------ */
   solution = init_solution(solution, gradient);
-  vector<Tensor> tensors(max_levels*5);
-  int64_t N = prepare_tensors(hessian, gradient, solution, weight, 
-                              tensors.data(), restrict_, restrict_, 
-                              max_levels);
-  Tensor * h = tensors.data();
-  Tensor * g = h + max_levels;
-  Tensor * x = g + max_levels;
-  Tensor * w = x + max_levels;
-  Tensor * r = w + max_levels;
-
-  /* ------------------------ FMG algorithm ------------------ */
-  do_fmg(h, g, x, w, r, N, nb_cycles, 
-         relax_, prolong_, restrict_, residuals_);
+  do_pcg(hessian, gradient, solution, weight, nb_iter, forward_, precond_);
 
   return solution;
 }

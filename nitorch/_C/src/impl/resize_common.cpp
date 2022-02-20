@@ -229,71 +229,108 @@ public:
     INIT_ALLOC_INFO_5D(src),
     INIT_ALLOC_INFO_5D(tgt)
   {
-#if __CUDACC__
-      // Cannot work with member function pointers
-      // -> we dispatch on device
-#else
+#ifndef __CUDACC__
       set_resize();
 #endif
   }
 
-#if __CUDACC__
-#else
+#ifndef __CUDACC__
   NI_HOST NI_INLINE void set_resize() 
   {
-    if (do_adjoint) {
-      if (dim == 1) {
-        if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::restrict1d_nearest;
-        else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::restrict1d_linear;
-        else
-          resize_ = &Self::restrict1d;
-      } else if (dim == 2) {
-        if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::restrict2d_nearest;
-        else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::restrict2d_linear;
-        else
-          resize_ = &Self::restrict2d;
-      } else {
-        if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::restrict3d_nearest;
-        else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::restrict3d_linear;
-        else
-          resize_ = &Self::restrict3d;
-      }
-    } else {
-      if (dim == 1) {
-        if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::resize1d_nearest;
-        else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::resize1d_linear;
-        else
-          resize_ = &Self::restrict1d;
-      } else if (dim == 2) {
-        if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::resize2d_nearest;
-        else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::resize2d_linear;
-        else
-          resize_ = &Self::resize2d;
-      } else {
-        if (iso && interpolation0 == InterpolationType::Nearest)
-          resize_ = &Self::resize3d_nearest;
-        else if (iso && interpolation0 == InterpolationType::Linear)
-          resize_ = &Self::resize3d_linear;
-        else
-          resize_ = &Self::resize3d;
-      }
+#   define ADJ 4
+#   define ISO 8
+#   define NN  InterpolationType::Nearest
+#   define LIN InterpolationType::Linear
+#   define QUD InterpolationType::Quadratic
+    uint8_t mode = dim + 4 * do_adjoint + 8 * iso;
+    switch (mode) {
+      case 1:
+        resize_ = &Self::resize1d; break;
+      case 2:
+        resize_ = &Self::resize2d; break;
+      case 3:
+        resize_ = &Self::resize3d; break;
+      case 1+ADJ:
+        resize_ = &Self::restrict1d; break; 
+      case 2+ADJ:
+        resize_ = &Self::restrict2d; break;
+      case 3+ADJ:
+        resize_ = &Self::restrict3d; break;
+      case 1+ISO:
+        switch (interpolation0) {
+          case NN:
+            resize_ = &Self::resize1d_nearest; break;
+          case LIN:
+            resize_ = &Self::resize1d_linear; break;
+          case QUD:
+            resize_ = &Self::resize1d_quadratic; break;
+          default:
+            resize_ = &Self::resize1d; break;
+        } break;
+      case 2+ISO:
+        switch (interpolation0) {
+          case NN:
+            resize_ = &Self::resize2d_nearest; break;
+          case LIN:
+            resize_ = &Self::resize2d_linear; break;
+          case QUD:
+            resize_ = &Self::resize2d_quadratic; break;
+          default:
+            resize_ = &Self::resize2d; break;
+        } break;
+      case 3+ISO:
+        switch (interpolation0) {
+          case NN:
+            resize_ = &Self::resize3d_nearest; break;
+          case LIN:
+            resize_ = &Self::resize3d_linear; break;
+          case QUD:
+            resize_ = &Self::resize3d_quadratic; break;
+          default:
+            resize_ = &Self::resize3d; break;
+        } break;
+      case 1+ADJ+ISO:
+        switch (interpolation0) {
+          case NN:
+            resize_ = &Self::restrict1d_nearest; break;
+          case LIN:
+            resize_ = &Self::restrict1d_linear; break;
+          case QUD:
+            resize_ = &Self::restrict1d_quadratic; break;
+          default:
+            resize_ = &Self::restrict1d; break;
+        } break;
+      case 2+ADJ+ISO:
+        switch (interpolation0) {
+          case NN:
+            resize_ = &Self::restrict2d_nearest; break;
+          case LIN:
+            resize_ = &Self::restrict2d_linear; break;
+          case QUD:
+            resize_ = &Self::restrict2d_quadratic; break;
+          default:
+            resize_ = &Self::restrict2d; break;
+        } break;
+      case 3+ADJ+ISO: 
+        switch (interpolation0) {
+          case NN:
+            resize_ = &Self::restrict3d_nearest; break;
+          case LIN:
+            resize_ = &Self::restrict3d_linear; break;
+          case QUD:
+            resize_ = &Self::restrict3d_quadratic; break;
+          default:
+            resize_ = &Self::restrict3d; break;
+        } break;
+      default:
+        resize_ = &Self::resize3d; break;
     }
   }
 #endif
 
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#if __CUDACC__
+#ifdef __CUDACC__
   // Loop over voxels that belong to one CUDA block
   // This function is called by the CUDA kernel
   NI_DEVICE void loop(int threadIdx, int blockIdx, 
@@ -321,26 +358,32 @@ private:
   DECLARE_RESIZE(resize1d)
   DECLARE_RESIZE(resize1d_nearest)
   DECLARE_RESIZE(resize1d_linear)
+  DECLARE_RESIZE(resize1d_quadratic)
 
   DECLARE_RESIZE(resize2d)
   DECLARE_RESIZE(resize2d_nearest)
   DECLARE_RESIZE(resize2d_linear)
+  DECLARE_RESIZE(resize2d_quadratic)
 
   DECLARE_RESIZE(resize3d)
   DECLARE_RESIZE(resize3d_nearest)
   DECLARE_RESIZE(resize3d_linear)
+  DECLARE_RESIZE(resize3d_quadratic)
 
   DECLARE_RESIZE(restrict1d)
   DECLARE_RESIZE(restrict1d_nearest)
   DECLARE_RESIZE(restrict1d_linear)
+  DECLARE_RESIZE(restrict1d_quadratic)
 
   DECLARE_RESIZE(restrict2d)
   DECLARE_RESIZE(restrict2d_nearest)
   DECLARE_RESIZE(restrict2d_linear)
+  DECLARE_RESIZE(restrict2d_quadratic)
 
   DECLARE_RESIZE(restrict3d)
   DECLARE_RESIZE(restrict3d_nearest)
   DECLARE_RESIZE(restrict3d_linear)
+  DECLARE_RESIZE(restrict3d_quadratic)
 
   // ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   int               dim;            // dimensionality (1 or 2 or 3)
@@ -358,9 +401,7 @@ private:
   double            scale2;         // scale               // z|D
   bool              iso;            // isotropic interpolation?
   bool              do_adjoint;     // push instead of pull
-#if __CUDACC__
-  // We cannot work with member function pointers
-#else
+#ifndef __CUDACC__
   ResizeFn          resize_;        // Pointer to resize function
 #endif
 
@@ -389,12 +430,13 @@ private:
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::resize(
     offset_t x, offset_t y, offset_t z, offset_t n) const {
-#if __CUDACC__
+#ifdef __CUDACC__
     // dispatch
 #   define ADJ 4
 #   define ISO 8
 #   define NN  InterpolationType::Nearest
 #   define LIN InterpolationType::Linear
+#   define QUD InterpolationType::Quadratic
     uint8_t mode = dim + 4 * do_adjoint + 8 * iso;
     switch (mode) {
       case 1:
@@ -415,6 +457,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return resize1d_nearest(x, y, z, n);
           case LIN:
             return resize1d_linear(x, y, z, n);
+          case QUD:
+            return resize1d_quadratic(x, y, z, n);
           default:
             return resize1d(x, y, z, n);
         }
@@ -424,6 +468,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return resize2d_nearest(x, y, z, n);
           case LIN:
             return resize2d_linear(x, y, z, n);
+          // case QUD:
+          //   return resize2d_quadratic(x, y, z, n);
           default:
             return resize2d(x, y, z, n);
         }
@@ -433,6 +479,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return resize3d_nearest(x, y, z, n);
           case LIN:
             return resize3d_linear(x, y, z, n);
+          case QUD:
+            return resize3d_quadratic(x, y, z, n);
           default:
             return resize3d(x, y, z, n);
         }
@@ -442,6 +490,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return restrict1d_nearest(x, y, z, n);
           case LIN:
             return restrict1d_linear(x, y, z, n);
+          case QUD:
+            return restrict1d_quadratic(x, y, z, n);
           default:
             return restrict1d(x, y, z, n);
         }
@@ -451,6 +501,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return restrict2d_nearest(x, y, z, n);
           case LIN:
             return restrict2d_linear(x, y, z, n);
+          case QUD:
+            return restrict2d_quadratic(x, y, z, n);
           default:
             return restrict2d(x, y, z, n);
         }
@@ -460,6 +512,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return restrict3d_nearest(x, y, z, n);
           case LIN:
             return restrict3d_linear(x, y, z, n);
+          case QUD:
+            return restrict3d_quadratic(x, y, z, n);
           default:
             return restrict3d(x, y, z, n);
         }
@@ -471,7 +525,7 @@ void ResizeImpl<scalar_t,offset_t>::resize(
 #endif
 }
 
-#if __CUDACC__
+#ifdef __CUDACC__
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::loop(
@@ -686,6 +740,236 @@ template <typename scalar_t, typename offset_t> NI_DEVICE
 void ResizeImpl<scalar_t,offset_t>::restrict1d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+//                     QUADRATIC INTERPOLATION 3D
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+#undef  GET_INDEX
+#define GET_INDEX \
+  scalar_t x = scale0 * w + shift0; \
+  scalar_t y = scale1 * h + shift1; \
+  scalar_t z = scale2 * d + shift2; \
+  offset_t ix1 = static_cast<offset_t>(std::floor(x+0.5)); \
+  offset_t iy1 = static_cast<offset_t>(std::floor(y+0.5)); \
+  offset_t iz1 = static_cast<offset_t>(std::floor(z+0.5)); \
+  scalar_t dx1 = interpolation::weight(interpolation0, x - ix1); \
+  scalar_t dy1 = interpolation::weight(interpolation1, y - iy1); \
+  scalar_t dz1 = interpolation::weight(interpolation2, z - iz1); \
+  scalar_t dx0 = interpolation::fastweight(interpolation0, x - (ix1 - 1)); \
+  scalar_t dy0 = interpolation::fastweight(interpolation1, y - (iy1 - 1)); \
+  scalar_t dz0 = interpolation::fastweight(interpolation2, z - (iz1 - 1)); \
+  scalar_t dx2 = interpolation::fastweight(interpolation0, (ix1 + 1) - x); \
+  scalar_t dy2 = interpolation::fastweight(interpolation1, (iy1 + 1) - y); \
+  scalar_t dz2 = interpolation::fastweight(interpolation2, (iz1 + 1) - z); \
+  scalar_t w000 = dx0 * dy0; \
+  scalar_t w001 = w000 * dz1; \
+  scalar_t w002 = w000 * dz2; \
+           w000 *= dz0; \
+  scalar_t w010 = dx0 * dy1; \
+  scalar_t w011 = w010 * dz1; \
+  scalar_t w012 = w010 * dz2; \
+           w010 *= dz0; \
+  scalar_t w020 = dx0 * dy2; \
+  scalar_t w021 = w020 * dz1; \
+  scalar_t w022 = w020 * dz2; \
+           w020 *= dz0; \
+  scalar_t w100 = dx1 * dy0; \
+  scalar_t w101 = w100 * dz1; \
+  scalar_t w102 = w100 * dz2; \
+           w100 *= dz0; \
+  scalar_t w110 = dx1 * dy1; \
+  scalar_t w111 = w110 * dz1; \
+  scalar_t w112 = w110 * dz2; \
+           w110 *= dz0; \
+  scalar_t w120 = dx1 * dy2; \
+  scalar_t w121 = w120 * dz1; \
+  scalar_t w122 = w120 * dz2; \
+           w120 *= dz0; \
+  scalar_t w200 = dx2 * dy0; \
+  scalar_t w201 = w200 * dz1; \
+  scalar_t w202 = w200 * dz2; \
+           w200 *= dz0; \
+  scalar_t w210 = dx2 * dy1; \
+  scalar_t w211 = w210 * dz1; \
+  scalar_t w212 = w210 * dz2; \
+           w210 *= dz0; \
+  scalar_t w220 = dx2 * dy2; \
+  scalar_t w221 = w220 * dz1; \
+  scalar_t w222 = w220 * dz2; \
+           w220 *= dz0; \
+  int8_t  sx0 = bound::sign(bound0, ix1-1, src_X); \
+  int8_t  sy0 = bound::sign(bound1, iy1-1, src_Y); \
+  int8_t  sz0 = bound::sign(bound2, iz1-1, src_Z); \
+  int8_t  sx2 = bound::sign(bound0, ix1+1, src_X); \
+  int8_t  sy2 = bound::sign(bound1, iy1+1, src_Y); \
+  int8_t  sz2 = bound::sign(bound2, iz1+1, src_Z); \
+  int8_t  sx1 = bound::sign(bound0, ix1,   src_X); \
+  int8_t  sy1 = bound::sign(bound1, iy1,   src_Y); \
+  int8_t  sz1 = bound::sign(bound2, iz1,   src_Z); \
+  int8_t s000 = sx0 * sy0; \
+  int8_t s001 = s000 * sz1; \
+  int8_t s002 = s000 * sz2; \
+         s000 *= sz0; \
+  int8_t s010 = sx0 * sy1; \
+  int8_t s011 = s010 * sz1; \
+  int8_t s012 = s010 * sz2; \
+         s010 *= sz0; \
+  int8_t s020 = sx0 * sy2; \
+  int8_t s021 = s020 * sz1; \
+  int8_t s022 = s020 * sz2; \
+         s020 *= sz0; \
+  int8_t s100 = sx1 * sy0; \
+  int8_t s101 = s100 * sz1; \
+  int8_t s102 = s100 * sz2; \
+         s100 *= sz0; \
+  int8_t s110 = sx1 * sy1; \
+  int8_t s111 = s110 * sz1; \
+  int8_t s112 = s110 * sz2; \
+         s110 *= sz0; \
+  int8_t s120 = sx1 * sy2; \
+  int8_t s121 = s120 * sz1; \
+  int8_t s122 = s120 * sz2; \
+         s120 *= sz0; \
+  int8_t s200 = sx2 * sy0; \
+  int8_t s201 = s200 * sz1; \
+  int8_t s202 = s200 * sz2; \
+         s200 *= sz0; \
+  int8_t s210 = sx2 * sy1; \
+  int8_t s211 = s210 * sz1; \
+  int8_t s212 = s210 * sz2; \
+         s210 *= sz0; \
+  int8_t s220 = sx2 * sy2; \
+  int8_t s221 = s220 * sz1; \
+  int8_t s222 = s220 * sz2; \
+         s220 *= sz0; \
+  offset_t ix0, iy0, iz0, ix2, iy2, iz2; \
+  ix0 = bound::index(bound0, ix1-1, src_X) * src_sX; \
+  iy0 = bound::index(bound1, iy1-1, src_Y) * src_sY; \
+  iz0 = bound::index(bound2, iz1-1, src_Z) * src_sZ; \
+  ix2 = bound::index(bound0, ix1+1, src_X) * src_sX; \
+  iy2 = bound::index(bound1, iy1+1, src_Y) * src_sY; \
+  iz2 = bound::index(bound2, iz1+1, src_Z) * src_sZ; \
+  ix1 = bound::index(bound0, ix1,   src_X) * src_sX; \
+  iy1 = bound::index(bound1, iy1,   src_Y) * src_sY; \
+  iz1 = bound::index(bound2, iz1,   src_Z) * src_sZ; \
+  offset_t o000 = ix0 + iy0 + iz0; \
+  offset_t o001 = ix0 + iy0 + iz1; \
+  offset_t o002 = ix0 + iy0 + iz2; \
+  offset_t o010 = ix0 + iy1 + iz0; \
+  offset_t o011 = ix0 + iy1 + iz1; \
+  offset_t o012 = ix0 + iy1 + iz2; \
+  offset_t o020 = ix0 + iy2 + iz0; \
+  offset_t o021 = ix0 + iy2 + iz1; \
+  offset_t o022 = ix0 + iy2 + iz2; \
+  offset_t o100 = ix1 + iy0 + iz0; \
+  offset_t o101 = ix1 + iy0 + iz1; \
+  offset_t o102 = ix1 + iy0 + iz2; \
+  offset_t o110 = ix1 + iy1 + iz0; \
+  offset_t o111 = ix1 + iy1 + iz1; \
+  offset_t o112 = ix1 + iy1 + iz2; \
+  offset_t o120 = ix1 + iy2 + iz0; \
+  offset_t o121 = ix1 + iy2 + iz1; \
+  offset_t o122 = ix1 + iy2 + iz2; \
+  offset_t o200 = ix2 + iy0 + iz0; \
+  offset_t o201 = ix2 + iy0 + iz1; \
+  offset_t o202 = ix2 + iy0 + iz2; \
+  offset_t o210 = ix2 + iy1 + iz0; \
+  offset_t o211 = ix2 + iy1 + iz1; \
+  offset_t o212 = ix2 + iy1 + iz2; \
+  offset_t o220 = ix2 + iy2 + iz0; \
+  offset_t o221 = ix2 + iy2 + iz1; \
+  offset_t o222 = ix2 + iy2 + iz2; \
+  scalar_t *tgt_ptr_NCXYZ = tgt_ptr                   \
+                          + n * tgt_sN + w * tgt_sX   \
+                          + h * tgt_sY + d * tgt_sZ;  \
+  scalar_t *src_ptr_NC = src_ptr + n * src_sN;
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void ResizeImpl<scalar_t,offset_t>::resize3d_quadratic(
+  offset_t w, offset_t h, offset_t d, offset_t n) const
+{
+  GET_INDEX
+
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
+                                   src_ptr_NC    += src_sC) {
+    *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, o000, s000) * w000
+                   + bound::get(src_ptr_NC, o001, s001) * w001
+                   + bound::get(src_ptr_NC, o002, s002) * w002
+                   + bound::get(src_ptr_NC, o010, s010) * w010
+                   + bound::get(src_ptr_NC, o011, s011) * w011
+                   + bound::get(src_ptr_NC, o012, s012) * w012
+                   + bound::get(src_ptr_NC, o020, s020) * w020
+                   + bound::get(src_ptr_NC, o021, s021) * w021
+                   + bound::get(src_ptr_NC, o022, s022) * w022
+                   + bound::get(src_ptr_NC, o100, s100) * w100
+                   + bound::get(src_ptr_NC, o101, s101) * w101
+                   + bound::get(src_ptr_NC, o102, s102) * w102
+                   + bound::get(src_ptr_NC, o110, s110) * w110
+                   + bound::get(src_ptr_NC, o111, s111) * w111
+                   + bound::get(src_ptr_NC, o112, s112) * w112
+                   + bound::get(src_ptr_NC, o120, s120) * w120
+                   + bound::get(src_ptr_NC, o121, s121) * w121
+                   + bound::get(src_ptr_NC, o122, s122) * w122
+                   + bound::get(src_ptr_NC, o200, s200) * w200
+                   + bound::get(src_ptr_NC, o201, s201) * w201
+                   + bound::get(src_ptr_NC, o202, s202) * w202
+                   + bound::get(src_ptr_NC, o210, s210) * w210
+                   + bound::get(src_ptr_NC, o211, s211) * w211
+                   + bound::get(src_ptr_NC, o212, s212) * w212
+                   + bound::get(src_ptr_NC, o220, s220) * w220
+                   + bound::get(src_ptr_NC, o221, s221) * w221
+                   + bound::get(src_ptr_NC, o222, s222) * w222;
+  }
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void ResizeImpl<scalar_t,offset_t>::restrict3d_quadratic(
+  offset_t w, offset_t h, offset_t d, offset_t n) const
+{
+  GET_INDEX
+
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
+                                   src_ptr_NC    += src_sC) {
+    scalar_t tgt = *tgt_ptr_NCXYZ;
+    bound::add(src_ptr_NC, o000, w000 * tgt, s000);
+    bound::add(src_ptr_NC, o001, w001 * tgt, s001);
+    bound::add(src_ptr_NC, o002, w002 * tgt, s002);
+    bound::add(src_ptr_NC, o010, w010 * tgt, s010);
+    bound::add(src_ptr_NC, o011, w011 * tgt, s011);
+    bound::add(src_ptr_NC, o012, w012 * tgt, s012);
+    bound::add(src_ptr_NC, o020, w020 * tgt, s020);
+    bound::add(src_ptr_NC, o021, w021 * tgt, s021);
+    bound::add(src_ptr_NC, o022, w022 * tgt, s022);
+    bound::add(src_ptr_NC, o100, w100 * tgt, s100);
+    bound::add(src_ptr_NC, o101, w101 * tgt, s101);
+    bound::add(src_ptr_NC, o102, w102 * tgt, s102);
+    bound::add(src_ptr_NC, o110, w110 * tgt, s110);
+    bound::add(src_ptr_NC, o111, w111 * tgt, s111);
+    bound::add(src_ptr_NC, o112, w112 * tgt, s112);
+    bound::add(src_ptr_NC, o120, w120 * tgt, s120);
+    bound::add(src_ptr_NC, o121, w121 * tgt, s121);
+    bound::add(src_ptr_NC, o122, w122 * tgt, s122);
+    bound::add(src_ptr_NC, o200, w200 * tgt, s200);
+    bound::add(src_ptr_NC, o201, w201 * tgt, s201);
+    bound::add(src_ptr_NC, o202, w202 * tgt, s202);
+    bound::add(src_ptr_NC, o210, w210 * tgt, s210);
+    bound::add(src_ptr_NC, o211, w211 * tgt, s211);
+    bound::add(src_ptr_NC, o212, w212 * tgt, s212);
+    bound::add(src_ptr_NC, o220, w220 * tgt, s220);
+    bound::add(src_ptr_NC, o221, w221 * tgt, s221);
+    bound::add(src_ptr_NC, o222, w222 * tgt, s222);
+  }
+}
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void ResizeImpl<scalar_t,offset_t>::resize2d_quadratic(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void ResizeImpl<scalar_t,offset_t>::restrict2d_quadratic(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void ResizeImpl<scalar_t,offset_t>::resize1d_quadratic(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void ResizeImpl<scalar_t,offset_t>::restrict1d_quadratic(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                     LINEAR INTERPOLATION 3D
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -703,44 +987,56 @@ void ResizeImpl<scalar_t,offset_t>::restrict1d(offset_t w, offset_t h, offset_t 
   scalar_t dx0 = 1. - dx1; \
   scalar_t dy0 = 1. - dy1; \
   scalar_t dz0 = 1. - dz1; \
-  scalar_t w000 = dx0 * dy0 * dz0; \
-  scalar_t w100 = dx1 * dy0 * dz0; \
-  scalar_t w010 = dx0 * dy1 * dz0; \
-  scalar_t w001 = dx0 * dy0 * dz1; \
-  scalar_t w110 = dx1 * dy1 * dz0; \
-  scalar_t w011 = dx0 * dy1 * dz1; \
-  scalar_t w101 = dx1 * dy0 * dz1; \
-  scalar_t w111 = dx1 * dy1 * dz1; \
+  scalar_t w000 = dx0 * dy0; \
+  scalar_t w001 = w000 * dz1; \
+           w000 *= dz0; \
+  scalar_t w010 = dx0 * dy1; \
+  scalar_t w011 = w010 * dz1; \
+           w010 *= dz0; \
+  scalar_t w100 = dx1 * dy0; \
+  scalar_t w101 = w100 * dz1; \
+           w100 *= dz0; \
+  scalar_t w110 = dx1 * dy1; \
+  scalar_t w111 = w110 * dz1; \
+           w110 *= dz0; \
   int8_t  sx1 = bound::sign(bound0, ix0+1, src_X); \
   int8_t  sy1 = bound::sign(bound1, iy0+1, src_Y); \
   int8_t  sz1 = bound::sign(bound2, iz0+1, src_Z); \
   int8_t  sx0 = bound::sign(bound0, ix0,   src_X); \
   int8_t  sy0 = bound::sign(bound1, iy0,   src_Y); \
   int8_t  sz0 = bound::sign(bound2, iz0,   src_Z); \
-  int8_t  s000 = sx0 * sy0 * sz0; \
-  int8_t  s100 = sx1 * sy0 * sz0; \
-  int8_t  s010 = sx0 * sy1 * sz0; \
-  int8_t  s001 = sx0 * sy0 * sz1; \
-  int8_t  s110 = sx1 * sy1 * sz0; \
-  int8_t  s011 = sx0 * sy1 * sz1; \
-  int8_t  s101 = sx1 * sy0 * sz1; \
-  int8_t  s111 = sx1 * sy1 * sz1; \
+  int8_t  s000 = sx0 * sy0; \
+  int8_t  s001 = s000 * sz1; \
+          s000 *= sz0; \
+  int8_t  s010 = sx0 * sy1; \
+  int8_t  s011 = s010 * sz1; \
+          s010 *= sz0; \
+  int8_t  s100 = sx1 * sy0; \
+  int8_t  s101 = s100 * sz1; \
+          s100 *= sz0; \
+  int8_t  s110 = sx1 * sy1; \
+  int8_t  s111 = s110 * sz1; \
+          s110 *= sz0; \
   offset_t ix1, iy1, iz1; \
-  ix1 = bound::index(bound0, ix0+1, src_X); \
-  iy1 = bound::index(bound1, iy0+1, src_Y); \
-  iz1 = bound::index(bound2, iz0+1, src_Z); \
-  ix0 = bound::index(bound0, ix0,   src_X); \
-  iy0 = bound::index(bound1, iy0,   src_Y); \
-  iz0 = bound::index(bound2, iz0,   src_Z); \
+  ix1 = bound::index(bound0, ix0+1, src_X) * src_sX; \
+  iy1 = bound::index(bound1, iy0+1, src_Y) * src_sY; \
+  iz1 = bound::index(bound2, iz0+1, src_Z) * src_sZ; \
+  ix0 = bound::index(bound0, ix0,   src_X) * src_sX; \
+  iy0 = bound::index(bound1, iy0,   src_Y) * src_sY; \
+  iz0 = bound::index(bound2, iz0,   src_Z) * src_sZ; \
   offset_t o000, o100, o010, o001, o110, o011, o101, o111; \
-  o000 = ix0*src_sX + iy0*src_sY + iz0*src_sZ; \
-  o100 = ix1*src_sX + iy0*src_sY + iz0*src_sZ; \
-  o010 = ix0*src_sX + iy1*src_sY + iz0*src_sZ; \
-  o001 = ix0*src_sX + iy0*src_sY + iz1*src_sZ; \
-  o110 = ix1*src_sX + iy1*src_sY + iz0*src_sZ; \
-  o011 = ix0*src_sX + iy1*src_sY + iz1*src_sZ; \
-  o101 = ix1*src_sX + iy0*src_sY + iz1*src_sZ; \
-  o111 = ix1*src_sX + iy1*src_sY + iz1*src_sZ; \
+  o000 = ix0 + iy0; \
+  o001 = o000 + iz1; \
+  o000 *= iz0; \
+  o010 = ix0 + iy1; \
+  o011 = o010 + iz1; \
+  o010 *= iz0; \
+  o100 = ix1 + iy0; \
+  o101 = o100 + iz1; \
+  o100 *= iz0; \
+  o110 = ix1 + iy1; \
+  o111 = o110 + iz1; \
+  o110 *= iz0; \
   scalar_t *tgt_ptr_NCXYZ = tgt_ptr                   \
                           + n * tgt_sN + w * tgt_sX   \
                           + h * tgt_sY + d * tgt_sZ;  \
@@ -772,7 +1068,7 @@ void ResizeImpl<scalar_t,offset_t>::restrict3d_linear(
   GET_INDEX
 
   for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
-                                   src_ptr_NC     += src_sC) {
+                                   src_ptr_NC    += src_sC) {
     scalar_t tgt = *tgt_ptr_NCXYZ;
     bound::add(src_ptr_NC, o000, w000 * tgt, s000);
     bound::add(src_ptr_NC, o100, w100 * tgt, s100);
@@ -932,7 +1228,7 @@ prepare_tensors(Tensor source, Tensor target, ArrayRef<double> factor, bool do_a
     int64_t Ys = dim > 1 ? static_cast<int64_t>(std::ceil(static_cast<double>(Y) * fy)) : 1L;
     int64_t Zs = dim > 2 ? static_cast<int64_t>(std::ceil(static_cast<double>(Z) * fz)) : 1L;
 
-    source = at::zeros({N, C, Xs, Ys, Zs}, source.options());
+    source = at::zeros({N, C, Xs, Ys, Zs}, target.options());
 
   }
 
@@ -1094,7 +1390,7 @@ NI_HOST
 Tensor resize_impl(
   Tensor source, Tensor target, ArrayRef<double> factor,
   BoundVectorRef bound, InterpolationVectorRef interpolation, 
-  GridAlignVectorRef mode, bool do_adjoint)
+  GridAlignVectorRef mode, bool do_adjoint, bool normalize)
 {
   throw std::logic_error("Function not implemented for this device.");
 }

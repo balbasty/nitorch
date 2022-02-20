@@ -3,6 +3,7 @@
 #include "defines.h"
 #include "bounds.h"
 #include "resize.h"
+#include "pcg.h"
 #include "relax.h"
 #include "regulariser.h"
 #include "relax_grid.h"
@@ -236,18 +237,23 @@ Tensor fmg(const Tensor & hessian,
            const vector<BoundType> & bound,
            int64_t nb_cycles,
            int64_t nb_iter,
-           int64_t max_levels)
+           int64_t max_levels,
+           bool use_cg)
 {
   int64_t dim = gradient.dim() - 2;
 
   /* ---------------- function handles ---------------------- */
-  auto relax_ = [absolute, membrane, bending, bound, nb_iter]
+  auto relax_ = [absolute, membrane, bending, bound, nb_iter, use_cg]
                 (const Tensor & hessian, const Tensor & gradient,
                  const Tensor & solution, const Tensor & weight,
                  const vector<double> & voxel_size)
   {
-    relax(hessian, gradient, solution, weight, 
+    if (use_cg)
+      pcg(hessian, gradient, solution, weight, 
           absolute, membrane, bending, voxel_size, bound, nb_iter);
+    else
+      relax(hessian, gradient, solution, weight, 
+            absolute, membrane, bending, voxel_size, bound, nb_iter);
   };
   auto prolong_ = [bound](const Tensor & x, const Tensor & o)
   {

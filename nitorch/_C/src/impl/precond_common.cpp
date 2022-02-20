@@ -48,15 +48,15 @@ namespace { // anonymous namespace > everything inside has internal linkage
 /*                                ALLOCATOR                                   */
 /*                                                                            */
 /* ========================================================================== */
-class RelaxAllocator: public Allocator {
+class PrecondAllocator: public Allocator {
 public:
 
   /* ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
   NI_HOST
-  RelaxAllocator(int dim, ArrayRef<double> absolute, 
-                     ArrayRef<double> membrane, ArrayRef<double> bending,
-                     ArrayRef<double> voxel_size, BoundVectorRef bound):
+  PrecondAllocator(int dim, ArrayRef<double> absolute, 
+                   ArrayRef<double> membrane, ArrayRef<double> bending,
+                   ArrayRef<double> voxel_size, BoundVectorRef bound):
     dim(dim),
     VEC_UNFOLD(bound, bound,      BoundType::Replicate),
     VEC_UNFOLD(vx,    voxel_size, 1.),
@@ -130,15 +130,15 @@ private:
   DEFINE_ALLOC_INFO_5D(sol)
   DEFINE_ALLOC_INFO_5D(wgt)
 
-  // Allow RelaxImpl's constructor to access RelaxAllocator's
+  // Allow PrecondImpl's constructor to access PrecondAllocator's
   // private members.
   template <typename scalar_t, typename offset_t, typename reduce_t>
-  friend class RelaxImpl;
+  friend class PrecondImpl;
 };
 
 
 NI_HOST
-void RelaxAllocator::init_all()
+void PrecondAllocator::init_all()
 {
   N = C = CC = X = Y = Z = 1L;
   grd_sN  = grd_sC   = grd_sX   = grd_sY  = grd_sZ   = 0L;
@@ -150,7 +150,7 @@ void RelaxAllocator::init_all()
 }
 
 NI_HOST
-void RelaxAllocator::init_gradient(const Tensor& input)
+void PrecondAllocator::init_gradient(const Tensor& input)
 {
   N       = input.size(0);
   C       = input.size(1);
@@ -167,7 +167,7 @@ void RelaxAllocator::init_gradient(const Tensor& input)
 }
 
 NI_HOST
-void RelaxAllocator::init_hessian(const Tensor& input)
+void PrecondAllocator::init_hessian(const Tensor& input)
 {
   if (!input.defined() || input.numel() == 0)
     return;
@@ -182,7 +182,7 @@ void RelaxAllocator::init_hessian(const Tensor& input)
 }
 
 NI_HOST
-void RelaxAllocator::init_solution(const Tensor& input)
+void PrecondAllocator::init_solution(const Tensor& input)
 {
   sol_sN  = input.stride(0);
   sol_sC  = input.stride(1);
@@ -194,7 +194,7 @@ void RelaxAllocator::init_solution(const Tensor& input)
 }
 
 NI_HOST
-void RelaxAllocator::init_weight(const Tensor& weight)
+void PrecondAllocator::init_weight(const Tensor& weight)
 {
   if (!weight.defined() || weight.numel() == 0)
     return;
@@ -222,17 +222,17 @@ NI_HOST NI_INLINE bool any(const reduce_t * v, offset_t C) {
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t>
-class RelaxImpl {
+class PrecondImpl {
 
-  using Self     = RelaxImpl;
-  using RelaxFn  = void (Self::*)(offset_t, offset_t, offset_t, offset_t) const;
-  using InvertFn = void (Self::*)(scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
-  using GetHFn   = void (Self::*)(const scalar_t *, reduce_t *) const;
+  using Self       = PrecondImpl;
+  using PrecondFn  = void (Self::*)(offset_t, offset_t, offset_t, offset_t) const;
+  using InvertFn   = void (Self::*)(scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
+  using GetHFn     = void (Self::*)(const scalar_t *, reduce_t *) const;
 
 public:
 
   /* ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-  RelaxImpl(const RelaxAllocator & info):
+  PrecondImpl(const PrecondAllocator & info):
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
     N(static_cast<offset_t>(info.N)),
@@ -257,9 +257,8 @@ public:
   {
     set_factors(info.absolute, info.membrane, info.bending);
     set_kernel(info.vx0, info.vx1, info.vx2);
-    set_bandwidth();
   #ifndef __CUDACC__
-    set_relax();
+    set_precond();
     set_invert();
   #endif
   }
@@ -311,89 +310,36 @@ public:
     b011 = static_cast<reduce_t>(2.0*vx1*vx2);
   }
 
-  NI_HOST NI_INLINE void set_bandwidth() 
-  { 
-    if (has_bending)
-      bandwidth = 3;
-    else if (has_membrane)
-      bandwidth = 0; // checkerboard
-    else
-      bandwidth = 1;
-
-    if (bandwidth)
-    {
-      // Size of the band in each direction
-      Fx = MIN(X, bandwidth);
-      Fy = MIN(Y, bandwidth);
-      Fz = MIN(Z, bandwidth);
-
-      // size of the fold
-      Xf = 1 + (X - 1) / Fx;
-      Yf = 1 + (Y - 1) / Fy;
-      Zf = 1 + (Z - 1) / Fz;
-    }
-  }
-
 #ifndef __CUDACC__
-  NI_HOST NI_INLINE void set_relax() 
+  NI_HOST NI_INLINE void set_precond() 
   {
-
-    if (wgt_ptr)
-    {
-      if (has_bending)
-        throw std::logic_error("RLS only implemented for absolute/membrane.");
-      else if (dim == 1) {
-        if (has_membrane)
-            relax_ = &Self::relax1d_rls_membrane;
-        else if (has_absolute)
-            relax_ = &Self::relax1d_rls_absolute;
-        else
-            relax_ = &Self::solve1d;
-      } else if (dim == 2) {
-        if (has_membrane)
-            relax_ = &Self::relax2d_rls_membrane;
-        else if (has_absolute)
-            relax_ = &Self::relax2d_rls_absolute;
-        else
-            relax_ = &Self::solve2d;
-      } else if (dim == 3) {
-        if (has_membrane)
-            relax_ = &Self::relax3d_rls_membrane;
-        else if (has_absolute)
-            relax_ = &Self::relax3d_rls_absolute;
-        else
-            relax_ = &Self::solve3d;
-      }
+#   define ABSOLUTE 4
+#   define MEMBRANE 8
+#   define BENDING  12
+#   define RLS      16
+    switch (mode) {
+      case 1 + MEMBRANE + RLS:
+        precond_ = &Self::precond1d_rls_membrane; break;
+      case 2 + MEMBRANE + RLS:
+        precond_ = &Self::precond2d_rls_membrane; break;
+      case 3 + MEMBRANE + RLS:
+        precond_ = &Self::precond3d_rls_membrane; break;
+      case 1 + ABSOLUTE + RLS:
+        precond_ = &Self::precond1d_rls_absolute; break;
+      case 2 + ABSOLUTE + RLS:
+        precond_ = &Self::precond2d_rls_absolute; break;
+      case 3 + ABSOLUTE + RLS:
+        precond_ = &Self::precond3d_rls_absolute; break;
+      default:
+        switch (dim) {
+          case 1:
+            precond_ = &Self::precond1d; break;
+          case 2: 
+            precond_ = &Self::precond2d; break;
+          default:
+            precond_ = &Self::precond3d; break;
+        } break;
     }
-    else if (dim == 1) {
-        if (has_bending)
-            relax_ = &Self::relax1d_bending;
-        else if (has_membrane)
-            relax_ = &Self::relax1d_membrane;
-        else if (has_absolute)
-            relax_ = &Self::relax1d_absolute;
-        else
-            relax_ = &Self::solve1d;
-    } else if (dim == 2) {
-        if (has_bending)
-            relax_ = &Self::relax2d_bending;
-        else if (has_membrane)
-            relax_ = &Self::relax2d_membrane;
-        else if (has_absolute)
-            relax_ = &Self::relax2d_absolute;
-        else
-            relax_ = &Self::solve2d;
-    } else if (dim == 3) {
-        if (has_bending)
-            relax_ = &Self::relax3d_bending;
-        else if (has_membrane)
-            relax_ = &Self::relax3d_membrane;
-        else if (has_absolute)
-            relax_ = &Self::relax3d_absolute;
-        else
-            relax_ = &Self::solve3d;
-    } else
-        throw std::logic_error("RLS only implemented for dimension 1/2/3.");
   }
 
   NI_HOST NI_INLINE void set_invert() 
@@ -423,67 +369,33 @@ public:
   // This function is called by the CUDA kernel
   NI_DEVICE void loop(int threadIdx, int blockIdx,
                       int blockDim, int gridDim) const;
-  NI_DEVICE void loop_band(int threadIdx, int blockIdx,
-                           int blockDim, int gridDim) const;
-  NI_DEVICE void loop_redblack(int threadIdx, int blockIdx,
-                               int blockDim, int gridDim) const;
 #else
   // Loop over all voxels
-  void loop();
-  void loop_band();
-  void loop_redblack();
+  void loop() const;
 #endif
 
   NI_HOST NI_DEVICE int64_t voxcount() const {
     return N * X * Y * Z;
-  }
-
-  NI_HOST NI_DEVICE int64_t voxcountfold() const {
-    return bandwidth == 0 ? voxcount() : N * Xf * Yf * Zf;
-  }
-
-  NI_HOST NI_DEVICE int64_t foldcount() const {
-    return bandwidth == 0 ? 2 : Fx * Fy * Fz;
-  }
-
-  NI_HOST void set_fold(offset_t i) {
-    if (bandwidth == 0)
-      // checkerboard
-      redblack = i;
-    else {
-      // index of the fold (lin2sub)
-      fx = i/(Fy*Fz);
-      fy = (i/Fz)  % Fy;
-      fz = i % Fz;
-
-      Xf = 1 + (X - fx - 1) / Fx;
-      Yf = 1 + (Y - fy - 1) / Fy;
-      Zf = 1 + (Z - fz - 1) / Fz;
-    }
   }
  
 
 private:
 
   /* ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-  NI_DEVICE NI_INLINE void relax(
+  NI_DEVICE NI_INLINE void precond(
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 
-#define DEFINE_relax(SUFFIX) \
-  NI_DEVICE void relax##SUFFIX( \
+#define DEFINE_PRECOND(SUFFIX) \
+  NI_DEVICE void precond##SUFFIX( \
     offset_t x, offset_t y, offset_t z, offset_t n) const;
-#define DEFINE_relax_DIM(DIM)        \
-  DEFINE_relax(DIM##d_absolute)      \
-  DEFINE_relax(DIM##d_membrane)      \
-  DEFINE_relax(DIM##d_bending)       \
-  DEFINE_relax(DIM##d_rls_absolute)  \
-  DEFINE_relax(DIM##d_rls_membrane)  \
-  NI_DEVICE void solve##DIM##d(      \
-    offset_t x, offset_t y, offset_t z, offset_t n) const;
+#define DEFINE_PRECOND_DIM(DIM)        \
+  DEFINE_PRECOND(DIM##d)               \
+  DEFINE_PRECOND(DIM##d_rls_absolute)  \
+  DEFINE_PRECOND(DIM##d_rls_membrane)
 
-  DEFINE_relax_DIM(1)
-  DEFINE_relax_DIM(2)
-  DEFINE_relax_DIM(3)
+  DEFINE_PRECOND_DIM(1)
+  DEFINE_PRECOND_DIM(2)
+  DEFINE_PRECOND_DIM(3)
 
 #ifndef __CUDACC__
   NI_DEVICE void get_h(const scalar_t * , reduce_t *) const;
@@ -495,8 +407,6 @@ private:
 
   NI_DEVICE void invert(
     scalar_t *, const scalar_t *, reduce_t *, const reduce_t *) const;
-  // NI_DEVICE void invert3(
-  //   scalar_t *, const scalar_t *, double *, const double *) const;
   NI_DEVICE void invert_sym(
     scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
   NI_DEVICE void invert_diag(
@@ -509,25 +419,6 @@ private:
   NI_DEVICE void cholesky(reduce_t a[], reduce_t p[]) const;
   NI_DEVICE void cholesky_solve(const reduce_t a[], const reduce_t p[], reduce_t x[]) const;
 
-  /* ~~~ FOLD NAVIGATORS  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-  // This is super hacky!!!
-  // I make sure that [fx fy fz Xf Yf Zf redblack] are the first fields in 
-  // the object so tht I can easily access them from the adress of the 
-  // englobing object. This is so I can mutate these fields when we change fold
-  // without having to move the whole object again from host to device.
-
-  offset_t fx; // Index of the fold
-  offset_t fy;
-  offset_t fz;
-  offset_t Xf; // Size of the fold
-  offset_t Yf;
-  offset_t Zf;
-  offset_t redblack;  // Index of the fold for checkerboard scheme
-  offset_t bandwidth;
-  offset_t Fx; // Fold window
-  offset_t Fy;
-  offset_t Fz;
-
   /* ~~~ OPTIONS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   offset_t          dim;
   uint8_t           mode;
@@ -539,7 +430,7 @@ private:
   reduce_t          bending[NI_MAX_NUM_CHANNELS];        // penalty on second derivatives
 
 #ifndef __CUDACC__
-  RelaxFn           relax_;         // Pointer to relax function
+  PrecondFn         precond_;       // Pointer to Precond function
   InvertFn          invert_;        // Pointer to inversion function
   GetHFn            get_h_;         // Pointer to inversion function
 #endif
@@ -590,7 +481,7 @@ private:
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond(
     offset_t x, offset_t y, offset_t z, offset_t n) const 
 {
   #ifdef __CUDACC__
@@ -600,159 +491,77 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax(
 #   define RLS      16
   switch (mode) {
     case 1 + MEMBRANE + RLS:
-      return relax1d_rls_membrane(x, y, z, n);
+      return precond1d_rls_membrane(x, y, z, n);
     case 2 + MEMBRANE + RLS:
-      return relax2d_rls_membrane(x, y, z, n);
+      return precond2d_rls_membrane(x, y, z, n);
     case 3 + MEMBRANE + RLS:
-      return relax3d_rls_membrane(x, y, z, n);
+      return precond3d_rls_membrane(x, y, z, n);
     case 1 + ABSOLUTE + RLS:
-      return relax1d_rls_absolute(x, y, z, n);
+      return precond1d_rls_absolute(x, y, z, n);
     case 2 + ABSOLUTE + RLS:
-      return relax2d_rls_absolute(x, y, z, n);
+      return precond2d_rls_absolute(x, y, z, n);
     case 3 + ABSOLUTE + RLS:
-      return relax3d_rls_absolute(x, y, z, n);
-    case 1 + BENDING:
-      return relax1d_bending(x, y, z, n);
-    case 2 + BENDING:
-      return relax2d_bending(x, y, z, n);
-    case 3 + BENDING:
-      return relax3d_bending(x, y, z, n);
-    case 1 + MEMBRANE:
-      return relax1d_membrane(x, y, z, n);
-    case 2 + MEMBRANE:
-      return relax2d_membrane(x, y, z, n);
-    case 3 + MEMBRANE:
-      return relax3d_membrane(x, y, z, n);
-    case 1 + ABSOLUTE:
-      return relax1d_absolute(x, y, z, n);
-    case 2 + ABSOLUTE:
-      return relax2d_absolute(x, y, z, n);
-    case 3 + ABSOLUTE:
-      return relax3d_absolute(x, y, z, n);
-    case 1: case 1 + RLS:
-      return solve1d(x, y, z, n);
-    case 2: case 2 + RLS:
-      return solve2d(x, y, z, n);
-    case 3: case 3 + RLS:
-      return solve3d(x, y, z, n);
+      return precond3d_rls_absolute(x, y, z, n);
     default:
-      return solve3d(x, y, z, n);
+      switch (dim) {
+        case 1:
+          return precond1d(x, y, z, n);
+        case 2: 
+          return precond2d(x, y, z, n);
+        default:
+          return precond3d(x, y, z, n);
+      }
   }
 #else
-  CALL_MEMBER_FN(*this, relax_)(x, y, z, n);
+  CALL_MEMBER_FN(*this, precond_)(x, y, z, n);
 #endif 
 }
 
-#if __CUDACC__
+#ifdef __CUDACC__
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::loop(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
-  if (bandwidth == 0)
-    return loop_redblack(threadIdx, blockIdx, blockDim, gridDim);
-  else
-    return loop_band(threadIdx, blockIdx, blockDim, gridDim);
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::loop_band(
-  int threadIdx, int blockIdx, int blockDim, int gridDim) const {
-
-  int64_t index = blockIdx * blockDim + threadIdx;
-  int64_t nthreads = N * Xf * Yf * Zf;
-  offset_t YZf   = Yf * Zf;
-  offset_t XYZf  = Xf * YZf;
-  offset_t n, x, y, z;
-  for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
-  {
-    // Convert index: linear to sub
-    n  = (i/XYZf);
-    x  = ((i/YZf) % Xf) * Fx + fx;
-    y  = ((i/Zf)  % Yf) * Fy + fy;
-    z  = (i       % Zf) * Fz + fz;
-    relax(x, y, z, n);
-  }
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::loop_redblack(
-  int threadIdx, int blockIdx, int blockDim, int gridDim) const {
-
-  int64_t index = blockIdx * blockDim + threadIdx;
-  int64_t nthreads = N * X * Y * Z;
+  offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
   offset_t YZ   = Y * Z;
   offset_t XYZ  = X * YZ;
+  offset_t NXYZ = N * XYZ;
   offset_t n, x, y, z;
-  for (offset_t i=index; index < nthreads; index += blockDim*gridDim, i=index)
+  for (offset_t i=index; index < NXYZ; index += blockDim*gridDim, i=index)
   {
-    // Convert index: linear to sub
-    n  = (i/XYZ);
-    x  = ((i/YZ) % X);
-    y  = ((i/Z)  % Y);
-    z  = (i      % Z);
-    if ((x+y+z) % 2 == redblack)
-      relax(x, y, z, n);
+      // Convert index: linear to sub
+      n  = (i/XYZ);
+      x  = (i/YZ) % X;
+      y  = (i/Z)  % Y;
+      z  =  i     % Z;
+      precond(x, y, z, n);
   }
 }
 
 #else
 
+// This bit loops over all target voxels. We therefore need to
+// convert linear indices to multivariate indices. The way I do it
+// might not be optimal.
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
-void RelaxImpl<scalar_t,offset_t,reduce_t>::loop()
-{
-  if (bandwidth == 0)
-    return loop_redblack();
-  else
-    return loop_band();
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
-void RelaxImpl<scalar_t,offset_t,reduce_t>::loop_redblack()
+void PrecondImpl<scalar_t,offset_t,reduce_t>::loop() const
 {
   // Parallelize across voxels
-  offset_t NXYZ = Z * Y * X * N;
-  offset_t XYZ  = Z * Y * X;
-  offset_t YZ   = Z * Y;
-
-  for (offset_t redblack = 0; redblack < 2; ++redblack) {
-    set_fold(redblack);
-    at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
-      offset_t n, x, y, z;
-      for (offset_t i = start; i < end; ++i) {
-        // Convert index: linear to sub
-        n  = (i/XYZ);
-        x  = (i/YZ) % X;
-        y  = (i/Z)  % Y;
-        z  = i % Z;
-        if ((x+y+z) % 2 == redblack)
-          relax(x, y, z, n);
-      }
-    });
-  }
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_HOST
-void RelaxImpl<scalar_t,offset_t,reduce_t>::loop_band()
-{
-  for (offset_t fold = 0; fold < Fx*Fy*Fz; ++fold) {
-    // Index of the fold
-    set_fold(fold);
-    offset_t   YZf =   Zf * Yf;
-    offset_t  XYZf =  YZf * Xf;
-    offset_t NXYZf = XYZf * N;
-    at::parallel_for(0, NXYZf, GRAIN_SIZE, [&](offset_t start, offset_t end) {
-      offset_t n, x, y, z;
-      for (offset_t i = start; i < end; ++i) {
-        // Convert index: linear to sub
-        n  = (i/XYZf);
-        x  = ((i/YZf) % Xf) * Fx + fx;
-        y  = ((i/Zf)  % Yf) * Fy + fy;
-        z  = (i       % Zf) * Fz + fz;
-        relax(x, y, z, n);
-      }
-    });
-  }
+  offset_t YZ   = Y * Z;
+  offset_t XYZ  = X * YZ;
+  offset_t NXYZ = N * XYZ;
+  at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
+    offset_t n, x, y, z;
+    for (offset_t i = start; i < end; ++i) {
+      // Convert index: linear to sub
+      n  = (i/XYZ);
+      x  = (i/YZ) % X;
+      y  = (i/Z)  % Y;
+      z  =  i     % Z;
+      precond(x, y, z, n);
+    }
+  });
 }
 
 #endif
@@ -766,7 +575,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::loop_band()
 // @param[inout]  a: CxC matrix
 // @param[out]    p: C vector
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::cholesky(reduce_t a[], reduce_t p[]) const
+void PrecondImpl<scalar_t,offset_t,reduce_t>::cholesky(reduce_t a[], reduce_t p[]) const
 {
   reduce_t sm, sm0;
 
@@ -798,7 +607,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::cholesky(reduce_t a[], reduce_t p[])
 // @param[in]    p: C vector
 // @param[inout] x: C vector
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::cholesky_solve(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::cholesky_solve(
     const reduce_t a[], const reduce_t p[], reduce_t x[]) const
 {
   reduce_t sm;
@@ -821,21 +630,9 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::cholesky_solve(
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                             Invert
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-// Our relaxation routines perform
-//      x += (H + diag(w)) \ ( g - (H + L) * x )
-// Often, g is the gradient, (H+L) is the Hessian where H is easy
-// to invert, x is the previous estimate and w is a stabilizing
-// constant (in our case, the diagonal of L)
-// This subroutines expects
-//      v = g - L * x
-// and performs
-//      v -= H * x
-//      x += (H + diag(w)) \ v
-// (k is a placeholder to store cholesky coefficients)
-
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::invert(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::invert(
     scalar_t * x, const scalar_t * h, reduce_t * v, const reduce_t * w) const 
 {
 #ifdef __CUDACC__
@@ -858,88 +655,43 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::invert(
 #endif 
 }
 
-#if 0
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::invert3(
-    scalar_t * x, const scalar_t * h, double * v, const double * w) const 
-{
-
-  double h00 = h[0],        h11 = h[  hes_sC], h22 = h[2*hes_sC],
-         h01 = h[3*hes_sC], h02 = h[4*hes_sC], h12 = h[5*hes_sC],
-         x0  = x[0],        x1  = x[  sol_sC], x2  = x[2*sol_sC],
-         idt;
-
-  // matvec
-  v[0] -= (h00*x0 + h01*x1 + h02*x2);
-  v[1] -= (h01*x0 + h11*x1 + h12*x2);
-  v[2] -= (h02*x0 + h12*x1 + h22*x2);
-
-  // solve
-  h00  = h00 + w[0];
-  h11  = h11 + w[1];
-  h22  = h22 + w[2];
-  idt  = 1.0/(h00*h11*h22 - h00*h12*h12 - h11*h02*h02 - h22*h01*h01 + 2*h01*h02*h12);
-  x[       0] += idt*(v[0]*(h11*h22-h12*h12) + v[1]*(h02*h12-h01*h22) + v[2]*(h01*h12-h02*h11));
-  x[  sol_sC] += idt*(v[0]*(h02*h12-h01*h22) + v[1]*(h00*h22-h02*h02) + v[2]*(h01*h02-h00*h12));
-  x[2*sol_sC] += idt*(v[0]*(h01*h12-h02*h11) + v[1]*(h01*h02-h00*h12) + v[2]*(h00*h11-h01*h01));
-}
-#endif
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_sym(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_sym(
     scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const {
 
-  reduce_t v_;
-  for (offset_t c = 0; c < C; ++c) {
-    // matvec (part of the forward pass)
-    v_ = v[c];
-    v_ = std::fma(-h[c*C+c], static_cast<reduce_t>(x[c*sol_sC]), v_);
-    for (offset_t cc = c+1; cc < C; ++cc)
-      v_ = std::fma(-h[c*C+cc], static_cast<reduce_t>(x[cc*sol_sC]), v_);
-    v[c] = v_;
-    // load diagonal
+  for (offset_t c = 0; c < C; ++c)
     h[c+C*c] += *(w++);
-  }
   reduce_t k[NI_MAX_NUM_CHANNELS];
   cholesky(h, k);            // cholesky decomposition
   cholesky_solve(h, k, v);   // solve linear system inplace
   for (offset_t c = 0; c < C; ++c, x += sol_sC)
-    *x += *(v++);
+    *x = *(v++);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_diag(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_diag(
     scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const 
 {
-  reduce_t x_, h_, v_;
   for (offset_t c = 0; c < C; ++c, x += sol_sC) {
-    x_ = static_cast<reduce_t>(*x);
-    h_ = *(h++);
-    v_ = *(v++);
-    v_ = std::fma(-h_, x_, v_);
-    *x = std::fma(v_,  1.0 / (h_ + *(w++)), x_);
+    *x = (*(v++)) / ((*(h++)) + *(w++));
   }
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_eye(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_eye(
     scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const 
 {
-  reduce_t h_ = *h, x_, v_;
-  for (offset_t c = 0; c < C; ++c, x += sol_sC) {
-    x_ = static_cast<reduce_t>(*x);
-    v_ = *(v++);
-    v_ = std::fma(-h_, x_, v_);
-    *x = std::fma(v_,  1.0 / (h_ + *(w++)), x_);
-  }
+  reduce_t h_ = *h;
+  for (offset_t c = 0; c < C; ++c, x += sol_sC)
+    *x = (*(v++)) / (h_ + *(w++));
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_none(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_none(
     scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const 
 {
   for (offset_t c = 0; c < C; ++c, x += sol_sC)
-    *x = std::fma(*(v++), 1.0 / *(w++), static_cast<reduce_t>(*x));
+    *x = (*(v++)) / (*(w++));
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -948,14 +700,14 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_none(
 
 #ifndef __CUDACC__
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h(
     const scalar_t * h, reduce_t * m) const {
   CALL_MEMBER_FN(*this, get_h_)(h, m);
 }
 #endif
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h_sym(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_sym(
     const scalar_t * hessian, reduce_t * mat) const {
   for (offset_t c = 0; c < C; ++c, hessian += hes_sC)
     mat[c+C*c] = (*hessian) * OnePlusTiny;
@@ -965,20 +717,20 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h_sym(
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h_diag(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_diag(
     const scalar_t * hessian, reduce_t * mat) const {
   for (offset_t c = 0; c < C; ++c, hessian += hes_sC)
     mat[c] = (*hessian) * OnePlusTiny;
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h_eye(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_eye(
     const scalar_t * hessian, reduce_t * mat) const {
   *mat = (*hessian) * OnePlusTiny;
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h_none(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_none(
     const scalar_t * hessian, reduce_t * mat) const 
 {}
 
@@ -1049,113 +801,21 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h_none(
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_bending(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
-  GET_COORD1
-  GET_COORD2
-  GET_SIGN1 
-  GET_SIGN2
-  GET_WARP1 
-  GET_WARP2
   GET_POINTERS
 
   reduce_t val[NI_MAX_NUM_CHANNELS];
-  const reduce_t *a = absolute, *m = membrane, *b = bending;
-  reduce_t aa, mm, bb;
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC)
+    val[c] = *grd;
 
-  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
-  {
-    scalar_t center = *sol; 
-    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
-    {
-      return bound::get(x, o, s) - center;
-    };
-
-    aa = *(a++);
-    mm = *(m++);
-    bb = *(b++);
-
-    reduce_t w100 = mm * m100 + bb * b100;
-    reduce_t w010 = mm * m010 + bb * b010;
-    reduce_t w001 = mm * m001 + bb * b001;
-
-    val[c] = (*grd) - (
-          aa * center
-        + w100*(get(sol, x0,    sx0)     + get(sol, x1,    sx1))
-        + w010*(get(sol, y0,    sy0)     + get(sol, y1,    sy1))
-        + w001*(get(sol, z0,    sz0)     + get(sol, z1,    sz1))
-        + bb * (
-            b110*(get(sol, x0+y0, sx0*sy0) + get(sol, x1+y0, sx1*sy0) +
-                  get(sol, x0+y1, sx0*sy1) + get(sol, x1+y1, sx1*sy1))
-          + b101*(get(sol, x0+z0, sx0*sz0) + get(sol, x1+z0, sx1*sz0) +
-                  get(sol, x0+z1, sx0*sz1) + get(sol, x1+z1, sx1*sz1))
-          + b011*(get(sol, y0+z0, sy0*sz0) + get(sol, y1+z0, sy1*sz0) +
-                  get(sol, y0+z1, sy0*sz1) + get(sol, y1+z1, sy1*sz1))
-          + b200*(get(sol, x00,   sx00)    + get(sol, x11,   sx11))
-          + b020*(get(sol, y00,   sy00)    + get(sol, y11,   sy11))
-          + b002*(get(sol, z00,   sz00)    + get(sol, z11,   sz11)) )
-    );
-  }
-
-  sol -= C*sol_sC;
   invert(sol, hes, val, w000);
 }
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_membrane(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
-{
-  GET_COORD1
-  GET_SIGN1 
-  GET_WARP1 
-  GET_POINTERS
-
-  reduce_t val[NI_MAX_NUM_CHANNELS];
-  const reduce_t *a = absolute, *m = membrane;
-
-  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
-  {
-    scalar_t center = *sol; 
-    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
-    {
-      return bound::get(x, o, s) - center;
-    };
-
-    val[c] = (*grd) - (
-          (*(a++)) * center
-        + (*(m++)) * (
-            m100*(get(sol, x0, sx0) + get(sol, x1, sx1))
-          + m010*(get(sol, y0, sy0) + get(sol, y1, sy1))
-          + m001*(get(sol, z0, sz0) + get(sol, z1, sz1)) )
-    );
-  }
-
-  sol -= C*sol_sC;
-  invert(sol, hes, val, w000);
-
-}
-
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_absolute(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
-{
-  GET_POINTERS
-  reduce_t val[NI_MAX_NUM_CHANNELS];
-
-  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
-    val[c] = (*grd) - ( absolute[c] * (*sol) );
-
-  sol -= C*sol_sC;
-  invert(sol, hes, val, w000);
-}
-
-
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_COORD1
@@ -1169,8 +829,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
 
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
-  for (offset_t c = 0; c < C; 
-       ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
   {
     scalar_t wcenter = *wgt;
     reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
@@ -1180,51 +839,32 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
     reduce_t w001m = m001 * (wcenter + bound::get(wgt, wz0, sz0));
     reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
 
-    scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
-    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
-    {
-      return bound::get(x, o, s) - center;
-    };
-
     aa = *(a++);
     mm = *(m++);
 
-    val[c] = (*grd) - (
-        aa * wcenter * center
-      + mm * (
-          w1m00 * get(sol, x0, sx0)
-        + w1p00 * get(sol, x1, sx1)
-        + w01m0 * get(sol, y0, sy0)
-        + w01p0 * get(sol, y1, sy1)
-        + w001m * get(sol, z0, sz0)
-        + w001p * get(sol, z1, sz1) )
-    );
-
+    val[c] = *grd;
     wval[c] = ( aa * wcenter
               + mm * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p) );
   }
 
-  sol -= C*sol_sC;
   invert(sol, hes, val, wval);
 }
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_absolute(
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
   GET_POINTERS
   reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
-  for (offset_t c = 0; c < C; 
-       ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC) {
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
     scalar_t wcenter = *wgt;
-    val[c]  = (*grd) - ( absolute[c] * wcenter * (*sol) );
+    val[c]  = *grd;
     wval[c] = absolute[c] * wcenter;
   }
 
-  sol -= C*sol_sC;
   invert(sol, hes, val, wval);
 }
 
@@ -1235,42 +875,22 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_absolute(
 /* ========================================================================== */
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_bending(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
 
 /* ========================================================================== */
 /*                                     1D                                     */
 /* ========================================================================== */
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_bending(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-
-
-/* ========================================================================== */
-/*                                     SOLVE                                  */
-/* ========================================================================== */
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::solve1d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::solve2d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::solve3d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1281,7 +901,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::solve3d(offset_t x, offset_t y, offs
 // CUDA Kernel
 template <typename scalar_t, typename offset_t, typename reduce_t>
 C10_LAUNCH_BOUNDS_1(1024)
-__global__ void relax_kernel(RelaxImpl<scalar_t,offset_t,reduce_t> * f) {
+__global__ void precond_kernel(PrecondImpl<scalar_t,offset_t,reduce_t> * f) {
   f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
 #endif
@@ -1327,69 +947,40 @@ prepare_tensors(const Tensor & gradient,
 
 #ifdef __CUDACC__
 
-template <typename offset_t, typename T, typename Stream>
-void copy_fold_info_to_device(const T & obj, T * ptr, Stream stream)
-{
-  // Super hacky !!!
-  // we copy the first 7 fields of the object to device
-  // [fx fy fz Xf Yf Zf redblack]
-  auto field_ptr_in  = reinterpret_cast<const offset_t *>(&obj);
-  auto field_ptr_out = reinterpret_cast<offset_t *>(ptr);
-  
-  cudaMemcpyAsync(field_ptr_out, field_ptr_in, 7*sizeof(offset_t), 
-                  cudaMemcpyHostToDevice, stream);
-}
-
 // ~~~ CUDA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-NI_HOST Tensor relax_impl(
+NI_HOST Tensor Precond_impl(
   Tensor hessian, const Tensor& gradient, Tensor solution, Tensor weight,
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending, 
-  ArrayRef<double> voxel_size, BoundVectorRef bound, int64_t nb_iter)
+  ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
   auto tensors = prepare_tensors(gradient, hessian, solution, weight);
   hessian  = std::get<0>(tensors);
   solution = std::get<1>(tensors);
   weight   = std::get<2>(tensors);
 
-  RelaxAllocator info(gradient.dim()-2, absolute, membrane, bending,
+  PrecondAllocator info(gradient.dim()-2, absolute, membrane, bending,
                       voxel_size, bound);
   info.ioset(hessian, gradient, solution, weight);
   auto stream = at::cuda::getCurrentCUDAStream();
 
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(gradient.scalar_type(), "relax_impl", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND_HALF(gradient.scalar_type(), "precond_impl", [&] {
     if (info.canUse32BitIndexMath())
     {
-      using Impl = RelaxImpl<scalar_t, int32_t, double>;
-      Impl   algo(info);
-      Impl * palgo = alloc_and_copy_to_device(algo, stream);
-      for (int32_t i=0; i < nb_iter; ++i)
-        for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
-            algo.set_fold(fold);
-            //copy_to_device(algo, palgo, stream);
-            copy_fold_info_to_device<int32_t>(algo, palgo, stream);
-            relax_kernel
-              <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
-              (palgo);
-            cudaStreamSynchronize(stream);
-        }
+      RegulariserImpl<scalar_t, int32_t, double> algo(info);
+      auto palgo = alloc_and_copy_to_device(algo, stream);
+      precond_kernel
+          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
+          (palgo);
       cudaFree(palgo);
     }
     else
     {
-      using Impl = RelaxImpl<scalar_t, int64_t, double>;
-      Impl   algo(info);
-      Impl * palgo = alloc_and_copy_to_device(algo, stream);
-      for (int64_t i=0; i < nb_iter; ++i)
-        for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
-            algo.set_fold(fold);
-            // copy_to_device(algo, palgo, stream);
-            copy_fold_info_to_device<int64_t>(algo, palgo, stream);
-            relax_kernel
-              <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
-              (palgo);
-            cudaStreamSynchronize(stream);
-        }
+      RegulariserImpl<scalar_t, int64_t, double> algo(info);
+      auto palgo = alloc_and_copy_to_device(algo, stream);
+      precond_kernel
+          <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
+          (palgo);
       cudaFree(palgo);
     }
   });
@@ -1400,24 +991,23 @@ NI_HOST Tensor relax_impl(
 
 // ~~~ CPU ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-NI_HOST Tensor relax_impl(
+NI_HOST Tensor precond_impl(
   Tensor hessian, const Tensor& gradient, Tensor solution, Tensor weight,
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending, 
-  ArrayRef<double> voxel_size, BoundVectorRef bound, int64_t nb_iter)
+  ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
   auto tensors = prepare_tensors(gradient, hessian, solution, weight);
   hessian  = std::get<0>(tensors);
   solution = std::get<1>(tensors);
   weight   = std::get<2>(tensors);
 
-  RelaxAllocator info(gradient.dim()-2, absolute, membrane, bending,
+  PrecondAllocator info(gradient.dim()-2, absolute, membrane, bending,
                       voxel_size, bound);
   info.ioset(hessian, gradient, solution, weight);
 
-  AT_DISPATCH_FLOATING_TYPES(gradient.scalar_type(), "relax_impl", [&] {
-    RelaxImpl<scalar_t, int64_t, double> algo(info);
-    for (int64_t i=0; i < nb_iter; ++i)
-      algo.loop();
+  AT_DISPATCH_FLOATING_TYPES(gradient.scalar_type(), "precond_impl", [&] {
+    PrecondImpl<scalar_t, int64_t, double> algo(info);
+    algo.loop();
   });
   return solution;
 }
@@ -1430,10 +1020,10 @@ NI_HOST Tensor relax_impl(
 
 namespace notimplemented {
 
-NI_HOST Tensor relax_impl(
+NI_HOST Tensor precond_impl(
   Tensor hessian, const Tensor& gradient, Tensor solution, Tensor weight,
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending,
-  ArrayRef<double> voxel_size, BoundVectorRef bound, int64_t nb_iter)
+  ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
   throw std::logic_error("Function not implemented for this device.");
 }
