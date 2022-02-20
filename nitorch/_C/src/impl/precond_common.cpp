@@ -949,7 +949,7 @@ prepare_tensors(const Tensor & gradient,
 
 // ~~~ CUDA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-NI_HOST Tensor Precond_impl(
+NI_HOST Tensor precond_impl(
   Tensor hessian, const Tensor& gradient, Tensor solution, Tensor weight,
   ArrayRef<double> absolute, ArrayRef<double> membrane, ArrayRef<double> bending, 
   ArrayRef<double> voxel_size, BoundVectorRef bound)
