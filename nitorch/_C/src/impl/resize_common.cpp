@@ -468,8 +468,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return resize2d_nearest(x, y, z, n);
           case LIN:
             return resize2d_linear(x, y, z, n);
-          // case QUD:
-          //   return resize2d_quadratic(x, y, z, n);
+          case QUD:
+            return resize2d_quadratic(x, y, z, n);
           default:
             return resize2d(x, y, z, n);
         }
@@ -1027,16 +1027,16 @@ void ResizeImpl<scalar_t,offset_t>::restrict1d_quadratic(offset_t w, offset_t h,
   offset_t o000, o100, o010, o001, o110, o011, o101, o111; \
   o000 = ix0 + iy0; \
   o001 = o000 + iz1; \
-  o000 *= iz0; \
+  o000 += iz0; \
   o010 = ix0 + iy1; \
   o011 = o010 + iz1; \
-  o010 *= iz0; \
+  o010 += iz0; \
   o100 = ix1 + iy0; \
   o101 = o100 + iz1; \
-  o100 *= iz0; \
+  o100 += iz0; \
   o110 = ix1 + iy1; \
   o111 = o110 + iz1; \
-  o110 *= iz0; \
+  o110 += iz0; \
   scalar_t *tgt_ptr_NCXYZ = tgt_ptr                   \
                           + n * tgt_sN + w * tgt_sX   \
                           + h * tgt_sY + d * tgt_sZ;  \

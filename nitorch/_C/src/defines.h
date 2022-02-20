@@ -2,7 +2,7 @@
 
 
 #ifndef NI_MAX_NUM_CHANNELS
-# 	define NI_MAX_NUM_CHANNELS 128
+#  define NI_MAX_NUM_CHANNELS 128
 #endif
 
 #define CALL_MEMBER_FN(object,ptrToMember) ((object).*(ptrToMember))
@@ -28,8 +28,8 @@
 #define DEC_9 8
 
 #ifdef NI_DEBUG
-# 	include <cstdio>
-# 	define NI_TRACE(...) printf(__VA_ARGS__)
+#  include <cstdio>
+#  define NI_TRACE(...) printf(__VA_ARGS__)
 #else 
-# 	define NI_TRACE(...) {}
+#  define NI_TRACE(...) {}
 #endif
