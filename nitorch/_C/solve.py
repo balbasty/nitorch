@@ -112,8 +112,8 @@ if COMPILED_BACKEND == 'C':
     def c_relax(gradient, weight=None, hessian=None,
                 absolute=0, membrane=0, bending=0,
                 voxel_size=1, bound='dct2', nb_iter=2, output=None):
-        """Apply the forward pass of a regularised linear system
-                output = (hessian + regulariser) @ input
+        """Solve a regularised linear system by relaxation (Gauss-Seidel)
+                solution = (hessian + regulariser) \ gradient
 
         Parameters
         ----------
@@ -154,8 +154,8 @@ if COMPILED_BACKEND == 'C':
     def c_pcg(gradient, weight=None, hessian=None,
               absolute=0, membrane=0, bending=0,
               voxel_size=1, bound='dct2', nb_iter=2, output=None):
-        """Apply the forward pass of a regularised linear system
-                output = (hessian + regulariser) @ input
+        """Solve a regularised linear system by conjugate gradient
+                solution = (hessian + regulariser) \ gradient
 
         Parameters
         ----------
@@ -198,22 +198,22 @@ if COMPILED_BACKEND == 'C':
               voxel_size=1, bound='dct2',
               nb_cycles=2, nb_iter=2, max_levels=16,
               solver='relax', output=None):
-        """Apply the forward pass of a regularised linear system
-                output = (hessian + regulariser) @ input
+        """Solve a regularised linear system by full multi-grid
+                solution = (hessian + regulariser) \ gradient
 
         Parameters
         ----------
+        hessian : (N, CC, *shape) tensor
+            CC is one of {1, C, C*(C+1)/2}
         gradient : (N, C, *shape) tensor
         weight : (N, C|1, *shape) tensor, optional
-        hessian : (N, CC, *shape) tensor, optional
-            CC is one of {1, C, C*(C+1)/2}
         absolute : [sequence of] float, default=0
         membrane : [sequence of] float, default=0
         bending : [sequence of] float, default=0
         voxel_size : [sequence of] float, default=1.
         bound : [sequence of] bound_like, default='dct2'
-        nb_iter : int, default=2
         nb_cycles : int, default=2
+        nb_iter : int, default=2
         max_levels : int, default=16
         solver : {'relax', 'cg'}, default='relax'
         output : (N, C, *shape) tensor, optional
@@ -246,23 +246,23 @@ if COMPILED_BACKEND == 'C':
                    voxel_size=1, bound='dft',
                    nb_cycles=2, nb_iter=2, max_levels=16,
                    output=None):
-        """Apply the forward pass of a regularised linear system
-                output = (hessian + regulariser) @ input
+        """Solve a regularised linear system by full multi-grid
+                solution = (hessian + regulariser) \ gradient
 
         Parameters
         ----------
+        hessian : (N, *shape, DD) tensor
+            DD is one of {1, D, D*(D+1)/2}
         gradient : (N, *shape, D) tensor
         weight : (N, *shape) tensor, optional
-        hessian : (N, *shape, DD) tensor, optional
-            DD is one of {1, D, D*(D+1)/2}
         absolute : float, default=0
         membrane : float, default=0
         bending : float, default=0
         lame : (float, float), default=0
         voxel_size : [sequence of] float, default=1.
         bound : [sequence of] bound_like, default='dft'
-        nb_iter : int, default=2
         nb_cycles : int, default=2
+        nb_iter : int, default=2
         max_levels : int, default=16
         output : (N, C, *shape) tensor, optional
 
