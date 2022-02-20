@@ -967,7 +967,7 @@ NI_HOST Tensor Precond_impl(
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(gradient.scalar_type(), "precond_impl", [&] {
     if (info.canUse32BitIndexMath())
     {
-      RegulariserImpl<scalar_t, int32_t, double> algo(info);
+      PrecondImpl<scalar_t, int32_t, double> algo(info);
       auto palgo = alloc_and_copy_to_device(algo, stream);
       precond_kernel
           <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
@@ -976,7 +976,7 @@ NI_HOST Tensor Precond_impl(
     }
     else
     {
-      RegulariserImpl<scalar_t, int64_t, double> algo(info);
+      PrecondImpl<scalar_t, int64_t, double> algo(info);
       auto palgo = alloc_and_copy_to_device(algo, stream);
       precond_kernel
           <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
