@@ -341,20 +341,26 @@ Tensor fmg_grid(const Tensor & hessian,
                 const vector<BoundType> & bound,
                 int64_t nb_cycles,
                 int64_t nb_iter,
-                int64_t max_levels)
+                int64_t max_levels,
+                bool use_cg)
 {
   int64_t dim = gradient.dim() - 2;
 
   /* ---------------- function handles ---------------------- */
   auto relax_ = [absolute, membrane, bending, lame_shear, lame_div, 
-                 bound, nb_iter]
+                 bound, nb_iter, use_cg]
                 (const Tensor & hessian, const Tensor & gradient,
                  const Tensor & solution, const Tensor & weight,
                  const vector<double> & voxel_size)
   {
-    relax_grid(hessian, gradient, solution, weight, 
+    if (use_cg)
+      pcg_grid(hessian, gradient, solution, weight, 
                absolute, membrane, bending, lame_shear, lame_div,
                voxel_size, bound, nb_iter);
+    else
+      relax_grid(hessian, gradient, solution, weight, 
+                 absolute, membrane, bending, lame_shear, lame_div,
+                 voxel_size, bound, nb_iter);
   };
   auto prolong_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
@@ -383,7 +389,7 @@ Tensor fmg_grid(const Tensor & hessian,
   auto restrict_g_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
     if (!o.defined() || o.numel() == 0)
-      return;
+      return;;
     restriction(x, o, bound);
     Tensor view;
     switch (dim) {  // there are no breaks on purpose

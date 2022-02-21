@@ -263,7 +263,7 @@ if COMPILED_BACKEND == 'C':
               absolute=0, membrane=0, bending=0, factor=1,
               voxel_size=1, bound='dct2',
               nb_cycles=2, nb_iter=2, max_levels=16,
-              solver='relax', output=None):
+              solver='cg', output=None):
         """Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
 
@@ -315,7 +315,7 @@ if COMPILED_BACKEND == 'C':
                    absolute=0, membrane=0, bending=0, lame=0, factor=1,
                    voxel_size=1, bound='dft',
                    nb_cycles=2, nb_iter=2, max_levels=16,
-                   output=None):
+                   solver='cg', output=None):
         """Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
 
@@ -334,6 +334,7 @@ if COMPILED_BACKEND == 'C':
         nb_cycles : int, default=2
         nb_iter : int, default=2
         max_levels : int, default=16
+        solver : {'relax', 'cg'}, default='relax'
         output : (N, *shape, D) tensor, optional
 
         Returns
@@ -366,5 +367,6 @@ if COMPILED_BACKEND == 'C':
             raise ValueError('RLS only implemented for membrane or absolute')
         output = _c_fmg_grid(hessian, gradient, output, weight, absolute,
                              membrane, bending, lame_shear, lame_div, voxel_size,
-                             bound, int(nb_cycles), int(nb_iter), int(max_levels))
+                             bound, int(nb_cycles), int(nb_iter), int(max_levels),
+                             bool(solver == 'cg'))
         return movedim(output, 1, -1)

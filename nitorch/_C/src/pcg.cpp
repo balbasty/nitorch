@@ -3,6 +3,7 @@
 #include "defines.h"
 #include "bounds.h"
 #include "precond.h"
+#include "precond_grid.h"
 #include "regulariser.h"
 #include "regulariser_grid.h"
 
@@ -90,6 +91,44 @@ Tensor pcg(const Tensor & hessian,
   {
     precond(hessian, gradient, output, weight, 
             absolute, membrane, bending, voxel_size, bound);
+  };
+
+  /* ------------------------ PCG algorithm ------------------ */
+  solution = init_solution(solution, gradient);
+  do_pcg(hessian, gradient, solution, weight, nb_iter, forward_, precond_);
+
+  return solution;
+}
+
+Tensor pcg_grid(
+           const Tensor & hessian, 
+           const Tensor & gradient,
+                 Tensor   solution,
+           const Tensor & weight,
+           double  absolute, 
+           double  membrane, 
+           double  bending,
+           double  lame_shear,
+           double  lame_div,
+           const vector<double> &  voxel_size, 
+           const vector<BoundType> & bound,
+           int64_t nb_iter)
+{
+
+  /* ---------------- function handles ---------------------- */
+  auto forward_ = [absolute, membrane, bending, lame_shear, lame_div, bound, voxel_size]
+                  (const Tensor & hessian, const Tensor & input,
+                   const Tensor & weight,  const Tensor & output)
+  {
+    regulariser_grid(input, output, weight, hessian,
+                     absolute, membrane, bending, lame_shear, lame_div, voxel_size, bound);
+  };
+  auto precond_ = [absolute, membrane, bending, lame_shear, lame_div, bound, voxel_size]
+                  (const Tensor & hessian, const Tensor & gradient,
+                   const Tensor & weight, const Tensor & output)
+  {
+    precond_grid(hessian, gradient, output, weight, 
+                 absolute, membrane, bending, lame_shear, lame_div, voxel_size, bound);
   };
 
   /* ------------------------ PCG algorithm ------------------ */

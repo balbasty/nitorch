@@ -300,6 +300,7 @@ public:
 
     // TODO: correct for 1d/2d cases
 
+    w000  *= OnePlusTiny;
     wx000 *= OnePlusTiny;
     wy000 *= OnePlusTiny;
     wz000 *= OnePlusTiny;
@@ -333,74 +334,68 @@ public:
 #ifndef __CUDACC__
   NI_HOST NI_INLINE void set_relax() 
   {
-    if (wgt_ptr)
-    {
-      if (bending || lame_div || lame_shear)
-        throw std::logic_error("RLS only implemented for absolute/membrane.");
-      else if (dim == 1) {
-        if (membrane)
-            relax_ = &Self::relax1d_rls_membrane;
-        else if (absolute)
-            relax_ = &Self::relax1d_rls_absolute;
-        else
-            relax_ = &Self::solve1d;
-      } else if (dim == 2) {
-        if (membrane)
-            relax_ = &Self::relax2d_rls_membrane;
-        else if (absolute)
-            relax_ = &Self::relax2d_rls_absolute;
-        else
-            relax_ = &Self::solve2d;
-      } else if (dim == 3) {
-        if (membrane)
-            relax_ = &Self::relax3d_rls_membrane;
-        else if (absolute)
-            relax_ = &Self::relax3d_rls_absolute;
-        else
-            relax_ = &Self::solve3d;
-      }
+#   define ABSOLUTE 4
+#   define MEMBRANE 8
+#   define BENDING  12
+#   define LAME     16
+#   define RLS      32
+    switch (mode) {
+      case 1 + MEMBRANE + RLS:
+        relax_ = &Self::relax1d_rls_membrane; break;
+      case 2 + MEMBRANE + RLS:
+        relax_ = &Self::relax2d_rls_membrane; break;
+      case 3 + MEMBRANE + RLS:
+        relax_ = &Self::relax3d_rls_membrane; break;
+      case 1 + ABSOLUTE + RLS:
+        relax_ = &Self::relax1d_rls_absolute; break;
+      case 2 + ABSOLUTE + RLS:
+        relax_ = &Self::relax2d_rls_absolute; break;
+      case 3 + ABSOLUTE + RLS:
+        relax_ = &Self::relax3d_rls_absolute; break;
+      case 1 + BENDING + LAME:
+        relax_ = &Self::relax1d_all; break;
+      case 2 + BENDING + LAME:
+        relax_ = &Self::relax2d_all; break;
+      case 3 + BENDING + LAME:
+        NI_TRACE("relax3d_all\n");
+        relax_ = &Self::relax3d_all; break;
+      case 1 + BENDING:
+        relax_ = &Self::relax1d_bending; break;
+      case 2 + BENDING:
+        relax_ = &Self::relax2d_bending; break;
+      case 3 + BENDING:
+        NI_TRACE("relax3d_bending\n");
+        relax_ = &Self::relax3d_bending; break;
+      case 1 + LAME: case 1 + LAME + MEMBRANE: case 1 + LAME + ABSOLUTE:
+        relax_ = &Self::relax1d_lame; break;
+      case 2 + LAME: case 2 + LAME + MEMBRANE: case 2 + LAME + ABSOLUTE:
+        relax_ = &Self::relax2d_lame; break;
+      case 3 + LAME: case 3 + LAME + MEMBRANE: case 3 + LAME + ABSOLUTE:
+        NI_TRACE("relax3d_lame\n");
+        relax_ = &Self::relax3d_lame; break;
+      case 1 + MEMBRANE:
+        relax_ = &Self::relax1d_membrane; break;
+      case 2 + MEMBRANE:
+        relax_ = &Self::relax2d_membrane; break;
+      case 3 + MEMBRANE:
+        NI_TRACE("relax3d_membrane\n");
+        relax_ = &Self::relax3d_membrane; break;
+      case 1 + ABSOLUTE:
+        relax_ = &Self::relax1d_absolute; break;
+      case 2 + ABSOLUTE:
+        relax_ = &Self::relax2d_absolute; break;
+      case 3 + ABSOLUTE:
+        NI_TRACE("relax3d_absolute\n");
+        relax_ = &Self::relax3d_absolute; break;
+      case 1: case 1 + RLS:
+        relax_ = &Self::solve1d; break;
+      case 2: case 2 + RLS:
+        relax_ = &Self::solve2d; break;
+      case 3: case 3 + RLS:
+        relax_ = &Self::solve3d; break;
+      default:
+        relax_ = &Self::solve3d; break;
     }
-    else if (dim == 1) {
-        if ((lame_shear or lame_div) and bending)
-            relax_ = &Self::relax1d_all;
-        else if (lame_shear or lame_div)
-            relax_ = &Self::relax1d_lame;
-        else if (bending)
-            relax_ = &Self::relax1d_bending;
-        else if (membrane)
-            relax_ = &Self::relax1d_membrane;
-        else if (absolute)
-            relax_ = &Self::relax1d_absolute;
-        else
-            relax_ = &Self::solve1d;
-    } else if (dim == 2) {
-        if ((lame_shear or lame_div) and bending)
-            relax_ = &Self::relax2d_all;
-        else if (lame_shear or lame_div)
-            relax_ = &Self::relax2d_lame;
-        else if (bending)
-            relax_ = &Self::relax2d_bending;
-        else if (membrane)
-            relax_ = &Self::relax2d_membrane;
-        else if (absolute)
-            relax_ = &Self::relax2d_absolute;
-        else
-            relax_ = &Self::solve2d;
-    } else if (dim == 3) {
-        if ((lame_shear or lame_div) and bending)
-            relax_ = &Self::relax3d_all;
-        else if (lame_shear or lame_div)
-            relax_ = &Self::relax3d_lame;
-        else if (bending)
-            relax_ = &Self::relax3d_bending;
-        else if (membrane)
-            relax_ = &Self::relax3d_membrane;
-        else if (absolute)
-            relax_ = &Self::relax3d_absolute;
-        else
-            relax_ = &Self::solve3d;
-    } else
-        throw std::logic_error("RLS only implemented for dimension 1/2/3.");
   }
 
   NI_HOST NI_INLINE void set_invert() 
@@ -645,11 +640,11 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax(
       return relax2d_bending(x, y, z, n);
     case 3 + BENDING:
       return relax3d_bending(x, y, z, n);
-    case 1 + LAME:
+    case 1 + LAME: case 1 + LAME + MEMBRANE: case 1 + LAME + ABSOLUTE:
       return relax1d_lame(x, y, z, n);
-    case 2 + LAME:
+    case 2 + LAME: case 2 + LAME + MEMBRANE: case 2 + LAME + ABSOLUTE:
       return relax2d_lame(x, y, z, n);
-    case 3 + LAME:
+    case 3 + LAME: case 3 + LAME + MEMBRANE: case 3 + LAME + ABSOLUTE:
       return relax3d_lame(x, y, z, n);
     case 1 + MEMBRANE:
       return relax1d_membrane(x, y, z, n);
@@ -1103,11 +1098,11 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_all(
               + bound::get(sol2, x0+z1, sx0*sz1) - bound::get(sol2, x0+z0, sx0*sz0) )
       + ( absolute*c
         + w110*(get(sol0, x0+y0, sx0*sy0) + get(sol0, x1+y0, sx1*sy0) +
-                get(sol0, x0+y1, sx1*sy1) + get(sol0, x1+y1, sx1*sy1))
+                get(sol0, x0+y1, sx0*sy1) + get(sol0, x1+y1, sx1*sy1))
         + w101*(get(sol0, x0+z0, sx0*sz0) + get(sol0, x1+z0, sx1*sz0) +
-                get(sol0, x0+z1, sx1*sz1) + get(sol0, x1+z1, sx1*sz1))
+                get(sol0, x0+z1, sx0*sz1) + get(sol0, x1+z1, sx1*sz1))
         + w011*(get(sol0, y0+z0, sy0*sz0) + get(sol0, y1+z0, sy1*sz0) +
-                get(sol0, y0+z1, sy1*sz1) + get(sol0, y1+z1, sy1*sz1))
+                get(sol0, y0+z1, sy0*sz1) + get(sol0, y1+z1, sy1*sz1))
         + w200*(get(sol0, x00,   sx00)    + get(sol0, x11,   sx11))
         + w020*(get(sol0, y00,   sy00)    + get(sol0, y11,   sy11))
         + w002*(get(sol0, z00,   sz00)    + get(sol0, z11,   sz11)) ) / vx0
@@ -1131,11 +1126,11 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_all(
               + bound::get(sol2, y0+z1, sy0*sz1) - bound::get(sol2, y0+z0, sy0*sz0) )
       + ( absolute*c
         + w110*(get(sol1, x0+y0, sx0*sy0) + get(sol1, x1+y0, sx1*sy0) +
-                get(sol1, x0+y1, sx1*sy1) + get(sol1, x1+y1, sx1*sy1))
+                get(sol1, x0+y1, sx0*sy1) + get(sol1, x1+y1, sx1*sy1))
         + w101*(get(sol1, x0+z0, sx0*sz0) + get(sol1, x1+z0, sx1*sz0) +
-                get(sol1, x0+z1, sx1*sz1) + get(sol1, x1+z1, sx1*sz1))
+                get(sol1, x0+z1, sx0*sz1) + get(sol1, x1+z1, sx1*sz1))
         + w011*(get(sol1, y0+z0, sy0*sz0) + get(sol1, y1+z0, sy1*sz0) +
-                get(sol1, y0+z1, sy1*sz1) + get(sol1, y1+z1, sy1*sz1))
+                get(sol1, y0+z1, sy0*sz1) + get(sol1, y1+z1, sy1*sz1))
         + w200*(get(sol1, x00,   sx00)    + get(sol1, x11,   sx11))
         + w020*(get(sol1, y00,   sy00)    + get(sol1, y11,   sy11))
         + w002*(get(sol1, z00,   sz00)    + get(sol1, z11,   sz11)) ) / vx1
@@ -1178,7 +1173,6 @@ template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_lame(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
-
   GET_COORD1
   GET_SIGN1 
   GET_WARP1
@@ -1250,7 +1244,6 @@ template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_bending(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
-
   GET_COORD1
   GET_COORD2
   GET_SIGN1 
@@ -1270,18 +1263,18 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_bending(
 
     val0 = (*grd0) - (
         ( absolute*c
-        + (w100*(get(sol0, x0,    sx0)     + get(sol0, x1,    sx1))
+        +  w100*(get(sol0, x0,    sx0)     + get(sol0, x1,    sx1))
         +  w010*(get(sol0, y0,    sy0)     + get(sol0, y1,    sy1))
-        +  w001*(get(sol0, z0,    sz0)     + get(sol0, z1,    sz1)))
-        + (w110*(get(sol0, x0+y0, sx0*sy0) + get(sol0, x1+y0, sx1*sy0) +
-                 get(sol0, x0+y1, sx1*sy1) + get(sol0, x1+y1, sx1*sy1))
-        +  w101*(get(sol0, x0+z0, sx0*sz0) + get(sol0, x1+z0, sx1*sz0) +
-                 get(sol0, x0+z1, sx1*sz1) + get(sol0, x1+z1, sx1*sz1))
-        +  w011*(get(sol0, y0+z0, sy0*sz0) + get(sol0, y1+z0, sy1*sz0) +
-                 get(sol0, y0+z1, sy1*sz1) + get(sol0, y1+z1, sy1*sz1)))
-        + (w200*(get(sol0, x00,   sx00)    + get(sol0, x11,   sx11))
+        +  w001*(get(sol0, z0,    sz0)     + get(sol0, z1,    sz1))
+        +  w200*(get(sol0, x00,   sx00)    + get(sol0, x11,   sx11))
         +  w020*(get(sol0, y00,   sy00)    + get(sol0, y11,   sy11))
-        +  w002*(get(sol0, z00,   sz00)    + get(sol0, z11,   sz11))) ) / vx0
+        +  w002*(get(sol0, z00,   sz00)    + get(sol0, z11,   sz11))
+        +  w110*(get(sol0, x0+y0, sx0*sy0) + get(sol0, x1+y0, sx1*sy0) +
+                 get(sol0, x0+y1, sx0*sy1) + get(sol0, x1+y1, sx1*sy1))
+        +  w101*(get(sol0, x0+z0, sx0*sz0) + get(sol0, x1+z0, sx1*sz0) +
+                 get(sol0, x0+z1, sx0*sz1) + get(sol0, x1+z1, sx1*sz1))
+        +  w011*(get(sol0, y0+z0, sy0*sz0) + get(sol0, y1+z0, sy1*sz0) +
+                 get(sol0, y0+z1, sy0*sz1) + get(sol0, y1+z1, sy1*sz1)) ) / vx0
     );
   }
 
@@ -1294,18 +1287,18 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_bending(
 
     val1 = (*grd1) - (
         ( absolute*c
-        + (w100*(get(sol1, x0,    sx0)     + get(sol1, x1,    sx1))
+        +  w100*(get(sol1, x0,    sx0)     + get(sol1, x1,    sx1))
         +  w010*(get(sol1, y0,    sy0)     + get(sol1, y1,    sy1))
-        +  w001*(get(sol1, z0,    sz0)     + get(sol1, z1,    sz1)))
-        + (w110*(get(sol1, x0+y0, sx0*sy0) + get(sol1, x1+y0, sx1*sy0) +
-                 get(sol1, x0+y1, sx1*sy1) + get(sol1, x1+y1, sx1*sy1))
-        +  w101*(get(sol1, x0+z0, sx0*sz0) + get(sol1, x1+z0, sx1*sz0) +
-                 get(sol1, x0+z1, sx1*sz1) + get(sol1, x1+z1, sx1*sz1))
-        +  w011*(get(sol1, y0+z0, sy0*sz0) + get(sol1, y1+z0, sy1*sz0) +
-                 get(sol1, y0+z1, sy1*sz1) + get(sol1, y1+z1, sy1*sz1)))
-        + (w200*(get(sol1, x00,   sx00)    + get(sol1, x11,   sx11))
+        +  w001*(get(sol1, z0,    sz0)     + get(sol1, z1,    sz1))
+        +  w200*(get(sol1, x00,   sx00)    + get(sol1, x11,   sx11))
         +  w020*(get(sol1, y00,   sy00)    + get(sol1, y11,   sy11))
-        +  w002*(get(sol1, z00,   sz00)    + get(sol1, z11,   sz11))) ) / vx1
+        +  w002*(get(sol1, z00,   sz00)    + get(sol1, z11,   sz11))
+        +  w110*(get(sol1, x0+y0, sx0*sy0) + get(sol1, x1+y0, sx1*sy0) +
+                 get(sol1, x0+y1, sx0*sy1) + get(sol1, x1+y1, sx1*sy1))
+        +  w101*(get(sol1, x0+z0, sx0*sz0) + get(sol1, x1+z0, sx1*sz0) +
+                 get(sol1, x0+z1, sx0*sz1) + get(sol1, x1+z1, sx1*sz1))
+        +  w011*(get(sol1, y0+z0, sy0*sz0) + get(sol1, y1+z0, sy1*sz0) +
+                 get(sol1, y0+z1, sy0*sz1) + get(sol1, y1+z1, sy1*sz1)) ) / vx1
     );
   }
 
@@ -1318,22 +1311,22 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_bending(
 
     val2 = (*grd2) - (
         ( absolute*c
-        + (w100*(get(sol2, x0,    sx0)     + get(sol2, x1,    sx1))
+        +  w100*(get(sol2, x0,    sx0)     + get(sol2, x1,    sx1))
         +  w010*(get(sol2, y0,    sy0)     + get(sol2, y1,    sy1))
-        +  w001*(get(sol2, z0,    sz0)     + get(sol2, z1,    sz1)))
-        + (w110*(get(sol2, x0+y0, sx0*sy0) + get(sol2, x1+y0, sx1*sy0) +
+        +  w001*(get(sol2, z0,    sz0)     + get(sol2, z1,    sz1))
+        +  w200*(get(sol2, x00,   sx00)    + get(sol2, x11,   sx11))
+        +  w020*(get(sol2, y00,   sy00)    + get(sol2, y11,   sy11))
+        +  w002*(get(sol2, z00,   sz00)    + get(sol2, z11,   sz11))
+        +  w110*(get(sol2, x0+y0, sx0*sy0) + get(sol2, x1+y0, sx1*sy0) +
                  get(sol2, x0+y1, sx1*sy1) + get(sol2, x1+y1, sx1*sy1))
         +  w101*(get(sol2, x0+z0, sx0*sz0) + get(sol2, x1+z0, sx1*sz0) +
                  get(sol2, x0+z1, sx1*sz1) + get(sol2, x1+z1, sx1*sz1))
         +  w011*(get(sol2, y0+z0, sy0*sz0) + get(sol2, y1+z0, sy1*sz0) +
-                 get(sol2, y0+z1, sy1*sz1) + get(sol2, y1+z1, sy1*sz1)))
-        + (w200*(get(sol2, x00,   sx00)    + get(sol2, x11,   sx11))
-        +  w020*(get(sol2, y00,   sy00)    + get(sol2, y11,   sy11))
-        +  w002*(get(sol2, z00,   sz00)    + get(sol2, z11,   sz11))) ) / vx2 
+                 get(sol2, y0+z1, sy1*sz1) + get(sol2, y1+z1, sy1*sz1)) ) / vx2 
       );
   }
 
-  invert(hes, sol0, val0, val1, val2, wx000, wy000, wz000);
+  invert(hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
 }
 
 
@@ -1341,7 +1334,6 @@ template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_membrane(
   offset_t x, offset_t y, offset_t z, offset_t n) const
 {
-
   GET_COORD1
   GET_SIGN1 
   GET_WARP1 
@@ -1393,7 +1385,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_membrane(
       );
   }
 
-  invert(hes, sol0, val0, val1, val2, wx000, wy000, wz000);
+  invert(hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
 }
 
 
@@ -1417,7 +1409,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_absolute(
     val2 = (*grd2) - ( absolute * c / vx2 );
   }
 
-  invert(hes, sol0, val0, val1, val2, wx000, wy000, wz000);
+  invert(hes, sol0, val0, val1, val2, w000/vx0, w000/vx1, w000/vx2);
 }
 
 
@@ -1499,8 +1491,8 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
     );
   }
 
-  reduce_t wcenterd = static_cast<reduce_t>(wcenter);
-  invert(hes, sol0, val0, val1, val2, wcenterd, wcenterd, wcenterd);
+  reduce_t w = (absolute * wcenter + (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p));
+  invert(hes, sol0, val0, val1, val2, w/vx0, w/vx1, w/vx2);
 }
 
 
@@ -1526,7 +1518,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_absolute(
   }
 
   reduce_t wd = absolute * w;
-  invert(hes, sol0, val0, val1, val2, wd, wd, wd);
+  invert(hes, sol0, val0, val1, val2, wd/vx0, wd/vx1, wd/vx2);
 }
 
 
