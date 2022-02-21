@@ -90,7 +90,7 @@ namespace {
   }
 #endif
 
-  template <typename RestrictFn, typename RestrictHFn>
+  template <typename RestrictGFn, typename RestrictHFn, typename RestrictWFn>
   inline int64_t prepare_tensors(
     const Tensor & h, 
     const Tensor & g, 
@@ -98,8 +98,9 @@ namespace {
     const Tensor & w,
     Tensor out[],
     double vx[],
-    RestrictFn  restrict,
+    RestrictGFn restrict_g,
     RestrictHFn restrict_h,
+    RestrictWFn restrict_w,
     int64_t max_levels)
   {
     int64_t dim = g.dim() - 2;
@@ -114,7 +115,6 @@ namespace {
     xx[0] = x;
     ww[0] = w;
     rr[0] = at::empty_like(g);
-
 
     bool has_h = h.defined() && h.numel();
     bool has_w = w.defined() && w.numel();
@@ -141,18 +141,18 @@ namespace {
       // gradient
       shape1[1] = g.size(1);
       gg[n] = at::empty(shape1, g.options());
-      restrict(gg[n-1], gg[n]);
+      restrict_g(gg[n-1], gg[n]);
       // residuals
       rr[n] = at::empty_like(gg[n]);
       // solution
       shape1[1] = x.size(1);
       xx[n] = at::empty(shape1, x.options());
-      restrict(xx[n-1], xx[n]);
+      restrict_g(xx[n-1], xx[n]);
       // weights
       if (has_w) {
         shape1[1] = w.size(1);
         ww[n] = at::empty(shape1, w.options());
-        restrict(ww[n-1], ww[n]);
+        restrict_w(ww[n-1], ww[n]);
       }
     }
     
@@ -283,8 +283,10 @@ Tensor fmg(const Tensor & hessian,
              voxel_size.size() > d  ? voxel_size[d] : vx[d-1]);
 
   int64_t N = prepare_tensors(hessian, gradient, solution, weight, 
-                              tensors.data(), vx.data(), restrict_, restrict_, 
+                              tensors.data(), vx.data(), 
+                              restrict_, restrict_, restrict_,
                               max_levels);
+
   Tensor * h = tensors.data();
   Tensor * g = h + max_levels;
   Tensor * x = g + max_levels;
@@ -372,87 +374,71 @@ Tensor fmg_grid(const Tensor & hessian,
         break;
     }
   };
-  auto prolong_h_ = [bound, dim](const Tensor & x, const Tensor & o)
+  auto restrict_w_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
-    prolongation(x, o, bound);
-    Tensor view;
-    double f0 = 1., f1 = 1., f2 = 1.;
-    switch (dim) {  // there are no breaks on purpose
-      case 3:
-        f2 = static_cast<double>(o.size(4)) / static_cast<double>(x.size(4));
-      case 2:
-        f1 = static_cast<double>(o.size(3)) / static_cast<double>(x.size(3));
-      case 1:
-        f0 = static_cast<double>(o.size(2)) / static_cast<double>(x.size(2));
-      default:
-        break;
-    }
-    switch (dim) {  // there are no breaks on purpose
-      case 3:
-        view   = o.index({Slice(), 2});
-        view  *= (f2 * f2);
-        view   = o.index({Slice(), 5});
-        view  *= (f1 * f2);
-        view   = o.index({Slice(), 4});
-        view  *= (f0 * f2);
-      case 2:
-        view   = o.index({Slice(), 1});
-        view  *= (f1 * f1);
-        view   = o.index({Slice(), dim});
-        view  *= (f0 * f1);
-      case 1:
-        view   = o.index({Slice(), 0});
-        view  *= (f0 * f0);
-      default:
-        break;
-    }
+    if (!o.defined() || o.numel() == 0)
+      return;
+    restriction(x, o, bound);
   };
-  auto restrict_ = [bound, dim](const Tensor & x, const Tensor & o)
+  auto restrict_g_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
+    if (!o.defined() || o.numel() == 0)
+      return;
     restriction(x, o, bound);
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
         view  = o.index({Slice(), 2});
-        view *= static_cast<double>(o.size(4)) / static_cast<double>(x.size(4));
+        view *= static_cast<double>(x.size(4)) / static_cast<double>(o.size(4));
       case 2:
         view  = o.index({Slice(), 1});
-        view *= static_cast<double>(o.size(3)) / static_cast<double>(x.size(3));
+        view *= static_cast<double>(x.size(3)) / static_cast<double>(o.size(3));
       case 1:
         view  = o.index({Slice(), 0});
-        view *= static_cast<double>(o.size(2)) / static_cast<double>(x.size(2));
+        view *= static_cast<double>(x.size(2)) / static_cast<double>(o.size(2));
       default:
         break;
     }
   };
   auto restrict_h_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
+    if (!o.defined() || o.numel() == 0)
+      return;
     restriction(x, o, bound);
     Tensor view;
     double f0 = 1., f1 = 1., f2 = 1.;
+    int64_t CC = x.size(1);
     switch (dim) {  // there are no breaks on purpose
       case 3:
-        f2 = static_cast<double>(o.size(4)) / static_cast<double>(x.size(4));
+        f2 = static_cast<double>(x.size(4)) / static_cast<double>(o.size(4));
       case 2:
-        f1 = static_cast<double>(o.size(3)) / static_cast<double>(x.size(3));
+        f1 = static_cast<double>(x.size(3)) / static_cast<double>(o.size(3));
       case 1:
-        f0 = static_cast<double>(o.size(2)) / static_cast<double>(x.size(2));
+        f0 = static_cast<double>(x.size(2)) / static_cast<double>(o.size(2));
       default:
         break;
     }
     switch (dim) {  // there are no breaks on purpose
       case 3:
-        view   = o.index({Slice(), 2});
-        view  *= (f2 * f2);
-        view   = o.index({Slice(), 5});
-        view  *= (f1 * f2);
-        view   = o.index({Slice(), 4});
-        view  *= (f0 * f2);
+        if (CC > 1) {
+          view   = o.index({Slice(), 2});
+          view  *= (f2 * f2);
+          if (CC > dim) {
+            view   = o.index({Slice(), 5});
+            view  *= (f1 * f2);
+            view   = o.index({Slice(), 4});
+            view  *= (f0 * f2);
+          }
+        }
       case 2:
-        view   = o.index({Slice(), 1});
-        view  *= (f1 * f1);
-        view   = o.index({Slice(), dim});
-        view  *= (f0 * f1);
+        if (CC > 1) {
+          view   = o.index({Slice(), 1});
+          view  *= (f1 * f1);
+          if (CC > dim) {
+            view   = o.index({Slice(), dim});
+            view  *= (f0 * f1);
+          }
+        }
       case 1:
         view   = o.index({Slice(), 0});
         view  *= (f0 * f0);
@@ -479,9 +465,12 @@ Tensor fmg_grid(const Tensor & hessian,
   for (size_t d=0; d<(size_t)dim; ++d) 
     vx[d] = (voxel_size.size() == 0 ? 1.0 :
              voxel_size.size() > d  ? voxel_size[d] : vx[d-1]);
+
   auto N = prepare_tensors(hessian, gradient, solution, weight, 
-                           tensors.data(), vx.data(), restrict_, restrict_h_, 
+                           tensors.data(), vx.data(), 
+                           restrict_g_, restrict_h_, restrict_w_,
                            max_levels);
+
   Tensor * h = tensors.data();
   Tensor * g = h + max_levels;
   Tensor * x = g + max_levels;
@@ -490,7 +479,7 @@ Tensor fmg_grid(const Tensor & hessian,
 
   /* ------------------------ FMG algorithm ------------------ */
   do_fmg(h, g, x, w, r, vx.data(), N, nb_cycles, 
-         relax_, prolong_, restrict_, residuals_);
+         relax_, prolong_, restrict_g_, residuals_);
 
   return solution;
 }

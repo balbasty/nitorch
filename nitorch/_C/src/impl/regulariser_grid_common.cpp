@@ -852,23 +852,23 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_all(
     };
 
     *out0 = static_cast<scalar_t>(
-        wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
-      + wx010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))
-      + wx001*(get(inp0, z0, sz0) + get(inp0, z1, sz1))
-      + w2   *( bound::get(inp1, x1+y0, sx1*sy0) - bound::get(inp1, x1+y1, sx1*sy1)
-              + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0)
-              + bound::get(inp2, x1+z0, sx1*sz0) - bound::get(inp2, x1+z1, sx1*sz1)
-              + bound::get(inp2, x0+z1, sx0*sz1) - bound::get(inp2, x0+z0, sx0*sz0) )
+        (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
+      +  wx010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))
+      +  wx001*(get(inp0, z0, sz0) + get(inp0, z1, sz1)))
+      + (w2   *( bound::get(inp1, x1+y0, sx1*sy0) - bound::get(inp1, x1+y1, sx1*sy1)
+               + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0)
+               + bound::get(inp2, x1+z0, sx1*sz0) - bound::get(inp2, x1+z1, sx1*sz1)
+               + bound::get(inp2, x0+z1, sx0*sz1) - bound::get(inp2, x0+z0, sx0*sz0) ))
       + ( absolute*c
-        + w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
-                get(inp0, x0+y1, sx1*sy1) + get(inp0, x1+y1, sx1*sy1))
-        + w101*(get(inp0, x0+z0, sx0*sz0) + get(inp0, x1+z0, sx1*sz0) +
-                get(inp0, x0+z1, sx1*sz1) + get(inp0, x1+z1, sx1*sz1))
-        + w011*(get(inp0, y0+z0, sy0*sz0) + get(inp0, y1+z0, sy1*sz0) +
-                get(inp0, y0+z1, sy1*sz1) + get(inp0, y1+z1, sy1*sz1))
-        + w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))
-        + w020*(get(inp0, y00, sy00) + get(inp0, y11, sy11))
-        + w002*(get(inp0, z00, sz00) + get(inp0, z11, sz11)) ) / vx0
+        + (w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
+                 get(inp0, x0+y1, sx1*sy1) + get(inp0, x1+y1, sx1*sy1))
+        +  w101*(get(inp0, x0+z0, sx0*sz0) + get(inp0, x1+z0, sx1*sz0) +
+                 get(inp0, x0+z1, sx1*sz1) + get(inp0, x1+z1, sx1*sz1))
+        +  w011*(get(inp0, y0+z0, sy0*sz0) + get(inp0, y1+z0, sy1*sz0) +
+                 get(inp0, y0+z1, sy1*sz1) + get(inp0, y1+z1, sy1*sz1)))
+        + (w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))
+        +  w020*(get(inp0, y00, sy00) + get(inp0, y11, sy11))
+        +  w002*(get(inp0, z00, sz00) + get(inp0, z11, sz11))) ) / vx0
     );
   }
 
@@ -880,23 +880,23 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_all(
     };
 
     *out1 = static_cast<scalar_t>(
-        wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-      + wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
-      + wy001*(get(inp1, z0, sz0) + get(inp1, z1, sz1))
-      + w2   *( bound::get(inp0, y1+x0, sy1*sx0) - bound::get(inp0, y1+x1, sy1*sx1)
-              + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0)
-              + bound::get(inp2, y1+z0, sy1*sz0) - bound::get(inp2, y1+z1, sy1*sz1)
-              + bound::get(inp2, y0+z1, sy0*sz1) - bound::get(inp2, y0+z0, sy0*sz0) )
+        (wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
+      +  wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
+      +  wy001*(get(inp1, z0, sz0) + get(inp1, z1, sz1)))
+      + (w2   *( bound::get(inp0, y1+x0, sy1*sx0) - bound::get(inp0, y1+x1, sy1*sx1)
+               + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0)
+               + bound::get(inp2, y1+z0, sy1*sz0) - bound::get(inp2, y1+z1, sy1*sz1)
+               + bound::get(inp2, y0+z1, sy0*sz1) - bound::get(inp2, y0+z0, sy0*sz0) ))
       + ( absolute*c
-        + w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
-                get(inp1, x0+y1, sx1*sy1) + get(inp1, x1+y1, sx1*sy1))
-        + w101*(get(inp1, x0+z0, sx0*sz0) + get(inp1, x1+z0, sx1*sz0) +
-                get(inp1, x0+z1, sx1*sz1) + get(inp1, x1+z1, sx1*sz1))
-        + w011*(get(inp1, y0+z0, sy0*sz0) + get(inp1, y1+z0, sy1*sz0) +
-                get(inp1, y0+z1, sy1*sz1) + get(inp1, y1+z1, sy1*sz1))
-        + w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
-        + w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11))
-        + w002*(get(inp1, z00,   sz00)    + get(inp1, z11,   sz11)) ) / vx1
+        + (w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
+                 get(inp1, x0+y1, sx1*sy1) + get(inp1, x1+y1, sx1*sy1))
+        +  w101*(get(inp1, x0+z0, sx0*sz0) + get(inp1, x1+z0, sx1*sz0) +
+                 get(inp1, x0+z1, sx1*sz1) + get(inp1, x1+z1, sx1*sz1))
+        +  w011*(get(inp1, y0+z0, sy0*sz0) + get(inp1, y1+z0, sy1*sz0) +
+                 get(inp1, y0+z1, sy1*sz1) + get(inp1, y1+z1, sy1*sz1)))
+        + (w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
+        +  w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11))
+        +  w002*(get(inp1, z00,   sz00)    + get(inp1, z11,   sz11))) ) / vx1
     );
   }
 
@@ -908,23 +908,23 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_all(
     };
 
     *out2 = static_cast<scalar_t>(
-        wz100*(get(inp2, x0, sx0) + get(inp2, x1, sx1))
-      + wz010*(get(inp2, y0, sy0) + get(inp2, y1, sy1))
-      + wz001*(get(inp2, z0, sz0) + get(inp2, z1, sz1))
-      + w2   *( bound::get(inp0, z1+x0, sz1*sx0) - bound::get(inp0, z1+x1, sz1*sx1)
-              + bound::get(inp0, z0+x1, sz0*sx1) - bound::get(inp0, z0+x0, sz0*sx0)
-              + bound::get(inp1, z1+y0, sz1*sy0) - bound::get(inp1, z1+y1, sz1*sy1)
-              + bound::get(inp1, z0+y1, sz0*sy1) - bound::get(inp1, z0+y0, sz0*sy0) )
+        (wz100*(get(inp2, x0, sx0) + get(inp2, x1, sx1))
+      +  wz010*(get(inp2, y0, sy0) + get(inp2, y1, sy1))
+      +  wz001*(get(inp2, z0, sz0) + get(inp2, z1, sz1)))
+      + (w2   *( bound::get(inp0, z1+x0, sz1*sx0) - bound::get(inp0, z1+x1, sz1*sx1)
+               + bound::get(inp0, z0+x1, sz0*sx1) - bound::get(inp0, z0+x0, sz0*sx0)
+               + bound::get(inp1, z1+y0, sz1*sy0) - bound::get(inp1, z1+y1, sz1*sy1)
+               + bound::get(inp1, z0+y1, sz0*sy1) - bound::get(inp1, z0+y0, sz0*sy0) ))
       + ( absolute*c
-        + w110*(get(inp2, x0+y0, sx0*sy0) + get(inp2, x1+y0, sx1*sy0) +
-                get(inp2, x0+y1, sx1*sy1) + get(inp2, x1+y1, sx1*sy1))
-        + w101*(get(inp2, x0+z0, sx0*sz0) + get(inp2, x1+z0, sx1*sz0) +
-                get(inp2, x0+z1, sx1*sz1) + get(inp2, x1+z1, sx1*sz1))
-        + w011*(get(inp2, y0+z0, sy0*sz0) + get(inp2, y1+z0, sy1*sz0) +
-                get(inp2, y0+z1, sy1*sz1) + get(inp2, y1+z1, sy1*sz1))
-        + w200*(get(inp2, x00,   sx00)    + get(inp2, x11,   sx11))
-        + w020*(get(inp2, y00,   sy00)    + get(inp2, y11,   sy11))
-        + w002*(get(inp2, z00,   sz00)    + get(inp2, z11,   sz11)) ) / vx2 
+        + (w110*(get(inp2, x0+y0, sx0*sy0) + get(inp2, x1+y0, sx1*sy0) +
+                 get(inp2, x0+y1, sx1*sy1) + get(inp2, x1+y1, sx1*sy1))
+        +  w101*(get(inp2, x0+z0, sx0*sz0) + get(inp2, x1+z0, sx1*sz0) +
+                 get(inp2, x0+z1, sx1*sz1) + get(inp2, x1+z1, sx1*sz1))
+        +  w011*(get(inp2, y0+z0, sy0*sz0) + get(inp2, y1+z0, sy1*sz0) +
+                 get(inp2, y0+z1, sy1*sz1) + get(inp2, y1+z1, sy1*sz1)))
+        + (w200*(get(inp2, x00,   sx00)    + get(inp2, x11,   sx11))
+        +  w020*(get(inp2, y00,   sy00)    + get(inp2, y11,   sy11))
+        +  w002*(get(inp2, z00,   sz00)    + get(inp2, z11,   sz11))) ) / vx2 
       );
   }
 
@@ -957,13 +957,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_lame(
               + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0)
               + bound::get(inp2, x1+z0, sx1*sz0) - bound::get(inp2, x1+z1, sx1*sz1)
               + bound::get(inp2, x0+z1, sx0*sz1) - bound::get(inp2, x0+z0, sx0*sz0) )
-      + ( absolute*c
-        + w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
-                get(inp0, x0+y1, sx1*sy1) + get(inp0, x1+y1, sx1*sy1))
-        + w101*(get(inp0, x0+z0, sx0*sz0) + get(inp0, x1+z0, sx1*sz0) +
-                get(inp0, x0+z1, sx1*sz1) + get(inp0, x1+z1, sx1*sz1))
-        + w011*(get(inp0, y0+z0, sy0*sz0) + get(inp0, y1+z0, sy1*sz0) +
-                get(inp0, y0+z1, sy1*sz1) + get(inp0, y1+z1, sy1*sz1)) ) / vx0
+      + absolute*c/vx0
     );
   }
 
@@ -982,13 +976,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_lame(
               + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0)
               + bound::get(inp2, y1+z0, sy1*sz0) - bound::get(inp2, y1+z1, sy1*sz1)
               + bound::get(inp2, y0+z1, sy0*sz1) - bound::get(inp2, y0+z0, sy0*sz0) )
-      + ( absolute*c
-        + w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
-                get(inp1, x0+y1, sx1*sy1) + get(inp1, x1+y1, sx1*sy1))
-        + w101*(get(inp1, x0+z0, sx0*sz0) + get(inp1, x1+z0, sx1*sz0) +
-                get(inp1, x0+z1, sx1*sz1) + get(inp1, x1+z1, sx1*sz1))
-        + w011*(get(inp1, y0+z0, sy0*sz0) + get(inp1, y1+z0, sy1*sz0) +
-                get(inp1, y0+z1, sy1*sz1) + get(inp1, y1+z1, sy1*sz1)) ) / vx1
+      + absolute*c/vx1
     );
   }
 
@@ -1007,13 +995,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_lame(
               + bound::get(inp0, z0+x1, sz0*sx1) - bound::get(inp0, z0+x0, sz0*sx0)
               + bound::get(inp1, z1+y0, sz1*sy0) - bound::get(inp1, z1+y1, sz1*sy1)
               + bound::get(inp1, z0+y1, sz0*sy1) - bound::get(inp1, z0+y0, sz0*sy0) )
-      + ( absolute*c
-        + w110*(get(inp2, x0+y0, sx0*sy0) + get(inp2, x1+y0, sx1*sy0) +
-                get(inp2, x0+y1, sx1*sy1) + get(inp2, x1+y1, sx1*sy1))
-        + w101*(get(inp2, x0+z0, sx0*sz0) + get(inp2, x1+z0, sx1*sz0) +
-                get(inp2, x0+z1, sx1*sz1) + get(inp2, x1+z1, sx1*sz1))
-        + w011*(get(inp2, y0+z0, sy0*sz0) + get(inp2, y1+z0, sy1*sz0) +
-                get(inp2, y0+z1, sy1*sz1) + get(inp2, y1+z1, sy1*sz1)) ) / vx2 
+      + absolute*c/vx2 
       );
   }
 
@@ -1044,18 +1026,18 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
 
     *out0 = static_cast<scalar_t>(
         ( absolute*c
-        + w100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
-        + w010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))
-        + w001*(get(inp0, z0, sz0) + get(inp0, z1, sz1))
-        + w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
-                get(inp0, x0+y1, sx1*sy1) + get(inp0, x1+y1, sx1*sy1))
-        + w101*(get(inp0, x0+z0, sx0*sz0) + get(inp0, x1+z0, sx1*sz0) +
-                get(inp0, x0+z1, sx1*sz1) + get(inp0, x1+z1, sx1*sz1))
-        + w011*(get(inp0, y0+z0, sy0*sz0) + get(inp0, y1+z0, sy1*sz0) +
-                get(inp0, y0+z1, sy1*sz1) + get(inp0, y1+z1, sy1*sz1))
-        + w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))
-        + w020*(get(inp0, y00, sy00) + get(inp0, y11, sy11))
-        + w002*(get(inp0, z00, sz00) + get(inp0, z11, sz11)) ) / vx0
+        + (w100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
+        +  w010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))
+        +  w001*(get(inp0, z0, sz0) + get(inp0, z1, sz1)))
+        + (w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
+                 get(inp0, x0+y1, sx1*sy1) + get(inp0, x1+y1, sx1*sy1))
+        +  w101*(get(inp0, x0+z0, sx0*sz0) + get(inp0, x1+z0, sx1*sz0) +
+                 get(inp0, x0+z1, sx1*sz1) + get(inp0, x1+z1, sx1*sz1))
+        +  w011*(get(inp0, y0+z0, sy0*sz0) + get(inp0, y1+z0, sy1*sz0) +
+                 get(inp0, y0+z1, sy1*sz1) + get(inp0, y1+z1, sy1*sz1)))
+        + (w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))
+        +  w020*(get(inp0, y00, sy00) + get(inp0, y11, sy11))
+        +  w002*(get(inp0, z00, sz00) + get(inp0, z11, sz11))) ) / vx0
     );
   }
 
@@ -1068,18 +1050,18 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
 
     *out1 = static_cast<scalar_t>(
         ( absolute*c
-        + w100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-        + w010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
-        + w001*(get(inp1, z0, sz0) + get(inp1, z1, sz1))
-        + w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
-                get(inp1, x0+y1, sx1*sy1) + get(inp1, x1+y1, sx1*sy1))
-        + w101*(get(inp1, x0+z0, sx0*sz0) + get(inp1, x1+z0, sx1*sz0) +
-                get(inp1, x0+z1, sx1*sz1) + get(inp1, x1+z1, sx1*sz1))
-        + w011*(get(inp1, y0+z0, sy0*sz0) + get(inp1, y1+z0, sy1*sz0) +
-                get(inp1, y0+z1, sy1*sz1) + get(inp1, y1+z1, sy1*sz1))
-        + w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
+        + (w100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
+        +  w010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
+        +  w001*(get(inp1, z0, sz0) + get(inp1, z1, sz1)))
+        + (w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
+                 get(inp1, x0+y1, sx1*sy1) + get(inp1, x1+y1, sx1*sy1))
+        +  w101*(get(inp1, x0+z0, sx0*sz0) + get(inp1, x1+z0, sx1*sz0) +
+                 get(inp1, x0+z1, sx1*sz1) + get(inp1, x1+z1, sx1*sz1))
+        +  w011*(get(inp1, y0+z0, sy0*sz0) + get(inp1, y1+z0, sy1*sz0) +
+                 get(inp1, y0+z1, sy1*sz1) + get(inp1, y1+z1, sy1*sz1)))
+        + (w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
         + w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11))
-        + w002*(get(inp1, z00,   sz00)    + get(inp1, z11,   sz11)) ) / vx1
+        + w002*(get(inp1, z00,   sz00)    + get(inp1, z11,   sz11))) ) / vx1
     );
   }
 
@@ -1092,18 +1074,18 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
 
     *out2 = static_cast<scalar_t>(
         ( absolute*c
-        + w100*(get(inp2, x0, sx0) + get(inp2, x1, sx1))
-        + w010*(get(inp2, y0, sy0) + get(inp2, y1, sy1))
-        + w001*(get(inp2, z0, sz0) + get(inp2, z1, sz1))
-        + w110*(get(inp2, x0+y0, sx0*sy0) + get(inp2, x1+y0, sx1*sy0) +
-                get(inp2, x0+y1, sx1*sy1) + get(inp2, x1+y1, sx1*sy1))
-        + w101*(get(inp2, x0+z0, sx0*sz0) + get(inp2, x1+z0, sx1*sz0) +
-                get(inp2, x0+z1, sx1*sz1) + get(inp2, x1+z1, sx1*sz1))
-        + w011*(get(inp2, y0+z0, sy0*sz0) + get(inp2, y1+z0, sy1*sz0) +
-                get(inp2, y0+z1, sy1*sz1) + get(inp2, y1+z1, sy1*sz1))
-        + w200*(get(inp2, x00,   sx00)    + get(inp2, x11,   sx11))
-        + w020*(get(inp2, y00,   sy00)    + get(inp2, y11,   sy11))
-        + w002*(get(inp2, z00,   sz00)    + get(inp2, z11,   sz11)) ) / vx2 
+        + (w100*(get(inp2, x0, sx0) + get(inp2, x1, sx1))
+        +  w010*(get(inp2, y0, sy0) + get(inp2, y1, sy1))
+        +  w001*(get(inp2, z0, sz0) + get(inp2, z1, sz1)))
+        + (w110*(get(inp2, x0+y0, sx0*sy0) + get(inp2, x1+y0, sx1*sy0) +
+                 get(inp2, x0+y1, sx1*sy1) + get(inp2, x1+y1, sx1*sy1))
+        +  w101*(get(inp2, x0+z0, sx0*sz0) + get(inp2, x1+z0, sx1*sz0) +
+                 get(inp2, x0+z1, sx1*sz1) + get(inp2, x1+z1, sx1*sz1))
+        +  w011*(get(inp2, y0+z0, sy0*sz0) + get(inp2, y1+z0, sy1*sz0) +
+                 get(inp2, y0+z1, sy1*sz1) + get(inp2, y1+z1, sy1*sz1)))
+        + (w200*(get(inp2, x00,   sx00)    + get(inp2, x11,   sx11))
+        +  w020*(get(inp2, y00,   sy00)    + get(inp2, y11,   sy11))
+        +  w002*(get(inp2, z00,   sz00)    + get(inp2, z11,   sz11))) ) / vx2 
       );
   }
 
@@ -1145,9 +1127,9 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
 
     *out1 = static_cast<scalar_t>(
         ( absolute*c
-        + wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
-        + wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
-        + wy001*(get(inp1, z0, sz0) + get(inp1, z1, sz1)) ) / vx1
+        + w100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
+        + w010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))
+        + w001*(get(inp1, z0, sz0) + get(inp1, z1, sz1)) ) / vx1
     );
   }
 

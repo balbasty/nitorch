@@ -466,24 +466,22 @@ public:
 private:
 
   /* ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-  NI_DEVICE NI_INLINE void relax(
-    offset_t x, offset_t y, offset_t z, offset_t n) const;
-
-#define DEFINE_relax(SUFFIX) \
+#define DEFINE_RELAX(SUFFIX) \
   NI_DEVICE void relax##SUFFIX( \
     offset_t x, offset_t y, offset_t z, offset_t n) const;
-#define DEFINE_relax_DIM(DIM)        \
-  DEFINE_relax(DIM##d_absolute)      \
-  DEFINE_relax(DIM##d_membrane)      \
-  DEFINE_relax(DIM##d_bending)       \
-  DEFINE_relax(DIM##d_rls_absolute)  \
-  DEFINE_relax(DIM##d_rls_membrane)  \
+#define DEFINE_RELAX_DIM(DIM)        \
+  DEFINE_RELAX(DIM##d_absolute)      \
+  DEFINE_RELAX(DIM##d_membrane)      \
+  DEFINE_RELAX(DIM##d_bending)       \
+  DEFINE_RELAX(DIM##d_rls_absolute)  \
+  DEFINE_RELAX(DIM##d_rls_membrane)  \
   NI_DEVICE void solve##DIM##d(      \
     offset_t x, offset_t y, offset_t z, offset_t n) const;
 
-  DEFINE_relax_DIM(1)
-  DEFINE_relax_DIM(2)
-  DEFINE_relax_DIM(3)
+  DEFINE_RELAX()
+  DEFINE_RELAX_DIM(1)
+  DEFINE_RELAX_DIM(2)
+  DEFINE_RELAX_DIM(3)
 
 #ifndef __CUDACC__
   NI_DEVICE void get_h(const scalar_t * , reduce_t *) const;
@@ -1366,7 +1364,6 @@ NI_HOST Tensor relax_impl(
       for (int32_t i=0; i < nb_iter; ++i)
         for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
             algo.set_fold(fold);
-            //copy_to_device(algo, palgo, stream);
             copy_fold_info_to_device<int32_t>(algo, palgo, stream);
             relax_kernel
               <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>
@@ -1383,7 +1380,6 @@ NI_HOST Tensor relax_impl(
       for (int64_t i=0; i < nb_iter; ++i)
         for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
             algo.set_fold(fold);
-            // copy_to_device(algo, palgo, stream);
             copy_fold_info_to_device<int64_t>(algo, palgo, stream);
             relax_kernel
               <<<GET_BLOCKS(algo.voxcountfold()), CUDA_NUM_THREADS, 0, stream>>>

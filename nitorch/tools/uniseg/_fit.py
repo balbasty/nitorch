@@ -5,6 +5,7 @@ from nitorch import spatial
 import torch
 from ._mrf import mrf, mrf_suffstat, mrf_covariance
 from ._plot import plot_lb, plot_images_and_lb
+from nitorch._C.solve import c_fmg, c_fmg_grid, c_regulariser, c_regulariser_grid
 
 
 default_warp_reg = {'absolute': 0,
@@ -1077,18 +1078,21 @@ class SpatialMixture:
             H *= W.unsqueeze(-1)
 
         lam = {'factor': vx.prod(), 'voxel_size': vx, **self.lam_warp}
-        La = spatial.regulariser_grid(self.alpha, **lam)
+        # La = spatial.regulariser_grid(self.alpha, **lam)
+        La = c_regulariser_grid(self.alpha[None], **lam)[0]
         aLa = self.alpha.flatten().dot(La.flatten()).cpu()
         g += La
 
-        delta = spatial.solve_grid_fmg(H, g, **lam)
+        # delta = spatial.solve_grid_fmg(H, g, **lam)
+        delta = c_fmg_grid(H[None], g[None], **lam)[0]
         if not self.max_ls_warp:
             self.alpha -= delta
             self._lb_warp = -0.5 * aLa
             return
 
         # line search
-        dLd = spatial.regulariser_grid(delta, **lam).cpu()
+        # dLd = spatial.regulariser_grid(delta, **lam)
+        dLd = c_regulariser_grid(delta[None], **lam)[0]
         dLd = delta.flatten().dot(dLd.flatten()).cpu()
         dLa = delta.flatten().dot(La.flatten()).cpu()
         armijo, prev_armijo = 1, 0
@@ -1476,11 +1480,13 @@ class UniSeg(SpatialMixture):
             #       with pure bending, as resizing does not induce that much
             #       additional curvature.
             lam = {'bending': self.lam_bias, 'voxel_size': vx}
-            Lb = spatial.regulariser(self.beta[None, c], **lam)
+            # Lb = spatial.regulariser(self.beta[None, c], **lam)
+            Lb = c_regulariser(self.beta[None, None, c], **lam)[0, 0]
             lb += self.beta[c].flatten().dot(Lb.flatten())
             g += Lb
 
-            delta = spatial.solve_field_fmg(H, g, **lam)
+            # delta = spatial.solve_field_fmg(H, g, **lam)
+            delta = c_fmg(H[None], g[None], **lam)[0]
             self.beta[c] -= delta[0]
 
         self.beta -= self.beta.mean()
