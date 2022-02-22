@@ -33,7 +33,7 @@ Currently, we implement:
 - `regulariser`: Implements the forward pass of a mixture of spatial
   regulariser (absolute values, first and second derivatives). If 
   a field of symmetric matrices is provided, the matrix-vector product
-  of the input with this matrix is also computed. <br \>
+  of the input with this matrix is also computed. <br />
   In other words, computes `(H + L) * x` or `L*x` or `H*x`, 
   where `H` is the field of matrices and `L` is the spatial regulariser.
 - `regulariser_grid`: Same as `regulariser` but specialized for 
