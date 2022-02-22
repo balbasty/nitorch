@@ -66,4 +66,16 @@ happen at each function call. We could instead split the API and implementation
 the algorithm.
 
 
-   
+## TODO
+
+I am thinking of (at least) two function which would benefit from a 
+CUDA implementation:
+- spline prefilter, so far implemented in torchscript here:
+  [coeff.py](https://github.com/balbasty/nitorch/blob/master/nitorch/_C/_ts/coeff.py])
+- Euclidean distance transform, so far implemented in pytorch here:
+  [_distances.py](https://github.com/balbasty/nitorch/blob/master/nitorch/spatial/_distances.py)
+
+Both of them are implemented using recursive separable "filters".
+All we'd need is a C++/CUDA 1D implementation, from which the ND version
+can be built.
+
