@@ -262,8 +262,8 @@ if COMPILED_BACKEND == 'C':
     def c_fmg(hessian, gradient, weight=None,
               absolute=0, membrane=0, bending=0, factor=1,
               voxel_size=1, bound='dct2',
-              nb_cycles=2, nb_iter=4, max_levels=16,
-              solver='cg', output=None):
+              nb_cycles=2, nb_iter=2, max_levels=16,
+              solver='relax', output=None):
         """Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
 
@@ -314,8 +314,8 @@ if COMPILED_BACKEND == 'C':
     def c_fmg_grid(hessian, gradient, weight=None,
                    absolute=0, membrane=0, bending=0, lame=0, factor=1,
                    voxel_size=1, bound='dft',
-                   nb_cycles=2, nb_iter=4, max_levels=16,
-                   solver='cg', output=None):
+                   nb_cycles=2, nb_iter=2, max_levels=16,
+                   solver='relax', output=None):
         """Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
 
