@@ -64,6 +64,8 @@ public:
     vx0 = 1. / (vx0*vx0);
     vx1 = 1. / (vx1*vx1);
     vx2 = 1. / (vx2*vx2);
+    if (dim < 3) vx2 = 0.;
+    if (dim < 2) vx1 = 0.;
   }
 
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -583,72 +585,6 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::loop() const
 //                             MatVec
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#if 0
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec(
-    scalar_t * x, const scalar_t * h, const scalar_t * y) const {
-  if (!hes_ptr) return;
-  double m[NI_MAX_NUM_CHANNELS*NI_MAX_NUM_CHANNELS];
-  get_h(h, m);
-  double v[NI_MAX_NUM_CHANNELS];
-  double * vv = v;
-  for (offset_t c = 0; c < C; ++c, ++vv, y += inp_sC)
-    *vv = *y;
-  CALL_MEMBER_FN(*this, matvec_)(x, m, v);
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_sym(
-    scalar_t * x, const double * h, const double * v) const 
-{
-  double placeholder[NI_MAX_NUM_CHANNELS];
-  double * o = placeholder;
-  for (offset_t c = 0; c < C; ++c, ++o, ++v, h += C+1)
-    (*o) = (*h) * (*v);
-  v -= C;
-  h -= C*(C+1);
-  o = placeholder;
-  for (offset_t c = 0; c < C; ++c, ++o, ++v, h += C+1)
-  {
-    double v_ = (*v);
-    double * oo = o + 1;
-    const double * vv = v + 1;
-    const double * hh = h + 1;
-    for (offset_t cc = c+1; cc < C; ++cc, ++oo, ++vv, ++hh) 
-    {
-      double h_ = (*hh);
-      (*oo) += h_ * v_;
-      (*o)  += h_ * (*vv);
-    }
-  }
-  o = placeholder;
-  for (offset_t c = 0; c < C; ++c, ++o, x += out_sC)
-    (*x) += (*o);
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_diag(
-    scalar_t * x, const double * h, const double * v) const 
-{
-  for (offset_t c = 0; c < C; ++c, ++v, ++h, x += out_sC)
-    (*x) += (*v) * (*h);
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_eye(
-    scalar_t * x, const double * h, const double * v) const 
-{
-  double hh = h[0];
-  for (offset_t c = 0; c < C; ++c, ++v, x += out_sC)
-    (*x) += (*v) * hh;
-}
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_none(
-    scalar_t * x, const double * h, const double * v) const {}
-
-#else
-
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec(
     scalar_t * x, const scalar_t * h, const scalar_t * y) const {
@@ -705,8 +641,6 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_eye(
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_none(
     scalar_t * x, const scalar_t * h, const scalar_t * v) const {}
-
-#endif
 
 /* ========================================================================== */
 /*                               MACRO HELPERS                                */
@@ -827,38 +761,6 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
   out -= C*out_sC;
   matvec(out, hes, inp);
 }
-
-#if 0
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
-{
-  GET_COORD1
-  GET_SIGN1 
-  GET_WARP1 
-  GET_POINTERS
-
-  for_unroll(C, [&](offset_t c) {
-
-    const scalar_t * inp_c = inp + c * inp_sC;
-    scalar_t center = (*inp_c); 
-    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
-    {
-      return bound::get(x, o, s) - center;
-    };
-
-    out[c * out_sC] = static_cast<scalar_t>(
-          absolute[c] * center
-        + membrane[c] * (
-            m100*(get(inp_c, x0, sx0) + get(inp_c, x1, sx1))
-          + m010*(get(inp_c, y0, sy0) + get(inp_c, y1, sy1))
-          + m001*(get(inp_c, z0, sz0) + get(inp_c, z1, sz1)) )
-    );
-  });
-
-  matvec(out, hes, inp);
-}
-#endif
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_membrane(
@@ -982,31 +884,375 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_absolute(
 /*                                     2D                                     */
 /* ========================================================================== */
 
+#undef GET_COORD1
+#define GET_COORD1 \
+  GET_COORD1_(x) \
+  GET_COORD1_(y) 
+#undef GET_COORD2
+#define GET_COORD2 \
+  GET_COORD2_(x) \
+  GET_COORD2_(y) 
+#undef GET_SIGN1
+#define GET_SIGN1 \
+  GET_SIGN1_(x, X, 0) \
+  GET_SIGN1_(y, Y, 1)
+#undef GET_SIGN2
+#define GET_SIGN2 \
+  GET_SIGN2_(x, X, 0) \
+  GET_SIGN2_(y, Y, 1)
+#undef GET_WARP1
+#define GET_WARP1 \
+  GET_WARP1_(x, X, 0) \
+  GET_WARP1_(y, Y, 1) 
+#undef GET_WARP2
+#define GET_WARP2 \
+  GET_WARP2_(x, X, 0) \
+  GET_WARP2_(y, Y, 1)
+#undef GET_WARP1_RLS
+#define GET_WARP1_RLS \
+  GET_WARP1_RLS_(x, X, 0) \
+  GET_WARP1_RLS_(y, Y, 1)
+#undef GET_POINTERS
+#define GET_POINTERS \
+        scalar_t *out = out_ptr + (x*out_sX + y*out_sY + n*out_sN); \
+  const scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + n*inp_sN); \
+  const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_COORD2
+  GET_SIGN1 
+  GET_SIGN2
+  GET_WARP1 
+  GET_WARP2
+  GET_POINTERS
+
+  reduce_t w100, w010;
+  const reduce_t *a = absolute, *m = membrane, *b = bending;
+  reduce_t aa, mm, bb;
+
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC)
+  {
+    scalar_t center = *inp; 
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    aa = *(a++);
+    mm = *(m++);
+    bb = *(b++);
+
+    w100 = mm * m100 + bb * b100;
+    w010 = mm * m010 + bb * b010;
+
+    *out = static_cast<scalar_t>(
+          aa * center
+        +(w100*(get(inp, x0,    sx0)     + get(inp, x1,    sx1))
+        + w010*(get(inp, y0,    sy0)     + get(inp, y1,    sy1)))
+        + bb * (
+           (b200*(get(inp, x00,   sx00)    + get(inp, x11,   sx11))
+          + b020*(get(inp, y00,   sy00)    + get(inp, y11,   sy11)))
+          +(b110*(get(inp, x0+y0, sx0*sy0) + get(inp, x1+y0, sx1*sy0) +
+                  get(inp, x0+y1, sx0*sy1) + get(inp, x1+y1, sx1*sy1))) )
+    );
+  }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1 
+  GET_WARP1 
+  GET_POINTERS
+
+  const reduce_t *a = absolute, *m = membrane;
+
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC)
+  {
+    scalar_t center = *inp; 
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    *out = static_cast<scalar_t>(
+          (*(a++)) * center
+        + (*(m++)) * (
+            m100*(get(inp, x0, sx0) + get(inp, x1, sx1))
+          + m010*(get(inp, y0, sy0) + get(inp, y1, sy1)) )
+    );
+  }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  const reduce_t *a = absolute;
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC)
+    *out = static_cast<scalar_t>( (*(a++)) * (*inp) );
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1
+  GET_WARP1_RLS
+  GET_POINTERS
+
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+  const reduce_t *a = absolute, *m = membrane;
+
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
+  {
+    scalar_t wcenter = *wgt;
+    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
+    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+    reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
+    reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+
+    scalar_t center = *inp;  // no need to use `get` -> we know we are in the FOV
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    *out = static_cast<scalar_t>(
+        (*(a++)) * wcenter * center
+      + (*(m++)) * (
+          w1m00 * get(inp, x0, sx0)
+        + w1p00 * get(inp, x1, sx1)
+        + w01m0 * get(inp, y0, sy0)
+        + w01p0 * get(inp, y1, sy1) )
+    );
+  }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+  const reduce_t *a = absolute;
+
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
+    *out = static_cast<scalar_t>( (*(a++)) * (*wgt) * (*inp) );
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
 
 /* ========================================================================== */
 /*                                     1D                                     */
 /* ========================================================================== */
 
+#undef GET_COORD1
+#define GET_COORD1 GET_COORD1_(x) 
+#undef GET_COORD2
+#define GET_COORD2 GET_COORD2_(x) 
+#undef GET_SIGN1
+#define GET_SIGN1 GET_SIGN1_(x, X, 0) 
+#undef GET_SIGN2
+#define GET_SIGN2 GET_SIGN2_(x, X, 0) 
+#undef GET_WARP1
+#define GET_WARP1 GET_WARP1_(x, X, 0) 
+#undef GET_WARP2
+#define GET_WARP2 GET_WARP2_(x, X, 0) 
+#undef GET_WARP1_RLS
+#define GET_WARP1_RLS GET_WARP1_RLS_(x, X, 0) 
+#undef GET_POINTERS
+#define GET_POINTERS \
+        scalar_t *out = out_ptr + (x*out_sX + n*out_sN); \
+  const scalar_t *inp = inp_ptr + (x*inp_sX + n*inp_sN); \
+  const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_bending(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_bending(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_COORD2
+  GET_SIGN1 
+  GET_SIGN2
+  GET_WARP1 
+  GET_WARP2
+  GET_POINTERS
+
+  reduce_t w100;
+  const reduce_t *a = absolute, *m = membrane, *b = bending;
+  reduce_t aa, mm, bb;
+
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC)
+  {
+    scalar_t center = *inp; 
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    aa = *(a++);
+    mm = *(m++);
+    bb = *(b++);
+
+    w100 = mm * m100 + bb * b100;
+
+    *out = static_cast<scalar_t>(
+          aa * center
+        +(w100*(get(inp, x0,    sx0)     + get(inp, x1,    sx1)))
+        + bb * (
+           (b200*(get(inp, x00,   sx00)    + get(inp, x11,   sx11))) )
+    );
+  }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1 
+  GET_WARP1 
+  GET_POINTERS
+
+  const reduce_t *a = absolute, *m = membrane;
+
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC)
+  {
+    scalar_t center = *inp; 
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    *out = static_cast<scalar_t>(
+          (*(a++)) * center
+        + (*(m++)) * (
+            m100*(get(inp, x0, sx0) + get(inp, x1, sx1)) )
+    );
+  }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  const reduce_t *a = absolute;
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC)
+    *out = static_cast<scalar_t>( (*(a++)) * (*inp) );
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1
+  GET_WARP1_RLS
+  GET_POINTERS
+
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX);
+  const reduce_t *a = absolute, *m = membrane;
+
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
+  {
+    scalar_t wcenter = *wgt;
+    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
+    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+
+    scalar_t center = *inp;  // no need to use `get` -> we know we are in the FOV
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    *out = static_cast<scalar_t>(
+        (*(a++)) * wcenter * center
+      + (*(m++)) * (
+          w1m00 * get(inp, x0, sx0)
+        + w1p00 * get(inp, x1, sx1) )
+    );
+  }
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX);
+  const reduce_t *a = absolute;
+
+  for (offset_t c = 0; c < C; 
+       ++c, inp += inp_sC, out += out_sC, wgt += wgt_sC)
+    *out = static_cast<scalar_t>( (*(a++)) * (*wgt) * (*inp) );
+
+  inp -= C*inp_sC;
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
 
 /* ========================================================================== */
 /*                                     COPY                                   */

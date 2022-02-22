@@ -67,6 +67,8 @@ public:
     vx0 = 1. / (vx0*vx0);
     vx1 = 1. / (vx1*vx1);
     vx2 = 1. / (vx2*vx2);
+    if (dim < 3) vx2 = 0.;
+    if (dim < 2) vx1 = 0.;
   }
 
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -876,24 +878,197 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
 /*                                     2D                                     */
 /* ========================================================================== */
 
+#undef  GET_COORD1
+#define GET_COORD1 \
+  GET_COORD1_(x) \
+  GET_COORD1_(y)
+#undef  GET_COORD2
+#define GET_COORD2 \
+  GET_COORD2_(x) \
+  GET_COORD2_(y)
+#undef  GET_SIGN1
+#define GET_SIGN1 \
+  GET_SIGN1_(x, X, 0) \
+  GET_SIGN1_(y, Y, 1)
+#undef  GET_SIGN2
+#define GET_SIGN2 \
+  GET_SIGN2_(x, X, 0) \
+  GET_SIGN2_(y, Y, 1)
+#undef  GET_WARP1
+#define GET_WARP1 \
+  GET_WARP1_(x, X, 0) \
+  GET_WARP1_(y, Y, 1)
+#undef  GET_WARP2
+#define GET_WARP2 \
+  GET_WARP2_(x, X, 0) \
+  GET_WARP2_(y, Y, 1)
+#undef  GET_WARP1_RLS
+#define GET_WARP1_RLS \
+  GET_WARP1_RLS_(x, X, 0) \
+  GET_WARP1_RLS_(y, Y, 1)
+
+#undef  GET_POINTERS
+#define GET_POINTERS \
+  const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + n*grd_sN); \
+        scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + n*sol_sN); \
+  const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC)
+    val[c] = *grd;
+
+  invert(sol, hes, val, w000);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1
+  GET_WARP1_RLS
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  const reduce_t *a = absolute, *m = membrane;
+  reduce_t aa, mm;
+
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
+  {
+    scalar_t wcenter = *wgt;
+    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
+    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+    reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
+    reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+
+    aa = *(a++);
+    mm = *(m++);
+
+    val[c] = *grd;
+    wval[c] = ( aa * wcenter
+              + mm * (w1m00 + w1p00 + w01m0 + w01p0) );
+  }
+
+  invert(sol, hes, val, wval);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
+    scalar_t wcenter = *wgt;
+    val[c]  = *grd;
+    wval[c] = absolute[c] * wcenter;
+  }
+
+  invert(sol, hes, val, wval);
+}
 
 /* ========================================================================== */
 /*                                     1D                                     */
 /* ========================================================================== */
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+#undef  GET_COORD1
+#define GET_COORD1 GET_COORD1_(x) 
+#undef  GET_COORD2
+#define GET_COORD2 GET_COORD2_(x)
+#undef  GET_SIGN1
+#define GET_SIGN1 GET_SIGN1_(x, X, 0)
+#undef  GET_SIGN2
+#define GET_SIGN2 GET_SIGN2_(x, X, 0)
+#undef  GET_WARP1
+#define GET_WARP1 GET_WARP1_(x, X, 0)
+#undef  GET_WARP2
+#define GET_WARP2 GET_WARP2_(x, X, 0)
+#undef  GET_WARP1_RLS
+#define GET_WARP1_RLS GET_WARP1_RLS_(x, X, 0)
 
+#undef  GET_POINTERS
+#define GET_POINTERS \
+  const scalar_t *grd = grd_ptr + (x*grd_sX + n*grd_sN); \
+        scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN); \
+  const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC)
+    val[c] = *grd;
+
+  invert(sol, hes, val, w000);
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1
+  GET_WARP1_RLS
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  const reduce_t *a = absolute, *m = membrane;
+  reduce_t aa, mm;
+
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
+  {
+    scalar_t wcenter = *wgt;
+    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
+    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+
+    aa = *(a++);
+    mm = *(m++);
+
+    val[c] = *grd;
+    wval[c] = ( aa * wcenter
+              + mm * (w1m00 + w1p00) );
+  }
+
+  invert(sol, hes, val, wval);
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+
+  for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
+    scalar_t wcenter = *wgt;
+    val[c]  = *grd;
+    wval[c] = absolute[c] * wcenter;
+  }
+
+  invert(sol, hes, val, wval);
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                  CUDA KERNEL (MUST BE OUT OF CLASS)

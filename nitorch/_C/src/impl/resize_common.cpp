@@ -1,3 +1,12 @@
+/*
+WARNING
+
+The "restrict" functions are not very robust.
+I'd like to reimplement restrict similarly to what I did in "multires",
+i.e., without relying on atomic adds (and looping across output voxels  
+rather than "target" voxels). It should be more stable, but it needs
+some thinking to work with arbitrary scaling factors. 
+*/
 #include "common.h"                // write C++/CUDA compatible code
 #include "../defines.h"            // useful macros
 #include "../grid_align.h"         // enum type for align mode
@@ -262,8 +271,8 @@ public:
             resize_ = &Self::resize1d_nearest; break;
           case LIN:
             resize_ = &Self::resize1d_linear; break;
-          case QUD:
-            resize_ = &Self::resize1d_quadratic; break;
+          // case QUD:
+          //   resize_ = &Self::resize1d_quadratic; break;
           default:
             resize_ = &Self::resize1d; break;
         } break;
@@ -273,8 +282,8 @@ public:
             resize_ = &Self::resize2d_nearest; break;
           case LIN:
             resize_ = &Self::resize2d_linear; break;
-          case QUD:
-            resize_ = &Self::resize2d_quadratic; break;
+          // case QUD:
+          //   resize_ = &Self::resize2d_quadratic; break;
           default:
             resize_ = &Self::resize2d; break;
         } break;
@@ -295,8 +304,8 @@ public:
             resize_ = &Self::restrict1d_nearest; break;
           case LIN:
             resize_ = &Self::restrict1d_linear; break;
-          case QUD:
-            resize_ = &Self::restrict1d_quadratic; break;
+          // case QUD:
+          //   resize_ = &Self::restrict1d_quadratic; break;
           default:
             resize_ = &Self::restrict1d; break;
         } break;
@@ -306,8 +315,8 @@ public:
             resize_ = &Self::restrict2d_nearest; break;
           case LIN:
             resize_ = &Self::restrict2d_linear; break;
-          case QUD:
-            resize_ = &Self::restrict2d_quadratic; break;
+          // case QUD:
+          //   resize_ = &Self::restrict2d_quadratic; break;
           default:
             resize_ = &Self::restrict2d; break;
         } break;
@@ -457,8 +466,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return resize1d_nearest(x, y, z, n);
           case LIN:
             return resize1d_linear(x, y, z, n);
-          case QUD:
-            return resize1d_quadratic(x, y, z, n);
+          // case QUD:
+          //   return resize1d_quadratic(x, y, z, n);
           default:
             return resize1d(x, y, z, n);
         }
@@ -468,8 +477,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return resize2d_nearest(x, y, z, n);
           case LIN:
             return resize2d_linear(x, y, z, n);
-          case QUD:
-            return resize2d_quadratic(x, y, z, n);
+          // case QUD:
+          //   return resize2d_quadratic(x, y, z, n);
           default:
             return resize2d(x, y, z, n);
         }
@@ -490,8 +499,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return restrict1d_nearest(x, y, z, n);
           case LIN:
             return restrict1d_linear(x, y, z, n);
-          case QUD:
-            return restrict1d_quadratic(x, y, z, n);
+          // case QUD:
+          //   return restrict1d_quadratic(x, y, z, n);
           default:
             return restrict1d(x, y, z, n);
         }
@@ -501,8 +510,8 @@ void ResizeImpl<scalar_t,offset_t>::resize(
             return restrict2d_nearest(x, y, z, n);
           case LIN:
             return restrict2d_linear(x, y, z, n);
-          case QUD:
-            return restrict2d_quadratic(x, y, z, n);
+          // case QUD:
+          //   return restrict2d_quadratic(x, y, z, n);
           default:
             return restrict2d(x, y, z, n);
         }
@@ -730,14 +739,162 @@ void ResizeImpl<scalar_t,offset_t>::restrict3d(
 }
 
 
+#undef  GET_INDEX
+#define GET_INDEX \
+  scalar_t x = scale0 * w + shift0;                               \
+  scalar_t y = scale1 * h + shift1;                               \
+  offset_t bx0, bx1, by0, by1;                                    \
+  interpolation::bounds(interpolation0, x, bx0, bx1);             \
+  interpolation::bounds(interpolation1, y, by0, by1);             \
+  offset_t dbx = bx1-bx0;                                         \
+  offset_t dby = by1-by0;                                         \
+  scalar_t  wx[8],  wy[8];                                        \
+  offset_t  ix[8],  iy[8];                                        \
+  uint8_t   sx[8],  sy[8];                                        \
+  {                                                               \
+    scalar_t *owy = static_cast<scalar_t*>(wy);                   \
+    offset_t *oiy = static_cast<offset_t*>(iy);                   \
+    uint8_t  *osy = static_cast<uint8_t *>(sy);                   \
+    for (offset_t by = by0; by <= by1; ++by) {                    \
+      scalar_t dy = y - by;                                       \
+      *(owy++) = interpolation::fastweight(interpolation1, dy);   \
+      *(osy++)  = bound::sign(bound1, by, src_Y);                 \
+      *(oiy++)  = bound::index(bound1, by, src_Y);                \
+    }                                                             \
+  }                                                               \
+  {                                                               \
+    scalar_t *owx = static_cast<scalar_t*>(wx);                   \
+    offset_t *oix = static_cast<offset_t*>(ix);                   \
+    uint8_t  *osx = static_cast<uint8_t *>(sx);                   \
+    for (offset_t bx = bx0; bx <= bx1; ++bx) {                    \
+      scalar_t dx = x - bx;                                       \
+      *(owx++)  = interpolation::fastweight(interpolation0, dx);  \
+      *(osx++)  = bound::sign(bound0, bx, src_X);                 \
+      *(oix++)  = bound::index(bound0, bx, src_X);                \
+    }                                                             \
+  }                                                               \
+  scalar_t *src_ptr_NC0    = src_ptr  + n * src_sN;               \
+  scalar_t *tgt_ptr_NCXYZ0 = tgt_ptr + n * tgt_sN + w * tgt_sX    \
+                                     + h * tgt_sY;
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::resize2d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::resize2d(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+
+  // Convolve coefficients with basis functions
+  for (offset_t j = 0; j <= dby; ++j) {
+    offset_t osyz = iy[j] * src_sY;
+    uint8_t  syz  = sy[j];
+    scalar_t wyz  = wy[j];
+    for (offset_t i = 0; i <= dbx; ++i) {
+      offset_t osxyz = osyz + ix[i] * src_sX;
+      uint8_t  sxyz  = syz  * sx[i];
+      scalar_t wxyz  = wyz  * wx[i];
+
+      scalar_t * src_ptr_NC    = src_ptr_NC0;
+      scalar_t * tgt_ptr_NCXYZ = tgt_ptr_NCXYZ0;
+      for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
+                                       src_ptr_NC    += src_sC)
+        *tgt_ptr_NCXYZ += bound::get(src_ptr_NC, osxyz, sxyz) * wxyz;
+
+      
+    } // x
+  } // y
+}
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict2d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::restrict2d(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+
+  scalar_t target[NI_MAX_NUM_CHANNELS];
+  scalar_t * tgt_ptr_NCXYZ = tgt_ptr_NCXYZ0;
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC)
+    target[c] = *tgt_ptr_NCXYZ;
+
+  // Convolve coefficients with basis functions
+  for (offset_t j = 0; j <= dby; ++j) {
+    offset_t osyz = iy[j] * src_sY;
+    uint8_t  syz  = sy[j];
+    scalar_t wyz  = wy[j];
+    for (offset_t i = 0; i <= dbx; ++i) {
+      offset_t osxyz = osyz + ix[i] * src_sX;
+      uint8_t  sxyz  = syz  * sx[i];
+      scalar_t wxyz  = wyz  * wx[i];
+
+      scalar_t * src_ptr_NC = src_ptr_NC0;
+      for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC)
+        bound::add(src_ptr_NC, osxyz, wxyz * target[c], sxyz);
+      
+    } // x
+  } // y
+}
+
+
+#undef  GET_INDEX
+#define GET_INDEX \
+  scalar_t x = scale0 * w + shift0;                               \
+  offset_t bx0, bx1;                                              \
+  interpolation::bounds(interpolation0, x, bx0, bx1);             \
+  offset_t dbx = bx1-bx0;                                         \
+  scalar_t  wx[8];                                                \
+  offset_t  ix[8];                                                \
+  uint8_t   sx[8];                                                \
+  {                                                               \
+    scalar_t *owx = static_cast<scalar_t*>(wx);                   \
+    offset_t *oix = static_cast<offset_t*>(ix);                   \
+    uint8_t  *osx = static_cast<uint8_t *>(sx);                   \
+    for (offset_t bx = bx0; bx <= bx1; ++bx) {                    \
+      scalar_t dx = x - bx;                                       \
+      *(owx++)  = interpolation::fastweight(interpolation0, dx);  \
+      *(osx++)  = bound::sign(bound0, bx, src_X);                 \
+      *(oix++)  = bound::index(bound0, bx, src_X);                \
+    }                                                             \
+  }                                                               \
+  scalar_t *src_ptr_NC0    = src_ptr  + n * src_sN;               \
+  scalar_t *tgt_ptr_NCXYZ0 = tgt_ptr + n * tgt_sN + w * tgt_sX;
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::resize1d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::resize1d(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+
+  // Convolve coefficients with basis functions
+  for (offset_t i = 0; i <= dbx; ++i) {
+    offset_t osxyz = ix[i] * src_sX;
+    uint8_t  sxyz  = sx[i];
+    scalar_t wxyz  = wx[i];
+
+    scalar_t * src_ptr_NC    = src_ptr_NC0;
+    scalar_t * tgt_ptr_NCXYZ = tgt_ptr_NCXYZ0;
+    for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
+                                     src_ptr_NC    += src_sC)
+      *tgt_ptr_NCXYZ += bound::get(src_ptr_NC, osxyz, sxyz) * wxyz;
+  } // x
+}
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict1d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::restrict1d(offset_t w, offset_t h, offset_t d, offset_t n) const
+{
+  GET_INDEX
+
+  scalar_t target[NI_MAX_NUM_CHANNELS];
+  scalar_t * tgt_ptr_NCXYZ = tgt_ptr_NCXYZ0;
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC)
+    target[c] = *tgt_ptr_NCXYZ;
+
+  // Convolve coefficients with basis functions
+  for (offset_t i = 0; i <= dbx; ++i) {
+    offset_t osxyz = ix[i] * src_sX;
+    uint8_t  sxyz  = sx[i];
+    scalar_t wxyz  = wx[i];
+
+    scalar_t * src_ptr_NC = src_ptr_NC0;
+    for (offset_t c = 0; c < C; ++c, src_ptr_NC += src_sC)
+      bound::add(src_ptr_NC, osxyz, wxyz * target[c], sxyz);
+  } // x
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                     QUADRATIC INTERPOLATION 3D
@@ -1086,14 +1243,111 @@ void ResizeImpl<scalar_t,offset_t>::restrict3d_linear(
   }
 }
 
+#undef  GET_INDEX
+#define GET_INDEX \
+  scalar_t x = scale0 * w + shift0; \
+  scalar_t y = scale1 * h + shift1; \
+  offset_t ix0 = static_cast<offset_t>(std::floor(x)); \
+  offset_t iy0 = static_cast<offset_t>(std::floor(y)); \
+  scalar_t dx1 = x - ix0; \
+  scalar_t dy1 = y - iy0; \
+  scalar_t dx0 = 1. - dx1; \
+  scalar_t dy0 = 1. - dy1; \
+  scalar_t w00 = dx0 * dy0; \
+  scalar_t w01 = dx0 * dy1; \
+  scalar_t w10 = dx1 * dy0; \
+  scalar_t w11 = dx1 * dy1; \
+  int8_t  sx1 = bound::sign(bound0, ix0+1, src_X); \
+  int8_t  sy1 = bound::sign(bound1, iy0+1, src_Y); \
+  int8_t  sx0 = bound::sign(bound0, ix0,   src_X); \
+  int8_t  sy0 = bound::sign(bound1, iy0,   src_Y); \
+  int8_t  s00 = sx0 * sy0; \
+  int8_t  s01 = sx0 * sy1; \
+  int8_t  s10 = sx1 * sy0; \
+  int8_t  s11 = sx1 * sy1; \
+  offset_t ix1, iy1; \
+  ix1 = bound::index(bound0, ix0+1, src_X) * src_sX; \
+  iy1 = bound::index(bound1, iy0+1, src_Y) * src_sY; \
+  ix0 = bound::index(bound0, ix0,   src_X) * src_sX; \
+  iy0 = bound::index(bound1, iy0,   src_Y) * src_sY; \
+  offset_t o00, o10, o01, o11; \
+  o00 = ix0 + iy0; \
+  o01 = ix0 + iy1; \
+  o10 = ix1 + iy0; \
+  o10 = ix1 + iy1; \
+  scalar_t *tgt_ptr_NCXYZ = tgt_ptr                   \
+                          + n * tgt_sN + w * tgt_sX + h * tgt_sY;  \
+  scalar_t *src_ptr_NC = src_ptr + n * src_sN;
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::resize2d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::resize2d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
+                                   src_ptr_NC    += src_sC) {
+    *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, o00, s00) * w00
+                   + bound::get(src_ptr_NC, o01, s01) * w01
+                   + bound::get(src_ptr_NC, o10, s10) * w10
+                   + bound::get(src_ptr_NC, o11, s11) * w11;
+  }
+}
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict2d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::restrict2d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const
+{
+  GET_INDEX
+
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
+                                   src_ptr_NC    += src_sC) {
+    scalar_t tgt = *tgt_ptr_NCXYZ;
+    bound::add(src_ptr_NC, o00, w00 * tgt, s00);
+    bound::add(src_ptr_NC, o01, w01 * tgt, s01);
+    bound::add(src_ptr_NC, o10, w10 * tgt, s10);
+    bound::add(src_ptr_NC, o11, w11 * tgt, s11);
+  }
+}
+
+#undef  GET_INDEX
+#define GET_INDEX \
+  scalar_t x = scale0 * w + shift0; \
+  offset_t ix0 = static_cast<offset_t>(std::floor(x)); \
+  scalar_t dx1 = x - ix0; \
+  scalar_t dx0 = 1. - dx1; \
+  int8_t  sx1 = bound::sign(bound0, ix0+1, src_X); \
+  int8_t  sx0 = bound::sign(bound0, ix0,   src_X); \
+  offset_t ix1; \
+  ix1 = bound::index(bound0, ix0+1, src_X) * src_sX; \
+  ix0 = bound::index(bound0, ix0,   src_X) * src_sX; \
+  scalar_t *tgt_ptr_NCXYZ = tgt_ptr                   \
+                          + n * tgt_sN + w * tgt_sX + h * tgt_sY;  \
+  scalar_t *src_ptr_NC = src_ptr + n * src_sN;
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::resize1d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::resize1d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const  
+{
+  GET_INDEX
+
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
+                                   src_ptr_NC    += src_sC) {
+    *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, ix0, sx0) * dx0
+                   + bound::get(src_ptr_NC, ix1, sx1) * dx1;
+  }
+}
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict1d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::restrict1d_linear(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC,
+                                   src_ptr_NC    += src_sC) {
+    scalar_t tgt = *tgt_ptr_NCXYZ;
+    bound::add(src_ptr_NC, ix0, dx0 * tgt, sx0);
+    bound::add(src_ptr_NC, ix1, dx1 * tgt, sx1);
+  }
+}
+
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                  NEAREST NEIGHBOR INTERPOLATION 3D
@@ -1103,7 +1357,7 @@ void ResizeImpl<scalar_t,offset_t>::restrict1d_linear(offset_t w, offset_t h, of
 #define GET_INDEX \
   offset_t ix = static_cast<offset_t>(std::round(scale0 * w + shift0)); \
   offset_t iy = static_cast<offset_t>(std::round(scale1 * h + shift1)); \
-  offset_t iz = static_cast<offset_t>(std::round(scale2 * d + shift1)); \
+  offset_t iz = static_cast<offset_t>(std::round(scale2 * d + shift2)); \
   int8_t   sx = bound::sign(bound0, ix, src_X);                         \
   int8_t   sy = bound::sign(bound1, iy, src_Y);                         \
   int8_t   sz = bound::sign(bound2, iz, src_Z);                         \
@@ -1124,7 +1378,7 @@ void ResizeImpl<scalar_t,offset_t>::resize3d_nearest(
   GET_INDEX
   for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
                                    src_ptr_NC    += src_sC)
-    bound::add(src_ptr_NC, o, *tgt_ptr_NCXYZ, s);
+    *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, o, s);
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
@@ -1133,18 +1387,67 @@ void ResizeImpl<scalar_t,offset_t>::restrict3d_nearest(
 {
   GET_INDEX
   for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
-                                   src_ptr_NC     += src_sC)
+                                   src_ptr_NC    += src_sC)
+    bound::add(src_ptr_NC, o, *tgt_ptr_NCXYZ, s);
+}
+
+#undef  GET_INDEX
+#define GET_INDEX \
+  offset_t ix = static_cast<offset_t>(std::round(scale0 * w + shift0)); \
+  offset_t iy = static_cast<offset_t>(std::round(scale1 * h + shift1)); \
+  int8_t   sx = bound::sign(bound0, ix, src_X);                         \
+  int8_t   sy = bound::sign(bound1, iy, src_Y);                         \
+           ix = bound::index(bound0, ix,src_X);                         \
+           iy = bound::index(bound1, iy,src_Y);                         \
+  int8_t    s = sy * sx;                                                \
+  offset_t  o = iy*src_sY + ix*src_sX;                                  \
+  scalar_t *tgt_ptr_NCXYZ = tgt_ptr + n * tgt_sN + w * tgt_sX + h * tgt_sY;  \
+  scalar_t *src_ptr_NC = src_ptr + n * src_sN;
+
+
+template <typename scalar_t, typename offset_t> NI_DEVICE
+void ResizeImpl<scalar_t,offset_t>::resize2d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
+                                   src_ptr_NC    += src_sC)
     *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, o, s);
 }
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::resize2d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::restrict2d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
+                                   src_ptr_NC    += src_sC)
+    bound::add(src_ptr_NC, o, *tgt_ptr_NCXYZ, s);
+}
+
+#undef  GET_INDEX
+#define GET_INDEX \
+  offset_t ix = static_cast<offset_t>(std::round(scale0 * w + shift0)); \
+  int8_t   sx = bound::sign(bound0, ix, src_X);                         \
+           ix = bound::index(bound0, ix,src_X) * src_sX ;               \
+  scalar_t *tgt_ptr_NCXYZ = tgt_ptr + n * tgt_sN + w * tgt_sX + h * tgt_sY;  \
+  scalar_t *src_ptr_NC = src_ptr + n * src_sN;
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict2d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::resize1d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
+                                   src_ptr_NC    += src_sC)
+    *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, ix, sx);
+}
+
 template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::resize1d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const {}
-template <typename scalar_t, typename offset_t> NI_DEVICE
-void ResizeImpl<scalar_t,offset_t>::restrict1d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void ResizeImpl<scalar_t,offset_t>::restrict1d_nearest(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  GET_INDEX
+  for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
+                                   src_ptr_NC    += src_sC)
+    bound::add(src_ptr_NC, ix, *tgt_ptr_NCXYZ, sx);
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                  CUDA KERNEL (MUST BE OUT OF CLASS)

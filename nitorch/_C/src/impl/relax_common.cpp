@@ -67,6 +67,8 @@ public:
     vx0 = 1. / (vx0*vx0);
     vx1 = 1. / (vx1*vx1);
     vx2 = 1. / (vx2*vx2);
+    if (dim < 3) vx2 = 0.;
+    if (dim < 2) vx1 = 0.;
   }
 
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -858,33 +860,6 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::invert(
 #endif 
 }
 
-#if 0
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::invert3(
-    scalar_t * x, const scalar_t * h, double * v, const double * w) const 
-{
-
-  double h00 = h[0],        h11 = h[  hes_sC], h22 = h[2*hes_sC],
-         h01 = h[3*hes_sC], h02 = h[4*hes_sC], h12 = h[5*hes_sC],
-         x0  = x[0],        x1  = x[  sol_sC], x2  = x[2*sol_sC],
-         idt;
-
-  // matvec
-  v[0] -= (h00*x0 + h01*x1 + h02*x2);
-  v[1] -= (h01*x0 + h11*x1 + h12*x2);
-  v[2] -= (h02*x0 + h12*x1 + h22*x2);
-
-  // solve
-  h00  = h00 + w[0];
-  h11  = h11 + w[1];
-  h22  = h22 + w[2];
-  idt  = 1.0/(h00*h11*h22 - h00*h12*h12 - h11*h02*h02 - h22*h01*h01 + 2*h01*h02*h12);
-  x[       0] += idt*(v[0]*(h11*h22-h12*h12) + v[1]*(h02*h12-h01*h22) + v[2]*(h01*h12-h02*h11));
-  x[  sol_sC] += idt*(v[0]*(h02*h12-h01*h22) + v[1]*(h00*h22-h02*h02) + v[2]*(h01*h02-h00*h12));
-  x[2*sol_sC] += idt*(v[0]*(h01*h12-h02*h11) + v[1]*(h01*h02-h00*h12) + v[2]*(h00*h11-h01*h01));
-}
-#endif
-
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_sym(
     scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const {
@@ -1228,50 +1203,443 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_absolute(
   invert(sol, hes, val, wval);
 }
 
-
-
 /* ========================================================================== */
 /*                                     2D                                     */
 /* ========================================================================== */
 
+#undef  GET_COORD1
+#define GET_COORD1 \
+  GET_COORD1_(x) \
+  GET_COORD1_(y)
+#undef  GET_COORD2
+#define GET_COORD2 \
+  GET_COORD2_(x) \
+  GET_COORD2_(y) 
+#undef  GET_SIGN1
+#define GET_SIGN1 \
+  GET_SIGN1_(x, X, 0) \
+  GET_SIGN1_(y, Y, 1)
+#undef  GET_SIGN2
+#define GET_SIGN2 \
+  GET_SIGN2_(x, X, 0) \
+  GET_SIGN2_(y, Y, 1) 
+#undef  GET_WARP1
+#define GET_WARP1 \
+  GET_WARP1_(x, X, 0) \
+  GET_WARP1_(y, Y, 1) 
+#undef  GET_WARP2
+#define GET_WARP2 \
+  GET_WARP2_(x, X, 0) \
+  GET_WARP2_(y, Y, 1) 
+#undef  GET_WARP1_RLS
+#define GET_WARP1_RLS \
+  GET_WARP1_RLS_(x, X, 0) \
+  GET_WARP1_RLS_(y, Y, 1) 
+
+#undef  GET_POINTERS
+#define GET_POINTERS \
+  const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + n*grd_sN); \
+        scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + n*sol_sN); \
+  const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_bending(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_bending(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_COORD2
+  GET_SIGN1 
+  GET_SIGN2
+  GET_WARP1 
+  GET_WARP2
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  const reduce_t *a = absolute, *m = membrane, *b = bending;
+  reduce_t aa, mm, bb;
+
+  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
+  {
+    scalar_t center = *sol; 
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    aa = *(a++);
+    mm = *(m++);
+    bb = *(b++);
+
+    reduce_t w100 = mm * m100 + bb * b100;
+    reduce_t w010 = mm * m010 + bb * b010;
+
+    val[c] = (*grd) - (
+          aa * center
+        +(w100*(get(sol, x0,    sx0)     + get(sol, x1,    sx1))
+        + w010*(get(sol, y0,    sy0)     + get(sol, y1,    sy1)))
+        + bb * (
+           (b110*(get(sol, x0+y0, sx0*sy0) + get(sol, x1+y0, sx1*sy0) +
+                  get(sol, x0+y1, sx0*sy1) + get(sol, x1+y1, sx1*sy1)))
+          +(b200*(get(sol, x00,   sx00)    + get(sol, x11,   sx11))
+          + b020*(get(sol, y00,   sy00)    + get(sol, y11,   sy11))) )
+    );
+  }
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1 
+  GET_WARP1 
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  const reduce_t *a = absolute, *m = membrane;
+
+  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
+  {
+    scalar_t center = *sol; 
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    val[c] = (*grd) - (
+          (*(a++)) * center
+        + (*(m++)) * (
+            m100*(get(sol, x0, sx0) + get(sol, x1, sx1))
+          + m010*(get(sol, y0, sy0) + get(sol, y1, sy1)) )
+    );
+  }
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000);
+
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+
+  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
+    val[c] = (*grd) - ( absolute[c] * (*sol) );
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000);
+}
+
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1
+  GET_WARP1_RLS
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  const reduce_t *a = absolute, *m = membrane;
+  reduce_t aa, mm;
+
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+
+  for (offset_t c = 0; c < C; 
+       ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
+  {
+    scalar_t wcenter = *wgt;
+    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
+    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+    reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
+    reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
+
+    scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    aa = *(a++);
+    mm = *(m++);
+
+    val[c] = (*grd) - (
+        aa * wcenter * center
+      + mm * (
+          w1m00 * get(sol, x0, sx0)
+        + w1p00 * get(sol, x1, sx1)
+        + w01m0 * get(sol, y0, sy0)
+        + w01p0 * get(sol, y1, sy1) )
+    );
+
+    wval[c] = ( aa * wcenter
+              + mm * (w1m00 + w1p00 + w01m0 + w01p0) );
+  }
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, wval);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+
+  for (offset_t c = 0; c < C; 
+       ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC) {
+    scalar_t wcenter = *wgt;
+    val[c]  = (*grd) - ( absolute[c] * wcenter * (*sol) );
+    wval[c] = absolute[c] * wcenter;
+  }
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, wval);
+}
 
 /* ========================================================================== */
 /*                                     1D                                     */
 /* ========================================================================== */
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_bending(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+#undef  GET_COORD1
+#define GET_COORD1 GET_COORD1_(x) 
+#undef  GET_COORD2
+#define GET_COORD2 GET_COORD2_(x) 
+#undef  GET_SIGN1
+#define GET_SIGN1 GET_SIGN1_(x, X, 0)
+#undef  GET_SIGN2
+#define GET_SIGN2 GET_SIGN2_(x, X, 0) 
+#undef  GET_WARP1
+#define GET_WARP1 GET_WARP1_(x, X, 0) 
+#undef  GET_WARP2
+#define GET_WARP2 GET_WARP2_(x, X, 0) 
+#undef  GET_WARP1_RLS
+#define GET_WARP1_RLS GET_WARP1_RLS_(x, X, 0) 
 
+#undef  GET_POINTERS
+#define GET_POINTERS \
+  const scalar_t *grd = grd_ptr + (x*grd_sX + n*grd_sN); \
+        scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN); \
+  const scalar_t *hes = hes_ptr + (x*hes_sX + n*hes_sN);
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_bending(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_COORD2
+  GET_SIGN1 
+  GET_SIGN2
+  GET_WARP1 
+  GET_WARP2
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  const reduce_t *a = absolute, *m = membrane, *b = bending;
+  reduce_t aa, mm, bb;
+
+  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
+  {
+    scalar_t center = *sol; 
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    aa = *(a++);
+    mm = *(m++);
+    bb = *(b++);
+
+    reduce_t w100 = mm * m100 + bb * b100;
+
+    val[c] = (*grd) - (
+          aa * center
+        +(w100*(get(sol, x0,    sx0)     + get(sol, x1,    sx1)))
+        + bb * (
+          (b200*(get(sol, x00,   sx00)    + get(sol, x11,   sx11))) )
+    );
+  }
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000);
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1 
+  GET_WARP1 
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  const reduce_t *a = absolute, *m = membrane;
+
+  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
+  {
+    scalar_t center = *sol; 
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    val[c] = (*grd) - (
+          (*(a++)) * center
+        + (*(m++)) * (
+            m100*(get(sol, x0, sx0) + get(sol, x1, sx1)) )
+    );
+  }
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000);
+
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+
+  for (offset_t c = 0; c < C; ++c, sol += sol_sC, grd += grd_sC)
+    val[c] = (*grd) - ( absolute[c] * (*sol) );
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, w000);
+}
+
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_COORD1
+  GET_SIGN1
+  GET_WARP1_RLS
+  GET_POINTERS
+
+  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  const reduce_t *a = absolute, *m = membrane;
+  reduce_t aa, mm;
+
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX);
+
+  for (offset_t c = 0; c < C; 
+       ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC)
+  {
+    scalar_t wcenter = *wgt;
+    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
+    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
+
+    scalar_t center = *sol;  // no need to use `get` -> we know we are in the FOV
+    auto get = [center](const scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - center;
+    };
+
+    aa = *(a++);
+    mm = *(m++);
+
+    val[c] = (*grd) - (
+        aa * wcenter * center
+      + mm * (
+          w1m00 * get(sol, x0, sx0)
+        + w1p00 * get(sol, x1, sx1) )
+    );
+
+    wval[c] = ( aa * wcenter
+              + mm * (w1m00 + w1p00) );
+  }
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, wval);
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
+
+  for (offset_t c = 0; c < C; 
+       ++c, sol += sol_sC, grd += grd_sC, wgt += wgt_sC) {
+    scalar_t wcenter = *wgt;
+    val[c]  = (*grd) - ( absolute[c] * wcenter * (*sol) );
+    wval[c] = absolute[c] * wcenter;
+  }
+
+  sol -= C*sol_sC;
+  invert(sol, hes, val, wval);
+}
 
 /* ========================================================================== */
 /*                                     SOLVE                                  */
 /* ========================================================================== */
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::solve1d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::solve2d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RelaxImpl<scalar_t,offset_t,reduce_t>::solve3d(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RelaxImpl<scalar_t,offset_t,reduce_t>::solve1d(offset_t x, offset_t y, offset_t z, offset_t n) const 
+{
+  const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN),          
+                 *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
+        scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN);
+  
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  for (offset_t c = 0; c < C; ++c,  grd += grd_sC) 
+    val[c] = *grd;
 
+  invert(sol, hes, val, 0);
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::solve2d(offset_t x, offset_t y, offset_t z, offset_t n) const 
+{
+  const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + n*grd_sN),
+                 *hes = hes_ptr + (x*hes_sX + y*hes_sY + n*hes_sN);
+        scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + n*sol_sN);
+
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  for (offset_t c = 0; c < C; ++c,  grd += grd_sC) 
+    val[c] = *grd;
+
+  invert(sol, hes, val, 0);
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::solve3d(offset_t x, offset_t y, offset_t z, offset_t n) const 
+{
+  const scalar_t *grd = grd_ptr + (x*grd_sX + n*grd_sN),                 
+                 *hes = hes_ptr + (x*hes_sX + n*hes_sN);
+        scalar_t *sol = sol_ptr + (x*sol_sX + n*sol_sN);
+
+  reduce_t val[NI_MAX_NUM_CHANNELS];
+  for (offset_t c = 0; c < C; ++c,  grd += grd_sC) 
+    val[c] = *grd;
+
+  invert(sol, hes, val, 0);
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                  CUDA KERNEL (MUST BE OUT OF CLASS)

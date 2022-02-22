@@ -500,9 +500,84 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::resize3d(
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::resize2d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void MultiResImpl<scalar_t,offset_t,reduce_t>::resize2d(offset_t w, offset_t h, offset_t d, offset_t n) const
+{
+  reduce_t x = (w + 0.5) * scale0 - 0.5;
+  reduce_t y = (h + 0.5) * scale1 - 0.5;
+  offset_t ix1 = static_cast<offset_t>(std::floor(x+0.5));
+  offset_t iy1 = static_cast<offset_t>(std::floor(y+0.5));
+  reduce_t dx1 = interpolation::weight(Q, x - ix1);
+  reduce_t dy1 = interpolation::weight(Q, y - iy1);
+  reduce_t dx0 = interpolation::fastweight(Q, x - (ix1 - 1));
+  reduce_t dy0 = interpolation::fastweight(Q, y - (iy1 - 1));
+  reduce_t dx2 = interpolation::fastweight(Q, (ix1 + 1) - x);
+  reduce_t dy2 = interpolation::fastweight(Q, (iy1 + 1) - y);
+  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
+  int8_t  sy0 = bound::sign(bound1, iy1-1, inp_Y);
+  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
+  int8_t  sy2 = bound::sign(bound1, iy1+1, inp_Y);
+  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
+  int8_t  sy1 = bound::sign(bound1, iy1,   inp_Y);
+  offset_t ix0, iy0, ix2, iy2;
+  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
+  iy0 = bound::index(bound1, iy1-1, inp_Y) * inp_sY;
+  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
+  iy2 = bound::index(bound1, iy1+1, inp_Y) * inp_sY;
+  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
+  iy1 = bound::index(bound1, iy1,   inp_Y) * inp_sY;
+
+  scalar_t *out_ptr_NCXYZ = out_ptr 
+                          + n * out_sN + w * out_sX + h * out_sY; 
+  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
+
+  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
+                                   inp_ptr_NC    += inp_sC) 
+  {
+
+    auto accum1d = [ix0, ix1, ix2, dx0, dx1, dx2, 
+                    sx0, sx1, sx2, inp_ptr_NC]
+                    (offset_t i, uint8_t s)
+    {
+      return static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix0, s * sx0)) * dx0
+           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix1, s * sx1)) * dx1
+           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix2, s * sx2)) * dx2;
+    };
+
+    *out_ptr_NCXYZ  = static_cast<scalar_t>(accum1d(iy0, sy0) * dy0 
+                                          + accum1d(iy1, sy1) * dy1 
+                                          + accum1d(iy2, sy2) * dy2);
+  }
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::resize1d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void MultiResImpl<scalar_t,offset_t,reduce_t>::resize1d(offset_t w, offset_t h, offset_t d, offset_t n) const
+{
+  reduce_t x = (w + 0.5) * scale0 - 0.5;
+  offset_t ix1 = static_cast<offset_t>(std::floor(x+0.5));
+  reduce_t dx1 = interpolation::weight(Q, x - ix1);
+  reduce_t dx0 = interpolation::fastweight(Q, x - (ix1 - 1));
+  reduce_t dx2 = interpolation::fastweight(Q, (ix1 + 1) - x);
+  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
+  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
+  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
+  offset_t ix0, ix2;
+  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
+  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
+  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
+
+  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX; 
+  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
+
+  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
+                                   inp_ptr_NC    += inp_sC) 
+  {
+    *out_ptr_NCXYZ  = static_cast<scalar_t>(
+        static_cast<reduce_t>(bound::get(inp_ptr_NC, ix0, sx0)) * dx0
+      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix1, sx1)) * dx1
+      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix2, sx2)) * dx2);
+  }
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                     LINEAR RESTRICTION 3D
@@ -594,9 +669,96 @@ void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict3d(
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict2d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict2d(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  reduce_t x = (w + 0.5) * scale0 - 0.5;
+  reduce_t y = (h + 0.5) * scale1 - 0.5;
+  offset_t ix1 = static_cast<offset_t>(std::floor(x));
+  offset_t iy1 = static_cast<offset_t>(std::floor(y));
+  reduce_t dx1 = interpolation::weight(L, (x - ix1) / scale0) / scale0;
+  reduce_t dy1 = interpolation::weight(L, (y - iy1) / scale1) / scale1;
+  reduce_t dx0 = interpolation::weight(L, (x - ix1 + 1) / scale0) / scale0;
+  reduce_t dy0 = interpolation::weight(L, (y - iy1 + 1) / scale1) / scale1;
+  reduce_t dx2 = interpolation::weight(L, (1 + ix1 - x) / scale0) / scale0;
+  reduce_t dy2 = interpolation::weight(L, (1 + iy1 - y) / scale1) / scale1;
+  reduce_t dx3 = interpolation::weight(L, (2 + ix1 - x) / scale0) / scale0;
+  reduce_t dy3 = interpolation::weight(L, (2 + iy1 - y) / scale1) / scale1;
+  int8_t  sx3 = bound::sign(bound0, ix1+2, inp_X);
+  int8_t  sy3 = bound::sign(bound1, iy1+2, inp_Y);
+  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
+  int8_t  sy2 = bound::sign(bound1, iy1+1, inp_Y);
+  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
+  int8_t  sy0 = bound::sign(bound1, iy1-1, inp_Y);
+  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
+  int8_t  sy1 = bound::sign(bound1, iy1,   inp_Y);
+  offset_t ix0, ix2, ix3, iy0, iy2, iy3;
+  ix3 = bound::index(bound0, ix1+2, inp_X) * inp_sX;
+  iy3 = bound::index(bound1, iy1+2, inp_Y) * inp_sY;
+  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
+  iy2 = bound::index(bound1, iy1+1, inp_Y) * inp_sY;
+  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
+  iy0 = bound::index(bound1, iy1-1, inp_Y) * inp_sY;
+  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
+  iy1 = bound::index(bound1, iy1,   inp_Y) * inp_sY;
+
+  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX + h * out_sY;
+  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
+
+
+  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
+                                   inp_ptr_NC    += inp_sC) 
+  {
+
+    auto accum1d = [ix0, ix1, ix2, ix3, dx0, dx1, dx2, dx3, 
+                    sx0, sx1, sx2, sx3, inp_ptr_NC]
+                    (offset_t i, uint8_t s)
+    {
+      return static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix0, s * sx0)) * dx0
+           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix1, s * sx1)) * dx1
+           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix2, s * sx2)) * dx2
+           + static_cast<reduce_t>(bound::get(inp_ptr_NC, i + ix3, s * sx3)) * dx3;
+    };
+
+    *out_ptr_NCXYZ  = static_cast<scalar_t>(accum1d(iy0, sy0) * dy0 
+                                          + accum1d(iy1, sy1) * dy1 
+                                          + accum1d(iy2, sy2) * dy2 
+                                          + accum1d(iy3, sy3) * dy3);
+  }
+}
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict1d(offset_t w, offset_t h, offset_t d, offset_t n) const {}
+void MultiResImpl<scalar_t,offset_t,reduce_t>::restrict1d(offset_t w, offset_t h, offset_t d, offset_t n) const 
+{
+  reduce_t x = (w + 0.5) * scale0 - 0.5;
+  offset_t ix1 = static_cast<offset_t>(std::floor(x));
+  reduce_t dx1 = interpolation::weight(L, (x - ix1) / scale0) / scale0;
+  reduce_t dx0 = interpolation::weight(L, (x - ix1 + 1) / scale0) / scale0;
+  reduce_t dx2 = interpolation::weight(L, (1 + ix1 - x) / scale0) / scale0;
+  reduce_t dx3 = interpolation::weight(L, (2 + ix1 - x) / scale0) / scale0;
+  int8_t  sx3 = bound::sign(bound0, ix1+2, inp_X);
+  int8_t  sx2 = bound::sign(bound0, ix1+1, inp_X);
+  int8_t  sx0 = bound::sign(bound0, ix1-1, inp_X);
+  int8_t  sx1 = bound::sign(bound0, ix1,   inp_X);
+  offset_t ix0, ix2, ix3;
+  ix3 = bound::index(bound0, ix1+2, inp_X) * inp_sX;
+  ix2 = bound::index(bound0, ix1+1, inp_X) * inp_sX;
+  ix0 = bound::index(bound0, ix1-1, inp_X) * inp_sX;
+  ix1 = bound::index(bound0, ix1,   inp_X) * inp_sX;
+
+  scalar_t *out_ptr_NCXYZ = out_ptr + n * out_sN + w * out_sX;
+  scalar_t *inp_ptr_NC = inp_ptr + n * inp_sN;
+
+
+  for (offset_t c = 0; c < C; ++c, out_ptr_NCXYZ += out_sC, 
+                                   inp_ptr_NC    += inp_sC) 
+  {
+    *out_ptr_NCXYZ  = static_cast<scalar_t>(
+        static_cast<reduce_t>(bound::get(inp_ptr_NC, ix0, sx0)) * dx0
+      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix1, sx1)) * dx1
+      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix2, sx2)) * dx2
+      + static_cast<reduce_t>(bound::get(inp_ptr_NC, ix3, sx3)) * dx3);
+  }
+}
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                  CUDA KERNEL (MUST BE OUT OF CLASS)

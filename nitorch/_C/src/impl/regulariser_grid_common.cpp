@@ -74,6 +74,8 @@ public:
     vx0 = 1. / (vx0*vx0);
     vx1 = 1. / (vx1*vx1);
     vx2 = 1. / (vx2*vx2);
+    if (dim < 3) vx2 = 0.;
+    if (dim < 2) vx1 = 0.;
   }
 
   /* ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -823,10 +825,10 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::matvec_none(
 
 #define GET_POINTERS \
   scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);  \
-  scalar_t *out1 = out0 + out_sC, *out2 = out0 + 2 * out_sC;    \
-  scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ);  \
-  scalar_t *inp1 = inp0 + inp_sC, *inp2 = inp0 + 2 * inp_sC + n*inp_sN; \
-  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ);
+  scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN);  \
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*inp_sN);  \
+  scalar_t *out1 = out0 + out_sC, *out2 = out1 + out_sC;    \
+  scalar_t *inp1 = inp0 + inp_sC, *inp2 = inp1 + inp_sC;
 
  
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -1286,47 +1288,574 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_absolute(
 /*                                     2D                                     */
 /* ========================================================================== */
 
+#undef GET_COORD1
+#define GET_COORD1 \
+  GET_COORD1_(x) \
+  GET_COORD1_(y)
+#undef GET_COORD2
+#define GET_COORD2 \
+  GET_COORD2_(x) \
+  GET_COORD2_(y) 
+#undef GET_SIGN1
+#define GET_SIGN1 \
+  GET_SIGN1_(x, X, 0) \
+  GET_SIGN1_(y, Y, 1) 
+#undef GET_SIGN2
+#define GET_SIGN2 \
+  GET_SIGN2_(x, X, 0) \
+  GET_SIGN2_(y, Y, 1) 
+#undef GET_WARP1
+#define GET_WARP1 \
+  GET_WARP1_(x, X, 0) \
+  GET_WARP1_(y, Y, 1) 
+#undef GET_WARP2
+#define GET_WARP2 \
+  GET_WARP2_(x, X, 0) \
+  GET_WARP2_(y, Y, 1) 
+#undef GET_WARP1_RLS
+#define GET_WARP1_RLS \
+  GET_WARP1_RLS_(x, X, 0) \
+  GET_WARP1_RLS_(y, Y, 1) 
+
+#undef GET_POINTERS
+#define GET_POINTERS \
+  scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + n*out_sN);  \
+  scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + n*inp_sN);  \
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + n*inp_sN);  \
+  scalar_t *out1 = out0 + out_sC;        \
+  scalar_t *inp1 = inp0 + inp_sC; 
+
+ 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_all(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_all(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_COORD2
+  GET_SIGN1   // Sign (/!\ compute sign before warping indices)
+  GET_SIGN2
+  GET_WARP1   // Warp indices
+  GET_WARP2
+  GET_POINTERS
+
+  // For numerical stability, we subtract the center value before convolving.
+  // We define a lambda function for ease.
+
+  {
+    scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out0 = static_cast<scalar_t>(
+        (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
+      +  wx010*(get(inp0, y0, sy0) + get(inp0, y1, sy1)))
+      + (w2   *( bound::get(inp1, x1+y0, sx1*sy0) - bound::get(inp1, x1+y1, sx1*sy1)
+               + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0) ))
+      + ( absolute*c
+        + (w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
+                 get(inp0, x0+y1, sx0*sy1) + get(inp0, x1+y1, sx1*sy1)))
+        + (w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))
+        +  w020*(get(inp0, y00, sy00) + get(inp0, y11, sy11))) ) / vx0
+    );
+  }
+
+  {
+    scalar_t c = *inp1;
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out1 = static_cast<scalar_t>(
+        (wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
+      +  wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1)))
+      + (w2   *( bound::get(inp0, y1+x0, sy1*sx0) - bound::get(inp0, y1+x1, sy1*sx1)
+               + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0) ))
+      + ( absolute*c
+        + (w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
+                 get(inp1, x0+y1, sx0*sy1) + get(inp1, x1+y1, sx1*sy1)))
+        + (w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
+        +  w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11))) ) / vx1
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+ 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_lame(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_lame(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_SIGN1 
+  GET_WARP1
+  GET_POINTERS
+
+  {
+    scalar_t c = *inp0; 
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out0 = static_cast<scalar_t>(
+       (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
+      + wx010*(get(inp0, y0, sy0) + get(inp0, y1, sy1)))
+      + w2   *( bound::get(inp1, x1+y0, sx1*sy0) - bound::get(inp1, x1+y1, sx1*sy1)
+              + bound::get(inp1, x0+y1, sx0*sy1) - bound::get(inp1, x0+y0, sx0*sy0) )
+      + absolute*c/vx0
+    );
+  }
+
+  {
+    scalar_t c = *inp1;
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out1 = static_cast<scalar_t>(
+       (wy100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
+      + wy010*(get(inp1, y0, sy0) + get(inp1, y1, sy1)))
+      + w2   *( bound::get(inp0, y1+x0, sy1*sx0) - bound::get(inp0, y1+x1, sy1*sx1)
+              + bound::get(inp0, y0+x1, sy0*sx1) - bound::get(inp0, y0+x0, sy0*sx0) )
+      + absolute*c/vx1
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_bending(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_COORD2
+  GET_SIGN1 
+  GET_SIGN2
+  GET_WARP1 
+  GET_WARP2
+  GET_POINTERS
+
+
+  {
+    scalar_t c = *inp0; 
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out0 = static_cast<scalar_t>(
+        ( absolute*c
+        + (w100*(get(inp0, x0,    sx0)     + get(inp0, x1,    sx1))
+        +  w010*(get(inp0, y0,    sy0)     + get(inp0, y1,    sy1)))
+        + (w200*(get(inp0, x00,   sx00)    + get(inp0, x11,   sx11))
+        +  w020*(get(inp0, y00,   sy00)    + get(inp0, y11,   sy11)))
+        + (w110*(get(inp0, x0+y0, sx0*sy0) + get(inp0, x1+y0, sx1*sy0) +
+                 get(inp0, x0+y1, sx0*sy1) + get(inp0, x1+y1, sx1*sy1))) ) / vx0
+    );
+  }
+
+  {
+    scalar_t c = *inp1;
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out1 = static_cast<scalar_t>(
+        ( absolute*c
+        + (w100*(get(inp1, x0,    sx0)     + get(inp1, x1,    sx1))
+        +  w010*(get(inp1, y0,    sy0)     + get(inp1, y1,    sy1)))
+        + (w200*(get(inp1, x00,   sx00)    + get(inp1, x11,   sx11))
+        +  w020*(get(inp1, y00,   sy00)    + get(inp1, y11,   sy11)))
+        + (w110*(get(inp1, x0+y0, sx0*sy0) + get(inp1, x1+y0, sx1*sy0) +
+                 get(inp1, x0+y1, sx0*sy1) + get(inp1, x1+y1, sx1*sy1))) ) / vx1
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_SIGN1 
+  GET_WARP1 
+  GET_POINTERS
+
+  {
+    scalar_t c = *inp0; 
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out0 = static_cast<scalar_t>(
+        ( absolute*c
+        +(w100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))
+        + w010*(get(inp0, y0, sy0) + get(inp0, y1, sy1))) ) / vx0
+    );
+  }
+
+  {
+    scalar_t c = *inp1;
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out1 = static_cast<scalar_t>(
+        ( absolute*c
+        +(w100*(get(inp1, x0, sx0) + get(inp1, x1, sx1))
+        + w010*(get(inp1, y0, sy0) + get(inp1, y1, sy1))) ) / vx1
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+
+  {
+    scalar_t c = *inp0;
+    *out0 = static_cast<scalar_t>(  absolute * c / vx0 );
+  }
+  {
+    scalar_t c = *inp1;
+    *out1 = static_cast<scalar_t>(  absolute * c / vx1 );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_SIGN1
+  GET_WARP1_RLS
+  GET_POINTERS
+
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + n*wgt_sN);
+
+  // In `grid` mode, the weight map is single channel
+  scalar_t wcenter = *wgt;
+  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
+  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
+  reduce_t w01m0 = w010 * (wcenter + bound::get(wgt, wy0, sy0));
+  reduce_t w01p0 = w010 * (wcenter + bound::get(wgt, wy1, sy1));
+
+  {
+    scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+
+    *out0 = static_cast<scalar_t>(
+      ( absolute * wcenter * c
+      +(w1m00 * get(inp0, x0, sx0)
+      + w1p00 * get(inp0, x1, sx1)
+      + w01m0 * get(inp0, y0, sy0)
+      + w01p0 * get(inp0, y1, sy1)) ) / vx0
+    );
+  }
+
+  {
+    scalar_t c = *inp1;
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out1 = static_cast<scalar_t>(
+      ( absolute * wcenter * c
+      +(w1m00 * get(inp1, x0, sx0)
+      + w1p00 * get(inp1, x1, sx1)
+      + w01m0 * get(inp1, y0, sy0)
+      + w01p0 * get(inp1, y1, sy1)) ) / vx1
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  scalar_t w = *(wgt_ptr + (x*wgt_sX + y*wgt_sY + n*wgt_sN));
+  w *= absolute;
+  {
+    scalar_t c = *inp0;
+    *out0 = static_cast<scalar_t>( c * w / vx0 );
+  }
+  {
+    scalar_t c = *inp1;
+    *out1 = static_cast<scalar_t>( c * w  / vx1 );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
 
 /* ========================================================================== */
 /*                                     1D                                     */
 /* ========================================================================== */
 
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_all(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_lame(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_bending(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(offset_t x, offset_t y, offset_t z, offset_t n) const {}
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+#undef GET_COORD1
+#define GET_COORD1 GET_COORD1_(x)
+#undef GET_COORD2
+#define GET_COORD2 GET_COORD2_(x)
+#undef GET_SIGN1
+#define GET_SIGN1 GET_SIGN1_(x, X, 0)
+#undef GET_SIGN2
+#define GET_SIGN2 GET_SIGN2_(x, X, 0) 
+#undef GET_WARP1
+#define GET_WARP1 GET_WARP1_(x, X, 0) 
+#undef GET_WARP2
+#define GET_WARP2 GET_WARP2_(x, X, 0) 
+#undef GET_WARP1_RLS
+#define GET_WARP1_RLS GET_WARP1_RLS_(x, X, 0) 
 
+#undef GET_POINTERS
+#define GET_POINTERS \
+  scalar_t *out0 = out_ptr + (x*out_sX + n*out_sN);  \
+  scalar_t *inp0 = inp_ptr + (x*inp_sX + n*inp_sN);  \
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + n*inp_sN); 
+
+ 
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_all(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_COORD2
+  GET_SIGN1   // Sign (/!\ compute sign before warping indices)
+  GET_SIGN2
+  GET_WARP1   // Warp indices
+  GET_WARP2
+  GET_POINTERS
+
+  // For numerical stability, we subtract the center value before convolving.
+  // We define a lambda function for ease.
+
+  {
+    scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out0 = static_cast<scalar_t>(
+        (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1)))
+      + ( absolute*c
+        + (w200*(get(inp0, x00, sx00) + get(inp0, x11, sx11))) ) / vx0
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+ 
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_lame(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_SIGN1 
+  GET_WARP1
+  GET_POINTERS
+
+  {
+    scalar_t c = *inp0; 
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out0 = static_cast<scalar_t>(
+       (wx100*(get(inp0, x0, sx0) + get(inp0, x1, sx1)))
+      + absolute*c/vx0
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_bending(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_COORD2
+  GET_SIGN1 
+  GET_SIGN2
+  GET_WARP1 
+  GET_WARP2
+  GET_POINTERS
+
+
+  {
+    scalar_t c = *inp0; 
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out0 = static_cast<scalar_t>(
+        ( absolute*c
+        + (w100*(get(inp0, x0,    sx0)     + get(inp0, x1,    sx1)))
+        + (w200*(get(inp0, x00,   sx00)    + get(inp0, x11,   sx11))) ) / vx0
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_SIGN1 
+  GET_WARP1 
+  GET_POINTERS
+
+  {
+    scalar_t c = *inp0; 
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+    *out0 = static_cast<scalar_t>(
+        ( absolute*c
+        +(w100*(get(inp0, x0, sx0) + get(inp0, x1, sx1))) ) / vx0
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+
+  {
+    scalar_t c = *inp0;
+    *out0 = static_cast<scalar_t>(  absolute * c / vx0 );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+
+  GET_COORD1
+  GET_SIGN1
+  GET_WARP1_RLS
+  GET_POINTERS
+
+  scalar_t * wgt = wgt_ptr + (x*wgt_sX + n*wgt_sN);
+
+  // In `grid` mode, the weight map is single channel
+  scalar_t wcenter = *wgt;
+  reduce_t w1m00 = w100 * (wcenter + bound::get(wgt, wx0, sx0));
+  reduce_t w1p00 = w100 * (wcenter + bound::get(wgt, wx1, sx1));
+
+  {
+    scalar_t c = *inp0;  // no need to use `get` -> we know we are in the FOV
+    auto get = [c](scalar_t * x, offset_t o, int8_t s)
+    {
+      return bound::get(x, o, s) - c;
+    };
+
+
+    *out0 = static_cast<scalar_t>(
+      ( absolute * wcenter * c
+      +(w1m00 * get(inp0, x0, sx0)
+      + w1p00 * get(inp0, x1, sx1)) ) / vx0
+    );
+  }
+
+  matvec(hes0, inp0, out0);
+}
+
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(
+  offset_t x, offset_t y, offset_t z, offset_t n) const
+{
+  GET_POINTERS
+  scalar_t w = *(wgt_ptr + (x*wgt_sX + n*wgt_sN));
+  w *= absolute;
+  {
+    scalar_t c = *inp0;
+    *out0 = static_cast<scalar_t>( c * w / vx0 );
+  }
+
+  matvec(hes0, inp0, out0);
+}
 
 /* ========================================================================== */
 /*                                     ZEROS                                  */
 /* ========================================================================== */
 
+
+#undef GET_POINTERS
+#define GET_POINTERS \
+  scalar_t *out0 = out_ptr + (x*out_sX + y*out_sY + z*out_sZ + n*out_sN);  \
+  scalar_t *inp0 = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN);  \
+  scalar_t *hes0 = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*inp_sN);  \
+  scalar_t *out1 = out0 + out_sC, *out2 = out1 + out_sC;
+
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t y, offset_t z, offset_t n) const {}
+void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t y, offset_t z, offset_t n) const 
+{
+  GET_POINTERS
+  *out0 = *out1 = *out2 = static_cast<scalar_t>(0);
+  matvec(hes0, inp0, out0);
+}
 
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
