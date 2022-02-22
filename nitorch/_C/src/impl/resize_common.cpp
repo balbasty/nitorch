@@ -1246,7 +1246,7 @@ prepare_affine(double factor, double Ds, double Dt, GridAlignType mode)
   double shift = 0., scale = 1./factor;
   switch (mode) {
     case GridAlignType::Edge:
-      shift = (Ds / Dt - 1);
+      shift = 0.5 * (Ds / Dt - 1);
       scale = Ds / Dt;
       break;
     case GridAlignType::Center:
