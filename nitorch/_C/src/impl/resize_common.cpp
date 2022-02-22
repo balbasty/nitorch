@@ -889,35 +889,40 @@ void ResizeImpl<scalar_t,offset_t>::resize3d_quadratic(
 {
   GET_INDEX
 
+  // NB: this function is fundamental to the FMG solver with bending energy
+  // The bravkets in the sum matter a lot!
+  // If they're removed, innacuracies creep in and the result of FMG is crap.
+  // I've gathered terms by distance to the center voxel.
+
   for (offset_t c = 0; c < C; ++c, tgt_ptr_NCXYZ += tgt_sC, 
                                    src_ptr_NC    += src_sC) {
-    *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, o000, s000) * w000
-                   + bound::get(src_ptr_NC, o001, s001) * w001
-                   + bound::get(src_ptr_NC, o002, s002) * w002
-                   + bound::get(src_ptr_NC, o010, s010) * w010
-                   + bound::get(src_ptr_NC, o011, s011) * w011
-                   + bound::get(src_ptr_NC, o012, s012) * w012
-                   + bound::get(src_ptr_NC, o020, s020) * w020
-                   + bound::get(src_ptr_NC, o021, s021) * w021
-                   + bound::get(src_ptr_NC, o022, s022) * w022
-                   + bound::get(src_ptr_NC, o100, s100) * w100
+    *tgt_ptr_NCXYZ = bound::get(src_ptr_NC, o111, s111) * w111
+                   +(bound::get(src_ptr_NC, o011, s011) * w011
                    + bound::get(src_ptr_NC, o101, s101) * w101
-                   + bound::get(src_ptr_NC, o102, s102) * w102
                    + bound::get(src_ptr_NC, o110, s110) * w110
-                   + bound::get(src_ptr_NC, o111, s111) * w111
                    + bound::get(src_ptr_NC, o112, s112) * w112
-                   + bound::get(src_ptr_NC, o120, s120) * w120
                    + bound::get(src_ptr_NC, o121, s121) * w121
-                   + bound::get(src_ptr_NC, o122, s122) * w122
-                   + bound::get(src_ptr_NC, o200, s200) * w200
+                   + bound::get(src_ptr_NC, o211, s211) * w211)
+                   +(bound::get(src_ptr_NC, o001, s001) * w001
+                   + bound::get(src_ptr_NC, o010, s010) * w010
+                   + bound::get(src_ptr_NC, o100, s100) * w100
+                   + bound::get(src_ptr_NC, o012, s012) * w012
+                   + bound::get(src_ptr_NC, o021, s021) * w021
                    + bound::get(src_ptr_NC, o201, s201) * w201
-                   + bound::get(src_ptr_NC, o202, s202) * w202
                    + bound::get(src_ptr_NC, o210, s210) * w210
-                   + bound::get(src_ptr_NC, o211, s211) * w211
                    + bound::get(src_ptr_NC, o212, s212) * w212
-                   + bound::get(src_ptr_NC, o220, s220) * w220
                    + bound::get(src_ptr_NC, o221, s221) * w221
-                   + bound::get(src_ptr_NC, o222, s222) * w222;
+                   + bound::get(src_ptr_NC, o120, s120) * w120
+                   + bound::get(src_ptr_NC, o122, s122) * w122
+                   + bound::get(src_ptr_NC, o102, s102) * w102)
+                   +(bound::get(src_ptr_NC, o000, s000) * w000
+                   + bound::get(src_ptr_NC, o002, s002) * w002
+                   + bound::get(src_ptr_NC, o020, s020) * w020
+                   + bound::get(src_ptr_NC, o200, s200) * w200
+                   + bound::get(src_ptr_NC, o022, s022) * w022
+                   + bound::get(src_ptr_NC, o202, s202) * w202
+                   + bound::get(src_ptr_NC, o220, s220) * w220
+                   + bound::get(src_ptr_NC, o222, s222) * w222);
   }
 }
 

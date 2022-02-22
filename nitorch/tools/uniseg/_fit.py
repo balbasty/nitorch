@@ -6,7 +6,7 @@ import torch
 from ._mrf import mrf, mrf_suffstat, mrf_covariance
 from ._plot import plot_lb, plot_images_and_lb
 
-USE_C_IMPL = False
+USE_C_IMPL = True
 if USE_C_IMPL:
     from nitorch._C.solve import c_fmg, c_fmg_grid, c_regulariser, c_regulariser_grid
 
@@ -16,6 +16,9 @@ default_warp_reg = {'absolute': 0,
                     'bending': 0.5,
                     'lame': (0.05, 0.2), }
 
+# default_warp_reg = {'absolute': 0,
+#                     'membrane': 0.5,
+#                     'lame': (0.05, 0.2), }
 
 def _softmax_lse(x, dim=-1, W=None):
     """Implicit softmax that also returns the LSE"""
@@ -539,7 +542,7 @@ class SpatialMixture:
                     S, lse = self._make_prior(M, L, W)
                     lb -= lse
                     lb += self._lb_parameters()
-                    all_all_lb.append(lb)
+                    all_all_lb.append(lb/nW)
                     if self.verbose >= 3:
                         gain = (lb - olb) / (self.tol * nW)
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_cluster:02d} | '
@@ -555,7 +558,7 @@ class SpatialMixture:
                         # plot after responsibilities have been combined
                         Z = self._z_combine(Z)
                         self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
-                    plot_mode = 'gmm'
+                    plot_mode = 'gmm' if plot_mode != 'bias' else 'bias'
 
                     # ===========================
                     # M-step - Mixing proportions
@@ -568,11 +571,11 @@ class SpatialMixture:
                                 S, lse = self._make_prior(M, L, W)
                                 lb -= lse
                                 lb += self._lb_parameters()
-                                all_all_lb.append(lb)
+                                all_all_lb.append(lb/nW)
                                 if self.verbose >= 3:
                                     gain = (lb - olb) / (self.tol * nW)
                                     print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_mrf:02d} | '
-                                          f'pre mixing: {lb.item()/nW:12.6g} ({gain:.6g})')
+                                          f'pre mix:  {lb.item()/nW:12.6g} ({gain:.6g})')
                                 if self.plot >= 4:
                                     self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
@@ -595,11 +598,11 @@ class SpatialMixture:
                             S, lse = self._make_prior(M, L, W)
                             lb -= lse
                             lb += self._lb_parameters()
-                            all_all_lb.append(lb)
+                            all_all_lb.append(lb/nW)
                             if self.verbose >= 3:
                                 gain = (lb - olb) / (self.tol * nW)
                                 print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_mrf:02d} | '
-                                      f'pre mrf: {lb.item()/nW:12.6g} ({gain:.6g})')
+                                      f'pre mrf:  {lb.item()/nW:12.6g} ({gain:.6g})')
                             if self.plot >= 4:
                                 self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
@@ -617,7 +620,7 @@ class SpatialMixture:
                     S, lse = self._make_prior(M, L, W)
                     lb -= lse
                     lb += self._lb_parameters()
-                    all_all_lb.append(lb)
+                    all_all_lb.append(lb/nW)
                     if self.verbose >= 2:
                         gain = (lb - olb) / (self.tol * nW)
                         print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_bias:02d} | '
@@ -646,7 +649,7 @@ class SpatialMixture:
                 S, lse = self._make_prior(M, L, W)
                 lb -= lse
                 lb += self._lb_parameters()
-                all_all_lb.append(lb)
+                all_all_lb.append(lb/nW)
                 if self.verbose >= 2:
                     gain = (lb - olb) / (self.tol * nW)
                     print(f'{n_iter:02d} | {n_iter_warp:02d} | {"":2s} | '
@@ -667,7 +670,7 @@ class SpatialMixture:
             # ==================
             # Log-likelihood
             # ==================
-            all_lb.append(lb)
+            all_lb.append(lb/nW)
             if n_iter > 1 and lb - olb_em < 2 * self.tol * nW:
                 if self.verbose > 0:
                     print('converged')

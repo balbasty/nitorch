@@ -294,7 +294,7 @@ public:
                     bending[c]  * (6.0*(vx0*vx0+vx1*vx1+vx2*vx2) + 
                                    8.0*(vx0*vx1+vx0*vx2+vx1*vx2))
                   + membrane[c] * (2.0*(vx0+vx1+vx2))
-                  + absolute[c]) * OnePlusTiny);
+                  + absolute[c]));
 
     m100 = static_cast<reduce_t>(-vx0);
     m010 = static_cast<reduce_t>(-vx1);
@@ -580,9 +580,11 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::cholesky(reduce_t a[], reduce_t p[
   reduce_t sm, sm0;
 
   sm0  = 1e-40;
+#if 0
   for(offset_t c = 0; c < C; ++c) sm0 += a[c*C+c];
   sm0 *= 1e-7;
   sm0 *= sm0;
+#endif
 
   for (offset_t c = 0; c < C; ++c)
   {
@@ -710,7 +712,7 @@ template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_sym(
     const scalar_t * hessian, reduce_t * mat) const {
   for (offset_t c = 0; c < C; ++c, hessian += hes_sC)
-    mat[c+C*c] = (*hessian) * OnePlusTiny;
+    mat[c+C*c] = (*hessian);
   for (offset_t c = 0; c < C; ++c)
     for (offset_t cc = c+1; cc < C; ++cc, hessian += hes_sC)
       mat[c+C*cc] = mat[cc+C*c] = *hessian;
@@ -720,13 +722,13 @@ template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_diag(
     const scalar_t * hessian, reduce_t * mat) const {
   for (offset_t c = 0; c < C; ++c, hessian += hes_sC)
-    mat[c] = (*hessian) * OnePlusTiny;
+    mat[c] = (*hessian);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_eye(
     const scalar_t * hessian, reduce_t * mat) const {
-  *mat = (*hessian) * OnePlusTiny;
+  *mat = (*hessian);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE

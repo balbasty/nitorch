@@ -262,7 +262,7 @@ if COMPILED_BACKEND == 'C':
     def c_fmg(hessian, gradient, weight=None,
               absolute=0, membrane=0, bending=0, factor=1,
               voxel_size=1, bound='dct2',
-              nb_cycles=2, nb_iter=2, max_levels=16,
+              nb_cycles=2, nb_iter=4, max_levels=16,
               solver='cg', output=None):
         """Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
@@ -279,7 +279,7 @@ if COMPILED_BACKEND == 'C':
         voxel_size : [sequence of] float, default=1.
         bound : [sequence of] bound_like, default='dct2'
         nb_cycles : int, default=2
-        nb_iter : int, default=2
+        nb_iter : int, default=4
         max_levels : int, default=16
         solver : {'relax', 'cg'}, default='relax'
         output : (N, C, *shape) tensor, optional
@@ -314,7 +314,7 @@ if COMPILED_BACKEND == 'C':
     def c_fmg_grid(hessian, gradient, weight=None,
                    absolute=0, membrane=0, bending=0, lame=0, factor=1,
                    voxel_size=1, bound='dft',
-                   nb_cycles=2, nb_iter=2, max_levels=16,
+                   nb_cycles=2, nb_iter=4, max_levels=16,
                    solver='cg', output=None):
         """Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
@@ -332,7 +332,7 @@ if COMPILED_BACKEND == 'C':
         voxel_size : [sequence of] float, default=1.
         bound : [sequence of] bound_like, default='dft'
         nb_cycles : int, default=2
-        nb_iter : int, default=2
+        nb_iter : int, default=4
         max_levels : int, default=16
         solver : {'relax', 'cg'}, default='relax'
         output : (N, *shape, D) tensor, optional
