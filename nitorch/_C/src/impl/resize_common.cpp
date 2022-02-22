@@ -1316,7 +1316,7 @@ Tensor resize_impl(
   ArrayRef<double> shifts(std::get<0>(affines));
   ArrayRef<double> scales(std::get<1>(affines));
 
-  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint > 0);
+  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint);
   info.ioset(source, target);
   auto stream = at::cuda::getCurrentCUDAStream();
 
@@ -1364,7 +1364,7 @@ Tensor resize_impl(
   ArrayRef<double> shifts(std::get<0>(affines));
   ArrayRef<double> scales(std::get<1>(affines));
 
-  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint > 0);
+  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint);
   info.ioset(source, target);
 
   AT_DISPATCH_FLOATING_TYPES(source.scalar_type(), "resize_impl", [&] {

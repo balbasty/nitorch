@@ -25,7 +25,7 @@ at::Tensor prolongation(
 
 at::Tensor restriction(
   const at::Tensor                      & input, 
-  const at::Tensor                      & source        = at::Tensor(),
+  const at::Tensor                      & output        = at::Tensor(),
   const std::vector<BoundType>          & bound         = std::vector<BoundType>(),
   const std::vector<InterpolationType>  & interpolation = std::vector<InterpolationType>());
 

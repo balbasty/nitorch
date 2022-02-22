@@ -2,7 +2,7 @@
 #include <vector>
 #include "defines.h"
 #include "bounds.h"
-#include "resize.h"
+#include "multires.h"
 #include "pcg.h"
 #include "relax.h"
 #include "regulariser.h"
@@ -257,11 +257,11 @@ Tensor fmg(const Tensor & hessian,
   };
   auto prolong_ = [bound](const Tensor & x, const Tensor & o)
   {
-    prolongation(x, o, bound);
+    fmg_prolongation(x, o, bound);
   };
   auto restrict_ = [bound](const Tensor & x, const Tensor & o)
   {
-    restriction(x, o, bound);
+    fmg_restriction(x, o, bound);
   };
   auto residuals_ = [absolute, membrane, bending, bound]
                     (const Tensor & hessian,  const Tensor & gradient,
@@ -364,7 +364,7 @@ Tensor fmg_grid(const Tensor & hessian,
   };
   auto prolong_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
-    prolongation(x, o, bound);
+    fmg_prolongation(x, o, bound);
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
@@ -380,17 +380,17 @@ Tensor fmg_grid(const Tensor & hessian,
         break;
     }
   };
-  auto restrict_w_ = [bound, dim](const Tensor & x, const Tensor & o)
+  auto restrict_w_ = [bound](const Tensor & x, const Tensor & o)
   {
     if (!o.defined() || o.numel() == 0)
       return;
-    restriction(x, o, bound);
+    fmg_restriction(x, o, bound);
   };
   auto restrict_g_ = [bound, dim](const Tensor & x, const Tensor & o)
   {
     if (!o.defined() || o.numel() == 0)
       return;;
-    restriction(x, o, bound);
+    fmg_restriction(x, o, bound);
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
@@ -410,7 +410,7 @@ Tensor fmg_grid(const Tensor & hessian,
   {
     if (!o.defined() || o.numel() == 0)
       return;
-    restriction(x, o, bound);
+    fmg_restriction(x, o, bound);
     Tensor view;
     double f0 = 1., f1 = 1., f2 = 1.;
     int64_t CC = x.size(1);
