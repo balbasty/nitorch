@@ -170,6 +170,7 @@ def membrane(field, voxel_size=1, bound='dct2', dim=None, weights=None):
             mom += div1d(g, dim=dims[i], bound=bound[i],
                          voxel_size=voxel_size[i], side=side, out=buf2)
 
+    mom *= 0.5
     return mom
 
 

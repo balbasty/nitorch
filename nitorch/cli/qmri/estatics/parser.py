@@ -20,7 +20,7 @@ Acquisition options:
    [-b0, --b0-field FIELD [MAG] [UNIT] B0 fieldmap] NOT IMPLEMENTED YET
 
 Reconstruction options:
-    --likelihood {gauss,chi}         Noise model (default: chi)
+    --likelihood {gauss,chi}         Noise model (default: gauss)
     --register {yes,no}              Start by registrering contrasts
     --recon-space [NAME]             Name of a contrast or 'mean' (default: 'mean')
     --regularization {no,tkh,tv,jtv} Regularization type (default: jtv)
@@ -101,14 +101,14 @@ contrast.add_option('b0', ('-b0', '--b0-field'), nargs='+3', help='B0 field', de
 parser.add_group(contrast)
 
 # recon options
-parser.add_option('likelihood', '--likelihood', nargs=1, default='chi',
-                  convert=cli.Validations.choice(['chi', 'gauss']))
+parser.add_option('likelihood', '--likelihood', nargs=1, default='gauss',
+                  validation=cli.Validations.choice(['chi', 'gauss']))
 parser.add_option('register', '--register', nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
 parser.add_option('space', '--recon-space', nargs=1, default='mean',
                   convert=number_or_str(int))
 parser.add_option('regularization', '--regularization', nargs=1, default='jtv',
-                  convert=cli.Validations.choice(['no', 'tkh', 'tv', 'jtv']))
+                  validation=cli.Validations.choice(['no', 'tkh', 'tv', 'jtv']))
 parser.add_option('meetup', '--meetup', nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
 parser.add_option('lam_intercept', '--lam-intercept', nargs='+', default=[50.],

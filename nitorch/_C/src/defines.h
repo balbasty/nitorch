@@ -2,7 +2,7 @@
 
 
 #ifndef NI_MAX_NUM_CHANNELS
-#  define NI_MAX_NUM_CHANNELS 128
+#  define NI_MAX_NUM_CHANNELS 64
 #endif
 
 #define CALL_MEMBER_FN(object,ptrToMember) ((object).*(ptrToMember))

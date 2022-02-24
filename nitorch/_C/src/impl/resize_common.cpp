@@ -1274,7 +1274,7 @@ void ResizeImpl<scalar_t,offset_t>::restrict3d_linear(
   o00 = ix0 + iy0; \
   o01 = ix0 + iy1; \
   o10 = ix1 + iy0; \
-  o10 = ix1 + iy1; \
+  o11 = ix1 + iy1; \
   scalar_t *tgt_ptr_NCXYZ = tgt_ptr                   \
                           + n * tgt_sN + w * tgt_sX + h * tgt_sY;  \
   scalar_t *src_ptr_NC = src_ptr + n * src_sN;
@@ -1457,7 +1457,7 @@ void ResizeImpl<scalar_t,offset_t>::restrict1d_nearest(offset_t w, offset_t h, o
 // CUDA Kernel
 template <typename scalar_t, typename offset_t>
 C10_LAUNCH_BOUNDS_1(1024)
-__global__ void resize_kernel(ResizeImpl<scalar_t,offset_t> * f) {
+__global__ void resize_kernel(const ResizeImpl<scalar_t,offset_t> * f) {
   f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
 #endif
@@ -1647,6 +1647,15 @@ Tensor resize_impl(
       case 2:  out *= scales[0] * scales[1];
       default: out *= scales[0] * scales[1] * scales[2];
     }
+  /*
+  Our implementation uses more stack per thread than the available local 
+  memory. CUDA probably needs to use some of the global memory to compensate,
+  but there is a bug and this memory is never freed.
+  The official solution is to call cudaDeviceSetLimit to reset the stack size
+  and free that memory:
+  https://forums.developer.nvidia.com/t/61314/2
+  */
+  cudaDeviceSetLimit(cudaLimitStackSize, 0);
   return out;
 }
 

@@ -29,6 +29,7 @@
 #  define NI_INLINE __forceinline__
 #  define NI_DEVICE __device__
 #  define NI_HOST   __host__
+#  define NI_DEVICE_NAME cuda
 #  define NI_NAMESPACE_DEVICE namespace cuda
 // --- ATOMIC ADD ------------------------------------------------------
 #  define NI_ATOMIC_ADD ni::gpuAtomicAdd
@@ -78,6 +79,7 @@ T * alloc_and_copy_to_device(T & obj, Stream stream)
 #  define NI_INLINE inline
 #  define NI_DEVICE
 #  define NI_HOST
+#  define NI_DEVICE_NAME cpu
 #  define NI_NAMESPACE_DEVICE namespace cpu
 // --- ATOMIC ADD ------------------------------------------------------
 #  define NI_ATOMIC_ADD ni::cpuAtomicAdd

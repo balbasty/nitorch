@@ -227,8 +227,10 @@ template <typename scalar_t, typename offset_t, typename reduce_t>
 class PrecondImpl {
 
   using Self       = PrecondImpl;
-  using PrecondFn  = void (Self::*)(offset_t, offset_t, offset_t, offset_t) const;
-  using InvertFn   = void (Self::*)(scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
+  using PrecondFn  = void (Self::*)(offset_t, offset_t, offset_t, offset_t, 
+                                    reduce_t *) const;
+  using InvertFn   = void (Self::*)(scalar_t *, reduce_t *, reduce_t *, 
+                                    const reduce_t *, reduce_t *) const;
   using GetHFn     = void (Self::*)(const scalar_t *, reduce_t *) const;
 
 public:
@@ -353,6 +355,9 @@ public:
       } else if (CC == C) {
         invert_ = &Self::invert_diag;
         get_h_  = &Self::get_h_diag;
+      } else if (CC == 2*C-1) {
+        invert_ = &Self::invert_estatics;
+        get_h_  = &Self::get_h_estatics;
       } else {
         invert_ = &Self::invert_sym;
         get_h_  = &Self::get_h_sym;
@@ -385,11 +390,11 @@ private:
 
   /* ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
   NI_DEVICE NI_INLINE void precond(
-    offset_t x, offset_t y, offset_t z, offset_t n) const;
+    offset_t x, offset_t y, offset_t z, offset_t n, reduce_t *) const;
 
 #define DEFINE_PRECOND(SUFFIX) \
   NI_DEVICE void precond##SUFFIX( \
-    offset_t x, offset_t y, offset_t z, offset_t n) const;
+    offset_t x, offset_t y, offset_t z, offset_t n, reduce_t *) const;
 #define DEFINE_PRECOND_DIM(DIM)        \
   DEFINE_PRECOND(DIM##d)               \
   DEFINE_PRECOND(DIM##d_rls_absolute)  \
@@ -403,20 +408,24 @@ private:
   NI_DEVICE void get_h(const scalar_t * , reduce_t *) const;
 #endif
   NI_DEVICE void get_h_sym(const scalar_t * , reduce_t *) const;
+  NI_DEVICE void get_h_estatics(const scalar_t * , reduce_t *) const;
   NI_DEVICE void get_h_diag(const scalar_t * , reduce_t *) const;
   NI_DEVICE void get_h_eye(const scalar_t * , reduce_t *) const;
   NI_DEVICE void get_h_none(const scalar_t * , reduce_t *) const;
 
   NI_DEVICE void invert(
-    scalar_t *, const scalar_t *, reduce_t *, const reduce_t *) const;
-  NI_DEVICE void invert_sym(
-    scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
-  NI_DEVICE void invert_diag(
-    scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
-  NI_DEVICE void invert_eye(
-    scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
-  NI_DEVICE void invert_none(
-    scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
+    scalar_t *, const scalar_t *, 
+    reduce_t *, const reduce_t *, reduce_t * , reduce_t *) const;
+
+#define DEFINE_INVERT(SUFFIX) \
+  NI_DEVICE void invert##SUFFIX( \
+    scalar_t *, reduce_t *, reduce_t *, const reduce_t *, reduce_t *) const;
+
+  DEFINE_INVERT(_sym);
+  DEFINE_INVERT(_estatics);
+  DEFINE_INVERT(_diag);
+  DEFINE_INVERT(_eye);
+  DEFINE_INVERT(_none);
 
   NI_DEVICE void cholesky(reduce_t a[], reduce_t p[]) const;
   NI_DEVICE void cholesky_solve(const reduce_t a[], const reduce_t p[], reduce_t x[]) const;
@@ -484,7 +493,7 @@ private:
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond(
-    offset_t x, offset_t y, offset_t z, offset_t n) const 
+    offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const 
 {
   #ifdef __CUDACC__
 #   define ABSOLUTE 4
@@ -493,29 +502,29 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond(
 #   define RLS      16
   switch (mode) {
     case 1 + MEMBRANE + RLS:
-      return precond1d_rls_membrane(x, y, z, n);
+      return precond1d_rls_membrane(x, y, z, n, buf);
     case 2 + MEMBRANE + RLS:
-      return precond2d_rls_membrane(x, y, z, n);
+      return precond2d_rls_membrane(x, y, z, n, buf);
     case 3 + MEMBRANE + RLS:
-      return precond3d_rls_membrane(x, y, z, n);
+      return precond3d_rls_membrane(x, y, z, n, buf);
     case 1 + ABSOLUTE + RLS:
-      return precond1d_rls_absolute(x, y, z, n);
+      return precond1d_rls_absolute(x, y, z, n, buf);
     case 2 + ABSOLUTE + RLS:
-      return precond2d_rls_absolute(x, y, z, n);
+      return precond2d_rls_absolute(x, y, z, n, buf);
     case 3 + ABSOLUTE + RLS:
-      return precond3d_rls_absolute(x, y, z, n);
+      return precond3d_rls_absolute(x, y, z, n, buf);
     default:
       switch (dim) {
         case 1:
-          return precond1d(x, y, z, n);
+          return precond1d(x, y, z, n, buf);
         case 2: 
-          return precond2d(x, y, z, n);
+          return precond2d(x, y, z, n, buf);
         default:
-          return precond3d(x, y, z, n);
+          return precond3d(x, y, z, n, buf);
       }
   }
 #else
-  CALL_MEMBER_FN(*this, precond_)(x, y, z, n);
+  CALL_MEMBER_FN(*this, precond_)(x, y, z, n, buf);
 #endif 
 }
 
@@ -525,6 +534,7 @@ template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
+  reduce_t buf[(NI_MAX_NUM_CHANNELS+3)*NI_MAX_NUM_CHANNELS];
   offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
   offset_t YZ   = Y * Z;
   offset_t XYZ  = X * YZ;
@@ -537,7 +547,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::loop(
       x  = (i/YZ) % X;
       y  = (i/Z)  % Y;
       z  =  i     % Z;
-      precond(x, y, z, n);
+      precond(x, y, z, n, buf);
   }
 }
 
@@ -554,6 +564,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::loop() const
   offset_t XYZ  = X * YZ;
   offset_t NXYZ = N * XYZ;
   at::parallel_for(0, NXYZ, GRAIN_SIZE, [&](offset_t start, offset_t end) {
+    reduce_t buf[(NI_MAX_NUM_CHANNELS+3)*NI_MAX_NUM_CHANNELS];
     offset_t n, x, y, z;
     for (offset_t i = start; i < end; ++i) {
       // Convert index: linear to sub
@@ -561,7 +572,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::loop() const
       x  = (i/YZ) % X;
       y  = (i/Z)  % Y;
       z  =  i     % Z;
-      precond(x, y, z, n);
+      precond(x, y, z, n, buf);
     }
   });
 }
@@ -573,9 +584,11 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::loop() const
 //                             Cholesky
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-// Cholesky decomposition (actually, LDL decomposition)
+// Cholesky decomposition (Cholesky–Banachiewicz)
 // @param[inout]  a: CxC matrix
 // @param[out]    p: C vector
+//
+// https://en.wikipedia.org/wiki/Cholesky_decomposition#LDL_decomposition_2
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::cholesky(reduce_t a[], reduce_t p[]) const
 {
@@ -592,16 +605,16 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::cholesky(reduce_t a[], reduce_t p[
   {
     for (offset_t b = c; b < C; ++b)
     {
-      sm = -a[c*C+b];
+      sm = a[c*C+b];
       for(offset_t d = c-1; d >= 0; --d)
-        sm = std::fma(a[c*C+d], a[b*C+d], sm);
+        sm += a[c*C+d] * a[b*C+d];
       if (c == b)
       {
-        sm = MAX(-sm, sm0);
+        sm = MAX(sm, sm0);
         p[c] = std::sqrt(sm);
       }
       else 
-        a[b*C+c] = -sm / p[c];
+        a[b*C+c] = sm / p[c];
     }
   }
 }
@@ -617,17 +630,17 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::cholesky_solve(
   reduce_t sm;
   for (offset_t c = 0; c < C; ++c)
   {
-    sm = -x[c];
+    sm = x[c];
     for (offset_t cc = c-1; cc >= 0; --cc)
-      sm = std::fma(a[c*C+cc], x[cc], sm);
-    x[c] = -sm / p[c];
+      sm += a[c*C+cc] * x[cc];
+    x[c] = sm / p[c];
   }
   for(offset_t c = C-1; c >= 0; --c)
   {
-    sm = -x[c];
+    sm = x[c];
     for(offset_t cc = c+1; cc < C; ++cc)
-      sm = std::fma(a[cc*C+c], x[cc], sm);
-    x[c] = -sm / p[c];
+      sm += a[cc*C+c] * x[cc];
+    x[c] = sm / p[c];
   }
 }
 
@@ -637,35 +650,36 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::cholesky_solve(
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::invert(
-    scalar_t * x, const scalar_t * h, reduce_t * v, const reduce_t * w) const 
+    scalar_t * x, const scalar_t * h, reduce_t * v, const reduce_t * w, 
+    reduce_t * m, reduce_t * k) const 
 {
 #ifdef __CUDACC__
-  if (hes_ptr == 0) return invert_none(x, 0, v, w);
-  reduce_t m[NI_MAX_NUM_CHANNELS*NI_MAX_NUM_CHANNELS];
+  if (hes_ptr == 0) return invert_none(x, 0, v, w, 0);
   if (CC == 1) {
     get_h_eye(h, m);
-    invert_eye(x, m, v, w);
+    invert_eye(x, m, v, w, 0);
   } else if (CC == C) {
     get_h_diag(h, m);
-    invert_diag(x, m, v, w);
+    invert_diag(x, m, v, w, 0);
+  } else if (CC == 2*C-1) {
+    get_h_estatics(h, m);
+    invert_estatics(x, m, v, w, 0);
   } else {
     get_h_sym(h, m);
-    invert_sym(x, m, v, w);
+    invert_sym(x, m, v, w, k);
   }
 #else
-  reduce_t m[NI_MAX_NUM_CHANNELS*NI_MAX_NUM_CHANNELS];
   get_h(h, m);
-  CALL_MEMBER_FN(*this, invert_)(x, m, v, w);
+  CALL_MEMBER_FN(*this, invert_)(x, m, v, w, k);
 #endif 
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_sym(
-    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const {
+    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w, reduce_t * k) const {
 
   for (offset_t c = 0; c < C; ++c)
     h[c+C*c] += *(w++);
-  reduce_t k[NI_MAX_NUM_CHANNELS];
   cholesky(h, k);            // cholesky decomposition
   cholesky_solve(h, k, v);   // solve linear system inplace
   for (offset_t c = 0; c < C; ++c, x += sol_sC)
@@ -673,8 +687,35 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_sym(
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_estatics(
+    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w, reduce_t * k) const 
+/*
+    This Hessian is sparse with structure:
+    `[[D, b], [b.T, r]]` where `D = diag(d)` is diagonal.
+    It is stored in a flattened form: `[d0, d1, ..., dP, r, b0, b1, ...,  bP]`
+
+    Because of this specific structure, the Hessian is inverted in
+    closed-form using the formula for the inverse of a 2x2 block matrix.
+    See: https://en.wikipedia.org/wiki/Block_matrix#Block_matrix_inversion
+*/
+{
+  reduce_t * o = h + C;  // pointer to off-diagonal elements
+  reduce_t oh = h[C-1] + w[C-1], ov = 0., tmp;
+  for (offset_t c = 0; c < C-1; ++c) {
+    h[c] += w[c];
+    tmp = o[c] / h[c];
+    oh -= o[c] * tmp;
+    ov += v[c] * tmp;
+  }
+  tmp = v[C-1];
+  for (offset_t c = 0; c < C-1; ++c, x += sol_sC)
+    *x = (o[c] * (ov - tmp) + v[c]) / (oh * h[c]);
+  *x = (tmp - ov) / oh;
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_diag(
-    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const 
+    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w, reduce_t * k) const 
 {
   for (offset_t c = 0; c < C; ++c, x += sol_sC) {
     *x = (*(v++)) / ((*(h++)) + *(w++));
@@ -683,7 +724,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_diag(
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_eye(
-    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const 
+    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w, reduce_t * k) const 
 {
   reduce_t h_ = *h;
   for (offset_t c = 0; c < C; ++c, x += sol_sC)
@@ -692,7 +733,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_eye(
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::invert_none(
-    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const 
+    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w, reduce_t * k) const 
 {
   for (offset_t c = 0; c < C; ++c, x += sol_sC)
     *x = (*(v++)) / (*(w++));
@@ -718,6 +759,13 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_sym(
   for (offset_t c = 0; c < C; ++c)
     for (offset_t cc = c+1; cc < C; ++cc, hessian += hes_sC)
       mat[c+C*cc] = mat[cc+C*c] = *hessian;
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_estatics(
+    const scalar_t * hessian, reduce_t * mat) const {
+  for (offset_t c = 0; c < 2*C-1; ++c, hessian += hes_sC)
+    mat[c] = (*hessian);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -803,31 +851,36 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::get_h_none(
         scalar_t *sol = sol_ptr + (x*sol_sX + y*sol_sY + z*sol_sZ + n*sol_sN); \
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
 
+#define GET_BUFFERS \
+  reduce_t *val = buf, \
+           *wval = val + NI_MAX_NUM_CHANNELS, \
+           *cvec = wval + NI_MAX_NUM_CHANNELS, \
+           *cmat = cvec + NI_MAX_NUM_CHANNELS;
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_POINTERS
-
-  reduce_t val[NI_MAX_NUM_CHANNELS];
+  GET_BUFFERS
+  
   for (offset_t c = 0; c < C; ++c, grd += grd_sC)
     val[c] = *grd;
 
-  invert(sol, hes, val, w000);
+  invert(sol, hes, val, w000, cmat, cvec);
 }
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_membrane(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_COORD1
   GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
+  GET_BUFFERS
 
-  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
   const reduce_t *a = absolute, *m = membrane;
   reduce_t aa, mm;
 
@@ -844,23 +897,23 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_membrane(
     reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
 
     aa = *(a++);
-    mm = *(m++);
+    mm = *(m++) * 0.5;
 
     val[c] = *grd;
     wval[c] = ( aa * wcenter
-              + mm * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p) );
+              - mm * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p) );
   }
 
-  invert(sol, hes, val, wval);
+  invert(sol, hes, val, wval, cmat, cvec);
 }
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_POINTERS
-  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  GET_BUFFERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
 
   for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
@@ -869,7 +922,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
     wval[c] = absolute[c] * wcenter;
   }
 
-  invert(sol, hes, val, wval);
+  invert(sol, hes, val, wval, cmat, cvec);
 }
 
 
@@ -916,28 +969,28 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_absolute(
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_POINTERS
+  GET_BUFFERS
 
-  reduce_t val[NI_MAX_NUM_CHANNELS];
   for (offset_t c = 0; c < C; ++c, grd += grd_sC)
     val[c] = *grd;
 
-  invert(sol, hes, val, w000);
+  invert(sol, hes, val, w000, cmat, cvec);
 }
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_COORD1
   GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
+  GET_BUFFERS
 
-  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
   const reduce_t *a = absolute, *m = membrane;
   reduce_t aa, mm;
 
@@ -952,23 +1005,23 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(
     reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
 
     aa = *(a++);
-    mm = *(m++);
+    mm = *(m++) * 0.5;
 
     val[c] = *grd;
     wval[c] = ( aa * wcenter
-              + mm * (w1m00 + w1p00 + w01m0 + w01p0) );
+              - mm * (w1m00 + w1p00 + w01m0 + w01p0) );
   }
 
-  invert(sol, hes, val, wval);
+  invert(sol, hes, val, wval, cmat, cvec);
 }
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_POINTERS
-  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  GET_BUFFERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
@@ -977,7 +1030,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(
     wval[c] = absolute[c] * wcenter;
   }
 
-  invert(sol, hes, val, wval);
+  invert(sol, hes, val, wval, cmat, cvec);
 }
 
 /* ========================================================================== */
@@ -1008,28 +1061,28 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_absolute(
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_POINTERS
+  GET_BUFFERS
 
-  reduce_t val[NI_MAX_NUM_CHANNELS];
   for (offset_t c = 0; c < C; ++c, grd += grd_sC)
     val[c] = *grd;
 
-  invert(sol, hes, val, w000);
+  invert(sol, hes, val, w000, cmat, cvec);
 }
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_COORD1
   GET_SIGN1
   GET_WARP1_RLS
   GET_POINTERS
+  GET_BUFFERS
 
-  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
   const reduce_t *a = absolute, *m = membrane;
   reduce_t aa, mm;
 
@@ -1042,23 +1095,23 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(
     reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
 
     aa = *(a++);
-    mm = *(m++);
+    mm = *(m++) * 0.5;
 
     val[c] = *grd;
     wval[c] = ( aa * wcenter
-              + mm * (w1m00 + w1p00) );
+              - mm * (w1m00 + w1p00) );
   }
 
-  invert(sol, hes, val, wval);
+  invert(sol, hes, val, wval, cmat, cvec);
 }
 
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(
-  offset_t x, offset_t y, offset_t z, offset_t n) const
+  offset_t x, offset_t y, offset_t z, offset_t n, reduce_t * buf) const
 {
   GET_POINTERS
-  reduce_t val[NI_MAX_NUM_CHANNELS], wval[NI_MAX_NUM_CHANNELS];
+  GET_BUFFERS
   scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY);
 
   for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
@@ -1067,7 +1120,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(
     wval[c] = absolute[c] * wcenter;
   }
 
-  invert(sol, hes, val, wval);
+  invert(sol, hes, val, wval, cmat, cvec);
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1078,7 +1131,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_absolute(
 // CUDA Kernel
 template <typename scalar_t, typename offset_t, typename reduce_t>
 C10_LAUNCH_BOUNDS_1(1024)
-__global__ void precond_kernel(PrecondImpl<scalar_t,offset_t,reduce_t> * f) {
+__global__ void precond_kernel(const PrecondImpl<scalar_t,offset_t,reduce_t> * f) {
   f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
 #endif
@@ -1161,6 +1214,16 @@ NI_HOST Tensor precond_impl(
       cudaFree(palgo);
     }
   });
+
+  /*
+  Our implementation uses more stack per thread than the available local 
+  memory. CUDA probably needs to use some of the global memory to compensate,
+  but there is a bug and this memory is never freed.
+  The official solution is to call cudaDeviceSetLimit to reset the stack size
+  and free that memory:
+  https://forums.developer.nvidia.com/t/61314/2
+  */
+  cudaDeviceSetLimit(cudaLimitStackSize, 0);
   return solution;
 }
 

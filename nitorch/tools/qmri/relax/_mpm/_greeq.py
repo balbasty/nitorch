@@ -18,6 +18,10 @@ from nitorch.tools.qmri.param import ParameterMap
 from typing import Optional, Tuple
 import math
 
+_USE_CIMPL = True
+if _USE_CIMPL:
+    from nitorch._C.solve import c_fmg, c_pcg, c_regulariser
+
 # import time
 Tensor = torch.Tensor
 
@@ -242,9 +246,14 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 # start = time.time()
                 reg = 0.
                 if opt.penalty.norm:
-                    g = spatial.regulariser(maps.volume, weights=rls, dim=3,
-                                            voxel_size=vx, membrane=1,
-                                            factor=lam * vol)
+                    if _USE_CIMPL:
+                        g = c_regulariser(maps.volume[None], weight=rls,
+                                          voxel_size=vx, membrane=1,
+                                          factor=lam * vol)[0]
+                    else:
+                        g = spatial.regulariser(maps.volume, weights=rls, dim=3,
+                                                voxel_size=vx, membrane=1,
+                                                factor=lam * vol)
                     grad += g
                     reg = 0.5 * dot(maps.volume, g)
                     del g
@@ -258,16 +267,28 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 if opt.penalty.norm:
                     hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)
                     if opt.optim.solver == 'fmg':
-                        deltas = spatial.solve_field_fmg(
-                            hess, grad, rls, factor=lam * vol, membrane=1,
-                            voxel_size=vx, verbose=False,
-                            nb_iter=2, tolerance=0)
+                        if _USE_CIMPL:
+                            deltas = c_fmg(
+                                hess[None], grad[None], weight=rls,
+                                factor=lam * vol, membrane=1,
+                                voxel_size=vx, nb_iter=2)[0]
+                        else:
+                            deltas = spatial.solve_field_fmg(
+                                hess, grad, rls, factor=lam * vol, membrane=1,
+                                voxel_size=vx, verbose=False,
+                                nb_iter=2, tolerance=0)
                     else:
-                        deltas = spatial.solve_field(
-                            hess, grad, rls, factor=lam * vol, membrane=1,
-                            voxel_size=vx, verbose=max(0, opt.verbose - 1),
-                            optim='cg', max_iter=opt.optim.max_iter_cg,
-                            tolerance=opt.optim.tolerance_cg * ll_scl, stop='diff')
+                        if _USE_CIMPL:
+                            deltas = c_pcg(
+                                grad[None], hessian=hess, weight=rls,
+                                factor=lam * vol, membrane=1,
+                                voxel_size=vx, nb_iter=opt.optim.max_iter_cg)[0]
+                        else:
+                            deltas = spatial.solve_field(
+                                hess, grad, rls, factor=lam * vol, membrane=1,
+                                voxel_size=vx, verbose=max(0, opt.verbose - 1),
+                                optim='cg', max_iter=opt.optim.max_iter_cg,
+                                tolerance=opt.optim.tolerance_cg * ll_scl, stop='diff')
                 else:
                     hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
                     deltas = sym_solve(hess, grad)

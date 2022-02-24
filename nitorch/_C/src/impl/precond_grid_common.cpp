@@ -823,7 +823,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_membrane(
   reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
 
   reduce_t w = absolute * wcenter 
-             + membrane * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p);
+             - 0.5 * membrane * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p);
   invert(hes, sol, grd, w/vx0, w/vx1, w/vx2);
 }
 
@@ -909,7 +909,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond2d_rls_membrane(
   reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
 
   reduce_t w = absolute * wcenter 
-             + membrane * (w1m00 + w1p00 + w01m0 + w01p0);
+             - 0.5 * membrane * (w1m00 + w1p00 + w01m0 + w01p0);
   invert(hes, sol, grd, w/vx0, w/vx1, 0);
 }
 
@@ -983,7 +983,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::precond1d_rls_membrane(
   reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
 
   reduce_t w = absolute * wcenter 
-             + membrane * (w1m00 + w1p00);
+             - 0.5 * membrane * (w1m00 + w1p00);
   invert(hes, sol, grd, w/vx0, 0, 0);
 }
 

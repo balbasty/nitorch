@@ -62,6 +62,11 @@ def _main(options):
     greeq_opt.verbose = options.verbose
     # greeq_opt.plot = options.verbose >= 2
     greeq_opt.recon.space = options.space
+    if isinstance(options.space, str) and  options.space != 'mean':
+        for c, contrast in enumerate(options.contrast):
+            if contrast.name == options.space:
+                greeq_opt.recon.space = c
+                break
     greeq_opt.backend.device = device
     greeq_opt.uncertainty = options.uncertainty
     greeq_opt.optim.nb_levels = options.levels

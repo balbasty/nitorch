@@ -7,7 +7,7 @@ namespace ni {
 at::Tensor fmg(
   const at::Tensor             & hessian, 
   const at::Tensor             & gradient,
-        at::Tensor               solution   = at::Tensor(),
+  const at::Tensor             & solution   = at::Tensor(),
   const at::Tensor             & weight     = at::Tensor(),
   const std::vector<double>    & absolute   = std::vector<double>(), 
   const std::vector<double>    & membrane   = std::vector<double>(), 
@@ -22,7 +22,7 @@ at::Tensor fmg(
 at::Tensor fmg_grid(
   const at::Tensor             & hessian, 
   const at::Tensor             & gradient,
-        at::Tensor               solution   = at::Tensor(),
+  const at::Tensor             & solution   = at::Tensor(),
   const at::Tensor             & weight     = at::Tensor(),
         double                   absolute   = 0., 
         double                   membrane   = 0., 

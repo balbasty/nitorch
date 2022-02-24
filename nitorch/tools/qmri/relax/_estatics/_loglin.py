@@ -54,14 +54,14 @@ def loglin(data, opt=None):
             # increment
             gind = [i, -1]
             grad[gind, ...] += g1
-            hind = [2*i, -1, 2*i+1]
+            hind = [i, len(grad)-1, len(grad)+i]
             hess[hind, ...] += h1
             crit += crit1
 
         print('{:3d} | {:12.6g}'.format(n_iter, crit))
 
         # --- mask of voxels where there's no data ---
-        msk = hess[:-1:2] == 0
+        msk = hess[:len(grad)] == 0
 
         # --- load diagonal of the Hessian ---
         hess = hessian_loaddiag_(hess, 1e-6, 1e-8)

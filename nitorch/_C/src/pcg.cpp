@@ -1,141 +1,144 @@
-#include <ATen/ATen.h>
-#include <vector>
-#include "defines.h"
+#include "impl/pcg_common.h"
+#include "checks.h"
 #include "bounds.h"
-#include "precond.h"
-#include "precond_grid.h"
-#include "regulariser.h"
-#include "regulariser_grid.h"
+#include <ATen/ATen.h>
+#include <torch/utils.h>  // NoGradGuard
+#include <vector>
+#include <utility>
 
-using c10::IntArrayRef;
+#ifndef NI_WITH_CUDA
+#  define cuda notimplemented
+#endif
+
 using at::Tensor;
+using c10::IntArrayRef;
+using c10::ArrayRef;
 using std::vector;
+
+
 
 namespace ni {
 
-namespace {
-
-  inline Tensor init_solution(const Tensor & solution, const Tensor & gradient)
-  {
-    if (solution.defined() && solution.numel() > 0)
-      return solution;
-    return at::zeros_like(gradient);
-  }
-
-  inline Tensor dot(Tensor a, Tensor b)
-  {
-    int64_t dim = a.dim() - 2;
-    a = a.reshape({a.size(0), 1, -1});
-    b = b.reshape({b.size(0), -1, 1});
-    a = at::matmul(a, b);
-    while (a.dim() < dim+2) a = a.unsqueeze(-1);
-    return a;
-  }
-
-  template <typename ForwardFn, typename PrecondFn>
-  inline void do_pcg(const Tensor & h, const Tensor & g, 
-                     Tensor & x, const Tensor & w,
-                     int64_t nb_iter, ForwardFn forward, PrecondFn precond)
-  {
-      Tensor alpha, beta, rz, rz0; // "scalar" tensors (can have a batch dim)
-      Tensor r = at::empty_like(g), z = at::empty_like(g);
-
-      // Initialisation
-      forward(h, x, w, r);       // r  = (H + KWK) * x
-      at::sub_out(r, g, r);      // r  = g - r
-      precond(h, r, w, z);       // z  = (H + diag(W)) \ r
-      rz = ni::dot(r, z);        // rz = r' * z
-      Tensor p = z.clone();      // Initial conjugate directions p
-
-      for (int64_t n = 0;  n < nb_iter; ++n)
-      {
-        forward(h, p, w, z);                      // Ap = (H + KWK) * p
-        alpha = ni::dot(p, z);                    // alpha = p' * Ap
-        alpha = rz / at::clamp_min(alpha, 1e-12); // alpha = (r' * z) / (p' * Ap)
-        at::addcmul_out(x, x, p, alpha);          // x += alpha * p
-        at::addcmul_out(r, r, z, alpha, -1);      // r -= alpha * Ap
-        precond(h, r, w, z);                      // z  = (H + diag(W)) \ r
-        rz0 = rz;
-        rz = ni::dot(r, z);
-        beta = rz / at::clamp_min_(rz0, 1e-12);
-        at::addcmul_out(p, z, p, beta);           // p = z + beta * p
-      }
-  }
-
-}
-
-
 Tensor pcg(const Tensor & hessian, 
            const Tensor & gradient,
-                 Tensor   solution,
+           const Tensor & solution,
            const Tensor & weight,
            const vector<double> &  absolute, 
            const vector<double> &  membrane, 
            const vector<double> &  bending,
            const vector<double> &  voxel_size, 
            const vector<BoundType> & bound,
-           int64_t nb_iter)
+           int64_t nb_iter) 
 {
+  torch::NoGradGuard no_grad;
 
-  /* ---------------- function handles ---------------------- */
-  auto forward_ = [absolute, membrane, bending, bound, voxel_size]
-                  (const Tensor & hessian, const Tensor & input,
-                   const Tensor & weight,  const Tensor & output)
+  NI_CHECK_DEFINED(gradient)
+  auto gradient_opt = gradient.options();
+  NI_CHECK_OPT_STRIDED(gradient_opt)
+  NI_CHECK_1D_2D_OR_3D(gradient)
+  NI_CHECK_NOT_EMPTY(gradient)
+  NI_CHECK_VEC_NOT_EMPTY(bound);
+
+  if (hessian.defined() && hessian.numel() > 0)
   {
-    regulariser(input, output, weight, hessian,
-                absolute, membrane, bending, voxel_size, bound);
-  };
-  auto precond_ = [absolute, membrane, bending, bound, voxel_size]
-                  (const Tensor & hessian, const Tensor & gradient,
-                   const Tensor & weight, const Tensor & output)
+    auto hessian_opt  = hessian.options();
+    NI_CHECK_OPT_STRIDED(hessian_opt)
+    NI_CHECK_OPT_SAME_DEVICE(gradient_opt, hessian_opt)
+    NI_CHECK_OPT_SAME_DTYPE(gradient_opt, hessian_opt)
+    NI_CHECK_1D_2D_OR_3D(hessian)
+    NI_CHECK_NOT_EMPTY(hessian)
+  }
+
+  if (solution.defined() && solution.numel() > 0)
   {
-    precond(hessian, gradient, output, weight, 
-            absolute, membrane, bending, voxel_size, bound);
-  };
+    auto solution_opt  = solution.options();
+    NI_CHECK_OPT_STRIDED(solution_opt)
+    NI_CHECK_OPT_SAME_DEVICE(gradient_opt, solution_opt)
+    NI_CHECK_OPT_SAME_DTYPE(gradient_opt, solution_opt)
+    NI_CHECK_1D_2D_OR_3D(solution)
+    NI_CHECK_NOT_EMPTY(solution)
+  }
 
-  /* ------------------------ PCG algorithm ------------------ */
-  solution = init_solution(solution, gradient);
-  do_pcg(hessian, gradient, solution, weight, nb_iter, forward_, precond_);
+  if (weight.defined() && weight.numel() > 0)
+  {
+    auto weight_opt  = weight.options();
+    NI_CHECK_OPT_STRIDED(weight_opt)
+    NI_CHECK_OPT_SAME_DEVICE(gradient_opt, weight_opt)
+    NI_CHECK_OPT_SAME_DTYPE(gradient_opt, weight_opt)
+    NI_CHECK_1D_2D_OR_3D(weight)
+    NI_CHECK_NOT_EMPTY(weight)
+  }
 
-  return solution;
+  if (gradient.is_cuda())
+    return cuda::pcg_impl(hessian, gradient, solution, weight,
+        ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
+        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
+  else
+    return cpu::pcg_impl(hessian, gradient, solution, weight,
+        ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
+        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
 }
 
-Tensor pcg_grid(
-           const Tensor & hessian, 
-           const Tensor & gradient,
-                 Tensor   solution,
-           const Tensor & weight,
-           double  absolute, 
-           double  membrane, 
-           double  bending,
-           double  lame_shear,
-           double  lame_div,
-           const vector<double> &  voxel_size, 
-           const vector<BoundType> & bound,
-           int64_t nb_iter)
+Tensor pcg_grid(const Tensor & hessian, 
+                const Tensor & gradient,
+                const Tensor & solution,
+                const Tensor & weight,
+                      double    absolute, 
+                      double    membrane, 
+                      double    bending,
+                      double    lame_shear,
+                      double    lame_div,
+                const vector<double> & voxel_size, 
+                const vector<BoundType> & bound,
+                int64_t nb_iter)
 {
+  torch::NoGradGuard no_grad;
 
-  /* ---------------- function handles ---------------------- */
-  auto forward_ = [absolute, membrane, bending, lame_shear, lame_div, bound, voxel_size]
-                  (const Tensor & hessian, const Tensor & input,
-                   const Tensor & weight,  const Tensor & output)
+  NI_CHECK_DEFINED(gradient)
+  auto gradient_opt = gradient.options();
+  NI_CHECK_OPT_STRIDED(gradient_opt)
+  NI_CHECK_1D_2D_OR_3D(gradient)
+  NI_CHECK_NOT_EMPTY(gradient)
+  NI_CHECK_VEC_NOT_EMPTY(bound);
+
+  if (hessian.defined() && hessian.numel() > 0)
   {
-    regulariser_grid(input, output, weight, hessian,
-                     absolute, membrane, bending, lame_shear, lame_div, voxel_size, bound);
-  };
-  auto precond_ = [absolute, membrane, bending, lame_shear, lame_div, bound, voxel_size]
-                  (const Tensor & hessian, const Tensor & gradient,
-                   const Tensor & weight, const Tensor & output)
+    auto hessian_opt  = hessian.options();
+    NI_CHECK_OPT_STRIDED(hessian_opt)
+    NI_CHECK_OPT_SAME_DEVICE(gradient_opt, hessian_opt)
+    NI_CHECK_OPT_SAME_DTYPE(gradient_opt, hessian_opt)
+    NI_CHECK_1D_2D_OR_3D(hessian)
+    NI_CHECK_NOT_EMPTY(hessian)
+  }
+
+  if (solution.defined() && solution.numel() > 0)
   {
-    precond_grid(hessian, gradient, output, weight, 
-                 absolute, membrane, bending, lame_shear, lame_div, voxel_size, bound);
-  };
+    auto solution_opt  = solution.options();
+    NI_CHECK_OPT_STRIDED(solution_opt)
+    NI_CHECK_OPT_SAME_DEVICE(gradient_opt, solution_opt)
+    NI_CHECK_OPT_SAME_DTYPE(gradient_opt, solution_opt)
+    NI_CHECK_1D_2D_OR_3D(solution)
+    NI_CHECK_NOT_EMPTY(solution)
+  }
 
-  /* ------------------------ PCG algorithm ------------------ */
-  solution = init_solution(solution, gradient);
-  do_pcg(hessian, gradient, solution, weight, nb_iter, forward_, precond_);
+  if (weight.defined() && weight.numel() > 0)
+  {
+    auto weight_opt  = weight.options();
+    NI_CHECK_OPT_STRIDED(weight_opt)
+    NI_CHECK_OPT_SAME_DEVICE(gradient_opt, weight_opt)
+    NI_CHECK_OPT_SAME_DTYPE(gradient_opt, weight_opt)
+    NI_CHECK_1D_2D_OR_3D(weight)
+    NI_CHECK_NOT_EMPTY(weight)
+  }
 
-  return solution;
+  if (gradient.is_cuda())
+    return cuda::pcg_impl(hessian, gradient, solution, weight,
+        ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
+        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
+  else
+    return cpu::pcg_impl(hessian, gradient, solution, weight,
+        ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
+        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
 }
 
 }

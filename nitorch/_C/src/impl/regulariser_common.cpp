@@ -368,6 +368,8 @@ public:
         matvec_ = &Self::matvec_eye;
       else if (CC == C)
         matvec_ = &Self::matvec_diag;
+      else if (CC == 2*C-1)
+        matvec_ = &Self::matvec_estatics;
       else
         matvec_ = &Self::matvec_sym;
     } 
@@ -416,6 +418,8 @@ private:
   NI_DEVICE void matvec(
     scalar_t *, const scalar_t *, const scalar_t *) const;
   NI_DEVICE void matvec_sym(
+    scalar_t *, const scalar_t *, const scalar_t *) const;
+  NI_DEVICE void matvec_estatics(
     scalar_t *, const scalar_t *, const scalar_t *) const;
   NI_DEVICE void matvec_diag(
     scalar_t *, const scalar_t *, const scalar_t *) const;
@@ -594,6 +598,8 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec(
     return matvec_eye(x, h, y);
   else if (CC == C)
     return matvec_diag(x, h, y);
+  else if (CC == 2*C-1)
+    return matvec_estatics(x, h, y);
   else
     return matvec_sym(x, h, y);
 #else
@@ -619,6 +625,27 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_sym(
       x[c  * out_sC] += h_ * v[cc * inp_sC];
     }
   }
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_estatics(
+    scalar_t * x, const scalar_t * h, const scalar_t * v) const 
+/*
+    This Hessian is sparse with structure:
+    `[[D, b], [b.T, r]]` where `D = diag(d)` is diagonal.
+    It is stored in a flattened form: `[d0, d1, ..., dP, r, b0, b1, ...,  bP]`
+*/
+{
+  const scalar_t * o = h + C * hes_sC;
+  scalar_t s = v[(C-1)*inp_sC];
+  reduce_t acc = s * h[(C-1)*hes_sC];
+  for (offset_t c = 0; c < C-1; ++c, 
+       x += out_sC, h += hes_sC, v += inp_sC, o += hes_sC)
+  {
+    *x += (*h) * (*v) + (*o) * s;
+    acc += (*o) * (*v);
+  }
+  *x += acc;
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -845,7 +872,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
 
     *out = static_cast<scalar_t>(
         (*(a++)) * wcenter * center
-      + (*(m++)) * (
+      + (*(m++)) * 0.5 * (
           w1m00 * get(inp, x0, sx0)
         + w1p00 * get(inp, x1, sx1)
         + w01m0 * get(inp, y0, sy0)
@@ -1048,7 +1075,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
 
     *out = static_cast<scalar_t>(
         (*(a++)) * wcenter * center
-      + (*(m++)) * (
+      + (*(m++)) * 0.5 * (
           w1m00 * get(inp, x0, sx0)
         + w1p00 * get(inp, x1, sx1)
         + w01m0 * get(inp, y0, sy0)
@@ -1225,7 +1252,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
 
     *out = static_cast<scalar_t>(
         (*(a++)) * wcenter * center
-      + (*(m++)) * (
+      + (*(m++)) * 0.5 * (
           w1m00 * get(inp, x0, sx0)
         + w1p00 * get(inp, x1, sx1) )
     );
@@ -1280,7 +1307,7 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t y, 
 
 template <typename scalar_t, typename offset_t, typename reduce_t>
 C10_LAUNCH_BOUNDS_1(1024)
-__global__ void regulariser_kernel(RegulariserImpl<scalar_t, offset_t, reduce_t> * f)
+__global__ void regulariser_kernel(const RegulariserImpl<scalar_t, offset_t, reduce_t> * f)
 {
   f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
@@ -1365,6 +1392,15 @@ NI_HOST Tensor regulariser_impl(
       cudaFree(palgo);
     }
   });
+  /*
+  Our implementation uses more stack per thread than the available local 
+  memory. CUDA probably needs to use some of the global memory to compensate,
+  but there is a bug and this memory is never freed.
+  The official solution is to call cudaDeviceSetLimit to reset the stack size
+  and free that memory:
+  https://forums.developer.nvidia.com/t/61314/2
+  */
+  cudaDeviceSetLimit(cudaLimitStackSize, 0);
   return output;
 }
 

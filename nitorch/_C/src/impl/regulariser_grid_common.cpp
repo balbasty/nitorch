@@ -1215,7 +1215,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
       + w01m0 * get(inp0, y0, sy0)
       + w01p0 * get(inp0, y1, sy1)
       + w001m * get(inp0, z0, sz0)
-      + w001p * get(inp0, z1, sz1)) ) / vx0
+      + w001p * get(inp0, z1, sz1)) * 0.5 ) / vx0
     );
   }
 
@@ -1233,7 +1233,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
       + w01m0 * get(inp1, y0, sy0)
       + w01p0 * get(inp1, y1, sy1)
       + w001m * get(inp1, z0, sz0)
-      + w001p * get(inp1, z1, sz1)) ) / vx1
+      + w001p * get(inp1, z1, sz1)) * 0.5 ) / vx1
     );
   }
 
@@ -1251,7 +1251,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_rls_membrane(
       + w01m0 * get(inp2, y0, sy0)
       + w01p0 * get(inp2, y1, sy1)
       + w001m * get(inp2, z0, sz0)
-      + w001p * get(inp2, z1, sz1)) ) / vx2
+      + w001p * get(inp2, z1, sz1)) * 0.5 ) / vx2
     );
   }
 
@@ -1580,7 +1580,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
       +(w1m00 * get(inp0, x0, sx0)
       + w1p00 * get(inp0, x1, sx1)
       + w01m0 * get(inp0, y0, sy0)
-      + w01p0 * get(inp0, y1, sy1)) ) / vx0
+      + w01p0 * get(inp0, y1, sy1)) * 0.5 ) / vx0
     );
   }
 
@@ -1596,7 +1596,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom2d_rls_membrane(
       +(w1m00 * get(inp1, x0, sx0)
       + w1p00 * get(inp1, x1, sx1)
       + w01m0 * get(inp1, y0, sy0)
-      + w01p0 * get(inp1, y1, sy1)) ) / vx1
+      + w01p0 * get(inp1, y1, sy1)) * 0.5 ) / vx1
     );
   }
 
@@ -1814,7 +1814,7 @@ void RegulariserGridImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_membrane(
     *out0 = static_cast<scalar_t>(
       ( absolute * wcenter * c
       +(w1m00 * get(inp0, x0, sx0)
-      + w1p00 * get(inp0, x1, sx1)) ) / vx0
+      + w1p00 * get(inp0, x1, sx1)) * 0.5 ) / vx0
     );
   }
 

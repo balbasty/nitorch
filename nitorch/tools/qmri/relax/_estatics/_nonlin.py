@@ -7,6 +7,11 @@ from ..utils import (smart_pull, smart_push, smart_grad, smart_grid,
                      nll_chi, nll_gauss, dot, ssq,
                      get_mask_missing, mask_nan_, check_nans_)
 from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
+import gc
+
+_USE_CIMPL = True
+if _USE_CIMPL:
+    from nitorch._C.solve import c_fmg, c_regulariser, c_fmg_grid, c_regulariser_grid
 
 # Boundary condition used for the distortion field throughout
 DIST_BOUND = 'dct2'
@@ -234,10 +239,12 @@ def nonlin(data, opt=None):
                         # increment
                         gind = [i, -1]
                         grad[gind, ...] += g1
-                        hind = [2*i, -1, 2*i+1]
+                        hind = [i, len(grad)-1, len(grad)+i]
+                        # hind = [2*i, -1, 1+2*i]
                         hess[hind, ...] += h1
                         crit += crit1
                     del g1, h1
+                    gc.collect()
 
                     # --- regularization -----------------------------------
                     reg = 0.
@@ -246,12 +253,19 @@ def nonlin(data, opt=None):
                                 in enumerate(zip(maps, iter_rls(rls), lam)):
                             if not l:
                                 continue
-                            g1 = spatial.membrane(map.volume, weights=weight, dim=3,
-                                                  voxel_size=vx).mul_(l*scl)
+                            if _USE_CIMPL:
+                                g1 = c_regulariser(map.volume[None, None],
+                                                   membrane=l*scl,
+                                                   weight=weight,
+                                                   voxel_size=vx)[0, 0]
+                            else:
+                                g1 = spatial.membrane(map.volume, weights=weight, dim=3,
+                                                      voxel_size=vx).mul_(l*scl)
                             reg1 = 0.5 * dot(map.volume, g1)
                             reg += reg1
                             grad[i] += g1
                         del g1
+                    gc.collect()
 
                     # --- track RLS improvement ----------------------------
                     # Updating the RLS weights changes `sumrls` and `reg`. Now
@@ -300,8 +314,14 @@ def nonlin(data, opt=None):
                                     in enumerate(zip(deltas, iter_rls(rls), lam)):
                                 if not l:
                                     continue
-                                g1 = spatial.membrane(delta, weights=weight,
-                                                      dim=3, voxel_size=vx).mul_(l*scl)
+                                if _USE_CIMPL:
+                                    g1 = c_regulariser(delta[None, None],
+                                                       membrane=l*scl,
+                                                       weight=weight,
+                                                       voxel_size=vx)[0, 0]
+                                else:
+                                    g1 = spatial.membrane(delta, weights=weight,
+                                                          dim=3, voxel_size=vx).mul_(l*scl)
                                 dd.append(g1)
                                 del g1
                         dv = sum([dd1.flatten().dot(map.volume.flatten())
@@ -389,15 +409,27 @@ def nonlin(data, opt=None):
                         # --- regularization -------------------------------
                         def momentum(vol):
                             if contrast.readout is None:
-                                g1 = spatial.regulariser_grid(
-                                    vol, **lam_dist, bound=DIST_BOUND,
-                                    voxel_size=distortion.voxel_size)
+                                if _USE_CIMPL:
+                                    g1 = c_regulariser_grid(
+                                        vol[None], **lam_dist,
+                                        bound=DIST_BOUND,
+                                        voxel_size=distortion.voxel_size)[0]
+                                else:
+                                    g1 = spatial.regulariser_grid(
+                                        vol, **lam_dist, bound=DIST_BOUND,
+                                        voxel_size=distortion.voxel_size)
                             else:
                                 distprm1 = dict(lam_dist)
                                 distprm1['factor'] *= distortion.voxel_size[contrast.readout] ** 2
-                                g1 = spatial.regulariser(
-                                    vol[None], **distprm1, dim=3, bound=DIST_BOUND,
-                                    voxel_size=distortion.voxel_size)[0]
+                                if _USE_CIMPL:
+                                    g1 = c_regulariser(
+                                        vol[None, None], **distprm1,
+                                        bound=DIST_BOUND,
+                                        voxel_size=distortion.voxel_size)[0, 0]
+                                else:
+                                    g1 = spatial.regulariser(
+                                        vol[None], **distprm1, dim=3, bound=DIST_BOUND,
+                                        voxel_size=distortion.voxel_size)[0]
                             return g1
 
                         if contrast.readout is None:
@@ -414,25 +446,39 @@ def nonlin(data, opt=None):
                         h = check_nans_(h, warn='hessian (distortion)')
                         if contrast.readout is None:
                             h = core.utils.movedim(h, -1, -4)
-                            h = hessian_loaddiag_(h, 1e-32, 1e-32)
+                            h = hessian_loaddiag_(h, 1e-32, 1e-32, sym=True)
                             h = core.utils.movedim(h, -4, -1)
-                            delta = spatial.solve_grid_fmg(
-                                h, g, **lam_dist, bound=DIST_BOUND,
-                                voxel_size=distortion.voxel_size,
-                                verbose=max(0, opt.verbose-1),
-                                nb_iter=opt.optim.max_iter_cg,
-                                tolerance=opt.optim.tolerance_cg)
+                            if _USE_CIMPL:
+                                delta = c_fmg_grid(
+                                    h[None], g[None], **lam_dist,
+                                    bound=DIST_BOUND,
+                                    voxel_size=distortion.voxel_size,
+                                    nb_iter=opt.optim.max_iter_cg)[0]
+                            else:
+                                delta = spatial.solve_grid_fmg(
+                                    h, g, **lam_dist, bound=DIST_BOUND,
+                                    voxel_size=distortion.voxel_size,
+                                    verbose=max(0, opt.verbose-1),
+                                    nb_iter=opt.optim.max_iter_cg,
+                                    tolerance=opt.optim.tolerance_cg)
                         else:
-                            h = hessian_loaddiag_(h[None], 1e-32, 1e-32)[0]
+                            h = hessian_loaddiag_(h[None], 1e-32, 1e-32, sym=True)[0]
                             distprm1 = dict(lam_dist)
                             distprm1['factor'] *= (distortion.voxel_size[contrast.readout] ** 2)
-                            delta = spatial.solve_field_fmg(
-                                h[None], g[None], **distprm1, dim=3,
-                                bound=DIST_BOUND,
-                                voxel_size=distortion.voxel_size,
-                                nb_iter=opt.optim.max_iter_cg,
-                                tolerance=opt.optim.tolerance_cg,
-                                verbose=max(0, opt.verbose-1))[0]
+                            if _USE_CIMPL:
+                                delta = c_fmg(
+                                    h[None, None], g[None, None], **distprm1,
+                                    bound=DIST_BOUND,
+                                    voxel_size=distortion.voxel_size,
+                                    nb_iter=opt.optim.max_iter_cg)[0, 0]
+                            else:
+                                delta = spatial.solve_field_fmg(
+                                    h[None], g[None], **distprm1, dim=3,
+                                    bound=DIST_BOUND,
+                                    voxel_size=distortion.voxel_size,
+                                    nb_iter=opt.optim.max_iter_cg,
+                                    tolerance=opt.optim.tolerance_cg,
+                                    verbose=max(0, opt.verbose-1))[0]
                         delta = check_nans_(delta, warn='delta (distortion)')
 
                         # --- line search ----------------------------------
@@ -462,6 +508,8 @@ def nonlin(data, opt=None):
 
                         new_crit += new_crit1
                         new_vreg += vreg1 + new_vreg1
+
+                        gc.collect()
 
                     # --- track distortion improvement ---------------------
                     if not ok:
@@ -847,28 +895,34 @@ def solve_parameters(hess, grad, rls, lam, vx, opt):
     delta : (P+1, *shape) tensor
 
     """
-    # The ESTATICS Hessian has a very particular form (intercepts do not
-    # have cross elements). We therefore need to tell the solver how to operate
-    # on it.
 
-    def matvec(m, x):
-        m = m.transpose(-1, -4)
-        x = x.transpose(-1, -4)
-        return hessian_matmul(m, x).transpose(-4, -1)
+    if _USE_CIMPL:
+        return c_fmg(hess[None], grad[None], weight=rls, membrane=lam,
+                     voxel_size=vx, nb_iter=opt.optim.max_iter_cg)[0]
+    else:
+        # The ESTATICS Hessian has a very particular form (intercepts do not
+        # have cross elements). We therefore need to tell the solver how to
+        # operate on it.
 
-    def matsolve(m, x):
-        m = m.transpose(-1, -4)
-        x = x.transpose(-1, -4)
-        return hessian_solve(m, x).transpose(-4, -1)
+        def matvec(m, x):
+            m = m.transpose(-1, -4)
+            x = x.transpose(-1, -4)
+            return hessian_matmul(m, x).transpose(-4, -1)
 
-    def matdiag(m, d):
-        return m[..., ::2]
+        def matsolve(m, x):
+            m = m.transpose(-1, -4)
+            x = x.transpose(-1, -4)
+            return hessian_solve(m, x).transpose(-4, -1)
 
-    return spatial.solve_field_fmg(hess, grad, rls, factor=lam, membrane=1,
-                                   voxel_size=vx, verbose=max(0, opt.verbose - 1),
-                                   nb_iter=opt.optim.max_iter_cg,
-                                   tolerance=opt.optim.tolerance_cg,
-                                   matvec=matvec, matsolve=matsolve, matdiag=matdiag)
+        def matdiag(m, d):
+            # return m[..., ::2]
+            return m[..., :d]
+
+        return spatial.solve_field_fmg(hess, grad, rls, factor=lam, membrane=1,
+                                       voxel_size=vx, verbose=max(0, opt.verbose - 1),
+                                       nb_iter=opt.optim.max_iter_cg,
+                                       tolerance=opt.optim.tolerance_cg,
+                                       matvec=matvec, matsolve=matsolve, matdiag=matdiag)
 
     # # ----------------------------------------------------------------
     # # In the 'Model-based MPM` paper, we used to solve the linear

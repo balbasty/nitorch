@@ -1448,7 +1448,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
       + w01m0 * get(sol0, y0, sy0)
       + w01p0 * get(sol0, y1, sy1)
       + w001m * get(sol0, z0, sz0)
-      + w001p * get(sol0, z1, sz1)) ) / vx0
+      + w001p * get(sol0, z1, sz1)) * 0.5 ) / vx0
     );
   }
 
@@ -1466,7 +1466,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
       + w01m0 * get(sol1, y0, sy0)
       + w01p0 * get(sol1, y1, sy1)
       + w001m * get(sol1, z0, sz0)
-      + w001p * get(sol1, z1, sz1)) ) / vx1
+      + w001p * get(sol1, z1, sz1)) * 0.5 ) / vx1
     );
   }
 
@@ -1484,11 +1484,12 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
       + w01m0 * get(sol2, y0, sy0)
       + w01p0 * get(sol2, y1, sy1)
       + w001m * get(sol2, z0, sz0)
-      + w001p * get(sol2, z1, sz1)) ) / vx2
+      + w001p * get(sol2, z1, sz1)) * 0.5 ) / vx2
     );
   }
 
-  reduce_t w = (absolute * wcenter + (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p));
+  reduce_t w = (absolute * wcenter -  
+                0.5 * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p));
   invert(hes, sol0, val0, val1, val2, w/vx0, w/vx1, w/vx2);
 }
 
@@ -1819,7 +1820,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(
       +(w1m00 * get(sol0, x0, sx0)
       + w1p00 * get(sol0, x1, sx1)
       + w01m0 * get(sol0, y0, sy0)
-      + w01p0 * get(sol0, y1, sy1)) ) / vx0
+      + w01p0 * get(sol0, y1, sy1)) * 0.5 ) / vx0
     );
   }
 
@@ -1835,11 +1836,11 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(
       +(w1m00 * get(sol1, x0, sx0)
       + w1p00 * get(sol1, x1, sx1)
       + w01m0 * get(sol1, y0, sy0)
-      + w01p0 * get(sol1, y1, sy1)) ) / vx1
+      + w01p0 * get(sol1, y1, sy1)) * 0.5 ) / vx1
     );
   }
 
-  reduce_t w = (absolute * wcenter + (w1m00 + w1p00 + w01m0 + w01p0));
+  reduce_t w = (absolute * wcenter - 0.5 * (w1m00 + w1p00 + w01m0 + w01p0));
   invert(hes, sol0, val0, val1, 0, w/vx0, w/vx1, 0);
 }
 
@@ -2058,11 +2059,11 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(
     val0 = (*grd0) - (
       ( absolute * wcenter * c
       +(w1m00 * get(sol0, x0, sx0)
-      + w1p00 * get(sol0, x1, sx1)) ) / vx0
+      + w1p00 * get(sol0, x1, sx1)) * 0.5 ) / vx0
     );
   }
 
-  reduce_t w = (absolute * wcenter + (w1m00 + w1p00));
+  reduce_t w = (absolute * wcenter - 0.5 * (w1m00 + w1p00));
   invert(hes, sol0, val0, 0, 0, w/vx0, 0, 0);
 }
 

@@ -407,6 +407,9 @@ public:
       } else if (CC == C) {
         invert_ = &Self::invert_diag;
         get_h_  = &Self::get_h_diag;
+      } else if (CC == 2*C-1) {
+        invert_ = &Self::invert_estatics;
+        get_h_  = &Self::get_h_estatics;
       } else {
         invert_ = &Self::invert_sym;
         get_h_  = &Self::get_h_sym;
@@ -489,17 +492,18 @@ private:
   NI_DEVICE void get_h(const scalar_t * , reduce_t *) const;
 #endif
   NI_DEVICE void get_h_sym(const scalar_t * , reduce_t *) const;
+  NI_DEVICE void get_h_estatics(const scalar_t * , reduce_t *) const;
   NI_DEVICE void get_h_diag(const scalar_t * , reduce_t *) const;
   NI_DEVICE void get_h_eye(const scalar_t * , reduce_t *) const;
   NI_DEVICE void get_h_none(const scalar_t * , reduce_t *) const;
 
   NI_DEVICE void invert(
     scalar_t *, const scalar_t *, reduce_t *, const reduce_t *) const;
-  // NI_DEVICE void invert3(
-  //   scalar_t *, const scalar_t *, double *, const double *) const;
   NI_DEVICE void invert_sym(
     scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
   NI_DEVICE void invert_diag(
+    scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
+  NI_DEVICE void invert_estatics(
     scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
   NI_DEVICE void invert_eye(
     scalar_t *, reduce_t *, reduce_t *, const reduce_t *) const;
@@ -846,6 +850,9 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::invert(
   if (CC == 1) {
     get_h_eye(h, m);
     invert_eye(x, m, v, w);
+  } else if (CC == 2*C-1) {
+    get_h_estatics(h, m);
+    invert_estatics(x, m, v, w);
   } else if (CC == C) {
     get_h_diag(h, m);
     invert_diag(x, m, v, w);
@@ -880,6 +887,33 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_sym(
   cholesky_solve(h, k, v);   // solve linear system inplace
   for (offset_t c = 0; c < C; ++c, x += sol_sC)
     *x += *(v++);
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_estatics(
+    scalar_t * x, reduce_t * h, reduce_t * v, const reduce_t * w) const 
+/*
+    This Hessian is sparse with structure:
+    `[[D, b], [b.T, r]]` where `D = diag(d)` is diagonal.
+    It is stored in a flattened form: `[d0, d1, ..., dP, r, b0, b1, ...,  bP]`
+
+    Because of this specific structure, the Hessian is inverted in
+    closed-form using the formula for the inverse of a 2x2 block matrix.
+    See: https://en.wikipedia.org/wiki/Block_matrix#Block_matrix_inversion
+*/
+{
+  reduce_t * o = h + C;  // pointer to off-diagonal elements
+  reduce_t oh = h[C-1] + w[C-1], ov = 0., tmp;
+  for (offset_t c = 0; c < C-1; ++c) {
+    h[c] += w[c];
+    tmp = o[c] / h[c];
+    oh -= o[c] * tmp;
+    ov += v[c] * tmp;
+  }
+  tmp = v[C-1];
+  for (offset_t c = 0; c < C-1; ++c, x+= sol_sC)
+    *x = (o[c] * (ov - tmp) + v[c]) / (oh * h[c]);
+  *x = (v[C-1] - ov) / oh;
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -937,6 +971,13 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h_sym(
   for (offset_t c = 0; c < C; ++c)
     for (offset_t cc = c+1; cc < C; ++cc, hessian += hes_sC)
       mat[c+C*cc] = mat[cc+C*c] = *hessian;
+}
+
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RelaxImpl<scalar_t,offset_t,reduce_t>::get_h_estatics(
+    const scalar_t * hessian, reduce_t * mat) const {
+  for (offset_t c = 0; c < 2*C-1; ++c, hessian += hes_sC)
+    mat[c] = (*hessian);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -1128,6 +1169,39 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_absolute(
 }
 
 
+/*
+Reweighted least squares
+========================
+
+The spatial regulariser (for a single channel) is L = K'*W*K, 
+where K*x returns the forward and backward gradients of x 
+(weighted by 1/sqrt(2)) and W = diag(w) contains the weight map. 
+If w = ones, we recover L = K'*K which corresponds to the (L2) membrane
+regulariser.
+
+In the forward pass, we can still implement L as a convolution, except that 
+the convolution weights are themselves obtained by convolving the weight map.
+Let us write the membrane convolution kernel K'*K (in 2d) as:
+[     m01     ]
+[ m10 m00 m10 ]
+[     m01     ]
+(Note that in all our kernels, weights sum to zero, such that the center weight 
+is equal to the negative of the sum of the off-diagonal weights. 
+Here: m00 = -2*(m01 + m10).)
+Then the convolution kernel at voxel n in the reweighted case is
+[                         |  m01 * (w[n,-] + w[n,n]) |                         ]
+[ m10 * (w[-,n] + w[n,n]) |  w00                     | m10 * (w[+,n] + w[n,n]) ]
+[                         |  m01 * (w[n,+] + w[n,n]) |                         ]
+Again weights sum to zero so the center weight is not explicitely given.
+
+To relax, we need the diagonal of the regulariser diag(K'*W*K). This can again
+be expressed as a convolution of the weight map, this time by the absolute value 
+of the L2 kernel:
+          [       |m01|       ]
+diag(L) = [ |m10| |m00| |m10| ] * w
+          [       |m01|       ]
+*/
+
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
@@ -1162,7 +1236,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
     };
 
     aa = *(a++);
-    mm = *(m++);
+    mm = *(m++) * 0.5;
 
     val[c] = (*grd) - (
         aa * wcenter * center
@@ -1176,7 +1250,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax3d_rls_membrane(
     );
 
     wval[c] = ( aa * wcenter
-              + mm * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p) );
+              - mm * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p) );
   }
 
   sol -= C*sol_sC;
@@ -1372,7 +1446,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(
     };
 
     aa = *(a++);
-    mm = *(m++);
+    mm = *(m++) * 0.5;
 
     val[c] = (*grd) - (
         aa * wcenter * center
@@ -1384,7 +1458,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax2d_rls_membrane(
     );
 
     wval[c] = ( aa * wcenter
-              + mm * (w1m00 + w1p00 + w01m0 + w01p0) );
+              - mm * (w1m00 + w1p00 + w01m0 + w01p0) );
   }
 
   sol -= C*sol_sC;
@@ -1558,7 +1632,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(
     };
 
     aa = *(a++);
-    mm = *(m++);
+    mm = *(m++) * 0.5;
 
     val[c] = (*grd) - (
         aa * wcenter * center
@@ -1568,7 +1642,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::relax1d_rls_membrane(
     );
 
     wval[c] = ( aa * wcenter
-              + mm * (w1m00 + w1p00) );
+              - mm * (w1m00 + w1p00) );
   }
 
   sol -= C*sol_sC;
@@ -1649,7 +1723,7 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::solve3d(offset_t x, offset_t y, offs
 // CUDA Kernel
 template <typename scalar_t, typename offset_t, typename reduce_t>
 C10_LAUNCH_BOUNDS_1(1024)
-__global__ void relax_kernel(RelaxImpl<scalar_t,offset_t,reduce_t> * f) {
+__global__ void relax_kernel(const RelaxImpl<scalar_t,offset_t,reduce_t> * f) {
   f->loop(threadIdx.x, blockIdx.x, blockDim.x, gridDim.x);
 }
 #endif
@@ -1759,6 +1833,15 @@ NI_HOST Tensor relax_impl(
       cudaFree(palgo);
     }
   });
+  /*
+  Our implementation uses more stack per thread than the available local 
+  memory. CUDA probably needs to use some of the global memory to compensate,
+  but there is a bug and this memory is never freed.
+  The official solution is to call cudaDeviceSetLimit to reset the stack size
+  and free that memory:
+  https://forums.developer.nvidia.com/t/61314/2
+  */
+  cudaDeviceSetLimit(cudaLimitStackSize, 0);
   return solution;
 }
 

@@ -58,3 +58,17 @@ whereas JA sets 128 in SPM). This causes my objects to be way too big
 and I think it causes weird side effects because (I think...) they take 
 up all the stack. But the stack does not say "out of memory". Amyway,
 Iwent back to max 128 channels and the issue seems resolved. 
+
+**NOTE:** I had issues with some of my functions using massive amounts 
+of VRAM that were never freed. It was weird because I never explicitly 
+allocated data (I always relied on std or torch reference counting).
+It seems to be caused by my code using more stack than available local 
+memory (local memory is the private memory that belongs to each thread),
+which was compensated by using some of the global (heap) memory. But a 
+CUDA bug caused this memory to be never freed (or maybe it reserved 
+that memory for future kernel calls that would require large stacks).
+I found a semi-official answer by nvidia on their website giving a 
+hacky solution: https://forums.developer.nvidia.com/t/61314/2. <br />
+It would be better to try to reduce the stack size used by each thread. 
+I could precompute less stuff, which would mean more ops but less stack
+(maybe we don't care that much on the GPU).

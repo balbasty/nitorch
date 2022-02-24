@@ -4,6 +4,8 @@
 #include "src/regulariser_grid.h"
 #include "src/relax.h"
 #include "src/relax_grid.h"
+#include "src/precond.h"
+#include "src/precond_grid.h"
 #include "src/resize.h"
 #include "src/pcg.h"
 #include "src/fmg.h"
@@ -92,6 +94,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("regulariser_grid_backward", &ni::regulariser_grid_backward,  "Grid regulariser backward");
   m.def("relax",                     &ni::relax,                      "Field relax");
   m.def("relax_grid",                &ni::relax_grid,                 "Grid relax");
+  m.def("precond",                   &ni::precond,                    "Field preconditioner");
+  m.def("precond_grid",              &ni::precond_grid,               "Grid preconditioner");
   m.def("resize",                    &ni::resize,                     "resize");
   m.def("resize_backward",           &ni::resize_backward,            "resize backward");
   m.def("prolongation",              &ni::prolongation,               "prolongation");
