@@ -41,7 +41,7 @@ namespace {
                      int64_t nb_iter, double tol,
                      ForwardFn forward, PrecondFn precond)
   {
-      Tensor alpha, beta, rz, rz0, obj; // "scalar" tensors (can have a batch dim)
+      Tensor alpha, beta, rz, rz0, pAp, obj; // "scalar" tensors (can have a batch dim)
       Tensor r = at::empty_like(g), z = at::empty_like(g);
 
       int64_t numel = g.numel() / g.size(1);
@@ -56,12 +56,13 @@ namespace {
       int64_t n = 0;
       for (;  n < nb_iter; ++n)
       {
-        forward(h, p, w, z);                      // Ap = (H + KWK) * p
-        alpha = dotprod(p, z);                    // alpha = p' * Ap
-        alpha = rz / at::clamp_min(alpha, 1e-12); // alpha = (r' * z) / (p' * Ap)
+        forward(h, p, w, z);                     // Ap = (H + KWK) * p
+        pAp = dotprod(p, z);                     // alpha = p' * Ap
+        alpha = rz / at::clamp_min(pAp, 1e-12);  // alpha = (r' * z) / (p' * Ap)
 
         if (tol) {
-          obj = at::sum(alpha * dotprod(x, z));   // delta_obj = x' * (alpha * Ap)
+          obj = alpha * (alpha * pAp + 2 * dotprod(r, z));
+          obj = at::sum(obj);
           if (obj.item<double>() < tol * numel)
             break;
         }

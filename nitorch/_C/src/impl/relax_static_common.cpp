@@ -292,7 +292,7 @@ public:
     // [1*RLS 2*ENERGY 2*DIM]
     // We can use this byte to switch between implementations efficiently.
     mode = dim 
-         + (bending ? 12 : has_membrane ? 8 : has_absolute ? 4 : 0)
+         + (has_bending ? 12 : has_membrane ? 8 : has_absolute ? 4 : 0)
          + (wgt_ptr ? 16 : 0);
   } 
 
