@@ -147,6 +147,7 @@ struct HessianCommon
   {
     reduce_t m[Child::max_size];
     Child::get(C, h, sh, m);
+    Child::submatvec_(C, x, sx, m, v);
     Child::invert_(C, m, v, w);
     add(C, x, sx, v);
   }
@@ -178,6 +179,11 @@ struct HessianUtils<HessianType::None, MaxC>: HessianCommonNone<MaxC>
   template <typename scalar_t, typename offset_t, typename reduce_t> 
   static NI_INLINE NI_DEVICE void 
   get(int32_t C, const scalar_t * inp, offset_t stride, reduce_t * out)
+  {}
+
+  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  static NI_INLINE NI_DEVICE void 
+  submatvec_(int32_t C, const scalar_t * inp, offset_t stride, const reduce_t * h, reduce_t * out)
   {}
 
   template <typename reduce_t> 
@@ -227,6 +233,15 @@ struct HessianUtils<HessianType::Eye, MaxC>: HessianCommonEye<MaxC>
     *out = static_cast<reduce_t>(*inp);
   }
 
+  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  static NI_INLINE NI_DEVICE void 
+  submatvec_(int32_t C, const scalar_t * inp, offset_t stride, const reduce_t * h, reduce_t * out)
+  {
+    reduce_t hh = *h;
+    for (int32_t c = 0; c < C; ++c, inp += stride)
+      out[c] -= hh * (*inp);
+  }
+
   template <typename reduce_t> 
   static NI_INLINE NI_DEVICE void 
   invert_(int32_t C, reduce_t * h, reduce_t * v, const reduce_t * w) {
@@ -250,6 +265,14 @@ struct HessianUtils<HessianType::Diag, MaxC>: HessianCommonDiag<MaxC>
       out[c] = static_cast<reduce_t>(*inp);
   }
 
+  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  static NI_INLINE NI_DEVICE void 
+  submatvec_(int32_t C, const scalar_t * inp, offset_t stride, const reduce_t * h, reduce_t * out)
+  {
+    for (int32_t c = 0; c < C; ++c, inp += stride)
+      out[c] -= h[c] * (*inp);
+  }
+
   template <typename reduce_t> 
   static NI_INLINE NI_DEVICE void 
   invert_(int32_t C, reduce_t * h, reduce_t * v, const reduce_t * w) {
@@ -270,6 +293,19 @@ struct HessianUtils<HessianType::ESTATICS, MaxC>: HessianCommonEst<MaxC>
   {
     for (int32_t c = 0; c < 2*C-1; ++c, inp += stride)
       out[c] = static_cast<reduce_t>(*inp);
+  }
+
+  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  static NI_INLINE NI_DEVICE void 
+  submatvec_(int32_t C, const scalar_t * inp, offset_t stride, const reduce_t * h, reduce_t * out)
+  {
+    const reduce_t * o = h + C; // pointer to off-diagonal elements
+    scalar_t r = inp[(C-1)*stride];
+    for (int32_t c = 0; c < C-1; ++c, inp += stride) {
+      out[c] -= h[c] * (*inp) + o[c] * r;
+      out[C-1] -= o[c] * (*inp);
+    }
+    out[C-1] -= r * h[C-1];
   }
 
   template <typename reduce_t> 
@@ -305,6 +341,17 @@ struct HessianUtils<HessianType::Sym, MaxC>: HessianCommonSym<MaxC>
     for (int32_t c = 0; c < C; ++c)
       for (int32_t cc = c+1; cc < C; ++cc, inp += stride)
         out[c+C*cc] = out[cc+C*c] = *inp;
+  }
+
+  template <typename scalar_t, typename offset_t, typename reduce_t> 
+  static NI_INLINE NI_DEVICE void 
+  submatvec_(int32_t C, const scalar_t * inp, offset_t stride, const reduce_t * h, reduce_t * out)
+  {
+    for (offset_t c = 0; c < C; ++c) {
+      out[c] -= h[c*C+c] * inp[c*stride];
+      for (offset_t cc = c+1; cc < C; ++cc)
+        out[c] -= h[c*C+cc] * inp[cc*stride];
+    }
   }
 
   template <typename reduce_t> 

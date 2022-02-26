@@ -912,8 +912,8 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_estatics(
   }
   tmp = v[C-1];
   for (offset_t c = 0; c < C-1; ++c, x+= sol_sC)
-    *x = (o[c] * (ov - tmp) + v[c]) / (oh * h[c]);
-  *x = (v[C-1] - ov) / oh;
+    *x += (o[c] * (ov - tmp) + v[c]) / (oh * h[c]);
+  *x += (v[C-1] - ov) / oh;
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
