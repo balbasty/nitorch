@@ -345,7 +345,7 @@ if COMPILED_BACKEND == 'C':
 
     def c_pcg(gradient, weight=None, hessian=None, dim=None,
               absolute=0, membrane=0, bending=0, factor=1,
-              voxel_size=1, bound='dct2', nb_iter=2, output=None):
+              voxel_size=1, bound='dct2', nb_iter=2, tol=0, output=None):
         """Solve a regularised linear system by conjugate gradient
                 solution = (hessian + regulariser) \ gradient
 
@@ -393,7 +393,7 @@ if COMPILED_BACKEND == 'C':
             raise ValueError('RLS only implemented for membrane or absolute')
         return _c_pcg(hessian, gradient, output, weight,
                       absolute, membrane, bending, voxel_size,
-                      bound, int(nb_iter))
+                      bound, int(nb_iter), float(tol))
 
     def c_fmg(hessian, gradient, weight=None, dim=None,
               absolute=0, membrane=0, bending=0, factor=1,

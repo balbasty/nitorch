@@ -29,10 +29,6 @@ using c10::ArrayRef;
 // Required for stability. Value is currently about 1+8*eps
 #define OnePlusTiny 1.000001
 
-// Macro to cleanly invoke a pointer to member function
-#define CALL_MEMBER_FN(object,ptrToMember)  ((object).*(ptrToMember))
-#define MIN(a,b) (a < b ? a : b)
-
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
   ONAME##0(INAME.size() > 0 ? INAME[0] : DEFAULT),  \
   ONAME##1(INAME.size() > 1 ? INAME[1] :            \
@@ -1945,6 +1941,17 @@ NI_HOST Tensor regulariser_grid_impl(
                            at::cuda::getCurrentCUDAStream()>>>(algo);
     }
   });
+
+  /*
+  Our implementation uses more stack per thread than the available local 
+  memory. CUDA probably needs to use some of the global memory to 
+  compensate, but there is a bug and this memory is never freed.
+  The official solution is to call cudaDeviceSetLimit to reset the 
+  stack size and free that memory:
+  https://forums.developer.nvidia.com/t/61314/2
+  */
+  cudaDeviceSetLimit(cudaLimitStackSize, 0);
+
   return output;
 }
 

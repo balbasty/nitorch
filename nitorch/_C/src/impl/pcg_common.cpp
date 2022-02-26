@@ -38,10 +38,13 @@ namespace {
   template <typename ForwardFn, typename PrecondFn>
   inline void do_pcg(const Tensor & h, const Tensor & g, 
                      Tensor & x, const Tensor & w,
-                     int64_t nb_iter, ForwardFn forward, PrecondFn precond)
+                     int64_t nb_iter, double tol,
+                     ForwardFn forward, PrecondFn precond)
   {
-      Tensor alpha, beta, rz, rz0; // "scalar" tensors (can have a batch dim)
+      Tensor alpha, beta, rz, rz0, obj; // "scalar" tensors (can have a batch dim)
       Tensor r = at::empty_like(g), z = at::empty_like(g);
+
+      int64_t numel = g.numel() / g.size(1);
 
       // Initialisation
       forward(h, x, w, r);       // r  = (H + KWK) * x
@@ -50,11 +53,19 @@ namespace {
       rz = dotprod(r, z);        // rz = r' * z
       Tensor p = z.clone();      // Initial conjugate directions p
 
-      for (int64_t n = 0;  n < nb_iter; ++n)
+      int64_t n = 0;
+      for (;  n < nb_iter; ++n)
       {
         forward(h, p, w, z);                      // Ap = (H + KWK) * p
         alpha = dotprod(p, z);                    // alpha = p' * Ap
         alpha = rz / at::clamp_min(alpha, 1e-12); // alpha = (r' * z) / (p' * Ap)
+
+        if (tol) {
+          obj = at::sum(alpha * dotprod(x, z));   // delta_obj = x' * (alpha * Ap)
+          if (obj.item<double>() < tol * numel)
+            break;
+        }
+
         at::addcmul_out(x, x, p, alpha);          // x += alpha * p
         at::addcmul_out(r, r, z, alpha, -1);      // r -= alpha * Ap
         precond(h, r, w, z);                      // z  = (H + diag(W)) \ r
@@ -63,6 +74,11 @@ namespace {
         beta = rz / at::clamp_min_(rz0, 1e-12);
         at::addcmul_out(p, z, p, beta);           // p = z + beta * p
       }
+
+      if (tol)
+        NI_TRACE("PCG: %d/%d, obj = %f, tol = %f\n", 
+                 n, nb_iter, obj.item<double>() / numel, tol);
+ 
   }
 
 } // anonymous namespace
@@ -77,7 +93,7 @@ Tensor pcg_impl(const Tensor & hessian,
                 const ArrayRef<double> &  bending,
                 const ArrayRef<double> &  voxel_size, 
                 const BoundVectorRef   & bound,
-                int64_t nb_iter)
+                int64_t nb_iter, double tol)
 {
 
   /* ---------------- function handles ---------------------- */
@@ -98,7 +114,7 @@ Tensor pcg_impl(const Tensor & hessian,
 
   /* ------------------------ PCG algorithm ------------------ */
   solution = init_solution(solution, gradient);
-  do_pcg(hessian, gradient, solution, weight, nb_iter, forward_, precond_);
+  do_pcg(hessian, gradient, solution, weight, nb_iter, tol, forward_, precond_);
 
   return solution;
 }
@@ -115,7 +131,7 @@ Tensor pcg_grid_impl(
            double  lame_div,
            const ArrayRef<double> &  voxel_size, 
            const BoundVectorRef   & bound,
-           int64_t nb_iter)
+           int64_t nb_iter, double tol)
 {
 
   /* ---------------- function handles ---------------------- */
@@ -138,7 +154,7 @@ Tensor pcg_grid_impl(
 
   /* ------------------------ PCG algorithm ------------------ */
   solution = init_solution(solution, gradient);
-  do_pcg(hessian, gradient, solution, weight, nb_iter, forward_, precond_);
+  do_pcg(hessian, gradient, solution, weight, nb_iter, tol, forward_, precond_);
 
   return solution;
 }
@@ -155,7 +171,7 @@ namespace notimplemented {
                   const ArrayRef<double> &  bending,
                   const ArrayRef<double> &  voxel_size, 
                   const BoundVectorRef   & bound,
-                  int64_t nb_iter) 
+                  int64_t nb_iter, double tol) 
   {
     return solution;
   }
@@ -172,7 +188,7 @@ namespace notimplemented {
              double  lame_div,
              const ArrayRef<double> &  voxel_size, 
              const BoundVectorRef   & bound,
-             int64_t nb_iter) 
+             int64_t nb_iter, double tol) 
   {
     return solution;
   }

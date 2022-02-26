@@ -72,3 +72,20 @@ hacky solution: https://forums.developer.nvidia.com/t/61314/2. <br />
 It would be better to try to reduce the stack size used by each thread. 
 I could precompute less stuff, which would mean more ops but less stack
 (maybe we don't care that much on the GPU).
+
+**FOLLOW UP NOTE:** I wanted to avoid that from the start because 
+template meta-programming can rapidly become a mess, but it's become 
+clear that optimizing stack size is very important for us. Compiling 
+with a single (static) maximum  number of channels means using huge amounts 
+of VRAM for nothing in very basic cases (we commonly have only 3-5 channels).
+I've now changed the implemantation of `relax` and `precond` so that the 
+maximum number of channels (which defines the size of our static arrays)
+depends on the effective number of channels used at runtime. This 
+means dynamically dispatching on the number of channels and hessian type.
+My first try dispatched on the exact number of channels, which optimized
+stack size, but made the compilation extremely slow (since the same code 
+must be compiled for all possible number of channels: 1 to 512 
+[or another dev-defined number]). Instead, I now set the maximum number 
+of channels (i.e. the static array size) to the smallest possible power 
+of two. E.g., 1 channel -> 1 max_channel, 2->2, (3,4)->4, (5,6,7,8)->8, 
+etc. Compilation now ends in finite time (but is still quite slow). 

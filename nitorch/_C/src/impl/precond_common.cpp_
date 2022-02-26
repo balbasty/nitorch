@@ -534,7 +534,7 @@ template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void PrecondImpl<scalar_t,offset_t,reduce_t>::loop(
   int threadIdx, int blockIdx, int blockDim, int gridDim) const {
 
-  reduce_t buf[(NI_MAX_NUM_CHANNELS+3)*NI_MAX_NUM_CHANNELS];
+  reduce_t buf[NI_CHOL_BUF_SIZE];
   offset_t index = static_cast<offset_t>(blockIdx * blockDim + threadIdx);
   offset_t YZ   = Y * Z;
   offset_t XYZ  = X * YZ;
@@ -881,27 +881,22 @@ void PrecondImpl<scalar_t,offset_t,reduce_t>::precond3d_rls_membrane(
   GET_POINTERS
   GET_BUFFERS
 
-  const reduce_t *a = absolute, *m = membrane;
-  reduce_t aa, mm;
-
-  scalar_t * wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ);
-
-  for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
   {
-    scalar_t wcenter = *wgt;
-    reduce_t w1m00 = m100 * (wcenter + bound::get(wgt, wx0, sx0));
-    reduce_t w1p00 = m100 * (wcenter + bound::get(wgt, wx1, sx1));
-    reduce_t w01m0 = m010 * (wcenter + bound::get(wgt, wy0, sy0));
-    reduce_t w01p0 = m010 * (wcenter + bound::get(wgt, wy1, sy1));
-    reduce_t w001m = m001 * (wcenter + bound::get(wgt, wz0, sz0));
-    reduce_t w001p = m001 * (wcenter + bound::get(wgt, wz1, sz1));
+    const reduce_t *a = absolute, *m = membrane;
+    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*grd_sN);
 
-    aa = *(a++);
-    mm = *(m++) * 0.5;
-
-    val[c] = *grd;
-    wval[c] = ( aa * wcenter
-              - mm * (w1m00 + w1p00 + w01m0 + w01p0 + w001m + w001p) );
+    for (offset_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
+    {
+      scalar_t wcenter = *wgt;
+      reduce_t wm = m100 * (wcenter + bound::get(wgt, wx0, sx0))
+                  + m100 * (wcenter + bound::get(wgt, wx1, sx1))
+                  + m010 * (wcenter + bound::get(wgt, wy0, sy0))
+                  + m010 * (wcenter + bound::get(wgt, wy1, sy1))
+                  + m001 * (wcenter + bound::get(wgt, wz0, sz0))
+                  + m001 * (wcenter + bound::get(wgt, wz1, sz1));
+      val[c] = *grd;
+      wval[c] = ( (*(a++)) * wcenter - 0.5 * (*(m++)) * wm );
+    }
   }
 
   invert(sol, hes, val, wval, cmat, cvec);

@@ -15,7 +15,7 @@
                 const c10::ArrayRef<double> &  bending,   \
                 const c10::ArrayRef<double> &  voxel_size,  \
                 const BoundVectorRef        & bound, \
-                int64_t nb_iter); \
+                int64_t nb_iter, double tol=0.); \
     at::Tensor pcg_grid_impl(const at::Tensor & hessian, \
                 const at::Tensor & gradient, \
                       at::Tensor   solution, \
@@ -27,7 +27,7 @@
                 double  lame_div, \
                 const c10::ArrayRef<double> &  voxel_size, \
                 const BoundVectorRef   & bound, \
-                int64_t nb_iter); \
+                int64_t nb_iter, double tol=0.); \
   }
 
 

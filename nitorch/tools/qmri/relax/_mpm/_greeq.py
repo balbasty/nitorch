@@ -282,7 +282,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                             deltas = c_pcg(
                                 grad[None], hessian=hess, weight=rls,
                                 factor=lam * vol, membrane=1,
-                                voxel_size=vx, nb_iter=opt.optim.max_iter_cg)[0]
+                                voxel_size=vx, nb_iter=opt.optim.max_iter_cg,
+                                tol=opt.optim.tolerance_cg)[0]
                         else:
                             deltas = spatial.solve_field(
                                 hess, grad, rls, factor=lam * vol, membrane=1,

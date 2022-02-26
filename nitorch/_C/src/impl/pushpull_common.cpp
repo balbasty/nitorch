@@ -2537,7 +2537,7 @@ std::deque<Tensor> pushpull(
                          do_pull, do_push, do_count, do_grad, do_sgrad);
   info.ioset(source, grid, target);
 
-  return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
+  auto output = AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
     if (info.canUse32BitIndexMath())
     {
       PushPullImpl<scalar_t, int32_t> algo(info);
@@ -2553,6 +2553,17 @@ std::deque<Tensor> pushpull(
       return algo.output;
     }
   });
+
+  /*
+  Our implementation uses more stack per thread than the available local 
+  memory. CUDA probably needs to use some of the global memory to 
+  compensate, but there is a bug and this memory is never freed.
+  The official solution is to call cudaDeviceSetLimit to reset the 
+  stack size and free that memory:
+  https://forums.developer.nvidia.com/t/61314/2
+  */
+  cudaDeviceSetLimit(cudaLimitStackSize, 0);
+  return output;
 }
 
 #else

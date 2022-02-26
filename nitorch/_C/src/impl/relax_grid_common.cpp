@@ -2213,6 +2213,17 @@ NI_HOST Tensor relax_grid_impl(
         }
     }
   });
+
+  /*
+  Our implementation uses more stack per thread than the available local 
+  memory. CUDA probably needs to use some of the global memory to 
+  compensate, but there is a bug and this memory is never freed.
+  The official solution is to call cudaDeviceSetLimit to reset the 
+  stack size and free that memory:
+  https://forums.developer.nvidia.com/t/61314/2
+  */
+  cudaDeviceSetLimit(cudaLimitStackSize, 0);
+
   return solution;
 }
 

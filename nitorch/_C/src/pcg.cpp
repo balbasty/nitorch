@@ -28,7 +28,7 @@ Tensor pcg(const Tensor & hessian,
            const vector<double> &  bending,
            const vector<double> &  voxel_size, 
            const vector<BoundType> & bound,
-           int64_t nb_iter) 
+           int64_t nb_iter, double tol) 
 {
   torch::NoGradGuard no_grad;
 
@@ -72,11 +72,11 @@ Tensor pcg(const Tensor & hessian,
   if (gradient.is_cuda())
     return cuda::pcg_impl(hessian, gradient, solution, weight,
         ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
-        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
+        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter, tol);
   else
     return cpu::pcg_impl(hessian, gradient, solution, weight,
         ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
-        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
+        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter, tol);
 }
 
 Tensor pcg_grid(const Tensor & hessian, 
@@ -90,7 +90,7 @@ Tensor pcg_grid(const Tensor & hessian,
                       double    lame_div,
                 const vector<double> & voxel_size, 
                 const vector<BoundType> & bound,
-                int64_t nb_iter)
+                int64_t nb_iter, double tol)
 {
   torch::NoGradGuard no_grad;
 
@@ -134,11 +134,11 @@ Tensor pcg_grid(const Tensor & hessian,
   if (gradient.is_cuda())
     return cuda::pcg_impl(hessian, gradient, solution, weight,
         ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
-        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
+        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter, tol);
   else
     return cpu::pcg_impl(hessian, gradient, solution, weight,
         ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
-        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter);
+        ArrayRef<double>(voxel_size), BoundVectorRef(bound), nb_iter, tol);
 }
 
 }

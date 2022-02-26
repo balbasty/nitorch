@@ -1,3 +1,4 @@
+#pragma once
 #include "common.h"
 #include "../defines.h"
 
@@ -45,5 +46,69 @@ static NI_INLINE NI_DEVICE void for_unroll(offset_t L, Fn fn)
       fn(0);
   }
 }
+
+// Returns a value such that: index <= 2 ** log2_ceil(index)
+// Adapted from https://stackoverflow.com/questions/994593
+template <typename T>
+static NI_HOST  
+T log2_ceil(T index)
+{
+  if (index == 0)
+    return static_cast<T>(-1); // assumes signed T
+  --index;
+  T targetlevel = 0;
+  while (index) {
+    index >>= 1;
+    ++targetlevel;
+  }
+  return targetlevel;
+}
+
+// https://stackoverflow.com/questions/101439
+template <typename BaseType, typename ExpType>
+static NI_HOST  
+BaseType pow_int(BaseType base, ExpType exp)
+{
+    BaseType result = 1;
+    for (;;)
+    {
+        if (exp & 1)
+            result *= base;
+        exp >>= 1;
+        if (!exp)
+            break;
+        base *= base;
+    }
+    return result;
+}
+
+// The following structures are used to compute powers of 2 at compile time
+// Adapted from https://stackoverflow.com/questions/27270541
+template <int32_t N>
+struct power_of_two
+{
+    static const int32_t value = 2 * power_of_two<N-1>::value;
+};
+template <>
+struct power_of_two<0>
+{
+    static const int32_t value = 1;
+};
+
+// The folowing structures are used to dynamically dispatch integer values
+// to integer-templated functions
+// Adapted from https://stackoverflow.com/questions/7089284
+template<int32_t min, int32_t... Indices>
+struct indices {
+    typedef indices<min, Indices..., sizeof...(Indices) + min> next;
+};
+template<int32_t min, int32_t N>
+struct build_indices {
+    typedef typename build_indices<min, N - 1>::type::next type;
+};
+template<int32_t min>
+struct build_indices<min, min> {
+    typedef indices<min> type;
+};
 
 }

@@ -27,6 +27,7 @@
 #  include <THC/THCAtomics.cuh>
 // --- DEFINES ---------------------------------------------------------
 #  define NI_INLINE __forceinline__
+#  define NI_NOINLINE __noinline__
 #  define NI_DEVICE __device__
 #  define NI_HOST   __host__
 #  define NI_DEVICE_NAME cuda
@@ -50,7 +51,7 @@ namespace ni {
 }
 namespace ni {
 template <typename T>
-NI_HOST NI_INLINE 
+static NI_HOST NI_INLINE 
 T * alloc_on_device(T & obj)
 {
   T * pointer_device;
@@ -58,14 +59,14 @@ T * alloc_on_device(T & obj)
   return pointer_device;
 }
 template <typename T, typename Stream>
-NI_HOST NI_INLINE 
+static NI_HOST NI_INLINE 
 T * copy_to_device(T & obj, T * pointer_device, Stream stream)
 {
   cudaMemcpyAsync(pointer_device, &obj, sizeof(T), cudaMemcpyHostToDevice, stream);
   return pointer_device;
 }
 template <typename T, typename Stream>
-NI_HOST NI_INLINE 
+static NI_HOST NI_INLINE 
 T * alloc_and_copy_to_device(T & obj, Stream stream)
 {
   T * pointer_device = alloc_on_device(obj);
@@ -77,6 +78,7 @@ T * alloc_and_copy_to_device(T & obj, Stream stream)
 #else
 // --- DEFINES ---------------------------------------------------------
 #  define NI_INLINE inline
+#  define NI_NOINLINE
 #  define NI_DEVICE
 #  define NI_HOST
 #  define NI_DEVICE_NAME cpu

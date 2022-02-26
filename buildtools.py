@@ -222,7 +222,8 @@ def fix_compile_parallel(self):
                                     depends, extra_postargs)
         cc_args = self._get_cc_args(pp_opts, debug, extra_preargs)
 
-        workers = os.cpu_count()  # may return None
+        workers = int(os.environ.get('NI_COMPILE_WORKERS', '0'))
+        workers = workers or os.cpu_count()  # may be None
         try:
             from concurrent.futures import ThreadPoolExecutor
         except ImportError:

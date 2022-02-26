@@ -15,7 +15,7 @@ at::Tensor pcg(
   const std::vector<double> &  bending,
   const std::vector<double> &  voxel_size, 
   const std::vector<BoundType> & bound, 
-  int64_t nb_iter);
+  int64_t nb_iter, double tol = 0.);
 
 at::Tensor pcg_grid(
   const at::Tensor& hessian,  
@@ -28,6 +28,7 @@ at::Tensor pcg_grid(
   double lame_shear, 
   double lame_div,
   const std::vector<double> & voxel_size, 
-  const std::vector<BoundType> & bound, int64_t nb_iter);
+  const std::vector<BoundType> & bound, 
+  int64_t nb_iter, double tol = 0.);
 
 }

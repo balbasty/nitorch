@@ -62,6 +62,11 @@ def _main(options):
     estatics_opt.verbose = options.verbose >= 1
     estatics_opt.plot = options.verbose >= 2
     estatics_opt.recon.space = options.space
+    if isinstance(options.space, str) and  options.space != 'mean':
+        for c, contrast in enumerate(options.contrast):
+            if contrast.name == options.space:
+                greeq_opt.recon.space = c
+                break
     estatics_opt.backend.device = device
     estatics_opt.optim.nb_levels = options.levels
     estatics_opt.optim.max_iter_rls = options.iter
