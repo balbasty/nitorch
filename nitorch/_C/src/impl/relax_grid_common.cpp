@@ -300,12 +300,10 @@ public:
     wz001 = -2.0*mu-lam + w001/vx2;
     w2    = 0.25*mu+0.25*lam;
 
-#if 0
     w000  *= OnePlusTiny;
     wx000 *= OnePlusTiny;
     wy000 *= OnePlusTiny;
     wz000 *= OnePlusTiny;
-#endif
   }
 
   NI_HOST NI_INLINE void set_bandwidth() 
@@ -845,9 +843,9 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert3d_sym(
   v2 -= h02*s0 + h12*s1 + h22*s2;
 
   // solve
-  h00  = h00 + w0;
-  h11  = h11 + w1;
-  h22  = h22 + w2;
+  h00  = h00 * OnePlusTiny + w0;
+  h11  = h11 * OnePlusTiny + w1;
+  h22  = h22 * OnePlusTiny + w2;
   idt  = 1.0/(h00*h11*h22 - h00*h12*h12 - h11*h02*h02 - h22*h01*h01 + 2*h01*h02*h12);
   s[       0] += idt*(v0*(h11*h22-h12*h12) + v1*(h02*h12-h01*h22) + v2*(h01*h12-h02*h11));
   s[  sol_sC] += idt*(v0*(h02*h12-h01*h22) + v1*(h00*h22-h02*h02) + v2*(h01*h02-h00*h12));
@@ -868,8 +866,8 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert2d_sym(
   v1 -= h01*s0 + h11*s1;
 
   // solve
-  h00  = h00 + w0;
-  h11  = h11 + w1;
+  h00  = h00 * OnePlusTiny + w0;
+  h11  = h11 * OnePlusTiny + w1;
   idt  = 1.0/(h00*h11 - h01*h01);
   s[     0] += idt*(v0*h11 - v1*h01);
   s[sol_sC] += idt*(v1*h00 - v0*h01);
@@ -890,9 +888,9 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert3d_diag(
   v2 -= h22 * s2;
 
   // solve
-  s[       0] += v0 / (h00 + w0);
-  s[  sol_sC] += v1 / (h11 + w1);
-  s[2*sol_sC] += v2 / (h22 + w2);
+  s[       0] += v0 / (h00 * OnePlusTiny + w0);
+  s[  sol_sC] += v1 / (h11 * OnePlusTiny + w1);
+  s[2*sol_sC] += v2 / (h22 * OnePlusTiny + w2);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -909,8 +907,8 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert2d_diag(
   v1 -= h11 * s1;
 
   // sve
-  s[     0] += v0 / (h00 + w0);
-  s[sol_sC] += v1 / (h11 + w1);
+  s[     0] += v0 / (h00 * OnePlusTiny + w0);
+  s[sol_sC] += v1 / (h11 * OnePlusTiny + w1);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -927,6 +925,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert3d_eye(
   v2 -= h00 * s2;
 
   // solve
+  h00 *= OnePlusTiny;
   s[       0] += v0 / (h00 + w0);
   s[  sol_sC] += v1 / (h00 + w1);
   s[2*sol_sC] += v2 / (h00 + w2);
@@ -945,6 +944,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert2d_eye(
   v1 -= h00 * s1;
 
   // solve
+  h00 *= OnePlusTiny;
   s[     0] += v0 / (h00 + w0);
   s[sol_sC] += v1 / (h00 + w1);
 }
@@ -961,7 +961,7 @@ void RelaxGridImpl<scalar_t,offset_t,reduce_t>::invert1d(
   v0 -= h00 * s0;
 
   // solve
-  (*s) += v0 / (h00 + w0);
+  (*s) += v0 / (h00 * OnePlusTiny + w0);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE

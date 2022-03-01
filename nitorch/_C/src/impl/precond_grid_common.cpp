@@ -292,12 +292,10 @@ public:
     b101 = 2.0*vx0*vx2;
     b011 = 2.0*vx1*vx2;
 
-#if 0
     w000  *= OnePlusTiny;
     wx000 *= OnePlusTiny;
     wy000 *= OnePlusTiny;
     wz000 *= OnePlusTiny;
-#endif
   }
 
 #ifndef __CUDACC__
@@ -627,9 +625,9 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert3d_sym(
            idt;
 
   // solve
-  h00  = h00 + w0;
-  h11  = h11 + w1;
-  h22  = h22 + w2;
+  h00  = h00 * OnePlusTiny + w0;
+  h11  = h11 * OnePlusTiny + w1;
+  h22  = h22 * OnePlusTiny + w2;
   idt  = 1.0/(h00*h11*h22 - h00*h12*h12 - h11*h02*h02 - h22*h01*h01 + 2*h01*h02*h12);
   s[       0] = idt*(v0*(h11*h22-h12*h12) + v1*(h02*h12-h01*h22) + v2*(h01*h12-h02*h11));
   s[  sol_sC] = idt*(v0*(h02*h12-h01*h22) + v1*(h00*h22-h02*h02) + v2*(h01*h02-h00*h12));
@@ -645,8 +643,8 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert2d_sym(
            v0  = v[0], v1  = v[  grd_sC], idt;
 
   // solve
-  h00  = h00 + w0;
-  h11  = h11 + w1;
+  h00  = h00 * OnePlusTiny + w0;
+  h11  = h11 * OnePlusTiny + w1;
   idt  = 1.0/(h00*h11 - h01*h01);
   s[     0] = idt*(v0*h11 - v1*h01);
   s[sol_sC] = idt*(v1*h00 - v0*h01);
@@ -657,9 +655,9 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert3d_diag(
     const scalar_t * h, scalar_t * s, const scalar_t *v, 
     reduce_t w0, reduce_t w1, reduce_t w2) const 
 {
-  s[       0] = v[       0] / (h[       0] + w0);
-  s[  sol_sC] = v[  grd_sC] / (h[  hes_sC] + w1);
-  s[2*sol_sC] = v[2*grd_sC] / (h[2*hes_sC] + w2);
+  s[       0] = v[       0] / (h[       0] * OnePlusTiny + w0);
+  s[  sol_sC] = v[  grd_sC] / (h[  hes_sC] * OnePlusTiny + w1);
+  s[2*sol_sC] = v[2*grd_sC] / (h[2*hes_sC] * OnePlusTiny + w2);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -667,8 +665,8 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert2d_diag(
     const scalar_t * h, scalar_t * s, const scalar_t *v, 
     reduce_t w0, reduce_t w1, reduce_t  /*unused*/) const 
 {
-  s[     0] = v[     0] / (h[     0] + w0);
-  s[sol_sC] = v[grd_sC] / (h[hes_sC] + w1);
+  s[     0] = v[     0] / (h[     0] * OnePlusTiny + w0);
+  s[sol_sC] = v[grd_sC] / (h[hes_sC] * OnePlusTiny + w1);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
@@ -676,7 +674,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert3d_eye(
     const scalar_t * h, scalar_t * s, const scalar_t *v, 
     reduce_t w0, reduce_t w1, reduce_t w2) const 
 {
-  reduce_t h00 = *h;
+  reduce_t h00 = (*h) * OnePlusTiny;
   s[       0] = v[       0] / (h00 + w0);
   s[  sol_sC] = v[  grd_sC] / (h00 + w1);
   s[2*sol_sC] = v[2*grd_sC] / (h00 + w2);
@@ -687,7 +685,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert2d_eye(
     const scalar_t * h, scalar_t * s, const scalar_t *v, 
     reduce_t w0, reduce_t w1, reduce_t  /*unused*/) const 
 {
-  reduce_t h00 = *h;
+  reduce_t h00 = (*h) * OnePlusTiny;
 
   // solve
   s[     0] = v[     0] / (h00 + w0);
@@ -699,7 +697,7 @@ void PrecondGridImpl<scalar_t,offset_t,reduce_t>::invert1d(
     const scalar_t * h, scalar_t * s, const scalar_t *v, 
     reduce_t w0, reduce_t  /*unused*/, reduce_t  /*unused*/) const 
 {
-  (*s) = (*v) / ((*h) + w0);
+  (*s) = (*v) / ((*h) * OnePlusTiny + w0);
 }
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE

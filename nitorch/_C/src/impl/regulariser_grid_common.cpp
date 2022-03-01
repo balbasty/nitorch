@@ -295,8 +295,6 @@ public:
     wz010 = -mu*vx1/vx2 + w010/vx2;
     wz001 = -2.0*mu-lam + w001/vx2;
     w2    = 0.25*mu+0.25*lam;
-
-    // TODO: correct for 1d/2d cases
   }
 
 #ifndef __CUDACC__

@@ -105,6 +105,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fmg",                       &ni::fmg,                        "Field Full MultiGrid");
   m.def("fmg_grid",                  &ni::fmg_grid,                   "Grid Full MultiGrid");
   m.def("pcg",                       &ni::pcg,                        "Field Preconditioned Conjugate Gradient");
+  m.def("pcg_grid",                  &ni::pcg_grid,                   "Grid Preconditioned Conjugate Gradient");
   m.def("fmg_prolongation",          &ni::fmg_prolongation,            "FMG prolongation");
   m.def("fmg_restriction",           &ni::fmg_restriction,             "FMG restriction");
 }

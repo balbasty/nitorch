@@ -1,4 +1,5 @@
 from .grid import COMPILED_BACKEND, bound_to_nitorch, inter_to_nitorch
+from .utils import make_list, vector_to_list, movedim
 import torch
 import math
 
@@ -57,8 +58,8 @@ if COMPILED_BACKEND == 'C':
 
     from .spatial import (
         resize as _c_resize,
-        prolongation as _c_prolongation,
-        restriction as _c_restriction)
+        fmg_prolongation as _c_prolongation,
+        fmg_restriction as _c_restriction)
 
     def c_resize(input, factor=None, bound='dct2', interpolation=1, mode='center',
                  shape=None, output=None, adjoint=False, normalize=False):
@@ -95,8 +96,7 @@ if COMPILED_BACKEND == 'C':
         return _c_resize(input, output, factor, bound, interpolation,
                          mode, adjoint, normalize)
 
-    def c_prolongation(input, factor=2., bound='dct2', interpolation=2,
-                       shape=None, output=None):
+    def c_prolongation(input, factor=2., bound='dct2', shape=None, output=None):
         """Prolongation of a spatial tensor
 
         Parameters
@@ -104,7 +104,6 @@ if COMPILED_BACKEND == 'C':
         input : (N, C, *inshape) tensor
         factor : [sequence of] float, default=2
         bound : [sequence of] bound_like, default='dct2'
-        interpolation : [sequence of] int, default=2
         shape : sequence[int], optional
         output : (N, C, *shape) tensor, optional
 
@@ -114,7 +113,6 @@ if COMPILED_BACKEND == 'C':
 
         """
         bound = bound_to_nitorch(make_list(bound), 'enum')
-        interpolation = inter_to_nitorch(make_list(interpolation), 'enum')
         if output is None:
             if not shape:
                 factor = make_list(factor, 3)
@@ -123,10 +121,9 @@ if COMPILED_BACKEND == 'C':
                 output = input.new_zeros([*input.shape[:2], *shape])
             else:
                 output = torch.Tensor()
-        return _c_prolongation(input, output, bound, interpolation)
+        return _c_prolongation(input, output, bound)
 
-    def c_restriction(input, factor=2., bound='dct2', interpolation=1,
-                      shape=None, output=None):
+    def c_restriction(input, factor=2., bound='dct2', shape=None, output=None):
         """Restriction of a spatial tensor
 
         Parameters
@@ -134,7 +131,6 @@ if COMPILED_BACKEND == 'C':
         input : (N, C, *inshape) tensor
         factor : [sequence of] float, default=2
         bound : [sequence of] bound_like, default='dct2'
-        interpolation : [sequence of] int, default=1
         shape : sequence[int], optional
         output : (N, C, *shape) tensor, optional
 
@@ -144,7 +140,6 @@ if COMPILED_BACKEND == 'C':
 
         """
         bound = bound_to_nitorch(make_list(bound), 'enum')
-        interpolation = inter_to_nitorch(make_list(interpolation), 'enum')
         if output is None:
             if not shape:
                 factor = make_list(factor, 3)
@@ -153,4 +148,76 @@ if COMPILED_BACKEND == 'C':
                 output = input.new_zeros([*input.shape[:2], *shape])
             else:
                 output = torch.Tensor()
-        return _c_restriction(input, output, bound, interpolation)
+        return _c_restriction(input, output, bound)
+
+    def c_prolongation_grid(input, factor=2., bound='dct2',
+                            shape=None, hessian=False, output=None):
+        """Prolongation of a spatial tensor
+
+        Parameters
+        ----------
+        input : (N, *inshape, D) tensor
+        factor : [sequence of] float, default=2
+        bound : [sequence of] bound_like, default='dct2'
+        shape : sequence[int], optional
+        output : (N, *shape, D) tensor, optional
+
+        Returns
+        -------
+        output : (N, *shape, D) tensor
+
+        """
+        dim = input.shape[-1]
+        input = movedim(input, -1, 1)
+        if output is not None:
+            output = movedim(output, -1, 1)
+        output = c_prolongation(input, factor, bound, shape, output)
+        output = movedim(output, 1, -1)
+        factor = [o/i for i, o in zip(input.shape[-dim:], output.shape[-dim:])]
+        if not hessian:
+            for c in range(dim):
+                output[..., c] *= factor[c]
+        else:
+            count = dim
+            for c in range(dim):
+                output[..., c] *= factor[c] ** 2
+                for cc in range(c+1, dim):
+                    output[..., count] *= factor[c] * factor[cc]
+                    count += 1
+        return output
+
+    def c_restriction_grid(input, factor=2., bound='dct2',
+                           shape=None, hessian=False, output=None):
+        """Restriction of a spatial tensor
+
+        Parameters
+        ----------
+        input : (N, *inshape, D) tensor
+        factor : [sequence of] float, default=2
+        bound : [sequence of] bound_like, default='dct2'
+        shape : sequence[int], optional
+        output : (N, *shape, D) tensor, optional
+
+        Returns
+        -------
+        output : (N, *shape, D) tensor
+
+        """
+        dim = input.shape[-1]
+        input = movedim(input, -1, 1)
+        if output is not None:
+            output = movedim(output, -1, 1)
+        output = c_restriction(input, factor, bound, shape, output)
+        output = movedim(output, 1, -1)
+        factor = [o/i for i, o in zip(input.shape[-dim:], output.shape[-dim:])]
+        if not hessian:
+            for c in range(dim):
+                output[..., c] *= factor[c]
+        else:
+            count = dim
+            for c in range(dim):
+                output[..., c] *= factor[c] ** 2
+                for cc in range(c+1, dim):
+                    output[..., count] *= factor[c] * factor[cc]
+                    count += 1
+        return output
