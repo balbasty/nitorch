@@ -134,8 +134,8 @@ parser.add_option('lam_meetup', '--lam-meetup', nargs=1, default=1e5, convert=fl
 parser.add_option('levels', '--nb-levels', nargs=1, default=1, convert=int)
 parser.add_option('iter', '--max-iter', nargs=1, default=10, convert=int)
 parser.add_option('tol', '--tolerance', nargs=1, default=1e-4, convert=float)
-parser.add_option('solver', '--solver', nargs=1, default='cg',
-                  validation=cli.Validations.choice(['fmg', 'cg']))
+parser.add_option('solver', '--solver', nargs='+', default=['cg'])
+                  #validation=cli.Validations.choice(['fmg', 'cg']))
 
 # generic options
 parser.add_option('verbose', ('-v', '--verbose'),

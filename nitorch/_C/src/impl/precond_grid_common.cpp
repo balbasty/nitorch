@@ -1074,7 +1074,7 @@ NI_HOST Tensor precond_grid_impl(
     if (info.canUse32BitIndexMath())
     {
       PrecondGridImpl<scalar_t, int32_t, double> algo(info);
-      auto palgo = alloc_and_copy_to_device(algo, stream);
+      auto palgo = alloc_and_copy_to_device(&algo, stream);
       precond_kernel
           <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
           (palgo);
@@ -1083,7 +1083,7 @@ NI_HOST Tensor precond_grid_impl(
     else
     {
       PrecondGridImpl<scalar_t, int64_t, double> algo(info);
-      auto palgo = alloc_and_copy_to_device(algo, stream);
+      auto palgo = alloc_and_copy_to_device(&algo, stream);
       precond_kernel
           <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
           (palgo);

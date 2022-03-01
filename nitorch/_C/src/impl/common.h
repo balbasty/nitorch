@@ -50,7 +50,6 @@ namespace ni {
   }
 }
 namespace ni {
-namespace ni {
 template <typename T>
 static NI_HOST NI_INLINE 
 T * alloc_on_device(const T * obj)

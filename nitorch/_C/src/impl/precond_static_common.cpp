@@ -907,7 +907,7 @@ prepare_tensors(const Tensor & gradient,
           if (alloc.canUse32BitIndexMath())
           {
               PrecondImpl<scalar_t, int32_t, double, utils_t> algo(alloc);
-              auto palgo = alloc_and_copy_to_device(algo, stream);
+              auto palgo = alloc_and_copy_to_device(&algo, stream);
               precond_kernel
                   <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
                   (palgo);
@@ -916,7 +916,7 @@ prepare_tensors(const Tensor & gradient,
           else
           {
             PrecondImpl<scalar_t, int64_t, double, utils_t> algo(alloc);
-            auto palgo = alloc_and_copy_to_device(algo, stream);
+            auto palgo = alloc_and_copy_to_device(&algo, stream);
             precond_kernel
                 <<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>
                 (palgo);

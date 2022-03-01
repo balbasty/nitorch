@@ -1656,7 +1656,7 @@ struct DoAlgo<0> {
         {
           using Impl = RelaxImpl<scalar_t, int32_t, double, utils_t>;
           Impl   algo(alloc);
-          Impl * palgo = alloc_and_copy_to_device(algo, stream);
+          Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int32_t i=0; i < nb_iter; ++i)
             for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
                 algo.set_fold(fold);
@@ -1671,7 +1671,7 @@ struct DoAlgo<0> {
         {
           using Impl = RelaxImpl<scalar_t, int64_t, double, utils_t>;
           Impl   algo(alloc);
-          Impl * palgo = alloc_and_copy_to_device(algo, stream);
+          Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int64_t i=0; i < nb_iter; ++i)
             for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
                 algo.set_fold(fold);
@@ -1719,7 +1719,7 @@ struct DoAlgo<1> {
         {
           using Impl = RelaxImpl<scalar_t, int32_t, double, utils_t>;
           Impl   algo(alloc);
-          Impl * palgo = alloc_and_copy_to_device(algo, stream);
+          Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int32_t i=0; i < nb_iter; ++i)
             for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
                 algo.set_fold(fold);
@@ -1734,7 +1734,7 @@ struct DoAlgo<1> {
         {
           using Impl = RelaxImpl<scalar_t, int64_t, double, utils_t>;
           Impl   algo(alloc);
-          Impl * palgo = alloc_and_copy_to_device(algo, stream);
+          Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int64_t i=0; i < nb_iter; ++i)
             for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
                 algo.set_fold(fold);
