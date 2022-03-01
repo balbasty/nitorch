@@ -63,6 +63,8 @@ namespace {
         if (tol) {
           obj = alpha * (alpha * pAp + 2 * dotprod(r, z));
           obj = at::sum(obj);
+          //NI_TRACE("PCG: %d/%d, obj = %f, tol = %f\n", 
+          //         n, nb_iter, obj.item<double>() / numel, tol);
           if (obj.item<double>() < tol * numel)
             break;
         }
@@ -98,14 +100,14 @@ Tensor pcg_impl(const Tensor & hessian,
 {
 
   /* ---------------- function handles ---------------------- */
-  auto forward_ = [absolute, membrane, bending, bound, voxel_size]
+  auto forward_ = [&]
                   (const Tensor & hessian, const Tensor & input,
                    const Tensor & weight,  const Tensor & output)
   {
     regulariser_impl(input, output, weight, hessian,
                      absolute, membrane, bending, voxel_size, bound);
   };
-  auto precond_ = [absolute, membrane, bending, bound, voxel_size]
+  auto precond_ = [&]
                   (const Tensor & hessian, const Tensor & gradient,
                    const Tensor & weight, const Tensor & output)
   {
@@ -136,7 +138,7 @@ Tensor pcg_grid_impl(
 {
 
   /* ---------------- function handles ---------------------- */
-  auto forward_ = [absolute, membrane, bending, lame_shear, lame_div, bound, voxel_size]
+  auto forward_ = [&]
                   (const Tensor & hessian, const Tensor & input,
                    const Tensor & weight,  const Tensor & output)
   {
@@ -144,7 +146,7 @@ Tensor pcg_grid_impl(
                           absolute, membrane, bending, lame_shear, lame_div, 
                           voxel_size, bound);
   };
-  auto precond_ = [absolute, membrane, bending, lame_shear, lame_div, bound, voxel_size]
+  auto precond_ = [&]
                   (const Tensor & hessian, const Tensor & gradient,
                    const Tensor & weight, const Tensor & output)
   {

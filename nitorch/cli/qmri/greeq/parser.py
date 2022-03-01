@@ -23,7 +23,7 @@ Acquisition options:
    [-b0, --b0-field FIELD [MAG] [UNIT]  B0 fieldmap] NOT IMPLEMENTED YET
 
 Reconstruction options:
-    --likelihood {gauss,[chi]}          Noise model
+    --likelihood {[gauss],chi}          Noise model
     --register {yes,[no],field}         Start by registrering contrasts
     -u, --uncertainty                   Write Laplace uncertainty
     --recon-space [NAME]                Name of a contrast or 'mean' (default: mean)
@@ -111,7 +111,7 @@ parser.add_option('receive', ('-rf', '--receive'), nargs='+3', help='Receive fie
 parser.add_option('b0', ('-b0', '--b0-field'), nargs='+3', help='B0 field')
 
 # recon options
-parser.add_option('likelihood', '--likelihood', nargs=1, default='chi',
+parser.add_option('likelihood', '--likelihood', nargs=1, default='gauss',
                   validation=cli.Validations.choice(['chi', 'gauss']))
 parser.add_option('register', '--register', nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)

@@ -28,7 +28,7 @@
 
 #ifdef NI_DEBUG
 #  include <cstdio>
-#  define NI_TRACE(...) printf(__VA_ARGS__)
+#  define NI_TRACE(...) {printf(__VA_ARGS__); std::fflush(stdout);}
 #else 
 #  define NI_TRACE(...) {}
 #endif

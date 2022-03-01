@@ -50,9 +50,10 @@ namespace ni {
   }
 }
 namespace ni {
+namespace ni {
 template <typename T>
 static NI_HOST NI_INLINE 
-T * alloc_on_device(T & obj)
+T * alloc_on_device(const T * obj)
 {
   T * pointer_device;
   cudaMalloc((void **)&pointer_device, sizeof(T));
@@ -60,14 +61,14 @@ T * alloc_on_device(T & obj)
 }
 template <typename T, typename Stream>
 static NI_HOST NI_INLINE 
-T * copy_to_device(T & obj, T * pointer_device, Stream stream)
+T * copy_to_device(const T * obj, T * pointer_device, Stream stream)
 {
-  cudaMemcpyAsync(pointer_device, &obj, sizeof(T), cudaMemcpyHostToDevice, stream);
+  cudaMemcpyAsync(pointer_device, obj, sizeof(T), cudaMemcpyHostToDevice, stream);
   return pointer_device;
 }
 template <typename T, typename Stream>
 static NI_HOST NI_INLINE 
-T * alloc_and_copy_to_device(T & obj, Stream stream)
+T * alloc_and_copy_to_device(const T * obj, Stream stream)
 {
   T * pointer_device = alloc_on_device(obj);
   copy_to_device(obj, pointer_device, stream);

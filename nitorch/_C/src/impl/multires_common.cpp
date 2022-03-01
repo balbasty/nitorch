@@ -876,14 +876,14 @@ Tensor multires_impl(
     if (info.canUse32BitIndexMath())
     {
       MultiResImpl<scalar_t, int32_t, scalar_t> algo(info);
-      auto palgo = alloc_and_copy_to_device(algo, stream);
+      auto palgo = alloc_and_copy_to_device(&algo, stream);
       resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }
     else
     {
       MultiResImpl<scalar_t, int64_t, scalar_t> algo(info);
-      auto palgo = alloc_and_copy_to_device(algo, stream);
+      auto palgo = alloc_and_copy_to_device(&algo, stream);
       resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }

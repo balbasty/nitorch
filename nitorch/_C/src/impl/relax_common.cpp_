@@ -874,11 +874,10 @@ void RelaxImpl<scalar_t,offset_t,reduce_t>::invert_sym(
   reduce_t v_;
   for (offset_t c = 0; c < C; ++c) {
     // matvec (part of the forward pass)
-    v_ = v[c];
-    v_ = std::fma(-h[c*C+c], static_cast<reduce_t>(x[c*sol_sC]), v_);
-    for (offset_t cc = c+1; cc < C; ++cc)
-      v_ = std::fma(-h[c*C+cc], static_cast<reduce_t>(x[cc*sol_sC]), v_);
-    v[c] = v_;
+    v_ = static_cast<reduce_t>(0);
+    for (offset_t cc = 0; cc < C; ++cc)
+      v_ = std::fma(h[c*C+cc], static_cast<reduce_t>(x[cc*sol_sC]), v_);
+    v[c] -= v_;
     // load diagonal
     h[c+C*c] += *(w++);
   }

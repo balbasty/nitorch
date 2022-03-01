@@ -4,6 +4,8 @@
 #include "utils.h"
 #include <cmath>
 
+#define OnePlusTiny 1.000001;
+
 namespace ni {
 NI_NAMESPACE_DEVICE {
 
@@ -41,13 +43,13 @@ HessianType guess_hessian_type(int32_t C, int32_t CC)
 namespace Cholesky {
 
   // Cholesky decomposition (Cholesky–Banachiewicz)
-  // @param[in]     C: (u)int
-  // @param[inout]  a: CxC matrix
-  // @param[out]    p: C vector
+  //
+  // @param[in]     C:  (u)int
+  // @param[inout]  a:  CxC matrix
   //
   // https://en.wikipedia.org/wiki/Cholesky_decomposition
   template <typename reduce_t, typename offset_t> NI_INLINE NI_DEVICE static
-  void decompose(offset_t C, reduce_t a[], reduce_t p[])
+  void decompose(offset_t C, reduce_t a[])
   {
     reduce_t sm, sm0;
 
@@ -64,44 +66,42 @@ namespace Cholesky {
       {
         sm = a[c*C+b];
         for(offset_t d = c-1; d >= 0; --d)
-          sm += a[c*C+d] * a[b*C+d];
-        if (c == b)
-        {
-          sm = MAX(sm, sm0);
-          p[c] = std::sqrt(sm);
-        }
-        else 
-          a[b*C+c] = sm / p[c];
+          sm -= a[c*C+d] * a[b*C+d];
+        if (c == b) {
+          a[c*C+c] = std::sqrt(MAX(sm, sm0));
+        } else
+          a[b*C+c] = sm / a[c*C+c];
       }
     }
+    return;
   }
 
   // Cholesky solver (inplace)
-  // @param[in]     C: (u)int
+  // @param[in]    C: (u)int
   // @param[in]    a: CxC matrix
   // @param[in]    p: C vector
   // @param[inout] x: C vector
   template <typename reduce_t, typename offset_t> NI_INLINE NI_DEVICE static
-  void solve(offset_t C, const reduce_t a[], const reduce_t p[], reduce_t x[])
+  void solve(offset_t C, const reduce_t a[], reduce_t x[])
   {
     reduce_t sm;
     for (offset_t c = 0; c < C; ++c)
     {
       sm = x[c];
       for (offset_t cc = c-1; cc >= 0; --cc)
-        sm += a[c*C+cc] * x[cc];
-      x[c] = sm / p[c];
+        sm -= a[c*C+cc] * x[cc];
+      x[c] = sm / a[c*C+c];
     }
     for(offset_t c = C-1; c >= 0; --c)
     {
       sm = x[c];
       for(offset_t cc = c+1; cc < C; ++cc)
-        sm += a[cc*C+c] * x[cc];
-      x[c] = sm / p[c];
+        sm -= a[cc*C+c] * x[cc];
+      x[c] = sm / a[c*C+c];
     }
   }
-
-}
+  
+} // namespace Cholesky
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 //                            Static traits
@@ -330,14 +330,14 @@ template <int32_t MaxC>
 struct HessianUtils<HessianType::Sym, MaxC>: HessianCommonSym<MaxC>
 { 
   static const int32_t max_length = MaxC;
-  static const int32_t max_size   = (MaxC*(MaxC+1))/2; 
+  static const int32_t max_size   = MaxC*MaxC; //< How much we allocate on the stack!
 
   template <typename scalar_t, typename offset_t, typename reduce_t> 
   static NI_INLINE NI_DEVICE void 
   get(int32_t C, const scalar_t * inp, offset_t stride, reduce_t * out)
   {
     for (int32_t c = 0; c < C; ++c, inp += stride)
-      out[c+C*c] = *inp;
+      out[c+C*c] = (*inp) * OnePlusTiny;
     for (int32_t c = 0; c < C; ++c)
       for (int32_t cc = c+1; cc < C; ++cc, inp += stride)
         out[c+C*cc] = out[cc+C*c] = *inp;
@@ -347,10 +347,12 @@ struct HessianUtils<HessianType::Sym, MaxC>: HessianCommonSym<MaxC>
   static NI_INLINE NI_DEVICE void 
   submatvec_(int32_t C, const scalar_t * inp, offset_t stride, const reduce_t * h, reduce_t * out)
   {
-    for (offset_t c = 0; c < C; ++c) {
-      out[c] -= h[c*C+c] * inp[c*stride];
-      for (offset_t cc = c+1; cc < C; ++cc)
-        out[c] -= h[c*C+cc] * inp[cc*stride];
+    reduce_t acc;
+    for (int32_t c = 0; c < C; ++c) {
+      acc = static_cast<reduce_t>(0);
+      for (int32_t cc = 0; cc < C; ++cc)
+        acc += h[c*C+cc] * inp[cc*stride];
+      out[c] -= acc;
     }
   }
 
@@ -360,9 +362,8 @@ struct HessianUtils<HessianType::Sym, MaxC>: HessianCommonSym<MaxC>
   {
     for (int32_t c = 0; c < C; ++c)
       h[c+C*c] += w[c];
-    reduce_t k[MaxC];
-    Cholesky::decompose(C, h, k);  // cholesky decomposition
-    Cholesky::solve(C, h, k, v);   // solve linear system inplace
+    Cholesky::decompose(C, h);  // cholesky decomposition
+    Cholesky::solve(C, h, v);   // solve linear system inplace
   }
 };
 

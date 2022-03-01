@@ -1627,14 +1627,14 @@ Tensor resize_impl(
     if (info.canUse32BitIndexMath())
     {
       ResizeImpl<scalar_t, int32_t> algo(info);
-      auto palgo = alloc_and_copy_to_device(algo, stream);
+      auto palgo = alloc_and_copy_to_device(&algo, stream);
       resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }
     else
     {
       ResizeImpl<scalar_t, int64_t> algo(info);
-      auto palgo = alloc_and_copy_to_device(algo, stream);
+      auto palgo = alloc_and_copy_to_device(&algo, stream);
       resize_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0, stream>>>(palgo);
       cudaFree(palgo);
     }

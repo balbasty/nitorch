@@ -29,6 +29,9 @@ using c10::IntArrayRef;
 using c10::ArrayRef;
 
 // Required for stability. Value is currently about 1+8*eps
+#ifdef OnePlusTiny
+#undef OnePlusTiny
+#endif
 #define OnePlusTiny 1.000001
 
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
@@ -124,8 +127,10 @@ private:
   void * NAME##_ptr;
 
   int64_t N;
+public:
   int64_t C;
   int64_t CC;
+private:
   int64_t X;
   int64_t Y;
   int64_t Z;
@@ -262,9 +267,9 @@ public:
 
     set_factors(info.absolute, info.membrane, info.bending);
     set_kernel(info.vx0, info.vx1, info.vx2);
-  #ifndef __CUDACC__
+#ifndef __CUDACC__
     set_precond();
-  #endif
+ #endif
   }
 
   NI_HOST void set_factors(ArrayRef<double> a, ArrayRef<double> m, ArrayRef<double> b)
@@ -298,7 +303,7 @@ public:
                     bending[c]  * (6.0*(vx0*vx0+vx1*vx1+vx2*vx2) + 
                                    8.0*(vx0*vx1+vx0*vx2+vx1*vx2))
                   + membrane[c] * (2.0*(vx0+vx1+vx2))
-                  + absolute[c]));
+                  + absolute[c]) * OnePlusTiny);
 
     m100 = static_cast<reduce_t>(-vx0);
     m010 = static_cast<reduce_t>(-vx1);
@@ -441,7 +446,9 @@ template <typename scalar_t, typename offset_t, typename reduce_t, typename hess
 void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond(
     offset_t x, offset_t y, offset_t z, offset_t n) const 
 {
-  #ifdef __CUDACC__
+#ifndef __CUDACC__
+  CALL_MEMBER_FN(*this, precond_)(x, y, z, n);
+#else
 #   define ABSOLUTE 4
 #   define MEMBRANE 8
 #   define BENDING  12
@@ -469,8 +476,6 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond(
           return precond3d(x, y, z, n);
       }
   }
-#else
-  CALL_MEMBER_FN(*this, precond_)(x, y, z, n);
 #endif 
 }
 
@@ -600,7 +605,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_membrane(
     GET_SIGN1
     GET_WARP1
     const reduce_t *a = absolute, *m = membrane;
-    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*grd_sN);
+    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN);
     const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN);
 
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
@@ -631,7 +636,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond3d_rls_absolute(
    reduce_t val[MaxC], wval[MaxC];
   {
     const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + z*grd_sZ + n*grd_sN);
-    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*grd_sN);
+    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + z*wgt_sZ + n*wgt_sN);
 
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
       scalar_t wcenter = *wgt;
@@ -705,7 +710,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_membrane(
     GET_SIGN1
     GET_WARP1
     const reduce_t *a = absolute, *m = membrane;
-    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + n*grd_sN);
+    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + n*wgt_sN);
     const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + n*grd_sN);
 
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
@@ -734,7 +739,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond2d_rls_absolute(
    reduce_t val[MaxC], wval[MaxC];
   {
     const scalar_t *grd = grd_ptr + (x*grd_sX + y*grd_sY + n*grd_sN);
-    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + n*grd_sN);
+    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + y*wgt_sY + n*wgt_sN);
 
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
       scalar_t wcenter = *wgt;
@@ -794,7 +799,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_membrane(
     GET_SIGN1
     GET_WARP1
     const reduce_t *a = absolute, *m = membrane;
-    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + n*grd_sN);
+    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + n*wgt_sN);
     const scalar_t *grd = grd_ptr + (x*grd_sX + n*grd_sN);
 
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC)
@@ -821,7 +826,7 @@ void PrecondImpl<scalar_t,offset_t,reduce_t,hessian_t>::precond1d_rls_absolute(
    reduce_t val[MaxC], wval[MaxC];
   {
     const scalar_t *grd = grd_ptr + (x*grd_sX + n*grd_sN);
-    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + n*grd_sN);
+    const scalar_t *wgt = wgt_ptr + (x*wgt_sX + n*wgt_sN);
 
     for (int32_t c = 0; c < C; ++c, grd += grd_sC, wgt += wgt_sC) {
       scalar_t wcenter = *wgt;

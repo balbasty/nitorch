@@ -268,7 +268,7 @@ Tensor fmg_impl(const Tensor & hessian,
   int64_t dim = gradient.dim() - 2;
 
   /* ---------------- function handles ---------------------- */
-  auto relax_ = [absolute, membrane, bending, bound, nb_iter, use_cg]
+  auto relax_ = [&]
                 (const Tensor & hessian, const Tensor & gradient,
                  const Tensor & solution, const Tensor & weight,
                  const ArrayRef<double> & voxel_size)
@@ -280,15 +280,15 @@ Tensor fmg_impl(const Tensor & hessian,
       relax_impl(hessian, gradient, solution, weight, 
                  absolute, membrane, bending, voxel_size, bound, nb_iter);
   };
-  auto prolong_ = [bound](const Tensor & x, const Tensor & o)
+  auto prolong_ = [&](const Tensor & x, const Tensor & o)
   {
     fmg_prolongation(x, o, bound);
   };
-  auto restrict_ = [bound](const Tensor & x, const Tensor & o)
+  auto restrict_ = [&](const Tensor & x, const Tensor & o)
   {
     fmg_restriction(x, o, bound);
   };
-  auto residuals_ = [absolute, membrane, bending, bound]
+  auto residuals_ = [&]
                     (const Tensor & hessian,  const Tensor & gradient,
                      const Tensor & solution, const Tensor & weight,
                            Tensor & res,
@@ -372,8 +372,7 @@ Tensor fmg_grid_impl(const Tensor & hessian,
   int64_t dim = gradient.dim() - 2;
 
   /* ---------------- function handles ---------------------- */
-  auto relax_ = [absolute, membrane, bending, lame_shear, lame_div, 
-                 bound, nb_iter, use_cg]
+  auto relax_ = [&]
                 (const Tensor & hessian, const Tensor & gradient,
                  const Tensor & solution, const Tensor & weight,
                  const ArrayRef<double> & voxel_size)
@@ -387,7 +386,7 @@ Tensor fmg_grid_impl(const Tensor & hessian,
                       absolute, membrane, bending, lame_shear, lame_div,
                       voxel_size, bound, nb_iter);
   };
-  auto prolong_ = [bound, dim](const Tensor & x, const Tensor & o)
+  auto prolong_ = [&](const Tensor & x, const Tensor & o)
   {
     fmg_prolongation(x, o, bound);
     Tensor view;
@@ -405,7 +404,7 @@ Tensor fmg_grid_impl(const Tensor & hessian,
         break;
     }
   };
-  auto restrict_w_ = [bound](const Tensor & x, const Tensor & o)
+  auto restrict_w_ = [&](const Tensor & x, const Tensor & o)
   {
     if (!o.defined() || o.numel() == 0)
       return;
@@ -431,7 +430,7 @@ Tensor fmg_grid_impl(const Tensor & hessian,
         break;
     }
   };
-  auto restrict_h_ = [bound, dim](const Tensor & x, const Tensor & o)
+  auto restrict_h_ = [&](const Tensor & x, const Tensor & o)
   {
     if (!o.defined() || o.numel() == 0)
       return;
@@ -477,8 +476,7 @@ Tensor fmg_grid_impl(const Tensor & hessian,
         break;
     }
   };
-  auto residuals_ = [absolute, membrane, bending, lame_shear, lame_div,
-                     bound]
+  auto residuals_ = [&]
                     (const Tensor & hessian,  const Tensor & gradient,
                      const Tensor & solution, const Tensor & weight,
                            Tensor & res, const ArrayRef<double> & voxel_size)

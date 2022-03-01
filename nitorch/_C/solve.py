@@ -399,7 +399,7 @@ if COMPILED_BACKEND == 'C':
               absolute=0, membrane=0, bending=0, factor=1,
               voxel_size=1, bound='dct2',
               nb_cycles=2, nb_iter=2, max_levels=16,
-              solver='cg', output=None):
+              solver='relax', output=None):
         """Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
 

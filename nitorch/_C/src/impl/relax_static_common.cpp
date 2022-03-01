@@ -29,6 +29,9 @@ using c10::IntArrayRef;
 using c10::ArrayRef;
 
 // Required for stability. Value is currently about 1+8*eps
+#ifdef OnePlusTiny
+#undef OnePlusTiny
+#endif
 #define OnePlusTiny 1.000001
 
 #define VEC_UNFOLD(ONAME, INAME, DEFAULT)             \
@@ -303,7 +306,7 @@ public:
                     bending[c]  * (6.0*(vx0*vx0+vx1*vx1+vx2*vx2) + 
                                    8.0*(vx0*vx1+vx0*vx2+vx1*vx2))
                   + membrane[c] * (2.0*(vx0+vx1+vx2))
-                  + absolute[c]));
+                  + absolute[c]) * OnePlusTiny);
 
     m100 = static_cast<reduce_t>(-vx0);
     m010 = static_cast<reduce_t>(-vx1);
@@ -1590,7 +1593,7 @@ struct DoAlgo {
         {
           using Impl = RelaxImpl<scalar_t, int32_t, double, utils_t>;
           Impl   algo(alloc);
-          Impl * palgo = alloc_and_copy_to_device(algo, stream);
+          Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int32_t i=0; i < nb_iter; ++i)
             for (int32_t fold = 0; fold < algo.foldcount(); ++fold) {
                 algo.set_fold(fold);
@@ -1605,7 +1608,7 @@ struct DoAlgo {
         {
           using Impl = RelaxImpl<scalar_t, int64_t, double, utils_t>;
           Impl   algo(alloc);
-          Impl * palgo = alloc_and_copy_to_device(algo, stream);
+          Impl * palgo = alloc_and_copy_to_device(&algo, stream);
           for (int64_t i=0; i < nb_iter; ++i)
             for (int64_t fold = 0; fold < algo.foldcount(); ++fold) {
                 algo.set_fold(fold);
