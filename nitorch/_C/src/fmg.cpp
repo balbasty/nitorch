@@ -138,13 +138,13 @@ Tensor fmg_grid(const Tensor & hessian,
   }
 
   if (gradient.is_cuda())
-    return cuda::fmg_impl(hessian, gradient, solution, weight,
-        ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
+    return cuda::fmg_grid_impl(hessian, gradient, solution, weight,
+        absolute, membrane, bending, lame_shear, lame_div,
         ArrayRef<double>(voxel_size), BoundVectorRef(bound), 
         nb_cycles, nb_iter, max_levels, use_cg);
   else
-    return cpu::fmg_impl(hessian, gradient, solution, weight,
-        ArrayRef<double>(absolute), ArrayRef<double>(membrane), ArrayRef<double>(bending),
+    return cpu::fmg_grid_impl(hessian, gradient, solution, weight,
+        absolute, membrane, bending, lame_shear, lame_div,
         ArrayRef<double>(voxel_size), BoundVectorRef(bound), 
         nb_cycles, nb_iter, max_levels, use_cg);
 }

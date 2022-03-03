@@ -354,24 +354,18 @@ public:
         else
             vel2mom = &Self::zeros;
     } else if (dim == 3) {
-        if ((lame_shear or lame_div) and bending) {
-            NI_TRACE("vel2mom3d_all\n");
+        if ((lame_shear or lame_div) and bending)
             vel2mom = &Self::vel2mom3d_all;
-        } else if (lame_shear or lame_div) {
-            NI_TRACE("vel2mom3d_lame\n");
+        else if (lame_shear or lame_div)
             vel2mom = &Self::vel2mom3d_lame;
-        } else if (bending) {
-            NI_TRACE("vel2mom3d_bending\n");
+        else if (bending)
             vel2mom = &Self::vel2mom3d_bending;
-        } else if (membrane) {
-            NI_TRACE("vel2mom3d_membrane\n");
+        else if (membrane)
             vel2mom = &Self::vel2mom3d_membrane;
-        } else if (absolute) {
-            NI_TRACE("vel2mom3d_absolute\n");
+        else if (absolute)
             vel2mom = &Self::vel2mom3d_absolute;
-        }else {
+        else
             vel2mom = &Self::zeros;
-       }
     } else
         throw std::logic_error("RLS only implemented for dimension 1/2/3.");
   }

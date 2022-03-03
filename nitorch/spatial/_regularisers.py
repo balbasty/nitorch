@@ -41,6 +41,8 @@ from nitorch.core.py import ensure_list
 from ._finite_differences import diff, div, diff1d, div1d
 from ._spconv import spconv
 import itertools
+from nitorch.core.optionals import try_import_as
+c_solvers = try_import_as('nitorch._C.solve')
 
 
 def _mul_(x, y):
@@ -1048,7 +1050,13 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
 
     if not (absolute or membrane or bending or any(ensure_list(lame))):
         return torch.zeros_like(v)
-    
+
+    if c_solvers and not v.requires_grad:
+        return c_solvers.c_regulariser_grid(
+            v, weights, None,
+            absolute, membrane, bending, lame, factor,
+            voxel_size=voxel_size, bound=bound)
+
     if torch.is_tensor(kernel) or kernel:
         if not torch.is_tensor(kernel):
             kernel = regulariser_grid_kernel(dim, absolute, membrane, bending,
@@ -1152,6 +1160,13 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     """
     if not (absolute or membrane or bending):
         return torch.zeros_like(x)
+
+    dim = dim or (x.dim() - 1)
+    if c_solvers and not x.requires_grad:
+        return c_solvers.c_regulariser(
+            x, weights, None, dim,
+            absolute, membrane, bending, factor,
+            voxel_size=voxel_size, bound=bound)
 
     backend = dict(dtype=x.dtype, device=x.device)
     dim = dim or x.dim() - 1

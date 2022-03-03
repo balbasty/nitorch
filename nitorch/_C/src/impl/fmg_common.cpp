@@ -419,13 +419,13 @@ Tensor fmg_grid_impl(const Tensor & hessian,
     switch (dim) {  // there are no breaks on purpose
       case 3:
         view  = o.index({Slice(), 2});
-        view *= static_cast<double>(o.size(4)) / static_cast<double>(x.size(4));
+        view *= static_cast<double>(x.size(4)) / static_cast<double>(o.size(4));
       case 2:
         view  = o.index({Slice(), 1});
-        view *= static_cast<double>(o.size(3)) / static_cast<double>(x.size(3));
+        view *= static_cast<double>(x.size(3)) / static_cast<double>(o.size(3));
       case 1:
         view  = o.index({Slice(), 0});
-        view *= static_cast<double>(o.size(2)) / static_cast<double>(x.size(2));
+        view *= static_cast<double>(x.size(2)) / static_cast<double>(o.size(2));
       default:
         break;
     }
@@ -440,11 +440,11 @@ Tensor fmg_grid_impl(const Tensor & hessian,
     int64_t CC = x.size(1);
     switch (dim) {  // there are no breaks on purpose
       case 3:
-        f2 = static_cast<double>(o.size(4)) / static_cast<double>(x.size(4));
+        f2 = static_cast<double>(x.size(4)) / static_cast<double>(o.size(4));
       case 2:
-        f1 = static_cast<double>(o.size(3)) / static_cast<double>(x.size(3));
+        f1 = static_cast<double>(x.size(3)) / static_cast<double>(o.size(3));
       case 1:
-        f0 = static_cast<double>(o.size(2)) / static_cast<double>(x.size(2));
+        f0 = static_cast<double>(x.size(2)) / static_cast<double>(o.size(2));
       default:
         break;
     }

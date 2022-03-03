@@ -6,15 +6,11 @@ import torch
 from ._mrf import mrf, mrf_suffstat, mrf_covariance
 from ._plot import plot_lb, plot_images_and_lb
 
-USE_C_IMPL = True
-if USE_C_IMPL:
-    from nitorch._C.solve import c_fmg, c_fmg_grid, c_regulariser, c_regulariser_grid
-
-
 default_warp_reg = {'absolute': 0,
                     'membrane': 0.001,
                     'bending': 0.5,
-                    'lame': (0.05, 0.2), }
+                    'lame': (0.05, 0.2),
+                    }
 
 # default_warp_reg = {'absolute': 0,
 #                     'membrane': 0.5,
@@ -182,7 +178,7 @@ class SpatialMixture:
         self.max_iter_warp = max_iter_warp
         self.max_iter_mrf = max_iter_mrf
         self.max_iter_mixing = max_iter_mixing
-        self.max_ls_warp = 0  # 12
+        self.max_ls_warp = 0 #12
         self.tol = tol
 
         if not self.do_bias:
@@ -1084,30 +1080,22 @@ class SpatialMixture:
             H *= W.unsqueeze(-1)
 
         lam = {'factor': vx.prod(), 'voxel_size': vx, **self.lam_warp}
-        if USE_C_IMPL:
-            La = c_regulariser_grid(self.alpha[None], **lam)[0]
-        else:
-            La = spatial.regulariser_grid(self.alpha, **lam)
+        La = spatial.regulariser_grid(self.alpha, **lam)
         aLa = self.alpha.flatten().dot(La.flatten()).cpu()
         g += La
 
-        if USE_C_IMPL:
-            delta = c_fmg_grid(H[None], g[None], **lam)[0]
-        else:
-            delta = spatial.solve_grid_fmg(H, g, **lam)
+        delta = spatial.solve_grid_fmg(H, g, **lam, nb_iter=4)
         if not self.max_ls_warp:
             self.alpha -= delta
             self._lb_warp = -0.5 * aLa
             return
 
         # line search
-        if USE_C_IMPL:
-            dLd = c_regulariser_grid(delta[None], **lam)[0]
-        else:
-            dLd = spatial.regulariser_grid(delta, **lam)
+        dLd = spatial.regulariser_grid(delta, **lam)
         dLd = delta.flatten().dot(dLd.flatten()).cpu()
         dLa = delta.flatten().dot(La.flatten()).cpu()
         armijo, prev_armijo = 1, 0
+        ll0 = ll0.cpu()
         success = False
         for n_ls in range(self.max_ls_warp):
             self.alpha.sub_(delta, alpha=armijo - prev_armijo)
@@ -1120,6 +1108,7 @@ class SpatialMixture:
             else:
                 ll = logM0.sum() + logM.mul_(Z).sum()
             ll = ll.cpu()
+
             if ll + armijo * (dLa - 0.5 * armijo * dLd) > ll0:
                 success = True
                 print('success', n_ls)
@@ -1492,17 +1481,11 @@ class UniSeg(SpatialMixture):
             #       with pure bending, as resizing does not induce that much
             #       additional curvature.
             lam = {'bending': self.lam_bias, 'voxel_size': vx}
-            if USE_C_IMPL:
-                Lb = c_regulariser(self.beta[None, None, c], **lam)[0, 0]
-            else:
-                Lb = spatial.regulariser(self.beta[None, c], **lam)
+            Lb = spatial.regulariser(self.beta[None, c], **lam)
             lb += self.beta[c].flatten().dot(Lb.flatten())
             g += Lb
 
-            if USE_C_IMPL:
-                delta = c_fmg(H[None], g[None], **lam)[0]
-            else:
-                delta = spatial.solve_field_fmg(H, g, **lam)
+            delta = spatial.solve_field_fmg(H, g, **lam)
             self.beta[c] -= delta[0]
 
         self.beta -= self.beta.mean()
