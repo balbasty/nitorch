@@ -92,7 +92,8 @@ def upsample_vel(v, aff_in, aff_out, shape, readout):
     vx_up = spatial.voxel_size(aff_out)[readout]
     factor = vx_down / vx_up
     v = spatial.reslice(v, aff_in, aff_out, shape,
-                        bound='dct2', interpolation=2, prefilter=True)
+                        bound='dct2', interpolation=2, prefilter=True,
+                        extrapolate=True)
     v *= factor
     return v
 
@@ -130,6 +131,7 @@ def get_readout(readout, affine, shape):
         readout = readout - dim
     return readout
 
+import matplotlib.pyplot as plt
 
 def main_fit(options):
     """
@@ -182,7 +184,11 @@ def main_fit(options):
             d1, _ = downsample(d11.to(device), f1.affine, dwn)
             vx = spatial.voxel_size(aff)
             if vel is not None:
+                plt.imshow(vel[:, :, vel.shape[-1] // 2].cpu())
+                plt.show()
                 vel = upsample_vel(vel, last_aff, aff, d0.shape[-dim:], readout)
+                plt.imshow(vel[:, :, vel.shape[-1] // 2].cpu())
+                plt.show()
             last_aff = aff
         last_dwn = dwn
         scl = py.prod(d00.shape) / py.prod(d0.shape)
@@ -192,7 +198,8 @@ def main_fit(options):
         if options.loss == 'mse':
             prm0, _ = estimate_noise(d0)
             prm1, _ = estimate_noise(d1)
-            sd = (prm0['sd'].log() + prm1['sd'].log()).exp()
+            sd = ((prm0['sd'].log() + prm1['sd'].log())/2).exp()
+            print(sd.item())
             loss = MSE(lam=1/(sd*sd), dim=dim)
         else:
             loss = NCC(dim=dim)
@@ -207,7 +214,11 @@ def main_fit(options):
     del d0, d1, d00, d11
 
     # upsample
+    plt.imshow(vel[:, :, vel.shape[-1] // 2].cpu())
+    plt.show()
     vel = upsample_vel(vel, aff, f0.affine, f0.shape[-dim:], readout)
+    plt.imshow(vel[:, :, vel.shape[-1] // 2].cpu())
+    plt.show()
 
     # save
     dir, base, ext = py.fileparts(options.pos_file)

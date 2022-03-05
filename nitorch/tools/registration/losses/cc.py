@@ -48,10 +48,12 @@ def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     fixed = fixed.div_(sigf)
 
     corr = mean(moving*fixed)
+    corr2 = 1 - corr.square()
 
     out = []
     if grad:
         g = 2 * corr * (moving * corr - fixed) / (n * sigm)
+        g /= corr2  # chain rule for log
         if mask is not None:
             g = g.mul_(mask)
         out.append(g)
@@ -59,12 +61,13 @@ def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     if hess:
         # approximate hessian
         h = 2 * (corr / sigm).square() / n
+        h /= corr2  # chain rule for log
         if mask is not None:
             h = h * mask
         out.append(h)
 
     # return stuff
-    corr = (1 - corr.square()).sum()
+    corr = corr2.log_().sum()
     out = [corr, *out]
     return tuple(out) if len(out) > 1 else out[0]
 

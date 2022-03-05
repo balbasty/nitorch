@@ -20,7 +20,7 @@ usage:
     -l, --loss {mse,ncc}             Matching term [mse]
     -m, --modulation {yes,no}        Jacobian modulation [yes]
     -d, --diffeo                     Use diffeomorphic model [no]
-    -p, --penalty VAL [{memb,bend}]  Penalty on bending energy [1 bend]
+    -p, --penalty VAL [{memb,bend}]  Penalty on bending energy [100 bend]
     -w, --downsample                 Estimate field at a lower dimension [1 mm]
     -n, --max-iter                   Maximum number of iterations [50]
     -t, --tolerance                  Tolerance for early stopping [1e-4]
@@ -88,7 +88,7 @@ parser_fit.add_option('modulation', ('-m', '--modulation'), nargs=1, default=Tru
 parser_fit.add_option('diffeo', ('-d', '--diffeo'), nargs=1, default=False,
                       convert=bool_or_str, action=cli.Actions.store_true,
                       help='Diffeomorphic transform')
-parser_fit.add_option('penalty', ('-p', '--penalty'), nargs='+', default=[1],
+parser_fit.add_option('penalty', ('-p', '--penalty'), nargs='+', default=[100],
                       convert=number_or_str(float), help='Penalty (value and type)')
 parser_fit.add_option('downsample', ('-w', '--downsample'), nargs='+', default=[8., 4., 1.],
                       convert=float, help='Downsampling voxel size')
