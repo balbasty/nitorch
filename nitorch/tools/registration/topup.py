@@ -147,7 +147,7 @@ class TopUpFlexiStep:
                     ih = ih.mul_(ijac)
                     ih0 = linalg.dot(neg, ih0).square_()
                     if self.model == 'svf':
-                        ih0.mul_(ijac)
+                        ih0.mul_(ijac).mul_(ijac)
                     ih += _div_1d(_div_1d(ih0))
                 del h0, ih0
 
@@ -174,7 +174,10 @@ class TopUpFlexiStep:
         # print objective
         if self.verbose and (self.verbose > 1 or not in_line_search):
             ll_prev = self.ll
-            line = '(topup) | '
+            if in_line_search:
+                line = '(search) | '
+            else:
+                line = '(topup)  | '
             line += f'{self.n_iter:03d} | {ll.item():12.6g} + {llv.item():12.6g} = {ll.item() + llv.item():12.6g}'
             if not in_line_search:
                 self.ll = ll.item() + llv.item()
@@ -248,7 +251,8 @@ def topup_apply(pos, neg, vel, dim=-1, model='smalldef', modulation=True):
 
 
 def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3,
-              model='smalldef', modulation=True, verbose=True, vel=None):
+              model='smalldef', penalty='bending', modulation=True,
+              max_iter=50, tolerance=1e-4, verbose=True, vel=None):
     """TOPUP correction with flexible objective function
 
     Parameters
@@ -267,6 +271,8 @@ def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3,
         Number of spatial dimensions
     model : {'smalldef', 'svf'}, default='smalldef'
         Deformation model
+    penalty : {'membrane', 'bending'}, default='bending'
+        Type of regularization
     modulation : bool, default=True
         Include Jacobian modulation
     verbose : bool, default=True
@@ -278,10 +284,6 @@ def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3,
     -------
     vel : (*spatial) tensor
         1D displacement (if 'smalldef') or velocity (if 'svf') field
-    pos : ([C], *spatial) tensor
-        Images with positive polarity, unwarped
-    neg : ([C], *spatial) tensor
-        Images with negative polarity, unwarped
 
     """
     dim = (dim - ndim) if dim >= 0 else dim
@@ -302,13 +304,15 @@ def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3,
     lam = lam / pos.shape[-ndim:].numel()
 
     def regulariser(v):
-        return spatial.regulariser(v, bending=1, dim=ndim,
+        return spatial.regulariser(v, dim=ndim, **{penalty: 1},
                                    factor=lam, voxel_size=vx, bound=BND)
 
     step = TopUpFlexiStep(pos, neg, loss, regulariser, verbose,
                           model=model, modulation=modulation)
-    optim = optm.FieldCG(factor=lam, voxel_size=vx, bending=1, bound=BND)
-    optim = optm.IterateOptim(optim, max_iter=50, tol=1e-4, ls='wolfe')
+    optim = optm.FieldCG(factor=lam, voxel_size=vx, **{penalty: 1},
+                         bound=BND, max_iter=4)
+    optim = optm.IterateOptim(optim, max_iter=max_iter, tol=tolerance,
+                              ls='wolfe', stop='diff')
 
     if vel is None:
         vel = pos.new_zeros(pos.shape[-ndim:])
@@ -316,22 +320,9 @@ def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3,
         vel = utils.movedim(vel, dim, -1)
 
     optim.iter(vel[None], step)
-
-    phi, iphi, jac, ijac = _exp_1d(vel, model=model)
-    pos, _ = _deform_1d(pos, phi)
-    neg, _ = _deform_1d(neg, iphi)
-    if modulation:
-        pos *= jac
-        neg *= ijac
-    del phi, iphi, jac, ijac
+    if verbose:
+        print('')
 
     vel = utils.movedim(vel, -1, dim)
-    pos = utils.movedim(pos, -1, dim)
-    neg = utils.movedim(neg, -1, dim)
-    if no_batch_pos:
-        pos = pos[0]
-    if no_batch_neg:
-        neg = neg[0]
-
-    return vel, pos, neg
+    return vel
 
