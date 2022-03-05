@@ -34,11 +34,11 @@ class OptimOptions(Option):
     max_iter_gn: int = 3                   # Number of prm+dist Gauss-Newton iterations
     max_iter_prm: int = 2                  # Number of prm Gauss-Newton iterations
     max_iter_dist: int = 1                 # Number of dist Gauss-Newton iterations
-    max_iter_cg: int = 2                   # Number of Conjugate Gradient iteration
+    max_iter_cg: int = 16                  # Number of Conjugate Gradient iteration
     max_iter_rls: int = 10                 # Number of Reweighted LS iterations
     tolerance: float = 1e-3                # Tolerance for early stopping
     tolerance_gn: float = 1e-5             # Tolerance for GN early stopping
-    tolerance_cg: float = 0                # Tolerance for CG early stopping (advised to be zero now that we use FMG)
+    tolerance_cg: float = 1e-3             # Tolerance for CG early stopping (advised to be zero now that we use FMG)
     tolerance_rls: float = 1e-5            # Tolerance for RLS early stopping
     nb_levels: int = 1                     # Number of resolution levels
 
@@ -75,7 +75,7 @@ class ESTATICSOptions(Option):
         if not self.regularization.norm:
             self.regularization.norm = ''
         self.regularization.norm = self.regularization.norm.lower()
-        if self.regularization.norm == 'none':
+        if self.regularization.norm.startswith('n'):
             self.regularization.norm = ''
         self.regularization.factor = py.ensure_list(self.regularization.factor, 2)
         return self

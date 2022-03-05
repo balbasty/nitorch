@@ -1,7 +1,7 @@
 from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
 from nitorch.tools.qmri import estatics, ESTATICSOptions, io as qio
-from nitorch.tools.qmri.relax.utils import smart_pull
+from nitorch.tools.qmri.relax.utils import smart_pull, pull1d
 from nitorch import io, spatial
 from nitorch.core import py
 import torch
@@ -12,7 +12,7 @@ import os
 def cli(args=None):
     f"""Command-line interface for `estatics`
 
-    {help[1]}
+    {help}
 
     """
 
@@ -20,7 +20,7 @@ def cli(args=None):
     try:
         _cli(args)
     except ParseError as e:
-        print(help[1])
+        print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
     # except Exception as e:
     #     print(f'[ERROR] {str(e)}', file=sys.stderr)
@@ -65,7 +65,7 @@ def _main(options):
     if isinstance(options.space, str) and  options.space != 'mean':
         for c, contrast in enumerate(options.contrast):
             if contrast.name == options.space:
-                greeq_opt.recon.space = c
+                estatics_opt.recon.space = c
                 break
     estatics_opt.backend.device = device
     estatics_opt.optim.nb_levels = options.levels
@@ -150,8 +150,6 @@ def _main(options):
             readout = c.readout
             grid_up, grid_down, jac_up, jac_down = b.exp2(
                 add_identity=True, jacobian=True)
-            jac_up = jac_up[..., readout, readout]
-            jac_down = jac_down[..., readout, readout]
             for j, e in enumerate(c):
                 blip = e.blip or (2*(j % 2) - 1)
                 grid_blip = grid_down if blip > 0 else grid_up  # inverse of
@@ -162,7 +160,7 @@ def _main(options):
                 obase = obase + '_unwrapped'
                 ofname = os.path.join(odir, obase + oext)
                 d = e.fdata(device=device)
-                d = smart_pull(d, grid_blip, bound='dft', extrapolate=True)
+                d, _ = pull1d(d, grid_blip, readout)
                 d *= jac_blip
                 io.savef(d, ofname, affine=e.affine, like=ifname)
                 del d

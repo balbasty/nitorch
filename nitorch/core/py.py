@@ -660,3 +660,43 @@ def move_elem(x, source, destination):
 
     """
     return [x[i] for i in move_to_permutation(len(x), source, destination)]
+
+
+def argmax(x):
+    """Return the index of the maximum element in an iterable
+
+    Parameters
+    ----------
+    x : sequence of numbers
+
+    Returns
+    -------
+    index : int
+    """
+    i = None
+    v = -float('inf')
+    for j, e in enumerate(x):
+        if e > v:
+            i = j
+            v = e
+    return i
+
+
+def argmin(x):
+    """Return the index of the minimum element in an iterable
+
+    Parameters
+    ----------
+    x : sequence of numbers
+
+    Returns
+    -------
+    index : int
+    """
+    i = None
+    v = float('inf')
+    for j, e in enumerate(x):
+        if e < v:
+            i = j
+            v = e
+    return i

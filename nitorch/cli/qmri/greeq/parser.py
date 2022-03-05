@@ -24,8 +24,7 @@ Acquisition options:
 
 Reconstruction options:
     --likelihood {[gauss],chi}          Noise model
-    --register {yes,[no],field}         Start by registrering contrasts
-    -u, --uncertainty                   Write Laplace uncertainty
+    --register {yes,[no],field}         Start by registering contrasts
     --recon-space [NAME]                Name of a contrast or 'mean' (default: mean)
     --regularization {no,tkh,tv,[jtv]}  Regularization type
     --lam [10]                          Regularization (shared by all maps)
@@ -42,9 +41,12 @@ Optimization options
     --tolerance [1e-4]                  Tolerance for early stopping
     --solver {[cg], fmg}                Linear solver 
 
+Output options
+    -o, --output-dir                    Output directory   [same as input files]
+    -u, --uncertainty                   Write Laplace uncertainty [no]
+
 General options:
     --cpu, --gpu                        Device to use [cpu]
-    -o, --output-dir                    Output directory [same as input files]
     -h, --help                          Display this help
     -v, --verbose [1]                   Level of verbosity [1=print], 2=plot
     --framerate                         Framerate of plotting function, in Hz [1]
@@ -56,7 +58,7 @@ References:
         https://arxiv.org/abs/2102.01604
     If you use the --meetup option, please cite:
         "Distortion correction in multi-echo MRI without field mapping or reverse encoding"
-        Balbastre et al., unpublished report (2021)
+        Balbastre et al., Proc. ISMRM (2022)
 """
 
 

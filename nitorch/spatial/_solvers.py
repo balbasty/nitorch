@@ -88,12 +88,12 @@ def estatics_matvec(hess, grad):
 
     """
     mm = torch.zeros_like(grad)
-    P = len(grad)
+    P = grad.shape[-1]
     diag = hess[..., :P - 1]
     slope = hess[..., P - 1:P]
     offdiag = hess[..., P:]
     mm[..., :-1] = diag * grad[..., :-1] + offdiag * grad[..., -1:]
-    mm[..., -1] = (offdiag * grad[..., :-1]).sum(-1) + slope * grad[..., -1:]
+    mm[..., -1:] = (offdiag * grad[..., :-1]).sum(-1, keepdim=True) + slope * grad[..., -1:]
     return mm
 
 
@@ -111,28 +111,28 @@ def estatics_solve(hess, grad):
 
     """
     # H = [[diag, vec], [vec.T, scal]]
-    P = len(grad)
-    diag = hess[..., :P - 1]
+    P = grad.shape[-1]
+    diag = hess[..., :P-1]
     vec = hess[..., P:]
-    scal = hess[..., P - 1]
+    scal = hess[..., P-1:P]
 
     # precompute stuff
     vec_norm = vec / diag
-    mini_inv = scal - (vec * vec_norm).sum(dim=-1)
+    mini_inv = scal - (vec * vec_norm).sum(dim=-1, keepdim=True)
     result = torch.empty_like(grad)
 
     # top left corner
-    result[..., :-1] = ((vec_norm * grad[..., :-1]).sum(dim=-1) / mini_inv) * vec_norm
+    result[..., :-1] = ((vec_norm * grad[..., :-1]).sum(dim=-1, keepdim=True) / mini_inv) * vec_norm
     result[..., :-1] += grad[..., :-1] / diag
 
     # top right corner:
-    result[..., :-1] -= vec_norm * grad[..., -1] / mini_inv
+    result[..., :-1] -= vec_norm * grad[..., -1:] / mini_inv
 
     # bottom left corner:
-    result[..., -1] = - (vec_norm * grad[..., :-1]).sum(dim=-1) / mini_inv
+    result[..., -1:] = - (vec_norm * grad[..., :-1]).sum(dim=-1, keepdim=True) / mini_inv
 
     # bottom right corner:
-    result[..., -1] += grad[..., -1] / mini_inv
+    result[..., -1:] += grad[..., -1:] / mini_inv
 
     return result
 
@@ -1178,7 +1178,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
                 gradient, weights, hessian, dim,
                 absolute, membrane, bending, factor,
                 voxel_size=voxel_size, bound=bound,
-                nb_iter=max_iter, tolerance=tolerance)
+                nb_iter=max_iter, tol=tolerance)
         elif optim == 'relax':
             return c_solvers.c_relax(
                 gradient, weights, hessian, dim,
@@ -1365,7 +1365,7 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
                 gradient, weights, hessian,
                 absolute, membrane, bending, lame, factor,
                 voxel_size=voxel_size, bound=bound,
-                nb_iter=max_iter, tolerance=tolerance)
+                nb_iter=max_iter, tol=tolerance)
         elif optim == 'relax':
             return c_solvers.c_relax_grid(
                 gradient, weights, hessian,

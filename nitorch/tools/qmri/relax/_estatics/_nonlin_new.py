@@ -35,6 +35,7 @@ def nonlin(data, opt=None):
 
 class _ESTATICS_nonlin:
 
+    IMAGE_BOUND = 'dft'
     DIST_BOUND = 'dct2'
 
     def __init__(self, opt):
@@ -136,7 +137,7 @@ class _ESTATICS_nonlin:
         self.print_header()
 
         # --- main loop ------------------------------------------------
-        self._fit()
+        self.loop()
 
         # --- prepare output -----------------------------------------------
         out = postproc(self.maps, self.data)
@@ -180,7 +181,7 @@ class _ESTATICS_nonlin:
         print(f'    - CG iterations:   {self.opt.optim.max_iter_cg}'
               f' (tolerance: {self.opt.optim.tolerance_cg})')
 
-    def _fit(self):
+    def loop(self):
         """Nested optimization loops"""
 
         rls = self.rls.reciprocal().sum() if self.rls is not None else 0
@@ -240,6 +241,24 @@ class _ESTATICS_nonlin:
                 nll0_rls = nll
                 nll = self.update_rls()
 
+    # ------------------------------------------------------------------
+    #                       UPDATE PARAMETERS MAPS
+    # ------------------------------------------------------------------
+
+    def momentum_prm(self, dat):
+        """Momentum of the parameter maps"""
+        return spatial.regulariser(dat, weights=self.rls, dim=3,
+                                   **self.lam_prm, voxel_size=self.voxel_size)
+
+    def solve_prm(self, hess, grad):
+        """Solve Newton step"""
+        hess = check_nans_(hess, warn='hessian')
+        hess = hessian_loaddiag_(hess, 1e-6, 1e-8)
+        delta = spatial.solve_field_fmg(hess, grad, self.rls, **self.lam_prm,
+                                        voxel_size=self.voxel_size)
+        delta = check_nans_(delta, warn='delta')
+        return delta
+
     def update_prm(self):
         """Update parameter maps (log-intercept and decay)"""
 
@@ -252,38 +271,27 @@ class _ESTATICS_nonlin:
         nll = 0
         for i, (contrast, intercept, distortion) in enumerate(iterator):
             # compute gradient
-            nll1, g1, h1 = derivatives_parameters(
-                contrast, distortion, intercept, self.maps.decay, self.opt)
+            nll1, g1, h1 = self.derivatives_prm(
+                contrast, distortion, intercept, self.maps.decay)
             # increment
             gind = [i, -1]
-            grad[gind, ...] += g1
-            hind = [2 * i, -1, 2 * i + 1]
-            hess[hind, ...] += h1
+            grad[gind] += g1
+            hind = [i, len(grad)-1, len(grad)+i]
+            hess[hind] += h1
             nll += nll1
+            del g1, h1
 
         # --- regularization ------------------------------------------
         reg = 0
         if self.opt.regularization.norm:
-            iterator = zip(self.maps, self.iter_rls(), self.lam)
-            for i, (map, weight, lam) in enumerate(iterator):
-                if not lam:
-                    continue
-                g1 = spatial.regulariser(map.volume[None], dim=3,
-                                         membrane=lam * self.lam_scale,
-                                         weights=weight,
-                                         voxel_size=self.voxel_size)[0]
-                reg1 = 0.5 * dot(map.volume, g1)
-                reg += reg1
-                grad[i] += g1
+            g1 = self.momentum_prm(self.data.volume)
+            reg = 0.5 * dot(g1, self.data.volume)
+            grad += g1
+            del g1
 
         # --- gauss-newton ---------------------------------------------
         # Computing the GN step involves solving H\g
-        hess = check_nans_(hess, warn='hessian')
-        hess = hessian_loaddiag_(hess, 1e-6, 1e-8)
-        lam_ = [l * self.lam_scale for l in self.lam]
-        vx = self.voxel_size
-        deltas = solve_parameters(hess, grad, self.rls, lam_, vx, self.opt)
-        deltas = check_nans_(deltas, warn='delta')
+        deltas = self.solve_prm(hess, grad)
 
         # No need for a line search (hopefully)
         for map, delta in zip(self.maps, deltas):
@@ -300,79 +308,95 @@ class _ESTATICS_nonlin:
         self.last_step = 'prm'
         return nll
 
+    # ------------------------------------------------------------------
+    #                       UPDATE DISTORTION MAPS
+    # ------------------------------------------------------------------
+
+    def momentum_dist(self, dat, vx, readout):
+        """Momentum of the distortion maps"""
+        lam = dict(self.lam_dist)
+        lam['factor'] = lam['factor'] * (vx[readout] ** 2)
+        return spatial.regulariser(dat[None], **self.lam_dist, dim=3,
+                                   bound=self.DIST_BOUND, voxel_size=vx)[0]
+
+    def solve_dist(self, hess, grad, vx, readout):
+        """Solve Newton step"""
+        hess = check_nans_(hess, warn='hessian')
+        hess = hessian_loaddiag_(hess, 1e-6, 1e-8)
+        lam = dict(self.lam_dist)
+        lam['factor'] = lam['factor'] * (vx[readout] ** 2)
+        delta = spatial.solve_field_fmg(hess, grad, **self.lam_dist, dim=3,
+                                        bound=self.DIST_BOUND, voxel_size=vx)
+        delta = check_nans_(delta, warn='delta')
+        return delta
+
     def update_dist(self):
         """Update distortions"""
 
         nll = 0
-        vreg = 0
+        reg = 0
         # --- loop over contrasts --------------------------------------
         iterator = zip(self.data, self.maps.intercepts, self.dist)
         for i, (contrast, intercept, distortion) in enumerate(iterator):
-            nll1, g, h = derivatives_distortion(
-                contrast, distortion, intercept, self.maps.decay, self.opt)
-            nll += nll1
+
+            momentum = lambda dat: self.momentum_dist(
+                dat, distortion.voxel_size, contrast.readout)
+            solve = lambda h, g: self.solve_dist(
+                h, g, distortion.voxel_size, contrast.readout)
+            vol = distortion.volume
+
+            # --- likelihood -------------------------------------------
+            nll1, g, h = self.derivatives_dist(
+                contrast, distortion, intercept, self.maps.decay)
 
             # --- regularization ---------------------------------------
-            def momentum(vol):
-                if contrast.readout is None:
-                    g1 = spatial.regulariser_grid(
-                        vol, **self.lam_dist, bound=self.DIST_BOUND,
-                        voxel_size=distortion.voxel_size)
-                else:
-                    distprm1 = dict(self.lam_dist)
-                    vx = distortion.voxel_size[contrast.readout]
-                    distprm1['factor'] *= vx ** 2
-                    g1 = spatial.regulariser(
-                        vol[None], **distprm1, dim=3, bound=self.DIST_BOUND,
-                        voxel_size=distortion.voxel_size)[0]
-                return g1
-
-            if contrast.readout is None:
-                vol = distortion.volume
-            else:
-                vol = distortion.volume[..., contrast.readout]
             g1 = momentum(vol)
-            vreg1 = 0.5 * vol.flatten().dot(g1.flatten())
-            vreg += vreg1
+            reg1 = 0.5 * dot(g1, vol)
             g += g1
             del g1
 
             # --- gauss-newton -----------------------------------------
-            h = check_nans_(h, warn='hessian (distortion)')
-            if contrast.readout is None:
-                h = core.utils.movedim(h, -1, -4)
-                h = hessian_loaddiag_(h, 1e-6, 1e-8)
-                h = core.utils.movedim(h, -4, -1)
-                delta = spatial.solve_grid_fmg(
-                    h, g, **self.lam_dist, bound=self.DIST_BOUND,
-                    voxel_size=distortion.voxel_size,
-                    verbose=self.opt.verbose - 1,
-                    nb_iter=self.opt.optim.max_iter_cg,
-                    tolerance=self.opt.optim.tolerance_cg)
-            else:
-                h = hessian_loaddiag_(h[None], 1e-6, 1e-8)[0]
-                distprm1 = dict(self.lam_dist)
-                vx = distortion.voxel_size[contrast.readout]
-                distprm1['factor'] *= vx ** 2
-                delta = spatial.solve_field_fmg(
-                    h[None], g[None], **distprm1, dim=3,
-                    bound=self.DIST_BOUND,
-                    voxel_size=distortion.voxel_size,
-                    nb_iter=self.opt.optim.max_iter_cg,
-                    tolerance=self.opt.optim.tolerance_cg,
-                    verbose=self.opt.verbose - 1)[0]
+            delta = solve(h, g)
+            del g, h
 
-            delta = check_nans_(delta, warn='delta (distortion)')
-            vol -= delta
+            # --- line search ------------------------------------------
+            armijo, armijo_prev = 1, 0
+            dd = momentum(delta)
+            dv = dot(dd, vol)
+            dd = dot(dd, delta)
+            success = False
+            for n_ls in range(12):
+                vol.sub_(delta, alpha=(armijo - armijo_prev))
+                armijo_prev = armijo
+                delta_reg1 = 0.5 * armijo * (armijo * dd - 2 * dv)
+                new_nll1 = self.derivatives_dist(
+                    contrast, distortion, intercept, self.maps.decay,
+                    do_grad=False)
+                if new_nll1 + delta_reg1 <= nll1:
+                    success = True
+                    break
+                armijo /= 2
+            if not success:
+                vol.add_(delta, alpha=armijo_prev)
+                new_nll1 = nll1
+                delta_reg1 = 0
+            nll += new_nll1
+            reg += reg1 + delta_reg1
+
+            del delta
 
         # --- track general improvement --------------------------------
         self.nll['obs_prev'] = self.nll['obs']
         self.nll['obs'] = nll
         self.nll['vreg_prev'] = self.nll['vreg']
-        self.nll['vreg'] = vreg
+        self.nll['vreg'] = reg
         nll = self.print_nll()
         self.last_step = 'dist'
         return nll
+
+    # ------------------------------------------------------------------
+    #                        UPDATE WEIGHT MAP
+    # ------------------------------------------------------------------
 
     def update_rls(self):
         if self.opt.regularization.norm not in ('tv', 'jtv'):

@@ -48,7 +48,7 @@ References:
         https://arxiv.org/abs/2005.14247
     If you use the --meetup option, please cite:
         "Distortion correction in multi-echo MRI without field mapping or reverse encoding"
-        Balbastre et al., unpublished report (2021)
+        Balbastre et al., Proc. ISMRM (2022)
     The original multi-contrast R2* log-fit was presented in: 
         "Estimating the apparent transverse relaxation time (R2*) from images 
          with different contrasts (ESTATICS) reduces motion artifacts"

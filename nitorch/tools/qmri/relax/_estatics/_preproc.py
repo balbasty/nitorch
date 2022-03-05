@@ -6,7 +6,7 @@ from nitorch.tools.qmri import io as qio
 from nitorch.core.optionals import try_import
 plt = try_import('matplotlib.pyplot', _as=True)
 from ._options import ESTATICSOptions
-from nitorch.tools.qmri.param import ParameterMap, GeodesicDeformation, SVFDeformation, DenseDeformation, DistortionMap
+from nitorch.tools.qmri.param import ParameterMap, SVFDistortion, DenseDistortion
 from ._param import ESTATICSParameterMaps
 
 
@@ -40,15 +40,6 @@ def postproc(maps, contrasts):
     return intercepts, decay
 
 
-def _argmax(x):
-    i = None
-    v = -float('inf')
-    for j, e in enumerate(x):
-        if e > v:
-            i = j
-    return i
-
-
 def preproc(data, opt):
     """Estimate noise variance + register + compute recon space + init maps
 
@@ -77,7 +68,7 @@ def preproc(data, opt):
     for contrast in data:
         shape = contrast.spatial_shape
         if contrast.readout is None:
-            contrast.readout = _argmax(shape)
+            contrast.readout = core.py.argmax(shape)
         if contrast.readout >= 0:
             contrast.readout = contrast.readout - (len(shape) + 1)
 
@@ -173,7 +164,7 @@ def preproc(data, opt):
         mean_shape = tuple(opt.recon.fov)
 
     # --- allocate maps ---
-    maps = ESTATICSParameterMaps(len(data), mean_shape, **backend, affine=mean_affine)
+    maps = ESTATICSParameterMaps([len(data)+1, *mean_shape], **backend, affine=mean_affine)
     for c in range(len(data)):
         maps.intercepts[c].volume.fill_(inter[c])
     maps.decay.volume.fill_(decay)
@@ -182,28 +173,17 @@ def preproc(data, opt):
     if opt.distortion.enable:
         dist = []
         for c, contrast in enumerate(data):
-            # dist1 = DistortionMap(contrast.spatial_shape,
-            #                       affine=contrast.affine,
-            #                       readout=contrast.readout,
-            #                       **backend)
             if opt.distortion.model == 'smalldef':
-                dist1 = DenseDeformation(contrast.spatial_shape,
-                                         affine=contrast.affine,
-                                         **backend)
+                dist1 = DenseDistortion(contrast.spatial_shape,
+                                        dim=contrast.readout,
+                                        affine=contrast.affine,
+                                        **backend)
             elif opt.distortion.model == 'svf':
-                dist1 = SVFDeformation(contrast.spatial_shape,
-                                       affine=contrast.affine,
-                                       steps=opt.distortion.steps,
-                                       **backend)
-            elif opt.distortion.model == 'shoot':
-                dist1 = GeodesicDeformation(contrast.spatial_shape,
-                                            affine=contrast.affine,
-                                            steps=opt.distortion.steps,
-                                            factor=opt.distortion.factor,
-                                            absolute=opt.distortion.absolute,
-                                            membrane=opt.distortion.membrane,
-                                            bending=opt.distortion.bending,
-                                            **backend)
+                dist1 = SVFDistortion(contrast.spatial_shape,
+                                      dim=contrast.readout,
+                                      affine=contrast.affine,
+                                      steps=opt.distortion.steps,
+                                      **backend)
             else:
                 dist1 = None
             dist.append(dist1)

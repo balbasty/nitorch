@@ -18,10 +18,6 @@ from nitorch.tools.qmri.param import ParameterMap
 from typing import Optional, Tuple
 import math
 
-_USE_CIMPL = True
-if _USE_CIMPL:
-    from nitorch._C.solve import c_fmg, c_pcg, c_regulariser
-
 # import time
 Tensor = torch.Tensor
 
@@ -200,6 +196,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         hess = torch.empty((nb_hes,) + shape, **backend)
     
         ll_rls = []
+        ll_gn = []
         ll_max = float('inf')
 
         max_iter_rls = max(opt.optim.max_iter_rls // level, 1)
@@ -208,7 +205,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
             printer.rls = n_iter_rls
 
             # --- Gauss Newton loop ---
-            ll_gn = []
             for n_iter_gn in range(opt.optim.max_iter_gn):
                 # start = time.time()
                 printer.gn = n_iter_gn
@@ -246,14 +242,9 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 # start = time.time()
                 reg = 0.
                 if opt.penalty.norm:
-                    if _USE_CIMPL:
-                        g = c_regulariser(maps.volume[None], weight=rls,
-                                          voxel_size=vx, membrane=1,
-                                          factor=lam * vol)[0]
-                    else:
-                        g = spatial.regulariser(maps.volume, weights=rls, dim=3,
-                                                voxel_size=vx, membrane=1,
-                                                factor=lam * vol)
+                    g = spatial.regulariser(maps.volume, weights=rls, dim=3,
+                                            voxel_size=vx, membrane=1,
+                                            factor=lam * vol)
                     grad += g
                     reg = 0.5 * dot(maps.volume, g)
                     del g
@@ -265,31 +256,17 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 grad = check_nans_(grad, warn='gradient')
                 hess = check_nans_(hess, warn='hessian')
                 if opt.penalty.norm:
-                    hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)
+                    hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)  # 1e-5 1e-8
                     if opt.optim.solver == 'fmg':
-                        if _USE_CIMPL:
-                            deltas = c_fmg(
-                                hess[None], grad[None], weight=rls,
-                                factor=lam * vol, membrane=1,
-                                voxel_size=vx, nb_iter=2)[0]
-                        else:
-                            deltas = spatial.solve_field_fmg(
+                        deltas = spatial.solve_field_fmg(
                                 hess, grad, rls, factor=lam * vol, membrane=1,
-                                voxel_size=vx, verbose=False,
-                                nb_iter=2, tolerance=0)
+                                voxel_size=vx, nb_iter=2)
                     else:
-                        if _USE_CIMPL:
-                            deltas = c_pcg(
-                                grad[None], hessian=hess, weight=rls,
-                                factor=lam * vol, membrane=1,
-                                voxel_size=vx, nb_iter=opt.optim.max_iter_cg,
-                                tol=opt.optim.tolerance_cg)[0]
-                        else:
-                            deltas = spatial.solve_field(
-                                hess, grad, rls, factor=lam * vol, membrane=1,
-                                voxel_size=vx, verbose=max(0, opt.verbose - 1),
-                                optim='cg', max_iter=opt.optim.max_iter_cg,
-                                tolerance=opt.optim.tolerance_cg * ll_scl, stop='diff')
+                        deltas = spatial.solve_field(
+                            hess, grad, rls, factor=lam * vol, membrane=1,
+                            voxel_size=vx, verbose=max(0, opt.verbose - 1),
+                            optim='cg', max_iter=opt.optim.max_iter_cg,
+                            tolerance=opt.optim.tolerance_cg, stop='diff')
                 else:
                     hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
                     deltas = sym_solve(hess, grad)
@@ -326,8 +303,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 # (we are late by one full RLS iteration when computing the 
                 #  gain but we save some computations)
                 ll = ll_gn[-1]
-                ll_prev = ll_rls[-1][-1] if ll_rls else ll_max
-                ll_rls.append(ll_gn)
+                ll_prev = ll_rls[-1] if ll_rls else ll_max
+                ll_rls.append(ll)
                 gain = ll_prev - ll
                 if abs(gain) < opt.optim.tolerance * ll_scl:
                     # print(f'RLS converged ({gain:7.2g})')
