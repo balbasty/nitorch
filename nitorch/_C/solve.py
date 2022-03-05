@@ -60,11 +60,12 @@ if COMPILED_BACKEND == 'C':
         else:
             pad_dim = min(pad_dim, input.dim() - hessian.dim())
             while hessian.dim() < input.dim(): hessian = hessian.unsqueeze(0)
+        C = input.shape[1]
         voxel_size = vector_to_list(voxel_size, float) or [1.]
-        absolute = vector_to_list(absolute, float) or [0.]
-        membrane = vector_to_list(membrane, float) or [0.]
-        bending = vector_to_list(bending, float) or [0.]
-        factor = vector_to_list(factor, float) or [1.]
+        absolute = vector_to_list(absolute, float, C) or ([0.]*C)
+        membrane = vector_to_list(membrane, float, C) or ([0.]*C)
+        bending = vector_to_list(bending, float, C) or ([0.]*C)
+        factor = vector_to_list(factor, float, C) or ([1.]*C)
         absolute = [a*f for a, f in zip(absolute, factor)]
         membrane = [m*f for m, f in zip(membrane, factor)]
         bending = [b*f for b, f in zip(bending, factor)]
@@ -182,11 +183,12 @@ if COMPILED_BACKEND == 'C':
         else:
             pad_dim = min(pad_dim, gradient.dim() - hessian.dim())
             while hessian.dim() < gradient.dim(): hessian = hessian.unsqueeze(0)
+        C = gradient.shape[1]
         voxel_size = vector_to_list(voxel_size, float) or [1.]
-        absolute = vector_to_list(absolute, float) or [0.]
-        membrane = vector_to_list(membrane, float) or [0.]
-        bending = vector_to_list(bending, float) or [0.]
-        factor = vector_to_list(factor, float) or [1.]
+        absolute = vector_to_list(absolute, float, C) or ([0.]*C)
+        membrane = vector_to_list(membrane, float, C) or ([0.]*C)
+        bending = vector_to_list(bending, float, C) or ([0.]*C)
+        factor = vector_to_list(factor, float, C) or ([1.]*C)
         absolute = [a*f for a, f in zip(absolute, factor)]
         membrane = [m*f for m, f in zip(membrane, factor)]
         bending = [b*f for b, f in zip(bending, factor)]
@@ -302,11 +304,12 @@ if COMPILED_BACKEND == 'C':
         else:
             pad_dim = min(pad_dim, gradient.dim() - hessian.dim())
             while hessian.dim() < gradient.dim(): hessian = hessian.unsqueeze(0)
+        C = gradient.shape[1]
         voxel_size = vector_to_list(voxel_size, float) or [1.]
-        absolute = vector_to_list(absolute, float) or [0.]
-        membrane = vector_to_list(membrane, float) or [0.]
-        bending = vector_to_list(bending, float) or [0.]
-        factor = vector_to_list(factor, float) or [1.]
+        absolute = vector_to_list(absolute, float, C) or ([0.]*C)
+        membrane = vector_to_list(membrane, float, C) or ([0.]*C)
+        bending = vector_to_list(bending, float, C) or ([0.]*C)
+        factor = vector_to_list(factor, float, C) or ([1.]*C)
         absolute = [a*f for a, f in zip(absolute, factor)]
         membrane = [m*f for m, f in zip(membrane, factor)]
         bending = [b*f for b, f in zip(bending, factor)]
@@ -422,11 +425,12 @@ if COMPILED_BACKEND == 'C':
         else:
             pad_dim = min(pad_dim, gradient.dim() - hessian.dim())
             while hessian.dim() < gradient.dim(): hessian = hessian.unsqueeze(0)
+        C = gradient.shape[1]
         voxel_size = vector_to_list(voxel_size, float) or [1.]
-        absolute = vector_to_list(absolute, float) or [0.]
-        membrane = vector_to_list(membrane, float) or [0.]
-        bending = vector_to_list(bending, float) or [0.]
-        factor = vector_to_list(factor, float) or [1.]
+        absolute = vector_to_list(absolute, float, C) or ([0.]*C)
+        membrane = vector_to_list(membrane, float, C) or ([0.]*C)
+        bending = vector_to_list(bending, float, C) or ([0.]*C)
+        factor = vector_to_list(factor, float, C) or ([1.]*C)
         absolute = [a*f for a, f in zip(absolute, factor)]
         membrane = [m*f for m, f in zip(membrane, factor)]
         bending = [b*f for b, f in zip(bending, factor)]
@@ -549,11 +553,12 @@ if COMPILED_BACKEND == 'C':
         else:
             pad_dim = min(pad_dim, gradient.dim() - hessian.dim())
             while hessian.dim() < gradient.dim(): hessian = hessian.unsqueeze(0)
+        C = gradient.shape[1]
         voxel_size = vector_to_list(voxel_size, float) or [1.]
-        absolute = vector_to_list(absolute, float) or [0.]
-        membrane = vector_to_list(membrane, float) or [0.]
-        bending = vector_to_list(bending, float) or [0.]
-        factor = vector_to_list(factor, float) or [1.]
+        absolute = vector_to_list(absolute, float, C) or ([0.]*C)
+        membrane = vector_to_list(membrane, float, C) or ([0.]*C)
+        bending = vector_to_list(bending, float, C) or ([0.]*C)
+        factor = vector_to_list(factor, float, C) or ([1.]*C)
         absolute = [a*f for a, f in zip(absolute, factor)]
         membrane = [m*f for m, f in zip(membrane, factor)]
         bending = [b*f for b, f in zip(bending, factor)]

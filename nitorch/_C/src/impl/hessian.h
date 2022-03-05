@@ -319,10 +319,14 @@ struct HessianUtils<HessianType::ESTATICS, MaxC>: HessianCommonEst<MaxC>
       oh -= o[c] * tmp;
       ov += v[c] * tmp;
     }
-    tmp = v[C-1];
+    oh = 1. / oh; // oh = 1/mini_inv, ov = sum(vec_norm * grad)
+    //tmp = v[C-1];
+    //for (int32_t c = 0; c < C-1; ++c)
+    //  v[c] = (o[c] * (ov - tmp) + v[c]) / (oh * h[c]);
+    //v[C-1] = (tmp - ov) / oh;
+    v[C-1] = tmp = (v[C-1] - ov) * oh;
     for (int32_t c = 0; c < C-1; ++c)
-      v[c] = (o[c] * (ov - tmp) + v[c]) / (oh * h[c]);
-    v[C-1] = (tmp - ov) / oh;
+      v[c] = (v[c] - tmp * o[c]) / h[c];
   }
 };
 
