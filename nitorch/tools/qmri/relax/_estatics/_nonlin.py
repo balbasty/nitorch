@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import torch
 from nitorch import core, spatial
 from ._options import ESTATICSOptions
@@ -23,11 +24,13 @@ def _get_level(level, aff0, shape0):
 
 def _resize(maps, rls, aff, shape):
     """Resize (prolong) current maps to a target resolution"""
-    for map in maps:
-        map.volume = spatial.resize(map.volume[None, None, ...],
-                                    shape=shape)[0, 0]
-        map.affine = aff
+    maps.volume = spatial.resize(maps.volume[None], shape=shape)[0]
     maps.affine = aff
+    # for map in maps:
+    #     map.volume = spatial.resize(map.volume[None, None, ...],
+    #                                 shape=shape)[0, 0]
+    #     map.affine = aff
+    # maps.affine = aff
     if rls is not None:
         if rls.dim() == len(shape):
             rls = spatial.resize(rls[None, None], shape=shape)[0, 0]
@@ -36,13 +39,15 @@ def _resize(maps, rls, aff, shape):
     return maps, rls
 
 
-def nonlin(data, opt=None):
+def nonlin(data, dist=None, opt=None):
     """Fit the ESTATICS model to multi-echo Gradient-Echo data.
 
     Parameters
     ----------
     data : sequence[GradientEchoMulti]
         Observed GRE data.
+    dist : sequence[Optional[ParameterizedDistortion]], optional
+        Pre-computed distortion fields
     opt : Options, optional
         Algorithm options.
 
@@ -52,7 +57,7 @@ def nonlin(data, opt=None):
         Echo series extrapolated to TE=0
     decay : estatics.ParameterMap
         R2* decay map
-    distortions : sequence[ParameterizedDeformation], if opt.distortion.enable
+    distortions : sequence[ParameterizedDistortion], if opt.distortion.enable
         B0-induced distortion fields
 
     """
@@ -73,8 +78,7 @@ def nonlin(data, opt=None):
         print(f'    - contrast {i:2d}: [' + ', '.join([f'{te*1e3:.1f}' for te in contrast.te]) + '] ms')
 
     # --- estimate noise / register / initialize maps ------------------
-    data, maps, dist = preproc(data, opt)
-    vx = spatial.voxel_size(maps.affine)
+    data, maps, dist = preproc(data, dist, opt)
     nb_contrasts = len(maps) - 1
 
     if opt.distortion.enable:
@@ -167,6 +171,8 @@ def nonlin(data, opt=None):
         if opt.distortion.enable:
             pstr += f'+ {"dist":^12s} '
         pstr += f'= {"crit":^12s}'
+        if opt.optim.nb_levels > 1:
+            pstr = f'{"lvl":3s} | ' + pstr
         print('\n' + pstr)
         print('-' * len(pstr))
 
@@ -273,6 +279,8 @@ def nonlin(data, opt=None):
                             pstr += f'+ {vreg:12.6g} '
                         pstr += f'= {ll_tmp:12.6g} | '
                         pstr += f'{evol}'
+                        if opt.optim.nb_levels > 1:
+                            pstr = f'{level:3d} | ' + pstr
                         print(pstr)
 
                     # --- gauss-newton -------------------------------------
@@ -359,6 +367,8 @@ def nonlin(data, opt=None):
                                 pstr += f'+ {vreg:12.6g} '
                             pstr += f'= {ll_tmp:12.6g} | gain = {gain/ll_scl:7.2g} | '
                             pstr += f'{evol}'
+                            if opt.optim.nb_levels > 1:
+                                pstr = f'{level:3d} | ' + pstr
                             print(pstr)
                             if opt.plot:
                                 _show_maps(maps, dist, data)
@@ -458,6 +468,8 @@ def nonlin(data, opt=None):
                         pstr += f'+ {vreg:12.6g} '
                         pstr += f'= {ll_tmp:12.6g} | gain = {gain/ll_scl:7.2g} | '
                         pstr += f'{evol}'
+                        if opt.optim.nb_levels > 1:
+                            pstr = f'{level:3d} | ' + pstr
                         print(pstr)
                         if opt.plot:
                             _show_maps(maps, dist, data)
@@ -482,6 +494,8 @@ def nonlin(data, opt=None):
                         pstr += f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} '
                         pstr += f'= {ll:12.6g} | '
                     pstr += f'gain = {gain/ll_scl:7.2g}'
+                    if opt.optim.nb_levels > 1:
+                        pstr = f'{level:3d} | ' + pstr
                     print(pstr)
                     if opt.plot:
                         _show_maps(maps, dist, data)
@@ -770,8 +784,9 @@ def derivatives_distortion(contrast, distortion, intercept, decay, opt,
                 fit /= jac_blip
             g1 = div1d(res * fit, readout)
             g1.addcmul_(res, gfit)
-            h1 = div1d(div1d(fit * fit, readout), readout)
-            h1.addcmul_(gfit, gfit)
+            # h1 = div1d(div1d(fit * fit, readout), readout)
+            # h1.addcmul_(gfit, gfit)
+            h1 = gfit.square()
 
             # propagate backward
             if isinstance(distortion, SVFDistortion):
@@ -813,7 +828,7 @@ def _show_maps(maps, dist, data):
             vol = dst.volume
             plt.subplot(1 + has_dist, ncol, i+1+ncol)
             vol = vol[:, :, dst.shape[-2]//2]
-            plt.imshow(vol.cpu())
+            plt.imshow(vol.cpu(), vmin=-2, vmax=2)
             plt.axis('off')
             plt.colorbar()
     plt.show()

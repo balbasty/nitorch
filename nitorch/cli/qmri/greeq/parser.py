@@ -121,6 +121,7 @@ parser.add_option('uncertainty', ('-u', '--uncertainty'), nargs='?', default=Fal
                   convert=bool_or_str, action=cli.Actions.store_true)
 parser.add_option('space', '--recon-space', nargs=1, default='mean',
                   convert=number_or_str(int))
+parser.add_option('crop', '--crop-space', nargs=1, default=0, convert=float)
 parser.add_option('regularization', '--regularization', nargs=1, default='jtv',
                   validation=cli.Validations.choice(['no', 'tkh', 'tv', 'jtv']))
 parser.add_option('meetup', '--meetup', nargs='?', default=False,

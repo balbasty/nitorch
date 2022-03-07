@@ -40,19 +40,20 @@ def postproc(maps, contrasts):
     return intercepts, decay
 
 
-def preproc(data, opt):
+def preproc(data, dist, opt):
     """Estimate noise variance + register + compute recon space + init maps
 
     Parameters
     ----------
     data : sequence[GradientEchoMulti]
+    dist : sequence[Optional[ParameterizedDistortion]]
     opt : Options
 
     Returns
     -------
     data : sequence[GradientEchoMulti]
     maps : ParametersMaps
-    dist : sequence[ParameterizedDeformation]
+    dist : sequence[ParameterizedDistortion]
 
     """
 
@@ -170,25 +171,30 @@ def preproc(data, opt):
     maps.decay.volume.fill_(decay)
 
     # --- allocate distortions ---
+    dist = dist or [None]
+    dist = core.py.make_list(dist, len(data))
     if opt.distortion.enable:
-        dist = []
         for c, contrast in enumerate(data):
-            if opt.distortion.model == 'smalldef':
-                dist1 = DenseDistortion(contrast.spatial_shape,
-                                        dim=contrast.readout,
-                                        affine=contrast.affine,
-                                        **backend)
-            elif opt.distortion.model == 'svf':
-                dist1 = SVFDistortion(contrast.spatial_shape,
-                                      dim=contrast.readout,
-                                      affine=contrast.affine,
-                                      steps=opt.distortion.steps,
-                                      **backend)
+            if dist[c] is None:
+                if opt.distortion.model == 'smalldef':
+                    dist[c] = DenseDistortion(contrast.spatial_shape,
+                                              dim=contrast.readout,
+                                              affine=contrast.affine,
+                                              **backend)
+                elif opt.distortion.model == 'svf':
+                    dist[c] = SVFDistortion(contrast.spatial_shape,
+                                            dim=contrast.readout,
+                                            affine=contrast.affine,
+                                            steps=opt.distortion.steps,
+                                            **backend)
+                else:
+                    raise ValueError('Unknown distortion model',
+                                     opt.distortion.model)
             else:
-                dist1 = None
-            dist.append(dist1)
-    else:
-        dist = [None] * len(data)
+                dist[c].displacement_dim = contrast.readout
+                dist[c].affine = contrast.affine
+                if opt.distortion.model == 'svf':
+                    dist[c].steps = opt.distortion.steps
 
     return data, maps, dist
 

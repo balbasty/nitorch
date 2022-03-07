@@ -2,6 +2,7 @@ from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
 from nitorch.tools.qmri import estatics, ESTATICSOptions, io as qio
 from nitorch.tools.qmri.relax.utils import smart_pull, pull1d
+from nitorch.tools.qmri.param import DenseDistortion
 from nitorch import io, spatial
 from nitorch.core import py
 import torch
@@ -79,6 +80,7 @@ def _main(options):
 
     # prepare files
     contrasts = []
+    distortion = []
     for i, c in enumerate(options.contrast):
 
         # read meta-parameters
@@ -115,8 +117,23 @@ def _main(options):
                     readout = j - 3
             contrasts[-1].readout = readout
 
+        if c.b0:
+            bw = c.bandwidth
+            b0, *unit = c.b0
+            unit = unit[-1] if unit else 'vx'
+            b0 = io.loadf(b0, device=device)
+            if unit.lower() == 'hz':
+                if not bw:
+                    raise ValueError('Bandwidth required to convert fieldmap'
+                                     'form Hz to voxel')
+                b0 /= bw
+            b0 = DenseDistortion(b0)
+            distortion.append(b0)
+        else:
+            distortion.append(None)
+
     # run algorithm
-    [te0, r2s, *b0] = estatics(contrasts, estatics_opt)
+    [te0, r2s, *b0] = estatics(contrasts, distortion, opt=estatics_opt)
 
     # write results
 

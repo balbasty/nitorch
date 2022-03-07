@@ -176,8 +176,9 @@ def preproc(data, transmit=None, receive=None, opt=None):
         #         plt.axis('off')
         #     plt.show()
         for contrast, aff in zip(data + transmit + receive, affines):
-            aff, contrast.affine = core.utils.to_max_device(aff, contrast.affine)
-            contrast.affine = torch.matmul(aff.inverse(), contrast.affine)
+            if contrast is not None:
+                aff, contrast.affine = core.utils.to_max_device(aff, contrast.affine)
+                contrast.affine = torch.matmul(aff.inverse(), contrast.affine)
 
     # --- compute recon space ---
     affines = [contrast.affine for contrast in data]

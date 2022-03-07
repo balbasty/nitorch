@@ -356,12 +356,77 @@ class DistortionField(_ParameterMap):
     spatial_dim = 3
 
     def __init__(self, input=None, fill=None, dtype=None, device=None,
-                dim=-1, bound='dct2', **kwargs):
+                dim=-1, bound='dct2', unit='vx', **kwargs):
         if isinstance(input, (list, tuple)):
             input = list(input)
         super().__init__(input, fill, dtype, device, **kwargs)
         self.displacement_dim = dim
         self.bound = bound
+        if unit[0].lower() not in 'vh':
+            raise ValueError('Unit must be "vx" or "hz" but got', unit)
+        self.unit = unit.lower()
+
+    def fdata(self, *args, unit=None, bandwidth=None, **kwargs):
+        if unit is not None:
+            unit = unit.lower()
+        if not unit or not bandwidth or unit == self.unit:
+            return super().fdata(*args, **kwargs)
+        else:
+            kwargs['copy'] = True
+            return self._convert_to_(super().fdata(*args, **kwargs),
+                                     unit, bandwidth)
+
+    def _convert_from_(self, other, unit=None, bandwidth=None):
+        if unit is not None:
+            unit = unit.lower()
+        if not unit or not bandwidth or unit == self.unit:
+            return other
+        if unit[0] == 'v':
+            # convert from vx to hz
+            other *= bandwidth
+        elif unit[0] == 'h':
+            # convert from hz to vx
+            other /= bandwidth
+        else:
+            raise ValueError('Unknown unit', unit)
+        return other
+
+    def _convert_from(self, other, unit=None, bandwidth=None):
+        return self._convert_from_(other.clone(), unit, bandwidth)
+
+    def _convert_to_(self, other, unit=None, bandwidth=None):
+        if unit is not None:
+            unit = unit.lower()
+        if not unit or not bandwidth or unit == self.unit:
+            return other
+        if unit[0] == 'v':
+            # convert from hz to vx
+            other /= bandwidth
+        elif unit[0] == 'h':
+            # convert from vx to hz
+            other *= bandwidth
+        else:
+            raise ValueError('Unknown unit', unit)
+        return other
+
+    def _convert_to(self, other, unit=None, bandwidth=None):
+        return self._convert_to_(other.clone(), unit, bandwidth)
+
+    def add_(self, other, alpha=None, unit=None, bandwidth=None):
+        other = self._convert_from(other, unit, bandwidth)
+        if torch.is_tensor(self.volume):
+            self.volume.add_(other, alpha=alpha)
+        else:
+            vol = self.fdata(dtype=other.dtype, device=other.device)
+            vol.add_(other, alpha)
+            self.volume.set_fdata(vol)
+
+    def sub_(self, other, alpha=None, unit=None, bandwidth=None):
+        if alpha is None:
+            alpha = -1
+        else:
+            alpha *= -1
+        return self.add_(other, alpha, unit, bandwidth)
 
     @property
     def spatial_shape(self):

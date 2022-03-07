@@ -123,7 +123,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     lam = core.utils.make_vector(lam, 3 + has_mt, **backend)  # PD, R1, R2*, [MT]
 
     # --- initialize weights (RLS) ---
-    if str(opt.penalty.norm).lower() == 'none' or all(lam == 0):
+    if str(opt.penalty.norm).lower().startswith('no') or all(lam == 0):
         opt.penalty.norm = ''
     opt.penalty.norm = opt.penalty.norm.lower()
     mean_shape = maps[0].shape
@@ -256,11 +256,11 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 grad = check_nans_(grad, warn='gradient')
                 hess = check_nans_(hess, warn='hessian')
                 if opt.penalty.norm:
-                    hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)  # 1e-5 1e-8
+                    # hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)  # 1e-5 1e-8
                     if opt.optim.solver == 'fmg':
                         deltas = spatial.solve_field_fmg(
-                                hess, grad, rls, factor=lam * vol, membrane=1,
-                                voxel_size=vx, nb_iter=2)
+                                hess, grad, rls, factor=lam * vol,
+                                membrane=1, voxel_size=vx, nb_iter=2)
                     else:
                         deltas = spatial.solve_field(
                             hess, grad, rls, factor=lam * vol, membrane=1,
@@ -268,8 +268,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                             optim='cg', max_iter=opt.optim.max_iter_cg,
                             tolerance=opt.optim.tolerance_cg, stop='diff')
                 else:
-                    hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
-                    deltas = sym_solve(hess, grad)
+                    # hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
+                    deltas = spatial.solve_field_closedform(hess, grad)
                 deltas = check_nans_(deltas, warn='deltas')
                 # duration = time.time() - start
                 # print('solve', duration)
@@ -707,7 +707,7 @@ def derivatives_parameters(contrast, maps, receive, transmit, opt, do_grad=True)
     has_mt = bool(hasattr(maps, 'mt') and getattr(contrast, 'mt', False))
     if not has_mt:
         maps = maps.drop_mt()
-    pd, r1, r2s, mt, b1p, b1m \
+    pd, r1, r2s, mt, b1m, b1p \
         = pull_parameters(maps, transmit, receive, contrast.affine, obs_shape,
                           **backend)
 

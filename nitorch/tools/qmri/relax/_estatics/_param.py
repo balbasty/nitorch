@@ -24,12 +24,25 @@ class ESTATICSParameterMaps(MultiParameterMaps):
     def __init__(self, *args, **kwargs):
         self._estatics_volume = []
         self._estatics_affine = None
-        self.intercepts = []
-        self.decay = None
+        # self.intercepts = []
+        # self.decay = None
         super().__init__(*args, **kwargs)
-        self.intercepts = [ParameterMap(self.volume[i], affine=self.affine)
-                           for i in range(len(self)-1)]
-        self.decay = ParameterMap(self.volume[-1], affine=self.affine)
+        # self.intercepts = [ParameterMap(self.volume[i], affine=self.affine)
+        #                    for i in range(len(self)-1)]
+        # self.decay = ParameterMap(self.volume[-1], affine=self.affine)
+
+    @property
+    def intercepts(self):
+        if self.volume is None:
+            return []
+        return [ParameterMap(self.volume[i], affine=self.affine)
+                for i in range(len(self)-1)]
+
+    @property
+    def decay(self):
+        if self.volume is None:
+            return None
+        return ParameterMap(self.volume[-1], affine=self.affine)
 
     @property
     def volume(self):

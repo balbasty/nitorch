@@ -67,6 +67,7 @@ def _main(options):
             if contrast.name == options.space:
                 greeq_opt.recon.space = c
                 break
+    greeq_opt.recon.crop = options.crop
     greeq_opt.backend.device = device
     greeq_opt.uncertainty = options.uncertainty
     greeq_opt.optim.nb_levels = options.levels
@@ -146,7 +147,7 @@ def _main(options):
         if c.transmit:
             files = c.transmit
             meta = {}
-            if files[-1] in ('%', 'pct', 'p.u.', 'a.u'):
+            if files[-1] in ('%', 'pct', 'p.u.', 'a.u.'):
                 *files, unit = files
                 meta['unit'] = unit
             files, *mag = files
@@ -157,7 +158,7 @@ def _main(options):
         if c.receive:
             files = c.receive
             meta = {}
-            if files[-1] in ('%', 'pct', 'p.u.', 'a.u'):
+            if files[-1] in ('%', 'pct', 'p.u.', 'a.u.'):
                 *files, unit = files
                 meta['unit'] = unit
             files, *mag = files
@@ -194,7 +195,7 @@ def _main(options):
     if options.receive:
         files = options.receive
         meta = {}
-        if files[-1] in ('%', 'pct', 'p.u.', 'a.u'):
+        if files[-1] in ('%', 'pct', 'p.u.', 'a.u.'):
             *files, unit = files
             meta['unit'] = unit
         files, *mag = files
@@ -207,7 +208,7 @@ def _main(options):
     if options.b0:
         files = options.b0
         meta = {}
-        if files[-1] in ('%', 'pct', 'p.u.', 'a.u'):
+        if files[-1] in ('%', 'pct', 'p.u.', 'a.u.'):
             *files, unit = files
             meta['unit'] = unit
         files, *mag = files

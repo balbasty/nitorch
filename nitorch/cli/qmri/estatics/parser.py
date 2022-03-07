@@ -11,13 +11,13 @@ usage:
     nitorch estatics [options] -c [NAME] [options] -e *FILE
 
 Acquisition options:
-    -c,  --contrast [NAME]           (default: contrasts are named by order)
-    -te, --echo-time TE [UNIT]       (default: try to read from file)
-    -sp, --echo-spacing DELTA [UNIT] (default: unused)      
-    -bw, --bandwidth [BW] [UNIT]     (default: unused)
-    -rd, --readout {lr, is, ap}      (default: largest dim)
-    -e,  --echo *FILE                Path to individual echoes
-   [-b0, --b0-field FIELD [MAG] [UNIT] B0 fieldmap] NOT IMPLEMENTED YET
+    -c,  --contrast [NAME]               (default: contrasts are named by order)
+    -te, --echo-time TE {[s],ms}         (default: try to read from file)
+    -sp, --echo-spacing DELTA {[s],ms}   (default: unused)      
+    -bw, --bandwidth [BW] [UNIT]         (default: unused)
+    -rd, --readout {lr,is,ap}            (default: largest dim)
+    -e,  --echo *FILE                    Path to individual echoes
+    -b0, --distortion FIELD {[vox],hz}   B0 fieldmap 
 
 Reconstruction options:
     --likelihood {gauss,chi}         Noise model (default: gauss)
@@ -97,7 +97,7 @@ contrast.add_option('te', ('-te', '--echo-time'), nargs='+',
 contrast.add_option('readout', ('-rd', '--readout'), nargs=1,
                     help='Readout direction')
 contrast.add_option('echoes', ('-e', '--echo'), nargs='+', help='Echoes')
-contrast.add_option('b0', ('-b0', '--b0-field'), nargs='+3', help='B0 field', default=[])
+contrast.add_option('b0', ('-b0', '--distortion'), nargs='+3', help='B0 field', default=[])
 parser.add_group(contrast)
 
 # recon options
