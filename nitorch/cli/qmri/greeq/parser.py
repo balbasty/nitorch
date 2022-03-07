@@ -111,7 +111,7 @@ parser.add_option('receive', ('-rf', '--receive'), nargs='+3', help='Receive fie
 parser.add_option('b0', ('-b0', '--b0-field'), nargs='+3', help='B0 field')
 
 # recon options
-parser.add_option('likelihood', '--likelihood', nargs=1, default='chi',
+parser.add_option('likelihood', '--likelihood', nargs=1, default='gauss',
                   validation=cli.Validations.choice(['chi', 'gauss']))
 parser.add_option('register', '--register', nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
@@ -134,8 +134,7 @@ parser.add_option('lam_meetup', '--lam-meetup', nargs=1, default=1e5, convert=fl
 parser.add_option('levels', '--nb-levels', nargs=1, default=1, convert=int)
 parser.add_option('iter', '--max-iter', nargs=1, default=10, convert=int)
 parser.add_option('tol', '--tolerance', nargs=1, default=1e-4, convert=float)
-parser.add_option('solver', '--solver', nargs=1, default='cg',
-                  validation=cli.Validations.choice(['fmg', 'cg']))
+parser.add_option('solver', '--solver', nargs='+', default=['cg'])
 
 # generic options
 parser.add_option('verbose', ('-v', '--verbose'),

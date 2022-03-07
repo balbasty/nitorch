@@ -62,13 +62,26 @@ def _main(options):
     greeq_opt.verbose = options.verbose
     # greeq_opt.plot = options.verbose >= 2
     greeq_opt.recon.space = options.space
+    if isinstance(options.space, str) and options.space != 'mean':
+        for c, contrast in enumerate(options.contrast):
+            if contrast.name == options.space:
+                greeq_opt.recon.space = c
+                break
     greeq_opt.backend.device = device
     greeq_opt.uncertainty = options.uncertainty
     greeq_opt.optim.nb_levels = options.levels
     greeq_opt.optim.max_iter_rls = options.iter
     greeq_opt.optim.tolerance = options.tol
     greeq_opt.optim.tolerance_cg = options.tol
-    greeq_opt.optim.solver = options.solver
+    solver, *subiter_max = options.solver
+    if subiter_max:
+        subiter_max = int(subiter_max[0])
+    elif solver == 'fmg':
+        subiter_max = 2
+    else:  # cg
+        subiter_max = 32
+    greeq_opt.optim.solver = solver
+    greeq_opt.optim.max_iter_cg = subiter_max
     greeq_opt.penalty.norm = options.regularization
     greeq_opt.penalty.factor = {
         'pd': options.lam_pd if options.lam_pd else options.lam,
