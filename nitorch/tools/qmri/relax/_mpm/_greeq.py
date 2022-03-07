@@ -708,7 +708,7 @@ def derivatives_parameters(contrast, maps, receive, transmit, opt, do_grad=True)
     has_mt = bool(hasattr(maps, 'mt') and getattr(contrast, 'mt', False))
     if not has_mt:
         maps = maps.drop_mt()
-    pd, r1, r2s, mt, b1p, b1m \
+    pd, r1, r2s, mt, b1m, b1p \
         = pull_parameters(maps, transmit, receive, contrast.affine, obs_shape,
                           **backend)
 
