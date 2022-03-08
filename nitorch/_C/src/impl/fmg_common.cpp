@@ -19,7 +19,7 @@ using at::Tensor;
 using c10::IntArrayRef;
 using c10::ArrayRef;
 using std::vector;
-using at::indexing::Slice;
+// using at::indexing::Slice;
 
 
 namespace ni {
@@ -392,13 +392,16 @@ Tensor fmg_grid_impl(const Tensor & hessian,
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
-        view  = o.index({Slice(), 2});
+        // view  = o.index({Slice(), 2});
+        view  = o.slice(-1, 2, 3);
         view *= static_cast<double>(o.size(4)) / static_cast<double>(x.size(4));
       case 2:
-        view  = o.index({Slice(), 1});
+        // view  = o.index({Slice(), 1});
+        view  = o.slice(-1, 1, 2);
         view *= static_cast<double>(o.size(3)) / static_cast<double>(x.size(3));
       case 1:
-        view  = o.index({Slice(), 0});
+        // view  = o.index({Slice(), 0});
+        view  = o.slice(-1, 0, 1);
         view *= static_cast<double>(o.size(2)) / static_cast<double>(x.size(2));
       default:
         break;
