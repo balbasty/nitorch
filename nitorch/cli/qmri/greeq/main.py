@@ -62,7 +62,7 @@ def _main(options):
     greeq_opt.verbose = options.verbose
     # greeq_opt.plot = options.verbose >= 2
     greeq_opt.recon.space = options.space
-    if isinstance(options.space, str) and  options.space != 'mean':
+    if isinstance(options.space, str) and options.space != 'mean':
         for c, contrast in enumerate(options.contrast):
             if contrast.name == options.space:
                 greeq_opt.recon.space = c
@@ -79,7 +79,7 @@ def _main(options):
         subiter_max = int(subiter_max[0])
     elif solver == 'fmg':
         subiter_max = 2
-    else: # cg
+    else:  # cg
         subiter_max = 32
     greeq_opt.optim.solver = solver
     greeq_opt.optim.max_iter_cg = subiter_max
@@ -182,7 +182,7 @@ def _main(options):
     if options.transmit:
         files = options.transmit
         meta = {}
-        if files[-1] in ('%', 'pct', 'p.u.', 'a.u'):
+        if files[-1] in ('%', 'pct', 'p.u.', 'a.u.'):
             *files, unit = files
             meta['unit'] = unit
         files, *mag = files
