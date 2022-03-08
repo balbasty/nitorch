@@ -144,19 +144,17 @@ class BaseND:
     def shape(self):
         return self.volume.shape
 
-    def __new__(cls, input=None, *args, **kwargs):
-        if isinstance(input, str):
-            return cls.from_fname(input, *args, **kwargs)
-        if isinstance(input, io.MappedArray):
-            return cls.from_mapped(input, *args, **kwargs)
-        if torch.is_tensor(input):
-            return cls.from_tensor(input, *args, **kwargs)
-        if isinstance(input, BaseND):
-            return cls.from_instance(input, *args, **kwargs)
-        return object.__new__(cls)
-
     def __init__(self, input=None, *args, **kwargs):
-        self.set_attributes(**kwargs)
+        if isinstance(input, str):
+            self._init_from_fname(input, *args, **kwargs)
+        elif isinstance(input, io.MappedArray):
+            self._init_from_mapped(input, *args, **kwargs)
+        elif torch.is_tensor(input):
+            self._init_from_tensor(input, *args, **kwargs)
+        elif isinstance(input, BaseND):
+            self._init_from_instance(input, *args, **kwargs)
+        else:
+            self.set_attributes(**kwargs)
 
     def __str__(self):
         if self.volume is None:
@@ -194,8 +192,7 @@ class BaseND:
         """Build an MRI object from attributes only. `volume` is not set."""
         return cls(**attributes)
 
-    @classmethod
-    def from_fname(cls, fname, permission='r', keep_open=False, **attributes):
+    def _init_from_fname(new, fname, permission='r', keep_open=False, **attributes):
         """Build an MRI object from a file name.
 
         We accept paths of the form 'path/to/file.nii,1,2', which
@@ -209,39 +206,56 @@ class BaseND:
             index = tuple(int(i) for i in index)
             index = (slice(None),) * 3 + index
             mapped = mapped[index]
-        return cls.from_mapped(mapped, **attributes)
+        return new._init_from_mapped(mapped, **attributes)
 
     @classmethod
-    def from_mapped(cls, mapped, **attributes):
+    def from_fname(cls, fname, permission='r', keep_open=False, **attributes):
+        """Build an MRI object from a file name.
+
+        We accept paths of the form 'path/to/file.nii,1,2', which
+        mean that only the subvolume `[:, :, :, 1, 2]` should be read.
+        The first three (spatial) dimensions are always read.
+        """
+        new = cls.__new__(cls)
+        new._init_from_fname(fname, permission, keep_open, **attributes)
+        return new
+
+    def _init_from_mapped(new, mapped, **attributes):
         """Build an MRI object from a mapped array"""
         if not isinstance(mapped, io.MappedArray):
             raise TypeError('Expected a MappedArray but got a {}.'
                             .format(type(mapped)))
-        new = BaseND.__new__(cls)
         new.volume = mapped
         new.reset_attributes()
         new.set_attributes(**attributes)
         new.atleast_3d_()
-        cls.__init__(new)
-        return new
 
     @classmethod
-    def from_tensor(cls, tensor, **attributes):
+    def from_mapped(cls, mapped, **attributes):
+        """Build an MRI object from a mapped array"""
+        new = cls.__new__(cls)
+        new._init_from_mapped(mapped, **attributes)
+        return new
+
+    def _init_from_tensor(new, tensor, **attributes):
         """Build an MRI object from a mapped array"""
         tensor = torch.as_tensor(tensor)
-        new = BaseND.__new__(cls)
         new.volume = tensor
         new.reset_attributes()
         new.set_attributes(**attributes)
         new.atleast_3d_()
         new.device = tensor.device
-        cls.__init__(new)
-        return new
 
     @classmethod
-    def from_instance(cls, instance, **attributes):
+    def from_tensor(cls, tensor, **attributes):
+        """Build an MRI object from a mapped array"""
+        new = cls.__new__(cls)
+        new._init_from_tensor(tensor, **attributes)
+        return new
+
+    def _init_from_instance(new, instance, **attributes):
         """Build an MRI object from an other instance"""
-        new = BaseND.__new__(cls)
+        # new = BaseND.__new__(cls)
         new.volume = instance.volume
         new.affine = instance.affine
         new.scanner_position = instance.scanner_position
@@ -251,7 +265,12 @@ class BaseND:
         old_attributes.update(attributes)
         new.set_attributes(**old_attributes)
         new.atleast_3d_()
-        cls.__init__(new)
+
+    @classmethod
+    def from_instance(cls, instance, **attributes):
+        """Build an MRI object from an other instance"""
+        new = cls.__new__(cls)
+        new._init_from_instance(instance, **attributes)
         return new
 
     def atleast_nd_(self, dim):
@@ -427,13 +446,13 @@ class BaseND:
 class Volume3D(BaseND):
     spatial_dim = 3
 
-    @classmethod
-    def from_mapped(cls, mapped, **attributes):
-        return super().from_mapped(mapped, **attributes).ensure_3d_()
+    def _init_from_mapped(new, mapped, **attributes):
+        super()._init_from_mapped(mapped, **attributes)
+        new.ensure_3d_()
 
-    @classmethod
-    def from_tensor(cls, tensor, **attributes):
-        return super().from_tensor(tensor, **attributes).ensure_3d_()
+    def from_tensor(new, tensor, **attributes):
+        super().from_tensor(tensor, **attributes)
+        new.ensure_3d_()
 
 
 class GradientEcho(BaseND):
@@ -471,8 +490,7 @@ class GradientEcho(BaseND):
         return super().attributes() + ['te', 'tr', 'ti', 'fa', 'mt',
                                        'readout', 'blip', 'noise', 'dof']
 
-    @classmethod
-    def from_mapped(cls, mapped, **attributes):
+    def _init_from_mapped(new, mapped, **attributes):
         missing = [key for key in ['te', 'tr', 'ti', 'fa', 'mt']
                   if key not in attributes ]
         meta = mapped.metadata(missing) if missing else {}
@@ -494,11 +512,10 @@ class GradientEcho(BaseND):
                 
         meta.update(attributes)
         attributes = meta
-        return super().from_mapped(mapped, **attributes)
+        super()._init_from_mapped(mapped, **attributes)
 
-    @classmethod
-    def from_instance(cls, instance, **attributes):
-        new = super().from_instance(instance)
+    def _init_from_instance(new, instance, **attributes):
+        super()._init_from_instance(instance)
         new.te = getattr(instance, 'te', None)
         new.tr = getattr(instance, 'tr', None)
         new.ti = getattr(instance, 'ti', None)
@@ -509,7 +526,6 @@ class GradientEcho(BaseND):
         new.noise = getattr(instance, 'noise', None)
         new.dof = getattr(instance, 'dof', None)
         new.set_attributes(**attributes)
-        return new
 
     def fdata(self, *args, **kwargs):
         kwargs.setdefault('missing', 0)
@@ -538,24 +554,22 @@ class GradientEchoMulti(GradientEcho):
     """
     te: list = None
 
-    @classmethod
-    def from_instance(cls, instance, **attributes):
+    def _init_from_instance(new, instance, **attributes):
         """Build a multi-echo gradient-echo volume from an
         instance of GradientEchoMulti or GradientEcho."""
         if isinstance(instance, GradientEchoMulti):
-            new = instance.copy()
-            new.set_attributes(**attributes)
-            return new
+            copy_attributes = {k: getattr(instance, k) for k in
+                               instance.attributes()}
+            copy_attributes.update(attributes)
+            new.set_attributes(**copy_attributes)
         if isinstance(instance, GradientEcho):
-            new = super().from_instance(instance)
+            super()._init_from_instance(instance)
             new.volume = new.volume[None, ...]
             new.te = [new.te]
             new.set_attributes(**attributes)
-            return new
-        return super().from_instance(instance, **attributes)
+        super()._init_from_instance(instance, **attributes)
 
-    @classmethod
-    def from_instances(cls, echoes, **attributes):
+    def _init_from_instances(new, echoes, **attributes):
         """Build a multi-echo gradient-echo volume from mutiple
         instances of GradientEchoSingle."""
         volume = io.stack([echo.volume for echo in echoes], dim=0)
@@ -612,22 +626,38 @@ class GradientEchoMulti(GradientEcho):
                 warnings.warn("Degrees of freedom not consistent across echoes. Using {}."
                               .format(dof))
             attributes['dof'] = dof
-        return cls.from_mapped(volume, **attributes)
+        new._init_from_mapped(volume, **attributes)
+
+    @classmethod
+    def from_instances(cls, echoes, **attributes):
+        new = cls.__new__(cls)
+        new._init_from_instances(echoes, **attributes)
+        return new
+
+    def _init_from_fnames(new, fnames, **attributes):
+        echoes = [GradientEchoSingle.from_fname(fname) for fname in fnames]
+        new._init_from_instances(echoes, **attributes)
 
     @classmethod
     def from_fnames(cls, fnames, **attributes):
-        echoes = [GradientEchoSingle.from_fname(fname) for fname in fnames]
-        return cls.from_instances(echoes, **attributes)
+        new = cls.__new__(cls)
+        new._init_from_fnames(fnames, **attributes)
+        return new
 
-    @classmethod
-    def from_maps(cls, fs, **attributes):
+    def _init_from_maps(new, fs, **attributes):
         if isinstance(fs, (list, tuple)):
             echoes = [GradientEchoSingle.from_mapped(f) for f in fs]
         else:
             ne = fs.shape[-1]
             echoes = [GradientEchoSingle.from_mapped(fs[..., i])
                       for i in range(ne)]
-        return cls.from_instances(echoes, **attributes)
+        new._init_from_instances(echoes, **attributes)
+
+    @classmethod
+    def from_maps(cls, fs, **attributes):
+        new = cls.__new__(cls)
+        new._init_from_maps(fs, **attributes)
+        return new
 
     def echo(self, index):
         volume = self.volume[index, ...]

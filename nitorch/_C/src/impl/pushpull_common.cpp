@@ -49,9 +49,9 @@
 
 // maximum number of channels
 // > not used in mode isotropic nearest/linear
-#ifndef NI_MAX_NUM_CHANNELS
-# define NI_MAX_NUM_CHANNELS 1024
-#endif
+// We override the (small) default
+#undef  NI_MAX_NUM_CHANNELS
+#define NI_MAX_NUM_CHANNELS 1024
 
 // This parameter allows for a little bit of tolerance when considering 
 // a coordinate as "out-of-bound" (if !extrapolate)
@@ -664,7 +664,7 @@ public:
 
   // ~~~ FUNCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#if __CUDACC__
+#ifdef __CUDACC__
   // Loop over voxels that belong to one CUDA block
   // This function is called by the CUDA kernel
   NI_DEVICE void loop(int threadIdx, int blockIdx, 
@@ -797,7 +797,7 @@ private:
 //                             LOOP
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-#if __CUDACC__
+#ifdef __CUDACC__
 
 template <typename scalar_t, typename offset_t> NI_DEVICE
 void PushPullImpl<scalar_t,offset_t>::loop(
@@ -2537,7 +2537,7 @@ std::deque<Tensor> pushpull(
                          do_pull, do_push, do_count, do_grad, do_sgrad);
   info.ioset(source, grid, target);
 
-  return AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
+  auto output = AT_DISPATCH_FLOATING_TYPES_AND_HALF(grid.scalar_type(), "pushpull", [&] {
     if (info.canUse32BitIndexMath())
     {
       PushPullImpl<scalar_t, int32_t> algo(info);
@@ -2553,6 +2553,17 @@ std::deque<Tensor> pushpull(
       return algo.output;
     }
   });
+
+  /*
+  Our implementation uses more stack per thread than the available local 
+  memory. CUDA probably needs to use some of the global memory to 
+  compensate, but there is a bug and this memory is never freed.
+  The official solution is to call cudaDeviceSetLimit to reset the 
+  stack size and free that memory:
+  https://forums.developer.nvidia.com/t/61314/2
+  */
+  cudaDeviceSetLimit(cudaLimitStackSize, 0);
+  return output;
 }
 
 #else

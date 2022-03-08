@@ -2,14 +2,18 @@ import torch
 from nitorch import core, spatial
 from ._options import ESTATICSOptions
 from ._preproc import preproc, postproc
-from ._utils import (hessian_loaddiag_, hessian_matmul, hessian_solve)
-from ..utils import (smart_pull, smart_push, smart_grad, smart_grid,
-                     nll_chi, nll_gauss, dot, ssq,
+from ._utils import (hessian_loaddiag_)
+from ..utils import (smart_pull, smart_push, smart_grid, pull1d, push1d,
+                     nll_chi, nll_gauss, dot,
                      get_mask_missing, mask_nan_, check_nans_)
-from nitorch.tools.qmri.param import ParameterMap, SVFDeformation, DenseDeformation
+from nitorch.tools.qmri.param import ParameterMap, SVFDistortion, DenseDistortion
 
 # Boundary condition used for the distortion field throughout
 DIST_BOUND = 'dct2'
+
+
+def div1d(disp, dim):
+    return spatial.div1d(disp, dim=dim, bound=DIST_BOUND, side='c')
 
 
 def _get_level(level, aff0, shape0):
@@ -19,11 +23,13 @@ def _get_level(level, aff0, shape0):
 
 def _resize(maps, rls, aff, shape):
     """Resize (prolong) current maps to a target resolution"""
-    for map in maps:
-        map.volume = spatial.resize(map.volume[None, None, ...],
-                                    shape=shape)[0, 0]
-        map.affine = aff
+    maps.volume = spatial.resize(maps.volume[None], shape=shape)[0]
     maps.affine = aff
+    # for map in maps:
+    #     map.volume = spatial.resize(map.volume[None, None, ...],
+    #                                 shape=shape)[0, 0]
+    #     map.affine = aff
+    # maps.affine = aff
     if rls is not None:
         if rls.dim() == len(shape):
             rls = spatial.resize(rls[None, None], shape=shape)[0, 0]
@@ -32,13 +38,15 @@ def _resize(maps, rls, aff, shape):
     return maps, rls
 
 
-def nonlin(data, opt=None):
+def nonlin(data, dist=None, opt=None):
     """Fit the ESTATICS model to multi-echo Gradient-Echo data.
 
     Parameters
     ----------
     data : sequence[GradientEchoMulti]
         Observed GRE data.
+    dist : sequence[Optional[ParameterizedDistortion]], optional
+        Pre-computed distortion fields
     opt : Options, optional
         Algorithm options.
 
@@ -48,7 +56,7 @@ def nonlin(data, opt=None):
         Echo series extrapolated to TE=0
     decay : estatics.ParameterMap
         R2* decay map
-    distortions : sequence[ParameterizedDeformation], if opt.distortion.enable
+    distortions : sequence[ParameterizedDistortion], if opt.distortion.enable
         B0-induced distortion fields
 
     """
@@ -69,8 +77,7 @@ def nonlin(data, opt=None):
         print(f'    - contrast {i:2d}: [' + ', '.join([f'{te*1e3:.1f}' for te in contrast.te]) + '] ms')
 
     # --- estimate noise / register / initialize maps ------------------
-    data, maps, dist = preproc(data, opt)
-    vx = spatial.voxel_size(maps.affine)
+    data, maps, dist = preproc(data, dist, opt)
     nb_contrasts = len(maps) - 1
 
     if opt.distortion.enable:
@@ -101,7 +108,6 @@ def nonlin(data, opt=None):
         bending=opt.distortion.bending)
 
     # --- initialize weights (RLS) -------------------------------------
-    iter_rls = make_iter_rls(nb_contrasts)
     mean_shape = maps.decay.volume.shape
     rls = None
     sumrls = 0
@@ -163,6 +169,8 @@ def nonlin(data, opt=None):
         if opt.distortion.enable:
             pstr += f'+ {"dist":^12s} '
         pstr += f'= {"crit":^12s}'
+        if opt.optim.nb_levels > 1:
+            pstr = f'{"lvl":3s} | ' + pstr
         print('\n' + pstr)
         print('-' * len(pstr))
 
@@ -179,15 +187,17 @@ def nonlin(data, opt=None):
     # --- Multi-Resolution loop ----------------------------------------
     shape0 = shape = maps.shape[1:]
     aff0 = aff = maps.affine
+    lam0 = lam
     vx0 = vx = spatial.voxel_size(aff0)
     scl0 = vx0.prod()
-    scl = vx.prod() / scl0
+    scl = 1
     for level in range(opt.optim.nb_levels, 0, -1):
 
         if opt.optim.nb_levels > 1:
             aff, shape = _get_level(level, aff0, shape0)
             vx = spatial.voxel_size(aff)
             scl = vx.prod() / scl0
+            lam = [float(l*scl) for l in lam0]
             maps, rls = _resize(maps, rls, aff, shape)
             if opt.regularization.norm in ('tv', 'jtv'):
                 sumrls = 0.5 * scl * rls.reciprocal().sum(dtype=torch.double)
@@ -233,24 +243,20 @@ def nonlin(data, opt=None):
                             contrast, distortion, intercept, maps.decay, opt)
                         # increment
                         gind = [i, -1]
-                        grad[gind, ...] += g1
-                        hind = [2*i, -1, 2*i+1]
-                        hess[hind, ...] += h1
+                        grad[gind] += g1
+                        hind = [i, len(grad)-1, len(grad)+i]
+                        hess[hind] += h1
                         crit += crit1
                     del g1, h1
 
                     # --- regularization -----------------------------------
                     reg = 0.
                     if opt.regularization.norm:
-                        for i, (map, weight, l) \
-                                in enumerate(zip(maps, iter_rls(rls), lam)):
-                            if not l:
-                                continue
-                            g1 = spatial.membrane(map.volume, weights=weight, dim=3,
-                                                  voxel_size=vx).mul_(l*scl)
-                            reg1 = 0.5 * dot(map.volume, g1)
-                            reg += reg1
-                            grad[i] += g1
+                        g1 = spatial.regulariser(
+                            maps.volume, weights=rls, dim=3,
+                            voxel_size=vx, membrane=1, factor=lam)
+                        reg = 0.5 * dot(maps.volume, g1)
+                        grad += g1
                         del g1
 
                     # --- track RLS improvement ----------------------------
@@ -271,6 +277,8 @@ def nonlin(data, opt=None):
                             pstr += f'+ {vreg:12.6g} '
                         pstr += f'= {ll_tmp:12.6g} | '
                         pstr += f'{evol}'
+                        if opt.optim.nb_levels > 1:
+                            pstr = f'{level:3d} | ' + pstr
                         print(pstr)
 
                     # --- gauss-newton -------------------------------------
@@ -278,7 +286,11 @@ def nonlin(data, opt=None):
                     hess = check_nans_(hess, warn='hessian')
                     hess = hessian_loaddiag_(hess, 1e-6, 1e-8)
                     lam_ = [l*scl for l in lam]
-                    deltas = solve_parameters(hess, grad, rls, lam_, vx, opt)
+                    membrane = 1 if opt.regularization.norm else 0
+                    deltas = spatial.solve_field(
+                        hess, grad, rls, factor=lam_, membrane=membrane,
+                        voxel_size=vx, max_iter=opt.optim.max_iter_cg,
+                        tolerance=opt.optim.tolerance_cg, dim=3)
                     deltas = check_nans_(deltas, warn='delta')
 
                     if not opt.distortion.enable:
@@ -294,20 +306,14 @@ def nonlin(data, opt=None):
                         # --- line search ----------------------------------
                         # Block coordinate descent makes it a bit less robust
                         # -> we use a line search
-                        dd = []
+                        dd = dv = 0.
                         if opt.regularization.norm:
-                            for i, (delta, weight, l) \
-                                    in enumerate(zip(deltas, iter_rls(rls), lam)):
-                                if not l:
-                                    continue
-                                g1 = spatial.membrane(delta, weights=weight,
-                                                      dim=3, voxel_size=vx).mul_(l*scl)
-                                dd.append(g1)
-                                del g1
-                        dv = sum([dd1.flatten().dot(map.volume.flatten())
-                                  for dd1, map in zip(dd, maps)])
-                        dd = sum([dd1.flatten().dot(delta.flatten())
-                                  for dd1, delta in zip(dd, deltas)])
+                            g1 = spatial.regulariser(
+                                deltas, weights=rls, dim=3, voxel_size=vx,
+                                membrane=1, factor=lam)
+                            dv = dot(g1, maps.volume)
+                            dd = dot(g1, deltas)
+                            del g1
                         armijo, armijo_prev = 1, 0
                         ok = False
                         for n_ls in range(12):
@@ -359,6 +365,8 @@ def nonlin(data, opt=None):
                                 pstr += f'+ {vreg:12.6g} '
                             pstr += f'= {ll_tmp:12.6g} | gain = {gain/ll_scl:7.2g} | '
                             pstr += f'{evol}'
+                            if opt.optim.nb_levels > 1:
+                                pstr = f'{level:3d} | ' + pstr
                             print(pstr)
                             if opt.plot:
                                 _show_maps(maps, dist, data)
@@ -388,22 +396,14 @@ def nonlin(data, opt=None):
 
                         # --- regularization -------------------------------
                         def momentum(vol):
-                            if contrast.readout is None:
-                                g1 = spatial.regulariser_grid(
-                                    vol, **lam_dist, bound=DIST_BOUND,
-                                    voxel_size=distortion.voxel_size)
-                            else:
-                                distprm1 = dict(lam_dist)
-                                distprm1['factor'] *= distortion.voxel_size[contrast.readout] ** 2
-                                g1 = spatial.regulariser(
+                            distprm1 = dict(lam_dist)
+                            distprm1['factor'] *= distortion.voxel_size[contrast.readout] ** 2
+                            g1 = spatial.regulariser(
                                     vol[None], **distprm1, dim=3, bound=DIST_BOUND,
                                     voxel_size=distortion.voxel_size)[0]
                             return g1
 
-                        if contrast.readout is None:
-                            vol = distortion.volume
-                        else:
-                            vol = distortion.volume[..., contrast.readout]
+                        vol = distortion.volume
                         g1 = momentum(vol)
                         vreg1 = 0.5 * vol.flatten().dot(g1.flatten())
                         vreg += vreg1
@@ -412,35 +412,21 @@ def nonlin(data, opt=None):
 
                         # --- gauss-newton ---------------------------------
                         h = check_nans_(h, warn='hessian (distortion)')
-                        if contrast.readout is None:
-                            h = core.utils.movedim(h, -1, -4)
-                            h = hessian_loaddiag_(h, 1e-32, 1e-32)
-                            h = core.utils.movedim(h, -4, -1)
-                            delta = spatial.solve_grid_fmg(
-                                h, g, **lam_dist, bound=DIST_BOUND,
-                                voxel_size=distortion.voxel_size,
-                                verbose=max(0, opt.verbose-1),
-                                nb_iter=opt.optim.max_iter_cg,
-                                tolerance=opt.optim.tolerance_cg)
-                        else:
-                            h = hessian_loaddiag_(h[None], 1e-32, 1e-32)[0]
-                            distprm1 = dict(lam_dist)
-                            distprm1['factor'] *= (distortion.voxel_size[contrast.readout] ** 2)
-                            delta = spatial.solve_field_fmg(
-                                h[None], g[None], **distprm1, dim=3,
+                        h = hessian_loaddiag_(h[None], 1e-32, 1e-32, sym=True)[0]
+                        distprm1 = dict(lam_dist)
+                        distprm1['factor'] *= (distortion.voxel_size[contrast.readout] ** 2)
+                        delta = spatial.solve_field_fmg(
+                                h, g, **distprm1, dim=3,
                                 bound=DIST_BOUND,
-                                voxel_size=distortion.voxel_size,
-                                nb_iter=opt.optim.max_iter_cg,
-                                tolerance=opt.optim.tolerance_cg,
-                                verbose=max(0, opt.verbose-1))[0]
+                                voxel_size=distortion.voxel_size)
                         delta = check_nans_(delta, warn='delta (distortion)')
 
                         # --- line search ----------------------------------
-                        armijo, armijo_prev = 1, 0 # armijo_dist_prev[i], 0
+                        armijo, armijo_prev = 1, 0  # armijo_dist_prev[i], 0
                         ok = False
                         dd = momentum(delta)
-                        dv = dd.flatten().dot(vol.flatten())
-                        dd = dd.flatten().dot(delta.flatten())
+                        dv = dot(dd, vol)
+                        dd = dot(dd, delta)
                         for n_ls in range(12):
                             vol.sub_(delta, alpha=(armijo - armijo_prev))
                             armijo_prev = armijo
@@ -480,6 +466,8 @@ def nonlin(data, opt=None):
                         pstr += f'+ {vreg:12.6g} '
                         pstr += f'= {ll_tmp:12.6g} | gain = {gain/ll_scl:7.2g} | '
                         pstr += f'{evol}'
+                        if opt.optim.nb_levels > 1:
+                            pstr = f'{level:3d} | ' + pstr
                         print(pstr)
                         if opt.plot:
                             _show_maps(maps, dist, data)
@@ -504,6 +492,8 @@ def nonlin(data, opt=None):
                         pstr += f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} '
                         pstr += f'= {ll:12.6g} | '
                     pstr += f'gain = {gain/ll_scl:7.2g}'
+                    if opt.optim.nb_levels > 1:
+                        pstr = f'{level:3d} | ' + pstr
                     print(pstr)
                     if opt.plot:
                         _show_maps(maps, dist, data)
@@ -516,7 +506,10 @@ def nonlin(data, opt=None):
             if level == 1 and opt.regularization.norm in ('tv', 'jtv'):
                 rls_changed = True
                 sumrls_prev = sumrls
-                rls, sumrls = update_rls(maps, lam, opt.regularization.norm)
+                rls, sumrls = spatial.membrane_weights(
+                    maps.volume, lam, vx, return_sum=True, dim=3,
+                    joint=opt.regularization.norm == 'jtv',
+                    eps=core.constants.eps(rls.dtype))
                 sumrls = 0.5 * sumrls
 
                 # --- compute gain -----------------------------------------
@@ -536,22 +529,6 @@ def nonlin(data, opt=None):
     return out
 
 
-def make_iter_rls(nb_contrasts):
-    """Make it easy to iterate across RLS weights even if they are `None`."""
-    def iter_rls(rls):
-        if rls is None:
-            for _ in range(nb_contrasts+1):
-                yield None
-        elif rls.dim() == 3:
-            for _ in range(nb_contrasts+1):
-                yield rls
-        else:
-            assert rls.dim() == 4
-            for rls1 in rls:
-                yield rls1
-    return iter_rls
-
-
 @torch.jit.script
 def recon_fit(inter, slope, te: float):
     """Reconstruct a single echo"""
@@ -567,7 +544,7 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt,
     ----------
     contrast : (nb_echo, *obs_shape) GradientEchoMulti
         A single echo series (with the same weighting)
-    distortion : ParameterizedDeformation
+    distortion : ParameterizedDistortion
         A model of distortions caused by B0 inhomogeneities.
     intercept : (*recon_shape) ParameterMap
         Log-intercept of the contrast
@@ -612,8 +589,6 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt,
     if distortion:
         grid_up, grid_down, jac_up, jac_down = distortion.exp2(
             add_identity=True, jacobian=True)
-        jac_up = jac_up[..., readout, readout]
-        jac_down = jac_down[..., readout, readout]
     else:
         grid_up = grid_down = jac_up = jac_down = None
         
@@ -630,11 +605,10 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt,
         grid_blip = grid_up if blip > 0 else grid_down
         jac_blip = jac_up if blip > 0 else jac_down
 
-        # compute residuals
+        # forward model
         dat = echo.fdata(**backend, rand=True, missing=0)
         fit = recon_fit(inter, slope, te)
-        # push_fit = smart_push(fit, grid_blip, bound='dft', extrapolate=True)
-        push_fit = smart_pull(fit, grid_blip, bound='dft', extrapolate=True)
+        push_fit, _ = pull1d(fit, grid_blip, readout)
         if jac_blip is not None:
             push_fit = push_fit * jac_blip
         msk = get_mask_missing(dat, push_fit)
@@ -642,26 +616,24 @@ def derivatives_parameters(contrast, distortion, intercept, decay, opt,
         push_fit.masked_fill_(msk, 0)
         msk = msk.bitwise_not_()
 
-        if chi:
-            crit1, res = nll_chi(dat, push_fit, msk, lam, df)
-        else:
-            crit1, res = nll_gauss(dat, push_fit, msk, lam)
+        # likelihood / residuals
+        nll = nll_chi if chi else nll_gauss
+        opt = [df] if chi else []
+        crit1, res = nll(dat, push_fit, msk, lam, *opt)
         del dat, push_fit
         crit += crit1
 
         if do_grad:
             msk = msk.to(fit.dtype)
             if grid_blip is not None:
-                res0 = res
-                # res = smart_pull(res0, grid_blip, bound='dft', extrapolate=True)
-                res = smart_push(res0*jac_blip, grid_blip, bound='dft', extrapolate=True)
-                # abs_res = smart_pull(res0.abs_(), grid_blip, bound='dft', extrapolate=True)
-                abs_res = smart_push(res0.abs_().mul_(jac_blip), grid_blip, bound='dft', extrapolate=True)
+                res *= jac_blip
+                abs_res = res
+                res = push1d(res, grid_blip, readout)
+                abs_res.mul_(jac_blip).abs_()
+                abs_res = push1d(abs_res, grid_blip, readout)
                 abs_res.mul_(fit)
-                # msk = smart_pull(msk, grid_blip, bound='dft', extrapolate=True)
                 msk = msk.mul_(jac_blip).mul_(jac_blip)
-                msk = smart_push(msk, grid_blip, bound='dft', extrapolate=True)
-                del res0
+                msk = push1d(msk, grid_blip, readout)
 
             # ----------------------------------------------------------
             # compute gradient and (majorised) Hessian in observed space
@@ -748,12 +720,10 @@ def derivatives_distortion(contrast, distortion, intercept, decay, opt,
     slope = smart_pull(decay.fdata(**backend), grid)
     grid_up, grid_down, jac_up, jac_down = distortion.exp2(
         add_identity=True, jacobian=True)
-    jac_up = jac_up[..., readout, readout]
-    jac_down = jac_down[..., readout, readout]
 
     crit = 0
-    grad = torch.zeros(obs_shape + (3,), **backend) if do_grad else None
-    hess = torch.zeros(obs_shape + (6,), **backend) if do_grad else None
+    grad = torch.zeros(obs_shape, **backend) if do_grad else None
+    hess = torch.zeros(obs_shape, **backend) if do_grad else None
 
     te0 = 0
     for e, echo in enumerate(contrast):
@@ -767,48 +737,47 @@ def derivatives_distortion(contrast, distortion, intercept, decay, opt,
         # compute residuals
         dat = echo.fdata(**backend, rand=True, cache=False)  # observed
         fit = recon_fit(inter, slope, te)                    # fitted
-        if do_grad and isinstance(distortion, DenseDeformation):
-            # D(fit) o phi
-            # gfit = smart_grad(fit, igrid_blip, bound='dft', extrapolate=True).neg_()
-            gfit = smart_grad(fit, grid_blip, bound='dft', extrapolate=True)
-            gfit *= jac_blip.unsqueeze(-1)
-        # fit = smart_push(fit, grid_blip, bound='dft', extrapolate=True)
-        fit = smart_pull(fit, grid_blip, bound='dft', extrapolate=True)
-        fit.mul_(jac_blip)
+        fit, gfit = pull1d(fit, grid_blip, readout, grad=do_grad)
+        fit *= jac_blip
         msk = get_mask_missing(dat, fit)    # mask of missing values
-        if do_grad and isinstance(distortion, SVFDeformation):
-            # D(fit o phi)
-            gfit = spatial.diff(fit, bound='dft', dim=[-3, -2, -1])
-            gfit.masked_fill_(msk.unsqueeze(-1), 0)
+        if do_grad:
+            gfit *= jac_blip
+            gfit.masked_fill_(msk, 0)
         dat.masked_fill_(msk, 0)
         fit.masked_fill_(msk, 0)
         msk = msk.bitwise_not_()
 
-        if chi:
-            crit1, res = nll_chi(dat, fit, msk, lam, df)
-        else:
-            crit1, res = nll_gauss(dat, fit, msk, lam)
-        del dat, fit, msk
+        nll = nll_chi if chi else nll_gauss
+        opt = [df] if chi else []
+        crit1, res = nll(dat, fit, msk, lam, *opt)
+        del dat, msk
         crit += crit1
 
         if do_grad:
-            g1 = res.unsqueeze(-1).mul(gfit)
-            h1 = torch.zeros_like(hess)
-            if readout is None:
-                h1[..., :3] = gfit.square()
-                h1[..., 3] = gfit[..., 0] * gfit[..., 1]
-                h1[..., 4] = gfit[..., 0] * gfit[..., 2]
-                h1[..., 5] = gfit[..., 1] * gfit[..., 2]
+            # if Dense:
+            #   g1 = res * jac * grad + div(res * fit)
+            #   h1 = (jac * grad)**2 + div(div(fit ** 2))
+            # if SVF:
+            #   g1 = res * jac**2 * grad + div(res * jac * fit)
+            #   h1 = (jac**2 * grad)**2 + div(div((jac * fit)**2))
+            if isinstance(distortion, SVFDistortion):
+                gfit *= jac_blip
             else:
-                h1[..., readout] = gfit[..., readout].square()
+                fit /= jac_blip
+            g1 = div1d(res * fit, readout)
+            g1.addcmul_(res, gfit)
+            # h1 = div1d(div1d(fit * fit, readout), readout)
+            # h1.addcmul_(gfit, gfit)
+            h1 = gfit.square()
 
             # propagate backward
-            if isinstance(distortion, SVFDeformation):
+            if isinstance(distortion, SVFDistortion):
                 vel = distortion.volume
-                if blip < 0:
-                    vel = -vel
-                g1, h1 = spatial.exp_backward(vel, g1, h1, steps=distortion.steps)
+                if blip < 0:  vel = -vel
+                g1, h1 = spatial.exp1d_backward(
+                    vel, g1, h1, steps=distortion.steps, bound=DIST_BOUND)
 
+            # accumulate
             alpha_g = alpha_h = lam
             alpha_g = alpha_g * blip
             grad.add_(g1, alpha=alpha_g)
@@ -816,175 +785,9 @@ def derivatives_distortion(contrast, distortion, intercept, decay, opt,
 
     if not do_grad:
         return crit
-
-    if readout is None:
-        mask_nan_(grad)
-        mask_nan_(hess[:-3], 1e-3)  # diagonal
-        mask_nan_(hess[-3:])        # off-diagonal
-    else:
-        grad = grad[..., readout]
-        hess = hess[..., readout]
-        mask_nan_(grad)
-        mask_nan_(hess)
-
+    mask_nan_(grad)
+    mask_nan_(hess)
     return crit, grad, hess
-
-
-def solve_parameters(hess, grad, rls, lam, vx, opt):
-    """Solve the regularized linear system
-
-    Parameters
-    ----------
-    hess : (2*P+1, *shape) tensor
-    grad : (P+1, *shape) tensor
-    rls : ([P+1], *shape) tensor or None
-    lam : (P,) sequence[float]
-    vx : (D,) sequence[float]
-    opt : Options
-
-    Returns
-    -------
-    delta : (P+1, *shape) tensor
-
-    """
-    # The ESTATICS Hessian has a very particular form (intercepts do not
-    # have cross elements). We therefore need to tell the solver how to operate
-    # on it.
-
-    def matvec(m, x):
-        m = m.transpose(-1, -4)
-        x = x.transpose(-1, -4)
-        return hessian_matmul(m, x).transpose(-4, -1)
-
-    def matsolve(m, x):
-        m = m.transpose(-1, -4)
-        x = x.transpose(-1, -4)
-        return hessian_solve(m, x).transpose(-4, -1)
-
-    def matdiag(m, d):
-        return m[..., ::2]
-
-    return spatial.solve_field_fmg(hess, grad, rls, factor=lam, membrane=1,
-                                   voxel_size=vx, verbose=max(0, opt.verbose - 1),
-                                   nb_iter=opt.optim.max_iter_cg,
-                                   tolerance=opt.optim.tolerance_cg,
-                                   matvec=matvec, matsolve=matsolve, matdiag=matdiag)
-
-    # # ----------------------------------------------------------------
-    # # In the 'Model-based MPM` paper, we used to solve the linear
-    # # system using PCG. I now use a multi-grid version of it, which
-    # # I found to yield lower residual errors.
-    # # Uncomment this line to use vanilla PCG instead.
-    # # ----------------------------------------------------------------
-    # return spatial.solve_field(hess, grad, rls, dim=3, factor=lam, membrane=1,
-    #                            voxel_size=vx, verbose=opt.verbose - 1,
-    #                            max_iter=32, tolerance=1e-5, stop='a',
-    #                            matvec=matvec, matsolve=matsolve, matdiag=matdiag)
-
-    # # ----------------------------------------------------------------
-    # # This is the old version of the code, before it got refactored
-    # # and generalized in the `spatial` module.
-    # # ----------------------------------------------------------------
-
-    # def hess_fn(x):
-    #     result = hessian_matmul(hess, x)
-    #     if not opt.regularization.norm:
-    #         return result
-    #     for i, (map, weight, l) in enumerate(zip(x, rls, lam)):
-    #         if not l:
-    #             continue
-    #         _, res1 = _nonlin_reg(map, vx, weight, l)
-    #         result[i] += res1
-    #     return result
-    #
-    # # The Hessian is A = H + L, where H corresponds to the data term
-    # # and L to the regularizer. Note that, L = D'WD where D is the
-    # # gradient operator, D' the divergence and W a diagonal matrix
-    # # that contains the RLS weights.
-    # # We use (H + diag(|D'D|w)) as a preconditioner because it is easy to
-    # # invert and majorises the true Hessian.
-    # hessp = hess.clone()
-    # smo = torch.as_tensor(vx).square().reciprocal().sum().item()
-    # for i, (weight, l) in enumerate(zip(rls, lam)):
-    #     if not l:
-    #         continue
-    #     hessp[2*i] += l * (rls_maj(weight, vx) if weight is not None else 4*smo)
-    #
-    # def precond(x):
-    #     return hessian_solve(hessp, x)
-    #
-    # result = core.optim.cg(hess_fn, grad, precond=precond,
-    #                        verbose=(opt.verbose > 1), stop='norm',
-    #                        max_iter=32, #opt.optim.max_iter_cg,
-    #                        tolerance=1e-5) #opt.optim.tolerance_cg)
-    # return result
-
-
-def update_rls(maps, lam=1., norm='jtv'):
-    """Update the (L1) weights.
-
-    Parameters
-    ----------
-    map : (P, *shape) ParameterMaps
-        Parameter map
-    lam : float or (P,) sequence[float], default=1
-        Regularisation factor
-    norm : {'tv', 'jtv'}, default='jtv'
-
-    Returns
-    -------
-    rls : ([P], *shape) tensor
-        (Inverted) Weights from the reweighted least squares scheme
-    sumrls : () tensor
-        Sum of the (non-inverted) weights
-    """
-    # vx = spatial.voxel_size(maps.affine)
-    # return spatial.membrane_weights(maps.volume, dim=3, factor=lam,
-    #                                 joint=(norm == 'jtv'), voxel_size=vx,
-    #                                 return_sum=True)
-
-    # ----------------------------------------------------------------
-    # This is the old version of the code, before it got refactored
-    # and generalized in the `spatial` module.
-    # ----------------------------------------------------------------
-
-    if norm not in ('tv', 'jtv', '__internal__'):
-        return None
-
-    if isinstance(maps, ParameterMap):
-        # single map
-        # this should only be an internal call
-        # -> we return the squared gradient map
-        assert norm == '__internal__'
-        vx = spatial.voxel_size(maps.affine)
-        grad_fwd = spatial.diff(maps.volume, dim=[0, 1, 2], voxel_size=vx, side='f')
-        grad_bwd = spatial.diff(maps.volume, dim=[0, 1, 2], voxel_size=vx, side='b')
-
-        grad = grad_fwd.square_().sum(-1)
-        grad += grad_bwd.square_().sum(-1)
-        grad *= lam / 2   # average across side (2)
-        return grad
-
-    # multiple maps
-
-    if norm == 'tv':
-        rls = []
-        for map, l in zip(maps, lam):
-            rls1 = update_rls(map, l, '__internal__')
-            rls1 = rls1.sqrt_()
-            rls.append(rls1)
-    else:
-        assert norm == 'jtv'
-        rls = 0
-        for map, l in zip(maps, lam):
-            rls += update_rls(map, l, '__internal__')
-        rls = rls.sqrt_()
-
-    sumrls = rls.sum(dtype=torch.double)
-    eps = core.constants.eps(rls.dtype)
-    rls = rls.clamp_min_(eps).reciprocal_()
-
-    return rls, sumrls
 
 
 def _show_maps(maps, dist, data):
@@ -1004,15 +807,10 @@ def _show_maps(maps, dist, data):
         for i, (dat, dst) in enumerate(zip(data, dist)):
             if dst is None:
                 continue
-            readout = dat.readout
             vol = dst.volume
             plt.subplot(1 + has_dist, ncol, i+1+ncol)
             vol = vol[:, :, dst.shape[-2]//2]
-            if readout is not None:
-                vol = vol[..., readout]
-            else:
-                vol = vol.square().sum(-1).sqrt()
-            plt.imshow(vol.cpu())
+            plt.imshow(vol.cpu(), vmin=-2, vmax=2)
             plt.axis('off')
             plt.colorbar()
     plt.show()

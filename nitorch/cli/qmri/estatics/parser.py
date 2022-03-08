@@ -11,16 +11,16 @@ usage:
     nitorch estatics [options] -c [NAME] [options] -e *FILE
 
 Acquisition options:
-    -c,  --contrast [NAME]           (default: contrasts are named by order)
-    -te, --echo-time TE [UNIT]       (default: try to read from file)
-    -sp, --echo-spacing DELTA [UNIT] (default: unused)      
-    -bw, --bandwidth [BW] [UNIT]     (default: unused)
-    -rd, --readout {lr, is, ap}      (default: largest dim)
-    -e,  --echo *FILE                Path to individual echoes
-   [-b0, --b0-field FIELD [MAG] [UNIT] B0 fieldmap] NOT IMPLEMENTED YET
+    -c,  --contrast [NAME]               (default: contrasts are named by order)
+    -te, --echo-time TE {[s],ms}         (default: try to read from file)
+    -sp, --echo-spacing DELTA {[s],ms}   (default: unused)      
+    -bw, --bandwidth [BW] [UNIT]         (default: unused)
+    -rd, --readout {lr,is,ap}            (default: largest dim)
+    -e,  --echo *FILE                    Path to individual echoes
+    -b0, --distortion FIELD {[vox],hz}   B0 fieldmap 
 
 Reconstruction options:
-    --likelihood {gauss,chi}         Noise model (default: chi)
+    --likelihood {gauss,chi}         Noise model (default: gauss)
     --register {yes,no}              Start by registrering contrasts
     --recon-space [NAME]             Name of a contrast or 'mean' (default: 'mean')
     --regularization {no,tkh,tv,jtv} Regularization type (default: jtv)
@@ -48,7 +48,7 @@ References:
         https://arxiv.org/abs/2005.14247
     If you use the --meetup option, please cite:
         "Distortion correction in multi-echo MRI without field mapping or reverse encoding"
-        Balbastre et al., unpublished report (2021)
+        Balbastre et al., Proc. ISMRM (2022)
     The original multi-contrast R2* log-fit was presented in: 
         "Estimating the apparent transverse relaxation time (R2*) from images 
          with different contrasts (ESTATICS) reduces motion artifacts"
@@ -97,18 +97,18 @@ contrast.add_option('te', ('-te', '--echo-time'), nargs='+',
 contrast.add_option('readout', ('-rd', '--readout'), nargs=1,
                     help='Readout direction')
 contrast.add_option('echoes', ('-e', '--echo'), nargs='+', help='Echoes')
-contrast.add_option('b0', ('-b0', '--b0-field'), nargs='+3', help='B0 field', default=[])
+contrast.add_option('b0', ('-b0', '--distortion'), nargs='+3', help='B0 field', default=[])
 parser.add_group(contrast)
 
 # recon options
-parser.add_option('likelihood', '--likelihood', nargs=1, default='chi',
-                  convert=cli.Validations.choice(['chi', 'gauss']))
+parser.add_option('likelihood', '--likelihood', nargs=1, default='gauss',
+                  validation=cli.Validations.choice(['chi', 'gauss']))
 parser.add_option('register', '--register', nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
 parser.add_option('space', '--recon-space', nargs=1, default='mean',
                   convert=number_or_str(int))
 parser.add_option('regularization', '--regularization', nargs=1, default='jtv',
-                  convert=cli.Validations.choice(['no', 'tkh', 'tv', 'jtv']))
+                  validation=cli.Validations.choice(['no', 'tkh', 'tv', 'jtv']))
 parser.add_option('meetup', '--meetup', nargs='?', default=False,
                   convert=bool_or_str, action=cli.Actions.store_true)
 parser.add_option('lam_intercept', '--lam-intercept', nargs='+', default=[50.],

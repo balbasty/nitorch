@@ -14,7 +14,7 @@
 
 #include <ATen/ATen.h> // Do I really need ATen her?
 #include "common.h"
-#include "bounds.h"
+#include "../bounds.h"
 #include <iostream>
 
 namespace ni {

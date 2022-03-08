@@ -11,7 +11,7 @@ __all__ = ['exp1d', 'exp1d_forward', 'exp1d_backward']
 
 
 def exp1d(vel, dim=-1, steps=8, interpolation='linear', bound='dft',
-          anagrad=False, ndim=None):
+          anagrad=False, ndim=None, inplace=False):
     """Exponentiate a stationary velocity field by scaling and squaring.
 
     Parameters
@@ -42,11 +42,11 @@ def exp1d(vel, dim=-1, steps=8, interpolation='linear', bound='dft',
     """
     exp_fn = _Exp1d.apply if anagrad else exp1d_forward
     ndim = ndim or vel.dim()
-    return exp_fn(vel, dim, steps, interpolation, bound, ndim)
+    return exp_fn(vel, dim, steps, interpolation, bound, ndim, inplace)
 
 
-def exp1d_forward(vel, dim=-1, steps=8, interpolation='linear',
-                  bound='dft', ndim=None, jacobian=False, _anagrad=False):
+def exp1d_forward(vel, dim=-1, steps=8, interpolation='linear', bound='dft',
+                  ndim=None, inplace=False, jacobian=False, _anagrad=False):
     """Exponentiate a stationary velocity field by scaling and squaring.
 
     This function always uses autodiff in the backward pass.
@@ -73,7 +73,8 @@ def exp1d_forward(vel, dim=-1, steps=8, interpolation='linear',
         Exponentiated tranformation (displacement field)
 
     """
-    vel = vel.clone()
+    if not inplace:
+        vel = vel.clone()
 
     # Precompute identity + aliases
     ndim = ndim or vel.dim()
@@ -192,13 +193,13 @@ class _Exp1d(torch.autograd.Function):
 
     @staticmethod
     @custom_fwd(cast_inputs=torch.float32)  # det() only implemented in f32
-    def forward(ctx, vel, dim, steps, interpolation, bound, ndim):
+    def forward(ctx, vel, dim, steps, interpolation, bound, ndim, inplace):
         if vel.requires_grad:
-            ctx.save_for_backward(vel)
+            ctx.save_for_backward(vel.clone() if inplace else vel)
             ctx.args = {'steps': steps, 'dim': dim, 'ndim': ndim,
                         'interpolation': interpolation, 'bound': bound}
         return exp1d_forward(vel, dim, steps, interpolation, bound,
-                             ndim, _anagrad=True)
+                             ndim, inplace, _anagrad=True)
 
     @staticmethod
     @custom_bwd
@@ -211,7 +212,7 @@ class _Exp1d(torch.autograd.Function):
                               bound=ctx.args['bound'],
                               ndim=ctx.args['ndim'],
                               rotate_grad=True)
-        return (grad,) + (None,)*5
+        return (grad,) + (None,)*6
 
 
 def _pull_vel(vel, disp=None, dim=-1, ndim=None, *args, **kwargs):

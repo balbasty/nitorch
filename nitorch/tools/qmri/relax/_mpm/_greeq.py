@@ -123,7 +123,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
     lam = core.utils.make_vector(lam, 3 + has_mt, **backend)  # PD, R1, R2*, [MT]
 
     # --- initialize weights (RLS) ---
-    if str(opt.penalty.norm).lower() == 'none' or all(lam == 0):
+    if str(opt.penalty.norm).lower().startswith('no') or all(lam == 0):
         opt.penalty.norm = ''
     opt.penalty.norm = opt.penalty.norm.lower()
     mean_shape = maps[0].shape
@@ -196,6 +196,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         hess = torch.empty((nb_hes,) + shape, **backend)
     
         ll_rls = []
+        ll_gn = []
         ll_max = float('inf')
 
         max_iter_rls = max(opt.optim.max_iter_rls // level, 1)
@@ -204,7 +205,6 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
             printer.rls = n_iter_rls
 
             # --- Gauss Newton loop ---
-            ll_gn = []
             for n_iter_gn in range(opt.optim.max_iter_gn):
                 # start = time.time()
                 printer.gn = n_iter_gn
@@ -256,21 +256,20 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 grad = check_nans_(grad, warn='gradient')
                 hess = check_nans_(hess, warn='hessian')
                 if opt.penalty.norm:
-                    hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)
+                    # hess = hessian_sym_loaddiag(hess, 1e-5, 1e-8)  # 1e-5 1e-8
                     if opt.optim.solver == 'fmg':
                         deltas = spatial.solve_field_fmg(
-                            hess, grad, rls, factor=lam * vol, membrane=1,
-                            voxel_size=vx, verbose=False,
-                            nb_iter=2, tolerance=0)
+                                hess, grad, rls, factor=lam * vol,
+                                membrane=1, voxel_size=vx, nb_iter=2)
                     else:
                         deltas = spatial.solve_field(
                             hess, grad, rls, factor=lam * vol, membrane=1,
                             voxel_size=vx, verbose=max(0, opt.verbose - 1),
                             optim='cg', max_iter=opt.optim.max_iter_cg,
-                            tolerance=opt.optim.tolerance_cg * ll_scl, stop='diff')
+                            tolerance=opt.optim.tolerance_cg, stop='diff')
                 else:
-                    hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
-                    deltas = sym_solve(hess, grad)
+                    # hess = hessian_sym_loaddiag(hess, 1e-3, 1e-4)
+                    deltas = spatial.solve_field_closedform(hess, grad)
                 deltas = check_nans_(deltas, warn='deltas')
                 # duration = time.time() - start
                 # print('solve', duration)
@@ -304,8 +303,8 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
                 # (we are late by one full RLS iteration when computing the 
                 #  gain but we save some computations)
                 ll = ll_gn[-1]
-                ll_prev = ll_rls[-1][-1] if ll_rls else ll_max
-                ll_rls.append(ll_gn)
+                ll_prev = ll_rls[-1] if ll_rls else ll_max
+                ll_rls.append(ll)
                 gain = ll_prev - ll
                 if abs(gain) < opt.optim.tolerance * ll_scl:
                     # print(f'RLS converged ({gain:7.2g})')

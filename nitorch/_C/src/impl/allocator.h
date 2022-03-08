@@ -1,17 +1,18 @@
-
+#pragma once
+#include <ATen/ATen.h>
+#include <limits>
 
 class Allocator {
+protected:
 
   static constexpr int64_t max_int32 = std::numeric_limits<int32_t>::max();
-
-private:
 
   // Copied from aten/src/ATen/native/IndexingUtils.cpp in PyTorch 1.6.
   // It is used to decide to which pointer type we should dispatch to.
   // Basically, we need to make sure that the "furthest" element we need
   // to reach is less than max_elem away.
   static bool tensorCanUse32BitIndexMath(
-    const Tensor &t, int64_t max_elem=max_int32)
+    const at::Tensor &t, int64_t max_elem=max_int32)
   {
     int64_t elements = t.numel();
     if (elements >= max_elem) {

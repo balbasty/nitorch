@@ -51,10 +51,90 @@ from ._regularisers import (absolute, membrane, bending,
                             absolute_diag, membrane_diag, bending_diag,
                             regulariser_grid_kernel, regulariser_kernel)
 from ._spconv import spconv
-
+from nitorch.core.optionals import try_import_as
+c_solvers = try_import_as('nitorch._C.solve')
 
 # TODO:
 #   - implement separable prolong/restrict (with torchscript?)
+
+# ======================================================================
+#                           ESTATICS helpers
+# ======================================================================
+# these routines takes compact representation of sparse Hessians with a
+# "ESTATICS" structure.
+#
+# The Hessian of the likelihood term is sparse with structure:
+# [[D, b],
+#  [b', r]]
+# where D = diag(d) is diagonal.
+# It is stored in a flattened form: [d0, d1, ..., dP, r, b0, b1, ...,  bP]
+#
+# Because of this specific structure, the Hessian is inverted in
+# closed-form using the formula for the inverse of a 2x2 block matrix.
+# See: https://en.wikipedia.org/wiki/Block_matrix#Block_matrix_inversion
+
+
+def estatics_matvec(hess, grad):
+    """Matrix-vector multiplication specialized to the ESTATICS sparse hessian.
+
+    Parameters
+    ----------
+    hess : (..., 2*P+1) tensor
+    grad : (..., P+1) tensor
+
+    Returns
+    -------
+    mm : (..., P+1) tensor
+
+    """
+    mm = torch.zeros_like(grad)
+    P = grad.shape[-1]
+    diag = hess[..., :P - 1]
+    slope = hess[..., P - 1:P]
+    offdiag = hess[..., P:]
+    mm[..., :-1] = diag * grad[..., :-1] + offdiag * grad[..., -1:]
+    mm[..., -1:] = (offdiag * grad[..., :-1]).sum(-1, keepdim=True) + slope * grad[..., -1:]
+    return mm
+
+
+def estatics_solve(hess, grad):
+    """Left matrix division specialized to the ESTATICS sparse hessian.
+
+    Parameters
+    ----------
+    hess : (..., 2*P+1) tensor
+    grad : (..., P+1) tensor
+
+    Returns
+    -------
+    mm : (..., P+1) tensor
+
+    """
+    # H = [[diag, vec], [vec.T, scal]]
+    P = grad.shape[-1]
+    diag = hess[..., :P-1]
+    vec = hess[..., P:]
+    scal = hess[..., P-1:P]
+
+    # precompute stuff
+    vec_norm = vec / diag
+    mini_inv = scal - (vec * vec_norm).sum(dim=-1, keepdim=True)
+    result = torch.empty_like(grad)
+
+    # top left corner
+    result[..., :-1] = ((vec_norm * grad[..., :-1]).sum(dim=-1, keepdim=True) / mini_inv) * vec_norm
+    result[..., :-1] += grad[..., :-1] / diag
+
+    # top right corner:
+    result[..., :-1] -= vec_norm * grad[..., -1:] / mini_inv
+
+    # bottom left corner:
+    result[..., -1:] = - (vec_norm * grad[..., :-1]).sum(dim=-1, keepdim=True) / mini_inv
+
+    # bottom right corner:
+    result[..., -1:] += grad[..., -1:] / mini_inv
+
+    return result
 
 
 # ======================================================================
@@ -895,8 +975,7 @@ class _GridFMG(_FMG):
 
 def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
                    lame=0, factor=1, voxel_size=1, bound='dft', weights=None,
-                   optim='cg', nb_cycles=2, nb_iter=2, tolerance=0, pool=2,
-                   verbose=False):
+                   optim='cg', nb_cycles=2, nb_iter=2):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
     Notes
@@ -928,9 +1007,6 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
     optim : {'cg', 'relax'}, default='cg'
     nb_cycles : int, default=2
     nb_iter : int, default=2
-    tolerance : float, default=0
-    pool : int, default=2
-    verbose : int, default=0
 
     Returns
     -------
@@ -942,10 +1018,17 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
                                      absolute=absolute, factor=factor,
                                      voxel_size=voxel_size)
 
+    if c_solvers:
+        if optim == 'relaks':  optim = 'relax'
+        return c_solvers.c_fmg_grid(
+            hessian, gradient, weights,
+            absolute, membrane, bending, lame, factor,
+            voxel_size=voxel_size, bound=bound,
+            nb_cycles=nb_cycles, nb_iter=nb_iter, solver=optim)
+
     FMG = _GridFMG(absolute=absolute, membrane=membrane, bending=bending,
                    lame=lame, factor=factor, voxel_size=voxel_size,
-                   bound=bound, optim=optim, nb_cycles=nb_cycles, pool=pool,
-                   nb_iter=nb_iter, verbose=verbose, tolerance=tolerance)
+                   bound=bound, optim=optim, nb_cycles=nb_cycles, nb_iter=nb_iter)
     FMG.set_data(hessian, gradient, weights=weights)
     result = FMG.solve()
     # FMG allocates a lot of objects: better to force garbage collection
@@ -956,8 +1039,7 @@ def solve_grid_fmg(hessian, gradient, absolute=0, membrane=0, bending=0,
 
 def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
                     absolute=0, membrane=0, bending=0, factor=1, dim=None,
-                    optim='cg', nb_cycles=2, nb_iter=2, tolerance=0, pool=2,
-                    verbose=False, matvec=None, matsolve=None, matdiag=None):
+                    optim='cg', nb_cycles=2, nb_iter=2):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
     Notes
@@ -989,9 +1071,6 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
     optim : {'cg', 'relax'}, default='cg'
     nb_cycles : int, default=2
     nb_iter : int, default=2
-    tolerance : float, default=1e-5
-    pool : int, default=2
-    verbose : int, default=0
 
     Returns
     -------
@@ -1000,14 +1079,30 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
     """
     if not (membrane or bending):
         return solve_field_closedform(hessian, gradient, weights=weights,
-                                      absolute=absolute, factor=factor,
-                                      matsolve=matsolve, matdiag=matdiag)
+                                      absolute=absolute, factor=factor)
+
+    dim = dim or (gradient.dim() - 1)
+    if c_solvers:
+        if optim == 'relaks':  optim = 'relax'
+        return c_solvers.c_fmg(
+            hessian, gradient, weights, dim,
+            absolute, membrane, bending, factor,
+            voxel_size=voxel_size, bound=bound,
+            nb_cycles=nb_cycles, nb_iter=nb_iter, solver=optim)
+
+    C = gradient.shape[-dim-1]
+    CC = hessian.shape[-dim-1]
+    if CC == 2*C - 1:
+        matvec = estatics_matvec
+        matsolve = estatics_solve
+    else:
+        matvec = None
+        matsolve = None
 
     FMG = _FieldFMG(absolute=absolute, membrane=membrane, bending=bending,
                     factor=factor, voxel_size=voxel_size,
-                    bound=bound, optim=optim, nb_cycles=nb_cycles, pool=pool,
-                    nb_iter=nb_iter, verbose=verbose, tolerance=tolerance,
-                    matvec=matvec, matsolve=matsolve, matdiag=matdiag)
+                    bound=bound, optim=optim, nb_cycles=nb_cycles, nb_iter=nb_iter,
+                    matvec=matvec, matsolve=matsolve)
     FMG.set_data(hessian, gradient, weights=weights, dim=dim)
     result = FMG.solve()
     # FMG allocates a lot of objects: better to force garbage collection
@@ -1030,7 +1125,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
                 absolute=0, membrane=0, bending=0, factor=1,
                 voxel_size=1, bound='dct2',
                 optim='cg', max_iter=16, tolerance=1e-5, stop='max_gain',
-                verbose=False, matvec=None, matsolve=None, matdiag=None):
+                verbose=False):
     """Solve a positive-definite linear system of the form (H + L)x = g
 
     Notes
@@ -1073,16 +1168,36 @@ def solve_field(hessian, gradient, weights=None, dim=None,
     """
     if not (membrane or bending):
         return solve_field_closedform(hessian, gradient, weights=weights,
-                                      absolute=absolute, factor=factor,
-                                      matsolve=matsolve, matdiag=matdiag)
+                                      absolute=absolute, factor=factor)
 
-    matvec = matvec or sym_matvec
-    matsolve = matsolve or sym_solve
-    matdiag = matdiag or (lambda x, dim: x[..., :dim])
+    dim = dim or (gradient.dim() - 1)
+    if c_solvers:
+        if optim == 'relaks':  optim = 'relax'
+        if optim == 'cg':
+            return c_solvers.c_pcg(
+                gradient, weights, hessian, dim,
+                absolute, membrane, bending, factor,
+                voxel_size=voxel_size, bound=bound,
+                nb_iter=max_iter, tol=tolerance)
+        elif optim == 'relax':
+            return c_solvers.c_relax(
+                gradient, weights, hessian, dim,
+                absolute, membrane, bending, factor,
+                voxel_size=voxel_size, bound=bound, nb_iter=max_iter)
 
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = dim or gradient.dim() - 1
     nb_prm = gradient.shape[-dim-1]
+
+    C = gradient.shape[-dim-1]
+    CC = hessian.shape[-dim-1]
+    if CC == 2*C - 1:
+        matvec = estatics_matvec
+        matsolve = estatics_solve
+    else:
+        matvec = sym_matvec
+        matsolve = sym_solve
+    matdiag = lambda x, d: x[..., :d]
 
     voxel_size = utils.make_vector(voxel_size, dim, **backend)
     is_diag = hessian.shape[-dim-1] in (1, gradient.shape[-dim-1])
@@ -1242,6 +1357,20 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
         return solve_grid_closedform(hessian, gradient, weights=weights,
                                      absolute=absolute, factor=factor,
                                      voxel_size=voxel_size)
+
+    if c_solvers:
+        if optim == 'relaks':  optim = 'relax'
+        if optim == 'cg':
+            return c_solvers.c_pcg_grid(
+                gradient, weights, hessian,
+                absolute, membrane, bending, lame, factor,
+                voxel_size=voxel_size, bound=bound,
+                nb_iter=max_iter, tol=tolerance)
+        elif optim == 'relax':
+            return c_solvers.c_relax_grid(
+                gradient, weights, hessian,
+                absolute, membrane, bending, lame, factor,
+                voxel_size=voxel_size, bound=bound, nb_iter=max_iter)
 
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = gradient.shape[-1]
@@ -1609,7 +1738,7 @@ solve_field_sym = solve_field
 
 
 def solve_field_closedform(hessian, gradient, weights=None, dim=None,
-                           absolute=0, factor=1, matsolve=None, matdiag=None):
+                           absolute=0, factor=1):
     """Solve a positive-definite linear system of the form (H + I)x = g
 
     Notes
@@ -1637,13 +1766,24 @@ def solve_field_closedform(hessian, gradient, weights=None, dim=None,
     solution : (..., K, *spatial) tensor
 
     """
-    matsolve = matsolve or sym_solve
-    matdiag = matdiag or (lambda x, dim: x[..., :dim])
+
+    dim = dim or (gradient.dim() - 1)
+    if c_solvers:
+        return c_solvers.c_precond(
+            gradient, weights, hessian, dim, absolute, factor=factor)
 
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = dim or gradient.dim() - 1
     nb_prm = gradient.shape[-dim-1]
     is_diag = hessian.shape[-dim-1] in (1, gradient.shape[-dim-1])
+
+    C = gradient.shape[-dim-1]
+    CC = hessian.shape[-dim-1]
+    if CC == 2*C - 1:
+        matsolve = estatics_solve
+    else:
+        matsolve = sym_solve
+    matdiag = lambda x, d: x[..., :d]
 
     factor = utils.make_vector(factor, nb_prm, **backend)
     pad_spatial = (Ellipsis,) + (None,) * dim
@@ -1702,6 +1842,11 @@ def solve_grid_closedform(hessian, gradient, weights=None,
     solution : (..., *spatial, D) tensor
 
     """
+    if c_solvers:
+        return c_solvers.c_precond_grid(
+            gradient, weights, hessian, absolute, factor=factor,
+            voxel_size=voxel_size)
+
     backend = dict(dtype=hessian.dtype, device=hessian.device)
     dim = gradient.shape[-1]
     nb_prm = dim

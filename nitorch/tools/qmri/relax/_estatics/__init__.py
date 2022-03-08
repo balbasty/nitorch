@@ -28,13 +28,16 @@ from ._options import ESTATICSOptions
 from ._param import ESTATICSParameterMaps
 
 
-def estatics(data, opt=None, **kwopt):
+def estatics(data, dist, opt=None, **kwopt):
     """Fit the ESTATICS model to multi-echo Gradient-Echo data.
 
     Parameters
     ----------
     data : sequence[GradientEchoMulti]
         Observed GRE data.
+
+    dist : sequence[Optional[ParameterizedDistortion]], optional
+        Pre-computed distortion fields
 
     opt : ESTATICSOptions, optional
         {'model':    'nonlin',                   # 'loglin' (= ESTATICS) or 'nonlin' (=JTV-ESTATICS)
@@ -62,6 +65,8 @@ def estatics(data, opt=None, **kwopt):
         Echo series extrapolated to TE=0
     decay : estatics.ParameterMap
         R2* decay map
+    distortions : sequence[ParameterizedDistortion], if opt.distortion.enable
+        B0-induced distortion fields
 
     References
     ----------
@@ -78,4 +83,4 @@ def estatics(data, opt=None, **kwopt):
     if opt.model.lower() == 'loglin':
         return loglin(data, opt)
     else:
-        return nonlin(data, opt)
+        return nonlin(data, dist, opt)

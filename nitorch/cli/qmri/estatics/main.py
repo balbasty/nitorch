@@ -1,7 +1,8 @@
 from nitorch.cli.cli import commands
 from .parser import parser, help, ParseError
 from nitorch.tools.qmri import estatics, ESTATICSOptions, io as qio
-from nitorch.tools.qmri.relax.utils import smart_pull
+from nitorch.tools.qmri.relax.utils import smart_pull, pull1d
+from nitorch.tools.qmri.param import DenseDistortion
 from nitorch import io, spatial
 from nitorch.core import py
 import torch
@@ -12,7 +13,7 @@ import os
 def cli(args=None):
     f"""Command-line interface for `estatics`
 
-    {help[1]}
+    {help}
 
     """
 
@@ -20,7 +21,7 @@ def cli(args=None):
     try:
         _cli(args)
     except ParseError as e:
-        print(help[1])
+        print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
     # except Exception as e:
     #     print(f'[ERROR] {str(e)}', file=sys.stderr)
@@ -62,6 +63,11 @@ def _main(options):
     estatics_opt.verbose = options.verbose >= 1
     estatics_opt.plot = options.verbose >= 2
     estatics_opt.recon.space = options.space
+    if isinstance(options.space, str) and  options.space != 'mean':
+        for c, contrast in enumerate(options.contrast):
+            if contrast.name == options.space:
+                estatics_opt.recon.space = c
+                break
     estatics_opt.backend.device = device
     estatics_opt.optim.nb_levels = options.levels
     estatics_opt.optim.max_iter_rls = options.iter
@@ -74,6 +80,7 @@ def _main(options):
 
     # prepare files
     contrasts = []
+    distortion = []
     for i, c in enumerate(options.contrast):
 
         # read meta-parameters
@@ -110,8 +117,23 @@ def _main(options):
                     readout = j - 3
             contrasts[-1].readout = readout
 
+        if c.b0:
+            bw = c.bandwidth
+            b0, *unit = c.b0
+            unit = unit[-1] if unit else 'vx'
+            b0 = io.loadf(b0, device=device)
+            if unit.lower() == 'hz':
+                if not bw:
+                    raise ValueError('Bandwidth required to convert fieldmap'
+                                     'form Hz to voxel')
+                b0 /= bw
+            b0 = DenseDistortion(b0)
+            distortion.append(b0)
+        else:
+            distortion.append(None)
+
     # run algorithm
-    [te0, r2s, *b0] = estatics(contrasts, estatics_opt)
+    [te0, r2s, *b0] = estatics(contrasts, distortion, opt=estatics_opt)
 
     # write results
 
@@ -145,8 +167,6 @@ def _main(options):
             readout = c.readout
             grid_up, grid_down, jac_up, jac_down = b.exp2(
                 add_identity=True, jacobian=True)
-            jac_up = jac_up[..., readout, readout]
-            jac_down = jac_down[..., readout, readout]
             for j, e in enumerate(c):
                 blip = e.blip or (2*(j % 2) - 1)
                 grid_blip = grid_down if blip > 0 else grid_up  # inverse of
@@ -157,7 +177,7 @@ def _main(options):
                 obase = obase + '_unwrapped'
                 ofname = os.path.join(odir, obase + oext)
                 d = e.fdata(device=device)
-                d = smart_pull(d, grid_blip, bound='dft', extrapolate=True)
+                d, _ = pull1d(d, grid_blip, readout)
                 d *= jac_blip
                 io.savef(d, ofname, affine=e.affine, like=ifname)
                 del d

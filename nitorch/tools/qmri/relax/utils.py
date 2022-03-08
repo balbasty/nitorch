@@ -771,3 +771,35 @@ def nll_gauss(dat, fit, msk, lam, return_residuals=True):
     res = dat.neg_().add_(fit)
     crit = 0.5 * lam * ssq(res[msk])
     return (crit, res) if return_residuals else crit
+
+
+def pull1d(img, grid, dim, grad=False, **kwargs):
+    if grid is None:
+        if grad:
+            bound = kwargs.get('bound', 'dft')
+            return img, spatial.diff1d(img, dim=dim, bound=bound, side='c')
+        else:
+            return img, None
+    kwargs.setdefault('extrapolate', True)
+    kwargs.setdefault('bound', 'dft')
+    img = core.utils.movedim(img, dim, -1).unsqueeze(-2)
+    grid = core.utils.movedim(grid, dim, -1).unsqueeze(-1)
+    warped = spatial.grid_pull(img, grid, **kwargs)
+    warped = core.utils.movedim(warped.squeeze(-2), -1, dim)
+    if not grad:
+        return warped, None
+    grad = spatial.grid_grad(img, grid, **kwargs)
+    grad = core.utils.movedim(grad.squeeze(-1).squeeze(-2), -1, dim)
+    return warped, grad
+
+
+def push1d(img, grid, dim, **kwargs):
+    if grid is None:
+        return img
+    kwargs.setdefault('extrapolate', True)
+    kwargs.setdefault('bound', 'dft')
+    img = core.utils.movedim(img, dim, -1).unsqueeze(-2)
+    grid = core.utils.movedim(grid, dim, -1).unsqueeze(-1)
+    pushed = spatial.grid_push(img, grid, **kwargs)
+    pushed = core.utils.movedim(pushed.squeeze(-2), -1, dim)
+    return pushed

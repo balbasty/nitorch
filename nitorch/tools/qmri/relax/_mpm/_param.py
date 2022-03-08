@@ -24,8 +24,10 @@ class GREEQParameterMaps(MultiParameterMaps):
     ```
     """
 
-    def __new__(cls, *args, **kwargs):
-        self = super().__new__(cls, *args, **kwargs)
+    def __init__(self, *args, **kwargs):
+        self._greeq_volume = None
+        self._greeq_affine = None
+        super().__init__(*args, **kwargs)
         if len(self) not in (3, 4):
             raise ValueError('Exected 3 or 4 maps')
         self.pd = ParameterMap(self.volume[0], affine=self.affine)
@@ -33,7 +35,6 @@ class GREEQParameterMaps(MultiParameterMaps):
         self.r2s = ParameterMap(self.volume[2], affine=self.affine)
         if len(self) == 4:
             self.mt = ParameterMap(self.volume[3], affine=self.affine)
-        return self
 
     def drop_mt(self):
         if not hasattr(self, 'mt'):
@@ -72,13 +73,13 @@ class GREEQParameterMaps(MultiParameterMaps):
         if hasattr(self, 'mt'):
             self.mt.affine = self.affine
 
-    def __len__(self):
-        return len(self.volume)
-
     def __iter__(self):
-        yield self.pd
-        yield self.r1
-        yield self.r2s
+        if hasattr(self, 'pd'):
+            yield self.pd
+        if hasattr(self, 'r1'):
+            yield self.r1
+        if hasattr(self, 'r2s'):
+            yield self.r2s
         if hasattr(self, 'mt'):
             yield self.mt
             

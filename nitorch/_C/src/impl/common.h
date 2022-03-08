@@ -27,8 +27,10 @@
 #  include <THC/THCAtomics.cuh>
 // --- DEFINES ---------------------------------------------------------
 #  define NI_INLINE __forceinline__
+#  define NI_NOINLINE __noinline__
 #  define NI_DEVICE __device__
 #  define NI_HOST   __host__
+#  define NI_DEVICE_NAME cuda
 #  define NI_NAMESPACE_DEVICE namespace cuda
 // --- ATOMIC ADD ------------------------------------------------------
 #  define NI_ATOMIC_ADD ni::gpuAtomicAdd
@@ -47,12 +49,39 @@ namespace ni {
 #   endif
   }
 }
+namespace ni {
+template <typename T>
+static NI_HOST NI_INLINE 
+T * alloc_on_device(const T * obj)
+{
+  T * pointer_device;
+  cudaMalloc((void **)&pointer_device, sizeof(T));
+  return pointer_device;
+}
+template <typename T, typename Stream>
+static NI_HOST NI_INLINE 
+T * copy_to_device(const T * obj, T * pointer_device, Stream stream)
+{
+  cudaMemcpyAsync(pointer_device, obj, sizeof(T), cudaMemcpyHostToDevice, stream);
+  return pointer_device;
+}
+template <typename T, typename Stream>
+static NI_HOST NI_INLINE 
+T * alloc_and_copy_to_device(const T * obj, Stream stream)
+{
+  T * pointer_device = alloc_on_device(obj);
+  copy_to_device(obj, pointer_device, stream);
+  return pointer_device;
+}
+}
 // === CPU =============================================================
 #else
 // --- DEFINES ---------------------------------------------------------
 #  define NI_INLINE inline
+#  define NI_NOINLINE
 #  define NI_DEVICE
 #  define NI_HOST
+#  define NI_DEVICE_NAME cpu
 #  define NI_NAMESPACE_DEVICE namespace cpu
 // --- ATOMIC ADD ------------------------------------------------------
 #  define NI_ATOMIC_ADD ni::cpuAtomicAdd

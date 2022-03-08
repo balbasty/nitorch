@@ -24,14 +24,16 @@ References
       MIDL 2020
       https://arxiv.org/abs/2003.01995
 """
-from typing import Sequence
-import torch
-from torch.functional import Tensor
 
+# # WIP qmri synth
+# from typing import Sequence
+# from torch import Tensor
+# from nitorch.tools import qmri
+
+import torch
 import nitorch as ni
 from nitorch import spatial
 from nitorch.core import utils
-from nitorch.tools import qmri
 from nitorch.nn.generators.spatial import RandomPatch
 from ..base import Module
 from ..preproc import LabelToOneHot, OneHotToLabel, AffineQuantiles

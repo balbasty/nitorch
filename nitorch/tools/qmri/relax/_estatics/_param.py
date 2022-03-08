@@ -1,9 +1,7 @@
-from nitorch.tools.qmri.param import ParameterMap
-import torch
-import copy
+from nitorch.tools.qmri.param import ParameterMap, MultiParameterMaps
 
 
-class ESTATICSParameterMaps:
+class ESTATICSParameterMaps(MultiParameterMaps):
     """ESTATICS-specific parameter maps
 
     Attributes
@@ -23,54 +21,56 @@ class ESTATICSParameterMaps:
     >>    do_something(prm)
     ```
     """
-
-    intercepts: list = None
-    decay: ParameterMap = None
-    volume: torch.Tensor = None
-
-    def __init__(self, nb_contrasts, shape, dtype=None, device=None, affine=None):
-        """
-
-        Parameters
-        ----------
-        nb_contrasts : int
-        shape : sequence[int]
-        dtype : torch.dtype, optional
-        device : torch.device, optional
-        affine : (D+1, D+1) tensor, optional
-        """
-        full_shape = (nb_contrasts+1, *shape)
-        volume = torch.zeros(full_shape, dtype=dtype, device=device)
-        volume[-1].fill_(1)
-        self.intercepts = [ParameterMap(volume[c], affine=affine)
-                           for c in range(nb_contrasts)]
-        self.decay = ParameterMap(volume[-1], affine=affine, min=0)
-        self.volume = volume
-
-    def __len__(self):
-        return len(self.intercepts) + 1
+    def __init__(self, *args, **kwargs):
+        self._estatics_volume = []
+        self._estatics_affine = None
+        # self.intercepts = []
+        # self.decay = None
+        super().__init__(*args, **kwargs)
+        # self.intercepts = [ParameterMap(self.volume[i], affine=self.affine)
+        #                    for i in range(len(self)-1)]
+        # self.decay = ParameterMap(self.volume[-1], affine=self.affine)
 
     @property
-    def shape(self):
-        return (len(self), *self.decay.shape)
+    def intercepts(self):
+        if self.volume is None:
+            return []
+        return [ParameterMap(self.volume[i], affine=self.affine)
+                for i in range(len(self)-1)]
+
+    @property
+    def decay(self):
+        if self.volume is None:
+            return None
+        return ParameterMap(self.volume[-1], affine=self.affine)
+
+    @property
+    def volume(self):
+        return self._estatics_volume
+
+    @volume.setter
+    def volume(self, value):
+        self._estatics_volume = value
+        for map, val in zip(self, value):
+            if map:
+                map.volume = val
 
     @property
     def affine(self):
-        return self.decay.affine
+        return self._estatics_affine
 
     @affine.setter
     def affine(self, value):
-        self.decay.affine = value
-        for inter in self.intercepts:
-            inter.affine = value
+        self._estatics_affine = value
+        for map, val in zip(self, value):
+            if map:
+                map.affine = val
 
     def __iter__(self):
-        maps = self.intercepts + [self.decay]
-        for map in maps:
+        for map in self.intercepts:
             yield map
+        yield self.decay
 
-    def copy(self):
-        return copy.copy(self)
-
-    def deepcopy(self):
-        return copy.deepcopy(self)
+    def __getitem__(self, index):
+        maps = [*self.intercepts, self.decay]
+        return maps[index]
