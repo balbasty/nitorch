@@ -44,6 +44,11 @@ else:
 
 
 @torch.jit.script
+def _square(x):
+    return x*x
+
+
+@torch.jit.script
 def _edt_1d(f, dim: int = -1, w: float = 1.):
     """Algorithm 1 in "Distance Transforms of Sampled Functions"
     Pedro F. Felzenszwalb & Daniel P. Huttenlocher
@@ -105,7 +110,7 @@ def _edt_1d(f, dim: int = -1, w: float = 1.):
 
         vk = v.gather(0, k[None])[0]
         fvk = f.gather(0, vk[None])[0]
-        d[q] = w * (q - vk).square() + fvk
+        d[q] = w * _square(q - vk) + fvk
 
     d = movedim1(d, 0, dim)
     return d
