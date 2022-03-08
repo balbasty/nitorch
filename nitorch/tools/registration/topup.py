@@ -49,9 +49,10 @@ class TopUpFlexiStep:
     """
 
     def __init__(self, pos, neg, loss, reg, verbose=False, model='smalldef',
-                 modulation=True):
+                 modulation=True, mask=None):
         self.pos = pos
         self.neg = neg
+        self.mask = mask
         self.loss = loss
         self.reg = reg
         self.model = model
@@ -82,14 +83,14 @@ class TopUpFlexiStep:
 
         g = ig = h = ih = None
         if grad and hess:
-            ll, g, h = self.loss.loss_grad_hess(pos, neg)
-            ill, ig, ih = self.loss.loss_grad_hess(neg, pos)
+            ll, g, h = self.loss.loss_grad_hess(pos, neg, mask=self.mask)
+            ill, ig, ih = self.loss.loss_grad_hess(neg, pos, mask=self.mask)
         elif grad:
-            ll, g = self.loss.loss_grad(pos, neg)
-            ill, ig = self.loss.loss_grad(neg, pos)
+            ll, g = self.loss.loss_grad(pos, neg, mask=self.mask)
+            ill, ig = self.loss.loss_grad(neg, pos, mask=self.mask)
         else:
-            ll = self.loss.loss(pos, neg)
-            ill = self.loss.loss(neg, pos)
+            ll = self.loss.loss(pos, neg, mask=self.mask)
+            ill = self.loss.loss(neg, pos, mask=self.mask)
 
         ll += ill
         ll /= 2
@@ -250,7 +251,7 @@ def topup_apply(pos, neg, vel, dim=-1, model='smalldef', modulation=True):
     return pos, neg
 
 
-def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3,
+def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3, mask=None,
               model='smalldef', penalty='bending', modulation=True,
               max_iter=50, tolerance=1e-4, verbose=True, vel=None):
     """TOPUP correction with flexible objective function
@@ -298,6 +299,8 @@ def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3,
     if no_batch_neg:
         neg = neg[None]
     neg = utils.movedim(neg, dim, -1)
+    if mask is not None:
+        mask = utils.movedim(mask, dim, -1)
     if isinstance(loss, str):
         loss = make_loss(loss)
 
@@ -308,7 +311,7 @@ def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3,
                                    factor=lam, voxel_size=vx, bound=BND)
 
     step = TopUpFlexiStep(pos, neg, loss, regulariser, verbose,
-                          model=model, modulation=modulation)
+                          model=model, modulation=modulation, mask=mask)
     optim = optm.FieldCG(factor=lam, voxel_size=vx, **{penalty: 1},
                          bound=BND, max_iter=4)
     optim = optm.IterateOptim(optim, max_iter=max_iter, tol=tolerance,

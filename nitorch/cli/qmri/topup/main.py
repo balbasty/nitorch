@@ -143,6 +143,11 @@ def main_fit(options):
     f1 = io.map(options.neg_file)
     dim = f0.affine.shape[-1] - 1
 
+    # map mask
+    fm = None
+    if options.mask:
+        fm = io.map(options.mask)
+
     # detect readout direction
     readout = get_readout(options.readout, f0.affine, f0.shape[-dim:])
 
@@ -172,10 +177,12 @@ def main_fit(options):
     # load
     d00 = f0.fdata(device='cpu')
     d11 = f1.fdata(device='cpu')
+    dmask = fm.fdata(device='cpu') if fm else None
 
     # fit
     vel = None
     last_dwn = last_aff = None
+    mask = None
     for penalty, n, tol, dwn in zip(penalties, max_iter, tolerance, downs):
 
         if dwn != last_dwn:
@@ -185,6 +192,8 @@ def main_fit(options):
             if vel is not None:
                 vel = upsample_vel(vel, last_aff, aff, d0.shape[-dim:], readout)
             last_aff = aff
+            if fm:
+                mask, _ = downsample(dmask.to(device), f1.affine, dwn)
         last_dwn = dwn
         scl = py.prod(d00.shape) / py.prod(d0.shape)
         penalty = penalty * scl
@@ -204,7 +213,7 @@ def main_fit(options):
                         model=('svf' if options.diffeo else 'smalldef'),
                         lam=penalty, penalty=penalty_type, vel=vel,
                         modulation=options.modulation, max_iter=n,
-                        tolerance=tol, verbose=options.verbose)
+                        tolerance=tol, verbose=options.verbose, mask=mask)
 
     del d0, d1, d00, d11
 
