@@ -418,13 +418,16 @@ Tensor fmg_grid_impl(const Tensor & hessian,
     Tensor view;
     switch (dim) {  // there are no breaks on purpose
       case 3:
-        view  = o.index({Slice(), 2});
+        // view  = o.index({Slice(), 2});
+        view = o.slice(-1, 2, 3);
         view *= static_cast<double>(x.size(4)) / static_cast<double>(o.size(4));
       case 2:
-        view  = o.index({Slice(), 1});
+        // view  = o.index({Slice(), 1});
+        view = o.slice(-1, 1, 2);
         view *= static_cast<double>(x.size(3)) / static_cast<double>(o.size(3));
       case 1:
-        view  = o.index({Slice(), 0});
+        // view  = o.index({Slice(), 0});
+        view = o.slice(-1, 0, 1);
         view *= static_cast<double>(x.size(2)) / static_cast<double>(o.size(2));
       default:
         break;
@@ -451,26 +454,32 @@ Tensor fmg_grid_impl(const Tensor & hessian,
     switch (dim) {  // there are no breaks on purpose
       case 3:
         if (CC > 1) {
-          view   = o.index({Slice(), 2});
+          // view   = o.index({Slice(), 2});
+          view = o.slice(-1, 2, 3);
           view  *= (f2 * f2);
           if (CC > dim) {
-            view   = o.index({Slice(), 5});
+            // view   = o.index({Slice(), 5});
+            view = o.slice(-1, 5, 6);
             view  *= (f1 * f2);
-            view   = o.index({Slice(), 4});
+            //view   = o.index({Slice(), 4});
+            view = o.slice(-1, 4, 5);
             view  *= (f0 * f2);
           }
         }
       case 2:
         if (CC > 1) {
-          view   = o.index({Slice(), 1});
+          // view   = o.index({Slice(), 1});
+          view = o.slice(-1, 1, 2);
           view  *= (f1 * f1);
           if (CC > dim) {
-            view   = o.index({Slice(), dim});
+            // view   = o.index({Slice(), dim});
+            view   = o.slice(-1, dim, dim+1);
             view  *= (f0 * f1);
           }
         }
       case 1:
-        view   = o.index({Slice(), 0});
+        // view   = o.index({Slice(), 0});
+        view = o.slice(-1, 0, 1);
         view  *= (f0 * f0);
       default:
         break;
