@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import torch
 from nitorch import core, spatial
 from ._options import ESTATICSOptions
