@@ -108,7 +108,6 @@ def nonlin(data, dist=None, opt=None):
         bending=opt.distortion.bending)
 
     # --- initialize weights (RLS) -------------------------------------
-    iter_rls = make_iter_rls(nb_contrasts)
     mean_shape = maps.decay.volume.shape
     rls = None
     sumrls = 0
@@ -528,22 +527,6 @@ def nonlin(data, dist=None, opt=None):
     if opt.distortion.enable:
         out = (*out, dist)
     return out
-
-
-def make_iter_rls(nb_contrasts):
-    """Make it easy to iterate across RLS weights even if they are `None`."""
-    def iter_rls(rls):
-        if rls is None:
-            for _ in range(nb_contrasts+1):
-                yield None
-        elif rls.dim() == 3:
-            for _ in range(nb_contrasts+1):
-                yield rls
-        else:
-            assert rls.dim() == 4
-            for rls1 in rls:
-                yield rls1
-    return iter_rls
 
 
 @torch.jit.script
