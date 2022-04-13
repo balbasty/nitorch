@@ -2213,7 +2213,7 @@ def affine_modify(affine, shape, voxel_size=None, layout=None, center=None):
 
     if center is None:
         # preserve center
-        center = shape * 0.5
+        center = (shape - 1) * 0.5
         center = affine_matvec(affine, center)
 
     # set correct layout
@@ -2228,7 +2228,7 @@ def affine_modify(affine, shape, voxel_size=None, layout=None, center=None):
 
     # set correct center
     center = utils.make_vector(center, nb_dim, **backend)
-    vox_center = shape * 0.5
+    vox_center = (shape - 1) * 0.5
     old_center = affine_matvec(affine, vox_center)
     affine[:-1, -1] += center - old_center
 
