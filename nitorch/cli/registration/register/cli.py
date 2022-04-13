@@ -1,3 +1,5 @@
+import warnings
+
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import parser, help
@@ -8,6 +10,7 @@ from nitorch.core import utils, py, dtypes
 import torch
 import sys
 import os
+import math as pymath
 
 
 def cli(args=None):
@@ -88,10 +91,13 @@ def _load_image(fnames, dim=None, device=None, label=False):
         dat = torch.zeros([len(label), *dat0.shape], device=device)
         for i, l in enumerate(label):
             dat[i] = dat0 == l
+        mask = None
     else:
-        dat = dat.fdata(device=device, rand=True)
+        dat = dat.fdata(device=device, rand=True, missing=0)
+        mask = torch.isfinite(dat)
+        dat.masked_fill_(~mask, 0)
     affine = affine.to(dat.device, torch.float32)
-    return dat, affine
+    return dat, mask, affine
 
 
 def _rescale_image(dat, quantiles):
@@ -122,19 +128,36 @@ def _discretize_image(dat, nbins=256):
     return dat
 
 
+def _soft_quantize_image(dat, nbins=16):
+    """Discretize an image into a number of bins"""
+    dim = dat.dim() - 1
+    dat = dat[0]
+    mn, mx = utils.quantile(dat, (0.0005, 0.9995), dim=range(-dim, 0), keepdim=True).unbind(-1)
+    dat = dat.sub_(mn).div_(mx - mn).clamp_(0, 1).mul_(nbins)
+    centers = torch.linspace(0, nbins, nbins+1, **utils.backend(dat))
+    centers = (centers[1:] + centers[:-1]) / 2
+    centers = centers.flip(0)
+    centers = centers[(Ellipsis,) + (None,) * dim]
+    dat = (centers - dat).square().mul_(-2.355**2).exp_()
+    dat /= dat.sum(0, keepdims=True)
+    return dat
+
+
 def _make_image(option, dim=None, device=None):
     """Return an ImagePyramid object"""
-    dat, affine = _load_image(option.files, dim=dim, device=device,
-                              label=option.label)
+    dat, mask, affine = _load_image(option.files, dim=dim, device=device,
+                                    label=option.label)
     dim = dat.dim() - 1
     if option.mask:
-        mask, _ = _load_image([option.mask], dim=dim, device=device,
-                              label=option.label)
+        mask1 = mask
+        mask, _, _ = _load_image([option.mask], dim=dim, device=device,
+                                 label=option.label)
         if mask.shape[-dim:] != dat.shape[-dim:]:
             raise ValueError('Mask should have the same shape as the image. '
                              f'Got {mask.shape[-dim:]} and {dat.shape[-dim:]}')
-    else:
-        mask = None
+        if mask1 is not None:
+            mask = mask * mask1
+        del mask1
     if option.world:  # overwrite orientation matrix
         affine = io.transforms.map(option.world).fdata()
     for transform in (option.affine or []):
@@ -172,17 +195,23 @@ def _make_image(option, dim=None, device=None):
             fwhm = torch.as_tensor(fwhm, **utils.backend(voxel_size))
             fwhm = fwhm / voxel_size
         dat = spatial.smooth(dat, dim=dim, fwhm=fwhm, bound=option.bound)
-    pyramid = []
-    for level in option.pyramid:
-        if isinstance(level, int):
-            pyramid.append(level)
-        else:
-            pyramid.extend(list(level))
-    image = objects.ImagePyramid(dat, levels=pyramid, affine=affine,
-                                 dim=dim, bound=option.bound, mask=mask,
-                                 extrapolate=option.extrapolate)
-    if not option.label and option.discretize:
+    image = objects.ImagePyramid(
+        dat,
+        levels=option.pyramid,
+        affine=affine,
+        dim=dim,
+        bound=option.bound,
+        mask=mask,
+        extrapolate=option.extrapolate,
+        method=option.pyramid_method
+    )
+    if getattr(option, 'soft_quantize', False) and len(image[0].dat) == 1:
         for level in image:
+            level.preview = level.dat
+            level.dat = _soft_quantize_image(level.dat, option.soft_quantize)
+    elif not option.label and option.discretize:
+        for level in image:
+            level.preview = level.dat
             level.dat = _discretize_image(level.dat, option.discretize)
     return image
 
@@ -259,8 +288,8 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
         odir = odir or idir or '.'
 
         image = objects.Image(fix.fdata(rand=True, device=device), dim=dim,
-                            affine=fix_affine, bound=option.fix.bound,
-                            extrapolate=option.fix.extrapolate)
+                              affine=fix_affine, bound=option.fix.bound,
+                              extrapolate=option.fix.extrapolate)
 
         if option.fix.output:
             target_affine = fix_affine
@@ -281,7 +310,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             target_affine = mov_affine
             target_shape = mov.shape[1:]
 
-            fname = option.mov.resliced.format(dir=odir, base=base, sep=os.path.sep, ext=ext)
+            fname = option.fix.resliced.format(dir=odir, base=base, sep=os.path.sep, ext=ext)
             print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = _warp_image1(image, target_affine, target_shape,
                                   affine=affine, nonlin=nonlin,
@@ -289,6 +318,122 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             io.savef(warped, fname, like=ifname, affine=target_affine)
             print('done.')
             del warped
+
+
+def _pyramid_levels1(vx, shape, opt):
+    def is_valid(vx, shape):
+        if opt.min_size and any(s < opt.min_size for s in shape):
+            return False
+        if opt.max_size and any(s > opt.max_size for s in shape):
+            return False
+        if opt.min_vx and any(v < opt.min_vx for v in vx):
+            return False
+        if opt.max_vx and any(v > opt.max_vx for v in vx):
+            return False
+        return True
+
+    def is_max(vx, shape):
+        if opt.min_size and any(s < opt.min_size for s in shape):
+            return True
+        if opt.max_vx and any(v > opt.max_vx for v in vx):
+            return True
+        if all(s == 1 for s in shape):
+            return True
+        return False
+
+    full_pyramid = [(0, vx, shape)]
+    valid_pyramid = []
+    while True:
+        level0, vx0, shape0 = full_pyramid[-1]
+        if is_max(vx0, shape0):
+            break
+        if is_valid(vx0, shape0):
+            valid_pyramid.append(full_pyramid[-1])
+        vx1 = [v*2 for v in vx0]
+        shape1 = [int(pymath.ceil(s/2)) for s in shape0]
+        full_pyramid.append((level0+1, vx1, shape1))
+
+    if not valid_pyramid:
+        raise ValueError(f'Image with shape {shape} and voxel size {vx} '
+                         f'does not fit in the pyramid.')
+    return valid_pyramid
+
+
+def _pyramid_levels(vxs, shapes, opt):
+    dim = len(shapes[0])
+    # first: compute approximate voxel size and shape at each level
+    pyramids = [
+        _pyramid_levels1(vx, shape, opt)
+        for vx, shape in zip(vxs, shapes)
+    ]
+    # NOTE: pyramids = [[(level, vx, shape), ...], ...]
+
+    # second: match voxel sizes across images
+    vx0 = min([py.prod(pyramid[0][1]) for pyramid in pyramids])
+    vx0 = pymath.log2(vx0**(1/dim))
+    level_offsets = []
+    for pyramid in pyramids:
+        level, vx, shape = pyramid[0]
+        vx1 = pymath.log2(py.prod(vx)**(1/dim))
+        level_offsets.append(round(vx1 - vx0))
+
+    # third: keep only levels that overlap across images
+    max_level = min(o + len(p) for o, p in zip(level_offsets, pyramids))
+    pyramids = [p[:max_level-o] for o, p in zip(level_offsets, pyramids)]
+    if any(len(p) == 0 for p in pyramids):
+        raise ValueError(f'Some images do not overlap in the pyramid.')
+
+    # fourth: compute pyramid index of each image at each level
+    select_levels = []
+    for level in opt.levels:
+        if isinstance(level, int):
+            select_levels.append(level)
+        else:
+            select_levels.extend(list(level))
+
+    map_levels = []
+    for pyramid, offset in zip(pyramids, level_offsets):
+        map_levels1 = [pyramid[0][0]] * offset
+        for pyramid_level in pyramid:
+            map_levels1.append(pyramid_level[0])
+        if select_levels:
+            map_levels1 = [map_levels1[l] for l in select_levels
+                           if l < len(map_levels1)]
+        map_levels.append(map_levels1)
+
+    return map_levels
+
+
+def _prepare_pyramid_levels(losses, opt, dim=None):
+    if opt.name == 'none':
+        return [{'fix': None, 'mov': None}] * len(losses)
+
+    vxs = []
+    shapes = []
+    for loss in losses:
+        # fixed image
+        dat, affine = _map_image(loss.fix.files, dim)
+        vx = dat.voxel_size[0].tolist()
+        shape = dat.shape[:dim]
+        if loss.fix.pad:
+            pad = py.make_list(loss.fix.pad, len(shape))
+            shape = [s + 2*p for s, p in zip(shape, pad)]
+        vxs.append(vx)
+        shapes.append(shape)
+        # moving image
+        dat, affine = _map_image(loss.mov.files, dim)
+        vx = dat.voxel_size[0].tolist()
+        shape = dat.shape[:dim]
+        if loss.mov.pad:
+            pad = py.make_list(loss.mov.pad, len(shape))
+            shape = [s + 2*p for s, p in zip(shape, pad)]
+        vxs.append(vx)
+        shapes.append(shape)
+
+    levels = _pyramid_levels(vxs, shapes, opt)
+    levels = [{'fix': fix, 'mov': mov}
+              for fix, mov in zip(levels[::2], levels[1::2])]
+    return levels
 
 
 def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
@@ -345,17 +490,192 @@ def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
     return warped
 
 
-def _main(options):
-    if isinstance(options.gpu, str):
-        device = torch.device(options.gpu)
+def setup_device(device, ndevice):
+    if device == 'gpu' and not torch.cuda.is_available():
+        warnings.warn('CUDA not available. Switching to CPU.')
+        device, ndevice = 'cpu', None
+    if device == 'cpu':
+        device = torch.device('cpu')
+        if ndevice:
+            torch.set_num_threads(ndevice)
     else:
-        assert isinstance(options.gpu, int)
-        device = torch.device(f'cuda:{options.gpu}')
+        assert device == 'gpu'
+        if ndevice is not None:
+            device = torch.device(f'cuda:{ndevice}')
+        else:
+            device = torch.device('cuda')
+    return device
 
-    # build loss
+
+def _get_loss(loss, dim):
+    if loss.name == 'mi':
+        lossobj = losses.MI(bins=loss.bins, norm=loss.norm,
+                            spline=loss.order, fwhm=loss.fwhm, dim=dim)
+    elif loss.name == 'ent':
+        lossobj = losses.Entropy(bins=loss.bins, spline=loss.order,
+                                 fwhm=loss.fwhm, dim=dim)
+    elif loss.name == 'mse':
+        lossobj = losses.MSE(lam=loss.weight, dim=dim)
+    elif loss.name == 'mad':
+        lossobj = losses.MAD(lam=loss.weight, dim=dim)
+    elif loss.name == 'tuk':
+        lossobj = losses.Tukey(lam=loss.weight, dim=dim)
+    elif loss.name == 'cc':
+        lossobj = losses.CC(dim=dim)
+    elif loss.name == 'lcc':
+        lossobj = losses.LCC(patch=loss.patch, dim=dim, stride=loss.stride,
+                             mode=loss.kernel)
+    elif loss.name == 'gmm':
+        lossobj = losses.GMMH(bins=loss.bins, dim=dim,
+                              max_iter=loss.max_iter)
+    elif loss.name == 'lgmm':
+        lossobj = losses.LGMMH(bins=loss.bins, dim=dim,
+                               max_iter=loss.max_iter,
+                               patch=loss.patch,
+                               stride=loss.stride,
+                               mode=loss.kernel)
+    elif loss.name == 'cat':
+        lossobj = losses.Cat(dim=dim, log=False)
+        # lossobj = losses.AutoCat()
+    elif loss.name == 'dice':
+        lossobj = losses.Dice(weighted=loss.weight, log=False)
+    elif loss.name == 'prod':
+        lossobj = losses.ProdLoss(dim=dim)
+    elif loss.name == 'normprod':
+        lossobj = losses.NormProdLoss(dim=dim)
+    elif loss.name == 'sqz':
+        lossobj = losses.SqueezedProdLoss(dim=dim, lam=loss.weight)
+    elif loss.name == 'emmi':
+        fwhm = None
+        if not loss.fix.label:
+            fwhm = loss.fix.discretize // 64
+        lossobj = losses.EMMI(dim=dim, fwhm=fwhm)
+    elif loss.name == 'extra':
+        # Not a proper loss, we just want to warp these images at the end
+        lossobj = None
+    else:
+        raise ValueError(loss.name)
+    return lossobj
+
+
+def _split_pyramid(loss_list):
+    fixs = []
+    movs = []
+    for loss in loss_list:
+        fixs.append(loss.fixed)
+        movs.append(loss.moving)
+        loss.fixed = loss.fixed[-1]
+        loss.moving = loss.moving[-1]
+    return loss_list, fixs, movs
+
+
+def _do_register(loss_list, affine, nonlin,
+                 affine_optim, nonlin_optim, options):
+    dim = 3
+    line_size = 89 if nonlin else 74
+
+    if not options.pyramid.concurrent:
+        loss_list, fixs, movs = _split_pyramid(loss_list)
+
+    # ------------------------------------------------------------------
+    #       INITIAL PROGRESSIVE AFFINE
+    # ------------------------------------------------------------------
+    if len(affine) > 1:
+        print('-' * line_size)
+        print(f'   PROGRESSIVE INITIALIZATION')
+        print('-' * line_size)
+        affines = affine
+        affine_prev = None
+        for i, affine in enumerate(affines):
+            line_pad = line_size - len(affine.basis_name) - 5
+            print(f'--- {affine.basis_name} ', end='')
+            print('-' * max(0, line_pad))
+            if affine_prev:
+                n = len(affine_prev.dat.dat)
+                affine.set_dat(dim=dim, device=affine_prev.dat.dat.device)
+                affine.dat.dat[:n] = affine_prev.dat.dat
+                if i == 2:  # similitude -> affine
+                    affine.dat.dat[n:n+2] = affine_prev.dat.dat[-1]
+            if i == len(affines) - 1:
+                break
+            register = pairwise.Register(loss_list, affine, None, affine_optim,
+                                         verbose=options.verbose,
+                                         framerate=options.framerate)
+            register.fit()
+            affine_prev = affine
+    elif len(affine) == 1:
+        affine = affine[0]
+
+    # ------------------------------------------------------------------
+    #       BUILD JOINT OPTIMIZER
+    # ------------------------------------------------------------------
+
+    if nonlin:
+        if affine:
+            if options.optim.name == 'sequential':
+                joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
+                                                       max_iter=1, tol=0)
+            else:
+                joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
+                                                       max_iter=options.optim.max_iter,
+                                                       tol=options.optim.tolerance)
+        else:
+            joptim = nonlin_optim
+    else:
+        joptim = affine_optim
+
+    # ------------------------------------------------------------------
+    #       CONCURRENT PYRAMID
+    # ------------------------------------------------------------------
+    if options.pyramid.concurrent:
+        register = pairwise.Register(loss_list, affine, nonlin, joptim,
+                                     verbose=options.verbose,
+                                     framerate=options.framerate)
+        register.fit()
+
+    # ------------------------------------------------------------------
+    #       SEQUENTIAL PYRAMID
+    # ------------------------------------------------------------------
+    else:
+        nb_level = len(fixs[0])
+        n_level = nb_level - 1
+        while len(fixs[0]) > 0:
+            print('-' * line_size)
+            print(f'   PYRAMID LEVEL {n_level}')
+            print('-' * line_size)
+            n_level -= 1
+            for i, loss in enumerate(loss_list):
+                loss.fixed = fixs[i][-1]
+                loss.moving = movs[i][-1]
+                fixs[i] = fixs[i][:-1]
+                movs[i] = movs[i][:-1]
+                loss.loss.clear_state()
+
+            register = pairwise.Register(loss_list, affine, nonlin, joptim,
+                                         verbose=options.verbose,
+                                         framerate=options.framerate)
+            register.fit()
+
+
+def _main(options):
+    device = setup_device(*options.device)
+    dim = 3
+
+    # ------------------------------------------------------------------
+    #                       COMPUTE PYRAMID
+    # ------------------------------------------------------------------
+    pyramids = _prepare_pyramid_levels(options.loss, options.pyramid, dim)
+
+    # ------------------------------------------------------------------
+    #                       BUILD LOSSES
+    # ------------------------------------------------------------------
     image_dict = {}
     loss_list = []
-    for loss in options.loss:
+    for loss, pyramid in zip(options.loss, pyramids):
+        lossobj = _get_loss(loss, dim)
+        if not lossobj:
+            # not a proper loss
+            continue
         if not loss.fix.rescale[-1]:
             loss.fix.rescale = False
         if not loss.mov.rescale[-1]:
@@ -363,66 +683,42 @@ def _main(options):
         if loss.name in ('cat', 'dice'):
             loss.fix.rescale = False
             loss.mov.rescale = False
-        if loss.name == 'emi':
+        if loss.name == 'emmi':
             loss.mov.rescale = False
             loss.fix.discretize = loss.fix.discretize or 256
+            loss.mov.soft_quantize = loss.mov.discretize or 16
+        loss.fix.pyramid = pyramid['fix']
+        loss.mov.pyramid = pyramid['mov']
+        loss.fix.pyramid_method = options.pyramid.name
+        loss.mov.pyramid_method = options.pyramid.name
         fix = _make_image(loss.fix, dim=options.dim, device=device)
         mov = _make_image(loss.mov, dim=options.dim, device=device)
         image_dict[loss.fix.name or loss.fix.files[0]] = fix
         image_dict[loss.mov.name or loss.mov.files[0]] = mov
-        dim = fix.dim
-        if loss.name == 'mi':
-            lossobj = losses.MI(bins=loss.bins, norm=loss.norm,
-                                spline=loss.order, fwhm=loss.fwhm, dim=dim)
-        elif loss.name == 'ent':
-            lossobj = losses.Entropy(bins=loss.bins, spline=loss.order,
-                                     fwhm=loss.fwhm, dim=dim)
-        elif loss.name == 'mse':
-            lossobj = losses.MSE(lam=loss.weight, dim=dim)
-        elif loss.name == 'mad':
-            lossobj = losses.MAD(lam=loss.weight, dim=dim)
-        elif loss.name == 'tuk':
-            lossobj = losses.Tukey(lam=loss.weight, dim=dim)
-        elif loss.name == 'cc':
-            lossobj = losses.CC(dim=dim)
-        elif loss.name == 'lcc':
-            lossobj = losses.LCC(patch=loss.patch, dim=dim, stride=loss.stride,
-                                 mode=loss.kernel)
-        elif loss.name == 'gmm':
-            lossobj = losses.GMMH(bins=loss.bins, dim=dim,
-                                  max_iter=loss.max_iter)
-        elif loss.name == 'lgmm':
-            lossobj = losses.LGMMH(bins=loss.bins, dim=dim,
-                                   max_iter=loss.max_iter,
-                                   patch=loss.patch,
-                                   stride=loss.stride,
-                                   mode=loss.kernel)
-        elif loss.name == 'cat':
-            lossobj = losses.Cat(dim=dim, log=False)
-            # lossobj = losses.AutoCat()
-        elif loss.name == 'dice':
-            lossobj = losses.Dice(weighted=loss.weight, log=False)
-        elif loss.name == 'prod':
-            lossobj = losses.ProdLoss(dim=dim)
-        elif loss.name == 'normprod':
-            lossobj = losses.NormProdLoss(dim=dim)
-        elif loss.name == 'sqz':
-            lossobj = losses.SqueezedProdLoss(dim=dim, lam=loss.weight)
-        elif loss.name == 'emi':
-            fwhm = None
-            if not loss.fix.label:
-                fwhm = loss.fix.discretize // 64
-            lossobj = losses.EMI(dim=dim, fwhm=fwhm)
-        elif loss.name == 'extra':
-            # Not a proper loss, we just want to warp these images at the end
-            continue
-        else:
-            raise ValueError(loss.name)
-        lossobj = objects.LossComponent(lossobj, mov, fix, factor=loss.factor,
-                                        symmetric=loss.symmetric)
+
+        # Forward loss
+        factor = loss.factor / (2 if loss.symmetric else 1)
+        lossobj = objects.LossComponent(lossobj, mov, fix, factor=factor)
         loss_list.append(lossobj)
 
-    # build affine
+        # Backward loss
+        if loss.symmetric:
+            lossobj = _get_loss(loss, dim)
+            if loss.name != 'emmi':
+                lossobj = objects.LossComponent(
+                    lossobj, fix, mov, factor=factor, backward=True)
+            else:
+                loss.fix, loss.mov = loss.mov, loss.fix
+                loss.mov.rescale = False
+                loss.fix.discretize = loss.fix.discretize or 256
+                loss.mov.soft_quantize = loss.mov.discretize or 16
+                lossobj = objects.LossComponent(
+                    lossobj, mov, fix, factor=factor, backward=True)
+            loss_list.append(lossobj)
+
+    # ------------------------------------------------------------------
+    #                           BUILD AFFINE
+    # ------------------------------------------------------------------
     affine = []
     affine_optim = None
     if options.affine:
@@ -431,6 +727,8 @@ def _main(options):
         name = options.affine.name
         while name:
             affine = [make_affine(name), *affine]
+            if not options.affine.progressive:
+                break
             if name == 'affine':
                 name = 'similitude'
             elif name == 'similitude':
@@ -478,7 +776,9 @@ def _main(options):
                                               tol=options.affine.optim.tolerance,
                                               ls=options.affine.optim.line_search)
 
-    # build dense deformation
+    # ------------------------------------------------------------------
+    #                           BUILD DENSE
+    # ------------------------------------------------------------------
     nonlin = None
     nonlin_optim = None
     if options.nonlin:
@@ -502,6 +802,7 @@ def _main(options):
                    membrane=options.nonlin.membrane,
                    bending=options.nonlin.bending,
                    lame=options.nonlin.lame)
+
         vel = objects.Displacement(space.shape, affine=space.affine, dim=dim,
                                    device=device)
         Model = objects.NonLinModel.subclass(options.nonlin.name)
@@ -580,62 +881,42 @@ def _main(options):
     if not affine and not nonlin:
         raise ValueError('At least one of @affine or @nonlin must be used.')
 
+    # ------------------------------------------------------------------
+    #                           BACKEND STUFF
+    # ------------------------------------------------------------------
     if options.verbose > 1:
         import matplotlib
         matplotlib.use('TkAgg')
 
-    # LCC and related losses may benefit from selecting the best conv
+    # local losses may benefit from selecting the best conv
     # torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.enabled = False
 
-    if affine:  # start with a few rounds of progressive affine
-        affines = affine
-        affine_prev = None
-        for i, affine in enumerate(affines):
-            if affine_prev:
-                n = len(affine_prev.dat.dat)
-                affine.set_dat(dim=dim, device=affine_prev.dat.dat.device)
-                affine.dat.dat[:n] = affine_prev.dat.dat
-                if i == 2: # similitude -> affine
-                    affine.dat.dat[n:n+2] = affine_prev.dat.dat[-1]
-            register = pairwise.Register(loss_list, affine, None, affine_optim,
-                                         verbose=options.verbose,
-                                         framerate=options.framerate)
-            register.fit()
-            affine_prev = affine
+    # ------------------------------------------------------------------
+    #                      PERFORM REGISTRATION
+    # ------------------------------------------------------------------
+    _do_register(loss_list, affine, nonlin,
+                 affine_optim, nonlin_optim, options)
 
-    if nonlin:  # now do joint optimization
-        # build joint optimizer
-        if affine:
-            if options.optim.name == 'sequential':
-                joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
-                                                       max_iter=1, tol=0)
-            else:
-                joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
-                                                       max_iter=options.optim.max_iter,
-                                                       tol=options.optim.tolerance)
-        else:
-            joptim = nonlin_optim
+    # ------------------------------------------------------------------
+    #                           WRITE RESULTS
+    # ------------------------------------------------------------------
+    affine = affine[-1]
 
-        register = pairwise.Register(loss_list, affine, nonlin, joptim,
-                                     verbose=options.verbose,
-                                     framerate=options.framerate)
-        register.fit()
-
-    if register.affine and options.affine.output:
+    if affine and options.affine.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
         fname = options.affine.output.format(dir=odir, sep=os.path.sep,
                                              name=options.affine.name)
         print('Affine ->', fname)
-        aff = register.affine.exp(cache_result=True, recompute=False)
+        aff = affine.exp(cache_result=True, recompute=False)
         io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
-    if register.nonlin and options.nonlin.output:
+    if nonlin and options.nonlin.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
         fname = options.nonlin.output.format(dir=odir, sep=os.path.sep,
                                              name=options.nonlin.name)
-        io.savef(register.nonlin.dat.dat, fname, affine=register.nonlin.affine)
+        io.savef(nonlin.dat.dat, fname, affine=nonlin.affine)
         print('Nonlin ->', fname)
     for loss in options.loss:
-        _warp_image(loss, affine=register.affine, nonlin=register.nonlin,
+        _warp_image(loss, affine=affine, nonlin=nonlin,
                     dim=dim, device=device, odir=options.odir)
 

@@ -6,3 +6,5 @@ from . import volumes
 from .volumes import *
 from . import vb
 from .vb import *
+from . import colormaps
+from .colormaps import *

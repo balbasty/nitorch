@@ -203,7 +203,7 @@ def intensity_to_rgb(image, min=None, max=None, colormap='gray', n=256, eq=False
     max : tensor_like, optional
         Maximum value. Should be broadcastable to batch.
         Default: max of image for each batch element.
-    colormap : (K, 3) tensor or str, default='gray'
+    colormap : str or (K, 3) tensor, default='gray'
         A colormap or the name of a matplotlib colormap.
     n : int, default=256
         Number of color levels to use.
@@ -394,3 +394,55 @@ def histeq(x, n=1024, dim=None):
 
     return x
 
+
+def set_alpha(x, alpha=0.5):
+    """Set the transparancy channel of an RGB image
+
+    Parameters
+    ----------
+    x : (*batch, H, W, 3|4) tensor
+        Input RGB images
+    alpha : float or (*batch, H, W) tensor
+        Values should be in 0..1
+        Transparency value (0 = hidden, 1 = visible)
+
+    Returns
+    -------
+    x : (*batch, H, W, 4) tensor
+        Preprocessed images.
+        Intensities are scaled within [0, 1].
+
+    """
+    if x.shape[-1] == 3:
+        x0, x = x, x.new_empty([*x.shape[:-1], 4])
+        x[..., :3] = x0
+    else:
+        x = x.clone()
+    x[..., -1] = alpha
+    x[..., -1].clamp_(0, 1)
+    return x
+
+
+def stack_layers(layers):
+    """Stack layers of images
+
+    Parameters
+    ----------
+    layers : sequence of (*batch, H, W, 3|4) tensor
+        Input RGB images
+
+    Returns
+    -------
+    x : tensor (*batch, H, W, 3) tensor
+        Merged image
+
+    """
+    layers, layers0 = [], layers
+    x = 0
+    for layer in layers0:
+        if layer.shape[-1] == 3:
+            layer = set_alpha(layer, 1)
+        alpha = layer[..., -1:]
+        layer = layer[..., :-1]
+        x = (1 - alpha) * x + alpha * layer
+    return x

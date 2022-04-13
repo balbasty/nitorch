@@ -362,7 +362,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         # torch implementation -> handles zero-padding
         # our implementation -> needs explicit padding
         padding = _normalize_padding(padding)
-        tensor = utils.pad(tensor, padding, bound,
+        tensor = utils.pad(tensor, padding, bound, side='both',
                            value=_fill_value(reduction, tensor))
         padding = [0] * dim
 

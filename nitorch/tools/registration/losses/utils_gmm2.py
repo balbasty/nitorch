@@ -332,7 +332,7 @@ def _fit_gmm2(x: Tensor, y: Tensor, max_iter: int = 20,
 
 @torch.jit.script
 class Fwd:
-    def __init__(self, patch: List[int], stride: List[int], dim: int, mode:str):
+    def __init__(self, patch: List[float], stride: List[int], dim: int, mode:str):
         self.patch = patch
         self.stride = stride
         self.dim = dim
@@ -347,7 +347,7 @@ class Fwd:
 
 @torch.jit.script
 class Bwd:
-    def __init__(self, patch: List[int], stride: List[int], dim:int,
+    def __init__(self, patch: List[float], stride: List[int], dim:int,
                  mode:str, shape: List[int]):
         self.patch = patch
         self.stride = stride
@@ -482,8 +482,8 @@ def fit_lgmm2(x, y, bins=6, max_iter=20, dim=None,
 
     dim = dim or (x.dim() - 1)
     shape = x.shape[-dim:]
-    patch = patch or [20]
-    stride = stride or [1]
+    patch = list(map(float, py.ensure_list(patch or [20])))
+    stride = py.ensure_list(stride or [1])
 
     # initialize parameters globally
     gmmfit = fit_gmm2(x, y, bins, dim=dim)

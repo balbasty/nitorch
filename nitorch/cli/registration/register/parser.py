@@ -22,10 +22,11 @@ help2 = r"""[nitorch] register
 
 usage: 
     nitorch register [options] 
-                     @loss [NAME] [FACTOR] @@fix *FILE @@mov *FILE ...
-                     @affine [NAME] [FACTOR] @@optim [NAME] ...
-                     @nonlin [NAME] [FACTOR] @@optim [NAME] ...
-                     @optim [NAME] ...
+                     @loss    [NAME] [FACTOR] @@fix *FILE @@mov *FILE ...
+                     @affine  [NAME] [FACTOR] @@optim [NAME] ...
+                     @nonlin  [NAME] [FACTOR] @@optim [NAME] ...
+                     @optim   [NAME] ...
+                     @pyramid [NAME] ...
 
 @loss options:
     NAME can take values (with specific sub-options):
@@ -67,7 +68,7 @@ usage:
         lbfgs                           Limited-memory BFGS
 
 General options:
-    --cpu, --gpu                    Device to use [cpu]
+    --cpu [THREADS], --gpu          Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
     -h, --help [LEVEL]              Display this help: [1=minimal], 2=normal, 3=more details
@@ -88,6 +89,7 @@ usage:
                     @nonlin [NAME] [FACTOR] [-i *FILE] ...
                         @@optim [NAME] ...
                     @optim [NAME] ...
+                    @pyramid [NAME] ...
     
 @loss options:
     FACTOR must be a scalar value [1]
@@ -118,11 +120,10 @@ usage:
     across the channel dimension.
     -o, --output [PATH]             Path to the output with minimal reslicing: [True={base}.registered.{ext}]
     -r, --resliced [PATH]           Path to the output resliced to the other image's space: [False], True={base}.resliced.{ext}
-    -p, --pyramid *LVL              Pyramid levels. Can be a range [start]:stop[:step]
     -b, --bound BND                 Boundary conditions [dct2]
     -n, --order N                   Interpolation order [1]
     -a, --affine *PATH              Path to one or more affine transforms to apply
-    -w, --world PATH                Path to an orientation matrix. Overrides the one form the data file.
+    -w, --world PATH                Path to an orientation matrix. Overrides the one from the data file.
     -f, --fwhm *F                   Smooth image before using it.
     -z, --pad *P                    Pad image before using it.
     -s, --rescale [[MN], MX]        Rescale image so that its MN/MX percentiles match (0, 1). [0, 95]
@@ -199,8 +200,22 @@ usage:
         -s, --line-search               Number of backtracking line search [wolfe]
         -t, --tolerance                 Tolerance for early stopping [1e-9]
 
+@pyramid options:
+    NAME can take values:
+       [g, gaussian]                    Gaussian pyramid
+        a, average                      Average pooling
+        m, median                       Median pooling
+        s, stride                       Strides
+    Common options:
+        --max-size                      Maximum size along a dimension
+        --min-size                      Minimum size along a dimension
+        --max-vx                        Maximum voxel size along a dimension
+        --min-vx                        Minimum voxel size along a dimension
+        --levels *LVL                   Pyramid levels. Can be a range start:stop:step [:3]
+        --concurrent                    Register pyramid levels concurrently [false]
+
 General options:
-    --cpu, --gpu                    Device to use [cpu]
+    --cpu [THREADS], --gpu [ID]     Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
     -h, --help [LEVEL]              Display this help: 0=minimal, [1=normal], 2=more details
@@ -247,18 +262,24 @@ def parse_range(x):
 
 
 # Main options
+def convert_device(device):
+    def _convert(x):
+        return (device, int(x))
+    return _convert
+
 
 parser = cli.CommandParser('register', help=help1, add_help=False)
 parser.add_option('verbose', ('-v', '--verbose'),
                   nargs='?', default=0, convert=int,
                   action=cli.Actions.store_value(1),
                   help='Level of verbosity')
-parser.add_option('gpu', '--gpu',
-                  nargs='?', default='cpu', convert=int,
-                  action=cli.Actions.store_value(0),
+parser.add_option('device', '--gpu', default=('cpu', None),
+                  nargs='?', convert=convert_device('gpu'),
+                  action=cli.Actions.store_value(('gpu', None)),
                   help='Use GPU (if available)')
-parser.add_option('gpu', '--cpu', nargs=0,
-                  action=cli.Actions.store_value('cpu'),
+parser.add_option('device', '--cpu',
+                  nargs='?', convert=convert_device('cpu'),
+                  action=cli.Actions.store_value(('cpu', None)),
                   help='Use CPU')
 parser.add_option('help', ('-h', '--help'),
                   nargs='?', default=False, convert=int,
@@ -276,7 +297,7 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
                 'entropy': 'ent', 'sqz': 'squeezed'}
-loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emi', 'prod', 'normprod', 'extra']
+loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emmi', 'prod', 'normprod', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -344,10 +365,8 @@ file.add_option('output', ('-o', '--output'), nargs='?',
                 help='Path to the output with minimal reslicing')
 file.add_option('resliced', ('-r', '--resliced'), nargs='?',
                 default=False, convert=bool_or_str,
+                action=cli.Actions.store_value('{dir}{sep}{base}.resliced{ext}'),
                 help='Path to the output resliced to the other \'s space')
-file.add_option('pyramid', ('-p', '--pyramid'), nargs='1*',
-                default=[0], convert=parse_range,
-                help='Pyramid levels. Can be a range [start]:stop[:step]')
 file.add_option('fwhm', ('-f', '--fwhm'), nargs='0*',
                 default=[0], convert=number_or_str(float),
                 action=cli.Actions.store_value([1, 'vox']),
@@ -458,6 +477,8 @@ affine.add_option('position', ('-p', '--position'), default='sym', nargs=1,
 affine.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{name}.lta',
                   help='Path to the output transform')
+affine.add_option('progressive', ('-g', '--progressive'), default=False,
+                  nargs='?',  convert=bool_or_str)
 affine.add_group(optim)
 
 # nonlin group
@@ -508,8 +529,28 @@ joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
 joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
                      convert=float, default=1e-5, help='Tolerance for early stopping')
 
+# pyramid group
+pyr_aliases = {'g': 'gaussian',
+               'a': 'average',
+               'm': 'median',
+               's': 'stride',
+               'n': 'none'}
+pyr_choices = list(pyr_aliases.values()) + ['unset']
+pyr_choices = cli.Positional('name', nargs='?', default='gaussian',
+                             validation=cli.Validations.choice(pyr_choices),
+                             convert=lambda x: pyr_aliases.get(x, x),
+                             help='Pyramid strategy ')
+pyr = cli.NamedGroup('pyramid', pyr_choices, '@pyramid', n='?')
+pyr.add_option('min_size', '--min-size', nargs=1, convert=int)
+pyr.add_option('max_size', '--max-size', nargs=1, convert=int)
+pyr.add_option('min_vx', '--min-vx', nargs=1, convert=float)
+pyr.add_option('max_vx', '--max-vx', nargs=1, convert=float)
+pyr.add_option('levels', '--levels', nargs='1*', convert=parse_range, default=[range(3)])
+pyr.add_option('concurrent', '--concurrent', nargs=1, convert=bool_or_str, default=False)
+
 # register groups
 parser.add_group(loss)
 parser.add_group(affine)
 parser.add_group(nonlin)
 parser.add_group(joptim)
+parser.add_group(pyr)

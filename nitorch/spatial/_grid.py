@@ -278,6 +278,8 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
 
     """
     grid, shape_info = _preproc(grid)
+    if shape is None:
+        shape = tuple(grid.shape[1:-1])
     out = GridCount.apply(grid, shape, interpolation, bound, extrapolate)
     return _postproc(out, shape_info, mode='count')
 
