@@ -1077,7 +1077,15 @@ def solve_field_fmg(hessian, gradient, weights=None, voxel_size=1, bound='dct2',
     solution : (..., K, *spatial) tensor
 
     """
-    if not (membrane or bending):
+    if isinstance(membrane, (list, tuple)):
+        has_membrane = any(membrane)
+    else:
+        has_membrane = bool(membrane)
+    if isinstance(bending, (list, tuple)):
+        has_bending = any(bending)
+    else:
+        has_bending = bool(bending)
+    if not (has_membrane or has_bending):
         return solve_field_closedform(hessian, gradient, weights=weights,
                                       absolute=absolute, factor=factor)
 
@@ -1166,7 +1174,15 @@ def solve_field(hessian, gradient, weights=None, dim=None,
     solution : (..., K, *spatial) tensor
 
     """
-    if not (membrane or bending):
+    if isinstance(membrane, (list, tuple)):
+        has_membrane = any(membrane)
+    else:
+        has_membrane = bool(membrane)
+    if isinstance(bending, (list, tuple)):
+        has_bending = any(bending)
+    else:
+        has_bending = bool(bending)
+    if not (has_membrane or has_bending):
         return solve_field_closedform(hessian, gradient, weights=weights,
                                       absolute=absolute, factor=factor)
 
