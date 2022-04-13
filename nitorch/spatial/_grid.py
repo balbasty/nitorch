@@ -222,7 +222,7 @@ def grid_push(input, grid, shape=None, interpolation='linear', bound='zero',
         Output shape
     interpolation : int or sequence[int], default=1
         Interpolation order.
-    bound : BoundType, or sequence[BoundType], default='zero'
+    bound : BoundType or sequence[BoundType], default='zero'
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
@@ -266,7 +266,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
         Output shape
     interpolation : int or sequence[int], default=1
         Interpolation order.
-    bound : BoundType, or sequence[BoundType], default='zero'
+    bound : BoundType or sequence[BoundType], default='zero'
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.
@@ -302,7 +302,7 @@ def grid_grad(input, grid, interpolation='linear', bound='zero',
         Output shape
     interpolation : int or sequence[int], default=1
         Interpolation order.
-    bound : BoundType, or sequence[BoundType], default='zero'
+    bound : BoundType or sequence[BoundType], default='zero'
         Boundary conditions.
     extrapolate : bool or int, default=True
         Extrapolate out-of-bound data.

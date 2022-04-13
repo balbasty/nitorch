@@ -732,6 +732,21 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::matvec_none(
   const scalar_t *inp = inp_ptr + (x*inp_sX + y*inp_sY + z*inp_sZ + n*inp_sN); \
   const scalar_t *hes = hes_ptr + (x*hes_sX + y*hes_sY + z*hes_sZ + n*hes_sN);
 
+// --------------------------------- COPY ------------------------------------//
+// We implement copy with 3d pointers since they're compatible with 1D/2D
+// and we're not losing much time here anyway.
+template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
+void RegulariserImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t y, offset_t z, offset_t n) const 
+{
+  GET_POINTERS
+
+  for (offset_t c = 0; c < C; out += out_sC)
+    *out = static_cast<scalar_t>(0);
+
+  out -= C*out_sC;
+  matvec(out, hes, inp);
+}
+
 
 template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
 void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom3d_bending(
@@ -1277,22 +1292,6 @@ void RegulariserImpl<scalar_t,offset_t,reduce_t>::vel2mom1d_rls_absolute(
     *out = static_cast<scalar_t>( (*(a++)) * (*wgt) * (*inp) );
 
   inp -= C*inp_sC;
-  out -= C*out_sC;
-  matvec(out, hes, inp);
-}
-
-/* ========================================================================== */
-/*                                     COPY                                   */
-/* ========================================================================== */
-
-template <typename scalar_t, typename offset_t, typename reduce_t> NI_DEVICE
-void RegulariserImpl<scalar_t,offset_t,reduce_t>::zeros(offset_t x, offset_t y, offset_t z, offset_t n) const 
-{
-  GET_POINTERS
-
-  for (offset_t c = 0; c < C; out += out_sC)
-    *out = static_cast<scalar_t>(0);
-
   out -= C*out_sC;
   matvec(out, hes, inp);
 }
