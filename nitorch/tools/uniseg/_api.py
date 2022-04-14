@@ -291,6 +291,7 @@ def path_spm_prior():
     url = 'https://github.com/spm/spm12/raw/master/tpm/TPM.nii'
     fname = os.path.join(cache_dir, 'SPM12_TPM.nii')
     if not os.path.exists(fname):
+        os.makedirs(cache_dir, exist_ok=True)
         fname = download(url, fname)
     return fname
 

@@ -207,12 +207,12 @@ usage:
         m, median                       Median pooling
         s, stride                       Strides
     Common options:
-        --max-size                      Maximum size along a dimension
-        --min-size                      Minimum size along a dimension
-        --max-vx                        Maximum voxel size along a dimension
-        --min-vx                        Minimum voxel size along a dimension
-        --levels *LVL                   Pyramid levels. Can be a range start:stop:step [:3]
-        --concurrent                    Register pyramid levels concurrently [false]
+            --max-size                  Maximum size along a dimension
+            --min-size                  Minimum size along a dimension
+            --max-vx                    Maximum voxel size along a dimension
+            --min-vx                    Minimum voxel size along a dimension
+        -l, --levels *LVL               Pyramid levels. Can be a range start:stop:step [:3]
+        -c, --concurrent                Register pyramid levels concurrently [false]
 
 General options:
     --cpu [THREADS], --gpu [ID]     Device to use [cpu]
@@ -409,7 +409,8 @@ optim_aliases = {'gauss-newton': 'gn',
                  'gradient-descent': 'gd',
                  'momentum': 'mom',
                  'nesterov': 'nes',
-                 'optimized-gradient': 'ogm'}
+                 'optimized-gradient': 'ogm',
+                 'powell': 'pow'}
 optim_choices = list(optim_aliases.values()) + ['lbfgs', 'unset']
 optim_choices = cli.Positional('name', nargs='?', default='unset',
                                validation=cli.Validations.choice(optim_choices),
@@ -545,8 +546,8 @@ pyr.add_option('min_size', '--min-size', nargs=1, convert=int)
 pyr.add_option('max_size', '--max-size', nargs=1, convert=int)
 pyr.add_option('min_vx', '--min-vx', nargs=1, convert=float)
 pyr.add_option('max_vx', '--max-vx', nargs=1, convert=float)
-pyr.add_option('levels', '--levels', nargs='1*', convert=parse_range, default=[range(3)])
-pyr.add_option('concurrent', '--concurrent', nargs=1, convert=bool_or_str, default=False)
+pyr.add_option('levels', ('-l', '--levels'), nargs='1*', convert=parse_range, default=[range(3)])
+pyr.add_option('concurrent', ('-c-', '--concurrent'), nargs=1, convert=bool_or_str, default=False)
 
 # register groups
 parser.add_group(loss)

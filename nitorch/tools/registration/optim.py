@@ -7,6 +7,7 @@ and its derivatives to be computed must be provided.
 Most optimizers, however, simply use derivatives; and a wrapper class
 that iterates multiple such steps is provided (IterOptim).
 Available optimizers are:
+- Powell
 - GradientDescent
 - Momentum
 - Nesterov
@@ -19,14 +20,15 @@ Along with helpers
 - StepSizeLineSearch
 - BacktrackingLineSearch
 - StrongWolfeLineSearch
+- BrentLineSearch
 - IterateOptim
 - IterateOptimInterleaved
 """
-
 from nitorch import spatial
-from nitorch.core import linalg
+from nitorch.core import linalg, utils
 import torch
 import copy
+import math as pymath
 
 
 class Optim:
@@ -88,6 +90,213 @@ class FirstOrder(Optim):
 class SecondOrder(Optim):
     requires_grad = True
     requires_hess = True
+
+
+class Brent(ZerothOrder):
+    # 1D line search
+
+    gold = (1 + pymath.sqrt(5))/2
+    igold = 1 - (pymath.sqrt(5) - 1)/2
+    tiny = 1e-8
+
+    def __init__(self, tol=1e-9, max_iter=128):
+        super().__init__()
+        self.tol = tol
+        self.max_iter = max_iter
+
+    def iter(self, x0, f0, delta, closure, a=1):
+        """
+
+        Parameters
+        ----------
+        x0 : previous parameter
+        f0 : previous value
+        delta : step direction
+        closure : callable(x), evaluate function
+        a : initial step size
+
+        Returns
+        -------
+        a : step
+        f : next value
+
+        """
+        def closure1d(a):
+            return closure(x0 + a * delta).item()
+        if torch.is_tensor(f0):
+            f0 = f0.item()
+        bracket = self.bracket(f0, closure1d, a1=a)
+        a, f = self.search(bracket, closure1d)
+        return a, f
+
+    def bracket(self, f0, closure, a1=1.):
+        """Bracket the minimum
+
+        Parameters
+        ----------
+        f0 : Initial value
+        closure : callable(a) -> evaluate function at `a0 + a`
+
+        Returns
+        -------
+        (a0, f0), (a1, f1), (a2, f2)
+        """
+        a0 = 0
+        f1 = closure(a1)
+
+        # sort such that f1 < f0
+        if f1 > f0:
+            a0, f0, a1, f1 = a1, f1, a0, f0
+
+        a2 = a1 + self.gold * (a1 - a0)
+        f2 = closure(a2)
+
+        while f1 > f2:
+            # fit quadratic polynomial
+            a = utils.as_tensor([a0-a1, 0., a2-a1])
+            quad = torch.stack([torch.ones_like(a), a, a.square()], -1)
+            f = utils.as_tensor([f0, f1, f2]).unsqueeze(-1)
+            quad = quad.pinverse().matmul(f).squeeze(-1)
+
+            if quad[2] > 0:  # There is a minimum
+                delta = -0.5 * quad[1] / quad[2].clamp_min(self.tiny)
+                delta = delta.clamp_max_((1 + self.gold) * (a2 - a1))
+                delta = delta.item()
+                a = a1 + delta
+            else:  # No minimum -> we must go farther than a2
+                a = a1 + (1 + self.gold) * (a2 - a1)
+
+            # check progress and update bracket
+            # f2 < f1 < f0 so (assuming unicity) the minimum is in
+            # (a1, a2) or (a2, inf)
+            f = closure(a)
+            if a1 < a < a2 or a2 < a < a1:
+                if f1 < f < f2:
+                    # minimum is in (a1, a2)
+                    (a0, f0), (a1, f1), (a2, f2) = (a1, f1), (a, f), (a2, f2)
+                    break
+                elif f1 < f:  # implicitly: f0 < f1 < f
+                    # minimum is in (a0, a)
+                    (a0, f0), (a1, f1), (a2, f2) = (a0, f0), (a1, f1), (a, f)
+                    break
+            # shift by one point
+            (a0, f0), (a1, f1), (a2, f2) = (a1, f1), (a2, f2), (a, f)
+
+        return (a0, f0), (a1, f1), (a2, f2)
+
+    def sort_bracket(self, bracket):
+        (a0, f0), (a1, f1), (a2, f2) = bracket
+        if f0 < f1 and f0 < f2:
+            if f1 < f2:
+                return bracket
+            else:
+                return (a0, f0), (a2, f2), (a1, f1)
+        elif f1 < f0 and f1 < f2:
+            if f0 < f2:
+                return (a1, f1), (a0, f0), (a2, f2)
+            else:
+                return (a1, f1), (a2, f2), (a0, f0)
+        else:
+            if f0 < f1:
+                return (a2, f2), (a0, f0), (a1, f1)
+            else:
+                return (a2, f2), (a1, f1), (a0, f0)
+
+    def search(self, bracket, closure):
+        b0, b1 = (bracket[0][0], bracket[2][0])
+        if b1 < b0:
+            b0, b1 = b1, b0
+        # sort by values
+        (a0, f0), (a1, f1), (a2, f2) = self.sort_bracket(bracket)
+
+        d = d0 = float('inf')
+        for n_iter in range(self.max_iter):
+
+            if abs(a0 - 0.5 * (b0 + b1)) + 0.5 * (b1 - b0) <= 2 * self.tol:
+                return a0, f0
+
+            d1, d0 = d0, d
+
+            # fit quadratic polynomial
+            a = utils.as_tensor([0., a1-a0, a2-a0])
+            quad = torch.stack([torch.ones_like(a), a, a.square()], -1)
+            f = utils.as_tensor([f0, f1, f2]).unsqueeze(-1)
+            quad = quad.pinverse().matmul(f).squeeze(-1)
+
+            d = -0.5 * quad[1] / quad[2].clamp_min(self.tiny)
+            d = d.item()
+            a = a0 + d
+
+            if abs(d) > abs(d0) or not (b0 < a < b1) or quad[-1] < 0:
+                if a0 > (b0 + b1)/2:
+                    d = self.igold * (b0 - a0)
+                else:
+                    d = self.igold * (b1 - a0)
+                a = a0 + d
+
+            # check progress and update bracket
+            f = closure(a)
+            if f < f0:
+                # better solution: f < f0 < f1 -> update three closest points
+                b0, b1 = (b0, a0) if a < a0 else (a0, b1)
+                (a0, f0), (a1, f1), (a2, f2) = (a, f), (a0, f0), (a1, f1)
+            else:
+                b0, b1 = (a, b1) if a < a0 else (b0, a)
+                if f < f1:
+                    # f0 < f < f1 -> update three closest points
+                    (a0, f0), (a1, f1), (a2, f2) = (a0, f0), (a, f), (a1, f1)
+                else:
+                    # f0 < f1 < f -> update three closest points
+                    (a0, f0), (a1, f1), (a2, f2) = (a0, f0), (a1, f1), (a, f)
+
+        return a0, f0
+
+
+class Powell(ZerothOrder):
+
+    def __init__(self, lr=0.02, tol=1e-9, max_iter=512, sub_iter=128):
+        super().__init__()
+        self.lr = lr
+        self.tol = tol
+        self.max_iter = max_iter
+        self.brent = Brent(max_iter=sub_iter, tol=tol)
+
+    def iter(self, x, closure, **kwargs):
+
+        closure_ls = lambda *a, **k: closure(*a, **k, in_line_search=True)
+
+        f = closure(x).item()
+        delta = torch.eye(len(x), **utils.backend(x)).mul_(self.lr)
+        for n_iter in range(self.max_iter):
+            x0, f0 = x.clone(), f
+            i_largest_step = len(x)
+            largest_step = 0
+            for i in range(len(x)):
+                fi = f
+                a, f = self.brent.iter(x, f, delta[i], closure_ls)
+                x.add_(delta[i], alpha=a)
+                step = abs(f - fi)
+                if step > largest_step:
+                    largest_step = step
+                    i_largest_step = i
+                # for verbosity only
+                closure(x)
+            if (f - f0) < self.tol:
+                break
+            if (x - x0).mean() < self.lr * self.tol:
+                break
+            # repeat the same step and see if we improve
+            f1 = closure(2 * x - x0).item()  # x + (x - x0)
+            if f1 < f:
+                delta1 = x - x0
+                a, f = self.brent.iter(x, f, delta1, closure_ls)
+                x.add_(delta1, alpha=a)
+                delta[i_largest_step].copy(delta1).mul_(a)
+                # for verbosity only
+                closure(x)
+
+        f = torch.as_tensor(f, **utils.backend(x))
+        return x, f
 
 
 class GradientDescent(FirstOrder):
@@ -753,13 +962,11 @@ class StrongWolfe(FirstOrder):
             elif abs(a1 - a) * dd < self.tol:
                 break
             else:
-                a_prev = a
-                a = self.interpolate_bracket((a1, a), (f1, f), (dg1, dg), bound=True)
-                a1 = a_prev
-                f1 = f
-                g1 = g
-                dg1 = dg
+                bracket = (a1, a), (f1, f), (dg1, dg)
+                a1, f1, g1, dg1 = a, f, g, dg
+                a = self.interpolate_bracket(*bracket, bound=True)
                 f, g = closure(x0.add(delta, alpha=a), grad=True)
+                dg = delta.flatten().dot(g.flatten())
 
         if ls_iter == self.max_iter:
             a1 = 0
@@ -784,6 +991,8 @@ class StrongWolfe(FirstOrder):
                 = update_bracket(new_a, new_f, new_g,
                                  (a, a1), (f, f1), (g, g1), (dg, dg1))
 
+        if f > f0:
+            return 0, f0, g0
         return a, f, g
 
     @staticmethod
@@ -1107,7 +1316,7 @@ class IterationStep(Optim):
         closure : callable([list of] tensor) -> tensor
             Function that takes optimized parameters as inputs and
             returns the objective function.
-        derivaitves : bool, default=False
+        derivatives : bool, default=False
             Return most recent derivatives
 
         Returns
@@ -1342,6 +1551,49 @@ class StrongWolfeLineSearch(LineSearch):
         return param, ll
 
 
+class BrentLineSearch(LineSearch):
+
+    def __init__(self, optim, tol=1e-9, max_iter=128):
+        """
+
+        Parameters
+        ----------
+        optim : `Optim`, default
+            Optimizer whose parameter is line-searched
+        tol : float, default=1e-9
+            Tolerance for early stopping
+        max_iter : int, default=25
+            Maximum number of line search iterations
+        """
+        super().__init__(optim)
+        self.brent = Brent(tol=tol, max_iter=max_iter)
+
+    def step(self, param, closure, derivatives=False):
+
+        import inspect
+        if 'in_line_search' in inspect.signature(closure).parameters:
+            closure_line_search = lambda *a, **k: closure(*a, **k, in_line_search=True)
+        else:
+            closure_line_search = closure
+
+        # compute derivatives and step
+        return_derivatives = derivatives
+        ll, *derivatives = closure(param, **self.requires)
+        delta = self.optim.step(*derivatives)
+
+        # perform Wolfe line search
+        step, ll = self.brent.iter(
+            param, ll, delta, closure_line_search, self.lr)
+        delta.mul_(step)
+        param.add_(delta)
+        if hasattr(self.optim, 'udpate_lr'):
+            self.optim.update_lr(step)
+
+        if return_derivatives:
+            return (param, ll, *derivatives)
+        return param, ll
+
+
 class IterateOptim(Optim):
     """Wrapper that performs multiple steps of an optimizer.
 
@@ -1360,10 +1612,12 @@ class IterateOptim(Optim):
             Maximum number of iterations
         tol : float, default=1e-9
             Tolerance for early stopping
-        ls : int or 'wolfe' or callable(Optim), default=0
-            If an int, use `StepSizeLineSearch` if optim is a SecondOrder
-            optimizer or `BacktrackingLineSearch` if optim is FirstOrder
-            optimizer. If 'wolfe', use `StrongWolfeLineSearch`.
+        ls : int or 'wolfe' or 'brent' or callable(Optim), default=0
+            If an int, use:
+                - `StepSizeLineSearch`      if optim is SecondOrder,
+                - `BacktrackingLineSearch`  if optim is FirstOrder.
+            If 'wolfe', use `StrongWolfeLineSearch`.
+            If 'brent', use `BrentLineSearch`.
             If callable, should be a non-instantiated `LineSearch` class.
         """
         super().__init__()
@@ -1382,6 +1636,8 @@ class IterateOptim(Optim):
                     self.optim = BacktrackingLineSearch(self.optim, max_iter=ls)
             elif isinstance(ls, str) and ls.lower() == 'wolfe':
                 self.optim = StrongWolfeLineSearch(self.optim)
+            elif isinstance(ls, str) and ls.lower() == 'brent':
+                self.optim = BrentLineSearch(self.optim)
             elif callable(ls):
                 self.optim = ls(self.optim)
         elif not isinstance(self.optim, IterationStep):
@@ -1476,7 +1732,7 @@ class IterateOptimInterleaved(IterateOptim):
             Maximum number of inner loops
         sub_tol : float, default=1e-9
             Inner loop tolerance for early stopping
-        ls : int or 'wolfe', optional
+        ls : int or 'wolfe' or 'brent', optional
             Maximum number of backtracking line-search iterations
         """
         # no super call

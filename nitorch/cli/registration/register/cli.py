@@ -248,7 +248,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
     if option.mov.output or option.mov.resliced:
         ifname = option.mov.files[0]
         idir, base, ext = py.fileparts(ifname)
-        odir = odir or idir or '.'
+        odir_mov = odir or idir or '.'
 
         image = objects.Image(mov.fdata(rand=True, device=device), dim=dim,
                               affine=mov_affine, bound=option.mov.bound,
@@ -261,7 +261,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
                 aff = affine.exp(recompute=False, cache_result=True)
                 target_affine = spatial.affine_lmdiv(aff, target_affine)
 
-            fname = option.mov.output.format(dir=odir, base=base, sep=os.path.sep, ext=ext)
+            fname = option.mov.output.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
             print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
             warped = _warp_image1(image, target_affine, target_shape,
                                   affine=affine, nonlin=nonlin)
@@ -285,7 +285,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
     if option.fix.output or option.fix.resliced:
         ifname = option.fix.files[0]
         idir, base, ext = py.fileparts(ifname)
-        odir = odir or idir or '.'
+        odir_fix = odir or idir or '.'
 
         image = objects.Image(fix.fdata(rand=True, device=device), dim=dim,
                               affine=fix_affine, bound=option.fix.bound,
@@ -310,7 +310,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             target_affine = mov_affine
             target_shape = mov.shape[1:]
 
-            fname = option.fix.resliced.format(dir=odir, base=base, sep=os.path.sep, ext=ext)
+            fname = option.fix.resliced.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
             print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = _warp_image1(image, target_affine, target_shape,
                                   affine=affine, nonlin=nonlin,
@@ -768,9 +768,12 @@ def _main(options):
                                        history=getattr(options.affine.optim, 'history', 100),
                                        max_iter=max_iter)
             # TODO: tolerance?
+        elif options.affine.optim.name == 'pow':
+            affine_optim = optim.Powell(lr=options.affine.optim.lr,
+                                        max_iter=max_iter)
         else:
             raise ValueError(options.affine.optim.name)
-        if not isinstance(affine_optim, optim.LBFGS):
+        if not hasattr(affine_optim, 'iter'):
             affine_optim = optim.IterateOptim(affine_optim,
                                               max_iter=max_iter,
                                               tol=options.affine.optim.tolerance,
@@ -871,7 +874,7 @@ def _main(options):
             # TODO: tolerance?
         else:
             raise ValueError(options.nonlin.optim.name)
-        if not isinstance(affine_optim, optim.LBFGS):
+        if not hasattr(optim, 'iter'):
             nonlin_optim = optim.IterateOptim(
                 nonlin_optim,
                 max_iter=max_iter,

@@ -8,7 +8,8 @@ from nitorch._C._ts import iso0, iso1, nd, utils as ts_utils
 from nitorch._C._ts.pushpull import make_bound, make_spline
 from nitorch._C._ts.bounds import Bound
 from nitorch._C.grid import bound_to_nitorch, inter_to_nitorch
-from nitorch.spatial import smooth, grid_grad
+from nitorch.spatial import smooth, grid_grad, grid_pull, grid_push, grid_count
+from nitorch.core import kernels
 import torch
 from .optionals import custom_fwd, custom_bwd
 from typing import List
@@ -20,6 +21,7 @@ from . import py, dtypes
 # ======================================================================
 # I copied that from nitorch.core.utils because the main histc function
 # needs it.
+
 
 def movedim(input, source, destination):
     """Moves the position of one or more dimensions
@@ -91,7 +93,7 @@ def movedim(input, source, destination):
 # ======================================================================
 # Computing the Hessian of a histogram-based function requires an
 # additional utility that computes G'HG, where G is equivalent to the
-# "grad" function and H os the Hessian of the loss with respect to the
+# "grad" function and H is the Hessian of the loss with respect to the
 # histogram. We call this utility "grad2".
 
 
@@ -531,8 +533,7 @@ def _histc_backward(g, x, w=None, order=0, bound='replicate',
         elif order == 1:
             gx = iso1.grad1d(*args)
         else:
-            order = make_spline([order])
-            args = (*args[:-1], order, args[-1])
+            args = (*args[:-1], make_spline([order]), args[-1])
             gx = nd.grad(*args)
         gx = gx.squeeze(1).squeeze(-1)
         if w is not None:
@@ -546,8 +547,7 @@ def _histc_backward(g, x, w=None, order=0, bound='replicate',
         elif order == 1:
             gw = iso1.pull1d(*args)
         else:
-            order = [make_spline(order)]
-            args = (*args[:-1], order, args[-1])
+            args = (*args[:-1], make_spline([order]), args[-1])
             gw = nd.pull(*args)
         gw = gw.squeeze(1)
 
@@ -633,7 +633,7 @@ def _jhistc_forward(x, bins, w=None, order=0, bound='replicate', extrapolate=Tru
     x : (b, n, 2) tensor
     bins : int or (int, int)
     w : ([b], n) tensor, optional
-    order : int, default=0
+    order : int or (int, int), default=0
     bound : {'zero', 'nearest'}, default='nearest'
     extrapolate : bool, default=True
 
@@ -642,29 +642,41 @@ def _jhistc_forward(x, bins, w=None, order=0, bound='replicate', extrapolate=Tru
     h : (b, bins, bins) tensor
 
     """
-    order = py.make_list(order, 2)
-    order = [inter_to_nitorch(o, 'int') for o in order]
-    bound = make_bound([bound_to_nitorch(bound, 'int')]*2)
-    extrapolate = 1 if extrapolate else 2
     bins = py.make_list(bins, 2)
-
+    extrapolate = 1 if extrapolate else 2
+    opt = dict(shape=bins, interpolation=order,
+               bound=bound, extrapolate=extrapolate)
+    x = x.unsqueeze(-3)                     # make 2d spatial
     if w is None:
-        w = x.new_ones([1]).expand(x.shape[:-1])
-    while w.dim() < 2:
-        w = w.unsqueeze(0)
-
-    args = (w.unsqueeze(-2).unsqueeze(-2), x.unsqueeze(1), bins, bound, extrapolate)
-    if all(o == 0 for o in order):
-        h = iso0.push2d(*args)
-    elif all(o == 1 for o in order):
-        h = iso1.push2d(*args)
+        h = grid_count(x, **opt)
     else:
-        order = make_spline([order]*2)
-        args = (*args[:-1], order, args[-1])
-        h = nd.push(*args)
-    h = h.squeeze(1).squeeze(1)
-
+        w = w.unsqueeze(-2).unsqueeze(-2)   # make 2d spatial + add channel
+        h = grid_push(w, x, **opt)
+        h = h.squeeze(-3)                   # drop channel
     return h
+
+    # order = py.make_list(order, 2)
+    # order = [inter_to_nitorch(o, 'int') for o in order]
+    # bound = make_bound([bound_to_nitorch(bound, 'int')]*2)
+    # extrapolate = 1 if extrapolate else 2
+    # bins = py.make_list(bins, 2)
+    #
+    # if w is None:
+    #     w = x.new_ones([1]).expand(x.shape[:-1])
+    # while w.dim() < 2:
+    #     w = w.unsqueeze(0)
+    #
+    # args = (w.unsqueeze(-2).unsqueeze(-2), x.unsqueeze(1), bins, bound, extrapolate)
+    # if all(o == 0 for o in order):
+    #     h = iso0.push2d(*args)
+    # elif all(o == 1 for o in order):
+    #     h = iso1.push2d(*args)
+    # else:
+    #     args = (*args[:-1], make_spline(order), args[-1])
+    #     h = nd.push(*args)
+    # h = h.squeeze(1).squeeze(1)
+    #
+    # return h
 
 
 def _jhistc_backward(g, x, w=None, order=0, bound='replicate',
@@ -690,57 +702,74 @@ def _jhistc_backward(g, x, w=None, order=0, bound='replicate',
     gw : ([b], n) tensor, if gradw
 
     """
-    order = py.make_list(order, 2)
-    order = [inter_to_nitorch(o, 'int') for o in order]
-    bound = make_bound([bound_to_nitorch(bound, 'int')]*2)
     extrapolate = 1 if extrapolate else 2
-
+    opt = dict(interpolation=order, bound=bound, extrapolate=extrapolate)
+    x = x.unsqueeze(-3)                     # make 2d spatial
+    g = g.unsqueeze(-3)                     # add channel dimension
     out = []
-
     if gradx:
-        args = (g.unsqueeze(1), x.unsqueeze(1), bound, extrapolate)
-        if all(o == 0 for o in order):
-            gx = iso0.grad(*args)
-        elif all(o == 1 for o in order):
-            gx = iso1.grad2d(*args)
-        else:
-            order = make_spline([order])
-            args = (*args[:-1], order, args[-1])
-            gx = nd.grad(*args)
-        gx = gx.squeeze(1).squeeze(1)
+        gx = grid_grad(g, x, **opt)
+        gx = gx.squeeze(-3).squeeze(-3)
         if w is not None:
-            gx *= w
+            gx *= w.unsqueeze(-1)
         out.append(gx)
-
-    if gradw:
-        args = (g.unsqueeze(1), x.unsqueeze(1), bound, extrapolate)
-        if all(o == 0 for o in order):
-            gw = iso0.pull2d(*args)
-        elif all(o == 1 for o in order):
-            gw = iso1.pull2d(*args)
-        else:
-            order = [make_spline(order)*2]
-            args = (*args[:-1], order, args[-1])
-            gw = nd.pull(*args)
-        gw = gw.squeeze(1).squeeze(1)
-
-        wshape = w.shape
-        while w.dim() < 2:
-            w = w.unsqueeze(0)
-        if w.numel() == 1:
-            gw = gw.sum(keepdim=True)
-        elif w.shape[0] == 1:
-            gw = gw.sum(dim=0, keepdim=True)
-        elif w.shape[1] == 1:
-            gw = gw.sum(dim=1, keepdim=True)
-        if len(wshape) < 2:
-            gw = gw[0]
-        if len(wshape) < 1:
-            gw = gw[0]
-
+    if gradw and w is not None:
+        gw = grid_pull(g, x, **opt)
+        gw = gw.squeeze(-2).squeeze(-2)     # drop spatial + channel
         out.append(gw)
-
+    elif gradw:
+        out.append(None)
     return out[0] if len(out) == 1 else tuple(out)
+
+    # order = py.make_list(order, 2)
+    # order = [inter_to_nitorch(o, 'int') for o in order]
+    # bound = make_bound([bound_to_nitorch(bound, 'int')]*2)
+    # extrapolate = 1 if extrapolate else 2
+    #
+    # out = []
+    #
+    # if gradx:
+    #     args = (g.unsqueeze(1), x.unsqueeze(1), bound, extrapolate)
+    #     if all(o == 0 for o in order):
+    #         gx = iso0.grad(*args)
+    #     elif all(o == 1 for o in order):
+    #         gx = iso1.grad2d(*args)
+    #     else:
+    #         args = (*args[:-1], make_spline(order), args[-1])
+    #         gx = nd.grad(*args)
+    #     gx = gx.squeeze(1).squeeze(1)
+    #     if w is not None:
+    #         gx *= w.unsqueeze(-1)
+    #     out.append(gx)
+    #
+    # if gradw:
+    #     args = (g.unsqueeze(1), x.unsqueeze(1), bound, extrapolate)
+    #     if all(o == 0 for o in order):
+    #         gw = iso0.pull2d(*args)
+    #     elif all(o == 1 for o in order):
+    #         gw = iso1.pull2d(*args)
+    #     else:
+    #         args = (*args[:-1], make_spline(order), args[-1])
+    #         gw = nd.pull(*args)
+    #     gw = gw.squeeze(1).squeeze(1)
+    #
+    #     wshape = w.shape
+    #     while w.dim() < 2:
+    #         w = w.unsqueeze(0)
+    #     if w.numel() == 1:
+    #         gw = gw.sum(keepdim=True)
+    #     elif w.shape[0] == 1:
+    #         gw = gw.sum(dim=0, keepdim=True)
+    #     elif w.shape[1] == 1:
+    #         gw = gw.sum(dim=1, keepdim=True)
+    #     if len(wshape) < 2:
+    #         gw = gw[0]
+    #     if len(wshape) < 1:
+    #         gw = gw[0]
+    #
+    #     out.append(gw)
+    #
+    # return out[0] if len(out) == 1 else tuple(out)
 
 
 def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
@@ -782,6 +811,7 @@ def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
         raise NotImplementedError
     gx = gx.squeeze(1).squeeze(1)
     if w is not None:
+        w = w.unsqueeze(-1)
         gx *= w if is_diag else w.unsqueeze(-1)
 
     return gx
@@ -1095,7 +1125,6 @@ class HistCount:
         n = x.shape[-1]
         xbatch = x.shape[:-1]
         if w is not None:
-            wbatch = w.shape[:-1]
             x, w = torch.broadcast_tensors(x, w)
             w = w.reshape([-1, n])
             batch = x.shape[:-1]
@@ -1145,7 +1174,6 @@ class HistCount:
         n = x.shape[-1]
         xbatch = x.shape[:-1]
         if w is not None:
-            wbatch = w.shape[:-1]
             x, w = torch.broadcast_tensors(x, w)
             w = w.reshape([-1, n])
             batch = x.shape[:-1]
@@ -1197,7 +1225,6 @@ class HistCount:
         n = x.shape[-1]
         xbatch = x.shape[:-1]
         if w is not None:
-            wbatch = w.shape[:-1]
             x, w = torch.broadcast_tensors(x, w)
             w = w.reshape([-1, n])
             batch = x.shape[:-1]
@@ -1265,10 +1292,9 @@ class JointHistCount:
         n = x.shape[-2]
         xbatch = x.shape[:-2]
         if w is not None:
-            wbatch = w.shape[:-1]
             _, w = torch.broadcast_tensors(x[..., 0], w)
             batch = w.shape[:-1]
-            x = x.expand([*batch, x.shape[-2:]])
+            x = x.expand([*batch, *x.shape[-2:]])
             w = w.reshape([-1, n])
         else:
             batch = xbatch
@@ -1320,10 +1346,9 @@ class JointHistCount:
         n = x.shape[-2]
         xbatch = x.shape[:-2]
         if w is not None:
-            wbatch = w.shape[:-1]
             _, w = torch.broadcast_tensors(x[..., 0], w)
             batch = w.shape[:-1]
-            x = x.expand([*batch, x.shape[-2:]])
+            x = x.expand([*batch, *x.shape[-2:]])
             w = w.reshape([-1, n])
         else:
             batch = xbatch
@@ -1378,10 +1403,9 @@ class JointHistCount:
         n = x.shape[-2]
         xbatch = x.shape[:-2]
         if w is not None:
-            wbatch = w.shape[:-1]
             _, w = torch.broadcast_tensors(x[..., 0], w)
             batch = w.shape[:-1]
-            x = x.expand([*batch, x.shape[-2:]])
+            x = x.expand([*batch, *x.shape[-2:]])
             w = w.reshape([-1, n])
         else:
             batch = xbatch
@@ -1416,10 +1440,14 @@ class JointHistCount:
 
         # smooth backward
         if any(self.fwhm):
-            h = smooth(h, fwhm=self.fwhm, bound=self.bound, dim=2)
-            if not is_diag:
+            ker = kernels.smooth(fwhm=self.fwhm)
+            if is_diag:
+                ker = [k.square_() for k in ker]
+                h = smooth(h, kernel=ker, bound=self.bound, dim=2)
+            else:
+                h = smooth(h, kernel=ker, bound=self.bound, dim=2)
                 h = h.transpose(-4, -2).transpose(-3, -1)
-                h = smooth(h, fwhm=self.fwhm, bound=self.bound, dim=2)
+                h = smooth(h, kernel=ker, bound=self.bound, dim=2)
                 h = h.transpose(-4, -2).transpose(-3, -1)
 
         # push data into the histogram

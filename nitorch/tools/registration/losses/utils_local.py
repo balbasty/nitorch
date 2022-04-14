@@ -394,7 +394,7 @@ def pre_reshape(x, dim: int):
 
 @torch.jit.script
 def post_reshape(x, nb_batch: int, batch: List[int]):
-    if batch:
+    if len(batch) > 0:
         x = x.reshape(batch + x.shape[1:])
     else:
         for _ in range(-nb_batch):
