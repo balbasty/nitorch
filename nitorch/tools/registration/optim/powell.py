@@ -47,7 +47,8 @@ class Powell(ZerothOrder):
         largest_step = 0
         for i in range(len(x)):
             fi = f
-            a, f = self.brent.iter(x, f, self.delta[i], closure_ls)
+            closure_i = lambda a: closure_ls(x.add(self.delta[i], alpha=a)).item()
+            a, f = self.brent(0, closure_i, loss=f)
             x.add_(self.delta[i], alpha=a)
             step = abs(f - fi)
             if step > largest_step:
@@ -59,9 +60,10 @@ class Powell(ZerothOrder):
         f1 = closure(2 * x - x0).item()  # x + (x - x0)
         if f1 < f:
             delta1 = x - x0
-            a, f = self.brent.iter(x, f, delta1, closure_ls)
+            closure_i = lambda a: closure_ls(x.add(delta1, alpha=a)).item()
+            a, f = self.brent(0, closure_i, loss=f)
             x.add_(delta1, alpha=a)
-            self.delta[i_largest_step].copy(delta1).mul_(a)
+            self.delta[i_largest_step].copy_(delta1).mul_(a)
             # for verbosity only
             closure(x)
 

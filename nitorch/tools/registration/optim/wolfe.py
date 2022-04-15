@@ -22,7 +22,7 @@ class StrongWolfe(FirstOrder):
         max_iter : int, default=25
             Maximum number of iterations
         """
-        super().__init__(lr=lr, **kwargs)
+        super().__init__(lr=lr, iter=0, **kwargs)
         self.c1 = c1
         self.c2 = c2
         self.tol = tol

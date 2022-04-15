@@ -57,31 +57,36 @@ class Optim:
         opt_iter = {k: opt[k] for k in opt_iter if k in opt}
         if iter is None and not isinstance(self, OptimWrapper):
             iter = OptimIterator(**opt_iter)
-        self.iter = iter
+        self._set_iter(iter)
         opt_ls = ('max_ls',)
         opt_ls = {k: opt[k] for k in opt_ls if k in opt}
-        search = _make_search(search, **opt_ls, second_order=self.requires_hess)
-        self.search = search
+        self._set_search(search, **opt_ls)
 
     @property
     def iter(self):
         return self._iter or self.step
 
-    @iter.setter
-    def iter(self, x):
+    def _set_iter(self, x):
         self._iter = x
         if self._iter:
             self._iter.optim = self
+
+    @iter.setter
+    def iter(self, x):
+        self._set_iter(x)
 
     @property
     def search(self):
         return self._search
 
-    @search.setter
-    def search(self, x):
-        self._search = _make_search(x, second_order=self.requires_hess)
+    def _set_search(self, x, **opt):
+        self._search = _make_search(x, **opt, second_order=self.requires_hess)
         if self._search:
             self._search.optim = self
+
+    @search.setter
+    def search(self, x):
+        self._set_search(x)
 
     def __call__(self, *args, **kwargs):
         return self.iter(*args, **kwargs)

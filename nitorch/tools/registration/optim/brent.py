@@ -13,7 +13,7 @@ class Brent(ZerothOrder):
     tiny = 1e-8
 
     def __init__(self, lr=1, tol=1e-9, max_iter=128):
-        super().__init__(lr=lr)
+        super().__init__(lr=lr, iter=0)
         self.tol = tol
         self.max_iter = max_iter
 
