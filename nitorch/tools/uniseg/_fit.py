@@ -47,7 +47,7 @@ class SpatialMixture:
 
     def __init__(self, nb_classes=6, prior=None, affine_prior=None,
                  do_bias=True, do_warp=True,  do_affine=True,
-                 do_mixing=True, do_mrf=True,
+                 do_mixing=True, do_mrf='once',
                  lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10,
                  bias_acceleration=0, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-3, max_iter_intensity=8, max_iter_mrf=50,
@@ -75,7 +75,7 @@ class SpatialMixture:
             Optimize affine matrix
         do_mixing : bool, default=True
             Optimize stationary mixing proportions
-        do_mrf : {False, 'once', 'always', 'learn' or True}, default='learn'
+        do_mrf : {False, 'once', 'always', 'learn' or True}, default='once'
             Include a Markov Random Field
             - 'once' : only at the end
             - 'always' : at each iteration

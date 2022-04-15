@@ -121,7 +121,8 @@ def _plot_gmm(moving, fixed, prm, bins=64):
 
 
 def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
-          grad=True, hess=True, mode='g', max_iter=128):
+          grad=True, hess=True, mode='g', max_iter=128,
+          theta=None, return_theta=False):
 
     fixed, moving = utils.to_max_backend(fixed, moving)
     dim = dim or (fixed.dim() - 1)
@@ -138,17 +139,23 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     bwd = Bwd(patch, stride, dim, mode, shape)
 
     gmmfit = fit_lgmm2(moving, fixed, bins, max_iter, dim,
-                       patch=patch, stride=stride, mode=mode)
-    z = gmmfit.pop('resp')
-    moving_mean = gmmfit.pop('xmean')
-    fixed_mean = gmmfit.pop('ymean')
-    moving_var = gmmfit.pop('xvar')
-    fixed_var = gmmfit.pop('yvar')
-    corr = gmmfit.pop('corr')
-    prior = gmmfit.pop('prior')
-    nll = gmmfit.pop('nll')
+                       patch=patch, stride=stride, mode=mode, theta=theta)
+
+    # drop unused variables
+    get = gmmfit.get if return_theta else gmmfit.pop
+    pop = gmmfit.pop
+    pop('idet', None)
+    pop('resp_entropy', None)
+
+    z = pop('resp')
+    moving_mean = get('xmean')
+    fixed_mean = get('ymean')
+    moving_var = get('xvar')
+    fixed_var = get('yvar')
+    corr = get('corr')
+    prior = get('prior')
+    out = [pop('nll')]
     nvox = py.prod(z.shape[-dim:])
-    del gmmfit
 
     moving = moving.unsqueeze(-dim-1)
     fixed = fixed.unsqueeze(-dim-1)
@@ -171,9 +178,9 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
         g = make_grad(bwd, z, z0, moving, fixed, moving_mean, fixed_mean,
                       moving_var, fixed_var, corr, prior)
         g.div_(nvox)
+        out.append(g)
 
         if hess:
-            #
             # # hessian of (1 - corr^2)
             # imoving_var = moving_var.reciprocal()
             # corr2 = corr * corr
@@ -195,12 +202,16 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
 
             h = make_hess(bwd, z, z0, moving_var, corr, prior)
             h.div_(nvox)
+            out.append(h)
 
-    return (nll, g, h) if hess else (nll, g) if grad else nll
+    if return_theta:
+        out.append(gmmfit)
+
+    return out[0] if len(out) == 1 else tuple(out)
 
 
 def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
-         grad=True, hess=True):
+         grad=True, hess=True, theta=None, return_theta=False):
     """Entropy estimated by Gaussian Mixture Modeling
 
     Parameters
@@ -227,24 +238,33 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
         Gradient
     h : (..., *spatial) tensor, if `hess`
         Hessian
+    theta : dict, if `return_theta`
+        GMM parameters
     """
     # TODO: multivariate GMM?
     #   -> must differentiate ln|C| where C is the correlation matrix
 
     dim = dim or (fixed.dim() - 1)
-    gmmfit = fit_gmm2(moving, fixed, bins, max_iter, dim=dim, mask=mask)
+    gmmfit = fit_gmm2(moving, fixed, bins, max_iter,
+                      dim=dim, mask=mask, theta=theta)
 
-    z = gmmfit.pop('z')
+    # drop unused variables
+    get = gmmfit.get if return_theta else gmmfit.pop
+    pop = gmmfit.pop
+    pop('idet', None)
+    pop('resp_entropy', None)
+
+    z = pop('resp')
     if mask is not None:
-        z *= mask
+        z *= mask.unsqueeze(-1)
     z = z.div_(sumspatial(z, dim))
-    prior = gmmfit.pop('prior')
-    moving_mean = gmmfit.pop('moving_mean')
-    fixed_mean = gmmfit.pop('fixed_mean')
-    moving_var = gmmfit.pop('moving_var')
-    fixed_var = gmmfit.pop('fixed_var')
-    corr = gmmfit.pop('corr')
-    ll = gmmfit.pop('ll')
+    prior = get('prior')
+    moving_mean = get('xmean')
+    fixed_mean = get('ymean')
+    moving_var = get('xvar')
+    fixed_var = get('yvar')
+    corr = get('corr')
+    out = [pop('nll')]
 
     moving = moving[..., None]
     fixed = fixed[..., None]
@@ -271,6 +291,7 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
 
         g = make_grad(moving, fixed, moving_mean, fixed_mean,
                       moving_var, fixed_var, corr, prior, z)
+        out.append(g)
 
         if hess:
 
@@ -290,8 +311,12 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
                 return h
 
             h = make_hess(moving_var, corr, prior, z)
+            out.append(h)
 
-    return (ll, g, h) if hess else (ll, g) if grad else ll
+    if return_theta:
+        out.append(gmmfit)
+
+    return out[0] if len(out) == 1 else tuple(out)
 
 
 class GMMH(OptimizationLoss):
@@ -299,7 +324,7 @@ class GMMH(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, bins=3, max_iter=128):
+    def __init__(self, dim=None, bins=3, max_iter=128, cache=True):
         """
 
         Parameters
@@ -311,6 +336,8 @@ class GMMH(OptimizationLoss):
         self.dim = dim
         self.bins = bins
         self.max_iter = max_iter
+        self.cache = cache
+        self.theta = None
 
     def loss(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -331,7 +358,12 @@ class GMMH(OptimizationLoss):
         kwargs.setdefault('dim', self.dim)
         kwargs.setdefault('bins', self.bins)
         kwargs.setdefault('max_iter', self.max_iter)
-        return gmmh(moving, fixed, **kwargs, grad=False, hess=False)
+        kwargs.setdefault('theta', self.theta)
+        kwargs['return_theta'] = self.cache
+        ll = gmmh(moving, fixed, **kwargs, grad=False, hess=False)
+        if self.cache:
+            ll, self.theta = ll
+        return ll
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -354,7 +386,12 @@ class GMMH(OptimizationLoss):
         kwargs.setdefault('dim', self.dim)
         kwargs.setdefault('bins', self.bins)
         kwargs.setdefault('max_iter', self.max_iter)
-        return gmmh(moving, fixed, **kwargs, grad=True, hess=False)
+        kwargs.setdefault('theta', self.theta)
+        kwargs['return_theta'] = self.cache
+        ll, g, *theta = gmmh(moving, fixed, **kwargs, grad=True, hess=False)
+        if self.cache:
+            self.theta = theta[0]
+        return ll, g
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -380,7 +417,21 @@ class GMMH(OptimizationLoss):
         kwargs.setdefault('dim', self.dim)
         kwargs.setdefault('bins', self.bins)
         kwargs.setdefault('max_iter', self.max_iter)
-        return gmmh(moving, fixed, **kwargs, grad=True, hess=True)
+        kwargs.setdefault('theta', self.theta)
+        kwargs['return_theta'] = self.cache
+        ll, g, h, *theta = gmmh(moving, fixed, **kwargs, grad=True, hess=True)
+        if self.cache:
+            self.theta = theta[0]
+        return ll, g, h
+
+    def clear_state(self):
+        self.theta = None
+
+    def get_state(self):
+        return dict(theta=self.theta)
+
+    def set_state(self, state):
+        self.theta = state.get('theta', None)
 
 
 class LGMMH(OptimizationLoss):
@@ -388,7 +439,8 @@ class LGMMH(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, bins=3, patch=20, stride=1, mode='g', max_iter=128):
+    def __init__(self, dim=None, bins=3, patch=20, stride=1, mode='g',
+                 max_iter=128, cache=True):
         """
 
         Parameters
@@ -403,6 +455,8 @@ class LGMMH(OptimizationLoss):
         self.stride = stride
         self.mode = mode
         self.max_iter = max_iter
+        self.cache = cache
+        self.theta = None
 
     def loss(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -426,8 +480,12 @@ class LGMMH(OptimizationLoss):
         kwargs.setdefault('stride', self.stride)
         kwargs.setdefault('mode', self.mode)
         kwargs.setdefault('max_iter', self.max_iter)
+        kwargs['return_theta'] = self.cache
         kwargs.pop('mask', None)
-        return lgmmh(moving, fixed, **kwargs, grad=False, hess=False)
+        ll = lgmmh(moving, fixed, **kwargs, grad=False, hess=False)
+        if self.cache:
+            ll, self.theta = ll
+        return ll
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -453,8 +511,12 @@ class LGMMH(OptimizationLoss):
         kwargs.setdefault('stride', self.stride)
         kwargs.setdefault('mode', self.mode)
         kwargs.setdefault('max_iter', self.max_iter)
+        kwargs['return_theta'] = self.cache
         kwargs.pop('mask', None)
-        return lgmmh(moving, fixed, **kwargs, grad=True, hess=False)
+        ll, g, *theta = lgmmh(moving, fixed, **kwargs, grad=True, hess=False)
+        if self.cache:
+            self.theta = theta[0]
+        return ll, g
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -483,5 +545,18 @@ class LGMMH(OptimizationLoss):
         kwargs.setdefault('stride', self.stride)
         kwargs.setdefault('mode', self.mode)
         kwargs.setdefault('max_iter', self.max_iter)
+        kwargs['return_theta'] = self.cache
         kwargs.pop('mask', None)
-        return lgmmh(moving, fixed, **kwargs, grad=True, hess=True)
+        ll, g, h, *theta = lgmmh(moving, fixed, **kwargs, grad=True, hess=True)
+        if self.cache:
+            self.theta = theta[0]
+        return ll, g, h
+
+    def clear_state(self):
+        self.theta = None
+
+    def get_state(self):
+        return dict(theta=self.theta)
+
+    def set_state(self, state):
+        self.theta = state.get('theta', None)

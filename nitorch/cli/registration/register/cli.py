@@ -613,12 +613,13 @@ def _do_register(loss_list, affine, nonlin,
     if nonlin:
         if affine:
             if options.optim.name == 'sequential':
-                joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
-                                                       max_iter=1, tol=0)
+                joptim = optim.InterleavedOptimIterator(
+                    [affine_optim, nonlin_optim], max_iter=1, tol=0)
             else:
-                joptim = optim.IterateOptimInterleaved([affine_optim, nonlin_optim],
-                                                       max_iter=options.optim.max_iter,
-                                                       tol=options.optim.tolerance)
+                joptim = optim.InterleavedOptimIterator(
+                    [affine_optim, nonlin_optim],
+                    max_iter=options.optim.max_iter,
+                    tol=options.optim.tolerance)
         else:
             joptim = nonlin_optim
     else:
@@ -765,19 +766,17 @@ def _main(options):
                                              marquardt=getattr(options.affine.optim, 'marquardt', None))
         elif options.affine.optim.name == 'lbfgs':
             affine_optim = optim.LBFGS(lr=options.affine.optim.lr,
-                                       history=getattr(options.affine.optim, 'history', 100),
-                                       max_iter=max_iter)
+                                       history=getattr(options.affine.optim, 'history', 100))
             # TODO: tolerance?
         elif options.affine.optim.name == 'pow':
-            affine_optim = optim.Powell(lr=options.affine.optim.lr,
-                                        max_iter=max_iter)
+            affine_optim = optim.Powell(lr=options.affine.optim.lr)
         else:
             raise ValueError(options.affine.optim.name)
-        if not hasattr(affine_optim, 'iter'):
-            affine_optim = optim.IterateOptim(affine_optim,
-                                              max_iter=max_iter,
-                                              tol=options.affine.optim.tolerance,
-                                              ls=options.affine.optim.line_search)
+        if options.affine.optim.line_search \
+                and not isinstance(affine_optim, (optim.Powell, optim.LBFGS)):
+            affine_optim.search = options.affine.optim.line_search
+        affine_optim.iter = optim.OptimIterator(
+            max_iter=max_iter, tol=options.affine.optim.tolerance)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
@@ -868,18 +867,15 @@ def _main(options):
         elif options.nonlin.optim.name == 'lbfgs':
             nonlin_optim = optim.LBFGS(
                 lr=options.nonlin.optim.lr,
-                history=getattr(options.nonlin.optim, 'history'),
-                max_iter=max_iter)
+                history=getattr(options.nonlin.optim, 'history'))
             nonlin_optim.preconditioner = nonlin.greens_apply
             # TODO: tolerance?
         else:
             raise ValueError(options.nonlin.optim.name)
-        if not hasattr(optim, 'iter'):
-            nonlin_optim = optim.IterateOptim(
-                nonlin_optim,
-                max_iter=max_iter,
-                tol=options.nonlin.optim.tolerance,
-                ls=options.nonlin.optim.line_search)
+        if options.nonlin.optim.line_search:
+            nonlin_optim.search = options.nonlin.optim.line_search
+        nonlin_optim.iter = optim.OptimIterator(
+            max_iter=max_iter, tol=options.nonlin.optim.tolerance)
 
     if not affine and not nonlin:
         raise ValueError('At least one of @affine or @nonlin must be used.')
@@ -892,8 +888,8 @@ def _main(options):
         matplotlib.use('TkAgg')
 
     # local losses may benefit from selecting the best conv
-    # torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.benchmark = True
 
     # ------------------------------------------------------------------
     #                      PERFORM REGISTRATION

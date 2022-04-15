@@ -36,6 +36,9 @@ usage:
         tuk, tukey                      Tukey's biweight function (can be weighted)
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
+        gmm                             Gaussian Mixture likelihood
+        lgmm                            Local Gaussian Mixture likelihood
+        emmi                            EM-based Mutual Information
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
 
@@ -96,10 +99,9 @@ usage:
     NAME can take values (with specific sub-options):
        [mi, nmi]                        Mutual information (can be normalized) 
             -m, --norm NAME                 Normalization: [studholme], arithmetic, geometric, no
-            -p, --patch *VAL [UNIT]         Patch size and unit: [vox], mm, pct
-            -b, --bins VAL                  Number of bins in the joint histogram [32]
-            -f, --fwhm VAL                  Full width half-max of histogram smoothing [0]
-            -n, --order VAL                 Spline order of parzen window [3]
+            -b, --bins VAL [VAL]            Number of bins in the joint histogram [32]
+            -f, --fwhm VAL                  Full width half-max of histogram smoothing [1]
+            -n, --order VAL                 Spline order of parzen window [1]
         mse, l2                         Mean squared error (can be weighted)
             -w, --weight [VAL]              Weight (= Gaussian precision): [auto]
         mad, l1                         Median absolute deviation (can be weighted)
@@ -109,6 +111,16 @@ usage:
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
             -p, --patch *VAL [UNIT]         Patch size and unit: [vox], mm, pct
+        gmm                             Gaussian Mixture likelihood
+            -b, --bins                      Number of clusters in the mixture [6]
+            -n, --iter VAL                  Number of EM iterations [128]
+        lgmm                            Local Gaussian Mixture likelihood
+            -b, --bins                      Number of clusters in the mixture [6]
+            -n, --iter VAL                  Number of EM iterations [128]
+            -p, --patch *VAL [UNIT]         Patch size [32] and unit: [vox], mm, pct
+            -k, --kernel VAL                Kernel type: [gauss]/square
+            -s, --stride *VAL               Stride between patches [0]
+        emmi                            EM-based Mutual Information
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
             -w, --weight *VAL               Weight per class [1]
@@ -198,7 +210,7 @@ usage:
         -l, --lr                        Learning rate [1]
         -n, --max-iter                  Maximum number of iterations
         -s, --line-search               Number of backtracking line search [wolfe]
-        -t, --tolerance                 Tolerance for early stopping [1e-9]
+        -t, --tolerance                 Tolerance for early stopping [1e-5]
 
 @pyramid options:
     NAME can take values:
@@ -312,7 +324,7 @@ loss.add_option('symmetric', ('-s', '--symmetric'), nargs=0, default=False,
 weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
                            default=None, convert=number_or_str(float),
                            help='Weight (= precision) or the loss.')
-patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=20,
+patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=32,
                           convert=number_or_str(int), help='Patch size')
 stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
                            convert=int, help='Strides between patches.')
@@ -427,7 +439,7 @@ optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  default='wolfe', convert=number_or_str(int),
                  help='Number of backtracking line search')
 optim.add_option('tolerance', ('-t', '--tolerance'), nargs=1,
-                 convert=float, default=1e-3, help='Tolerance for early stopping')
+                 convert=float, default=1e-5, help='Tolerance for early stopping')
 optim.add_suboption('gn', 'marquardt', ('-m', '--marquardt'), nargs=1,
                     default=None, convert=number_or_str(float),
                     help='Levenberg-Marquardt regularization')

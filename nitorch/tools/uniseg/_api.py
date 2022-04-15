@@ -11,7 +11,7 @@ from nitorch.tools.registration.affine_tpm import align_tpm
 def uniseg(x, w=None, affine=None, device=None,
            nb_classes=None, prior=None, affine_prior=None,
            do_bias=True, do_warp=True, do_affine=True, do_mixing=True,
-           do_mrf=True, wishart=None, cleanup=None, spacing=3,
+           do_mrf='once', wishart=None, cleanup=None, spacing=3,
            lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10, lam_wishart=1,
            max_iter=30, tol=1e-3, verbose=1, plot=0, return_parameters=False):
     """Unified Segmentation using a deformable spatial prior.
@@ -48,7 +48,7 @@ def uniseg(x, w=None, affine=None, device=None,
         Optimize an affine warp of the spatial prior
     do_mixing : bool, default=True
         Optimize global missing proportions
-    do_mrf : {False, 'once', 'always', 'learn' or True}, default='learn'
+    do_mrf : {False, 'once', 'always', 'learn' or True}, default='once'
         Include a Markov Random Field in the model.
         - 'once' : only at the end
         - 'always' : at each iteration
@@ -156,7 +156,7 @@ def uniseg(x, w=None, affine=None, device=None,
         else:
             prior_for_align = prior
         aff = align_tpm((x, affine), (prior_for_align, affine_prior), w,
-                        verbose=verbose, joint=True)
+                        verbose=verbose-1, joint=True)
         affine_prior = aff.inverse() @ affine_prior
         del prior_for_align
 

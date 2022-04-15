@@ -400,7 +400,8 @@ class RegisterStep:
             line += f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} + {lla:12.6g} = {ll:12.6g}'
             if not in_line_search:
                 if self.ll_prev is not None:
-                    gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
+                    gain = self.ll_prev - ll
+                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
                     line += f' | {gain:12.6g}'
                 self.llv = llv
                 self.all_ll.append(ll)
@@ -605,7 +606,8 @@ class RegisterStep:
             line += f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} + {lla:12.6g} = {ll:12.6g}'
             if not in_line_search:
                 if self.ll_prev is not None:
-                    gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
+                    gain = self.ll_prev - ll
+                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
                     line += f' | {gain:12.6g}'
                 self.all_ll.append(ll)
                 self.ll_prev = ll
@@ -760,7 +762,8 @@ class RegisterStep:
             line += f'{self.n_iter:03d} | {llx:12.6g} + {lla:12.6g} = {ll:12.6g}'
             if not in_line_search:
                 if self.ll_prev is not None:
-                    gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
+                    gain = self.ll_prev - ll
+                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
                     line += f' | {gain:12.6g}'
                 self.all_ll.append(ll)
                 self.ll_prev = ll

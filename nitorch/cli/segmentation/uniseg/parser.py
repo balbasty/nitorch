@@ -37,7 +37,7 @@ components:
     -a, --align, --no-align         Perform TPM alignment               [always]/once/no
     -w, --warp,  --no-warp          Perform TPM warping                 [yes]/no
         --mix,   --no-mix           Perform mixing proportion updates   [yes]/no
-        --mrf,   --no-mrf           Perform Markov random field         [learn]/always/once/no
+        --mrf,   --no-mrf           Perform Markov random field         learn/always/[once]/no
         --wish,  --no-wish          Perform Wishart regularization      [yes]/no
     -c, --clean, --no-clean         Perform postprocessing cleanup      [yes]/no
 
@@ -151,7 +151,7 @@ parser.add_option(f'mix', '--no-mix', nargs=0,
 parser.add_option(f'mrf', '--mrf', nargs='?',
                   convert=lambda x: mrf_aliases.get(x, x),
                   validation=cli.Validations.choice(mrf_choices),
-                  action=cli.Actions.store_value('learn'), default=True)
+                  action=cli.Actions.store_value('learn'), default='once')
 parser.add_option(f'mrf', '--no-mrf', nargs=0,
                   action=cli.Actions.store_value(False))
 parser.add_option(f'wish', '--wish', nargs='?', convert=bool_or_str,
