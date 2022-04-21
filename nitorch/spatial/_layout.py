@@ -1,3 +1,10 @@
+"""
+WORK IN PROGRESS
+- the idea is too have an object that represents an "oriented lattice"
+  and can easily be sliced/transformed/etc, which would be easier to
+  use than the affine_* functions
+"""
+
 from ._affine import (
     affine_default,
     affine_sub,
