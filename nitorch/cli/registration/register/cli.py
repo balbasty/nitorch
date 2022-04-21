@@ -1,5 +1,7 @@
 import warnings
 
+import copy
+
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import parser, help
@@ -114,7 +116,8 @@ def _rescale_image(dat, quantiles):
     else:
         mn, mx = quantiles
     mx = mx / 100
-    mn, mx = utils.quantile(dat, (mn, mx), dim=range(-dim, 0), keepdim=True).unbind(-1)
+    mn, mx = utils.quantile(dat, (mn, mx), dim=range(-dim, 0),
+                            keepdim=True, bins=1024).unbind(-1)
     dat = dat.sub_(mn).div_(mx - mn)
     return dat
 
@@ -159,11 +162,11 @@ def _make_image(option, dim=None, device=None):
             mask = mask * mask1
         del mask1
     if option.world:  # overwrite orientation matrix
-        affine = io.transforms.map(option.world).fdata()
+        affine = io.transforms.map(option.world).fdata().squeeze()
     for transform in (option.affine or []):
-        transform = io.transforms.map(transform).fdata()
+        transform = io.transforms.map(transform).fdata().squeeze()
         affine = spatial.affine_lmdiv(transform, affine)
-    if not option.discretize and option.rescale:
+    if not option.discretize and any(option.rescale):
         dat = _rescale_image(dat, option.rescale)
     if option.pad:
         pad = option.pad
@@ -233,15 +236,15 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
     dim = dim or (fix.dim - 1)
 
     if option.fix.world:  # overwrite orientation matrix
-        fix_affine = io.transforms.map(option.fix.world).fdata()
+        fix_affine = io.transforms.map(option.fix.world).fdata().squeeze()
     for transform in (option.fix.affine or []):
-        transform = io.transforms.map(transform).fdata()
+        transform = io.transforms.map(transform).fdata().squeeze()
         fix_affine = spatial.affine_lmdiv(transform, fix_affine)
 
     if option.mov.world:  # overwrite orientation matrix
-        mov_affine = io.transforms.map(option.mov.world).fdata()
+        mov_affine = io.transforms.map(option.mov.world).fdata().squeeze()
     for transform in (option.mov.affine or []):
-        transform = io.transforms.map(transform).fdata()
+        transform = io.transforms.map(transform).fdata().squeeze()
         mov_affine = spatial.affine_lmdiv(transform, mov_affine)
 
     # moving
@@ -273,7 +276,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             target_affine = fix_affine
             target_shape = fix.shape[1:]
 
-            fname = option.mov.resliced.format(dir=odir, base=base, sep=os.path.sep, ext=ext)
+            fname = option.mov.resliced.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
             print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = _warp_image1(image, target_affine, target_shape,
                                   affine=affine, nonlin=nonlin, reslice=True)
@@ -298,7 +301,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
                 aff = affine.exp(recompute=False, cache_result=True)
                 target_affine = spatial.affine_matmul(aff, target_affine)
 
-            fname = option.fix.output.format(dir=odir, base=base, sep=os.path.sep, ext=ext)
+            fname = option.fix.output.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
             print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
             warped = _warp_image1(image, target_affine, target_shape,
                                   affine=affine, nonlin=nonlin, backward=True)
@@ -318,122 +321,6 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             io.savef(warped, fname, like=ifname, affine=target_affine)
             print('done.')
             del warped
-
-
-def _pyramid_levels1(vx, shape, opt):
-    def is_valid(vx, shape):
-        if opt.min_size and any(s < opt.min_size for s in shape):
-            return False
-        if opt.max_size and any(s > opt.max_size for s in shape):
-            return False
-        if opt.min_vx and any(v < opt.min_vx for v in vx):
-            return False
-        if opt.max_vx and any(v > opt.max_vx for v in vx):
-            return False
-        return True
-
-    def is_max(vx, shape):
-        if opt.min_size and any(s < opt.min_size for s in shape):
-            return True
-        if opt.max_vx and any(v > opt.max_vx for v in vx):
-            return True
-        if all(s == 1 for s in shape):
-            return True
-        return False
-
-    full_pyramid = [(0, vx, shape)]
-    valid_pyramid = []
-    while True:
-        level0, vx0, shape0 = full_pyramid[-1]
-        if is_max(vx0, shape0):
-            break
-        if is_valid(vx0, shape0):
-            valid_pyramid.append(full_pyramid[-1])
-        vx1 = [v*2 for v in vx0]
-        shape1 = [int(pymath.ceil(s/2)) for s in shape0]
-        full_pyramid.append((level0+1, vx1, shape1))
-
-    if not valid_pyramid:
-        raise ValueError(f'Image with shape {shape} and voxel size {vx} '
-                         f'does not fit in the pyramid.')
-    return valid_pyramid
-
-
-def _pyramid_levels(vxs, shapes, opt):
-    dim = len(shapes[0])
-    # first: compute approximate voxel size and shape at each level
-    pyramids = [
-        _pyramid_levels1(vx, shape, opt)
-        for vx, shape in zip(vxs, shapes)
-    ]
-    # NOTE: pyramids = [[(level, vx, shape), ...], ...]
-
-    # second: match voxel sizes across images
-    vx0 = min([py.prod(pyramid[0][1]) for pyramid in pyramids])
-    vx0 = pymath.log2(vx0**(1/dim))
-    level_offsets = []
-    for pyramid in pyramids:
-        level, vx, shape = pyramid[0]
-        vx1 = pymath.log2(py.prod(vx)**(1/dim))
-        level_offsets.append(round(vx1 - vx0))
-
-    # third: keep only levels that overlap across images
-    max_level = min(o + len(p) for o, p in zip(level_offsets, pyramids))
-    pyramids = [p[:max_level-o] for o, p in zip(level_offsets, pyramids)]
-    if any(len(p) == 0 for p in pyramids):
-        raise ValueError(f'Some images do not overlap in the pyramid.')
-
-    # fourth: compute pyramid index of each image at each level
-    select_levels = []
-    for level in opt.levels:
-        if isinstance(level, int):
-            select_levels.append(level)
-        else:
-            select_levels.extend(list(level))
-
-    map_levels = []
-    for pyramid, offset in zip(pyramids, level_offsets):
-        map_levels1 = [pyramid[0][0]] * offset
-        for pyramid_level in pyramid:
-            map_levels1.append(pyramid_level[0])
-        if select_levels:
-            map_levels1 = [map_levels1[l] for l in select_levels
-                           if l < len(map_levels1)]
-        map_levels.append(map_levels1)
-
-    return map_levels
-
-
-def _prepare_pyramid_levels(losses, opt, dim=None):
-    if opt.name == 'none':
-        return [{'fix': None, 'mov': None}] * len(losses)
-
-    vxs = []
-    shapes = []
-    for loss in losses:
-        # fixed image
-        dat, affine = _map_image(loss.fix.files, dim)
-        vx = dat.voxel_size[0].tolist()
-        shape = dat.shape[:dim]
-        if loss.fix.pad:
-            pad = py.make_list(loss.fix.pad, len(shape))
-            shape = [s + 2*p for s, p in zip(shape, pad)]
-        vxs.append(vx)
-        shapes.append(shape)
-        # moving image
-        dat, affine = _map_image(loss.mov.files, dim)
-        vx = dat.voxel_size[0].tolist()
-        shape = dat.shape[:dim]
-        if loss.mov.pad:
-            pad = py.make_list(loss.mov.pad, len(shape))
-            shape = [s + 2*p for s, p in zip(shape, pad)]
-        vxs.append(vx)
-        shapes.append(shape)
-
-    levels = _pyramid_levels(vxs, shapes, opt)
-    levels = [{'fix': fix, 'mov': mov}
-              for fix, mov in zip(levels[::2], levels[1::2])]
-    return levels
 
 
 def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
@@ -558,15 +445,206 @@ def _get_loss(loss, dim):
     return lossobj
 
 
-def _split_pyramid(loss_list):
+def _ras_to_layout(x, affine):
+    layout = spatial.affine_to_layout(affine)
+    ras_to_layout = layout[..., 0]
+    return [x[i] for i in ras_to_layout]
+
+
+def _patch(patch, affine, shape, level):
+    dim = affine.shape[-1] - 1
+    patch = py.make_list(patch)
+    unit = 'pct'
+    if isinstance(patch[-1], str):
+        *patch, unit = patch
+    patch = py.make_list(patch, dim)
+    unit = unit.lower()
+    if unit[0] == 'v':  # voxels
+        patch = [p / 2**level for p in patch]
+    elif unit in ('m', 'mm', 'cm', 'um'):  # assume RAS orientation
+        factor = (1e-3 if unit == 'um' else
+                  1e1 if unit == 'cm' else
+                  1e3 if unit == 'm' else
+                  1)
+        affine_ras = spatial.affine_reorient(affine, layout='RAS')
+        vx_ras = spatial.voxel_size(affine_ras).tolist()
+        patch = [factor * p / v for p, v in zip(patch, vx_ras)]
+        patch = _ras_to_layout(patch, affine)
+    elif unit[0] in 'p%':    # percentage of shape
+        patch = [0.01 * p * s for p, s in zip(patch, shape)]
+    else:
+        raise ValueError('Unknown patch unit:', unit)
+
+    # ensure patch size is an integer >= 2 (else, no gradients)
+    patch = list(map(lambda x: max(int(pymath.ceil(x)), 2), patch))
+    return patch
+
+
+def _pyramid_levels1(vx, shape, opt):
+    def is_valid(vx, shape):
+        if opt.min_size and any(s < opt.min_size for s in shape):
+            return False
+        if opt.max_size and any(s > opt.max_size for s in shape):
+            return False
+        if opt.min_vx and any(v < opt.min_vx for v in vx):
+            return False
+        if opt.max_vx and any(v > opt.max_vx for v in vx):
+            return False
+        return True
+
+    def is_max(vx, shape):
+        if opt.min_size and any(s < opt.min_size for s in shape):
+            return True
+        if opt.max_vx and any(v > opt.max_vx for v in vx):
+            return True
+        if all(s == 1 for s in shape):
+            return True
+        return False
+
+    full_pyramid = [(0, vx, shape)]
+    valid_pyramid = []
+    while True:
+        level0, vx0, shape0 = full_pyramid[-1]
+        if is_max(vx0, shape0):
+            break
+        if is_valid(vx0, shape0):
+            valid_pyramid.append(full_pyramid[-1])
+        vx1 = [v*2 for v in vx0]
+        shape1 = [int(pymath.ceil(s/2)) for s in shape0]
+        full_pyramid.append((level0+1, vx1, shape1))
+
+    if not valid_pyramid:
+        raise ValueError(f'Image with shape {shape} and voxel size {vx} '
+                         f'does not fit in the pyramid.')
+    return valid_pyramid
+
+
+def _pyramid_levels(vxs, shapes, opt):
+    dim = len(shapes[0])
+    # first: compute approximate voxel size and shape at each level
+    pyramids = [
+        _pyramid_levels1(vx, shape, opt)
+        for vx, shape in zip(vxs, shapes)
+    ]
+    # NOTE: pyramids = [[(level, vx, shape), ...], ...]
+
+    # second: match voxel sizes across images
+    vx0 = min([py.prod(pyramid[0][1]) for pyramid in pyramids])
+    vx0 = pymath.log2(vx0**(1/dim))
+    level_offsets = []
+    for pyramid in pyramids:
+        level, vx, shape = pyramid[0]
+        vx1 = pymath.log2(py.prod(vx)**(1/dim))
+        level_offsets.append(round(vx1 - vx0))
+
+    # third: keep only levels that overlap across images
+    max_level = min(o + len(p) for o, p in zip(level_offsets, pyramids))
+    pyramids = [p[:max_level-o] for o, p in zip(level_offsets, pyramids)]
+    if any(len(p) == 0 for p in pyramids):
+        raise ValueError(f'Some images do not overlap in the pyramid.')
+
+    # fourth: compute pyramid index of each image at each level
+    select_levels = []
+    for level in opt.levels:
+        if isinstance(level, int):
+            select_levels.append(level)
+        else:
+            select_levels.extend(list(level))
+
+    map_levels = []
+    for pyramid, offset in zip(pyramids, level_offsets):
+        map_levels1 = [pyramid[0][0]] * offset
+        for pyramid_level in pyramid:
+            map_levels1.append(pyramid_level[0])
+        if select_levels:
+            map_levels1 = [map_levels1[l] for l in select_levels
+                           if l < len(map_levels1)]
+        map_levels.append(map_levels1)
+
+    return map_levels
+
+
+def _prepare_pyramid_levels(losses, opt, dim=None):
+    if opt.name == 'none':
+        return [{'fix': None, 'mov': None}] * len(losses)
+
+    vxs = []
+    shapes = []
+    for loss in losses:
+        # fixed image
+        dat, affine = _map_image(loss.fix.files, dim)
+        vx = dat.voxel_size[0].tolist()
+        shape = dat.shape[:dim]
+        if loss.fix.pad:
+            pad = py.make_list(loss.fix.pad, len(shape))
+            shape = [s + 2*p for s, p in zip(shape, pad)]
+        vxs.append(vx)
+        shapes.append(shape)
+        # moving image
+        dat, affine = _map_image(loss.mov.files, dim)
+        vx = dat.voxel_size[0].tolist()
+        shape = dat.shape[:dim]
+        if loss.mov.pad:
+            pad = py.make_list(loss.mov.pad, len(shape))
+            shape = [s + 2*p for s, p in zip(shape, pad)]
+        vxs.append(vx)
+        shapes.append(shape)
+
+    levels = _pyramid_levels(vxs, shapes, opt)
+    levels = [{'fix': fix, 'mov': mov}
+              for fix, mov in zip(levels[::2], levels[1::2])]
+    return levels
+
+
+def _sequential_pyramid(loss_list):
     fixs = []
     movs = []
     for loss in loss_list:
         fixs.append(loss.fixed)
         movs.append(loss.moving)
-        loss.fixed = loss.fixed[-1]
-        loss.moving = loss.moving[-1]
-    return loss_list, fixs, movs
+        loss.fixed = None
+        loss.moving = None
+
+    pyramid = []
+    for i in range(len(fixs[0])):
+        level = []
+        for loss, fix, mov in zip(loss_list, fixs, movs):
+            loss_level = copy.deepcopy(loss)
+            loss_level.fixed = fix[i]
+            loss_level.moving = mov[i]
+            if hasattr(loss.loss, 'patch'):
+                dim = fix[i].affine.shape[-1] - 1
+                shape = fix[i].shape[-dim:]
+                loss_level.loss.patch = _patch(
+                    loss_level.loss.patch, fix[i].affine, shape, i)
+            level.append(loss_level)
+        pyramid.append(level)
+    pyramid = pyramid[::-1]
+    return pyramid
+
+
+def _concurrent_pyramid(loss_list):
+    fixs = []
+    movs = []
+    for loss in loss_list:
+        fixs.append(loss.fixed)
+        movs.append(loss.moving)
+        loss.fixed = None
+        loss.moving = None
+
+    level = []
+    for i in range(len(fixs[0])):
+        for loss, fix, mov in zip(loss_list, fixs, movs):
+            loss_level = copy.deepcopy(loss)
+            loss_level.fixed = fix[i]
+            loss_level.moving = mov[i]
+            if hasattr(loss_level.loss, 'patch'):
+                dim = fix[i].affine.shape[-1] - 1
+                shape = fix[i].shape[-dim:]
+                loss_level.loss.patch = _patch(
+                    loss_level.loss.patch, fix[i].affine, shape, i)
+            level.append(loss_level)
+    return [level]
 
 
 def _do_register(loss_list, affine, nonlin,
@@ -574,8 +652,10 @@ def _do_register(loss_list, affine, nonlin,
     dim = 3
     line_size = 89 if nonlin else 74
 
-    if not options.pyramid.concurrent:
-        loss_list, fixs, movs = _split_pyramid(loss_list)
+    if options.pyramid.concurrent:
+        loss_list = _concurrent_pyramid(loss_list)
+    else:
+        loss_list = _sequential_pyramid(loss_list)
 
     # ------------------------------------------------------------------
     #       INITIAL PROGRESSIVE AFFINE
@@ -598,7 +678,8 @@ def _do_register(loss_list, affine, nonlin,
                     affine.dat.dat[n:n+2] = affine_prev.dat.dat[-1]
             if i == len(affines) - 1:
                 break
-            register = pairwise.Register(loss_list, affine, None, affine_optim,
+            affine_optim.reset_state()
+            register = pairwise.Register(loss_list[0], affine, None, affine_optim,
                                          verbose=options.verbose,
                                          framerate=options.framerate)
             register.fit()
@@ -629,6 +710,7 @@ def _do_register(loss_list, affine, nonlin,
     #       CONCURRENT PYRAMID
     # ------------------------------------------------------------------
     if options.pyramid.concurrent:
+        joptim.reset_state()
         register = pairwise.Register(loss_list, affine, nonlin, joptim,
                                      verbose=options.verbose,
                                      framerate=options.framerate)
@@ -638,21 +720,14 @@ def _do_register(loss_list, affine, nonlin,
     #       SEQUENTIAL PYRAMID
     # ------------------------------------------------------------------
     else:
-        nb_level = len(fixs[0])
-        n_level = nb_level - 1
-        while len(fixs[0]) > 0:
+        n_level = len(loss_list)
+        for loss_level in loss_list:
+            n_level -= 1
             print('-' * line_size)
             print(f'   PYRAMID LEVEL {n_level}')
             print('-' * line_size)
-            n_level -= 1
-            for i, loss in enumerate(loss_list):
-                loss.fixed = fixs[i][-1]
-                loss.moving = movs[i][-1]
-                fixs[i] = fixs[i][:-1]
-                movs[i] = movs[i][:-1]
-                loss.loss.clear_state()
-
-            register = pairwise.Register(loss_list, affine, nonlin, joptim,
+            joptim.reset_state()
+            register = pairwise.Register(loss_level, affine, nonlin, joptim,
                                          verbose=options.verbose,
                                          framerate=options.framerate)
             register.fit()
@@ -749,6 +824,9 @@ def _main(options):
                 options.affine.optim.name = 'lbfgs'
         if options.affine.optim.name == 'gd':
             affine_optim = optim.GradientDescent(lr=options.affine.optim.lr)
+        elif options.affine.optim.name == 'cg':
+            affine_optim = optim.ConjugateGradientDescent(lr=options.affine.optim.lr,
+                                                          beta=options.affine.optim.beta)
         elif options.affine.optim.name == 'mom':
             affine_optim = optim.Momentum(lr=options.affine.optim.lr,
                                           momentum=options.affine.optim.momentum)
@@ -824,6 +902,10 @@ def _main(options):
                 options.nonlin.optim.name = 'lbfgs'
         if options.nonlin.optim.name == 'gd':
             nonlin_optim = optim.GradientDescent(lr=options.nonlin.optim.lr)
+            nonlin_optim.preconditioner = nonlin.greens_apply
+        elif options.affine.optim.name == 'cg':
+            nonlin_optim = optim.ConjugateGradientDescent(lr=options.nonlin.optim.lr,
+                                                          beta=options.nonlin.optim.beta)
             nonlin_optim.preconditioner = nonlin.greens_apply
         elif options.nonlin.optim.name == 'mom':
             nonlin_optim = optim.Momentum(lr=options.nonlin.optim.lr,

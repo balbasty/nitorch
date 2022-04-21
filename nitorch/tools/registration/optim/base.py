@@ -91,6 +91,9 @@ class Optim:
     def __call__(self, *args, **kwargs):
         return self.iter(*args, **kwargs)
 
+    def reset_state(self):
+        pass
+
     def update(self, step, param=None):
         """Apply a step to the current parameters"""
         if param is None:
@@ -211,6 +214,10 @@ class OptimWrapper(Optim):
     requires = _wrapped_prop('requires')
     param = _wrapped_prop('param')
     closure = _wrapped_prop('closure')
+
+    def reset_state(self):
+        if self.optim:
+            self.optim.reset_state()
 
     def update(self, *a, **k):
         optim = k.pop('optim', self.optim)
@@ -341,6 +348,10 @@ class InterleavedOptimIterator(OptimIterator):
 
         """
         super().__init__(list(optim), max_iter, tol, stop, **kwargs)
+
+    def reset_state(self):
+        for optim in self.optim:
+            optim.reset_state()
 
     def step(self, param=None, closure=None, **kwargs):
         if param is None:

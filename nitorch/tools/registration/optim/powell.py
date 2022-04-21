@@ -1,5 +1,6 @@
 from .base import ZerothOrder
 from .brent import Brent
+from .utils import get_closure_ls
 from nitorch.core import utils
 import torch
 
@@ -24,19 +25,17 @@ class Powell(ZerothOrder):
         self.brent = Brent(max_iter=sub_iter, tol=tol)
         self.delta = None
 
+    def reset_state(self):
+        self.delta = None
+
     def step(self, param=None, closure=None, **kwargs):
 
         if param is None:
             param = self.param
         if closure is None:
             closure = self.closure
+        closure_ls = get_closure_ls(closure)
         x = param
-
-        import inspect
-        if 'in_line_search' in inspect.signature(closure).parameters:
-            closure_ls = lambda *a, **k: closure(*a, **k, in_line_search=True)
-        else:
-            closure_ls = closure
 
         if self.delta is None:
             self.delta = torch.eye(len(x), **utils.backend(x)).mul_(self.lr)
@@ -49,23 +48,25 @@ class Powell(ZerothOrder):
             fi = f
             closure_i = lambda a: closure_ls(x.add(self.delta[i], alpha=a)).item()
             a, f = self.brent(0, closure_i, loss=f)
-            x.add_(self.delta[i], alpha=a)
-            step = abs(f - fi)
-            if step > largest_step:
-                largest_step = step
-                i_largest_step = i
-            # for verbosity only
-            closure(x)
-        # repeat the same step and see if we improve
-        f1 = closure(2 * x - x0).item()  # x + (x - x0)
-        if f1 < f:
-            delta1 = x - x0
-            closure_i = lambda a: closure_ls(x.add(delta1, alpha=a)).item()
-            a, f = self.brent(0, closure_i, loss=f)
-            x.add_(delta1, alpha=a)
-            self.delta[i_largest_step].copy_(delta1).mul_(a)
-            # for verbosity only
-            closure(x)
+            if f < fi:
+                x.add_(self.delta[i], alpha=a)
+                step = abs(fi - f)
+                if step > largest_step:
+                    largest_step = step
+                    i_largest_step = i
+            else:
+                f = fi
+        if f < f0:
+            # repeat the same step and see if we improve
+            f1 = closure_ls(2 * x - x0).item()  # x + (x - x0)
+            if f1 < f:
+                delta1 = x - x0
+                closure_i = lambda a: closure_ls(x.add(delta1, alpha=a)).item()
+                a, f = self.brent(0, closure_i, loss=f)
+                x.add_(delta1, alpha=a)
+                self.delta[i_largest_step].copy_(delta1).mul_(a)
+        # for verbosity only
+        closure(x)
 
         f = torch.as_tensor(f, **utils.backend(x))
         return x, f

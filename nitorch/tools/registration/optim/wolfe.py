@@ -1,3 +1,5 @@
+import math
+
 from .base import FirstOrder, _wrapped_prop
 from .linesearch import LineSearch
 import torch
@@ -105,16 +107,22 @@ class StrongWolfe(FirstOrder):
                 # Wolfe failed + wrong direction
                 return -1
 
+            if not math.isfinite(f_new):
+                # Same as inf
+                return -1
+
             # Wolfe failed + right direction
             return 1
 
-        def update_bracket(a, f, g, ba, bf, bg, bdg):
+        def debug(*a, **k): pass
+
+        def update_bracket(a, f, g, dg, ba, bf, bg, bdg):
             # (a, f, g, dg)     -> new values (step, function, gradient, dot)
             # (ba, bf, bg, bdg) -> brackets (ordered [low, high])
-            dg = delta.flatten().dot(g.flatten())
 
             if f > (f0 + self.c1 * a * dg0) or f >= bf[0]:
                 # Armijo condition failed -> replace high  value
+                debug('Armijo condition failed -> replace high  value')
                 ba = [ba[0], a]
                 bf = [bf[0], f]
                 bg = [bg[0], g]
@@ -124,16 +132,19 @@ class StrongWolfe(FirstOrder):
 
             if abs(dg) <= -self.c2 * dg0:
                 # Armijo + Wolfe succeeded
+                debug('Armijo + Wolfe succeeded')
                 return True, [a, a], [f, f], [g, g], [dg, dg]
 
             if dg * (ba[1] - ba[0]) >= 0:
                 # old low becomes new high
+                debug('old low becomes new high')
                 ba = ba[::-1]
                 bf = bf[::-1]
                 bg = bg[::-1]
                 bdg = bdg[::-1]
 
             # new point becomes new low
+            debug('new point becomes new low')
             ba = [a, ba[1]]
             bf = [f, bf[1]]
             bg = [g, bg[1]]
@@ -142,6 +153,9 @@ class StrongWolfe(FirstOrder):
 
         # value at initial step size
         f, g = closure(a, grad=True)
+        while not math.isfinite(f):
+            a = 0.5 * a
+            f, g = closure(a, grad=True)
         dg = delta.flatten().dot(g.flatten())
 
         # We first want to find an upper bound for the step size.
@@ -153,16 +167,23 @@ class StrongWolfe(FirstOrder):
         # true, cubic interpolation brings us to the right of the
         # rightmost point.
         dd = delta.abs().max()
+        debug('bracket')
         while ls_iter < self.max_iter:
+            debug((a1, f1.item(), "\\" if dg1 < 0 else '//'),
+                  (a, f.item(), "\\" if dg < 0 else '//'))
             side = update_bracket_init(a, f, dg, f1)
             ls_iter += 1
             if side == 0:
+                debug('side = 0')
                 return a, f, g
             elif side < 0:
+                debug('side < 0')
                 break
             elif abs(a1 - a) * dd < self.tol:
+                debug('side ≈ 0')
                 break
             else:
+                debug('side > 0')
                 bracket = (a1, a), (f1, f), (dg1, dg)
                 a1, f1, g1, dg1 = a, f, g, dg
                 a = self.interpolate_bracket(*bracket, bound=True)
@@ -177,19 +198,29 @@ class StrongWolfe(FirstOrder):
         # cubic interpolation and either find a point that enforces
         # all Wolfe conditions (we can stop there) or explore the half
         # space between the two lowest points.
+        debug('optimize')
         (a, a1), (f, f1), (g, g1), (dg, dg1) \
             = self.sort_bracket((a, a1), (f, f1), (g, g1), (dg, dg1))
         progress = True
         success = False
         while ls_iter < self.max_iter:
             if success or abs(a1 - a) * dd < self.tol:
+                debug('converge', a1, a, dd)
                 break
+            if a1 < a:
+                debug((a1, f1.item(), "\\" if dg1 < 0 else '//'),
+                      (a, f.item(), "\\" if dg < 0 else '//'))
+            else:
+                debug((a, f.item(), "\\" if dg < 0 else '//'),
+                      (a1, f1.item(), "\\" if dg1 < 0 else '//'))
             new_a = self.interpolate_bracket((a, a1), (f, f1), (dg, dg1))
             ls_iter += 1
             new_a, progress = self.check_progress(new_a, (a, a1), progress)
             new_f, new_g = closure(new_a, grad=True)
+            new_dg = delta.flatten().dot(new_g.flatten())
+            debug('new:', new_a, new_f.item(), "\\" if new_dg < 0 else '//')
             success, (a, a1), (f, f1), (g, g1), (dg, dg1) \
-                = update_bracket(new_a, new_f, new_g,
+                = update_bracket(new_a, new_f, new_g, new_dg,
                                  (a, a1), (f, f1), (g, g1), (dg, dg1))
 
         if f > f0:

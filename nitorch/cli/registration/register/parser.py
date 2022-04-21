@@ -110,14 +110,14 @@ usage:
             -w, --weight [VAL]              Weight (= Laplace precision): [auto]
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
-            -p, --patch *VAL [UNIT]         Patch size and unit: [vox], mm, pct
+            -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
         gmm                             Gaussian Mixture likelihood
             -b, --bins                      Number of clusters in the mixture [6]
             -n, --iter VAL                  Number of EM iterations [128]
         lgmm                            Local Gaussian Mixture likelihood
             -b, --bins                      Number of clusters in the mixture [6]
             -n, --iter VAL                  Number of EM iterations [128]
-            -p, --patch *VAL [UNIT]         Patch size [32] and unit: [vox], mm, pct
+            -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
             -k, --kernel VAL                Kernel type: [gauss]/square
             -s, --stride *VAL               Stride between patches [0]
         emmi                            EM-based Mutual Information
@@ -190,9 +190,11 @@ usage:
     NAME can take values (with options):
         gn, gauss-newton                Second-order method. Not all losses can be used.
             -m, --marquardt                  Levenberg-Marquardt regularization [auto]
-            -q, --solver                     Linear solver: [cg],relax (used for @nonlin only)
+            -q, --solver                     Linear solver: [cg], relax (used for @nonlin only)
             -j, --sub-iter                   Number of linear solver iterations [32]
         gd, gradient-descent            Simple gradient descent
+        cg, conjugate-gradient          Conjugate gradient descent
+            -b, --beta                      Update rule: [pr], fr, hs, dy
         mom, momentum                   Gradient descent with momentum
             -m, --momentum                  Momentum factor [0.9]
         nes, nesterov                   Gradient descent with Nesterov momentum
@@ -324,7 +326,7 @@ loss.add_option('symmetric', ('-s', '--symmetric'), nargs=0, default=False,
 weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
                            default=None, convert=number_or_str(float),
                            help='Weight (= precision) or the loss.')
-patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=32,
+patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=10,
                           convert=number_or_str(int), help='Patch size')
 stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
                            convert=int, help='Strides between patches.')
@@ -419,6 +421,7 @@ loss.add_group(mov)
 # optim subgroup
 optim_aliases = {'gauss-newton': 'gn',
                  'gradient-descent': 'gd',
+                 'conjugate-gradient': 'cg',
                  'momentum': 'mom',
                  'nesterov': 'nes',
                  'optimized-gradient': 'ogm',
@@ -469,6 +472,14 @@ optim.add_suboption('ogm', 'output', ('-o', '--output'), nargs='?',
                     help='Write momentum maps')
 optim.add_suboption('lbfgs', 'history', ('-h', '--history'), nargs=1,
                     default=100, convert=int, help='History size')
+cg_aliases = {'fletcher-reeves': 'fr',
+              'polak-ribiere': 'pr',
+              'hestenes-stiefel': 'hs',
+              'dai-yuan': 'dy'}
+cg_choices = list(cg_aliases.values())
+optim.add_suboption('cg', 'beta', ('-b', '--beta'), nargs=1, default='pr',
+                    validation=cli.Validations.choice(cg_choices),
+                    convert=lambda x: cg_aliases.get(x, x))
 
 # affine group
 affine_aliases = {'t': 'translation',

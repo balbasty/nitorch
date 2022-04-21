@@ -17,6 +17,9 @@ class AcceleratedFirstOrder(FirstOrder):
             self.delta.mul_(lr / self.lr)
         self.lr = lr
 
+    def reset_state(self):
+        self.delta = 0
+
 
 class Momentum(AcceleratedFirstOrder):
     """Gradient descent with momentum
@@ -26,10 +29,10 @@ class Momentum(AcceleratedFirstOrder):
     """
 
     def __init__(self, *args, **kwargs):
-        kwargs.setdefault('momentum', 0.9)
+        momentum = kwargs.pop('momentum', 0.9)
         super().__init__(*args, **kwargs)
-        self.delta = 0
         self.n_iter = 0
+        self.momentum = momentum
 
     def search_direction(self, grad):
         grad = self.precondition(grad)
@@ -77,9 +80,11 @@ class Nesterov(AcceleratedFirstOrder):
         """
         super().__init__(**kwargs)
         self.auto_restart = auto_restart
-        self.delta = 0
         self.theta = 1
         self.momentum = self._momentum = momentum
+
+    def reset_state(self):
+        self.restart()
 
     def restart(self):
         self.delta = 0
@@ -170,11 +175,13 @@ class OGM(AcceleratedFirstOrder):
         self.auto_restart = auto_restart
         self.damping = damping
         self._damping = 1
-        self.delta = 0
         self.theta = 1
         self.momentum = self._momentum = momentum
         self.relaxation = self._relaxation = relaxation
         self._grad = 0
+
+    def reset_state(self):
+        self.restart()
 
     def restart(self):
         self.delta = 0

@@ -90,7 +90,8 @@ class Brent(ZerothOrder):
                 delta = delta.item()
                 a = a1 + delta
             else:  # No minimum -> we must go farther than a2
-                a = a1 + (1 + self.gold) * (a2 - a1)
+                delta = self.gold * (a2 - a1)
+                a = a2 + delta
 
             # check progress and update bracket
             # f2 < f1 < f0 so (assuming unicity) the minimum is in
@@ -153,8 +154,9 @@ class Brent(ZerothOrder):
             d = d.item()
             a = a0 + d
 
-            if abs(d) > abs(d0) or not (b0 < a < b1) or quad[-1] < 0:
-                if a0 > (b0 + b1)/2:
+            tiny = self.tiny * (1 + 2 * abs(a0))
+            if abs(d) > abs(d1)/2 or not (b0 + tiny < a < b1 - tiny) or quad[-1] < 0:
+                if a0 > 0.5 * (b0 + b1):
                     d = self.igold * (b0 - a0)
                 else:
                     d = self.igold * (b1 - a0)
@@ -163,16 +165,16 @@ class Brent(ZerothOrder):
             # check progress and update bracket
             f = closure(a)
             if f < f0:
-                # better solution: f < f0 < f1 -> update three closest points
+                # f < f0 < f1 < f2
                 b0, b1 = (b0, a0) if a < a0 else (a0, b1)
                 (a0, f0), (a1, f1), (a2, f2) = (a, f), (a0, f0), (a1, f1)
             else:
                 b0, b1 = (a, b1) if a < a0 else (b0, a)
                 if f < f1:
-                    # f0 < f < f1 -> update three closest points
+                    # f0 < f < f1 < f2
                     (a0, f0), (a1, f1), (a2, f2) = (a0, f0), (a, f), (a1, f1)
-                else:
-                    # f0 < f1 < f -> update three closest points
+                elif f < f2:
+                    # f0 < f1 < f < f2
                     (a0, f0), (a1, f1), (a2, f2) = (a0, f0), (a1, f1), (a, f)
 
         return a0, f0

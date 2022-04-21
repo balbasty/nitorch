@@ -1,5 +1,6 @@
 from .base import FirstOrder
 from .wolfe import StrongWolfe
+from .utils import get_closure_ls
 import torch
 
 
@@ -29,17 +30,29 @@ class LBFGS(FirstOrder):
             self.wolfe = False
         else:
             self.wolfe = StrongWolfe(**(wolfe or dict()))
+        # state
+        self._lr = self.lr
         self.delta = []  # s
         self.delta_grad = []  # y
         self.sy = []
         self.yy = []
         self.last_grad = 0
 
+    def reset_state(self):
+        # state
+        self.delta = []  # s
+        self.delta_grad = []  # y
+        self.sy = []
+        self.yy = []
+        self.last_grad = 0
+        self.lr = self._lr
+
     def step(self, param=None, closure=None, derivatives=False, **kwargs):
         if param is None:
             param = self.param
         if closure is None:
             closure = self.closure
+        closure_ls = get_closure_ls(closure)
 
         loss, grad = self._get_loss(param, closure, **kwargs)
 
@@ -48,12 +61,16 @@ class LBFGS(FirstOrder):
         delta = self.search_direction(grad, update=False)
 
         if self.wolfe:
+            def closure1(x, *a, **k):
+                return closure_ls(param.add(delta, alpha=x), *a, **k)
             step, loss, grad = self.wolfe(
-                param, delta, closure, derivatives=True, loss=loss, grad=grad)
-            closure(param)  # to plot stuff
+                0, closure1, delta=delta, loss=loss, grad=grad)
+            closure(param)  # to plot stuff / update loss state
             delta.mul_(step)
             self.lr *= step
 
+        # print('up ', delta.tolist())
+        self.update_state(grad, delta)
         param = self.update(delta, param)
 
         if not self.wolfe:
@@ -65,6 +82,7 @@ class LBFGS(FirstOrder):
         """Compute gradient direction, without Wolfe line search"""
         alphas = []
         delta = grad.neg()
+        # print('   ', delta.tolist())
         for i in range(1, len(self.delta)+1):
             alpha = torch.dot(self.delta[-i].flatten(),
                               delta.flatten()) / self.sy[-i]
@@ -83,6 +101,7 @@ class LBFGS(FirstOrder):
             beta = torch.dot(self.delta_grad[i].flatten(),
                              delta.flatten()) / self.sy[i]
             delta.add_(self.delta[i], alpha=alphas[i] - beta)
+        # print('-> ', delta.tolist())
         delta = delta.mul_(self.lr)
         if update:
             self.update_state(grad, delta)
@@ -91,11 +110,9 @@ class LBFGS(FirstOrder):
     def update_state(self, grad, delta):
         """Update state"""
         delta_grad = grad - self.last_grad
-        sy = torch.dot(delta_grad[-1].flatten(),
-                       delta[-1].flatten())
+        sy = torch.dot(delta_grad.flatten(), delta.flatten())
         if sy > 1e-10:
-            yy = torch.dot(delta_grad.flatten(),
-                           delta_grad.flatten())
+            yy = torch.dot(delta_grad.flatten(), delta_grad.flatten())
             if len(self.delta) == self.history:
                 self.delta.pop(0)
                 self.delta_grad.pop(0)

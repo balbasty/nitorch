@@ -33,7 +33,9 @@ class LineSearch(OptimWrapper):
     the gradient as well (e.g. a Wolfe line search looks for a step size
     that brings the loss in a "nice" region).
     """
-    pass
+    def __init__(self, *args, **kwargs):
+        kwargs['max_ls'] = 0
+        super().__init__(*args, **kwargs)
 
 
 class NoLineSearch(LineSearch):

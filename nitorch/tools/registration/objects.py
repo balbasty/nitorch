@@ -141,7 +141,8 @@ class Image(SpatialTensor):
         if dat or (preview and not self.previewed):
             img = regutils.smart_pull(self.dat, grid, bound=self.bound,
                                       extrapolate=self.extrapolate)
-            out += [img]
+            if dat:
+                out += [img]
         if mask:
             msk = None
             if self.masked:
@@ -621,6 +622,9 @@ class LossComponent:
             f'    fixed={self.fixed}'
         if self.backward:
             s += f',\n    backward=True'
+        p = getattr(self.loss, 'patch', None)
+        if p is not None:
+            s += f',\n    patch={p}'
         s += ')'
         return s
 
