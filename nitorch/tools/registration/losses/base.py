@@ -47,6 +47,16 @@ class OptimizationLoss:
         """
         raise NotImplementedError
 
+    def clear_state(self):
+        """Clear persistant state"""
+        pass
+
+    def get_state(self):
+        pass
+
+    def set_state(self, state):
+        pass
+
 
 class HistBasedOptimizationLoss(OptimizationLoss):
     """Base class for histogram-bases losses"""

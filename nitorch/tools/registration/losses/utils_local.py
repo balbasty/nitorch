@@ -1,19 +1,25 @@
-"""Utility to apply (weighted) convolutions.
+"""
+Utility to apply (weighted) convolutions.
 It is mostly use to compute local averages in LCC/LGMM.
 It is implemented in TorchScript for performance.
 """
 
 import torch
 from torch.nn import functional as F
-from typing import Optional, List
+from typing import Optional, List, Dict, Tuple
+import math
 Tensor = torch.Tensor
 
 
-__all__ = ['local_mean']
+__all__ = ['local_mean', 'cache']
 
+
+# ----------------------------------------------------------------------
+#                           JIT UTILS
+# ----------------------------------------------------------------------
 
 @torch.jit.script
-def _pad_list_int(x: List[int], length: int) -> List[int]:
+def pad_list_int(x: List[int], length: int) -> List[int]:
     """Pad a List[int] using its last value until it has length `length`."""
     x = x + x[-1:] * max(0, length-len(x))
     x = x[:length]
@@ -21,7 +27,15 @@ def _pad_list_int(x: List[int], length: int) -> List[int]:
 
 
 @torch.jit.script
-def _any(x: List[bool]) -> bool:
+def pad_list_float(x: List[float], length: int) -> List[float]:
+    """Pad a List[float] using its last value until it has length `length`."""
+    x = x + x[-1:] * max(0, length-len(x))
+    x = x[:length]
+    return x
+
+
+@torch.jit.script
+def list_any(x: List[bool]) -> bool:
     for elem in x:
         if elem:
             return True
@@ -29,7 +43,7 @@ def _any(x: List[bool]) -> bool:
 
 
 @torch.jit.script
-def _all(x: List[bool]) -> bool:
+def list_all(x: List[bool]) -> bool:
     for elem in x:
         if not elem:
             return False
@@ -46,95 +60,98 @@ def prod(x: List[int]) -> int:
     return x0
 
 
-@torch.jit.script
-def _guess_output_shape(inshape: List[int],
-                        dim: int,
-                        kernel_size: List[int],
-                        stride: Optional[List[int]] = None,
-                        transposed: bool = False) -> List[int]:
-    """Guess the output shape of a convolution"""
-    # assumes dilation=1, padding=0, output_padding=0
-    kernel_size = _pad_list_int(kernel_size, dim)
-    if stride is None:
-        stride = [1]
-    stride = _pad_list_int(stride, dim)
+# ----------------------------------------------------------------------
+#                               CONV
+# ----------------------------------------------------------------------
+# We only use odd kernels, which simplifies some things when computing shapes
 
-    N = inshape[0]
-    C = inshape[1]
-    shape = [N, C]
-    for L, S, K in zip(inshape[2:], stride, kernel_size):
-        Pi = 0  # padding
-        Po = 0  # output padding
-        D = 1   # dilation
-        if transposed:
-            shape.append((L - 1) * S - 2 * Pi + D * (K - 1) + Po + 1)
-        else:
-            shape.append(int(((L + 2 * Pi - D * (K - 1) - 1) / S + 1) // 1))
-    return shape
+
+@torch.jit.script
+def conv_input_padding(kernel_size: List[int]):
+    """Input padding -- mode 'same' """
+    # assert k % 2 == 1
+    pad: List[int] = [(k - 1)//2 for k in kernel_size]
+    return pad
+
+
+@torch.jit.script
+def convt_output_shape(input_shape: List[int],
+                       kernel_size: List[int],
+                       stride: List[int]) -> List[int]:
+    """Output shape of transposed conv -- mode 'same'"""
+    pad = conv_input_padding(kernel_size)
+    oshape: List[int] = [(l - 1) * s - 2 * p + (k - 1) + 1 for k, s, l, p
+                         in zip(kernel_size, stride, input_shape, pad)]
+    return oshape
+
+
+@torch.jit.script
+def convt_output_padding(output_shape: List[int],
+                         input_shape: List[int],
+                         kernel_size: List[int],
+                         stride: List[int]) -> List[int]:
+    """Input padding -- mode 'same' """
+    output_shape0 = convt_output_shape(input_shape, kernel_size, stride)
+    opad: List[int] = [l - l0 for l, l0 in zip(output_shape, output_shape0)]
+    return opad
 
 
 @torch.jit.script
 def conv(x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
-    """ND convolution
+    """ND convolution (padding = 'same')
     x : (B, Ci, *inspatial) tensor
     kernel : (Ci, Co, *kernel_size) tensor
     stride : List{dim}[int]
     returns : (B, Co, *outspatial) tensor
     """
     dim = x.dim() - 2
-    if kernel.shape[-dim-1] == kernel.shape[-dim-2] == 1:
+    pad = conv_input_padding(kernel.shape[-dim:])
+    out_channels = kernel.shape[-dim-1]
+    inp_channels = kernel.shape[-dim-2]
+    if inp_channels == out_channels == 1:
         groups = x.shape[-dim-1]
-        kernel = kernel.expand([x.shape[-dim-1], 1] + kernel.shape[2:])
+        kernel = kernel.expand([groups, 1] + kernel.shape[2:])
     else:
         groups = 1
     if dim == 1:
-        return F.conv1d(x, kernel, stride=stride, groups=groups)
+        return F.conv1d(x, kernel, stride=stride, groups=groups, padding=pad)
     elif dim == 2:
-        return F.conv2d(x, kernel, stride=stride, groups=groups)
+        return F.conv2d(x, kernel, stride=stride, groups=groups, padding=pad)
     else:
-        return F.conv3d(x, kernel, stride=stride, groups=groups)
+        return F.conv3d(x, kernel, stride=stride, groups=groups, padding=pad)
 
 
 @torch.jit.script
 def conv_transpose(x: Tensor, kernel: Tensor, stride: List[int],
-                   opad: List[int]) -> Tensor:
-    """ND transposed convolution
+                   oshape: List[int]) -> Tensor:
+    """ND transposed convolution (padding = 'same')
     x : (B, Ci, *inspatial) tensor
     kernel : (Ci, Co, *kernel_size) tensor
     stride : List{dim}[int]
-    opad : List{dim}[int]
+    oshape : List{dim}[int]
     returns : (B, Co, *outspatial) tensor
     """
     dim = x.dim() - 2
-    if kernel.shape[-dim-1] == kernel.shape[-dim-2] == 1:
+    ishape = x.shape[-dim:]
+    kernel_size = kernel.shape[-dim:]
+    out_channels = kernel.shape[-dim-1]
+    inp_channels = kernel.shape[-dim-2]
+    if inp_channels == out_channels == 1:
         groups = x.shape[-dim-1]
-        kernel = kernel.expand([x.shape[-dim-1], 1] + kernel.shape[2:])
+        kernel = kernel.expand([groups, 1] + kernel.shape[2:])
     else:
         groups = 1
-    tpad: Optional[List[int]] = None
-    if _any([p > s for p, s in zip(opad, stride)]):
-        tpad = opad
-        opad = [0] * dim
+    ipad = conv_input_padding(kernel_size)
+    opad = convt_output_padding(oshape, ishape, kernel_size, stride)
     if dim == 1:
         x = F.conv_transpose1d(x, kernel, stride=stride, output_padding=opad,
-                               groups=groups)
+                               padding=ipad, groups=groups)
     elif dim == 2:
         x = F.conv_transpose2d(x, kernel, stride=stride, output_padding=opad,
-                               groups=groups)
+                               padding=ipad, groups=groups)
     else:
         x = F.conv_transpose3d(x, kernel, stride=stride, output_padding=opad,
-                               groups=groups)
-    if tpad is not None:
-        y = x
-        oshape = [s+p for s, p in zip(x.shape[-dim:], tpad)]
-        oshape = x.shape[:-dim] + oshape
-        x = torch.zeros(oshape, dtype=y.dtype, device=y.device)
-        if dim == 1:
-            x[:, :, :y.shape[2]] = y
-        elif dim == 2:
-            x[:, :, :y.shape[2], :y.shape[3]] = y
-        else:
-            x[:, :, :y.shape[2], :y.shape[3], :y.shape[4]] = y
+                               padding=ipad, groups=groups)
     return x
 
 
@@ -151,30 +168,58 @@ def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
         x = conv(x, kernel[0], stride)
     else:
         for d, (k, s) in enumerate(zip(kernel, stride)):
-            ss: List[int] = [1] * d + [s] + [1] * (dim-d-1)
-            x = conv(x, k, ss)
+            stride1: List[int] = [1] * dim
+            stride1[d] = s
+            x = conv(x, k, stride1)
     return x
 
 
 @torch.jit.script
 def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
-             opad: List[int]) -> Tensor:
+             oshape: List[int]) -> Tensor:
     """Apply a [separable] transposed convolution
     x : (B, C, *inspatial) tensor
     kernel : List[(C, C, *kernel_size) tensor]
     stride : List{dim}[int]
-    opad : List{dim}[int]
+    oshape : List{dim}[int]
     returns : (B, C, *outspatial) tensor
     """
     dim = x.dim() - 2
     if len(kernel) == 1:
-        x = conv_transpose(x, kernel[0], stride, opad)
+        x = conv_transpose(x, kernel[0], stride, oshape)
     else:
-        for d, (k, s, p) in enumerate(zip(kernel, stride, opad)):
-            ss: List[int] = [1] * d + [s] + [1] * (dim - d - 1)
-            pp: List[int] = [0] * d + [p] + [0] * (dim - d - 1)
-            x = conv_transpose(x, k, ss, pp)
+        for d, (k, s, z) in enumerate(zip(kernel, stride, oshape)):
+            stride1: List[int] = [1] * dim
+            stride1[d] = s
+            shape1: List[int] = x.shape[-dim:]
+            shape1[d] = z
+            x = conv_transpose(x, k, stride1, shape1)
     return x
+
+
+# ----------------------------------------------------------------------
+#                               PATCH
+# ----------------------------------------------------------------------
+# We don't use padding with square patches
+
+@torch.jit.script
+def patcht_output_shape(input_shape: List[int],
+                        kernel_size: List[int],
+                        stride: List[int]) -> List[int]:
+    oshape: List[int] = [(l - 1) * s + (k - 1) + 1 for k, s, l
+                         in zip(kernel_size, stride, input_shape)]
+    return oshape
+
+
+@torch.jit.script
+def patcht_output_padding(output_shape: List[int],
+                          input_shape: List[int],
+                          kernel_size: List[int],
+                          stride: List[int]) -> List[int]:
+    output_shape_nopad = patcht_output_shape(input_shape, kernel_size, stride)
+    opad: List[int] = [l - l0 for l, l0
+                       in zip(output_shape, output_shape_nopad)]
+    return opad
 
 
 @torch.jit.script
@@ -190,12 +235,13 @@ def do_patch(x: Tensor, kernel_size: List[int], stride: List[int]) -> Tensor:
 
 @torch.jit.script
 def do_patcht(x: Tensor, kernel_size: List[int], stride: List[int],
-              opad: List[int]) -> Tensor:
+              oshape: List[int]) -> Tensor:
     """Transposed convolution by a constant square kernel of shape `kernel_size`"""
     dim = x.dim() - 2
     # allocate output
-    oshape = [s*k + p for s, p, k in zip(x.shape[-dim:], opad, kernel_size)]
-    if _all([p == 0 for p in opad]):
+    ishape = x.shape[-dim:]
+    opad = patcht_output_padding(oshape, ishape, kernel_size, stride)
+    if list_all([p == 0 for p in opad]):
         y = torch.empty(oshape, dtype=x.dtype, device=x.device)
     else:
         y = torch.zeros(oshape, dtype=x.dtype, device=x.device)
@@ -209,6 +255,10 @@ def do_patcht(x: Tensor, kernel_size: List[int], stride: List[int],
     z = z.div_(prod(kernel_size))
     return y
 
+# ----------------------------------------------------------------------
+#                              LOCAL MEAN
+# ----------------------------------------------------------------------
+
 
 @torch.jit.script
 def _local_mean_patch(
@@ -221,23 +271,18 @@ def _local_mean_patch(
     """Compute a local average by extracting patches"""
     dim = x.dim() - 2
 
-    if shape is not None:  # estimate output padding
-        ishape = [1, 1] + list(x.shape[-dim:])
-        oshape = _guess_output_shape(ishape, dim, kernel_size, stride, transposed=True)
-        oshape = oshape[2:]
-        opad = [s - os for s, os in zip(shape, oshape)]
-    else:
-        opad = [0] * dim
-
-    # conv
+    # --- backward pass ------------------------------------------------
     if backward:
+        if shape is None:
+            shape = patcht_output_shape(x.shape[-dim:], kernel_size, stride)
         if mask is not None:
             convmask = do_patch(mask, kernel_size, stride).clamp_min_(1e-5)
             x = x / convmask
-        x = do_patcht(x, kernel_size, stride, opad)
+        x = do_patcht(x, kernel_size, stride, shape)
         if mask is not None:
             x = x.mul_(mask)
-    else:  # forward pass
+    # --- forward pass -------------------------------------------------
+    else:
         if mask is not None:
             x = x * mask
         x = do_patch(x, kernel_size, stride)
@@ -248,21 +293,26 @@ def _local_mean_patch(
     return x
 
 
+cache: Dict[str, Tensor] = {}
+
+
 @torch.jit.script
 def _local_mean_conv(
         x: Tensor,
-        kernel_size: List[int],
+        fwhm: List[float],
         stride: List[int],
         backward: bool = False,
         shape: Optional[List[int]] = None,
-        mask: Optional[Tensor] = None) -> Tensor:
+        mask: Optional[Tensor] = None,
+        cache: Optional[Dict[str, Tensor]] = None) -> Tensor:
     """Compute a local average by convolving with a (normalized) Gaussian."""
     dim = x.dim() - 2
 
     # build kernel
     kernel: List[Tensor] = []
     # Gaussian kernel (weighted mean)
-    fwhm = [float(k)/3. for k in kernel_size]
+    kernel_size = [int(math.ceil(k*3)) for k in fwhm]
+    kernel_size = [k + 1 - (k%2) for k in kernel_size]  # ensure odd
     sigma2 = [(f/2.355)**2 for f in fwhm]
     norm: Optional[Tensor] = None
     for d in range(dim):
@@ -284,49 +334,90 @@ def _local_mean_conv(
         for k in kernel:
             k.div_(norm)
 
-    if shape is not None:  # estimate output padding
-        ishape = [1, 1] + list(x.shape[-dim:])
-        oshape = _guess_output_shape(ishape, dim, kernel_size, stride, transposed=True)
-        oshape = oshape[2:]
-        opad = [s - os for s, os in zip(shape, oshape)]
-    else:
-        opad = [0] * dim
+    # --- original spatial shape ---------------------------------------
+    if shape is None:
+        if backward:
+            shape = convt_output_shape(x.shape[-dim:], kernel_size, stride)
+        else:
+            shape = x.shape[-dim:]
 
-    # conv
+    # --- cached conv(ones) --------------------------------------------
+    if mask is None:
+        key = str((list(shape), list(kernel_size), list(stride)))
+        if cache is not None:
+            if key not in cache:
+                convmask = torch.ones(shape, dtype=x.dtype, device=x.device)
+                convmask = convmask[None, None]
+                cache[key] = do_conv(convmask, kernel, stride).clamp_min_(1e-5)
+            convmask = cache[key]
+        else:
+            convmask = torch.ones(shape, dtype=x.dtype, device=x.device)
+            convmask = convmask[None, None]
+            convmask = do_conv(convmask, kernel, stride).clamp_min_(1e-5)
+    else:
+        convmask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
+
+    # --- backward pass ------------------------------------------------
     if backward:
-        if mask is not None:
-            convmask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
-            x = x / convmask
-        x = do_convt(x, kernel, stride, opad)
+        # if mask is not None:
+        # convmask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
+        x = x / convmask
+        x = do_convt(x, kernel, stride, shape)
         if mask is not None:
             x = x.mul_(mask)
-    else:  # forward pass
+    # --- forward pass -------------------------------------------------
+    else:
         if mask is not None:
             x = x * mask
         x = do_conv(x, kernel, stride)
-        if mask is not None:
-            mask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
-            x = x.div_(mask)
+        # if mask is not None:
+        # mask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
+        x = x.div_(convmask)
 
     return x
 
 
 @torch.jit.script
+def pre_reshape(x, dim: int):
+    nb_batch = x.dim() - (dim + 2)
+    batch: List[int] = []
+    if nb_batch > 0:
+        batch = x.shape[:-dim-1]
+        x = x.reshape([-1] + x.shape[-dim-1:])
+    if nb_batch < 0:
+        x = x[None]
+    if nb_batch < -1:
+        x = x[None]
+    return x, nb_batch, batch
+
+
+@torch.jit.script
+def post_reshape(x, nb_batch: int, batch: List[int]):
+    if len(batch) > 0:
+        x = x.reshape(batch + x.shape[1:])
+    else:
+        for _ in range(-nb_batch):
+            x = x[0]
+    return x
+
+
+@torch.jit.script
 def local_mean(x: Tensor,
-               kernel_size: List[int],
+               kernel_fwhm: List[float],
                stride: Optional[List[int]] = None,
                mode: str = 'g',
                dim: Optional[int] = None,
                backward: bool = False,
                shape: Optional[List[int]] = None,
-               mask: Optional[Tensor] = None) -> Tensor:
+               mask: Optional[Tensor] = None,
+               cache: Optional[Dict[str, Tensor]] = None) -> Tensor:
     """Compute a local average by convolution
 
     Parameters
     ----------
-    x : ([[B], C], *spatial) tensor
+    x : ([*batch, channels], *spatial) tensor
         Input tensor
-    kernel_size : List{1+}[int]
+    kernel_fwhm : List{1+}[float]
         Kernel size, will be padded to length `dim`
     stride : List{1+}[int], default=[1]
         Strides, will be padded to length `dim`
@@ -338,51 +429,40 @@ def local_mean(x: Tensor,
         Whether we are in a backward (transposed) pass
     shape : List[int], default=`spatial`
         Output shape (if backward).
-    mask : ([[B], C], *spatial) tensor, optional
+    mask : ([*batch, channels], *spatial) tensor, optional
         A mask (if bool) or weight map (if float) used to weight the
         contribution of each voxel.
 
     Returns
     -------
-    x : ([[B], C], *outspatial) tensor
+    x : ([*batch, channels], *outspatial) tensor
 
     """
-    if mask is not None:
-        mask = mask.to(x.device, x.dtype)
+    mode = mode[0].lower()
     if dim is None:
         dim = x.dim() - 1
-    extra_batch = x.dim() > dim + 2
-    batch: List[int] = []
-    if extra_batch:
-        batch = x.shape[:-dim-1]
-        x = x.reshape([-1] + x.shape[-dim-1:])
-    virtual_channel = x.dim() <= dim
-    virtual_batch = x.dim() <= dim + 1
-    if virtual_channel:
-        x = x[None]
-    if virtual_batch:
-        x = x[None]
+    x, nb_batch, extra_batch = pre_reshape(x, dim)
     if mask is not None:
-        for d in range(max(x.dim() - mask.dim(), 0)):
-            mask = mask[None]
+        mask = mask.to(x.device, x.dtype)
+        mask, *_ = pre_reshape(mask, dim)
 
-    kernel_size = kernel_size + kernel_size[-1:] * max(0, dim - len(kernel_size))
+    kernel_fwhm = pad_list_float(kernel_fwhm, dim)
+    if mode == 'g':
+        kernel_size = [int(math.ceil(k*3)) for k in kernel_fwhm]
+    else:
+        kernel_size = [min(int(math.ceil(k)), d)
+                       for k, d in zip(kernel_fwhm, x.shape[-dim:])]
     if stride is None:
         stride = [1]
-    stride = stride + stride[-1:] * max(0, dim - len(stride))
+    stride = pad_list_int(stride, dim)
     stride = [s if s > 0 else k for s, k in zip(stride, kernel_size)]
 
-    if mode[0].lower() in ('c', 's'):  # const/square
+    if mode in ('c', 's'):  # const/square
         x = _local_mean_patch(x, kernel_size, stride, backward, shape, mask)
-    elif mode[0].lower() == 'g':  # gauss
-        x = _local_mean_conv(x, kernel_size, stride, backward, shape, mask)
+    elif mode == 'g':        # gauss
+        x = _local_mean_conv(x, kernel_fwhm, stride, backward, shape, mask, cache)
     else:
         raise ValueError(f'Unknown mode {mode}')
 
-    if virtual_batch:
-        x = x[0]
-    if virtual_channel:
-        x = x[0]
-    if extra_batch:
-        x = x.reshape(batch + x.shape[1:])
+    x = post_reshape(x, nb_batch, extra_batch)
     return x

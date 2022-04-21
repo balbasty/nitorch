@@ -362,7 +362,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         # torch implementation -> handles zero-padding
         # our implementation -> needs explicit padding
         padding = _normalize_padding(padding)
-        tensor = utils.pad(tensor, padding, bound,
+        tensor = utils.pad(tensor, padding, bound, side='both',
                            value=_fill_value(reduction, tensor))
         padding = [0] * dim
 
@@ -472,7 +472,7 @@ pool3d = lambda *args, **kwargs: pool(3, *args, **kwargs)
 
 
 def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
-           stride=1, padding='same'):
+           stride=1, padding='same', fn=None, kernel=None):
     """Smooth a tensor.
 
     Parameters
@@ -516,17 +516,25 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
     shape = tensor.shape[-dim:]
     tensor = tensor.reshape([-1, 1, *shape])
     backend = dict(dtype=tensor.dtype, device=tensor.device)
-    fwhm = utils.make_vector(fwhm, dim)
-    kernels = core.kernels.smooth(type, fwhm, basis, **backend)
+    if kernel is None:
+        fwhm = utils.make_vector(fwhm, dim)
+        kernel = core.kernels.smooth(type, fwhm, basis, **backend)
+
     stride = make_list(stride, dim)
     padding = make_list(padding, dim)
-    for d, kernel in enumerate(kernels):
-        substride = [1] * dim
-        substride[d] = stride[d]
-        subpadding = [0] * dim
-        subpadding[d] = padding[d]
+    if torch.is_tensor(kernel):
         tensor = conv(dim, tensor, kernel, bound=bound,
-                      stride=substride, padding=subpadding)
+                      stride=stride, padding=padding)
+    else:
+        for d, ker in enumerate(kernel):
+            substride = [1] * dim
+            substride[d] = stride[d]
+            subpadding = [0] * dim
+            subpadding[d] = padding[d]
+            if fn:
+                kernel = fn(kernel)
+            tensor = conv(dim, tensor, ker, bound=bound,
+                          stride=substride, padding=subpadding)
     # stride = make_list(stride, dim)
     # slicer = [Ellipsis] + [slice(None, None, s) for s in stride]
     # tensor = tensor[tuple(slicer)]

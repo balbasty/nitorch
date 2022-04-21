@@ -1,7 +1,6 @@
 from nitorch.core import py, linalg
 from nitorch.core._hist import JointHistCount
 import torch
-from .utils_hist import JointHist
 from .base import HistBasedOptimizationLoss
 pyutils = py
 
@@ -97,7 +96,7 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
         Number of spatial dimensions.
     bins : int, default=64
         Number of bins in the joing histogram.
-    order : int, default=3
+    order : int, default=1
         Order of B-splines encoding the histogram.
     norm : {'studholme', 'arithmetic', None}, default='studholme'
         Normalization method:
@@ -122,14 +121,16 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
 
     shape = moving.shape
     dim = dim or fixed.dim() - 1
-    nvox = pyutils.prod(shape[-dim:])
     moving = moving.reshape([*moving.shape[:-dim], -1])
     fixed = fixed.reshape([*fixed.shape[:-dim], -1])
     idx = torch.stack([moving, fixed], -1)
-    del moving, fixed
     if mask is not None:
         mask = mask.to(fixed.device)
         mask = mask.reshape([*mask.shape[:-dim], -1])
+        nvox = mask.sum(-1)[..., None]  # shape: [*batch, 1, 1]
+    else:
+        nvox = pyutils.prod(shape[-dim:])
+    del moving, fixed
 
     if minmax not in (True, False, None):
         mn, mx = minmax
@@ -166,7 +167,8 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
             g = -nmi * ((1 + px.log()) + (1 + py.log())) + (1 + pxy.log())
             g /= (hx + hy)
         else:
-            g = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
+            # g = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
+            g = pxy.log().neg_().add_(px.log()).add_(py.log()).add_(1)
         g = g.div_(nvox)
         g = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
         g = g.reshape(shape)
@@ -179,11 +181,9 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
             H = (1 / pxy + nmi * (1 / px + 1 / py)) / (hx + hy)
         else:
             H = 1 / pxy - 1 / px - 1 / py
-        H = H.div_(nvox)
+        H = H.div_(nvox**2)
         H = hist.backward2(H, idx, w=mask)[..., 0]
         H = H.reshape(shape)
-        delta = g/H
-        print(delta.abs().max(), delta.abs().mean())
         out.append(H)
 
     nmi = -nmi
@@ -200,7 +200,7 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
 
 
 class Entropy(HistBasedOptimizationLoss):
-    """entorpy"""
+    """entropy"""
 
     order = 2  # Gradient defined
 

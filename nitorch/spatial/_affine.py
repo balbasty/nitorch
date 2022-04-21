@@ -153,7 +153,7 @@ def volume_layout(*args, **kwargs):
         but in any dimension.
 
     name : str
-        Permutation of axis names,  according to the neuroimaging convention:
+        Permutation of axis names, according to the neuroimaging convention:
         * 'R' for *left to Right* (index=0, flipped=False) or
           'L' for *right to Left* (index=0, flipped=True)
         * 'A' for *posterior to Anterior* (index=1, flipped=False) or

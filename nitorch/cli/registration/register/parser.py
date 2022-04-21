@@ -22,10 +22,11 @@ help2 = r"""[nitorch] register
 
 usage: 
     nitorch register [options] 
-                     @loss [NAME] [FACTOR] @@fix *FILE @@mov *FILE ...
-                     @affine [NAME] [FACTOR] @@optim [NAME] ...
-                     @nonlin [NAME] [FACTOR] @@optim [NAME] ...
-                     @optim [NAME] ...
+                     @loss    [NAME] [FACTOR] @@fix *FILE @@mov *FILE ...
+                     @affine  [NAME] [FACTOR] @@optim [NAME] ...
+                     @nonlin  [NAME] [FACTOR] @@optim [NAME] ...
+                     @optim   [NAME] ...
+                     @pyramid [NAME] ...
 
 @loss options:
     NAME can take values (with specific sub-options):
@@ -35,6 +36,9 @@ usage:
         tuk, tukey                      Tukey's biweight function (can be weighted)
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
+        gmm                             Gaussian Mixture likelihood
+        lgmm                            Local Gaussian Mixture likelihood
+        emmi                            EM-based Mutual Information
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
 
@@ -67,7 +71,7 @@ usage:
         lbfgs                           Limited-memory BFGS
 
 General options:
-    --cpu, --gpu                    Device to use [cpu]
+    --cpu [THREADS], --gpu          Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
     -h, --help [LEVEL]              Display this help: [1=minimal], 2=normal, 3=more details
@@ -88,16 +92,16 @@ usage:
                     @nonlin [NAME] [FACTOR] [-i *FILE] ...
                         @@optim [NAME] ...
                     @optim [NAME] ...
+                    @pyramid [NAME] ...
     
 @loss options:
     FACTOR must be a scalar value [1]
     NAME can take values (with specific sub-options):
        [mi, nmi]                        Mutual information (can be normalized) 
             -m, --norm NAME                 Normalization: [studholme], arithmetic, geometric, no
-            -p, --patch *VAL [UNIT]         Patch size and unit: [vox], mm, pct
-            -b, --bins VAL                  Number of bins in the joint histogram [32]
-            -f, --fwhm VAL                  Full width half-max of histogram smoothing [0]
-            -n, --order VAL                 Spline order of parzen window [3]
+            -b, --bins VAL [VAL]            Number of bins in the joint histogram [32]
+            -f, --fwhm VAL                  Full width half-max of histogram smoothing [1]
+            -n, --order VAL                 Spline order of parzen window [1]
         mse, l2                         Mean squared error (can be weighted)
             -w, --weight [VAL]              Weight (= Gaussian precision): [auto]
         mad, l1                         Median absolute deviation (can be weighted)
@@ -106,7 +110,17 @@ usage:
             -w, --weight [VAL]              Weight (= Laplace precision): [auto]
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
-            -p, --patch *VAL [UNIT]         Patch size and unit: [vox], mm, pct
+            -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
+        gmm                             Gaussian Mixture likelihood
+            -b, --bins                      Number of clusters in the mixture [6]
+            -n, --iter VAL                  Number of EM iterations [128]
+        lgmm                            Local Gaussian Mixture likelihood
+            -b, --bins                      Number of clusters in the mixture [6]
+            -n, --iter VAL                  Number of EM iterations [128]
+            -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
+            -k, --kernel VAL                Kernel type: [gauss]/square
+            -s, --stride *VAL               Stride between patches [0]
+        emmi                            EM-based Mutual Information
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
             -w, --weight *VAL               Weight per class [1]
@@ -118,11 +132,10 @@ usage:
     across the channel dimension.
     -o, --output [PATH]             Path to the output with minimal reslicing: [True={base}.registered.{ext}]
     -r, --resliced [PATH]           Path to the output resliced to the other image's space: [False], True={base}.resliced.{ext}
-    -p, --pyramid *LVL              Pyramid levels. Can be a range [start]:stop[:step]
     -b, --bound BND                 Boundary conditions [dct2]
     -n, --order N                   Interpolation order [1]
     -a, --affine *PATH              Path to one or more affine transforms to apply
-    -w, --world PATH                Path to an orientation matrix. Overrides the one form the data file.
+    -w, --world PATH                Path to an orientation matrix. Overrides the one from the data file.
     -f, --fwhm *F                   Smooth image before using it.
     -z, --pad *P                    Pad image before using it.
     -s, --rescale [[MN], MX]        Rescale image so that its MN/MX percentiles match (0, 1). [0, 95]
@@ -177,9 +190,11 @@ usage:
     NAME can take values (with options):
         gn, gauss-newton                Second-order method. Not all losses can be used.
             -m, --marquardt                  Levenberg-Marquardt regularization [auto]
-            -q, --solver                     Linear solver: [cg],relax (used for @nonlin only)
+            -q, --solver                     Linear solver: [cg], relax (used for @nonlin only)
             -j, --sub-iter                   Number of linear solver iterations [32]
         gd, gradient-descent            Simple gradient descent
+        cg, conjugate-gradient          Conjugate gradient descent
+            -b, --beta                      Update rule: [pr], fr, hs, dy
         mom, momentum                   Gradient descent with momentum
             -m, --momentum                  Momentum factor [0.9]
         nes, nesterov                   Gradient descent with Nesterov momentum
@@ -197,10 +212,24 @@ usage:
         -l, --lr                        Learning rate [1]
         -n, --max-iter                  Maximum number of iterations
         -s, --line-search               Number of backtracking line search [wolfe]
-        -t, --tolerance                 Tolerance for early stopping [1e-9]
+        -t, --tolerance                 Tolerance for early stopping [1e-5]
+
+@pyramid options:
+    NAME can take values:
+       [g, gaussian]                    Gaussian pyramid
+        a, average                      Average pooling
+        m, median                       Median pooling
+        s, stride                       Strides
+    Common options:
+            --max-size                  Maximum size along a dimension
+            --min-size                  Minimum size along a dimension
+            --max-vx                    Maximum voxel size along a dimension
+            --min-vx                    Minimum voxel size along a dimension
+        -l, --levels *LVL               Pyramid levels. Can be a range start:stop:step [:3]
+        -c, --concurrent                Register pyramid levels concurrently [false]
 
 General options:
-    --cpu, --gpu                    Device to use [cpu]
+    --cpu [THREADS], --gpu [ID]     Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
     -h, --help [LEVEL]              Display this help: 0=minimal, [1=normal], 2=more details
@@ -247,18 +276,24 @@ def parse_range(x):
 
 
 # Main options
+def convert_device(device):
+    def _convert(x):
+        return (device, int(x))
+    return _convert
+
 
 parser = cli.CommandParser('register', help=help1, add_help=False)
 parser.add_option('verbose', ('-v', '--verbose'),
                   nargs='?', default=0, convert=int,
                   action=cli.Actions.store_value(1),
                   help='Level of verbosity')
-parser.add_option('gpu', '--gpu',
-                  nargs='?', default='cpu', convert=int,
-                  action=cli.Actions.store_value(0),
+parser.add_option('device', '--gpu', default=('cpu', None),
+                  nargs='?', convert=convert_device('gpu'),
+                  action=cli.Actions.store_value(('gpu', None)),
                   help='Use GPU (if available)')
-parser.add_option('gpu', '--cpu', nargs=0,
-                  action=cli.Actions.store_value('cpu'),
+parser.add_option('device', '--cpu',
+                  nargs='?', convert=convert_device('cpu'),
+                  action=cli.Actions.store_value(('cpu', None)),
                   help='Use CPU')
 parser.add_option('help', ('-h', '--help'),
                   nargs='?', default=False, convert=int,
@@ -276,7 +311,7 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
                 'entropy': 'ent', 'sqz': 'squeezed'}
-loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emi', 'prod', 'normprod', 'extra']
+loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emmi', 'prod', 'normprod', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -291,7 +326,7 @@ loss.add_option('symmetric', ('-s', '--symmetric'), nargs=0, default=False,
 weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
                            default=None, convert=number_or_str(float),
                            help='Weight (= precision) or the loss.')
-patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=20,
+patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=10,
                           convert=number_or_str(int), help='Patch size')
 stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
                            convert=int, help='Strides between patches.')
@@ -344,10 +379,8 @@ file.add_option('output', ('-o', '--output'), nargs='?',
                 help='Path to the output with minimal reslicing')
 file.add_option('resliced', ('-r', '--resliced'), nargs='?',
                 default=False, convert=bool_or_str,
+                action=cli.Actions.store_value('{dir}{sep}{base}.resliced{ext}'),
                 help='Path to the output resliced to the other \'s space')
-file.add_option('pyramid', ('-p', '--pyramid'), nargs='1*',
-                default=[0], convert=parse_range,
-                help='Pyramid levels. Can be a range [start]:stop[:step]')
 file.add_option('fwhm', ('-f', '--fwhm'), nargs='0*',
                 default=[0], convert=number_or_str(float),
                 action=cli.Actions.store_value([1, 'vox']),
@@ -388,9 +421,11 @@ loss.add_group(mov)
 # optim subgroup
 optim_aliases = {'gauss-newton': 'gn',
                  'gradient-descent': 'gd',
+                 'conjugate-gradient': 'cg',
                  'momentum': 'mom',
                  'nesterov': 'nes',
-                 'optimized-gradient': 'ogm'}
+                 'optimized-gradient': 'ogm',
+                 'powell': 'pow'}
 optim_choices = list(optim_aliases.values()) + ['lbfgs', 'unset']
 optim_choices = cli.Positional('name', nargs='?', default='unset',
                                validation=cli.Validations.choice(optim_choices),
@@ -407,7 +442,7 @@ optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  default='wolfe', convert=number_or_str(int),
                  help='Number of backtracking line search')
 optim.add_option('tolerance', ('-t', '--tolerance'), nargs=1,
-                 convert=float, default=1e-3, help='Tolerance for early stopping')
+                 convert=float, default=1e-5, help='Tolerance for early stopping')
 optim.add_suboption('gn', 'marquardt', ('-m', '--marquardt'), nargs=1,
                     default=None, convert=number_or_str(float),
                     help='Levenberg-Marquardt regularization')
@@ -437,6 +472,14 @@ optim.add_suboption('ogm', 'output', ('-o', '--output'), nargs='?',
                     help='Write momentum maps')
 optim.add_suboption('lbfgs', 'history', ('-h', '--history'), nargs=1,
                     default=100, convert=int, help='History size')
+cg_aliases = {'fletcher-reeves': 'fr',
+              'polak-ribiere': 'pr',
+              'hestenes-stiefel': 'hs',
+              'dai-yuan': 'dy'}
+cg_choices = list(cg_aliases.values())
+optim.add_suboption('cg', 'beta', ('-b', '--beta'), nargs=1, default='pr',
+                    validation=cli.Validations.choice(cg_choices),
+                    convert=lambda x: cg_aliases.get(x, x))
 
 # affine group
 affine_aliases = {'t': 'translation',
@@ -458,6 +501,8 @@ affine.add_option('position', ('-p', '--position'), default='sym', nargs=1,
 affine.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{name}.lta',
                   help='Path to the output transform')
+affine.add_option('progressive', ('-g', '--progressive'), default=False,
+                  nargs='?',  convert=bool_or_str)
 affine.add_group(optim)
 
 # nonlin group
@@ -508,8 +553,28 @@ joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
 joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
                      convert=float, default=1e-5, help='Tolerance for early stopping')
 
+# pyramid group
+pyr_aliases = {'g': 'gaussian',
+               'a': 'average',
+               'm': 'median',
+               's': 'stride',
+               'n': 'none'}
+pyr_choices = list(pyr_aliases.values()) + ['unset']
+pyr_choices = cli.Positional('name', nargs='?', default='gaussian',
+                             validation=cli.Validations.choice(pyr_choices),
+                             convert=lambda x: pyr_aliases.get(x, x),
+                             help='Pyramid strategy ')
+pyr = cli.NamedGroup('pyramid', pyr_choices, '@pyramid', n='?')
+pyr.add_option('min_size', '--min-size', nargs=1, convert=int)
+pyr.add_option('max_size', '--max-size', nargs=1, convert=int)
+pyr.add_option('min_vx', '--min-vx', nargs=1, convert=float)
+pyr.add_option('max_vx', '--max-vx', nargs=1, convert=float)
+pyr.add_option('levels', ('-l', '--levels'), nargs='1*', convert=parse_range, default=[range(3)])
+pyr.add_option('concurrent', ('-c-', '--concurrent'), nargs=1, convert=bool_or_str, default=False)
+
 # register groups
 parser.add_group(loss)
 parser.add_group(affine)
 parser.add_group(nonlin)
 parser.add_group(joptim)
+parser.add_group(pyr)

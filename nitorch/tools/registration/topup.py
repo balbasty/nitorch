@@ -314,8 +314,9 @@ def topup_fit(pos, neg, dim=-1, loss='mse', lam=1, vx=1, ndim=3, mask=None,
                           model=model, modulation=modulation, mask=mask)
     optim = optm.FieldCG(factor=lam, voxel_size=vx, **{penalty: 1},
                          bound=BND, max_iter=4)
-    optim = optm.IterateOptim(optim, max_iter=max_iter, tol=tolerance,
-                              ls='wolfe', stop='diff')
+    optim.search = 'wolfe'
+    optim.iter = optm.OptimIterator(max_iter=max_iter, tol=tolerance,
+                                    stop='diff')
 
     if vel is None:
         vel = pos.new_zeros(pos.shape[-ndim:])

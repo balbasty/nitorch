@@ -1,6 +1,6 @@
 from nitorch.core import utils, py
 import torch
-from .utils_local import local_mean
+from .utils_local import local_mean, cache as local_cache
 from .base import OptimizationLoss
 
 
@@ -161,21 +161,21 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
     shape = fixed.shape[-dim:]
     if mask is not None:
         mask = mask.to(**utils.backend(fixed))
+    else:
+        mask = fixed.new_ones(fixed.shape[-dim:])
 
     if lam.dim() <= 2:
         if lam.dim() == 0:
             lam = lam.flatten()
         lam = utils.unsqueeze(lam, -1, dim)
 
-    if not isinstance(patch, (list, tuple)):
-        patch = [patch]
-    patch = list(patch)
-    if not isinstance(stride, (list, tuple)):
-        stride = [stride]
+    patch = list(map(float, py.ensure_list(patch)))
+    stride = py.ensure_list(stride)
     stride = [s or 0 for s in stride]
-    fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask)
+    fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
+                               cache=local_cache)
     bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
-                               backward=True, shape=shape)
+                               backward=True, shape=shape, cache=local_cache)
 
     # compute ncc within each patch
     mom0, moving_mean, fixed_mean, moving_std, fixed_std, corr = \

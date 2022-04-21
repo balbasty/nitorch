@@ -65,7 +65,7 @@ class RegisterStep:
         self.verbose = verbose
 
         # pretty printing
-        self.n_iter = 0             # current iteration
+        self.n_iter = 1             # current iteration
         self.ll_prev = None         # previous loss value
         self.ll_max = 0             # max loss value
         self.llv = 0                # last velocity penalty
@@ -108,14 +108,9 @@ class RegisterStep:
         nb_channels = fixed.shape[-dim - 1]
         nb_batch = len(fixed)
 
-        # mov_mn, mov_mx = utils.quantile(moving, [0.005, 0.995],
-        #                                 dim=range(-dim, 0), bins=1024).unbind(-1)
-        # mov_mx = mov_mx.max(mov_mn + 1e-8)
-        # fix_mn, fix_mx = utils.quantile(fixed.to(moving.dtype), [0.005, 0.995],
-        #                                 dim=range(-dim, 0), bins=1024).unbind(-1)
-        # fix_mx = fix_mx.max(fix_mn + 1e-8)
-
         def rescale2d(x):
+            if not x.dtype.is_floating_point:
+                x = x.float()
             mn, mx = utils.quantile(x, [0.005, 0.995],
                                     dim=range(-2, 0), bins=1024).unbind(-1)
             mx = mx.max(mn + 1e-8)
@@ -127,20 +122,14 @@ class RegisterStep:
             fixed = [fixed[..., fixed.shape[-1] // 2],
                      fixed[..., fixed.shape[-2] // 2, :],
                      fixed[..., fixed.shape[-3] // 2, :, :]]
-            # fixed = [f.sub(fix_mn[..., None, None]).div_((fix_mx-fix_mn)[..., None, None])
-            #          for f in fixed]
             fixed = [rescale2d(f) for f in fixed]
             moving = [moving[..., moving.shape[-1] // 2],
                       moving[..., moving.shape[-2] // 2, :],
                       moving[..., moving.shape[-3] // 2, :, :]]
-            # moving = [f.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])
-            #          for f in moving]
             moving = [rescale2d(f) for f in moving]
             warped = [warped[..., warped.shape[-1] // 2],
                       warped[..., warped.shape[-2] // 2, :],
                       warped[..., warped.shape[-3] // 2, :, :]]
-            # warped = [f.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])
-            #          for f in warped]
             warped = [rescale2d(f) for f in warped]
             if vel is not None:
                 vel = [vel[..., vel.shape[-2] // 2, :],
@@ -148,9 +137,6 @@ class RegisterStep:
                        vel[..., vel.shape[-4] // 2, :, :, :]]
                 vel = [v.square().sum(-1).sqrt() for v in vel]
         else:
-            # fixed = [fixed.sub(fix_mn[..., None, None]).div_((fix_mx-fix_mn)[..., None, None])]
-            # moving = [moving.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])]
-            # warped = [warped.sub(mov_mn[..., None, None]).div_((mov_mx-mov_mn)[..., None, None])]
             fixed = [rescale2d(f) for f in fixed]
             moving = [rescale2d(f) for f in moving]
             warped = [rescale2d(f) for f in warped]
@@ -163,7 +149,7 @@ class RegisterStep:
         checker = []
         for f, w in zip(fixed, warped):
             patch = max([s // 8 for s in f.shape])
-            patch = [min(patch, s) for s in f.shape]
+            patch = [max(min(patch, s), 1) for s in f.shape]
             broad_shape = utils.expanded_shape(f.shape, w.shape)
             f = f.expand(broad_shape).clone()
             w = w.expand(broad_shape)
@@ -253,15 +239,17 @@ class RegisterStep:
         sumgrad = None
         sumhess = None
 
-        # build affine and displacement field
+        # ==============================================================
+        #                     EXPONENTIATE TRANSFORMS
+        # ==============================================================
         if self.affine:
             aff0, iaff0 = self.affine.exp2(cache_result=True, recompute=False)
             aff_pos = self.affine.position[0].lower()
         else:
             aff_pos = 'x'
-            aff0 = iaff0 = torch.eye(self.nonlin.dim + 1, **utils.backend(self.nonlin.dat))
+            aff0 = iaff0 = torch.eye(self.nonlin.dim + 1)
         vel0 = vel
-        if any(loss.symmetric for loss in self.losses):
+        if any(loss.backward for loss in self.losses):
             phi0, iphi0 = self.nonlin.exp2(vel0,
                                            recompute=True,
                                            cache_result=not in_line_search)
@@ -271,142 +259,160 @@ class RegisterStep:
                                    recompute=True,
                                    cache_result=not in_line_search)
             iphi0 = ivel0 = None
-        aff0 = aff0.to(phi0.dtype)
-        iaff0 = iaff0.to(phi0.dtype)
+        aff0 = aff0.to(phi0)
+        iaff0 = iaff0.to(phi0)
 
-        # register temporary "backward" loss for symmetric losses
-        losses = []
-        for loss in self.losses:
-            losses.append(loss)
-            if loss.symmetric:
-                bwdloss = copy.copy(loss)
-                bwdloss.moving, bwdloss.fixed = loss.fixed, loss.moving
-                bwdloss.symmetric = 'backward'
-                losses.append(bwdloss)
+        # ==============================================================
+        #                     ACCUMULATE DERIVATIVES
+        # ==============================================================
 
         has_printed = False
-        for loss in losses:
+        for loss in self.losses:
 
-            factor = loss.factor
-            if loss.symmetric:
-                factor = factor / 2
-            if loss.symmetric == 'backward':
-                phi00 = iphi0
-                aff00 = iaff0
-                vel00 = ivel0
+            # ==========================================================
+            #                     ONE LOSS COMPONENT
+            # ==========================================================
+            moving, fixed, factor = loss.moving, loss.fixed, loss.factor
+            if loss.backward:
+                phi00, aff00, vel00 = iphi0, iaff0, ivel0
             else:
-                phi00 = phi0
-                aff00 = aff0
-                vel00 = vel0
+                phi00, aff00, vel00 = phi0, aff0, vel0
 
-            is_level0 = True
-            for moving, fixed in zip(loss.moving, loss.fixed):  # pyramid
+            # ----------------------------------------------------------
+            # build left and right affine
+            # ----------------------------------------------------------
+            aff_right = fixed.affine
+            if aff_pos in 'fs':  # affine position: fixed or symmetric
+                aff_right = aff00 @ aff_right
+            aff_right = linalg.lmdiv(self.nonlin.affine, aff_right)
+            aff_left = self.nonlin.affine
+            if aff_pos in 'ms':  # affine position: moving or symmetric
+                aff_left = aff00 @ self.nonlin.affine
+            aff_left = linalg.lmdiv(moving.affine, aff_left)
 
-                # build left and right affine
-                if aff_pos in 'fs':
-                    aff_right = spatial.affine_matmul(aff00, fixed.affine)
+            # ----------------------------------------------------------
+            # build full transform
+            # ----------------------------------------------------------
+            if _almost_identity(aff_right) and fixed.shape == self.nonlin.shape:
+                aff_right = None
+                phi = spatial.add_identity_grid(phi00)
+                disp = phi00
+            else:
+                phi = spatial.affine_grid(aff_right, fixed.shape)
+                disp = regutils.smart_pull_grid(phi00, phi)
+                phi += disp
+            if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
+                aff_left = None
+            else:
+                phi = spatial.affine_matvec(aff_left, phi)
+
+            # ----------------------------------------------------------
+            # forward pass
+            # ----------------------------------------------------------
+            warped, mask = moving.pull(phi, mask=True)
+            if fixed.masked:
+                if mask is None:
+                    mask = fixed.mask
                 else:
-                    aff_right = fixed.affine
-                aff_right = spatial.affine_lmdiv(self.nonlin.affine, aff_right)
-                if aff_pos in 'ms':
-                    tmp = spatial.affine_matmul(aff00, self.nonlin.affine)
-                    aff_left = spatial.affine_lmdiv(moving.affine, tmp)
+                    mask = mask * fixed.mask
+
+            do_print = not (has_printed or self.verbose < 3 or in_line_search
+                            or loss.backward)
+            if do_print:
+                has_printed = True
+                if moving.previewed:
+                    preview = moving.pull(phi, preview=True, dat=False)
                 else:
-                    aff_left = spatial.affine_lmdiv(moving.affine, self.nonlin.affine)
-
-                # build full transform
-                if _almost_identity(aff_right) and fixed.shape == self.nonlin.shape:
-                    aff_right = None
-                    phi = spatial.identity_grid(fixed.shape, **utils.backend(phi00))
-                    phi += phi00
-                    disp = phi00
+                    preview = warped
+                init = spatial.affine_lmdiv(moving.affine, fixed.affine)
+                if _almost_identity(init) and moving.shape == fixed.shape:
+                    init = moving.dat
                 else:
-                    phi = spatial.affine_grid(aff_right, fixed.shape)
-                    disp = regutils.smart_pull_grid(phi00, phi)
-                    phi += disp
-                if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
-                    aff_left = None
-                else:
-                    phi = spatial.affine_matvec(aff_left, phi)
+                    init = spatial.affine_grid(init, fixed.shape)
+                    init = moving.pull(init, preview=True, dat=False)
+                self.mov2fix(fixed.dat, init, preview, disp, dim=fixed.dim,
+                             title=f'(nonlin) {self.n_iter:03d}')
 
-                # forward
-                warped, mask = moving.pull(phi, mask=True)
-                if fixed.masked:
-                    if mask is None:
-                        mask = fixed.mask
-                    else:
-                        mask = mask * fixed.mask
+            # ----------------------------------------------------------
+            # derivatives wrt moving
+            # ----------------------------------------------------------
+            g = h = None
+            loss_args = (warped, fixed.dat)
+            loss_kwargs = dict(dim=fixed.dim, mask=mask)
+            state = loss.loss.get_state()
+            if not grad and not hess:
+                llx = loss.loss.loss(*loss_args, **loss_kwargs)
+            elif not hess:
+                llx, g = loss.loss.loss_grad(*loss_args, **loss_kwargs)
+            else:
+                llx, g, h = loss.loss.loss_grad_hess(*loss_args, **loss_kwargs)
+            del loss_args, loss_kwargs
+            if in_line_search:
+                loss.loss.set_state(state)
 
-                if not has_printed and self.verbose > 1 and not in_line_search \
-                        and loss.symmetric != 'backward':
-                    # is_level0 = False
-                    has_printed = True
-                    init = spatial.affine_lmdiv(moving.affine, fixed.affine)
-                    if _almost_identity(init) and moving.shape == fixed.shape:
-                        init = moving.dat
-                    else:
-                        init = spatial.affine_grid(init, fixed.shape)
-                        init = moving.pull(init)
-                    self.mov2fix(fixed.dat, init, warped, disp,
-                                 dim=fixed.dim,
-                                 title=f'(nonlin) {self.n_iter:03d}')
+            # ----------------------------------------------------------
+            # chain rule -> derivatives wrt phi
+            # ----------------------------------------------------------
+            if grad or hess:
 
-                # gradient/Hessian of the log-likelihood in observed space
-                g = h = None
-                if not grad and not hess:
-                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim, mask=mask)
-                elif not hess:
-                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim, mask=mask)
-                else:
-                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim, mask=mask)
+                g, h, mugrad = self.nonlin.propagate_grad(
+                    g, h, moving, phi00, aff_left, aff_right,
+                    inv=loss.backward)
+                g = regutils.jg(mugrad, g)
+                h = regutils.jhj(mugrad, h)
+                if isinstance(self.nonlin, SVFModel):
+                    # propagate backward by scaling and squaring
+                    g, h = spatial.exp_backward(vel00, g, h,
+                                                steps=self.nonlin.steps)
 
-                # compose with spatial gradients
-                if grad or hess:
+                sumgrad = (g.mul_(factor) if sumgrad is None else
+                           sumgrad.add_(g, alpha=factor))
+                if hess:
+                    sumhess = (h.mul_(factor) if sumhess is None else
+                               sumhess.add_(h, alpha=factor))
+            sumloss = (llx.mul_(factor) if sumloss is None else
+                       sumloss.add_(llx, alpha=factor))
 
-                    g, h, mugrad = self.nonlin.propagate_grad(
-                        g, h, moving, phi00, aff_left, aff_right,
-                        inv=(loss.symmetric == 'backward'))
-
-                    g = regutils.jg(mugrad, g)
-                    h = regutils.jhj(mugrad, h)
-
-                    if isinstance(self.nonlin, SVFModel):
-                        # propagate backward by scaling and squaring
-                        g, h = spatial.exp_backward(vel00, g, h, steps=self.nonlin.steps)
-
-                    sumgrad = g.mul_(factor) if sumgrad is None else sumgrad.add_(g, alpha=factor)
-                    if hess:
-                        sumhess = h.mul_(factor) if sumhess is None else sumhess.add_(h, alpha=factor)
-                sumloss = llx.mul_(factor) if sumloss is None else sumloss.add_(llx, alpha=factor)
-
-        # add regularization term
+        # ==============================================================
+        #                       REGULARIZATION
+        # ==============================================================
         vgrad = self.nonlin.regulariser(vel0)
         llv = 0.5 * vel0.flatten().dot(vgrad.flatten())
         if grad:
             sumgrad += vgrad
         del vgrad
 
-        # print objective
+        # ==============================================================
+        #                           VERBOSITY
+        # ==============================================================
         llx = sumloss.item()
         sumloss += llv
         sumloss += self.lla
         self.loss_value = sumloss.item()
-        if self.verbose and not in_line_search:
+        if self.verbose and (self.verbose > 1 or not in_line_search):
             llv = llv.item()
-            self.llv = llv
             ll = sumloss.item()
-            self.all_ll.append(ll)
             lla = self.lla
-            self.n_iter += 1
-            line = '(nonlin) | '
+            if in_line_search:
+                line = '(search) | '
+            else:
+                line = '(nonlin) | '
             line += f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} + {lla:12.6g} = {ll:12.6g}'
-            if self.ll_prev is not None:
-                gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
-                line += f' | {gain:12.6g}'
+            if not in_line_search:
+                if self.ll_prev is not None:
+                    gain = self.ll_prev - ll
+                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
+                    line += f' | {gain:12.6g}'
+                self.llv = llv
+                self.all_ll.append(ll)
+                self.ll_prev = ll
+                self.ll_max = max(self.ll_max, ll)
+                self.n_iter += 1
             print(line, end='\r')
-            self.ll_prev = ll
-            self.ll_max = max(self.ll_max, ll)
 
+        # ==============================================================
+        #                           RETURN
+        # ==============================================================
         out = [sumloss]
         if grad:
             out.append(sumgrad)
@@ -421,185 +427,197 @@ class RegisterStep:
         sumgrad = None
         sumhess = None
 
-        # build affine and displacement field
+        # ==============================================================
+        #                     EXPONENTIATE TRANSFORMS
+        # ==============================================================
         logaff0 = logaff
         aff_pos = self.affine.position[0].lower()
-        if any(loss.symmetric for loss in self.losses):
-            aff0, iaff0, gaff0, igaff0 = self.affine.exp2(logaff0, grad=True,
-                                                          cache_result=not in_line_search)
+        if any(loss.backward for loss in self.losses):
+            aff0, iaff0, gaff0, igaff0 = \
+                self.affine.exp2(logaff0, grad=True,
+                                 cache_result=not in_line_search)
             phi0, iphi0 = self.nonlin.exp2(cache_result=True, recompute=False)
         else:
-            iaff0 = None
+            iaff0, igaff0, iphi0 = None, None, None
             aff0, gaff0 = self.affine.exp(logaff0, grad=True,
                                           cache_result=not in_line_search)
             phi0 = self.nonlin.exp(cache_result=True, recompute=False)
-            iphi0 = None
-
-        # register temporary "backward" loss for symmetric losses
-        losses = []
-        for loss in self.losses:
-            losses.append(loss)
-            if loss.symmetric:
-                bwdloss = copy.copy(loss)
-                bwdloss.moving, bwdloss.fixed = loss.fixed, loss.moving
-                bwdloss.symmetric = 'backward'
-                losses.append(bwdloss)
 
         has_printed = False
-        for loss in losses:
+        for loss in self.losses:
 
-            factor = loss.factor
-            if loss.symmetric:
-                factor = factor / 2
-            if loss.symmetric == 'backward':
-                phi00 = iphi0
-                aff00 = iaff0
-                gaff00 = igaff0
+            moving, fixed, factor = loss.moving, loss.fixed, loss.factor
+            if loss.backward:
+                phi00, aff00, gaff00 = iphi0, iaff0, igaff0
             else:
-                phi00 = phi0
-                aff00 = aff0
-                gaff00 = gaff0
+                phi00, aff00, gaff00 = phi0, aff0, gaff0
 
-            is_level0 = True
-            for moving, fixed in zip(loss.moving, loss.fixed):  # pyramid
+            # ----------------------------------------------------------
+            # build left and right affine matrices
+            # ----------------------------------------------------------
+            aff_right, gaff_right = fixed.affine, None
+            if aff_pos in 'fs':
+                gaff_right = gaff00 @ aff_right
+                gaff_right = linalg.lmdiv(self.nonlin.affine, gaff_right)
+                aff_right = aff00 @ aff_right
+            aff_right = linalg.lmdiv(self.nonlin.affine, aff_right)
+            aff_left, gaff_left = self.nonlin.affine, None
+            if aff_pos in 'ms':
+                gaff_left = gaff00 @ aff_left
+                gaff_left = linalg.lmdiv(moving.affine, gaff_left)
+                aff_left = aff00 @ aff_left
+            aff_left = linalg.lmdiv(moving.affine, aff_left)
 
-                # build complete warp
-                if aff_pos in 'fs':
-                    aff_right = spatial.affine_matmul(aff00, fixed.affine)
-                    aff_right = spatial.affine_lmdiv(self.nonlin.affine, aff_right)
-                    gaff_right = torch.matmul(gaff00, fixed.affine)
-                    gaff_right = linalg.lmdiv(self.nonlin.affine, gaff_right)
+            # ----------------------------------------------------------
+            # build full transform
+            # ----------------------------------------------------------
+            if _almost_identity(aff_right) and fixed.shape == self.nonlin.shape:
+                right = None
+                phi = spatial.add_identity_grid(phi00)
+            else:
+                right = spatial.affine_grid(aff_right, fixed.shape)
+                phi = regutils.smart_pull_grid(phi00, right)
+                phi += right
+            phi_right = phi
+            if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
+                left = None
+            else:
+                left = spatial.affine_grid(aff_left, self.nonlin.shape)
+                phi = spatial.affine_matvec(aff_left, phi)
+
+            # ----------------------------------------------------------
+            # forward pass
+            # ----------------------------------------------------------
+            warped, mask = moving.pull(phi, mask=True)
+            if fixed.masked:
+                if mask is None:
+                    mask = fixed.mask
                 else:
-                    aff_right = spatial.affine_lmdiv(self.nonlin.affine, fixed.affine)
-                    gaff_right = None
+                    mask = mask * fixed.mask
+
+            do_print = not (has_printed or self.verbose < 3 or in_line_search
+                            or loss.backward)
+            if do_print:
+                has_printed = True
+                if moving.previewed:
+                    preview = moving.pull(phi, preview=True, dat=False)
+                else:
+                    preview = warped
+                init = spatial.affine_lmdiv(moving.affine, fixed.affine)
+                if _almost_identity(init) and moving.shape == fixed.shape:
+                    init = moving.dat
+                else:
+                    init = spatial.affine_grid(init, fixed.shape)
+                    init = moving.pull(init, preview=True, dat=False)
+                self.mov2fix(fixed.dat, init, preview, dim=fixed.dim,
+                             title=f'(affine) {self.n_iter:03d}')
+
+            # ----------------------------------------------------------
+            # derivatives wrt moving
+            # ----------------------------------------------------------
+            g = h = None
+            loss_args = (warped, fixed.dat)
+            loss_kwargs = dict(dim=fixed.dim, mask=mask)
+            state = loss.loss.get_state()
+            if not grad and not hess:
+                llx = loss.loss.loss(*loss_args, **loss_kwargs)
+            elif not hess:
+                llx, g = loss.loss.loss_grad(*loss_args, **loss_kwargs)
+            else:
+                llx, g, h = loss.loss.loss_grad_hess(*loss_args, **loss_kwargs)
+            del loss_args, loss_kwargs
+            if in_line_search:
+                loss.loss.set_state(state)
+
+            # ----------------------------------------------------------
+            # chain rule -> derivatives wrt Lie parameters
+            # ----------------------------------------------------------
+
+            def compose_grad(g, h, g_mu, g_aff):
+                """
+                g, h : gradient/Hessian of loss wrt moving image
+                g_mu : spatial gradients of moving image
+                g_aff : gradient of affine matrix wrt Lie parameters
+                returns g, h: gradient/Hessian of loss wrt Lie parameters
+                """
+                # Note that `h` can be `None`, but the functions I
+                # use deal with this case correctly.
+                dim = g_mu.shape[-1]
+                g = jg(g_mu, g)
+                h = jhj(g_mu, h)
+                g, h = regutils.affine_grid_backward(g, h)
+                dim2 = dim * (dim + 1)
+                g = g.reshape([*g.shape[:-2], dim2])
+                g_aff = g_aff[..., :-1, :]
+                g_aff = g_aff.reshape([*g_aff.shape[:-2], dim2])
+                g = linalg.matvec(g_aff, g)
+                if h is not None:
+                    h = h.reshape([*h.shape[:-4], dim2, dim2])
+                    h = g_aff.matmul(h).matmul(g_aff.transpose(-1, -2))
+                    # h = h.abs().sum(-1).diag_embed()
+                return g, h
+
+            if grad or hess:
+                g0, g = g, None
+                h0, h = h, None
                 if aff_pos in 'ms':
-                    aff_left = spatial.affine_matmul(aff00, self.nonlin.affine)
-                    aff_left = spatial.affine_lmdiv(moving.affine, aff_left)
-                    gaff_left = torch.matmul(gaff00, self.nonlin.affine)
-                    gaff_left = linalg.lmdiv(moving.affine, gaff_left)
-                else:
-                    aff_left = spatial.affine_lmdiv(moving.affine, self.nonlin.affine)
-                    gaff_left = None
-                if _almost_identity(aff_right) and fixed.shape == self.nonlin.shape:
-                    right = None
-                    phi = spatial.identity_grid(fixed.shape, **utils.backend(phi00))
-                    phi += phi00
-                else:
-                    right = spatial.affine_grid(aff_right, fixed.shape)
-                    phi = regutils.smart_pull_grid(phi00, right)
-                    phi += right
-                phi_right = phi
-                if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
-                    left = None
-                else:
-                    left = spatial.affine_grid(aff_left, self.nonlin.shape)
-                    phi = spatial.affine_matvec(aff_left, phi)
+                    g_left = regutils.smart_push(g0, phi_right, shape=self.nonlin.shape)
+                    h_left = regutils.smart_push(h0, phi_right, shape=self.nonlin.shape)
+                    mugrad = moving.pull_grad(left, rotate=False)
+                    g_left, h_left = compose_grad(g_left, h_left, mugrad, gaff_left)
+                    g, h = g_left, h_left
+                if aff_pos in 'fs':
+                    g_right, h_right = g0, h0
+                    mugrad = moving.pull_grad(phi, rotate=False)
+                    jac = spatial.grid_jacobian(phi0, right, type='disp', extrapolate=False)
+                    jac = torch.matmul(aff_left[:-1, :-1], jac)
+                    mugrad = linalg.matvec(jac.transpose(-1, -2), mugrad)
+                    g_right, h_right = compose_grad(g_right, h_right, mugrad, gaff_right)
+                    g = g_right if g is None else g.add_(g_right)
+                    h = h_right if h is None else h.add_(h_right)
 
-                # forward
-                warped, mask = moving.pull(phi, mask=True)
-                if fixed.masked:
-                    if mask is None:
-                        mask = fixed.mask
-                    else:
-                        mask = mask * fixed.mask
-
-                if not has_printed and self.verbose > 1 and not in_line_search \
-                        and loss.symmetric != 'backward':
-                    is_level0 = False
-                    has_printed = True
-                    init = spatial.affine_lmdiv(moving.affine, fixed.affine)
-                    if _almost_identity(init) and moving.shape == fixed.shape:
-                        init = moving.dat
-                    else:
-                        init = spatial.affine_grid(init, fixed.shape)
-                        init = moving.pull(init)
-                    self.mov2fix(fixed.dat, init, warped, dim=fixed.dim,
-                                 title=f'(affine) {self.n_iter:03d}')
-
-                # gradient/Hessian of the log-likelihood in observed space
-                g = h = None
-                if not grad and not hess:
-                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim, mask=mask)
-                elif not hess:
-                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim, mask=mask)
-                else:
-                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim, mask=mask)
-
-                def compose_grad(g, h, g_mu, g_aff):
-                    """
-                    g, h : gradient/Hessian of loss wrt moving image
-                    g_mu : spatial gradients of moving image
-                    g_aff : gradient of affine matrix wrt Lie parameters
-                    returns g, h: gradient/Hessian of loss wrt Lie parameters
-                    """
-                    # Note that `h` can be `None`, but the functions I
-                    # use deal with this case correctly.
-                    dim = g_mu.shape[-1]
-                    g = jg(g_mu, g)
-                    h = jhj(g_mu, h)
-                    g, h = regutils.affine_grid_backward(g, h)
-                    dim2 = dim * (dim + 1)
-                    g = g.reshape([*g.shape[:-2], dim2])
-                    g_aff = g_aff[..., :-1, :]
-                    g_aff = g_aff.reshape([*g_aff.shape[:-2], dim2])
-                    g = linalg.matvec(g_aff, g)
-                    if h is not None:
-                        h = h.reshape([*h.shape[:-4], dim2, dim2])
-                        h = g_aff.matmul(h).matmul(g_aff.transpose(-1, -2))
-                        h = h.abs().sum(-1).diag_embed()
-                    return g, h
-
-                # compose with spatial gradients
-                if grad or hess:
-                    g0, g = g, None
-                    h0, h = h, None
-                    if aff_pos in 'ms':
-                        g_left = regutils.smart_push(g0, phi_right, shape=self.nonlin.shape)
-                        h_left = regutils.smart_push(h0, phi_right, shape=self.nonlin.shape)
-                        mugrad = moving.pull_grad(left, rotate=False)
-                        g_left, h_left = compose_grad(g_left, h_left, mugrad, gaff_left)
-                        g = g_left
-                        h = h_left
-                    if aff_pos in 'fs':
-                        g_right = g0
-                        h_right = h0
-                        mugrad = moving.pull_grad(phi, rotate=False)
-                        jac = spatial.grid_jacobian(phi0, right, type='disp', extrapolate=False)
-                        jac = torch.matmul(aff_left[:-1, :-1], jac)
-                        mugrad = linalg.matvec(jac.transpose(-1, -2), mugrad)
-                        g_right, h_right = compose_grad(g_right, h_right, mugrad, gaff_right)
-                        g = g_right if g is None else g.add_(g_right)
-                        h = h_right if h is None else h.add_(h_right)
-
-                    if loss.symmetric == 'backward':
-                        g = g.neg_()
-                    sumgrad = g.mul_(factor) if sumgrad is None else sumgrad.add_(g, alpha=factor)
-                    if hess:
-                        sumhess = h.mul_(factor) if sumhess is None else sumhess.add_(h, alpha=factor)
-                sumloss = llx.mul_(factor) if sumloss is None else sumloss.add_(llx, alpha=factor)
+                if loss.backward:
+                    g = g.neg_()
+                sumgrad = (g.mul_(factor) if sumgrad is None else
+                           sumgrad.add_(g, alpha=factor))
+                if hess:
+                    sumhess = (h.mul_(factor) if sumhess is None else
+                               sumhess.add_(h, alpha=factor))
+            sumloss = (llx.mul_(factor) if sumloss is None else
+                       sumloss.add_(llx, alpha=factor))
 
         # TODO add regularization term
         lla = 0
 
-        # print objective
+        # ==============================================================
+        #                           VERBOSITY
+        # ==============================================================
         llx = sumloss.item()
         sumloss += lla
         sumloss += self.llv
         self.loss_value = sumloss.item()
-        if self.verbose and not in_line_search:
-            self.n_iter += 1
+        if self.verbose and (self.verbose > 1 or not in_line_search):
             ll = sumloss.item()
-            self.all_ll.append(ll)
             llv = self.llv
-            line = '(affine) | '
+            if in_line_search:
+                line = '(search) | '
+            else:
+                line = '(affine) | '
             line += f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} + {lla:12.6g} = {ll:12.6g}'
-            if self.ll_prev is not None:
-                gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
-                line += f' | {gain:12.6g}'
+            if not in_line_search:
+                if self.ll_prev is not None:
+                    gain = self.ll_prev - ll
+                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
+                    line += f' | {gain:12.6g}'
+                self.all_ll.append(ll)
+                self.ll_prev = ll
+                self.ll_max = max(self.ll_max, ll)
+                self.n_iter += 1
             print(line, end='\r')
-            self.ll_prev = ll
-            self.ll_max = max(self.ll_max, ll)
 
+        # ==============================================================
+        #                           RETURN
+        # ==============================================================
         out = [sumloss]
         if grad:
             out.append(sumgrad)
@@ -614,130 +632,148 @@ class RegisterStep:
         sumgrad = None
         sumhess = None
 
-        # build affine and displacement field
+        # ==============================================================
+        #                     EXPONENTIATE TRANSFORMS
+        # ==============================================================
         logaff0 = logaff
         aff0, iaff0, gaff0, igaff0 = self.affine.exp2(logaff0, grad=True)
 
-        # register temporary "backward" loss for symmetric losses
-        losses = []
-        for loss in self.losses:
-            losses.append(loss)
-            if loss.symmetric:
-                bwdloss = copy.copy(loss)
-                bwdloss.moving, bwdloss.fixed = loss.fixed, loss.moving
-                bwdloss.symmetric = 'backward'
-                losses.append(bwdloss)
-
         has_printed = False
-        for loss in losses:
+        for loss in self.losses:
 
-            factor = loss.factor
-            if loss.symmetric:
-                factor = factor / 2
-            if loss.symmetric == 'backward':
-                aff00 = iaff0
-                gaff00 = igaff0
+            moving, fixed, factor = loss.moving, loss.fixed, loss.factor
+            if loss.backward:
+                aff00, gaff00 = iaff0, igaff0
             else:
-                aff00 = aff0
-                gaff00 = gaff0
+                aff00, gaff00 = aff0, gaff0
 
-            is_level0 = True
-            for moving, fixed in zip(loss.moving, loss.fixed):  # pyramid
-                
-                # build complete warp
-                aff = spatial.affine_matmul(aff00, fixed.affine)
-                aff = spatial.affine_lmdiv(moving.affine, aff)
-                gaff = torch.matmul(gaff00, fixed.affine)
-                gaff = linalg.lmdiv(moving.affine, gaff)
-                phi = spatial.affine_grid(aff, fixed.shape)
+            # ----------------------------------------------------------
+            # build full transform
+            # ----------------------------------------------------------
+            aff = aff00 @ fixed.affine
+            aff = linalg.lmdiv(moving.affine, aff)
+            gaff = gaff00 @ fixed.affine
+            gaff = linalg.lmdiv(moving.affine, gaff)
+            phi = spatial.affine_grid(aff, fixed.shape)
 
-                # forward
-                warped, mask = moving.pull(phi, mask=True)
-                if fixed.masked:
-                    if mask is None:
-                        mask = fixed.mask
-                    else:
-                        mask = mask * fixed.mask
-
-                if not has_printed and self.verbose > 1 and not in_line_search \
-                        and loss.symmetric != 'backward':
-                    is_level0 = False
-                    has_printed = True
-                    init = spatial.affine_lmdiv(moving.affine, fixed.affine)
-                    if _almost_identity(init) and moving.shape == fixed.shape:
-                        init = moving.dat
-                    else:
-                        init = spatial.affine_grid(init, fixed.shape)
-                        init = moving.pull(init)
-                    self.mov2fix(fixed.dat, init, warped, dim=fixed.dim,
-                                 title=f'(affine) {self.n_iter:03d}')
-
-                # gradient/Hessian of the log-likelihood in observed space
-                g = h = None
-                if not grad and not hess:
-                    llx = loss.loss.loss(warped, fixed.dat, dim=fixed.dim, mask=mask)
-                elif not hess:
-                    llx, g = loss.loss.loss_grad(warped, fixed.dat, dim=fixed.dim, mask=mask)
+            # ----------------------------------------------------------
+            # forward pass
+            # ----------------------------------------------------------
+            warped, mask = moving.pull(phi, mask=True)
+            if fixed.masked:
+                if mask is None:
+                    mask = fixed.mask
                 else:
-                    llx, g, h = loss.loss.loss_grad_hess(warped, fixed.dat, dim=fixed.dim, mask=mask)
+                    mask = mask * fixed.mask
 
-                def compose_grad(g, h, g_mu, g_aff):
-                    """
-                    g, h : gradient/Hessian of loss wrt moving image
-                    g_mu : spatial gradients of moving image
-                    g_aff : gradient of affine matrix wrt Lie parameters
-                    returns g, h: gradient/Hessian of loss wrt Lie parameters
-                    """
-                    # Note that `h` can be `None`, but the functions I
-                    # use deal with this case correctly.
-                    dim = g_mu.shape[-1]
-                    g = jg(g_mu, g)
-                    h = jhj(g_mu, h)
-                    g, h = regutils.affine_grid_backward(g, h)
-                    dim2 = dim * (dim + 1)
-                    g = g.reshape([*g.shape[:-2], dim2])
-                    g_aff = g_aff[..., :-1, :]
-                    g_aff = g_aff.reshape([*g_aff.shape[:-2], dim2])
-                    g = linalg.matvec(g_aff, g)
-                    if h is not None:
-                        h = h.reshape([*h.shape[:-4], dim2, dim2])
-                        h = g_aff.matmul(h).matmul(g_aff.transpose(-1, -2))
-                        h = h.abs().sum(-1).diag_embed()
-                    return g, h
+            do_print = not (has_printed or self.verbose < 3 or in_line_search
+                            or loss.backward)
+            if do_print:
+                has_printed = True
+                if moving.previewed:
+                    preview = moving.pull(phi, preview=True, dat=False)
+                else:
+                    preview = warped
+                init = spatial.affine_lmdiv(moving.affine, fixed.affine)
+                if _almost_identity(init) and moving.shape == fixed.shape:
+                    init = moving.preview
+                else:
+                    init = spatial.affine_grid(init, fixed.shape)
+                    init = moving.pull(init, preview=True, dat=False)
+                self.mov2fix(fixed.preview, init, preview, dim=fixed.dim,
+                             title=f'(affine) {self.n_iter:03d}')
 
-                # compose with spatial gradients
-                if grad or hess:
-                    mugrad = moving.pull_grad(phi, rotate=False)
-                    g, h = compose_grad(g, h, mugrad, gaff)
+            # ----------------------------------------------------------
+            # derivatives wrt moving
+            # ----------------------------------------------------------
+            g = h = None
+            loss_args = (warped, fixed.dat)
+            loss_kwargs = dict(dim=fixed.dim, mask=mask)
+            state = loss.loss.get_state()
+            if not grad and not hess:
+                llx = loss.loss.loss(*loss_args, **loss_kwargs)
+            elif not hess:
+                llx, g = loss.loss.loss_grad(*loss_args, **loss_kwargs)
+            else:
+                llx, g, h = loss.loss.loss_grad_hess(*loss_args, **loss_kwargs)
+            del loss_args, loss_kwargs
+            if in_line_search:
+                loss.loss.set_state(state)
 
-                    if loss.symmetric == 'backward':
-                        g = g.neg_()
-                    sumgrad = g.mul_(factor) if sumgrad is None else sumgrad.add_(g, alpha=factor)
-                    if hess:
-                        sumhess = h.mul_(factor) if sumhess is None else sumhess.add_(h, alpha=factor)
-                sumloss = llx.mul_(factor) if sumloss is None else sumloss.add_(llx, alpha=factor)
+            # ----------------------------------------------------------
+            # chain rule -> derivatives wrt Lie parameters
+            # ----------------------------------------------------------
+
+            def compose_grad(g, h, g_mu, g_aff):
+                """
+                g, h : gradient/Hessian of loss wrt moving image
+                g_mu : spatial gradients of moving image
+                g_aff : gradient of affine matrix wrt Lie parameters
+                returns g, h: gradient/Hessian of loss wrt Lie parameters
+                """
+                # Note that `h` can be `None`, but the functions I
+                # use deal with this case correctly.
+                dim = g_mu.shape[-1]
+                g = jg(g_mu, g)
+                h = jhj(g_mu, h)
+                g, h = regutils.affine_grid_backward(g, h)
+                dim2 = dim * (dim + 1)
+                g = g.reshape([*g.shape[:-2], dim2])
+                g_aff = g_aff[..., :-1, :]
+                g_aff = g_aff.reshape([*g_aff.shape[:-2], dim2])
+                g = linalg.matvec(g_aff, g)
+                if h is not None:
+                    h = h.reshape([*h.shape[:-4], dim2, dim2])
+                    h = g_aff.matmul(h).matmul(g_aff.transpose(-1, -2))
+                    # h = h.abs().sum(-1).diag_embed()
+                return g, h
+
+            # compose with spatial gradients
+            if grad or hess:
+                mugrad = moving.pull_grad(phi, rotate=False)
+                g, h = compose_grad(g, h, mugrad, gaff)
+
+                if loss.backward:
+                    g = g.neg_()
+                sumgrad = (g.mul_(factor) if sumgrad is None else
+                           sumgrad.add_(g, alpha=factor))
+                if hess:
+                    sumhess = (h.mul_(factor) if sumhess is None else
+                               sumhess.add_(h, alpha=factor))
+            sumloss = (llx.mul_(factor) if sumloss is None else
+                       sumloss.add_(llx, alpha=factor))
 
         # TODO add regularization term
         lla = 0
 
-        # print objective
+        # ==============================================================
+        #                           VERBOSITY
+        # ==============================================================
         llx = sumloss.item()
         sumloss += lla
         lla = lla
         ll = sumloss.item()
         self.loss_value = ll
-        if self.verbose and not in_line_search:
-            self.n_iter += 1
-            self.all_ll.append(ll)
-            line = '(affine) | '
+        if self.verbose and (self.verbose > 1 or not in_line_search):
+            if in_line_search:
+                line = '(search) | '
+            else:
+                line = '(affine) | '
             line += f'{self.n_iter:03d} | {llx:12.6g} + {lla:12.6g} = {ll:12.6g}'
-            if self.ll_prev is not None:
-                gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
-                line += f' | {gain:12.6g}'
+            if not in_line_search:
+                if self.ll_prev is not None:
+                    gain = self.ll_prev - ll
+                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
+                    line += f' | {gain:12.6g}'
+                self.all_ll.append(ll)
+                self.ll_prev = ll
+                self.ll_max = max(self.ll_max, ll)
+                self.n_iter += 1
             print(line, end='\r')
-            self.ll_prev = ll
-            self.ll_max = max(self.ll_max, ll)
 
+        # ==============================================================
+        #                           RETURN
+        # ==============================================================
         out = [sumloss]
         if grad:
             out.append(sumgrad)
