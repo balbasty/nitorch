@@ -293,8 +293,7 @@ def _local_mean_patch(
     return x
 
 
-CacheType = Dict[str, Tensor]
-cache: CacheType = {}
+cache: Dict[str, Tensor] = {}
 
 
 @torch.jit.script
@@ -305,7 +304,7 @@ def _local_mean_conv(
         backward: bool = False,
         shape: Optional[List[int]] = None,
         mask: Optional[Tensor] = None,
-        cache: Optional[CacheType] = None) -> Tensor:
+        cache: Optional[Dict[str, Tensor]] = None) -> Tensor:
     """Compute a local average by convolving with a (normalized) Gaussian."""
     dim = x.dim() - 2
 
@@ -411,7 +410,7 @@ def local_mean(x: Tensor,
                backward: bool = False,
                shape: Optional[List[int]] = None,
                mask: Optional[Tensor] = None,
-               cache: Optional[CacheType] = None) -> Tensor:
+               cache: Optional[Dict[str, Tensor]] = None) -> Tensor:
     """Compute a local average by convolution
 
     Parameters
