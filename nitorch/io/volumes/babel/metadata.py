@@ -263,10 +263,16 @@ def header_to_metadata(header, metadata):
         metadata['affine'] = torch.as_tensor(header.get_best_affine())
 
     if 'slope' in metadata:
-        metadata['slope'], _ = header.get_slope_inter()
+        if hasattr(header, 'get_slope_inter'):
+            metadata['slope'], _ = header.get_slope_inter()
+        else:
+            metadata['slope'] = None
 
     if 'inter' in metadata:
-        _, metadata['inter'] = header.get_slope_inter()
+        if hasattr(header, 'get_slope_inter'):
+            _, metadata['inter'] = header.get_slope_inter()
+        else:
+            metadata['inter'] = None
 
     if 'time_step' in metadata or 'tr' in metadata:
         zooms = header.get_zooms()

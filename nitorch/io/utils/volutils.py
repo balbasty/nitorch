@@ -226,7 +226,7 @@ def cutoff(dat, cutoff, dim=None):
             dat_for_quantile = dat_for_quantile.float()
 
         cutoff = [val/100 for val in cutoff]
-        pct = utils.quantile(dat_for_quantile, cutoff)
+        pct = utils.quantile(dat_for_quantile, cutoff, bins=1024)
 
         if len(pct) == 1:
             mn, mx = None, pct[0]
