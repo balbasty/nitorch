@@ -86,9 +86,8 @@ def _suffstat(fn, x, y):
     [fn(1), fn(x), fn(y), fn(x*x), fn(y*y), fn(x*y)]
 
     """
-
-    square_ = lambda x: x.square() if x.requires_grad else x.square_()
-    mul_ = lambda x, y: x.mul(y) if y.requires_grad else x.mul_(y)
+    # square_ = lambda x: x.square() if x.requires_grad else x.square_()
+    # mul_ = lambda x, y: x.mul(y) if y.requires_grad else x.mul_(y)
 
     mom = x.new_empty([6, *x.shape])
     mom[0] = 1
@@ -187,13 +186,14 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
     fixed_std.clamp_min_(1e-5)
     std2 = moving_std * fixed_std
     corr = div_(corr.addcmul_(moving_mean, fixed_mean, value=-1), std2)
+    corr2 = corr.square().neg_().add_(1)
 
     out = []
     if grad or hess:
         fixed_mean = div_(fixed_mean, fixed_std)
         moving_mean = div_(moving_mean, moving_std)
 
-        h = bwd(square_(corr / moving_std).mul_(mom0).mul_(lam))
+        h = bwd(square_(corr / moving_std).mul_(mom0).mul_(lam).div_(corr2))
 
         if grad:
             # g = G' * (corr.*(corr.*xmean./xstd - ymean./ystd)./xstd)
@@ -202,9 +202,10 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
             # g = -2 * g
             g = fixed_mean.addcmul_(corr, moving_mean, value=-1)
             g = mul_(g, corr / moving_std).mul_(mom0).mul_(lam)
-            g = bwd(g)
+            g = bwd(g.div_(corr2))
             g = g.addcmul_(h, moving)
-            g = g.addcmul_(bwd((corr / std2).mul_(mom0).mul_(lam)), fixed, value=-1)
+            g = g.addcmul_(bwd((corr / std2).mul_(mom0).mul_(lam).div_(corr2)),
+                           fixed, value=-1)
             g = g.mul_(2)
             out.append(g)
 
@@ -214,7 +215,7 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
             out.append(h)
 
     # return stuff
-    corr = square_(corr).neg_().add_(1).mul_(mom0).mul_(lam)
+    corr = corr2.log_().mul_(mom0).mul_(lam)
     corr = corr.sum()
     out = [corr, *out]
     return tuple(out) if len(out) > 1 else out[0]
