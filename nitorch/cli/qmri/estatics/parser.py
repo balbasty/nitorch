@@ -32,6 +32,7 @@ Reconstruction options:
 Optimization options
     --nb-levels [1]                  Number of resolutions
     --max-iter [10]                  Maximum number of outer iterations
+    --max-search [15]                Maximum number of line search iterations (meetup only)
     --tolerance [1e-5]               Tolerance for early stopping
 
 General options:
@@ -122,6 +123,8 @@ parser.add_option('lam_meetup', '--lam-meetup', nargs=1, default=1e5,
 parser.add_option('levels', '--nb-levels', nargs=1, default=1,
                   convert=int)
 parser.add_option('iter', '--max-iter', nargs=1, default=10,
+                  convert=int)
+parser.add_option('search', '--max-search', nargs=1, default=12,
                   convert=int)
 parser.add_option('tol', '--tolerance', nargs=1, default=1e-5,
                   convert=float)
