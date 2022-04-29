@@ -1175,6 +1175,9 @@ def affine_parameters(mat, *basis, max_iter=10000, tol=1e-9):
     prm : tensor
         Parameters in the specified basis
 
+    mat : (dim+1, dim+1) tensor
+        Fitted matrix
+
     """
 
     # Authors
