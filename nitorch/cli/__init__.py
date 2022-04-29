@@ -2,6 +2,7 @@
 from . import denoise
 from . import misc
 from . import qmri
+from . import segmentation
 from . import registration
 from . import viewer
 

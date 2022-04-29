@@ -4,7 +4,7 @@ from .cc import *
 from .dice import *
 from .gmm import *
 from .mi import *
-from .emi import *
+from .emmi import *
 from .mse import *
 from .robust import *
 from .prod import *
@@ -39,7 +39,7 @@ def make_loss(loss, dim=None):
             CC(dim=dim) if loss in ('cc', 'ncc') else
             LCC(dim=dim) if loss in ('lcc', 'lncc') else
             MI(dim=dim) if loss in ('mi', 'nmi') else
-            EMI(dim=dim) if loss == 'emi' else
+            EMMI(dim=dim) if loss == 'emi' else
             ProdLoss(dim=dim) if loss == 'prod' else
             NormProdLoss(dim=dim) if loss == 'normprod' else
             SqueezedProdLoss(dim=dim) if loss in ('sqz', 'squeezed') else

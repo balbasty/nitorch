@@ -552,7 +552,7 @@ class Conv(Module):
             output_padding = [0] * self.dim
             if output_shape:
                 if self.padding in ('same', 'auto'):
-                    # we now the original input size so we can compute
+                    # we know the original input size so we can compute
                     # the exact padding that was applied
                     sumpadding = []
                     for L, K, S, D in zip(output_shape, self.kernel_size,

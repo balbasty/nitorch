@@ -95,10 +95,10 @@ def orient(inp, affine=None, layout=None, voxel_size=None, center=None,
     layout = spatial.volume_layout(layout)
 
     if center in (None, 'like') or len(center) == 0:
-        center = torch.as_tensor(shape_like, dtype=torch.float) * 0.5
+        center = (torch.as_tensor(shape_like, dtype=torch.float) - 1) * 0.5
         center = spatial.affine_matvec(aff_like, center)
     elif center == 'self':
-        center = torch.as_tensor(shape, dtype=torch.float) * 0.5
+        center = (torch.as_tensor(shape, dtype=torch.float) - 1) * 0.5
         center = spatial.affine_matvec(aff0, center)
     elif center == 'standard':
         center = 0.

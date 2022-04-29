@@ -1,13 +1,14 @@
 from nitorch.cli.cli import commands
 from .parser import parser_fit, parser_apply, help, ParseError
 from nitorch.tools.registration.topup import topup_fit, topup_apply
-from nitorch.tools.registration.losses import MSE, NCC
+from nitorch.tools.registration.losses import MSE, NCC, LNCC
 from nitorch.tools.img_statistics import estimate_noise
 from nitorch import io, spatial
 from nitorch.core import py, utils
 import torch
 import sys
 import os
+import math as pymath
 
 
 def cli(args=None):
@@ -132,6 +133,42 @@ def get_readout(readout, affine, shape):
     return readout
 
 
+def ras_to_layout(x, affine):
+    layout = spatial.affine_to_layout(affine)
+    ras_to_layout = layout[..., 0]
+    return [x[i] for i in ras_to_layout]
+
+
+def get_kernel(kernel, affine, shape, level):
+    """Convert the provided kernel size (RAS mm or pct) to native voxels"""
+    dim = affine.shape[-1] - 1
+    kernel = py.make_list(kernel)
+    unit = 'pct'
+    if isinstance(kernel[-1], str):
+        *kernel, unit = kernel
+    kernel = py.make_list(kernel, dim)
+    unit = unit.lower()
+    if unit[0] == 'v':  # voxels
+        kernel = [p / 2**level for p in kernel]
+    elif unit in ('m', 'mm', 'cm', 'um'):  # assume RAS orientation
+        factor = (1e-3 if unit == 'um' else
+                  1e1 if unit == 'cm' else
+                  1e3 if unit == 'm' else
+                  1)
+        affine_ras = spatial.affine_reorient(affine, layout='RAS')
+        vx_ras = spatial.voxel_size(affine_ras).tolist()
+        kernel = [factor * p / v for p, v in zip(kernel, vx_ras)]
+        kernel = ras_to_layout(kernel, affine)
+    elif unit[0] in 'p%':    # percentage of shape
+        kernel = [0.01 * p * s for p, s in zip(kernel, shape)]
+    else:
+        raise ValueError('Unknown patch unit:', unit)
+
+    # ensure patch size is an integer >= 2 (else, no gradients)
+    kernel = list(map(lambda x: max(int(pymath.ceil(x)), 2), kernel))
+    return kernel
+
+
 def main_fit(options):
     """
     Estimate a displacement field from opposite polarity  images
@@ -180,11 +217,10 @@ def main_fit(options):
     dmask = fm.fdata(device='cpu') if fm else None
 
     # fit
-    vel = None
-    last_dwn = last_aff = None
-    mask = None
+    vel = mask = None
+    aff = last_aff = f0.affine
+    last_dwn = None
     for penalty, n, tol, dwn in zip(penalties, max_iter, tolerance, downs):
-
         if dwn != last_dwn:
             d0, aff = downsample(d00.to(device), f0.affine, dwn)
             d1, _ = downsample(d11.to(device), f1.affine, dwn)
@@ -198,6 +234,8 @@ def main_fit(options):
         scl = py.prod(d00.shape) / py.prod(d0.shape)
         penalty = penalty * scl
 
+        kernel = get_kernel(options.kernel, aff, d0.shape[-dim:], dwn)
+
         # prepare loss
         if options.loss == 'mse':
             prm0, _ = estimate_noise(d0)
@@ -205,6 +243,8 @@ def main_fit(options):
             sd = ((prm0['sd'].log() + prm1['sd'].log())/2).exp()
             print(sd.item())
             loss = MSE(lam=1/(sd*sd), dim=dim)
+        elif options.loss == 'lncc':
+            loss = LNCC(dim=dim, patch=kernel)
         else:
             loss = NCC(dim=dim)
 

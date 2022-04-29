@@ -288,9 +288,9 @@ def _affine_grid_backward_g(grid, grad):
     dim = grid.shape[-1]
     g = torch.empty([grad.shape[0], dim, dim+1], dtype=grad.dtype, device=grad.device)
     for i in range(dim):
-        g[..., i, -1] = grad[..., i].sum(1, dtype=torch.double).to(g.dtype)
+        g[:, i, -1] = grad[:, :, i].sum(1, dtype=torch.double).to(g.dtype)
         for j in range(dim):
-            g[..., i, j] = (grad[..., i] * grid[..., j]).sum(1, dtype=torch.double).to(g.dtype)
+            g[:, i, j] = (grad[:, :, i] * grid[:, :, j]).sum(1, dtype=torch.double).to(g.dtype)
     return g
 
 
@@ -305,9 +305,9 @@ def _affine_grid_backward_gh(grid, grad, hess):
         basecount = basecount + i * (dim-i)
         for j in range(dim+1):
             if j == dim:
-                g[..., i, j] = (grad[..., i]).sum(1)
+                g[:, i, j] = (grad[:, :, i]).sum(1)
             else:
-                g[..., i, j] = (grad[..., i] * grid[..., j]).sum(1)
+                g[:, i, j] = (grad[:, :, i] * grid[:, :, j]).sum(1)
             for k in range(dim):
                 idx = k
                 if k < i:
@@ -316,13 +316,13 @@ def _affine_grid_backward_gh(grid, grad, hess):
                     idx = basecount + (k - i)
                 for l in range(dim+1):
                     if l == dim and j == dim:
-                        h[..., i, j, k, l] = h[..., k, j, i, l] = hess[..., idx].sum(1)
+                        h[:, i, j, k, l] = h[:, k, j, i, l] = hess[:, :, idx].sum(1)
                     elif l == dim:
-                        h[..., i, j, k, l] = h[..., k, j, i, l] = (hess[..., idx] * grid[..., j]).sum(1)
+                        h[:, i, j, k, l] = h[:, k, j, i, l] = (hess[:, :, idx] * grid[:, :, j]).sum(1)
                     elif j == dim:
-                        h[..., i, j, k, l] = h[..., k, j, i, l] = (hess[..., idx] * grid[..., l]).sum(1)
+                        h[:, i, j, k, l] = h[:, k, j, i, l] = (hess[:, :, idx] * grid[:, :, l]).sum(1)
                     else:
-                        h[..., i, j, k, l] = h[..., k, j, i, l] = (hess[..., idx] * grid[..., j] * grid[..., l]).sum(1)
+                        h[:, i, j, k, l] = h[:, k, j, i, l] = (hess[:, :, idx] * grid[:, :, j] * grid[:, :, l]).sum(1)
     return g, h
 
 

@@ -252,6 +252,125 @@ def zcorrect_exp(x, decay=None, sigma=None, lam=10,
     return y, b, x
 
 
+def zcorrect_exp_const(x, decay=None, sigma=None, lam=10, mask=None,
+                       max_iter=128, tol=1e-6, verbose=False, snr=5):
+    """Correct the z signal decay in a SPIM image.
+
+    The signal is modelled as: f(z) = s * exp(-b * z) + eps
+    where z=0 is (arbitrarily) the middle slice, s is the intercept
+    and b is the decay coefficient.
+
+    Parameters
+    ----------
+    x : (..., nz) tensor
+        SPIM image with the z dimension last and the z=0 plane first
+    decay : float, optional
+        Initial guess for decay parameter. Default: educated guess.
+    sigma : float, optional
+        Noise standard deviation. Default: educated guess.
+    lam : float or (float, float), default=10
+        Regularisation.
+    max_iter : int, default=128
+    tol : float, default=1e-6
+    verbose : int or bool, default=False
+
+    Returns
+    -------
+    y : tensor
+        Corrected image
+    decay : float
+        Decay parameters
+
+    """
+
+    x = torch.as_tensor(x)
+    if not x.dtype.is_floating_point:
+        x = x.to(dtype=torch.get_default_dtype())
+    backend = utils.backend(x)
+    shape = x.shape
+    dim = x.dim() - 1
+    nz = shape[-1]
+    b = decay
+
+    x = utils.movedim(x, -1, 0).clone()
+    if mask is None:
+        mask = torch.isfinite(x) & (x > 0)
+    else:
+        mask = mask & (torch.isfinite(x) & (x > 0))
+    x[~mask] = 0
+
+    # decay educated guess: closed form from two values
+    if b is None:
+        z1 = 2 * nz // 5
+        z2 = 3 * nz // 5
+        x1 = x[z1]
+        x1 = x1[x1 > 0].median()
+        x2 = x[z2]
+        x2 = x2[x2 > 0].median()
+        z1 = float(z1)
+        z2 = float(z2)
+        b = (x2.log() - x1.log()) / (z1 - z2)
+    y = x[(nz-1)//2]
+    y = y[y > 0].median().log()
+
+    b = b.item() if torch.is_tensor(b) else b
+    y = y.item()
+    print(f'init: y = {y}, b = {b}') 
+
+    # noise educated guess: assume SNR=5 at z=1/2
+    sigma = sigma or (y / snr)
+    lam_y, lam_b = py.make_list(lam, 2)
+    lam_y = lam_y ** 2 * sigma ** 2
+    lam_b = lam_b ** 2 * sigma ** 2
+    reg = lambda t: spatial.regulariser(t, membrane=1, dim=dim, factor=(lam_y, lam_b))
+    solve = lambda h, g: spatial.solve_field_fmg(h, g, membrane=1, dim=dim, factor=(lam_y, lam_b))
+
+    # init
+    z = torch.arange(nz, **backend) - (nz - 1)/2
+    z = utils.unsqueeze(z, -1, dim)
+    theta = z.new_empty([2, *x.shape[1:]], **backend)
+    logy = theta[0].fill_(y)
+    b = theta[1].fill_(b)
+    y = logy.exp()
+    ll0 = (mask * y * (-b * z).exp_() - x).square_().sum() + (theta * reg(theta)).sum()
+    ll1 = ll0
+
+    g = torch.zeros_like(theta)
+    h = theta.new_zeros([3, *theta.shape[1:]])
+    for it in range(max_iter):
+
+        # exponentiate
+        y = torch.exp(logy, out=y)
+        fit = (b * z).neg_().exp_().mul_(y).mul_(mask)
+        res = fit - x
+
+        # compute objective
+        reg_theta = reg(theta)
+        ll = res.square().sum() + (theta * reg_theta).sum()
+        gain = (ll1 - ll) / ll0
+        if verbose:
+            end = '\n' if verbose > 1 else '\r'
+            print(f'{it:3d} | {ll:12.6g} | gain = {gain:12.6g}', end=end)
+        if it > 0 and gain < tol:
+            break
+        ll1 = ll
+
+        g[0] = (fit * res).sum(0)
+        g[1] = -(fit * res * z).sum(0)
+        h[0] = (fit * (fit + res.abs())).sum(0)
+        h[1] = (fit * (fit + res.abs()) * (z * z)).sum(0)
+        h[2] = -(z * fit * fit).sum(0)
+
+        g += reg_theta
+        theta -= solve(h, g)
+
+    y = torch.exp(logy, out=y)
+    x = x * (b * z).exp_()
+    x = utils.movedim(x, 0, -1)
+    x = x.reshape(shape)
+    return y, b, x
+
+
 def correct_smooth(x, sigma=None, lam=10, gamma=10, downsample=None,
                    max_iter=16, max_rls=8, tol=1e-6, verbose=False, device=None):
     """Correct the intensity non-uniformity in a SPIM image.

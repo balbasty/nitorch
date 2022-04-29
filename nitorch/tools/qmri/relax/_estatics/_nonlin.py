@@ -293,7 +293,7 @@ def nonlin(data, dist=None, opt=None):
                         tolerance=opt.optim.tolerance_cg, dim=3)
                     deltas = check_nans_(deltas, warn='delta')
 
-                    if not opt.distortion.enable:
+                    if not opt.distortion.enable or opt.optim.max_ls_prm < 1:
                         # No need for a line search
                         for map, delta in zip(maps, deltas):
                             map.volume -= delta
@@ -316,7 +316,7 @@ def nonlin(data, dist=None, opt=None):
                             del g1
                         armijo, armijo_prev = 1, 0
                         ok = False
-                        for n_ls in range(12):
+                        for n_ls in range(opt.optim.max_ls_prm):
                             for map, delta in zip(maps, deltas):
                                 map.volume.sub_(delta, alpha=(armijo - armijo_prev))
                                 # if map.min is not None or map.max is not None:
@@ -420,62 +420,69 @@ def nonlin(data, dist=None, opt=None):
                                 bound=DIST_BOUND,
                                 voxel_size=distortion.voxel_size)
                         delta = check_nans_(delta, warn='delta (distortion)')
+                        del g, h
 
-                        # --- line search ----------------------------------
-                        armijo, armijo_prev = 1, 0  # armijo_dist_prev[i], 0
-                        ok = False
-                        dd = momentum(delta)
-                        dv = dot(dd, vol)
-                        dd = dot(dd, delta)
-                        for n_ls in range(12):
-                            vol.sub_(delta, alpha=(armijo - armijo_prev))
-                            armijo_prev = armijo
-                            new_vreg1 = 0.5 * armijo * (armijo * dd - 2 * dv)
-                            new_crit1 = derivatives_parameters(
-                                contrast, distortion, intercept, maps.decay, opt,
-                                do_grad=False)
-                            if new_crit1 + new_vreg1 <= crit1:
-                                ok = True
-                                break
-                            else:
-                                armijo = armijo / 2
-                        armijo_dist_prev[i] = armijo * 2
+                        if opt.optim.max_ls_dist < 1:
+                            vol.sub_(delta)
+                            ok = True
+                            del delta
+                        else:
+                            # --- line search --------------------------
+                            armijo, armijo_prev = 1, 0  # armijo_dist_prev[i], 0
+                            ok = False
+                            dd = momentum(delta)
+                            dv = dot(dd, vol)
+                            dd = dot(dd, delta)
+                            for n_ls in range(opt.optim.max_ls_dist):
+                                vol.sub_(delta, alpha=(armijo - armijo_prev))
+                                armijo_prev = armijo
+                                new_vreg1 = 0.5 * armijo * (armijo * dd - 2 * dv)
+                                new_crit1 = derivatives_parameters(
+                                    contrast, distortion, intercept, maps.decay, opt,
+                                    do_grad=False)
+                                if new_crit1 + new_vreg1 <= crit1:
+                                    ok = True
+                                    break
+                                else:
+                                    armijo = armijo / 2
+                            armijo_dist_prev[i] = armijo * 2
+                            if not ok:
+                                vol.add_(delta, alpha=armijo_prev)
+                                new_crit1 = crit1
+                                new_vreg1 = 0
+                            del delta
+
+                            new_crit += new_crit1
+                            new_vreg += vreg1 + new_vreg1
+
+                    if opt.optim.max_ls_dist:
+                        # --- track distortion improvement ---------------------
                         if not ok:
-                            vol.add_(delta, alpha=armijo_prev)
-                            new_crit1 = crit1
-                            new_vreg1 = 0
-                        del delta, g, h
+                            evol = '== (x)'
+                        elif new_crit + new_vreg <= crit + vreg:
+                            evol = f'<= ({n_ls:2d})'
+                        else:
+                            evol = f'> ({n_ls:2d})'
+                        gain = (crit + vreg) - (new_crit + new_vreg)
+                        crit = new_crit
+                        vreg = new_vreg
+                        if opt.verbose:
+                            ll_tmp = crit + reg + vreg + sumrls
+                            pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"dist":4s} | '
+                                    f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
+                            pstr += f'+ {vreg:12.6g} '
+                            pstr += f'= {ll_tmp:12.6g} | gain = {gain/ll_scl:7.2g} | '
+                            pstr += f'{evol}'
+                            if opt.optim.nb_levels > 1:
+                                pstr = f'{level:3d} | ' + pstr
+                            print(pstr)
+                            if opt.plot:
+                                _show_maps(maps, dist, data)
+                        if not ok:
+                            break
 
-                        new_crit += new_crit1
-                        new_vreg += vreg1 + new_vreg1
-
-                    # --- track distortion improvement ---------------------
-                    if not ok:
-                        evol = '== (x)'
-                    elif new_crit + new_vreg <= crit + vreg:
-                        evol = f'<= ({n_ls:2d})'
-                    else:
-                        evol = f'> ({n_ls:2d})'
-                    gain = (crit + vreg) - (new_crit + new_vreg)
-                    crit = new_crit
-                    vreg = new_vreg
-                    if opt.verbose:
-                        ll_tmp = crit + reg + vreg + sumrls
-                        pstr = (f'{n_iter_rls:3d} | {n_iter_gn:3d} | {"dist":4s} | '
-                                f'{crit:12.6g} + {reg:12.6g} + {sumrls:12.6g} ')
-                        pstr += f'+ {vreg:12.6g} '
-                        pstr += f'= {ll_tmp:12.6g} | gain = {gain/ll_scl:7.2g} | '
-                        pstr += f'{evol}'
-                        if opt.optim.nb_levels > 1:
-                            pstr = f'{level:3d} | ' + pstr
-                        print(pstr)
-                        if opt.plot:
-                            _show_maps(maps, dist, data)
-                    if not ok:
-                        break
-
-                    if n_iter_dist > 1 and gain < opt.optim.tolerance * ll_scl:
-                        break
+                        if n_iter_dist > 1 and gain < opt.optim.tolerance * ll_scl:
+                            break
 
                 # --- compute GN (maps + distortion) gain --------------
                 ll = crit + reg + vreg + sumrls

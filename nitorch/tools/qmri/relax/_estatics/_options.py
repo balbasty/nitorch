@@ -36,6 +36,8 @@ class OptimOptions(Option):
     max_iter_dist: int = 1                 # Number of dist Gauss-Newton iterations
     max_iter_cg: int = 16                  # Number of Conjugate Gradient iteration
     max_iter_rls: int = 10                 # Number of Reweighted LS iterations
+    max_ls_dist: int = 12                  # Number of dist line search iterations
+    max_ls_prm: int = 12                   # Number of prm line search iterations
     tolerance: float = 1e-3                # Tolerance for early stopping
     tolerance_gn: float = 1e-5             # Tolerance for GN early stopping
     tolerance_cg: float = 1e-3             # Tolerance for CG early stopping (advised to be zero now that we use FMG)

@@ -492,7 +492,7 @@ class GradientEcho(BaseND):
 
     def _init_from_mapped(new, mapped, **attributes):
         missing = [key for key in ['te', 'tr', 'ti', 'fa', 'mt']
-                  if key not in attributes ]
+                   if key not in attributes ]
         meta = mapped.metadata(missing) if missing else {}
         if not isinstance(meta, dict):
             meta = meta[0]
@@ -566,6 +566,7 @@ class GradientEchoMulti(GradientEcho):
             super()._init_from_instance(instance)
             new.volume = new.volume[None, ...]
             new.te = [new.te]
+            new.blip = [getattr(new, 'blip', None)]
             new.set_attributes(**attributes)
         super()._init_from_instance(instance, **attributes)
 
@@ -662,7 +663,7 @@ class GradientEchoMulti(GradientEcho):
     def echo(self, index):
         volume = self.volume[index, ...]
         te = self.te[index]
-        blip = self.blip[index]
+        blip = self.blip[index] if self.blip else None
         attributes = {key: getattr(self, key) for key in self.attributes()
                       if key not in ('te', 'blip')}
         attributes['te'] = te

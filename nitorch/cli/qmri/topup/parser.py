@@ -18,7 +18,8 @@ usage:
     -m, --mask                       Path to a mask in which to compute the loss
     -o, --output                     Path to output displacement field [{dir}/{base}_topup_b0{ext}]
     -r, --readout  {lr,is,ap}        Readout direction (default: largest dim)
-    -l, --loss {mse,ncc}             Matching term [mse]
+    -l, --loss {mse,ncc,lncc}        Matching term [mse]
+    -k, --kernel VAL [{vox,mm,%}]    LNCC kernel size [10 %] 
     -m, --modulation {yes,no}        Jacobian modulation [yes]
     -d, --diffeo                     Use diffeomorphic model [no]
     -p, --penalty VAL [{memb,bend}]  Penalty on bending energy [100 bend]
@@ -82,8 +83,10 @@ parser_fit.add_option('output', ('-o', '--output'), nargs=1,
 parser_fit.add_option('readout', ('-r', '--readout'), nargs=1,
                       help='Readout direction')
 parser_fit.add_option('loss', ('-l', '--loss'), nargs=1, default='mse',
-                      validation=cli.Validations.choice(['mse', 'ncc']),
+                      validation=cli.Validations.choice(['mse', 'ncc', 'lncc']),
                       help='Matching loss')
+parser_fit.add_option('kernel', ('-k', '--kernel'), nargs='+', default=[10],
+                      convert=number_or_str(float), help='Kernel size')
 parser_fit.add_option('modulation', ('-m', '--modulation'), nargs=1, default=True,
                       convert=bool_or_str, action=cli.Actions.store_true,
                       help='Jacobian modulation')

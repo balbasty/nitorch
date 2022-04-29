@@ -156,14 +156,15 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs) -> Iterable:
             input = [input]
         return_type = type(input) if isinstance(input, (list, tuple)) else list
         input = list(input)
-        if len(input) == 0 and n is not None and not has_default:
+        if len(input) == 0 and n and not has_default:
             raise ValueError('Empty sequence')
         if n is not None:
             if crop:
                 input = input[:min(n, len(input))]
-            if not has_default:
-                default = input[-1]
-            input += [default] * max(0, n - len(input))
+            if len(input) < n:
+                if not has_default:
+                    default = input[-1]
+                input += [default] * (n - len(input))
         return return_type(input)
 
 

@@ -1,5 +1,29 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+SETUP SCRIPT
+============
+
+Important environment variables:
+CUDA_HOME
+    Path to cuda toolkit (nvcc, etc.)
+    By default, we try to find it in standard locations.
+NI_COMPILED_BACKEND ({TS, C, MONAI}, default=TS)
+    Which backend to use for our interpolation/solver functions
+    By default, TS (TorchScript) is used. It does not require any compilation
+    and is crossed-platform. "C" triggers the compilation of C++ (and
+    optionally CUDA) routines . "MONAI" tries to use functions from the
+    monai packages (which were ported from nitorch).
+NI_USE_CUDA ({0, 1}, default=1)
+    Whether to compile with cuda support.
+    By default, yes if a correct CUDA toolkit is found.
+TORCH_CUDA_ARCH_LIST ({all, mine, Kepler, Maxwell, Pascal, Volta, Turing, Ampere}, default=mine)
+    If "mine", we only compile for the architecture of the current GPU.
+    If "all", compile for all architectures.
+    If space-separated list of architectures, compile only for these archs.
+NI_PYTORCH_TARGET
+    I don't think think we use it, but I should check.
+"""
 from setuptools import setup, find_packages
 from warnings import warn
 import os

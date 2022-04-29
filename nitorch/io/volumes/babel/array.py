@@ -111,9 +111,9 @@ class BabelArray(MappedArray):
     _affine = property(lambda self: torch.as_tensor(self._image.affine, dtype=torch.double))
     _spatial = property(lambda self: tuple([True]*3 + [False]*max(0, self._dim-3)))
     _shape = property(lambda self: [int(d) for d in self._image.shape])
-    dtype = property(lambda self: self._image.dataobj.dtype)
-    slope = property(lambda self: float(self._image.dataobj.slope))
-    inter = property(lambda self: float(self._image.dataobj.inter))
+    dtype = property(lambda self: self._image.get_data_dtype())
+    slope = property(lambda self: float(getattr(self._image.dataobj, 'slope', None)))
+    inter = property(lambda self: float(getattr(self._image.dataobj, 'inter', None)))
 
     @slope.setter
     def slope(self, val):
@@ -264,7 +264,7 @@ class BabelArray(MappedArray):
                 return self._read_data_raw_full(fileobj, lock)
 
         if mmap is None:
-            mmap = self._image.dataobj._mmap
+            mmap = getattr(self._image.dataobj, '_mmap', False)
 
         return array_from_file(self._shape, self.dtype, fileobj,
                                offset=self._image.dataobj._offset,
@@ -291,6 +291,13 @@ class BabelArray(MappedArray):
         dat : np.ndarray
 
         """
+
+        if not isinstance(self._image, (nib.MGHImage, nib.AnalyzeImage)):
+            # Use nibabel's high-level API
+            image = self._image
+            if slicer is not None:
+                image = image.slicer[slicer]
+            return np.asanyarray(image.dataobj)
 
         # load sub-array
         if slicer is None or all(is_fullslice(slicer, self._shape)):
@@ -440,7 +447,8 @@ class BabelArray(MappedArray):
     def metadata(self, keys=None):
         if not keys:
             keys = metadata_keys
-        meta = header_to_metadata(self._image.dataobj._header, keys)
+        header = getattr(self._image.dataobj, '_header', self._image.header)
+        meta = header_to_metadata(header, keys)
         return meta
 
     def set_metadata(self, **meta):
@@ -541,7 +549,8 @@ class BabelArray(MappedArray):
         # build header
         if isinstance(like, BabelArray):
             # defer metadata conversion to nibabel
-            header = format.header_class.from_header(like._image.dataobj._header)
+            header = getattr(like._image.dataobj, '_header', like._image.header)
+            header = format.header_class.from_header(header)
         else:
             header = format.header_class()
         if like is not None:

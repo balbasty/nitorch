@@ -153,7 +153,7 @@ def volume_layout(*args, **kwargs):
         but in any dimension.
 
     name : str
-        Permutation of axis names,  according to the neuroimaging convention:
+        Permutation of axis names, according to the neuroimaging convention:
         * 'R' for *left to Right* (index=0, flipped=False) or
           'L' for *right to Left* (index=0, flipped=True)
         * 'A' for *posterior to Anterior* (index=1, flipped=False) or
@@ -2216,7 +2216,7 @@ def affine_modify(affine, shape, voxel_size=None, layout=None, center=None):
 
     if center is None:
         # preserve center
-        center = shape * 0.5
+        center = (shape - 1) * 0.5
         center = affine_matvec(affine, center)
 
     # set correct layout
@@ -2231,7 +2231,7 @@ def affine_modify(affine, shape, voxel_size=None, layout=None, center=None):
 
     # set correct center
     center = utils.make_vector(center, nb_dim, **backend)
-    vox_center = shape * 0.5
+    vox_center = (shape - 1) * 0.5
     old_center = affine_matvec(affine, vox_center)
     affine[:-1, -1] += center - old_center
 

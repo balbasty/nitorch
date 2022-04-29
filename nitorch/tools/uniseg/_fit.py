@@ -2,6 +2,7 @@ from timeit import default_timer as timer
 import math as pymath
 from nitorch.core import linalg, math, utils, py
 from nitorch import spatial
+from nitorch.tools.registration.utils import affine_grid_backward
 import torch
 from ._mrf import mrf, mrf_suffstat, mrf_covariance
 from ._plot import plot_lb, plot_images_and_lb
@@ -45,12 +46,13 @@ class SpatialMixture:
     _tinyish = 1e-3
 
     def __init__(self, nb_classes=6, prior=None, affine_prior=None,
-                 do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
+                 do_bias=True, do_warp=True,  do_affine=True,
+                 do_mixing=True, do_mrf='once',
                  lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10,
                  bias_acceleration=0, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-3, max_iter_intensity=8, max_iter_mrf=50,
-                 max_iter_cluster=20, max_iter_bias=1, max_iter_warp=3,
-                 max_iter_mixing=10, verbose=1, plot=0):
+                 max_iter_cluster=20, max_iter_bias=3, max_iter_warp=3,
+                 max_iter_affine=3, max_iter_mixing=10, verbose=1, plot=0):
         """
         Parameters
         ----------
@@ -69,9 +71,11 @@ class SpatialMixture:
             Optimize bias field
         do_warp : bool, default=True
             Optimize warping field
+        do_affine : bool, default=True
+            Optimize affine matrix
         do_mixing : bool, default=True
             Optimize stationary mixing proportions
-        do_mrf : {False, 'once', 'always', 'learn' or True}, default='learn'
+        do_mrf : {False, 'once', 'always', 'learn' or True}, default='once'
             Include a Markov Random Field
             - 'once' : only at the end
             - 'always' : at each iteration
@@ -108,6 +112,8 @@ class SpatialMixture:
             Maximum number of Bias (Gauss-Newton) iterations
         max_iter_warp : int, default=3
             Maximum number of Warp (Gauss-Newton) iterations
+        max_iter_affine : int, default=3
+            Maximum number of Affine (Gauss-Newton) iterations
         bias_acceleration : float, default=0.9
             How much to trust Fisher's Hessian
             (1 = faster but less stable, 0 = slower but more stable)
@@ -160,7 +166,8 @@ class SpatialMixture:
         self.warp_acceleration = min(1., max(0., warp_acceleration))
         self.bias_acceleration = min(1., max(0., bias_acceleration))
         self.do_bias = do_bias
-        self.do_warp = do_warp
+        self.do_warp = (prior is not None) and do_warp
+        self.do_affine = (prior is not None) and do_affine
         self.do_mixing = do_mixing
         self.do_mrf = do_mrf
         if self.do_mrf is True:
@@ -176,15 +183,20 @@ class SpatialMixture:
         self.max_iter_cluster = max_iter_cluster
         self.max_iter_bias = max_iter_bias
         self.max_iter_warp = max_iter_warp
+        self.max_iter_affine = max_iter_affine
         self.max_iter_mrf = max_iter_mrf
         self.max_iter_mixing = max_iter_mixing
-        self.max_ls_warp = 0 #12
+        self.max_ls_warp = 12
+        self.max_ls_affine = 12
+        self.affine_maj = False
         self.tol = tol
 
         if not self.do_bias:
             self.max_iter_bias = 0
         if not self.do_warp:
             self.max_iter_warp = 0
+        if not self.do_affine:
+            self.max_iter_affine = 0
         if not self.do_mixing:
             self.max_iter_mixing = 0
         if self.do_mrf != 'learn':
@@ -219,6 +231,11 @@ class SpatialMixture:
         # if we ever implement diffeomorphic warps, this should
         # return the exponentiated displacement field
         return self.alpha
+
+    @property
+    def affine(self):
+        """Return the (exponentiated) affine matrix"""
+        return linalg.expm(self.eta, self.affine_basis)
 
     @property
     def mixing(self):
@@ -388,7 +405,7 @@ class SpatialMixture:
                 bound='dft', interpolation=2,
                 prefilter=False, extrapolate=True)
             self.alpha = utils.movedim(self.alpha, 0, -1)
-            self.alpha *= factor.to(self.alpha.device)
+            self.alpha /= factor.to(self.alpha.device)
 
     def _final_e_step(self, X, W, aff):
         """Perform the final Expectation step"""
@@ -429,11 +446,11 @@ class SpatialMixture:
             return Z, L, lb
 
         N = X.shape[1:]
-        L = X.new_zeros((self.nb_clusters, *N))
+        L = X.new_empty((self.nb_clusters, *N))
         LMRF = None
         # --- likelihood ---
         for k, k0 in enumerate(self.lkp):
-            L[k].add_(self._log_likelihood(X, cluster=k))
+            L[k] = self._log_likelihood(X, cluster=k)
             if not k0:
                 continue
             # --- prior (stationary component) ---
@@ -560,8 +577,8 @@ class SpatialMixture:
                     # M-step - Mixing proportions
                     # ===========================
                     if n_iter_intensity > 0:
-                        for n_iter_mrf in range(self.max_iter_mixing):
-                            if n_iter_mrf > 0:
+                        for n_iter_mix in range(self.max_iter_mixing):
+                            if n_iter_mix > 0:
                                 olb = lb
                                 Z, L, lb = self.e_step(XB, W, M, vx=vx, combine=True)
                                 S, lse = self._make_prior(M, L, W)
@@ -570,14 +587,14 @@ class SpatialMixture:
                                 all_all_lb.append(lb/nW)
                                 if self.verbose >= 3:
                                     gain = (lb - olb) / (self.tol * nW)
-                                    print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_mrf:02d} | '
+                                    print(f'{n_iter:02d} | {n_iter_intensity:02d} | {n_iter_mix:02d} | '
                                           f'pre mix:  {lb.item()/nW:12.6g} ({gain:.6g})')
                                 if self.plot >= 4:
                                     self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
                             self._update_mixing(ss0, W, S)
 
-                            if n_iter_mrf > 1 and lb-olb < 0.5 * self.tol * nW:
+                            if n_iter_mix > 1 and lb-olb < 0.5 * self.tol * nW:
                                 break
 
                     if n_iter_cluster > 1 and lb-olb < self.tol * nW:
@@ -636,6 +653,33 @@ class SpatialMixture:
                 if n_iter_intensity > 1 and lb - olb_intensity < 2 * self.tol * nW:
                     break
 
+            for n_iter_affine in range(self.max_iter_affine):
+                # ======
+                # E-step
+                # ======
+                olb = lb
+                Z, L, lb = self.e_step(XB, W, M, combine=True, vx=vx)
+                S, lse = self._make_prior(M, L, W)
+                lb -= lse
+                lb += self._lb_parameters()
+                all_all_lb.append(lb/nW)
+                if self.verbose >= 2:
+                    gain = (lb - olb) / (self.tol * nW)
+                    print(f'{n_iter:02d} | {n_iter_affine:02d} | {n_iter_affine:02d} | '
+                          f'pre aff:  {lb.item()/nW:12.6g} ({gain:.6g})')
+                self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
+
+                # =============
+                # M-step - Warp
+                # =============
+                self._update_affine(Z, S, G, L, W, aff=aff)
+                M, G = self.warp_tpm(aff=aff, mode='logit', shape=X.shape[1:],
+                                     grad=True)
+                plot_mode = 'warp'
+
+                if n_iter_affine > 1 and lb - olb < self.tol * nW:
+                    break
+
             for n_iter_warp in range(self.max_iter_warp):
                 # ======
                 # E-step
@@ -648,7 +692,7 @@ class SpatialMixture:
                 all_all_lb.append(lb/nW)
                 if self.verbose >= 2:
                     gain = (lb - olb) / (self.tol * nW)
-                    print(f'{n_iter:02d} | {n_iter_warp:02d} | {"":2s} | '
+                    print(f'{n_iter:02d} | {n_iter_warp:02d} | {n_iter_warp:02d} | '
                           f'pre warp: {lb.item()/nW:12.6g} ({gain:.6g})')
                 self._plot_lb(all_all_lb, X, Z, M, mode=plot_mode)
 
@@ -797,6 +841,17 @@ class SpatialMixture:
             self.alpha = torch.zeros([*N, dim], **backend)
         else:
             self.alpha = None
+
+        # affine Lie coefficients
+        affine = kwargs.pop('affine', None)
+        self.affine_basis = spatial.affine_basis('affine', **backend)
+        if affine is not None:
+            affine = torch.as_tensor(affine, **backend)
+            self.eta = spatial.affine_parameters(affine, self.affine_basis)
+        elif self.do_affine:
+            self.eta = torch.zeros([len(self.affine_basis)], **backend)
+        else:
+            self.eta = None
 
         # bias field coefficients (log)
         bias = kwargs.pop('bias', None)
@@ -981,9 +1036,8 @@ class SpatialMixture:
         if self.lam_mrf:
             self._lb_mrf = -0.5 * self.lam_mrf * self.psi.square().sum().cpu()
 
-    # TODO: it seems that I could get rid of the line search
-    def _update_warp(self, Z, M, G, L, W=None, aff=None):
-        """
+    def _update_warp_base(self, Z, M, G, W=None):
+        """Common bit for update_warp and update_affine
 
         Parameters
         ----------
@@ -992,17 +1046,20 @@ class SpatialMixture:
         M : (K-1, *spatial) tensor
             Current modulated prior (atlas +  mixing + mrf + softmax)
         G : (K-1, *spatial, D) tensor
-            Gradients of the log-TPM
-        L : (K, *spatial) tensor
-            MRF log-term
+            Gradients of the log-TPM (eventually rotated)
         W : (*spatial) tensor, optional
             Voxel weights
-        aff : (D+1,D+1) tensor, optional
-            Orientation matrix
+
+        Returns
+        -------
+        g : (K, *spatial) tensor
+            Gradient
+        H : (K*(K+1)//2, *spatial) tensor
+            Hessian
+        ll0 : () scalar tensor
+            Initial log-likelihood
 
         """
-        vx = spatial.voxel_size(aff)
-
         def mul(*x, out=None):
             x = list(x)
             if out is None:
@@ -1079,6 +1136,37 @@ class SpatialMixture:
             g *= W.unsqueeze(-1)
             H *= W.unsqueeze(-1)
 
+        return g, H, ll0
+
+    def _update_warp(self, Z, M, G, L, W=None, aff=None):
+        """Update dense deformation
+
+        Parameters
+        ----------
+        Z : (K, *spatial) tensor
+            Responsibilities
+        M : (K-1, *spatial) tensor
+            Current modulated prior (atlas +  mixing + mrf + softmax)
+        G : (K-1, *spatial, D) tensor
+            Gradients of the log-TPM
+        L : (K, *spatial) tensor
+            MRF log-term
+        W : (*spatial) tensor, optional
+            Voxel weights
+        aff : (D+1,D+1) tensor, optional
+            Orientation matrix
+
+        """
+        # rotate spatial gradients
+        dim = G.shape[-1]
+        rot = self._full_affine(aff)[:dim, :dim].T
+        G = linalg.matvec(rot.to(G), G)
+
+        if len(Z) == self.nb_classes:
+            Z = Z[1:]
+        g, H, ll0 = self._update_warp_base(Z, M, G, W)
+
+        vx = spatial.voxel_size(aff)
         lam = {'factor': vx.prod(), 'voxel_size': vx, **self.lam_warp}
         La = spatial.regulariser_grid(self.alpha, **lam)
         aLa = self.alpha.flatten().dot(La.flatten()).cpu()
@@ -1111,21 +1199,105 @@ class SpatialMixture:
 
             if ll + armijo * (dLa - 0.5 * armijo * dLd) > ll0:
                 success = True
-                print('success', n_ls)
+                # print('success', n_ls)
                 break
             prev_armijo, armijo = armijo, armijo/2
         if not success:
-            print('failure')
+            # print('failure')
             self.alpha.add_(delta, alpha=armijo)
         else:
             self._lb_warp = (getattr(self, '_lb_warp', 0) +
                              armijo * (dLa - 0.5 * armijo * dLd))
+
+    def _update_affine(self, Z, M, G, L, W=None, aff=None):
+        """Update affine transformation
+
+        Parameters
+        ----------
+        Z : (K, *spatial) tensor
+            Responsibilities
+        M : (K-1, *spatial) tensor
+            Current modulated prior (atlas +  mixing + mrf + softmax)
+        G : (K-1, *spatial, D) tensor
+            Gradients of the log-TPM
+        L : (K, *spatial) tensor
+            MRF log-term
+        W : (*spatial) tensor, optional
+            Voxel weights
+        aff : (D+1,D+1) tensor, optional
+            Orientation matrix
+
+        """
+        dim = G.shape[-1]
+        if len(Z) == self.nb_classes:
+            Z = Z[1:]
+        g, H, ll0 = self._update_warp_base(Z, M, G, W)
+
+        g_aff = self._affine_gradient
+        aff = aff.to(g_aff)
+        g_aff = linalg.lmdiv(self.affine_prior.to(g_aff), g_aff.matmul(aff))
+        g_aff = g_aff[:, :-1, :].reshape([-1, dim*(dim+1)])
+        g, H = affine_grid_backward(g, H)
+        g = g.flatten()
+        H = H.reshape([len(g), len(g)])
+        g = linalg.matvec(g_aff, g.flatten())
+        H = g_aff @ H @ g_aff.T
+        if self.affine_maj:
+            H = H.abs().sum(-1).diag_embed()
+
+        delta = linalg.lmdiv(H, g.unsqueeze(-1)).squeeze(-1)
+        if not self.max_ls_affine:
+            self.eta -= delta
+            return
+
+        # line search
+        armijo, prev_armijo = 1, 0
+        ll0 = ll0.cpu()
+        success = False
+        for n_ls in range(self.max_ls_warp):
+            self.eta.sub_(delta, alpha=armijo - prev_armijo)
+            M = self.warp_tpm(aff=aff, mode='logit')
+            M, _ = self._make_prior(M, L, W)
+            logM0 = M.sum(0).neg_().add_(1).log_()
+            logM = M.log_().sub_(logM0)
+            if W is not None:
+                ll = (W * logM0).sum() + logM.mul_(Z).mul_(W).sum()
+            else:
+                ll = logM0.sum() + logM.mul_(Z).sum()
+            ll = ll.cpu()
+
+            if ll > ll0:
+                success = True
+                break
+            prev_armijo, armijo = armijo, armijo/2
+        if not success:
+            self.eta.add_(delta, alpha=armijo)
 
     def _update_intensity(self, *a, **k):
         pass
 
     def _update_bias(self, *a, **k):
         pass
+
+    @property
+    def _affine_gradient(self):
+        """Return the gradient of the exponentiated affine matrix wrt eta"""
+        return linalg._expm(self.eta, self.affine_basis, grad_X=True)[1]
+
+    def _full_affine_gradient(self, aff):
+        """Derivative of the full affine (aff_prior \ (aff_align @ aff_dat))
+        with respect to the Lie parameters if aff_align."""
+        g_aff = self._affine_gradient
+        g_aff = torch.matmul(g_aff, aff)
+        g_aff = torch.matmul(self.affine_prior.inverse().to(aff), g_aff)
+        return g_aff
+
+    def _full_affine(self, aff):
+        """Full affine matrix: aff_prior \ (aff_align @ aff_dat)"""
+        if self.eta is not None:
+            aff = torch.matmul(self.affine.to(aff), aff)
+        aff = torch.matmul(self.affine_prior.inverse().to(aff), aff)
+        return aff
 
     def warp_tpm(self, aff=None, grad=False, mode='softmax', shape=None):
         """
@@ -1144,16 +1316,16 @@ class SpatialMixture:
 
         """
         bound = 'replicate'
+        # bound = 'zero'
 
         if self.log_prior is None:
             return None
-        dim = self.log_prior.dim() - 1
         if self.alpha is not None:
             grid = spatial.add_identity_grid(self.alpha)
         else:
             grid = spatial.identity_grid(shape, **utils.backend(self.log_prior))
         if aff is not None:
-            aff = torch.matmul(self.affine_prior.inverse().to(aff), aff)
+            aff = self._full_affine(aff)
             grid = spatial.affine_matvec(aff.to(grid), grid)
         mask = self.log_prior.new_ones(self.log_prior.shape[1:])
         if mode == 'mask8':
@@ -1178,8 +1350,6 @@ class SpatialMixture:
         if not grad:
             return M
         G = spatial.grid_grad(self.log_prior, grid, bound=bound, extrapolate=True)
-        aff = aff.to(**utils.backend(G))
-        G = linalg.matvec(aff[:dim, :dim].T, G)  # rotate spatial gradients
         return M, G
 
 
@@ -1453,22 +1623,24 @@ class UniSeg(SpatialMixture):
             W = W.reshape([-1])
 
         lb = 0
+        g = X.new_empty(X.shape[0])
+        H = X.new_empty(X.shape[0])
+        a = 1 - self.bias_acceleration
         for c in range(C):
+            g.zero_()
+            H.zero_()
             # Solve for each channel individually
-            g = X.new_zeros(X.shape[0])
-            H = X.new_zeros(X.shape[0])
             for k in range(K):
                 sigma = self.sigma[k]
                 mu = self.mu[k].to(**utils.backend(X))
                 # Determine each class' contribution to gradient and Hessian
                 lam = sigma.inverse()[c].to(**utils.backend(X))
-                g.addcmul_(Z[k], linalg.dot(X - mu, lam))
-                H.addcmul_(Z[k], lam[c])
+                g1 = linalg.dot(X - mu, lam)
+                g.addcmul_(Z[k], g1)
+                H1 = g1.abs().mul_(a).add_(lam[c]) if a > 0 else lam[c]
+                H.addcmul_(Z[k], H1)
             g.mul_(X[:, c]).sub_(1)
             H.mul_(X[:, c].square()).add_(1)
-            if self.bias_acceleration < 1:
-                a = 1 - self.bias_acceleration
-                H.add_(g.abs(), alpha=a)  # new robust Hessian
 
             if W is not None:
                 g *= W

@@ -71,6 +71,8 @@ def _main(options):
     estatics_opt.backend.device = device
     estatics_opt.optim.nb_levels = options.levels
     estatics_opt.optim.max_iter_rls = options.iter
+    estatics_opt.optim.max_ls_dist = options.search
+    estatics_opt.optim.max_ls_prm = options.search
     estatics_opt.optim.tolerance = options.tol
     estatics_opt.regularization.norm = options.regularization
     estatics_opt.regularization.factor = [*options.lam_intercept, options.lam_decay]
@@ -121,11 +123,14 @@ def _main(options):
             bw = c.bandwidth
             b0, *unit = c.b0
             unit = unit[-1] if unit else 'vx'
-            b0 = io.loadf(b0, device=device)
+            fb0 = b0.map(b0)
+            b0 = fb0.fdata(device=device)
+            b0 = spatial.reslice(b0, fb0.affine, contrasts[-1][0].affine,
+                                 contrasts[-1][0].shape)
             if unit.lower() == 'hz':
                 if not bw:
                     raise ValueError('Bandwidth required to convert fieldmap'
-                                     'form Hz to voxel')
+                                     'from Hz to voxel')
                 b0 /= bw
             b0 = DenseDistortion(b0)
             distortion.append(b0)

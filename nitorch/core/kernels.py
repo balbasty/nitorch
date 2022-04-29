@@ -193,7 +193,7 @@ _smooth_switcher = {
     }
 
 
-def smooth(types, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
+def smooth(types='gauss', fwhm=1, basis=1, x=None, sep=True, dtype=None, device=None):
     """Create a smoothing kernel.
 
     Creates a (separable) smoothing kernel with fixed (i.e., not learned)
@@ -221,7 +221,7 @@ def smooth(types, fwhm=1, basis=0, x=None, sep=True, dtype=None, device=None):
     fwhm : int or sequence[int], default=1
         Full-width at half-maximum of the smoothing function 
         (in voxels), in each dimension.
-    basis : int, default=0
+    basis : int, default=1
         Image encoding basis (B-spline order)
     x : tuple or vector_like, optional
         Coordinates at which to evaluate the kernel. 

@@ -1935,11 +1935,11 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
         q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
     elif not bins:
         input, index = input.sort(-1)
-        mask = mask[:, index]
+        mask = mask.gather(-1, index)
         mask = mask.cumsum(-1) / mask.sum(-1, keepdim=True)
         mask[:, -1] = 1
         q = _hist_to_quantile(mask, q)
-        q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
+        q = GridPull.apply(input[:, None], q[:, :, None], 1, 'replicate', 0)[:, 0]
     else:
         # compute cumulative histogram
         min = input.min(-1).values

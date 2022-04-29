@@ -5,12 +5,13 @@ from ._cleanup import cleanup as cleanup_fn
 from nitorch.core import utils
 from nitorch.core.datasets import download, cache_dir
 from nitorch import io
+from nitorch.tools.registration.affine_tpm import align_tpm
 
 
 def uniseg(x, w=None, affine=None, device=None,
            nb_classes=None, prior=None, affine_prior=None,
-           do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
-           wishart=None, cleanup=None, spacing=3,
+           do_bias=True, do_warp=True, do_affine=True, do_mixing=True,
+           do_mrf='once', wishart=None, cleanup=None, spacing=3,
            lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10, lam_wishart=1,
            max_iter=30, tol=1e-3, verbose=1, plot=0, return_parameters=False):
     """Unified Segmentation using a deformable spatial prior.
@@ -36,16 +37,18 @@ def uniseg(x, w=None, affine=None, device=None,
 
     Components
     ----------
-    nb_classes : int or sequence[int], default=(2, 1, 1, 2, 3, 4)
+    nb_classes : int or sequence[int], default=(4, 2, 2, 2, 2, 3)
         If an int: number of classes
         If a sequence: Number of clusters per class
     do_bias : bool, default=True
         Optimize a smooth intensity bias field
     do_warp : bool, default=True
         Optimize a nonlinear warp of the spatial prior
+    do_affine : {False, 'once', 'always' or True}, default='always'
+        Optimize an affine warp of the spatial prior
     do_mixing : bool, default=True
         Optimize global missing proportions
-    do_mrf : {False, 'once', 'always', 'learn' or True}, default='learn'
+    do_mrf : {False, 'once', 'always', 'learn' or True}, default='once'
         Include a Markov Random Field in the model.
         - 'once' : only at the end
         - 'always' : at each iteration
@@ -126,6 +129,8 @@ def uniseg(x, w=None, affine=None, device=None,
             dim = x.dim() - 1
         else:
             dim = 3
+        do_warp = False
+        do_affine = False
     x, w, affine = get_data(x, w, affine, dim, **backend)
     if affine_prior is not None:
         affine_prior = affine_prior.to(x.dtype)
@@ -135,16 +140,35 @@ def uniseg(x, w=None, affine=None, device=None,
             raise ValueError('If no prior is provided, the number of '
                              'classes must be provided.')
         if len(prior) == 5:
-            nb_classes = (2, 2, 2, 2, 3, 4)
+            nb_classes = (4, 2, 2, 2, 2, 3)
         else:
             nb_classes = len(prior) + 1
 
+    # --- align --------------------------------------------------------
+    aff = None
+    if do_affine:
+        K = nb_classes if isinstance(nb_classes, int) else len(nb_classes)
+        if len(prior) == K - 1:
+            prior_for_align = prior.new_empty([K, *prior.shape[1:]])
+            prior_for_align[:-1] = prior
+            torch.sum(prior, 0, out=prior_for_align[-1])
+            prior_for_align[-1].neg_().add_(1)
+        else:
+            prior_for_align = prior
+        aff = align_tpm((x, affine), (prior_for_align, affine_prior), w,
+                        verbose=verbose-1, joint=True)
+        affine_prior = aff.inverse() @ affine_prior
+        del prior_for_align
+
+    # --- fit ----------------------------------------------------------
+    do_affine = do_affine in (True, 'always')
     model = UniSeg(
         nb_classes, prior=prior, affine_prior=affine_prior,
-        do_bias=do_bias, do_warp=do_warp, do_mixing=do_mixing, do_mrf=do_mrf,
-        lam_bias=lam_bias, lam_warp=lam_warp, lam_mixing=lam_mixing, lam_mrf=lam_mrf,
-        spacing=spacing, max_iter=max_iter, tol=tol, verbose=verbose, plot=plot,
-        wishart=wishart, lam_wishart=lam_wishart,
+        do_bias=do_bias, do_warp=do_warp, do_affine=do_affine,
+        do_mixing=do_mixing, do_mrf=do_mrf,  lam_bias=lam_bias,
+        lam_warp=lam_warp, lam_mixing=lam_mixing, lam_mrf=lam_mrf,
+        spacing=spacing, max_iter=max_iter, tol=tol, verbose=verbose,
+        plot=plot, wishart=wishart, lam_wishart=lam_wishart,
     )
     z, lb = model.fit(x, w, aff=affine)
     if cleanup:
@@ -162,6 +186,10 @@ def uniseg(x, w=None, affine=None, device=None,
         parameters['bias'] = model.bias
     if do_mixing:
         parameters['mixing'] = model.mixing
+    if do_affine:
+        parameters['affine'] = aff @ model.affine
+    elif aff is not None:
+        parameters['affine'] = aff
     if do_mrf in ('learn', True):
         parameters['mrf'] = model.mrf
 
@@ -259,11 +287,17 @@ def uniseg_batch(x, w=None, affine=None, device=None,
 # ======================================================================
 
 
-def get_spm_prior(**backend):
+def path_spm_prior():
     url = 'https://github.com/spm/spm12/raw/master/tpm/TPM.nii'
     fname = os.path.join(cache_dir, 'SPM12_TPM.nii')
     if not os.path.exists(fname):
+        os.makedirs(cache_dir, exist_ok=True)
         fname = download(url, fname)
+    return fname
+
+
+def get_spm_prior(**backend):
+    fname = path_spm_prior()
     f = io.map(fname).movedim(-1, 0)[:-1]  # drop background
     aff = f.affine
     dat = f.fdata(**backend)
@@ -317,7 +351,7 @@ def get_data(x, w, affine, dim, **backend):
         else:
             f = io.stack([io.map(x1) for x1 in x])
             if affine is None:
-                f = f.affine[0]
+                affine = f.affine[0]
             x = f.fdata(**backend, rand=True, missing=0)
 
     if x.dim() > dim + 1:

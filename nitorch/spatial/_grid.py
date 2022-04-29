@@ -278,6 +278,8 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
 
     """
     grid, shape_info = _preproc(grid)
+    if shape is None:
+        shape = tuple(grid.shape[1:-1])
     out = GridCount.apply(grid, shape, interpolation, bound, extrapolate)
     return _postproc(out, shape_info, mode='count')
 
@@ -760,6 +762,16 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
     # resize grid
     kwargs['_return_trf'] = True
     kwargs.setdefault('prefilter', True)
+    ndim = grid.shape[-1]
+    *spatial, _ = grid.shape[-ndim-1:-1]
+    batch = grid.shape[:-ndim-1]
+    if len(batch) == 0:
+        grid = grid[None]
+    elif len(batch) > 1:
+        grid = grid.reshape([-1, *spatial, ndim])
+    if affine is not None:
+        affine = affine.expand([*batch, *affine.shape[-2:]])
+        affine = affine.reshape([-1, *affine.shape[-2:]])
     grid = utils.last2channel(grid)
     outputs = resize(grid, factor, shape, affine, *args, **kwargs)
     if affine is not None:
@@ -782,8 +794,11 @@ def resize_grid(grid, factor=None, shape=None, type='grid',
         grids.append(grid1)
     grid = torch.stack(grids, -1)
 
+    grid = grid.reshape([*batch, *grid.shape[-ndim-1:]])
+
     # return
     if affine is not None:
+        affine = affine.reshape([*batch, *affine.shape[-2:]])
         return grid, affine
     else:
         return grid
