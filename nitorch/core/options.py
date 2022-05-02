@@ -123,7 +123,7 @@ class Option:
         if key.startswith('_') or key in self.__protected_fields__:
             return super().__setattr__(key, value)
         if key not in self.keys():
-            raise KeyError(key)
+            raise KeyError(f'Key "{key}" does not exist in structure {type(self)}')
         if key in self._validators and self._validators[key] is not None:
             validator = self._validators[key]
             if not validator(value):

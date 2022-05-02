@@ -136,12 +136,12 @@ def _main(options):
                     delta = delta * 1e-3
                 elif unit not in ('s', 'sec'):
                     raise ValueError(f'echo spacing unit: {unit}')
-                ne = len(c.echoes)
+                ne = sum(io.map(f).unsqueeze(-1).shape[3] for f in c.echoes)
                 te = [te[0] + e*delta for e in range(ne)]
             meta['te'] = te
 
         # map volumes
-        cc = qio.GradientEchoMulti.from_fnames(c.echoes, **meta)
+        cc = qio.GradientEchoMulti.from_fname(c.echoes, **meta)
         contrasts[i] = cc
 
         if c.transmit:

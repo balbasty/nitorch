@@ -31,17 +31,12 @@ class DistortionOption(Option):
 
 class OptimOptions(Option):
     """Options for the optimizer(s)"""
-    max_iter_gn: int = 3                   # Number of prm+dist Gauss-Newton iterations
-    max_iter_prm: int = 2                  # Number of prm Gauss-Newton iterations
-    max_iter_dist: int = 1                 # Number of dist Gauss-Newton iterations
+    max_iter_prm: int = 3                  # Number of prm Gauss-Newton iterations
+    max_iter_dist: int = 3                 # Number of dist Gauss-Newton iterations
     max_iter_cg: int = 16                  # Number of Conjugate Gradient iteration
     max_iter_rls: int = 10                 # Number of Reweighted LS iterations
-    max_ls_dist: int = 12                  # Number of dist line search iterations
-    max_ls_prm: int = 12                   # Number of prm line search iterations
     tolerance: float = 1e-3                # Tolerance for early stopping
-    tolerance_gn: float = 1e-5             # Tolerance for GN early stopping
-    tolerance_cg: float = 1e-3             # Tolerance for CG early stopping (advised to be zero now that we use FMG)
-    tolerance_rls: float = 1e-5            # Tolerance for RLS early stopping
+    tolerance_cg: float = 1e-3             # Tolerance for CG early stopping
     nb_levels: int = 1                     # Number of resolution levels
 
 

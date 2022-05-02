@@ -554,25 +554,23 @@ class GradientEchoMulti(GradientEcho):
     """
     te: list = None
 
-    def _init_from_instance(new, instance, **attributes):
-        """Build a multi-echo gradient-echo volume from an
-        instance of GradientEchoMulti or GradientEcho."""
-        if isinstance(instance, GradientEchoMulti):
-            copy_attributes = {k: getattr(instance, k) for k in
-                               instance.attributes()}
+    def _init_from_instance(new, echoes, **attributes):
+        """Build a multi-echo gradient-echo volume from mutiple
+        instances of GradientEchoSingle."""
+        if isinstance(echoes, GradientEchoMulti):
+            copy_attributes = {k: getattr(echoes, k) for k in
+                               echoes.attributes()}
             copy_attributes.update(attributes)
             new.set_attributes(**copy_attributes)
-        if isinstance(instance, GradientEcho):
-            super()._init_from_instance(instance)
+            super()._init_from_instance(echoes, **attributes)
+            return
+        if isinstance(echoes, GradientEcho):
+            super()._init_from_instance(echoes)
             new.volume = new.volume[None, ...]
             new.te = [new.te]
             new.blip = [getattr(new, 'blip', None)]
             new.set_attributes(**attributes)
-        super()._init_from_instance(instance, **attributes)
-
-    def _init_from_instances(new, echoes, **attributes):
-        """Build a multi-echo gradient-echo volume from mutiple
-        instances of GradientEchoSingle."""
+            return
         volume = io.stack([echo.volume for echo in echoes], dim=0)
         if 'tr' not in attributes:
             trs = set([echo.tr for echo in echoes if echo.tr is not None])
@@ -627,38 +625,22 @@ class GradientEchoMulti(GradientEcho):
                 warnings.warn("Degrees of freedom not consistent across echoes. Using {}."
                               .format(dof))
             attributes['dof'] = dof
-        new._init_from_mapped(volume, **attributes)
+        super()._init_from_mapped(volume, **attributes)
 
-    @classmethod
-    def from_instances(cls, echoes, **attributes):
-        new = cls.__new__(cls)
-        new._init_from_instances(echoes, **attributes)
-        return new
+    def _init_from_fname(new, fnames, permission='r', keep_open=False,  **attributes):
+        fnames = py.make_list(fnames)
+        fs = []
+        for fname in fnames:
+            f = io.map(fname, permission=permission, keep_open=keep_open)
+            while f.dim < 4:
+                f = f.unsqueeze(-1)
+            fs += [f]
+        fs = io.cat(fs, -1).permute([-1, 0, 1, 2])
+        new._init_from_mapped(fs, **attributes)
 
-    def _init_from_fnames(new, fnames, **attributes):
-        echoes = [GradientEchoSingle.from_fname(fname) for fname in fnames]
-        new._init_from_instances(echoes, **attributes)
-
-    @classmethod
-    def from_fnames(cls, fnames, **attributes):
-        new = cls.__new__(cls)
-        new._init_from_fnames(fnames, **attributes)
-        return new
-
-    def _init_from_maps(new, fs, **attributes):
-        if isinstance(fs, (list, tuple)):
-            echoes = [GradientEchoSingle.from_mapped(f) for f in fs]
-        else:
-            ne = fs.shape[-1]
-            echoes = [GradientEchoSingle.from_mapped(fs[..., i])
-                      for i in range(ne)]
-        new._init_from_instances(echoes, **attributes)
-
-    @classmethod
-    def from_maps(cls, fs, **attributes):
-        new = cls.__new__(cls)
-        new._init_from_maps(fs, **attributes)
-        return new
+    def _init_from_mapped(new, fs, **attributes):
+        echoes = [GradientEchoSingle.from_mapped(f) for f in fs]
+        new._init_from_instance(echoes, **attributes)
 
     def echo(self, index):
         volume = self.volume[index, ...]

@@ -1089,13 +1089,13 @@ class CatArray(MappedArray):
                     # we haven't found the volume yet
                     nb_pre += self._arrays[i].shape[self._dim_cat]
                     continue
-                if i > index_cat:
-                    # we've passed the volume
-                    i = i - 1
-                    nb_pre -= self._arrays[i].shape[self._dim_cat]
-                index_cat = index_cat - nb_pre
-                index[map_dim_cat] = index_cat
-                return self._arrays[i].slice(tuple(index), new_shape)
+                break
+            if nb_pre > index_cat:
+                i = i - 1
+                nb_pre -= self._arrays[i].shape[self._dim_cat]
+            index_cat = index_cat - nb_pre
+            index[map_dim_cat] = index_cat
+            return self._arrays[i].slice(tuple(index), new_shape)
 
         # else, we may have to drop some volumes and slice the others
         assert is_sliceaxis(index_cat), "This should not happen"
