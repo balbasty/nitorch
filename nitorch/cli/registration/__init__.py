@@ -1,3 +1,4 @@
+from . import affreg
 from . import autoreg
 from . import compose
 from . import orient

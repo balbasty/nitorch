@@ -130,7 +130,7 @@ usage:
 @@fix/mov options:
     *FILES must be one or several filenames, which will be concatenated 
     across the channel dimension.
-    -o, --output [PATH]             Path to the output with minimal reslicing: [True={base}.registered.{ext}]
+    -o, --output [PATH]             Path to the output with minimal reslicing: [True={base}.moved.{ext}]
     -r, --resliced [PATH]           Path to the output resliced to the other image's space: [False], True={base}.resliced.{ext}
     -b, --bound BND                 Boundary conditions [dct2]
     -n, --order N                   Interpolation order [1]
@@ -327,7 +327,7 @@ weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
                            default=None, convert=number_or_str(float),
                            help='Weight (= precision) or the loss.')
 patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=10,
-                          convert=number_or_str(int), help='Patch size')
+                          convert=number_or_str(float), help='Patch size')
 stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
                            convert=int, help='Strides between patches.')
 cluster_option = cli.Option('bins', ('-b', '--bins'), nargs=1, default=6,
@@ -374,7 +374,7 @@ loss.add_suboption('lgmm', iter_option)
 file = cli.Group('file', n=1, help='Volume to register')
 file.add_positional('files', nargs='1*', help='File names')
 file.add_option('output', ('-o', '--output'), nargs='?',
-                default='{dir}{sep}{base}.registered{ext}',
+                default='{dir}{sep}{base}.moved{ext}',
                 convert=bool_or_str,
                 help='Path to the output with minimal reslicing')
 file.add_option('resliced', ('-r', '--resliced'), nargs='?',
