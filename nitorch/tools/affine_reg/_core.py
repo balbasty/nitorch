@@ -2,8 +2,7 @@
 
 """
 import numpy as np
-from scipy.optimize.optimize import _minimize_powell
-from scipy.optimize._constraints import Bounds
+from scipy.optimize import minimize, Bounds
 import torch
 from torch.nn import functional as F
 from nitorch.plot import show_slices
@@ -135,18 +134,18 @@ def _do_optimisation(q, args, s, opt):
             # Ensure that the parameters have zero mean, across images.
             callback = lambda x: _zero_mean(x, q_shape)
         # Do optimisation
-        res = _minimize_powell(_compute_cost, q, args,
-            disp=False, callback=callback, direc=direc, bounds=bounds)
+        res = minimize(_compute_cost, q, args, method='Powell',
+                       callback=callback, bounds=bounds,
+                       options=dict(disp=False, direc=direc))
         q = res['x']
     # Cast back to tensor
     q = q.reshape(q_shape)
     q = torch.from_numpy(q).to(device)
-    from scipy.optimize._minimize import standardize_bounds
     return q
 
 
 def _fit_q(q, dat_fix, grid, mat_fix, dat, mat, mov, B, s, opt):
-    '''Fit q, either by pairwise or groupwise optimisation.
+    """Fit q, either by pairwise or groupwise optimisation.
 
     Parameters
     ----------
@@ -178,7 +177,7 @@ def _fit_q(q, dat_fix, grid, mat_fix, dat, mat, mov, B, s, opt):
     args : tuple
         All arguments for optimiser (except the parameters to be fitted (q))
 
-    '''
+    """
     if opt['cost_fun'] in _costs_edge:  # Groupwise optimisation
         # Arguments to _compute_cost
         m = mov
