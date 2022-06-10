@@ -19,6 +19,15 @@ except ImportError:
 #   (see torchvision.extension)
 
 
+# inform and check backend
+from ._C import COMPILED_BACKEND as compiled_backend
+from os import environ as _env
+if compiled_backend != 'C' and int(_env.get('NI_CHECK_BACKEND', '1')):
+    import logging
+    logging.warning(f'nitorch uses its non-compiled backend '
+                    f'({compiled_backend}). Some algorithms may be slow.')
+
+
 from . import cli
 from . import core
 from . import io
@@ -30,5 +39,3 @@ from . import vb
 
 from . import _version
 __version__ = _version.get_versions()['version']
-
-from ._C import COMPILED_BACKEND as compiled_backend

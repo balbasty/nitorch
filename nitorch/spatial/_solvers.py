@@ -41,8 +41,8 @@ All functions are implemented in a "field" (for vector fields) or "grid"
 import torch
 import math
 import gc
-from nitorch.core import utils, py
-from nitorch.core import optim as optimizers
+from nitorch import compiled_backend
+from nitorch.core import utils, py, optim as optimizers
 from nitorch.core.linalg import sym_matvec, sym_solve
 from ._grid import grid_pull, grid_push
 from ._regularisers import (absolute, membrane, bending,
@@ -51,8 +51,10 @@ from ._regularisers import (absolute, membrane, bending,
                             absolute_diag, membrane_diag, bending_diag,
                             regulariser_grid_kernel, regulariser_kernel)
 from ._spconv import spconv
-from nitorch.core.optionals import try_import_as
-c_solvers = try_import_as('nitorch._C.solve')
+if compiled_backend == 'C':
+    import nitorch._C.solve as c_solvers
+else:
+    c_solvers = None
 
 # TODO:
 #   - implement separable prolong/restrict (with torchscript?)

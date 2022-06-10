@@ -35,14 +35,16 @@ These functions are not yet implemented for the other regularisers (WIP).
 """
 
 import torch
-from nitorch import core
+from nitorch import core, compiled_backend
 from nitorch.core.utils import movedim, make_vector, unsqueeze, fast_movedim
 from nitorch.core.py import ensure_list
 from ._finite_differences import diff, div, diff1d, div1d
 from ._spconv import spconv
 import itertools
-from nitorch.core.optionals import try_import_as
-c_solvers = try_import_as('nitorch._C.solve')
+if compiled_backend == 'C':
+    import nitorch._C.solve as c_solvers
+else:
+    c_solvers = None
 
 
 def _mul_(x, y):
