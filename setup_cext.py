@@ -54,6 +54,8 @@ def torch_version(astuple=True):
 
 
 def torch_cuda_version(astuple=True):
+    if not torch.cuda.is_available():
+        return None
     version = torch.version.cuda.split('.')
     version = tuple(int(v) for v in version)
     if len(version) == 2:
@@ -64,6 +66,8 @@ def torch_cuda_version(astuple=True):
 
 
 def torch_cudnn_version(astuple=True):
+    if not torch.cuda.is_available():
+        return None
     version = torch.backends.cudnn.version()
     version = (version//1000, version//100 % 10, version % 100)
     if not astuple:
@@ -171,6 +175,9 @@ def torch_include_dirs(use_cuda=False, use_cudnn=False):
 
 
 def cuda_check():
+    if not torch.cuda.is_available():
+        print('PyTorch was not compiled with CUDA. Compiling for CPU only.')
+        return False
     local_version = cuda_version()
     torch_version = torch_cuda_version()
     ok = (local_version[0] == torch_version[0] and

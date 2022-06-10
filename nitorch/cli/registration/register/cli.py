@@ -460,7 +460,7 @@ def _patch(patch, affine, shape, level):
     patch = py.make_list(patch, dim)
     unit = unit.lower()
     if unit[0] == 'v':  # voxels
-        patch = [p / 2**level for p in patch]
+        patch = [float(p) / 2**level for p in patch]
     elif unit in ('m', 'mm', 'cm', 'um'):  # assume RAS orientation
         factor = (1e-3 if unit == 'um' else
                   1e1 if unit == 'cm' else
@@ -970,7 +970,7 @@ def _main(options):
         matplotlib.use('TkAgg')
 
     # local losses may benefit from selecting the best conv
-    torch.backends.cudnn.enabled = True
+    torch.backends.cudnn.enabled = False
     torch.backends.cudnn.benchmark = True
 
     # ------------------------------------------------------------------

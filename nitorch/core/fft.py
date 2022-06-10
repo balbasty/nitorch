@@ -363,7 +363,7 @@ def rfftfreq(n, d=1.0, *,
 
 
 if _torch_has_fft_module:
-    fft = lambda *a, real=None, **k: fft_mod(*a, **k)
+    fft = lambda *a, real=None, **k: fft_mod.fft(*a, **k)
 else:
     def fft(input, n=None, dim=-1, norm='backward', real=None):
         """One dimensional discrete Fourier transform.
@@ -399,9 +399,6 @@ else:
             contain the real and imaginary parts of the signal.
 
         """
-        if _torch_has_fft_module:
-            return fft_mod.fft(input, n, dim, norm=norm)
-
         # Make real and move processed dimension to the right
         if _torch_has_complex:
             input = utils.movedim(input, dim, -1)
@@ -487,9 +484,6 @@ else:
             contain the real and imaginary parts of the signal.
 
         """
-        if _torch_has_fft_module:
-            return fft_mod.fftn(input, s, dim, norm=norm)
-
         # Output shape
         oldcomplex = not (real or _torch_has_complex)
         if dim:
@@ -551,7 +545,7 @@ else:
 
 
 if _torch_has_fft_module:
-    ifft = lambda *a, real=None, **k: fft_mod(*a, **k)
+    ifft = lambda *a, real=None, **k: fft_mod.ifft(*a, **k)
 else:
     def ifft(input, n=None, dim=-1, norm='backward', real=None):
         """One dimensional discrete inverse Fourier transform.

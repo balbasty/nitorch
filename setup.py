@@ -63,7 +63,7 @@ if COMPILED_BACKEND.upper() == 'C':
     if '.'.join(torch_version[:2]) == '1.7':
         torch_version = '.'.join(torch_version[:3])  # we need the patch
     else:
-        torch_version = '.'.join(torch_version[:2])
+        torch_version = '.'.join(torch_version[:3])
     PYTORCH_TARGET = os.environ.get('NI_PYTORCH_TARGET', '')
     SETUP_KWARGS['ext_package'] = 'nitorch'
     SETUP_KWARGS['ext_modules'] = prepare_extensions()

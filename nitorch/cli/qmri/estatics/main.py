@@ -71,8 +71,6 @@ def _main(options):
     estatics_opt.backend.device = device
     estatics_opt.optim.nb_levels = options.levels
     estatics_opt.optim.max_iter_rls = options.iter
-    estatics_opt.optim.max_ls_dist = options.search
-    estatics_opt.optim.max_ls_prm = options.search
     estatics_opt.optim.tolerance = options.tol
     estatics_opt.regularization.norm = options.regularization
     estatics_opt.regularization.factor = [*options.lam_intercept, options.lam_decay]
@@ -103,12 +101,12 @@ def _main(options):
                     delta = delta * 1e-3
                 elif unit not in ('s', 'sec'):
                     raise ValueError(f'echo spacing unit: {unit}')
-                ne = len(c.echoes)
+                ne = sum(io.map(f).unsqueeze(-1).shape[3] for f in c.echoes)
                 te = [te[0] + e*delta for e in range(ne)]
             meta['te'] = te
 
         # map volumes
-        contrasts.append(qio.GradientEchoMulti.from_fnames(c.echoes, **meta))
+        contrasts.append(qio.GradientEchoMulti.from_fname(c.echoes, **meta))
 
         if c.readout:
             layout = spatial.affine_to_layout(contrasts[-1].affine)

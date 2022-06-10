@@ -49,6 +49,7 @@ def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
 
     corr = mean(moving*fixed)
     corr2 = 1 - corr.square()
+    corr2.clamp_min_(1e-8)
 
     out = []
     if grad:
@@ -186,7 +187,7 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
     fixed_std.clamp_min_(1e-5)
     std2 = moving_std * fixed_std
     corr = div_(corr.addcmul_(moving_mean, fixed_mean, value=-1), std2)
-    corr2 = corr.square().neg_().add_(1)
+    corr2 = corr.square().neg_().add_(1).clamp_min_(1e-8)
 
     out = []
     if grad or hess:

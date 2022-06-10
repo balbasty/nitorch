@@ -1,10 +1,111 @@
 import torch
-from nitorch.core import py, utils
+from nitorch.core import py, utils, fft
 from nitorch import spatial
 from nitorch.tools.img_statistics import estimate_noise
 from typing import Optional
 from torch import Tensor
 import math as pymath
+
+
+def _laplacian_freq(shape, **backend):
+    """
+    Compute Fourier squared frequency on the lattice and its inverse.
+    """
+    dim = len(shape)
+    shape = torch.as_tensor(shape, **backend)
+    g = spatial.identity_grid(shape, **backend)
+    g -= shape // 2
+    g /= shape
+    g = g.square_().sum(-1)
+    if fft._torch_has_old_fft:
+        g = g.unsqueeze(-1)
+    g = fft.ifftshift(g, dim=list(range(dim)))
+    ig = g.reciprocal()
+    ig[(0,) * dim] = 0
+    return g, ig
+
+
+def _laplacian_filter(phase, freq, dims):
+    """
+    Assumes ifftshift has been applied to phase and freq.
+    Eq (5) from Schofield and Zhu.
+    """
+    g, ig = freq
+
+    s = phase.sin()
+    c = phase.cos()
+
+    fft_ = lambda x: fft.fftn(x, dim=dims)
+    ifft_ = lambda x: fft.ifftn(x, dim=dims)
+
+    phase = ifft_(fft_(s).mul_(g)).mul_(c)
+    phase -= ifft_(fft_(c).mul_(g)).mul_(s)
+    phase = ifft_(fft_(phase).mul_(ig))
+    phase = fft.real(phase)
+
+    return phase
+
+
+def unwrap(phase, dim=None, bound='dct2', max_iter=0, tol=1e-5):
+    """Laplacian unwrapping of the phase
+
+    Parameters
+    ----------
+    phase : tensor
+        Wrapped phase, in radian
+    dim : int, default=phase.dim()
+        Number of spatial dimensions
+    max_iter : int, default=0
+        Maximum number of unwrapping iterations.
+        If 0, return the Laplacian filtered phase, which is not exactly
+        equal to the input phase modulo 2 pi.
+    tol : float, default=1e-5
+        Tolerance for early stopping
+
+
+    Returns
+    -------
+    unwrapped : tensor
+
+    References
+    ----------
+    .. "Fast phase unwrapping algorithm for interferometric applications"
+       Marvin A. Schofield and Yimei Zhu
+       Optics Letters (2003)
+
+    """
+    # TODO: would be nice to use DCT/DST rather than padding once they
+    #       are available in PyTorch.
+
+    dim = dim or phase.dim()
+    dims = list(range(-dim, 0))
+    shape = bigshape = phase.shape[-dim:]
+
+    if bound not in ('dct', 'circulant'):
+        phase = utils.pad(phase, [d//2 for d in shape], side='both', mode=bound)
+        bigshape = phase.shape[-dim:]
+
+    freq = _laplacian_freq(bigshape, **utils.backend(phase))
+    phase = fft.ifftshift(phase, dim=dims)
+    twopi = 2 * pymath.pi
+
+    if max_iter == 0:
+        phase = _laplacian_filter(phase, freq, dims)
+    else:
+        for n_iter in range(1, max_iter+1):
+            filtered_phase = _laplacian_filter(phase, freq, dims)
+            filtered_phase.sub_(phase).div_(twopi).round_().mul_(twopi)
+            phase += filtered_phase
+
+            if n_iter < max_iter and filtered_phase.mean() < tol:
+                break
+
+    phase = fft.fftshift(phase, dim=dims)
+
+    if bound not in ('dct', 'circulant'):
+        slicer = [slice(d//2, d+d//2) for d in shape]
+        phase = phase[(Ellipsis, *slicer)]
+    return phase
 
 
 def mean_phase(phase, weight=None):
