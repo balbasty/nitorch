@@ -1,5 +1,4 @@
 import torch
-from nitorch.core import utils, py
 from nitorch import spatial
 from ..registration import losses, phantoms
 
@@ -12,24 +11,18 @@ def denoise(image=None, lam=1, max_iter=64, sub_iter=32, optim='relax',
 
     Parameters
     ----------
-    image : (..., K, *spatial) tensor
-        Image to denoise with K channels
-    lam : float, default=1
-        Regularisartion factor
-    max_iter : int, default=64
-        Number of RLS iterations
-    sub_iter : int, default=32
-        Number of relaxation/cg iterations per RLS iteration
+    image : (..., K, *spatial) tensor, Image to denoise with K channels
+    lam : [list of] float, default=1, Regularisation factor
+    max_iter : int, default=64, Number of RLS iterations
+    sub_iter : int, default=32, Number of relaxation/cg iterations
     optim : {'cg', 'relax'}, default='relax'
     plot : bool, default=False
-    jtv : bool, default=True
-        Joint regularisation across channels ($\ell_{1,2}$ norm)
+    jtv : bool, default=True, Joint TV across channels ($\ell_{1,2}$)
     dim : int, default=image.dim()-1
 
     Returns
     -------
-    denoised : (..., K, *spatial) tensor
-        Denoised image
+    denoised : (..., K, *spatial) tensor, Denoised image
 
     """
 

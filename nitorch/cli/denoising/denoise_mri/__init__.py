@@ -1,1 +1,1 @@
-from nitorch.cli.denoise.denoise_mri.main import denoise_mri
+from nitorch.cli.denoising.denoise_mri.main import denoise_mri

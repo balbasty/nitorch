@@ -1,5 +1,5 @@
 
-from . import denoise
+from . import denoising
 from . import misc
 from . import qmri
 from . import segmentation
