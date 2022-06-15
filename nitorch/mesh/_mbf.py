@@ -504,6 +504,9 @@ def voxelize_rois(rois, shape, roi_to_vox=None, device=None):
             if roi_to_vox is not None:
                 vertices = spatial.affine_matvec(roi_to_vox, vertices)
             z = math.round(vertices[0, 2]).int().item()
+            if not (0 <= z < out.shape[-1]):
+                print('Contour not in FOV. Skipping it...')
+                continue
             vertices = vertices[:, :2]
             faces = [(i, i+1 if i+1 < len(vertices) else 0)
                      for i in range(len(vertices))]
