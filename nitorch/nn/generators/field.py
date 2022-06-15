@@ -575,7 +575,7 @@ class HyperRandomFieldSpline(_HyperRandomField):
 class RandomMultiplicativeField(Module):
     """Exponentiated random field with fixed hyper-parameters."""
 
-    def __init__(self, mean=0, amplitude=1, fwhm=5, device=None, dtype=None,
+    def __init__(self, mean=1, amplitude=1, fwhm=5, device=None, dtype=None,
                  sigmoid=False):
         """
         The geometry of a random field is controlled by three parameters:
@@ -585,8 +585,8 @@ class RandomMultiplicativeField(Module):
 
         Parameters
         ----------
-        mean : float or (channel,) vector_like, default=0
-            Log-Mean value.
+        mean : float or (channel,) vector_like, default=1
+            Mean value.
         amplitude : float or (channel,) vector_like, default=1
             Amplitude of the squared-exponential kernel.
         fwhm : float or (channel,) vector_like, default=5
@@ -598,6 +598,7 @@ class RandomMultiplicativeField(Module):
         """
 
         super().__init__()
+        mean = mean.log() if torch.is_tensor(mean) else math.log(mean)
         self.field = RandomFieldSpline(mean=mean, amplitude=amplitude,
                                        fwhm=fwhm, device=device, dtype=dtype)
         self.sigmoid = sigmoid
@@ -628,7 +629,7 @@ class HyperRandomMultiplicativeField(Module):
     """Exponentiated random field with randomized hyper-parameters."""
 
     def __init__(self,
-                 mean=None, mean_exp=0, mean_scale=1,
+                 mean=None, mean_exp=1, mean_scale=0.1,
                  amplitude='lognormal', amplitude_exp=1, amplitude_scale=10,
                  fwhm='lognormal', fwhm_exp=5, fwhm_scale=2,
                  sigmoid=False, device=None, dtype=None):
@@ -646,9 +647,9 @@ class HyperRandomMultiplicativeField(Module):
 
         Parameters
         ----------
-        mean : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
-        mean_exp : float or (channel,) vector_like, default=0
-        mean_scale : float or (channel,) vector_like, default=0
+        mean : {'normal', 'lognormal', 'uniform', 'gamma'}, optional
+        mean_exp : float or (channel,) vector_like, default=1
+        mean_scale : float or (channel,) vector_like, default=0.1
         amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
         amplitude_exp : float or (channel,) vector_like, default=1
         amplitude_scale : float or (channel,) vector_like, default=10
@@ -710,6 +711,7 @@ class HyperRandomMultiplicativeField(Module):
             mean1 = mean.sample()
             amplitude1 = amplitude.sample()
             fwhm1 = fwhm.sample()
+            print('bias:', mean1.item(), amplitude1.item(), fwhm1.item())
 
             sampler = RandomMultiplicativeField(mean1, amplitude1, fwhm1,
                                                 dtype=dtype, device=device,

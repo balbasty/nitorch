@@ -10,7 +10,7 @@ from .distribution import _get_dist
 class RandomBiasFieldTransform(Module):
     """Apply a random multiplicative bias field to an image."""
 
-    def __init__(self, mean=0, amplitude=1, fwhm=5, sigmoid=False):
+    def __init__(self, mean=1, amplitude=1, fwhm=48, sigmoid=False):
         """
         The geometry of a random field is controlled by three parameters:
             - `mean` controls the expected value of the field.
@@ -23,7 +23,7 @@ class RandomBiasFieldTransform(Module):
             Log-Mean value.
         amplitude : float or (channel,) vector_like, default=1
             Amplitude of the squared-exponential kernel.
-        fwhm : float or (channel,) vector_like, default=5
+        fwhm : float or (channel,) vector_like, default=48
             Full-width at Half Maximum of the squared-exponential kernel.
         """
         super().__init__()
@@ -59,9 +59,9 @@ class HyperRandomBiasFieldTransform(Module):
     """
 
     def __init__(self,
-                 mean=None, mean_exp=0, mean_scale=1,
+                 mean=None, mean_exp=1, mean_scale=0.1,
                  amplitude='lognormal', amplitude_exp=1, amplitude_scale=10,
-                 fwhm='lognormal', fwhm_exp=5, fwhm_scale=2, sigmoid=False):
+                 fwhm='lognormal', fwhm_exp=48, fwhm_scale=16, sigmoid=False):
         """
         The geometry of a random field is controlled by three parameters:
             - `mean` controls the expected value of the field.
@@ -76,15 +76,15 @@ class HyperRandomBiasFieldTransform(Module):
 
         Parameters
         ----------
-        mean : {'normal', 'lognormal', 'uniform', 'gamma'}, default='normal'
-        mean_exp : float or (channel,) vector_like, default=0
-        mean_scale : float or (channel,) vector_like, default=0
+        mean : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
+        mean_exp : float or (channel,) vector_like, default=1
+        mean_scale : float or (channel,) vector_like, default=0.1
         amplitude : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
         amplitude_exp : float or (channel,) vector_like, default=1
         amplitude_scale : float or (channel,) vector_like, default=10
         fwhm : {'normal', 'lognormal', 'uniform', 'gamma'}, default='lognormal'
-        fwhm_exp : float or (channel,) vector_like, default=5
-        fwhm_scale : float or (channel,) vector_like, default=2
+        fwhm_exp : float or (channel,) vector_like, default=48
+        fwhm_scale : float or (channel,) vector_like, default=16
         """
         super().__init__()
         self.bias = field.HyperRandomMultiplicativeField(
@@ -302,6 +302,7 @@ class RandomChiNoise(Module):
             tmp[:, 2*ncoils + 1 >= n + 1, ...] = 0
             noise += tmp
         noise = noise.sqrt_()
+        noise /= ncoils
 
         if gfactor is not None:
             noise *= gfactor
@@ -332,6 +333,7 @@ class HyperRandomChiNoise(Module):
         for b in range(len(x)):
             sigma = self.sigma(self.sigma_exp, self.sigma_scale, **utils.backend(x)).sample().clamp_min_(0)
             ncoils = self.ncoils(self.ncoils_exp, self.ncoils_exp, device=x.device).sample().clamp_min_(1)
+            print('chi:', sigma.item(), ncoils.item())
             sampler = RandomChiNoise(sigma, ncoils)
             if gfactor is not None and gfactor.dim() == x.dim():
                 gfactor1 = gfactor[b]
