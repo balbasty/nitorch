@@ -1,7 +1,7 @@
 from nitorch.cli.cli import commands
 from .parser import parser_fit, parser_apply, help, ParseError
 from nitorch.tools.registration.topup import topup_fit, topup_apply
-from nitorch.tools.registration.losses import MSE, NCC, LNCC
+from nitorch.tools.registration.losses import MSE, NCC, LNCC, LGMMH, GMMH
 from nitorch.tools.img_statistics import estimate_noise
 from nitorch import io, spatial
 from nitorch.core import py, utils
@@ -245,6 +245,16 @@ def main_fit(options):
             loss = MSE(lam=1/(sd*sd), dim=dim)
         elif options.loss == 'lncc':
             loss = LNCC(dim=dim, patch=kernel)
+        elif options.loss == 'lgmm':
+            if options.bins == 1:
+                loss = LNCC(dim=dim, patch=kernel)
+            else:
+                loss = LGMMH(dim=dim, patch=kernel, bins=options.bins)
+        elif options.loss == 'gmm':
+            if options.bins == 1:
+                loss = NCC(dim=dim)
+            else:
+                loss = GMMH(dim=dim, bins=options.bins)
         else:
             loss = NCC(dim=dim)
 

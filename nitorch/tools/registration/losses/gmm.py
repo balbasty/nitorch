@@ -144,8 +144,6 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     # drop unused variables
     get = gmmfit.get if return_theta else gmmfit.pop
     pop = gmmfit.pop
-    pop('idet', None)
-    pop('resp_entropy', None)
 
     z = pop('resp')
     moving_mean = get('xmean')
@@ -163,6 +161,8 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
     if grad:
         z0 = fwd(z, None).clamp_min_(1e-10)
 
+        # gradient of the GMM entropy
+        # L = 0.5 * \sum_k pi_k log|\Sigma_k| + cte
         @torch.jit.script
         def make_grad(bwd: Bwd, z, z0, moving, fixed, moving_mean, fixed_mean,
                       moving_var, fixed_var, corr, prior) -> Tensor:
@@ -251,8 +251,6 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
     # drop unused variables
     get = gmmfit.get if return_theta else gmmfit.pop
     pop = gmmfit.pop
-    pop('idet', None)
-    pop('resp_entropy', None)
 
     z = pop('resp')
     if mask is not None:

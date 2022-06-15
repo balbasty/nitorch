@@ -54,7 +54,12 @@ def _cli(args):
 
 
 def _map_image(fnames, dim=None):
-    """Load a N-D image from disk"""
+    """
+    Load a N-D image from disk.
+    Returns:
+        image : (C, *spatial) MappedTensor
+        affine: (D+1, D+1) tensor
+    """
     affine = None
     imgs = []
     for fname in fnames:
@@ -79,7 +84,13 @@ def _map_image(fnames, dim=None):
 
 
 def _load_image(fnames, dim=None, device=None, label=False):
-    """Load a N-D image from disk"""
+    """
+    Load a N-D image from disk
+    Returns:
+        dat : (C, *spatial) MappedTensor
+        mask : (C, *spatial) MappedTensor
+        affine: (D+1, D+1) tensor
+    """
     dat, affine = _map_image(fnames, dim)
     if label:
         dtype = dat.dtype
@@ -103,7 +114,7 @@ def _load_image(fnames, dim=None, device=None, label=False):
 
 
 def _rescale_image(dat, quantiles):
-    """Rescale an image based on two quantiles"""
+    """Rescale an image between (0, 1) based on two quantiles"""
     dim = dat.dim() - 1
     if not isinstance(quantiles, (list, tuple)):
         quantiles = [quantiles]
@@ -123,7 +134,11 @@ def _rescale_image(dat, quantiles):
 
 
 def _discretize_image(dat, nbins=256):
-    """Discretize an image into a number of bins"""
+    """
+    Discretize an image into a number of bins
+    Input : (C, *spatial) tensor[float]
+    Returns: (C, *spatial) tensor[long]
+    """
     dim = dat.dim() - 1
     mn, mx = utils.quantile(dat, (0.0005, 0.9995), dim=range(-dim, 0), keepdim=True).unbind(-1)
     dat = dat.sub_(mn).div_(mx - mn).clamp_(0, 1).mul_(nbins-1)
@@ -132,7 +147,11 @@ def _discretize_image(dat, nbins=256):
 
 
 def _soft_quantize_image(dat, nbins=16):
-    """Discretize an image into a number of bins"""
+    """
+    Discretize an image into a number of bins
+    Input : (1, *spatial) tensor[float]
+    Returns: (C, *spatial) tensor[long]
+    """
     dim = dat.dim() - 1
     dat = dat[0]
     mn, mx = utils.quantile(dat, (0.0005, 0.9995), dim=range(-dim, 0), keepdim=True).unbind(-1)
@@ -147,7 +166,10 @@ def _soft_quantize_image(dat, nbins=16):
 
 
 def _make_image(option, dim=None, device=None):
-    """Return an ImagePyramid object"""
+    """
+    Load an image and build a Gaussian pyramid (if requireD)
+    Returns: ImagePyramid
+    """
     dat, mask, affine = _load_image(option.files, dim=dim, device=device,
                                     label=option.label)
     dim = dat.dim() - 1
@@ -220,10 +242,12 @@ def _make_image(option, dim=None, device=None):
 
 
 def _almost_identity(aff):
+    """Return True if an affine is almost the identity matrix"""
     return torch.allclose(aff, torch.eye(*aff.shape, **utils.backend(aff)))
 
 
 def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=None):
+    """Warp and save the moving and fixed images from a loss object"""
 
     if not (option.mov.output or option.mov.resliced or
             option.fix.output or option.fix.resliced):
@@ -395,6 +419,7 @@ def setup_device(device, ndevice):
 
 
 def _get_loss(loss, dim):
+    """Instantiate the correct loss object based on a loss name"""
     if loss.name == 'mi':
         lossobj = losses.MI(bins=loss.bins, norm=loss.norm,
                             spline=loss.order, fwhm=loss.fwhm, dim=dim)
@@ -446,12 +471,14 @@ def _get_loss(loss, dim):
 
 
 def _ras_to_layout(x, affine):
+    """Guess layout (e.g. "RAS") from an affine matrix"""
     layout = spatial.affine_to_layout(affine)
     ras_to_layout = layout[..., 0]
     return [x[i] for i in ras_to_layout]
 
 
 def _patch(patch, affine, shape, level):
+    """Compute the patch size in voxels"""
     dim = affine.shape[-1] - 1
     patch = py.make_list(patch)
     unit = 'pct'
@@ -475,8 +502,8 @@ def _patch(patch, affine, shape, level):
     else:
         raise ValueError('Unknown patch unit:', unit)
 
-    # ensure patch size is an integer >= 2 (else, no gradients)
-    patch = list(map(lambda x: max(int(pymath.ceil(x)), 2), patch))
+    # round down to zero small patch sizes
+    patch = [0 if p < 1e-3 else p for p in patch]
     return patch
 
 
@@ -520,6 +547,14 @@ def _pyramid_levels1(vx, shape, opt):
 
 
 def _pyramid_levels(vxs, shapes, opt):
+    """
+    Map global pyramid levels to per-image pyramid levels.
+
+    The idea is that we're trying to match resolutions as well as possible
+    across images at each global pyramid level. So we may be matching
+    the 3rd pyramid level of an image with the 5th pyramid level of another
+    image.
+    """
     dim = len(shapes[0])
     # first: compute approximate voxel size and shape at each level
     pyramids = [
@@ -565,6 +600,10 @@ def _pyramid_levels(vxs, shapes, opt):
 
 
 def _prepare_pyramid_levels(losses, opt, dim=None):
+    """
+    For each loss, compute the pyramid levels of `fix` and `mov` that
+    must be computed.
+    """
     if opt.name == 'none':
         return [{'fix': None, 'mov': None}] * len(losses)
 
@@ -720,12 +759,21 @@ def _do_register(loss_list, affine, nonlin,
     #       SEQUENTIAL PYRAMID
     # ------------------------------------------------------------------
     else:
-        n_level = len(loss_list)
-        for loss_level in loss_list:
+        n_level = nb_levels = len(loss_list)
+        if nonlin and n_level > 1:
+            vel_shape = nonlin.shape
+            nonlin = nonlin.downsample_(2**n_level)
+        while loss_list:
+            loss_level = loss_list.pop(0)
             n_level -= 1
             print('-' * line_size)
             print(f'   PYRAMID LEVEL {n_level}')
             print('-' * line_size)
+            if nonlin and nb_levels > 1:
+                if n_level == 0:
+                    nonlin.upsample_(shape=vel_shape, interpolation=3)
+                else:
+                    nonlin.upsample_()
             joptim.reset_state()
             register = pairwise.Register(loss_level, affine, nonlin, joptim,
                                          verbose=options.verbose,
@@ -733,18 +781,9 @@ def _do_register(loss_list, affine, nonlin,
             register.fit()
 
 
-def _main(options):
-    device = setup_device(*options.device)
+def _build_losses(options, pyramids, device):
     dim = 3
 
-    # ------------------------------------------------------------------
-    #                       COMPUTE PYRAMID
-    # ------------------------------------------------------------------
-    pyramids = _prepare_pyramid_levels(options.loss, options.pyramid, dim)
-
-    # ------------------------------------------------------------------
-    #                       BUILD LOSSES
-    # ------------------------------------------------------------------
     image_dict = {}
     loss_list = []
     for loss, pyramid in zip(options.loss, pyramids):
@@ -792,9 +831,10 @@ def _main(options):
                     lossobj, mov, fix, factor=factor, backward=True)
             loss_list.append(lossobj)
 
-    # ------------------------------------------------------------------
-    #                           BUILD AFFINE
-    # ------------------------------------------------------------------
+    return loss_list, image_dict
+
+
+def _build_affine(options, can_use_2nd_order):
     affine = []
     affine_optim = None
     if options.affine:
@@ -818,15 +858,16 @@ def _main(options):
             else:
                 max_iter = 100
         if options.affine.optim.name == 'unset':
-            if all(loss.loss.order >= 2 for loss in loss_list):
+            if can_use_2nd_order:
                 options.affine.optim.name = 'gn'
             else:
                 options.affine.optim.name = 'lbfgs'
         if options.affine.optim.name == 'gd':
             affine_optim = optim.GradientDescent(lr=options.affine.optim.lr)
         elif options.affine.optim.name == 'cg':
-            affine_optim = optim.ConjugateGradientDescent(lr=options.affine.optim.lr,
-                                                          beta=options.affine.optim.beta)
+            affine_optim = optim.ConjugateGradientDescent(
+                lr=options.affine.optim.lr,
+                beta=options.affine.optim.beta)
         elif options.affine.optim.name == 'mom':
             affine_optim = optim.Momentum(lr=options.affine.optim.lr,
                                           momentum=options.affine.optim.momentum)
@@ -841,10 +882,13 @@ def _main(options):
                                      auto_restart=options.affine.optim.restart)
         elif options.affine.optim.name == 'gn':
             affine_optim = optim.GaussNewton(lr=options.affine.optim.lr,
-                                             marquardt=getattr(options.affine.optim, 'marquardt', None))
+                                             marquardt=getattr(
+                                                 options.affine.optim,
+                                                 'marquardt', None))
         elif options.affine.optim.name == 'lbfgs':
             affine_optim = optim.LBFGS(lr=options.affine.optim.lr,
-                                       history=getattr(options.affine.optim, 'history', 100))
+                                       history=getattr(options.affine.optim,
+                                                       'history', 100))
             # TODO: tolerance?
         elif options.affine.optim.name == 'pow':
             affine_optim = optim.Powell(lr=options.affine.optim.lr)
@@ -856,9 +900,13 @@ def _main(options):
         affine_optim.iter = optim.OptimIterator(
             max_iter=max_iter, tol=options.affine.optim.tolerance)
 
-    # ------------------------------------------------------------------
-    #                           BUILD DENSE
-    # ------------------------------------------------------------------
+    return affine, affine_optim
+
+
+def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
+    dim = 3
+    device = next(iter(image_dict.values())).dat.device
+
     nonlin = None
     nonlin_optim = None
     if options.nonlin:
@@ -878,6 +926,7 @@ def _main(options):
         space = objects.MeanSpace(
             [image_dict[key] for key in (options.nonlin.fov or image_dict)],
             voxel_size=vx, vx_unit=vx_unit, pad=pad, pad_unit=pad_unit)
+        print(space)
         prm = dict(absolute=options.nonlin.absolute,
                    membrane=options.nonlin.membrane,
                    bending=options.nonlin.bending,
@@ -896,7 +945,7 @@ def _main(options):
             else:
                 max_iter = 50
         if options.nonlin.optim.name == 'unset':
-            if all(loss.loss.order >= 2 for loss in loss_list):
+            if can_use_2nd_order:
                 options.nonlin.optim.name = 'gn'
             else:
                 options.nonlin.optim.name = 'lbfgs'
@@ -959,6 +1008,36 @@ def _main(options):
         nonlin_optim.iter = optim.OptimIterator(
             max_iter=max_iter, tol=options.nonlin.optim.tolerance)
 
+    return nonlin, nonlin_optim
+
+
+def _main(options):
+    device = setup_device(*options.device)
+    dim = 3
+
+    # ------------------------------------------------------------------
+    #                       COMPUTE PYRAMID
+    # ------------------------------------------------------------------
+    pyramids = _prepare_pyramid_levels(options.loss, options.pyramid, dim)
+
+    # ------------------------------------------------------------------
+    #                       BUILD LOSSES
+    # ------------------------------------------------------------------
+    loss_list, image_dict = _build_losses(options, pyramids, device)
+
+    can_use_2nd_order = all(loss.loss.order >= 2 for loss in loss_list)
+
+    # ------------------------------------------------------------------
+    #                           BUILD AFFINE
+    # ------------------------------------------------------------------
+    affine, affine_optim = _build_affine(options, can_use_2nd_order)
+
+    # ------------------------------------------------------------------
+    #                           BUILD DENSE
+    # ------------------------------------------------------------------
+    nonlin, nonlin_optim = _build_nonlin(options, can_use_2nd_order,
+                                         affine, image_dict)
+
     if not affine and not nonlin:
         raise ValueError('At least one of @affine or @nonlin must be used.')
 
@@ -970,7 +1049,7 @@ def _main(options):
         matplotlib.use('TkAgg')
 
     # local losses may benefit from selecting the best conv
-    torch.backends.cudnn.enabled = False
+    torch.backends.cudnn.enabled = True
     torch.backends.cudnn.benchmark = True
 
     # ------------------------------------------------------------------

@@ -17,8 +17,11 @@ __all__ = ['local_mean', 'cache']
 # ----------------------------------------------------------------------
 #                           JIT UTILS
 # ----------------------------------------------------------------------
+USE_JIT = True
+jit_script = torch.jit.script if USE_JIT else (lambda f: f)
 
-@torch.jit.script
+
+@jit_script
 def pad_list_int(x: List[int], length: int) -> List[int]:
     """Pad a List[int] using its last value until it has length `length`."""
     x = x + x[-1:] * max(0, length-len(x))
@@ -26,7 +29,7 @@ def pad_list_int(x: List[int], length: int) -> List[int]:
     return x
 
 
-@torch.jit.script
+@jit_script
 def pad_list_float(x: List[float], length: int) -> List[float]:
     """Pad a List[float] using its last value until it has length `length`."""
     x = x + x[-1:] * max(0, length-len(x))
@@ -34,7 +37,7 @@ def pad_list_float(x: List[float], length: int) -> List[float]:
     return x
 
 
-@torch.jit.script
+@jit_script
 def list_any(x: List[bool]) -> bool:
     for elem in x:
         if elem:
@@ -42,7 +45,7 @@ def list_any(x: List[bool]) -> bool:
     return False
 
 
-@torch.jit.script
+@jit_script
 def list_all(x: List[bool]) -> bool:
     for elem in x:
         if not elem:
@@ -50,7 +53,7 @@ def list_all(x: List[bool]) -> bool:
     return True
 
 
-@torch.jit.script
+@jit_script
 def prod(x: List[int]) -> int:
     if len(x) == 0:
         return 1
@@ -66,7 +69,7 @@ def prod(x: List[int]) -> int:
 # We only use odd kernels, which simplifies some things when computing shapes
 
 
-@torch.jit.script
+@jit_script
 def conv_input_padding(kernel_size: List[int]):
     """Input padding -- mode 'same' """
     # assert k % 2 == 1
@@ -74,7 +77,7 @@ def conv_input_padding(kernel_size: List[int]):
     return pad
 
 
-@torch.jit.script
+@jit_script
 def convt_output_shape(input_shape: List[int],
                        kernel_size: List[int],
                        stride: List[int]) -> List[int]:
@@ -85,7 +88,7 @@ def convt_output_shape(input_shape: List[int],
     return oshape
 
 
-@torch.jit.script
+@jit_script
 def convt_output_padding(output_shape: List[int],
                          input_shape: List[int],
                          kernel_size: List[int],
@@ -96,7 +99,7 @@ def convt_output_padding(output_shape: List[int],
     return opad
 
 
-@torch.jit.script
+@jit_script
 def conv(x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
     """ND convolution (padding = 'same')
     x : (B, Ci, *inspatial) tensor
@@ -110,7 +113,7 @@ def conv(x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
     inp_channels = kernel.shape[-dim-2]
     if inp_channels == out_channels == 1:
         groups = x.shape[-dim-1]
-        kernel = kernel.expand([groups, 1] + kernel.shape[2:])
+        kernel = kernel.expand(torch.Size([groups, 1]) + kernel.shape[2:])
     else:
         groups = 1
     if dim == 1:
@@ -121,7 +124,7 @@ def conv(x: Tensor, kernel: Tensor, stride: List[int]) -> Tensor:
         return F.conv3d(x, kernel, stride=stride, groups=groups, padding=pad)
 
 
-@torch.jit.script
+@jit_script
 def conv_transpose(x: Tensor, kernel: Tensor, stride: List[int],
                    oshape: List[int]) -> Tensor:
     """ND transposed convolution (padding = 'same')
@@ -138,7 +141,7 @@ def conv_transpose(x: Tensor, kernel: Tensor, stride: List[int],
     inp_channels = kernel.shape[-dim-2]
     if inp_channels == out_channels == 1:
         groups = x.shape[-dim-1]
-        kernel = kernel.expand([groups, 1] + kernel.shape[2:])
+        kernel = kernel.expand(torch.Size([groups, 1]) + kernel.shape[2:])
     else:
         groups = 1
     ipad = conv_input_padding(kernel_size)
@@ -155,7 +158,7 @@ def conv_transpose(x: Tensor, kernel: Tensor, stride: List[int],
     return x
 
 
-@torch.jit.script
+@jit_script
 def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
     """Apply a [separable] convolution
     x : (B, C, *inspatial) tensor
@@ -174,7 +177,7 @@ def do_conv(x: Tensor, kernel: List[Tensor], stride: List[int]) -> Tensor:
     return x
 
 
-@torch.jit.script
+@jit_script
 def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
              oshape: List[int]) -> Tensor:
     """Apply a [separable] transposed convolution
@@ -191,7 +194,7 @@ def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
         for d, (k, s, z) in enumerate(zip(kernel, stride, oshape)):
             stride1: List[int] = [1] * dim
             stride1[d] = s
-            shape1: List[int] = x.shape[-dim:]
+            shape1: List[int] = list(x.shape[-dim:])
             shape1[d] = z
             x = conv_transpose(x, k, stride1, shape1)
     return x
@@ -202,7 +205,7 @@ def do_convt(x: Tensor, kernel: List[Tensor], stride: List[int],
 # ----------------------------------------------------------------------
 # We don't use padding with square patches
 
-@torch.jit.script
+@jit_script
 def patcht_output_shape(input_shape: List[int],
                         kernel_size: List[int],
                         stride: List[int]) -> List[int]:
@@ -211,7 +214,7 @@ def patcht_output_shape(input_shape: List[int],
     return oshape
 
 
-@torch.jit.script
+@jit_script
 def patcht_output_padding(output_shape: List[int],
                           input_shape: List[int],
                           kernel_size: List[int],
@@ -222,7 +225,7 @@ def patcht_output_padding(output_shape: List[int],
     return opad
 
 
-@torch.jit.script
+@jit_script
 def do_patch(x: Tensor, kernel_size: List[int], stride: List[int]) -> Tensor:
     """Convolution by a constant square kernel of shape `kernel_size`"""
     dim = x.dim() - 2
@@ -233,7 +236,7 @@ def do_patch(x: Tensor, kernel_size: List[int], stride: List[int]) -> Tensor:
     return x
 
 
-@torch.jit.script
+@jit_script
 def do_patcht(x: Tensor, kernel_size: List[int], stride: List[int],
               oshape: List[int]) -> Tensor:
     """Transposed convolution by a constant square kernel of shape `kernel_size`"""
@@ -260,7 +263,7 @@ def do_patcht(x: Tensor, kernel_size: List[int], stride: List[int],
 # ----------------------------------------------------------------------
 
 
-@torch.jit.script
+@jit_script
 def _local_mean_patch(
         x: Tensor,
         kernel_size: List[int],
@@ -276,19 +279,19 @@ def _local_mean_patch(
         if shape is None:
             shape = patcht_output_shape(x.shape[-dim:], kernel_size, stride)
         if mask is not None:
-            convmask = do_patch(mask, kernel_size, stride).clamp_min_(1e-5)
-            x = x / convmask
+            convmask = do_patch(mask, kernel_size, stride).clamp_min(1e-5)
+            x = x.div(convmask)
         x = do_patcht(x, kernel_size, stride, shape)
         if mask is not None:
-            x = x.mul_(mask)
+            x = x.mul(mask)
     # --- forward pass -------------------------------------------------
     else:
         if mask is not None:
-            x = x * mask
+            x = x.mul(mask)
         x = do_patch(x, kernel_size, stride)
         if mask is not None:
-            mask = do_patch(mask, kernel_size, stride).clamp_min_(1e-5)
-            x = x.div_(mask)
+            mask = do_patch(mask, kernel_size, stride).clamp_min(1e-5)
+            x = x.div(mask)
 
     return x
 
@@ -296,7 +299,7 @@ def _local_mean_patch(
 cache: Dict[str, Tensor] = {}
 
 
-@torch.jit.script
+@jit_script
 def _local_mean_conv(
         x: Tensor,
         fwhm: List[float],
@@ -312,13 +315,15 @@ def _local_mean_conv(
     kernel: List[Tensor] = []
     # Gaussian kernel (weighted mean)
     kernel_size = [int(math.ceil(k*3)) for k in fwhm]
-    kernel_size = [k + 1 - (k%2) for k in kernel_size]  # ensure odd
+    kernel_size = [k + 1 - (k % 2) if k else 0 for k in kernel_size]  # ensure odd
     sigma2 = [(f/2.355)**2 for f in fwhm]
     norm: Optional[Tensor] = None
     for d in range(dim):
+        if not kernel_size[d]:
+            continue
         k = torch.arange(kernel_size[d], dtype=x.dtype, device=x.device)
-        k -= kernel_size[d]//2
-        k = k.mul_(k).div_(-2*sigma2[d]).exp_()
+        k = k - kernel_size[d]//2
+        k = k.mul(k).div(-2*sigma2[d]).exp()
         for dd in range(d):
             k = k.unsqueeze(0)
         for dd in range(dim-d-1):
@@ -330,7 +335,7 @@ def _local_mean_conv(
             norm = norm * k
         kernel.append(k)
     if norm is not None:
-        norm = norm.sum().pow(1/dim)
+        norm = norm.sum().pow(1/len(kernel))
         for k in kernel:
             k.div_(norm)
 
@@ -348,36 +353,32 @@ def _local_mean_conv(
             if key not in cache:
                 convmask = torch.ones(shape, dtype=x.dtype, device=x.device)
                 convmask = convmask[None, None]
-                cache[key] = do_conv(convmask, kernel, stride).clamp_min_(1e-5)
+                cache[key] = do_conv(convmask, kernel, stride).clamp_min(1e-5)
             convmask = cache[key]
         else:
             convmask = torch.ones(shape, dtype=x.dtype, device=x.device)
             convmask = convmask[None, None]
-            convmask = do_conv(convmask, kernel, stride).clamp_min_(1e-5)
+            convmask = do_conv(convmask, kernel, stride).clamp_min(1e-5)
     else:
-        convmask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
+        convmask = do_conv(mask, kernel, stride).clamp_min(1e-5)
 
     # --- backward pass ------------------------------------------------
     if backward:
-        # if mask is not None:
-        # convmask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
-        x = x / convmask
+        x = x.div(convmask)
         x = do_convt(x, kernel, stride, shape)
         if mask is not None:
-            x = x.mul_(mask)
+            x = x.mul(mask)
     # --- forward pass -------------------------------------------------
     else:
         if mask is not None:
-            x = x * mask
+            x = x.mul(mask)
         x = do_conv(x, kernel, stride)
-        # if mask is not None:
-        # mask = do_conv(mask, kernel, stride).clamp_min_(1e-5)
-        x = x.div_(convmask)
+        x = x.div(convmask)
 
     return x
 
 
-@torch.jit.script
+@jit_script
 def pre_reshape(x, dim: int):
     nb_batch = x.dim() - (dim + 2)
     batch: List[int] = []
@@ -391,7 +392,7 @@ def pre_reshape(x, dim: int):
     return x, nb_batch, batch
 
 
-@torch.jit.script
+@jit_script
 def post_reshape(x, nb_batch: int, batch: List[int]):
     if len(batch) > 0:
         x = x.reshape(batch + x.shape[1:])
@@ -401,7 +402,7 @@ def post_reshape(x, nb_batch: int, batch: List[int]):
     return x
 
 
-@torch.jit.script
+@jit_script
 def local_mean(x: Tensor,
                kernel_fwhm: List[float],
                stride: Optional[List[int]] = None,

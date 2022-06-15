@@ -1,3 +1,5 @@
+import copy
+
 from nitorch import spatial
 from nitorch.core import py, utils, linalg
 from . import optim as optm
@@ -82,6 +84,7 @@ class TopUpFlexiStep:
                 grad_neg *= ijac
 
         g = ig = h = ih = None
+        state = self.loss.get_state()
         if grad and hess:
             ll, g, h = self.loss.loss_grad_hess(pos, neg, mask=self.mask)
             ill, ig, ih = self.loss.loss_grad_hess(neg, pos, mask=self.mask)
@@ -91,6 +94,8 @@ class TopUpFlexiStep:
         else:
             ll = self.loss.loss(pos, neg, mask=self.mask)
             ill = self.loss.loss(neg, pos, mask=self.mask)
+        if in_line_search:
+            self.loss.set_state(state)
 
         ll += ill
         ll /= 2

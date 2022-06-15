@@ -360,7 +360,7 @@ class InterleavedOptimIterator(OptimIterator):
             closure = self.closure
         optim = kwargs.get('optim', self.optim)
         loss_prev, loss_max = float('inf'), -float('inf')
-        outputs = param
+        outputs = [(p,) for p in param]
         for n_iter in range(1, self.max_iter+1):
             outputs0, outputs = outputs, []
             for opt, cls, out in zip(optim, closure, outputs0):
@@ -369,7 +369,7 @@ class InterleavedOptimIterator(OptimIterator):
                 outputs.append(out)
 
             # check convergence
-            loss = outputs[-1][0]
+            loss = outputs[-1][1]
             stop = abs(loss_prev-loss)
             if self.stop == 'gain':
                 denom = max(abs(loss_max-loss), 1e-9)

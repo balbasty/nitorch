@@ -834,3 +834,34 @@ def sym_inv(mat, diag=False):
                 imat[..., cnt] = vec[..., j]
                 cnt += 1
     return imat
+
+
+def sym_outer(x):
+    """Compute the symmetric outer product of a vector: x @ x.T
+
+    Parameters
+    ----------
+    x : (..., M)
+
+    Returns
+    -------
+    xx : (..., M*(M+1)//2)
+
+    """
+    M = x.shape[-1]
+    MM = M*(M+1)//2
+    xx = x.new_empty([*x.shape[:-1], MM])
+    if x.requires_grad:
+        xx[..., :M] = x.square()
+        index = M
+        for m in range(M):
+            for n in range(m+1, M):
+                xx[..., index] = x[..., m] * x[..., n]
+    else:
+        torch.mul(x, x, out=xx[..., :M])
+        index = M
+        for m in range(M):
+            for n in range(m+1, M):
+                torch.mul(x[..., m], x[..., n], out=xx[..., index])
+                index += 1
+    return xx

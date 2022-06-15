@@ -834,6 +834,16 @@ class Register:
                 print('-' * 74)
 
         step = RegisterStep(self.losses, self.affine, self.nonlin, self.verbose)
+
+        # initialize loss
+        verbose, self.verbose = self.verbose, False
+        if self.nonlin:
+            step.do_vel(self.nonlin.dat.dat, grad=False, hess=False)
+            step.do_affine(self.affine.dat.dat, grad=False, hess=False)
+        else:
+            step.do_affine_only(self.affine.dat.dat, grad=False, hess=False)
+        self.verbose = verbose
+
         step.framerate = self.framerate
         if self.affine and self.nonlin:
             # if isinstance(self.optim.optim[1], optm.FirstOrder):

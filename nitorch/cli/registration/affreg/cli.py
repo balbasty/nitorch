@@ -63,6 +63,8 @@ def _cli(args):
             options.optimizer = 'powell'
         else:
             options.optimizer = 'gn'
+    if options.output:
+        args += ['-o', options.output]
     args += ['@@optim', options.optimizer,
              '-n', options.max_iter,
              '-t', options.tolerance,

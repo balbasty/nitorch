@@ -17,6 +17,10 @@ class MeanSpace:
         self.affine = mat
         self.shape = shape
 
+    def __repr__(self):
+        vx = spatial.voxel_size(self.affine).tolist()
+        return f'{type(self).__name__}(shape={self.shape}, vx={vx})'
+
 
 class SpatialTensor:
     """Base class for tensors with an orientation"""
@@ -371,7 +375,10 @@ class ImagePyramid(ImageSequence):
             shape = dat.shape[-dim:]
             kernel_size = [min(2, s) for s in shape]
             if method[0] == 'g':  # gaussian pyramid
-                smooth = lambda x: spatial.smooth(x, fwhm=2, stride=2,
+                # We assume the original data has a PSF of 1 input voxel.
+                # We smooth by an additional 1-vx FWHM so that the data has a
+                # PSF of 2 input voxels == 1 output voxel, then subsample.
+                smooth = lambda x: spatial.smooth(x, fwhm=1, stride=2,
                                                   dim=dim, bound=bound)
             elif method[0] == 'a':  # average window
                 smooth = lambda x: spatial.pool(dim, x, kernel_size=kernel_size,
@@ -483,6 +490,40 @@ class Displacement(SpatialTensor, DenseTransform):
             kwargs.setdefault('affine', dat.affine)
             dat = dat.dat
         return cls(dat, **kwargs)
+
+    def downsample_(self, factor=2, **kwargs):
+        kwargs.setdefault('interpolation', 1)
+        kwargs.setdefault('bound', 'dft')
+        kwargs.setdefault('anchor', 'c')
+        factor = 1 / factor
+        self.dat, self.affine = spatial.resize_grid(
+            self.dat, factor, type='disp', affine=self.affine, **kwargs)
+        return self
+
+    def downsample(self, factor=2, **kwargs):
+        kwargs.setdefault('interpolation', 1)
+        kwargs.setdefault('bound', 'dft')
+        kwargs.setdefault('anchor', 'c')
+        factor = 1 / factor
+        dat, aff = spatial.resize_grid(self.dat, factor, type='displacement',
+                                       affine=self.affine, **kwargs)
+        return type(self)(dat, aff, dim=self.dim)
+
+    def upsample_(self, factor=2, **kwargs):
+        kwargs.setdefault('interpolation', 1)
+        kwargs.setdefault('bound', 'dft')
+        kwargs.setdefault('anchor', 'c')
+        self.dat, self.affine = spatial.resize_grid(
+            self.dat, factor, type='disp', affine=self.affine, **kwargs)
+        return self
+
+    def upsample(self, factor=2, **kwargs):
+        kwargs.setdefault('interpolation', 1)
+        kwargs.setdefault('bound', 'dft')
+        kwargs.setdefault('anchor', 'c')
+        dat, aff = spatial.resize_grid(self.dat, factor, type='displacement',
+                                       affine=self.affine, **kwargs)
+        return type(self)(dat, aff, dim=self.dim)
 
 
 class LogAffine(AffineTransform):
@@ -725,11 +766,6 @@ class NonLinModel:
         if isinstance(dat, SpatialTensor) and affine is None:
             affine = dat.affine
         self.dat = Displacement.make(dat, affine=affine, **backend)
-        if self.kernel is None:
-            self.kernel = spatial.greens(self.shape, **self.prm,
-                                         factor=self.factor / py.prod(self.shape),
-                                         voxel_size=self.voxel_size,
-                                         **utils.backend(self.dat))
         return self
 
     def make(self, model, **kwargs):
@@ -766,6 +802,24 @@ class NonLinModel:
     def greens_apply(self, m):
         return spatial.greens_apply(m, self.kernel, self.factor, self.voxel_size)
 
+    def downsample_(self, factor=2, **kwargs):
+        self.clear_cache()
+        self.dat.downsample_(factor, **kwargs)
+        return self
+
+    def downsample(self, factor=2, **kwargs):
+        dat = self.dat.downsample(factor, **kwargs)
+        return type(self)(dat, self.factor, self.prm, self.steps, self.kernel)
+
+    def upsample_(self, factor=2, **kwargs):
+        self.clear_cache()
+        self.dat.upsample_(factor, **kwargs)
+        return self
+
+    def upsample(self, factor=2, **kwargs):
+        dat = self.dat.upsample(factor, **kwargs)
+        return type(self)(dat, self.factor, self.prm, self.steps, self.kernel)
+
     def __repr__(self):
         s = []
         if self.dat is not None:
@@ -787,6 +841,18 @@ class ShootModel(NonLinModel):
         obj = object.__new__(ShootModel)
         obj.__init__(*args, **kwargs)
         return obj
+
+    def reset_kernel(self):
+        self.kernel = spatial.greens(self.shape, **self.prm,
+                                     factor=self.factor / py.prod(self.shape),
+                                     voxel_size=self.voxel_size,
+                                     **utils.backend(self.dat))
+        return self
+
+    def set_dat(self, dat, affine=None, **backend):
+        super().set_dat(dat, affine, **backend)
+        self.reset_kernel()
+        return self
 
     def exp(self, v=None, jacobian=False, add_identity=False,
             cache_result=False, recompute=True):
@@ -1222,6 +1288,7 @@ class AffineModel:
             s += ['<uninitialized>']
         s += [f'basis={self._basis}']
         s += [f'factor={self.factor}']
+        s += [f'position={self.position}']
         s += [f'{key}={value}' for key, value in self.prm.items()]
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'

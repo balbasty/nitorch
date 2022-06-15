@@ -170,7 +170,7 @@ usage:
         -m, --membrane                  Penalty on membrane energy (1st) [1e-3]
         -b, --bending                   Penalty on bending energy (2nd) [0.2]
         -l, --lame                      Penalty on linear elastic energy [0.05, 0.2]]
-        -v, --voxel-size VAL [UNIT]     Voxel size and unit [1 %]
+        -v, --voxel-size VAL [UNIT]     Voxel size and unit [100 %]
         -f, --fov *NAMES                Name of inputs used to compute mean space [all]
         -p, --pad VAL [UNIT]            Pad field of view by some amount [0 %]
 

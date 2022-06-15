@@ -13,36 +13,37 @@ be estimated from reverse-polarity images with differing contrasts
 usage: 
     nitorch topup fit POS NEG [options]
     
-    POS                              File with positive polarity readout
-    NEG                              File with negative polarity readout
-    -m, --mask                       Path to a mask in which to compute the loss
-    -o, --output                     Path to output displacement field [{dir}/{base}_topup_b0{ext}]
-    -r, --readout  {lr,is,ap}        Readout direction (default: largest dim)
-    -l, --loss {mse,ncc,lncc}        Matching term [mse]
-    -k, --kernel VAL [{vox,mm,%}]    LNCC kernel size [10 %] 
-    -m, --modulation {yes,no}        Jacobian modulation [yes]
-    -d, --diffeo                     Use diffeomorphic model [no]
-    -p, --penalty VAL [{memb,bend}]  Penalty on bending energy [100 bend]
-    -w, --downsample                 Estimate field at a lower dimension [1 mm]
-    -n, --max-iter                   Maximum number of iterations [50]
-    -t, --tolerance                  Tolerance for early stopping [1e-4]
-    --cpu, --gpu                     Device to use [cpu]
-    -h, --help [LEVEL]               Display this help
-    -v, --verbose [LVL]              Level of verbosity [1=print], 2=plot
+    POS                                 File with positive polarity readout
+    NEG                                 File with negative polarity readout
+    -m, --mask                          Path to a mask in which to compute the loss
+    -o, --output                        Path to output displacement field [{dir}/{base}_topup_b0{ext}]
+    -r, --readout  {lr,is,ap}           Readout direction (default: largest dim)
+    -l, --loss {mse,ncc,lncc,gmm,lgmm}  Matching term [mse]
+    -k, --kernel VAL [{vox,mm,%}]       LNCC kernel size [10 %] 
+    -b, --bins VAL                      Number of (L)GMM classes [3]
+    -m, --modulation {yes,no}           Jacobian modulation [yes]
+    -d, --diffeo                        Use diffeomorphic model [no]
+    -p, --penalty VAL [{memb,bend}]     Penalty on bending energy [100 bend]
+    -w, --downsample                    Estimate field at a lower dimension [1 mm]
+    -n, --max-iter                      Maximum number of iterations [50]
+    -t, --tolerance                     Tolerance for early stopping [1e-4]
+    --cpu, --gpu                        Device to use [cpu]
+    -h, --help [LEVEL]                  Display this help
+    -v, --verbose [LVL]                 Level of verbosity [1=print], 2=plot
 
 usage: 
     nitorch topup apply FIELD -p *POS -n *NEG [options]
     
-    FIELD                            Path to displacement field
-    -p, --pos *POS                   Files with positive polarity readout
-    -n, --neg *NEG                   Files with negative polarity readout
-    -o, --output                     Path to output files [{dir}/{base}_topup_unwarped{ext}]
-    -r, --readout  {lr,is,ap}        Readout direction (default: largest dim)
-    -m, --modulation {yes,no}        Jacobian modulation [yes]
-    -d, --diffeo                     Field is diffeomorphic [no]
-    --cpu, --gpu                     Device to use [cpu]
-    -h, --help [LEVEL]               Display this help
-    -v, --verbose [LVL]              Level of verbosity [1=print], 2=plot
+    FIELD                               Path to displacement field
+    -p, --pos *POS                      Files with positive polarity readout
+    -n, --neg *NEG                      Files with negative polarity readout
+    -o, --output                        Path to output files [{dir}/{base}_topup_unwarped{ext}]
+    -r, --readout  {lr,is,ap}           Readout direction (default: largest dim)
+    -m, --modulation {yes,no}           Jacobian modulation [yes]
+    -d, --diffeo                        Field is diffeomorphic [no]
+    --cpu, --gpu                        Device to use [cpu]
+    -h, --help [LEVEL]                  Display this help
+    -v, --verbose [LVL]                 Level of verbosity [1=print], 2=plot
     
     
 References:
@@ -82,11 +83,14 @@ parser_fit.add_option('output', ('-o', '--output'), nargs=1,
                       help='Output file')
 parser_fit.add_option('readout', ('-r', '--readout'), nargs=1,
                       help='Readout direction')
+losses = ['mse', 'ncc', 'lncc', 'gmm', 'lgmm']
 parser_fit.add_option('loss', ('-l', '--loss'), nargs=1, default='mse',
-                      validation=cli.Validations.choice(['mse', 'ncc', 'lncc']),
+                      validation=cli.Validations.choice(losses),
                       help='Matching loss')
 parser_fit.add_option('kernel', ('-k', '--kernel'), nargs='+', default=[10],
                       convert=number_or_str(float), help='Kernel size')
+parser_fit.add_option('bins', ('-b', '--bins'), nargs=1, default=3,
+                      convert=int, help='Number of classes')
 parser_fit.add_option('modulation', ('-m', '--modulation'), nargs=1, default=True,
                       convert=bool_or_str, action=cli.Actions.store_true,
                       help='Jacobian modulation')

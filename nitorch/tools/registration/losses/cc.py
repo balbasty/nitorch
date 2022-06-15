@@ -87,24 +87,30 @@ def _suffstat(fn, x, y):
     [fn(1), fn(x), fn(y), fn(x*x), fn(y*y), fn(x*y)]
 
     """
-    # square_ = lambda x: x.square() if x.requires_grad else x.square_()
-    # mul_ = lambda x, y: x.mul(y) if y.requires_grad else x.mul_(y)
+    # mom = x.new_empty([6, *x.shape])
+    # mom[0] = 1
+    # mom[1] = x
+    # mom[2] = y
+    # mom[3] = x
+    # mom[3].square_()
+    # mom[4] = y
+    # mom[4].square_()
+    # mom[5] = x
+    # mom[5].mul_(y)
+    # mom = fn(mom)
 
-    mom = x.new_empty([6, *x.shape])
-    mom[0] = 1
-    mom[1] = x
-    mom[2] = y
-    mom[3] = x
-    # mom[3] = square_(mom[3])
-    mom[3].square_()
-    mom[4] = y
-    # mom[4] = square_(mom[4])
-    mom[4].square_()
-    mom[5] = x
-    # mom[5] = mul_(mom[5], y)
-    mom[5].mul_(y)
-
-    mom = fn(mom)
+    tmp = torch.ones_like(x)
+    mom0 = fn(tmp[None])[0]
+    mom = x.new_empty([6, *mom0.shape])
+    mom[0] = mom0
+    mom[1] = fn(x[None])[0]
+    mom[2] = fn(y[None])[0]
+    torch.mul(x, x, out=tmp)
+    mom[3] = fn(tmp[None])[0]
+    torch.mul(y, y, out=tmp)
+    mom[4] = fn(tmp[None])[0]
+    torch.mul(x, y, out=tmp)
+    mom[5] = fn(tmp[None])[0]
     return mom
 
 
@@ -147,13 +153,9 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
     """
     if moving.requires_grad:
         sqrt_ = torch.sqrt
-        square_ = torch.square
-        mul_ = torch.mul
         div_ = torch.div
     else:
         sqrt_ = torch.sqrt_
-        square_ = torch.square_
-        mul_ = lambda x, y: x.mul_(y)
         div_ = lambda x, y: x.div_(y)
 
     fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
@@ -176,36 +178,39 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
                                cache=local_cache)
     bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
                                backward=True, shape=shape, cache=local_cache)
+    sumall = lambda x: x.sum(list(range(-dim, 0)), keepdim=True)
 
     # compute ncc within each patch
     mom0, moving_mean, fixed_mean, moving_std, fixed_std, corr = \
         _suffstat(fwd, moving, fixed)
-    mom0 = mom0.div_(mom0.sum(list(range(-dim, 0)), keepdim=True))
+    mom0 = mom0.div_(sumall(mom0).clamp_min_(1e-5)).mul_(lam)
     moving_std = sqrt_(moving_std.addcmul_(moving_mean, moving_mean, value=-1))
     fixed_std = sqrt_(fixed_std.addcmul_(fixed_mean, fixed_mean, value=-1))
     moving_std.clamp_min_(1e-5)
     fixed_std.clamp_min_(1e-5)
-    std2 = moving_std * fixed_std
-    corr = div_(corr.addcmul_(moving_mean, fixed_mean, value=-1), std2)
+    corr = div_(div_(corr.addcmul_(moving_mean, fixed_mean, value=-1),
+                     moving_std), fixed_std)
     corr2 = corr.square().neg_().add_(1).clamp_min_(1e-8)
 
     out = []
     if grad or hess:
-        fixed_mean = div_(fixed_mean, fixed_std)
-        moving_mean = div_(moving_mean, moving_std)
-
-        h = bwd(square_(corr / moving_std).mul_(mom0).mul_(lam).div_(corr2))
+        h = (corr / moving_std).square_().mul_(mom0).div_(corr2)
+        h = bwd(h)
 
         if grad:
             # g = G' * (corr.*(corr.*xmean./xstd - ymean./ystd)./xstd)
             #   - x .* (G' * (corr./ xstd).^2)
             #   + y .* (G' * (corr ./ (xstd.*ystd)))
             # g = -2 * g
+            fixed_mean = fixed_mean.div_(fixed_std)
+            moving_mean = moving_mean.div_(moving_std)
             g = fixed_mean.addcmul_(corr, moving_mean, value=-1)
-            g = mul_(g, corr / moving_std).mul_(mom0).mul_(lam)
-            g = bwd(g.div_(corr2))
+            fixed_mean = moving_mean = None
+            g = g.mul_(corr).div_(moving_std).mul_(mom0).div_(corr2)
+            g = bwd(g)
             g = g.addcmul_(h, moving)
-            g = g.addcmul_(bwd((corr / std2).mul_(mom0).mul_(lam).div_(corr2)),
+            g = g.addcmul_(bwd(corr.div_(moving_std).div_(fixed_std)
+                                   .mul_(mom0).div_(corr2)),
                            fixed, value=-1)
             g = g.mul_(2)
             out.append(g)
@@ -216,7 +221,7 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
             out.append(h)
 
     # return stuff
-    corr = corr2.log_().mul_(mom0).mul_(lam)
+    corr = corr2.log_().mul_(mom0)
     corr = corr.sum()
     out = [corr, *out]
     return tuple(out) if len(out) > 1 else out[0]
