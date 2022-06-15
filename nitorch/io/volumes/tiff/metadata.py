@@ -22,6 +22,8 @@ def parse_unit(unit):
     """
     if unit is None or len(unit) == 0:
         return 1.
+    if unit == 'pixel':
+        return 1., unit
     unit_type = unit[-1]
     unit_scale = unit[:-1]
     mu1 = '\u00B5'

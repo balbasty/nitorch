@@ -93,7 +93,7 @@ class TiffArray(MappedArray):
                 # convert to mm + drop non-spatial zooms
                 units = [parse_unit(u) for u in units]
                 zooms = [z * (f / 1e-3) for z, (f, type) in zip(zooms, units)
-                         if type == 'm']
+                         if type in ('m', 'pixel')]
                 if 'ModelPixelScaleTag' in geotags:
                     warn("Both OME and GeoTiff pixel scales are present: "
                          "{} vs {}. Using OME."
