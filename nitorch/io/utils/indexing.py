@@ -587,7 +587,6 @@ def compose_index(parent, child, full_shape):
 
         # extract leading dimension
         p, *parent = parent
-        c, *child = child
         i_parent += 1
 
         if isinstance(p, int):
@@ -598,6 +597,7 @@ def compose_index(parent, child, full_shape):
             continue
 
         # pop sub dimension
+        c, *child = child
         sz, *sub_shape = sub_shape
 
         if p is None:
