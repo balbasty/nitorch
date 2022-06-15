@@ -23,7 +23,7 @@ usage:
 
 parser = cli.CommandParser('denoise', help=help)
 
-parser.add_positional('input', nargs='+', help='Input images')
+parser.add_positional('files', nargs='+', help='Input images')
 parser.add_option('output', ('-o', '--output'), nargs='*',
                   default='{dir}{sep}{base}.denoised{ext}')
 parser.add_option('lam', ('-l', '--lam'), nargs='+', default=[10.],
@@ -34,8 +34,9 @@ parser.add_option('max_iter', ('-n', '--max-iter'), nargs='+', default=[10, 32],
                   convert=int)
 parser.add_option('tolerance', ('-t', '--tolerance'), nargs='+', default=[1e-4],
                   convert=float)
+optim_choices = ['cg', 'relax', 'fmg', 'fmg+cg', 'fmg+relax']
 parser.add_option('optim', ('-x', '--optim'), nargs=1, default='cg',
-                  validation=cli.Validations.choice(['cg', 'optim']))
+                  validation=cli.Validations.choice(optim_choices))
 parser.add_option('joint', ('-j', '--joint'), nargs='?', default=True,
                   convert=cli.Conversions.bool)
 parser.add_option('verbose', ('-v', '--verbose'),

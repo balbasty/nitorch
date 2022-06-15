@@ -67,7 +67,7 @@ def denoise(*inputs, lam, sigma=None, jtv=True,
     dat = utils.movedim(dat, -1, 0)  # (channels, *spatial)
 
     # estimate noise
-    sigma = py.make_list(sigma, len(dat))
+    sigma = py.make_list(sigma or [None], len(dat))
     for c, (sigma1, dat1) in enumerate(zip(sigma, dat)):
         if sigma1:
             continue
@@ -75,16 +75,17 @@ def denoise(*inputs, lam, sigma=None, jtv=True,
 
     # Prepare options
     lam = py.make_list(lam, len(dat))
-    lam = [l * (s*s) for l, s in zip(lam, sigma)]
+    # lam = [l * (s*s) for l, s in zip(lam, sigma)]
     lam = [l.item() if hasattr(l, 'item') else l for l in lam]
     max_iter, sub_iter = py.make_list(max_iter, 2)
+    tol, sub_tol = py.make_list(tol, 2)
 
     # vx = 1 if aff is None else spatial.voxel_size(aff)
     vx = 1
 
-    dat = tv.denoise(dat, lam=lam, max_iter=max_iter, sub_iter=sub_iter,
-                     optim=optim, plot=verbose > 2, jtv=jtv, dim=3,
-                     voxel_size=vx)
+    dat = tv.denoise(dat, lam=lam, sigma=sigma, jtv=jtv, dim=3, 
+                     max_iter=max_iter, sub_iter=sub_iter, tol=tol, sub_tol=sub_tol,
+                     optim=optim, plot=verbose > 2, voxel_size=vx)
 
     # Postprocess
     dat = utils.movedim(dat, 0, -1)

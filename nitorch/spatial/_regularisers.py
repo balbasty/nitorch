@@ -1295,13 +1295,11 @@ def membrane_weights(field, factor=1, voxel_size=1, bound='dct2',
     field.mul_(factor/2)
     dims = [-1] + ([-dim-2] if joint else [])
     field = field.sum(dim=dims, keepdims=True)[..., 0].sqrt_()
+    ll = field.sum(dtype=torch.double) if return_sum else None
     if eps is None:
         eps = core.constants.eps(field.dtype)
-    if return_sum:
-        ll = field.sum(dtype=torch.double)
-        return field.clamp_min_(eps).reciprocal_(), ll
-    else:
-        return field.clamp_min_(eps).reciprocal_()
+    field = field.clamp_min_(eps).reciprocal_()
+    return (field, ll) if return_sum else field
 
 
 def bending_weights(field, lam=1, voxel_size=1, bound='dct2',
