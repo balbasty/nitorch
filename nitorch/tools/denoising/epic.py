@@ -64,8 +64,7 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
     readout = readout - ndim if readout > 0 else readout
     echoes = movedim(echoes, readout, -1)
     fieldmap = movedim(fieldmap, readout, -1)
-    if reverse_echoes is not None:
-        reverse_echoes = movedim(reverse_echoes, readout, -1)
+    reverse_echoes = movedim(reverse_echoes, readout, -1)
 
     if slicewise:
         # --- loop over slices -----------------------------------------
