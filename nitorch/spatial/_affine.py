@@ -1756,12 +1756,15 @@ def affine_resize(affine, shape, factor, anchor='c'):
     info = {'dtype': affine.dtype, 'device': affine.device}
 
     # compute output shape
-    shape_out = [int(s * f) for s, f in zip(shape, factor)]
+    shape_out = [max(1, int(s * f)) for s, f in zip(shape, factor)]
 
     # compute shift and scale in each dimension
     shifts = []
     scales = []
     for anch, f, inshp, outshp in zip(anchor, factor, shape, shape_out):
+        if inshp == 1 or outshp == 1:
+            # anchor must be "edges"
+            anch = 'e'
         if anch == 'c':
             shifts.append(0)
             scales.append((inshp - 1) / (outshp - 1))
@@ -1776,6 +1779,8 @@ def affine_resize(affine, shape, factor, anchor='c'):
             scales.append(1/f)
         else:
             raise ValueError('Unknown anchor {}'.format(anch))
+        if inshp == outshp == 1:
+            scales[-1] = 1/f
 
     # build voxel-to-voxel transformation matrix
     lin = torch.diag(torch.as_tensor(scales, **info))

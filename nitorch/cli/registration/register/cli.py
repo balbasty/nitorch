@@ -952,7 +952,7 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
         if options.nonlin.optim.name == 'gd':
             nonlin_optim = optim.GradientDescent(lr=options.nonlin.optim.lr)
             nonlin_optim.preconditioner = nonlin.greens_apply
-        elif options.affine.optim.name == 'cg':
+        elif options.nonlin.optim.name == 'cg':
             nonlin_optim = optim.ConjugateGradientDescent(lr=options.nonlin.optim.lr,
                                                           beta=options.nonlin.optim.beta)
             nonlin_optim.preconditioner = nonlin.greens_apply
@@ -1061,7 +1061,8 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           WRITE RESULTS
     # ------------------------------------------------------------------
-    affine = affine[-1]
+    if affine:
+        affine = affine[-1]
 
     if affine and options.affine.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'

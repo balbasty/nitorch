@@ -842,12 +842,17 @@ class ShootModel(NonLinModel):
         obj.__init__(*args, **kwargs)
         return obj
 
-    def reset_kernel(self):
-        self.kernel = spatial.greens(self.shape, **self.prm,
-                                     factor=self.factor / py.prod(self.shape),
-                                     voxel_size=self.voxel_size,
-                                     **utils.backend(self.dat))
+    def set_kernel(self, kernel=None):
+        if kernel is None:
+            kernel = spatial.greens(self.shape, **self.prm,
+                                    factor=self.factor / py.prod(self.shape),
+                                    voxel_size=self.voxel_size,
+                                    **utils.backend(self.dat))
+        self.kernel = kernel
         return self
+
+    def reset_kernel(self, kernel=None):
+        return self.set_kernel(kernel)  # backward compatibility
 
     def set_dat(self, dat, affine=None, **backend):
         super().set_dat(dat, affine, **backend)

@@ -647,7 +647,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     return_trf = kwargs.pop('_return_trf', False)  # hidden option
 
     # compute output shape
-    outshape = [o or int(i*f) for i, o, f in zip(inshape, outshape, factor)]
+    outshape = [o or max(1, int(i*f)) for i, o, f in zip(inshape, outshape, factor)]
     if any(not s for s in outshape):
         raise ValueError('Either factor or shape must be set in '
                          'all dimensions')
@@ -659,7 +659,11 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     lin = []
     scales = []
     shifts = []
+    print(factor)
     for anch, f, inshp, outshp in zip(anchor, factor, inshape, outshape):
+        if inshp == 1 or outshp == 1:
+            # anchor must be "edges"
+            anch = 'e'
         if anch == 'c':    # centers
             lin.append(torch.linspace(0, inshp - 1, outshp, **info))
             scales.append((inshp - 1) / (outshp - 1))
@@ -681,6 +685,8 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
             shifts.append(shift)
         else:
             raise ValueError('Unknown anchor {}'.format(anch))
+        if inshp == outshp == 1:
+            scales[-1] = 1/f
     grid = torch.stack(torch.meshgrid(*lin), dim=-1)
 
     # resize input image

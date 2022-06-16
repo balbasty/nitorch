@@ -839,25 +839,26 @@ class Register:
         verbose, self.verbose = self.verbose, False
         if self.nonlin:
             step.do_vel(self.nonlin.dat.dat, grad=False, hess=False)
-            step.do_affine(self.affine.dat.dat, grad=False, hess=False)
+            if self.affine:
+                step.do_affine(self.affine.dat.dat, grad=False, hess=False)
         else:
             step.do_affine_only(self.affine.dat.dat, grad=False, hess=False)
         self.verbose = verbose
 
         step.framerate = self.framerate
         if self.affine and self.nonlin:
-            # if isinstance(self.optim.optim[1], optm.FirstOrder):
-            #     self.optim.optim[1].preconditioner = self.nonlin.greens_apply
-            # elif isinstance(self.optim.optim[1].optim, optm.FirstOrder):
-            #     self.optim.optim[1].optim.preconditioner = self.nonlin.greens_apply
+            if isinstance(self.optim.optim[1], optm.FirstOrder):
+                if self.nonlin.kernel is None:
+                    self.nonlin.set_kernel()
+                self.optim.optim[1].preconditioner = self.nonlin.greens_apply
             self.optim.iter([self.affine.dat.dat, self.nonlin.dat.dat],
                             [step.do_affine, step.do_vel])
         elif self.affine:
             self.optim.iter(self.affine.dat.dat, step.do_affine_only)
         elif self.nonlin:
             if isinstance(self.optim, optm.FirstOrder):
-                self.optim.preconditioner = self.nonlin.greens_apply
-            elif isinstance(self.optim.optim.optim, optm.FirstOrder):
+                if self.nonlin.kernel is None:
+                    self.nonlin.set_kernel()
                 self.optim.preconditioner = self.nonlin.greens_apply
             self.optim.iter(self.nonlin.dat.dat, step.do_vel)
 
