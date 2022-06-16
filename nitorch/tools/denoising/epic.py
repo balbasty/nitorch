@@ -25,7 +25,7 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
         Echoes acquired with reverse bipolar readout. Else: synthesized.
     fieldmap : file_like or (*spatial) tensor, Fieldmap or voxel shift map
     extrapolate : bool, Extrapolate first/last echo when reverse_echoes is None
-    bandwidth : float, Bandwidth of the fieldmap, in Hz/pixel
+    bandwidth : float, Bandwidth of the input echoes, in Hz/pixel
     polarity : '+' or '-', Readout polarity of the first echo
     readout : int, Index of the readout dimension
     slicewise : bool, Run the algorithm slicewise
