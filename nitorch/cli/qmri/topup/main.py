@@ -14,7 +14,7 @@ import math as pymath
 def cli(args=None):
     f"""Command-line interface for `topup`
 
-    {help[1]}
+    {help}
 
     """
 

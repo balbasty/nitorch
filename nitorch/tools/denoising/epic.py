@@ -5,10 +5,11 @@ from nitorch.spatial import (solve_field, regulariser, membrane_weights,
 from nitorch.tools.img_statistics import estimate_noise
 from nitorch import io
 import torch
+import math
 
 
-def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
-         bandwidth=1, polarity='+', readout=-1, slicewise=True, lam=1,
+def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
+         bandwidth=1, polarity='+', readout=-1, slicewise=False, lam=1e2,
          max_iter=(10, 32), tol=1e-5, verbose=False, device=None):
     """Edge-Preserving B0 inhomogeneity correction (EPIC)
 
@@ -21,14 +22,14 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
     ----------
     echoes : list[file_like] or (N, *spatial) tensor,
         Echoes acquired with a bipolar readout.
-    reverse_echoes : list[file_like] or (N, *spatial) tensor
-        Echoes acquired with reverse bipolar readout. Else: synthesized.
+    reverse_echoes : bool or list[file_like] or (N, *spatial) tensor
+        Echoes acquired with reverse bipolar readout. If True: synthesized.
     fieldmap : file_like or (*spatial) tensor, Fieldmap or voxel shift map
     extrapolate : bool, Extrapolate first/last echo when reverse_echoes is None
     bandwidth : float, Bandwidth of the input echoes, in Hz/pixel
     polarity : '+' or '-', Readout polarity of the first echo
     readout : int, Index of the readout dimension
-    slicewise : bool, Run the algorithm slicewise
+    slicewise : bool or int, Run the algorithm slicewise. If int, chunk size.
     lam : [list of] float, Regularization factor (per echo)
     max_iter : [pair of] int, Maximum number of RLS and CG iterations
     tol : float, Tolerance for early stopping
@@ -46,7 +47,7 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
 
     echoes = map_files(echoes)
     reverse_echoes = map_files(reverse_echoes)
-    fieldmap = map_files(fieldmap)[0]
+    fieldmap = map_files(fieldmap, nobatch=True)
     ndim = len(echoes.shape) - 1
 
     # estimate noise variance + scale regularization
@@ -60,22 +61,20 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
     lam = [l / mu for l, mu in zip(lam, tissue)]
 
     # ensure readout dimension is last
-    if readout > 0:
-        readout = readout - ndim if readout > 0 else readout
-        echoes = echoes.movedim(readout, -1)
-        fieldmap = fieldmap.movedim(readout, -1)
-        if reverse_echoes is not None:
-            reverse_echoes = reverse_echoes.movedim(readout, -1)
+    readout = readout - ndim if readout > 0 else readout
+    echoes = movedim(echoes, readout, -1)
+    fieldmap = movedim(fieldmap, readout, -1)
+    if reverse_echoes is not None:
+        reverse_echoes = movedim(reverse_echoes, readout, -1)
 
     if slicewise:
         # --- loop over slices -----------------------------------------
 
         # ensure slice direction is second to last
         dz = -2 if echoes.shape[-2] < echoes.shape[-3] else -3
-        echoes = echoes.movedim(dz, -2)
-        fieldmap = fieldmap.movedim(dz, -2)
-        if reverse_echoes is not None:
-            reverse_echoes = reverse_echoes.movedim(dz, -2)
+        echoes = movedim(echoes, dz, -2)
+        fieldmap = movedim(fieldmap, dz, -2)
+        reverse_echoes = movedim(reverse_echoes, dz, -2)
         nz = echoes.shape[-2]
 
         # allocate output
@@ -85,28 +84,36 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
             out_backend = dict(dtype=torch.float32, device='cpu')
         fit = torch.zeros(echoes.shape, **out_backend)
 
-        for z in nz:
+        slicewise = int(slicewise)
+        for z in range(0, nz, slicewise):
+            chunk = z if slicewise == 1 else slice(z, z+slicewise)
             if verbose > 0:
                 print(f'processing slice: {z:03d}/{nz:03d}')
 
-            # load data
-            echoes1 = load(echoes[..., z, :], **backend)
-            fieldmap1 = load(fieldmap[..., z, :], **backend)
-            if reverse_echoes is not None:
-                reverse_echoes1 = load(reverse_echoes[..., z, :], **backend)
-            else:
-                reverse_echoes1 = None
+            echoes1 = load(echoes[..., chunk, :], **backend)
 
-            # rescale fieldmap
-            fieldmap1 = fieldmap1 / bandwidth
-            if polarity == '-':
-                fieldmap1 = -fieldmap1
+            if fieldmap is not None:
+                fieldmap1 = load(fieldmap[..., chunk, :], **backend)
+                # rescale fieldmap
+                fieldmap1 = fieldmap1 / bandwidth
+                if polarity == '-':
+                    fieldmap1 = -fieldmap1
+            else:
+                fieldmap1 = fieldmap
+
+            if hasattr(reverse_echoes, '__getitem__'):  # Tensor or MappedArray
+                reverse_echoes1 = load(reverse_echoes[..., chunk, :], **backend)
+            else:  # None or True or False
+                reverse_echoes1 = reverse_echoes
 
             # run EPIC
             fit1 = run_epic(echoes1, reverse_echoes1, fieldmap1,
                             extrapolate=extrapolate, lam=lam, sigma=noise,
                             max_iter=max_iter, tol=tol, verbose=verbose)
-            fit[..., z, :] = fit1.to(fit)
+            fit[..., chunk, :] = fit1.to(fit)
+
+        # unpermute slice
+        fit = movedim(fit, -2, dz)
 
     else:
         # --- process full volume --------------------------------------
@@ -114,18 +121,21 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
         # load data
         echoes = load(echoes, **backend)
         fieldmap = load(fieldmap, **backend)
-        if reverse_echoes is not None:
-            reverse_echoes = load(reverse_echoes, **backend)
+        reverse_echoes = load(reverse_echoes, **backend)
 
         # rescale fieldmap
-        fieldmap = fieldmap / bandwidth
-        if polarity == '-':
-            fieldmap = -fieldmap
+        if fieldmap is not None:
+            fieldmap = fieldmap / bandwidth
+            if polarity == '-':
+                fieldmap = -fieldmap
 
         # run EPIC
         fit = run_epic(echoes, reverse_echoes, fieldmap,
                        extrapolate=extrapolate, lam=lam, sigma=noise,
                        max_iter=max_iter, tol=tol, verbose=verbose)
+
+    # unpermute readout
+    fit = movedim(fit, -1, readout)
 
     return fit
 
@@ -163,12 +173,17 @@ def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
         Undistorted + denoised echoes
 
     """
+    if reverse_echoes is False:
+        return run_epic_noreverse(echoes, voxshift,
+                                  lam, sigma, max_iter, tol, verbose)
+
     ne = len(echoes)                    # number of echoes
     nv = echoes.shape[1:].numel()       # number of voxels
     nd = echoes.dim() - 1               # number of dimensions
 
     # synthesize echoes
-    if reverse_echoes is None:
+    synth = not torch.is_tensor(reverse_echoes)
+    if synth:
         neg = synthesize_neg(echoes[0::2])
         pos = synthesize_pos(echoes[1::2])
         reverse_echoes = torch.stack([x for y in zip(pos, neg) for x in y])
@@ -176,63 +191,80 @@ def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
     else:
         extrapolate = True
 
+    # initialize denoised echoes
+    fit = (echoes + reverse_echoes).div_(2)
+    if not extrapolate:
+        fit[0] = echoes[0]
+        fit[-1] = echoes[-1]
+    fwd_fit = torch.zeros_like(fit)
+    bwd_fit = torch.zeros_like(fit)
+
+    # prepare voxel shift maps
+    if voxshift is not None:
+        ivoxshift = add_identity_1d(-voxshift)
+        voxshift = add_identity_1d(voxshift)
+    else:
+        ivoxshift = None
+
     # prepare parameters
     max_iter, sub_iter = py.make_list(max_iter, 2)
     tol, sub_tol = py.make_list(tol, 2)
     lam = [l / ne for l in py.make_list(lam, ne)]
     isigma2 = 1 / (sigma * sigma)
 
-    # initialize denoised echoes
-    fit = (echoes + reverse_echoes).div_(2)
-    if not extrapolate:
-        fit[0] = echoes[0]
-        fit[-1] = echoes[-1]
-    fwd_fit = torch.empty_like(fit)
-    bwd_fit = torch.empty_like(fit)
-
-    # prepare voxel shift maps
-    ivoxshift = add_identity_grid(-voxshift)
-    voxshift = add_identity_grid(voxshift)
-
     # compute hessian once and for all
-    if extrapolate:
-        h = torch.ones_like(voxshift)[None]
-        h = push1d(pull1d(h, voxshift), voxshift)
-        h += push1d(pull1d(h, ivoxshift), ivoxshift)
-        h *= 2
+    if voxshift is not None:
+        one = torch.ones_like(voxshift)[None]
+        if extrapolate:
+            h = push1d(pull1d(one, voxshift), voxshift)
+            h += push1d(pull1d(one, ivoxshift), ivoxshift)
+            weight_ = lambda x: x.mul_(0.5)
+            halfweight_ = lambda x: x.mul_(math.sqrt(0.5))
+        else:
+            h = torch.zeros_like(fit)
+            h[:-1] += push1d(pull1d(one, voxshift), voxshift)
+            h[1:] += push1d(pull1d(one, ivoxshift), ivoxshift)
+            weight_ = lambda x: x[1:-1].mul_(0.5)
+            halfweight_ = lambda x: x[1:-1].mul_(math.sqrt(0.5))
+        del one
+        weight_(h)
     else:
-        h = torch.zeros_like(fit)
-        h[:-1] += push1d(pull1d(h, voxshift), voxshift)
-        h[1:] += push1d(pull1d(h, ivoxshift), ivoxshift)
+        h = fit.new_ones([ne] + [1] * nd)
+        if extrapolate:
+            h *= 2
+            weight_ = lambda x: x.mul_(0.5)
+            halfweight_ = lambda x: x.mul_(math.sqrt(0.5))
+        else:
+            h[1:-1] *= 2
+            weight_ = lambda x: x[1:-1].mul_(0.5)
+            halfweight_ = lambda x: x[1:-1].mul_(math.sqrt(0.5))
+    weight_(h)
     h *= isigma2
 
+    loss = float('inf')
     for n_iter in range(max_iter):
 
         # update weights
         w, jtv = membrane_weights(fit, factor=lam, return_sum=True)
 
-        # gradient of likelihood
-        fwd_fit[0::2] = pull1d(fit[0::2], voxshift)
-        fwd_fit[1::2] = pull1d(fit[1::2], ivoxshift)
-        fwd_fit = (fwd_fit - echoes)
-        ll = fwd_fit.flatten().dot(fwd_fit.flatten())
-        fwd_fit[0::2] = push1d(fwd_fit[0::2], voxshift)
-        fwd_fit[1::2] = push1d(fwd_fit[1::2], ivoxshift)
+        # gradient of likelihood (forward)
+        pull_forward(fit, voxshift, ivoxshift, out=fwd_fit)
+        fwd_fit.sub_(echoes)
+        halfweight_(fwd_fit)
+        ll = ssq(fwd_fit)
+        halfweight_(fwd_fit)
+        push_forward(fwd_fit, voxshift, ivoxshift, out=fwd_fit)
 
+        # gradient of likelihood (reversed)
+        pull_backward(fit, voxshift, ivoxshift, extrapolate, out=bwd_fit)
         if extrapolate:
-            bwd_fit[0::2] = pull1d(fit[0::2], ivoxshift)
-            bwd_fit[1::2] = pull1d(fit[1::2], voxshift)
-            bwd_fit = (bwd_fit - echoes)
-            ll += bwd_fit.flatten().dot(bwd_fit.flatten())
-            bwd_fit[0::2] = push1d(bwd_fit[0::2], ivoxshift)
-            bwd_fit[1::2] = push1d(bwd_fit[1::2], voxshift)
+            bwd_fit.sub_(reverse_echoes)
         else:
-            bwd_fit[2::2] = pull1d(fit[2::2], ivoxshift)
-            bwd_fit[1:-1:2] = pull1d(fit[1:-1:2], voxshift)
-            bwd_fit = (bwd_fit - echoes[1:-1])
-            ll += bwd_fit.flatten().dot(bwd_fit.flatten())
-            bwd_fit[2::2] = push1d(bwd_fit[2::2], ivoxshift)
-            bwd_fit[1:-1:2] = push1d(bwd_fit[1:-1:2], voxshift)
+            bwd_fit[1:-1].sub_(reverse_echoes[1:-1])
+        halfweight_(bwd_fit)
+        ll += ssq(bwd_fit)
+        halfweight_(bwd_fit)
+        push_backward(bwd_fit, voxshift, ivoxshift, extrapolate, out=bwd_fit)
 
         g = fwd_fit.add_(bwd_fit).mul_(isigma2)
         ll *= 0.5 * isigma2
@@ -246,26 +278,128 @@ def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
 
         # track objective
         ll, jtv = ll.item() / (ne*nv), jtv.item() / (ne*nv)
-        loss = ll + jtv
+        loss, loss_prev = ll + jtv, loss
         if n_iter:
-            loss_prev = loss
             gain = (loss_prev - loss) / max((loss_max - loss), 1e-8)
         else:
             gain = float('inf')
-            loss_max = max(loss_max, loss)
+            loss_max = loss
         if verbose:
             end = '\n' if verbose > 1 else '\r'
             print(f'{n_iter+1:02d} | {ll:12.6g} + {jtv:12.6g} = {loss:12.6g} '
                   f'| gain = {gain:12.6g}', end=end)
+        if gain < tol:
+            break
 
     if verbose == 1:
-        print('\n')
+        print('')
+
+    return fit
 
 
-def map_files(files):
+def run_epic_noreverse(echoes, voxshift=None, lam=1, sigma=1,
+                       max_iter=(10, 32), tol=1e-5, verbose=False):
+    """Run EPIC on pre-loaded tensors (no reverse gradients or synthesis)
+
+    Parameters
+    ----------
+    echoes : (N, *spatial) tensor
+        Echoes acquired with bipolar readout, Readout direction should be last.
+    lam : [list of] float
+        Regularization factor (per echo)
+    sigma : float
+        Noise standard deviation
+    max_iter : [pair of] int
+        Maximum number of RLS and CG iterations
+    tol : float
+        Tolerance for early stopping
+    verbose : int,
+        Verbosity level
+
+    Returns
+    -------
+    echoes : (N, *spatial) tensor
+        Undistorted + denoised echoes
+
+    """
+    ne = len(echoes)                    # number of echoes
+    nv = echoes.shape[1:].numel()       # number of voxels
+    nd = echoes.dim() - 1               # number of dimensions
+
+    # initialize denoised echoes
+    fit = echoes.clone()
+    fwd_fit = torch.empty_like(fit)
+
+    # prepare voxel shift maps
+    do_voxshift = voxshift is not None
+    if do_voxshift:
+        ivoxshift = add_identity_1d(-voxshift)
+        voxshift = add_identity_1d(voxshift)
+    else:
+        ivoxshift = None
+
+    # prepare parameters
+    max_iter, sub_iter = py.make_list(max_iter, 2)
+    tol, sub_tol = py.make_list(tol, 2)
+    lam = [l / ne for l in py.make_list(lam, ne)]
+    isigma2 = 1 / (sigma * sigma)
+
+    # compute hessian once and for all
+    if do_voxshift:
+        one = torch.empty_like(voxshift)[None]
+        h = torch.empty_like(echoes)
+        h[0::2] = push1d(pull1d(one, voxshift), voxshift)
+        h[1::2] = push1d(pull1d(one, ivoxshift), ivoxshift)
+        del one
+    else:
+        h = fit.new_ones([1] * (nd + 1))
+    h *= isigma2
+
+    loss = float('inf')
+    for n_iter in range(max_iter):
+
+        # update weights
+        w, jtv = membrane_weights(fit, factor=lam, return_sum=True)
+
+        # gradient of likelihood
+        pull_forward(fit, voxshift, ivoxshift, out=fwd_fit)
+        fwd_fit.sub_(echoes)
+        ll = ssq(fwd_fit)
+        push_forward(fwd_fit, voxshift, ivoxshift, out=fwd_fit)
+
+        g = fwd_fit.mul_(isigma2)
+        ll *= 0.5 * isigma2
+
+        # gradient of prior
+        g += regulariser(fit, membrane=1, factor=lam, weights=w)
+
+        # solve
+        fit -= solve_field(h, g, w, membrane=1, factor=lam,
+                           max_iter=sub_iter, tolerance=sub_tol)
+
+        # track objective
+        ll, jtv = ll.item() / (ne*nv), jtv.item() / (ne*nv)
+        loss, loss_prev = ll + jtv, loss
+        if n_iter:
+            gain = (loss_prev - loss) / max((loss_max - loss), 1e-8)
+        else:
+            gain = float('inf')
+            loss_max = loss
+        if verbose:
+            end = '\n' if verbose > 1 else '\r'
+            print(f'{n_iter+1:02d} | {ll:12.6g} + {jtv:12.6g} = {loss:12.6g} '
+                  f'| gain = {gain:12.6g}', end=end)
+        if gain < tol:
+            break
+
+    if verbose == 1:
+        print('')
+
+    return fit
+
+
+def map_files(files, nobatch=False):
     """Concat and map input files or tensors"""
-    if files is None or torch.is_tensor(files) or isinstance(files, io.MappedArray):
-        return files
     if isinstance(files, str):
         files = io.volumes.map(files)
         if files.dim == 5 and files.shape[3] == 1 and files.dim == 5:
@@ -285,11 +419,11 @@ def map_files(files):
     elif isinstance(files, (list, tuple)):
         files = list(map(map_files, files))
         if isinstance(files[0], io.MappedArray):
-            return io.cat(files)
+            files = io.cat(files)
         else:
-            return torch.cat(files)
-    else:
-        raise TypeError(f'Unsupported input type {type(files)}')
+            files = torch.cat(files)
+    if nobatch and (torch.is_tensor(files) or isinstance(files, io.MappedArray)):
+        files = files[0]
     return files
 
 
@@ -297,10 +431,94 @@ def load(dat, rand=True, missing=0, **backend):
     """Load a tensor from a file (if input is a mapped file)"""
     if torch.is_tensor(dat):
         return dat.to(**backend)
-    else:
+    elif isinstance(dat, io.MappedArray):
         dat = dat.fdata(rand=rand, missing=missing, **backend)
         dat.masked_fill_(torch.isfinite(dat).logical_not_(), 0)
         return dat
+    else:
+        return dat
+
+
+def movedim(x, *a, **k):
+    if torch.is_tensor(x):
+        return torch.movedim(x, *a, **k)
+    elif isinstance(x, io.MappedArray):
+        return x.movedim(*a, **k)
+    else:
+        return x
+
+
+def ssq(x):
+    """Sum of squares"""
+    return x.flatten().dot(x.flatten())
+
+
+def pull_forward(echoes, voxshift, ivoxshift, out=None):
+    """Pull echoes "forward" (nonreversed gradient)"""
+    if out is None:
+        out = torch.empty_like(echoes)
+    if voxshift is None:
+        if not utils.same_storage(out, echoes):
+            out.copy_(echoes)
+        return out
+    out[0::2] = pull1d(echoes[0::2], voxshift)
+    out[1::2] = pull1d(echoes[1::2], ivoxshift)
+    return out
+
+
+def push_forward(echoes, voxshift, ivoxshift, out=None):
+    """Push echoes "forward" (nonreversed gradient)"""
+    if out is None:
+        out = torch.empty_like(echoes)
+    if voxshift is None:
+        if not utils.same_storage(out, echoes):
+            out.copy_(echoes)
+        return out
+    out[0::2] = push1d(echoes[0::2], voxshift)
+    out[1::2] = push1d(echoes[1::2], ivoxshift)
+    return out
+
+
+def pull_backward(echoes, voxshift, ivoxshift, extrapolate, out=None):
+    """Pull echoes "backward" (reversed gradient)"""
+    if out is None:
+        out = torch.zeros_like(echoes)
+    if extrapolate:
+        if voxshift is None:
+            if not utils.same_storage(out, echoes):
+                out.copy_(echoes)
+            return out
+        out[0::2] = pull1d(echoes[0::2], ivoxshift)
+        out[1::2] = pull1d(echoes[1::2], voxshift)
+    else:
+        if voxshift is None:
+            if not utils.same_storage(out, echoes):
+                out[1:-1].copy_(echoes[1:-1])
+            return out
+        out[2::2] = pull1d(echoes[2::2], ivoxshift)
+        out[1:-1:2] = pull1d(echoes[1:-1:2], voxshift)
+    return out
+
+
+def push_backward(echoes, voxshift, ivoxshift, extrapolate, out=None):
+    """Push echoes "backward" (reversed gradient)"""
+    if out is None:
+        out = torch.zeros_like(echoes)
+    if extrapolate:
+        if voxshift is None:
+            if not utils.same_storage(out, echoes):
+                out.copy_(echoes)
+            return out
+        out[0::2] = push1d(echoes[0::2], ivoxshift)
+        out[1::2] = push1d(echoes[1::2], voxshift)
+    else:
+        if voxshift is None:
+            if not utils.same_storage(out, echoes):
+                out[1:-1].copy_(echoes[1:-1])
+            return out
+        out[2::2] = push1d(echoes[2::2], ivoxshift)
+        out[1:-1:2] = push1d(echoes[1:-1:2], voxshift)
+    return out
 
 
 def interpolate_echo(x1, x2):
@@ -362,7 +580,7 @@ def pull1d(img, grid, grad=False, **kwargs):
     img, grid = img.unsqueeze(-2), grid.unsqueeze(-1)
     warped = grid_pull(img, grid, **kwargs).squeeze(-2)
     if not grad:
-        return warped, None
+        return warped
     grad = grid_grad(img, grid, **kwargs)
     grad = grad.squeeze(-1).squeeze(-2)
     return warped, grad
@@ -392,3 +610,6 @@ def push1d(img, grid, **kwargs):
     return pushed
 
 
+def add_identity_1d(grid):
+    """Add 1D identity"""
+    return add_identity_grid(grid[..., None])[..., 0]
