@@ -19,17 +19,12 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
 
     Parameters
     ----------
-    echoes : list[file_like] or (N, *spatial) tensor
-        Echoes acquired with bipolar readout, Readout direction should be last.
+    echoes : list[file_like] or (N, *spatial) tensor,
+        Echoes acquired with a bipolar readout.
     reverse_echoes : list[file_like] or (N, *spatial) tensor
         Echoes acquired with reverse bipolar readout. Else: synthesized.
-    fieldmap : file_like or (*spatial) tensor
-        Fieldmap (if bandwidth != 1) or voxel shift map
-        Voxel shift map used to deform towards even (0, 2, ...) echoes.
-        Its inverse is used to deform towards odd (1, 3, ...) echoes.
-    extrapolate : bool
-        Extrapolate first/last echo when reverse_echoes is True.
-        Otherwise, only use interpolated echoes.
+    fieldmap : file_like or (*spatial) tensor, Fieldmap or voxel shift map
+    extrapolate : bool, Extrapolate first/last echo when reverse_echoes is None
     bandwidth : float, Bandwidth of the fieldmap, in Hz/pixel
     polarity : '+' or '-', Readout polarity of the first echo
     readout : int, Index of the readout dimension
@@ -47,7 +42,7 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
 
     """
     device = torch.device('cuda' if device == 'gpu' else device)
-    loadopt = dict(rand=True, missing=0, device=device)
+    backend = dict(dtype=torch.float32, device=device)
 
     echoes = map_files(echoes)
     reverse_echoes = map_files(reverse_echoes)
@@ -57,7 +52,7 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
     # estimate noise variance + scale regularization
     noise, tissue = 1, []
     for echo in echoes:
-        noise1, tissue1 = estimate_noise(echo.fdata(**loadopt))
+        noise1, tissue1 = estimate_noise(load(echo, **backend))
         noise *= noise1['sd']
         tissue.append(tissue1['mean'])
     noise = noise ** (1 / len(echoes))
@@ -73,6 +68,9 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
             reverse_echoes = reverse_echoes.movedim(readout, -1)
 
     if slicewise:
+        # --- loop over slices -----------------------------------------
+
+        # ensure slice direction is second to last
         dz = -2 if echoes.shape[-2] < echoes.shape[-3] else -3
         echoes = echoes.movedim(dz, -2)
         fieldmap = fieldmap.movedim(dz, -2)
@@ -80,16 +78,22 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
             reverse_echoes = reverse_echoes.movedim(dz, -2)
         nz = echoes.shape[-2]
 
-        fit = torch.zeros(echoes.shape, dtype=torch.float32)
+        # allocate output
+        if torch.is_tensor(echoes):
+            out_backend = dict(dtype=echoes.dtype, device=echoes.device)
+        else:
+            out_backend = dict(dtype=torch.float32, device='cpu')
+        fit = torch.zeros(echoes.shape, **out_backend)
+
         for z in nz:
             if verbose > 0:
                 print(f'processing slice: {z:03d}/{nz:03d}')
 
             # load data
-            echoes1 = echoes[..., z, :].fdata(**loadopt)
-            fieldmap1 = fieldmap[..., z, :].fdata(**loadopt)
+            echoes1 = load(echoes[..., z, :], **backend)
+            fieldmap1 = load(fieldmap[..., z, :], **backend)
             if reverse_echoes is not None:
-                reverse_echoes1 = reverse_echoes[..., z, :].fdata(**loadopt)
+                reverse_echoes1 = load(reverse_echoes[..., z, :], **backend)
             else:
                 reverse_echoes1 = None
 
@@ -98,33 +102,32 @@ def epic(echoes, reverse_echoes=None, fieldmap=None, extrapolate=True,
             if polarity == '-':
                 fieldmap1 = -fieldmap1
 
+            # run EPIC
             fit1 = run_epic(echoes1, reverse_echoes1, fieldmap1,
                             extrapolate=extrapolate, lam=lam, sigma=noise,
                             max_iter=max_iter, tol=tol, verbose=verbose)
-            fit[..., z, :] = fit1.cpu()
+            fit[..., z, :] = fit1.to(fit)
 
     else:
+        # --- process full volume --------------------------------------
+
         # load data
-        echoes = echoes.fdata(**loadopt)
-        fieldmap = fieldmap.fdata(**loadopt)
+        echoes = load(echoes, **backend)
+        fieldmap = load(fieldmap, **backend)
         if reverse_echoes is not None:
-            reverse_echoes = reverse_echoes.fdata(**loadopt)
+            reverse_echoes = load(reverse_echoes, **backend)
 
         # rescale fieldmap
         fieldmap = fieldmap / bandwidth
         if polarity == '-':
             fieldmap = -fieldmap
 
+        # run EPIC
         fit = run_epic(echoes, reverse_echoes, fieldmap,
                        extrapolate=extrapolate, lam=lam, sigma=noise,
                        max_iter=max_iter, tol=tol, verbose=verbose)
 
     return fit
-
-
-def map_files(files):
-    # TODO
-    return files
 
 
 def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
@@ -141,7 +144,7 @@ def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
         Voxel shift map used to deform towards even (0, 2, ...) echoes.
         Its inverse is used to deform towards odd (1, 3, ...) echoes.
     extrapolate : bool
-        Extrapolate first/last echo when reverse_echoes is True.
+        Extrapolate first/last echo when reverse_echoes is None.
         Otherwise, only use interpolated echoes.
     lam : [list of] float
         Regularization factor (per echo)
@@ -231,7 +234,7 @@ def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
             bwd_fit[2::2] = push1d(bwd_fit[2::2], ivoxshift)
             bwd_fit[1:-1:2] = push1d(bwd_fit[1:-1:2], voxshift)
 
-        g = fwd_fit.add_(bwd_fit)
+        g = fwd_fit.add_(bwd_fit).mul_(isigma2)
         ll *= 0.5 * isigma2
 
         # gradient of prior
@@ -259,9 +262,49 @@ def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
         print('\n')
 
 
+def map_files(files):
+    """Concat and map input files or tensors"""
+    if files is None or torch.is_tensor(files) or isinstance(files, io.MappedArray):
+        return files
+    if isinstance(files, str):
+        files = io.volumes.map(files)
+        if files.dim == 5 and files.shape[3] == 1 and files.dim == 5:
+            # channel along the 5th dimension (C), drop 4th (T) dimension
+            files = files[:, :, :, 0, :]
+        elif files.dim == 5 and files.shape[4] == 1:
+            # channel along the 4th dimension (T), drop 5th (C) dimension
+            files = files[:, :, :, :, 0]
+        elif files.dim == 4:
+            # channel along the 4th dimension (T)
+            pass
+        elif files.dim == 3:
+            files = files[..., None]
+        else:
+            raise ValueError(f'Unsupported input shape {list(files.shape)}')
+        files = files.movedim(-1, 0)
+    elif isinstance(files, (list, tuple)):
+        files = list(map(map_files, files))
+        if isinstance(files[0], io.MappedArray):
+            return io.cat(files)
+        else:
+            return torch.cat(files)
+    else:
+        raise TypeError(f'Unsupported input type {type(files)}')
+    return files
+
+
+def load(dat, rand=True, missing=0, **backend):
+    """Load a tensor from a file (if input is a mapped file)"""
+    if torch.is_tensor(dat):
+        return dat.to(**backend)
+    else:
+        dat = dat.fdata(rand=rand, missing=missing, **backend)
+        dat.masked_fill_(torch.isfinite(dat).logical_not_(), 0)
+        return dat
+
+
 def interpolate_echo(x1, x2):
     """Interpolate the middle echo"""
-    # the output is distributed as
     return (x1 * x2).sqrt_()
 
 
