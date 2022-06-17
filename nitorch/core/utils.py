@@ -600,7 +600,8 @@ def max_dtype(*args, force_float=False):
             return torch.complex128
         elif dtype1 is torch.complex64 or dtype2 is torch.complex64:
             return torch.complex64
-        elif hasattr(torch, 'complex32') and dtype1 is torch.complex32 or dtype2 is torch.complex32:
+        elif hasattr(torch, 'complex32') and (dtype1 is torch.complex32 or
+                                              dtype2 is torch.complex32):
             return torch.complex32
         elif dtype1 is torch.float64 or dtype2 is torch.float64:
             return torch.float64
