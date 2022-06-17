@@ -116,8 +116,8 @@ def pull(inp, grid, bound: List[Bound], spline: List[Spline],
         out1 = inp.gather(-1, idx)
 
         # apply sign
-        sign1 = make_sign([torch.jit.annotate(Optional[Tensor], sgn[n])
-                           for sgn, n in zip(signs, nodes)])
+        sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
+        sign1: Optional[Tensor] = make_sign(sign0)
         if sign1 is not None:
             out1 *= sign1
 
@@ -183,8 +183,8 @@ def push(inp, grid, shape: Optional[List[int]], bound: List[Bound],
         out1 = inp.clone()
 
         # apply sign
-        sign1 = make_sign([torch.jit.annotate(Optional[Tensor], sgn[n])
-                           for sgn, n in zip(signs, nodes)])
+        sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
+        sign1: Optional[Tensor] = make_sign(sign0)
         if sign1 is not None:
             out1 *= sign1
 
@@ -248,8 +248,8 @@ def grad(inp, grid, bound: List[Bound], spline: List[Spline],
         out0 = inp.gather(-1, idx)
 
         # apply sign
-        sign1 = make_sign([torch.jit.annotate(Optional[Tensor], sgn[n])
-                           for sgn, n in zip(signs, nodes)])
+        sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
+        sign1: Optional[Tensor] = make_sign(sign0)
         if sign1 is not None:
             out0 *= sign1
 
@@ -321,8 +321,8 @@ def pushgrad(inp, grid, shape: Optional[List[int]], bound: List[Bound],
         out0 = inp.clone()
 
         # apply sign
-        sign1 = make_sign([torch.jit.annotate(Optional[Tensor], sgn[n])
-                           for sgn, n in zip(signs, nodes)])
+        sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
+        sign1: Optional[Tensor] = make_sign(sign0)
         if sign1 is not None:
             out0 *= sign1.unsqueeze(-1)
 
@@ -393,8 +393,8 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
         out1 = inp.gather(-1, idx)
 
         # apply sign
-        sign1 = make_sign([torch.jit.annotate(Optional[Tensor], sgn[n])
-                           for sgn, n in zip(signs, nodes)])
+        sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
+        sign1: Optional[Tensor] = make_sign(sign0)
         if sign1 is not None:
             out1 *= sign1
 
