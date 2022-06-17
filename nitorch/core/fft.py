@@ -24,7 +24,7 @@ from . import py, utils
 
 
 _torch_has_old_fft = callable(getattr(torch, 'fft', None))
-_torch_has_complex = hasattr(torch, 'complex32')
+_torch_has_complex = hasattr(torch, 'complex64')
 try:
     _fft = torch.fft
     import torch.fft as fft_mod

@@ -230,7 +230,7 @@ def _from_torch(cls, obj):
         return _new_dtype(cls, float32)
     if obj is _torch.float64:
         return _new_dtype(cls, float64)
-    if obj is _torch.complex32:
+    if hasattr(_torch, 'complex32') and obj is _torch.complex32:
         return _new_dtype(cls, complex32)
     if obj is _torch.complex64:
         return _new_dtype(cls, complex64)
