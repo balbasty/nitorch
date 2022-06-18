@@ -6,6 +6,7 @@ from nitorch.core import py
 import torch
 import sys
 import os
+import warnings
 
 
 def cli(args=None):
@@ -45,14 +46,21 @@ def _cli(args):
     return main(options)
 
 
-def get_device(opt):
-    if isinstance(opt, str):
-        device = torch.device(opt)
+def get_device(device):
+    device, ndevice = device
+    if device == 'gpu' and not torch.cuda.is_available():
+        warnings.warn('CUDA not available. Switching to CPU.')
+        device, ndevice = 'cpu', None
+    if device == 'cpu':
+        device = torch.device('cpu')
+        if ndevice:
+            torch.set_num_threads(ndevice)
     else:
-        assert isinstance(opt, int)
-        device = torch.device(f'cuda:{opt}')
-    if not torch.cuda.is_available():
-        device = 'cpu'
+        assert device == 'gpu'
+        if ndevice is not None:
+            device = torch.device(f'cuda:{ndevice}')
+        else:
+            device = torch.device('cuda')
     return device
 
 

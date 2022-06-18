@@ -6,7 +6,7 @@ from nitorch.tools.img_statistics import estimate_noise
 from nitorch import io
 import torch
 import math
-
+import multiprocessing
 
 def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
          bandwidth=1, polarity='+', readout=-1, slicewise=False, lam=1e2,
@@ -83,33 +83,19 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
             out_backend = dict(dtype=torch.float32, device='cpu')
         fit = torch.zeros(echoes.shape, **out_backend)
 
+        # prepare runner
         slicewise = int(slicewise)
-        for z in range(0, nz, slicewise):
-            chunk = z if slicewise == 1 else slice(z, z+slicewise)
-            if verbose > 0:
-                print(f'processing slice: {z:03d}/{nz:03d}')
+        run_slicewise = RunSlicewise(
+            slicewise, echoes, reverse_echoes, fieldmap,
+            bandwidth, polarity, lam, noise, extrapolate, max_iter, tol,
+            backend, out_backend, verbose)
 
-            echoes1 = load(echoes[..., chunk, :], **backend)
-
-            if fieldmap is not None:
-                fieldmap1 = load(fieldmap[..., chunk, :], **backend)
-                # rescale fieldmap
-                fieldmap1 = fieldmap1 / bandwidth
-                if polarity == '-':
-                    fieldmap1 = -fieldmap1
-            else:
-                fieldmap1 = fieldmap
-
-            if hasattr(reverse_echoes, '__getitem__'):  # Tensor or MappedArray
-                reverse_echoes1 = load(reverse_echoes[..., chunk, :], **backend)
-            else:  # None or True or False
-                reverse_echoes1 = reverse_echoes
-
-            # run EPIC
-            fit1 = run_epic(echoes1, reverse_echoes1, fieldmap1,
-                            extrapolate=extrapolate, lam=lam, sigma=noise,
-                            max_iter=max_iter, tol=tol, verbose=verbose)
-            fit[..., chunk, :] = fit1.to(fit)
+        # parallel process
+        with multiprocessing.Pool(torch.get_num_threads()) as pool:
+            slices = pool.imap_unordered(run_slicewise, range(0, nz, slicewise))
+            for chunk in slices:
+                chunk, fitchunk = chunk
+                fit[..., chunk, :] = fitchunk
 
         # unpermute slice
         fit = movedim(fit, -2, dz)
@@ -137,6 +123,61 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
     fit = movedim(fit, -1, readout)
 
     return fit
+
+
+class RunSlicewise:
+
+    def __init__(self, chunksize, echoes, reverse_echoes, fieldmap,
+                 bandwidth, polarity, lam, sigma, extrapolate, max_iter, tol,
+                 backend, out_backend, verbose):
+        self.chunksize = chunksize
+        self.echoes = echoes
+        self.reverse_echoes = reverse_echoes
+        self.fieldmap = fieldmap
+        self.bandwidth = bandwidth
+        self.polarity = polarity
+        self.lam = lam
+        self.sigma = sigma
+        self.max_iter = max_iter
+        self.tol = tol
+        self.extrapolate = extrapolate
+        self.backend = backend
+        self.out_backend = out_backend
+        self.verbose = verbose
+
+    def __call__(self, z):
+        torch.set_num_threads(1)
+
+        nz = self.echoes.shape[-2]
+        chunk = z if self.chunksize == 1 else slice(z, z + self.chunksize)
+        if self.verbose > 0:
+            print(f'processing slice: {z:03d}/{nz:03d}')
+
+        echoes1 = load(self.echoes[..., chunk, :], **self.backend)
+
+        if self.fieldmap is not None:
+            fieldmap1 = load(self.fieldmap[..., chunk, :], **self.backend)
+            # rescale fieldmap
+            fieldmap1 = fieldmap1 / self.bandwidth
+            if self.polarity == '-':
+                fieldmap1 = -fieldmap1
+        else:
+            fieldmap1 = self.fieldmap
+
+        if hasattr(self.reverse_echoes, '__getitem__'):
+            # Tensor or MappedArray
+            reverse_echoes1 = load(self.reverse_echoes[..., chunk, :],
+                                   **self.backend)
+        else:
+            # None or True or False
+            reverse_echoes1 = self.reverse_echoes
+
+        # run EPIC
+        fit1 = run_epic(echoes1, reverse_echoes1, fieldmap1,
+                        extrapolate=self.extrapolate, lam=self.lam,
+                        sigma=self.sigma, max_iter=self.max_iter, tol=self.tol,
+                        verbose=self.verbose)
+        return chunk, fit1.to(**self.out_backend)
 
 
 def run_epic(echoes, reverse_echoes=None, voxshift=None, extrapolate=True,
@@ -397,10 +438,10 @@ def run_epic_noreverse(echoes, voxshift=None, lam=1, sigma=1,
     return fit
 
 
-def map_files(files, nobatch=False):
+def map_files(files, nobatch=False, keep_open=False):
     """Concat and map input files or tensors"""
     if isinstance(files, str):
-        files = io.volumes.map(files)
+        files = io.volumes.map(files, keep_open=keep_open)
         if files.dim == 5 and files.shape[3] == 1 and files.dim == 5:
             # channel along the 5th dimension (C), drop 4th (T) dimension
             files = files[:, :, :, 0, :]

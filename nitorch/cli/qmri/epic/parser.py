@@ -77,9 +77,9 @@ parser.add_option('verbose', ('-q', '--quiet'),
 parser.add_option('gpu', '--gpu',
                   nargs='?', default='cpu',
                   convert=cli.Conversions.device('gpu'),
-                  action=cli.Actions.store_value(0),
+                  action=cli.Actions.store_value(('gpu', None)),
                   help='Use GPU (if available)')
 parser.add_option('gpu', '--cpu', nargs=0,
                   convert=cli.Conversions.device('cpu'),
-                  action=cli.Actions.store_value(0),
+                  action=cli.Actions.store_value(('cpu', None)),
                   help='Use CPU')
