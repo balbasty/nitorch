@@ -90,7 +90,6 @@ class BabelArray(MappedArray):
 
         super().__init__()
 
-
     @classmethod
     def possible_extensions(cls):
         ext = []
@@ -760,14 +759,28 @@ class BabelArray(MappedArray):
 
         raise RuntimeError('Could not yield an appropriate file object')
 
-    def __del__(self):
-        """If this ``ArrayProxy`` was created with ``keep_file_open=True``,
-        the open file object is closed if necessary.
-        """
+    def close(self):
+        if hasattr(self, '_opener'):
+            for key, opener in self._opener.items():
+                if not opener.closed:
+                    opener.close()
+        super().close()
+        return self
+
+    def close_if_mine(self):
         if hasattr(self, '_opener'):
             for key, opener in self._opener.items():
                 if not opener.closed:
                     opener.close_if_mine()
+        super().close_if_mine()
+        return self
+
+    def __del__(self):
+        """If this ``ArrayProxy`` was created with ``keep_file_open=True``,
+        the open file object is closed if necessary.
+        """
+        self.close_if_mine()
+        if hasattr(self, '_opener'):
             del self._opener
 
     def __getstate__(self):

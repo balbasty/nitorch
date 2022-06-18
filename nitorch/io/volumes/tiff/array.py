@@ -26,7 +26,7 @@ class TiffArray(MappedArray):
 
     FailedReadError = TiffFileError
 
-    def __init__(self, file_like, mode='r', keep_open=False, **hints):
+    def __init__(self, file_like, mode='r', keep_open=True, **hints):
         """
 
         Parameters
@@ -39,7 +39,14 @@ class TiffArray(MappedArray):
             Tells the Tiff reader that a file is or isn't of a specific
             subformat. If not provided, it it guessed by the Tiff reader.
         """
-        self._tiff = TiffFile(file_like, **hints)
+        if mode not in ('r', 'rb'):
+            raise ValueError('Tiff files can only be opened in mode "r"')
+        if not isinstance(file_like, TiffFile):
+            file_like = TiffFile(file_like, **hints)
+            self._mine = True
+        else:
+            self._mine = False
+        self._tiff = file_like
         if not keep_open:
             self._tiff.close()
 
@@ -51,6 +58,17 @@ class TiffArray(MappedArray):
     _series: int = 0   # index of series to map
     _level: int = 0    # index of pyramid level to map
     _cache: dict = {}  # a cache of precomputed _shape, _spatial, etc
+
+    def close_if_mine(self):
+        if self._mine:
+            self._tiff.close()
+        super().close_if_mine()
+        return self
+
+    def close(self):
+        self._tiff.close()
+        super().close()
+        return self
 
     @property
     def _shape(self):

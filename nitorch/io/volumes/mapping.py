@@ -139,6 +139,21 @@ class MappedArray(MappedFile):
 
         return self
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close_if_mine()
+
+    def __del__(self):
+        self.close_if_mine()
+
+    def close_if_mine(self):
+        return self
+
+    def close(self):
+        return self
+
     def __str__(self):
         return '{}(shape={}, dtype={})'.format(
             type(self).__name__, self.shape, self.dtype)
