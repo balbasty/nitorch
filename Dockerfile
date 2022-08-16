@@ -13,7 +13,7 @@ RUN NI_COMPILED_BACKEND="C" \
 
 # In this stage, install python dependencies that are not in install_requires.
 FROM pytorch/pytorch:${PYTORCH_TAG_PREFIX}-runtime as python-deps
-RUN conda install --yes --quiet --freeze-installed \
+RUN conda install --yes --quiet --freeze-installed --channel conda-forge \
         appdirs \
         matplotlib \
         nibabel \
