@@ -6,7 +6,9 @@ ARG PYTORCH_TAG_PREFIX="1.12.1-cuda11.3-cudnn8"
 FROM pytorch/pytorch:$PYTORCH_TAG_PREFIX-devel as builder
 WORKDIR /opt/nitorch
 COPY . .
-RUN NI_COMPILED_BACKEND="C" python setup.py bdist_wheel
+RUN NI_COMPILED_BACKEND="C" \
+    TORCH_CUDA_ARCH_LIST="3.5 5.2 6.0 6.1 7.0+PTX 8.0" \
+    python setup.py bdist_wheel
 
 # Stage 2: Install pre-compiled package.
 FROM pytorch/pytorch:$PYTORCH_TAG_PREFIX-runtime
