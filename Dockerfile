@@ -20,9 +20,7 @@ RUN conda install --yes --quiet --freeze-installed --channel conda-forge \
         python-wget \
         scipy \
     # Clean up the caches so they are not part of the final image.
-    && conda clean --all --yes \
-    # Run first-time setup for matplotlib.
-    && python -c 'import matplotlib'
+    && conda clean --all --yes
 
 # In this stage, set up the final image.
 FROM python-deps
