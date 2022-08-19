@@ -329,6 +329,20 @@ def movedim(input, source, destination):
     return input.permute(*perm)
 
 
+def movedim_front2back(tensor, dim):
+    """Move the first N dimensions to the back"""
+    dims = list(range(tensor.dim()))
+    perm = dims[dim:] + dims[:dim]
+    return tensor.permute(*perm)
+
+
+def movedim_back2front(tensor, dim):
+    """Move the last N dimensions to the front"""
+    dims = list(range(tensor.dim()))
+    perm = dims[-dim:] + dims[:-dim]
+    return tensor.permute(*perm)
+
+
 def moveelem(input, source, destination, dim=-1):
     """Move elements in a tensor
 
