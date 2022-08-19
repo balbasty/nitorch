@@ -61,7 +61,7 @@ namespace {
         alpha = rz / at::clamp_min(pAp, 1e-12);  // alpha = (r' * z) / (p' * Ap)
 
         if (tol) {
-          obj = alpha * (alpha * pAp + 2 * dotprod(r, z));
+          obj = alpha * (alpha * pAp + 2 * rz);
           obj = at::sum(obj);
           //NI_TRACE("PCG: %d/%d, obj = %f, tol = %f\n", 
           //         n, nb_iter, obj.item<double>() / numel, tol);

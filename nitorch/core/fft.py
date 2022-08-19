@@ -20,7 +20,7 @@ is used to represent complex tensors.
 """
 import functools
 import torch
-from . import py, utils
+from . import py, utils, linalg
 
 
 _torch_has_old_fft = callable(getattr(torch, 'fft', None))
@@ -95,6 +95,7 @@ def imag(x):
         x = x.imag
         if callable(x):
             x = x()
+        return x
     else:
         return x[..., 1]
 
@@ -144,7 +145,8 @@ def mul(x, y, real=False):
         xreal = not x.is_complex()
         yreal = not y.is_complex()
         if (xreal and yreal) or (not xreal and not yreal):
-            return torch.matmul(x, y)
+            xy = torch.mul(x, y)
+            return xy
         elif xreal:
             return torch.complex(x * _real(y), x * imag(y))
         else:
@@ -159,6 +161,41 @@ def mul(x, y, real=False):
     else:
         return complex(_real(x) * _real(y) - imag(x) * imag(y),
                        _real(x) * imag(y) + imag(x) * _real(y))
+
+
+def matvec(x, y, real=False):
+    if _torch_has_complex:
+        xreal = not x.is_complex()
+        yreal = not y.is_complex()
+        if (xreal and yreal) or (not xreal and not yreal):
+            return linalg.matvec(x, y)
+        elif xreal:
+            return torch.complex(linalg.matvec(x, _real(y)),
+                                 linalg.matvec(x, imag(y)))
+        else:
+            return torch.complex(linalg.matvec(_real(x), y),
+                                 linalg.matvec(imag(x), y))
+    xreal, yreal = py.make_list(real, 2)
+    if xreal and yreal:
+        return linalg.matvec(x, y)
+    elif xreal:
+        x = utils.movedim(x.unsqueeze(-1), -1, -3)
+        y = utils.movedim(y, -1, -2)
+        xy = linalg.matvec(x, y)
+        xy = utils.movedim(xy, -2, -1)
+        return xy
+    elif yreal:
+        x = utils.movedim(x, -1, -3)
+        y = utils.movedim(y.unsqueeze(-1), -1, -2)
+        xy = linalg.matvec(x, y)
+        xy = utils.movedim(xy, -2, -1)
+        return xy
+    else:
+        rr = linalg.matvec(_real(x), _real(y))
+        ii = linalg.matvec(imag(x), imag(y))
+        ri = linalg.matvec(_real(x), imag(y))
+        ir = linalg.matvec(imag(x), _real(y))
+        return complex(rr - ii, ri + ir)
 
 
 if _torch_has_fftshift:

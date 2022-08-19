@@ -1235,58 +1235,46 @@ def solve_field(hessian, gradient, weights=None, dim=None,
         wa = wm = wb = weights
     has_weights = (wa is not None or wm is not None or wb is not None)
 
-    if not absolute and not membrane:
-        def regulariser(x):
-            return _bending(x, weights=wb, **fdopt).mul_(bending).mul_(factor)
-    elif not absolute and not bending:
-        def regulariser(x):
-            return _membrane(x, weights=wm, **fdopt).mul_(membrane).mul_(factor)
-    elif membrane:
-        def regulariser(x):
-            y = _membrane(x, weights=wm, **fdopt).mul_(membrane)
-            if absolute:
-                y.add_(_absolute(x, weights=wa), alpha=absolute)
-            if bending:
-                y.add_(_bending(x, weights=wb, **fdopt), alpha=bending)
-            return y.mul_(factor)
-    elif bending:
-        def regulariser(x):
-            y = _bending(x, weights=wb, **fdopt).mul_(bending)
-            if absolute:
-                y.add_(_absolute(x, weights=wa), alpha=absolute)
-            if membrane:
-                y.add_(_membrane(x, weights=wm, **fdopt), alpha=membrane)
-            return y.mul_(factor)
-    else:
-        def regulariser(x):
-            y = torch.zeros_like(x)
-            if absolute:
-                y.add_(_absolute(x, weights=wa), alpha=absolute)
-            if membrane:
-                y.add_(_membrane(x, weights=wm, **fdopt), alpha=membrane)
-            if bending:
-                y.add_(_bending(x, weights=wb, **fdopt), alpha=bending)
-            return y.mul_(factor)
+    absolute = py.make_list(absolute, nb_prm) if absolute else []
+    membrane = py.make_list(membrane, nb_prm) if membrane else []
+    bending = py.make_list(bending, nb_prm) if bending else []
+
+    wa = wa.expand(gradient.shape) if wa is not None else [None] * nb_prm
+    wm = wm.expand(gradient.shape) if wm is not None else [None] * nb_prm
+    wb = wb.expand(gradient.shape) if wb is not None else [None] * nb_prm
+
+    def regulariser(x):
+        y = torch.zeros_like(x)
+        for x1, y1, w1, alpha in zip(x, y, wa, absolute):
+            y1.add_(_absolute(x1, weights=w1), alpha=alpha)
+        for x1, y1, w1, alpha in zip(x, y, wm, membrane):
+            y1.add_(_membrane(x1, weights=w1, **fdopt), alpha=alpha)
+        for x1, y1, w1, alpha in zip(x, y, wb, bending):
+            y1.add_(_bending(x1, weights=w1, **fdopt), alpha=alpha)
+        return y.mul_(factor)
 
     # diagonal of the regulariser
     if has_weights:
         smo = torch.zeros_like(gradient)
     else:
         smo = gradient.new_zeros([nb_prm] + [1]*dim)
-    if absolute:
-        smo.add_(absolute_diag(weights=wa), alpha=absolute)
-    if membrane:
-        smo.add_(membrane_diag(weights=wm, **fdopt), alpha=membrane)
-    if bending:
-        smo.add_(bending_diag(weights=wb, **fdopt), alpha=bending)
+    for smo1, w1, alpha in zip(smo, wa, absolute):
+        if alpha:
+            smo1.add_(absolute_diag(weights=w1), alpha=alpha)
+    for smo1, w1, alpha in zip(smo, wm, membrane):
+        if alpha:
+            smo1.add_(membrane_diag(weights=w1, **fdopt), alpha=alpha)
+    for smo1, w1, alpha in zip(smo, wb, bending):
+        if alpha:
+            smo1.add_(bending_diag(weights=w1, **fdopt), alpha=alpha)
     smo.mul_(factor)
 
     if is_diag:
         hessian_smo = hessian + smo
     else:
         hessian_smo = hessian.clone()
-        hessian_diag = matdiag(hessian_smo.transpose(-dim-1, -1), nb_prm).transpose(-dim-1, -1)
-        hessian_diag.add_(smo)
+        hessian_diag = matdiag(hessian_smo.transpose(-dim-1, -1), nb_prm)
+        hessian_diag.transpose(-dim-1, -1).add_(smo)
 
     def s2h(s):
         # do not slice if hessian_smo is constant across space

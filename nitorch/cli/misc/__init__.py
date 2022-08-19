@@ -6,4 +6,5 @@ from . import info
 from . import inpaint
 from . import pad
 from . import pool
+from . import smooth
 from . import unstack

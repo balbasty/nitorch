@@ -692,7 +692,12 @@ def _rotate_grad(grad, aff=None, dense=None):
     return grad
 
 
-class NonLinModel:
+class TransformationModel:
+    def parameters(self):
+        raise NotImplementedError
+
+
+class NonLinModel(TransformationModel):
     """Base class for non-linear deformations."""
     # TODO: currently tailored for dense fields but could be adapted
     #   to spline-encoded deformations (or velocities)
@@ -721,7 +726,7 @@ class NonLinModel:
         else:
             raise ValueError('unknown:', model)
 
-    def __init__(self, dat=None, factor=1, prm=None,
+    def __init__(self, dat=None, factor=1, penalty=None,
                  steps=8, kernel=None, **backend):
         """
 
@@ -731,7 +736,7 @@ class NonLinModel:
             Pre-allocated displacement or its shape
         factor : float, default=1
             Regularization factor
-        prm : dict(absolute, membrane, bending, lame), optional
+        penalty : dict(absolute, membrane, bending, lame), optional
             Regularization factor for each component.
             Informed values are used by default.
         steps : int, default=8
@@ -742,8 +747,8 @@ class NonLinModel:
         """
         super().__init__()
         self.factor = factor
-        self.prm = prm or regutils.defaults_velocity()
-        self.prm.pop('voxel_size', None)
+        self.penalty = penalty or regutils.defaults_velocity()
+        self.penalty.pop('voxel_size', None)
         self.steps = steps
         self.kernel = kernel
         if dat is not None:
@@ -758,6 +763,11 @@ class NonLinModel:
     dim = property(lambda self: self.dat.dim if self.dat is not None else None)
     voxel_size = property(lambda self: self.dat.voxel_size if self.dat is not None else None)
 
+    def parameters(self):
+        if not self.dat:
+            return None
+        return self.dat.dat
+
     def set_dat(self, dat, affine=None, **backend):
         if isinstance(dat, str):
             dat = io.map(dat)
@@ -768,10 +778,22 @@ class NonLinModel:
         self.dat = Displacement.make(dat, affine=affine, **backend)
         return self
 
+    def set_kernel(self, kernel=None):
+        if kernel is None:
+            kernel = spatial.greens(self.shape, **self.penalty,
+                                    factor=self.factor / py.prod(self.shape),
+                                    voxel_size=self.voxel_size,
+                                    **utils.backend(self.dat))
+        self.kernel = kernel
+        return self
+
+    def reset_kernel(self, kernel=None):
+        return self.set_kernel(kernel)  # backward compatibility
+
     def make(self, model, **kwargs):
         if isinstance(model, type(self)):
             kwargs.setdefault('factor', model.factor)
-            kwargs.setdefault('prm', model.prm)
+            kwargs.setdefault('prm', model.penalty)
             kwargs.setdefault('steps', model.steps)
             kwargs.setdefault('kernel', model.kernel)
             kwargs.setdefault('dat', model.dat)
@@ -795,7 +817,7 @@ class NonLinModel:
     def regulariser(self, v=None):
         if v is None:
             v = self.dat
-        return spatial.regulariser_grid(v, **self.prm,
+        return spatial.regulariser_grid(v, **self.penalty,
                                         factor=self.factor / py.prod(self.shape),
                                         voxel_size=self.voxel_size)
 
@@ -805,20 +827,30 @@ class NonLinModel:
     def downsample_(self, factor=2, **kwargs):
         self.clear_cache()
         self.dat.downsample_(factor, **kwargs)
+        if self.kernel is not None:
+            self.set_kernel()
         return self
 
     def downsample(self, factor=2, **kwargs):
         dat = self.dat.downsample(factor, **kwargs)
-        return type(self)(dat, self.factor, self.prm, self.steps, self.kernel)
+        obj = type(self)(dat, self.factor, self.penalty, self.steps)
+        if self.kernel is not None:
+            obj.set_kernel()
+        return obj
 
     def upsample_(self, factor=2, **kwargs):
         self.clear_cache()
         self.dat.upsample_(factor, **kwargs)
+        if self.kernel is not None:
+            self.set_kernel()
         return self
 
     def upsample(self, factor=2, **kwargs):
         dat = self.dat.upsample(factor, **kwargs)
-        return type(self)(dat, self.factor, self.prm, self.steps, self.kernel)
+        obj = type(self)(dat, self.factor, self.penalty, self.steps)
+        if self.kernel is not None:
+            obj.set_kernel()
+        return obj
 
     def __repr__(self):
         s = []
@@ -827,7 +859,7 @@ class NonLinModel:
         else:
             s += ['<uninitialized>']
         s += [f'factor={self.factor}']
-        s += [f'{key}={value}' for key, value in self.prm.items()]
+        s += [f'{key}={value}' for key, value in self.penalty.items()]
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'
 
@@ -842,18 +874,6 @@ class ShootModel(NonLinModel):
         obj.__init__(*args, **kwargs)
         return obj
 
-    def set_kernel(self, kernel=None):
-        if kernel is None:
-            kernel = spatial.greens(self.shape, **self.prm,
-                                    factor=self.factor / py.prod(self.shape),
-                                    voxel_size=self.voxel_size,
-                                    **utils.backend(self.dat))
-        self.kernel = kernel
-        return self
-
-    def reset_kernel(self, kernel=None):
-        return self.set_kernel(kernel)  # backward compatibility
-
     def set_dat(self, dat, affine=None, **backend):
         super().set_dat(dat, affine, **backend)
         self.reset_kernel()
@@ -867,7 +887,7 @@ class ShootModel(NonLinModel):
         if recompute or self._cache is None:
             grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                  factor=self.factor / py.prod(self.shape),
-                                 voxel_size=self.voxel_size, **self.prm,
+                                 voxel_size=self.voxel_size, **self.penalty,
                                  displacement=True)
         else:
             grid = self._cache
@@ -891,8 +911,8 @@ class ShootModel(NonLinModel):
         if recompute or self._icache is None:
             _, grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                     factor=self.factor / py.prod(self.shape),
-                                    voxel_size=self.voxel_size, **self.prm,
-                                    return_inverse=True,  displacement=True)
+                                    voxel_size=self.voxel_size, **self.penalty,
+                                    return_inverse=True, displacement=True)
         else:
             grid = self._icache
         if cache_result:
@@ -915,7 +935,7 @@ class ShootModel(NonLinModel):
         if recompute or self._cache is None or self._icache is None:
             grid, igrid = spatial.shoot(v, self.kernel, steps=self.steps,
                                         factor=self.factor / py.prod(self.shape),
-                                        voxel_size=self.voxel_size, **self.prm,
+                                        voxel_size=self.voxel_size, **self.penalty,
                                         return_inverse=True, displacement=True)
         if cache_result:
             self._cache = grid
@@ -1157,7 +1177,7 @@ class SmallDefModel(NonLinModel):
         if v is None:
             v = self.dat.dat
         if recompute or self._icache is None:
-            grid = spatial.grid_inv(v, type='disp', **self.prm)
+            grid = spatial.grid_inv(v, type='disp', **self.penalty)
         else:
             grid = self._icache
         if cache_result:
@@ -1175,7 +1195,7 @@ class SmallDefModel(NonLinModel):
             v = self.dat.dat
         grid = v
         if recompute or self._icache is None:
-            igrid = spatial.grid_inv(v, type='disp', **self.prm)
+            igrid = spatial.grid_inv(v, type='disp', **self.penalty)
         else:
             igrid = self._icache
         if cache_result:
@@ -1230,7 +1250,7 @@ class SmallDefModel(NonLinModel):
         return g, h, mugrad
 
 
-class AffineModel:
+class AffineModel(TransformationModel):
     """Affine transformation model encoded in a Lie algebra"""
 
     def __init__(self, basis, factor=1, prm=None, dat=None, position='symmetric'):
@@ -1263,6 +1283,11 @@ class AffineModel:
     def set_dat(self, dat=None, dim=None, **backend):
         self.dat = LogAffine.make(dat, basis=self._basis, dim=dim, **backend)
         return self
+
+    def parameters(self):
+        if not self.dat:
+            return None
+        return self.dat.dat
 
     basis = property(lambda self: self.dat.basis if self.dat is not None else None)
     basis_name = property(lambda self: self._basis)

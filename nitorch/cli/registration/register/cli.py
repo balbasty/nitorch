@@ -1,7 +1,3 @@
-import warnings
-
-import copy
-
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import parser, help
@@ -12,6 +8,9 @@ from nitorch.core import utils, py, dtypes
 import torch
 import sys
 import os
+import json
+import warnings
+import copy
 import math as pymath
 
 
@@ -83,7 +82,7 @@ def _map_image(fnames, dim=None):
     return imgs, affine
 
 
-def _load_image(fnames, dim=None, device=None, label=False):
+def _load_image(fnames, dim=None, device=None, label=False, missing=0):
     """
     Load a N-D image from disk
     Returns:
@@ -106,8 +105,9 @@ def _load_image(fnames, dim=None, device=None, label=False):
             dat[i] = dat0 == l
         mask = None
     else:
-        dat = dat.fdata(device=device, rand=True, missing=0)
+        dat = dat.fdata(device=device, rand=True, missing=missing)
         mask = torch.isfinite(dat)
+        mask = mask.all(dim=0)
         dat.masked_fill_(~mask, 0)
     affine = affine.to(dat.device, torch.float32)
     return dat, mask, affine
@@ -171,7 +171,7 @@ def _make_image(option, dim=None, device=None):
     Returns: ImagePyramid
     """
     dat, mask, affine = _load_image(option.files, dim=dim, device=device,
-                                    label=option.label)
+                                    label=option.label, missing=option.missing)
     dim = dat.dim() - 1
     if option.mask:
         mask1 = mask
@@ -718,9 +718,9 @@ def _do_register(loss_list, affine, nonlin,
             if i == len(affines) - 1:
                 break
             affine_optim.reset_state()
-            register = pairwise.Register(loss_list[0], affine, None, affine_optim,
-                                         verbose=options.verbose,
-                                         framerate=options.framerate)
+            register = pairwise.PairwiseRegister(loss_list[0], affine, None, affine_optim,
+                                                 verbose=options.verbose,
+                                                 framerate=options.framerate)
             register.fit()
             affine_prev = affine
     elif len(affine) == 1:
@@ -750,9 +750,9 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
     if options.pyramid.concurrent:
         joptim.reset_state()
-        register = pairwise.Register(loss_list, affine, nonlin, joptim,
-                                     verbose=options.verbose,
-                                     framerate=options.framerate)
+        register = pairwise.PairwiseRegister(loss_list, affine, nonlin, joptim,
+                                             verbose=options.verbose,
+                                             framerate=options.framerate)
         register.fit()
 
     # ------------------------------------------------------------------
@@ -775,9 +775,9 @@ def _do_register(loss_list, affine, nonlin,
                 else:
                     nonlin.upsample_()
             joptim.reset_state()
-            register = pairwise.Register(loss_level, affine, nonlin, joptim,
-                                         verbose=options.verbose,
-                                         framerate=options.framerate)
+            register = pairwise.PairwiseRegister(loss_level, affine, nonlin, joptim,
+                                                 verbose=options.verbose,
+                                                 framerate=options.framerate)
             register.fit()
 
 
@@ -792,16 +792,17 @@ def _build_losses(options, pyramids, device):
             # not a proper loss
             continue
         if not loss.fix.rescale[-1]:
-            loss.fix.rescale = False
+            loss.fix.rescale = (0, 0)
         if not loss.mov.rescale[-1]:
-            loss.mov.rescale = False
+            loss.mov.rescale = (0, 0)
         if loss.name in ('cat', 'dice'):
-            loss.fix.rescale = False
-            loss.mov.rescale = False
+            loss.fix.rescale = (0, 0)
+            loss.mov.rescale = (0, 0)
         if loss.name == 'emmi':
-            loss.mov.rescale = False
+            loss.mov.rescale = (0, 0)
             loss.fix.discretize = loss.fix.discretize or 256
             loss.mov.soft_quantize = loss.mov.discretize or 16
+            loss.mov.missing = []
         loss.fix.pyramid = pyramid['fix']
         loss.mov.pyramid = pyramid['mov']
         loss.fix.pyramid_method = options.pyramid.name
@@ -824,7 +825,7 @@ def _build_losses(options, pyramids, device):
                     lossobj, fix, mov, factor=factor, backward=True)
             else:
                 loss.fix, loss.mov = loss.mov, loss.fix
-                loss.mov.rescale = False
+                loss.mov.rescale = (0, 0)
                 loss.fix.discretize = loss.fix.discretize or 256
                 loss.mov.soft_quantize = loss.mov.discretize or 16
                 lossobj = objects.LossComponent(
@@ -898,7 +899,8 @@ def _build_affine(options, can_use_2nd_order):
                 and not isinstance(affine_optim, (optim.Powell, optim.LBFGS)):
             affine_optim.search = options.affine.optim.line_search
         affine_optim.iter = optim.OptimIterator(
-            max_iter=max_iter, tol=options.affine.optim.tolerance)
+            max_iter=max_iter, tol=options.affine.optim.tolerance,
+            stop=options.affine.optim.crit)
 
     return affine, affine_optim
 
@@ -926,7 +928,6 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
         space = objects.MeanSpace(
             [image_dict[key] for key in (options.nonlin.fov or image_dict)],
             voxel_size=vx, vx_unit=vx_unit, pad=pad, pad_unit=pad_unit)
-        print(space)
         prm = dict(absolute=options.nonlin.absolute,
                    membrane=options.nonlin.membrane,
                    bending=options.nonlin.bending,
@@ -936,7 +937,7 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
                                    device=device)
         Model = objects.NonLinModel.subclass(options.nonlin.name)
         nonlin = Model(dat=vel, factor=options.nonlin.factor,
-                       prm=prm, steps=getattr(options.nonlin, 'steps', None))
+                       penalty=prm, steps=getattr(options.nonlin, 'steps', None))
 
         max_iter = options.nonlin.optim.max_iter
         if not max_iter:
@@ -981,7 +982,7 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
                     sub_iter = 16
             prm = {'factor': nonlin.factor / py.prod(nonlin.shape),
                    'voxel_size': nonlin.voxel_size,
-                   **nonlin.prm}
+                   **nonlin.penalty}
             if getattr(options.nonlin.optim, 'solver', 'cg') == 'cg':
                 nonlin_optim = optim.GridCG(
                     lr=options.nonlin.optim.lr,
@@ -1076,6 +1077,13 @@ def _main(options):
         fname = options.nonlin.output.format(dir=odir, sep=os.path.sep,
                                              name=options.nonlin.name)
         io.savef(nonlin.dat.dat, fname, affine=nonlin.affine)
+        if isinstance(nonlin, objects.ShootModel):
+            nldir, nlbase, _ = py.fileparts(fname)
+            fname = os.path.join(nldir, nlbase + '.json')
+            with open(fname, 'w') as f:
+                prm = dict(nonlin.penalty)
+                prm['factor'] = nonlin.factor / py.prod(nonlin.shape)
+                json.dump(prm, f)
         print('Nonlin ->', fname)
     for loss in options.loss:
         _warp_image(loss, affine=affine, nonlin=nonlin,

@@ -266,7 +266,7 @@ def greens_apply(mom, greens, factor=1, voxel_size=1):
         mom = fft.mul(mom, greens, real=(False, True))
         mom = fft.mul(mom, voxel_size, real=(False, True))
     else:
-        mom = fft.mul(mom, greens, real=(False, True))
+        mom = fft.matvec(greens, mom, real=(True, False))
 
     # inverse fourier transform
     # mom = utils.movedim(mom, -1, 0)

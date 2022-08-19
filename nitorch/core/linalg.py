@@ -599,9 +599,15 @@ def _square_(x):
 
 
 @torch.jit.script
-def _sym_solve2(diag, uppr, vec, shape: List[int]):
+def _sym_det2(diag, uppr):
     det = _square(uppr[0]).neg_()
     det.addcmul_(diag[0], diag[1])
+    return det
+
+
+@torch.jit.script
+def _sym_solve2(diag, uppr, vec, shape: List[int]):
+    det = _sym_det2(diag, uppr)
     res = vec.new_empty(shape)
     res[0] = diag[1] * vec[0] - uppr[0] * vec[1]
     res[1] = diag[0] * vec[1] - uppr[0] * vec[0]
@@ -610,11 +616,17 @@ def _sym_solve2(diag, uppr, vec, shape: List[int]):
 
 
 @torch.jit.script
-def _sym_solve3(diag, uppr, vec, shape: List[int]):
+def _sym_det3(diag, uppr):
     det = diag.prod(0) + 2 * uppr.prod(0) \
         - (diag[0] * _square(uppr[2]) +
            diag[2] * _square(uppr[0]) +
            diag[1] * _square(uppr[1]))
+    return det
+
+
+@torch.jit.script
+def _sym_solve3(diag, uppr, vec, shape: List[int]):
+    det = _sym_det3(diag, uppr)
     res = vec.new_empty(shape)
     res[0] = (diag[1] * diag[2] - _square(uppr[2])) * vec[0] \
            + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[1] \
@@ -630,7 +642,7 @@ def _sym_solve3(diag, uppr, vec, shape: List[int]):
 
 
 @torch.jit.script
-def _sym_solve4(diag, uppr, vec, shape: List[int]):
+def _sym_det4(diag, uppr):
     det = diag.prod(0) \
          + (_square(uppr[0] * uppr[5]) +
             _square(uppr[1] * uppr[4]) +
@@ -648,6 +660,12 @@ def _sym_solve4(diag, uppr, vec, shape: List[int]):
             diag[1] * diag[2] * _square(uppr[2]) +
             diag[1] * diag[3] * _square(uppr[1]) +
             diag[2] * diag[3] * _square(uppr[0]))
+    return det
+
+
+@torch.jit.script
+def _sym_solve4(diag, uppr, vec, shape: List[int]):
+    det = _sym_det4(diag, uppr)
     inv01 = (- diag[2] * diag[3] * uppr[0]
              + diag[2] * uppr[2] * uppr[4]
              + diag[3] * uppr[1] * uppr[3]
@@ -788,7 +806,58 @@ def sym_solve(mat, vec, eps=None):
         vec = utils.fast_movedim(vec, 0, -1)
         mat = utils.fast_movedim(mat, 0, -1)
         mat = sym_to_full(mat)
-        return torch.solve(vec, mat)
+        return lmdiv(mat, vec.unsqueeze(-1)).squeeze(-1)
+
+    return utils.fast_movedim(res, 0, -1)
+
+
+def sym_det(mat):
+    """Determinant of a sparse symmetric matrix.
+
+    Warning
+    -------
+    .. Currently, autograd does not work through this function.
+
+    Notes
+    -----
+    .. Orders up to 4 are implemented in closed-form.
+    .. Orders > 4 use torch's batched implementation but require
+       building the full matrices.
+    .. Backpropagation works at least for torch >= 1.6
+       It should be checked on earlier versions.
+
+    Parameters
+    ----------
+    mat : (..., M*(M+1)//2) tensor
+        A symmetric matrix that is stored in a sparse way.
+        Its elements along the last (flat) dimension are the
+        diagonal elements followed by the flattened upper-half elements.
+        E.g., [a00, a11, aa22, a01, a02, a12]
+
+    Returns
+    -------
+    result : (..., M) tensor
+    """
+
+    # make the vector dimension first so that the code is less ugly
+    mat = utils.fast_movedim(mat, -1, 0)
+    nb_prm = int((math.sqrt(1 + 8 * mat.shape[-1]) - 1) // 2)
+
+    diag = mat[:nb_prm]  # diagonal
+    uppr = mat[nb_prm:]  # upper triangular part
+
+    if nb_prm == 1:
+        res = diag
+    elif nb_prm == 2:
+        res = _sym_det2(diag, uppr)
+    elif nb_prm == 3:
+        res = _sym_det3(diag, uppr)
+    elif nb_prm == 4:
+        res = _sym_det4(diag, uppr)
+    else:
+        mat = utils.fast_movedim(mat, 0, -1)
+        mat = sym_to_full(mat)
+        return torch.det(mat)
 
     return utils.fast_movedim(res, 0, -1)
 

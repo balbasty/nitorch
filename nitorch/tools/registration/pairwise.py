@@ -15,7 +15,7 @@ from nitorch.core import py, utils, linalg, math
 import torch
 from .utils import jg, jhj
 from . import optim as optm, utils as regutils
-from .objects import SVFModel, MeanSpace
+from .objects import SVFModel, ShootModel, MeanSpace
 import copy
 
 
@@ -41,11 +41,126 @@ import copy
 #      too large, it would allow us to use Gauss-Newton directly.
 
 
+class PairwiseRegister:
+    """A class that registers pairs of images"""
+
+    def __init__(self,
+                 losses,                 # list[LossComponent]
+                 affine=None,            # AffineModel
+                 nonlin=None,            # NonLinModel
+                 optim=None,             # Optimizer
+                 verbose=True,           # verbosity level
+                 framerate=1,            # plotting framerate
+                 ):
+        """
+
+        Parameters
+        ----------
+        losses : list[LossComponent]
+            A list of losses to optimize.
+        affine : AffineModel, optional
+            An object describing the affine transformation model
+        nonlin : NonLinModel
+            An object describing the nonlinear transformation model
+        optim : Optimizer
+            A numerical optimizer. If both `affine` and `nonlin` are
+            provided, the optimizer should accept a list of tensors
+            (first: affine, second: nonlin) and
+            a list of closures as arguments (e.g., SequentialOptimizer)
+        verbose : bool or int, default=True
+            Verbosity level.
+            - 0: quiet
+            - 1: print iterations
+            - 2: print iterations + line searches (slower)
+            - 3: plot stuff (much slower).
+        framerate : float, default=1
+            Update plot at most `framerate` times per second.
+        """
+        self.losses = losses
+        self.verbose = verbose
+        self.affine = affine
+        self.nonlin = nonlin
+        self.optim = optim
+        self.framerate = framerate
+
+    def __call__(self):
+        return self.fit()
+
+    def fit(self):
+        backend = dict(device=self.losses[0].moving.device,
+                       dtype=self.losses[0].moving.dtype)
+        if self.affine and self.affine.parameters() is None:
+            self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
+                                              **backend)
+            self.affine.parameters().fill_(1e-12)
+        if self.nonlin and self.nonlin.parameters() is None:
+            space = MeanSpace([loss.fixed for loss in self.losses] +
+                              [loss.moving for loss in self.losses])
+            self.nonlin.set_dat(space.shape, affine=space.affine, **backend)
+            self.nonlin.parameters().fill_(1e-12)
+
+        if self.verbose > 1:
+            for loss in self.losses:
+                print(loss)
+            if self.affine:
+                print(self.affine)
+            if self.nonlin:
+                print(self.nonlin)
+            print(self.optim)
+            print('')
+
+        if self.verbose:
+            if self.nonlin:
+                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"nonlin":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
+                print('-' * 89)
+            else:
+                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
+                print('-' * 74)
+
+        step = PairwiseRegisterStep(self.losses, self.affine, self.nonlin, self.verbose)
+
+        if self.nonlin and isinstance(self.nonlin, ShootModel):
+            if self.nonlin.kernel is None:
+                self.nonlin.set_kernel()
+
+        # initialize loss
+        verbose, self.verbose = self.verbose, False
+        if self.nonlin:
+            step.do_vel(self.nonlin.parameters(), grad=False, hess=False)
+            if self.affine:
+                step.do_affine(self.affine.parameters(), grad=False, hess=False)
+        else:
+            step.do_affine_only(self.affine.parameters(), grad=False, hess=False)
+        self.verbose = verbose
+
+        step.framerate = self.framerate
+        if self.affine and self.nonlin:
+            if isinstance(self.optim[1], optm.FirstOrder):
+                if self.nonlin.kernel is None:
+                    self.nonlin.set_kernel()
+                self.optim[1].preconditioner = self.nonlin.greens_apply
+            self.optim.iter([self.affine.parameters(), self.nonlin.parameters()],
+                            [step.do_affine, step.do_vel])
+        elif self.affine:
+            self.optim.iter(self.affine.dat.dat, step.do_affine_only)
+        elif self.nonlin:
+            if isinstance(self.optim, optm.FirstOrder):
+                if self.nonlin.kernel is None:
+                    self.nonlin.set_kernel()
+                self.optim.preconditioner = self.nonlin.greens_apply
+            self.optim.iter(self.nonlin.parameters(), step.do_vel)
+
+        if self.verbose:
+            print('')
+
+        return step.loss_value
+
+
 def _almost_identity(aff):
     return torch.allclose(aff, torch.eye(*aff.shape, **utils.backend(aff)))
 
 
-class RegisterStep:
+class PairwiseRegisterStep:
     """Forward pass of Diffeo+Affine registration, with derivatives"""
     # We use a class so that we can have a state to keep track of
     # iterations and objectives (mainly for pretty printing)
@@ -780,91 +895,5 @@ class RegisterStep:
         if hess:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
-
-
-class Register:
-
-    def __init__(self,
-                 losses,                 # list[LossComponent]
-                 affine=None,            # AffineModel
-                 nonlin=None,            # NonLinModel
-                 optim=None,             # Optimizer
-                 verbose=True,           # verbosity level
-                 framerate=1,            # plotting framerate
-                 ):
-        self.losses = losses
-        self.verbose = verbose
-        self.affine = affine
-        self.nonlin = nonlin
-        self.optim = optim
-        self.framerate = framerate
-
-    def __call__(self):
-        return self.fit()
-
-    def fit(self):
-        backend = dict(device=self.losses[0].moving.device,
-                       dtype=self.losses[0].moving.dtype)
-        if self.affine and not self.affine.dat:
-            self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
-                                              **backend)
-            self.affine.dat.dat.fill_(1e-12)
-        if self.nonlin and not self.nonlin.dat:
-            space = MeanSpace([loss.fixed for loss in self.losses] +
-                              [loss.moving for loss in self.losses])
-            self.nonlin.set_dat(space.shape, affine=space.affine, **backend)
-            self.nonlin.dat.dat.fill_(1e-12)
-
-        if self.verbose > 1:
-            for loss in self.losses:
-                print(loss)
-            if self.affine:
-                print(self.affine)
-            if self.nonlin:
-                print(self.nonlin)
-            print(self.optim)
-            print('')
-
-        if self.verbose:
-            if self.nonlin:
-                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"nonlin":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
-                print('-' * 89)
-            else:
-                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
-                print('-' * 74)
-
-        step = RegisterStep(self.losses, self.affine, self.nonlin, self.verbose)
-
-        # initialize loss
-        verbose, self.verbose = self.verbose, False
-        if self.nonlin:
-            step.do_vel(self.nonlin.dat.dat, grad=False, hess=False)
-            if self.affine:
-                step.do_affine(self.affine.dat.dat, grad=False, hess=False)
-        else:
-            step.do_affine_only(self.affine.dat.dat, grad=False, hess=False)
-        self.verbose = verbose
-
-        step.framerate = self.framerate
-        if self.affine and self.nonlin:
-            if isinstance(self.optim.optim[1], optm.FirstOrder):
-                if self.nonlin.kernel is None:
-                    self.nonlin.set_kernel()
-                self.optim.optim[1].preconditioner = self.nonlin.greens_apply
-            self.optim.iter([self.affine.dat.dat, self.nonlin.dat.dat],
-                            [step.do_affine, step.do_vel])
-        elif self.affine:
-            self.optim.iter(self.affine.dat.dat, step.do_affine_only)
-        elif self.nonlin:
-            if isinstance(self.optim, optm.FirstOrder):
-                if self.nonlin.kernel is None:
-                    self.nonlin.set_kernel()
-                self.optim.preconditioner = self.nonlin.greens_apply
-            self.optim.iter(self.nonlin.dat.dat, step.do_vel)
-
-        if self.verbose:
-            print('')
-
-        return step.loss_value
 
 

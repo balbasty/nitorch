@@ -523,6 +523,8 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
     stride = make_list(stride, dim)
     padding = make_list(padding, dim)
     if torch.is_tensor(kernel):
+        if fn:
+            kernel = fn(kernel)
         tensor = conv(dim, tensor, kernel, bound=bound,
                       stride=stride, padding=padding)
     else:
@@ -532,7 +534,7 @@ def smooth(tensor, type='gauss', fwhm=1, basis=1, bound='dct2', dim=None,
             subpadding = [0] * dim
             subpadding[d] = padding[d]
             if fn:
-                kernel = fn(kernel)
+                ker = fn(ker)
             tensor = conv(dim, tensor, ker, bound=bound,
                           stride=substride, padding=subpadding)
     # stride = make_list(stride, dim)

@@ -659,7 +659,6 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
     lin = []
     scales = []
     shifts = []
-    print(factor)
     for anch, f, inshp, outshp in zip(anchor, factor, inshape, outshape):
         if inshp == 1 or outshp == 1:
             # anchor must be "edges"

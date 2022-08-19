@@ -349,6 +349,17 @@ class InterleavedOptimIterator(OptimIterator):
         """
         super().__init__(list(optim), max_iter, tol, stop, **kwargs)
 
+    def __getitem__(self, item):
+        print(self.optim)
+        return self.optim[item]
+
+    def __iter__(self):
+        for optim in self.optim:
+            yield optim
+
+    def __len__(self):
+        return len(self.optim)
+
     def reset_state(self):
         for optim in self.optim:
             optim.reset_state()
