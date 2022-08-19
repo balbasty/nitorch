@@ -182,7 +182,7 @@ class BSplineCurve:
         # convert (0, 1) to (0, n)
         shape = t.shape
         t = t.flatten()
-        t = t.clamp(0, 1) * (len(self.waypoints) - 1)
+        t = t.clamp(0, 1) * (len(self.coeff_radius) - 1)
 
         # interpolate
         y = self.coeff_radius                 # [K]
@@ -283,9 +283,10 @@ def min_dist(x, s, max_iter=2**16, tol=1e-6, steps=100):
         d = torch.min(d, d1)
 
     # Fine tune using Gauss-Newton optimization
-    nll = d.square_().sum()
+    nll = d.square_().sum(-1)
     # d = s.eval_position(t).sub_(x)
-    for n_iter in range(max_iter):
+    # print(f'{0:03d} {nll.sum().item():12.6g}')
+    for n_iter in range(1, max_iter+1):
         # compute the distance between x and s(t) + gradients
         d, g = s.eval_grad_position(t)
         d.sub_(x)
@@ -296,25 +297,29 @@ def min_dist(x, s, max_iter=2**16, tol=1e-6, steps=100):
 
         # Perform GN step (with line search)
         # TODO: I could get rid of the line search
-        armijo = 1
         t0 = t.clone()
-        nll0 = nll
-        success = False
+        nll0: torch.Tensor = nll
+        armijo = torch.full_like(t, 1024)
+        success = torch.zeros_like(t, dtype=torch.bool)
         for n_ls in range(12):
-            t = torch.sub(t0, g, alpha=armijo, out=t)
+            # t = torch.sub(t0, g, alpha=armijo, out=t)
+            t = torch.where(success, t, t0 - armijo * g)
             t.clamp_(0, 1)
             d = s.eval_position(t).sub_(x)
-            nll = d.square().sum(dtype=torch.double)
-            if nll < nll0:
-                success = True
+            nll = d.square().sum(-1)
+            success = success.logical_or_(nll < nll0)
+            if success.all():
                 break
-            armijo /= 2
-        if not success:
-            t = t0
+            armijo = torch.where(success, armijo, armijo/2)
+        t = torch.where(success, t, t0)
+        if not success.any():
             break
 
-        # print(n_iter, nll.item(), (nll0 - nll)/t.numel())
-        if (nll0 - nll) < tol * t.numel():
+        # print(f'{n_iter:03d} '
+        #       f'{nll.sum().item():12.6g} '
+        #       f'{(nll0 - nll).sum().item()/t.numel():6.3g} '
+        #       f'{armijo.min():6.3g} {armijo.max():6.3g}')
+        if (nll0 - nll).sum() < tol * t.numel():
             break
 
     d = s.eval_position(t).sub_(x)
@@ -394,34 +399,49 @@ def draw_curves(shape, s, mode='gaussian', tiny=0, **kwargs):
     -------
     x : (*shape) tensor
         Drawn curve
+    lab : (*shape) tensor[int]
+        Label of closest curve
 
     """
     s = list(s)
     x = identity_grid(shape, **utils.backend(s[0].waypoints))
     n = len(s)
     tiny = tiny / n
+    l = x.new_zeros(shape, dtype=torch.long)
     if mode[0].lower() == 'b':
         s1 = s.pop(0)
         t, d = min_dist(x, s1, **kwargs)
         r = s1.eval_radius(t)
         c = d <= r
+        l[c] = 1
+        cnt = 1
         while s:
+            cnt += 1
             s1 = s.pop(0)
             t, d = min_dist(x, s1, **kwargs)
             r = s1.eval_radius(t)
             c.bitwise_or_(d <= r)
+            l[d <= r] = cnt
     else:
         s1 = s.pop(0)
         t, d = min_dist(x, s1, **kwargs)
         r = s1.eval_radius(t)
-        c = dist_to_prob(d, r, tiny).neg_().add_(1)
+        c = dist_to_prob(d, r, tiny)
+        l.fill_(1)
+        cnt = 1
+        p = c.clone()
+        c = c.neg_().add_(1)
         while s:
+            cnt += 1
             s1 = s.pop(0)
             t, d = min_dist(x, s1, **kwargs)
             r = s1.eval_radius(t)
-            c.mul_(dist_to_prob(d, r, tiny).neg_().add_(1))
+            c1 = dist_to_prob(d, r, tiny)
+            l[c1 > p] = cnt
+            p = torch.maximum(c1, p)
+            c.mul_(c1.neg_().add_(1))
         c = c.neg_().add_(1)
-    return c
+    return c, l
 
 
 def fit_curve_joint(f, s, max_iter=128, tol=1e-8):
