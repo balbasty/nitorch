@@ -17,8 +17,6 @@ def _laplacian_freq(shape, **backend):
     g -= shape // 2
     g /= shape
     g = g.square_().sum(-1)
-    if fft._torch_has_old_fft:
-        g = g.unsqueeze(-1)
     g = fft.ifftshift(g, dim=list(range(dim)))
     ig = g.reciprocal()
     ig[(0,) * dim] = 0
@@ -244,7 +242,8 @@ def plot_fit(magnitude, phase, fit):
     plt.show()
 
 
-def phase_fit(magnitude, phase, lam=(0, 1e1), penalty=('membrane', 'bending')):
+def phase_fit(magnitude, phase, lam=(0, 1e1), penalty=('membrane', 'bending'),
+              max_iter=20, tol=1e-5):
     """Fit a complex image using a decreasing phase regularization
 
     Parameters
@@ -286,7 +285,7 @@ def phase_fit(magnitude, phase, lam=(0, 1e1), penalty=('membrane', 'bending')):
 
     lam0 = dict(membrane=prm['membrane'][-1], bending=prm['bending'][-1])
     ll0 = lr0 = factor = float('inf')
-    for n_iter in range(20):
+    for n_iter in range(max_iter):
 
         # decrease regularization
         factor, factor_prev = 1 + 10 ** (5 - n_iter), factor
@@ -312,8 +311,9 @@ def phase_fit(magnitude, phase, lam=(0, 1e1), penalty=('membrane', 'bending')):
         l0 = ll0 + factor_ratio * lr0
         l = ll + lr
         gain = l0 - l
-        print(f'{n_iter:3d} | {ll/n:12.6g} + {lr/n:6.3g} = {l/n:12.6g} | gain = {gain/n:6.3}')
-        if abs(gain) < n * 1e-4:
+        print(f'{n_iter:02d} | {ll/n:12.6g} + {lr/n:12.6g} = {l/n:12.6g} '
+              f'| gain = {gain/n:12.6g}')
+        if abs(gain) < n * tol:
             break
 
         ll0, lr0 = ll, lr
@@ -322,7 +322,153 @@ def phase_fit(magnitude, phase, lam=(0, 1e1), penalty=('membrane', 'bending')):
     return fit[0].exp_(), fit[1]
 
 
-def b0_rad_to_hz(phase, delta_te, dwell, delta_frequency=0):
+def phase_fit_vm(magnitude, phase, lam=1e1, sigma=None, penalty='bending',
+                 max_iter=20, max_ls=12, tol=1e-5):
+    """
+    Smooth phase fit using a Von Mises likelihood with k = SNR**2
+
+    Note that this is equivalent to fitting a complex Gaussian noise model,
+    where the maximum-likelihood solution for the magnitude is obtained
+    analytically and plugged back in the joint likelihood.
+    """
+    noise, tissue = estimate_noise(magnitude)
+    if sigma is None:
+        sigma = noise['sd']
+
+    if penalty[0].lower() == 'm':
+        # membrane
+        reg = lambda x: spatial.regulariser(x, membrane=lam)
+        solve = lambda h, g: spatial.solve_field_fmg(h, g, membrane=lam)
+    else:
+        # bending
+        reg = lambda x: spatial.regulariser(x, bending=lam)
+        solve = lambda h, g: spatial.solve_field_fmg(h, g, bending=lam)
+
+    f = torch.zeros_like(phase)
+    k = (magnitude/sigma).square()
+
+    ll, lr = dot(k, (f - phase).cos_().neg_().add_(1)), 0
+    print(f'{0:02d} '
+          f'| {ll.item()/phase.numel():12.6g} + {0:12.6g} '
+          f'= {(ll + lr).item()/phase.numel():12.6g}')
+
+    factor = 1
+    for n_iter in range(max_iter):
+
+        factor, factor_prev = 1 + 10 ** (5 - n_iter), factor
+        factor_ratio = factor / factor_prev if n_iter else 1
+        lr *= factor_ratio
+
+        g = (f - phase).sin_().mul_(k)
+        g += reg(f)
+
+        d = solve(k, g)
+
+        dd = reg(d)
+        df = dot(dd, f)
+        dd = dot(dd, dd)
+        armijo, armijo_prev, success = 1, 0, False
+        for n_ls in range(max_ls):
+            f.sub_(d, alpha=armijo - armijo_prev)
+            new_ll = dot(k, (f - phase).cos_().neg_().add_(1))
+            new_lr = 0.5 * armijo * (armijo * dd - 2 * df)
+            if new_ll + new_lr < ll:
+                success = True
+                break
+            armijo /= 2
+
+        if not success:
+            f.add_(d, alpha=armijo_prev)
+            break
+
+        old_ll, old_lr = ll, lr
+        ll, lr = new_ll, lr + new_lr
+        l, old_l = ll + lr, old_ll + old_lr
+        gain = old_l - l
+        print(f'{n_iter+1:02d} '
+              f'| {ll.item()/phase.numel():12.6g} '
+              f'+ {lr.item()/phase.numel():12.6g} '
+              f'= {(ll + lr).item()/phase.numel():12.6g} '
+              f'| gain = {gain/phase.numel():12.6g}')
+        if gain < tol * phase.numel():
+            break
+
+    return f
+
+
+def phase_fit_gauss(magnitude, phase, lam=1e1, sigma=None, penalty='bending',
+                    max_iter=20, max_ls=12, tol=1e-5):
+    """
+    Smooth phase fit using a Gaussian likelihood with k = SNR**2
+
+    Input phase should be unwrapped!
+    """
+    noise, tissue = estimate_noise(magnitude)
+    if sigma is None:
+        sigma = noise['sd']
+
+    if penalty[0].lower() == 'm':
+        # membrane
+        reg = lambda x: spatial.regulariser(x, membrane=lam)
+        solve = lambda h, g: spatial.solve_field_fmg(h, g, membrane=lam)
+    else:
+        # bending
+        reg = lambda x: spatial.regulariser(x, bending=lam)
+        solve = lambda h, g: spatial.solve_field_fmg(h, g, bending=lam)
+
+    f = torch.zeros_like(phase)
+    k = magnitude.square().div_(sigma**2)
+
+    ll, lr = 0.5 * dot(k, (f - phase).square_()), 0
+    print(f'{0:02d} '
+          f'| {ll.item()/phase.numel():12.6g} + {0:12.6g} '
+          f'= {(ll + lr).item()/phase.numel():12.6g}')
+
+    factor = 1
+    for n_iter in range(max_iter):
+
+        factor, factor_prev = 1 + 10 ** (5 - n_iter), factor
+        factor_ratio = factor / factor_prev if n_iter else 1
+        lr *= factor_ratio
+
+        g = (f - phase).mul_(k)
+        g += reg(f)
+
+        d = solve(k, g)
+
+        dd = reg(d)
+        df = dot(dd, f)
+        dd = dot(dd, dd)
+        armijo, armijo_prev, success = 1, 0, False
+        for n_ls in range(max_ls):
+            f.sub_(d, alpha=armijo - armijo_prev)
+            new_ll = 0.5 * dot(k, (f - phase).square_())
+            new_lr = 0.5 * armijo * (armijo * dd - 2 * df)
+            if new_ll + new_lr < ll:
+                success = True
+                break
+            armijo /= 2
+
+        if not success:
+            f.add_(d, alpha=armijo_prev)
+            break
+
+        old_ll, old_lr = ll, lr
+        ll, lr = new_ll, lr + new_lr
+        l, old_l = ll + lr, old_ll + old_lr
+        gain = old_l - l
+        print(f'{n_iter+1:02d} '
+              f'| {ll.item()/phase.numel():12.6g} '
+              f'+ {lr.item()/phase.numel():12.6g} '
+              f'= {(ll + lr).item()/phase.numel():12.6g} '
+              f'| gain = {gain/phase.numel():12.6g}')
+        if gain < tol * phase.numel():
+            break
+
+    return f
+
+
+def b0_rad_to_hz(phase, delta_te, delta_frequency=0):
     """Convert a phase-difference image to a fieldmap in Hz
 
     Parameters
@@ -331,9 +477,6 @@ def b0_rad_to_hz(phase, delta_te, dwell, delta_frequency=0):
         Phase difference image
     delta_te : float
         Echo time difference of the original images, in sec
-    dwell : float
-        Dwell time of the fieldmap images, in sec
-        Bandwidth = 1 / (dwell * nb_pixels)
     delta_frequency : float
         Difference of center frequencies between the target acquisition
         and fieldmap acquisition, in Hz
@@ -344,7 +487,7 @@ def b0_rad_to_hz(phase, delta_te, dwell, delta_frequency=0):
         Fieldmap in Hz
 
     """
-    fmap = phase / (delta_te * dwell * 2 * pymath.pi)
+    fmap = phase / (delta_te * 2 * pymath.pi)
     if delta_frequency:
         fmap += delta_frequency
     return fmap
