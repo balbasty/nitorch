@@ -82,7 +82,7 @@ def main(options):
                fieldmap=options.fieldmap,
                extrapolate=options.extrapolate,
                bandwidth=options.bandwidth,
-               polarity=options.polarity,
+               polarity=-1 if options.polarity == '-' else +1,
                readout=readout,
                slicewise=options.slicewise,
                lam=options.penalty,
