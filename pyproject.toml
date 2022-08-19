@@ -3,5 +3,6 @@
 requires = [
     "setuptools",
     "wheel",
-    "torch >= 1.4"
+    "torch >= 1.4",
+    "versioneer"
 ]
