@@ -569,7 +569,6 @@ def draw_curves_gaussian_fast(shape, curves, threshold, **kwargs):
     while curves:
         curve = curves.pop(0)
         count += 1
-        print(count)
 
         # initialize distance from table and only process
         # points that are close enough from the curve
@@ -1354,7 +1353,7 @@ class Brent:
             # fit quadratic polynomial
             delta0 = a2 - a1
             delta, s = quad_min(a0, a1, a2, f0, f1, f2)
-            delta = delta.sub_(a1).clamp_max_((1 + self.gold) * delta0)
+            delta = delta.sub_(a1).minimum((1 + self.gold) * delta0)
             a = torch.where(s > 0, a1 + delta, a2 + self.gold * delta0)
 
             # check progress and update bracket
