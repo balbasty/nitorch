@@ -1303,17 +1303,17 @@ class JointHistCount:
         if min is None:
             min = x.min(-2, keepdim=True).values
         else:
-            min = torch.as_tensor(min, **backend).expand([*xbatch, 2]).reshape([-1, 1, 2])
+            min = torch.as_tensor(min, **backend).expand([*batch, 2]).reshape([-1, 1, 2])
         if max is None:
             max = x.max(-2, keepdim=True).values
         else:
-            max = torch.as_tensor(max, **backend).expand([*xbatch, 2]).reshape([-1, 1, 2])
+            max = torch.as_tensor(max, **backend).expand([*batch, 2]).reshape([-1, 1, 2])
 
         x = x.clone()
         bins = torch.as_tensor(self.bins, **backend)
         x = x.mul_(bins / (max - min)).add_(bins / (1 - max / min)).sub_(0.5)
-        min = min.reshape([*xbatch, 2])
-        max = max.reshape([*xbatch, 2])
+        min = min.reshape([*batch, 2])
+        max = max.reshape([*batch, 2])
 
         # push data into the histogram
         h = _jhistc_forward(x, self.bins, w, self.order, self.bound, self.extrapolate)
