@@ -187,7 +187,7 @@ def _jhj(jac, hess):
     return out
 
 
-def exp_backward(vel, *grad_and_hess, inverse=False, steps=8,
+def exp_backward(vel, grad, hess=None, inverse=False, steps=8,
                  interpolation='linear', bound='dft', rotate_grad=False):
     """Backward pass of SVF exponentiation.
 
@@ -237,11 +237,6 @@ def exp_backward(vel, *grad_and_hess, inverse=False, steps=8,
         Approximate (block diagonal) Hessian with respect to the SVF
 
     """
-    has_hess = len(grad_and_hess) > 1
-    grad, *hess = grad_and_hess
-    hess = hess[0] if hess else None
-    del grad_and_hess
-
     opt = dict(bound=bound, interpolation=interpolation)
     dim = vel.shape[-1]
     shape = vel.shape[-dim-1:-1]
