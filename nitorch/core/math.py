@@ -13,12 +13,14 @@ Tensor = torch.Tensor
 
 def round(t, decimals=0):
     """Round a tensor to the given number of decimals.
+
     Parameters
     ----------
     t : tensor
         Input tensor.
     decimals : int, default=0
         Round to this decimal.
+
     Returns
     -------
     t : tensor
@@ -79,11 +81,13 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
                   inplace=False, return_indices=False, out=None,
                   nanfn=lambda x: x):
     """Multi-dimensional reduction for min/max/median.
+
     Signatures
     ----------
     fn(input) -> Tensor
     fn(input, dim) -> Tensor
     fn(input, dim, return_indices=True) -> (Tensor, Tensor)
+
     Parameters
     ----------
     fn : callable
@@ -105,6 +109,7 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
         Output placeholder
     nanfn : callable, optional
         Preprocessing function for removing nans
+
     Returns
     -------
     output : tensor
@@ -171,15 +176,18 @@ def _reduce_index(fn, input, dim=None, keepdim=False, omitnan=False,
 def max(input, dim=None, keepdim=False, omitnan=False, inplace=False,
         return_indices=False, out=None):
     """Multi-dimensional max reduction.
+
     Signatures
     ----------
     max(input) -> Tensor
     max(input, dim) -> Tensor
     max(input, dim, return_indices=True) -> (Tensor, Tensor)
+
     Notes
     -----
     .. This function cannot compute the maximum of two tensors, it only
        computes the maximum of one tensor (along a dimension).
+
     Parameters
     ----------
     input : tensor_like
@@ -197,6 +205,7 @@ def max(input, dim=None, keepdim=False, omitnan=False, inplace=False,
         Return index of the max value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
+
     Returns
     -------
     output : tensor
@@ -213,15 +222,18 @@ def max(input, dim=None, keepdim=False, omitnan=False, inplace=False,
 def min(input, dim=None, keepdim=False, omitnan=False, inplace=False,
         return_indices=False, out=None):
     """Multi-dimensional min reduction.
+
     Signatures
     ----------
     min(input) -> Tensor
     min(input, dim) -> Tensor
     min(input, dim, return_indices=True) -> (Tensor, Tensor)
+
     Notes
     -----
     .. This function cannot compute the minimum of two tensors, it only
        computes the minimum of one tensor (along a dimension).
+
     Parameters
     ----------
     input : tensor_like
@@ -239,6 +251,7 @@ def min(input, dim=None, keepdim=False, omitnan=False, inplace=False,
         Return index of the min value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
+
     Returns
     -------
     output : tensor
@@ -267,15 +280,18 @@ def _nanmax(fn, input, inplace=False):
 def nanmax(input, dim=None, keepdim=False, inplace=False,
            return_indices=False, out=None):
     """Multi-dimensional max reduction, excluding NaNs.
+
     Signatures
     ----------
     nanmax(input) -> Tensor
     nanmax(input, dim) -> Tensor
     nanmax(input, dim, return_indices=True) -> (Tensor, Tensor)
+
     Notes
     -----
     .. This function cannot compute the minimum of two tensors, it only
        computes the minimum of one tensor (along a dimension).
+
     Parameters
     ----------
     input : tensor_like
@@ -291,6 +307,7 @@ def nanmax(input, dim=None, keepdim=False, inplace=False,
         Return index of the max value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
+
     Returns
     -------
     output : tensor
@@ -319,15 +336,18 @@ def _nanmin(fn, input, inplace=False):
 def nanmin(input, dim=None, keepdim=False, inplace=False,
            return_indices=False, out=None):
     """Multi-dimensional min reduction, excluding NaNs.
+
     Signatures
     ----------
     nanmin(input) -> Tensor
     nanmin(input, dim) -> Tensor
     nanmin(input, dim, return_indices=True) -> (Tensor, Tensor)
+
     Notes
     -----
     .. This function cannot compute the minimum of two tensors, it only
        computes the minimum of one tensor (along a dimension).
+
     Parameters
     ----------
     input : tensor_like
@@ -343,6 +363,7 @@ def nanmin(input, dim=None, keepdim=False, inplace=False,
         Return index of the min value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
+
     Returns
     -------
     output : tensor
@@ -359,14 +380,17 @@ def nanmin(input, dim=None, keepdim=False, inplace=False,
 def median(input, dim=None, keepdim=False, omitnan=None, inplace=None,
            return_indices=False, out=None):
     """Multi-dimensional median reduction.
+
     Signatures
     ----------
     median(input) -> Tensor
     median(input, dim) -> Tensor
     median(input, dim, return_indices=True) -> (Tensor, Tensor)
+
     Note
     ----
     .. This function omits NaNs by default
+
     Parameters
     ----------
     input : tensor_like
@@ -379,6 +403,7 @@ def median(input, dim=None, keepdim=False, omitnan=None, inplace=None,
         Return index of the median value on top if the value
     out : tensor or (tensor, tensor), optional
         Output placeholder
+
     Returns
     -------
     output : tensor
@@ -393,6 +418,7 @@ def median(input, dim=None, keepdim=False, omitnan=None, inplace=None,
 
 def sum(input, *args, omitnan=False, inplace=False, **kwargs):
     """Compute the sum of a tensor.
+
     Parameters
     ----------
     input : tensor
@@ -409,6 +435,7 @@ def sum(input, *args, omitnan=False, inplace=False, **kwargs):
         Accumulator data type
     out : tensor, optional
         Output placeholder.
+
     Returns
     -------
     out : tensor
@@ -422,6 +449,7 @@ def sum(input, *args, omitnan=False, inplace=False, **kwargs):
 
 def nansum(input, *args, inplace=False, **kwargs):
     """Compute the sum of a tensor, excluding nans.
+
     Parameters
     ----------
     input : tensor
@@ -436,6 +464,7 @@ def nansum(input, *args, inplace=False, **kwargs):
         Accumulator data type
     out : tensor, optional
         Output placeholder.
+
     Returns
     -------
     out : tensor
@@ -455,6 +484,7 @@ def nansum(input, *args, inplace=False, **kwargs):
 
 def mean(input, *args, omitnan=False, inplace=False, **kwargs):
     """Compute the mean of a tensor.
+
     Parameters
     ----------
     input : tensor
@@ -471,6 +501,7 @@ def mean(input, *args, omitnan=False, inplace=False, **kwargs):
         Accumulator data type
     out : tensor, optional
         Output placeholder.
+
     Returns
     -------
     out : tensor
@@ -484,6 +515,7 @@ def mean(input, *args, omitnan=False, inplace=False, **kwargs):
 
 def nanmean(input, *args, inplace=False, **kwargs):
     """Compute the mean of a tensor, excluding nans.
+
     Parameters
     ----------
     input : tensor
@@ -498,6 +530,7 @@ def nanmean(input, *args, inplace=False, **kwargs):
         Accumulator data type
     out : tensor, optional
         Output placeholder.
+
     Returns
     -------
     out : tensor
@@ -519,6 +552,7 @@ def nanmean(input, *args, inplace=False, **kwargs):
 
 def var(input, *args, omitnan=False, inplace=False, **kwargs):
     """Compute the variance of a tensor, excluding nans.
+
     Parameters
     ----------
     input : tensor
@@ -535,6 +569,7 @@ def var(input, *args, omitnan=False, inplace=False, **kwargs):
         Authorize working inplace.
     dtype : dtype, default=input.dtype
         Accumulator data type
+
     Returns
     -------
     out : tensor
@@ -548,6 +583,7 @@ def var(input, *args, omitnan=False, inplace=False, **kwargs):
 
 def nanvar(input, *args, unbiased=True, inplace=False, **kwargs):
     """Compute the variance of a tensor, excluding nans.
+
     Parameters
     ----------
     input : tensor
@@ -562,6 +598,7 @@ def nanvar(input, *args, unbiased=True, inplace=False, **kwargs):
         Authorize working inplace.
     dtype : dtype, default=input.dtype
         Accumulator data type
+
     Returns
     -------
     out : tensor
@@ -589,6 +626,7 @@ def nanvar(input, *args, unbiased=True, inplace=False, **kwargs):
 
 def std(input, *args, omitnan=False, inplace=False, **kwargs):
     """Compute the standard deviation of a tensor, excluding nans.
+
     Parameters
     ----------
     input : tensor
@@ -605,6 +643,7 @@ def std(input, *args, omitnan=False, inplace=False, **kwargs):
         Authorize working inplace.
     dtype : dtype, default=input.dtype
         Accumulator data type
+
     Returns
     -------
     out : tensor
@@ -618,6 +657,7 @@ def std(input, *args, omitnan=False, inplace=False, **kwargs):
 
 def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
     """Compute the standard deviation of a tensor, excluding nans.
+
     Parameters
     ----------
     input : tensor
@@ -632,6 +672,7 @@ def nanstd(input, *args, unbiased=True, inplace=False, **kwargs):
         Authorize working inplace.
     dtype : dtype, default=input.dtype
         Accumulator data type
+
     Returns
     -------
     out : tensor
@@ -731,6 +772,7 @@ class _LSE(torch.autograd.Function):
 
 def logsumexp(input, dim=-1, keepdim=False, implicit=False):
     """Numerically stabilised log-sum-exp (lse).
+
     Parameters
     ----------
     input : tensor
@@ -741,6 +783,7 @@ def logsumexp(input, dim=-1, keepdim=False, implicit=False):
         Whether the output tensor has dim retained or not.
     implicit : bool, default=False
         Assume that an additional (hidden) channel with value zero exists.
+
     Returns
     -------
     lse : tensor
@@ -854,6 +897,7 @@ class _Softmax(torch.autograd.Function):
 
 def logit(input, dim=-1, implicit=False, implicit_index=0):
     """(Multiclass) logit function
+
     Notes
     -----
     .. logit(x)_k = log(x_k) - log(x_K), where K is an arbitrary channel.
@@ -865,6 +909,7 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
         .. softmax(logit(x, implicit=False), implicit=False) == x
     .. `logit(x, implicit=True)`, with `x.shape[dim] == 1` is equivalent
        to the "classical" binary logit function (inverse of the sigmoid).
+
     Parameters
     ----------
     input : tensor
@@ -881,6 +926,7 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
     implicit_index : int, default=0
         Index of the implicit channel. This is the channel whose logits
         are assumed equal to zero.
+
     Returns
     -------
     output : tensor
@@ -903,6 +949,7 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
 
 def softmax(input, dim=-1, implicit=False, implicit_index=0):
     """ SoftMax (safe).
+
     Parameters
     ----------
     input : tensor
@@ -917,6 +964,7 @@ def softmax(input, dim=-1, implicit=False, implicit_index=0):
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
     implicit_index : int, default=0
+
     Returns
     -------
     output : tensor
@@ -928,6 +976,7 @@ def softmax(input, dim=-1, implicit=False, implicit_index=0):
 
 def log_softmax(input, dim=-1, implicit=False, implicit_index=0):
     """ Log(SoftMax).
+
     Parameters
     ----------
     input : tensor
@@ -942,6 +991,7 @@ def log_softmax(input, dim=-1, implicit=False, implicit_index=0):
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
     implicit_index : int, default=0
+
     Returns
     -------
     output : tensor
@@ -963,6 +1013,7 @@ def log_softmax(input, dim=-1, implicit=False, implicit_index=0):
 
 def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False,):
     """ SoftMax (safe).
+
     Parameters
     ----------
     input : torch.tensor
@@ -980,6 +1031,7 @@ def softmax_lse(input, dim=-1, lse=False, weights=None, implicit=False,):
           with value zero exists.
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
+
     Returns
     -------
     Z : torch.tensor
