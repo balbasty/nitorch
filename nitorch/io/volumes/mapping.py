@@ -1202,7 +1202,6 @@ class CatArray(MappedArray):
         #   (1) we don't have the option to provide a buffer yet
         #   (2) everything's already quite inefficient
         dats = [array.data(*args, **kwargs) for array in self._arrays]
-        print([dat.shape for dat in dats])
         return volutils.cat(dats, dim=self._dim_cat)
 
     def fdata(self, *args,  **kwargs):
