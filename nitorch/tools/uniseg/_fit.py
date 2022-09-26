@@ -51,7 +51,7 @@ class SpatialMixture:
                  lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10,
                  bias_acceleration=0, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-3, max_iter_intensity=8, max_iter_mrf=50,
-                 max_iter_cluster=20, max_iter_bias=3, max_iter_warp=3,
+                 max_iter_cluster=20, max_iter_bias=2, max_iter_warp=3,
                  max_iter_affine=3, max_iter_mixing=10, verbose=1, plot=0):
         """
         Parameters
@@ -201,6 +201,8 @@ class SpatialMixture:
             self.max_iter_mixing = 0
         if self.do_mrf != 'learn':
             self.max_iter_mrf = 0
+        if self.max_iter_mrf == 0 and self.max_iter_bias == 0:
+            self.max_iter_intensity = max(2, self.max_iter_intensity)
 
         # Verbosity
         self.verbose = verbose
