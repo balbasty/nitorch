@@ -751,7 +751,13 @@ class PairwiseRegisterStep:
         #                     EXPONENTIATE TRANSFORMS
         # ==============================================================
         logaff0 = logaff
-        aff0, iaff0, gaff0, igaff0 = self.affine.exp2(logaff0, grad=True)
+        aff0 = iaff0 = gaff0 = igaff0 = None
+        if all(loss.backward for loss in self.losses):
+            iaff0, igaff0 = self.affine.iexp(logaff0, grad=True)
+        elif not any(loss.backward for loss in self.losses):
+            aff0, gaff0 = self.affine.exp(logaff0, grad=True)
+        else:
+            aff0, iaff0, gaff0, igaff0 = self.affine.exp2(logaff0, grad=True)
 
         has_printed = False
         for loss in self.losses:

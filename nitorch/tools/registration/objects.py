@@ -559,13 +559,23 @@ class LogAffine(AffineTransform):
     @property
     def basis(self):
         if self._basis is None:
+            begin_rot = self.dim
+            begin_scl = begin_rot + (self.dim*(self.dim-1))//2
+            if self._basis_name == 'affine':
+                end_scl = begin_scl + self.dim
+            else:
+                end_scl = begin_scl + 1
             self._basis = spatial.affine_basis(self._basis_name, self.dim,
                                                **utils.backend(self.dat))
+            self._basis[begin_rot:begin_scl] /= 40
+            self._basis[begin_scl:end_scl] /= 40
+            self._basis[end_scl:] /= 40
         return self._basis
 
     @basis.setter
     def basis(self, x):
         self._basis_name = x
+        self._basis = None
 
     def clear_cache(self):
         self._cache = None
@@ -622,6 +632,128 @@ class LogAffine(AffineTransform):
         return f'{self.__class__.__name__}({s})'
 
     __str__ = __repr__
+
+
+class LogAffine2d(LogAffine):
+    """2d affine transform in a 3D world space"""
+    def __init__(self, dat=None, basis=None, rotation=None,
+                 plane=0, dim=3, **backend):
+        """
+        Parameters
+        ----------
+        [dat : tensor, optional]
+            Pre-allocated log-affine
+        basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
+            Name of an Affine basis
+        rotation : tensor, default=identity
+            Rotation matrix from 2d space to 3d space
+        dim : int, default=3
+            Number of spatial dimensions
+        **backend
+        """
+        if dat is None:
+            dat = torch.zeros(spatial.affine_basis_size(basis, 2), **backend)
+        super().__init__(dat, basis, dim, **backend)
+        if rotation is None:
+            rotation = torch.eye(self.dim + 1, **backend)
+        self.rotation = rotation
+        if isinstance(plane, str):
+            plane = plane.upper()
+            plane = (0 if plane in 'RL' else 1 if plane in 'AP' else 2)
+        self.plane = plane
+
+    def _make_basis_2d(self):
+        if self._basis is not None:
+            if self._basis_name[0].lower() == 't':
+                if self.plane == 0:
+                    idx = [1, 2]
+                elif self.plane == 1:
+                    idx = [0, 2]
+                else:
+                    idx = [0, 1]
+            elif self._basis_name[0].lower() in 'rs':
+                if self.plane == 0:
+                    idx = [1, 2, 5]
+                elif self.plane == 1:
+                    idx = [0, 2, 4]
+                else:
+                    idx = [0, 1, 3]
+                if self._basis_name[0].lower() == 's':
+                    idx += [6]
+            else:
+                if self.plane == 0:
+                    idx = [1, 2, 5, 7, 8, 11]
+                elif self.plane == 1:
+                    idx = [0, 2, 1, 6, 8, 10]
+                else:
+                    idx = [0, 1, 3, 6, 7, 9]
+
+            self._basis = self._basis[idx]
+            if self._basis_name[0].lower() == 's':
+                if self.plane == 0:
+                    idx = 0
+                elif self.plane == 1:
+                    idx = 1
+                else:
+                    idx = 2
+                self._basis[3][idx, idx] = 0
+
+    @property
+    def basis(self):
+        make_basis_2d = self._basis is None
+        _ = super().basis
+        if make_basis_2d:
+            self._make_basis_2d()
+        return self._basis
+
+    @basis.setter
+    def basis(self, x):
+        self._basis_name = x
+        self._basis = None
+
+    @classmethod
+    def make(cls, dat, **kwargs):
+        if isinstance(dat, LogAffine2d):
+            kwargs.setdefault('dim', dat.dim)
+            kwargs.setdefault('basis', dat.basis)
+            kwargs.setdefault('plane', dat.plane)
+            kwargs.setdefault('rotation', dat.rotation)
+            dat = dat.dat
+        return LogAffine2d(dat, **kwargs)
+
+    def exp(self, q=None, grad=False, cache_result=False, recompute=True):
+        aff = super().exp(q, grad, cache_result, recompute)
+        if grad:
+            aff, gaff = aff
+        aff = self.rotation @ aff @ self.rotation.T
+        if grad:
+            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
+            return aff, gaff
+        return aff
+
+    def iexp(self, q=None, grad=False, cache_result=False, recompute=True):
+        aff = super().iexp(q, grad, cache_result, recompute)
+        if grad:
+            aff, gaff = aff
+        aff = self.rotation @ aff @ self.rotation.T
+        if grad:
+            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
+            return aff, gaff
+        return aff
+
+    def exp2(self, q=None, grad=False, cache_result=False, recompute=True):
+        aff = super().exp2(q, grad, cache_result, recompute)
+        if grad:
+            aff, iaff, gaff, giaff = aff
+        else:
+            aff, iaff = aff
+        aff = self.rotation @ aff @ self.rotation.T
+        iaff = self.rotation @ iaff @ self.rotation.T
+        if grad:
+            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
+            giaff = self.rotation.matmul(giaff).matmul(self.rotation.T)
+            return aff, iaff, gaff, giaff
+        return aff, iaff
 
 
 class LossComponent:
@@ -869,6 +1001,8 @@ class NonLinModel(TransformationModel):
 class ShootModel(NonLinModel):
     """Initial velocity exponentiated by geodesic shooting"""
 
+    model = 'shoot'
+
     def __new__(cls, *args, **kwargs):
         obj = object.__new__(ShootModel)
         obj.__init__(*args, **kwargs)
@@ -1019,6 +1153,8 @@ class ShootModel(NonLinModel):
 class SVFModel(NonLinModel):
     """Stationary velocity field exponentiated by scaling and squaring."""
 
+    model = 'svf'
+
     def __new__(cls, *args, **kwargs):
         obj = object.__new__(SVFModel)
         obj.__init__(*args, **kwargs)
@@ -1154,6 +1290,8 @@ class SVFModel(NonLinModel):
 class SmallDefModel(NonLinModel):
     """Dense displacement field."""
 
+    model = 'smalldef'
+
     def __new__(cls, *args, **kwargs):
         obj = object.__new__(SmallDefModel)
         obj.__init__(*args, **kwargs)
@@ -1250,6 +1388,30 @@ class SmallDefModel(NonLinModel):
         return g, h, mugrad
 
 
+class Nonlin2dModel(NonLinModel):
+
+    def __init__(self, model, plane, ref_affine=None, *args, **kwargs):
+        if isinstance(plane, str):
+            plane = plane.upper()
+            plane = (0 if plane in 'RL' else 1 if plane in 'AP' else 2)
+        self.plane = plane
+        if ref_affine is None:
+            rot = None
+        else:
+            rot = ref_affine.clone()
+            rot[:-1, -1] = 0
+            rot[:-1, :-1] /= rot[:-1, :-1].square().sum(0, keepdim=True).sqrt()
+        self.rotation = rot
+        self._model = NonLinModel(model, *args, **kwargs)
+
+    model = property(lambda self: self._model.model)
+    factor = property(lambda self: self._model.factor)
+    penalty = property(lambda self: self._model.penalty)
+    steps = property(lambda self: self._model.steps)
+    kernel = property(lambda self: self._model.kernel)
+    dat = property(lambda self: self._model.dat)
+
+
 class AffineModel(TransformationModel):
     """Affine transformation model encoded in a Lie algebra"""
 
@@ -1322,3 +1484,29 @@ class AffineModel(TransformationModel):
         s += [f'{key}={value}' for key, value in self.prm.items()]
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'
+
+
+class Affine2dModel(AffineModel):
+    """A 2D affine in a 3D world"""
+
+    def __init__(self, basis, plane, ref_affine=None, factor=1, prm=None,
+                 dat=None, position='symmetric'):
+        super().__init__(basis, factor, prm, dat, position)
+        self._plane = plane
+        if ref_affine is None:
+            rot = None
+        else:
+            rot = ref_affine.clone()
+            rot[:-1, -1] = 0
+            rot[:-1, :-1] /= rot[:-1, :-1].square().sum(0, keepdim=True).sqrt()
+        self._rotation = rot
+
+    rotation = property(lambda self: self.dat.rotation if self.dat is not None else None)
+    plane = property(lambda self: self.dat.plane if self.dat is not None else None)
+
+    def set_dat(self, dat=None, dim=None, **backend):
+        self.dat = LogAffine2d.make(dat, basis=self._basis, dim=dim,
+                                    rotation=self._rotation,
+                                    plane=self._plane, **backend)
+        return self
+

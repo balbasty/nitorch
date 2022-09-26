@@ -125,7 +125,8 @@ usage:
         dice, f1                        Dice coefficient
             -w, --weight *VAL               Weight per class [1]
     Common options:
-        -s, --symmetric                 Make loss symmetric: [False]
+        -s, --symmetric                 Make loss symmetric [False]
+        -z, --slicewise [AXIS=-1]       Make loss slice-wise [False]
 
 @@fix/mov options:
     *FILES must be one or several filenames, which will be concatenated 
@@ -159,6 +160,7 @@ usage:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
         -o, --output                    Path to the output transform: [{dir}/{name}.lta]
+        -2d [AXIS=2]                    Force transform to be 2d about AXIS
 
 @nonlin options:
     FACTOR must be a scalar value [1] and is a global penalty factor
@@ -328,6 +330,9 @@ loss.add_positional('factor', nargs='?', default=1., convert=float,
                     help='Weight it this component in the global loss')
 loss.add_option('symmetric', ('-s', '--symmetric'), nargs=0, default=False,
                 help='Make the loss symmetric')
+loss.add_option('slicewise', ('-z', '--slicewise'), nargs='?', default=False,
+                action=cli.Actions.store_value(-1), convert=int,
+                help='Make the loss slice-wise')
 # conditional options
 weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
                            default=None, convert=number_or_str(float),
@@ -516,6 +521,9 @@ affine.add_option('output', ('-o', '--output'), nargs=1,
                   help='Path to the output transform')
 affine.add_option('progressive', ('-g', '--progressive'), default=False,
                   nargs='?',  convert=bool_or_str)
+affine.add_option('is2d', '-2d', default=False, nargs='?',
+                  action=cli.Actions.store_value(2),
+                  convert=number_or_str(int))
 affine.add_group(optim)
 
 # nonlin group

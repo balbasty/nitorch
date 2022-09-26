@@ -350,7 +350,6 @@ class InterleavedOptimIterator(OptimIterator):
         super().__init__(list(optim), max_iter, tol, stop, **kwargs)
 
     def __getitem__(self, item):
-        print(self.optim)
         return self.optim[item]
 
     def __iter__(self):

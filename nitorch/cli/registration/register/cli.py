@@ -285,7 +285,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             target_affine = mov_affine
             target_shape = image.shape
             if affine and affine.position[0].lower() in 'ms':
-                aff = affine.exp(recompute=False, cache_result=True)
+                aff = affine.exp(recompute=True, cache_result=True)
                 target_affine = spatial.affine_lmdiv(aff, target_affine)
 
             fname = option.mov.output.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
@@ -322,7 +322,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             target_affine = fix_affine
             target_shape = image.shape
             if affine and affine.position[0].lower() in 'fs':
-                aff = affine.exp(recompute=False, cache_result=True)
+                aff = affine.exp(recompute=True, cache_result=True)
                 target_affine = spatial.affine_matmul(aff, target_affine)
 
             fname = option.fix.output.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
@@ -357,7 +357,7 @@ def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
     if affine:
         # exp = affine.iexp if backward else affine.exp
         exp = affine.exp
-        aff = exp(recompute=False, cache_result=True)
+        aff = exp(recompute=True, cache_result=True)
         if backward:
             aff = spatial.affine_inv(aff)
     if nonlin:
@@ -401,7 +401,7 @@ def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
     return warped
 
 
-def setup_device(device, ndevice):
+def setup_device(device='cpu', ndevice=0):
     if device == 'gpu' and not torch.cuda.is_available():
         warnings.warn('CUDA not available. Switching to CPU.')
         device, ndevice = 'cpu', None
@@ -467,6 +467,8 @@ def _get_loss(loss, dim):
         lossobj = None
     else:
         raise ValueError(loss.name)
+    if loss.slicewise is not False:
+        lossobj = losses.SliceWiseLoss(lossobj, loss.slicewise)
     return lossobj
 
 
@@ -707,16 +709,14 @@ def _do_register(loss_list, affine, nonlin,
         affine_prev = None
         for i, affine in enumerate(affines):
             line_pad = line_size - len(affine.basis_name) - 5
-            print(f'--- {affine.basis_name} ', end='')
-            print('-' * max(0, line_pad))
             if affine_prev:
                 n = len(affine_prev.dat.dat)
                 affine.set_dat(dim=dim, device=affine_prev.dat.dat.device)
                 affine.dat.dat[:n] = affine_prev.dat.dat
-                if i == 2:  # similitude -> affine
-                    affine.dat.dat[n:n+2] = affine_prev.dat.dat[-1]
             if i == len(affines) - 1:
                 break
+            print(f'--- {affine.basis_name} ', end='')
+            print('-' * max(0, line_pad))
             affine_optim.reset_state()
             register = pairwise.PairwiseRegister(loss_list[0], affine, None, affine_optim,
                                                  verbose=options.verbose,
@@ -835,12 +835,17 @@ def _build_losses(options, pyramids, device):
     return loss_list, image_dict
 
 
-def _build_affine(options, can_use_2nd_order):
+def _build_affine(options, can_use_2nd_order, ref_affine=None):
     affine = []
     affine_optim = None
     if options.affine:
-        make_affine = lambda name: objects.AffineModel(
-            name, options.affine.factor, position=options.affine.position)
+        if options.affine.is2d is not False:
+            make_affine = lambda name: objects.Affine2dModel(
+                name, options.affine.is2d, factor=options.affine.factor,
+                ref_affine=ref_affine, position=options.affine.position)
+        else:
+            make_affine = lambda name: objects.AffineModel(
+                name, options.affine.factor, position=options.affine.position)
         name = options.affine.name
         while name:
             affine = [make_affine(name), *affine]
@@ -1031,7 +1036,8 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           BUILD AFFINE
     # ------------------------------------------------------------------
-    affine, affine_optim = _build_affine(options, can_use_2nd_order)
+    affine, affine_optim = _build_affine(options, can_use_2nd_order,
+                                         loss_list[0].fixed.affine)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
@@ -1070,7 +1076,7 @@ def _main(options):
         fname = options.affine.output.format(dir=odir, sep=os.path.sep,
                                              name=options.affine.name)
         print('Affine ->', fname)
-        aff = affine.exp(cache_result=True, recompute=False)
+        aff = affine.exp(cache_result=True, recompute=True)
         io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
     if nonlin and options.nonlin.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
