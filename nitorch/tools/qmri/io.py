@@ -259,9 +259,9 @@ class BaseND:
         new.volume = instance.volume
         new.affine = instance.affine
         new.scanner_position = instance.scanner_position
-        old_attributes = [getattr(instance, key) 
+        old_attributes = {key: getattr(instance, key)
                           for key in new.attributes()
-                          if key in instance.attributes()]
+                          if key in instance.attributes()}
         old_attributes.update(attributes)
         new.set_attributes(**old_attributes)
         new.atleast_3d_()
