@@ -351,9 +351,9 @@ class MappedArray(MappedFile):
         # (it's a bit more complicated: we need to find the
         #  permutation of the *current* *spatial* dimensions)
         perm_spatial = [p for p in dims if self.spatial[p]]
-        perm_spatial = sorted(range(len(perm_spatial)),
-                              key=lambda k: perm_spatial[k])
-        affine, _ = affine_permute(self.affine, perm_spatial, self.shape)
+        remap = list(sorted(perm_spatial))
+        remap = [remap.index(p) for p in perm_spatial]
+        affine, _ = affine_permute(self.affine, remap, self.shape)
 
         # create new object
         new = copy(self)
