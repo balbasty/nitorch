@@ -45,7 +45,7 @@ def dice_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None,
     fixed = utils.slice_tensor(fixed, slice(nc), -dim-1)    # remove bkg class
     if mask is not None:
         mask = mask.to(moving.device)
-        nvox = mask.sum(range(-dim-1), keepdim=True)
+        nvox = mask.sum(list(range(-dim-1)), keepdim=True)
     else:
         nvox = py.prod(fixed.shape[-dim:])
 

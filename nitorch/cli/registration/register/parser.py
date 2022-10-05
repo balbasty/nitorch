@@ -178,6 +178,7 @@ usage:
         -v, --voxel-size VAL [UNIT]     Voxel size and unit [100 %]
         -f, --fov *NAMES                Name of inputs used to compute mean space [all]
         -p, --pad VAL [UNIT]            Pad field of view by some amount [0 %]
+        -2d [AXIS=2]                    Force transform to be 2d about AXIS
 
 @optim options:
     NAME can take values:
@@ -557,6 +558,9 @@ nonlin.add_option('fov', ('-f', '--fov'), nargs='1*',
 nonlin.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{name}.nii.gz',
                   help='Path to the output transform')
+nonlin.add_option('is2d', '-2d', default=False, nargs='?',
+                  action=cli.Actions.store_value(2),
+                  convert=number_or_str(int))
 nonlin.add_group(optim)
 
 
