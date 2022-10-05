@@ -277,19 +277,36 @@ def min_dist_table(x, s, steps=None):
     """
     @torch.jit.script
     def dot(x, y):
-        return x[..., None, :].matmul(y[...,:,  None])[..., 0, 0]
+        return x[..., None, :].matmul(y[..., :,  None])[..., 0, 0]
 
-    def mind(x, all_x, all_t):
+    def mind_fast(x, xref, tref, veryfast=False):
+        x = x.unsqueeze(-2)
+        d = dot(xref, x).mul_(-2).add_(dot(xref, xref))
+        d, t = d.min(-1)
+        t = tref[t]
+        if not veryfast:
+            d += dot(x, x)
+        return t, d
+
+    def mind(x, all_x, all_t, chunk=16):
         t = torch.zeros_like(x[..., 0])
         d = torch.full_like(x[..., 0], float('inf'))
-        for t1, x1 in zip(all_t, all_x):
-            d1 = dot(x1, x).mul_(-2).add_(dot(x1, x1))
-            t = torch.where(d1 < d, t1, t)
-            t = t.masked_fill_(d1 < d, t1)
-            d = torch.minimum(d, d1, out=d)
+        nchunks = int(pymath.ceil(len(all_x) / chunk))
+        for c in range(nchunks):
+            t1 = all_t[c*chunk:(c+1)*chunk]
+            x1 = all_x[c*chunk:(c+1)*chunk]
+            t1, d1 = mind_fast(x, x1, t1, veryfast=True)
+            mask = d1 < d
+            t[mask] = t1[mask]
+            d[mask] = d1[mask]
+            # t = torch.where(d1 < d, t1, t)
+            # d = torch.minimum(d, d1, out=d)
         d += dot(x, x)
         d = d.sqrt_()
         return t, d
+
+    import time
+    tic = time.time()
 
     # initialize using a discrete search
     if steps is None:
@@ -300,11 +317,12 @@ def min_dist_table(x, s, steps=None):
         all_t = torch.linspace(0, 1, steps, **utils.backend(x))
     else:
         all_t = utils.make_vector(steps, **utils.backend(x))
-    t = x.new_zeros(x.shape[:-1])
-    d = x.new_empty(x.shape[:-1]).fill_(float('inf'))
     all_x = torch.stack([s.eval_position(t1) for t1 in all_t])
     t, d = mind(x, all_x, all_t)
-    return t, d
+
+    tic = time.time() - tic
+    print('table', tic)
+    return t, d.sqrt_()
 
 
 def min_dist_quad(x, s, max_iter=16, tol=1e-3, step=0.01,
@@ -337,18 +355,30 @@ def min_dist_quad(x, s, max_iter=16, tol=1e-3, step=0.01,
         Minimum distance between each point and the curve
 
     """
+    @torch.jit.script
+    def dot(x, y):
+        return x[..., None, :].matmul(y[..., :,  None])[..., 0, 0]
+
     def dist(t):
-        return s.eval_position(t).sub_(x).square_().sum(-1).sqrt_()
+        d = s.eval_position(t).sub_(x)
+        d = dot(d, d)
+        return d
 
     if init is None:
         # initialize using a discrete search
-        t, d = min_dist_table(x, s, **(init_kwargs or {}))
+        t, _ = min_dist_table(x, s, **(init_kwargs or {}))
     else:
         t = init.clone()
 
+    import time
+    tic = time.time()
+
     brent = Brent(tol=tol, max_iter=max_iter, step=step)
     t, d = brent.fit(t, dist)
-    return t, d
+
+    tic = time.time() - tic
+    print('quad', tic)
+    return t, d.sqrt_()
 
 
 def min_dist_gn(x, s, max_iter=16, tol=1e-3, init=None, init_kwargs=None):
@@ -382,16 +412,21 @@ def min_dist_gn(x, s, max_iter=16, tol=1e-3, init=None, init_kwargs=None):
     if init is None or init == 'quad':
         # initialize using a quadratic search
         t, d = min_dist_quad(x, s, **(init_kwargs or {}))
+        d = d.square_()
     elif init == 'table':
         # initialize using a discrete search
         t, d = min_dist_table(x, s, **(init_kwargs or {}))
+        d = d.square_()
     else:
         t = init.clone()
         d = s.eval_position(t) - x
-        d = d.square_().sum(-1).sqrt_()
+        d = d.square_().sum(-1)
+
+    import time
+    tic = time.time()
 
     # Fine tune using Gauss-Newton optimization
-    nll = d.square_().sum(-1)
+    nll = d.sum(-1)
     # print(f'{0:03d} {nll.sum().item():12.6g}')
     for n_iter in range(1, max_iter+1):
         # compute the distance between x and s(t) + gradients
@@ -427,6 +462,9 @@ def min_dist_gn(x, s, max_iter=16, tol=1e-3, init=None, init_kwargs=None):
 
     d = s.eval_position(t).sub_(x)
     d = d.square_().sum(-1).sqrt_()
+
+    tic = time.time() - tic
+    print('gn', tic)
     return t, d
 
 
@@ -467,12 +505,12 @@ def min_dist(x, s, method='gn', **kwargs):
         return min_dist_table(x, s, **kwargs)
 
 
-def dist_to_prob(d, r, tiny=0):
+def dist_to_prob(d, r, mode='gaussian', tiny=0):
     if torch.is_tensor(d):
         d = d.clone()
     if torch.is_tensor(r):
         r = r.clone()
-    return dist_to_prob_(d, r, tiny)
+    return dist_to_prob_(d, r, mode, tiny)
 
 
 def dist_to_prob_(d, r, mode='gaussian', tiny=0):
@@ -530,7 +568,7 @@ def draw_curve(shape, s, mode='cosine', tiny=0, **kwargs):
     if mode[0].lower() == 'b':
         return d <= r
     else:
-        return dist_to_prob(d, r, tiny)
+        return dist_to_prob(d, r, mode, tiny)
 
 
 def draw_curves(shape, curves, mode='cosine', fast=0, **kwargs):
@@ -620,8 +658,8 @@ def draw_curves_prob_fast(shape, curves, threshold, mode='cosine', **kwargs):
 
             label.masked_fill_(prob > max_prob, count)
             max_prob = torch.maximum(max_prob, prob)
-            sum_prob *= prob.neg_().add_(1)  # probability of no vessel
-    sum_prob = sum_prob.neg_().add_(1)   # probability of at least one vessel
+            sum_prob *= prob.neg_().add_(1)  # probability of no curve
+    sum_prob = sum_prob.neg_().add_(1)   # probability of at least one curve
 
     print('')
     return sum_prob, label
@@ -1315,10 +1353,9 @@ class Brent:
 
     def __init__(self, tol=1e-9, max_iter=128, step=0.1):
         """
-
         Parameters
         ----------
-        tol : float, defualt=1e-9
+        tol : float, default=1e-9
             Tolerance for early stopping
         max_iter : int, default=128
             Maximum number of iterations
@@ -1331,7 +1368,6 @@ class Brent:
 
     def fit(self, init, closure):
         """
-
         Parameters
         ----------
         init : tensor
@@ -1345,8 +1381,6 @@ class Brent:
             Location of the minimum
         f : tensor
             Value of the minimum
-
-
         """
         bracket = self.bracket(init, closure(init), closure)
         return self.search_in_bracket(bracket, closure)
@@ -1379,6 +1413,36 @@ class Brent:
             s = f0 / (y01 * y02) + f1 / (y01 * y12) + f2 / (y02 * y12)
             return a / 2, s
 
+        @torch.jit.script
+        def pre_closure(a0, a1, a2, f0, f1, f2, gold: float):
+            delta0 = a2 - a1
+            delta, s = quad_min(a0, a1, a2, f0, f1, f2)
+            delta = (delta - a1).minimum((1 + gold) * delta0)
+            a = torch.where(s > 0, a1 + delta, a2 + gold * delta0)
+            return a
+
+        @torch.jit.script
+        def post_closure(a, a0, a1, a2, f, f0, f1, f2):
+            # f2 < f1 < f0 so (assuming unicity) the minimum is in
+            # (a1, a2) or (a2, inf)
+            mask0 = f2 < f1
+            mask1 = ((a1 < a) == (a < a2))
+            mask2 = (f < f2) & mask1 & mask0
+            a0, a1 = torch.where(mask2, a1, a0), torch.where(mask2, a, a1)
+            f0, f1 = torch.where(mask2, f1, f0), torch.where(mask2, f, f1)
+            mask2 = (f1 < f) & mask1 & mask0
+            a2 = torch.where(mask2, a, a2)
+            f2 = torch.where(mask2, f, f2)
+            # shift by one point
+            mask2 = mask0 & ~mask1
+            a0, a1, a2 = (torch.where(mask2, a1, a0),
+                          torch.where(mask2, a2, a1),
+                          torch.where(mask2, a, a2))
+            f0, f1, f2 = (torch.where(mask2, f1, f0),
+                          torch.where(mask2, f2, f1),
+                          torch.where(mask2, f, f2))
+            return a0, a1, a2, f0, f1, f2
+
         a1 = a0 + self.step
         f1 = closure(a1)
 
@@ -1390,36 +1454,18 @@ class Brent:
         a2 = (a1 - a0).mul_(self.gold).add_(a1)
         f2 = closure(a2)
 
-        mask0 = f2 < f1
         for n_iter in range(self.max_iter):
-            if ~mask0.any():
+            if (f1 < f2).all():
                 break
+
             # fit quadratic polynomial
-            delta0 = a2 - a1
-            delta, s = quad_min(a0, a1, a2, f0, f1, f2)
-            delta = delta.sub_(a1).minimum((1 + self.gold) * delta0)
-            a = torch.where(s > 0, a1 + delta, a2 + self.gold * delta0)
+            a = pre_closure(a0, a1, a2, f0, f1, f2, float(self.gold))
+
+            # evaluate new point
+            f = closure(a)
 
             # check progress and update bracket
-            # f2 < f1 < f0 so (assuming unicity) the minimum is in
-            # (a1, a2) or (a2, inf)
-            f = closure(a)
-            mask1 = ((a1 < a) == (a < a2))
-            mask2 = mask0 & mask1 & (f < f2)
-            a0, a1 = torch.where(mask2, a1, a0), torch.where(mask2, a, a1)
-            f0, f1 = torch.where(mask2, f1, f0), torch.where(mask2, f, f1)
-            mask2 = mask0 & mask1 & (f2 < f)
-            a2 = torch.where(mask2, a, a2)
-            f2 = torch.where(mask2, f, f2)
-            # shift by one point
-            mask2 = mask0 & ~mask1
-            a0, a1, a2 = (torch.where(mask2, a1, a0),
-                          torch.where(mask2, a2, a1),
-                          torch.where(mask2, a, a2))
-            f0, f1, f2 = (torch.where(mask2, f1, f0),
-                          torch.where(mask2, f2, f1),
-                          torch.where(mask2, f, f2))
-            mask0 = f2 < f1
+            a0, a1, a2, f0, f1, f2 = post_closure(a, a0, a1, a2, f, f0, f1, f2)
 
         return a0, a1, a2, f0, f1, f2
 
@@ -1445,18 +1491,24 @@ class Brent:
 
         @torch.jit.script
         def quad_min(a0, a1, a2, f0, f1, f2):
-            y01 = a0 * a0 - a1 * a1
-            y02 = a0 * a0 - a2 * a2
-            y12 = a1 * a1 - a2 * a2
-            a01 = a0 - a1
-            a02 = a0 - a2
-            a12 = a1 - a2
-            a = (f0 * y12 + f1 * y02 + f2 * y01) / (f0 * a12 + f1 * a02 + f2 * a01)
+            """
+            Fit a quadratic to three points (a0, f0), (a1, f1), (a2, f2)
+            and return the location of its minimum, and its quadratic factor
+            """
+            a00, a11, a22 = a0 * a0, a1 * a1, a2 * a2
+            y01, y02, y12 = a00 - a11, a00 - a22, a11 - a22
+            a01, a02, a12 = a0 - a1, a0 - a2, a1 - a2
+            a = f0 * y12 + f1 * y02 + f2 * y01
+            a = 0.5 * a / (f0 * a12 + f1 * a02 + f2 * a01)
             s = f0 / (y01 * y02) + f1 / (y01 * y12) + f2 / (y02 * y12)
-            return a / 2, s
+            return a, s
 
         @torch.jit.script
         def sort(a0, a1, a2, f0, f1, f2):
+            """
+            Sort the pairs (a0, f0), (a1, f1), (a2, f2) such that
+            f0 < f1 < f2
+            """
             mask = f2 < f1
             a1, a2 = torch.where(mask, a2, a1), torch.where(mask, a1, a2)
             f1, f2 = torch.where(mask, f2, f1), torch.where(mask, f1, f2)
@@ -1468,36 +1520,49 @@ class Brent:
             f1, f2 = torch.where(mask, f2, f1), torch.where(mask, f1, f2)
             return a0, a1, a2, f0, f1, f2
 
-        b0, b1 = bracket[0].clone(), bracket[2].clone()
-        mask = b1 < b0
-        b0, b1 = torch.where(mask, b1, b0), torch.where(mask, b0, b1)
-        a0, a1, a2, f0, f1, f2 = sort(*bracket)  # sort by values
+        @torch.jit.script
+        def get_mask_stop(a0, b0, b1, tol: float):
+            """Mask of elements that have converged"""
+            return ((a0 - 0.5 * (b0 + b1)).abs() + 0.5 * (b1 - b0)) <= 2 * tol
 
-        d = torch.full_like(a0, float('inf'))
-        d0 = d.clone()
-        for n_iter in range(1, self.max_iter+1):
+        @torch.jit.script
+        def get_mask_nomin(a0, b0, b1, s, d, d1, tiny):
+            """Mask of elements that use bisection rather than interpolation"""
+            # do not use extremum of the quadratic fit if:
+            # - it is a maximum (s < 0), or
+            # - jump is larger than half the last jump, or
+            # - new point is too close from brackets
+            a = a0 + d
+            return (s < 0) | (d.abs() > d1.abs()/2) | ~((b0 + tiny < a) & (a < b1 - tiny))
 
-            mask_stop = abs(a0 - 0.5 * (b0 + b1)) + 0.5 * (b1 - b0) <= 2 * self.tol
-            if mask_stop.all():
-                return a0, f0
+        @torch.jit.script
+        def get_side(a0, b0, b1):
+            """Side of the bisection"""
+            return a0 > 0.5 * (b0 + b1)
 
-            d1, d0 = d0, d
+        @torch.jit.script
+        def get_tiny(a0, tiny: float):
+            return tiny * (1 + 2 * a0.abs())
 
+        @torch.jit.script
+        def pre_closure(a0, a1, a2, f0, f1, f2, b0, b1, d1, igold: float, tiny: float):
             # fit quadratic polynomial
-            a, s = quad_min(a0, a1, a2, f0, f1, f2)
-            d = a - a0
+            d, s = quad_min(a0, a1, a2, f0, f1, f2)
+            d = d - a0
 
-            tiny = self.tiny * (1 + 2 * a0.abs())
-            mask_nomin = (s < 0) | (abs(d) > abs(d1)/2) | ~((b0 + tiny < a) & (a < b1 - tiny))
-            mask_nomin2 = a0 > 0.5 * (b0 + b1)
-            d = torch.where(mask_nomin & mask_nomin2, (b0 - a0) * self.igold, d)
-            d = torch.where(mask_nomin & ~mask_nomin2, (b1 - a) * self.igold, d)
-            a = torch.where(mask_nomin, a0 + d, a)
+            # if quad has a minimum -> new point = minimum      (interpolation)
+            # else                  -> new point = golden ratio (bisection)
+            tiny1 = get_tiny(a0, tiny)
+            mask_nomin = get_mask_nomin(a0, b0, b1, s, d, d1, tiny1)
+            mask_side = get_side(a0, b0, b1)
+            bisection = torch.where(mask_side, b0 - a0, b1 - a0) * igold
+            d = torch.where(mask_nomin, bisection, d)
+            a = d + a0
+            return a, d
 
-            # check progress and update bracket
-            f = closure(a)
-            # f < f0 < f1 < f2
-            mask = f < f0
+        @torch.jit.script
+        def post_closure(a, a0, a1, a2, f, f0, f1, f2, b0, b1):
+            mask = f < f0  # f < f0 < f1 < f2
             mask2 = a < a0
             b0, b1 = (torch.where(mask & ~mask2, a0, b0),
                       torch.where(mask & mask2, a0, b1))
@@ -1511,12 +1576,41 @@ class Brent:
             mask = f0 < f
             b0, b1 = (torch.where(mask & mask2, a, b0),
                       torch.where(mask & ~mask2, a, b1))
-            # f0 < f < f1 < f2
-            mask = (f0 < f) & (f < f1)
+            mask = mask & (f < f1)          # f0 < f < f1 < f2
             a1, a2 = torch.where(mask, a, a1), torch.where(mask, a1, a2)
             f1, f2 = torch.where(mask, f, f1), torch.where(mask, f1, f2)
-            mask = (f1 < f) & (f < f2)
+            mask = (f1 < f) & (f < f2)      # f0 < f1 < f < f2
             a2 = torch.where(mask, a, a2)
             f2 = torch.where(mask, f, f2)
+            return a0, a1, a2, f0, f1, f2, b0, b1
+
+        b0, b1 = bracket[0], bracket[2]
+        mask = b1 < b0
+        b0, b1 = torch.where(mask, b1, b0), torch.where(mask, b0, b1)
+        a0, a1, a2, f0, f1, f2 = sort(*bracket)  # sort by values
+
+        d = torch.full_like(a0, float('inf'))
+        d0 = d.clone()
+        for n_iter in range(1, self.max_iter+1):
+
+            mask_stop = get_mask_stop(a0, b0, b1, float(self.tol))
+            if mask_stop.all():
+                break
+
+            # d1 = delta from two iterations ago
+            d1, d0 = d0, d
+
+            # fit quadratic polynomial
+            # if quad has a minimum -> new point = minimum      (interpolation)
+            # else                  -> new point = golden ratio (bisection)
+            a, d = pre_closure(a0, a1, a2, f0, f1, f2, b0, b1, d1,
+                               float(self.igold), float(self.tiny))
+
+            # evaluate new point
+            f = closure(a)
+
+            # update bracket
+            a0, a1, a2, f0, f1, f2, b0, b1 = post_closure(
+                a, a0, a1, a2, f, f0, f1, f2, b0, b1)
 
         return a0, f0
