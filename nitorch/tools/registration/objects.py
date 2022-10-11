@@ -922,8 +922,9 @@ class NonLinModel(TransformationModel):
     def reset_kernel(self, kernel=None):
         return self.set_kernel(kernel)  # backward compatibility
 
-    def make(self, model, **kwargs):
-        if isinstance(model, type(self)):
+    @classmethod
+    def make(cls, model, **kwargs):
+        if isinstance(model, cls):
             kwargs.setdefault('factor', model.factor)
             kwargs.setdefault('prm', model.penalty)
             kwargs.setdefault('steps', model.steps)
@@ -931,10 +932,12 @@ class NonLinModel(TransformationModel):
             kwargs.setdefault('dat', model.dat)
         elif isinstance(model, NonLinModel):
             raise TypeError('Cannot convert between `NonLinModel`s')
-        if type(self) is NonLinModel:
+        if cls is NonLinModel:
+            if isinstance(model, NonLinModel):
+                return type(model)(**kwargs)
             return NonLinModel(model, **kwargs)
         else:
-            return type(self)(**kwargs)
+            return cls(**kwargs)
 
     @classmethod
     def add_identity(cls, disp):
@@ -1389,6 +1392,12 @@ class SmallDefModel(NonLinModel):
 
 
 class Nonlin2dModel(NonLinModel):
+    """A 3D Nonlinear field pointing along a 2D direction"""
+
+    def __new__(cls, *args, **kwargs):
+        obj = object.__new__(Nonlin2dModel)
+        cls.__init__(obj, *args, **kwargs)
+        return obj
 
     def __init__(self, model, plane, ref_affine=None, *args, **kwargs):
         if isinstance(plane, str):
@@ -1402,7 +1411,7 @@ class Nonlin2dModel(NonLinModel):
             rot[:-1, -1] = 0
             rot[:-1, :-1] /= rot[:-1, :-1].square().sum(0, keepdim=True).sqrt()
         self.rotation = rot
-        self._model = NonLinModel(model, *args, **kwargs)
+        self._model = model
 
     model = property(lambda self: self._model.model)
     factor = property(lambda self: self._model.factor)
@@ -1410,6 +1419,31 @@ class Nonlin2dModel(NonLinModel):
     steps = property(lambda self: self._model.steps)
     kernel = property(lambda self: self._model.kernel)
     dat = property(lambda self: self._model.dat)
+    affine = property(lambda self: self._model.affine)
+    shape = property(lambda self: self._model.shape)
+    dim = property(lambda self: self._model.dim)
+    voxel_size = property(lambda self: self._model.voxel_size)
+
+    def exp(self, *args, **kwargs):
+        return self._model.exp(*args, **kwargs)
+
+    def iexp(self, *args, **kwargs):
+        return self._model.iexp(*args, **kwargs)
+
+    def exp2(self, *args, **kwargs):
+        return self._model.exp2(*args, **kwargs)
+
+    def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False):
+        g, h, mugrad = self._model.propagate_grad(
+            g, h, moving, phi, left, right, inv)
+
+        A = self.dat.affine[:-1, :-1]
+        R = self.rotation[:-1, :-1]
+        R = R[:, list(range(self.plane)) + list(range(self.plane+1, len(R)))]
+        P = A.inverse() @ (R @ R.T) @ A
+        mugrad = linalg.matvec(P, mugrad)
+
+        return g, h, mugrad
 
 
 class AffineModel(TransformationModel):

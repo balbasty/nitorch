@@ -731,6 +731,8 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
 
     if nonlin:
+        if affine.dat and affine.dat.dat is not None:
+            affine.dat.dat /= 2  # take the matrix square root
         if affine:
             if options.optim.name == 'sequential':
                 joptim = optim.InterleavedOptimIterator(
@@ -750,6 +752,8 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
     if options.pyramid.concurrent:
         joptim.reset_state()
+        if nonlin and hasattr(nonlin_optim, 'factor'):
+            nonlin_optim.factor /= py.prod(nonlin.shape)
         register = pairwise.PairwiseRegister(loss_list, affine, nonlin, joptim,
                                              verbose=options.verbose,
                                              framerate=options.framerate)
@@ -760,6 +764,9 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
     else:
         n_level = nb_levels = len(loss_list)
+        factor = None
+        if nonlin and hasattr(nonlin_optim, 'factor'):
+            factor = nonlin_optim.factor
         if nonlin and n_level > 1:
             vel_shape = nonlin.shape
             nonlin = nonlin.downsample_(2**n_level)
@@ -774,6 +781,8 @@ def _do_register(loss_list, affine, nonlin,
                     nonlin.upsample_(shape=vel_shape, interpolation=3)
                 else:
                     nonlin.upsample_()
+            if nonlin and factor is not None:
+                nonlin_optim.factor = factor / py.prod(nonlin.shape)
             joptim.reset_state()
             register = pairwise.PairwiseRegister(loss_level, affine, nonlin, joptim,
                                                  verbose=options.verbose,
@@ -910,7 +919,7 @@ def _build_affine(options, can_use_2nd_order, ref_affine=None):
     return affine, affine_optim
 
 
-def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
+def _build_nonlin(options, can_use_2nd_order, affine, image_dict, ref_affine=None):
     dim = 3
     device = next(iter(image_dict.values())).dat.device
 
@@ -943,6 +952,9 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
         Model = objects.NonLinModel.subclass(options.nonlin.name)
         nonlin = Model(dat=vel, factor=options.nonlin.factor,
                        penalty=prm, steps=getattr(options.nonlin, 'steps', None))
+        if options.nonlin.is2d is not False:
+            nonlin = objects.Nonlin2dModel(
+                nonlin, options.nonlin.is2d, ref_affine=ref_affine)
 
         max_iter = options.nonlin.optim.max_iter
         if not max_iter:
@@ -985,7 +997,7 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
                     sub_iter = 2
                 else:
                     sub_iter = 16
-            prm = {'factor': nonlin.factor / py.prod(nonlin.shape),
+            prm = {'factor': nonlin.factor,
                    'voxel_size': nonlin.voxel_size,
                    **nonlin.penalty}
             if getattr(options.nonlin.optim, 'solver', 'cg') == 'cg':
@@ -1043,7 +1055,8 @@ def _main(options):
     #                           BUILD DENSE
     # ------------------------------------------------------------------
     nonlin, nonlin_optim = _build_nonlin(options, can_use_2nd_order,
-                                         affine, image_dict)
+                                         affine, image_dict,
+                                         loss_list[0].fixed.affine)
 
     if not affine and not nonlin:
         raise ValueError('At least one of @affine or @nonlin must be used.')

@@ -111,6 +111,19 @@ class BSplineCurve:
             self.coeff_radius = spline_coeff(radius, interpolation=self.order,
                                              bound=self.bound, dim=0)
 
+    def to(self, *args, **kwargs):
+        self.waypoints = self.waypoints.to(*args, **kwargs)
+        self.coeff = self.coeff.to(*args, **kwargs)
+        self.radius = self.radius.to(*args, **kwargs)
+        self.coeff_radius = self.coeff_radius.to(*args, **kwargs)
+        return self
+
+    def cpu(self):
+        return self.to('cpu')
+
+    def cuda(self):
+        return self.to('cuda')
+
     def update_waypoints(self):
         """Convert coefficients into waypoints"""
         t = torch.linspace(0, 1, len(self.coeff), **utils.backend(self.coeff))
