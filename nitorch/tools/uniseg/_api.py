@@ -156,8 +156,8 @@ def uniseg(x, w=None, affine=None, device=None,
         else:
             prior_for_align = prior
         aff = align_tpm((x, affine), (prior_for_align, affine_prior), w,
-                        verbose=verbose-1, joint=True)
-        affine_prior = aff.inverse() @ affine_prior
+                        verbose=verbose-1, joint=True, flexi=True)
+        affine = aff.to(affine).matmul(affine)
         del prior_for_align
 
     # --- fit ----------------------------------------------------------
@@ -187,7 +187,7 @@ def uniseg(x, w=None, affine=None, device=None,
     if do_mixing:
         parameters['mixing'] = model.mixing
     if do_affine:
-        parameters['affine'] = aff @ model.affine
+        parameters['affine'] = model.affine @ aff
     elif aff is not None:
         parameters['affine'] = aff
     if do_mrf in ('learn', True):
@@ -333,33 +333,33 @@ def get_prior(prior, affine_prior, **backend):
 
 
 def get_data(x, w, affine, dim, **backend):
+    def ensure_dim(f):
+        def ndim(f):
+            return f.dim() if callable(f.dim) else f.dim
+        if ndim(f) > dim:
+            if f.shape[dim] == 1:
+                f = f.squeeze(dim)
+            if ndim(f) > dim + 1:
+                raise ValueError('Too many dimensions')
+        if f.dim > dim:
+            f = f.movedim(-1, 0)
+        else:
+            f = f[None]
+        return f
+
     if not torch.is_tensor(x):
         if isinstance(x, str):
             f = io.map(x)
             if affine is None:
                 affine = f.affine
-            if f.dim > dim:
-                if f.shape[dim] == 1:
-                    f = f.squeeze(dim)
-                if f.dim > dim + 1:
-                    raise ValueError('Too many dimensions')
-            if f.dim > dim:
-                f = f.movedim(-1, 0)
-            else:
-                f = f[None]
-            x = f.fdata(**backend, rand=True, missing=0)
+            f = ensure_dim(f)
         else:
-            f = io.stack([io.map(x1) for x1 in x])
+            f = io.cat([ensure_dim(io.map(x1)) for x1 in x])
             if affine is None:
                 affine = f.affine[0]
-            x = f.fdata(**backend, rand=True, missing=0)
-
-    if x.dim() > dim + 1:
-        x = x.unsqeeze(-1)
-    if x.dim() > dim + 1:
-        raise ValueError('Too many dimensions')
-    if x.dim() == dim:
-        x = x[None]
+        x = f.fdata(**backend, rand=True, missing=0)
+    else:
+        x = ensure_dim(x)
 
     if not torch.is_tensor(w) and w is not None:
         w = io.loadf(w, **backend)

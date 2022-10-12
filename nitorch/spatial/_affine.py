@@ -273,12 +273,13 @@ def iter_layouts(ndim, device=None):
     if device is None:
         if torch.is_tensor(ndim):
             device = ndim.device
+    backend = dict(dtype=torch.long, device=device)
 
     # First, compute all possible directed layouts on one hand,
     # and all possible flips on the other hand.
-    axes = torch.arange(ndim, dtype=torch.long, device=device)
-    layouts = itertools.permutations(axes)           # [P, D]
-    flips = itertools.product([0, 1], r=ndim)        # [F, D]
+    axes = torch.arange(ndim, **backend)
+    layouts = itertools.permutations(axes)                      # [P, D]
+    flips = itertools.product([0, 1], r=ndim, **backend)        # [F, D]
 
     # Now, compute combination (= cartesian product) of both
     # We replicate each tensor so that shapes match and stack them.

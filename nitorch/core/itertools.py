@@ -6,7 +6,7 @@ import torch
 combinations = torch.combinations
 
 
-def product(*inputs, r=1):
+def product(*inputs, r=1, **backend):
     """Cartesian product of a set.
 
     Parameters
@@ -24,7 +24,7 @@ def product(*inputs, r=1):
         Cartesian product
 
     """
-    inputs = [torch.as_tensor(input) for input in inputs]
+    inputs = [torch.as_tensor(input, **backend) for input in inputs]
     return torch.cartesian_prod(*(inputs * r))
 
 
