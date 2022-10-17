@@ -1,17 +1,18 @@
 from .pairwise import PairwiseRegister
+from .pairwise_makeobj import make_affine, make_affine_optim, make_nonlin, make_nonlin_optim
 from .optim import InterleavedOptimIterator, Optim
 from . import objects
 import math as pymath
 
 
 def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
-        pyramid=True, interleaved=False, progressive=True,
+        pyramid=True, interleaved=True, progressive=True,
         max_iter=10, tolerance=1e-5, verbose=True, framerate=1):
     """Run pairwise registration
 
     Parameters
     ----------
-    losses : list[objects.Loss] or list[list[objects.Loss]]
+    losses : list[objects.Similarity] or list[list[objects.Similarity]]
         List of losses. If `pyramid`, should be a list of list.
     affine : AffineModel, optional
         Instantiated affine transformation model
@@ -49,17 +50,22 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
 
     # --- prepare transformation models if not provided ---
     if not affine and not nonlin:
-        affine = True
-    if not isinstance(affine, objects.AffineModel):
+        affine = 'rigid'
+    if not isinstance(affine, objects.AffineModel) and affine:
         affine = make_affine(affine)
-    if not isinstance(nonlin, objects.NonLinModel):
-        nonlin = make_nonlin(nonlin)
+    if not isinstance(nonlin, objects.NonLinModel) and nonlin:
+        images = [elem
+                  for loss in flatten_list(losses)
+                  for elem in (loss.fix, loss.mov)]
+        nonlin = make_nonlin(images, nonlin)
 
     # --- prepare optimizers if not provided ---
     if affine and not isinstance(affine_optim, Optim):
-        affine_optim = make_affine_optim(affine_optim, affine)
+        order = min(loss.order for loss in losses[0])
+        affine_optim = make_affine_optim(affine_optim, order)
     if nonlin and not isinstance(nonlin_optim, Optim):
-        nonlin_optim = make_nonlin_optim(nonlin_optim, nonlin)
+        order = min(loss.order for loss in losses[0])
+        nonlin_optim = make_nonlin_optim(nonlin_optim, order, nonlin=nonlin)
 
     # --- progressive affine initialization ---
     if progressive:
@@ -96,7 +102,7 @@ def run_progressive_init(losses, affine, affine_optim,
 
     Parameters
     ----------
-    losses : list[objects.Loss]
+    losses : list[objects.Similarity]
         List of losses
     affine : objects.AffineModel
         Target affine model

@@ -823,21 +823,21 @@ def _build_losses(options, pyramids, device):
 
         # Forward loss
         factor = loss.factor / (2 if loss.symmetric else 1)
-        lossobj = objects.LossComponent(lossobj, mov, fix, factor=factor)
+        lossobj = objects.Similarity(lossobj, mov, fix, factor=factor)
         loss_list.append(lossobj)
 
         # Backward loss
         if loss.symmetric:
             lossobj = _get_loss(loss, dim)
             if loss.name != 'emmi':
-                lossobj = objects.LossComponent(
+                lossobj = objects.Similarity(
                     lossobj, fix, mov, factor=factor, backward=True)
             else:
                 loss.fix, loss.mov = loss.mov, loss.fix
                 loss.mov.rescale = (0, 0)
                 loss.fix.discretize = loss.fix.discretize or 256
                 loss.mov.soft_quantize = loss.mov.discretize or 16
-                lossobj = objects.LossComponent(
+                lossobj = objects.Similarity(
                     lossobj, mov, fix, factor=factor, backward=True)
             loss_list.append(lossobj)
 

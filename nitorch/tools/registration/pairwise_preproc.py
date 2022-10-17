@@ -189,68 +189,6 @@ def prepare_pyramid_levels(image_pairs, levels, dim=None, **opt):
     return levels
 
 
-def make_image_object(dat, mask=None, affine=None,
-                      pyramid=0, pyramid_method='gaussian',
-                      discretize=False, soft=False,
-                      bound='zero', extrapolate=True, **kwargs):
-    """Create an image pyramid (eventually with a single level)
-
-    Parameters
-    ----------
-    dat : (C, *spatial) tensor
-        Input image
-    mask : (C|1, *spatial) tensor, optional
-        Mask of voxels to include
-    affine : (D+1, D+1) tensor, optional
-        Orientation matrix
-    pyramid : [sequence of] int, default=[0]
-        Pyramid level to compute
-    pyramid_method : {'gauss', 'average', 'median', 'stride'}, default='gauss'
-        Method used to compute the pyramid
-    discretize : int, optional
-        Discretize the image at each level into this many bins
-    soft : bool, default=False
-        Use soft discretization instead of hard discretization
-    bound : [sequence of] str
-        Boundary conditions
-    extrapolate : bool, default=True
-        Extrapolate input data when sampling out-of-bound
-
-    Returns
-    -------
-    image: ImagePyramid
-
-    """
-    pyramid = make_list(pyramid)
-    dim = dat.dim() - 1
-    is_label = not dat.dtype.is_floating_point
-    if affine is None:
-        affine = spatial.affine_default(dat.shape[1:])
-
-    image = objects.ImagePyramid(
-        dat,
-        levels=pyramid,
-        affine=affine,
-        dim=dim,
-        bound=bound,
-        mask=mask,
-        extrapolate=extrapolate,
-        method=pyramid_method
-    )
-    if discretize:
-        if soft:
-            if len(dat) > 1:
-                raise ValueError('Cannot soft-quantize a multi-channel image')
-            for level in image:
-                level.preview = level.dat
-                level.dat = soft_quantize_image(level.dat, discretize)
-        elif not is_label:
-            for level in image:
-                level.preview = level.dat
-                level.dat = discretize_image(level.dat, discretize)
-    return image
-
-
 def map_image(fnames, dim=None):
     """Map an ND image from disk
 

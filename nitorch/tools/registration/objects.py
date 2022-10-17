@@ -6,7 +6,222 @@ from . import losses, utils as regutils
 import copy
 
 
-class MeanSpace:
+class BaseSimilarity:
+
+    def copy(self):
+        return copy.copy(self)
+
+    def deepcopy(self):
+        return copy.deepcopy(self)
+
+
+class Similarity(BaseSimilarity):
+    """
+    Similarity measure between two images
+
+    A similarity term between a fixed and moving image is instantiated
+    by e.g. `sim = Similarity(NCC(), mov, fix)`, where `mov` and `fix`
+    are pre-instantiated `Image` objects.
+
+    A Similarity instance can be multiplied or divided by a scalar number,
+    with the effect of modulating its weight (one by default) in the loss.
+    E.g., `loss = 10 * sim`.
+
+    The `reverse()` method generates a function that expects `moving` to
+    be warped to `fixed` using the inverse transform. The `symmetrize()`
+    method generates a symmetric similarity that contains both the
+    forward and reverse similarities.
+
+    Multiple similarity terms can be combined by addition, e.g.
+    `loss = 10 * sim1 + 0.5 * sim2`
+    """
+
+    def __init__(self, loss, moving, fixed, factor=1, backward=False):
+        """
+
+        Parameters
+        ----------
+        loss : OptimizationLoss (or its name)
+            Similarity loss to minimize.
+        moving, fixed : Image
+            Fixed and moving images.
+        factor : float, default=1
+            Weight of the loss
+        backward : bool, default=False
+            If True, apply the backward transform instead of the forward.
+        """
+        self.moving = ImagePyramid(moving)
+        self.fixed = ImagePyramid(fixed)
+        self.loss = losses.make_loss(loss, self.moving.dim)
+        self.factor = factor
+        self.backward = backward
+
+    def reverse(self):
+        """
+        Return the reverse similarity, where `fixed` is warped to `moving`
+        """
+        return type(self)(copy.deepcopy(self.loss),
+                          self.fixed, self.moving, self.factor,
+                          not self.backward)
+
+    def symmetrize(self):
+        """
+        Return a symmetric loss, that includes both the forward and
+        reverse losses.
+        """
+        return SumSimilarity([self, self.reverse()]) * 0.5
+
+    def __mul__(self, factor: float):
+        obj = self.copy()
+        obj.factor = factor * obj.factor
+        return obj
+
+    def __rmul__(self, factor: float):
+        obj = self.copy()
+        obj.factor = obj.factor * factor
+        return obj
+
+    def __imul__(self, factor: float):
+        self.factor *= factor
+        return self
+
+    def __truediv__(self, factor: float):
+        obj = self.copy()
+        obj.factor = factor / obj.factor
+        return obj
+
+    def __itruediv__(self, factor: float):
+        self.factor /= factor
+        return self
+
+    def __add__(self, other: BaseSimilarity):
+        if isinstance(other, SumSimilarity):
+            return SumSimilarity([self, *other])
+        elif isinstance(other, BaseSimilarity):
+            return SumSimilarity([self, other])
+        raise TypeError(f'Cannot add a {type(self)} and a {type(other)}')
+
+    def __radd__(self, other: BaseSimilarity):
+        if isinstance(other, SumSimilarity):
+            return SumSimilarity([*other, self])
+        elif isinstance(other, BaseSimilarity):
+            return SumSimilarity([other, self])
+        raise TypeError(f'Cannot add a {type(other)} and a {type(self)}')
+
+    def __repr__(self):
+        s = f'{type(self.loss).__name__}(\n' \
+            f'    moving={self.moving}, \n' \
+            f'    fixed={self.fixed}'
+        if self.backward:
+            s += f',\n    backward=True'
+        p = getattr(self.loss, 'patch', None)
+        if p is not None:
+            s += f',\n    patch={p}'
+        s += ')'
+        if self.factor != 1:
+            s = f'{self.factor:.1g} * {s}'
+        return s
+
+    __str_ = __repr__
+
+
+class SumSimilarity(BaseSimilarity):
+    """A sum of Similarity losses"""
+
+    def __init__(self, losses):
+        """
+        Parameters
+        ----------
+        losses : sequence[Similarity]
+        """
+        def flatten_losses(losses):
+            if isinstance(losses, Similarity):
+                return [losses]
+            flat_losses = []
+            for loss in losses:
+                flat_losses += flatten_losses(loss)
+            return flat_losses
+        self.losses = flatten_losses(losses)
+
+    def __len__(self):
+        return len(self.losses)
+
+    def __iter__(self):
+        for loss in self.losses:
+            yield loss
+
+    def __getitem__(self, item):
+        return self.losses[item]
+
+    def reverse(self):
+        return SumSimilarity([loss.reverse() for loss in self])
+
+    def symmetrize(self):
+        return SumSimilarity([*self, *self.reverse()]) * 0.5
+
+    def __mul__(self, factor):
+        return SumSimilarity([factor * loss for loss in self])
+
+    def __rmul__(self, factor):
+        return SumSimilarity([loss * factor for loss in self])
+
+    def __imul__(self, factor):
+        for loss in self:
+            loss *= factor
+        return self
+
+    def __truediv__(self, factor):
+        return SumSimilarity([factor / loss for loss in self])
+
+    def __itruediv__(self, factor):
+        for loss in self:
+            loss /= factor
+        return self
+
+    def __add__(self, other):
+        if isinstance(other, SumSimilarity):
+            return SumSimilarity([*self, *other])
+        elif isinstance(other, BaseSimilarity):
+            return SumSimilarity([*self, other])
+        raise TypeError(f'Cannot add a {type(self)} and a {type(other)}')
+
+    def __radd__(self, other):
+        if isinstance(other, SumSimilarity):
+            return SumSimilarity([*other, *self])
+        elif isinstance(other, BaseSimilarity):
+            return SumSimilarity([other, *self])
+        raise TypeError(f'Cannot add a {type(other)} and a {type(self)}')
+
+    def __iadd__(self, other):
+        if isinstance(other, SumSimilarity):
+            self.losses += other.losses
+        elif isinstance(other, BaseSimilarity):
+            self.losses.append(other)
+        else:
+            raise TypeError(f'Cannot add a {type(self)} and a {type(other)}')
+        return self
+
+    def __repr__(self):
+        s = ' + '.join([repr(loss) for loss in self])
+        return f'[{s}]'
+
+    __str_ = __repr__
+
+
+class Space:
+    """An oriented lattice (shape and affine)"""
+    def __init__(self, shape, affine=None, voxel_size=None):
+        if affine is None:
+            affine = spatial.affine_default(shape, voxel_size)
+        self.shape = shape
+        self.affine = affine
+
+    def __repr__(self):
+        vx = spatial.voxel_size(self.affine).tolist()
+        return f'{type(self).__name__}(shape={self.shape}, vx={vx})'
+
+
+class MeanSpace(Space):
     """Compute a mean space from a bunch of affine + shape"""
     def __init__(self, images, voxel_size=None, vx_unit='mm', pad=0, pad_unit='%'):
         mat, shape = spatial.mean_space(
@@ -14,36 +229,36 @@ class MeanSpace:
             [image.shape for image in images],
             voxel_size=voxel_size, vx_unit=vx_unit,
             pad=pad, pad_unit=pad_unit)
-        self.affine = mat
-        self.shape = shape
-
-    def __repr__(self):
-        vx = spatial.voxel_size(self.affine).tolist()
-        return f'{type(self).__name__}(shape={self.shape}, vx={vx})'
+        super().__init__(shape, mat)
 
 
 class SpatialTensor:
     """Base class for tensors with an orientation"""
-    def __init__(self, dat, affine=None, dim=None, **backend):
+
+    def __init__(self, dat, affine=None, **backend):
         """
         Parameters
         ----------
-        dat : ([C], *spatial) tensor
-        affine : tensor, optional
-        dim : int, default=`dat.dim() - 1`
-        **backend : dtype, device
+        dat : (C, *spatial) tensor or MappedArray or SpatialTensor
+            Image data
+        affine : (D+1, D+1) tensor, optional
+            Orientation matrix.
+        dtype : torch.dtype, optional
+        device : torch.device, optional
         """
-        if isinstance(dat, str):
-            dat = io.map(dat)[None]
         if isinstance(dat, io.MappedArray):
             if affine is None:
                 affine = dat.affine
             dat = dat.fdata(rand=True, **backend)
-        self.dim = dim or dat.dim() - 1
-        self.dat = dat
+        if isinstance(dat, SpatialTensor):
+            if affine is None:
+                affine = dat.affine
+            dat = dat.dat
+        self.dim = dat.dim() - 1
+        self.dat = dat.to(**backend)
         if affine is None:
             affine = spatial.affine_default(self.shape, **utils.backend(dat))
-        self.affine = affine.to(utils.backend(self.dat)['device'])
+        self.affine = affine.to(self.dat.device)
 
     def to(self, *args, **kwargs):
         return copy.copy(self).to_(*args, **kwargs)
@@ -64,9 +279,9 @@ class SpatialTensor:
         v = ', '.join(v)
         s += [f'voxel_size=[{v}]']
         if self.dtype != torch.float32:
-            s += [f'dtype={self.dtype}']
+            s += [f'dtype={str(torch.int32).split(".")[-1]}']
         if self.device.type != 'cpu':
-            s +=[f'device={self.device}']
+            s += [f'device={self.device.type}']
         return s
 
     def __repr__(self):
@@ -79,26 +294,37 @@ class SpatialTensor:
 
 class Image(SpatialTensor):
     """Data + Metadata (affine, boundary) of an Image"""
-    def __init__(self, dat, affine=None, dim=None, mask=None,
+    def __init__(self, dat, affine=None, mask=None,
                  bound='dct2', extrapolate=False, preview=None):
         """
         Parameters
         ----------
-        dat : ([C], *spatial) tensor
+        dat : (C, *spatial) tensor or MappedArray or SpatialTensor
+            Image data
         affine : tensor, optional
-        dim : int, default=`dat.dim() - 1`
+            Orientation matrix
+        mask : (C|1, *spatial) tensor, optional
+            Mask of valid voxels
         bound : str, default='dct2'
+            Boundary conditions for interpolation
         extrapolate : bool, default=True
+            Whether to extrapolate out-of-bound data
+        preview : (C|1, *spatial) tensor, optional
+            Image used when plotting
         """
-        super().__init__(dat, affine, dim)
+        super().__init__(dat, affine)
         self.bound = bound
         self.extrapolate = extrapolate
-        self.mask = mask
         if self.masked and mask.shape[-self.dim:] != self.shape:
             raise ValueError('Wrong shape for mask')
-        self._preview = preview
+        while mask.dim() < self.dim + 1:
+            mask = mask[None]
+        self.mask = mask
         if self.previewed and preview.shape[-self.dim:] != self.shape:
             raise ValueError('Wrong shape for preview')
+        while preview.dim() < self.dim + 1:
+            preview = preview[None]
+        self._preview = preview
 
     masked = property(lambda self: self.mask is not None)
     previewed = property(lambda self: self._preview is not None)
@@ -108,26 +334,6 @@ class Image(SpatialTensor):
     def preview(self, x):
         self._preview = x
 
-    def _prm_as_str(self):
-        s = []
-        if self.bound != 'dct2':
-            s += [f'bound={self.bound}']
-        if self.extrapolate:
-            s += ['extrapolate=True']
-        s = super()._prm_as_str() + s
-        return s
-
-    @classmethod
-    def make(cls, dat, **kwargs):
-        if isinstance(dat, Image):
-            kwargs.setdefault('dim', dat.dim)
-            kwargs.setdefault('affine', dat.affine)
-            kwargs.setdefault('bound', dat.bound)
-            kwargs.setdefault('extrapolate', dat.extrapolate)
-            kwargs.setdefault('mask', dat.mask)
-            dat = dat.mask
-        return cls(dat.dat, **kwargs)
-
     def pull(self, grid, dat=True, mask=False, preview=False):
         """Sample the image at dense coordinates.
 
@@ -135,10 +341,18 @@ class Image(SpatialTensor):
         ----------
         grid : (*spatial, dim) tensor or None
             Dense transformation field.
+        dat : bool, default=True
+            Return warped image
+        mask : bool, default=False
+            Return warped mask
+        preview : bool, default=False
+            Return warped preview image
 
         Returns
         -------
-        warped : ([C], *spatial) tensor
+        warped, if `dat` : (C, *spatial) tensor
+        warped_mask, if `mask` : (C|1, *spatial) tensor
+        warpe_previewd, if `preview` : (C|1, *spatial) tensor
 
         """
         out = []
@@ -176,7 +390,7 @@ class Image(SpatialTensor):
 
         Returns
         -------
-        grad : ([C], *spatial, dim) tensor
+        grad : (C, *spatial, dim) tensor
 
         """
         if grid is None:
@@ -195,20 +409,26 @@ class Image(SpatialTensor):
 
         Returns
         -------
-        grad : ([C], *spatial, dim) tensor
+        grad : (C, *spatial, dim) tensor
 
         """
         return spatial.diff(self.dat, dim=list(range(-self.dim, 0)),
                             bound=self.bound)
 
     def _prm_as_str(self):
-        s = super()._prm_as_str()
+        s = []
+        if self.bound != 'dct2':
+            s += [f'bound={self.bound}']
+        if self.extrapolate:
+            s += ['extrapolate=True']
         if self.masked:
             s += ['masked=True']
+        s = super()._prm_as_str() + s
         return s
 
 
 class ImageSequence(Image):
+    """A list of images that can also be used as an image"""
     def __init__(self, dat, affine=None, dim=None, mask=None,
                  bound='dct2', extrapolate=False, **backend):
         # I don't call super().__init__() on purpose
@@ -255,6 +475,7 @@ class ImageSequence(Image):
     extrapolate = property(lambda self: self[0].extrapolate)
     voxel_size = property(lambda self: self[0].voxel_size)
     mask = property(lambda self: self[0].mask)
+    preview = property(lambda self: self[0].preview)
 
     def to(self, *args, **kwargs):
         return copy.deepcopy(self).to_(*args, **kwargs)
@@ -269,7 +490,8 @@ class ImageSequence(Image):
 
 
 class ImagePyramid(ImageSequence):
-    """Compute a multiscale image pyramid.
+    """
+    Compute a multiscale image pyramid.
     This object can be used as an Image (in which case the highest
     resolution is returned) or as a list of Images.
     """
@@ -434,18 +656,6 @@ class ImagePyramid(ImageSequence):
             reordered_affines[i] = affine
         return reordered_affines
 
-    @classmethod
-    def make(cls, dat, **kwargs):
-        if isinstance(dat, ImagePyramid):
-            dat = dat._dat
-        elif isinstance(dat, Image):
-            kwargs.setdefault('affine', dat.affine)
-            kwargs.setdefault('dim', dat.dim)
-            kwargs.setdefault('bound', dat.bound)
-            kwargs.setdefault('extrapolate', dat.extrapolate)
-            dat = dat.dat
-        return cls(dat, **kwargs)
-
 
 class SpatialTransform:
     pass
@@ -460,8 +670,11 @@ class DenseTransform(SpatialTransform):
 
 
 class Displacement(SpatialTensor, DenseTransform):
-    """Data + Metadata (affine) of a displacement or velocity field"""
-    def __init__(self, dat, affine=None, dim=None, **backend):
+    """
+    Data + Metadata (affine) of a displacement or velocity field (in voxels)
+    """
+
+    def __init__(self, dat, affine=None, **backend):
         """
         Parameters
         ----------
@@ -469,27 +682,16 @@ class Displacement(SpatialTensor, DenseTransform):
             Pre-allocated displacement field, or its shape.
         affine : tensor, optional
             Orientation matrix
-        dim : int, default=`dat.dim()-1`
-            Number of spatial dimensions
-        **backend
         """
         if isinstance(dat, (list, tuple)):
             shape = dat
-            dim = dim or len(shape)
+            dim = len(shape)
             dat = torch.zeros([*shape, dim], **backend)
-        super().__init__(dat, affine, dim)
+        super().__init__(dat, affine)
 
     @property
     def shape(self):
         return self.dat.shape[-self.dim-1:-1]
-
-    @classmethod
-    def make(cls, dat, **kwargs):
-        if isinstance(dat, Displacement):
-            kwargs.setdefault('dim', dat.dim)
-            kwargs.setdefault('affine', dat.affine)
-            dat = dat.dat
-        return cls(dat, **kwargs)
 
     def downsample_(self, factor=2, **kwargs):
         kwargs.setdefault('interpolation', 1)
@@ -548,8 +750,10 @@ class LogAffine(AffineTransform):
         elif basis is None:
             raise ValueError('A basis should be provided')
         self._basis = None
-        self.basis = basis
+        if torch.is_tensor(basis):
+            dim = basis.shape[-1] - 1
         self.dim = dim
+        self.basis = basis
         if dat is None:
             dat = torch.zeros(spatial.affine_basis_size(basis, dim), **backend)
         self.dat = dat
@@ -644,14 +848,6 @@ class LogAffine(AffineTransform):
     def clear_cache(self):
         self._cache = None
         self._icache = None
-
-    @classmethod
-    def make(cls, dat, **kwargs):
-        if isinstance(dat, LogAffine):
-            kwargs.setdefault('dim', dat.dim)
-            kwargs.setdefault('basis', dat.basis)
-            dat = dat.dat
-        return LogAffine(dat, **kwargs)
 
     def exp(self, q=None, grad=False, cache_result=False, recompute=True):
         if q is None:
@@ -775,16 +971,6 @@ class LogAffine2d(LogAffine):
         self._basis_name = x
         self._basis = None
 
-    @classmethod
-    def make(cls, dat, **kwargs):
-        if isinstance(dat, LogAffine2d):
-            kwargs.setdefault('dim', dat.dim)
-            kwargs.setdefault('basis', dat.basis)
-            kwargs.setdefault('plane', dat.plane)
-            kwargs.setdefault('rotation', dat.rotation)
-            dat = dat.dat
-        return LogAffine2d(dat, **kwargs)
-
     def switch_basis(self, basis):
         """Return a transform with the same log-parameters but a different basis
 
@@ -837,53 +1023,6 @@ class LogAffine2d(LogAffine):
         return aff, iaff
 
 
-class LossComponent:
-    """Component of a composite loss"""
-    def __init__(self, loss, moving, fixed, factor=1, backward=False):
-        """
-
-        Parameters
-        ----------
-        loss : OptimizationLoss (or its name)
-            Matching loss to minimize.
-        moving : Image or ImagePyramid like
-        fixed : Image or ImagePyramid like
-            Fixed and moving should have the same number of levels.
-        factor : float, default=1
-            Weight of the loss
-        symmetric : bool, default=False
-            Whether the loss should be symmetric
-            i.e., loss = (loss(moving, fixed) + loss(fixed, moving)) / 2
-        """
-        self.moving = ImagePyramid.make(moving)
-        self.fixed = ImagePyramid.make(fixed)
-        self.loss = losses.make_loss(loss, self.moving.dim)
-        self.factor = factor
-        self.backward = backward
-
-    def make(self, loss, **kwargs):
-        if isinstance(loss, LossComponent):
-            kwargs.setdefault('moving', loss.moving)
-            kwargs.setdefault('fixed', loss.fixed)
-            kwargs.setdefault('factor', loss.factor)
-            kwargs.setdefault('backward', loss.backward)
-            loss = loss.loss
-        return LossComponent(loss, **kwargs)
-
-    def __repr__(self):
-        s = f'{type(self.loss).__name__}[{self.factor:.1g}](\n' \
-            f'    moving={self.moving}, \n' \
-            f'    fixed={self.fixed}'
-        if self.backward:
-            s += f',\n    backward=True'
-        p = getattr(self.loss, 'patch', None)
-        if p is not None:
-            s += f',\n    patch={p}'
-        s += ')'
-        return s
-
-    __str_ = __repr__
-
 
 def _rotate_grad(grad, aff=None, dense=None):
     """Rotate grad by the jacobian of `aff o dense`.
@@ -927,17 +1066,26 @@ class NonLinModel(TransformationModel):
         else:
             raise ValueError('unknown:', model)
 
-    def __new__(cls, model, *args, **kwargs):
-        if isinstance(model, NonLinModel):
-            return cls.make(model, *args, **kwargs)
-        elif model.lower() == 'shoot':
-            return ShootModel(*args, **kwargs)
-        elif model.lower() == 'svf':
-            return SVFModel(*args, **kwargs)
-        elif model.lower() == 'smalldef':
-            return SmallDefModel(*args, **kwargs)
+    def __new__(cls, *args, **kwargs):
+        if cls is NonLinModel:
+            if args:
+                model, *args = args
+            else:
+                model = kwargs.pop('model', None)
+            if isinstance(model, NonLinModel):
+                return model
+            elif model.lower() == 'shoot':
+                return ShootModel(*args, **kwargs)
+            elif model.lower() == 'svf':
+                return SVFModel(*args, **kwargs)
+            elif model.lower() == 'smalldef':
+                return SmallDefModel(*args, **kwargs)
+            else:
+                raise ValueError('unknown:', model)
         else:
-            raise ValueError('unknown:', model)
+            obj =  object.__new__(cls)
+            obj.__init__(*args, **kwargs)
+            return obj
 
     def __init__(self, dat=None, factor=1, penalty=None,
                  steps=8, kernel=None, **backend):
@@ -960,7 +1108,7 @@ class NonLinModel(TransformationModel):
         """
         super().__init__()
         self.factor = factor
-        self.penalty = penalty or regutils.defaults_velocity()
+        self.penalty = dict(penalty or regutils.defaults_velocity())
         self.penalty.pop('voxel_size', None)
         self.steps = steps
         self.kernel = kernel
@@ -982,13 +1130,11 @@ class NonLinModel(TransformationModel):
         return self.dat.dat
 
     def set_dat(self, dat, affine=None, **backend):
-        if isinstance(dat, str):
-            dat = io.map(dat)
+        if isinstance(dat, io.MappedArray):
             if affine is None:
-                affine = self.dat.affine
-        if isinstance(dat, SpatialTensor) and affine is None:
-            affine = dat.affine
-        self.dat = Displacement.make(dat, affine=affine, **backend)
+                affine = dat.affine
+            dat = dat.fdata()
+        self.dat = Displacement(dat, affine=affine, **backend)
         return self
 
     def set_kernel(self, kernel=None):
@@ -1002,23 +1148,6 @@ class NonLinModel(TransformationModel):
 
     def reset_kernel(self, kernel=None):
         return self.set_kernel(kernel)  # backward compatibility
-
-    @classmethod
-    def make(cls, model, **kwargs):
-        if isinstance(model, cls):
-            kwargs.setdefault('factor', model.factor)
-            kwargs.setdefault('prm', model.penalty)
-            kwargs.setdefault('steps', model.steps)
-            kwargs.setdefault('kernel', model.kernel)
-            kwargs.setdefault('dat', model.dat)
-        elif isinstance(model, NonLinModel):
-            raise TypeError('Cannot convert between `NonLinModel`s')
-        if cls is NonLinModel:
-            if isinstance(model, NonLinModel):
-                return type(model)(**kwargs)
-            return NonLinModel(model, **kwargs)
-        else:
-            return cls(**kwargs)
 
     @classmethod
     def add_identity(cls, disp):
@@ -1086,11 +1215,6 @@ class ShootModel(NonLinModel):
     """Initial velocity exponentiated by geodesic shooting"""
 
     model = 'shoot'
-
-    def __new__(cls, *args, **kwargs):
-        obj = object.__new__(ShootModel)
-        obj.__init__(*args, **kwargs)
-        return obj
 
     def set_dat(self, dat, affine=None, **backend):
         super().set_dat(dat, affine, **backend)
@@ -1239,11 +1363,6 @@ class SVFModel(NonLinModel):
 
     model = 'svf'
 
-    def __new__(cls, *args, **kwargs):
-        obj = object.__new__(SVFModel)
-        obj.__init__(*args, **kwargs)
-        return obj
-
     def exp(self, v=None, jacobian=False, add_identity=False,
             cache_result=False, recompute=True):
         """Exponentiate forward transform"""
@@ -1375,11 +1494,6 @@ class SmallDefModel(NonLinModel):
     """Dense displacement field."""
 
     model = 'smalldef'
-
-    def __new__(cls, *args, **kwargs):
-        obj = object.__new__(SmallDefModel)
-        obj.__init__(*args, **kwargs)
-        return obj
 
     def exp(self, v=None, jacobian=False, add_identity=False,
             cache_result=False, recompute=True):
@@ -1564,7 +1678,7 @@ class AffineModel(TransformationModel):
         return obj
 
     def set_dat(self, dat=None, dim=None, **backend):
-        self.dat = LogAffine.make(dat, basis=self._basis, dim=dim, **backend)
+        self.dat = LogAffine(dat, basis=self._basis, dim=dim, **backend)
         return self
 
     def parameters(self):
@@ -1574,15 +1688,6 @@ class AffineModel(TransformationModel):
 
     basis = property(lambda self: self.dat.basis if self.dat is not None else None)
     basis_name = property(lambda self: self._basis)
-
-    def make(self, basis, **kwargs):
-        if isinstance(basis, AffineModel):
-            kwargs.setdefault('factor', basis.factor)
-            kwargs.setdefault('prm', basis.prm)
-            kwargs.setdefault('dat', basis.dat)
-            kwargs.setdefault('position', basis.position)
-            basis = basis.basis
-        return AffineModel(basis, **kwargs)
 
     def exp(self, q=None, grad=False, cache_result=False, recompute=True):
         return self.dat.exp(q, grad, cache_result, recompute)
@@ -1631,8 +1736,8 @@ class Affine2dModel(AffineModel):
         return self._plane
 
     def set_dat(self, dat=None, dim=None, **backend):
-        self.dat = LogAffine2d.make(dat, basis=self._basis, dim=dim,
-                                    rotation=self._rotation,
-                                    plane=self._plane, **backend)
+        self.dat = LogAffine2d(dat, basis=self._basis, dim=dim,
+                               rotation=self._rotation,
+                               plane=self._plane, **backend)
         return self
 
