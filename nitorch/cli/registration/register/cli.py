@@ -27,7 +27,7 @@ def cli(args=None):
     except ParseError as e:
         print(help[1])
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
+    # except Exception as e:f
     #     print(f'[ERROR] {str(e)}', file=sys.stderr)
 
 
@@ -837,6 +837,8 @@ def _build_losses(options, pyramids, device):
                 loss.mov.rescale = (0, 0)
                 loss.fix.discretize = loss.fix.discretize or 256
                 loss.mov.soft_quantize = loss.mov.discretize or 16
+                fix = _make_image(loss.fix, dim=options.dim, device=device)
+                mov = _make_image(loss.mov, dim=options.dim, device=device)
                 lossobj = objects.Similarity(
                     lossobj, mov, fix, factor=factor, backward=True)
             loss_list.append(lossobj)

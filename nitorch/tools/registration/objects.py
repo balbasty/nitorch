@@ -50,11 +50,18 @@ class Similarity(BaseSimilarity):
         backward : bool, default=False
             If True, apply the backward transform instead of the forward.
         """
-        self.moving = ImagePyramid(moving)
-        self.fixed = ImagePyramid(fixed)
+        self.moving = moving
+        self.fixed = fixed
         self.loss = losses.make_loss(loss, self.moving.dim)
         self.factor = factor
         self.backward = backward
+
+    def images(self):
+        yield self.moving
+        yield self.fixed
+
+    def losses(self):
+        yield self.loss
 
     def reverse(self):
         """
@@ -70,6 +77,17 @@ class Similarity(BaseSimilarity):
         reverse losses.
         """
         return SumSimilarity([self, self.reverse()]) * 0.5
+
+    def __len__(self):
+        return 1
+
+    def __iter__(self):
+        yield self
+
+    def __getitem__(self, item):
+        if item > 0:
+            raise IndexError
+        return self
 
     def __mul__(self, factor: float):
         obj = self.copy()
@@ -128,30 +146,51 @@ class Similarity(BaseSimilarity):
 class SumSimilarity(BaseSimilarity):
     """A sum of Similarity losses"""
 
-    def __init__(self, losses):
+    def __init__(self, similarities):
         """
         Parameters
         ----------
-        losses : sequence[Similarity]
+        similarities : sequence[Similarity]
         """
-        def flatten_losses(losses):
-            if isinstance(losses, Similarity):
-                return [losses]
-            flat_losses = []
-            for loss in losses:
-                flat_losses += flatten_losses(loss)
-            return flat_losses
-        self.losses = flatten_losses(losses)
+        def flatten_losses(similarities):
+            if isinstance(similarities, Similarity):
+                return [similarities]
+            flat_similarities = []
+            for similarity in similarities:
+                print(similarity)
+                flat_similarities += flatten_losses(similarity)
+            return flat_similarities
+        self.similarities = flatten_losses(similarities)
+
+    @classmethod
+    def sum(cls, losses):
+        obj = SumSimilarity(losses)
+        if len(obj) == 1:
+            return obj[0]
+        return obj
+
+    def images(self):
+        for loss in self.similarities:
+            for image in loss.images():
+                yield image
+
+    def losses(self):
+        for similarity in self.similarities:
+            for loss in similarity.losses():
+                yield loss
 
     def __len__(self):
-        return len(self.losses)
+        return len(self.similarities)
 
     def __iter__(self):
-        for loss in self.losses:
+        for loss in self.similarities:
             yield loss
 
     def __getitem__(self, item):
-        return self.losses[item]
+        return self.similarities[item]
+
+    def __setitem__(self, item, value):
+        self.similarities[item] = value
 
     def reverse(self):
         return SumSimilarity([loss.reverse() for loss in self])
@@ -194,9 +233,9 @@ class SumSimilarity(BaseSimilarity):
 
     def __iadd__(self, other):
         if isinstance(other, SumSimilarity):
-            self.losses += other.losses
+            self.similarities += other.losses
         elif isinstance(other, BaseSimilarity):
-            self.losses.append(other)
+            self.similarities.append(other)
         else:
             raise TypeError(f'Cannot add a {type(self)} and a {type(other)}')
         return self
@@ -315,16 +354,17 @@ class Image(SpatialTensor):
         super().__init__(dat, affine)
         self.bound = bound
         self.extrapolate = extrapolate
-        if self.masked and mask.shape[-self.dim:] != self.shape:
-            raise ValueError('Wrong shape for mask')
         while mask.dim() < self.dim + 1:
             mask = mask[None]
         self.mask = mask
+        if self.masked and mask.shape[-self.dim:] != self.shape:
+            raise ValueError('Wrong shape for mask')
+        if preview is not None:
+            while preview.dim() < self.dim + 1:
+                preview = preview[None]
+        self._preview = preview
         if self.previewed and preview.shape[-self.dim:] != self.shape:
             raise ValueError('Wrong shape for preview')
-        while preview.dim() < self.dim + 1:
-            preview = preview[None]
-        self._preview = preview
 
     masked = property(lambda self: self.mask is not None)
     previewed = property(lambda self: self._preview is not None)
@@ -451,7 +491,7 @@ class ImageSequence(Image):
         self._dat = []
         for dat1, aff1, mask1 in zip(dat, affine, mask):
             if not isinstance(dat1, Image):
-                dat1 = Image(dat1, aff1, mask=mask1, dim=dim,
+                dat1 = Image(dat1, aff1, mask=mask1,
                              bound=bound, extrapolate=extrapolate)
             self._dat.append(dat1)
 
@@ -522,7 +562,7 @@ class ImagePyramid(ImageSequence):
                 affine = dat.affine
             dim = dat.dim
             mask = dat.mask
-            preview = dat._preview
+            preview = getattr(dat, '_preview', None)
             bound = dat.bound
             extrapolate = dat.extrapolate
             dat = dat.dat
@@ -568,7 +608,7 @@ class ImagePyramid(ImageSequence):
                 raise ValueError('levels required to compute affine pyramid')
             shape = dat[0].shape[-dim:]
             affine = self._build_affine_pyramid(affine, shape, levels, method)
-        self._dat = [Image(d, aff, dim=dim,  mask=m, preview=p,
+        self._dat = [Image(d, aff, mask=m, preview=p,
                            bound=bound, extrapolate=extrapolate)
                      for d, m, p, aff in zip(dat, mask, preview, affine)]
 
@@ -1109,6 +1149,8 @@ class NonLinModel(TransformationModel):
         super().__init__()
         self.factor = factor
         self.penalty = dict(penalty or regutils.defaults_velocity())
+        if factor is not None:
+            self.penalty['factor'] = factor
         self.penalty.pop('voxel_size', None)
         self.steps = steps
         self.kernel = kernel
@@ -1162,8 +1204,10 @@ class NonLinModel(TransformationModel):
     def regulariser(self, v=None):
         if v is None:
             v = self.dat
-        return spatial.regulariser_grid(v, **self.penalty,
-                                        factor=self.factor / py.prod(self.shape),
+        penalty = dict(self.penalty)
+        factor = penalty.pop('factor')
+        return spatial.regulariser_grid(v, **penalty,
+                                        factor=factor / py.prod(self.shape),
                                         voxel_size=self.voxel_size)
 
     def greens_apply(self, m):

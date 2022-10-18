@@ -1,7 +1,11 @@
-from nitorch import spatial
+__all__ = ['make_image', 'make_loss',
+           'make_affine', 'make_affine_2d', 'make_affine_optim',
+           'make_nonlin', 'make_nonlin_2d', 'make_nonlin_optim']
+
+from nitorch import spatial, io
 from nitorch.core.py import make_list
 from . import losses, objects, optim as opt
-from .pairwise_preproc import soft_quantize_image, discretize_image
+from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_image
 
 
 def make_image(dat, mask=None, affine=None,
@@ -37,6 +41,15 @@ def make_image(dat, mask=None, affine=None,
 
     """
     pyramid = make_list(pyramid)
+
+    if isinstance(dat, (str, io.MappedArray)):
+        dat, mask0, aff0 = preproc_image(dat, **kwargs, bound=bound)
+        if mask is None:
+            mask = mask0
+        if affine is None:
+            affine = aff0
+        del mask0, aff0
+
     dim = dat.dim() - 1
     is_label = not dat.dtype.is_floating_point
     if affine is None:
@@ -127,7 +140,7 @@ def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric'):
 
 
 def make_nonlin(shape, model='svf', affine=None, voxel_size=None,
-                padding=None, penalty=None, device=None, **kwargs):
+                padding=None, factor=1, penalty=None, device=None, **kwargs):
     """Build an NonlinModel object
 
     Parameters
@@ -156,20 +169,24 @@ def make_nonlin(shape, model='svf', affine=None, voxel_size=None,
     dim = shape[0].dim if do_mean_space else len(shape)
 
     voxel_size = make_list(voxel_size or [])
-    if isinstance(voxel_size[-1], str):
+    if voxel_size and isinstance(voxel_size[-1], str):
         *voxel_size, vx_unit = voxel_size
     else:
         vx_unit = 'mm'
     if voxel_size:
         voxel_size = make_list(voxel_size, dim)
+    else:
+        voxel_size = None
 
     padding = make_list(padding or [])
-    if isinstance(padding[-1], str):
+    if padding and isinstance(padding[-1], str):
         *padding, pad_unit = padding
     else:
         pad_unit = '%'
     if padding:
         padding = make_list(padding, dim)
+    else:
+        padding = None
 
     # build mean space
     if do_mean_space:
@@ -180,11 +197,9 @@ def make_nonlin(shape, model='svf', affine=None, voxel_size=None,
         space = objects.Space(shape, affine, voxel_size)
 
     # allocate data
-    vel = objects.Displacement(space.shape, affine=space.affine, dim=dim,
-                               device=device)
+    vel = objects.Displacement(space.shape, affine=space.affine, device=device)
 
     # build model
-    factor = penalty.pop('factor', 1)
     Model = objects.NonLinModel.subclass(model)
     nonlin = Model(dat=vel, factor=factor, penalty=penalty, **kwargs)
     return nonlin
@@ -288,7 +303,7 @@ def make_affine_optim(optim=None, order=None, ls='wolfe', lr=None,
         affine_optim = opt.Nesterov
     elif optim == 'ogm':
         affine_optim = opt.OGM
-    elif optim == 'gn' or optim.startswith('gauss'):
+    elif optim == 'gn' or optim.startswith('gauss') or optim.startswith('newt'):
         affine_optim = opt.GaussNewton
     elif optim == 'lbfgs':
         affine_optim = opt.LBFGS
@@ -296,6 +311,8 @@ def make_affine_optim(optim=None, order=None, ls='wolfe', lr=None,
         affine_optim = opt.Powell
     else:
         raise ValueError(optim)
+
+    lr = lr or (1 if issubclass(affine_optim, opt.SecondOrder) else 1e-3)
     affine_optim = affine_optim(lr, **kwargs)
 
     if ls and not isinstance(affine_optim, (opt.Powell, opt.LBFGS)):
@@ -385,7 +402,7 @@ def make_nonlin_optim(optim=None, order=None, ls='wolfe', lr=None,
         nonlin_optim = opt.Nesterov
     elif optim == 'ogm':
         nonlin_optim = opt.OGM
-    elif optim == 'gn' or optim.startswith('gauss'):
+    elif optim == 'gn' or optim.startswith('gauss') or optim.startswith('newt'):
         fmg = kwargs.pop('fmg', True)
         kwargs['max_iter'] = kwargs.pop('sub_iter', 2 if fmg else 16)
         solver = kwargs.pop('solver', 'cg')
@@ -397,6 +414,8 @@ def make_nonlin_optim(optim=None, order=None, ls='wolfe', lr=None,
         nonlin_optim = opt.Powell
     else:
         raise ValueError(optim)
+
+    lr = lr or (1 if issubclass(nonlin_optim, opt.SecondOrder) else 1e-3)
     nonlin_optim = nonlin_optim(lr, **kwargs)
 
     if preconditioner and isinstance(nonlin_optim, opt.FirstOrder):

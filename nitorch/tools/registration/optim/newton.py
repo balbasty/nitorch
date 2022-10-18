@@ -1,5 +1,5 @@
 from .base import SecondOrder
-from nitorch.core import linalg
+from nitorch.core import linalg, py
 from nitorch import spatial
 import torch
 
@@ -7,9 +7,9 @@ import torch
 class SymGaussNewton(SecondOrder):
     """Base class for Gauss-Newton"""
 
-    def __init__(self, marquardt=True, preconditioner=None,
+    def __init__(self, lr=1, marquardt=True, preconditioner=None,
                  **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(lr, **kwargs)
         self.preconditioner = preconditioner
         self.marquardt = marquardt
 
@@ -36,9 +36,9 @@ class SymGaussNewton(SecondOrder):
 class GaussNewton(SecondOrder):
     """Base class for Gauss-Newton"""
 
-    def __init__(self, marquardt=True, preconditioner=None,
+    def __init__(self, lr=1, marquardt=True, preconditioner=None,
                  **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(lr, **kwargs)
         self.preconditioner = preconditioner
         self.marquardt = marquardt
 
@@ -65,10 +65,10 @@ class GaussNewton(SecondOrder):
 class GridGaussNewton(SecondOrder):
     """Base class for Gauss-Newton on displacement grids"""
 
-    def __init__(self, fmg=2, max_iter=2, factor=1, voxel_size=1,
+    def __init__(self, lr=1, fmg=2, max_iter=2, factor=1, voxel_size=1,
                  absolute=0, membrane=0, bending=0, lame=0, marquardt=True,
                  preconditioner=None, **kwargs):
-        super().__init__(**kwargs)
+        super().__init__(lr, **kwargs)
         self.preconditioner = preconditioner
         self.factor = factor
         self.absolute = absolute
@@ -79,6 +79,20 @@ class GridGaussNewton(SecondOrder):
         self.marquardt = marquardt
         self.max_iter = max_iter
         self.fmg = fmg
+
+    @property
+    def penalty(self):
+        return dict(absolute=self.absolute,
+                    membrane=self.membrane,
+                    bending=self.bending,
+                    lame=self.lame,
+                    factor=self.factor)
+
+    @penalty.setter
+    def penalty(self, x):
+        for key, value in x.items():
+            if key in ('absolute', 'membrane', 'bending', 'lame', 'factor'):
+                setattr(self, key, value)
 
     def _get_prm(self):
         prm = dict(absolute=self.absolute,
@@ -123,6 +137,8 @@ class GridCG(GridGaussNewton):
     def search_direction(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess, 1e-5)
         prm = self._get_prm()
+        dim = grad.shape[-1]
+        prm['factor'] = prm['factor'] / py.prod(grad.shape[-dim-1:-1])
         solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
         step = solver(hess, grad, optim='cg', **prm)
         step.masked_fill_(torch.isfinite(step).bitwise_not_(), 0)
@@ -136,6 +152,8 @@ class GridRelax(GridGaussNewton):
     def search_direction(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
+        dim = grad.shape[-1]
+        prm['factor'] = prm['factor'] / py.prod(grad.shape[-dim-1:-1])
         solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
         step = solver(hess, grad, optim='relax', **prm)
         step.masked_fill_(torch.isfinite(step).bitwise_not_(), 0)
@@ -149,6 +167,8 @@ class GridJacobi(GridGaussNewton):
     def search_direction(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
+        dim = grad.shape[-1]
+        prm['factor'] = prm['factor'] / py.prod(grad.shape[-dim-1:-1])
         solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
         step = solver(hess, grad, optim='jacobi', **prm)
         step.mul_(-self.lr)

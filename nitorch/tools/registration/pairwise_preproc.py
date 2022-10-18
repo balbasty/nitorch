@@ -1,12 +1,15 @@
+__all__ = ['preproc_image', 'map_image', 'load_image', 'prepare_pyramid_levels',
+           'rescale_image', 'discretize_image', 'soft_quantize_image']
+
 from nitorch import io
 from nitorch.core.py import make_list
 from nitorch.core import dtypes, utils
 from nitorch import spatial
-from . import objects, pairwise_pyramid as pyrutils
+from . import pairwise_pyramid as pyrutils
 import torch
 
 
-def preproc_image(input, mask=False, label=False, missing=0,
+def preproc_image(input, mask=None, label=False, missing=0,
                   world=None, affine=None, rescale=.95,
                   pad=None, bound='zero', fwhm=None,
                   dim=None, device=None, **kwargs):
@@ -77,12 +80,12 @@ def preproc_image(input, mask=False, label=False, missing=0,
             affine0 = world
 
     # apply input affines
+    if not torch.is_tensor(affine) and not affine:
+        affine = []
     affine = make_list(affine)
     for transform in affine:
         if isinstance(transform, str):
             transform = io.transforms.map(transform).fdata().squeeze()
-        else:
-            transform = affine
         affine0 = spatial.affine_lmdiv(transform.to(affine0), affine0)
 
     # rescale intensities
@@ -128,15 +131,15 @@ def preproc_image(input, mask=False, label=False, missing=0,
     return dat, mask0, affine0
 
 
-def prepare_pyramid_levels(image_pairs, levels, dim=None, **opt):
+def prepare_pyramid_levels(images, levels, dim=None, **opt):
     """
     For each loss, compute the pyramid levels of `fix` and `mov` that
     must be computed.
 
     Parameters
     ----------
-    image_pairs : list[(fix, mov)]
-        Image pairs
+    images : [list of] str or MappedArray
+        images
     dim : int, optional
         Number of spatial dimensions
     min_size, max_size : int, optional
@@ -146,47 +149,37 @@ def prepare_pyramid_levels(image_pairs, levels, dim=None, **opt):
 
     Returns
     -------
-    levels : list[{"fix": int, "mov": int}]
+    levels : [list of] list[int]
         Level to compute in the fixed and moving image for each global
         pyramid level
 
     """
+    if not images:
+        return [] if isinstance(images, (list, tuple)) else None
+
     if not levels:
-        return [{'fix': None, 'mov': None}] * len(image_pairs)
+        if isinstance(images, (list, tuple)):
+            return [None] * len(images)
+        else:
+            return None
 
     vxs = []
     shapes = []
-    for pair in image_pairs:
-        if hasattr(pair, 'fix'):
-            assert hasattr(pair, 'mov')
-            fix, mov = pair.fix, pair.mov
+    for image in images:
+        if not isinstance(image, io.MappedArray):
+            dat, affine = map_image(image, dim=dim)
         else:
-            fix, mov = pair
-
-        # fixed image
-        dat, affine = map_image(fix.files, dim)
-        vx = dat.voxel_size[0].tolist()
-        shape = dat.shape[:dim]
-        if fix.pad:
-            pad = make_list(fix.pad, len(shape))
-            shape = [s + 2*p for s, p in zip(shape, pad)]
+            affine = image.affine
+            dat = image
+            if affine.dim() > 2:
+                affine = affine[0]
+        dim = dat.dim - 1
+        vx = spatial.voxel_size(affine).tolist()
+        shape = dat.shape[-dim:]
         vxs.append(vx)
         shapes.append(shape)
 
-        # moving image
-        dat, affine = map_image(mov.files, dim)
-        vx = dat.voxel_size[0].tolist()
-        shape = dat.shape[:dim]
-        if mov.pad:
-            pad = make_list(mov.pad, len(shape))
-            shape = [s + 2*p for s, p in zip(shape, pad)]
-        vxs.append(vx)
-        shapes.append(shape)
-
-    levels = pyrutils.pyramid_levels(vxs, shapes, levels, **opt)
-    levels = [{'fix': fix, 'mov': mov}
-              for fix, mov in zip(levels[::2], levels[1::2])]
-    return levels
+    return pyrutils.pyramid_levels(vxs, shapes, levels, **opt)
 
 
 def map_image(fnames, dim=None):

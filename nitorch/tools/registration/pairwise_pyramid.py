@@ -1,5 +1,10 @@
-from nitorch.core.py import  make_list
+__all__ = ['pyramid_levels', 'valid_pyramid_levels',
+           'sequential_pyramid', 'concurrent_pyramid',
+           'compute_patch_size']
+
+from nitorch.core.py import make_list, prod
 from nitorch import spatial
+from .objects import SumSimilarity
 import copy
 import math as pymath
 
@@ -43,12 +48,12 @@ def pyramid_levels(vxs, shapes, levels, **opt):
     # NOTE: pyramids = [[(level, vx, shape), ...], ...]
 
     # second: match voxel sizes across images
-    vx0 = min([pymath.prod(pyramid[0][1]) for pyramid in pyramids])
+    vx0 = min([prod(pyramid[0][1]) for pyramid in pyramids])
     vx0 = pymath.log2(vx0**(1/dim))
     level_offsets = []
     for pyramid in pyramids:
         level, vx, shape = pyramid[0]
-        vx1 = pymath.log2(pymath.prod(vx)**(1/dim))
+        vx1 = pymath.log2(prod(vx)**(1/dim))
         level_offsets.append(round(vx1 - vx0))
 
     # third: keep only levels that overlap across images
@@ -138,85 +143,90 @@ def valid_pyramid_levels(vx, shape, min_size=None, max_size=None,
     return valid_pyramid
 
 
-def sequential_pyramid(losses):
-    """Transform a list of losses into a pyramid list of losses, whose
+def sequential_pyramid(loss):
+    """Transform a loss (or losses) into a pyramid of losses, whose
     levels are fitted sequentially.
 
     Parameters
     ----------
-    losses : list[objects.Loss]
-        List of losses, where the images in each loss are ImagePyramid
-        objects.
+    loss : objects.Similarity
+        A Similarity object, where the images are ImagePyramid objects.
 
     Returns
     -------
-    losses : list[list[objects.Loss]]
+    loss : list[objects.Similarity]
         A pyramid of losses, where the images in each loss are Image objects.
 
     """
-    fixs = []
-    movs = []
-    for loss in losses:
-        fixs.append(loss.fixed)
-        movs.append(loss.moving)
-        loss.fixed = None
-        loss.moving = None
+    def get_level(loss, level):
+        new_loss = copy.copy(loss)
+        if hasattr(new_loss, 'fixed'):
+            new_loss.fixed = new_loss.fixed[level]
+        if hasattr(new_loss, 'moving'):
+            new_loss.moving = new_loss.moving[level]
+        if hasattr(loss, 'loss') and hasattr(loss.loss, 'patch'):
+            dim = new_loss.fixed.affine.shape[-1] - 1
+            shape = new_loss.fixed.shape[-dim:]
+            new_loss.loss.patch = compute_patch_size(
+                new_loss.loss.patch, new_loss.fixed.affine, shape, level)
+        if isinstance(new_loss, SumSimilarity):
+            for i in range(len(new_loss)):
+                new_loss[i] = get_level(new_loss[i], level)
+        return new_loss
 
     pyramid = []
-    for i in range(len(fixs[0])):
-        level = []
-        for loss, fix, mov in zip(losses, fixs, movs):
-            loss_level = copy.deepcopy(loss)
-            loss_level.fixed = fix[i]
-            loss_level.moving = mov[i]
-            if hasattr(loss.loss, 'patch'):
-                dim = fix[i].affine.shape[-1] - 1
-                shape = fix[i].shape[-dim:]
-                loss_level.loss.patch = compute_patch_size(
-                    loss_level.loss.patch, fix[i].affine, shape, i)
-            level.append(loss_level)
-        pyramid.append(level)
+    level = 0
+    while True:
+        try:
+            pyramid.append(get_level(loss, level))
+            level += 1
+        except Exception:
+            break
     pyramid = pyramid[::-1]
     return pyramid
 
 
-def concurrent_pyramid(losses):
-    """Transform a list of losses into a pyramid list of losses, whose
+def concurrent_pyramid(loss):
+    """Transform a loss into a pyramid of losses, whose
     levels are fitted concurrently.
 
     Parameters
     ----------
-    losses : list[objects.Loss]
-        List of losses, where the images in each loss are ImagePyramid
-        objects.
+    loss : objects.Similarity
+        A Similarity object, where the images are ImagePyramid objects.
 
     Returns
     -------
-    losses : [ list[objects.Loss] ]
-        A single level of losses, where the images in each loss are Image objects.
+    loss : objects.SumSimilarity
+        A Similarity object, where the images are Image objects.
 
     """
-    fixs = []
-    movs = []
-    for loss in losses:
-        fixs.append(loss.fixed)
-        movs.append(loss.moving)
-        loss.fixed = None
-        loss.moving = None
+    def get_level(loss, level):
+        new_loss = copy.copy(loss)
+        if hasattr(new_loss, 'fixed'):
+            new_loss.fixed = new_loss.fixed[level]
+        if hasattr(new_loss, 'moving'):
+            new_loss.moving = new_loss.moving[level]
+        if hasattr(loss, 'loss') and hasattr(loss.loss, 'patch'):
+            dim = new_loss.fixed.affine.shape[-1] - 1
+            shape = new_loss.fixed.shape[-dim:]
+            new_loss.loss.patch = compute_patch_size(
+                new_loss.loss.patch, new_loss.fixed.affine, shape, level)
+        if hasattr(new_loss, '__len__'):
+            for i in range(len(new_loss)):
+                new_loss[i] = get_level(new_loss[i], level)
+        return new_loss
 
-    level = []
-    for i in range(len(fixs[0])):
-        for loss, fix, mov in zip(losses, fixs, movs):
-            loss_level = copy.deepcopy(loss)
-            loss_level.fixed = fix[i]
-            loss_level.moving = mov[i]
-            if hasattr(loss_level.loss, 'patch'):
-                dim = fix[i].affine.shape[-1] - 1
-                shape = fix[i].shape[-dim:]
-                loss_level.loss.patch = compute_patch_size(
-                    loss_level.loss.patch, fix[i].affine, shape, i)
-            level.append(loss_level)
-    return [level]
+    pyramid = []
+    level = 0
+    while True:
+        try:
+            pyramid.append(get_level(loss, level))
+            level += 1
+        except Exception:
+            break
+    pyramid = SumSimilarity.sum(pyramid) / (level + 1)
+    return pyramid
 
 
 def ras_to_layout(x, affine):

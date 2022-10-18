@@ -1,25 +1,23 @@
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import parser, help
-from nitorch.tools.registration import (pairwise, losses, optim,
-                                        utils as regutils, objects)
+from nitorch.tools.registration import objects
 from nitorch.tools.registration.pairwise_preproc import map_image, load_image
 from nitorch.tools.registration.pairwise_postproc import warp_images
-from nitorch.tools.registration.pairwise_pyramid import pyramid_levels
+from nitorch.tools.registration.pairwise_pyramid import (
+    pyramid_levels, concurrent_pyramid, sequential_pyramid)
 from nitorch.tools.registration.pairwise_makeobj import (
     make_image, make_loss,
     make_affine, make_affine_2d, make_affine_optim,
     make_nonlin, make_nonlin_2d, make_nonlin_optim)
 from nitorch.tools.registration.pairwise_run import run
 from nitorch import io, spatial
-from nitorch.core import utils, py, dtypes
+from nitorch.core import py
 import torch
 import sys
 import os
 import json
 import warnings
-import copy
-import math as pymath
 
 
 def cli(args=None):
@@ -67,14 +65,14 @@ def _main(options):
     # ------------------------------------------------------------------
     #                       COMPUTE PYRAMID
     # ------------------------------------------------------------------
-    vxs, shapes = _get_spaces([file for loss in options.loss
+    vxs, shapes = get_spaces([file for loss in options.loss
                                for file in (loss.fix, loss.mov)])
     pyramids = pyramid_levels(vxs, shapes, **options.pyramid)
 
     # ------------------------------------------------------------------
     #                       BUILD LOSSES
     # ------------------------------------------------------------------
-    losses, image_dict = _build_losses(options, pyramids, device)
+    losses, image_dict = build_losses(options, pyramids, device)
 
     # ------------------------------------------------------------------
     #                           BUILD AFFINE
@@ -177,6 +175,17 @@ def setup_device(device='cpu', ndevice=0):
     return device
 
 
+def get_spaces(fnames):
+    """Return the voxel size and spatial shape of all volumes"""
+    vxs = []
+    shapes = []
+    for fname in fnames:
+        f = map_image(fname)
+        shapes.append(f.shape[1:])
+        vxs.append(spatial.voxel_size(f.affine).tolist())
+    return vxs, shapes
+
+
 def build_losses(options, pyramids, device):
     dim = 3
 
@@ -224,8 +233,15 @@ def build_losses(options, pyramids, device):
                 loss.mov.rescale = (0, 0)
                 loss.fix.discretize = loss.fix.discretize or 256
                 loss.mov.soft_quantize = loss.mov.discretize or 16
+                fix = make_image(*load_image(loss.fix.files, **loss.fix, dim=dim, device=device), **loss.fix)
+                mov = make_image(*load_image(loss.mov.files, **loss.mov, dim=dim, device=device), **loss.mov)
                 lossobj = objects.Similarity(
                     lossobj, mov, fix, factor=factor, backward=True)
             loss_list.append(lossobj)
+
+    if options.pyramid.concurrent:
+        loss_list = concurrent_pyramid(loss_list)
+    else:
+        loss_list = sequential_pyramid(loss_list)
 
     return loss_list, image_dict
