@@ -51,6 +51,7 @@ class PairwiseRegister:
                  optim=None,             # Optimizer
                  verbose=True,           # verbosity level
                  framerate=1,            # plotting framerate
+                 figure=None,            # figure object
                  ):
         """
 
@@ -82,6 +83,7 @@ class PairwiseRegister:
         self.nonlin = nonlin
         self.optim = optim
         self.framerate = framerate
+        self.figure = figure
 
     def __call__(self):
         return self.fit()
@@ -117,7 +119,9 @@ class PairwiseRegister:
                 print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
                 print('-' * 74)
 
-        step = PairwiseRegisterStep(self.losses, self.affine, self.nonlin, self.verbose)
+        step = PairwiseRegisterStep(self.losses, self.affine, self.nonlin,
+                                    self.verbose, self.framerate, self.figure)
+        self.figure = step.figure
 
         if self.nonlin and isinstance(self.nonlin, ShootModel):
             if self.nonlin.kernel is None:
@@ -171,6 +175,8 @@ class PairwiseRegisterStep:
             affine=None,            # AffineModel
             nonlin=None,            # NonLinModel
             verbose=True,           # verbosity level
+            framerate=1.0,          # framerate
+            figure=None,            # figure object
             ):
         if not isinstance(losses, (list, tuple)):
             losses = [losses]
@@ -189,9 +195,10 @@ class PairwiseRegisterStep:
         self.all_ll = []            # all losses (total)
         self.last_step = None
 
-        self.framerate = 1
+        self.figure = figure
+        self.framerate = framerate
         self._last_plot = 0
-        if self.verbose > 1:
+        if self.verbose > 1 and not self.figure:
             import matplotlib.pyplot as plt
             self.figure = plt.figure()
 
@@ -206,7 +213,6 @@ class PairwiseRegisterStep:
         self._last_plot = toc
 
         import matplotlib.pyplot as plt
-
 
         warped = warped.detach()
         if vel is not None:
@@ -281,7 +287,9 @@ class PairwiseRegisterStep:
         nb_cols = 4 + bool(vel)
 
         fig = self.figure
-        if len(fig.axes) != (nb_rows - 1) * nb_cols + 1:
+        replot = len(fig.axes) != (nb_rows - 1) * nb_cols + 1
+        replot = replot or not getattr(self, 'plt_saved', None)
+        if replot:
             fig.clf()
 
             for b in range(bdim):
