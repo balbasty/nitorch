@@ -301,7 +301,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
     tensor : (*batch, *spatial_in) tensor
         Input tensor
     kernel_size : int or sequence[int], default=3
-        Size of the pooling window
+        Size of the pooling window. If <= 0, pool the entire dimension.
     stride : int or sequence[int], default=`kernel_size`
         Strides between output elements.
     dilation : int or sequence[int], default=1
@@ -340,6 +340,8 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
 
     # compute padding
     kernel_size = make_list(kernel_size, dim)
+    kernel_size = [s if ks <= 0 else ks
+                   for s, ks in zip(spatial_in, kernel_size)]
     stride = make_list(stride or None, dim)
     stride = [st or ks for st, ks in zip(stride, kernel_size)]
     dilation = make_list(dilation or 1, dim)
