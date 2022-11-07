@@ -105,7 +105,7 @@ class LTAStruct(Structure):
     """
 
     type: int = Constants.LINEAR_VOX_TO_VOX     # Affine type
-    nxform: int = 1                             # Number of affines stored
+    nxforms: int = 1                             # Number of affines stored
     mean: tuple = None                          # ?
     sigma: float = None                         # ?
     affine: np.ndarray = None                   # Affine(s)
@@ -144,7 +144,8 @@ class LTAStruct(Structure):
         affine = []
         affine_shape = (1, 4, 4)
         for line in f:
-            line = line.decode()
+            if hasattr(line, 'decode'):
+                line = line.decode()
             line = line.split('\r\n')[0]  # remove eol (windows)
             line = line.split('\n')[0]    # remove eol (unix)
             line = line.split('#')[0]     # remove hanging comments
@@ -190,7 +191,7 @@ class LTAStruct(Structure):
     def to_lines(self):
         """Iterator over lines"""
         # header
-        attributes = ('type', 'nxform', 'mean', 'sigma')
+        attributes = ('type', 'nxforms', 'mean', 'sigma')
         for attr in attributes:
             val = getattr(self, attr)
             if val is not None:
@@ -543,7 +544,7 @@ class LinearTransformArray(MappedAffine):
 
         affine = np.asarray(affine).reshape([-1, 4, 4])
         self._struct.affine = affine
-        self._struct.nxform = affine.shape[0]
+        self._struct.nxforms = affine.shape[0]
         return self
 
     def set_data(self, affine):
@@ -552,7 +553,7 @@ class LinearTransformArray(MappedAffine):
             raise ValueError('Expected a 4x4 matrix')
         affine = affine.reshape([-1, 4, 4])
         self._struct.affine = affine
-        self._struct.nxform = affine.shape[0]
+        self._struct.nxforms = affine.shape[0]
         return self
 
     @classmethod
@@ -565,6 +566,24 @@ class LinearTransformArray(MappedAffine):
         meta : dict
 
         """
+        if 'type' in meta and not isinstance(meta['type'], int):
+            ltatype = meta['type']
+            if isinstance(ltatype, (list, tuple)):
+                srctype, dsttype = ltatype
+            else:
+                srctype = dsttype = ltatype
+            if srctype == dsttype == 'ras':
+                ltatype = Constants.LINEAR_RAS_TO_RAS
+            elif srctype == dsttype == 'rsa':
+                ltatype = Constants.LINEAR_COR_TO_COR
+            elif srctype == dsttype == 'voxel':
+                ltatype = Constants.LINEAR_VOX_TO_VOX
+            elif srctype == dsttype == 'physical':
+                ltatype = Constants.LINEAR_PHYSVOX_TO_PHYSVOX
+            else:
+                raise ValueError('Unsupported LTA type:', ltatype)
+            meta['type'] = ltatype
+
         tupleof = lambda typ: (lambda x: tuple(typ(y) for y in x))
         known_keys = dict(type=int, mean=tupleof(float), sigma=float)
         known_superkeys = ('src', 'dst')
