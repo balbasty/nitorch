@@ -511,6 +511,33 @@ def add_identity_grid_(disp):
 
 
 @torch.jit.script
+def sub_identity_grid_(disp):
+    """Subtracts the identity grid to a displacement field, inplace.
+
+    Parameters
+    ----------
+    disp : (..., *spatial, dim) tensor
+        Transformation field
+
+    Returns
+    -------
+    grid : (..., *spatial, dim) tensor
+        Displacement field
+
+    """
+    dim = disp.shape[-1]
+    spatial = disp.shape[-dim-1:-1]
+    mesh1d = [torch.arange(s, dtype=disp.dtype, device=disp.device)
+              for s in spatial]
+    grid = utils.meshgrid_script_ij(mesh1d)
+    disp = _movedim1(disp, -1, 0)
+    for i, grid1 in enumerate(grid):
+        disp[i].sub_(grid1)
+    disp = _movedim1(disp, 0, -1)
+    return disp
+
+
+@torch.jit.script
 def add_identity_grid(disp):
     """Adds the identity grid to a displacement field.
 
@@ -526,6 +553,24 @@ def add_identity_grid(disp):
 
     """
     return add_identity_grid_(disp.clone())
+
+
+@torch.jit.script
+def sub_identity_grid(disp):
+    """Subtracts the identity grid to a displacement field.
+
+    Parameters
+    ----------
+    disp : (..., *spatial, dim) tensor
+        Transformation field
+
+    Returns
+    -------
+    grid : (..., *spatial, dim) tensor
+        Displacement field
+
+    """
+    return sub_identity_grid_(disp.clone())
 
 
 def affine_grid(mat, shape, jitter=False):
