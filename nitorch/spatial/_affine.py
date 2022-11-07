@@ -2122,6 +2122,8 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     offset = []
     for L, S, Pi, D, K, Po in zip(shape, stride, padding,
                                   dilation, kernel_size, output_padding):
+        if K <= 0:
+            K = S
         if Pi == 'auto':
             if K % 2 == 0:
                 raise ValueError('Cannot compute automatic padding '
@@ -2666,7 +2668,8 @@ def fov_max(mat, affines, shapes, pad=0, pad_unit='%'):
     mx = torch.ceil(mx)
     mn = torch.floor(mn)
     shape = (mx - mn + 1).long()
-    M = mn - 1
+    # M = mn - 1
+    M = mn
     M = torch.cat((torch.eye(dim, **backend), M[:, None]), dim=1)
     M = affine_make_homogeneous(as_euclidean(M))
     mat = torch.matmul(mat, M)
