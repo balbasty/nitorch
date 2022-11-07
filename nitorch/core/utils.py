@@ -1597,7 +1597,7 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
             count = pad(count, padding, side='right')
         padding = [0] * (out.dim() - 2*dim) + padding
         value = (dtypes.dtype(inp.dtype).min if fn == 'max' else
-                 dtypes.dtype(inp.dtype).max if fn == 'max' else 0)
+                 dtypes.dtype(inp.dtype).max if fn == 'min' else 0)
         out = pad(out, padding, value=value, side='right')
 
         slicer1 = [slice(-1 if o else None) for o in overlap]
