@@ -88,6 +88,8 @@ def main(options):
         wishart=wishart_mode,
         cleanup=options.clean,
         spacing=options.spacing,
+        flexi=options.flexi,
+        lam_prior=options.lam_prior,
         lam_bias=options.lam_bias,
         lam_warp=options.lam_warp,
         lam_mixing=options.lam_mix,

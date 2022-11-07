@@ -47,7 +47,7 @@ class SpatialMixture:
 
     def __init__(self, nb_classes=6, prior=None, affine_prior=None,
                  do_bias=True, do_warp=True,  do_affine=True,
-                 do_mixing=True, do_mrf='once',
+                 do_mixing=True, do_mrf='once', lam_prior=1,
                  lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10,
                  bias_acceleration=0, warp_acceleration=0.9, spacing=3,
                  max_iter=30, tol=1e-3, max_iter_intensity=8, max_iter_mrf=50,
@@ -83,6 +83,8 @@ class SpatialMixture:
 
         Regularization
         --------------
+        lam_prior : float, default=1
+            Strength of the spatial prior
         lam_bias : float, default=0.1
             Regularization factor of the bias field.
         lam_warp : float or dict, default=0.1
@@ -146,9 +148,13 @@ class SpatialMixture:
             lkp = [n for n, k in enumerate(nb_classes) for _ in range(k)]
         self.lkp = lkp
 
+        if not lam_prior:
+            prior = None
         if prior is not None:
             implicit_in = len(prior) < self.nb_classes
+            prior = prior.clamp(1e-3, 1-1e-3)
             prior = math.logit(prior, implicit=(implicit_in, True), dim=0)
+            prior *= lam_prior
             if affine_prior is None:
                 affine_prior = spatial.affine_default(prior.shape[1:])
         self.log_prior = prior
@@ -332,7 +338,7 @@ class SpatialMixture:
         W.bitwise_and_(X != 0)
         if not W.all():
             X = X.clone()
-            X[~W] = 0
+            X.masked_fill_(~W, 0)
         if W0 is not None:
             W = W.to(W.dtype).mul_(W0.to(W.device))
         if W.dtype is torch.bool:
@@ -523,6 +529,7 @@ class SpatialMixture:
         XB = X
         if self.beta is not None:
             XB = self.beta.exp().mul_(X)
+            XB = self.beta.exp().mul_(X)
         Z = None
 
         # --- deactivate MRF if needed ---------------------------------
@@ -541,7 +548,7 @@ class SpatialMixture:
             for n_iter_intensity in range(self.max_iter_intensity):
                 olb_intensity = lb
 
-                if n_iter_intensity == 1 and do_split:
+                if n_iter_intensity == 2 and do_split:
                     do_split = False
                     self.lkp = self._lkp
                     self._split_clusters()
@@ -1508,6 +1515,13 @@ class UniSeg(SpatialMixture):
 
             self.df = torch.zeros(K, **backend)
 
+    @staticmethod
+    def _chol(x):
+        if x.shape[-1] == 1:
+            return x.sqrt()
+        else:
+            return linalg.cholesky(x)
+
     def _split_clusters(self):
         # Heuristic to split a single Gaussians into multiple Gaussians.
 
@@ -1528,7 +1542,7 @@ class UniSeg(SpatialMixture):
             mask = [k1 == k for k1 in self.lkp]
             K1 = sum(mask)
             w = 1. / (1 + pymath.exp(-(K1 - 1) * 0.25)) - 0.5
-            chol = linalg.cholesky(sigma0[k]).diag()
+            chol = self._chol(sigma0[k]).diag()
             noise = torch.randn(K1, **utils.backend(mu)) * w
             mu[mask] = chol * noise[:, None] + mu0[k]
             sigma[mask] = sigma0[k] * (1 - w)
@@ -1548,17 +1562,19 @@ class UniSeg(SpatialMixture):
         # update lower bound: KL between inverse wishart,
         # keeping only terms that depend on sigma
         sigma = self.sigma.cpu()
+        nc = sigma.shape[-1]
         df = self.df.cpu()  # zero-th order suffstat (not true posterior df)
         scale, df0 = self.wishart
+        dff = (df + df0).clamp_min_(nc-1+1e-3)
 
-        chol = linalg.cholesky(sigma)
+        chol = self._chol(sigma)
         logdet = chol.diagonal(0, -1, -2).log().sum(-1).mul_(2)
         tr = linalg.trace(torch.matmul(scale, sigma.inverse()))
         lb = tr * df0 \
              + logdet * df0 \
-             + sigma.shape[-1] * (df0 + 1) * (df + df0).log() \
-             + (df - 1) * math.mvdigamma((df + df0) / 2, sigma.shape[-1]) \
-             - 2 * torch.mvlgamma((df + df0) / 2, sigma.shape[-1])
+             + sigma.shape[-1] * (df0 + 1) * dff.log() \
+             + (df - 1) * math.mvdigamma(dff / 2, nc) \
+             - 2 * torch.mvlgamma(dff / 2, nc)
         lb = lb.sum().cpu()
         self._lb_intensity = -0.5 * lb
 
@@ -1575,7 +1591,6 @@ class UniSeg(SpatialMixture):
             2nd moment
 
         """
-
         ss0 = ss0.cpu()
         ss1 = ss1.cpu()
         ss2 = ss2.cpu()
