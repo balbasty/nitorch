@@ -266,7 +266,7 @@ def greens_apply(mom, greens, factor=1, voxel_size=1):
         mom = fft.mul(mom, greens, real=(False, True))
         mom = fft.mul(mom, voxel_size, real=(False, True))
     else:
-        mom = fft.mul(mom, greens, real=(False, True))
+        mom = fft.matvec(greens, mom, real=(True, False))
 
     # inverse fourier transform
     # mom = utils.movedim(mom, -1, 0)
@@ -409,6 +409,41 @@ def shoot(vel, greens=None,
         if return_inverse:
             idisp += id
     return (disp, idisp) if return_inverse else disp
+
+
+# def shoot_backward(vel, mugrad, grad, hess=None, greens=None,
+#                    absolute=_default_absolute, membrane=_default_membrane,
+#                    bending=_default_bending, lame=_default_lame, factor=1,
+#                    voxel_size=1, inverse=False, steps=8,
+#                    interpolation='linear', bound='dft'):
+#     # I am mostly following the adjoint procedure from:
+#     #       "Diffeomorphic 3D Image Registration via Geodesic Shooting
+#     #        Using an Efficient Adjoint Calculation"
+#     #       Vialard, Risser, Rueckert, Cotter
+#     #       IJCV (2012)
+#     # with some tweaks.
+#     #
+#     # Their `J` corresponds to my `f` (the fixed image)
+#     # Their `I` corresponds to my `mu` (the moving image)
+#     # Their `P` is the scalar momentum, such that their `P0 ∇I0` is my
+#     # inital momentum vector `m0`.
+#     # I'll write the similarity/log-likelihood term of the objective
+#     # function as S, and drop the regularization term, since the adjoint
+#     # calculation is only concerned with propagating gradients of the
+#     # similarity term.
+#     # In the paper, `\hat{I}` corresponds to the flow of the gradient of
+#     # `dS(f, mu)/dmu` backward in time, and their P corresponds to the
+#     # flow of the gradient of `S` with respect to the scalar momentum
+#     # `P`. The adjoint equations are mostly written in terms of `\hat{I} ∇I`,
+#     # so I'll rewrite them in terms of the gradient G, defined such that
+#     # `G1 = push[phi1](\hat{I}1) ∇I0`.
+#
+#     I_tilde = grad
+#     P_tilde = 0
+#     mom_hat = jac(phi) @ mugrad * I_tilde
+#     mom_hat = greens_apply(mom_hat)
+#     P_tilde += push(dot(jac @ mugrad, mom_hat), phi) / jacdet(phi)
+#     I_tilde =
 
 
 class _ApproximateShoot(torch.autograd.Function):

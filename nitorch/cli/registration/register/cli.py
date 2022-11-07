@@ -1,7 +1,3 @@
-import warnings
-
-import copy
-
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import parser, help
@@ -12,6 +8,9 @@ from nitorch.core import utils, py, dtypes
 import torch
 import sys
 import os
+import json
+import warnings
+import copy
 import math as pymath
 
 
@@ -83,7 +82,7 @@ def _map_image(fnames, dim=None):
     return imgs, affine
 
 
-def _load_image(fnames, dim=None, device=None, label=False):
+def _load_image(fnames, dim=None, device=None, label=False, missing=0):
     """
     Load a N-D image from disk
     Returns:
@@ -106,8 +105,9 @@ def _load_image(fnames, dim=None, device=None, label=False):
             dat[i] = dat0 == l
         mask = None
     else:
-        dat = dat.fdata(device=device, rand=True, missing=0)
+        dat = dat.fdata(device=device, rand=True, missing=missing)
         mask = torch.isfinite(dat)
+        mask = mask.all(dim=0)
         dat.masked_fill_(~mask, 0)
     affine = affine.to(dat.device, torch.float32)
     return dat, mask, affine
@@ -171,7 +171,7 @@ def _make_image(option, dim=None, device=None):
     Returns: ImagePyramid
     """
     dat, mask, affine = _load_image(option.files, dim=dim, device=device,
-                                    label=option.label)
+                                    label=option.label, missing=option.missing)
     dim = dat.dim() - 1
     if option.mask:
         mask1 = mask
@@ -285,7 +285,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             target_affine = mov_affine
             target_shape = image.shape
             if affine and affine.position[0].lower() in 'ms':
-                aff = affine.exp(recompute=False, cache_result=True)
+                aff = affine.exp(recompute=True, cache_result=True)
                 target_affine = spatial.affine_lmdiv(aff, target_affine)
 
             fname = option.mov.output.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
@@ -322,7 +322,7 @@ def _warp_image(option, affine=None, nonlin=None, dim=None, device=None, odir=No
             target_affine = fix_affine
             target_shape = image.shape
             if affine and affine.position[0].lower() in 'fs':
-                aff = affine.exp(recompute=False, cache_result=True)
+                aff = affine.exp(recompute=True, cache_result=True)
                 target_affine = spatial.affine_matmul(aff, target_affine)
 
             fname = option.fix.output.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
@@ -357,7 +357,7 @@ def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
     if affine:
         # exp = affine.iexp if backward else affine.exp
         exp = affine.exp
-        aff = exp(recompute=False, cache_result=True)
+        aff = exp(recompute=True, cache_result=True)
         if backward:
             aff = spatial.affine_inv(aff)
     if nonlin:
@@ -401,7 +401,7 @@ def _warp_image1(image, target, shape=None, affine=None, nonlin=None,
     return warped
 
 
-def setup_device(device, ndevice):
+def setup_device(device='cpu', ndevice=0):
     if device == 'gpu' and not torch.cuda.is_available():
         warnings.warn('CUDA not available. Switching to CPU.')
         device, ndevice = 'cpu', None
@@ -467,6 +467,8 @@ def _get_loss(loss, dim):
         lossobj = None
     else:
         raise ValueError(loss.name)
+    if loss.slicewise is not False:
+        lossobj = losses.SliceWiseLoss(lossobj, loss.slicewise)
     return lossobj
 
 
@@ -699,6 +701,7 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
     #       INITIAL PROGRESSIVE AFFINE
     # ------------------------------------------------------------------
+    figure = None
     if len(affine) > 1:
         print('-' * line_size)
         print(f'   PROGRESSIVE INITIALIZATION')
@@ -707,21 +710,21 @@ def _do_register(loss_list, affine, nonlin,
         affine_prev = None
         for i, affine in enumerate(affines):
             line_pad = line_size - len(affine.basis_name) - 5
-            print(f'--- {affine.basis_name} ', end='')
-            print('-' * max(0, line_pad))
             if affine_prev:
                 n = len(affine_prev.dat.dat)
                 affine.set_dat(dim=dim, device=affine_prev.dat.dat.device)
                 affine.dat.dat[:n] = affine_prev.dat.dat
-                if i == 2:  # similitude -> affine
-                    affine.dat.dat[n:n+2] = affine_prev.dat.dat[-1]
             if i == len(affines) - 1:
                 break
+            print(f'--- {affine.basis_name} ', end='')
+            print('-' * max(0, line_pad))
             affine_optim.reset_state()
-            register = pairwise.Register(loss_list[0], affine, None, affine_optim,
-                                         verbose=options.verbose,
-                                         framerate=options.framerate)
+            register = pairwise.PairwiseRegister(loss_list[0], affine, None, affine_optim,
+                                                 verbose=options.verbose,
+                                                 framerate=options.framerate,
+                                                 figure=figure)
             register.fit()
+            figure = register.figure
             affine_prev = affine
     elif len(affine) == 1:
         affine = affine[0]
@@ -731,6 +734,8 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
 
     if nonlin:
+        if affine.dat and affine.dat.dat is not None:
+            affine.dat.dat /= 2  # take the matrix square root
         if affine:
             if options.optim.name == 'sequential':
                 joptim = optim.InterleavedOptimIterator(
@@ -750,9 +755,12 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
     if options.pyramid.concurrent:
         joptim.reset_state()
-        register = pairwise.Register(loss_list, affine, nonlin, joptim,
-                                     verbose=options.verbose,
-                                     framerate=options.framerate)
+        if nonlin and hasattr(nonlin_optim, 'factor'):
+            nonlin_optim.factor /= py.prod(nonlin.shape)
+        register = pairwise.PairwiseRegister(loss_list, affine, nonlin, joptim,
+                                             verbose=options.verbose,
+                                             framerate=options.framerate,
+                                             figure=figure)
         register.fit()
 
     # ------------------------------------------------------------------
@@ -760,6 +768,9 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
     else:
         n_level = nb_levels = len(loss_list)
+        factor = None
+        if nonlin and hasattr(nonlin_optim, 'factor'):
+            factor = nonlin_optim.factor
         if nonlin and n_level > 1:
             vel_shape = nonlin.shape
             nonlin = nonlin.downsample_(2**n_level)
@@ -774,11 +785,15 @@ def _do_register(loss_list, affine, nonlin,
                     nonlin.upsample_(shape=vel_shape, interpolation=3)
                 else:
                     nonlin.upsample_()
+            if nonlin and factor is not None:
+                nonlin_optim.factor = factor / py.prod(nonlin.shape)
             joptim.reset_state()
-            register = pairwise.Register(loss_level, affine, nonlin, joptim,
-                                         verbose=options.verbose,
-                                         framerate=options.framerate)
+            register = pairwise.PairwiseRegister(loss_level, affine, nonlin, joptim,
+                                                 verbose=options.verbose,
+                                                 framerate=options.framerate,
+                                                 figure=figure)
             register.fit()
+            figure = register.figure
 
 
 def _build_losses(options, pyramids, device):
@@ -792,16 +807,17 @@ def _build_losses(options, pyramids, device):
             # not a proper loss
             continue
         if not loss.fix.rescale[-1]:
-            loss.fix.rescale = False
+            loss.fix.rescale = (0, 0)
         if not loss.mov.rescale[-1]:
-            loss.mov.rescale = False
+            loss.mov.rescale = (0, 0)
         if loss.name in ('cat', 'dice'):
-            loss.fix.rescale = False
-            loss.mov.rescale = False
+            loss.fix.rescale = (0, 0)
+            loss.mov.rescale = (0, 0)
         if loss.name == 'emmi':
-            loss.mov.rescale = False
+            loss.mov.rescale = (0, 0)
             loss.fix.discretize = loss.fix.discretize or 256
             loss.mov.soft_quantize = loss.mov.discretize or 16
+            loss.mov.missing = []
         loss.fix.pyramid = pyramid['fix']
         loss.mov.pyramid = pyramid['mov']
         loss.fix.pyramid_method = options.pyramid.name
@@ -824,7 +840,7 @@ def _build_losses(options, pyramids, device):
                     lossobj, fix, mov, factor=factor, backward=True)
             else:
                 loss.fix, loss.mov = loss.mov, loss.fix
-                loss.mov.rescale = False
+                loss.mov.rescale = (0, 0)
                 loss.fix.discretize = loss.fix.discretize or 256
                 loss.mov.soft_quantize = loss.mov.discretize or 16
                 lossobj = objects.LossComponent(
@@ -834,12 +850,17 @@ def _build_losses(options, pyramids, device):
     return loss_list, image_dict
 
 
-def _build_affine(options, can_use_2nd_order):
+def _build_affine(options, can_use_2nd_order, ref_affine=None):
     affine = []
     affine_optim = None
     if options.affine:
-        make_affine = lambda name: objects.AffineModel(
-            name, options.affine.factor, position=options.affine.position)
+        if options.affine.is2d is not False:
+            make_affine = lambda name: objects.Affine2dModel(
+                name, options.affine.is2d, factor=options.affine.factor,
+                ref_affine=ref_affine, position=options.affine.position)
+        else:
+            make_affine = lambda name: objects.AffineModel(
+                name, options.affine.factor, position=options.affine.position)
         name = options.affine.name
         while name:
             affine = [make_affine(name), *affine]
@@ -898,12 +919,13 @@ def _build_affine(options, can_use_2nd_order):
                 and not isinstance(affine_optim, (optim.Powell, optim.LBFGS)):
             affine_optim.search = options.affine.optim.line_search
         affine_optim.iter = optim.OptimIterator(
-            max_iter=max_iter, tol=options.affine.optim.tolerance)
+            max_iter=max_iter, tol=options.affine.optim.tolerance,
+            stop=options.affine.optim.crit)
 
     return affine, affine_optim
 
 
-def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
+def _build_nonlin(options, can_use_2nd_order, affine, image_dict, ref_affine=None):
     dim = 3
     device = next(iter(image_dict.values())).dat.device
 
@@ -926,7 +948,6 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
         space = objects.MeanSpace(
             [image_dict[key] for key in (options.nonlin.fov or image_dict)],
             voxel_size=vx, vx_unit=vx_unit, pad=pad, pad_unit=pad_unit)
-        print(space)
         prm = dict(absolute=options.nonlin.absolute,
                    membrane=options.nonlin.membrane,
                    bending=options.nonlin.bending,
@@ -936,7 +957,10 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
                                    device=device)
         Model = objects.NonLinModel.subclass(options.nonlin.name)
         nonlin = Model(dat=vel, factor=options.nonlin.factor,
-                       prm=prm, steps=getattr(options.nonlin, 'steps', None))
+                       penalty=prm, steps=getattr(options.nonlin, 'steps', None))
+        if options.nonlin.is2d is not False:
+            nonlin = objects.Nonlin2dModel(
+                nonlin, options.nonlin.is2d, ref_affine=ref_affine)
 
         max_iter = options.nonlin.optim.max_iter
         if not max_iter:
@@ -979,9 +1003,9 @@ def _build_nonlin(options, can_use_2nd_order, affine, image_dict):
                     sub_iter = 2
                 else:
                     sub_iter = 16
-            prm = {'factor': nonlin.factor / py.prod(nonlin.shape),
+            prm = {'factor': nonlin.factor,
                    'voxel_size': nonlin.voxel_size,
-                   **nonlin.prm}
+                   **nonlin.penalty}
             if getattr(options.nonlin.optim, 'solver', 'cg') == 'cg':
                 nonlin_optim = optim.GridCG(
                     lr=options.nonlin.optim.lr,
@@ -1030,13 +1054,15 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           BUILD AFFINE
     # ------------------------------------------------------------------
-    affine, affine_optim = _build_affine(options, can_use_2nd_order)
+    affine, affine_optim = _build_affine(options, can_use_2nd_order,
+                                         loss_list[0].fixed.affine)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
     # ------------------------------------------------------------------
     nonlin, nonlin_optim = _build_nonlin(options, can_use_2nd_order,
-                                         affine, image_dict)
+                                         affine, image_dict,
+                                         loss_list[0].fixed.affine)
 
     if not affine and not nonlin:
         raise ValueError('At least one of @affine or @nonlin must be used.')
@@ -1069,13 +1095,20 @@ def _main(options):
         fname = options.affine.output.format(dir=odir, sep=os.path.sep,
                                              name=options.affine.name)
         print('Affine ->', fname)
-        aff = affine.exp(cache_result=True, recompute=False)
+        aff = affine.exp(cache_result=True, recompute=True)
         io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
     if nonlin and options.nonlin.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
         fname = options.nonlin.output.format(dir=odir, sep=os.path.sep,
                                              name=options.nonlin.name)
         io.savef(nonlin.dat.dat, fname, affine=nonlin.affine)
+        if isinstance(nonlin, objects.ShootModel):
+            nldir, nlbase, _ = py.fileparts(fname)
+            fname = os.path.join(nldir, nlbase + '.json')
+            with open(fname, 'w') as f:
+                prm = dict(nonlin.penalty)
+                prm['factor'] = nonlin.factor / py.prod(nonlin.shape)
+                json.dump(prm, f)
         print('Nonlin ->', fname)
     for loss in options.loss:
         _warp_image(loss, affine=affine, nonlin=nonlin,

@@ -57,11 +57,10 @@ tiny = 1e-16
 #
 # ======================================================================
 
-
 def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
               basis='affine', joint=False, progressive=False, bins=256,
               fwhm=None, max_iter_gn=100, max_iter_em=32, max_line_search=6,
-              verbose=1):
+              flexi=False, verbose=1):
     """Align a Tissue Probability Map to an image
 
     Input Parameters
@@ -91,6 +90,8 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         Estimate a single affine for all images
     progressive : bool, default=False
         Fit prameters progressively (translation then rigid then affine)
+    flexi : bool, default=False
+        Assume that the header can be wrong and try all possible orientations
 
     Optimization parameters
     -----------------------
@@ -165,26 +166,84 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         verbose=verbose,
     )
 
-    # ------------------------------------------------------------------
-    #       SPACING
-    # ------------------------------------------------------------------
     spacing = py.make_list(spacing) or [0]
     dat0, affine_dat0, weights0 = dat, affine_dat, weights
     vx = spatial.voxel_size(affine_dat0).tolist()
-    prm = None
+
+    def do_spacing(sp):
+        if not sp:
+            return dat0, affine_dat0, weights0
+        sp = [max(1, int(pymath.floor(sp / vx1))) for vx1 in vx]
+        sp = [slice(None, None, sp1) for sp1 in sp]
+        affine_dat, _ = spatial.affine_sub(affine_dat0, dat0.shape[-dim:], tuple(sp))
+        dat = dat0[(Ellipsis, *sp)]
+        if weights0 is not None:
+            weights = weights0[(Ellipsis, *sp)]
+        else:
+            weights = None
+        return dat, affine_dat, weights
+
+    def make_reorient(layout, affine_dat0):
+        layout_matrix = spatial.layout_matrix(layout).to(affine_dat0)
+        affine_dat = layout_matrix.matmul(affine_dat0)
+        center = torch.as_tensor(dat.shape[-dim:]).to(affine_dat)[:, None]
+        center = (center - 1) / 2
+        affine_dat[..., :-1, -1:] = -affine_dat[..., :-1, :-1].matmul(center)
+        reorient = affine_dat.matmul(affine_dat0.inverse())
+        return affine_dat, reorient
+
+    # ------------------------------------------------------------------
+    #       FLEXIBLE INITIALIZATION
+    # ------------------------------------------------------------------
+    reorient = prm = None
+    if flexi:
+        sp = spacing[0] * 2
+        dat, affine_dat1, weights = do_spacing(sp)
+
+        opt1 = dict(opt)
+        opt1['verbose'] = 0
+
+        # first: trust header
+        reorient0 = torch.zeros_like(affine_dat0)
+        reorient0.diagonal(0, -1, -2).fill_(1)
+        mi0, _, prm0 = fit_affine_tpm(dat, tpm, affine_dat1, affine_tpm,
+                                         weights, **opt1)
+        best_name = spatial.volume_layout_to_name(spatial.affine_to_layout(affine_dat))
+        if verbose:
+            print(f'best: {best_name} ({mi0.item():4.2f})', end='\r')
+
+        # next: try all possible orientations
+        for layout in spatial.iter_layouts(dim, device=dat.device):
+            affine_dat, reorient = make_reorient(layout, affine_dat1)
+            name1 = spatial.volume_layout_to_name(spatial.affine_to_layout(affine_dat))
+            if verbose:
+                print(f'best: {best_name} ({mi0.item():4.2f}) | {name1}', end='\r')
+
+            mi, _, prm = fit_affine_tpm(dat, tpm, affine_dat, affine_tpm,
+                                          weights, **opt1)
+            # update if better
+            if mi > mi0:
+                prm0 = prm
+                reorient0 = reorient
+                mi0 = mi
+                best_name = name1
+        print(f'best: {best_name} ({mi0.item():4.2f})')
+
+        prm, reorient = prm0, reorient0
+
+    # ------------------------------------------------------------------
+    #       SPACING
+    # ------------------------------------------------------------------
     for sp in spacing:
+        dat, affine_dat, weights = do_spacing(sp)
+        if reorient is not None:
+            affine_dat = reorient.matmul(affine_dat)
 
-        if sp:
-            sp = [max(1, int(pymath.floor(sp / vx1))) for vx1 in vx]
-            sp = [slice(None, None, sp1) for sp1 in sp]
-            affine_dat, _ = spatial.affine_sub(affine_dat0, dat0.shape[-dim:], tuple(sp))
-            dat = dat0[(Ellipsis, *sp)]
-            if weights is not None:
-                weights = weights0[(Ellipsis, *sp)]
+        mi, aff, prm = fit_affine_tpm(dat, tpm, affine_dat, affine_tpm,
+                                      weights, **opt, prm=prm)
 
-        _, aff, prm = fit_affine_tpm(dat, tpm, affine_dat, affine_tpm,
-                                     weights, **opt, prm=prm)
-
+    if reorient is not None:
+        aff = aff.matmul(reorient.to(aff))
     return aff.squeeze()
 
 

@@ -114,20 +114,21 @@ def cg(A, b, x=None, precond=None, max_iter=None, tolerance=1e-5,
     p = z.clone()               # Initial conjugate directions p
 
     if tolerance or verbose:
-        Ax = Ax.sub_(b, alpha=2)  # Ax now stores `A(x) - 2*b`
-        obj0 = 0.5 * _dot(Ax, x)
+        # Ax = Ax.sub_(b, alpha=2)  # Ax now stores `A(x) - 2*b`
+        # obj0 = 0.5 * _dot(Ax, x)
         if verbose:
             space = str(len(str(max_iter + 1)))
-            s = '{:' + space + '} | a = {:12.6g}'
-            print(s.format(0, obj0))
-        obj = obj0.new_zeros(max_iter+1)
-        obj[0] = obj0
+            # s = '{:' + space + '} | a = {:12.6g}'
+            # print(s.format(0, obj0))
+        obj = x.new_zeros(max_iter+1)
+        obj[0] = float('inf')
 
     # Run algorithm
     for n_iter in range(1, max_iter+1):
         # Find the step size of the conj. gradient descent
         Ap = A(p)
-        alpha = _dot(p, Ap).clamp_min_(1e-12).reciprocal_().mul_(rz)
+        pAp = _dot(p, Ap)
+        alpha = pAp.clamp_min(1e-12).reciprocal_().mul_(rz)
         # Perform conj. gradient descent, obtaining updated X and R, using the
         # calculated P and alpha
         x.add_(p, alpha=alpha)
@@ -141,9 +142,7 @@ def cg(A, b, x=None, precond=None, max_iter=None, tolerance=1e-5,
         
         # Check convergence
         if tolerance or verbose:
-            Ax = Ax.add_(Ap, alpha=alpha)
-            obj1 = 0.5 * _dot(Ax, x)
-            obj[n_iter] = obj1
+            obj[n_iter] = alpha * (alpha * pAp + 2 * rz)
             gain = get_gain(obj[:n_iter + 1], monotonicity='<', type=stop)
             if verbose:
                 s = '{:' + space + '} | a = {:12.6g} | gain = {:12.6g}'
@@ -443,6 +442,9 @@ def get_gain(obj, monotonicity='increasing', type='max_gain'):
     if type == 'gain':
         gain = gain / abs(obj[-2])
     elif type == 'max_gain':
+        obj = obj[torch.isfinite(obj)]
+        if len(obj) == 0:
+            return 0
         gain = gain / max(max(obj) - min(obj), 1e-12)
     elif type != 'diff':
         raise ValueError(f'Unknown type "{type}"')

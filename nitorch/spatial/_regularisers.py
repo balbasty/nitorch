@@ -1184,13 +1184,24 @@ def regulariser(x, absolute=0, membrane=0, bending=0, factor=1,
     else:
         wa = wm = wb = weights
 
+    absolute = core.py.make_list(absolute, nb_prm) if absolute else []
+    membrane = core.py.make_list(membrane, nb_prm) if membrane else []
+    bending = core.py.make_list(bending, nb_prm) if bending else []
+
+    wa = wa.expand(x.shape) if wa is not None else [None] * nb_prm
+    wm = wm.expand(x.shape) if wm is not None else [None] * nb_prm
+    wb = wb.expand(x.shape) if wb is not None else [None] * nb_prm
+
     y = torch.zeros_like(x)
-    if absolute:
-        y.add_(_absolute(x, weights=wa), alpha=absolute)
-    if membrane:
-        y.add_(_membrane(x, weights=wm, **fdopt), alpha=membrane)
-    if bending:
-        y.add_(_bending(x, weights=wb, **fdopt), alpha=bending)
+    for x1, y1, w1, alpha in zip(x, y, wa, absolute):
+        if alpha:
+            y1.add_(_absolute(x1, weights=w1), alpha=alpha)
+    for x1, y1, w1, alpha in zip(x, y, wm, membrane):
+        if alpha:
+            y1.add_(_membrane(x1, weights=w1, **fdopt), alpha=alpha)
+    for x1, y1, w1, alpha in zip(x, y, wb, bending):
+        if alpha:
+            y1.add_(_bending(x1, weights=w1, **fdopt), alpha=alpha)
 
     pad_spatial = (Ellipsis,) + (None,) * dim
     return y.mul_(factor[pad_spatial])

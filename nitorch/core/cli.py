@@ -254,7 +254,7 @@ class Conversions:
         if isinstance(type, str):
             # Let's assume the user forgot to call the function with
             # a type. We'll use the default type.
-            return Conversions.number_or_str()(type)
+            return Conversions.number()(type)
 
         if type is None:
             # Try int, then float, then bool

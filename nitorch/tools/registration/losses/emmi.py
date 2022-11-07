@@ -15,7 +15,7 @@ General idea
   likelihood:
       p(𝒙; 𝑯, 𝜇, 𝜙) = ∏ₙ ∑ⱼ p(𝑥ₙ | 𝑦ₙ = 𝑗; 𝑯) p(𝑦ₙ; 𝜇, 𝜙)
   where we use ";" to separate random variables from parameters.
-. Note that mu is assumed constant in this problem: only H and 𝜙 are
+. Note that 𝜇 is assumed constant in this problem: only H and 𝜙 are
   optimized.
 . In order to maximize H, we use an EM algorithm:
   We introduce an approximate parameter H and compute the approximate
@@ -36,7 +36,6 @@ from nitorch.core import utils, linalg, math
 from nitorch import spatial
 from .base import OptimizationLoss
 import torch
-
 
 
 def emmi(moving, fixed, *args, **kwargs):
@@ -132,9 +131,9 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         moving, fixed, weights, prior, dim)
 
     *batch, J, K = prior.shape
+    Nb = len(batch)
     N = moving.shape[-1]
     Nm = weights.sum()
-
 
     # ------------------------------------------------------------------
     #           EM LOOP
@@ -164,9 +163,12 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         #    = Σ_n log Σ_k p(x[n] == j[n] | z[n] == k)  p(z[n] == k)
         #    = Σ_n log Σ_k p(z[n] == k | x[n] == j) + constant{\z}
         # --------------------------------------------------------------
-        ll = z.sum(-2, keepdim=True) + tiny
+        ll = z.sum(-2, keepdim=True)
+        ll = add_tiny_(ll, Nb)
         z /= ll
-        ll = ll.log_().mul_(weights).sum(dtype=torch.double)
+        ll = ll.log_().mul_(weights).sum([-1, -2], dtype=torch.double)
+
+        z *= weights
 
         # --------------------------------------------------------------
         # M-step
@@ -174,20 +176,20 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         # estimate joint prior by maximizing Q = E_{Z;H,mu}[ln p(X, Z; H)]
         # => H_jk = p(x == j, z == k) ∝ Σ_n p(z[n] == k | x[n] == j) 𝛿(x[n] == j)
         # --------------------------------------------------------------
-        z *= weights
         prior0 = scatter_prior(prior0, fixed, z)
         prior.copy_(prior0).add_(tiny)
         # make it a joint distribution
-        prior /= prior.sum(dim=[-1, -2], keepdim=True).add_(tiny)
+        prior /= add_tiny_(prior.sum(dim=[-1, -2], keepdim=True), Nb)
+
         if fwhm:
             # smooth "prior" for the prior
             prior = prior.transpose(-1, -2)
             prior = spatial.smooth(prior, dim=1, basis=0, fwhm=fwhm, bound='replicate')
             prior = prior.transpose(-1, -2)
-        prior /= prior.sum(dim=[-1, -2], keepdim=True)
-        prior1 = prior.clone()
+
+        # prior /= prior.sum(dim=[-1, -2], keepdim=True)
         # MI-like normalization
-        prior /= prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True)
+        prior /= add_tiny_(prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True), Nb)
         if ll - ll_prev < 1e-5 * Nm:
             break
 
@@ -204,7 +206,7 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     #       - \sum_{y} p(y) log p(y)
     #    = -H[x,y] + H[x] + H[y]
     #    = MI[x, y]
-    ll = -(prior0 * prior.log()).sum() / Nm
+    ll = -(prior0 * add_tiny_(prior, Nb).log()).sum() / Nm
     out = [ll]
 
     # ------------------------------------------------------------------
@@ -219,18 +221,20 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
 
         g = sample_prior(prior, fixed)
         norm = linalg.dot(g.transpose(-1, -2), moving.transpose(-1, -2))
-        norm = norm.unsqueeze(-2).add_(tiny).reciprocal_()
+        norm = add_tiny_(norm, Nb).unsqueeze(-2).reciprocal_()
         g *= norm
         if hess:
             h = sym_outer(g, -2)
 
         if grad:
             g *= weights
-            g.neg_()
+            g /= -Nm
+            # g.neg_()
             g = g.reshape([*g.shape[:-1], *shape])
             out.append(g)
         if hess:
             h *= weights
+            h /= Nm
             h = h.reshape([*h.shape[:-1], *shape])
             out.append(h)
 
@@ -241,7 +245,7 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
 
 
 def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
-         weights=None, grad=True, hess=True, return_prior=False):
+              weights=None, grad=True, hess=True, return_prior=False):
     # ------------------------------------------------------------------
     #           PREPARATION
     # ------------------------------------------------------------------
@@ -251,6 +255,7 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         moving, fixed, weights, prior, dim)
 
     *batch, J, K = prior.shape
+    Nb = len(batch)
     N = moving.shape[-1]
     Nm = weights.sum()
 
@@ -279,7 +284,7 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         prior0 = scatter_prior(prior0, fixed, z)
         prior.copy_(prior0).add_(tiny)
         # make it a joint distribution
-        prior /= prior.sum(dim=[-1, -2], keepdim=True).add_(tiny)
+        prior /= add_tiny_(prior.sum(dim=[-1, -2], keepdim=True), Nb)
         if fwhm:
             # smooth "prior" for the prior
             prior = prior.transpose(-1, -2)
@@ -325,14 +330,12 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
             norm = norm.square_().mul_(fixed).unsqueeze(-1)
             h = moving.new_zeros([*g.shape[:-2], K*(K+1)//2, N])
             for j in range(J):
-                h[..., :K, :] += prior[..., j, :K, None].square() * \
-                                 norm
+                h[..., :K, :] += prior[..., j, :K, None].square() * norm
                 c = K
                 for k in range(K):
                     for kk in range(k + 1, K):
-                        h[..., c, :] += prior[..., j, k, None] * \
-                                        prior[..., j, kk, None] * \
-                                        norm
+                        h[..., c, :] += (prior[..., j, k, None] *
+                                         prior[..., j, kk, None] * norm)
                         c += 1
 
         if grad:
@@ -456,6 +459,15 @@ def spatial_sum(x, dim, keepdim=False):
 
 def make_finite_(x):
     x = x.masked_fill_(torch.isfinite(x).bitwise_not_(), 0)
+    return x
+
+
+def add_tiny_(x, n=0, eps=1e-12):
+    if n:
+        tiny = x.abs().max(range(n), keepdim=True)
+    else:
+        tiny = x.abs().max()
+    x.add_(tiny, alpha=eps)
     return x
 
 

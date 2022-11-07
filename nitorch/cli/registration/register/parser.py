@@ -125,7 +125,8 @@ usage:
         dice, f1                        Dice coefficient
             -w, --weight *VAL               Weight per class [1]
     Common options:
-        -s, --symmetric                 Make loss symmetric: [False]
+        -s, --symmetric                 Make loss symmetric [False]
+        -z, --slicewise [AXIS=-1]       Make loss slice-wise [False]
 
 @@fix/mov options:
     *FILES must be one or several filenames, which will be concatenated 
@@ -144,6 +145,8 @@ usage:
                                     If no argument given, labels are [all but zero]
     -m, --mask FILE                 Path to a mask of voxels to *include* [all]
         --name NAME                 A name to use with `@nonlin --fov`
+    -x, --missing *VAL              Values that should be considered missing [0]
+        --no-missing                No value should be considered missing
 
 @affine options:
     FACTOR must be a scalar value [1] and is a global penalty factor
@@ -155,7 +158,9 @@ usage:
         a, affine                       Full affine
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
+        -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
         -o, --output                    Path to the output transform: [{dir}/{name}.lta]
+        -2d [AXIS=2]                    Force transform to be 2d about AXIS
 
 @nonlin options:
     FACTOR must be a scalar value [1] and is a global penalty factor
@@ -173,6 +178,7 @@ usage:
         -v, --voxel-size VAL [UNIT]     Voxel size and unit [100 %]
         -f, --fov *NAMES                Name of inputs used to compute mean space [all]
         -p, --pad VAL [UNIT]            Pad field of view by some amount [0 %]
+        -2d [AXIS=2]                    Force transform to be 2d about AXIS
 
 @optim options:
     NAME can take values:
@@ -210,9 +216,12 @@ usage:
             -h, --history                   History size [100]
     Common options:
         -l, --lr                        Learning rate [1]
-        -n, --max-iter                  Maximum number of iterations
         -s, --line-search               Number of backtracking line search [wolfe]
-        -t, --tolerance                 Tolerance for early stopping [1e-5]
+        -t, --tolerance                 Tolerance for early stopping [1e-4]
+        -c, --crit                      Stopping criterion: [diff], gain
+        -n, --max-iter                  Maximum number of iterations
+                                        [interleaved: affine=50,  nonlin=10,
+                                         sequential:  affine=100, nonlin=50]
 
 @pyramid options:
     NAME can take values:
@@ -322,6 +331,9 @@ loss.add_positional('factor', nargs='?', default=1., convert=float,
                     help='Weight it this component in the global loss')
 loss.add_option('symmetric', ('-s', '--symmetric'), nargs=0, default=False,
                 help='Make the loss symmetric')
+loss.add_option('slicewise', ('-z', '--slicewise'), nargs='?', default=False,
+                action=cli.Actions.store_value(-1), convert=int,
+                help='Make the loss slice-wise')
 # conditional options
 weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
                            default=None, convert=number_or_str(float),
@@ -411,6 +423,10 @@ file.add_option('discretize', ('-d', '--discretize'), nargs='?', convert=int,
                 default=0, help='Discretize the image into N discrete bins')
 file.add_option('mask', ('-m', '--mask'), nargs=1, default=None,
                 help='Path to a mask of voxels to include')
+file.add_option('missing', ('-x', '--missing'), nargs='+', convert=float,
+                default=[0], help='Missing values')
+file.add_option('missing', '--no-missing', nargs=0,
+                action=cli.Actions.store_value([]), help='No missing values')
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)
 mov = cli.Group('mov', '@@mov', n=1)
@@ -442,11 +458,14 @@ optim.add_option('line_search', ('-s', '--line-search'), nargs=1,
                  default='wolfe', convert=number_or_str(int),
                  help='Number of backtracking line search')
 optim.add_option('tolerance', ('-t', '--tolerance'), nargs=1,
-                 convert=float, default=1e-5, help='Tolerance for early stopping')
+                 convert=float, default=1e-4, help='Tolerance for early stopping')
+optim.add_option('crit', ('-c', '--crit'), nargs=1,
+                 default='diff', validation=cli.Validations.choice(['gain', 'diff']),
+                 help='Criterion for early stopping')
 optim.add_suboption('gn', 'marquardt', ('-m', '--marquardt'), nargs=1,
                     default=None, convert=number_or_str(float),
                     help='Levenberg-Marquardt regularization')
-optim.add_suboption('gn', 'solver', ('-a', '--solver'), nargs=1,
+optim.add_suboption('gn', 'solver', ('-q', '--solver'), nargs=1,
                     default='cg', validation=cli.Validations.choice(['cg', 'relax']),
                     help='Linear solver')
 optim.add_suboption('gn', 'sub_iter', ('-j', '--sub-iter'), nargs=1,
@@ -503,6 +522,9 @@ affine.add_option('output', ('-o', '--output'), nargs=1,
                   help='Path to the output transform')
 affine.add_option('progressive', ('-g', '--progressive'), default=False,
                   nargs='?',  convert=bool_or_str)
+affine.add_option('is2d', '-2d', default=False, nargs='?',
+                  action=cli.Actions.store_value(2),
+                  convert=number_or_str(int))
 affine.add_group(optim)
 
 # nonlin group
@@ -536,6 +558,9 @@ nonlin.add_option('fov', ('-f', '--fov'), nargs='1*',
 nonlin.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{name}.nii.gz',
                   help='Path to the output transform')
+nonlin.add_option('is2d', '-2d', default=False, nargs='?',
+                  action=cli.Actions.store_value(2),
+                  convert=number_or_str(int))
 nonlin.add_group(optim)
 
 

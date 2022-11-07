@@ -559,13 +559,23 @@ class LogAffine(AffineTransform):
     @property
     def basis(self):
         if self._basis is None:
+            begin_rot = self.dim
+            begin_scl = begin_rot + (self.dim*(self.dim-1))//2
+            if self._basis_name == 'affine':
+                end_scl = begin_scl + self.dim
+            else:
+                end_scl = begin_scl + 1
             self._basis = spatial.affine_basis(self._basis_name, self.dim,
                                                **utils.backend(self.dat))
+            self._basis[begin_rot:begin_scl] /= 40
+            self._basis[begin_scl:end_scl] /= 40
+            self._basis[end_scl:] /= 40
         return self._basis
 
     @basis.setter
     def basis(self, x):
         self._basis_name = x
+        self._basis = None
 
     def clear_cache(self):
         self._cache = None
@@ -622,6 +632,128 @@ class LogAffine(AffineTransform):
         return f'{self.__class__.__name__}({s})'
 
     __str__ = __repr__
+
+
+class LogAffine2d(LogAffine):
+    """2d affine transform in a 3D world space"""
+    def __init__(self, dat=None, basis=None, rotation=None,
+                 plane=0, dim=3, **backend):
+        """
+        Parameters
+        ----------
+        [dat : tensor, optional]
+            Pre-allocated log-affine
+        basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
+            Name of an Affine basis
+        rotation : tensor, default=identity
+            Rotation matrix from 2d space to 3d space
+        dim : int, default=3
+            Number of spatial dimensions
+        **backend
+        """
+        if dat is None:
+            dat = torch.zeros(spatial.affine_basis_size(basis, 2), **backend)
+        super().__init__(dat, basis, dim, **backend)
+        if rotation is None:
+            rotation = torch.eye(self.dim + 1, **backend)
+        self.rotation = rotation
+        if isinstance(plane, str):
+            plane = plane.upper()
+            plane = (0 if plane in 'RL' else 1 if plane in 'AP' else 2)
+        self.plane = plane
+
+    def _make_basis_2d(self):
+        if self._basis is not None:
+            if self._basis_name[0].lower() == 't':
+                if self.plane == 0:
+                    idx = [1, 2]
+                elif self.plane == 1:
+                    idx = [0, 2]
+                else:
+                    idx = [0, 1]
+            elif self._basis_name[0].lower() in 'rs':
+                if self.plane == 0:
+                    idx = [1, 2, 5]
+                elif self.plane == 1:
+                    idx = [0, 2, 4]
+                else:
+                    idx = [0, 1, 3]
+                if self._basis_name[0].lower() == 's':
+                    idx += [6]
+            else:
+                if self.plane == 0:
+                    idx = [1, 2, 5, 7, 8, 11]
+                elif self.plane == 1:
+                    idx = [0, 2, 1, 6, 8, 10]
+                else:
+                    idx = [0, 1, 3, 6, 7, 9]
+
+            self._basis = self._basis[idx]
+            if self._basis_name[0].lower() == 's':
+                if self.plane == 0:
+                    idx = 0
+                elif self.plane == 1:
+                    idx = 1
+                else:
+                    idx = 2
+                self._basis[3][idx, idx] = 0
+
+    @property
+    def basis(self):
+        make_basis_2d = self._basis is None
+        _ = super().basis
+        if make_basis_2d:
+            self._make_basis_2d()
+        return self._basis
+
+    @basis.setter
+    def basis(self, x):
+        self._basis_name = x
+        self._basis = None
+
+    @classmethod
+    def make(cls, dat, **kwargs):
+        if isinstance(dat, LogAffine2d):
+            kwargs.setdefault('dim', dat.dim)
+            kwargs.setdefault('basis', dat.basis)
+            kwargs.setdefault('plane', dat.plane)
+            kwargs.setdefault('rotation', dat.rotation)
+            dat = dat.dat
+        return LogAffine2d(dat, **kwargs)
+
+    def exp(self, q=None, grad=False, cache_result=False, recompute=True):
+        aff = super().exp(q, grad, cache_result, recompute)
+        if grad:
+            aff, gaff = aff
+        aff = self.rotation @ aff @ self.rotation.T
+        if grad:
+            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
+            return aff, gaff
+        return aff
+
+    def iexp(self, q=None, grad=False, cache_result=False, recompute=True):
+        aff = super().iexp(q, grad, cache_result, recompute)
+        if grad:
+            aff, gaff = aff
+        aff = self.rotation @ aff @ self.rotation.T
+        if grad:
+            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
+            return aff, gaff
+        return aff
+
+    def exp2(self, q=None, grad=False, cache_result=False, recompute=True):
+        aff = super().exp2(q, grad, cache_result, recompute)
+        if grad:
+            aff, iaff, gaff, giaff = aff
+        else:
+            aff, iaff = aff
+        aff = self.rotation @ aff @ self.rotation.T
+        iaff = self.rotation @ iaff @ self.rotation.T
+        if grad:
+            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
+            giaff = self.rotation.matmul(giaff).matmul(self.rotation.T)
+            return aff, iaff, gaff, giaff
+        return aff, iaff
 
 
 class LossComponent:
@@ -692,7 +824,12 @@ def _rotate_grad(grad, aff=None, dense=None):
     return grad
 
 
-class NonLinModel:
+class TransformationModel:
+    def parameters(self):
+        raise NotImplementedError
+
+
+class NonLinModel(TransformationModel):
     """Base class for non-linear deformations."""
     # TODO: currently tailored for dense fields but could be adapted
     #   to spline-encoded deformations (or velocities)
@@ -721,7 +858,7 @@ class NonLinModel:
         else:
             raise ValueError('unknown:', model)
 
-    def __init__(self, dat=None, factor=1, prm=None,
+    def __init__(self, dat=None, factor=1, penalty=None,
                  steps=8, kernel=None, **backend):
         """
 
@@ -731,7 +868,7 @@ class NonLinModel:
             Pre-allocated displacement or its shape
         factor : float, default=1
             Regularization factor
-        prm : dict(absolute, membrane, bending, lame), optional
+        penalty : dict(absolute, membrane, bending, lame), optional
             Regularization factor for each component.
             Informed values are used by default.
         steps : int, default=8
@@ -742,8 +879,8 @@ class NonLinModel:
         """
         super().__init__()
         self.factor = factor
-        self.prm = prm or regutils.defaults_velocity()
-        self.prm.pop('voxel_size', None)
+        self.penalty = penalty or regutils.defaults_velocity()
+        self.penalty.pop('voxel_size', None)
         self.steps = steps
         self.kernel = kernel
         if dat is not None:
@@ -758,6 +895,11 @@ class NonLinModel:
     dim = property(lambda self: self.dat.dim if self.dat is not None else None)
     voxel_size = property(lambda self: self.dat.voxel_size if self.dat is not None else None)
 
+    def parameters(self):
+        if not self.dat:
+            return None
+        return self.dat.dat
+
     def set_dat(self, dat, affine=None, **backend):
         if isinstance(dat, str):
             dat = io.map(dat)
@@ -768,19 +910,34 @@ class NonLinModel:
         self.dat = Displacement.make(dat, affine=affine, **backend)
         return self
 
-    def make(self, model, **kwargs):
-        if isinstance(model, type(self)):
+    def set_kernel(self, kernel=None):
+        if kernel is None:
+            kernel = spatial.greens(self.shape, **self.penalty,
+                                    factor=self.factor / py.prod(self.shape),
+                                    voxel_size=self.voxel_size,
+                                    **utils.backend(self.dat))
+        self.kernel = kernel
+        return self
+
+    def reset_kernel(self, kernel=None):
+        return self.set_kernel(kernel)  # backward compatibility
+
+    @classmethod
+    def make(cls, model, **kwargs):
+        if isinstance(model, cls):
             kwargs.setdefault('factor', model.factor)
-            kwargs.setdefault('prm', model.prm)
+            kwargs.setdefault('prm', model.penalty)
             kwargs.setdefault('steps', model.steps)
             kwargs.setdefault('kernel', model.kernel)
             kwargs.setdefault('dat', model.dat)
         elif isinstance(model, NonLinModel):
             raise TypeError('Cannot convert between `NonLinModel`s')
-        if type(self) is NonLinModel:
+        if cls is NonLinModel:
+            if isinstance(model, NonLinModel):
+                return type(model)(**kwargs)
             return NonLinModel(model, **kwargs)
         else:
-            return type(self)(**kwargs)
+            return cls(**kwargs)
 
     @classmethod
     def add_identity(cls, disp):
@@ -795,7 +952,7 @@ class NonLinModel:
     def regulariser(self, v=None):
         if v is None:
             v = self.dat
-        return spatial.regulariser_grid(v, **self.prm,
+        return spatial.regulariser_grid(v, **self.penalty,
                                         factor=self.factor / py.prod(self.shape),
                                         voxel_size=self.voxel_size)
 
@@ -805,20 +962,30 @@ class NonLinModel:
     def downsample_(self, factor=2, **kwargs):
         self.clear_cache()
         self.dat.downsample_(factor, **kwargs)
+        if self.kernel is not None:
+            self.set_kernel()
         return self
 
     def downsample(self, factor=2, **kwargs):
         dat = self.dat.downsample(factor, **kwargs)
-        return type(self)(dat, self.factor, self.prm, self.steps, self.kernel)
+        obj = type(self)(dat, self.factor, self.penalty, self.steps)
+        if self.kernel is not None:
+            obj.set_kernel()
+        return obj
 
     def upsample_(self, factor=2, **kwargs):
         self.clear_cache()
         self.dat.upsample_(factor, **kwargs)
+        if self.kernel is not None:
+            self.set_kernel()
         return self
 
     def upsample(self, factor=2, **kwargs):
         dat = self.dat.upsample(factor, **kwargs)
-        return type(self)(dat, self.factor, self.prm, self.steps, self.kernel)
+        obj = type(self)(dat, self.factor, self.penalty, self.steps)
+        if self.kernel is not None:
+            obj.set_kernel()
+        return obj
 
     def __repr__(self):
         s = []
@@ -827,7 +994,7 @@ class NonLinModel:
         else:
             s += ['<uninitialized>']
         s += [f'factor={self.factor}']
-        s += [f'{key}={value}' for key, value in self.prm.items()]
+        s += [f'{key}={value}' for key, value in self.penalty.items()]
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'
 
@@ -837,22 +1004,12 @@ class NonLinModel:
 class ShootModel(NonLinModel):
     """Initial velocity exponentiated by geodesic shooting"""
 
+    model = 'shoot'
+
     def __new__(cls, *args, **kwargs):
         obj = object.__new__(ShootModel)
         obj.__init__(*args, **kwargs)
         return obj
-
-    def set_kernel(self, kernel=None):
-        if kernel is None:
-            kernel = spatial.greens(self.shape, **self.prm,
-                                    factor=self.factor / py.prod(self.shape),
-                                    voxel_size=self.voxel_size,
-                                    **utils.backend(self.dat))
-        self.kernel = kernel
-        return self
-
-    def reset_kernel(self, kernel=None):
-        return self.set_kernel(kernel)  # backward compatibility
 
     def set_dat(self, dat, affine=None, **backend):
         super().set_dat(dat, affine, **backend)
@@ -867,7 +1024,7 @@ class ShootModel(NonLinModel):
         if recompute or self._cache is None:
             grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                  factor=self.factor / py.prod(self.shape),
-                                 voxel_size=self.voxel_size, **self.prm,
+                                 voxel_size=self.voxel_size, **self.penalty,
                                  displacement=True)
         else:
             grid = self._cache
@@ -891,8 +1048,8 @@ class ShootModel(NonLinModel):
         if recompute or self._icache is None:
             _, grid = spatial.shoot(v, self.kernel, steps=self.steps,
                                     factor=self.factor / py.prod(self.shape),
-                                    voxel_size=self.voxel_size, **self.prm,
-                                    return_inverse=True,  displacement=True)
+                                    voxel_size=self.voxel_size, **self.penalty,
+                                    return_inverse=True, displacement=True)
         else:
             grid = self._icache
         if cache_result:
@@ -915,7 +1072,7 @@ class ShootModel(NonLinModel):
         if recompute or self._cache is None or self._icache is None:
             grid, igrid = spatial.shoot(v, self.kernel, steps=self.steps,
                                         factor=self.factor / py.prod(self.shape),
-                                        voxel_size=self.voxel_size, **self.prm,
+                                        voxel_size=self.voxel_size, **self.penalty,
                                         return_inverse=True, displacement=True)
         if cache_result:
             self._cache = grid
@@ -998,6 +1155,8 @@ class ShootModel(NonLinModel):
 
 class SVFModel(NonLinModel):
     """Stationary velocity field exponentiated by scaling and squaring."""
+
+    model = 'svf'
 
     def __new__(cls, *args, **kwargs):
         obj = object.__new__(SVFModel)
@@ -1134,6 +1293,8 @@ class SVFModel(NonLinModel):
 class SmallDefModel(NonLinModel):
     """Dense displacement field."""
 
+    model = 'smalldef'
+
     def __new__(cls, *args, **kwargs):
         obj = object.__new__(SmallDefModel)
         obj.__init__(*args, **kwargs)
@@ -1157,7 +1318,7 @@ class SmallDefModel(NonLinModel):
         if v is None:
             v = self.dat.dat
         if recompute or self._icache is None:
-            grid = spatial.grid_inv(v, type='disp', **self.prm)
+            grid = spatial.grid_inv(v, type='disp', **self.penalty)
         else:
             grid = self._icache
         if cache_result:
@@ -1175,7 +1336,7 @@ class SmallDefModel(NonLinModel):
             v = self.dat.dat
         grid = v
         if recompute or self._icache is None:
-            igrid = spatial.grid_inv(v, type='disp', **self.prm)
+            igrid = spatial.grid_inv(v, type='disp', **self.penalty)
         else:
             igrid = self._icache
         if cache_result:
@@ -1230,7 +1391,62 @@ class SmallDefModel(NonLinModel):
         return g, h, mugrad
 
 
-class AffineModel:
+class Nonlin2dModel(NonLinModel):
+    """A 3D Nonlinear field pointing along a 2D direction"""
+
+    def __new__(cls, *args, **kwargs):
+        obj = object.__new__(Nonlin2dModel)
+        cls.__init__(obj, *args, **kwargs)
+        return obj
+
+    def __init__(self, model, plane, ref_affine=None, *args, **kwargs):
+        if isinstance(plane, str):
+            plane = plane.upper()
+            plane = (0 if plane in 'RL' else 1 if plane in 'AP' else 2)
+        self.plane = plane
+        if ref_affine is None:
+            rot = None
+        else:
+            rot = ref_affine.clone()
+            rot[:-1, -1] = 0
+            rot[:-1, :-1] /= rot[:-1, :-1].square().sum(0, keepdim=True).sqrt()
+        self.rotation = rot
+        self._model = model
+
+    model = property(lambda self: self._model.model)
+    factor = property(lambda self: self._model.factor)
+    penalty = property(lambda self: self._model.penalty)
+    steps = property(lambda self: self._model.steps)
+    kernel = property(lambda self: self._model.kernel)
+    dat = property(lambda self: self._model.dat)
+    affine = property(lambda self: self._model.affine)
+    shape = property(lambda self: self._model.shape)
+    dim = property(lambda self: self._model.dim)
+    voxel_size = property(lambda self: self._model.voxel_size)
+
+    def exp(self, *args, **kwargs):
+        return self._model.exp(*args, **kwargs)
+
+    def iexp(self, *args, **kwargs):
+        return self._model.iexp(*args, **kwargs)
+
+    def exp2(self, *args, **kwargs):
+        return self._model.exp2(*args, **kwargs)
+
+    def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False):
+        g, h, mugrad = self._model.propagate_grad(
+            g, h, moving, phi, left, right, inv)
+
+        A = self.dat.affine[:-1, :-1]
+        R = self.rotation[:-1, :-1]
+        R = R[:, list(range(self.plane)) + list(range(self.plane+1, len(R)))]
+        P = A.inverse() @ (R @ R.T) @ A
+        mugrad = linalg.matvec(P, mugrad)
+
+        return g, h, mugrad
+
+
+class AffineModel(TransformationModel):
     """Affine transformation model encoded in a Lie algebra"""
 
     def __init__(self, basis, factor=1, prm=None, dat=None, position='symmetric'):
@@ -1263,6 +1479,11 @@ class AffineModel:
     def set_dat(self, dat=None, dim=None, **backend):
         self.dat = LogAffine.make(dat, basis=self._basis, dim=dim, **backend)
         return self
+
+    def parameters(self):
+        if not self.dat:
+            return None
+        return self.dat.dat
 
     basis = property(lambda self: self.dat.basis if self.dat is not None else None)
     basis_name = property(lambda self: self._basis)
@@ -1297,3 +1518,29 @@ class AffineModel:
         s += [f'{key}={value}' for key, value in self.prm.items()]
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'
+
+
+class Affine2dModel(AffineModel):
+    """A 2D affine in a 3D world"""
+
+    def __init__(self, basis, plane, ref_affine=None, factor=1, prm=None,
+                 dat=None, position='symmetric'):
+        super().__init__(basis, factor, prm, dat, position)
+        self._plane = plane
+        if ref_affine is None:
+            rot = None
+        else:
+            rot = ref_affine.clone()
+            rot[:-1, -1] = 0
+            rot[:-1, :-1] /= rot[:-1, :-1].square().sum(0, keepdim=True).sqrt()
+        self._rotation = rot
+
+    rotation = property(lambda self: self.dat.rotation if self.dat is not None else None)
+    plane = property(lambda self: self.dat.plane if self.dat is not None else None)
+
+    def set_dat(self, dat=None, dim=None, **backend):
+        self.dat = LogAffine2d.make(dat, basis=self._basis, dim=dim,
+                                    rotation=self._rotation,
+                                    plane=self._plane, **backend)
+        return self
+

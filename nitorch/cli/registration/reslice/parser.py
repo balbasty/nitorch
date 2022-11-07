@@ -12,7 +12,9 @@ usage:
     -d, --displacement      Dense or free-form displacement field
         -n, --order             Order of the encoding splines (1)
         -u, --unit              Unit/Space of the displacement (mm or [vox])
-    -v, --velocity          Diffeomorphic velocity field
+    -v, --velocity          Diffeomorphic velocity field 
+                            [and JSON file of shooting parameters]
+                            If no JSON file, assume stationary velocity.
    
     Each of these transforms can be inverted by prepending 'i' in the
     short form or appending '-inverse' in the long form:
@@ -24,7 +26,7 @@ usage:
     -t, --target            Defines the target space.
                             If not provided, minimal reslicing is performed.
     -o, --output            Name of the output file (default: '*.resliced*')
-    -i, --interpolation     Interpolation order (1)
+    -i, --interpolation     Interpolation order. Use `l` for labels. (1)
     -p, --prefilter         Apply spline prefilter (yes)
     -b, --bound             Boundary conditions (dct2)
     -x, --extrapolate       Extrapolate out-of-bounds data (no)
@@ -72,6 +74,8 @@ def parse_transform(args, options):
 
     cli.check_next_isvalue(args, tag)
     opt.file, *args = args
+    if isinstance(opt, struct.Velocity) and cli.next_isvalue(args):
+        opt.json, *args = args
 
     while cli.next_istag(args):
         tag, *args = args
@@ -129,7 +133,12 @@ def parse(args):
         elif tag in ('-i', '-inter', '--interpolation'):
             cli.check_next_isvalue(args, tag)
             options.interpolation, *args = args
-            options.interpolation = int(options.interpolation)
+            try:
+                options.interpolation = int(options.interpolation)
+            except ValueError:
+                if options.interpolation[0] != 'l':
+                    raise cli.ParseError('interpolation should be an integer of "l"')
+                options.interpolation = 'l'
         elif tag in ('-b', '-bnd', '--bound'):
             cli.check_next_isvalue(args, tag)
             options.bound, *args = args

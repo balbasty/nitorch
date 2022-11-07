@@ -187,7 +187,7 @@ def _jhj(jac, hess):
     return out
 
 
-def exp_backward(vel, *grad_and_hess, inverse=False, steps=8,
+def exp_backward(vel, *gradhess, inverse=False, steps=8,
                  interpolation='linear', bound='dft', rotate_grad=False):
     """Backward pass of SVF exponentiation.
 
@@ -237,10 +237,9 @@ def exp_backward(vel, *grad_and_hess, inverse=False, steps=8,
         Approximate (block diagonal) Hessian with respect to the SVF
 
     """
-    has_hess = len(grad_and_hess) > 1
-    grad, *hess = grad_and_hess
-    hess = hess[0] if hess else None
-    del grad_and_hess
+    grad, *gradhess = gradhess
+    has_hess = len(gradhess) > 0
+    hess = gradhess[0] if has_hess else None
 
     opt = dict(bound=bound, interpolation=interpolation)
     dim = vel.shape[-1]
@@ -262,6 +261,14 @@ def exp_backward(vel, *grad_and_hess, inverse=False, steps=8,
 
     vel /= (-1 if not inverse else 1) * (2**steps)
     jac = grid_jacobian(vel, bound=bound, type='disp')
+
+    # rotate gradient a bit so that when steps == 0, we get the same
+    # gradients as the smalldef case
+    ijac = 2 * torch.eye(dim, dtype=jac.dtype, device=jac.device) - jac
+    ijac = ijac.transpose(-1, -2).inverse()
+    grad = linalg.matvec(ijac, grad)
+    del ijac
+
     for _ in range(steps):
         det = jac.det()
         jac = jac.transpose(-1, -2)

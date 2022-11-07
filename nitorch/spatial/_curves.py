@@ -111,6 +111,19 @@ class BSplineCurve:
             self.coeff_radius = spline_coeff(radius, interpolation=self.order,
                                              bound=self.bound, dim=0)
 
+    def to(self, *args, **kwargs):
+        self.waypoints = self.waypoints.to(*args, **kwargs)
+        self.coeff = self.coeff.to(*args, **kwargs)
+        self.radius = self.radius.to(*args, **kwargs)
+        self.coeff_radius = self.coeff_radius.to(*args, **kwargs)
+        return self
+
+    def cpu(self):
+        return self.to('cpu')
+
+    def cuda(self):
+        return self.to('cuda')
+
     def update_waypoints(self):
         """Convert coefficients into waypoints"""
         t = torch.linspace(0, 1, len(self.coeff), **utils.backend(self.coeff))
@@ -182,7 +195,7 @@ class BSplineCurve:
         # convert (0, 1) to (0, n)
         shape = t.shape
         t = t.flatten()
-        t = t.clamp(0, 1) * (len(self.waypoints) - 1)
+        t = t.clamp(0, 1) * (len(self.coeff_radius) - 1)
 
         # interpolate
         y = self.coeff_radius                 # [K]
@@ -253,15 +266,19 @@ class BSplineCurve:
         return y
 
 
-def min_dist(x, s, max_iter=2**16, tol=1e-6, steps=100):
+def min_dist_table(x, s, steps=None):
     """Compute the minimum distance from a (set of) point(s) to a curve.
+
+    This function performs a global search across a list of values
 
     Parameters
     ----------
-    x : (..., dim) tensor
+    x : (*shape, dim) tensor
         Coordinates
     s : BSplineCurve
         Parameterized curve
+    steps : int or sequence, default=max(x.shape)
+        Number of values evaluated, or explicit list of values to evaluate.
 
     Returns
     -------
@@ -271,70 +288,256 @@ def min_dist(x, s, max_iter=2**16, tol=1e-6, steps=100):
         Minimum distance between each point and the curve
 
     """
+    @torch.jit.script
+    def dot(x, y):
+        return x[..., None, :].matmul(y[..., :,  None])[..., 0, 0]
+
+    def mind_fast(x, xref, tref, veryfast=False):
+        x = x.unsqueeze(-2)
+        d = dot(xref, x).mul_(-2).add_(dot(xref, xref))
+        d, t = d.min(-1)
+        t = tref[t]
+        if not veryfast:
+            d += dot(x, x)
+        return t, d
+
+    def mind(x, all_x, all_t, chunk=16):
+        t = torch.zeros_like(x[..., 0])
+        d = torch.full_like(x[..., 0], float('inf'))
+        nchunks = int(pymath.ceil(len(all_x) / chunk))
+        for c in range(nchunks):
+            t1 = all_t[c*chunk:(c+1)*chunk]
+            x1 = all_x[c*chunk:(c+1)*chunk]
+            t1, d1 = mind_fast(x, x1, t1, veryfast=True)
+            mask = d1 < d
+            t[mask] = t1[mask]
+            d[mask] = d1[mask]
+            # t = torch.where(d1 < d, t1, t)
+            # d = torch.minimum(d, d1, out=d)
+        d += dot(x, x)
+        d = d.sqrt_()
+        return t, d
+
+    import time
+    tic = time.time()
+
     # initialize using a discrete search
-    all_t = torch.linspace(0, 1, steps, **utils.backend(x))
-    t = x.new_zeros(x.shape[:-1])
-    d = x.new_empty(x.shape[:-1]).fill_(float('inf'))
-    for t1 in all_t:
-        x1 = s.eval_position(t1)
-        d1 = x1 - x
-        d1 = d1.square_().sum(-1).sqrt_()
-        t = torch.where(d1 < d, t1, t)
-        d = torch.min(d, d1)
+    if steps is None:
+        length = s.waypoints[1:] - s.waypoints[:-1]
+        length = dot(length, length).sqrt_().sum()
+        steps = max(3, (length / 2).ceil().int().item())
+    if isinstance(steps, int):
+        all_t = torch.linspace(0, 1, steps, **utils.backend(x))
+    else:
+        all_t = utils.make_vector(steps, **utils.backend(x))
+    all_x = torch.stack([s.eval_position(t1) for t1 in all_t])
+    t, d = mind(x, all_x, all_t)
+
+    tic = time.time() - tic
+    print('table', tic)
+    return t, d.sqrt_()
+
+
+def min_dist_quad(x, s, max_iter=16, tol=1e-3, step=0.01,
+                  init=None, init_kwargs=None):
+    """Compute the minimum distance from a (set of) point(s) to a curve.
+
+    This function uses quadratic optimization to estimate the distance map.
+
+    Parameters
+    ----------
+    x : (*shape, dim) tensor
+        Coordinates
+    s : BSplineCurve
+        Parameterized curve
+    max_iter : int, default=2**16
+        Maximum number of iterations
+    tol : float, default=1e-6
+        Tolerance for early stopping
+    step : float, default=0.1
+        Step around the initial value, used to fit the first quadratic curve.
+    init : (*shape) tensor or 'table', default='table'
+        Initial guess for `t`.
+        If 'table', initialize using a table search.
+
+    Returns
+    -------
+    t : (*shape) tensor
+        Coordinate of the closest point
+    d : (*shape) tensor
+        Minimum distance between each point and the curve
+
+    """
+    @torch.jit.script
+    def dot(x, y):
+        return x[..., None, :].matmul(y[..., :,  None])[..., 0, 0]
+
+    def dist(t):
+        d = s.eval_position(t).sub_(x)
+        d = dot(d, d)
+        return d
+
+    if init is None:
+        # initialize using a discrete search
+        t, _ = min_dist_table(x, s, **(init_kwargs or {}))
+    else:
+        t = init.clone()
+
+    import time
+    tic = time.time()
+
+    brent = Brent(tol=tol, max_iter=max_iter, step=step)
+    t, d = brent.fit(t, dist)
+
+    tic = time.time() - tic
+    print('quad', tic)
+    return t, d.sqrt_()
+
+
+def min_dist_gn(x, s, max_iter=16, tol=1e-3, init=None, init_kwargs=None):
+    """Compute the minimum distance from a (set of) point(s) to a curve.
+
+    This function uses Gauss-Newton optimization to estimate the distance map.
+
+    Parameters
+    ----------
+    x : (*shape, dim) tensor
+        Coordinates
+    s : BSplineCurve
+        Parameterized curve
+    max_iter : int, default=2**16
+        Maximum number of iterations
+    tol : float, default=1e-6
+        Tolerance for early stopping
+    init : (*shape) tensor or {'table', 'quad'}, default='table'
+        Initial guess for `t`.
+        If 'table', initialize using a table search.
+        If 'quad', initialize using a quadratic optimizer.
+
+    Returns
+    -------
+    t : (*shape) tensor
+        Coordinate of the closest point
+    d : (*shape) tensor
+        Minimum distance between each point and the curve
+
+    """
+    if init is None or init == 'quad':
+        # initialize using a quadratic search
+        t, d = min_dist_quad(x, s, **(init_kwargs or {}))
+        d = d.square_()
+    elif init == 'table':
+        # initialize using a discrete search
+        t, d = min_dist_table(x, s, **(init_kwargs or {}))
+        d = d.square_()
+    else:
+        t = init.clone()
+        d = s.eval_position(t) - x
+        d = d.square_().sum(-1)
+
+    import time
+    tic = time.time()
 
     # Fine tune using Gauss-Newton optimization
-    nll = d.square_().sum()
-    # d = s.eval_position(t).sub_(x)
-    for n_iter in range(max_iter):
+    nll = d.sum(-1)
+    # print(f'{0:03d} {nll.sum().item():12.6g}')
+    for n_iter in range(1, max_iter+1):
         # compute the distance between x and s(t) + gradients
         d, g = s.eval_grad_position(t)
         d.sub_(x)
-        g = linalg.dot(g, d)
         h = linalg.dot(g, g)
+        g = linalg.dot(g, d)
         h.add_(1e-3)
         g.div_(h)
 
         # Perform GN step (with line search)
-        # TODO: I could get rid of the line search
-        armijo = 1
         t0 = t.clone()
         nll0 = nll
-        success = False
+        armijo = 1
+        success = torch.zeros_like(t, dtype=torch.bool)
         for n_ls in range(12):
-            t = torch.sub(t0, g, alpha=armijo, out=t)
-            t.clamp_(0, 1)
+            t = torch.where(success, t, t0 - armijo * g).clamp_(0, 1)
             d = s.eval_position(t).sub_(x)
-            nll = d.square().sum(dtype=torch.double)
-            if nll < nll0:
-                success = True
+            nll = d.square().sum(-1)
+            success = success.logical_or_(nll < nll0)
+            if success.all():
                 break
             armijo /= 2
-        if not success:
-            t = t0
+        t = torch.where(success, t, t0)
+        if not success.any():
             break
 
-        # print(n_iter, nll.item(), (nll0 - nll)/t.numel())
-        if (nll0 - nll) < tol * t.numel():
+        # print(f'{n_iter:03d} '
+        #       f'{nll.sum().item()/nll.numel():12.6g} '
+        #       f'{(nll0 - nll).sum().item()/t.numel():6.3g} ')
+        if (nll0 - nll).sum() < tol * t.numel():
             break
 
     d = s.eval_position(t).sub_(x)
     d = d.square_().sum(-1).sqrt_()
+
+    tic = time.time() - tic
+    print('gn', tic)
     return t, d
 
 
-def dist_to_prob(d, r, tiny=0):
+def min_dist(x, s, method='gn', **kwargs):
+    """Compute the minimum distance from a (set of) point(s) to a curve.
+
+    Parameters
+    ----------
+    x : (*shape, dim) tensor
+        Coordinates
+    s : BSplineCurve
+        Parameterized curve
+    method : {'table', 'quad', 'gn}, default='gn'
+        If 'table', use a table search.
+        If 'quad', use a quadratic optimizer (Brent).
+        If 'gn', use a Gauss-Newton optimizer
+
+    Returns
+    -------
+    t : (*shape) tensor
+        Coordinate of the closest point
+    d : (*shape) tensor
+        Minimum distance between each point and the curve
+
+    References
+    ----------
+    ..[1]   "Robust and efficient computation of the closest point on a
+            spline curve"
+            Hongling Wang, Joseph Kearney, Kendall Atkinson
+            Proc. 5th International Conference on Curves and Surfaces (2002)
+    """
+    method = method[0].lower()
+    if method == 'g':
+        return min_dist_gn(x, s, **kwargs)
+    elif method == 'q':
+        return min_dist_quad(x, s, **kwargs)
+    else:
+        return min_dist_table(x, s, **kwargs)
+
+
+def dist_to_prob(d, r, mode='gaussian', tiny=0):
     if torch.is_tensor(d):
         d = d.clone()
     if torch.is_tensor(r):
         r = r.clone()
-    return dist_to_prob_(d, r, tiny)
+    return dist_to_prob_(d, r, mode, tiny)
 
 
-def dist_to_prob_(d, r, tiny=0):
+def dist_to_prob_(d, r, mode='gaussian', tiny=0):
+    mode = mode.lower()
     d = torch.as_tensor(d)
-    r = radius_to_prec_(r)
-    d.square_().mul_(r).mul_(-0.5)
-    d.exp_()
+    if mode[0] == 'g':
+        r = radius_to_prec_(r)
+        d.square_().mul_(r).mul_(-0.5).exp_()
+    elif mode[0] == 'c':
+        mask = (d - r).abs() < 0.5
+        blend = (d - r).add_(0.5).mul_(pymath.pi/2).cos_()
+        d = torch.where(mask, blend, (d < r).to(blend))
+    else:
+        raise ValueError('Unknown model', mode)
     if tiny:
         d.mul_(1-2*tiny).add_(tiny)
     return d
@@ -357,7 +560,7 @@ def radius_to_prec_(r):
     return r
 
 
-def draw_curve(shape, s, mode='gaussian', tiny=0, **kwargs):
+def draw_curve(shape, s, mode='cosine', tiny=0, **kwargs):
     """Draw a BSpline curve
 
     Parameters
@@ -378,10 +581,10 @@ def draw_curve(shape, s, mode='gaussian', tiny=0, **kwargs):
     if mode[0].lower() == 'b':
         return d <= r
     else:
-        return dist_to_prob(d, r, tiny)
+        return dist_to_prob(d, r, mode, tiny)
 
 
-def draw_curves(shape, s, mode='gaussian', tiny=0, **kwargs):
+def draw_curves(shape, curves, mode='cosine', fast=0, **kwargs):
     """Draw multiple BSpline curves
 
     Parameters
@@ -389,39 +592,142 @@ def draw_curves(shape, s, mode='gaussian', tiny=0, **kwargs):
     shape : list[int]
     s : list[BSplineCurve]
     mode : {'binary', 'gaussian'}
+    fast : float, default=0
 
     Returns
     -------
     x : (*shape) tensor
         Drawn curve
+    lab : (*shape) tensor[int]
+        Label of closest curve
 
     """
-    s = list(s)
-    x = identity_grid(shape, **utils.backend(s[0].waypoints))
-    n = len(s)
-    tiny = tiny / n
-    if mode[0].lower() == 'b':
-        s1 = s.pop(0)
-        t, d = min_dist(x, s1, **kwargs)
-        r = s1.eval_radius(t)
-        c = d <= r
-        while s:
-            s1 = s.pop(0)
-            t, d = min_dist(x, s1, **kwargs)
-            r = s1.eval_radius(t)
-            c.bitwise_or_(d <= r)
+    mode = mode[0].lower()
+    if mode == 'b':
+        return draw_curves_binary(shape, curves, fast, **kwargs)
     else:
-        s1 = s.pop(0)
-        t, d = min_dist(x, s1, **kwargs)
-        r = s1.eval_radius(t)
-        c = dist_to_prob(d, r, tiny).neg_().add_(1)
-        while s:
-            s1 = s.pop(0)
-            t, d = min_dist(x, s1, **kwargs)
-            r = s1.eval_radius(t)
-            c.mul_(dist_to_prob(d, r, tiny).neg_().add_(1))
-        c = c.neg_().add_(1)
-    return c
+        return draw_curves_prob(shape, curves, fast, mode, **kwargs)
+
+
+def draw_curves_prob(shape, curves, fast=0, mode='cosine', **kwargs):
+    if fast:
+        return draw_curves_prob_fast(shape, curves, fast, mode, **kwargs)
+
+    curves = list(curves)
+    locations = identity_grid(shape, **utils.backend(curves[0].waypoints))
+    label = locations.new_zeros(shape, dtype=torch.long)
+    sum_prob = locations.new_ones(shape)
+    max_prob = locations.new_zeros(shape)
+
+    count = 0
+    while curves:
+        curve = curves.pop(0)
+        count += 1
+        time, dist = min_dist(locations, curve, **kwargs)
+        radius = curve.eval_radius(time)
+        prob = dist_to_prob(dist, radius, mode)
+        label.masked_fill_(prob > max_prob, count)
+        max_prob = torch.maximum(max_prob, prob)
+        sum_prob *= prob.neg_().add_(1)  # probability of no vessel
+    sum_prob = sum_prob.neg_().add_(1)   # probability of at least one vessel
+
+    return sum_prob, label
+
+
+def draw_curves_prob_fast(shape, curves, threshold, mode='cosine', **kwargs):
+    curves = list(curves)
+    locations = identity_grid(shape, **utils.backend(curves[0].waypoints))
+    label = locations.new_zeros(shape, dtype=torch.long)
+    sum_prob = locations.new_ones(shape)
+    max_prob = locations.new_zeros(shape)
+    prob = locations.new_zeros(shape)
+
+    count = 0
+    ncurves = len(curves)
+    while curves:
+        curve = curves.pop(0)
+        count += 1
+        print(f"{count:03d}/{ncurves:03d}", end='\r')
+
+        if threshold is True:
+            threshold1 = 10 * max(curve.radius)
+        else:
+            threshold1 = threshold
+
+        # initialize distance from table and only process
+        # points that are close enough from the curve
+        time, dist = min_dist_table(locations, curve)
+        mask = dist < threshold1
+        if mask.any():
+            sublocations = locations[mask, :]
+
+            kwargs.setdefault('init_kwargs', {})
+            kwargs['init_kwargs']['init'] = time[mask]
+            time, dist = min_dist(sublocations, curve, **kwargs)
+            radius = curve.eval_radius(time)
+            subprob = dist_to_prob(dist, radius, mode)
+            prob.zero_()
+            prob[mask] = subprob
+
+            label.masked_fill_(prob > max_prob, count)
+            max_prob = torch.maximum(max_prob, prob)
+            sum_prob *= prob.neg_().add_(1)  # probability of no curve
+    sum_prob = sum_prob.neg_().add_(1)   # probability of at least one curve
+
+    print('')
+    return sum_prob, label
+
+
+def draw_curves_binary(shape, curves, fast=0, **kwargs):
+    if fast:
+        return draw_curves_binary_fast(shape, curves, fast, **kwargs)
+
+    curves = list(curves)
+    locations = identity_grid(shape, **utils.backend(curves[0].waypoints))
+    label = locations.new_zeros(shape, dtype=torch.long)
+
+    count = 0
+    while curves:
+        curve = curves.pop(0)
+        count += 1
+        time, dist = min_dist(locations, curve, **kwargs)
+        radius = curve.eval_radius(time)
+        is_vessel = dist <= radius
+        label.masked_fill_(is_vessel, count)
+
+    return label > 0, label
+
+
+def draw_curves_binary_fast(shape, curves, threshold, **kwargs):
+    curves = list(curves)
+    locations = identity_grid(shape, **utils.backend(curves[0].waypoints))
+    label = locations.new_zeros(shape, dtype=torch.long)
+
+    count = label.new_zeros([])
+    while curves:
+        curve = curves.pop(0)
+        count += 1
+
+        if threshold is True:
+            threshold1 = 10 * max(curve.radius)
+        else:
+            threshold1 = threshold
+
+        # initialize distance from table and only process
+        # points that are close enough from the curve
+        time, dist = min_dist_table(locations, curve)
+        mask = dist < threshold1
+        if mask.any():
+            sublocations = locations[mask, :]
+
+            kwargs.setdefault('init_kwargs', {})
+            kwargs['init_kwargs']['init'] = time[mask]
+            time, dist = min_dist(sublocations, curve, **kwargs)
+            radius = curve.eval_radius(time)
+            is_vessel = dist <= radius
+            label[mask] = torch.where(is_vessel, count, label[mask])
+
+    return label > 0, label
 
 
 def fit_curve_joint(f, s, max_iter=128, tol=1e-8):
@@ -795,7 +1101,7 @@ def fit_curve_cat(f, s, lam=0, gamma=0, vx=1, max_iter=8, tol=1e-8, max_levels=4
                 t, d = min_dist(x, s)
                 r = s.eval_radius(t)
                 r = torch.as_tensor(r, **utils.backend(x))
-                e = dist_to_prob(d, r, TINY)
+                e = dist_to_prob(d, r, tiny=TINY)
                 d = d.square_()
                 nll_prev = nll
                 nll = get_nll(e)
@@ -853,19 +1159,19 @@ def fit_curve_cat(f, s, lam=0, gamma=0, vx=1, max_iter=8, tol=1e-8, max_levels=4
     print(stop-start)
 
 
-def _draw_curves_inv(shape, s, tiny=0):
+def _draw_curves_inv(shape, s, mode='cosine', tiny=0):
     """prod_k (1 - p_k)"""
     s = list(s)
     x = identity_grid(shape, **utils.backend(s[0].waypoints))
     s1 = s.pop(0)
     t, d = min_dist(x, s1)
     r = s1.eval_radius(t)
-    c = dist_to_prob(d, r, tiny=tiny).neg_().add_(1)
+    c = dist_to_prob(d, r, mode, tiny=tiny).neg_().add_(1)
     while s:
         s1 = s.pop(0)
         t, d = min_dist(x, s1)
         r = s1.eval_radius(t)
-        c.mul_(dist_to_prob(d, r, tiny=tiny).neg_().add_(1))
+        c.mul_(dist_to_prob(d, r, mode, tiny=tiny).neg_().add_(1))
     return c
 
 
@@ -947,7 +1253,7 @@ def fit_curves_cat(f, s, vx=1, max_iter=8, tol=1e-8, max_levels=4):
 
                 s0 = s[n_curve]
                 s1 = s[:n_curve] + s[n_curve+1:]
-                ie1 = _draw_curves_inv(f.shape, s1, TINY)
+                ie1 = _draw_curves_inv(f.shape, s1, tiny=TINY)
 
                 for n_iter_position in range(max_iter_position):
 
@@ -955,7 +1261,7 @@ def fit_curves_cat(f, s, vx=1, max_iter=8, tol=1e-8, max_levels=4):
                     p = s0.eval_position(t).sub_(x)  # residuals
                     r = s0.eval_radius(t)
                     r = torch.as_tensor(r, **utils.backend(x))
-                    e0 = dist_to_prob(d, r, TINY)
+                    e0 = dist_to_prob(d, r, tiny=TINY)
                     ome0 = 1 - e0
                     e = 1 - ome0 * ie1
                     nll_prev = nll
@@ -1049,3 +1355,275 @@ def fit_curves_cat(f, s, vx=1, max_iter=8, tol=1e-8, max_levels=4):
 
         stop = time.time()
         print(stop-start)
+
+
+class Brent:
+    """Batched 1D optimizer (derivative-free)"""
+
+    gold = (1 + pymath.sqrt(5))/2
+    igold = 1 - (pymath.sqrt(5) - 1)/2
+    tiny = 1e-8
+
+    def __init__(self, tol=1e-9, max_iter=128, step=0.1):
+        """
+        Parameters
+        ----------
+        tol : float, default=1e-9
+            Tolerance for early stopping
+        max_iter : int, default=128
+            Maximum number of iterations
+        step : float, default=0.1
+            Initial step size used to compute the initial bracket
+        """
+        self.tol = tol
+        self.max_iter = max_iter
+        self.step = step
+
+    def fit(self, init, closure):
+        """
+        Parameters
+        ----------
+        init : tensor
+            Initial estimate of the minimum
+        closure : callable(tensor) -> tensor
+            Function that computes the loss
+
+        Returns
+        -------
+        a : tensor
+            Location of the minimum
+        f : tensor
+            Value of the minimum
+        """
+        bracket = self.bracket(init, closure(init), closure)
+        return self.search_in_bracket(bracket, closure)
+
+    def bracket(self, a0, f0, closure):
+        """Bracket the minimum
+
+        Parameters
+        ----------
+        a0 : Initial parameter
+        f0 : Initial value
+        closure : callable(a) -> evaluate function at `a`
+
+        Returns
+        -------
+        a0, a1, a2, f0, f1, f2
+            (a1, f1) is the current estimate of the minimum location and value
+            a1 is in (a0, a2) or (a2, a0)
+            f1 is lower than both f0 and f2
+        """
+        @torch.jit.script
+        def quad_min(a0, a1, a2, f0, f1, f2):
+            y01 = a0 * a0 - a1 * a1
+            y02 = a0 * a0 - a2 * a2
+            y12 = a1 * a1 - a2 * a2
+            a01 = a0 - a1
+            a02 = a0 - a2
+            a12 = a1 - a2
+            a = (f0 * y12 + f1 * y02 + f2 * y01) / (f0 * a12 + f1 * a02 + f2 * a01)
+            s = f0 / (y01 * y02) + f1 / (y01 * y12) + f2 / (y02 * y12)
+            return a / 2, s
+
+        @torch.jit.script
+        def pre_closure(a0, a1, a2, f0, f1, f2, gold: float):
+            delta0 = a2 - a1
+            delta, s = quad_min(a0, a1, a2, f0, f1, f2)
+            delta = (delta - a1).minimum((1 + gold) * delta0)
+            a = torch.where(s > 0, a1 + delta, a2 + gold * delta0)
+            return a
+
+        @torch.jit.script
+        def post_closure(a, a0, a1, a2, f, f0, f1, f2):
+            # f2 < f1 < f0 so (assuming unicity) the minimum is in
+            # (a1, a2) or (a2, inf)
+            mask0 = f2 < f1
+            mask1 = ((a1 < a) == (a < a2))
+            mask2 = (f < f2) & mask1 & mask0
+            a0, a1 = torch.where(mask2, a1, a0), torch.where(mask2, a, a1)
+            f0, f1 = torch.where(mask2, f1, f0), torch.where(mask2, f, f1)
+            mask2 = (f1 < f) & mask1 & mask0
+            a2 = torch.where(mask2, a, a2)
+            f2 = torch.where(mask2, f, f2)
+            # shift by one point
+            mask2 = mask0 & ~mask1
+            a0, a1, a2 = (torch.where(mask2, a1, a0),
+                          torch.where(mask2, a2, a1),
+                          torch.where(mask2, a, a2))
+            f0, f1, f2 = (torch.where(mask2, f1, f0),
+                          torch.where(mask2, f2, f1),
+                          torch.where(mask2, f, f2))
+            return a0, a1, a2, f0, f1, f2
+
+        a1 = a0 + self.step
+        f1 = closure(a1)
+
+        # sort such that f1 < f0
+        mask = f1 > f0
+        a0, a1 = torch.where(mask, a1, a0), torch.where(mask, a0, a1)
+        f0, f1 = torch.where(mask, f1, f0), torch.where(mask, f0, f1)
+
+        a2 = (a1 - a0).mul_(self.gold).add_(a1)
+        f2 = closure(a2)
+
+        for n_iter in range(self.max_iter):
+            if (f1 < f2).all():
+                break
+
+            # fit quadratic polynomial
+            a = pre_closure(a0, a1, a2, f0, f1, f2, float(self.gold))
+
+            # evaluate new point
+            f = closure(a)
+
+            # check progress and update bracket
+            a0, a1, a2, f0, f1, f2 = post_closure(a, a0, a1, a2, f, f0, f1, f2)
+
+        return a0, a1, a2, f0, f1, f2
+
+    def search_in_bracket(self, bracket, closure):
+        """
+
+        Parameters
+        ----------
+        bracket : tuple[tensor] = (a0, a1, a2, f0, f1, f2)
+            Estimate (a1, f1) and bracket [(a0, f0), (a2, f2)] returned
+            by the `bracket` function.
+        closure : callable(a) -> f
+            Function that computes the objective function.
+
+        Returns
+        -------
+        a : tensor
+            Location of the minimum
+        f : tensor
+            Value of the minimum
+
+        """
+
+        @torch.jit.script
+        def quad_min(a0, a1, a2, f0, f1, f2):
+            """
+            Fit a quadratic to three points (a0, f0), (a1, f1), (a2, f2)
+            and return the location of its minimum, and its quadratic factor
+            """
+            a00, a11, a22 = a0 * a0, a1 * a1, a2 * a2
+            y01, y02, y12 = a00 - a11, a00 - a22, a11 - a22
+            a01, a02, a12 = a0 - a1, a0 - a2, a1 - a2
+            a = f0 * y12 + f1 * y02 + f2 * y01
+            a = 0.5 * a / (f0 * a12 + f1 * a02 + f2 * a01)
+            s = f0 / (y01 * y02) + f1 / (y01 * y12) + f2 / (y02 * y12)
+            return a, s
+
+        @torch.jit.script
+        def sort(a0, a1, a2, f0, f1, f2):
+            """
+            Sort the pairs (a0, f0), (a1, f1), (a2, f2) such that
+            f0 < f1 < f2
+            """
+            mask = f2 < f1
+            a1, a2 = torch.where(mask, a2, a1), torch.where(mask, a1, a2)
+            f1, f2 = torch.where(mask, f2, f1), torch.where(mask, f1, f2)
+            mask = f1 < f0
+            a0, a1 = torch.where(mask, a1, a0), torch.where(mask, a0, a1)
+            f0, f1 = torch.where(mask, f1, f0), torch.where(mask, f0, f1)
+            mask = f2 < f1
+            a1, a2 = torch.where(mask, a2, a1), torch.where(mask, a1, a2)
+            f1, f2 = torch.where(mask, f2, f1), torch.where(mask, f1, f2)
+            return a0, a1, a2, f0, f1, f2
+
+        @torch.jit.script
+        def get_mask_stop(a0, b0, b1, tol: float):
+            """Mask of elements that have converged"""
+            return ((a0 - 0.5 * (b0 + b1)).abs() + 0.5 * (b1 - b0)) <= 2 * tol
+
+        @torch.jit.script
+        def get_mask_nomin(a0, b0, b1, s, d, d1, tiny):
+            """Mask of elements that use bisection rather than interpolation"""
+            # do not use extremum of the quadratic fit if:
+            # - it is a maximum (s < 0), or
+            # - jump is larger than half the last jump, or
+            # - new point is too close from brackets
+            a = a0 + d
+            return (s < 0) | (d.abs() > d1.abs()/2) | ~((b0 + tiny < a) & (a < b1 - tiny))
+
+        @torch.jit.script
+        def get_side(a0, b0, b1):
+            """Side of the bisection"""
+            return a0 > 0.5 * (b0 + b1)
+
+        @torch.jit.script
+        def get_tiny(a0, tiny: float):
+            return tiny * (1 + 2 * a0.abs())
+
+        @torch.jit.script
+        def pre_closure(a0, a1, a2, f0, f1, f2, b0, b1, d1, igold: float, tiny: float):
+            # fit quadratic polynomial
+            d, s = quad_min(a0, a1, a2, f0, f1, f2)
+            d = d - a0
+
+            # if quad has a minimum -> new point = minimum      (interpolation)
+            # else                  -> new point = golden ratio (bisection)
+            tiny1 = get_tiny(a0, tiny)
+            mask_nomin = get_mask_nomin(a0, b0, b1, s, d, d1, tiny1)
+            mask_side = get_side(a0, b0, b1)
+            bisection = torch.where(mask_side, b0 - a0, b1 - a0) * igold
+            d = torch.where(mask_nomin, bisection, d)
+            a = d + a0
+            return a, d
+
+        @torch.jit.script
+        def post_closure(a, a0, a1, a2, f, f0, f1, f2, b0, b1):
+            mask = f < f0  # f < f0 < f1 < f2
+            mask2 = a < a0
+            b0, b1 = (torch.where(mask & ~mask2, a0, b0),
+                      torch.where(mask & mask2, a0, b1))
+            a0, a1, a2 = (torch.where(mask, a, a0),
+                          torch.where(mask, a0, a1),
+                          torch.where(mask, a1, a2))
+            f0, f1, f2 = (torch.where(mask, f, f0),
+                          torch.where(mask, f0, f1),
+                          torch.where(mask, f1, f2))
+
+            mask = f0 < f
+            b0, b1 = (torch.where(mask & mask2, a, b0),
+                      torch.where(mask & ~mask2, a, b1))
+            mask = mask & (f < f1)          # f0 < f < f1 < f2
+            a1, a2 = torch.where(mask, a, a1), torch.where(mask, a1, a2)
+            f1, f2 = torch.where(mask, f, f1), torch.where(mask, f1, f2)
+            mask = (f1 < f) & (f < f2)      # f0 < f1 < f < f2
+            a2 = torch.where(mask, a, a2)
+            f2 = torch.where(mask, f, f2)
+            return a0, a1, a2, f0, f1, f2, b0, b1
+
+        b0, b1 = bracket[0], bracket[2]
+        mask = b1 < b0
+        b0, b1 = torch.where(mask, b1, b0), torch.where(mask, b0, b1)
+        a0, a1, a2, f0, f1, f2 = sort(*bracket)  # sort by values
+
+        d = torch.full_like(a0, float('inf'))
+        d0 = d.clone()
+        for n_iter in range(1, self.max_iter+1):
+
+            mask_stop = get_mask_stop(a0, b0, b1, float(self.tol))
+            if mask_stop.all():
+                break
+
+            # d1 = delta from two iterations ago
+            d1, d0 = d0, d
+
+            # fit quadratic polynomial
+            # if quad has a minimum -> new point = minimum      (interpolation)
+            # else                  -> new point = golden ratio (bisection)
+            a, d = pre_closure(a0, a1, a2, f0, f1, f2, b0, b1, d1,
+                               float(self.igold), float(self.tiny))
+
+            # evaluate new point
+            f = closure(a)
+
+            # update bracket
+            a0, a1, a2, f0, f1, f2, b0, b1 = post_closure(
+                a, a0, a1, a2, f, f0, f1, f2, b0, b1)
+
+        return a0, f0

@@ -116,7 +116,6 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
     hess : (..., K, *spatial) tensor
 
     """
-
     hist = JointHistCount(bins=bins, order=order, fwhm=fwhm)
 
     shape = moving.shape
@@ -127,7 +126,7 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
     if mask is not None:
         mask = mask.to(fixed.device)
         mask = mask.reshape([*mask.shape[:-dim], -1])
-        nvox = mask.sum(-1)[..., None]  # shape: [*batch, 1, 1]
+        nvox = mask.sum(-1, keepdim=True)  # shape: [*batch, 1, 1]
     else:
         nvox = pyutils.prod(shape[-dim:])
     del moving, fixed
@@ -138,7 +137,7 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
     else:
         h, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
     h = h.clamp(1e-8)
-    h /= nvox
+    h /= (nvox.unsqueeze(-1) if torch.is_tensor(nvox) else nvox)
 
     pxy = h
     px = pxy.sum(-1, keepdim=True)

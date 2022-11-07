@@ -1,6 +1,7 @@
 from .base import SecondOrder
 from nitorch.core import linalg
 from nitorch import spatial
+import torch
 
 
 class SymGaussNewton(SecondOrder):
@@ -106,6 +107,9 @@ class GridGaussNewton(SecondOrder):
             hess[..., :dim] += self.marquardt
         return grad, hess
 
+    def repr_keys(self):
+        return super().repr_keys() + ['fmg']
+
     def __repr__(self):
         fmg = self.fmg or 'False'
         return f'{type(self).__name__}(lr={self.lr}, fmg={fmg})'
@@ -121,6 +125,7 @@ class GridCG(GridGaussNewton):
         prm = self._get_prm()
         solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
         step = solver(hess, grad, optim='cg', **prm)
+        step.masked_fill_(torch.isfinite(step).bitwise_not_(), 0)
         step.mul_(-self.lr)
         return step
 
@@ -128,11 +133,12 @@ class GridCG(GridGaussNewton):
 class GridRelax(GridGaussNewton):
     """Gauss-Newton on displacement grids using Relaxation"""
 
-    def step(self, grad, hess):
+    def search_direction(self, grad, hess):
         grad, hess = self._add_marquardt(grad, hess)
         prm = self._get_prm()
         solver = spatial.solve_grid_fmg if self.fmg else spatial.solve_grid_sym
         step = solver(hess, grad, optim='relax', **prm)
+        step.masked_fill_(torch.isfinite(step).bitwise_not_(), 0)
         step.mul_(-self.lr)
         return step
 
@@ -196,6 +202,7 @@ class FieldCG(FieldGaussNewton):
         prm = self._get_prm()
         solver = spatial.solve_field_fmg if self.fmg else spatial.solve_field_sym
         step = solver(hess, grad, optim='cg', **prm)
+        step.masked_fill_(torch.isfinite(step).bitwise_not_(), 0)
         step.mul_(-self.lr)
         return step
 
@@ -208,5 +215,6 @@ class FieldRelax(FieldGaussNewton):
         prm = self._get_prm()
         solver = spatial.solve_field_fmg if self.fmg else spatial.solve_field_sym
         step = solver(hess, grad, optim='relax', **prm)
+        step.masked_fill_(torch.isfinite(step).bitwise_not_(), 0)
         step.mul_(-self.lr)
         return step

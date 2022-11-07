@@ -4,37 +4,6 @@ from ._conv import conv
 import itertools
 
 
-# def _distance(x, dim=None):
-#     # Work in progress
-#     #
-#     # Reference:
-#     # "New sequential exact Euclidean distance transform algorithms based
-#     # on convex analysis", Yves Lucet, Image and Vision Computing (2009)
-#     # http://www.cs.ust.hk/mjg_lib/bibs/DPSu/DPSu.Files/Lucet09.pdf
-#     #
-#     # Implementation
-#     # https://people.ok.ubc.ca/ylucet/CCA/man/whatis.htm
-#
-#     dim = dim or x.dim()
-#     shape = x.shape[-dim:]
-#     sq = identity_grid(shape, device=x.device).square().sum().div_(2)
-#     sq[x] = float('inf')
-#     dist = torch.full_like(sq, float('inf'))
-#
-#     for d in range(-dim, 0):
-#         # make working dimension last
-#         sq0 = utils.movedim(sq, d, -1)
-#         dist0 = utils.movedim(dist, d, -1)
-#         # fusion of two increasing sequences
-#         # https://people.ok.ubc.ca/ylucet/CCA/man/fusion.htm
-#         c = sq0[..., 1:] - sq0[..., :-1]
-#         n = sq0.shape[-1]
-#         for i in range(n):
-#             for j in range(1, n):
-#                 correct = c[..., j-1] <= i <= c[..., j]
-#                 dist0[..., i][correct] = j
-
-
 def connectivity_kernel(dim, conn=1, **backend):
     """Build a connectivity kernel
 

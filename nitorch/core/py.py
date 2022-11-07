@@ -168,6 +168,7 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs) -> Iterable:
         return return_type(input)
 
 
+@functools.wraps(make_sequence, assigned=[])
 def make_list(*args, **kwargs) -> List:
     """Ensure that the input is a list and pad/crop if necessary.
 
@@ -189,7 +190,7 @@ def make_list(*args, **kwargs) -> List:
         Output arguments.
 
     """
-    return [elem for elem in make_sequence(*args, **kwargs)]
+    return list(elem for elem in make_sequence(*args, **kwargs))
 
 
 def ensure_list(x, dim=None):
@@ -210,6 +211,7 @@ def ensure_list(x, dim=None):
     return x
 
 
+@functools.wraps(make_sequence, assigned=[])
 def make_tuple(*args, **kwargs) -> Tuple:
     """Ensure that the input is a tuple and pad/crop if necessary.
 

@@ -1,8 +1,7 @@
 """Linear algebra."""
 import torch
-from . import utils
+from . import utils, py
 from warnings import warn
-from typing import List
 import math
 
 
@@ -10,6 +9,7 @@ import math
 from ._linalg_expm import expm, _expm
 from ._linalg_logm import logm
 from ._linalg_qr import eig_sym, eig_sym_
+from ._linalg_sym import *
 
 
 if hasattr(torch, 'linalg') and hasattr(torch.linalg, 'solve'):
@@ -426,442 +426,307 @@ def is_orthonormal(basis, return_matrix=False):
     return (check, mat) if return_matrix else check
 
 
-def sym_to_full(mat):
-    """Transform a symmetric matrix into a full matrix
-
-    Notes
-    -----
-    Backpropagation works at least for torch >= 1.6
-    It should be checked on earlier versions.
+def trapprox(matvec, shape=None, moments=None, samples=10,
+             method='rademacher', hutchpp=False, **backend):
+    """Stochastic trace approximation (Hutchinson's estimator)
 
     Parameters
     ----------
-    mat : (..., M * (M+1) // 2) tensor
-        A symmetric matrix that is stored in a sparse way.
-        Its elements along the last (flat) dimension are the
-        diagonal elements followed by the flattened upper-half elements.
-        E.g., [a00, a11, aa22, a01, a02, a12]
+    matvec : sparse tensor or callable(tensor) -> tensor
+        Function that computes the matrix-vector product
+    shape : sequence[int]
+        "vector" shape
+    moments : int, default=1
+        Number of moments
+    samples : int, default=10
+        Number of samples
+    method : {'rademacher', 'gaussian'}, default='rademacher'
+        Sampling method
+    hutchpp : bool, default=False
+        Use Hutch++ instead of Hutchinson.
+        /!\ Be aware that it uses more memory.
 
     Returns
     -------
-    full : (..., M, M) tensor
-        Full matrix
+    trace : ([moments],) tensor
+
+    Reference
+    ---------
+    ..[1]   "A stochastic estimator ofthe trace of the influence matrix
+            for Laplacian smooth-ing  splines"
+            Hutchinson
+            Communications in  Statistics - Simulation and Computation (1990)
+    ..[2]   "Hutch++: Optimal Stochastic Trace Estimation"
+            Meyer, Musco, Musco, Woodruff
+            Proc SIAM Symp Simplicity Algorithms (2021)
 
     """
-
-    mat = torch.as_tensor(mat)
-    mat = utils.movedim(mat, -1, 0)
-    nb_prm = int((math.sqrt(1 + 8 * len(mat)) - 1)//2)
-    if not mat.requires_grad:
-        full = mat.new_empty([nb_prm, nb_prm, *mat.shape[1:]])
-        i = 0
-        for i in range(nb_prm):
-            full[i, i] = mat[i]
-        count = i + 1
-        for i in range(nb_prm):
-            for j in range(i+1, nb_prm):
-                full[i, j] = full[j, i] = mat[count]
-                count += 1
+    if torch.is_tensor(matvec):
+        mat = matvec
+        matvec = lambda x: mat.matmul(x)
+        backend.setdefault('dtype', mat.dtype)
+        backend.setdefault('device', mat.device)
+        shape = [*mat.shape[:-2], mat.shape[-1]]
     else:
-        full = [[None] * nb_prm for _ in range(nb_prm)]
-        i = 0
-        for i in range(nb_prm):
-            full[i][i] = mat[i]
-        count = i + 1
-        for i in range(nb_prm):
-            for j in range(i+1, nb_prm):
-                full[i][j] = full[j][i] = mat[count]
-                count += 1
-        full = utils.as_tensor(full)
-    return utils.movedim(full, [0, 1], [-2, -1])
+        backend.setdefault('dtype', torch.get_default_dtype())
+        backend.setdefault('device', torch.device('cpu'))
+    no_moments = moments is None
+    moments = moments or 1
 
+    def rademacher(m=0):
+        shape1 = [m, *shape] if m else shape
+        x = torch.bernoulli(torch.full([], 0.5, **backend).expand(shape1))
+        x.sub_(0.5).mul_(2)
+        return x
 
-@torch.jit.script
-def _sym_matvec2(mat, vec):
-    mm = mat[:2] * vec
-    mm[0].addcmul_(mat[2], vec[1])
-    mm[1].addcmul_(mat[2], vec[0])
-    return mm
+    def gaussian(m=0):
+        shape1 = [m, *shape] if m else shape
+        return torch.randn(shape1, **backend)
 
+    samp = rademacher if method[0].lower() == 'r' else gaussian
 
-@torch.jit.script
-def _sym_matvec3(mat, vec):
-    mm = mat[:3] * vec
-    mm[0].addcmul_(mat[3], vec[1]).addcmul_(mat[4], vec[2])
-    mm[1].addcmul_(mat[3], vec[0]).addcmul_(mat[5], vec[2])
-    mm[2].addcmul_(mat[4], vec[0]).addcmul_(mat[5], vec[1])
-    return mm
+    if hutchpp:
+        samples = int(math.ceil(samples/3))
 
+        def matvecpp(x):
+            y = torch.empty_like(x)
+            for j in range(samples):
+                y[j] = matvec(x[j])
+            return y
 
-@torch.jit.script
-def _sym_matvec4(mat, vec):
-    mm = mat[:4] * vec
-    mm[0].addcmul_(mat[4], vec[1]) \
-        .addcmul_(mat[5], vec[2]) \
-        .addcmul_(mat[6], vec[3])
-    mm[1].addcmul_(mat[4], vec[0]) \
-        .addcmul_(mat[7], vec[2]) \
-        .addcmul_(mat[8], vec[3])
-    mm[2].addcmul_(mat[5], vec[0]) \
-        .addcmul_(mat[7], vec[1]) \
-        .addcmul_(mat[9], vec[3])
-    mm[3].addcmul_(mat[6], vec[0]) \
-        .addcmul_(mat[8], vec[1]) \
-        .addcmul_(mat[9], vec[2])
-    return mm
+        def dotpp(x, y):
+            d = 0
+            for j in range(samples):
+                d += x[j].flatten().dot(y[j].flatten())
+            return d
 
+        def outerpp(x, y):
+            z = x.new_empty([samples, samples])
+            for j in range(samples):
+                for k in range(samples):
+                    z[j, k] = x[j].flatten().dot(y[k].flatten())
+            return z
 
-@torch.jit.script
-def _sym_matvecn(mat, vec, nb_prm: int):
-    mm = mat[:nb_prm] * vec
-    c = nb_prm
-    for i in range(nb_prm):
-        for j in range(i+1, nb_prm):
-            mm[i].addcmul_(mat[c], vec[j])
-            mm[j].addcmul_(mat[c], vec[i])
-            c += 1
-    return mm
+        def mmpp(x, y):
+            z = torch.zeros_like(x)
+            for j in range(samples):
+                for k in range(samples):
+                    z[j].addcmul_(x[k], y[k, j])
+            return z
 
+        t = torch.zeros([moments], **backend)
+        q, g = samp(samples), samp(samples)
+        q = torch.qr(matvecpp(q).T, some=True)[0].T
+        g -= mmpp(q, outerpp(q, g))
+        mq, mg = q, g
+        for j in range(moments):
+            mq = matvecpp(mq)
+            mg = matvecpp(mg)
+            t[j] = dotpp(q, mq) + dotpp(g, mg) / samples
 
-def sym_matvec(mat, vec):
-    """Matrix-vector product with a symmetric matrix
-
-    Parameters
-    ----------
-    mat : (..., M * (M+1) // 2) tensor
-        A symmetric matrix that is stored in a sparse way.
-        Its elements along the last (flat) dimension are the
-        diagonal elements followed by the flattened upper-half elements.
-        E.g., [a00, a11, aa22, a01, a02, a12]
-    vec : (..., M) tensor
-        A vector
-
-    Returns
-    -------
-    matvec : (..., M) tensor
-        The matrix-vector product
-
-    """
-
-    mat, vec = utils.to_max_backend(mat, vec)
-
-    nb_prm = vec.shape[-1]
-    if nb_prm == 1:
-        return mat * vec
-
-    # make the vector dimension first so that the code is less ugly
-    mat = utils.fast_movedim(mat, -1, 0)
-    vec = utils.fast_movedim(vec, -1, 0)
-
-    if nb_prm == 2:
-        mm = _sym_matvec2(mat, vec)
-    elif nb_prm == 3:
-        mm = _sym_matvec3(mat, vec)
-    elif nb_prm == 4:
-        mm = _sym_matvec4(mat, vec)
     else:
-        mm = _sym_matvecn(mat, vec, nb_prm)
+        t = torch.zeros([moments], **backend)
+        for i in range(samples):
+            m = v = samp()
+            for j in range(moments):
+                m = matvec(m)
+                t[j] += m.flatten().dot(v.flatten())
+        t /= samples
 
-    return utils.fast_movedim(mm, 0, -1)
-
-
-def sym_diag(mat):
-    """Diagonal of a symmetric matrix
-
-    Parameters
-    ----------
-    mat : (..., M * (M+1) // 2) tensor
-        A symmetric matrix that is stored in a sparse way.
-        Its elements along the last (flat) dimension are the
-        diagonal elements followed by the flattened upper-half elements.
-        E.g., [a00, a11, aa22, a01, a02, a12]
-
-    Returns
-    -------
-    diag : (..., M) tensor
-        Main diagonal of the matrix
-
-    """
-    mat = torch.as_tensor(mat)
-    nb_prm = int((math.sqrt(1 + 8 * mat.shape[-1]) - 1)//2)
-    return mat[..., :nb_prm]
+    if no_moments:
+        t = t[0]
+    return t
 
 
-@torch.jit.script
-def _square(x):
-    return x * x
-
-
-@torch.jit.script
-def _square_(x):
-    x *= x
-    return x
-
-
-@torch.jit.script
-def _sym_solve2(diag, uppr, vec, shape: List[int]):
-    det = _square(uppr[0]).neg_()
-    det.addcmul_(diag[0], diag[1])
-    res = vec.new_empty(shape)
-    res[0] = diag[1] * vec[0] - uppr[0] * vec[1]
-    res[1] = diag[0] * vec[1] - uppr[0] * vec[0]
-    res /= det
-    return res
-
-
-@torch.jit.script
-def _sym_solve3(diag, uppr, vec, shape: List[int]):
-    det = diag.prod(0) + 2 * uppr.prod(0) \
-        - (diag[0] * _square(uppr[2]) +
-           diag[2] * _square(uppr[0]) +
-           diag[1] * _square(uppr[1]))
-    res = vec.new_empty(shape)
-    res[0] = (diag[1] * diag[2] - _square(uppr[2])) * vec[0] \
-           + (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[1] \
-           + (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[2]
-    res[1] = (uppr[1] * uppr[2] - diag[2] * uppr[0]) * vec[0] \
-           + (diag[0] * diag[2] - _square(uppr[1])) * vec[1] \
-           + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[2]
-    res[2] = (uppr[0] * uppr[2] - diag[1] * uppr[1]) * vec[0] \
-           + (uppr[0] * uppr[1] - diag[0] * uppr[2]) * vec[1] \
-           + (diag[0] * diag[1] - _square(uppr[0])) * vec[2]
-    res /= det
-    return res
-
-
-@torch.jit.script
-def _sym_solve4(diag, uppr, vec, shape: List[int]):
-    det = diag.prod(0) \
-         + (_square(uppr[0] * uppr[5]) +
-            _square(uppr[1] * uppr[4]) +
-            _square(uppr[2] * uppr[3])) + \
-         - 2 * (uppr[0] * uppr[1] * uppr[4] * uppr[5] +
-                uppr[0] * uppr[2] * uppr[3] * uppr[5] +
-                uppr[1] * uppr[2] * uppr[3] * uppr[4]) \
-         + 2 * (diag[0] * uppr[3] * uppr[4] * uppr[5] +
-                diag[1] * uppr[1] * uppr[2] * uppr[5] +
-                diag[2] * uppr[0] * uppr[2] * uppr[4] +
-                diag[3] * uppr[0] * uppr[1] * uppr[3]) \
-         - (diag[0] * diag[1] * _square(uppr[5]) +
-            diag[0] * diag[2] * _square(uppr[4]) +
-            diag[0] * diag[3] * _square(uppr[3]) +
-            diag[1] * diag[2] * _square(uppr[2]) +
-            diag[1] * diag[3] * _square(uppr[1]) +
-            diag[2] * diag[3] * _square(uppr[0]))
-    inv01 = (- diag[2] * diag[3] * uppr[0]
-             + diag[2] * uppr[2] * uppr[4]
-             + diag[3] * uppr[1] * uppr[3]
-             + uppr[0] * _square(uppr[5])
-             - uppr[1] * uppr[4] * uppr[5]
-             - uppr[2] * uppr[3] * uppr[5])
-    inv02 = (- diag[1] * diag[3] * uppr[1]
-             + diag[1] * uppr[2] * uppr[5]
-             + diag[3] * uppr[0] * uppr[3]
-             + uppr[1] * _square(uppr[4])
-             - uppr[0] * uppr[4] * uppr[5]
-             - uppr[2] * uppr[3] * uppr[4])
-    inv03 = (- diag[1] * diag[2] * uppr[2]
-             + diag[1] * uppr[1] * uppr[5]
-             + diag[2] * uppr[0] * uppr[4]
-             + uppr[2] * _square(uppr[3])
-             - uppr[0] * uppr[3] * uppr[5]
-             - uppr[1] * uppr[3] * uppr[4])
-    inv12 = (- diag[0] * diag[3] * uppr[3]
-             + diag[0] * uppr[4] * uppr[5]
-             + diag[3] * uppr[0] * uppr[1]
-             + uppr[3] * _square(uppr[2])
-             - uppr[0] * uppr[2] * uppr[5]
-             - uppr[1] * uppr[2] * uppr[4])
-    inv13 = (- diag[0] * diag[2] * uppr[4]
-             + diag[0] * uppr[3] * uppr[5]
-             + diag[2] * uppr[0] * uppr[2]
-             + uppr[4] * _square(uppr[1])
-             - uppr[0] * uppr[1] * uppr[5]
-             - uppr[1] * uppr[2] * uppr[3])
-    inv23 = (- diag[0] * diag[1] * uppr[5]
-             + diag[0] * uppr[4] * uppr[3]
-             + diag[1] * uppr[1] * uppr[2]
-             + uppr[5] * _square(uppr[0])
-             - uppr[0] * uppr[1] * uppr[4]
-             - uppr[0] * uppr[2] * uppr[3])
-    res = vec.new_empty(shape)
-    res[0] = (diag[1] * diag[2] * diag[3]
-              - diag[1] * _square(uppr[5])
-              - diag[2] * _square(uppr[4])
-              - diag[3] * _square(uppr[3])
-              + 2 * uppr[3] * uppr[4] * uppr[5]) * vec[0]
-    res[0] += inv01 * vec[1]
-    res[0] += inv02 * vec[2]
-    res[0] += inv03 * vec[3]
-    res[1] = (diag[0] * diag[2] * diag[3]
-              - diag[0] * _square(uppr[5])
-              - diag[2] * _square(uppr[2])
-              - diag[3] * _square(uppr[1])
-              + 2 * uppr[1] * uppr[2] * uppr[5]) * vec[1]
-    res[1] += inv01 * vec[0]
-    res[1] += inv12 * vec[2]
-    res[1] += inv13 * vec[3]
-    res[2] = (diag[0] * diag[1] * diag[3]
-              - diag[0] * _square(uppr[4])
-              - diag[1] * _square(uppr[2])
-              - diag[3] * _square(uppr[0])
-              + 2 * uppr[0] * uppr[2] * uppr[4]) * vec[2]
-    res[2] += inv02 * vec[0]
-    res[2] += inv12 * vec[1]
-    res[2] += inv23 * vec[3]
-    res[3] = (diag[0] * diag[1] * diag[2]
-              - diag[0] * _square(uppr[3])
-              - diag[1] * _square(uppr[1])
-              - diag[2] * _square(uppr[0])
-              + 2 * uppr[0] * uppr[1] * uppr[3]) * vec[3]
-    res[3] += inv03 * vec[0]
-    res[3] += inv13 * vec[1]
-    res[3] += inv23 * vec[2]
-    res /= det
-    return res
-
-
-def sym_solve(mat, vec, eps=None):
-    """Left matrix division for sparse symmetric matrices.
-
-    `>>> mat \ vec`
-
-    Warning
-    -------
-    .. Currently, autograd does not work through this function.
-    .. The order of arguments is the inverse of torch.solve
-
-    Notes
-    -----
-    .. Orders up to 4 are implemented in closed-form.
-    .. Orders > 4 use torch's batched implementation but require
-       building the full matrices.
-    .. Backpropagation works at least for torch >= 1.6
-       It should be checked on earlier versions.
+def vbald(matvec, shape=None, upper=None, moments=5, samples=5, mc_samples=64,
+          method='rademacher', **backend):
+    """Variational Bayesian Approximation of Log Determinants
 
     Parameters
     ----------
-    mat : (..., M*(M+1)//2) tensor
-        A symmetric matrix that is stored in a sparse way.
-        Its elements along the last (flat) dimension are the
-        diagonal elements followed by the flattened upper-half elements.
-        E.g., [a00, a11, aa22, a01, a02, a12]
-    vec : (..., M) tensor
-        A vector
-    eps : float or (M,) sequence[float], optional
-        Smoothing term added to the diagonal of `mat`
+    matvec : sparse tensor or callable(tensor) -> tensor
+        Function that computes the matrix-vector product
+    shape : sequence[int]
+        "vector" shape
+    upper : float
+        Upper bound on eigenvalues
+    moments : int, default=1
+        Number of moments
+    samples : int, default=5
+        Number of samples for moment estimation
+    mc_samples : int, default=64
+        Number of samples for Monte Carlo integration
+    method : {'rademacher', 'gaussian'}, default='rademacher'
+        Sampling method
 
     Returns
     -------
-    result : (..., M) tensor
+    logdet : scalar tensor
+
+    Reference
+    ---------
+    ..[1]   "VBALD - Variational Bayesian Approximation of Log Determinants"
+            Granziol, Roberts & Osborne
+            https://arxiv.org/abs/1802.08054
     """
-
-    # make the vector dimension first so that the code is less ugly
-    mat, vec = utils.to_max_backend(mat, vec)
-    backend = dict(dtype=mat.dtype, device=mat.device)
-    mat = utils.fast_movedim(mat, -1, 0)
-    vec = utils.fast_movedim(vec, -1, 0)
-    nb_prm = len(vec)
-
-    shape = utils.expanded_shape(mat.shape[1:], vec.shape[1:])
-    shape = [vec.shape[0], *shape]
-
-    diag = mat[:nb_prm]  # diagonal
-    uppr = mat[nb_prm:]  # upper triangular part
-
-    if eps is not None:
-        # add smoothing term
-        eps = torch.as_tensor(eps, **backend).flatten()
-        eps = torch.cat([eps, eps[-1].expand(nb_prm - len(eps))])
-        eps = eps.reshape([len(eps)] + [1] * (mat.dim() - 1))
-        diag = diag + eps[:-1]
-
-    if nb_prm == 1:
-        res = vec / diag
-    elif nb_prm == 2:
-        res = _sym_solve2(diag, uppr, vec, shape)
-    elif nb_prm == 3:
-        res = _sym_solve3(diag, uppr, vec, shape)
-    elif nb_prm == 4:
-        res = _sym_solve4(diag, uppr, vec, shape)
+    if torch.is_tensor(matvec):
+        mat = matvec
+        matvec = lambda x: mat.matmul(x)
+        backend.setdefault('dtype', mat.dtype)
+        backend.setdefault('device', mat.device)
+        shape = [*mat.shape[:-2], mat.shape[-1]]
     else:
-        vec = utils.fast_movedim(vec, 0, -1)
-        mat = utils.fast_movedim(mat, 0, -1)
-        mat = sym_to_full(mat)
-        return torch.solve(vec, mat)
+        backend.setdefault('dtype', torch.get_default_dtype())
+        backend.setdefault('device', torch.device('cpu'))
+    numel = py.prod(shape)
 
-    return utils.fast_movedim(res, 0, -1)
+    if not upper:
+        upper = maxeig_power(matvec, shape)
+    matvec2 = lambda x: matvec(x).div_(upper)
+    mom = trapprox(matvec2, shape, moments=moments, samples=samples,
+                   method=method, **backend).cpu()
+    mom /= numel
+
+    # Compute beta parameters (Maximum Likelihood)
+    alpha = mom[0] * (mom[0] - mom[1]) / (mom[1] - mom[0]**2)
+    beta = alpha * (1/mom[0] - 1)
+    if alpha > 0 and beta > 0:
+        prior = torch.distributions.Beta(alpha.item(), beta.item())
+    else:
+        prior = torch.distributions.Uniform(1e-8, 1)
+
+    # Compute coefficients
+    coeff = _vbald_gn(mom, mc_samples, prior)
+
+    # logdet(A) = N * (E[log(lam)] + log(upper))
+    logdet = _vbald_mc_log(coeff, mc_samples, prior)
+    logdet = numel * (logdet + math.log(upper))
+    return logdet.to(backend['device'])
 
 
-def sym_inv(mat, diag=False):
-    """Matrix inversion for sparse symmetric matrices.
+def _vbald_gn(mom, samples, prior, tol=1e-6, max_iter=512):
+    dot = lambda u, v: u.flatten().dot(v.flatten())
+    coeff = torch.zeros_like(mom)
+    for n_iter in range(max_iter):
+        loss, grad, hess = _vbald_mc(coeff, samples, prior,
+                                     gradient=True, hessian=True)
+        loss += dot(coeff, mom)
+        grad = mom - grad
+        diag = hess.diagonal(0, -1, -2)
+        diag += 1e-3 * diag.abs().max() * torch.rand_like(diag)
+        delta = lmdiv(hess, grad)
 
-    Notes
-    -----
-    .. Backpropagation works at least for torch >= 1.6
-       It should be checked on earlier versions.
+        success = False
+        armijo = 1
+        loss0 = loss
+        coeff0 = coeff
+        for n_iter in range(12):
+            coeff = coeff0 - armijo * delta
+            loss = _vbald_mc(coeff, samples, prior)
+            loss += dot(coeff, mom)
+            if loss < loss0:
+                success = True
+                break
+            armijo /= 2
+        if not success:
+            return coeff0
+
+        gain = abs(loss - loss0)
+        if gain < tol:
+            break
+    return coeff
+
+
+def _vbald_mc(coeff, samples, prior, gradient=False, hessian=False):
+    nprm = 1
+    if gradient:
+        nprm += len(coeff)
+    if hessian:
+        nprm += len(coeff)
+
+    # compute \int q(lam) * lam**j * exp(-1 - \sum coeff[i] lam**i) dlam
+    # for multiple k, using monte carlo integration.
+    s = coeff.new_zeros([nprm])
+    for i in range(samples):
+        lam = prior.sample([])
+        q = _vbald_factexp(lam, coeff)
+        s[0] += q
+        if len(s) > 1:
+            for j in range(1, len(s)):
+                q = q * lam
+                s[j] += q
+    s /= samples
+
+    # compute gradient and Hessian from the above integrals
+    if gradient:
+        g = s[1:len(coeff)+1]
+        if hessian:
+            h = g.new_zeros(len(coeff), len(coeff))
+            for j in range(len(coeff)):
+                for k in range(j+1, len(coeff)):
+                    h[j, k] = h[k, j] = s[1+j+k]
+                h[j, j] = s[1+j+j]
+            return s[0], g, h
+        return s[0], g
+    return s[0]
+
+
+def _vbald_factexp(lam, coeff):
+    lam = lam ** torch.arange(1, len(coeff)+1, dtype=lam.dtype, device=lam.device)
+    dot = lambda u, v: u.flatten().dot(v.flatten())
+    return (-1 - dot(lam, coeff)).exp()
+
+
+def _vbald_mc_log(coeff, samples, prior):
+
+    # compute \int q(lam) * log(lam) * exp(-1 - \sum coeff[i] lam**i) dlam
+    # for multiple k, using monte carlo integration.
+    s = 0
+    for i in range(samples):
+        lam = prior.sample([])
+        s += lam.log() * _vbald_factexp(lam, coeff)
+    s /= samples
+    return s
+
+
+def maxeig_power(matvec, shape=None, max_iter=512, tol=1e-6, **backend):
+    """Estimate the maximum eigenvalue of a matrix by power iteration
 
     Parameters
     ----------
-    mat : (..., M*(M+1)//2) tensor
-        A symmetric matrix that is stored in a sparse way.
-        Its elements along the last (flat) dimension are the
-        diagonal elements followed by the flattened upper-half elements.
-        E.g., [a00, a11, aa22, a01, a02, a12]
-    diag : bool, default=False
-        If True, only return the diagonal of the inverse
+    matvec : sparse tensor or callable(tensor) -> tensor
+        Function that computes the matrix-vector product
+    shape : sequence[int]
+        "vector" shape
+    max_iter : int, default=512
+    tol : float, default=1e-6
 
     Returns
     -------
-    imat : (..., M or M*(M+1)//2) tensor
+    maxeig : scalar tensor
+        Largest eigenvalue
 
     """
-    mat = torch.as_tensor(mat)
-    nb_prm = int((math.sqrt(1 + 8 * mat.shape[-1]) - 1) // 2)
-    if diag:
-        imat = mat.new_empty([*mat.shape[:-1], nb_prm])
+
+    if torch.is_tensor(matvec):
+        mat = matvec
+        matvec = lambda x: mat.matmul(x)
+        backend.setdefault('dtype', mat.dtype)
+        backend.setdefault('device', mat.device)
+        shape = [*mat.shape[:-2], mat.shape[-1]]
     else:
-        imat = torch.empty_like(mat)
+        backend.setdefault('dtype', torch.get_default_dtype())
+        backend.setdefault('device', torch.device('cpu'))
 
-    cnt = nb_prm
-    for i in range(nb_prm):
-        e = mat.new_zeros(nb_prm)
-        e[i] = 1
-        vec = sym_solve(mat, e)
-        imat[..., i] = vec[..., i]
-        if not diag:
-            for j in range(i+1, nb_prm):
-                imat[..., cnt] = vec[..., j]
-                cnt += 1
-    return imat
+    dot = lambda u, v: u.flatten().dot(v.flatten())
 
+    v = torch.bernoulli(torch.full([], 0.5, **backend).expand(shape)).sub_(0.5).mul_(2)
+    mu = float('inf')
 
-def sym_outer(x):
-    """Compute the symmetric outer product of a vector: x @ x.T
-
-    Parameters
-    ----------
-    x : (..., M)
-
-    Returns
-    -------
-    xx : (..., M*(M+1)//2)
-
-    """
-    M = x.shape[-1]
-    MM = M*(M+1)//2
-    xx = x.new_empty([*x.shape[:-1], MM])
-    if x.requires_grad:
-        xx[..., :M] = x.square()
-        index = M
-        for m in range(M):
-            for n in range(m+1, M):
-                xx[..., index] = x[..., m] * x[..., n]
-    else:
-        torch.mul(x, x, out=xx[..., :M])
-        index = M
-        for m in range(M):
-            for n in range(m+1, M):
-                torch.mul(x[..., m], x[..., n], out=xx[..., index])
-                index += 1
-    return xx
+    for n_iter in range(max_iter):
+        w, v = v, matvec(v)
+        mu0, mu = mu, dot(w, v)
+        v /= dot(v, v).sqrt_()
+        if abs(mu - mu0) < tol:
+            break
+    return mu

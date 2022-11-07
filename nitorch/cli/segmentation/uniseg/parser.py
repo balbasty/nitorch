@@ -40,13 +40,15 @@ components:
         --mrf,   --no-mrf           Perform Markov random field         learn/always/[once]/no
         --wish,  --no-wish          Perform Wishart regularization      [yes]/no
     -c, --clean, --no-clean         Perform postprocessing cleanup      [yes]/no
+    -f, --flexi                     Try to find the correct orientation yes/[no]
 
 regularization:
-    --lam-bias FLOAT                Bias field regularization           [0.1]
-    --lam-warp FLOAT                Warp regularization                 [0.1]
-    --lam-mix  FLOAT                Mixing proportion regularization    [100]
-    --lam-mrf  FLOAT                MRF regularization                  [10]
-    --lam-wish FLOAT                Wishart regularization              [1]
+    --lam-prior FLOAT               Strength of spatial prior           [1]
+    --lam-bias  FLOAT               Bias field regularization           [0.1]
+    --lam-warp  FLOAT               Warp regularization                 [0.1]
+    --lam-mix   FLOAT               Mixing proportion regularization    [100]
+    --lam-mrf   FLOAT               MRF regularization                  [10]
+    --lam-wish  FLOAT               Wishart regularization              [1]
 
 optimization:
     -s, --spacing   FLOAT           Space between sampled points, in mm [3]
@@ -93,7 +95,7 @@ def convert_device(device):
 parser = cli.CommandParser('uniseg', help=help)
 # --- inputs -----------------------------------------------------------
 parser.add_positional('input', nargs='+')
-parser.add_option('tpm', ('-t', '--tpm'), nargs='?', default=None)
+parser.add_option('tpm', ('-t', '--tpm'), nargs='+', default=None)
 parser.add_option('tpm', '--no-tpm', nargs=0,
                   action=cli.Actions.store_value(False))
 parser.add_option('mask', ('-m', '--mask'), nargs='?', default=None)
@@ -101,23 +103,27 @@ parser.add_option('mask', ('-m', '--mask'), nargs='?', default=None)
 parser.add_option('output', ('-o', '--output'), nargs=1, default=None)
 for space in ('nat', 'mni', 'wrp'):
     default_fname = '{dir}{sep}{base}.prob.' + space + '{ext}'
-    parser.add_option(f'prob_{space}', f'--prob-{space}', nargs=1,
+    parser.add_option(f'prob_{space}', f'--prob-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=default_fname if space == 'nat' else None)
+    parser.add_option(f'prob_{space}', f'--no-prob-{space}', nargs=0,
+                      action=cli.Actions.store_value(None))
     default_fname = '{dir}{sep}{base}.labels.' + space + '{ext}'
-    parser.add_option(f'labels_{space}', f'--labels-{space}', nargs=1,
+    parser.add_option(f'labels_{space}', f'--labels-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=default_fname if space == 'nat' else None)
+    parser.add_option(f'labels_{space}', f'--no-labels-{space}', nargs=0,
+                      action=cli.Actions.store_value(None))
     default_fname = '{dir}{sep}{base}.nobias.' + space + '{ext}'
-    parser.add_option(f'nobias_{space}', f'--nobias-{space}', nargs=1,
+    parser.add_option(f'nobias_{space}', f'--nobias-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=None)
     default_fname = '{dir}{sep}{base}.bias.' + space + '{ext}'
-    parser.add_option(f'bias_{space}', f'--bias-{space}', nargs=1,
+    parser.add_option(f'bias_{space}', f'--bias-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=None)
     default_fname = '{dir}{sep}{base}.warp.' + space + '{ext}'
-    parser.add_option(f'warp_{space}', f'--warp-{space}', nargs=1,
+    parser.add_option(f'warp_{space}', f'--warp-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=None)
     parser.add_option(f'all_{space}', f'--all-{space}', nargs=0,
@@ -162,7 +168,11 @@ parser.add_option(f'clean', ('-c', '--clean'), nargs='?', convert=bool_or_str,
                   action=cli.Actions.store_value(True), default=True)
 parser.add_option(f'clean', '--no-clean', nargs=0,
                   action=cli.Actions.store_value(False))
+parser.add_option(f'flexi', ('-f', '--flexi'), nargs='?', convert=bool_or_str,
+                  action=cli.Actions.store_value(True), default=False)
 # --- regularization ---------------------------------------------------
+parser.add_option(f'lam_prior', '--lam-prior', nargs=1, convert=float,
+                  default=1)
 parser.add_option(f'lam_bias', '--lam-bias', nargs=1, convert=float,
                   default=0.1)
 parser.add_option(f'lam_warp', '--lam-warp', nargs=1, convert=float,

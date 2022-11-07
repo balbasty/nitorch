@@ -126,7 +126,7 @@ class Structure:
                 self._fields[k] = self.DefaultField()
         # 1) Set attributes that are user-defined
         for k, v in kwargs.items():
-            if not self._fields[k].init:
+            if k in self._fields and not self._fields[k].init:
                 raise TypeError(f'Attribute {k} cannot be set at init')
             setattr(self, k, copy(v))
         # 3) Use class-level default value

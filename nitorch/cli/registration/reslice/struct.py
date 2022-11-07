@@ -28,6 +28,7 @@ class Displacement(Transform):
 
 
 class Velocity(Transform):
+    json: str = None
     pass
 
 

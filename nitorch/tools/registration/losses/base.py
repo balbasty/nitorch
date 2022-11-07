@@ -16,7 +16,7 @@ Currently, the following losses are implemented:
 - LCC : local correlation coefficient
 - NMI : normalized mutual information
 """
-from nitorch.core import py
+from nitorch.core import py, utils
 import math as pymath
 import torch
 
@@ -113,3 +113,53 @@ class AutoGradLoss(OptimizationLoss):
         return loss, grad
 
 
+class SliceWiseLoss(OptimizationLoss):
+
+    def __init__(self, loss, axis=-1):
+        super().__init__()
+        self.base_loss = loss
+        self.axis = axis
+
+    @property
+    def order(self):
+        return self.base_loss.order
+
+    def slice_to_batch(self, moving, fixed, **overload):
+        dim = overload.get('dim', None) or getattr(self.base_loss, 'dim', None)
+        axis = (self.axis - dim) if self.axis >= 0 else self.axis
+        moving = utils.movedim(moving, axis, 0)
+        fixed = utils.movedim(fixed, axis, 0)
+        if 'mask' in overload and overload['mask'] is not None:
+            mask = overload['mask']
+            while mask.dim() < moving.dim():
+                mask = mask[None]
+            overload['mask'] = utils.movedim(mask, axis, 0)
+        overload['dim'] = dim - 1
+        return moving, fixed, overload, axis
+
+    def loss(self, moving, fixed, **overload):
+        moving, fixed, overload, _ = self.slice_to_batch(moving, fixed, **overload)
+        return self.base_loss.loss(moving, fixed, **overload)
+
+    def loss_grad(self, moving, fixed, **overload):
+        moving, fixed, overload, axis = self.slice_to_batch(moving, fixed, **overload)
+        loss, grad = self.base_loss.loss_grad(moving, fixed, **overload)
+        grad = utils.movedim(grad, 0, axis)
+        return loss, grad
+
+    def loss_grad_hess(self, moving, fixed, **overload):
+        moving, fixed, overload, axis = self.slice_to_batch(moving, fixed,
+                                                            **overload)
+        loss, grad, hess = self.base_loss.loss_grad_hess(moving, fixed, **overload)
+        grad = utils.movedim(grad, 0, axis)
+        hess = utils.movedim(hess, 0, axis)
+        return loss, grad, hess
+
+    def clear_state(self):
+        return self.base_loss.clear_state()
+
+    def get_state(self):
+        return self.base_loss.get_state()
+
+    def set_state(self, state):
+        return self.base_loss.set_state(state)

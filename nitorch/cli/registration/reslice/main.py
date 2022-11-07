@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import torch
 from nitorch import io, spatial
 from nitorch.cli.cli import commands
@@ -156,8 +157,18 @@ def write_data(options):
             trf.shape = squeeze_to_nd(f.shape, 3, 1)
             trf.dat = f.fdata(**backend).reshape(trf.shape)
             trf.shape = trf.shape[:3]
-            trf.dat = spatial.exp(trf.dat[None], displacement=True,
-                                  inverse=trf.inv)[0]
+            if trf.json:
+                with open(trf.json) as f:
+                    prm = json.load(f)
+                prm['voxel_size'] = spatial.voxel_size(trf.affine)
+                trf.dat = spatial.shoot(trf.dat[None], displacement=True,
+                                        return_inverse=trf.inv)
+                if trf.inv:
+                    trf.dat = trf.dat[-1]
+            else:
+                trf.dat = spatial.exp(trf.dat[None], displacement=True,
+                                      inverse=trf.inv)
+            trf.dat = trf.dat[0]  # drop batch dimension
             trf.inv = False
             trf.order = 1
         elif isinstance(trf, struct.Displacement):
@@ -216,19 +227,27 @@ def write_data(options):
         oaffine = options.target.affine
 
     # 4) Loop across input files
-    opt_pull = dict(interpolation=options.interpolation,
-                    bound=options.bound,
-                    extrapolate=options.extrapolate)
+    opt_pull0 = dict(interpolation=options.interpolation,
+                     bound=options.bound,
+                     extrapolate=options.extrapolate)
     opt_coeff = dict(interpolation=options.interpolation,
                      bound=options.bound,
                      dim=3,
                      inplace=True)
     output = py.make_list(options.output, len(options.files))
     for file, ofname in zip(options.files, output):
+        is_label = isinstance(options.interpolation, str) and options.interpolation == 'l'
         ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext)
         print(f'Reslicing:   {file.fname}\n'
               f'          -> {ofname}')
-        dat = io.volumes.loadf(file.fname, rand=options.interpolation>0, **backend)
+        if is_label:
+            backend_int = dict(dtype=torch.long, device=backend['device'])
+            dat = io.volumes.load(file.fname, **backend_int)
+            opt_pull = dict(opt_pull0)
+            opt_pull['interpolation'] = 1
+        else:
+            dat = io.volumes.loadf(file.fname, rand=options.interpolation>0, **backend)
+            opt_pull = opt_pull0
         dat = dat.reshape([*file.shape, file.channels])
         dat = utils.movedim(dat, -1, 0)
 
@@ -243,11 +262,14 @@ def write_data(options):
             grid = build_from_target(oaffine, oshape)
         mat = file.affine.to(**backend)
         imat = spatial.affine_inv(mat)
-        if options.prefilter:
+        if options.prefilter and not is_label:
             dat = spatial.spline_coeff_nd(dat, **opt_coeff)
         dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt_pull)
         dat = utils.movedim(dat, 0, -1)
 
-        io.volumes.savef(dat, ofname, like=file.fname, affine=oaffine)
+        if is_label:
+            io.volumes.save(dat, ofname, like=file.fname, affine=oaffine)
+        else:
+            io.volumes.savef(dat, ofname, like=file.fname, affine=oaffine)
 
 

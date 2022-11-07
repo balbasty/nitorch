@@ -1526,9 +1526,6 @@ void PushPullImpl<scalar_t,offset_t>::interpolate1d(
   if (do_pull || do_sgrad) {
     for (offset_t c = 0; c < C; ++c, out_ptr_NCX += out_sC) {
       *out_ptr_NCX = static_cast<scalar_t>(0);
-      if (do_sgrad) {
-        out_ptr_NCX[out_sK] = static_cast<scalar_t>(0);
-      }
     }
   }
 

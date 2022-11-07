@@ -15,7 +15,7 @@ from nitorch.core import py, utils, linalg, math
 import torch
 from .utils import jg, jhj
 from . import optim as optm, utils as regutils
-from .objects import SVFModel, MeanSpace
+from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel
 import copy
 
 
@@ -41,11 +41,130 @@ import copy
 #      too large, it would allow us to use Gauss-Newton directly.
 
 
+class PairwiseRegister:
+    """A class that registers pairs of images"""
+
+    def __init__(self,
+                 losses,                 # list[LossComponent]
+                 affine=None,            # AffineModel
+                 nonlin=None,            # NonLinModel
+                 optim=None,             # Optimizer
+                 verbose=True,           # verbosity level
+                 framerate=1,            # plotting framerate
+                 figure=None,            # figure object
+                 ):
+        """
+
+        Parameters
+        ----------
+        losses : list[LossComponent]
+            A list of losses to optimize.
+        affine : AffineModel, optional
+            An object describing the affine transformation model
+        nonlin : NonLinModel
+            An object describing the nonlinear transformation model
+        optim : Optimizer
+            A numerical optimizer. If both `affine` and `nonlin` are
+            provided, the optimizer should accept a list of tensors
+            (first: affine, second: nonlin) and
+            a list of closures as arguments (e.g., SequentialOptimizer)
+        verbose : bool or int, default=True
+            Verbosity level.
+            - 0: quiet
+            - 1: print iterations
+            - 2: print iterations + line searches (slower)
+            - 3: plot stuff (much slower).
+        framerate : float, default=1
+            Update plot at most `framerate` times per second.
+        """
+        self.losses = losses
+        self.verbose = verbose
+        self.affine = affine
+        self.nonlin = nonlin
+        self.optim = optim
+        self.framerate = framerate
+        self.figure = figure
+
+    def __call__(self):
+        return self.fit()
+
+    def fit(self):
+        backend = dict(device=self.losses[0].moving.device,
+                       dtype=self.losses[0].moving.dtype)
+        if self.affine and self.affine.parameters() is None:
+            self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
+                                              **backend)
+            # self.affine.parameters().fill_(1e-12)
+        if self.nonlin and self.nonlin.parameters() is None:
+            space = MeanSpace([loss.fixed for loss in self.losses] +
+                              [loss.moving for loss in self.losses])
+            self.nonlin.set_dat(space.shape, affine=space.affine, **backend)
+            # self.nonlin.parameters().fill_(1e-12)
+
+        if self.verbose > 1:
+            for loss in self.losses:
+                print(loss)
+            if self.affine:
+                print(self.affine)
+            if self.nonlin:
+                print(self.nonlin)
+            print(self.optim)
+            print('')
+
+        if self.verbose:
+            if self.nonlin:
+                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"nonlin":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
+                print('-' * 89)
+            else:
+                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
+                print('-' * 74)
+
+        step = PairwiseRegisterStep(self.losses, self.affine, self.nonlin,
+                                    self.verbose, self.framerate, self.figure)
+        self.figure = step.figure
+
+        if self.nonlin and isinstance(self.nonlin, ShootModel):
+            if self.nonlin.kernel is None:
+                self.nonlin.set_kernel()
+
+        # initialize loss
+        verbose, self.verbose = self.verbose, False
+        if self.nonlin:
+            step.do_vel(self.nonlin.parameters(), grad=False, hess=False)
+            if self.affine:
+                step.do_affine(self.affine.parameters(), grad=False, hess=False)
+        else:
+            step.do_affine_only(self.affine.parameters(), grad=False, hess=False)
+        self.verbose = verbose
+
+        step.framerate = self.framerate
+        if self.affine and self.nonlin:
+            if isinstance(self.optim[1], optm.FirstOrder):
+                if self.nonlin.kernel is None:
+                    self.nonlin.set_kernel()
+                self.optim[1].preconditioner = self.nonlin.greens_apply
+            self.optim.iter([self.affine.parameters(), self.nonlin.parameters()],
+                            [step.do_affine, step.do_vel])
+        elif self.affine:
+            self.optim.iter(self.affine.dat.dat, step.do_affine_only)
+        elif self.nonlin:
+            if isinstance(self.optim, optm.FirstOrder):
+                if self.nonlin.kernel is None:
+                    self.nonlin.set_kernel()
+                self.optim.preconditioner = self.nonlin.greens_apply
+            self.optim.iter(self.nonlin.parameters(), step.do_vel)
+
+        if self.verbose:
+            print('')
+
+        return step.ll
+
+
 def _almost_identity(aff):
     return torch.allclose(aff, torch.eye(*aff.shape, **utils.backend(aff)))
 
 
-class RegisterStep:
+class PairwiseRegisterStep:
     """Forward pass of Diffeo+Affine registration, with derivatives"""
     # We use a class so that we can have a state to keep track of
     # iterations and objectives (mainly for pretty printing)
@@ -56,6 +175,8 @@ class RegisterStep:
             affine=None,            # AffineModel
             nonlin=None,            # NonLinModel
             verbose=True,           # verbosity level
+            framerate=1.0,          # framerate
+            figure=None,            # figure object
             ):
         if not isinstance(losses, (list, tuple)):
             losses = [losses]
@@ -65,16 +186,19 @@ class RegisterStep:
         self.verbose = verbose
 
         # pretty printing
-        self.n_iter = 1             # current iteration
-        self.ll_prev = None         # previous loss value
-        self.ll_max = 0             # max loss value
+        self.n_iter = 0             # current iteration
+        self.ll = None              # Current loss (total)
+        self.ll_prev = None         # previous loss (total))
+        self.ll_max = 0             # max loss (total))
         self.llv = 0                # last velocity penalty
         self.lla = 0                # last affine penalty
-        self.all_ll = []
+        self.all_ll = []            # all losses (total)
+        self.last_step = None
 
-        self.framerate = 1
+        self.figure = figure
+        self.framerate = framerate
         self._last_plot = 0
-        if self.verbose > 1:
+        if self.verbose > 1 and not self.figure:
             import matplotlib.pyplot as plt
             self.figure = plt.figure()
 
@@ -89,7 +213,6 @@ class RegisterStep:
         self._last_plot = toc
 
         import matplotlib.pyplot as plt
-
 
         warped = warped.detach()
         if vel is not None:
@@ -163,74 +286,125 @@ class RegisterStep:
         nb_rows = kdim * bdim + 1
         nb_cols = 4 + bool(vel)
 
-        if len(self.figure.axes) != nb_rows*nb_cols:
-            self.figure.clf()
+        fig = self.figure
+        replot = len(fig.axes) != (nb_rows - 1) * nb_cols + 1
+        replot = replot or not getattr(self, 'plt_saved', None)
+        if replot:
+            fig.clf()
 
             for b in range(bdim):
                 for k in range(kdim):
-                    plt.subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 1)
-                    plt.imshow(moving[k][b, 0].cpu())
+                    ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 1)
+                    ax.imshow(moving[k][b, 0].cpu())
                     if b == 0 and k == 0:
-                        plt.title('moving')
-                    plt.axis('off')
-                    plt.subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 2)
-                    plt.imshow(warped[k][b, 0].cpu())
+                        ax.set_title('moving')
+                    ax.axis('off')
+                    ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 2)
+                    ax.imshow(warped[k][b, 0].cpu())
                     if b == 0 and k == 0:
-                        plt.title('moved')
-                    plt.axis('off')
-                    plt.subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 3)
-                    plt.imshow(checker[k][b, 0].cpu())
+                        ax.set_title('moved')
+                    ax.axis('off')
+                    ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 3)
+                    ax.imshow(checker[k][b, 0].cpu())
                     if b == 0 and k == 0:
-                        plt.title('checker')
-                    plt.axis('off')
-                    plt.subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 4)
-                    plt.imshow(fixed[k][b, 0].cpu())
+                        ax.set_title('checker')
+                    ax.axis('off')
+                    ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 4)
+                    ax.imshow(fixed[k][b, 0].cpu())
                     if b == 0 and k == 0:
-                        plt.title('fixed')
-                    plt.axis('off')
+                        ax.set_title('fixed')
+                    ax.axis('off')
                     if vel:
-                        plt.subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 5)
-                        plt.imshow(vel[k][b].cpu())
+                        ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 5)
+                        d = ax.imshow(vel[k][b].cpu())
                         if b == 0 and k == 0:
-                            plt.title('displacement')
-                        plt.axis('off')
-                        plt.colorbar()
-            plt.subplot(nb_rows, 1, nb_rows)
-            plt.plot(list(range(1, len(self.all_ll)+1)), self.all_ll)
-            plt.ylabel('NLL')
-            plt.xlabel('iteration')
+                            ax.set_title('displacement')
+                        ax.axis('off')
+                        fig.colorbar(d, None, ax)
+            ax = fig.add_subplot(nb_rows, 1, nb_rows)
+            all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
+            ax.plot(range(1, len(all_ll)+1), all_ll)
+            ax.set_ylabel('NLL')
+            ax.set_xlabel('iteration')
             if title:
-                plt.suptitle(title)
+                fig.suptitle(title)
 
-            self.figure.canvas.draw()
-            self.plt_saved = [self.figure.canvas.copy_from_bbox(ax.bbox)
-                              for ax in self.figure.axes]
-            self.figure.canvas.flush_events()
+            fig.canvas.draw()
+            self.plt_saved = [fig.canvas.copy_from_bbox(ax.bbox)
+                              for ax in fig.axes]
+            fig.canvas.flush_events()
             plt.show(block=False)
 
         else:
-            self.figure.canvas.draw()
             for elem in self.plt_saved:
-                self.figure.canvas.restore_region(elem)
+                fig.canvas.restore_region(elem)
 
             for b in range(bdim):
                 for k in range(kdim):
                     j = (b + k*bdim) * nb_cols
-                    self.figure.axes[j].images[0].set_data(moving[k][b, 0].cpu())
-                    self.figure.axes[j+1].images[0].set_data(warped[k][b, 0].cpu())
-                    self.figure.axes[j+2].images[0].set_data(checker[k][b, 0].cpu())
-                    self.figure.axes[j+3].images[0].set_data(fixed[k][b, 0].cpu())
+                    fig.axes[j].images[0].set_data(moving[k][b, 0].cpu())
+                    fig.axes[j+1].images[0].set_data(warped[k][b, 0].cpu())
+                    fig.axes[j+2].images[0].set_data(checker[k][b, 0].cpu())
+                    fig.axes[j+3].images[0].set_data(fixed[k][b, 0].cpu())
                     if vel is not None:
-                        self.figure.axes[j+4].images[0].set_data(vel[k][b].cpu())
-            lldata = (list(range(1, len(self.all_ll)+1)), self.all_ll)
-            self.figure.axes[-1].lines[0].set_data(lldata)
+                        fig.axes[j+4].images[0].set_data(vel[k][b].cpu())
+            all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
+            lldata = (range(1, len(all_ll)+1), all_ll)
+            fig.axes[-1].lines[0].set_data(lldata)
+            fig.axes[-1].relim()
+            fig.axes[-1].autoscale_view()
             if title:
-                self.figure._suptitle.set_text(title)
+                fig._suptitle.set_text(title)
 
-            for ax in self.figure.axes:
-                ax.draw_artist(ax.images[0])
-                self.figure.canvas.blit(ax.bbox)
-            self.figure.canvas.flush_events()
+            for ax in fig.axes:
+                if ax.images:
+                    ax.draw_artist(ax.images[0])
+                else:
+                    ax.draw_artist(ax.lines[0])
+                fig.canvas.blit(ax.bbox)
+            fig.canvas.flush_events()
+
+        self.figure = fig
+
+    def print(self, step, ll, lla=None, llv=None, in_line_search=False):
+
+        if lla is None:
+            lla = self.lla
+        if llv is None:
+            llv = self.llv
+        llx = ll.clone()
+        ll += llv + lla
+
+        if self.verbose and (self.verbose > 1 or not in_line_search):
+            if step == 'affine_only':
+                step = 'affine'
+                has_vel = False
+            else:
+                has_vel = True
+            step = 'search' if in_line_search else step
+            line = f'({step}) | {self.n_iter:03d} | '
+            if has_vel:
+                line += f'{llx:12.6g} + {llv:12.6g} + {lla:12.6g} = {ll:12.6g}'
+            else:
+                line += f'{llx:12.6g} + {lla:12.6g} = {ll:12.6g}'
+            if self.ll_prev is not None:
+                gain = self.ll_prev - ll
+                # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
+                if in_line_search:
+                    line += ' | :D' if gain > 0 else ' | :('
+                else:
+                    line += f' | {gain:12.6g}'
+            print(line, end='\n')
+
+        if not in_line_search:
+            self.ll = ll
+            self.llv = llv
+            self.all_ll.append(ll)
+            self.ll_prev = self.ll
+            self.ll_max = max(self.ll_max, self.ll)
+            self.n_iter += 1
+
+        return ll
 
     def do_vel(self, vel, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the nonlinear component"""
@@ -242,25 +416,32 @@ class RegisterStep:
         # ==============================================================
         #                     EXPONENTIATE TRANSFORMS
         # ==============================================================
+        needs_inverse = any(loss.backward for loss in self.losses)
+        vel0 = vel
+        if needs_inverse:
+            phi0, iphi0 = self.nonlin.exp2(
+                vel0, recompute=True, cache_result=not in_line_search)
+            ivel0 = -vel0
+        else:
+            phi0 = self.nonlin.exp(
+                vel0, recompute=True, cache_result=not in_line_search)
+            iphi0 = ivel0 = None
         if self.affine:
-            aff0, iaff0 = self.affine.exp2(cache_result=True, recompute=False)
+            recompute_affine = self.last_step != 'nonlin'
+            if needs_inverse:
+                aff0, iaff0 = self.affine.exp2(
+                    cache_result=True, recompute=recompute_affine)
+                iaff0 = iaff0.to(phi0)
+            else:
+                aff0 = self.affine.exp(
+                    cache_result=True, recompute=recompute_affine)
+            aff0 = aff0.to(phi0)
             aff_pos = self.affine.position[0].lower()
         else:
             aff_pos = 'x'
-            aff0 = iaff0 = torch.eye(self.nonlin.dim + 1)
-        vel0 = vel
-        if any(loss.backward for loss in self.losses):
-            phi0, iphi0 = self.nonlin.exp2(vel0,
-                                           recompute=True,
-                                           cache_result=not in_line_search)
-            ivel0 = -vel0
-        else:
-            phi0 = self.nonlin.exp(vel0,
-                                   recompute=True,
-                                   cache_result=not in_line_search)
-            iphi0 = ivel0 = None
-        aff0 = aff0.to(phi0)
-        iaff0 = iaff0.to(phi0)
+            aff0 = iaff0 = torch.eye(self.nonlin.dim + 1,
+                                     dtype=phi0.dtype, device=phi0.device)
+        self.last_step = 'nonlin'
 
         # ==============================================================
         #                     ACCUMULATE DERIVATIVES
@@ -268,6 +449,8 @@ class RegisterStep:
 
         has_printed = False
         for loss in self.losses:
+            do_print = not (has_printed or self.verbose < 3 or in_line_search
+                            or loss.backward)
 
             # ==========================================================
             #                     ONE LOSS COMPONENT
@@ -287,7 +470,7 @@ class RegisterStep:
             aff_right = linalg.lmdiv(self.nonlin.affine, aff_right)
             aff_left = self.nonlin.affine
             if aff_pos in 'ms':  # affine position: moving or symmetric
-                aff_left = aff00 @ self.nonlin.affine
+                aff_left = aff00 @ aff_left
             aff_left = linalg.lmdiv(moving.affine, aff_left)
 
             # ----------------------------------------------------------
@@ -298,9 +481,11 @@ class RegisterStep:
                 phi = spatial.add_identity_grid(phi00)
                 disp = phi00
             else:
-                phi = spatial.affine_grid(aff_right, fixed.shape)
-                disp = regutils.smart_pull_grid(phi00, phi)
-                phi += disp
+                right = spatial.affine_grid(aff_right, fixed.shape)
+                phi = regutils.smart_pull_grid(phi00, right)
+                if do_print:
+                    disp = phi.clone()
+                phi += right
             if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
                 aff_left = None
             else:
@@ -309,16 +494,17 @@ class RegisterStep:
             # ----------------------------------------------------------
             # forward pass
             # ----------------------------------------------------------
-            warped, mask = moving.pull(phi, mask=True)
+            warped, warped_mask = moving.pull(phi, mask=True)
             if fixed.masked:
-                if mask is None:
+                if warped_mask is None:
                     mask = fixed.mask
                 else:
-                    mask = mask * fixed.mask
+                    mask = warped_mask * fixed.mask
+            else:
+                mask = warped_mask
 
-            do_print = not (has_printed or self.verbose < 3 or in_line_search
-                            or loss.backward)
             if do_print:
+                disp = linalg.matvec(aff_right.inverse()[:-1, :-1], disp)
                 has_printed = True
                 if moving.previewed:
                     preview = moving.pull(phi, preview=True, dat=False)
@@ -329,8 +515,12 @@ class RegisterStep:
                     init = moving.dat
                 else:
                     init = spatial.affine_grid(init, fixed.shape)
-                    init = moving.pull(init, preview=True, dat=False)
-                self.mov2fix(fixed.dat, init, preview, disp, dim=fixed.dim,
+                    initmask, init = moving.pull(init, preview=True, dat=False, mask=True)
+                    if initmask is not None:
+                        init = init * initmask
+                dat = fixed.dat * fixed.mask if fixed.masked else fixed.dat
+                preview = preview * warped_mask if warped_mask is not None else preview
+                self.mov2fix(dat, init, preview, disp, dim=fixed.dim,
                              title=f'(nonlin) {self.n_iter:03d}')
 
             # ----------------------------------------------------------
@@ -360,7 +550,10 @@ class RegisterStep:
                     inv=loss.backward)
                 g = regutils.jg(mugrad, g)
                 h = regutils.jhj(mugrad, h)
-                if isinstance(self.nonlin, SVFModel):
+                is_svf = isinstance(self.nonlin, SVFModel)
+                is_svf = is_svf or (isinstance(self.nonlin, Nonlin2dModel) and
+                                    isinstance(self.nonlin._model, SVFModel))
+                if is_svf:
                     # propagate backward by scaling and squaring
                     g, h = spatial.exp_backward(vel00, g, h,
                                                 steps=self.nonlin.steps)
@@ -385,30 +578,8 @@ class RegisterStep:
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        llx = sumloss.item()
-        sumloss += llv
-        sumloss += self.lla
-        self.loss_value = sumloss.item()
-        if self.verbose and (self.verbose > 1 or not in_line_search):
-            llv = llv.item()
-            ll = sumloss.item()
-            lla = self.lla
-            if in_line_search:
-                line = '(search) | '
-            else:
-                line = '(nonlin) | '
-            line += f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} + {lla:12.6g} = {ll:12.6g}'
-            if not in_line_search:
-                if self.ll_prev is not None:
-                    gain = self.ll_prev - ll
-                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
-                    line += f' | {gain:12.6g}'
-                self.llv = llv
-                self.all_ll.append(ll)
-                self.ll_prev = ll
-                self.ll_max = max(self.ll_max, ll)
-                self.n_iter += 1
-            print(line, end='\r')
+        sumloss = self.print('nonlin', sumloss, lla=self.lla, llv=llv,
+                             in_line_search=in_line_search)
 
         # ==============================================================
         #                           RETURN
@@ -432,16 +603,20 @@ class RegisterStep:
         # ==============================================================
         logaff0 = logaff
         aff_pos = self.affine.position[0].lower()
-        if any(loss.backward for loss in self.losses):
-            aff0, iaff0, gaff0, igaff0 = \
-                self.affine.exp2(logaff0, grad=True,
-                                 cache_result=not in_line_search)
-            phi0, iphi0 = self.nonlin.exp2(cache_result=True, recompute=False)
+        needs_inverse = any(loss.backward for loss in self.losses)
+        recompute_nonlin = self.last_step != 'affine'
+        if needs_inverse:
+            aff0, iaff0, gaff0, igaff0 = self.affine.exp2(
+                logaff0, grad=True, cache_result=not in_line_search)
+            phi0, iphi0 = self.nonlin.exp2(
+                cache_result=True, recompute=recompute_nonlin)
         else:
             iaff0, igaff0, iphi0 = None, None, None
-            aff0, gaff0 = self.affine.exp(logaff0, grad=True,
-                                          cache_result=not in_line_search)
-            phi0 = self.nonlin.exp(cache_result=True, recompute=False)
+            aff0, gaff0 = self.affine.exp(
+                logaff0, grad=True, cache_result=not in_line_search)
+            phi0 = self.nonlin.exp(
+                cache_result=True, recompute=recompute_nonlin)
+        self.last_step = 'affine'
 
         has_printed = False
         for loss in self.losses:
@@ -488,12 +663,14 @@ class RegisterStep:
             # ----------------------------------------------------------
             # forward pass
             # ----------------------------------------------------------
-            warped, mask = moving.pull(phi, mask=True)
+            warped, warped_mask = moving.pull(phi, mask=True)
             if fixed.masked:
-                if mask is None:
+                if warped_mask is None:
                     mask = fixed.mask
                 else:
-                    mask = mask * fixed.mask
+                    mask = warped_mask * fixed.mask
+            else:
+                mask = warped_mask
 
             do_print = not (has_printed or self.verbose < 3 or in_line_search
                             or loss.backward)
@@ -508,8 +685,12 @@ class RegisterStep:
                     init = moving.dat
                 else:
                     init = spatial.affine_grid(init, fixed.shape)
-                    init = moving.pull(init, preview=True, dat=False)
-                self.mov2fix(fixed.dat, init, preview, dim=fixed.dim,
+                    initmask, init = moving.pull(init, preview=True, dat=False, mask=True)
+                    if initmask is not None:
+                        init = init * initmask
+                dat = fixed.dat * fixed.mask if fixed.masked else fixed.dat
+                preview = preview * warped_mask if warped_mask is not None else preview
+                self.mov2fix(dat, init, preview, dim=fixed.dim,
                              title=f'(affine) {self.n_iter:03d}')
 
             # ----------------------------------------------------------
@@ -592,28 +773,8 @@ class RegisterStep:
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        llx = sumloss.item()
-        sumloss += lla
-        sumloss += self.llv
-        self.loss_value = sumloss.item()
-        if self.verbose and (self.verbose > 1 or not in_line_search):
-            ll = sumloss.item()
-            llv = self.llv
-            if in_line_search:
-                line = '(search) | '
-            else:
-                line = '(affine) | '
-            line += f'{self.n_iter:03d} | {llx:12.6g} + {llv:12.6g} + {lla:12.6g} = {ll:12.6g}'
-            if not in_line_search:
-                if self.ll_prev is not None:
-                    gain = self.ll_prev - ll
-                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
-                    line += f' | {gain:12.6g}'
-                self.all_ll.append(ll)
-                self.ll_prev = ll
-                self.ll_max = max(self.ll_max, ll)
-                self.n_iter += 1
-            print(line, end='\r')
+        sumloss = self.print('affine', sumloss, lla=lla, llv=self.llv,
+                             in_line_search=in_line_search)
 
         # ==============================================================
         #                           RETURN
@@ -636,7 +797,13 @@ class RegisterStep:
         #                     EXPONENTIATE TRANSFORMS
         # ==============================================================
         logaff0 = logaff
-        aff0, iaff0, gaff0, igaff0 = self.affine.exp2(logaff0, grad=True)
+        aff0 = iaff0 = gaff0 = igaff0 = None
+        if all(loss.backward for loss in self.losses):
+            iaff0, igaff0 = self.affine.iexp(logaff0, grad=True)
+        elif not any(loss.backward for loss in self.losses):
+            aff0, gaff0 = self.affine.exp(logaff0, grad=True)
+        else:
+            aff0, iaff0, gaff0, igaff0 = self.affine.exp2(logaff0, grad=True)
 
         has_printed = False
         for loss in self.losses:
@@ -749,27 +916,8 @@ class RegisterStep:
         # ==============================================================
         #                           VERBOSITY
         # ==============================================================
-        llx = sumloss.item()
-        sumloss += lla
-        lla = lla
-        ll = sumloss.item()
-        self.loss_value = ll
-        if self.verbose and (self.verbose > 1 or not in_line_search):
-            if in_line_search:
-                line = '(search) | '
-            else:
-                line = '(affine) | '
-            line += f'{self.n_iter:03d} | {llx:12.6g} + {lla:12.6g} = {ll:12.6g}'
-            if not in_line_search:
-                if self.ll_prev is not None:
-                    gain = self.ll_prev - ll
-                    # gain = (self.ll_prev - ll) / max(abs(self.ll_max - ll), 1e-8)
-                    line += f' | {gain:12.6g}'
-                self.all_ll.append(ll)
-                self.ll_prev = ll
-                self.ll_max = max(self.ll_max, ll)
-                self.n_iter += 1
-            print(line, end='\r')
+        sumloss = self.print('affine_only', sumloss, lla=lla,
+                             in_line_search=in_line_search)
 
         # ==============================================================
         #                           RETURN
@@ -780,91 +928,5 @@ class RegisterStep:
         if hess:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
-
-
-class Register:
-
-    def __init__(self,
-                 losses,                 # list[LossComponent]
-                 affine=None,            # AffineModel
-                 nonlin=None,            # NonLinModel
-                 optim=None,             # Optimizer
-                 verbose=True,           # verbosity level
-                 framerate=1,            # plotting framerate
-                 ):
-        self.losses = losses
-        self.verbose = verbose
-        self.affine = affine
-        self.nonlin = nonlin
-        self.optim = optim
-        self.framerate = framerate
-
-    def __call__(self):
-        return self.fit()
-
-    def fit(self):
-        backend = dict(device=self.losses[0].moving.device,
-                       dtype=self.losses[0].moving.dtype)
-        if self.affine and not self.affine.dat:
-            self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
-                                              **backend)
-            self.affine.dat.dat.fill_(1e-12)
-        if self.nonlin and not self.nonlin.dat:
-            space = MeanSpace([loss.fixed for loss in self.losses] +
-                              [loss.moving for loss in self.losses])
-            self.nonlin.set_dat(space.shape, affine=space.affine, **backend)
-            self.nonlin.dat.dat.fill_(1e-12)
-
-        if self.verbose > 1:
-            for loss in self.losses:
-                print(loss)
-            if self.affine:
-                print(self.affine)
-            if self.nonlin:
-                print(self.nonlin)
-            print(self.optim)
-            print('')
-
-        if self.verbose:
-            if self.nonlin:
-                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"nonlin":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
-                print('-' * 89)
-            else:
-                print(f'{"step":8s} | {"it":3s} | {"fit":^12s} + {"affine":^12s} = {"obj":^12s} | {"gain":^12s}')
-                print('-' * 74)
-
-        step = RegisterStep(self.losses, self.affine, self.nonlin, self.verbose)
-
-        # initialize loss
-        verbose, self.verbose = self.verbose, False
-        if self.nonlin:
-            step.do_vel(self.nonlin.dat.dat, grad=False, hess=False)
-            if self.affine:
-                step.do_affine(self.affine.dat.dat, grad=False, hess=False)
-        else:
-            step.do_affine_only(self.affine.dat.dat, grad=False, hess=False)
-        self.verbose = verbose
-
-        step.framerate = self.framerate
-        if self.affine and self.nonlin:
-            if isinstance(self.optim.optim[1], optm.FirstOrder):
-                if self.nonlin.kernel is None:
-                    self.nonlin.set_kernel()
-                self.optim.optim[1].preconditioner = self.nonlin.greens_apply
-            self.optim.iter([self.affine.dat.dat, self.nonlin.dat.dat],
-                            [step.do_affine, step.do_vel])
-        elif self.affine:
-            self.optim.iter(self.affine.dat.dat, step.do_affine_only)
-        elif self.nonlin:
-            if isinstance(self.optim, optm.FirstOrder):
-                if self.nonlin.kernel is None:
-                    self.nonlin.set_kernel()
-                self.optim.preconditioner = self.nonlin.greens_apply
-            self.optim.iter(self.nonlin.dat.dat, step.do_vel)
-
-        if self.verbose:
-            print('')
-
-        return step.loss_value
 
 

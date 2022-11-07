@@ -8,8 +8,9 @@ import torch
 import math
 import multiprocessing
 
+
 def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
-         bandwidth=1, polarity='+', readout=-1, slicewise=False, lam=1e2,
+         bandwidth=1, polarity=1, readout=-1, slicewise=False, lam=1e2,
          max_iter=(10, 32), tol=1e-5, verbose=False, device=None):
     """Edge-Preserving B0 inhomogeneity correction (EPIC)
 
@@ -27,14 +28,14 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
     fieldmap : file_like or (*spatial) tensor, Fieldmap or voxel shift map
     extrapolate : bool, Extrapolate first/last echo when reverse_echoes is None
     bandwidth : float, Bandwidth of the input echoes, in Hz/pixel
-    polarity : '+' or '-', Readout polarity of the first echo
+    polarity : +1 or -1, Readout polarity of the first echo
     readout : int, Index of the readout dimension
     slicewise : bool or int, Run the algorithm slicewise. If int, chunk size.
     lam : [list of] float, Regularization factor (per echo)
     max_iter : [pair of] int, Maximum number of RLS and CG iterations
     tol : float, Tolerance for early stopping
     verbose : int, Verbosity level
-    device : {'cpu', 'cuda'}
+    device : {'cpu', 'cuda'} or torch.device
 
     Returns
     -------
@@ -111,7 +112,7 @@ def epic(echoes, reverse_echoes=True, fieldmap=None, extrapolate=False,
         # rescale fieldmap
         if fieldmap is not None:
             fieldmap = fieldmap / bandwidth
-            if polarity == '-':
+            if polarity < 0:
                 fieldmap = -fieldmap
 
         # run EPIC
@@ -159,7 +160,7 @@ class RunSlicewise:
             fieldmap1 = load(self.fieldmap[..., chunk, :], **self.backend)
             # rescale fieldmap
             fieldmap1 = fieldmap1 / self.bandwidth
-            if self.polarity == '-':
+            if self.polarity < 0:
                 fieldmap1 = -fieldmap1
         else:
             fieldmap1 = self.fieldmap
