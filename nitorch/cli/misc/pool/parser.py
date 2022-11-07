@@ -20,7 +20,7 @@ usage:
 
     -w, --window *WIN      Window size per dimension (default: 3)
     -s, --stride *STRD     Stride between output elements (default: *WIN)
-    -m, --method METHOD    Pooling function: {'mean', 'sum', 'min', 'max', 'median'} (default: 'mean')
+    -m, --method METHOD    Pooling function: {'mean', 'sum', 'min', 'max', 'median', 'ssq'} (default: 'mean')
     -d, --dimension DIM    Number of spatial dimensions (default: 3)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.pool{ext})
     -cpu, -gpu             Device to use (default: cpu)
