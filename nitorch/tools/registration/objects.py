@@ -126,16 +126,18 @@ class Similarity(BaseSimilarity):
             return SumSimilarity([other, self])
         raise TypeError(f'Cannot add a {type(other)} and a {type(self)}')
 
-    def __repr__(self):
-        s = f'{type(self.loss).__name__}(\n' \
-            f'    moving={self.moving}, \n' \
-            f'    fixed={self.fixed}'
+    def _prm_as_str(self):
+        s = []
         if self.backward:
-            s += f',\n    backward=True'
+            s += ['backward=True']
         p = getattr(self.loss, 'patch', None)
         if p is not None:
-            s += f',\n    patch={p}'
-        s += ')'
+            s += [f'patch={p}']
+        return s
+
+    def __repr__(self):
+        s = ', '.join(self._prm_as_str())
+        s = f'{type(self.loss).__name__}({s})'
         if self.factor != 1:
             s = f'{self.factor:.1g} * {s}'
         return s
@@ -157,7 +159,6 @@ class SumSimilarity(BaseSimilarity):
                 return [similarities]
             flat_similarities = []
             for similarity in similarities:
-                print(similarity)
                 flat_similarities += flatten_losses(similarity)
             return flat_similarities
         self.similarities = flatten_losses(similarities)
@@ -307,6 +308,18 @@ class SpatialTensor:
         self.affine = self.affine.to(*args, **kwargs)
         return self
 
+    def cuda(self):
+        return self.to('cuda')
+
+    def cpu(self):
+        return self.to('cpu')
+
+    def cuda_(self):
+        return self.to_('cuda')
+
+    def cpu_(self):
+        return self.to_('cpu')
+
     voxel_size = property(lambda self: spatial.voxel_size(self.affine))
     shape = property(lambda self: self.dat.shape[-self.dim:])
     dtype = property(lambda self: self.dat.dtype)
@@ -354,8 +367,9 @@ class Image(SpatialTensor):
         super().__init__(dat, affine)
         self.bound = bound
         self.extrapolate = extrapolate
-        while mask.dim() < self.dim + 1:
-            mask = mask[None]
+        if mask is not None:
+            while mask.dim() < self.dim + 1:
+                mask = mask[None]
         self.mask = mask
         if self.masked and mask.shape[-self.dim:] != self.shape:
             raise ValueError('Wrong shape for mask')
@@ -700,6 +714,17 @@ class ImagePyramid(ImageSequence):
 class SpatialTransform:
     pass
 
+    def _prm_as_str(self):
+        return []
+
+    def __repr__(self):
+        s = ', '.join(self._prm_as_str())
+        s = f'{self.__class__.__name__}({s})'
+        return s
+
+    def __str__(self):
+        return repr(self)
+
 
 class AffineTransform(SpatialTransform):
     pass
@@ -743,7 +768,7 @@ class Displacement(SpatialTensor, DenseTransform):
         return self
 
     def downsample(self, factor=2, **kwargs):
-        kwargs.setdefault('interpolation', 1)
+        kwargs.setdefault('interpolation', 2)
         kwargs.setdefault('bound', 'dft')
         kwargs.setdefault('anchor', 'c')
         factor = 1 / factor
@@ -752,7 +777,7 @@ class Displacement(SpatialTensor, DenseTransform):
         return type(self)(dat, aff, dim=self.dim)
 
     def upsample_(self, factor=2, **kwargs):
-        kwargs.setdefault('interpolation', 1)
+        kwargs.setdefault('interpolation', 2)
         kwargs.setdefault('bound', 'dft')
         kwargs.setdefault('anchor', 'c')
         self.dat, self.affine = spatial.resize_grid(
@@ -800,6 +825,31 @@ class LogAffine(AffineTransform):
         self._cache = None
         self._icache = None
 
+    dtype = property(lambda self: self.dat.dtype if self.dat is not None else None)
+    device = property(lambda self: self.dat.device if self.dat is not None else None)
+
+    def to(self, *args, **kwargs):
+        return copy.copy(self).to_(*args, **kwargs)
+
+    def to_(self, *args, **kwargs):
+        if self.dat is not None:
+            self.dat = self.dat.to(*args, **kwargs)
+        if self._basis is not None:
+            self._basis = self._basis.to(*args, **kwargs)
+        return self
+
+    def cuda(self):
+        return self.to('cuda')
+
+    def cpu(self):
+        return self.to('cpu')
+
+    def cuda_(self):
+        return self.to_('cuda')
+
+    def cpu_(self):
+        return self.to_('cpu')
+
     @property
     def basis(self):
         if self._basis is None:
@@ -811,9 +861,9 @@ class LogAffine(AffineTransform):
                 end_scl = begin_scl + 1
             self._basis = spatial.affine_basis(self._basis_name, self.dim,
                                                **utils.backend(self.dat))
-            self._basis[begin_rot:begin_scl] /= 40
-            self._basis[begin_scl:end_scl] /= 40
-            self._basis[end_scl:] /= 40
+            self._basis[begin_rot:begin_scl] /= 40  # rotations ~ 1 deg
+            self._basis[begin_scl:end_scl] /= 40    # scalings  ~ 1 pct
+            self._basis[end_scl:] /= 40             # shears
         return self._basis
 
     @basis.setter
@@ -861,7 +911,7 @@ class LogAffine(AffineTransform):
                     dat = self.dat[:nb_prm].clone()
                 else:
                     dat = self.dat.new_zeros([nb_prm])
-                    dat[:len(dat)] = dat
+                    dat[:len(self.dat)] = self.dat
             elif new_basis[0] == 's':
                 nb_prm = dim + dim*(dim-1)//2 + 1
                 dat = self.dat.new_zeros([nb_prm])
@@ -872,7 +922,7 @@ class LogAffine(AffineTransform):
                     dat[:nb_prm-1] = self.dat[:nb_prm-1]
                     dat[-1] = self.dat[nb_prm-1:nb_prm+2].mean()
                 else:
-                    dat[:len(dat)] = dat
+                    dat[:len(self.dat)] = self.dat
             else:
                 nb_prm = dim*(dim+1)
                 dat = self.dat.new_zeros([nb_prm])
@@ -880,9 +930,9 @@ class LogAffine(AffineTransform):
                     dat[dim:dim+dim*(dim-1)//2] = self.dat
                 elif old_basis[0] == 's':
                     dat[:len(self.dat)-1] = self.dat[:-1]
-                    dat[len(self.dat)-1:] = self.dat[-1]
+                    dat[len(self.dat)-1:len(self.dat)+dim-1] = self.dat[-1]
                 else:
-                    dat[:len(dat)] = dat
+                    dat[:len(self.dat)] = self.dat
         return LogAffine(dat, basis, self.dim)
 
     def clear_cache(self):
@@ -895,7 +945,9 @@ class LogAffine(AffineTransform):
         if grad:
             recompute = True
         if recompute or getattr(self, '_cache') is None:
-            aff = linalg._expm(q, self.basis, grad_X=grad)
+            aff = linalg._expm(q.double(), self.basis, grad_X=grad)
+            aff = (list(map(lambda x: x.to(q.dtype), aff))
+                   if isinstance(aff, (list, tuple)) else aff.to(q.dtype))
         else:
             aff = self._cache
         if cache_result:
@@ -908,7 +960,9 @@ class LogAffine(AffineTransform):
         if grad:
             recompute = True
         if recompute or self._cache is None:
-            iaff = linalg._expm(-q, self.basis, grad_X=grad)
+            iaff = linalg._expm(-q.double(), self.basis, grad_X=grad)
+            iaff = (list(map(lambda x: x.to(q.dtype), iaff))
+                    if isinstance(iaff, (list, tuple)) else iaff.to(q.dtype))
         else:
             iaff = self._cache
         if cache_result:
@@ -925,6 +979,9 @@ class LogAffine(AffineTransform):
         else:
             return (self.exp(q, cache_result=cache_result, recompute=recompute),
                     self.iexp(q, cache_result=cache_result, recompute=recompute))
+
+    def _prm_as_str(self):
+        return [f'shape={list(self.dat.shape)}', f'dim={self.dim}']
 
     def __repr__(self):
         s = [f'shape={list(self.dat.shape)}', f'dim={self.dim}']
@@ -1022,19 +1079,71 @@ class LogAffine2d(LogAffine):
         Returns
         -------
         affine : LogAffine2d
-            LogAffine with a different basis
+            LogAffine2d with a different basis
+
         """
-        new_dat = super().switch_basis(basis).dat
-        return LogAffine2d(new_dat, basis, rotation=self.rotation,
-                           plane=self.plane, dim=self.dim)
+        dat = None
+        dim = 2
+        if self._basis_name is not None and self.dat is not None:
+            new_basis = basis[:2].lower()
+            old_basis = self._basis_name[:2].lower()
+            if new_basis[0] == 't':
+                dat = self.dat[:dim].clone()
+            elif new_basis == 'ro':
+                nb_prm = dim*(dim-1)//2
+                if old_basis == 'ro':
+                    dat = self.dat.clone()
+                elif len(self.dat) >= dim + nb_prm:
+                    dat = self.dat[dim:dim+nb_prm].clone()
+                else:
+                    dat = self.dat.new_zeros([nb_prm])
+                    dat1 = self.dat[dim:dim+nb_prm]
+                    dat[:len(dat1)] = dat1
+            elif new_basis[0] == 'r':
+                nb_prm = dim + dim*(dim-1)//2
+                if old_basis == 'ro':
+                    dat = self.dat.new_zeros([nb_prm])
+                    dat[dim:] = self.dat
+                elif len(self.dat) >= dim + nb_prm:
+                    dat = self.dat[:nb_prm].clone()
+                else:
+                    dat = self.dat.new_zeros([nb_prm])
+                    dat[:len(dat)] = dat
+            elif new_basis[0] == 's':
+                nb_prm = dim + dim*(dim-1)//2 + 1
+                dat = self.dat.new_zeros([nb_prm])
+                if old_basis == 'ro':
+                    dat[dim:-1] = self.dat
+                elif len(self.dat) >= dim + nb_prm:
+                    # old_basis is full affine
+                    dat[:nb_prm-1] = self.dat[:nb_prm-1]
+                    dat[-1] = self.dat[nb_prm-1:nb_prm+2].mean()
+                else:
+                    dat[:len(dat)] = dat
+            else:
+                nb_prm = dim*(dim+1)
+                dat = self.dat.new_zeros([nb_prm])
+                if old_basis == 'ro':
+                    dat[dim:dim+dim*(dim-1)//2] = self.dat
+                elif old_basis[0] == 's':
+                    dat[:len(self.dat)-1] = self.dat[:-1]
+                    dat[len(self.dat)-1:] = self.dat[-1]
+                else:
+                    dat[:len(dat)] = dat
+        return LogAffine2d(dat, basis, dim=self.dim,
+                           plane=self.plane, rotation=self.rotation)
 
     def exp(self, q=None, grad=False, cache_result=False, recompute=True):
         aff = super().exp(q, grad, cache_result, recompute)
         if grad:
             aff, gaff = aff
-        aff = self.rotation @ aff @ self.rotation.T
+        dtype = aff.dtype
+        aff = aff.double()
+        rot = self.rotation.to(aff)
+        aff = (rot @ aff @ rot.T).to(dtype)
         if grad:
-            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
+            gaff = gaff.double()
+            gaff = rot.matmul(gaff).matmul(rot.T).to(dtype)
             return aff, gaff
         return aff
 
@@ -1042,9 +1151,13 @@ class LogAffine2d(LogAffine):
         aff = super().iexp(q, grad, cache_result, recompute)
         if grad:
             aff, gaff = aff
-        aff = self.rotation @ aff @ self.rotation.T
+        dtype = aff.dtype
+        aff = aff.double()
+        rot = self.rotation.to(aff)
+        aff = (rot @ aff @ rot.T).to(dtype)
         if grad:
-            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
+            gaff = gaff.double()
+            gaff = rot.matmul(gaff).matmul(rot.T).to(dtype)
             return aff, gaff
         return aff
 
@@ -1054,14 +1167,24 @@ class LogAffine2d(LogAffine):
             aff, iaff, gaff, giaff = aff
         else:
             aff, iaff = aff
-        aff = self.rotation @ aff @ self.rotation.T
-        iaff = self.rotation @ iaff @ self.rotation.T
+        dtype = aff.dtype
+        aff = aff.double()
+        iaff = iaff.double()
+        rot = self.rotation.to(aff)
+        aff = (rot @ aff @ rot.T).to(dtype)
+        iaff = (rot @ iaff @ rot.T).to(dtype)
         if grad:
-            gaff = self.rotation.matmul(gaff).matmul(self.rotation.T)
-            giaff = self.rotation.matmul(giaff).matmul(self.rotation.T)
+            gaff = gaff.double()
+            giaff = giaff.double()
+            gaff = rot.matmul(gaff).matmul(rot.T).to(dtype)
+            giaff = rot.matmul(giaff).matmul(rot.T).to(dtype)
             return aff, iaff, gaff, giaff
         return aff, iaff
 
+    def _prm_as_str(self):
+        s = super()._prm_as_str()
+        s += [f'plane={self.plane}']
+        return s
 
 
 def _rotate_grad(grad, aff=None, dense=None):
@@ -1087,6 +1210,17 @@ def _rotate_grad(grad, aff=None, dense=None):
 class TransformationModel:
     def parameters(self):
         raise NotImplementedError
+
+    def _prm_as_str(self):
+        return []
+
+    def __repr__(self):
+        s = ', '.join(self._prm_as_str())
+        s = f'{self.__class__.__name__}({s})'
+        return s
+
+    def __str__(self):
+        return repr(self)
 
 
 class NonLinModel(TransformationModel):
@@ -1166,6 +1300,26 @@ class NonLinModel(TransformationModel):
     dim = property(lambda self: self.dat.dim if self.dat is not None else None)
     voxel_size = property(lambda self: self.dat.voxel_size if self.dat is not None else None)
 
+    def to(self, *args, **kwargs):
+        return copy.copy(self).to_(*args, **kwargs)
+
+    def to_(self, *args, **kwargs):
+        if self.dat is not None:
+            self.dat.to_(*args, **kwargs)
+        return self
+
+    def cuda(self):
+        return self.to('cuda')
+
+    def cpu(self):
+        return self.to('cpu')
+
+    def cuda_(self):
+        return self.to_('cuda')
+
+    def cpu_(self):
+        return self.to_('cpu')
+
     def parameters(self):
         if not self.dat:
             return None
@@ -1241,18 +1395,14 @@ class NonLinModel(TransformationModel):
             obj.set_kernel()
         return obj
 
-    def __repr__(self):
+    def _prm_as_str(self):
         s = []
         if self.dat is not None:
-            s += [f'velocity={self.dat}']
+            s += self.dat._prm_as_str()
         else:
             s += ['<uninitialized>']
-        s += [f'factor={self.factor}']
         s += [f'{key}={value}' for key, value in self.penalty.items()]
-        s = ', '.join(s)
-        return f'{self.__class__.__name__}({s})'
-
-    __str__ = __repr__
+        return s
 
 
 class ShootModel(NonLinModel):
@@ -1688,7 +1838,7 @@ class Nonlin2dModel(NonLinModel):
 class AffineModel(TransformationModel):
     """Affine transformation model encoded in a Lie algebra"""
 
-    def __init__(self, basis, factor=1, prm=None, dat=None, position='symmetric'):
+    def __init__(self, basis, factor=1, penalty=None, dat=None, position='symmetric'):
         """
 
         Parameters
@@ -1697,7 +1847,10 @@ class AffineModel(TransformationModel):
             Affine basis name
         factor : float, default=1
             Regularization factor
-        prm : dict(), unused
+        penalty : float or list[float] or dict(), optional
+            L2 penalty
+            If a list, one value per parameters.
+            If a dict, keys "translation", "rotation", "zoom", "shear"
         dat : LogAffine or tensor, optional
             Pre-allocated log-parameters.
         position : {'moving', 'fixed', 'symmetric'}, default='symmetric'
@@ -1707,7 +1860,8 @@ class AffineModel(TransformationModel):
             symmetric.
         """
         self.factor = factor
-        self.prm = prm or {}  # regutils.defaults_affine()
+        self._penalty = penalty or None  # regutils.defaults_affine()
+        self._penalty_list = None
         self._basis = basis
         self.position = position
         if dat is not None:
@@ -1715,10 +1869,71 @@ class AffineModel(TransformationModel):
         else:
             self.dat = None
 
+    @property
+    def _truedim(self):
+        return self.dat.dim if self.dat else None
+
+    @property
+    def penalty(self):
+        if not self.dat or self._penalty is None:
+            return None
+        if self._penalty_list is None:
+            B = self._basis[0].lower()
+            D = self._truedim
+            nb_t = D
+            nb_r = (D*(D-1))//2
+            nb_z0 = 1
+            nb_z1 = D
+            nb_z = nb_z0 if B == 's' else nb_z1
+            nb_s = (D*(D-1))//2
+            nb_p = nb_t
+            if B != 't':
+                nb_p += nb_r
+            if B not in 'tr':
+                nb_p += nb_z
+            if B not in 'trs':
+                nb_p += nb_s
+            backend = dict(dtype=self.dat.dtype, device=self.dat.device)
+            penalty = torch.zeros([nb_p], **backend)
+            if isinstance(self._penalty_list, dict):
+                for key, val in self._penalty_list.items():
+                    key = key.lower()[0]
+                    if key == 't':
+                        penalty[:nb_t] = val
+                    elif key == 'r':
+                        penalty[nb_t:nb_t+nb_r] = val
+                    elif key == 's':
+                        penalty[nb_t+nb_r:nb_t+nb_r+nb_z] = val
+                    elif key == 'a':
+                        penalty[nb_t+nb_r+nb_z:] = val
+            else:
+                penalty0 = torch.as_tensor(self._penalty, **backend)
+                B0 = ('a' if len(penalty0) == nb_t+nb_r+nb_z1+nb_s else
+                      's' if len(penalty0) == nb_t+nb_r+nb_z0 else
+                      'r' if len(penalty0) == nb_t+nb_r else
+                      't' if len(penalty0) == nb_t else
+                      '')
+                if not B0 or B == B0:
+                    penalty[...] = penalty0
+                elif B in 'tr':
+                    N = min(len(penalty), len(penalty0))
+                    penalty[:N] = penalty0[:N]
+                else:
+                    N = min(len(penalty), len(penalty0), nb_t+nb_r)
+                    penalty[:N] = penalty0[:N]
+                    if B == 's' and B0 == 'a':
+                        penalty[nb_t+nb_r] = penalty[nb_t+nb_r:nb_t+nb_r+nb_z1].mean()
+                    elif B == 'a' and B0 == 's':
+                        penalty[nb_t+nb_r:nb_t+nb_r+nb_z1] = penalty0[nb_t+nb_r]
+            self._penalty_list = penalty
+        return self._penalty_list
+
     def switch_basis(self, basis):
         obj = copy.deepcopy(self)
         if obj.dat:
             obj.dat = obj.dat.switch_basis(basis)
+        obj._basis = basis
+        obj._penalty_list = None
         return obj
 
     def set_dat(self, dat=None, dim=None, **backend):
@@ -1732,6 +1947,30 @@ class AffineModel(TransformationModel):
 
     basis = property(lambda self: self.dat.basis if self.dat is not None else None)
     basis_name = property(lambda self: self._basis)
+
+    def to(self, *args, **kwargs):
+        return copy.copy(self).to_(*args, **kwargs)
+
+    def to_(self, *args, **kwargs):
+        if self.dat is not None:
+            self.dat.to_(*args, **kwargs)
+        return self
+
+    def cuda(self):
+        return self.to('cuda')
+
+    def cpu(self):
+        return self.to('cpu')
+
+    def cuda_(self):
+        return self.to_('cuda')
+
+    def cpu_(self):
+        return self.to_('cpu')
+
+    def clear_cache(self):
+        if self.dat is not None:
+            self.dat.clear_cache()
 
     def exp(self, q=None, grad=False, cache_result=False, recompute=True):
         return self.dat.exp(q, grad, cache_result, recompute)
@@ -1751,7 +1990,8 @@ class AffineModel(TransformationModel):
         s += [f'basis={self._basis}']
         s += [f'factor={self.factor}']
         s += [f'position={self.position}']
-        s += [f'{key}={value}' for key, value in self.prm.items()]
+        if self.penalty is not None:
+            s += [f'penalty={self.penalty.tolist()}']
         s = ', '.join(s)
         return f'{self.__class__.__name__}({s})'
 
@@ -1759,21 +1999,25 @@ class AffineModel(TransformationModel):
 class Affine2dModel(AffineModel):
     """A 2D affine in a 3D world"""
 
-    def __init__(self, basis, plane, ref_affine=None, factor=1, prm=None,
+    def __init__(self, basis, plane, ref_affine=None, factor=1, penalty=None,
                  dat=None, position='symmetric'):
-        super().__init__(basis, factor, prm, dat, position)
+        super().__init__(basis, factor, penalty, dat, position)
         self._plane = plane
         self.ref_affine = ref_affine
         if ref_affine is None:
             rot = None
         else:
-            rot = ref_affine.clone()
+            rot = ref_affine.clone().double()
             rot[:-1, -1] = 0
             rot[:-1, :-1] /= rot[:-1, :-1].square().sum(0, keepdim=True).sqrt()
-        self._rotation = rot
+        self._rotation = rot.to(ref_affine)
 
     rotation = property(lambda self: self.dat.rotation if self.dat is not None else None)
     plane = property(lambda self: self.dat.plane if self.dat is not None else None)
+
+    @property
+    def _truedim(self):
+        return 2
 
     @property
     def plane_name(self):

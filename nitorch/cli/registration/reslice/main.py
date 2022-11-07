@@ -194,8 +194,10 @@ def write_data(options):
             file.affine = spatial.affine_lmdiv(aff, mat)
         options.transformations = options.transformations[1:]
 
-    def build_from_target(affine, shape):
+    def build_from_target(affine, shape, smart=False):
         """Compose all transformations, starting from the final orientation"""
+        if smart and all(isinstance(trf, struct.Linear) for trf in options.transformations):
+            return None
         grid = spatial.affine_grid(affine.to(**backend), shape)
         for trf in reversed(options.transformations):
             if isinstance(trf, struct.Linear):
@@ -246,7 +248,7 @@ def write_data(options):
             opt_pull = dict(opt_pull0)
             opt_pull['interpolation'] = 1
         else:
-            dat = io.volumes.loadf(file.fname, rand=options.interpolation>0, **backend)
+            dat = io.volumes.loadf(file.fname, rand=False, **backend)
             opt_pull = opt_pull0
         dat = dat.reshape([*file.shape, file.channels])
         dat = utils.movedim(dat, -1, 0)
@@ -259,12 +261,13 @@ def write_data(options):
                                         dtype=oaffine.dtype)
                 factor = spatial.voxel_size(oaffine) / ovx
                 oaffine, oshape = spatial.affine_resize(oaffine, oshape, factor=factor, anchor='f')
-            grid = build_from_target(oaffine, oshape)
-        mat = file.affine.to(**backend)
-        imat = spatial.affine_inv(mat)
-        if options.prefilter and not is_label:
-            dat = spatial.spline_coeff_nd(dat, **opt_coeff)
-        dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt_pull)
+            grid = build_from_target(oaffine, oshape, smart=not options.voxel_size)
+        if grid is not None:
+            mat = file.affine.to(**backend)
+            imat = spatial.affine_inv(mat)
+            if options.prefilter and not is_label:
+                dat = spatial.spline_coeff_nd(dat, **opt_coeff)
+            dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt_pull)
         dat = utils.movedim(dat, 0, -1)
 
         if is_label:

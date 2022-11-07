@@ -15,7 +15,7 @@ from nitorch.core import py, utils, linalg, math
 import torch
 from .utils import jg, jhj
 from . import optim as optm, utils as regutils
-from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel
+from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilarity
 import copy
 
 
@@ -57,7 +57,7 @@ class PairwiseRegister:
 
         Parameters
         ----------
-        losses : list[LossComponent]
+        losses : Similarity
             A list of losses to optimize.
         affine : AffineModel, optional
             An object describing the affine transformation model
@@ -77,7 +77,7 @@ class PairwiseRegister:
         framerate : float, default=1
             Update plot at most `framerate` times per second.
         """
-        self.losses = losses
+        self.losses = SumSimilarity.sum(losses)
         self.verbose = verbose
         self.affine = affine
         self.nonlin = nonlin
@@ -94,22 +94,23 @@ class PairwiseRegister:
         if self.affine and self.affine.parameters() is None:
             self.affine = self.affine.set_dat(dim=self.losses[0].fixed.dim,
                                               **backend)
-            # self.affine.parameters().fill_(1e-12)
+        if self.affine:
+            self.affine.to_(**backend)
         if self.nonlin and self.nonlin.parameters() is None:
             space = MeanSpace([loss.fixed for loss in self.losses] +
                               [loss.moving for loss in self.losses])
             self.nonlin.set_dat(space.shape, affine=space.affine, **backend)
-            # self.nonlin.parameters().fill_(1e-12)
+        if self.nonlin:
+            self.nonlin.to_(**backend)
 
-        if self.verbose > 1:
-            for loss in self.losses:
-                print(loss)
-            if self.affine:
-                print(self.affine)
-            if self.nonlin:
-                print(self.nonlin)
-            print(self.optim)
-            print('')
+        # if self.verbose > 1:
+        #     print(self.losses)
+        #     if self.affine:
+        #         print(self.affine)
+        #     if self.nonlin:
+        #         print(self.nonlin)
+        #     print(self.optim)
+        #     print('')
 
         if self.verbose:
             if self.nonlin:
@@ -178,8 +179,6 @@ class PairwiseRegisterStep:
             framerate=1,
             figure=None,
             ):
-        if not isinstance(losses, (list, tuple)):
-            losses = [losses]
         self.losses = losses
         self.affine = affine
         self.nonlin = nonlin
@@ -202,7 +201,7 @@ class PairwiseRegisterStep:
             import matplotlib.pyplot as plt
             self.figure = plt.figure()
 
-    def mov2fix(self, fixed, moving, warped, vel=None, cat=False, dim=None, title=None):
+    def mov2fix(self, fixed, moving, warped, vel=None, title=None):
         """Plot registration live"""
 
         import time
@@ -214,23 +213,16 @@ class PairwiseRegisterStep:
 
         import matplotlib.pyplot as plt
 
-
         warped = warped.detach()
         if vel is not None:
             vel = vel.detach()
 
-        dim = dim or (fixed.dim() - 1)
-        if fixed.dim() < dim + 2:
+        dim = moving.dim() - 1
+        while fixed.dim() < dim + 1:
             fixed = fixed[None]
-        if moving.dim() < dim + 2:
-            moving = moving[None]
-        if warped.dim() < dim + 2:
-            warped = warped[None]
-        if vel is not None:
-            if vel.dim() < dim + 2:
-                vel = vel[None]
-        nb_channels = fixed.shape[-dim - 1]
-        nb_batch = len(fixed)
+        moving = moving[0]
+        fixed = fixed[0]
+        warped = warped[0]
 
         def rescale2d(x):
             if not x.dtype.is_floating_point:
@@ -243,32 +235,28 @@ class PairwiseRegisterStep:
             return x
 
         if dim == 3:
-            fixed = [fixed[..., fixed.shape[-1] // 2],
-                     fixed[..., fixed.shape[-2] // 2, :],
-                     fixed[..., fixed.shape[-3] // 2, :, :]]
+            fixed = [fixed[:, :, fixed.shape[-1] // 2],
+                     fixed[:, fixed.shape[-2] // 2, :],
+                     fixed[fixed.shape[-3] // 2, :, :]]
             fixed = [rescale2d(f) for f in fixed]
-            moving = [moving[..., moving.shape[-1] // 2],
-                      moving[..., moving.shape[-2] // 2, :],
-                      moving[..., moving.shape[-3] // 2, :, :]]
+            moving = [moving[:, :, moving.shape[-1] // 2],
+                      moving[:, moving.shape[-2] // 2, :],
+                      moving[moving.shape[-3] // 2, :, :]]
             moving = [rescale2d(f) for f in moving]
-            warped = [warped[..., warped.shape[-1] // 2],
-                      warped[..., warped.shape[-2] // 2, :],
-                      warped[..., warped.shape[-3] // 2, :, :]]
+            warped = [warped[:, :, warped.shape[-1] // 2],
+                      warped[:, warped.shape[-2] // 2, :],
+                      warped[warped.shape[-3] // 2, :, :]]
             warped = [rescale2d(f) for f in warped]
             if vel is not None:
-                vel = [vel[..., vel.shape[-2] // 2, :],
-                       vel[..., vel.shape[-3] // 2, :, :],
-                       vel[..., vel.shape[-4] // 2, :, :, :]]
+                vel = [vel[:, :, vel.shape[-2] // 2, :],
+                       vel[:, vel.shape[-3] // 2, :, :],
+                       vel[vel.shape[-4] // 2, :, :, :]]
                 vel = [v.square().sum(-1).sqrt() for v in vel]
         else:
-            fixed = [rescale2d(f) for f in fixed]
-            moving = [rescale2d(f) for f in moving]
-            warped = [rescale2d(f) for f in warped]
+            fixed = [rescale2d(fixed)]
+            moving = [rescale2d(moving)]
+            warped = [rescale2d(warped)]
             vel = [vel.square().sum(-1).sqrt()] if vel is not None else []
-
-        if cat:
-            moving = [math.softmax(img, dim=1, implicit=True) for img in moving]
-            warped = [math.softmax(img, dim=1, implicit=True) for img in warped]
 
         checker = []
         for f, w in zip(fixed, warped):
@@ -282,46 +270,47 @@ class PairwiseRegisterStep:
             checker_unfold.copy_(warped_unfold)
             checker.append(f)
 
-        kdim = 3 if dim == 3 else 1
-        bdim = min(nb_batch, 3)
-        nb_rows = kdim * bdim + 1
+        kdim = len(fixed)
+        nb_rows = kdim + 1
         nb_cols = 4 + bool(vel)
+
+        imkwargs = dict(interpolation='bilinear')
 
         fig = self.figure
         replot = len(fig.axes) != (nb_rows - 1) * nb_cols + 1
         replot = replot or not getattr(self, 'plt_saved', None)
+        replot = True
         if replot:
             fig.clf()
 
-            for b in range(bdim):
-                for k in range(kdim):
-                    ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 1)
-                    ax.imshow(moving[k][b, 0].cpu())
-                    if b == 0 and k == 0:
-                        ax.set_title('moving')
+            for k in range(kdim):
+                ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 1)
+                ax.imshow(moving[k].cpu(), **imkwargs)
+                if k == 0:
+                    ax.set_title('moving')
+                ax.axis('off')
+                ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 2)
+                ax.imshow(warped[k].cpu(), **imkwargs)
+                if k == 0:
+                    ax.set_title('moved')
+                ax.axis('off')
+                ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 3)
+                ax.imshow(checker[k].cpu(), **imkwargs)
+                if k == 0:
+                    ax.set_title('checker')
+                ax.axis('off')
+                ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 4)
+                ax.imshow(fixed[k].cpu(), **imkwargs)
+                if k == 0:
+                    ax.set_title('fixed')
+                ax.axis('off')
+                if vel:
+                    ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 5)
+                    d = ax.imshow(vel[k].cpu(), **imkwargs)
+                    if k == 0:
+                        ax.set_title('displacement')
                     ax.axis('off')
-                    ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 2)
-                    ax.imshow(warped[k][b, 0].cpu())
-                    if b == 0 and k == 0:
-                        ax.set_title('moved')
-                    ax.axis('off')
-                    ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 3)
-                    ax.imshow(checker[k][b, 0].cpu())
-                    if b == 0 and k == 0:
-                        ax.set_title('checker')
-                    ax.axis('off')
-                    ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 4)
-                    ax.imshow(fixed[k][b, 0].cpu())
-                    if b == 0 and k == 0:
-                        ax.set_title('fixed')
-                    ax.axis('off')
-                    if vel:
-                        ax = fig.add_subplot(nb_rows, nb_cols, (b + k*bdim) * nb_cols + 5)
-                        d = ax.imshow(vel[k][b].cpu())
-                        if b == 0 and k == 0:
-                            ax.set_title('displacement')
-                        ax.axis('off')
-                        fig.colorbar(d, None, ax)
+                    fig.colorbar(d, None, ax)
             ax = fig.add_subplot(nb_rows, 1, nb_rows)
             all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
             ax.plot(range(1, len(all_ll)+1), all_ll)
@@ -340,15 +329,14 @@ class PairwiseRegisterStep:
             for elem in self.plt_saved:
                 fig.canvas.restore_region(elem)
 
-            for b in range(bdim):
-                for k in range(kdim):
-                    j = (b + k*bdim) * nb_cols
-                    fig.axes[j].images[0].set_data(moving[k][b, 0].cpu())
-                    fig.axes[j+1].images[0].set_data(warped[k][b, 0].cpu())
-                    fig.axes[j+2].images[0].set_data(checker[k][b, 0].cpu())
-                    fig.axes[j+3].images[0].set_data(fixed[k][b, 0].cpu())
-                    if vel is not None:
-                        fig.axes[j+4].images[0].set_data(vel[k][b].cpu())
+            for k in range(kdim):
+                j = k * nb_cols
+                fig.axes[j].images[0].set_data(moving[k].cpu())
+                fig.axes[j+1].images[0].set_data(warped[k].cpu())
+                fig.axes[j+2].images[0].set_data(checker[k].cpu())
+                fig.axes[j+3].images[0].set_data(fixed[k].cpu())
+                if vel:
+                    fig.axes[j+4].images[0].set_data(vel[k].cpu())
             all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
             lldata = (range(1, len(all_ll)+1), all_ll)
             fig.axes[-1].lines[0].set_data(lldata)
@@ -521,7 +509,7 @@ class PairwiseRegisterStep:
                         init = init * initmask
                 dat = fixed.dat * fixed.mask if fixed.masked else fixed.dat
                 preview = preview * warped_mask if warped_mask is not None else preview
-                self.mov2fix(dat, init, preview, disp, dim=fixed.dim,
+                self.mov2fix(dat, init, preview, disp,
                              title=f'(nonlin) {self.n_iter:03d}')
 
             # ----------------------------------------------------------
@@ -621,6 +609,8 @@ class PairwiseRegisterStep:
 
         has_printed = False
         for loss in self.losses:
+            do_print = not (has_printed or self.verbose < 3 or in_line_search
+                            or loss.backward)
 
             moving, fixed, factor = loss.moving, loss.fixed, loss.factor
             if loss.backward:
@@ -673,8 +663,6 @@ class PairwiseRegisterStep:
             else:
                 mask = warped_mask
 
-            do_print = not (has_printed or self.verbose < 3 or in_line_search
-                            or loss.backward)
             if do_print:
                 has_printed = True
                 if moving.previewed:
@@ -691,7 +679,7 @@ class PairwiseRegisterStep:
                         init = init * initmask
                 dat = fixed.dat * fixed.mask if fixed.masked else fixed.dat
                 preview = preview * warped_mask if warped_mask is not None else preview
-                self.mov2fix(dat, init, preview, dim=fixed.dim,
+                self.mov2fix(dat, init, preview,
                              title=f'(affine) {self.n_iter:03d}')
 
             # ----------------------------------------------------------
@@ -768,8 +756,16 @@ class PairwiseRegisterStep:
             sumloss = (llx.mul_(factor) if sumloss is None else
                        sumloss.add_(llx, alpha=factor))
 
-        # TODO add regularization term
-        lla = 0
+        if self.affine.penalty is not None:
+            lla = logaff * self.affine.penalty
+            if grad:
+                sumgrad += lla
+            if hess:
+                sumhess.diagonal(0, -1, -2).add_(self.affine.penalty)
+            lla = 0.5 * lla.dot(logaff)
+            sumloss += lla
+        else:
+            lla = 0
 
         # ==============================================================
         #                           VERBOSITY
@@ -808,6 +804,8 @@ class PairwiseRegisterStep:
 
         has_printed = False
         for loss in self.losses:
+            do_print = not (has_printed or self.verbose < 3 or in_line_search
+                            or loss.backward)
 
             moving, fixed, factor = loss.moving, loss.fixed, loss.factor
             if loss.backward:
@@ -834,8 +832,6 @@ class PairwiseRegisterStep:
                 else:
                     mask = mask * fixed.mask
 
-            do_print = not (has_printed or self.verbose < 3 or in_line_search
-                            or loss.backward)
             if do_print:
                 has_printed = True
                 if moving.previewed:
@@ -848,7 +844,7 @@ class PairwiseRegisterStep:
                 else:
                     init = spatial.affine_grid(init, fixed.shape)
                     init = moving.pull(init, preview=True, dat=False)
-                self.mov2fix(fixed.preview, init, preview, dim=fixed.dim,
+                self.mov2fix(fixed.preview, init, preview,
                              title=f'(affine) {self.n_iter:03d}')
 
             # ----------------------------------------------------------
@@ -911,8 +907,16 @@ class PairwiseRegisterStep:
             sumloss = (llx.mul_(factor) if sumloss is None else
                        sumloss.add_(llx, alpha=factor))
 
-        # TODO add regularization term
-        lla = 0
+        if self.affine.penalty is not None:
+            lla = logaff * self.affine.penalty
+            if grad:
+                sumgrad += lla
+            if hess:
+                sumhess.diagonal(0, -1, -2).add_(self.affine.penalty)
+            lla = 0.5 * lla.dot(logaff)
+            sumloss += lla
+        else:
+            lla = 0
 
         # ==============================================================
         #                           VERBOSITY

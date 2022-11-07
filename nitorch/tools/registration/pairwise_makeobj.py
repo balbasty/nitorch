@@ -79,7 +79,7 @@ def make_image(dat, mask=None, affine=None,
     return image
 
 
-def make_affine(basis='rigid', position='symmetric'):
+def make_affine(basis='rigid', position='symmetric', penalty=None):
     """Build an AffineModel object
 
     Parameters
@@ -101,10 +101,11 @@ def make_affine(basis='rigid', position='symmetric'):
         return None
     if basis is True:
         basis = 'rigid'
-    return objects.AffineModel(basis, position=position)
+    return objects.AffineModel(basis, position=position, penalty=penalty)
 
 
-def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric'):
+def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
+                   penalty=None):
     """Build an Affine2dModel object
 
     An Affine2dModel represents an in-plane affine within a 3D space.
@@ -136,7 +137,7 @@ def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric'):
     if basis is True:
         basis = 'rigid'
     return objects.Affine2dModel(basis, plane=plane, ref_affine=affine_ref,
-                                 position=position)
+                                 position=position, penalty=penalty)
 
 
 def make_nonlin(shape, model='svf', affine=None, voxel_size=None,

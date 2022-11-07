@@ -1,7 +1,7 @@
 __all__ = ['warp_images']
 
 from nitorch import io
-from nitorch.core.py import fileparts
+from nitorch.core.py import fileparts, make_list
 from nitorch.core import utils
 from nitorch.core.struct import Structure
 from nitorch import spatial
@@ -27,6 +27,10 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             read from disk.
         affine : [sequence of] (D+1, D+1) tensor or str, optional
             A series of affine transforms that should be applied to the image.
+        bound : str, default='dct2'
+            Boundary conditions for out-of-bound data
+        extrapolate : bool, default=False
+            Extrapolate out-of-bound data
 
     affine : objects.AffineModel, optional
         An affine transform (fitted using `PairwiseRegister`)
@@ -42,18 +46,39 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
     """
 
     if isinstance(fix, dict):
+        fix = dict(fix)
+        fix.setdefault('world', None)
+        fix.setdefault('affine', None)
+        fix.setdefault('output', None)
+        fix.setdefault('resliced', None)
+        fix.setdefault('bound', 'dct2')
+        fix.setdefault('extrapolate', False)
         fix = Structure(fix)
     if isinstance(mov, dict):
+        mov = dict(mov)
+        mov.setdefault('world', None)
+        mov.setdefault('affine', None)
+        mov.setdefault('output', None)
+        mov.setdefault('resliced', None)
+        mov.setdefault('bound', 'dct2')
+        mov.setdefault('extrapolate', False)
         mov = Structure(mov)
 
     if not (mov.output or mov.resliced or fix.output or fix.resliced):
         return
 
-    fix, fix_affine = preproc.map_image(fix.files, dim=dim)
-    mov, mov_affine = preproc.map_image(mov.files, dim=dim)
+    dat_fix, fix_affine = preproc.map_image(fix.files, dim=dim)
+    dat_mov, mov_affine = preproc.map_image(mov.files, dim=dim)
     fix_affine = fix_affine.float()
     mov_affine = mov_affine.float()
     dim = dim or (fix.dim - 1)
+
+    if affine:
+        affine.to_(device)
+        affine.clear_cache()
+    if nonlin:
+        nonlin.to_(device)
+        nonlin.clear_cache()
 
     if fix.world:  # overwrite orientation matrix
         fix_affine = io.transforms.map(fix.world).fdata().squeeze()
@@ -69,11 +94,11 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
 
     # moving
     if mov.output or mov.resliced:
-        ifname = mov.files[0]
+        ifname = make_list(mov.files)[0]
         idir, base, ext = fileparts(ifname)
         odir_mov = odir or idir or '.'
 
-        image = objects.Image(mov.fdata(rand=True, device=device), dim=dim,
+        image = objects.Image(dat_mov.fdata(rand=True, device=device),
                               affine=mov_affine, bound=mov.bound,
                               extrapolate=mov.extrapolate)
 
@@ -81,7 +106,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             target_affine = mov_affine
             target_shape = image.shape
             if affine and affine.position[0].lower() in 'ms':
-                aff = affine.exp(recompute=True, cache_result=True)
+                aff = affine.exp(recompute=False, cache_result=True)
                 target_affine = spatial.affine_lmdiv(aff, target_affine)
 
             fname = mov.output.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
@@ -94,7 +119,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
 
         if mov.resliced:
             target_affine = fix_affine
-            target_shape = fix.shape[1:]
+            target_shape = dat_fix.shape[1:]
 
             fname = mov.resliced.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
             print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
@@ -106,11 +131,11 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
 
     # fixed
     if fix.output or fix.resliced:
-        ifname = fix.files[0]
+        ifname = make_list(fix.files)[0]
         idir, base, ext = fileparts(ifname)
         odir_fix = odir or idir or '.'
 
-        image = objects.Image(fix.fdata(rand=True, device=device), dim=dim,
+        image = objects.Image(dat_fix.fdata(rand=True, device=device),
                               affine=fix_affine, bound=fix.bound,
                               extrapolate=fix.extrapolate)
 
@@ -118,7 +143,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             target_affine = fix_affine
             target_shape = image.shape
             if affine and affine.position[0].lower() in 'fs':
-                aff = affine.exp(recompute=True, cache_result=True)
+                aff = affine.exp(recompute=False, cache_result=True)
                 target_affine = spatial.affine_matmul(aff, target_affine)
 
             fname = fix.output.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
@@ -131,7 +156,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
 
         if fix.resliced:
             target_affine = mov_affine
-            target_shape = mov.shape[1:]
+            target_shape = dat_mov.shape[1:]
 
             fname = fix.resliced.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
             print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
@@ -182,7 +207,7 @@ def warp_one_image(image, target, shape=None, affine=None, nonlin=None,
     if affine:
         # exp = affine.iexp if backward else affine.exp
         exp = affine.exp
-        aff = exp(recompute=True, cache_result=True)
+        aff = exp(recompute=False, cache_result=True)
         if backward:
             aff = spatial.affine_inv(aff)
     if nonlin:
@@ -198,11 +223,11 @@ def warp_one_image(image, target, shape=None, affine=None, nonlin=None,
         if _almost_identity(aff_right) and nonlin.shape == shape:
             phi = nonlin.add_identity(phi)
         else:
-            tmp = spatial.affine_grid(aff_right, shape)
+            tmp = spatial.affine_grid(aff_right.to(phi), shape)
             phi = regutils.smart_pull_grid(phi, tmp).add_(tmp)
             del tmp
         if not _almost_identity(aff_left):
-            phi = spatial.affine_matvec(aff_left, phi)
+            phi = spatial.affine_matvec(aff_left.to(phi), phi)
     else:
         # no nonlin: single affine even if position == 'symmetric'
         if reslice:

@@ -6,6 +6,7 @@ from .pairwise_makeobj import make_affine, make_affine_optim, make_nonlin, make_
 from .optim import InterleavedOptimIterator, Optim
 from . import objects
 from nitorch.core.py import make_list, prod
+import torch
 
 
 def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
@@ -54,6 +55,7 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
     if not pyramid:
         losses = objects.SumSimilarity.sum(losses)
 
+    first_level = losses[0] if pyramid else losses
     last_level = losses[-1] if pyramid else losses
 
     # --- prepare transformation models if not provided ---
@@ -76,7 +78,7 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
     # --- progressive affine initialization ---
     if progressive:
         affine = run_progressive_init(
-            losses, affine, affine_optim,  line_size=line_size,
+            first_level, affine, affine_optim,  line_size=line_size,
             verbose=verbose, framerate=framerate, figure=figure)
 
     # --- joint affine and nonlinear  ---
@@ -105,7 +107,7 @@ def run_progressive_init(losses, affine, affine_optim,
 
     Parameters
     ----------
-    losses : list[objects.Similarity]
+    losses : objects.Similarity
         List of losses
     affine : objects.AffineModel
         Target affine model
@@ -152,9 +154,10 @@ def run_progressive_init(losses, affine, affine_optim,
         register = PairwiseRegister(losses, affine, None, affine_optim,
                                     verbose=verbose, framerate=framerate,
                                     figure=figure)
+        torch.cuda.empty_cache()
         register.fit()
         figure = register.figure
-        affine.switch_basis(names.pop(0))
+        affine = affine.switch_basis(names.pop(0))
 
     return affine
 
@@ -170,13 +173,14 @@ def run_single(losses, affine, nonlin, optim, verbose=True, framerate=1,
             affine.dat.dat /= 2  # take the matrix square root
         nonlin_optim = optim[1] if affine else optim
         if nonlin:
-            if hasattr(nonlin, 'voxel_size'):
+            if hasattr(nonlin_optim, 'voxel_size'):
                 nonlin_optim.voxel_size = nonlin.voxel_size
-            if hasattr(nonlin, 'penalty'):
+            if hasattr(nonlin_optim, 'penalty'):
                 nonlin_optim.penalty = nonlin.penalty
     register = PairwiseRegister(losses, affine, nonlin, optim,
                                 verbose=verbose, framerate=framerate,
                                 figure=figure)
+    torch.cuda.empty_cache()
     register.fit()
     return affine, nonlin
 
@@ -188,37 +192,45 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
 
     nonlin_optim = None if not nonlin else optim[1] if affine else optim
 
-    if nonlin and affine and affine.dat and affine.dat.dat is not None:
+    if (nonlin and affine and affine.position[0].lower() == 's'
+            and affine.dat and affine.dat.dat is not None):
         affine.dat.dat /= 2  # take the matrix square root
 
     losses = make_list(losses)
-    n_level = nb_levels = len(losses)
+    nb_levels = len(losses)
+    n_level = nb_levels - 1
     if nonlin and n_level > 1:
+        penalty0 = dict(nonlin.penalty)
         vel_shape = nonlin.shape
         nonlin = nonlin.downsample_(2**n_level)
+        nonlin.penalty['bending'] *= prod(vel_shape) / prod(nonlin.shape)
 
     while losses:
         loss_level = losses.pop(0)
-        n_level -= 1
         print('-' * line_size)
         print(f'   PYRAMID LEVEL {n_level}')
         print('-' * line_size)
         if nonlin:
-            if nb_levels > 1:
-                if n_level == 0:
-                    nonlin.upsample_(shape=vel_shape, interpolation=3)
-                else:
-                    nonlin.upsample_()
-            if hasattr(nonlin, 'voxel_size'):
+            if hasattr(nonlin_optim, 'voxel_size'):
                 nonlin_optim.voxel_size = nonlin.voxel_size
-            if hasattr(nonlin, 'penalty'):
+            if hasattr(nonlin_optim, 'penalty'):
                 nonlin_optim.penalty = nonlin.penalty
         optim.reset_state()
         register = PairwiseRegister(loss_level, affine, nonlin, optim,
                                     verbose=verbose, framerate=framerate,
                                     figure=figure)
+        torch.cuda.empty_cache()
         register.fit()
         figure = register.figure
+
+        if nonlin:
+            if n_level == 1:
+                nonlin.upsample_(shape=vel_shape, interpolation=3)
+                nonlin.penalty['bending'] = penalty0['bending']
+            elif n_level > 1:
+                nonlin.upsample_()
+                nonlin.penalty['bending'] = penalty0['bending'] * prod(vel_shape) / prod(nonlin.shape)
+        n_level -= 1
 
     return affine, nonlin
 

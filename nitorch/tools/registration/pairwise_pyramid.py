@@ -159,11 +159,20 @@ def sequential_pyramid(loss):
 
     """
     def get_level(loss, level):
-        new_loss = copy.copy(loss)
+        moving = fixed = None
+        if hasattr(loss, 'fixed'):
+            fixed, loss.fixed = loss.fixed, None
+        if hasattr(loss, 'moving'):
+            moving, loss.moving = loss.moving, None
+        new_loss = copy.deepcopy(loss)
         if hasattr(new_loss, 'fixed'):
-            new_loss.fixed = new_loss.fixed[level]
+            loss.fixed = fixed
         if hasattr(new_loss, 'moving'):
-            new_loss.moving = new_loss.moving[level]
+            loss.moving = moving
+        if hasattr(new_loss, 'fixed'):
+            new_loss.fixed = fixed[level]
+        if hasattr(new_loss, 'moving'):
+            new_loss.moving = moving[level]
         if hasattr(loss, 'loss') and hasattr(loss.loss, 'patch'):
             dim = new_loss.fixed.affine.shape[-1] - 1
             shape = new_loss.fixed.shape[-dim:]

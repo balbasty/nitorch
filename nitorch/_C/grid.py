@@ -1,7 +1,10 @@
 """AutoGrad version of pull/push/count/grad"""
 import torch
 import os
-from ._ts import spline_coeff_nd, spline_coeff, BoundType as _TSBoundType
+from interpol.coeff import spline_coeff_nd, spline_coeff
+from interpol.pushpull import grid_push as ts_grid_push
+from interpol.bounds import BoundType as _TSBoundType
+from interpol.splines import InterpolationType as _TSInterpolationType
 
 try:
     from torch.cuda.amp import custom_fwd, custom_bwd
@@ -21,6 +24,7 @@ if _compiled_backend == 'C':
             grid_grad, grid_grad_backward,
             InterpolationType, BoundType)
         COMPILED_BACKEND = 'C'
+        # grid_push = ts_grid_push
     except ImportError:
         pass
 elif _compiled_backend == 'TS':
@@ -55,6 +59,7 @@ if not COMPILED_BACKEND:
             grid_grad, grid_grad_backward,
             InterpolationType, BoundType)
         COMPILED_BACKEND = 'C'
+        # grid_push = ts_grid_push
     except ImportError:
         try:
             from monai._C import (
@@ -235,10 +240,11 @@ class GridPush(torch.autograd.Function):
     @custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, input, grid, shape, interpolation, bound, extrapolate):
 
-        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
-        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)
+        bound = bound_to_nitorch(make_list(bound), as_type=enum_type)  # enum_type
+        interpolation = inter_to_nitorch(make_list(interpolation), as_type=enum_type)  # enum_type
         extrapolate = int(extrapolate)
         opt = (bound, interpolation, extrapolate)
+        # opt = (interpolation, bound, extrapolate)
 
         # Push
         output = grid_push(input, grid, shape, *opt)

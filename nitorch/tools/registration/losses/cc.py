@@ -73,6 +73,9 @@ def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     return tuple(out) if len(out) > 1 else out[0]
 
 
+_cudnn_backends = {}
+
+
 def _suffstat(fn, x, y):
     """Compute convolutional sufficient statistics
 
@@ -100,9 +103,10 @@ def _suffstat(fn, x, y):
     # mom = fn(mom)
 
     tmp = torch.ones_like(x)
-    mom0 = fn(tmp[None])[0]
-    mom = x.new_empty([6, *mom0.shape])
-    mom[0] = mom0
+    mom = [None] * 6
+    mom[0] = fn(tmp[None])[0]
+    # mom = x.new_empty([6, *mom[0].shape])
+    # mom[0] = mom0
     mom[1] = fn(x[None])[0]
     mom[2] = fn(y[None])[0]
     torch.mul(x, x, out=tmp)
@@ -111,7 +115,49 @@ def _suffstat(fn, x, y):
     mom[4] = fn(tmp[None])[0]
     torch.mul(x, y, out=tmp)
     mom[5] = fn(tmp[None])[0]
+
+    mom = torch.stack(mom)
     return mom
+
+
+def _robust(fn):
+
+    def robust_fn(x):
+        deterministic = torch.backends.cudnn.deterministic
+        enabled = torch.backends.cudnn.enabled
+        benchmark = torch.backends.cudnn.benchmark
+        try:
+            try:
+                return fn(x)
+            except RuntimeError as e:
+                print(e)
+                pass
+            try:
+                torch.backends.cudnn.deterministic = True
+                return fn(x)
+            except RuntimeError as e:
+                print(e)
+                pass
+            try:
+                torch.backends.cudnn.benchmark = False
+                return fn(x)
+            except RuntimeError as e:
+                print(e)
+                pass
+            try:
+                torch.backends.cudnn.enabled = False
+                return fn(x)
+            except RuntimeError as e:
+                print(e)
+                pass
+            torch.backends.cudnn.deterministic = False
+            return fn(x)
+        finally:
+            torch.backends.cudnn.deterministic = deterministic
+            torch.backends.cudnn.enabled = enabled
+            torch.backends.cudnn.benchmark = benchmark
+
+    return robust_fn
 
 
 def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
@@ -176,8 +222,10 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
     stride = [s or 0 for s in stride]
     fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
                                cache=local_cache)
+    fwd = _robust(fwd)
     bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
                                backward=True, shape=shape, cache=local_cache)
+    bwd = _robust(bwd)
     sumall = lambda x: x.sum(list(range(-dim, 0)), keepdim=True)
 
     # compute ncc within each patch

@@ -17,7 +17,7 @@ __all__ = ['local_mean', 'cache']
 # ----------------------------------------------------------------------
 #                           JIT UTILS
 # ----------------------------------------------------------------------
-USE_JIT = True
+USE_JIT = False
 jit_script = torch.jit.script if USE_JIT else (lambda f: f)
 
 

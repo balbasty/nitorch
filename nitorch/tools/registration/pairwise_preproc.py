@@ -7,6 +7,7 @@ from nitorch.core import dtypes, utils
 from nitorch import spatial
 from . import pairwise_pyramid as pyrutils
 import torch
+import math as pymath
 
 
 def preproc_image(input, mask=None, label=False, missing=0,
@@ -57,8 +58,14 @@ def preproc_image(input, mask=None, label=False, missing=0,
         Orientation matrix
 
     """
-    dat, mask0, affine0 = load_image(input, dim=dim, device=device,
-                                     label=label, missing=missing)
+    if not torch.is_tensor(input):
+        dat, mask0, affine0 = load_image(input, dim=dim, device=device,
+                                         label=label, missing=missing)
+    else:
+        dat = input
+        mask0 = torch.isfinite(dat)
+        dat = dat.masked_fill(~mask0, 0)
+        affine0 = spatial.affine_default(dat.shape[1:])
     dim = dat.dim() - 1
 
     # load user-defined mask
@@ -90,7 +97,7 @@ def preproc_image(input, mask=None, label=False, missing=0,
 
     # rescale intensities
     rescale = make_list(rescale)
-    if any(rescale):
+    if not label and any(rescale):
         dat = rescale_image(dat, rescale)
 
     # pad image
@@ -100,20 +107,22 @@ def preproc_image(input, mask=None, label=False, missing=0,
             *pad, unit = pad
         else:
             unit = 'vox'
+        pad = make_list(pad, dim)
         if unit == 'mm':
             voxel_size = spatial.voxel_size(affine)
             pad = torch.as_tensor(pad, **utils.backend(voxel_size))
             pad = pad / voxel_size
             pad = pad.floor().int().tolist()
+        elif unit in ('%', 'pct'):
+            pad = [int(pymath.ceil(p * s / 100)) for p, s in zip(pad, dat.shape[1:])]
         else:
             pad = [int(p) for p in pad]
-        pad = make_list(pad, dim)
         if any(pad):
-            affine, _ = spatial.affine_pad(affine, dat.shape[-dim:], pad,
-                                           side='both')
+            affine0, _ = spatial.affine_pad(affine0, dat.shape[-dim:], pad,
+                                            side='both')
             dat = utils.pad(dat, pad, side='both', mode=bound)
             if mask0 is not None:
-                mask0 = utils.pad(mask, pad, side='both', mode=bound)
+                mask0 = utils.pad(mask0, pad, side='both', mode=bound)
 
     # smooth image
     if fwhm:
