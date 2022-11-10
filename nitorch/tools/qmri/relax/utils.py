@@ -688,7 +688,7 @@ def check_nans_(x, warn: Optional[str] = None, value: float = 0):
     return x
 
 
-def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
+def nll_chi(dat, fit, msk, lam, df, return_residuals=True, sum_crit=True):
     """Negative log-likelihood of the noncentral Chi distribution
 
     Parameters
@@ -717,21 +717,32 @@ def nll_chi(dat, fit, msk, lam, df, return_residuals=True):
     fitm = fit[msk]
     datm = dat[msk]
 
-    # components of the log-likelihood
-    sumlogfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
-    sumfit2 = ssq(fitm)
-    sumlogdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
-    sumdat2 = ssq(datm)
-
     # reweighting
     z = (fitm * datm).mul_(lam).clamp_min_(1e-32)
     xi = math.besseli_ratio(df / 2 - 1, z)
     logbes = math.besseli(df / 2 - 1, z, 'log')
-    logbes = logbes.sum(dtype=torch.double)
+
+    # components of the log-likelihood
+    if sum_crit:
+        logfit = fitm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+        fit2 = ssq(fitm)
+        logdat = datm.clamp_min(1e-32).log_().sum(dtype=torch.double)
+        dat2 = ssq(datm)
+        logbes = logbes.sum(dtype=torch.double)
+    else:
+        logfit = fitm.clamp_min(1e-32).log_()
+        fit2 = fitm.square()
+        logdat = datm.clamp_min(1e-32).log_()
+        dat2 = datm.square()
 
     # sum parts
-    crit = (df / 2 - 1) * sumlogfit - (df / 2) * sumlogdat - logbes
-    crit += 0.5 * lam * (sumfit2 + sumdat2)
+    crit = (df / 2 - 1) * logfit - (df / 2) * logdat - logbes
+    crit += 0.5 * lam * (fit2 + dat2)
+    if not sum_crit:
+        critm = crit
+        crit = torch.zeros_like(fit)
+        crit[msk] = critm
+
     if not return_residuals:
         return crit
 
