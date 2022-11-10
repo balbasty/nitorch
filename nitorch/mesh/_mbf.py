@@ -451,6 +451,24 @@ def read_contours_asc(fname, vx=1):
                 shape = dict(points=[])
                 while True:
                     line = strip_line(f.readline())
+
+                    # Get rid of properties that we do not care about
+                    # (we only care about lines that start with a bracket
+                    # then a number, which are coordinates)
+                    if line.startswith('(') and strip_line(line[1:])[0] not in '0123456789-':
+                        line = strip_line(line[1:])
+                        if ')' in line:
+                            line = line[line.index(')')+1:]
+                        else:
+                            while True:
+                                line = strip_line(f.readline())
+                                if ')' in line:
+                                    line = line[line.index(')')+1:]
+                                    break
+                    line = strip_line(line)
+                    if not line:
+                        continue
+
                     if ')' in line and '(' not in line:
                         break
                     line = line[line.index('(')+1:line.index(')')].strip()
