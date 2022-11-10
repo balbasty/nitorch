@@ -50,40 +50,34 @@ def plot_lb(lb, fig=None, saved_elem=None):
     if isinstance(lb, (list, tuple)):
         lb = torch.stack(lb)
 
-    # --- Restore figure elements --------------------------------------
     if first:
         fig.clf()
-    else:
-        fig.canvas.draw()
-        for elem in saved_elem:
-            fig.canvas.restore_region(elem)
-
-    # --- Update lower bound -------------------------------------------
-    if first:
-        plt.plot(range(1, len(lb) + 1), lb.cpu())
-        plt.suptitle('# iter. = {}'.format(len(lb)))
-    else:
-        ax = fig.axes[-1]
-        ax.lines[0].set_data(range(1, len(lb) + 1), lb.cpu())
-        ax.relim()
-        ax.autoscale_view()
-        fig._suptitle.set_text('# iter. = {}'.format(len(lb)))
-
-    # --- Draw figure --------------------------------------------------
-    if first:
+        plt.plot([])
+        plt.suptitle('# iter. = {}'.format(0))
         fig.canvas.draw()
         saved_elem = [fig.canvas.copy_from_bbox(ax.bbox)
                       for ax in fig.axes]
-        fig.canvas.flush_events()
         plt.show(block=False)
-    else:
-        for ax in fig.axes[:-1]:
-            ax.draw_artist(ax.images[0])
-            fig.canvas.blit(ax.bbox)
-        ax = fig.axes[-1]
-        ax.draw_artist(ax.lines[0])
+
+    # --- Restore figure elements --------------------------------------
+    for elem in saved_elem:
+        fig.canvas.restore_region(elem)
+
+    # --- Update lower bound -------------------------------------------
+    ax = fig.axes[-1]
+    ax.lines[0].set_data(range(1, len(lb) + 1), lb.cpu())
+    ax.relim()
+    ax.autoscale_view()
+    fig._suptitle.set_text('# iter. = {}'.format(len(lb)))
+
+    # --- Draw figure --------------------------------------------------
+    for ax in fig.axes[:-1]:
+        ax.draw_artist(ax.images[0])
         fig.canvas.blit(ax.bbox)
-        fig.canvas.flush_events()
+    ax = fig.axes[-1]
+    ax.draw_artist(ax.lines[0])
+    fig.canvas.blit(ax.bbox)
+    fig.canvas.flush_events()
 
     return fig, saved_elem
 
@@ -141,7 +135,6 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
     if first:
         fig.clf()
     else:
-        fig.canvas.draw()
         for elem in saved_elem:
             fig.canvas.restore_region(elem)
 
@@ -188,6 +181,9 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
                 X1 = X1 * B1
                 X2 = X2 * B2
                 X3 = X3 * B3
+                B1 = B1.reciprocal_()
+                B2 = B2.reciprocal_()
+                B3 = B3.reciprocal_()
                 for c in range(len(B)):
                     if first:
                         plt.subplot(4, ncol, len(X) + c + 1)
@@ -330,6 +326,7 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
             if not mode or mode == 'bias':
                 B1 = B.exp().cpu()
                 X1 = X1 * B1
+                B1 = B1.reciprocal_()
                 for c in range(len(B)):
                     if first:
                         plt.subplot(4, ncol, len(X) + c + 1)
@@ -389,32 +386,27 @@ def plot_images_and_lb(lb, X, Z, B=None, M=None, V=None, G=None,
     # --- Update lower bound -------------------------------------------
     if first:
         plt.subplot(1+dim*(dim-1)//2, 1, 1+dim*(dim-1)//2)
-        plt.plot(range(1, len(lb) + 1), lb.cpu())
-        plt.suptitle('# iter. = {}'.format(len(lb)))
-    else:
-        ax = fig.axes[-1]
-        ax.lines[0].set_data(list(range(1, len(lb) + 1)), lb.cpu())
-        ax.relim()
-        ax.autoscale_view()
-        fig._suptitle.set_text('# iter. = {}'.format(len(lb)))
+        plt.plot([])
+        plt.suptitle('# iter. = {}'.format(0))
 
-    # --- Draw figure --------------------------------------------------
-    if first:
         fig.canvas.draw()
         saved_elem = [fig.canvas.copy_from_bbox(ax.bbox)
                       for ax in fig.axes]
         plt.show(block=False)
-    else:
-        fig.canvas.draw()
-        for ax in fig.axes[:-1]:
-            ax.draw_artist(ax.images[0])
-        ax = fig.axes[-1]
-        ax.draw_artist(ax.lines[0])
 
-        saved_elem = []
-        for ax in fig.axes:
-            fig.canvas.blit(ax.bbox)
-            saved_elem.append(fig.canvas.copy_from_bbox(ax.bbox))
-        fig.canvas.flush_events()
+    ax = fig.axes[-1]
+    ax.lines[0].set_data(list(range(1, len(lb) + 1)), lb.cpu())
+    ax.relim()
+    ax.autoscale_view()
+    fig._suptitle.set_text('# iter. = {}'.format(len(lb)))
+
+    # --- Draw figure --------------------------------------------------
+    for ax in fig.axes[:-1]:
+        ax.draw_artist(ax.images[0])
+    ax = fig.axes[-1]
+    ax.draw_artist(ax.lines[0])
+    for ax in fig.axes:
+        fig.canvas.blit(ax.bbox)
+    fig.canvas.flush_events()
 
     return fig, saved_elem

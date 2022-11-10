@@ -6,13 +6,14 @@ from nitorch.core import utils
 from nitorch.core.datasets import download, cache_dir
 from nitorch import io
 from nitorch.tools.registration.affine_tpm import align_tpm
+from nitorch.core.utils import min_intensity_step
 
 
 def uniseg(x, w=None, affine=None, device=None,
            nb_classes=None, prior=None, affine_prior=None,
            do_bias=True, do_warp=True, do_affine=True, do_mixing=True,
-           do_mrf='once', wishart=None, cleanup=None, spacing=3,
-           lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10, lam_wishart=1,
+           do_mrf='once', wishart=None, cleanup=None, spacing=3, flexi=False,
+           lam_prior=1, lam_bias=0.1, lam_warp=0.1, lam_mixing=100, lam_mrf=10, lam_wishart=1,
            max_iter=30, tol=1e-3, verbose=1, plot=0, return_parameters=False):
     """Unified Segmentation using a deformable spatial prior.
 
@@ -24,6 +25,8 @@ def uniseg(x, w=None, affine=None, device=None,
         Tensor of weights for each voxel
     affine : (D+1, D+1) tensor, optional
         Orientation matrix of the input tensor(s)
+    device : torch.device, default=x.device
+        Device to use during fitting.
 
     Atlas
     -----
@@ -65,9 +68,13 @@ def uniseg(x, w=None, affine=None, device=None,
     spacing : float, default=3
         Space (in mm) between sampled points. None (or 0) uses all the voxels.
         Smaller is more accurate but slower.
+    flexi : bool, default=False
+        Try to find the correct orientation of the input data.
 
     Optimization
     ------------
+    lam_prior : float, default=1
+        Strength of the spatial prior
     lam_bias : float, default=0.1
         Regularization of the bias field: larger == stiffer
     lam_warp : float, default=0.1
@@ -156,7 +163,7 @@ def uniseg(x, w=None, affine=None, device=None,
         else:
             prior_for_align = prior
         aff = align_tpm((x, affine), (prior_for_align, affine_prior), w,
-                        verbose=verbose-1, joint=True, flexi=True)
+                        verbose=verbose-1, joint=True, flexi=flexi)
         affine = aff.to(affine).matmul(affine)
         del prior_for_align
 
@@ -165,7 +172,7 @@ def uniseg(x, w=None, affine=None, device=None,
     model = UniSeg(
         nb_classes, prior=prior, affine_prior=affine_prior,
         do_bias=do_bias, do_warp=do_warp, do_affine=do_affine,
-        do_mixing=do_mixing, do_mrf=do_mrf,  lam_bias=lam_bias,
+        do_mixing=do_mixing, do_mrf=do_mrf, lam_prior=lam_prior, lam_bias=lam_bias,
         lam_warp=lam_warp, lam_mixing=lam_mixing, lam_mrf=lam_mrf,
         spacing=spacing, max_iter=max_iter, tol=tol, verbose=verbose,
         plot=plot, wishart=wishart, lam_wishart=lam_wishart,
@@ -199,9 +206,9 @@ def uniseg(x, w=None, affine=None, device=None,
 def uniseg_batch(x, w=None, affine=None, device=None,
                  nb_classes=None, prior=None, affine_prior=None,
                  do_bias=True, do_warp=True, do_mixing=True, do_mrf=True,
-                 wishart=None, cleanup=None, spacing=3, lam_bias=0.1,
-                 lam_warp=0.1, lam_mixing=100, lam_mrf=10, lam_wishart=1,
-                 max_iter=30, tol=1e-3, verbose=1, plot=0,
+                 wishart=None, cleanup=None, spacing=3, flexi=False,
+                 lam_prior=1, lam_bias=0.1, lam_warp=0.1, lam_mixing=100,
+                 lam_mrf=10, lam_wishart=1, max_iter=30, tol=1e-3, verbose=1, plot=0,
                  return_parameters=False):
     """Batched Unified Segmentation using a deformable spatial prior.
 
@@ -263,9 +270,10 @@ def uniseg_batch(x, w=None, affine=None, device=None,
             x1, w1, aff1, device=backend['device'],
             nb_classes=nb_classes, prior=prior, affine_prior=affine_prior,
             do_bias=do_bias, do_warp=do_warp, do_mixing=do_mixing, do_mrf=do_mrf,
-            spacing=spacing, cleanup=cleanup, lam_bias=lam_bias, lam_warp=lam_warp,
-            wishart=wishart, lam_mrf=lam_mrf, lam_wishart=lam_wishart, lam_mixing=lam_mixing,
-            max_iter=max_iter, tol=tol, verbose=verbose, plot=plot,
+            spacing=spacing, cleanup=cleanup, wishart=wishart,
+            lam_prior=lam_prior,  lam_bias=lam_bias, lam_warp=lam_warp,
+            lam_mrf=lam_mrf, lam_wishart=lam_wishart, lam_mixing=lam_mixing,
+            max_iter=max_iter, tol=tol, verbose=verbose, plot=plot, flexi=flexi,
             return_parameters=return_parameters)
         z.append(out1[0])
         lb.append(out1[1])
@@ -322,10 +330,22 @@ def get_prior(prior, affine_prior, **backend):
         prior, _affine_prior = get_spm_prior(**backend)
         if affine_prior is None:
             affine_prior = _affine_prior
+    elif isinstance(prior, (list, tuple)):
+        def ensure_4d(x):
+            while x.dim < 4:
+                x = x.unsqueeze(-1)
+            while x.dim > 4:
+                x = x.squeeze(-1)
+            return x
+        prior = io.cat(list(map(lambda x: ensure_4d(io.volumes.map(x)), prior)), -1)
+        prior = prior.movedim(-1, 0)
     elif isinstance(prior, str):
-        prior = io.map(prior).movedim(-1, 0)
+        prior = io.volumes.map(prior).movedim(-1, 0)
+    if isinstance(prior, io.MappedArray):
         if affine_prior is None:
             affine_prior = prior.affine
+            if isinstance(affine_prior, (list, tuple)):
+                affine_prior = affine_prior[0]
         prior = prior.fdata(**backend)
     else:
         prior = prior.to(**backend)
@@ -367,6 +387,10 @@ def get_data(x, w, affine, dim, **backend):
             w = w.squeeze(-1)
         if x.dim() > dim:
             raise ValueError('Too many dimensions')
+
+    step = min_intensity_step(x)
+    if step > 0.5:
+        x = torch.rand_like(x).mul_(step).mul_(x > 0).add_(x)
 
     x = x.contiguous()
     if w is not None:

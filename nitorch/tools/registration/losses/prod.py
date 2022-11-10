@@ -43,18 +43,20 @@ def normprod(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     mf = m * f
     sum_m = sumdim(m).clamp_min_(1e-3)
     sum_mf = sumdim(mf)
-
     ll = sum_mf / sum_m
     out = [ll.sum()]
 
     if grad:
-        g = (f - sum_mf / sum_m) / sum_m
+        # g = (f - 2 * m * sum_mf / sum_mm) / sum_mm
+        g = (f - ll) / sum_m
         if mask is not None:
             g *= mask
         out.append(g)
 
     if hess:
-        h = (f + sum_mf) * (2 / sum_m ** 2)
+        # h = (2 * mm * sum_mf / sum_mm + mf) * (4 / sum_mm ** 2)
+        # h = (f + sum_mf) * (2 / sum_m ** 2)
+        h = (f + ll) / (sum_m * sum_m)
         if mask is not None:
             h *= mask
         out.append(h)

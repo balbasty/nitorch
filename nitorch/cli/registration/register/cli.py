@@ -701,6 +701,7 @@ def _do_register(loss_list, affine, nonlin,
     # ------------------------------------------------------------------
     #       INITIAL PROGRESSIVE AFFINE
     # ------------------------------------------------------------------
+    figure = None
     if len(affine) > 1:
         print('-' * line_size)
         print(f'   PROGRESSIVE INITIALIZATION')
@@ -720,8 +721,10 @@ def _do_register(loss_list, affine, nonlin,
             affine_optim.reset_state()
             register = pairwise.PairwiseRegister(loss_list[0], affine, None, affine_optim,
                                                  verbose=options.verbose,
-                                                 framerate=options.framerate)
+                                                 framerate=options.framerate,
+                                                 figure=figure)
             register.fit()
+            figure = register.figure
             affine_prev = affine
     elif len(affine) == 1:
         affine = affine[0]
@@ -756,7 +759,8 @@ def _do_register(loss_list, affine, nonlin,
             nonlin_optim.factor /= py.prod(nonlin.shape)
         register = pairwise.PairwiseRegister(loss_list, affine, nonlin, joptim,
                                              verbose=options.verbose,
-                                             framerate=options.framerate)
+                                             framerate=options.framerate,
+                                             figure=figure)
         register.fit()
 
     # ------------------------------------------------------------------
@@ -786,8 +790,10 @@ def _do_register(loss_list, affine, nonlin,
             joptim.reset_state()
             register = pairwise.PairwiseRegister(loss_level, affine, nonlin, joptim,
                                                  verbose=options.verbose,
-                                                 framerate=options.framerate)
+                                                 framerate=options.framerate,
+                                                 figure=figure)
             register.fit()
+            figure = register.figure
 
 
 def _build_losses(options, pyramids, device):

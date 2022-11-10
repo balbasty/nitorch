@@ -18,8 +18,8 @@ def cli(args=None):
     except ParseError as e:
         print(help)
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    except Exception as e:
-        print(f'[ERROR] {str(e)}', file=sys.stderr)
+    # except Exception as e:
+    #     print(f'[ERROR] {str(e)}', file=sys.stderr)
 
 
 def _cli(args):

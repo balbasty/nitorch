@@ -270,6 +270,10 @@ def main_fit(options):
     # upsample
     vel = upsample_vel(vel, aff, f0.affine, f0.shape[-dim:], readout)
 
+    # convert to Hz
+    if options.bandwidth != 1:
+        vel *= options.bandwidth
+
     # save
     dir, base, ext = py.fileparts(options.pos_file)
     fname = options.output
@@ -325,12 +329,12 @@ def main_apply(options):
     vel = utils.movedim(vel, readout, -1)
 
     if options.file_pos:
+        phi = vel / options.bandwidth
         if options.diffeo:
-            phi, *jac = spatial.exp1d_forward(vel, bound='dct2',
+            phi, *jac = spatial.exp1d_forward(phi, bound='dct2',
                                               jacobian=options.modulation)
             jac = jac[0] if jac else None
         else:
-            phi = vel.clone()
             jac = None
             if options.modulation:
                 jac = spatial.diff1d(phi, dim=readout, bound='dct2', side='c')
@@ -340,12 +344,12 @@ def main_apply(options):
         do_apply(options.file_pos, phi, jac)
 
     if options.file_neg:
+        phi = vel / (-options.bandwidth)
         if options.diffeo:
-            phi, *jac = spatial.exp1d_forward(-vel, bound='dct2',
+            phi, *jac = spatial.exp1d_forward(phi, bound='dct2',
                                               jacobian=options.modulation)
             jac = jac[0] if jac else None
         else:
-            phi = -vel
             jac = None
             if options.modulation:
                 jac = spatial.diff1d(phi, dim=readout, bound='dct2', side='c')

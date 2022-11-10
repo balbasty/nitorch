@@ -17,12 +17,16 @@ class STRONGTYPE:
     pass
 
 
+def _donothing(x):
+    return x
+
+
 class Field:
     """This object can be used to describe slightly more complex
     default values."""
 
     def __init__(self, default=MISSING, default_factory=MISSING,
-                 init=True, repr=True, compare=True):
+                 init=True, repr=True, compare=True, convert=None):
         """
 
         Parameters
@@ -47,6 +51,7 @@ class Field:
         self.init = init
         self.repr = repr
         self.compare = compare
+        self.convert = convert or _donothing
 
 
 class ValidatedField(Field):
@@ -119,14 +124,14 @@ class Structure:
         for k in self._all_annotations().keys():
             if hasattr(self, k):
                 if isinstance(getattr(self, k), Field):
-                    self._fields[k] = getattr(self, k)
+                    self._fields[k] = _donothing(getattr(self, k))
                 else:
                     self._fields[k] = self.DefaultField(default=getattr(self, k))
             else:
                 self._fields[k] = self.DefaultField()
         # 1) Set attributes that are user-defined
         for k, v in kwargs.items():
-            if not self._fields[k].init:
+            if k in self._fields and not self._fields[k].init:
                 raise TypeError(f'Attribute {k} cannot be set at init')
             setattr(self, k, copy(v))
         # 3) Use class-level default value
@@ -155,6 +160,7 @@ class Structure:
                 if not validator(value):
                     raise ValueError(f'Value {value} failed validation '
                                      f'for attribute {key}')
+            value = field.convert(value)
         return super().__setattr__(key, value)
 
     def update(self, other=None, **kwargs):

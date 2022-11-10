@@ -1597,7 +1597,7 @@ def fold(inp, dim=None, stride=None, shape=None, collapsed=False,
             count = pad(count, padding, side='right')
         padding = [0] * (out.dim() - 2*dim) + padding
         value = (dtypes.dtype(inp.dtype).min if fn == 'max' else
-                 dtypes.dtype(inp.dtype).max if fn == 'max' else 0)
+                 dtypes.dtype(inp.dtype).max if fn == 'min' else 0)
         out = pad(out, padding, value=value, side='right')
 
         slicer1 = [slice(-1 if o else None) for o in overlap]
@@ -2093,11 +2093,12 @@ def merge_labels(x, lookup):
 
 def min_intensity_step(x, max_points=1e6):
     """Detect empty steps in the data distribution"""
+    x = x.flatten()
     nb_points = x.numel()
     ratio = 1/min(1, max_points / nb_points)
-    ratio = max(1, int((ratio ** (1/3)) // 1))
-    x = x[..., ::ratio, ::ratio, ::ratio].flatten().clone()
-    x[~torch.isfinite(x)] = 0
+    mask = torch.rand_like(x) > (1 - ratio)
+    x = x[mask]
+    x = x[torch.isfinite(x)]
     x = x.sort().values
     x = x[1:] - x[:-1]
     x = x[x > 0].min().item()

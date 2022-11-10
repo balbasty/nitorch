@@ -106,9 +106,9 @@ def write_key(key, value):
 
     """
     if isinstance(value, (str, int, float)):
-        return f'{key} = {value}'
+        return f'{key:9s} = {value}'
     else:
-        return f'{key} = ' + ' '.join([str(v) for v in value])
+        return f'{key:9s} = ' + ' '.join([str(v) for v in value])
 
 
 def write_values(value):
