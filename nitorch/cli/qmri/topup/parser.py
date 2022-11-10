@@ -18,6 +18,7 @@ usage:
     -m, --mask                          Path to a mask in which to compute the loss
     -o, --output                        Path to output displacement field [{dir}/{base}_topup_b0{ext}]
     -r, --readout  {lr,is,ap}           Readout direction (default: largest dim)
+    -bw, --bandwidth                    Readout bandwidth in Hz/pixel (1)
     -l, --loss {mse,ncc,lncc,gmm,lgmm}  Matching term [mse]
     -k, --kernel VAL [{vox,mm,%}]       LNCC kernel size [10 %] 
     -b, --bins VAL                      Number of (L)GMM classes [3]
@@ -83,6 +84,8 @@ parser_fit.add_option('output', ('-o', '--output'), nargs=1,
                       help='Output file')
 parser_fit.add_option('readout', ('-r', '--readout'), nargs=1,
                       help='Readout direction')
+parser_fit.add_option('bandwidth', ('-bw', '--bandwidth'), nargs=1,
+                      convert=float, help='Readout bandwidth')
 losses = ['mse', 'ncc', 'lncc', 'gmm', 'lgmm']
 parser_fit.add_option('loss', ('-l', '--loss'), nargs=1, default='mse',
                       validation=cli.Validations.choice(losses),
@@ -130,6 +133,8 @@ parser_apply.add_option('output', ('-o', '--output'), nargs=1,
                         help='Output file')
 parser_apply.add_option('readout', ('-r', '--readout'), nargs=1,
                         help='Readout direction')
+parser_apply.add_option('bandwidth', ('-bw', '--bandwidth'), nargs=1,
+                        convert=float, help='Readout bandwidth')
 parser_apply.add_option('modulation', ('-m', '--modulation'), nargs=1, default=True,
                         convert=bool_or_str, action=cli.Actions.store_true,
                         help='Jacobian modulation')
