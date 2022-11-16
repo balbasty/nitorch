@@ -182,6 +182,8 @@ class LTAStruct(Structure):
                     section = section[:-1]
                     setattr(lta, section, cls.VolumeInfo())
                 vol = section
+                if '=' not in line:
+                    continue
                 key, value = read_key(line, lta_keys)
                 setattr(getattr(lta, vol), key, value)
         if affine is not None:
