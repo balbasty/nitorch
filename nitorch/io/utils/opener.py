@@ -42,7 +42,7 @@ def _mode(fileobj):
     if isinstance(fileobj, GzipFile):
         return 'rb' if fileobj.mode == gzip_r else 'wb'
     else:
-        return fileobj.mode
+        return fileobj.kernel
 
 
 def _is_fileobj(obj):
@@ -326,8 +326,8 @@ class TransformedOpener(Opener):
                f"'{self.fileobj.mode}' -> '{self.mode}')"
 
     mode = property(lambda self: self._mode)
-    readable = lambda self: 'r' in self.mode or '+' in self.mode
-    writable = lambda self: 'w' in self.mode or 'a' in self.mode or '+' in self.mode
+    readable = lambda self: 'r' in self.kernel or '+' in self.kernel
+    writable = lambda self: 'w' in self.kernel or 'a' in self.kernel or '+' in self.kernel
     seekable = lambda self: True
 
     def read(self, *args, **kwargs):
@@ -401,3 +401,12 @@ def transform_opener(opener, mode):
 
     """
     return TransformedOpener(opener, mode)
+
+
+COMPRESSED_FILE_LIKES = (GzipFile, BZ2File, IndexedGzipFile)
+
+
+def is_compressed_fileobj(fobj):
+    """ Return True if fobj represents a compressed data file-like object
+    """
+    return isinstance(fobj, COMPRESSED_FILE_LIKES)

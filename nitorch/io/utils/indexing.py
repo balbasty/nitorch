@@ -35,6 +35,23 @@ def is_sliceaxis(slicer):
     return isinstance(slicer, (slice, oob_slice))
 
 
+def is_fancy(sliceobj):
+    """ Returns True if sliceobj is attempting fancy indexing"""
+    if not isinstance(sliceobj, tuple):
+        sliceobj = (sliceobj,)
+    for slicer in sliceobj:
+        if getattr(slicer, 'ndim', 0) > 0:  # ndarray always fancy, but scalars are safe
+            return True
+        # slice or Ellipsis or None OK for  basic
+        if isinstance(slicer, slice) or slicer in (None, Ellipsis):
+            continue
+        try:
+            int(slicer)
+        except TypeError:
+            return True
+    return False
+
+
 def neg2pos(index, shape):
     """Make a negative index (that counts from then end) positive
 
@@ -241,6 +258,21 @@ def simplify_slice(index, shape, do_neg2pos=True):
         if step == 1:
             step = None
 
+    return slice(start, stop, step)
+
+
+def fill_slice(index, shape):
+    """
+    Replace None with start/stop
+    Assume that the slice is positive and simplified
+    """
+    start, stop, step = index.start, index.stop, index.step
+    if start is None:
+        start = 0
+    if stop is None:
+        stop = shape
+    if step is None:
+        step = 1
     return slice(start, stop, step)
 
 

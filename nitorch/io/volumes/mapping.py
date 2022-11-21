@@ -815,7 +815,7 @@ class MappedArray(MappedFile):
         index = index[:dim] + ([None] * ndim) + index[dim:]
         return self[tuple(index)]
 
-    def squeeze(self, dim):
+    def squeeze(self, dim=None):
         """Remove all dimensions of size 1.
 
         Parameters
