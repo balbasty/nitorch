@@ -199,7 +199,7 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
     losses = make_list(losses)
     nb_levels = len(losses)
     n_level = nb_levels - 1
-    if nonlin and n_level > 1:
+    if nonlin and n_level > 0:
         penalty0 = dict(nonlin.penalty)
         vel_shape = nonlin.shape
         nonlin = nonlin.downsample_(2**n_level)
@@ -223,7 +223,7 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
         register.fit()
         figure = register.figure
 
-        if nonlin:
+        if nonlin and nb_levels > 1:
             if n_level == 1:
                 nonlin.upsample_(shape=vel_shape, interpolation=3)
                 nonlin.penalty['bending'] = penalty0['bending']

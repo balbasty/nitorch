@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class Convert(cli.ParsedStructure):
+class Convert(Structure):
     """Structure that holds parameters of the `info` command"""
     files: list = []
     meta: dict = {}

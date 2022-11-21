@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class Orient(cli.ParsedStructure):
+class Orient(Structure):
     """Structure that holds parameters of the `nireorient` command"""
     files: list = []
     affine: list = 'like'

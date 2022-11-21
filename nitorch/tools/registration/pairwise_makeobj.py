@@ -4,13 +4,14 @@ __all__ = ['make_image', 'make_loss',
 
 from nitorch import spatial, io
 from nitorch.core.py import make_list
+from nitorch.core import utils
 from . import losses, objects, optim as opt
 from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_image
 
 
 def make_image(dat, mask=None, affine=None,
                pyramid=0, pyramid_method='gaussian',
-               discretize=False, soft=False,
+               discretize=False, soft=False, mind=None,
                bound='zero', extrapolate=True, **kwargs):
     """Create an image pyramid (eventually with a single level)
 
@@ -30,6 +31,10 @@ def make_image(dat, mask=None, affine=None,
         Discretize the image at each level into this many bins
     soft : bool, default=False
         Use soft discretization instead of hard discretization
+    mind : pair(float, int), optional
+        Compute MIND features at each pyramid level.
+        First parameter is the FWHM (default = 1)
+        Second parameter is the radius (default = 0 = first-ring neighbors)
     bound : [sequence of] str
         Boundary conditions
     extrapolate : bool, default=True
@@ -65,6 +70,19 @@ def make_image(dat, mask=None, affine=None,
         extrapolate=extrapolate,
         method=pyramid_method
     )
+
+    mind = [] if mind is False else [1, 0] if mind is True else mind
+    mind = make_list(mind or [])
+    if mind:
+        fwhm, radius = make_list(mind, 2, default=0)
+        for level in image:
+            level.preview = level.dat
+            level.dat = spatial.mind(level.dat, dim=dim,
+                                     radius=int(radius), fwhm=fwhm,
+                                     bound=level.bound)
+            level.dat = utils.movedim(level.dat, -1, 0)
+            level.dat = level.dat.reshape([-1, *level.shape])
+
     if discretize:
         if soft:
             if len(dat) > 1:
@@ -79,7 +97,7 @@ def make_image(dat, mask=None, affine=None,
     return image
 
 
-def make_affine(basis='rigid', position='symmetric', penalty=None):
+def make_affine(basis='rigid', position='symmetric', penalty=None, init=None):
     """Build an AffineModel object
 
     Parameters
@@ -101,7 +119,15 @@ def make_affine(basis='rigid', position='symmetric', penalty=None):
         return None
     if basis is True:
         basis = 'rigid'
-    return objects.AffineModel(basis, position=position, penalty=penalty)
+    if init is not None:
+        if isinstance(init, str):
+            init = io.map(init)
+        if isinstance(init, io.transforms.MappedAffine):
+            init = init.fdata().squeeze()
+        if init.dim() > 1:
+            init, _ = spatial.affine_parameters(init, basis)
+    return objects.AffineModel(basis, position=position, penalty=penalty,
+                               dat=init)
 
 
 def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
@@ -140,21 +166,22 @@ def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
                                  position=position, penalty=penalty)
 
 
-def make_nonlin(shape, model='svf', affine=None, voxel_size=None,
-                padding=None, factor=1, penalty=None, device=None, **kwargs):
+def make_nonlin(shape_or_init=None, model='svf', affine=None, voxel_size=None,
+                pad=None, factor=1, penalty=None, device=None, **kwargs):
     """Build an NonlinModel object
 
     Parameters
     ----------
-    shape : list[int] or list[objects.Image]
+    shape or init : list[int] or list[objects.Image] or str or MappedArray
         Shape or a list of images from which to compute a mean space.
+        If a str or MappedArray, read from file
     model : {'smalldef', 'svf', 'shoot'}, default='svf'
         Nonlinear model name
     affine : (D+1, D+1) tensor, optional
         Orientation matrix of the nonlinear space
     voxel_size : [list of] float, optional
         Voxel size of the nonlinear space
-    padding : [list of] int or float, optional
+    pad : [list of] int or float, optional
     penalty : dict, optional
     device : torch.device, optional
 
@@ -166,39 +193,58 @@ def make_nonlin(shape, model='svf', affine=None, voxel_size=None,
     if not model:
         return None
 
-    do_mean_space = isinstance(shape[0], objects.Image)
-    dim = shape[0].dim if do_mean_space else len(shape)
+    if shape_or_init is None:
+        if 'shape' in kwargs:
+            shape_or_init = kwargs.pop('shape')
+        elif 'init' in kwargs:
+            shape_or_init = kwargs.pop('shape')
+        else:
+            raise ValueError('`shape` or `init` required')
 
-    voxel_size = make_list(voxel_size or [])
-    if voxel_size and isinstance(voxel_size[-1], str):
-        *voxel_size, vx_unit = voxel_size
-    else:
-        vx_unit = 'mm'
-    if voxel_size:
-        voxel_size = make_list(voxel_size, dim)
-    else:
-        voxel_size = None
+    # check if file provided
+    if isinstance(shape_or_init, str):
+        shape_or_init = io.map(shape_or_init)
 
-    padding = make_list(padding or [])
-    if padding and isinstance(padding[-1], str):
-        *padding, pad_unit = padding
-    else:
-        pad_unit = '%'
-    if padding:
-        padding = make_list(padding, dim)
-    else:
-        padding = None
+    if isinstance(shape_or_init, io.MappedArray):
+        vel = objects.Displacement(shape_or_init.fdata(device=device),
+                                   affine=init.affine)
 
-    # build mean space
-    if do_mean_space:
-        space = objects.MeanSpace(shape,
-                                  voxel_size=voxel_size, vx_unit=vx_unit,
-                                  pad=padding, pad_unit=pad_unit)
     else:
-        space = objects.Space(shape, affine, voxel_size)
+        shape = shape_or_init
 
-    # allocate data
-    vel = objects.Displacement(space.shape, affine=space.affine, device=device)
+        do_mean_space = isinstance(shape[0], objects.Image)
+        dim = shape[0].dim if do_mean_space else len(shape)
+
+        voxel_size = make_list(voxel_size or [])
+        if voxel_size and isinstance(voxel_size[-1], str):
+            *voxel_size, vx_unit = voxel_size
+        else:
+            vx_unit = 'mm'
+        if voxel_size:
+            voxel_size = make_list(voxel_size, dim)
+        else:
+            voxel_size = None
+
+        pad = make_list(pad or [])
+        if pad and isinstance(pad[-1], str):
+            *pad, pad_unit = pad
+        else:
+            pad_unit = '%'
+        if pad:
+            pad = make_list(pad, dim)
+        else:
+            pad = None
+
+        # build mean space
+        if do_mean_space:
+            space = objects.MeanSpace(shape,
+                                      voxel_size=voxel_size, vx_unit=vx_unit,
+                                      pad=pad, pad_unit=pad_unit)
+        else:
+            space = objects.Space(shape, affine, voxel_size)
+
+        # allocate data
+        vel = objects.Displacement(space.shape, affine=space.affine, device=device)
 
     # build model
     Model = objects.NonLinModel.subclass(model)
@@ -490,9 +536,9 @@ def make_loss(loss, slicewise=False, **kwargs):
     elif loss.startswith('tuk'):
         kwargs['lam'] = kwargs.pop('weight', None)
         lossobj = losses.Tukey(**kwargs)
-    elif loss == 'ncc':
+    elif loss in ('cc', 'ncc'):
         lossobj = losses.CC()
-    elif loss == 'lncc':
+    elif loss in ('lcc', 'lncc'):
         lossobj = losses.LCC(**kwargs)
     elif loss == 'gmm':
         lossobj = losses.GMMH(**kwargs)

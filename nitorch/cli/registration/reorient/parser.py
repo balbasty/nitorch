@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class Reorient(cli.ParsedStructure):
+class Reorient(Structure):
     """Structure that holds parameters of the `nireorient` command"""
     files: list = []
     layout: str = 'RAS'

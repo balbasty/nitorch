@@ -121,7 +121,7 @@ def _plot_gmm(moving, fixed, prm, bins=64):
 
 
 def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
-          grad=True, hess=True, mode='g', max_iter=128,
+          grad=True, hess=True, kernel='g', max_iter=128,
           theta=None, return_theta=False):
 
     fixed, moving = utils.to_max_backend(fixed, moving)
@@ -135,11 +135,11 @@ def lgmmh(moving, fixed, dim=None, bins=3, patch=7, stride=1,
         stride = [stride]
     stride = [s or 0 for s in stride]
 
-    fwd = Fwd(patch, stride, dim, mode)
-    bwd = Bwd(patch, stride, dim, mode, shape)
+    fwd = Fwd(patch, stride, dim, kernel)
+    bwd = Bwd(patch, stride, dim, kernel, shape)
 
     gmmfit = fit_lgmm2(moving, fixed, bins, max_iter, dim,
-                       patch=patch, stride=stride, mode=mode, theta=theta)
+                       patch=patch, stride=stride, mode=kernel, theta=theta)
 
     # drop unused variables
     get = gmmfit.get if return_theta else gmmfit.pop
@@ -437,7 +437,7 @@ class LGMMH(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, bins=3, patch=20, stride=1, mode='g',
+    def __init__(self, dim=None, bins=3, patch=20, stride=1, kernel='g',
                  max_iter=128, cache=True):
         """
 
@@ -451,7 +451,7 @@ class LGMMH(OptimizationLoss):
         self.bins = bins
         self.patch = patch
         self.stride = stride
-        self.mode = mode
+        self.kernel = kernel
         self.max_iter = max_iter
         self.cache = cache
         self.theta = None
@@ -476,7 +476,7 @@ class LGMMH(OptimizationLoss):
         kwargs.setdefault('bins', self.bins)
         kwargs.setdefault('patch', self.patch)
         kwargs.setdefault('stride', self.stride)
-        kwargs.setdefault('mode', self.mode)
+        kwargs.setdefault('kernel', self.kernel)
         kwargs.setdefault('max_iter', self.max_iter)
         kwargs['return_theta'] = self.cache
         kwargs.pop('mask', None)
@@ -507,7 +507,7 @@ class LGMMH(OptimizationLoss):
         kwargs.setdefault('bins', self.bins)
         kwargs.setdefault('patch', self.patch)
         kwargs.setdefault('stride', self.stride)
-        kwargs.setdefault('mode', self.mode)
+        kwargs.setdefault('kernel', self.kernel)
         kwargs.setdefault('max_iter', self.max_iter)
         kwargs['return_theta'] = self.cache
         kwargs.pop('mask', None)
@@ -541,7 +541,7 @@ class LGMMH(OptimizationLoss):
         kwargs.setdefault('bins', self.bins)
         kwargs.setdefault('patch', self.patch)
         kwargs.setdefault('stride', self.stride)
-        kwargs.setdefault('mode', self.mode)
+        kwargs.setdefault('kernel', self.kernel)
         kwargs.setdefault('max_iter', self.max_iter)
         kwargs['return_theta'] = self.cache
         kwargs.pop('mask', None)

@@ -3,6 +3,34 @@ from .base import OptimizationLoss
 from .mse import weighted_precision, mse
 
 
+def preproc_lam(lam, dim):
+    if lam is None:
+        lam = 1
+    elif lam.dim() <= 2:
+        if lam.dim() == 0:
+            lam = lam.flatten()
+        lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
+    return lam
+
+
+def mask_(x, mask):
+    if mask is not None:
+        x = x.masked_fill_(mask == 0, 0)
+    return x
+
+
+def mul_(x, mask):
+    if mask is not None:
+        x = x.mul_(mask)
+    return x
+
+
+def mask_inf_(x):
+    mask = x.isfinite().bitwise_not_()
+    x = x.masked_fill_(mask, 0)
+    return x
+
+
 def irls_laplace_reweight(moving, fixed, lam=1, joint=False, eps=1e-5,
                           dim=None, mask=None):
     """Update iteratively reweighted least-squares weights for l1
@@ -25,24 +53,17 @@ def irls_laplace_reweight(moving, fixed, lam=1, joint=False, eps=1e-5,
         IRLS weights
 
     """
-    if lam is None:
-        lam = 1
-    fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
-    if mask is not None:
-        mask = mask.to(fixed.device)
     dim = dim or (fixed.dim() - 1)
-    if lam.dim() <= 2:
-        if lam.dim() == 0:
-            lam = lam.flatten()
-        lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
+    fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
+    fixed, moving, lam, mask = utils.to_max_device(fixed, moving, lam, mask)
+    lam = preproc_lam(lam, dim)
+
     weights = (moving - fixed).square_().mul_(lam)
-    if mask is not None:
-        weights = weights.mul_(mask)
+    weights = mul_(weights, mask)
     if joint:
         weights = weights.sum(dim=-dim-1, keepdims=True)
     weights = weights.sqrt_().clamp_min_(eps).reciprocal_()
-    if mask is not None:
-        weights = weights.masked_fill_(mask == 0, 0)
+    weights = mask_(weights, mask)
     return weights
 
 
@@ -72,25 +93,21 @@ def irls_tukey_reweight(moving, fixed, lam=1, c=4.685, joint=False, dim=None,
         IRLS weights
 
     """
-    if lam is None:
-        lam = 1
     c = c * c
-    fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
-    if mask is not None:
-        mask = mask.to(fixed.device)
+
     dim = dim or (fixed.dim() - 1)
-    if lam.dim() <= 2:
-        if lam.dim() == 0:
-            lam = lam.flatten()
-        lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
+    fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
+    fixed, moving, lam, mask = utils.to_max_device(fixed, moving, lam, mask)
+    lam = preproc_lam(lam, dim)
+
     weights = (moving - fixed).square_().mul_(lam)
-    if mask is not None:
-        weights = weights.mul_(mask)
+    weights = mul_(weights, mask)
     if joint:
         weights = weights.sum(dim=-dim-1, keepdims=True)
     zeromsk = weights > c
     weights = weights.div_(-c).add_(1).square()
-    weights[zeromsk].zero_()
+    weights = weights.masked_fill_(zeromsk, 0)
+    weights = mask_(weights, mask)
     return weights
 
 
@@ -122,33 +139,42 @@ class RobustLoss(OptimizationLoss):
         self.cache = cache
 
     def irls(self, moving, fixed, lam, mask, joint, dim, **kwargs):
-        nvox = py.prod(fixed.shape[-dim:])
+        dim = dim or fixed.dim() - 1
+        if mask is not None:
+            nvox = mask.sum(list(range(-dim, 0)), keepdim=True)
+        else:
+            mask = 1
+            nvox = py.prod(fixed.shape[-dim:])
         compute_lam = lam is None or self.compute_lam
         # --- Fixed lam -> no reweighting ------------------------------
         lll = llw = 0
         if not compute_lam:
             weights = self.reweight(moving, fixed, lam=lam, joint=joint,
                                     dim=dim, mask=mask, **kwargs)
-            llw = weights[weights > 1e-9].reciprocal_().sum().div_(2 * nvox)
+            llw = 0.5 * mask_inf_(weights.reciprocal_()).mul_(mask).div_(nvox).sum()
+            lam = preproc_lam(lam, dim)
             lam = lam * weights
             return lll, llw, lam
 
         # --- Estimated lam -> IRLS loop -------------------------------
         if lam is None:
             lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
+        lam = preproc_lam(lam, dim)
         lll = llw = float('inf')
         for n_iter in range(32):
             lll_prev = lll
             weights = self.reweight(moving, fixed, lam=lam, joint=joint,
                                     dim=dim, mask=mask, **kwargs)
-            lam = weighted_precision(moving, fixed, dim=dim, weights=weights)
-            lam /= weights.mean(list(range(-dim, 0)))
-            lll = -0.5 * lam.log().sum()
-            llw = weights[weights > 1e-9].reciprocal_().sum().div_(2 * nvox)
+            lam = weighted_precision(moving, fixed, dim=dim, weights=weights * mask)
+            lam = preproc_lam(lam, dim)
+            # lam /= weights.mean(list(range(-dim, 0)))
+            lll = -0.5 * (lam.log() * weights * mask / nvox).sum()
+            llw = 0.5 * mask_inf_(weights.reciprocal_()).mul_(mask).div_(nvox).sum()
             if abs(lll_prev - lll) < 1e-4:
                 break
         if self.cache:
             self.lam = lam
+
         lam = lam * weights
         return lll, llw, lam
 

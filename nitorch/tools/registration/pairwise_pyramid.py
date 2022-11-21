@@ -34,8 +34,8 @@ def pyramid_levels(vxs, shapes, levels, **opt):
     Returns
     -------
     levels : list[list[int]]
-        The outer loop corresponds to global levels effectively used
-        during registration. The inner loop contains the image-specific
+        The inner loop corresponds to global levels effectively used
+        during registration. The outer loop contains the image-specific
         pyramid level that corresponds to this global level, for each image.
 
     """
@@ -85,7 +85,7 @@ def pyramid_levels(vxs, shapes, levels, **opt):
 
 
 def valid_pyramid_levels(vx, shape, min_size=None, max_size=None,
-                         min_vx=None, max_vx=None):
+                         min_vx=None, max_vx=None, **opt):
     """Compute the shape and voxel size of all valid pyramid levels
 
     Parameters
@@ -158,6 +158,9 @@ def sequential_pyramid(loss):
         A pyramid of losses, where the images in each loss are Image objects.
 
     """
+    class EndOfPyramid(Exception):
+        pass
+
     def get_level(loss, level):
         moving = fixed = None
         if hasattr(loss, 'fixed'):
@@ -170,8 +173,12 @@ def sequential_pyramid(loss):
         if hasattr(new_loss, 'moving'):
             loss.moving = moving
         if hasattr(new_loss, 'fixed'):
+            if level >= len(fixed):
+                raise EndOfPyramid
             new_loss.fixed = fixed[level]
         if hasattr(new_loss, 'moving'):
+            if level >= len(moving):
+                raise EndOfPyramid
             new_loss.moving = moving[level]
         if hasattr(loss, 'loss') and hasattr(loss.loss, 'patch'):
             dim = new_loss.fixed.affine.shape[-1] - 1
@@ -189,7 +196,7 @@ def sequential_pyramid(loss):
         try:
             pyramid.append(get_level(loss, level))
             level += 1
-        except Exception:
+        except EndOfPyramid:
             break
     pyramid = pyramid[::-1]
     return pyramid

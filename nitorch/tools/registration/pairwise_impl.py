@@ -201,7 +201,7 @@ class PairwiseRegisterStep:
             import matplotlib.pyplot as plt
             self.figure = plt.figure()
 
-    def mov2fix(self, fixed, moving, warped, vel=None, title=None):
+    def mov2fix(self, fixed, moving, warped, vel=None, title=None, lam=None):
         """Plot registration live"""
 
         import time
@@ -223,6 +223,8 @@ class PairwiseRegisterStep:
         moving = moving[0]
         fixed = fixed[0]
         warped = warped[0]
+        if lam is not None:
+            lam = lam[0]
 
         def rescale2d(x):
             if not x.dtype.is_floating_point:
@@ -252,11 +254,17 @@ class PairwiseRegisterStep:
                        vel[:, vel.shape[-3] // 2, :, :],
                        vel[vel.shape[-4] // 2, :, :, :]]
                 vel = [v.square().sum(-1).sqrt() for v in vel]
+            if lam is not None:
+                lam = [lam[:, :, lam.shape[-1] // 2],
+                       lam[:, lam.shape[-2] // 2, :],
+                       lam[lam.shape[-3] // 2, :, :]]
+                lam = [rescale2d(f) for f in lam]
         else:
             fixed = [rescale2d(fixed)]
             moving = [rescale2d(moving)]
             warped = [rescale2d(warped)]
             vel = [vel.square().sum(-1).sqrt()] if vel is not None else []
+            lam = [rescale2d(lam)] if lam is not None else []
 
         checker = []
         for f, w in zip(fixed, warped):
@@ -272,48 +280,62 @@ class PairwiseRegisterStep:
 
         kdim = len(fixed)
         nb_rows = kdim + 1
-        nb_cols = 4 + bool(vel)
+        nb_cols = 4 + bool(vel) + bool(lam)
 
         imkwargs = dict(interpolation='bilinear')
 
         fig = self.figure
-        replot = len(fig.axes) != (nb_rows - 1) * nb_cols + 1
-        replot = replot or not getattr(self, 'plt_saved', None)
-        replot = True
+        replot = len(getattr(self, 'axes_saved', [])) != (nb_rows - 1) * nb_cols + 1
         if replot:
             fig.clf()
 
+            axes = []
             for k in range(kdim):
                 ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 1)
+                axes += [ax]
                 ax.imshow(moving[k].cpu(), **imkwargs)
                 if k == 0:
                     ax.set_title('moving')
                 ax.axis('off')
                 ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 2)
+                axes += [ax]
                 ax.imshow(warped[k].cpu(), **imkwargs)
                 if k == 0:
                     ax.set_title('moved')
                 ax.axis('off')
                 ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 3)
+                axes += [ax]
                 ax.imshow(checker[k].cpu(), **imkwargs)
                 if k == 0:
                     ax.set_title('checker')
                 ax.axis('off')
                 ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 4)
+                axes += [ax]
                 ax.imshow(fixed[k].cpu(), **imkwargs)
                 if k == 0:
                     ax.set_title('fixed')
                 ax.axis('off')
                 if vel:
                     ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 5)
+                    axes += [ax]
                     d = ax.imshow(vel[k].cpu(), **imkwargs)
                     if k == 0:
                         ax.set_title('displacement')
                     ax.axis('off')
                     fig.colorbar(d, None, ax)
+                if lam:
+                    ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 5 + bool(vel))
+                    axes += [ax]
+                    d = ax.imshow(lam[k].cpu(), **imkwargs)
+                    if k == 0:
+                        ax.set_title('precision')
+                    ax.axis('off')
+                    fig.colorbar(d, None, ax)
             ax = fig.add_subplot(nb_rows, 1, nb_rows)
+            axes += [ax]
             all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
-            ax.plot(range(1, len(all_ll)+1), all_ll)
+            # ax.plot(range(1, len(all_ll)+1), all_ll)
+            ax.plot([])
             ax.set_ylabel('NLL')
             ax.set_xlabel('iteration')
             if title:
@@ -321,31 +343,40 @@ class PairwiseRegisterStep:
 
             fig.canvas.draw()
             self.plt_saved = [fig.canvas.copy_from_bbox(ax.bbox)
-                              for ax in fig.axes]
+                              for ax in axes]
+            self.axes_saved = axes
             fig.canvas.flush_events()
             plt.show(block=False)
 
+            lldata = (range(1, len(all_ll)+1), all_ll)
+            axes[-1].lines[0].set_data(lldata)
+            axes[-1].draw_artist(axes[-1].lines[0])
+            fig.canvas.blit(ax.bbox)
+            fig.canvas.flush_events()
         else:
             for elem in self.plt_saved:
                 fig.canvas.restore_region(elem)
 
             for k in range(kdim):
                 j = k * nb_cols
-                fig.axes[j].images[0].set_data(moving[k].cpu())
-                fig.axes[j+1].images[0].set_data(warped[k].cpu())
-                fig.axes[j+2].images[0].set_data(checker[k].cpu())
-                fig.axes[j+3].images[0].set_data(fixed[k].cpu())
+                self.axes_saved[j].images[0].set_data(moving[k].cpu())
+                self.axes_saved[j+1].images[0].set_data(warped[k].cpu())
+                self.axes_saved[j+2].images[0].set_data(checker[k].cpu())
+                self.axes_saved[j+3].images[0].set_data(fixed[k].cpu())
                 if vel:
-                    fig.axes[j+4].images[0].set_data(vel[k].cpu())
+                    self.axes_saved[j+4].images[0].set_data(vel[k].cpu())
+                    j += 1
+                if lam:
+                    self.axes_saved[j+4].images[0].set_data(lam[k].cpu())
             all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
             lldata = (range(1, len(all_ll)+1), all_ll)
-            fig.axes[-1].lines[0].set_data(lldata)
-            fig.axes[-1].relim()
-            fig.axes[-1].autoscale_view()
+            self.axes_saved[-1].lines[0].set_data(lldata)
+            self.axes_saved[-1].relim()
+            self.axes_saved[-1].autoscale_view()
             if title:
                 fig._suptitle.set_text(title)
 
-            for ax in fig.axes:
+            for ax in self.axes_saved:
                 if ax.images:
                     ax.draw_artist(ax.images[0])
                 else:
@@ -471,7 +502,7 @@ class PairwiseRegisterStep:
                 disp = phi00
             else:
                 right = spatial.affine_grid(aff_right, fixed.shape)
-                phi = regutils.smart_pull_grid(phi00, right)
+                phi = regutils.smart_pull_grid(phi00, right, bound='zero')
                 if do_print:
                     disp = phi.clone()
                 phi += right
@@ -493,8 +524,16 @@ class PairwiseRegisterStep:
                 mask = warped_mask
 
             if do_print:
-                disp = linalg.matvec(aff_right.inverse()[:-1, :-1], disp)
                 has_printed = True
+                disp = linalg.matvec(aff_right.inverse()[:-1, :-1], disp)
+                lam = None
+                if hasattr(loss.loss, 'irls'):
+                    _, _, lam = loss.loss.irls(warped, fixed.dat,
+                                               loss.loss.lam, mask,
+                                               loss.loss.joint,
+                                               warped.dim()-1)
+                    if mask is not None:
+                        lam *= mask
                 if moving.previewed:
                     preview = moving.pull(phi, preview=True, dat=False)
                 else:
@@ -507,9 +546,9 @@ class PairwiseRegisterStep:
                     initmask, init = moving.pull(init, preview=True, dat=False, mask=True)
                     if initmask is not None:
                         init = init * initmask
-                dat = fixed.dat * fixed.mask if fixed.masked else fixed.dat
+                dat = fixed.preview * fixed.mask if fixed.masked else fixed.preview
                 preview = preview * warped_mask if warped_mask is not None else preview
-                self.mov2fix(dat, init, preview, disp,
+                self.mov2fix(dat, init, preview, disp, lam=lam,
                              title=f'(nonlin) {self.n_iter:03d}')
 
             # ----------------------------------------------------------
@@ -642,7 +681,7 @@ class PairwiseRegisterStep:
                 phi = spatial.add_identity_grid(phi00)
             else:
                 right = spatial.affine_grid(aff_right, fixed.shape)
-                phi = regutils.smart_pull_grid(phi00, right)
+                phi = regutils.smart_pull_grid(phi00, right, bound='zero')
                 phi += right
             phi_right = phi
             if _almost_identity(aff_left) and moving.shape == self.nonlin.shape:
@@ -665,6 +704,14 @@ class PairwiseRegisterStep:
 
             if do_print:
                 has_printed = True
+                lam = None
+                if hasattr(loss.loss, 'irls'):
+                    _, _, lam = loss.loss.irls(warped, fixed.dat,
+                                               loss.loss.lam, mask,
+                                               loss.loss.joint,
+                                               warped.dim()-1)
+                    if mask is not None:
+                        lam *= mask
                 if moving.previewed:
                     preview = moving.pull(phi, preview=True, dat=False)
                 else:
@@ -677,9 +724,9 @@ class PairwiseRegisterStep:
                     initmask, init = moving.pull(init, preview=True, dat=False, mask=True)
                     if initmask is not None:
                         init = init * initmask
-                dat = fixed.dat * fixed.mask if fixed.masked else fixed.dat
+                dat = fixed.preview * fixed.mask if fixed.masked else fixed.preview
                 preview = preview * warped_mask if warped_mask is not None else preview
-                self.mov2fix(dat, init, preview,
+                self.mov2fix(dat, init, preview, lam=lam,
                              title=f'(affine) {self.n_iter:03d}')
 
             # ----------------------------------------------------------
@@ -825,26 +872,40 @@ class PairwiseRegisterStep:
             # ----------------------------------------------------------
             # forward pass
             # ----------------------------------------------------------
-            warped, mask = moving.pull(phi, mask=True)
+            warped, warped_mask = moving.pull(phi, mask=True)
             if fixed.masked:
-                if mask is None:
+                if warped_mask is None:
                     mask = fixed.mask
                 else:
-                    mask = mask * fixed.mask
+                    mask = warped_mask * fixed.mask
+            else:
+                mask = warped_mask
 
             if do_print:
                 has_printed = True
+                lam = None
+                if hasattr(loss.loss, 'irls'):
+                    _, _, lam = loss.loss.irls(warped, fixed.dat,
+                                               loss.loss.lam, mask,
+                                               loss.loss.joint,
+                                               warped.dim()-1)
+                    if mask is not None:
+                        lam *= mask
                 if moving.previewed:
                     preview = moving.pull(phi, preview=True, dat=False)
                 else:
                     preview = warped
                 init = spatial.affine_lmdiv(moving.affine, fixed.affine)
                 if _almost_identity(init) and moving.shape == fixed.shape:
-                    init = moving.preview
+                    init = moving.dat
                 else:
                     init = spatial.affine_grid(init, fixed.shape)
-                    init = moving.pull(init, preview=True, dat=False)
-                self.mov2fix(fixed.preview, init, preview,
+                    initmask, init = moving.pull(init, preview=True, dat=False, mask=True)
+                    if initmask is not None:
+                        init = init * initmask
+                dat = fixed.preview * fixed.mask if fixed.masked else fixed.preview
+                preview = preview * warped_mask if warped_mask is not None else preview
+                self.mov2fix(dat, init, preview, lam=lam,
                              title=f'(affine) {self.n_iter:03d}')
 
             # ----------------------------------------------------------

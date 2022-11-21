@@ -113,6 +113,8 @@ class Similarity(BaseSimilarity):
         return self
 
     def __add__(self, other: BaseSimilarity):
+        if isinstance(other, (int, float)) and other == 0:
+            return self
         if isinstance(other, SumSimilarity):
             return SumSimilarity([self, *other])
         elif isinstance(other, BaseSimilarity):
@@ -120,6 +122,8 @@ class Similarity(BaseSimilarity):
         raise TypeError(f'Cannot add a {type(self)} and a {type(other)}')
 
     def __radd__(self, other: BaseSimilarity):
+        if isinstance(other, (int, float)) and other == 0:
+            return self
         if isinstance(other, SumSimilarity):
             return SumSimilarity([*other, self])
         elif isinstance(other, BaseSimilarity):
@@ -219,6 +223,8 @@ class SumSimilarity(BaseSimilarity):
         return self
 
     def __add__(self, other):
+        if isinstance(other, (int, float)) and other == 0:
+            return self
         if isinstance(other, SumSimilarity):
             return SumSimilarity([*self, *other])
         elif isinstance(other, BaseSimilarity):
@@ -226,6 +232,8 @@ class SumSimilarity(BaseSimilarity):
         raise TypeError(f'Cannot add a {type(self)} and a {type(other)}')
 
     def __radd__(self, other):
+        if isinstance(other, (int, float)) and other == 0:
+            return self
         if isinstance(other, SumSimilarity):
             return SumSimilarity([*other, *self])
         elif isinstance(other, BaseSimilarity):
@@ -233,6 +241,8 @@ class SumSimilarity(BaseSimilarity):
         raise TypeError(f'Cannot add a {type(other)} and a {type(self)}')
 
     def __iadd__(self, other):
+        if isinstance(other, (int, float)) and other == 0:
+            return self
         if isinstance(other, SumSimilarity):
             self.similarities += other.losses
         elif isinstance(other, BaseSimilarity):

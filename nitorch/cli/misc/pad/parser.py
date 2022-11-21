@@ -2,9 +2,10 @@ import ast
 
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class Pad(cli.ParsedStructure):
+class Pad(Structure):
     """Structure that holds parameters of the `crop` command"""
     files: list = []
     size: list = []

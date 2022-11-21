@@ -124,12 +124,6 @@ class GridGaussNewton(SecondOrder):
     def repr_keys(self):
         return super().repr_keys() + ['fmg']
 
-    def __repr__(self):
-        fmg = self.fmg or 'False'
-        return f'{type(self).__name__}(lr={self.lr}, fmg={fmg})'
-
-    __str__ = __repr__
-
 
 class GridCG(GridGaussNewton):
     """Gauss-Newton on displacement grids using Conjugate Gradients"""

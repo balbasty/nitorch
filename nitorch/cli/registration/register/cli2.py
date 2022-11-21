@@ -2,7 +2,7 @@ from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import parser, help
 from nitorch.tools.registration import objects
-from nitorch.tools.registration.pairwise_preproc import map_image, load_image
+from nitorch.tools.registration.pairwise_preproc import map_image, load_image, preproc_image
 from nitorch.tools.registration.pairwise_postproc import warp_images
 from nitorch.tools.registration.pairwise_pyramid import (
     pyramid_levels, concurrent_pyramid, sequential_pyramid)
@@ -65,23 +65,33 @@ def _main(options):
     # ------------------------------------------------------------------
     #                       COMPUTE PYRAMID
     # ------------------------------------------------------------------
-    vxs, shapes = get_spaces([file for loss in options.loss
-                               for file in (loss.fix, loss.mov)])
+    vxs, shapes = get_spaces([file.files[0] for loss in options.loss
+                              for file in (loss.fix, loss.mov)])
     pyramids = pyramid_levels(vxs, shapes, **options.pyramid)
+
+    # refold as loss/image/level
+    pyramids0 = list(pyramids)
+    pyramid_per_loss = []
+    for _ in options.loss:
+        pyramid_per_image = {'fix': pyramids0[0], 'mov': pyramids0[1]}
+        pyramid_per_loss.append(pyramid_per_image)
+        pyramids0 = pyramids0[2:]
 
     # ------------------------------------------------------------------
     #                       BUILD LOSSES
     # ------------------------------------------------------------------
-    losses, image_dict = build_losses(options, pyramids, device)
+    losses, image_dict = build_losses(options, pyramid_per_loss, device)
 
     # ------------------------------------------------------------------
     #                           BUILD AFFINE
     # ------------------------------------------------------------------
     if options.affine.is2d is not False:
+        # TODO: allow initial affine
         affine = make_affine_2d(options.affine.is2d, losses[0].fixed.affine,
                                 options.affine.name, options.affine.position)
     else:
-        affine = make_affine(options.affine.name, options.affine.position)
+        affine = make_affine(options.affine.name, options.affine.position,
+                             init=options.affine.init)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
@@ -99,9 +109,16 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           BUILD OPTIM
     # ------------------------------------------------------------------
-    order = min(loss.order for loss in losses[0])
+    order = min(loss.loss.order for loss in losses[0])
+    interleaved = options.optim.name[0] == 'i'
+
+    if not options.affine.optim.max_iter:
+        options.affine.optim.max_iter = 50 if interleaved else 100
     affine_optim = make_affine_optim(options.affine.optim.name, order,
                                      **options.affine.optim)
+
+    if not options.nonlin.optim.max_iter:
+        options.nonlin.optim.max_iter = 10 if interleaved else 50
     nonlin_optim = make_nonlin_optim(options.nonlin.optim.name, order,
                                      **options.nonlin.optim, nonlin=nonlin)
 
@@ -180,19 +197,26 @@ def get_spaces(fnames):
     vxs = []
     shapes = []
     for fname in fnames:
-        f = map_image(fname)
+        f, affine = map_image(fname)
         shapes.append(f.shape[1:])
-        vxs.append(spatial.voxel_size(f.affine).tolist())
+        vxs.append(spatial.voxel_size(affine).tolist())
     return vxs, shapes
 
 
 def build_losses(options, pyramids, device):
     dim = 3
 
+    losskeys = ('kernel', 'patch', 'bins', 'norm', 'fwhm',
+                'spline', 'weight', 'weighted', 'max_iter')
+    loadkeys = ('label', 'missing', 'world', 'affine', 'rescale',
+                'pad', 'bound', 'fwhm', 'mask')
+    imagekeys = ('pyramid', 'pyramid_method', 'discretize',
+                 'soft', 'bound', 'extrapolate', 'mind')
+
     image_dict = {}
-    loss_list = []
+    sumloss = 0
     for loss, pyramid in zip(options.loss, pyramids):
-        lossobj = make_loss(loss.name, **loss)
+        lossobj = make_loss(loss.name, **include(loss, losskeys))
         if not lossobj:
             # not a proper loss
             continue
@@ -212,36 +236,40 @@ def build_losses(options, pyramids, device):
         loss.mov.pyramid = pyramid['mov']
         loss.fix.pyramid_method = options.pyramid.name
         loss.mov.pyramid_method = options.pyramid.name
-        fix = make_image(*load_image(loss.fix.files, **loss.fix, dim=dim, device=device), **loss.fix)
-        mov = make_image(*load_image(loss.mov.files, **loss.mov, dim=dim, device=device), **loss.mov)
+        fix = make_image(*preproc_image(loss.fix.files, **include(loss.fix, loadkeys), dim=dim, device=device),
+                         **include(loss.fix, imagekeys))
+        mov = make_image(*preproc_image(loss.mov.files, **include(loss.mov, loadkeys), dim=dim, device=device),
+                         **include(loss.mov, imagekeys))
         image_dict[loss.fix.name or loss.fix.files[0]] = fix
         image_dict[loss.mov.name or loss.mov.files[0]] = mov
 
         # Forward loss
         factor = loss.factor / (2 if loss.symmetric else 1)
-        lossobj = objects.Similarity(lossobj, mov, fix, factor=factor)
-        loss_list.append(lossobj)
+        sumloss = sumloss + factor * objects.Similarity(lossobj, mov, fix)
 
         # Backward loss
         if loss.symmetric:
             lossobj = make_loss(loss.name, **loss)
-            if loss.name != 'emmi':
-                lossobj = objects.Similarity(
-                    lossobj, fix, mov, factor=factor, backward=True)
-            else:
+            if loss.name == 'emmi':
                 loss.fix, loss.mov = loss.mov, loss.fix
                 loss.mov.rescale = (0, 0)
                 loss.fix.discretize = loss.fix.discretize or 256
                 loss.mov.soft_quantize = loss.mov.discretize or 16
                 fix = make_image(*load_image(loss.fix.files, **loss.fix, dim=dim, device=device), **loss.fix)
                 mov = make_image(*load_image(loss.mov.files, **loss.mov, dim=dim, device=device), **loss.mov)
-                lossobj = objects.Similarity(
-                    lossobj, mov, fix, factor=factor, backward=True)
-            loss_list.append(lossobj)
+            sumloss = sumloss + factor * objects.Similarity(lossobj, mov, fix, backward=True)
 
-    if options.pyramid.concurrent:
-        loss_list = concurrent_pyramid(loss_list)
-    else:
-        loss_list = sequential_pyramid(loss_list)
-
+    pyramid_fn = (concurrent_pyramid if options.pyramid.concurrent else
+                  sequential_pyramid)
+    loss_list = pyramid_fn(sumloss)
     return loss_list, image_dict
+
+
+def include(dict_like, keys):
+    return {key: value for key, value in dict_like.items()
+            if key in keys}
+
+
+def exclude(dict_like, keys):
+    return {key: value for key, value in dict_like.items()
+            if key in keys}

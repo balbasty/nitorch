@@ -121,6 +121,7 @@ def _suffstat(fn, x, y):
 
 
 def _robust(fn):
+    """Robust call to the convolutional backend"""
 
     def robust_fn(x):
         deterministic = torch.backends.cudnn.deterministic
@@ -160,7 +161,7 @@ def _robust(fn):
     return robust_fn
 
 
-def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
+def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, kernel='g',
         grad=True, hess=True, mask=None):
     """Local correlation coefficient (squared)
 
@@ -220,29 +221,25 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
     patch = list(map(float, py.ensure_list(patch)))
     stride = py.ensure_list(stride)
     stride = [s or 0 for s in stride]
-    fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
+    fwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=kernel, mask=mask,
                                cache=local_cache)
     fwd = _robust(fwd)
-    bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=mode, mask=mask,
+    bwd = lambda x: local_mean(x, patch, stride, dim=dim, mode=kernel, mask=mask,
                                backward=True, shape=shape, cache=local_cache)
     bwd = _robust(bwd)
     sumall = lambda x: x.sum(list(range(-dim, 0)), keepdim=True)
 
     # compute ncc within each patch
-    mom0, moving_mean, fixed_mean, moving_std, fixed_std, corr = \
-        _suffstat(fwd, moving, fixed)
+    mom0, mov_mean, fix_mean, mov_std, fix_std, corr = _suffstat(fwd, moving, fixed)
     mom0 = mom0.div_(sumall(mom0).clamp_min_(1e-5)).mul_(lam)
-    moving_std = sqrt_(moving_std.addcmul_(moving_mean, moving_mean, value=-1))
-    fixed_std = sqrt_(fixed_std.addcmul_(fixed_mean, fixed_mean, value=-1))
-    moving_std.clamp_min_(1e-5)
-    fixed_std.clamp_min_(1e-5)
-    corr = div_(div_(corr.addcmul_(moving_mean, fixed_mean, value=-1),
-                     moving_std), fixed_std)
-    corr2 = corr.square().neg_().add_(1).clamp_min_(1e-8)
+    mov_std = sqrt_(mov_std.addcmul_(mov_mean, mov_mean, value=-1).clamp_min_(1e-5))
+    fix_std = sqrt_(fix_std.addcmul_(fix_mean, fix_mean, value=-1).clamp_min_(1e-5))
+    corr = div_(div_(corr.addcmul_(mov_mean, fix_mean, value=-1), mov_std), fix_std)
+    corr2 = corr.square().neg_().add_(1).clamp_min_(1e-5)
 
     out = []
     if grad or hess:
-        h = (corr / moving_std).square_().mul_(mom0).div_(corr2)
+        h = (corr / mov_std).square_().mul_(mom0).div_(corr2)
         h = bwd(h)
 
         if grad:
@@ -250,14 +247,14 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
             #   - x .* (G' * (corr./ xstd).^2)
             #   + y .* (G' * (corr ./ (xstd.*ystd)))
             # g = -2 * g
-            fixed_mean = fixed_mean.div_(fixed_std)
-            moving_mean = moving_mean.div_(moving_std)
-            g = fixed_mean.addcmul_(corr, moving_mean, value=-1)
-            fixed_mean = moving_mean = None
-            g = g.mul_(corr).div_(moving_std).mul_(mom0).div_(corr2)
+            fix_mean = fix_mean.div_(fix_std)
+            mov_mean = mov_mean.div_(mov_std)
+            g = fix_mean.addcmul_(corr, mov_mean, value=-1)
+            fix_mean = mov_mean = None
+            g = g.mul_(corr).div_(mov_std).mul_(mom0).div_(corr2)
             g = bwd(g)
             g = g.addcmul_(h, moving)
-            g = g.addcmul_(bwd(corr.div_(moving_std).div_(fixed_std)
+            g = g.addcmul_(bwd(corr.div_(mov_std).div_(fix_std)
                                    .mul_(mom0).div_(corr2)),
                            fixed, value=-1)
             g = g.mul_(2)
@@ -266,6 +263,7 @@ def lcc(moving, fixed, dim=None, patch=20, stride=1, lam=1, mode='g',
         if hess:
             # h = 2 * (G' * (corr./ xstd).^2)
             h = h.mul_(2)
+            h.clamp_min_(1e-3)
             out.append(h)
 
     # return stuff
@@ -361,7 +359,7 @@ class LCC(OptimizationLoss):
 
     order = 2  # Hessian defined
 
-    def __init__(self, dim=None, patch=20, stride=1, lam=1, mode='g'):
+    def __init__(self, dim=None, patch=20, stride=1, lam=1, kernel='g'):
         """
 
         Parameters
@@ -374,7 +372,7 @@ class LCC(OptimizationLoss):
         self.patch = patch
         self.stride = stride
         self.lam = lam
-        self.mode = mode
+        self.kernel = kernel
 
     def loss(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -396,9 +394,9 @@ class LCC(OptimizationLoss):
         patch = kwargs.pop('patch', self.patch)
         stride = kwargs.pop('stride', self.stride)
         lam = kwargs.pop('lam', self.lam)
-        mode = kwargs.pop('mode', self.mode)
+        kernel = kwargs.pop('kernel', self.kernel)
         return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
-                   lam=lam, mode=mode, grad=False, hess=False, **kwargs)
+                   lam=lam, kernel=kernel, grad=False, hess=False, **kwargs)
 
     def loss_grad(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -422,9 +420,9 @@ class LCC(OptimizationLoss):
         patch = kwargs.pop('patch', self.patch)
         stride = kwargs.pop('stride', self.stride)
         lam = kwargs.pop('lam', self.lam)
-        mode = kwargs.pop('mode', self.mode)
+        kernel = kwargs.pop('kernel', self.kernel)
         return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
-                   lam=lam, mode=mode, hess=False, **kwargs)
+                   lam=lam, kernel=kernel, hess=False, **kwargs)
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
         """Compute the squared LCC loss
@@ -451,9 +449,9 @@ class LCC(OptimizationLoss):
         patch = kwargs.pop('patch', self.patch)
         stride = kwargs.pop('stride', self.stride)
         lam = kwargs.pop('lam', self.lam)
-        mode = kwargs.pop('mode', self.mode)
+        kernel = kwargs.pop('kernel', self.kernel)
         return lcc(moving, fixed, dim=dim, patch=patch, stride=stride,
-                   lam=lam, mode=mode, **kwargs)
+                   lam=lam, kernel=kernel, **kwargs)
 
 
 # aliases

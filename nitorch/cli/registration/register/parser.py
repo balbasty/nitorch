@@ -106,8 +106,10 @@ usage:
             -w, --weight [VAL]              Weight (= Gaussian precision): [auto]
         mad, l1                         Median absolute deviation (can be weighted)
             -w, --weight [VAL]              Weight (= Laplace precision): [auto]
+            -j, --joint                     Joint weight map across channels [false] 
         tuk, tukey                      Tukey's biweight function (can be weighted)
             -w, --weight [VAL]              Weight (= Laplace precision): [auto]
+            -j, --joint                     Joint weight map across channels [false] 
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
             -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
@@ -147,6 +149,7 @@ usage:
         --name NAME                 A name to use with `@nonlin --fov`
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
+        --mind [FWHM=1 [RADIUS=0]]  Compute MIND features
 
 @affine options:
     FACTOR must be a scalar value [1] and is a global penalty factor
@@ -159,6 +162,7 @@ usage:
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
+        -i, --input                     Path to initial transform
         -o, --output                    Path to the output transform: [{dir}/{name}.lta]
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
 
@@ -169,6 +173,7 @@ usage:
         g, shoot                        Geodesic shooting
         d, smalldef                     Dense deformation field
     Common options:
+        -i, --input                     Path to initial transform
         -o, --output                    Path to the output transform: [{dir}/{name}.nii.gz]
         -s, --steps                     Number of integration steps
         -a, --absolute                  Penalty on absolute displacements (0th) [1e-4]
@@ -338,6 +343,9 @@ loss.add_option('slicewise', ('-z', '--slicewise'), nargs='?', default=False,
 weight_option = cli.Option('weight', ('-w', '--weight'), nargs='1',
                            default=None, convert=number_or_str(float),
                            help='Weight (= precision) or the loss.')
+joint_option = cli.Option('joint', ('-j', '--joint'), nargs='0',
+                          default=False, action=cli.Actions.store_true,
+                          help='Joint weight map across channels.')
 patch_option = cli.Option('patch', ('-p', '--patch'), nargs='1*', default=10,
                           convert=number_or_str(float), help='Patch size')
 stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
@@ -372,6 +380,8 @@ loss.add_suboption('mse', weight_option)
 loss.add_suboption('mad', weight_option)
 loss.add_suboption('tuk', weight_option)
 loss.add_suboption('sqz', weight_option)
+loss.add_suboption('mad', joint_option)
+loss.add_suboption('tuk', joint_option)
 loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=False,
                    convert=float, action=cli.Actions.store_true,
                    help='Weight of each class')
@@ -427,6 +437,8 @@ file.add_option('missing', ('-x', '--missing'), nargs='+', convert=float,
                 default=[0], help='Missing values')
 file.add_option('missing', '--no-missing', nargs=0,
                 action=cli.Actions.store_value([]), help='No missing values')
+file.add_option('mind', '--mind', nargs='*2', default=[], convert=float,
+                action=cli.Actions.store_value([1, 0]))
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)
 mov = cli.Group('mov', '@@mov', n=1)
@@ -520,6 +532,8 @@ affine.add_option('position', ('-p', '--position'), default='sym', nargs=1,
 affine.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{name}.lta',
                   help='Path to the output transform')
+affine.add_option('init', ('-i', '--input', '--init'), nargs=1,
+                  help='Path to the input transform')
 affine.add_option('progressive', ('-g', '--progressive'), default=False,
                   nargs='?',  convert=bool_or_str)
 affine.add_option('is2d', '-2d', default=False, nargs='?',
@@ -558,6 +572,8 @@ nonlin.add_option('fov', ('-f', '--fov'), nargs='1*',
 nonlin.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{name}.nii.gz',
                   help='Path to the output transform')
+nonlin.add_option('init', ('-i', '--input', '--init'), nargs=1,
+                  help='Path to the input transform')
 nonlin.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
                   convert=number_or_str(int))

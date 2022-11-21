@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class Pool(cli.ParsedStructure):
+class Pool(Structure):
     """Structure that holds parameters of the `pool` command"""
     files: list = []
     window: list = 3

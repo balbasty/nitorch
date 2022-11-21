@@ -436,7 +436,7 @@ def _get_loss(loss, dim):
         lossobj = losses.CC(dim=dim)
     elif loss.name == 'lcc':
         lossobj = losses.LCC(patch=loss.patch, dim=dim, stride=loss.stride,
-                             mode=loss.kernel)
+                             kernel=loss.kernel)
     elif loss.name == 'gmm':
         lossobj = losses.GMMH(bins=loss.bins, dim=dim,
                               max_iter=loss.max_iter)

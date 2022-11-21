@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class InPaint(cli.ParsedStructure):
+class InPaint(Structure):
     """Structure that holds parameters of the `nipaint` command"""
     files: list = []
     missing: str = 'nan'
