@@ -1,4 +1,5 @@
 """Finite-differences operators (gradient, divergence, ...)."""
+import itertools
 
 import torch
 from nitorch.core import utils, linalg
@@ -8,7 +9,7 @@ from ._conv import smooth
 
 
 __all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',
-           'sobel', 'frangi', 'hessian_eig']
+           'mind', 'sobel', 'frangi', 'hessian_eig']
 
 
 # Converts from nitorch.utils.pad boundary naming to
@@ -559,6 +560,90 @@ def div(x, order=1, dim=-1, voxel_size=1, side='f', bound='dct2', out=None):
         div += div1d(diff, order, d, v, side, bound, out=tmp)
 
     return div
+
+
+def mind(x, radius=0, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
+    """Modality-Independent Neighborhood Descriptor
+
+    Parameters
+    ----------
+    x : (..., *shape) tensor
+        Input tensor
+    radius : int,
+        Half-width of spatial search
+    fwhm : float
+        Full-width at half-maximum of Gaussian smoothing
+    dim : int, default=x.dim()
+        Number of spatial dimensions
+    bound : boundary-like
+        Boundary condition
+    robust : int
+        Power of robustness threshold (smaller = more robust, 0 = disabled)
+    norm : {'max', 'mean', None}
+        Normalization across features
+
+    Returns
+    -------
+    m : (..., *shape, K) tensor
+        MIND feature maps
+
+    References
+    ----------
+    "MIND: Modality Independent Neighbourhood Descriptor for Multi-Modal
+    Deformable Registration"
+    M.P. Heinrich et al.
+    Medical Image Analysis (2012)
+    """
+    dim = dim or x.dim()
+    fwhm = make_list(fwhm, dim)
+
+    inplace = not x.requires_grad
+    square_ = torch.square_ if inplace else torch.square
+    div_ = torch.Tensor.div_ if inplace else torch.div
+    exp_ = torch.Tensor.exp_ if inplace else torch.exp
+
+    nb_feat = 2*dim if radius == 0 else ((2*radius+1)**dim - 1)
+    mnd = x.new_zeros([nb_feat, *x.shape])
+
+    # compute differences
+    n_feat = 0
+    # first ring neighbors
+    for d in range(-dim, 0):
+        for side in 'fb':
+            diff1d(x, dim=d, side=side, bound=bound, out=mnd[n_feat])
+            n_feat += 1
+    # other neighbors
+    mnd[n_feat:].copy_(x)
+    if radius > 0:
+        indices = itertools.product(*[range(-radius, radius+1)])
+        for index in indices:
+            if sum(map(abs, index)) <= 1:
+                # center of first-ring neighbor -> skip
+                continue
+            mnd[n_feat] -= utils.roll(x, index, range(-dim, 0), bound=bound)
+            n_feat += 1
+    # square and smooth
+    mnd = square_(mnd)
+    mnd = smooth(mnd, fwhm=fwhm, dim=dim, bound=bound)
+
+    # compute variance in first-ring neighborhood
+    var = mnd[:2*dim].mean(0)
+    if robust:
+        meanvar = var.mean(list(range(-3, 0)), keepdim=True)
+        mn = 10 ** (-robust) * meanvar
+        mx = 10 ** robust * meanvar
+        var = torch.min(torch.max(var, mn), mx)
+
+    # exponentiation
+    mnd = exp_(div_(mnd, var).neg_())
+
+    # normalize
+    if norm == 'max':
+        mnd -= mnd.max(0).values
+    elif norm == 'mean':
+        mnd -= mnd.mean(0)
+
+    return utils.movedim(mnd, 0, -1)
 
 
 def frangi(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
