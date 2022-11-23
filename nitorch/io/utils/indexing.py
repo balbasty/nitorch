@@ -20,6 +20,15 @@ class oob_slice:
     __str__ = __repr__
 
 
+class oob_int:
+    """Describe an out-of-bound integral index"""
+
+    def __repr__(self):
+        return 'oob_int'
+
+    __str__ = __repr__
+
+
 def is_newaxis(slicer):
     """Return True if the index represents a new axis"""
     return slicer is None or (isinstance(slicer, oob_slice) and slicer.newaxis)
@@ -27,7 +36,7 @@ def is_newaxis(slicer):
 
 def is_droppedaxis(slicer):
     """Return True if the index represents a dropped axis"""
-    return isinstance(slicer, int)
+    return isinstance(slicer, (int, oob_int))
 
 
 def is_sliceaxis(slicer):
@@ -43,7 +52,7 @@ def is_fancy(sliceobj):
         if getattr(slicer, 'ndim', 0) > 0:  # ndarray always fancy, but scalars are safe
             return True
         # slice or Ellipsis or None OK for  basic
-        if isinstance(slicer, slice) or slicer in (None, Ellipsis):
+        if isinstance(slicer, (slice, oob_slice, oob_int)) or slicer in (None, Ellipsis):
             continue
         try:
             int(slicer)
@@ -52,78 +61,106 @@ def is_fancy(sliceobj):
     return False
 
 
-def neg2pos(index, shape):
-    """Make a negative index (that counts from then end) positive
-
-    .. warning:: this function should be called only once -- always on
-        user inputs -- otherwise we risk transforming back stuff that
-        should be kept negative.
-        Ex: neg2pos(-5, 3) = -2                              # correct
-            neg2pos(neg2pos(-5, 3), 3) = neg2pos(-2, 3) = 1  # wrong
+def expand_shape(index, shape):
+    """Add None to shape in place of new axes
 
     Parameters
     ----------
-    index : index_like or sequence[index_like]
-    shape : int or sequence[int]
+    index : sequence[index-like]
+    shape : sequence[int]
 
     Returns
     -------
-    index : index_like or tuple[index_like]
+    shape : sequence[int]
+
+    """
+    shape0 = shape
+    shape = []
+    for d, idx in enumerate(index):
+        if idx is None or getattr(idx, 'newaxis', False):
+            shape.append(None)
+        else:
+            shp, *shape0 = shape0
+            shape.append(shp)
+    if len(shape0) > 0 or len(index) != len(shape):
+        raise ValueError('shape and index vectors not consistent.')
+    return shape
+
+
+def clamp_slice(index, shape):
+    """Should only be called during neg2pos"""
+    start, stop, step = index.start, index.stop, index.step
+    if step and step < 0:
+        if stop is not None and start is not None and stop >= start:
+            return oob_slice()
+        if stop is not None and stop <= 0:
+            stop = None
+        if start is not None and start >= shape - 1:
+            start = None
+    else:
+        if stop is not None and start is not None and stop <= start:
+            return oob_slice()
+        if start is not None and start <= 0:
+            start = None
+        if stop is not None and stop >= shape - 1:
+            stop = None
+    return slice(start, stop, step)
+
+
+def neg2pos(index, shape, _oob=True):
+    """Make a negative index (that counts from the end) positive
+
+    If index is a slice, negated start/stop are clamped to None when needed.
+    If index is an int, negated indices that fall out-of-bounds are
+    replaced by an `oob_int` object.
+
+    Parameters
+    ----------
+    index : index_like
+    shape : int
+
+    Returns
+    -------
+    index : index_like
 
     Raises
     ------
     ValueError
-        * if (en element of) shape is negative
-        * if the lengths of index and shape are not consistent
+        * if shape is negative
     TypeError
-        * if index is not an index_like or sequence[index_like]
-        * if shape is not an int or sequence[int]
+        * if index is not an index_like
+        * if shape is not an int
     """
-
-    accepted_types = (slice, int, oob_slice, type(None), type(Ellipsis))
-    if not isinstance(index, accepted_types):
-        # add `None`s to shape to match new axes
-        shape0 = shape
-        shape = []
-        for d, idx in enumerate(index):
-            if idx is None:
-                shape.append(None)
-            else:
-                shp, *shape0 = shape0
-                shape.append(shp)
-        index = list(index)
-        if len(shape0) > 0 or len(index) != len(shape):
-            raise ValueError('shape and index vectors not consistent.')
-        # recursive call
-        return tuple(neg2pos(idx, shp) for idx, shp in zip(index, shape))
-
     # sanity checks
     try:
         shape0 = shape
         shape = int(shape0)
-        if shape != shape0:
-            raise TypeError('Shape should be an integer')
     except TypeError:
         raise TypeError('Shape should be an integer')
-    if shape < 0:
-        raise ValueError('Shape should be a nonnegative integer')
+    else:
+        if shape != shape0:
+            raise TypeError('Shape should be an integer')
+        if shape < 0:
+            raise ValueError('Shape should be a nonnegative integer')
 
     # deal with accepted types
     if isinstance(index, slice):
-        return slice(neg2pos(index.start, shape),
-                     neg2pos(index.stop, shape),
-                     index.step)
+        index = slice(neg2pos(index.start, shape, False),
+                      neg2pos(index.stop, shape, False), index.step)
+        return clamp_slice(index, shape)
     elif isinstance(index, int):
         if index is not None and index < 0:
             index = shape + index
+        if _oob and index is not None and (index < 0 or index >= shape):
+            return oob_int()
         return index
-    elif isinstance(index, (oob_slice, type(None), type(Ellipsis))):
+    elif isinstance(index, (oob_slice, oob_int, type(None), type(Ellipsis))):
         return index
     raise TypeError('Index should be an int, slice, Ellipsis or None')
 
 
-def is_fullslice(index, shape, do_neg2pos=True):
-    """Check if an index spans the full dimension.
+def is_fullslice(index, shape):
+    """Check if an index (or slicer) spans the full dimension (or volume).
 
     An index spans the full dimension if:
     * it is a new axis or a oob slice into a new axis
@@ -132,55 +169,45 @@ def is_fullslice(index, shape, do_neg2pos=True):
 
     Parameters
     ----------
-    index : index_like or sequence[index_like]
+    index : index_like
         Index should have been expanded beforehand.
         That is, index_like includes (slice, int, None)
     shape : int or sequence[int]
-    neg2pos : bool, default=True
 
     Returns
     -------
     bool or tuple[bool]
 
     """
+    if isinstance(index, (list, tuple)):
+        index = expand_index(index, shape)
+        index = type(index)(map(lambda a: is_fullslice(*a), zip(index, shape)))
+        return all(index)
+
     if index is None:
         return True
     elif isinstance(index, slice):
-        index = simplify_slice(index, shape, do_neg2pos=do_neg2pos)
+        index = simplify_slice(index, shape)
         return (index.start is None and index.stop is None
                 and index.step in (None, 1, -1))
     elif isinstance(index, int):
-        if do_neg2pos:
-            index = neg2pos(index, shape)
+        index = neg2pos(index, shape)
         return index == 0 and shape == 1
     elif isinstance(index, oob_slice):
         return oob_slice.newaxis
+    elif isinstance(index, oob_int):
+        return False
     else:
-        # expand
-        index = expand_index(index, shape)
-        # add `None`s to shape to match new axes
-        shape0 = shape
-        shape = []
-        for d, idx in enumerate(index):
-            if idx is None:
-                shape.append(None)
-            else:
-                shp, *shape0 = shape0
-                shape.append(shp)
-        return tuple(is_fullslice(idx, shp) for idx, shp in zip(index, shape))
+        raise TypeError(f'Unknown index type {type(index)}')
 
 
-def slice_length(index, shape, do_neg2pos=True):
+def slice_length(index, shape):
     """Compute the effective length (output number of elements) of a slice.
-
-    ..warning:: `neg2pos` should *not* have been called on `index` before
-        unless `do_neg2pos is False`.
 
     Parameters
     ----------
     index : slice
     shape : int
-    do_neg2pos : bool, default=True
 
     Returns
     -------
@@ -190,8 +217,10 @@ def slice_length(index, shape, do_neg2pos=True):
     def sign(x):
         return 1 if x > 0 else -1 if x < 0 else 0
 
-    if do_neg2pos:
-        index = neg2pos(index, shape)
+    index = neg2pos(index, shape)
+    if isinstance(index, oob_slice):
+        return 0
+
     start = index.start
     stop = index.stop
 
@@ -200,23 +229,20 @@ def slice_length(index, shape, do_neg2pos=True):
     step = 1 if step is None else step
 
     if step < 0:
-        if stop is None or stop < 0:
+        if stop is None:
             stop = -1
-        if start is None or start >= shape:
+        if start is None:
             start = shape - 1
     else:
-        if stop is None or stop > shape:
+        if stop is None:
             stop = shape
-        if start is None or start < 0:
+        if start is None:
             start = 0
     return max(1 + (stop - start - sign(step)) // step, 0)
 
 
-def simplify_slice(index, shape, do_neg2pos=True):
+def simplify_slice(index, shape):
     """Replace start/stop/step by `None`s when it is equivalent.
-
-    ..warning:: `neg2pos` should *not* have been called on `index` before
-        unless `do_neg2pos is False`.
 
     Parameters
     ----------
@@ -228,10 +254,12 @@ def simplify_slice(index, shape, do_neg2pos=True):
     slice
 
     """
-
     length = slice_length(index, shape)
-    if do_neg2pos:
-        index = neg2pos(index, shape)
+    index = neg2pos(index, shape)
+    if not isinstance(index, slice):
+        # probably already a oob_slice
+        return index
+
     start = index.start
 
     step = index.step or 1
@@ -264,7 +292,7 @@ def simplify_slice(index, shape, do_neg2pos=True):
 def fill_slice(index, shape):
     """
     Replace None with start/stop
-    Assume that the slice is positive and simplified
+    /!\ Assume that the slice is positive and simplified
     """
     start, stop, step = index.start, index.stop, index.step
     if start is None:
@@ -276,14 +304,13 @@ def fill_slice(index, shape):
     return slice(start, stop, step)
 
 
-def invert_slice(index, shape, do_neg2pos=True):
+def invert_slice(index, shape):
     """Compute a slice that is equivalent but with inverse stride.
 
     Parameters
     ----------
     index : slice
     shape : int
-    do_neg2pos : bool, default=True
 
     Returns
     -------
@@ -294,7 +321,10 @@ def invert_slice(index, shape, do_neg2pos=True):
     def sign(x):
         return 1 if x > 0 else -1 if x < 0 else 0
 
-    start, step, length = slice_navigator(index, shape, do_neg2pos)
+    if isinstance(index, oob_slice):
+        return oob_slice
+
+    start, step, length = slice_navigator(index, shape)
 
     # invert
     #   new start: last reachable element
@@ -303,17 +333,21 @@ def invert_slice(index, shape, do_neg2pos=True):
     start = start + (length - 1) * step
     step = -step
     stop = start + (length - 1) * step + sign(step)  # value
-    return simplify_slice(slice(start, stop, step), shape, do_neg2pos=False)
+
+    index = slice(start, step, stop)
+    index = clamp_slice(index, shape)
+    index = simplify_slice(index, shape)
+
+    return index
 
 
-def slice_navigator(index, shape, do_neg2pos=True):
+def slice_navigator(index, shape):
     """Return explicit start and step values from a slice
 
     Parameters
     ----------
     index : slice
     shape : int
-    do_neg2pos : bool, default=False
 
     Returns
     -------
@@ -325,8 +359,8 @@ def slice_navigator(index, shape, do_neg2pos=True):
         Length of the slice
 
     """
-    length = slice_length(index, shape, do_neg2pos)
-    index = simplify_slice(index, shape, do_neg2pos)
+    length = slice_length(index, shape)
+    index = simplify_slice(index, shape)
     start = index.start
     step = index.step or 1
 
@@ -341,7 +375,7 @@ def slice_navigator(index, shape, do_neg2pos=True):
     return start, step, length
 
 
-def is_slice_equivalent(index1, index2, shape, same_sign=True, do_neg2pos=True):
+def is_slice_equivalent(index1, index2, shape, same_sign=True):
     """Check that two slices describe the same chunk of data
 
     Parameters
@@ -351,23 +385,21 @@ def is_slice_equivalent(index1, index2, shape, same_sign=True, do_neg2pos=True):
     shape : int
     same_sign : bool, default=True
         If True, requires that the steps have the same sign
-    do_neg2pos : bool, default=True
 
     Returns
     -------
     bool
 
     """
-    if do_neg2pos:
-        index1 = neg2pos(index1, shape)
-        index2 = neg2pos(index2, shape)
+    index1 = neg2pos(index1, shape)
+    index2 = neg2pos(index2, shape)
     if not same_sign:
         if index1.step is not None and index1.step < 0:
-            index1 = invert_slice(index1, shape, False)
+            index1 = invert_slice(index1, shape)
         if index2.step is not None and index2.step < 0:
-            index2 = invert_slice(index2, shape, False)
-    start1, step1, length1 = slice_navigator(index1, shape, False)
-    start2, step2, length2 = slice_navigator(index2, shape, False)
+            index2 = invert_slice(index2, shape)
+    start1, step1, length1 = slice_navigator(index1, shape)
+    start2, step2, length2 = slice_navigator(index2, shape)
     return (start1, step1, length1) == (start2, step2, length2)
 
 
@@ -561,7 +593,7 @@ def expand_index(index, shape):
             # scalar (1 -> 0)
             assert isinstance(ind, int)  # already checked
             ind = neg2pos(ind, shape[nb_ind])
-            if ind < 0 or ind >= shape[nb_ind]:
+            if isinstance(ind, oob_int):
                 raise IndexError('Out-of-bound index in dimension {} '
                                  '({} not in [0, {}])'
                                  .format(nb_ind, ind, shape[nb_ind]-1))
@@ -704,12 +736,8 @@ def compose_index(parent, child, full_shape):
                 start = start0 + start * step0
                 step = step0 * step
                 stop = start + length * step
-                if step < 0 and stop < 0:
-                    # need to simplify this here because
-                    # simplify_slice fails otherwise
-                    stop = None
-                new_slice = simplify_slice(slice(start, stop, step), sz0,
-                                           do_neg2pos=False)
+                new_slice = clamp_slice(slice(start, stop, step), sz0)
+                new_slice = simplify_slice(new_slice, sz0)
                 new_parent.append(new_slice)
                 continue
             if isinstance(c, oob_slice):
@@ -725,7 +753,7 @@ def compose_index(parent, child, full_shape):
     return tuple(new_parent)
 
 
-def split_operation(perm, slicer, direction):
+def splitop(perm, slicer, direction):
     """Split the operation `slicer of permutation` into subcomponents.
 
     Symbolic slicing is encoded by a permutation and an indexing operation.

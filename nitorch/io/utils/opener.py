@@ -50,6 +50,22 @@ def _is_fileobj(obj):
     return hasattr(obj, 'read') and hasattr(obj, 'write')
 
 
+def _defer_method(other, name):
+    def deferred(self, *args, **kwargs):
+        return getattr(getattr(self, other), name)(*args, **kwargs)
+    return deferred
+
+
+def _defer_property(other, name):
+    def _get(self):
+        return getattr(getattr(self, other), name)
+    def _set(self, value):
+        return setattr(getattr(self, other), name, value)
+    def _del(self):
+        return delattr(getattr(self, other), name)
+    return property(_get, _set, _del)
+
+
 gz = dict(
     name='GZip',
     open=_gzip_open,
@@ -90,7 +106,7 @@ class Opener:
       -> close on deletion
 
     Some differences with the native `open`:
-    - Default is binary mode, not tet mode.
+    - Default is binary mode, not text mode.
       The user is expected to deal with different types of line endings,
       unless 't' mode is explicitly set,
 
@@ -200,36 +216,59 @@ class Opener:
         except AttributeError:
             return self._name
 
+    @property
+    def is_indexed(self):
+        return IndexedGzipFile and isinstance(self.fileobj, IndexedGzipFile)
+
+    @property
+    def is_owned(self):
+        return self._name is not None
+
+    @property
+    def mode(self):
+        return _mode(self.fileobj)
+
+    def close(self, *a, **k):
+        if self.fileobj:
+            self.fileobj.close(*a, **k)
+        return self
+
+    def close_if_mine(self):
+        if self.is_owned:
+            self.close()
+        return self
+
     # Defer properties and methods
-    is_indexed = property(lambda self: IndexedGzipFile and
-                                       isinstance(self.fileobj, IndexedGzipFile))
-    is_owned = property(lambda self: self._name is not None)
-    closed = property(lambda self: self.fileobj.closed)
-    mode = property(lambda self: _mode(self.fileobj))
-    readable = lambda self: self.fileobj.readable()
-    writable = lambda self: self.fileobj.writable()
-    seekable = lambda self: self.fileobj.seekable()
-    fileno = lambda self: self.fileobj.fileno()
-    peek = lambda self, *a, **k: self.fileobj.peek(*a, **k)
-    read = lambda self, *a, **k: self.fileobj.read(*a, **k)
-    read1 = lambda self, *a, **k: self.fileobj.read1(*a, **k)
-    readline = lambda self, *a, **k: self.fileobj.readline(*a, **k)
-    readinto = lambda self, *a, **k: self.fileobj.readinto(*a, **k)
-    readinto1 = lambda self, *a, **k: self.fileobj.readinto1(*a, **k)
-    readlines = lambda self, *a, **k: self.fileobj.readlines(*a, **k)
-    writelines = lambda self, *a, **k: self.fileobj.writelines(*a, **k)
-    write = lambda self, *a, **k: self.fileobj.write(*a, **k)
-    flush = lambda self, *a, **k: self.fileobj.flush(*a, **k)
-    seek = lambda self, *a, **k: self.fileobj.seek(*a, **k)
-    tell = lambda self, *a, **k: self.fileobj.tell(*a, **k)
-    truncate = lambda self, *a, **k: self.fileobj.truncate(*a, **k) # NOT IN GZIP
-    isatty = lambda self, *a, **k: self.fileobj.isatty(*a, **k)
-    close = lambda self, *a, **k: self.fileobj.close(*a, **k) if self.fileobj else None
-    close_if_mine = lambda self: self.close() if self.is_owned else None
-    __iter__ = lambda self: iter(self.fileobj)
-    __enter__ = lambda self: self
-    __exit__ = lambda self, *a, **k: self.close_if_mine()
-    __del__ = lambda self: self.close_if_mine()
+    closed = _defer_property('fileobj', 'closed')
+    readable = _defer_method('fileobj', 'readable')
+    writable = _defer_method('fileobj', 'writable')
+    seekable = _defer_method('fileobj', 'seekable')
+    fileno = _defer_method('fileobj', 'fileno')
+    peek = _defer_method('fileobj', 'peek')
+    read = _defer_method('fileobj', 'read')
+    read1 = _defer_method('fileobj', 'read1')
+    readinto = _defer_method('fileobj', 'readinto')
+    readinto1 = _defer_method('fileobj', 'readinto1')
+    readlines = _defer_method('fileobj', 'readlines')
+    writelines = _defer_method('fileobj', 'writelines')
+    write = _defer_method('fileobj', 'write')
+    flush = _defer_method('fileobj', 'flush')
+    seek = _defer_method('fileobj', 'seek')
+    tell = _defer_method('fileobj', 'tell')
+    truncate = _defer_method('fileobj', 'truncate')  # NOT IN GZIP
+    isatty = _defer_method('fileobj', 'isatty')
+
+    def __iter__(self):
+        return iter(self.fileobj)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close_if_mine()
+
+    def __del__(self):
+        self.close_if_mine()
 
 
 def open(file_like, mode='r', opener=None, **kwargs):

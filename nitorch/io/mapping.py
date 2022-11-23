@@ -82,7 +82,7 @@ class MappedFile:
     FailedReadError = RuntimeError        # class of errors raised on read
     FailedWriteError = RuntimeError       # class of errors raised no write
 
-    def __init__(self, file_like, mode='r+', keep_open=False):
+    def __init__(self, file_like=None, mode='r+', keep_open=False, **kwargs):
         """
 
         Parameters
@@ -99,12 +99,35 @@ class MappedFile:
             writes) are expected. Note that this option may not be
             implemented in all formats. If not implemented, does nothing.
         """
-        pass
+        if file_like is None:
+            self.init(**kwargs)
+        else:
+            self.init(file_like=file_like, mode=mode, keep_open=keep_open)
+
+    def init(self, **kwargs):
+        for key, val in kwargs:
+            setattr(self, key, val)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close_if_mine()
+
+    def __del__(self):
+        self.close_if_mine()
+
+    def close_if_mine(self):
+        return self
+
+    def close(self):
+        return self
 
     def __str__(self):
         return '{}()'.format(type(self).__name__)
 
-    __repr__ = __str__
+    def __repr__(self):
+        return self.__str__()
 
     @classmethod
     def possible_extensions(cls):

@@ -38,7 +38,7 @@ from nitorch.io.volumes.mapping import MappedArray
 from nitorch.io.volumes.readers import reader_classes
 from nitorch.io.volumes.writers import writer_classes
 from nitorch.io.volumes.loadsave import map as map_array
-from nitorch.io.utils.indexing import is_fullslice, split_operation
+from nitorch.io.utils.indexing import is_fullslice, splitop
 from nitorch.io.utils.opener import open, Opener, transform_opener, gz
 from nitorch.io.utils import volutils
 from nitorch.io.metadata import keys as metadata_keys
@@ -173,7 +173,7 @@ class BabelArray(MappedArray):
         assert isinstance(dat, np.ndarray), "Data should already be numpy"
         assert dat.dtype == self.dtype, "Data should already have correct type"
         assert not self.is_compressed('image'), "Data cannot be compressed"
-        assert not all(is_fullslice(slicer, self._shape)), "No need for partial writing"
+        assert not is_fullslice(slicer, self._shape), "No need for partial writing"
 
         if not fileobj.readable():
             raise RuntimeError('File object not readable')
@@ -299,7 +299,7 @@ class BabelArray(MappedArray):
             return np.asanyarray(image.dataobj)
 
         # load sub-array
-        if slicer is None or all(is_fullslice(slicer, self._shape)):
+        if slicer is None or is_fullslice(slicer, self._shape):
             dat = self._read_data_raw_full(fileobj, mmap=mmap)
             if slicer is not None:
                 dat = dat[slicer]
@@ -404,12 +404,12 @@ class BabelArray(MappedArray):
         dat = volutils.cast(dat, self.dtype, casting)
 
         # --- unpermute ---
-        drop, perm, slicer = split_operation(self.permutation, self.slicer, 'w')
+        drop, perm, slicer = splitop(self.permutation, self.slicer, 'w')
         dat = dat[drop].transpose(perm)
 
         # --- dispatch ---
         if self.is_compressed('image'):
-            if not all(is_fullslice(slicer, self._shape)):
+            if not is_fullslice(slicer, self._shape):
                 # read-and-write
                 slice = dat
                 with self.fileobj('image', 'r') as f:
@@ -422,7 +422,7 @@ class BabelArray(MappedArray):
                 if self.same_file('image', 'footer'):
                     self._set_footer_raw(fileobj=f)
 
-        elif all(is_fullslice(slicer, self._shape)):
+        elif is_fullslice(slicer, self._shape):
             with self.fileobj('image', 'r+') as f:
                 self._write_data_raw_full(dat, fileobj=f)
 
@@ -437,7 +437,7 @@ class BabelArray(MappedArray):
             return np.zeros(self.shape, dtype=self.dtype)
 
         # --- read native data ---
-        slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
+        slicer, perm, newdim = splitop(self.permutation, self.slicer, 'r')
         with self.fileobj('image', 'r') as f:
             dat = self._read_data_raw(slicer, fileobj=f)
         dat = dat.transpose(perm)[newdim]

@@ -8,7 +8,7 @@ from nitorch.spatial import affine_default
 from nitorch.core import py, dtypes
 # io
 from nitorch.io.mapping import AccessType
-from nitorch.io.utils.indexing import (is_fullslice, split_operation,
+from nitorch.io.utils.indexing import (is_fullslice, splitop,
                                        slicer_sub2ind, invert_slice)
 from nitorch.io.utils import volutils
 from nitorch.io.volumes.mapping import MappedArray
@@ -229,7 +229,7 @@ class TiffArray(MappedArray):
             return np.zeros(self.shape, dtype=self.dtype)
 
         # --- read native data ---
-        slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
+        slicer, perm, newdim = splitop(self.permutation, self.slicer, 'r')
         with self.tiffobj() as f:
             dat = self._read_data_raw(slicer, tiffobj=f)
         dat = dat.transpose(perm)[newdim]

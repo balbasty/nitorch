@@ -3,9 +3,10 @@ import torch
 from nitorch.core.py import make_list
 from nitorch.core import dtypes
 from nitorch.spatial import affine_sub, affine_permute, voxel_size as affvx
-from nitorch.io.utils.indexing import (expand_index, guess_shape, compose_index, neg2pos,
-                                       is_droppedaxis, is_newaxis, is_sliceaxis,
-                                       invert_permutation, invert_slice, slice_navigator)
+# from nitorch.io.utils.indexing import (expand_index, guess_shape, compose_index, neg2pos,
+#                                        is_droppedaxis, is_newaxis, is_sliceaxis,
+#                                        invert_permutation, invert_slice, slice_navigator)
+from ..utils import indexing as idxutils
 from ..utils import volutils
 from ..mapping import MappedFile
 
@@ -69,7 +70,8 @@ class MappedArray(MappedFile):
     chunk -> tuple              Unstack arrays along a dimension by chunks
     split -> tuple              Unstack arrays along a dimension by chunks
 
-    data(...) -> tensor         Load raw data to memory
+    raw_data(...) -> tensor     Load raw numpy data (without upcasting) to memory
+    data(...) -> tensor         Load raw data to memory (optional upcasting)
     fdata(...) -> tensor        Load scaled floating-point data to memory
     metadata(...) -> dict       Load metadata to memory
     set_data(dat, ...)          Write raw data to disk
@@ -103,7 +105,7 @@ class MappedArray(MappedFile):
     fname: str = None             # filename (can be None if in-memory proxy)
     fileobj = None                # file-like object (`write`, `seek`, etc)
     is_compressed: bool = None    # is compressed
-    dtype: torch.dtype = None     # on-disk data type
+    dtype: torch.dtype = None     # on-disk voxel data type
     slope: float = 1              # intensity slope
     inter: float = 0              # intensity shift
 
@@ -120,10 +122,7 @@ class MappedArray(MappedFile):
     _dim = property(lambda self: len(self._shape))  # Nb of original dimensions
     voxel_size = property(lambda self: affvx(self.affine))
 
-    def __init__(self, **kwargs):
-        self._init(**kwargs)
-
-    def _init(self, **kwargs):
+    def init(self, **kwargs):
         for key, val in kwargs:
             setattr(self, key, val)
 
@@ -135,41 +134,18 @@ class MappedArray(MappedFile):
             self.spatial = self._spatial
             self.affine = self._affine
             self.shape = self._shape
-            self.slicer = expand_index([Ellipsis], self._shape)
+            self.slicer = idxutils.expand_index([Ellipsis], self._shape)
 
-        return self
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close_if_mine()
-
-    def __del__(self):
-        self.close_if_mine()
-
-    def close_if_mine(self):
-        return self
-
-    def close(self):
         return self
 
     def __str__(self):
-        return '{}(shape={}, dtype={})'.format(
-            type(self).__name__, self.shape, self.dtype)
-
-    __repr__ = __str__
+        return f'{type(self).__name__}(shape={self.shape}, dtype={self.dtype})'
 
     def __len__(self):
         if len(self.shape) > 0:
             return self.shape[0]
         else:
             return 0
-
-    @classmethod
-    def possible_extensions(cls):
-        """List all possible extensions"""
-        return tuple()
 
     def __getitem__(self, index):
         """Extract a sub-part of the array.
@@ -178,7 +154,7 @@ class MappedArray(MappedFile):
 
         Parameters
         ----------
-        index : tuple[slice or ellipsis or int or None]
+        index : int or tuple[slice or ellipsis or int or None]
 
         Returns
         -------
@@ -187,9 +163,16 @@ class MappedArray(MappedFile):
             matrix relating to the new sub-array.
 
         """
+        if not isinstance(index, tuple):
+            index = (index,)
         return self.slice(index)
 
-    def slice(self, index, new_shape=None, _pre_expanded=False):
+    def __iter__(self):
+        """Unstack along the first dimension"""
+        for i in range(len(self)):
+            yield self[(i,)]
+
+    def slice(self, index):
         """Extract a sub-part of the array.
 
         Indices can only be slices, ellipses, integers or None.
@@ -198,13 +181,6 @@ class MappedArray(MappedFile):
         ----------
         index : tuple[slice or ellipsis or int or None]
 
-        Other Parameters
-        ----------------
-        new_shape : sequence[int], optional
-            Output shape of the sliced object
-        _pre_expanded : bool, default=False
-            Set to True of `expand_index` has already been called on `index`
-
         Returns
         -------
         subarray : type(self)
@@ -212,8 +188,8 @@ class MappedArray(MappedFile):
             matrix relating to the new sub-array.
 
         """
-        index = expand_index(index, self.shape)
-        new_shape = guess_shape(index, self.shape)
+        index = idxutils.expand_index(index, self.shape)
+        new_shape = idxutils.guess_shape(index, self.shape)
         if any(isinstance(idx, list) for idx in index) > 1:
             raise ValueError('List indices not currently supported '
                              '(otherwise we enter advanced indexing '
@@ -221,31 +197,30 @@ class MappedArray(MappedFile):
         new = copy(self)
         new.shape = new_shape
 
+        filtermask = lambda m, x: [x1 for x1, m1 in zip(x, m) if m1]
+        isnot_newaxis = lambda x: not idxutils.is_newaxis(idx)
+
         # compute new affine
+        new.affine = None
         if self.affine is not None:
-            spatial_shape = [sz for sz, msk in zip(self.shape, self.spatial)
-                             if msk]
-            spatial_index = [idx for idx in index if not is_newaxis(idx)]
-            spatial_index = [idx for idx, msk in zip(spatial_index, self.spatial)
-                             if msk]
-            affine, _ = affine_sub(self.affine, spatial_shape, tuple(spatial_index))
-        else:
-            affine = None
-        new.affine = affine
+            spatial_shape = tuple(filtermask(self.spatial, self.shape))
+            spatial_index = filter(isnot_newaxis, index)
+            spatial_index = tuple(filtermask(self.spatial, spatial_index))
+            new.affine, _ = affine_sub(self.affine, spatial_shape, spatial_index)
 
         # compute new slicer
         perm_shape = [self._shape[d] for d in self.permutation]
-        new.slicer = compose_index(self.slicer, index, perm_shape)
+        new.slicer = idxutils.compose_index(self.slicer, index, perm_shape)
 
         # compute new spatial mask
         spatial = []
         i = 0
         for idx in new.slicer:
-            if is_newaxis(idx):
+            if idxutils.is_newaxis(idx):
                 spatial.append(False)
             else:
                 # original axis
-                if not is_droppedaxis(idx):
+                if not idxutils.is_droppedaxis(idx):
                     spatial.append(self._spatial[self.permutation[i]])
                 i += 1
         new.spatial = tuple(spatial)
@@ -309,12 +284,13 @@ class MappedArray(MappedFile):
 
         # permute slicer
         # 1) permute non-dropped dimensions
-        slicer_nodrop = list(filter(lambda x: not is_droppedaxis(x), self.slicer))
+        isnot_droppedaxis = lambda x: not idxutils.is_droppedaxis(x)
+        slicer_nodrop = list(filter(isnot_droppedaxis, self.slicer))
         slicer_nodrop = [slicer_nodrop[d] for d in dims]
         # 2) insert dropped dimensions
         slicer = []
         for idx in self.slicer:
-            if is_droppedaxis(idx):
+            if idxutils.is_droppedaxis(idx):
                 slicer.append(idx)
             else:
                 new_idx, *slicer_nodrop = slicer_nodrop
@@ -326,11 +302,11 @@ class MappedArray(MappedFile):
         new_perm = []
         drop_perm = []
         for idx in self.slicer:
-            if is_newaxis(idx):
+            if idxutils.is_newaxis(idx):
                 new_perm.append(None)
                 continue
             p, *old_perm = old_perm
-            if not is_droppedaxis(idx):
+            if not idxutils.is_droppedaxis(idx):
                 new_perm.append(p)
             else:
                 drop_perm.append(p)
@@ -339,12 +315,12 @@ class MappedArray(MappedFile):
         # 3) insert back dropped axes and remove new axes
         perm = []
         for idx in self.slicer:
-            if is_droppedaxis(idx):
+            if idxutils.is_droppedaxis(idx):
                 p, *drop_perm = drop_perm
                 perm.append(p)
                 continue
             p, *new_perm = new_perm
-            if not is_newaxis(p):
+            if not idxutils.is_newaxis(p):
                 perm.append(p)
 
         # permute affine
@@ -365,6 +341,22 @@ class MappedArray(MappedFile):
         return new
 
     def movedim(self, source, destination):
+        """Move dimension(s) around
+
+        Parameters
+        ----------
+        source : int or list[int]
+            Indices of dimensions to move
+        destination : int or list [int]
+            Destination index of each source index
+
+        Returns
+        -------
+        permarray : type(self)
+            MappedArray object, with the indexing operations and affine
+            matrix reflecting the permutation.
+
+        """
 
         dim = self.dim
         source = make_list(source)
@@ -984,6 +976,12 @@ class MappedArray(MappedFile):
         return new
 
 
+def _catproperty(key):
+    def _get(self):
+        return tuple(getattr(a, key) for a in self._arrays)
+    return property(_get)
+
+
 class CatArray(MappedArray):
     """A concatenation of mapped arrays.
 
@@ -996,21 +994,21 @@ class CatArray(MappedArray):
     _dim_cat: int = None
 
     # defer attributes
-    fname = property(lambda self: tuple(a.fname for a in self._arrays))
-    fileobj = property(lambda self: tuple(a.fileobj for a in self._arrays))
-    is_compressed = property(lambda self: tuple(a.is_compressed for a in self._arrays))
-    dtype = property(lambda self: tuple(a.dtype for a in self._arrays))
-    slope = property(lambda self: tuple(a.slope for a in self._arrays))
-    inter = property(lambda self: tuple(a.inter for a in self._arrays))
-    _shape = property(lambda self: tuple(a._shape for a in self._arrays))
-    _dim = property(lambda self: tuple(a._dim for a in self._arrays))
-    affine = property(lambda self: tuple(a.affine for a in self._arrays))
-    _affine = property(lambda self: tuple(a._affine for a in self._arrays))
-    spatial = property(lambda self: tuple(a.spatial for a in self._arrays))
-    _spatial = property(lambda self: tuple(a._spatial for a in self._arrays))
-    slicer = property(lambda self: tuple(a.slicer for a in self._arrays))
-    permutation = property(lambda self: tuple(a.permutation for a in self._arrays))
-    voxel_size = property(lambda self: tuple(a.voxel_size for a in self._arrays))
+    fname = _catproperty('fname')
+    fileobj = _catproperty('fileobj')
+    is_compressed = _catproperty('is_compressed')
+    dtype = _catproperty('dtype')
+    slope = _catproperty('slope')
+    inter = _catproperty('inter')
+    _shape = _catproperty('_shape')
+    _dim = _catproperty('_dim')
+    affine = _catproperty('affine')
+    _affine = _catproperty('_affine')
+    spatial = _catproperty('spatial')
+    _spatial = _catproperty('_spatial')
+    slicer = _catproperty('slicer')
+    permutation = _catproperty('permutation')
+    voxel_size = _catproperty('voxel_size')
 
     def __init__(self, arrays, dim=0):
         """
@@ -1060,10 +1058,10 @@ class CatArray(MappedArray):
 
     __repr__ = __str__
 
-    def slice(self, index, new_shape=None):
+    def slice(self, index):
         # overload slicer -> slice individual arrays
-        index = expand_index(index, self.shape)
-        new_shape = guess_shape(index, self.shape)
+        index = idxutils.expand_index(index, self.shape)
+        new_shape = idxutils.guess_shape(index, self.shape)
         assert len(index) > 0, "index should never be empty here"
         if any(isinstance(idx, list) for idx in index) > 1:
             raise ValueError('List indices not currently supported '
@@ -1077,10 +1075,10 @@ class CatArray(MappedArray):
         new_dim_cat = self._dim_cat
         nb_old_dim = -1
         for map_dim_cat, idx in enumerate(index):
-            if is_newaxis(idx):
+            if idxutils.is_newaxis(idx):
                 # an axis was added: dim_cat moves to the right
                 new_dim_cat = new_dim_cat + 1
-            elif is_droppedaxis(idx):
+            elif idxutils.is_droppedaxis(idx):
                 # an axis was dropped: dim_cat moves to the left
                 new_dim_cat = new_dim_cat - 1
                 nb_old_dim += 1
@@ -1090,14 +1088,14 @@ class CatArray(MappedArray):
                 # found the concatenated dimension
                 break
         index_cat = index[map_dim_cat]
-        index_cat = neg2pos(index_cat, shape_cat)  # /!\ do not call it again
+        index_cat = idxutils.neg2pos(index_cat, shape_cat)
+        if isinstance(index_cat, idxutils.oob_int):
+            raise IndexError(f'Index {index[map_dim_cat]} out of bounds '
+                             f'[0, {shape_cat-1}]')
 
-        if is_droppedaxis(index_cat):
+        if idxutils.is_droppedaxis(index_cat):
             # if the concatenated dimension is dropped, return the
             # corresponding array (sliced)
-            if index_cat < 0 or index_cat >= shape_cat:
-                raise IndexError('Index {} out of bounds [0, {}]'
-                                 .format(index_cat, shape_cat))
             nb_pre = 0
             for i in range(len(self._arrays)):
                 if nb_pre < index_cat:

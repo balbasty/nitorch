@@ -1,8 +1,11 @@
 from .mapping import MappedArray
 from ..mapping import AccessType
 from ..utils.opener import open, Opener, transform_opener, is_compressed_fileobj
-from ..utils.indexing import is_fullslice, split_operation
-from ..utils.sliceio import writeslice, array_from_file, array_to_file
+from ..utils.indexing import is_fullslice, splitop
+from ..utils.volumeio import read_array, write_array, read_subarray, write_subarray
+from ..utils import volutils
+from ..loadsave import map as map_array
+from nitorch.core import py, dtypes
 import numpy as np
 from threading import RLock
 from contextlib import contextmanager
@@ -13,15 +16,18 @@ import torch
 class ContiguousArray(MappedArray):
     """Base class for contiguous array readers"""
 
-    _offset_hdr: int
-    _offset_dat: int
-    _offset_ftr: int
-    _dtype_hdr: np.dtype = None
-    _dtype_dat: np.dtype = None
-    _dtype_ftr: np.dtype = None
-    _order: str = 'C'
+    _hdr: np.ndarray = None             # Header
+    _ftr: np.ndarray = None             # Footer
+    _offset_hdr: int = 0                # Offset to beginning of header
+    _offset_dat: int = 0                # Offset to beginning of data
+    _offset_ftr: int = 0                # Offset to beginning of footer
+    _dtype_hdr: np.dtype = None         # Header (structured) datatype
+    _dtype_dat: np.dtype = None         # Data (element) datatype
+    _dtype_ftr: np.dtype = None         # Header (structured) datatype
+    _order: str = 'C'                   # Data order on disk
+    _filemap: dict = {}                 # Map of all input files
 
-    def is_compressed(self, key='image'):
+    def is_compressed(self, key=None):
         with self.fileobj(key) as f:
             if isinstance(f, Opener):
                 f = f.fileobj
@@ -43,243 +49,12 @@ class ContiguousArray(MappedArray):
             return AccessType.TruePartial
 
     # ------------------------------------------------------------------
-    #    LOW-LEVEL IMPLEMENTATION
-    # ------------------------------------------------------------------
-    # the following functions implement read/write of (meta)data at the
-    # lowest level (no conversion is performed there)
-
-    def _write_data_raw_partial(self, dat, slicer, fileobj=None):
-        """Write native data
-
-        Parameters
-        ----------
-        dat : np.ndarray
-            Should already have the on-disk data type, including byte-order
-        slicer : tuple[index_like]
-            Unpermuted slicer, without new axes.
-        fileobj : nibabel.Opener, optional
-            File object
-
-        """
-
-        if fileobj is None:
-            # Create our own context
-            with self.fileobj('image', 'r+') as fileobj:
-                return self._write_data_raw_partial(dat, slicer, fileobj)
-
-        # sanity checks for developers
-        # (asserts because proper conversion/dispatch should happen before)
-        assert isinstance(dat, np.ndarray), "Data should already be numpy"
-        assert dat.dtype == self.dtype, "Data should already have correct type"
-        assert not self.is_compressed('image'), "Data cannot be compressed"
-        assert not all(
-            is_fullslice(slicer, self._shape)), "No need for partial writing"
-
-        if not fileobj.readable():
-            raise RuntimeError('File object not readable')
-        if not fileobj.writable():
-            raise RuntimeError('File object not writable')
-
-        # write data chunk
-        writeslice(dat, fileobj, tuple(slicer), self._shape, self.dtype,
-                   offset=self._offset_dat,
-                   order=self._order,
-                   lock=self._lock['image'])
-
-    def _write_data_raw_full(self, dat, fileobj=None):
-        """Write native data
-
-        Returns
-        -------
-        dat : np.ndarray
-            Should already have the on-disk data type, including byte-order
-
-        """
-
-        if fileobj is None:
-            # Create our own context
-            with self.fileobj('image', 'a') as fileobj:
-                return self._write_data_raw_full(dat, fileobj)
-
-        # sanity checks for developers
-        # (asserts because proper conversion/dispatch should happen before)
-        assert isinstance(dat, np.ndarray), "Data should already be numpy"
-        assert dat.dtype == self.dtype, "Data should already have correct type"
-
-        if not fileobj.writable():
-            raise RuntimeError('File object not writable')
-
-        array_to_file(dat, fileobj, self.dtype,
-                      offset=self._image.dataobj.offset,
-                      order=self._image.dataobj.order)
-
-    def _read_data_raw_partial(self, slicer, fileobj=None, lock=None):
-        """Read a chunk of data from disk
-
-        Parameters
-        ----------
-        slicer : tuple[index_like]
-        fileobj : Opener
-        lock : Lock
-
-        Returns
-        -------
-        dat : np.ndarray
-
-        """
-        if fileobj is None:
-            with self.fileobj('image', 'r') as fileobj:
-                return self._read_data_raw_partial(slicer, fileobj, lock)
-
-        if lock is None:
-            lock = self._lock['image']
-            return self._read_data_raw_partial(slicer, fileobj, lock)
-
-        return fileslice(fileobj, slicer, self._shape, self.dtype,
-                         offset=self._image.dataobj._offset,
-                         order=self._image.dataobj.order,
-                         lock=lock)
-
-    def _read_data_raw_full(self, fileobj=None, lock=None, mmap=None):
-        """Read the full data from disk
-
-        Parameters
-        ----------
-        fileobj : Opener, default=`self.fileobj('image')`
-        lock : Lock, default=`self._lock['image']`
-        mmap : bool, default=`self._image.dataobj._mmap`
-
-        Returns
-        -------
-        dat : np.ndarray
-
-        """
-        if fileobj is None:
-            with self.fileobj('image', 'r') as fileobj:
-                return self._read_data_raw_full(fileobj, lock)
-
-        if lock is None:
-            with self._lock['image'] as lock:
-                return self._read_data_raw_full(fileobj, lock)
-
-        if mmap is None:
-            mmap = getattr(self._image.dataobj, '_mmap', False)
-
-        return array_from_file(self._shape, self.dtype, fileobj,
-                               offset=self._image.dataobj._offset,
-                               order=self._image.dataobj.order,
-                               mmap=mmap)
-
-    def _read_data_raw(self, slicer=None, fileobj=None, mmap=None):
-        """Read native data
-
-        Dispatch to `_read_data_raw_full` or `_read_data_raw_partial`.
-
-        Parameters
-        ----------
-        slicer : tuple[index_like], optional
-            A tuple of indices that describe the chunk of data to read.
-            If None, read everything.
-        fileobj : file object, default=`self.fileobj('image', 'r')`
-            A file object (with `seek`, `read`) from which to read
-        mmap : bool, default=`self._image.dataobj.mmap`
-            If True, try to memory map the data.
-
-        Returns
-        -------
-        dat : np.ndarray
-
-        """
-
-        if not isinstance(self._image, (nib.MGHImage, nib.AnalyzeImage)):
-            # Use nibabel's high-level API
-            image = self._image
-            if slicer is not None:
-                image = image.slicer[slicer]
-            return np.asanyarray(image.dataobj)
-
-        # load sub-array
-        if slicer is None or all(is_fullslice(slicer, self._shape)):
-            dat = self._read_data_raw_full(fileobj, mmap=mmap)
-            if slicer is not None:
-                dat = dat[slicer]
-        else:
-            dat = self._read_data_raw_partial(slicer, fileobj)
-
-        return dat
-
-    def _set_header_raw(self, header=None, fileobj=None):
-        """Write (nibabel) header to file
-
-        This function assumes that `fileobj` is at -- or can seek to --
-        the beginning of the file.
-
-        Parameters
-        ----------
-        header : nibabel.Header, default=`self._image.dataobj._header`
-            Header object from nibabel.
-        fileobj : Opener, default=`self.fileobj('header')`
-            File object., with `seek` and `write`.
-            By default, a file object open in mode 'w' (and therefore
-            truncated)
-
-        Returns
-        -------
-        self : type(self)
-
-        """
-        if fileobj is None:
-            with self.fileobj('header', 'w') as f:
-                return self._set_header_raw(header, f)
-        if header is None:
-            header = self._image.dataobj._header
-        header.set_data_dtype(self.dtype)
-        header.set_data_shape(self._shape)
-        if hasattr(header, 'writehdr_to'):
-            header.writehdr_to(fileobj)
-        elif hasattr(header, 'write_to'):
-            fileobj.seek(0)
-            header.write_to(fileobj)
-        return self
-
-    def _set_footer_raw(self, header=None, fileobj=None):
-        """Write (nibabel) footer to file
-
-        This function assumes that `fileobj` is at -- or can seek to --
-        the footer offset (that is, just after the data block).
-
-        I think this is only used by the MGH format.
-
-        Parameters
-        ----------
-        header : Header
-        fileobj : Opener
-            By default, a file object open in mode 'a'
-
-        Returns
-        -------
-        self : type(self)
-
-        """
-        if fileobj is None:
-            with self.fileobj('footer', 'a') as f:
-                return self._set_footer_raw(header, f)
-        if header is None:
-            header = self._image.dataobj._header
-        header.set_data_dtype(self.dtype)
-        header.set_data_shape(self._shape)
-        if hasattr(header, 'writeftr_to'):
-            header.writeftr_to(fileobj)
-        return self
-
-    # ------------------------------------------------------------------
     #    HIGH-LEVEL IMPLEMENTATION
     # ------------------------------------------------------------------
     # These functions implement the MappedArray API
     # (that's why there's no doc, it's at the MappedArray level)
 
     def set_data(self, dat, casting='unsafe'):
-
         if '+' not in self.mode:
             raise RuntimeError('Cannot write into read-only volume. '
                                'Re-map in mode "r+" to allow in-place '
@@ -304,32 +79,31 @@ class ContiguousArray(MappedArray):
         dat = volutils.cast(dat, self.dtype, casting)
 
         # --- unpermute ---
-        drop, perm, slicer = split_operation(self.permutation, self.slicer,
-                                             'w')
+        drop, perm, slicer = splitop(self.permutation, self.slicer, 'w')
         dat = dat[drop].transpose(perm)
 
         # --- dispatch ---
-        if self.is_compressed('image'):
-            if not all(is_fullslice(slicer, self._shape)):
+        if self.is_compressed('data'):
+            if not is_fullslice(slicer, self._shape):
                 # read-and-write
                 slice = dat
-                with self.fileobj('image', 'r') as f:
-                    dat = self._read_data_raw(fileobj=f, mmap=False)
+                dat = self._read_data_raw()
                 dat[slicer] = slice
-            with self.fileobj('image', 'w', seek=0) as f:
-                if self.same_file('image', 'header'):
-                    self._set_header_raw(fileobj=f)
+            with self.fileobj('data', 'w', seek=0) as f:
+                if self.same_file('data', 'header'):
+                    self._write_header_raw(fileobj=f)
                 self._write_data_raw_full(dat, fileobj=f)
-                if self.same_file('image', 'footer'):
-                    self._set_footer_raw(fileobj=f)
+                if self.same_file('data', 'footer'):
+                    self._write_footer_raw(fileobj=f)
 
-        elif all(is_fullslice(slicer, self._shape)):
+        elif is_fullslice(slicer, self._shape):
             with self.fileobj('image', 'r+') as f:
                 self._write_data_raw_full(dat, fileobj=f)
 
         else:
             with self.fileobj('image', 'r+') as f:
                 self._write_data_raw_partial(dat, slicer, fileobj=f)
+
         return self
 
     def raw_data(self):
@@ -338,19 +112,14 @@ class ContiguousArray(MappedArray):
             return np.zeros(self.shape, dtype=self.dtype)
 
         # --- read native data ---
-        slicer, perm, newdim = split_operation(self.permutation, self.slicer,
-                                               'r')
+        slicer, perm, newdim = splitop(self.permutation, self.slicer, 'r')
         with self.fileobj('image', 'r') as f:
             dat = self._read_data_raw(slicer, fileobj=f)
         dat = dat.transpose(perm)[newdim]
         return dat
 
     def metadata(self, keys=None):
-        if not keys:
-            keys = metadata_keys
-        header = getattr(self._image.dataobj, '_header', self._image.header)
-        meta = header_to_metadata(header, keys)
-        return meta
+        return self.from_header(keys)
 
     def set_metadata(self, **meta):
         if '+' not in self.mode:
@@ -358,24 +127,22 @@ class ContiguousArray(MappedArray):
                                'Re-map in mode "r+" to allow in-place '
                                'writing.')
 
-        header = self._image.dataobj._header
-        if meta:
-            header = metadata_to_header(header, meta, shape=self.shape)
+        self.to_header(**meta)
 
         if self.is_compressed('header'):
             # read-and-write
-            if self.same_file('image', 'header'):
+            if self.same_file('data', 'header'):
                 with self.fileobj('header', 'r') as f:
                     full_dat = self._read_data_raw(fileobj=f)
             with self.fileobj('header', 'w') as f:
-                self._set_header_raw(header, fileobj=f)
-                if self.same_file('header', 'image'):
+                self._write_header_raw(fileobj=f)
+                if self.same_file('header', 'data'):
                     self._write_data_raw_full(full_dat, fileobj=f)
                 if self.same_file('header', 'footer'):
-                    self._set_footer_raw(header, fileobj=f)
+                    self._write_footer_raw(fileobj=f)
         else:
             with self.fileobj('header', 'r+') as f:
-                self._set_header_raw(header, fileobj=f)
+                self._write_header_raw(fileobj=f)
 
     @classmethod
     def savef_new(cls, dat, file_like, like=None, **metadata):
@@ -538,6 +305,92 @@ class ContiguousArray(MappedArray):
             fimg.close_if_mine()
         if not fftr.closed:
             fftr.close_if_mine()
+
+    # ------------------------------------------------------------------
+    #    LOW-LEVEL IMPLEMENTATION
+    # ------------------------------------------------------------------
+    # the following functions implement read/write of (meta)data at the
+    # lowest level (no conversion is performed there)
+
+    def _write_data_raw_partial(self, dat, slicer, fileobj=None, key=None):
+        key = key or list(self._filemap.keys())[0]
+
+        if fileobj is None:
+            # Create our own context
+            with self.fileobj(key, 'r+') as fileobj:
+                return self._write_data_raw_partial(dat, slicer, fileobj, key)
+
+        # sanity checks for developers
+        # (asserts because proper conversion/dispatch should happen before)
+        assert isinstance(dat, np.ndarray), "Data should already be numpy"
+        assert dat.dtype == self.dtype, "Data should already have correct type"
+        assert not self.is_compressed(key), "Data cannot be compressed"
+        assert not is_fullslice(slicer, self._shape), "No need for partial writing"
+
+        if not fileobj.readable():
+            raise RuntimeError('File object not readable')
+        if not fileobj.writable():
+            raise RuntimeError('File object not writable')
+
+        # write data chunk
+        write_subarray(dat, fileobj, tuple(slicer), self._shape, self.dtype,
+                       offset=self._offset_dat,
+                       order=self._order,
+                       lock=self._lock[key])
+
+    def _write_data_raw_full(self, dat, fileobj=None, key=None):
+        key = key or list(self._filemap.keys())[0]
+
+        if fileobj is None:
+            # Create our own context
+            with self.fileobj(key, 'a') as fileobj:
+                return self._write_data_raw_full(dat, fileobj, key)
+
+        # sanity checks for developers
+        # (asserts because proper conversion/dispatch should happen before)
+        assert isinstance(dat, np.ndarray), "Data should already be numpy"
+        assert dat.dtype == self.dtype, "Data should already have correct type"
+
+        if not fileobj.writable():
+            raise RuntimeError('File object not writable')
+
+        write_array(dat, fileobj, self.dtype,
+                    offset=self._offset_dat, order=self._order)
+
+    def _read_data_raw_partial(self, slicer, fileobj=None, lock=None, key=None):
+        key = key or list(self._filemap.keys())[0]
+        lock = lock or self._lock[key]
+
+        if fileobj is None:
+            with self.fileobj(key, 'r') as fileobj:
+                return self._read_data_raw_partial(slicer, fileobj, lock, key)
+
+        return read_subarray(fileobj, slicer, self._shape, self.dtype,
+                             offset=self._offset_dat,
+                             order=self._order,
+                             lock=lock)
+
+    def _read_data_raw_full(self, fileobj=None, lock=None, key=None):
+        key = key or list(self._filemap.keys())[0]
+        lock = lock or self._lock[key]
+
+        if fileobj is None:
+            with self.fileobj(key, 'r') as fileobj:
+                return self._read_data_raw_full(fileobj, lock)
+
+        return read_array(fileobj, self._shape, self.dtype, fileobj,
+                          offset=self._offset_dat,
+                          order=self._order)
+
+    def _read_data_raw(self, slicer=None, fileobj=None):
+        if not slicer or is_fullslice(slicer, self._shape):
+            dat = self._read_data_raw_full(fileobj)
+            if slicer:
+                dat = dat[slicer]
+        else:
+            dat = self._read_data_raw_partial(slicer, fileobj)
+
+        return dat
 
     # ------------------------------------------------------------------
     #    ADAPTED FROM NIBABEL'S ARRAYPROXY
