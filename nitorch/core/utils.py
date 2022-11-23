@@ -464,14 +464,7 @@ def max_device(*args):
     is_array = lambda x: (isinstance(x, np.ndarray) if np else False)
     is_tensor = torch.is_tensor
 
-    def select_device(*many_devices):
-        if len(many_devices) == 0:
-            return None
-        elif len(many_devices) == 1:
-            return many_devices[0]
-        device1, device2, *many_devices = many_devices
-        if len(many_devices) > 0:
-            return select_device(select_device(device1, device2), *many_devices)
+    def max_device2(device1, device2):
         if device1 is None:
             return device2
         elif device2 is None:
@@ -488,6 +481,16 @@ def max_device(*args):
             return device1
         else:
             return torch.device('cuda')
+
+    def select_device(*many_devices):
+        if not many_devices:
+            return None
+        many_devices = list(many_devices)
+        device = many_devices.pop(0)
+        while many_devices:
+            other_device = many_devices.pop(0)
+            device = max_device2(device, other_device)
+        return device
 
     def explore_device(x):
         if x is None:
@@ -546,15 +549,7 @@ def max_dtype(*args, force_float=False):
     is_py_dtype = lambda x: isinstance(x, type) and issubclass(x, numbers.Number)
     is_dtype = lambda x: is_torch_dtype(x) or is_np_dtype(x) or is_py_dtype(x)
 
-    def upcast(*many_types):
-        if len(many_types) == 0:
-            return None
-        elif len(many_types) == 1:
-            return many_types[0]
-        dtype1, dtype2, *many_types = many_types
-        if len(many_types) > 0:
-            return upcast(upcast(dtype1, dtype2), *many_types)
-        # here, we only have torch dtypes
+    def max_dtype2(dtype1, dtype2):
         if dtype1 is None:
             return dtype2
         elif dtype2 is None:
@@ -590,6 +585,16 @@ def max_dtype(*args, force_float=False):
         else:
             raise TypeError('We do not deal with type {} or {} yet.'
                             .format(dtype1, dtype2))
+
+    def upcast(*many_types):
+        if not many_types:
+            return None
+        many_types = list(many_types)
+        dtype = many_types.pop(0)
+        while many_types:
+            other_dtype = many_types.pop(0)
+            dtype = max_dtype2(dtype, other_dtype)
+        return dtype
 
     def explore_dtype(x, n_pass=1):
         # find the max data type at a given pass
