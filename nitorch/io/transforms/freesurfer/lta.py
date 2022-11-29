@@ -34,8 +34,8 @@ import torch
 from nitorch.core.optionals import numpy as np
 from nitorch.spatial import affine_matmul
 from nitorch.core.struct import Structure
-from nitorch.io.mapping import AccessType
-from nitorch.io.utils.volutils import cast
+from nitorch.io.mappedfile import AccessType
+from nitorch.io.utils.volumeutils import cast
 from nitorch.io.loadsave import map as map_affine
 from nitorch.io.transforms.mapping import MappedAffine
 from nitorch.io.utils.opener import open

@@ -1,9 +1,10 @@
 from . import loadsave
-from . import mapping
+from . import mappedarray
 from . import readers
 from . import writers
 
-from .mapping import MappedArray, CatArray, stack, cat
+from .mappedarray import MappedArray
+from .catarray import MappedArray, CatArray, stack, cat
 from .loadsave import map, load, loadf, save, savef
 
 # Optional imports

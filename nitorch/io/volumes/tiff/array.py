@@ -7,11 +7,11 @@ import numpy as np
 from nitorch.spatial import affine_default
 from nitorch.core import py, dtypes
 # io
-from nitorch.io.mapping import AccessType
+from nitorch.io.mappedfile import AccessType
 from nitorch.io.utils.indexing import (is_fullslice, splitop,
                                        slicer_sub2ind, invert_slice)
-from nitorch.io.utils import volutils
-from nitorch.io.volumes.mapping import MappedArray
+from nitorch.io.utils import volumeutils
+from nitorch.io.volumes.mappedarray import MappedArray
 from nitorch.io.volumes.readers import reader_classes
 from nitorch.io.metadata import keys as metadata_keys
 # tiff

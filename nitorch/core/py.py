@@ -5,6 +5,9 @@ from types import GeneratorType as generator
 import warnings
 from collections import Counter
 from typing import List, Tuple, Iterable
+from .optionals import numpy as np
+
+import torch
 
 
 def file_mod(s, nam=None, prefix='', suffix='', odir=None, ext=None):
@@ -101,6 +104,38 @@ def fileparts(fname):
     return dir, base, ext
 
 
+class PaddedIterator:
+    """Iterate a sequence and pad/crop it if required"""
+
+    class NoDefault:
+        pass
+
+    def __init__(self, input, n=None, crop=True, default=NoDefault):
+        self.input = input
+        self.n = n
+        self.crop = crop
+        self.default = default
+
+    def __iter__(self):
+        last = None
+        i = None
+        for i, elem in enumerate(self.input):
+            if self.crop and (i == self.n):
+                return
+            last = elem
+            yield elem
+        if i is None:
+            if self.n is None:
+                return
+            if self.default is self.NoDefault:
+                raise ValueError('Empty sequence')
+            i = -1
+        if self.n is not None:
+            last = self.default if self.default is not self.NoDefault else last
+            for j in range(i + 1, self.n):
+                yield last
+
+
 def make_sequence(input, n=None, crop=True, *args, **kwargs) -> Iterable:
     """Ensure that the input is a sequence and pad/crop if necessary.
 
@@ -122,54 +157,21 @@ def make_sequence(input, n=None, crop=True, *args, **kwargs) -> Iterable:
         Output arguments.
 
     """
-    default = None
-    has_default = False
+    default = PaddedIterator.NoDefault
     if len(args) > 0:
         default = args[0]
-        has_default = True
     elif 'default' in kwargs.keys():
         default = kwargs['default']
-        has_default = True
 
-    if isinstance(input, generator):
-        # special case for generators
-        def make_gen():
-            last = None
-            i = None
-            for i, elem in input:
-                if crop and (i == n):
-                    return
-                last = elem
-                yield elem
-            if i is None:
-                if n is None:
-                    return
-                if not has_default:
-                    raise ValueError('Empty sequence')
-                last = default
-            for j in range(i+1, n):
-                yield last
-        return make_gen()
-    else:
-        # generic case -> induces a copy
-        if not isinstance(input, (list, tuple, range)):
-            input = [input]
-        return_type = type(input) if isinstance(input, (list, tuple)) else list
-        input = list(input)
-        if len(input) == 0 and n and not has_default:
-            raise ValueError('Empty sequence')
-        if n is not None:
-            if crop:
-                input = input[:min(n, len(input))]
-            if len(input) < n:
-                if not has_default:
-                    default = input[-1]
-                input += [default] * (n - len(input))
-        return return_type(input)
+    if (not hasattr(input, '__iter__')) \
+            or torch.is_tensor(input) \
+            or (np and isinstance(input, np.ndarray)):
+        input = [input]
+
+    return PaddedIterator(input, n, crop, default)
 
 
-@functools.wraps(make_sequence, assigned=[])
-def make_list(*args, **kwargs) -> List:
+def make_list(input, n=None, crop=True, *args, **kwargs) -> List:
     """Ensure that the input is a list and pad/crop if necessary.
 
     Parameters
@@ -190,7 +192,7 @@ def make_list(*args, **kwargs) -> List:
         Output arguments.
 
     """
-    return list(elem for elem in make_sequence(*args, **kwargs))
+    return list(make_sequence(input, n, crop, *args, **kwargs))
 
 
 def ensure_list(x, dim=None):
@@ -211,8 +213,7 @@ def ensure_list(x, dim=None):
     return x
 
 
-@functools.wraps(make_sequence, assigned=[])
-def make_tuple(*args, **kwargs) -> Tuple:
+def make_tuple(input, n=None, crop=True, *args, **kwargs) -> Tuple:
     """Ensure that the input is a tuple and pad/crop if necessary.
 
     Parameters
@@ -233,7 +234,7 @@ def make_tuple(*args, **kwargs) -> Tuple:
         Output arguments.
 
     """
-    return tuple(elem for elem in make_sequence(*args, **kwargs))
+    return tuple(make_sequence(input, n, crop, *args, **kwargs))
 
 
 def make_set(input) -> set:

@@ -1,6 +1,6 @@
 """Functional API to load and save arrays."""
 import os
-from .mapping import MappedFile
+from .mappedfile import MappedFile
 from .readers import reader_classes as all_reader_classes
 from .writers import writer_classes as all_writer_classes
 

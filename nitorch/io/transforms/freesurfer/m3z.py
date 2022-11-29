@@ -1,5 +1,5 @@
 from ..mapping import MappedNonLin
-from nitorch.io.mapping import AccessType
+from nitorch.io.mappedfile import AccessType
 from nitorch.io.utils.opener import open, Opener, transform_opener, gz
 import numpy as np
 from threading import RLock

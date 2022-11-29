@@ -33,14 +33,14 @@ from nibabel.filebasedimages import ImageFileError
 # nitorch imports
 from nitorch.core import py, dtypes
 # io imports
-from nitorch.io.mapping import AccessType
-from nitorch.io.volumes.mapping import MappedArray
+from nitorch.io.mappedfile import AccessType
+from nitorch.io.volumes.mappedarray import MappedArray
 from nitorch.io.volumes.readers import reader_classes
 from nitorch.io.volumes.writers import writer_classes
 from nitorch.io.volumes.loadsave import map as map_array
 from nitorch.io.utils.indexing import is_fullslice, splitop
 from nitorch.io.utils.opener import open, Opener, transform_opener, gz
-from nitorch.io.utils import volutils
+from nitorch.io.utils.sliceable import ShapedSpatial
 from nitorch.io.metadata import keys as metadata_keys
 from .metadata import header_to_metadata, metadata_to_header
 from .utils import writeslice
@@ -72,23 +72,24 @@ class BabelArray(MappedArray):
         keep_open : bool, default=True
             Keep file descriptor open.
         """
-
         if nib is None:
             raise ImportError('NiBabel is not available.')
+
+        if mode not in ('r', 'r+'):
+            raise ValueError(f"Mode expected in ('r', 'r+'). Got {mode}.")
 
         if isinstance(file_like, SpatialImage):
             self._image = file_like
         else:
             self._image = nib.load(file_like, mmap=False, keep_file_open=False)
 
-        # deal with file openers
-        if not mode in ('r', 'r+'):
-            raise ValueError(f"Mode expected in ('r', 'r+'). Got {mode}.")
-        self.mode = mode            # Decides if the user lets us write
-        self.keep_open = keep_open  # Keep file descriptor open (user value)?
+        ref = ShapedSpatial(shape=[int(d) for d in self._image.shape],
+                            spatial=range(3),
+                            affine=torch.as_tensor(self._image.affine,
+                                                   dtype=torch.double))
+        super().__init__(file_like=file_like, mode=mode, keep_open=keep_open,
+                         shaped=ref)
         self._prepare_openers()
-
-        super().__init__()
 
     @classmethod
     def possible_extensions(cls):
@@ -107,9 +108,6 @@ class BabelArray(MappedArray):
     # when that's the case
 
     fname = property(lambda self: self._image.file_map['image'].filename)
-    _affine = property(lambda self: torch.as_tensor(self._image.affine, dtype=torch.double))
-    _spatial = property(lambda self: tuple([True]*3 + [False]*max(0, self._dim-3)))
-    _shape = property(lambda self: [int(d) for d in self._image.shape])
     dtype = property(lambda self: self._image.get_data_dtype())
     slope = property(lambda self: float(getattr(self._image.dataobj, 'slope', None)))
     inter = property(lambda self: float(getattr(self._image.dataobj, 'inter', None)))

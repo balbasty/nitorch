@@ -9,7 +9,9 @@ from gzip import GzipFile, READ as gzip_r, WRITE as gzip_w
 from distutils.version import StrictVersion
 from warnings import warn
 from os.path import splitext
+from enum import Enum
 import io
+
 
 # is indexed_gzip present and modern?
 IndexedGzipFile = None
@@ -449,3 +451,71 @@ def is_compressed_fileobj(fobj):
     """ Return True if fobj represents a compressed data file-like object
     """
     return isinstance(fobj, COMPRESSED_FILE_LIKES)
+
+
+class OpenMode(Enum):
+
+    ReadOnly = 0
+    WriteOnly = 1
+    ReadAndWrite = 2
+
+    @staticmethod
+    def readable(value):
+        value = OpenMode._name2inst(value)
+        return value in (ReadOnly, ReadAndWrite)
+
+    @staticmethod
+    def writable(value):
+        value = OpenMode._name2inst(value)
+        return value in (WriteOnly, ReadAndWrite)
+
+    @staticmethod
+    def _name2inst(val):
+        if isinstance(val, str):
+            val = val.lower()
+            if val in ('r', 'rb'):
+                val = 0
+            elif val == ('w', 'wb'):
+                val = 1
+            elif val == ('r+', 'rb+'):
+                val = 2
+            else:
+                raise ValueError(f'{val} does not map to any value')
+        return OpenMode(val)
+
+    def __eq__(self, other):
+        try:
+            return self.value == self._name2inst(other).value
+        except ValueError:
+            return False
+
+    def __ne__(self, other):
+        try:
+            return self.value != self._name2inst(other).value
+        except ValueError:
+            return True
+
+    def __ge__(self, other):
+        other = self._name2inst(other)
+        return ((self == ReadOnly and other == ReadOnly) or
+                (self == WriteOnly and other == WriteOnly) or
+                self == ReadAndWrite)
+
+    def __gt__(self, other):
+        other = self._name2inst(other)
+        return self == ReadAndWrite and other != ReadAndWrite
+
+    def __le__(self, other):
+        other = self._name2inst(other)
+        return ((self == ReadOnly and other in (ReadOnly, ReadAndWrite)) or
+                (self == WriteOnly and other in (WriteOnly, ReadAndWrite)) or
+                self == ReadAndWrite and other == ReadAndWrite)
+
+    def __lt__(self, other):
+        other = self._name2inst(other)
+        return self in (ReadOnly, WriteOnly) and other == ReadAndWrite
+
+
+ReadOnly = OpenMode.ReadOnly
+WriteOnly = OpenMode.WriteOnly
+ReadAndWrite = OpenMode.ReadAndWrite

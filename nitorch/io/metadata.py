@@ -1,21 +1,21 @@
 """Generic metadata"""
 
 keys = [
-    'format',        # name of the file format
-    'affine',        # orientation matrix (tensor)
-    'dtype',         # numpy data type
-    'voxel_size',    # voxel size, in voxel_size_unit
+    'format',           # name of the file format
+    'affine',           # orientation matrix (tensor)
+    'dtype',            # numpy data type
+    'voxel_size',       # voxel size, in voxel_size_unit
     'voxel_size_unit',  # voxel size unit, default=mm
-    'intent',        # nii: type of data/maps stored in the file
-    'slope',         # nii: intensity transform
-    'inter',         # nii: intensity transform
-    'slice_order',   # nii: slice acquisition order
-    'time_step',     # nii: time between volumes in the time direction (sec)
-    'time_offset',   # nii: constant time shift applied to all volumes (sec)
-    'tr',            # mgh: repetition time, in seconds
-    'te',            # mgh: echo time, in second
-    'ti',            # mgh: inversion time, in second
-    'fa',            # mgh: flip angle, in degrees
+    'intent',           # nii: type of data/maps stored in the file
+    'slope',            # nii: intensity transform
+    'inter',            # nii: intensity transform
+    'slice_order',      # nii: slice acquisition order
+    'time_step',        # nii: time between volumes in the time direction (sec)
+    'time_offset',      # nii: constant time shift applied to all volumes (sec)
+    'tr',               # mgh: repetition time, in seconds
+    'te',               # mgh: echo time, in second
+    'ti',               # mgh: inversion time, in second
+    'fa',               # mgh: flip angle, in degrees
 ]
 
 
@@ -25,7 +25,7 @@ def doc(key):
     if key == 'format':
         _doc = 'Name of the file format'
     elif key == 'affine':
-        _doc = """Affine orientation matrix. 
+        _doc = '''Affine orientation matrix. 
         
 This matrix is used to map voxel coordinates to "world" 
 or "lab" coordinates, generally expressed in millimeters.
@@ -46,11 +46,11 @@ zeros and a one:
       [l31, l32, l33, t3],
       [0,   0,   0,   1]]`
 such that `new_p = A @ p`.
-"""
+'''
     elif key == 'dtype':
-        _doc = """On-disk data type. We encode it using numpy dtypes 
+        _doc = '''On-disk data type. We encode it using numpy dtypes 
 as they have much more flexibility than torch dtypes
-or even string representations."""
+or even string representations.'''
     elif key == 'voxel_size':
         _doc = 'The size of the voxels that encode spatial dimensions, in mm.'
     elif key == 'intent':
