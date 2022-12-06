@@ -1130,7 +1130,8 @@ def _pad_bound(inp, padpre, padpost, bound):
     grid = jit.sub2ind_list(grid, inp.shape)
 
     out = inp.flatten()[grid]
-    out *= mult
+    if torch.is_tensor(mult) or mult != 1:
+        out *= mult
     return out
 
 
