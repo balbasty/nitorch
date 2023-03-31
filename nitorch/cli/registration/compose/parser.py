@@ -25,9 +25,11 @@ class Linear(Transform):
 class Displacement(Transform):
     order: int = 1
     unit: str = 'vox'
+    spline: int = 1
 
 
 class Velocity(Transform):
+    spline: int = 1
     pass
 
 
