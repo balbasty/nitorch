@@ -32,4 +32,4 @@ def save(*args, writer_classes=None, **kwargs):
 @wraps(loadsave.savef)
 def savef(*args, writer_classes=None, **kwargs):
     writer_classes = writer_classes or volume_writer_classes
-    return loadsave.save(*args, writer_classes=writer_classes, **kwargs)
+    return loadsave.savef(*args, writer_classes=writer_classes, **kwargs)
