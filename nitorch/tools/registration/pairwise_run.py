@@ -204,12 +204,12 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
 
     losses = make_list(losses)
     nb_levels = len(losses)
-    shapes = [nonlin.shape]
-    for n in range(1, nb_levels):
-        shapes.append([int(math.ceil(s/2)) for s in shapes[-1]])
-
+    
     n_level = nb_levels - 1
     if nonlin and n_level > 0:
+        shapes = [nonlin.shape]
+        for n in range(1, nb_levels):
+            shapes.append([int(math.ceil(s/2)) for s in shapes[-1]])
         if getattr(nonlin, 'frozen', False):
             nonlin0 = nonlin
             nonlin = nonlin.downsample(shape=shapes[n_level])

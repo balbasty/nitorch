@@ -1285,7 +1285,7 @@ class NonLinModel(TransformationModel):
             else:
                 raise ValueError('unknown:', model)
         else:
-            obj =  object.__new__(cls)
+            obj = object.__new__(cls)
             obj.__init__(*args, **kwargs)
             return obj
 

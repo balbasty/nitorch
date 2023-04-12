@@ -108,6 +108,12 @@ def _main(options):
     images = [image_dict[key] for key in (getattr(options.nonlin, 'fov', None) or image_dict)]
     nonlin = None
     if options.nonlin:
+        options.nonlin.penalty = dict(
+            absolute=options.nonlin.absolute,
+            membrane=options.nonlin.membrane,
+            bending=options.nonlin.bending,
+            lame=options.nonlin.lame,
+        )
         if options.nonlin.is2d is not False:
             if isinstance(losses[0], objects.SumSimilarity):
                 affine0 = losses[0][0].fixed.affine
