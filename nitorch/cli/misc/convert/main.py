@@ -51,5 +51,9 @@ def convert(inp, meta=None, dtype=None, casting='unsafe', format=None, output=No
         odtype = odtype.numpy
         meta['dtype'] = odtype
 
+    if output.endswith(('.nii', '.nii.gz', '.mgh', '.mgz')):
+        while d.ndim < 3:
+            d = d[..., None]
+
     io.save(d, output, like=f, casting=casting, **meta)
 
