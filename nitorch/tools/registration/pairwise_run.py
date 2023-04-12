@@ -7,6 +7,7 @@ from .optim import InterleavedOptimIterator, Optim
 from . import objects
 from nitorch.core.py import make_list, prod
 import torch
+import math
 
 
 def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
@@ -69,14 +70,18 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
 
     # --- prepare optimizers if not provided ---
     if affine and not isinstance(affine_optim, Optim):
-        order = min(loss.order for loss in last_level)
+        order = min(loss.loss.order for loss in last_level)
         affine_optim = make_affine_optim(affine_optim, order)
+        if not affine_optim:
+            affine.frozen = True
     if nonlin and not isinstance(nonlin_optim, Optim):
-        order = min(loss.order for loss in last_level)
+        order = min(loss.loss.order for loss in last_level)
         nonlin_optim = make_nonlin_optim(nonlin_optim, order, nonlin=nonlin)
+        if not nonlin_optim:
+            nonlin.frozen = True
 
     # --- progressive affine initialization ---
-    if progressive:
+    if affine_optim and progressive:
         affine = run_progressive_init(
             first_level, affine, affine_optim,  line_size=line_size,
             verbose=verbose, framerate=framerate, figure=figure)
@@ -168,15 +173,15 @@ def run_single(losses, affine, nonlin, optim, verbose=True, framerate=1,
 
     losses = make_list(losses)
     optim.reset_state()
-    if nonlin:
-        if affine and affine.dat and affine.dat.dat is not None:
-            affine.dat.dat /= 2  # take the matrix square root
-        nonlin_optim = optim[1] if affine else optim
-        if nonlin:
-            if hasattr(nonlin_optim, 'voxel_size'):
-                nonlin_optim.voxel_size = nonlin.voxel_size
-            if hasattr(nonlin_optim, 'penalty'):
-                nonlin_optim.penalty = nonlin.penalty
+    if nonlin and not getattr(nonlin, 'frozen', False):
+        if affine and not getattr(affine, 'frozen', False):
+            nonlin_optim = optim[1]
+        else:
+            nonlin_optim = optim
+        if hasattr(nonlin_optim, 'voxel_size'):
+            nonlin_optim.voxel_size = nonlin.voxel_size
+        if hasattr(nonlin_optim, 'penalty'):
+            nonlin_optim.penalty = nonlin.penalty
     register = PairwiseRegister(losses, affine, nonlin, optim,
                                 verbose=verbose, framerate=framerate,
                                 figure=figure)
@@ -190,31 +195,37 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
     """Run sequential pyramid registration"""
     line_size = 89 if nonlin else 74
 
-    nonlin_optim = None if not nonlin else optim[1] if affine else optim
-
-    if (nonlin and affine and affine.position[0].lower() == 's'
-            and affine.dat and affine.dat.dat is not None):
-        affine.dat.dat /= 2  # take the matrix square root
+    nonlin_optim = None
+    if nonlin and not getattr(nonlin, 'frozen', False):
+        if affine and not getattr(affine, 'frozen', False):
+            nonlin_optim = optim[1]
+        else:
+            nonlin_optim = optim
 
     losses = make_list(losses)
     nb_levels = len(losses)
+    shapes = [nonlin.shape]
+    for n in range(1, nb_levels):
+        shapes.append([int(math.ceil(s/2)) for s in shapes[-1]])
+
     n_level = nb_levels - 1
     if nonlin and n_level > 0:
-        penalty0 = dict(nonlin.penalty)
-        vel_shape = nonlin.shape
-        nonlin = nonlin.downsample_(2**n_level)
-        nonlin.penalty['bending'] *= prod(vel_shape) / prod(nonlin.shape)
-
+        if getattr(nonlin, 'frozen', False):
+            nonlin0 = nonlin
+            nonlin = nonlin.downsample(shape=shapes[n_level])
+        else:
+            nonlin = nonlin.downsample_(shape=shapes[n_level])
+        
+    if nonlin and hasattr(nonlin_optim, 'penalty'):
+        nonlin_optim.penalty = nonlin.penalty
+        
     while losses:
         loss_level = losses.pop(0)
         print('-' * line_size)
         print(f'   PYRAMID LEVEL {n_level}')
         print('-' * line_size)
-        if nonlin:
-            if hasattr(nonlin_optim, 'voxel_size'):
-                nonlin_optim.voxel_size = nonlin.voxel_size
-            if hasattr(nonlin_optim, 'penalty'):
-                nonlin_optim.penalty = nonlin.penalty
+        if nonlin and hasattr(nonlin_optim, 'voxel_size'):
+            nonlin_optim.voxel_size = nonlin.voxel_size
         optim.reset_state()
         register = PairwiseRegister(loss_level, affine, nonlin, optim,
                                     verbose=verbose, framerate=framerate,
@@ -224,13 +235,17 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
         figure = register.figure
 
         if nonlin and nb_levels > 1:
-            if n_level == 1:
-                nonlin.upsample_(shape=vel_shape, interpolation=3)
-                nonlin.penalty['bending'] = penalty0['bending']
-            elif n_level > 1:
-                nonlin.upsample_()
-                nonlin.penalty['bending'] = penalty0['bending'] * prod(vel_shape) / prod(nonlin.shape)
-        n_level -= 1
+            n_level -= 1
+            if getattr(nonlin, 'frozen', False):
+                if n_level == 0:
+                    nonlin = nonlin0
+                else:
+                    nonlin = nonlin0.downsample(shape=shapes[n_level])
+            else:
+                if n_level == 0:
+                    nonlin.upsample_(shape=shapes[n_level])
+                elif n_level > 0:
+                    nonlin.upsample_(shape=shapes[n_level])
 
     return affine, nonlin
 

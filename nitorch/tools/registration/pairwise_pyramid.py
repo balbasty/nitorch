@@ -4,7 +4,8 @@ __all__ = ['pyramid_levels', 'valid_pyramid_levels',
 
 from nitorch.core.py import make_list, prod
 from nitorch import spatial
-from .objects import SumSimilarity
+from .objects import SumSimilarity, Similarity
+from .losses import SliceWiseLoss
 import copy
 import math as pymath
 
@@ -185,6 +186,12 @@ def sequential_pyramid(loss):
             shape = new_loss.fixed.shape[-dim:]
             new_loss.loss.patch = compute_patch_size(
                 new_loss.loss.patch, new_loss.fixed.affine, shape, level)
+        if hasattr(loss, 'loss') and isinstance(loss.loss, SliceWiseLoss):
+            slice_loss = loss.loss
+            tmp_loss = Similarity(loss.loss.base_loss, loss.moving, loss.fixed)
+            tmp_loss = get_level(tmp_loss, level)
+            slice_loss = SliceWiseLoss(tmp_loss.loss, slice_loss.axis)
+            new_loss = Similarity(slice_loss, tmp_loss.moving, tmp_loss.fixed)
         if isinstance(new_loss, SumSimilarity):
             for i in range(len(new_loss)):
                 new_loss[i] = get_level(new_loss[i], level)

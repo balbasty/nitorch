@@ -319,7 +319,7 @@ class OptimIterator(OptimWrapper):
             stop = abs(loss_prev-loss)
             if self.stop == 'gain':
                 denom = abs(loss_max-loss)
-                denom = max(denom, 1e-9 * abs(loss_max))
+                denom = max(max(denom, 1e-9 * abs(loss_max)), 1e-9)
                 stop = stop / denom
             if stop < self.tol:
                 break

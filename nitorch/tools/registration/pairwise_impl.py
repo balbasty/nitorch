@@ -11,12 +11,10 @@ The command line function `nitorch register` calls this model under the hood.
 
 """
 from nitorch import spatial
-from nitorch.core import py, utils, linalg, math
+from nitorch.core import utils, linalg
 import torch
-from .utils import jg, jhj
 from . import optim as optm, utils as regutils
 from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilarity
-import copy
 
 
 # TODO:
@@ -135,19 +133,31 @@ class PairwiseRegister:
             if self.affine:
                 step.do_affine(self.affine.parameters(), grad=False, hess=False)
         else:
+            self.affine.position, pos = 'm', self.affine.position
             step.do_affine_only(self.affine.parameters(), grad=False, hess=False)
         self.verbose = verbose
 
         step.framerate = self.framerate
         if self.affine and self.nonlin:
-            if isinstance(self.optim[1], optm.FirstOrder):
+            if getattr(self.affine, 'frozen', False):
+                nonlin_optim = self.optim
+            elif getattr(self.nonlin, 'frozen', False):
+                nonlin_optim = None
+            else:
+                nonlin_optim = self.optim[1]
+            if isinstance(nonlin_optim, optm.FirstOrder):
                 if self.nonlin.kernel is None:
                     self.nonlin.set_kernel()
-                self.optim[1].preconditioner = self.nonlin.greens_apply
-            self.optim.iter([self.affine.parameters(), self.nonlin.parameters()],
-                            [step.do_affine, step.do_vel])
+                nonlin_optim.preconditioner = self.nonlin.greens_apply
+            if getattr(self.affine, 'frozen', False):
+                self.optim.iter(self.nonlin.parameters(), step.do_vel)
+            elif getattr(self.nonlin, 'frozen', False):
+                self.optim.iter(self.affine.parameters(), step.do_affine)
+            else:
+                self.optim.iter([self.affine.parameters(), self.nonlin.parameters()],
+                                [step.do_affine, step.do_vel])
         elif self.affine:
-            self.optim.iter(self.affine.dat.dat, step.do_affine_only)
+            self.optim.iter(self.affine.parameters(), step.do_affine_only)
         elif self.nonlin:
             if isinstance(self.optim, optm.FirstOrder):
                 if self.nonlin.kernel is None:
@@ -157,6 +167,9 @@ class PairwiseRegister:
 
         if self.verbose:
             print('')
+
+        if self .affine and not self.nonlin:
+            self.affine.position = pos
 
         return step.ll
 
@@ -282,7 +295,7 @@ class PairwiseRegisterStep:
         nb_rows = kdim + 1
         nb_cols = 4 + bool(vel) + bool(lam)
 
-        imkwargs = dict(interpolation='bilinear')
+        imkwargs = dict(interpolation='nearest')
 
         fig = self.figure
         replot = len(getattr(self, 'axes_saved', [])) != (nb_rows - 1) * nb_cols + 1
@@ -377,10 +390,10 @@ class PairwiseRegisterStep:
                 fig._suptitle.set_text(title)
 
             for ax in self.axes_saved:
-                if ax.images:
-                    ax.draw_artist(ax.images[0])
-                else:
-                    ax.draw_artist(ax.lines[0])
+                for elem in (ax.images or []):
+                    ax.draw_artist(elem)
+                for elem in (ax.lines or []):
+                    ax.draw_artist(elem)
                 fig.canvas.blit(ax.bbox)
             fig.canvas.flush_events()
 
@@ -425,7 +438,7 @@ class PairwiseRegisterStep:
             self.n_iter += 1
 
         return ll
-
+    
     def do_vel(self, vel, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the nonlinear component"""
 
@@ -526,6 +539,7 @@ class PairwiseRegisterStep:
             if do_print:
                 has_printed = True
                 disp = linalg.matvec(aff_right.inverse()[:-1, :-1], disp)
+                disp *= spatial.voxel_size(fixed.affine)
                 lam = None
                 if hasattr(loss.loss, 'irls'):
                     _, _, lam = loss.loss.irls(warped, fixed.dat,
@@ -572,7 +586,6 @@ class PairwiseRegisterStep:
             # chain rule -> derivatives wrt phi
             # ----------------------------------------------------------
             if grad or hess:
-
                 g, h, mugrad = self.nonlin.propagate_grad(
                     g, h, moving, phi00, aff_left, aff_right,
                     inv=loss.backward)
@@ -593,6 +606,7 @@ class PairwiseRegisterStep:
                                sumhess.add_(h, alpha=factor))
             sumloss = (llx.mul_(factor) if sumloss is None else
                        sumloss.add_(llx, alpha=factor))
+            
 
         # ==============================================================
         #                       REGULARIZATION
@@ -614,8 +628,13 @@ class PairwiseRegisterStep:
         # ==============================================================
         out = [sumloss]
         if grad:
+            if hasattr(self.nonlin, 'projection'):
+                P = self.nonlin.projection()
+                sumgrad = linalg.matvec(P.to(sumgrad), sumgrad)
             out.append(sumgrad)
         if hess:
+            if hasattr(self.nonlin, 'projection'):
+                sumhess = self.nonlin.load(sumhess)
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
 
@@ -760,8 +779,8 @@ class PairwiseRegisterStep:
                 # Note that `h` can be `None`, but the functions I
                 # use deal with this case correctly.
                 dim = g_mu.shape[-1]
-                g = jg(g_mu, g)
-                h = jhj(g_mu, h)
+                g = regutils.jg(g_mu, g)
+                h = regutils.jhj(g_mu, h)
                 g, h = regutils.affine_grid_backward(g, h)
                 dim2 = dim * (dim + 1)
                 g = g.reshape([*g.shape[:-2], dim2])
@@ -850,7 +869,7 @@ class PairwiseRegisterStep:
             aff0, iaff0, gaff0, igaff0 = self.affine.exp2(logaff0, grad=True)
 
         has_printed = False
-        for loss in self.losses:
+        for i, loss in enumerate(self.losses):
             do_print = not (has_printed or self.verbose < 3 or in_line_search
                             or loss.backward)
 
@@ -939,8 +958,8 @@ class PairwiseRegisterStep:
                 # Note that `h` can be `None`, but the functions I
                 # use deal with this case correctly.
                 dim = g_mu.shape[-1]
-                g = jg(g_mu, g)
-                h = jhj(g_mu, h)
+                g = regutils.jg(g_mu, g)
+                h = regutils.jhj(g_mu, h)
                 g, h = regutils.affine_grid_backward(g, h)
                 dim2 = dim * (dim + 1)
                 g = g.reshape([*g.shape[:-2], dim2])

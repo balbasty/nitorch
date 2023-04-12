@@ -8,13 +8,14 @@ from nitorch.core.py import make_list, prod
 from nitorch._C.grid import (GridPull, GridPush, GridCount, GridGrad,
                              BoundType, InterpolationType,
                              SplineCoeff, SplineCoeffND)
-from ._affine import affine_resize, affine_lmdiv
+from ._affine import affine_resize, affine_lmdiv, voxel_size
 from ._finite_differences import diff
 
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
            'identity_grid', 'affine_grid', 'resize', 'resize_grid', 'reslice',
            'add_identity_grid', 'add_identity_grid_',
+           'sub_identity_grid', 'sub_identity_grid_',
            'grid_jacobian', 'grid_jacdet', 'BoundType', 'InterpolationType',
            'spline_coeff', 'spline_coeff_nd']
 
@@ -739,7 +740,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
 
     # compute orientation matrix
     if affine is not None:
-        affine, _ = affine_resize(affine, inshape, factor, anchor)
+        affine, _ = affine_resize(affine, inshape, factor, anchor, shape_out=outshape)
         if return_trf:
             return resized, affine, (scales, shifts)
         else:
@@ -885,6 +886,8 @@ def reslice(image, affine, affine_to, shape_to=None, **kwargs):
     # prepare tensors
     image = torch.as_tensor(image)
     backend = dict(dtype=image.dtype, device=image.device)
+    if not backend['dtype'].is_floating_point:
+        backend['dtype'] = torch.get_default_dtype()
     affine = torch.as_tensor(affine, **backend)
     affine_to = torch.as_tensor(affine_to, **backend)
 

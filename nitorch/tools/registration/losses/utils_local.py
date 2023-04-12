@@ -384,7 +384,7 @@ def pre_reshape(x, dim: int):
     batch: List[int] = []
     if nb_batch > 0:
         batch = x.shape[:-dim-1]
-        x = x.reshape([-1] + x.shape[-dim-1:])
+        x = x.reshape(torch.Size([-1]) + x.shape[-dim-1:])
     if nb_batch < 0:
         x = x[None]
     if nb_batch < -1:

@@ -4,6 +4,7 @@ from nitorch.core import py, utils, linalg
 import torch
 from . import losses, utils as regutils
 import copy
+import math
 
 
 class BaseSimilarity:
@@ -768,38 +769,48 @@ class Displacement(SpatialTensor, DenseTransform):
     def shape(self):
         return self.dat.shape[-self.dim-1:-1]
 
+    _upkwargs = dict(
+        interpolation=3,
+        bound='dft',
+        anchor='e',
+        extrapolate=True,
+        type='displacement',
+    )
+    
     def downsample_(self, factor=2, **kwargs):
-        kwargs.setdefault('interpolation', 1)
-        kwargs.setdefault('bound', 'dft')
-        kwargs.setdefault('anchor', 'c')
-        factor = 1 / factor
+        new_shape = [int(math.ceil(s/factor)) for s in self.shape]
+        kwargs.setdefault('shape', new_shape)
+        upkwargs = dict(self._upkwargs)
+        upkwargs.update(kwargs)
         self.dat, self.affine = spatial.resize_grid(
-            self.dat, factor, type='disp', affine=self.affine, **kwargs)
+            self.dat, affine=self.affine, **upkwargs)
         return self
 
     def downsample(self, factor=2, **kwargs):
-        kwargs.setdefault('interpolation', 2)
-        kwargs.setdefault('bound', 'dft')
-        kwargs.setdefault('anchor', 'c')
-        factor = 1 / factor
-        dat, aff = spatial.resize_grid(self.dat, factor, type='displacement',
-                                       affine=self.affine, **kwargs)
+        new_shape = [int(math.ceil(s/factor)) for s in self.shape]
+        kwargs.setdefault('shape', new_shape)
+        upkwargs = dict(self._upkwargs)
+        upkwargs.update(kwargs)
+        dat, aff = spatial.resize_grid(
+            self.dat, affine=self.affine, **upkwargs)
         return type(self)(dat, aff, dim=self.dim)
 
     def upsample_(self, factor=2, **kwargs):
-        kwargs.setdefault('interpolation', 2)
-        kwargs.setdefault('bound', 'dft')
-        kwargs.setdefault('anchor', 'c')
+        new_shape = [int(math.floor(s*factor)) for s in self.shape]
+        kwargs.setdefault('shape', new_shape)
+        upkwargs = dict(self._upkwargs)
+        upkwargs.update(kwargs)
         self.dat, self.affine = spatial.resize_grid(
-            self.dat, factor, type='disp', affine=self.affine, **kwargs)
+            self.dat, affine=self.affine, **upkwargs)
         return self
 
     def upsample(self, factor=2, **kwargs):
-        kwargs.setdefault('interpolation', 1)
-        kwargs.setdefault('bound', 'dft')
-        kwargs.setdefault('anchor', 'c')
-        dat, aff = spatial.resize_grid(self.dat, factor, type='displacement',
-                                       affine=self.affine, **kwargs)
+        new_shape = [int(math.floor(s*factor)) for s in self.shape]
+        kwargs.setdefault('shape', new_shape)
+        upkwargs = dict(self._upkwargs)
+        upkwargs.update(kwargs)
+        dat, aff = spatial.resize_grid(
+            self.dat, affine=self.affine, **upkwargs)
         return type(self)(dat, aff, dim=self.dim)
 
 
@@ -827,6 +838,7 @@ class LogAffine(AffineTransform):
         self._basis = None
         if torch.is_tensor(basis):
             dim = basis.shape[-1] - 1
+        dim = dim or 3
         self.dim = dim
         self.basis = basis
         if dat is None:
@@ -871,9 +883,9 @@ class LogAffine(AffineTransform):
                 end_scl = begin_scl + 1
             self._basis = spatial.affine_basis(self._basis_name, self.dim,
                                                **utils.backend(self.dat))
-            self._basis[begin_rot:begin_scl] /= 40  # rotations ~ 1 deg
-            self._basis[begin_scl:end_scl] /= 40    # scalings  ~ 1 pct
-            self._basis[end_scl:] /= 40             # shears
+            # self._basis[begin_rot:begin_scl] /= 40  # rotations ~ 1 deg
+            # self._basis[begin_scl:end_scl] /= 40    # scalings  ~ 1 pct
+            # self._basis[end_scl:] /= 40             # shears
         return self._basis
 
     @basis.setter
@@ -949,13 +961,17 @@ class LogAffine(AffineTransform):
         self._cache = None
         self._icache = None
 
-    def exp(self, q=None, grad=False, cache_result=False, recompute=True):
+    def exp(self, q=None, grad=False, cache_result=False, recompute=True, sqrt=False):
         if q is None:
             q = self.dat
+        if sqrt:
+            q = q * 0.5
         if grad:
             recompute = True
         if recompute or getattr(self, '_cache') is None:
             aff = linalg._expm(q.double(), self.basis, grad_X=grad)
+            if sqrt and grad:
+                aff[1].mul_(0.5)
             aff = (list(map(lambda x: x.to(q.dtype), aff))
                    if isinstance(aff, (list, tuple)) else aff.to(q.dtype))
         else:
@@ -964,31 +980,33 @@ class LogAffine(AffineTransform):
             self._cache = aff[0] if grad else aff
         return aff
 
-    def iexp(self, q=None, grad=False, cache_result=False, recompute=True):
+    def iexp(self, q=None, grad=False, cache_result=False, recompute=True, sqrt=False):
         if q is None:
             q = self.dat
+        if sqrt:
+            q = q * 0.5
         if grad:
             recompute = True
-        if recompute or self._cache is None:
+        if recompute or self._icache is None:
             iaff = linalg._expm(-q.double(), self.basis, grad_X=grad)
+            if sqrt and grad:
+                iaff[1].mul_(0.5)
             iaff = (list(map(lambda x: x.to(q.dtype), iaff))
                     if isinstance(iaff, (list, tuple)) else iaff.to(q.dtype))
         else:
-            iaff = self._cache
+            iaff = self._icache
         if cache_result:
-            self._cache = iaff[0] if grad else iaff
+            self._icache = iaff[0] if grad else iaff
         return iaff
 
-    def exp2(self, q=None, grad=False, cache_result=False, recompute=True):
+    def exp2(self, q=None, grad=False, cache_result=False, recompute=True, sqrt=False):
         if grad:
-            recompute = True
-        if grad:
-            a, g = self.exp(q, True)
-            ia, ig = self.iexp(q, True)
+            a, g = self.exp(q, True, sqrt=sqrt)
+            ia, ig = self.iexp(q, True, sqrt=sqrt)
             return a, ia, g, ig
         else:
-            return (self.exp(q, cache_result=cache_result, recompute=recompute),
-                    self.iexp(q, cache_result=cache_result, recompute=recompute))
+            return (self.exp(q, cache_result=cache_result, recompute=recompute, sqrt=sqrt),
+                    self.iexp(q, cache_result=cache_result, recompute=recompute, sqrt=sqrt))
 
     def _prm_as_str(self):
         return [f'shape={list(self.dat.shape)}', f'dim={self.dim}']
@@ -1114,22 +1132,22 @@ class LogAffine2d(LogAffine):
                 if old_basis == 'ro':
                     dat = self.dat.new_zeros([nb_prm])
                     dat[dim:] = self.dat
-                elif len(self.dat) >= dim + nb_prm:
+                elif len(self.dat) >= nb_prm:
                     dat = self.dat[:nb_prm].clone()
                 else:
                     dat = self.dat.new_zeros([nb_prm])
-                    dat[:len(dat)] = dat
+                    dat[:len(self.dat)] = self.dat
             elif new_basis[0] == 's':
                 nb_prm = dim + dim*(dim-1)//2 + 1
                 dat = self.dat.new_zeros([nb_prm])
                 if old_basis == 'ro':
                     dat[dim:-1] = self.dat
-                elif len(self.dat) >= dim + nb_prm:
+                elif len(self.dat) >= nb_prm:
                     # old_basis is full affine
                     dat[:nb_prm-1] = self.dat[:nb_prm-1]
                     dat[-1] = self.dat[nb_prm-1:nb_prm+2].mean()
                 else:
-                    dat[:len(dat)] = dat
+                    dat[:len(self.dat)] = self.dat
             else:
                 nb_prm = dim*(dim+1)
                 dat = self.dat.new_zeros([nb_prm])
@@ -1139,12 +1157,12 @@ class LogAffine2d(LogAffine):
                     dat[:len(self.dat)-1] = self.dat[:-1]
                     dat[len(self.dat)-1:] = self.dat[-1]
                 else:
-                    dat[:len(dat)] = dat
+                    dat[:len(self.dat)] = self.dat
         return LogAffine2d(dat, basis, dim=self.dim,
                            plane=self.plane, rotation=self.rotation)
 
-    def exp(self, q=None, grad=False, cache_result=False, recompute=True):
-        aff = super().exp(q, grad, cache_result, recompute)
+    def exp(self, q=None, grad=False, cache_result=False, recompute=True, sqrt=False):
+        aff = super().exp(q, grad, cache_result, recompute, sqrt=sqrt)
         if grad:
             aff, gaff = aff
         dtype = aff.dtype
@@ -1157,8 +1175,8 @@ class LogAffine2d(LogAffine):
             return aff, gaff
         return aff
 
-    def iexp(self, q=None, grad=False, cache_result=False, recompute=True):
-        aff = super().iexp(q, grad, cache_result, recompute)
+    def iexp(self, q=None, grad=False, cache_result=False, recompute=True, sqrt=False):
+        aff = super().iexp(q, grad, cache_result, recompute, sqrt=sqrt)
         if grad:
             aff, gaff = aff
         dtype = aff.dtype
@@ -1171,8 +1189,8 @@ class LogAffine2d(LogAffine):
             return aff, gaff
         return aff
 
-    def exp2(self, q=None, grad=False, cache_result=False, recompute=True):
-        aff = super().exp2(q, grad, cache_result, recompute)
+    def exp2(self, q=None, grad=False, cache_result=False, recompute=True, sqrt=False):
+        aff = super().exp2(q, grad, cache_result, recompute, sqrt=sqrt)
         if grad:
             aff, iaff, gaff, giaff = aff
         else:
@@ -1345,8 +1363,10 @@ class NonLinModel(TransformationModel):
 
     def set_kernel(self, kernel=None):
         if kernel is None:
-            kernel = spatial.greens(self.shape, **self.penalty,
-                                    factor=self.factor / py.prod(self.shape),
+            penalty = dict(self.penalty)
+            factor = penalty.pop('factor')
+            kernel = spatial.greens(self.shape, **penalty,
+                                    factor=factor / py.prod(self.shape),
                                     voxel_size=self.voxel_size,
                                     **utils.backend(self.dat))
         self.kernel = kernel
@@ -1668,6 +1688,7 @@ class SVFModel(NonLinModel):
         """
         if inv:
             g = g.neg_()
+        kwargs = dict(bound='dft', extrapolate=True)
 
         # build bits of warp
         dim = phi.shape[-1]
@@ -1678,8 +1699,9 @@ class SVFModel(NonLinModel):
         # we'll then propagate them through Phi by scaling and squaring
         if right is not None:
             right = spatial.affine_grid(right, fixed_shape)
-        g = regutils.smart_push(g, right, shape=self.shape)
-        h = regutils.smart_push(h, right, shape=self.shape)
+        g = regutils.smart_push(g, right, shape=self.shape, **kwargs)
+        if h is not None:
+            h = regutils.smart_push(h, right, shape=self.shape, **kwargs)
         del right
 
         phi_left = spatial.identity_grid(self.shape, **utils.backend(phi))
@@ -1823,25 +1845,81 @@ class Nonlin2dModel(NonLinModel):
     dim = property(lambda self: self._model.dim)
     voxel_size = property(lambda self: self._model.voxel_size)
 
-    def exp(self, *args, **kwargs):
-        return self._model.exp(*args, **kwargs)
+    def exp(self, v=None, jacobian=False, add_identity=False, *args, **kwargs):
+        phi = self._model.exp(v, jacobian, add_identity, *args, **kwargs)
+        P = self.projection()
+        if jacobian:
+            phi, jac = phi
+            P = P.to(phi)
+            jac = P.matmul(jac).matmul(P.T)
+            phi = linalg.matvec(P, phi)
+            return phi, jac
+        else:
+            phi = linalg.matvec(P.to(phi), phi)
+            return phi
 
-    def iexp(self, *args, **kwargs):
-        return self._model.iexp(*args, **kwargs)
+    def iexp(self, v=None, jacobian=False, add_identity=False, *args, **kwargs):
+        iphi = self._model.iexp(v, jacobian, add_identity, *args, **kwargs)
+        P = self.projection()
+        if jacobian:
+            iphi, ijac = iphi
+            P = P.to(iphi)
+            ijac = P.matmul(ijac).matmul(P.T)
+            iphi = linalg.matvec(P, iphi)
+            return iphi, ijac
+        else:
+            iphi = linalg.matvec(P.to(iphi), iphi)
+            return iphi
 
-    def exp2(self, *args, **kwargs):
-        return self._model.exp2(*args, **kwargs)
+    def exp2(self, v=None, jacobian=False, add_identity=False, *args, **kwargs):
+        phi = self._model.exp2(v, jacobian, add_identity, *args, **kwargs)
+        P = self.projection()
+        if jacobian:
+            phi, iphi, jac, ijac = phi
+            P = P.to(phi)
+            jac = P.matmul(jac).matmul(P.T)
+            ijac = P.matmul(ijac).matmul(P.T)
+            phi = linalg.matvec(P, phi)
+            iphi = linalg.matvec(P, iphi)
+            return phi, iphi, jac, ijac
+        else:
+            phi, iphi = phi
+            P = P.to(phi)
+            phi = linalg.matvec(P, phi)
+            iphi = linalg.matvec(P, iphi)
+            return phi, iphi
+
+    def projection(self):
+        A = self.dat.affine[:-1, :-1].clone().double()
+        A /= A.square().sum(0, keepdim=True).sqrt()
+        R = self.rotation[:-1, :-1].double()
+        R = R[:, list(range(self.plane)) + list(range(self.plane+1, len(R)))]
+        P = A.T @ (R @ R.T) @ A
+        # P.masked_fill_(P.abs() < 1e-3, 0)
+        return P
+
+    def load(self, hess):
+        dim = self.dim
+        A = self.dat.affine[:-1, :-1].clone().double()
+        A /= A.square().sum(0, keepdim=True).sqrt()
+        R = self.rotation[:-1, :-1].clone().double()
+        R = A.T @ R
+        for d in range(dim):
+            R = R.unsqueeze(-2)
+        R = R.expand([dim, *hess.shape[-dim-1:-1], dim])
+        hess = hess.movedim(-1, -dim-1)
+        hess = regutils.jhj(R.transpose(0, -1), hess)
+        hess[..., self.plane] += hess[..., :dim].abs().max(-1).values
+        hess = hess.movedim(-1, -dim-1)
+        hess = regutils.jhj(R, hess)
+        return hess
 
     def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False):
         g, h, mugrad = self._model.propagate_grad(
             g, h, moving, phi, left, right, inv)
 
-        A = self.dat.affine[:-1, :-1].double()
-        R = self.rotation[:-1, :-1].double()
-        R = R[:, list(range(self.plane)) + list(range(self.plane+1, len(R)))]
-        P = A.inverse() @ (R @ R.T) @ A
+        P = self.projection()
         mugrad = linalg.matvec(P.to(mugrad), mugrad)
-
         return g, h, mugrad
 
 
@@ -1873,7 +1951,7 @@ class AffineModel(TransformationModel):
         self._penalty = penalty or None  # regutils.defaults_affine()
         self._penalty_list = None
         self._basis = basis
-        self.position = position
+        self.position = position.lower()[0]
         if dat is not None:
             self.set_dat(dat)
         else:
@@ -1983,13 +2061,13 @@ class AffineModel(TransformationModel):
             self.dat.clear_cache()
 
     def exp(self, q=None, grad=False, cache_result=False, recompute=True):
-        return self.dat.exp(q, grad, cache_result, recompute)
+        return self.dat.exp(q, grad, cache_result, recompute, sqrt=self.position[0] == 's')
 
     def iexp(self, q=None, grad=False, cache_result=False, recompute=True):
-        return self.dat.iexp(q, grad, cache_result, recompute)
+        return self.dat.iexp(q, grad, cache_result, recompute, sqrt=self.position[0] == 's')
 
     def exp2(self, q=None, grad=False, cache_result=False, recompute=True):
-        return self.dat.exp2(q, grad, cache_result, recompute)
+        return self.dat.exp2(q, grad, cache_result, recompute, sqrt=self.position[0] == 's')
 
     def __repr__(self):
         s = []

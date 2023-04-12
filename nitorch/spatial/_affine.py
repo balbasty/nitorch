@@ -813,7 +813,8 @@ def _build_affine_basis(basis, dim=None, dtype=None, device=None):
         basename = name.split('[')[0]
         if basename in affine_subbasis_choices:
             return affine_subbasis(name, dim, dtype=dtype, device=device)
-        elif basename in affine_basis_choices:
+        elif basename in affine_basis_choices \
+                or basename in [v for val in affine_basis_aliases.values() for v in val]:
             return affine_basis(name, dim, dtype=dtype, device=device)
         else:
             raise ValueError('Unknown basis name {}.'.format(basename))
@@ -1709,7 +1710,7 @@ def affine_rmdiv(a, b):
     return affine_matmul(a, affine_inv(b))
 
 
-def affine_resize(affine, shape, factor, anchor='c'):
+def affine_resize(affine, shape, factor, anchor='c', shape_out=None):
     """Update an affine matrix according to a resizing of the lattice.
 
     Notes
@@ -1757,7 +1758,8 @@ def affine_resize(affine, shape, factor, anchor='c'):
     info = {'dtype': affine.dtype, 'device': affine.device}
 
     # compute output shape
-    shape_out = [max(1, int(s * f)) for s, f in zip(shape, factor)]
+    if shape_out is None:
+        shape_out = [max(1, int(round(s * f))) for s, f in zip(shape, factor)]
 
     # compute shift and scale in each dimension
     shifts = []

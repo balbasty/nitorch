@@ -62,6 +62,9 @@ def _main(options):
     device = setup_device(*options.device)
     dim = 3
 
+    if options.odir:
+        os.makedirs(options.odir, exist_ok=True)
+
     # ------------------------------------------------------------------
     #                       COMPUTE PYRAMID
     # ------------------------------------------------------------------
@@ -85,23 +88,35 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           BUILD AFFINE
     # ------------------------------------------------------------------
-    if options.affine.is2d is not False:
-        # TODO: allow initial affine
-        affine = make_affine_2d(options.affine.is2d, losses[0].fixed.affine,
-                                options.affine.name, options.affine.position)
-    else:
-        affine = make_affine(options.affine.name, options.affine.position,
-                             init=options.affine.init)
+    affine = None
+    if options.affine:
+        if options.affine.is2d is not False:
+            # TODO: allow initial affine
+            if isinstance(losses[0], objects.SumSimilarity):
+                affine0 = losses[0][0].fixed.affine
+            else:
+                affine0 = losses[0].fixed.affine
+            affine = make_affine_2d(options.affine.is2d, affine0,
+                                    options.affine.name, options.affine.position)
+        else:
+            affine = make_affine(options.affine.name, options.affine.position,
+                                 init=options.affine.init)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
     # ------------------------------------------------------------------
-    images = [image_dict[key] for key in (options.nonlin.fov or image_dict)]
-    if options.nonlin.is2d is not False:
-        nonlin = make_nonlin_2d(options.nonlin.is2d, losses[0].fixed.affine,
-                                images, options.nonlin.name, **options.nonlin)
-    else:
-        nonlin = make_nonlin(images, options.nonlin.name, **options.nonlin)
+    images = [image_dict[key] for key in (getattr(options.nonlin, 'fov', None) or image_dict)]
+    nonlin = None
+    if options.nonlin:
+        if options.nonlin.is2d is not False:
+            if isinstance(losses[0], objects.SumSimilarity):
+                affine0 = losses[0][0].fixed.affine
+            else:
+                affine0 = losses[0].fixed.affine
+            nonlin = make_nonlin_2d(options.nonlin.is2d, affine0,
+                                    images, options.nonlin.name, **options.nonlin)
+        else:
+            nonlin = make_nonlin(images, options.nonlin.name, **options.nonlin)
 
     if not affine and not nonlin:
         raise ValueError('At least one of @affine or @nonlin must be used.')
@@ -112,15 +127,23 @@ def _main(options):
     order = min(loss.loss.order for loss in losses[0])
     interleaved = options.optim.name[0] == 'i'
 
-    if not options.affine.optim.max_iter:
-        options.affine.optim.max_iter = 50 if interleaved else 100
-    affine_optim = make_affine_optim(options.affine.optim.name, order,
-                                     **options.affine.optim)
+    affine_optim = None
+    if affine and options.affine.optim.name != 'none':
+        if not options.affine.optim.max_iter:
+            options.affine.optim.max_iter = 50 if interleaved else 100
+        affine_optim = make_affine_optim(options.affine.optim.name, order,
+                                         **options.affine.optim)
+    elif affine and options.affine.optim.name == 'none':
+        affine_optim = 'none'
 
-    if not options.nonlin.optim.max_iter:
-        options.nonlin.optim.max_iter = 10 if interleaved else 50
-    nonlin_optim = make_nonlin_optim(options.nonlin.optim.name, order,
-                                     **options.nonlin.optim, nonlin=nonlin)
+    nonlin_optim = None
+    if nonlin and options.nonlin.optim.name != 'none':
+        if not options.nonlin.optim.max_iter:
+            options.nonlin.optim.max_iter = 10 if interleaved else 50
+        nonlin_optim = make_nonlin_optim(options.nonlin.optim.name, order,
+                                         **options.nonlin.optim, nonlin=nonlin)
+    elif nonlin and options.nonlin.optim.name == 'none':
+        nonlin_optim = 'none'
 
     # ------------------------------------------------------------------
     #                           BACKEND STUFF
@@ -140,7 +163,7 @@ def _main(options):
     affine, nonlin = run(losses, affine, nonlin, affine_optim, nonlin_optim,
                          pyramid=not options.pyramid.concurrent,
                          interleaved=options.optim.name != 'sequential',
-                         progressive=options.affine.progressive,
+                         progressive=getattr(options.affine, 'progressive', False),
                          max_iter=options.optim.max_iter,
                          tolerance=options.optim.tolerance,
                          verbose=options.verbose,
@@ -156,6 +179,8 @@ def _main(options):
                                              name=options.affine.name)
         print('Affine ->', fname)
         aff = affine.exp(cache_result=True, recompute=True)
+        if affine.position[0] == 's':
+            aff = aff.matmul(aff)
         io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
     if nonlin and options.nonlin.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
@@ -207,7 +232,7 @@ def build_losses(options, pyramids, device):
     dim = 3
 
     losskeys = ('kernel', 'patch', 'bins', 'norm', 'fwhm',
-                'spline', 'weight', 'weighted', 'max_iter')
+                'spline', 'weight', 'weighted', 'max_iter', 'slicewise')
     loadkeys = ('label', 'missing', 'world', 'affine', 'rescale',
                 'pad', 'bound', 'fwhm', 'mask')
     imagekeys = ('pyramid', 'pyramid_method', 'discretize',
@@ -249,7 +274,7 @@ def build_losses(options, pyramids, device):
 
         # Backward loss
         if loss.symmetric:
-            lossobj = make_loss(loss.name, **loss)
+            lossobj = make_loss(loss.name, **include(loss, losskeys))
             if loss.name == 'emmi':
                 loss.fix, loss.mov = loss.mov, loss.fix
                 loss.mov.rescale = (0, 0)

@@ -10,14 +10,14 @@ class Dice(OptimizationLoss):
 
     order = 2  # Hessian defined
 
-    def __init__(self, add_background=False, weighted=False,
+    def __init__(self, add_background=False, weight=False,
                  fisher=False, dim=None):
         """
         Parameters
         ----------
         add_background : bool, default=False
             Include the Dice of the (implicit) background class in the loss.
-        weighted : bool or tensor, default=False
+        weight : bool or tensor, default=False
             Weights for each class. If True, weight by positive rate.
         fisher : bool or {0..1}
             Whether to use Fisher's scoring of the Hessian (True),
@@ -29,14 +29,14 @@ class Dice(OptimizationLoss):
         """
         super().__init__()
         self.add_background = add_background
-        self.weighted = weighted
+        self.weight = weight
         self.fisher = fisher
         self.dim = dim
 
     def set_default(self, kwargs):
         kwargs.setdefault('dim', self.dim)
         kwargs.setdefault('add_background', self.add_background)
-        kwargs.setdefault('weighted', self.weighted)
+        kwargs.setdefault('weighted', self.weight)
         kwargs.setdefault('fisher', self.fisher)
         return kwargs
 

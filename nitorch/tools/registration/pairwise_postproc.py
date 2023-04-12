@@ -53,6 +53,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
         fix.setdefault('resliced', None)
         fix.setdefault('bound', 'dct2')
         fix.setdefault('extrapolate', False)
+        fix.setdefault('label', False)
         fix = Structure(fix)
     if isinstance(mov, dict):
         mov = dict(mov)
@@ -62,6 +63,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
         mov.setdefault('resliced', None)
         mov.setdefault('bound', 'dct2')
         mov.setdefault('extrapolate', False)
+        mov.setdefault('label', False)
         mov = Structure(mov)
 
     if not (mov.output or mov.resliced or fix.output or fix.resliced):
@@ -98,8 +100,8 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
         idir, base, ext = fileparts(ifname)
         odir_mov = odir or idir or '.'
 
-        image = objects.Image(dat_mov.fdata(rand=True, device=device),
-                              affine=mov_affine, bound=mov.bound,
+        dat = dat_mov.data(device=device) if mov.label else dat_mov.fdata(rand=True, device=device)
+        image = objects.Image(dat, affine=mov_affine, bound=mov.bound,
                               extrapolate=mov.extrapolate)
 
         if mov.output:
@@ -107,13 +109,16 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             target_shape = image.shape
             if affine and affine.position[0].lower() in 'ms':
                 aff = affine.exp(recompute=False, cache_result=True)
+                if not nonlin and affine.position[0].lower() == 's':
+                    aff = aff.matmul(aff)
                 target_affine = spatial.affine_lmdiv(aff, target_affine)
 
             fname = mov.output.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
             print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin)
-            io.savef(warped, fname, like=ifname, affine=target_affine)
+            save = io.save if mov.label else io.savef
+            save(warped, fname, like=ifname, affine=target_affine)
             print('done.')
             del warped
 
@@ -125,7 +130,8 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin, reslice=True)
-            io.savef(warped, fname, like=ifname, affine=target_affine)
+            save = io.save if mov.label else io.savef
+            save(warped, fname, like=ifname, affine=target_affine)
             print('done.')
             del warped
 
@@ -135,8 +141,8 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
         idir, base, ext = fileparts(ifname)
         odir_fix = odir or idir or '.'
 
-        image = objects.Image(dat_fix.fdata(rand=True, device=device),
-                              affine=fix_affine, bound=fix.bound,
+        dat = dat_fix.data(device=device) if fix.label else dat_fix.fdata(rand=True, device=device)
+        image = objects.Image(dat, affine=fix_affine, bound=fix.bound,
                               extrapolate=fix.extrapolate)
 
         if fix.output:
@@ -144,13 +150,16 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             target_shape = image.shape
             if affine and affine.position[0].lower() in 'fs':
                 aff = affine.exp(recompute=False, cache_result=True)
+                if not nonlin and affine.position[0].lower() == 's':
+                    aff = aff.matmul(aff)
                 target_affine = spatial.affine_matmul(aff, target_affine)
 
             fname = fix.output.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
             print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin, backward=True)
-            io.savef(warped, fname, like=ifname, affine=target_affine)
+            save = io.save if fix.label else io.savef
+            save(warped, fname, like=ifname, affine=target_affine)
             print('done.')
             del warped
 
@@ -163,7 +172,8 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin,
                                     backward=True, reslice=True)
-            io.savef(warped, fname, like=ifname, affine=target_affine)
+            save = io.save if fix.label else io.savef
+            save(warped, fname, like=ifname, affine=target_affine)
             print('done.')
             del warped
 
@@ -231,6 +241,8 @@ def warp_one_image(image, target, shape=None, affine=None, nonlin=None,
     else:
         # no nonlin: single affine even if position == 'symmetric'
         if reslice:
+            if affine.position[0].lower():
+                aff = aff.matmul(aff)
             aff = spatial.affine_matmul(aff, aff_right)
             aff = spatial.affine_matmul(aff_left, aff)
             phi = spatial.affine_grid(aff, shape)

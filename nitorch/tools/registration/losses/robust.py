@@ -1,12 +1,13 @@
 from nitorch.core import utils, py
 from .base import OptimizationLoss
 from .mse import weighted_precision, mse
+import torch
 
 
 def preproc_lam(lam, dim):
     if lam is None:
         lam = 1
-    elif lam.dim() <= 2:
+    elif torch.is_tensor(lam) and lam.dim() <= 2:
         if lam.dim() == 0:
             lam = lam.flatten()
         lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions

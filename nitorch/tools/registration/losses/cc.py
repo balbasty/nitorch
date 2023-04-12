@@ -7,7 +7,7 @@ from .base import OptimizationLoss
 def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
     """Squared Pearson's correlation coefficient loss
 
-        1 - (E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)) ** 2
+        log(1 - (E[(x - mu_x)'(y - mu_y)]/(s_x * s_y)) ** 2)
 
     Parameters
     ----------
@@ -69,6 +69,95 @@ def cc(moving, fixed, dim=None, grad=True, hess=True, mask=None):
 
     # return stuff
     corr = corr2.log_().sum()
+    out = [corr, *out]
+    return tuple(out) if len(out) > 1 else out[0]
+
+
+def rcc(moving, fixed, dim=None, grad=True, hess=True, mask=None, weight=None,
+        threshold=0.5, max_iter=16, tolerance=1e-4):
+    """Robust correlation coefficient loss
+
+    Parameters
+    ----------
+    moving : (..., K, *spatial) tensor
+        Moving image with K channels.
+    fixed : (..., K, *spatial) tensor
+        Fixed image with K channels.
+    dim : int, default=`fixed.dim() - 1`
+        Number of spatial dimensions.
+    grad : bool, default=True
+        Compute an return gradient
+    hess : bool, default=True
+        Compute and return approximate Hessian
+
+    Returns
+    -------
+    ll : () tensor
+
+    """
+    moving0, fixed0 = utils.to_max_backend(moving, fixed)
+    dim = dim or (fixed0.dim() - 1)
+    dims = list(range(-dim, 0))
+
+
+    if weight is None:
+        weight = torch.ones_like(moving0)
+    else:
+        weight = weight.clone()
+    if mask is not None:
+        weight *= mask
+
+    moving = moving0.clone()
+    fixed = fixed0.clone()
+    loss0 = float('inf')
+    for n_iter in range(max_iter):
+
+        norm = weight.sum(dim=dims, keepdim=True)
+        mean = lambda x: (x * weight).sum(dim=dims, keepdim=True).div_(norm)
+
+        moving.copy_(moving0)
+        fixed.copy_(fixed0)
+        moving -= mean(moving)
+        fixed -= mean(fixed)
+        sigm = mean(moving.square()).sqrt_()
+        sigf = mean(fixed.square()).sqrt_()
+        moving = moving.div_(sigm)
+        fixed = fixed.div_(sigf)
+        corr = mean(moving*fixed)
+
+        loss = (1 - corr*corr).log() + (sigf*sigf).log()
+
+        weight = (fixed - corr * moving).square_().mul_(sigf*sigf).div_(-2)
+        weight -= loss
+        weight += threshold
+        weight = weight.exp_()
+        loss = mean((1 + weight).log())
+        weight /= (1 + weight)
+
+        if abs(loss - loss0) < tolerance:
+            break
+        loss0 = loss
+
+    corr2 = 1 - corr*corr
+
+    out = []
+    if grad:
+        g = 2 * corr * (moving * corr - fixed) / (norm * sigm)
+        g /= corr2  # chain rule for log
+        if mask is not None:
+            g = g.mul_(mask)
+        out.append(g)
+
+    if hess:
+        # approximate hessian
+        h = 2 * (corr / sigm).square() / norm
+        h /= corr2  # chain rule for log
+        if mask is not None:
+            h = h * mask
+        out.append(h)
+
+    # return stuff
+    corr = corr2.log_().sum() + (sigf*sigf).log()
     out = [corr, *out]
     return tuple(out) if len(out) > 1 else out[0]
 

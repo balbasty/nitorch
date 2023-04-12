@@ -129,8 +129,9 @@ class MSE(OptimizationLoss):
         lll = 0
         if lam is None:
             nvox = sumweights(mask, fixed.shape[-dim:], keepdim=True)
+            nvoxsum = nvox.sum() if torch.is_tensor(nvox) else nvox
             lam = weighted_precision(moving, fixed, dim=dim, weights=mask, keepdim=True)
-            lll = -0.5 * lam.log().mul(mask).div_(nvox).sum()
+            lll = -0.5 * lam.log().mul(nvox).sum().div(nvoxsum)
             for _ in range(dim):
                 lam = lam.squeeze(-1)
         return lam, lll

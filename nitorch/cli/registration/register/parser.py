@@ -149,7 +149,7 @@ usage:
         --name NAME                 A name to use with `@nonlin --fov`
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
-        --mind [FWHM=1 [RADIUS=0]]  Compute MIND features
+        --mind  [FWHM=1 [RADIUS=0]] Compute MIND features
 
 @affine options:
     FACTOR must be a scalar value [1] and is a global penalty factor
@@ -219,6 +219,7 @@ usage:
             -o, --output FILE               Write momentum maps
         lbfgs                           Limited-memory BFGS
             -h, --history                   History size [100]
+        none                            Do not optimize
     Common options:
         -l, --lr                        Learning rate [1]
         -s, --line-search               Number of backtracking line search [wolfe]
@@ -325,7 +326,7 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
                 'entropy': 'ent', 'sqz': 'squeezed'}
-loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emmi', 'prod', 'normprod', 'extra']
+loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emmi', 'prod', 'dot', 'ndot', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -438,7 +439,7 @@ file.add_option('missing', ('-x', '--missing'), nargs='+', convert=float,
 file.add_option('missing', '--no-missing', nargs=0,
                 action=cli.Actions.store_value([]), help='No missing values')
 file.add_option('mind', '--mind', nargs='*2', default=[], convert=float,
-                action=cli.Actions.store_value([1, 0]))
+                action=cli.Actions.store_value([1, 2]))
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)
 mov = cli.Group('mov', '@@mov', n=1)
@@ -454,7 +455,7 @@ optim_aliases = {'gauss-newton': 'gn',
                  'nesterov': 'nes',
                  'optimized-gradient': 'ogm',
                  'powell': 'pow'}
-optim_choices = list(optim_aliases.values()) + ['lbfgs', 'unset']
+optim_choices = list(optim_aliases.values()) + ['lbfgs', 'unset', 'none']
 optim_choices = cli.Positional('name', nargs='?', default='unset',
                                validation=cli.Validations.choice(optim_choices),
                                convert=lambda x: optim_aliases.get(x, x),

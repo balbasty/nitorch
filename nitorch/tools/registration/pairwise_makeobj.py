@@ -71,13 +71,13 @@ def make_image(dat, mask=None, affine=None,
         method=pyramid_method
     )
 
-    mind = [] if mind is False else [1, 0] if mind is True else mind
+    mind = [] if mind is False else [1, 2] if mind is True else mind
     mind = make_list(mind or [])
     if mind:
-        fwhm, radius = make_list(mind, 2, default=0)
+        fwhm, radius = make_list(mind, 2, default=2)
         for level in image:
             level.preview = level.dat
-            level.dat = spatial.mind(level.dat, dim=dim,
+            level.dat = spatial.rmind(level.dat, dim=dim,
                                      radius=int(radius), fwhm=fwhm,
                                      bound=level.bound)
             level.dat = utils.movedim(level.dat, -1, 0)
@@ -207,7 +207,7 @@ def make_nonlin(shape_or_init=None, model='svf', affine=None, voxel_size=None,
 
     if isinstance(shape_or_init, io.MappedArray):
         vel = objects.Displacement(shape_or_init.fdata(device=device),
-                                   affine=init.affine)
+                                   affine=shape_or_init.affine)
 
     else:
         shape = shape_or_init
@@ -356,6 +356,8 @@ def make_affine_optim(optim=None, order=None, ls='wolfe', lr=None,
         affine_optim = opt.LBFGS
     elif optim.startswith('pow'):
         affine_optim = opt.Powell
+    elif optim == 'none':
+        return None
     else:
         raise ValueError(optim)
 
@@ -451,7 +453,7 @@ def make_nonlin_optim(optim=None, order=None, ls='wolfe', lr=None,
         nonlin_optim = opt.OGM
     elif optim == 'gn' or optim.startswith('gauss') or optim.startswith('newt'):
         fmg = kwargs.pop('fmg', True)
-        kwargs['max_iter'] = kwargs.pop('sub_iter', 2 if fmg else 16)
+        kwargs['max_iter'] = kwargs.pop('sub_iter', None) or (2 if fmg else 16)
         solver = kwargs.pop('solver', 'cg')
         kwargs['penalty'] = penalty
         nonlin_optim = opt.GridCG if solver == 'cg' else opt.GridRelax
@@ -459,6 +461,8 @@ def make_nonlin_optim(optim=None, order=None, ls='wolfe', lr=None,
         nonlin_optim = opt.LBFGS
     elif optim.startswith('pow'):
         nonlin_optim = opt.Powell
+    elif optim == 'none':
+        return None
     else:
         raise ValueError(optim)
 
@@ -547,7 +551,7 @@ def make_loss(loss, slicewise=False, **kwargs):
     elif loss == 'cat':
         lossobj = losses.Cat(log=False)
     elif loss == 'dice':
-        lossobj = losses.Dice(**kwargs, log=False)
+        lossobj = losses.Dice(**kwargs)
     elif loss == 'dot':
         lossobj = losses.ProdLoss()
     elif loss == 'ndot':

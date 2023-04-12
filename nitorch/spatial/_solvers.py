@@ -820,10 +820,10 @@ class _GridFMG(_FMG):
                     y.add_(bending_grid(x, weights=wb, **opt),
                            alpha=self.bending)
                 if self.lame[0]:
-                    y.add_(lame_div(x, weights=wl[0], **opt),
+                    y.add_(lame_shear(x, weights=wl[0], **opt),
                            alpha=self.lame[0])
                 if self.lame[1]:
-                    y.add_(lame_shear(x, weights=wl[1], **opt),
+                    y.add_(lame_div(x, weights=wl[1], **opt),
                            alpha=self.lame[1])
                 y = y.mul_(factor)
                 return y
@@ -844,14 +844,14 @@ class _GridFMG(_FMG):
             ivx2 = vx2.reciprocal_()
             if self.lame[0]:
                 if wl[0] is not None:
-                    smo.add_(wl[0], alpha=2 * self.lame[0])
+                    smo.add_(wl[0], alpha=2 * self.lame[0] * (1 + ivx2.sum() / ivx2))
                 else:
-                    smo += 2 * self.lame[0]
+                    smo += 2 * self.lame[0] * (1 + ivx2.sum() / ivx2)
             if self.lame[1]:
                 if wl[1] is not None:
-                    smo.add_(wl[1], alpha=2 * self.lame[1] * (1 + ivx2.sum() / ivx2))
+                    smo.add_(wl[1], alpha=2 * self.lame[1])
                 else:
-                    smo += 2 * self.lame[1] * (1 + ivx2.sum() / ivx2)
+                    smo += 2 * self.lame[1]
             smo *= factor
 
             h_smo = h.clone()
@@ -939,9 +939,9 @@ class _GridFMG(_FMG):
             smo *= vx2
             ivx2 = vx2.reciprocal_()
             if self.lame[0]:
-                smo += 2 * self.lame[0]
+                smo += 2 * self.lame[0] * (1 + ivx2.sum() / ivx2)
             if self.lame[1]:
-                smo += 2 * self.lame[1] * (1 + ivx2.sum() / ivx2)
+                smo += 2 * self.lame[1]
             smo *= factor
 
             h_smo = h.clone()
@@ -1410,9 +1410,9 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
         if bending:
             y.add_(bending_grid(v, weights=wb, **fdopt), alpha=bending)
         if lame[0]:
-            y.add_(lame_div(v, weights=wl[0], **fdopt), alpha=lame[0])
+            y.add_(lame_shear(v, weights=wl[0], **fdopt), alpha=lame[0])
         if lame[1]:
-            y.add_(lame_shear(v, weights=wl[1], **fdopt), alpha=lame[1])
+            y.add_(lame_div(v, weights=wl[1], **fdopt), alpha=lame[1])
         return y
 
     # diagonal of the regulariser
@@ -1437,14 +1437,14 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
             smo += bending * (8 * val + 6 * ivx2.square().sum()) * vx2
     if lame[0]:
         if wl[0] is not None:
-            smo.add_(wl[0], alpha=2 * lame[0])
+            smo.add_(wl[0], alpha=2 * lame[0] * (1 + ivx2.sum() / ivx2))
         else:
-            smo += 2 * lame[0]
+            smo += 2 * lame[0] * (1 + ivx2.sum() / ivx2)
     if lame[1]:
         if wl[1] is not None:
-            smo.add_(wl[1], alpha=2 * lame[1] * (1 + ivx2.sum() / ivx2))
+            smo.add_(wl[1], alpha=2 * lame[1])
         else:
-            smo += 2 * lame[1] * (1 + ivx2.sum() / ivx2)
+            smo += 2 * lame[1]
 
     if smo.shape[-1] > hessian.shape[-1]:
         hessian_smo = hessian + smo
@@ -1570,9 +1570,9 @@ def solve_grid_kernel(hessian, gradient, absolute=0, membrane=0, bending=0,
         val = torch.combinations(ivx2, r=2).prod(dim=-1).sum()
         smo += bending * (8 * val + 6 * ivx2.square().sum()) * vx2
     if lame[0]:
-        smo += 2 * lame[0]
+        smo += 2 * lame[0] * (1 + ivx2.sum() / ivx2)
     if lame[1]:
-        smo += 2 * lame[1] * (1 + ivx2.sum() / ivx2)
+        smo += 2 * lame[1]
     hessian_smo = hessian.clone()
     hessian_smo[..., :dim] += smo
 

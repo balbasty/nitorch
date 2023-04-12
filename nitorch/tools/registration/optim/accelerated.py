@@ -64,7 +64,7 @@ class Nesterov(AcceleratedFirstOrder):
     y{k+1} = y{k} + α{k+1} Δ{k+1} - η ∇f(y{k})
     """
 
-    def __init__(self, momentum=0, auto_restart=True, **kwargs):
+    def __init__(self, *args, momentum=0, auto_restart=True, **kwargs):
         """
 
         Parameters
@@ -78,7 +78,7 @@ class Nesterov(AcceleratedFirstOrder):
         lr : float, default=1
             Learning rate.
         """
-        super().__init__(**kwargs)
+        super().__init__(*args, **kwargs)
         self.auto_restart = auto_restart
         self.theta = 1
         self.momentum = self._momentum = momentum
