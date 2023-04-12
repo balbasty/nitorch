@@ -5,6 +5,7 @@ from nitorch import io
 from nitorch import spatial
 from nitorch.core import utils, py
 from nitorch.core.optionals import try_import
+from nitorch.spatial import affine_inv as aff_inv, affine_matvec as aff_mv
 from .volumes import show_orthogonal_slices
 import math as pymath
 # from .menu import Menu, MenuItem
@@ -12,6 +13,7 @@ import math as pymath
 # optional imports
 plt = try_import('matplotlib.pyplot', _as=True)
 gridspec = try_import('matplotlib.gridspec', _as=True)
+MouseButton = try_import('matplotlib.backend_bases', 'MouseButton', _as=True)
 
 
 __all__ = ['ImageViewer']
@@ -202,7 +204,6 @@ class ImageArtist:
                 setattr(image, key, getattr(self, key))
 
     def blit(self, index=None, space=None, fov=None):
-        print(index, fov)
         _, self._axes, self._mats = show_orthogonal_slices(
             self.fdata, index, self.affine,
             fig=self._axes,
@@ -290,6 +291,8 @@ class ImageViewer:
         Minimum amount of time, in sec, between two calls to `redraw`.
         If `redraw` is called more than twice within `draw_freq` sec, only
         the first call is executed.
+    use_blit : bool, default=True
+        Use blit to update the plot. Otherwise, always redraw.
 
     """
 
@@ -322,17 +325,22 @@ class ImageViewer:
         self.space = kwargs.pop('space', None)
         self.fov = kwargs.pop('fov', None)
         self.index = kwargs.pop('index', None)
+        auto = kwargs.pop('auto_redraw', False)
 
         # user-defined
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+        self.is_pressed = dict()
         fig.canvas.mpl_connect('button_press_event', self.on_press)
+        fig.canvas.mpl_connect('key_press_event', self.on_press)
         fig.canvas.mpl_connect('motion_notify_event', self.on_move)
         fig.canvas.mpl_connect('button_release_event', self.on_release)
+        fig.canvas.mpl_connect('key_release_event', self.on_release)
         fig.canvas.mpl_connect('scroll_event', self.on_scroll)
         # fig.canvas.mpl_connect('resize_event', self.on_resize)
         self.redraw(show=True)
+        self.auto_redraw = auto
 
         # self.menu = Menu(self.fig,
         #                  [MenuItem(self.fig, 'field of view'),
@@ -346,9 +354,11 @@ class ImageViewer:
         return self.images[0].ndim if self.images else 0
 
     def __setattr__(self, key, value):
-        redraw_keys = ('images', 'grid', 'aspect', 'layout')
+        redraw_keys = ('images', 'grid', 'aspect', 'layout', 'show_cursor')
+        blit_keys = ('size', 'index', 'fov', 'fov_size', 'equalize',
+                     'interpolation', 'colormap')
         do_redraw = key in redraw_keys and self.auto_redraw
-        do_blit = key[0] != '_' and self.auto_redraw
+        do_blit = key in blit_keys and self.auto_redraw
         super().__setattr__(key, value)
         if do_redraw:
             self.redraw()
@@ -365,57 +375,129 @@ class ImageViewer:
     def _index_from_cursor(self, x, y, image, n_ax):
         p = utils.as_tensor([x, y, 0])[:self.ndim]
         mat = image._mats[n_ax]
-        self.index = spatial.affine_matvec(mat, p)
+        return spatial.affine_matvec(mat, p)
 
     def on_release(self, event):
-        if event.button == 1:  # LEFT
-            self._is_pressed = False
+
+        button = getattr(event, 'button', None)
+        key = (getattr(event, 'key', None) or '').lower()
+        if button == MouseButton.LEFT:
+            self.is_pressed[MouseButton.LEFT] = False
+        elif button == MouseButton.RIGHT:
+            self.is_pressed[MouseButton.RIGHT] = False
+        elif button == MouseButton.MIDDLE:
+            self.is_pressed[MouseButton.MIDDLE] = False
+        elif key:
+            self.is_pressed[key] = False
 
     def on_press(self, event):
-        if event.button == 1:  # LEFT
-            self._is_pressed = True
+
+        button = getattr(event, 'button', None)
+        key = (getattr(event, 'key', None) or '').lower()
+        if button == MouseButton.LEFT:
+            self.is_pressed[MouseButton.LEFT] = True
             if event.inaxes:
                 x, y = (event.xdata, event.ydata)
                 image, n_ax = self._image_from_ax(event.inaxes)
-                self._index_from_cursor(x, y, image, n_ax)
-                self.blit(show=True)
+                self.index = self._index_from_cursor(x, y, image, n_ax)
+                if not self.auto_redraw:
+                    self.blit(show=True)
+        elif button == MouseButton.RIGHT:
+            self.is_pressed[MouseButton.RIGHT] = True
+        elif button == MouseButton.MIDDLE:
+            self.is_pressed[MouseButton.MIDDLE] = True
+        elif key:
+            self.is_pressed[key] = True
 
-    def on_move(self, event):
-        is_pressed = getattr(self, '_is_pressed', False)
-        if is_pressed and event.inaxes:
+        is_pressed_left = self.is_pressed.get(MouseButton.LEFT, False)
+        is_pressed_right = self.is_pressed.get(MouseButton.RIGHT, False)
+        is_pressed_shift = self.is_pressed.get('shift', False)
+
+        if is_pressed_right or (is_pressed_left and is_pressed_shift):
+            # start moving
             x, y = (event.xdata, event.ydata)
             image, n_ax = self._image_from_ax(event.inaxes)
-            self._index_from_cursor(x, y, image, n_ax)
-            self.blit(show=True)
+            new_position = self._index_from_cursor(x, y, image, n_ax)
+            self.last_position = new_position
+
+    def on_move(self, event):
+        if not event.inaxes:
+            return
+        is_pressed_left = self.is_pressed.get(MouseButton.LEFT, False)
+        is_pressed_right = self.is_pressed.get(MouseButton.RIGHT, False)
+        is_pressed_shift = self.is_pressed.get('shift', False)
+
+        if is_pressed_left and not is_pressed_shift:
+            # update crosshair
+            x, y = (event.xdata, event.ydata)
+            image, n_ax = self._image_from_ax(event.inaxes)
+            self.index = self._index_from_cursor(x, y, image, n_ax)
+            if not self.auto_redraw:
+                self.blit(show=True)
+
+        elif is_pressed_right or (is_pressed_left and is_pressed_shift):
+            # move field-of-view
+            auto, self.auto_redraw = self.auto_redraw, False
+            x, y = (event.xdata, event.ydata)
+            image, n_ax = self._image_from_ax(event.inaxes)
+            new_position = self._index_from_cursor(x, y, image, n_ax)
+            last_position = getattr(self, 'last_position', None)
+            if last_position is None:
+                return
+            vx = spatial.voxel_size(self._space_matrix)
+            last_position1 = aff_mv(aff_inv(self._space_matrix), last_position)
+            new_position1 = aff_mv(aff_inv(self._space_matrix), new_position)
+            delta = (new_position1 - last_position1) * vx
+            fov0 = self.fov
+            mn, mx = self.fov
+            mn = torch.as_tensor(mn, dtype=delta.dtype, device=delta.device)
+            mx = torch.as_tensor(mx, dtype=delta.dtype, device=delta.device)
+            mn = mn - delta
+            mx = mx - delta
+            self.fov = (mn, mx)
+            self.last_position = new_position
+            has_drawn = self.blit(show=True)
+            if not has_drawn:
+                self.fov = fov0
+                self.last_position = last_position
+            self.auto_redraw = auto
 
     # NOTE: not needed because we do not change any *content* on resize
     # def on_resize(self, event):
     #     self.blit(show=True)
 
     def on_scroll(self, event):
-        auto, self.auto_redraw = (self.auto_redraw, False)
-        index0 = self.index
-        if event.inaxes:
-            x, y = (event.xdata, event.ydata)
-            image, n_ax = self._image_from_ax(event.inaxes)
-            if image:
-                self._index_from_cursor(x, y, image, n_ax)
-        steps = event.step
+        if not event.inaxes:
+            return
+        steps = event.step + getattr(self, '_outstanding_scrolls', 0)
+        if steps == 0:
+            self._outstanding_scrolls = 0
+            return
+
+        x, y = (event.xdata, event.ydata)
+        image, n_ax = self._image_from_ax(event.inaxes)
+        if not image:
+            return
+        index = self._index_from_cursor(x, y, image, n_ax)
         step_size = abs(steps) * self.scroll_step
         if steps > 0:
             step_size = 1 / step_size
         min, max = self.fov
-        index = torch.as_tensor(index0)
-        index = spatial.affine_matvec(spatial.affine_inv(self._space_matrix), index)
-        index = index * spatial.voxel_size(self._space_matrix)
+        index = torch.as_tensor(index)
+        index = aff_mv(aff_inv(self._space_matrix), index)
+        index *= spatial.voxel_size(self._space_matrix)
         index = index.tolist()
         new_min = [i - step_size * (i - mn0) for i, mn0 in zip(index, min)]
         new_max = [i + step_size * (mx0 - i) for i, mx0 in zip(index, max)]
-        # new_max = [mn + step_size * (mx0 - mn0)
-        #            for i, mn, mn0, mx0 in zip(self.index, new_min, min, max)]
+
+        auto, self.auto_redraw = (self.auto_redraw, False)
         self.fov = (new_min, new_max)
-        self.index = index0
-        self.blit(show=True)
+        has_drawn = self.blit(show=True)
+        if not has_drawn:
+            self.fov = (min, max)
+            self._outstanding_scrolls = steps
+        else:
+            self._outstanding_scrolls = 0
         self.auto_redraw = auto
 
     @property
@@ -765,9 +847,12 @@ class ImageViewer:
         return best_size
 
     def blit(self, show=False):
+        if not getattr(self, 'use_blit', True):
+            return self.redraw(show)
+
         last_draw = getattr(self, '_last_draw', 0)
         if (time.time() - last_draw) < self.draw_freq:
-            return
+            return False
 
         for d, image in enumerate(self.images):
             image.blit(index=self.index, space=self._space_matrix, fov=self.fov)
@@ -775,12 +860,13 @@ class ImageViewer:
             self.fig.canvas.flush_events()
 
         self._last_draw = time.time()
+        return True
 
     def redraw(self, show=False):
 
         last_draw = getattr(self, '_last_draw', 0)
         if (time.time() - last_draw) < self.draw_freq:
-            return
+            return False
 
         self.fig.clear()
 
@@ -795,6 +881,7 @@ class ImageViewer:
             self.fig.show()
 
         self._last_draw = time.time()
+        return True
 
 
 

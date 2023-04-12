@@ -108,9 +108,13 @@ def _get_default_space(affines, shapes, space=None, bbox=None):
     Parameters
     ----------
     affines : [sequence of] (D+1, D+1) tensor_like
+        Orientation matrices of all input images
     shapes : [sequence of] (D,) tensor_like
+        Shapes of all input images
     space : (D+1, D+1) tensor_like, optional
     bbox : (2, D) tensor_like, optional
+        Bounding box: min and max coordinates (in millimetric
+        visualisation space). Default: bounding box of the input image.
 
     Returns
     -------
@@ -120,19 +124,19 @@ def _get_default_space(affines, shapes, space=None, bbox=None):
 
     """
     affines, shapes = _get_default_native(affines, shapes)
-    voxel_size = spatial.voxel_size(affines)
-    voxel_size = voxel_size.min()
 
     if space is None:
+        voxel_size = spatial.voxel_size(affines)
+        voxel_size = voxel_size.min()
         ndim = shapes.shape[-1]
         space = torch.eye(ndim+1)
         space[:-1, :-1] *= voxel_size
-    voxel_size = spatial.voxel_size(space)
 
     if bbox is None:
         shapes = torch.as_tensor(shapes)
         mn, mx = spatial.compute_fov(space, affines, shapes)
     else:
+        voxel_size = spatial.voxel_size(space)
         mn, mx = utils.as_tensor(bbox)
         mn /= voxel_size
         mx /= voxel_size
@@ -252,7 +256,6 @@ def get_oriented_slice(image, dim=-1, index=None, affine=None,
             index = (mx[1] + 1 - index[1], index[2] - mn[2] + 1)
     else:
         raise ValueError(f'Unknown dimension {dim}')
-    print(index, mn, mx)
 
     # sample
     space = spatial.affine_rmdiv(space, shift)
@@ -395,6 +398,20 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
     def transpose(x):
         return utils.movedim(x, [-2, -3], [-3, -2])
 
+    def reset_extent(ax):
+        # https://stackoverflow.com/questions/7433585
+        im = ax.images[0]
+        shape = im.get_array().shape
+
+        if im.origin == 'upper':
+            im.set_extent((-0.5, shape[0] - .5, shape[1] - .5, -.5))
+            ax.set_xlim((-0.5, shape[0] - .5))
+            ax.set_ylim((shape[1] - .5, -.5))
+        else:
+            im.set_extent((-0.5, shape[0] - .5, -.5, shape[1] - .5))
+            ax.set_xlim((-0.5, shape[0] - .5))
+            ax.set_ylim((-.5, shape[1] - .5))
+
     def show_curs(ax, index, width, blit=False):
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
@@ -424,6 +441,9 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
         return_index=True, return_mat=True,
         transpose_sagittal=not layout.startswith('orth'), **kwargs)
     ndim = mat[0].shape[-1] - 1
+
+    print('index', index)
+    print('shape', [s.shape for s in slices])
 
     # process intensities
     if mode == 'intensity':
@@ -504,8 +524,10 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
     if ndim == 2:
         if blit:
             ax[0].images[0].set_data(transpose(slices[0]).cpu())
+            reset_extent(ax[0])
         else:
-            ax[0].imshow(transpose(slices[0]).cpu(), aspect=vx[1]/vx[0], origin='lower')
+            ax[0].imshow(transpose(slices[0]).cpu(), aspect=vx[1]/vx[0],
+                         origin='lower', interpolation='nearest')
             ax[0].set_axis_off()
         if show_cursor:
             show_curs(ax[0], index[0], show_cursor, blit)
@@ -513,14 +535,20 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
         # orthogonal views
         if blit:
             ax[0].images[0].set_data(transpose(slices[0]).cpu())
+            reset_extent(ax[0])
             ax[1].images[0].set_data(transpose(slices[1]).cpu())
+            reset_extent(ax[1])
             ax[2].images[0].set_data(transpose(slices[2]).cpu())
+            reset_extent(ax[2])
         else:
-            ax[0].imshow(transpose(slices[0]).cpu(), aspect=vx[1]/vx[0], origin='lower')
+            ax[0].imshow(transpose(slices[0]).cpu(), aspect=vx[1]/vx[0],
+                         origin='lower', interpolation='nearest')
             ax[0].set_axis_off()
-            ax[1].imshow(transpose(slices[1]).cpu(), aspect=vx[2]/vx[0], origin='lower')
+            ax[1].imshow(transpose(slices[1]).cpu(), aspect=vx[2]/vx[0],
+                         origin='lower', interpolation='nearest')
             ax[1].set_axis_off()
-            ax[2].imshow(transpose(slices[2]).cpu(), aspect=vx[2]/vx[1], origin='lower')
+            ax[2].imshow(transpose(slices[2]).cpu(), aspect=vx[2]/vx[1],
+                         origin='lower', interpolation='nearest')
             ax[2].set_axis_off()
         if show_cursor:
             show_curs(ax[0], index[0], show_cursor, blit)
@@ -530,8 +558,11 @@ def show_orthogonal_slices(image, index=None, affine=None, fig=None,
         # aligned row or col views
         if blit:
             ax[0].images[0].set_data(transpose(slices[0]).cpu())
+            reset_extent(ax[0])
             ax[1].images[0].set_data(transpose(slices[1]).cpu())
+            reset_extent(ax[1])
             ax[2].images[0].set_data(transpose(slices[2]).cpu())
+            reset_extent(ax[2])
         else:
             ax[0].imshow(transpose(slices[0]).cpu(), aspect=vx[1]/vx[0], origin='lower')
             ax[0].set_axis_off()
