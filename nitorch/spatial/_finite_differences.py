@@ -6,10 +6,12 @@ from nitorch.core import utils, linalg
 from nitorch.core.utils import fast_slice_tensor, same_storage, make_vector
 from nitorch.core.py import make_list, ensure_list
 from ._conv import smooth
+import math as pymath
+import itertools
 
 
 __all__ = ['im_divergence', 'im_gradient', 'diff1d', 'diff', 'div1d', 'div',
-           'mind', 'sobel', 'frangi', 'hessian_eig']
+           'mind', 'rmind', 'sobel', 'frangi', 'sato', 'hessian_eig']
 
 
 # Converts from nitorch.utils.pad boundary naming to
@@ -615,7 +617,7 @@ def mind(x, radius=0, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     # other neighbors
     mnd[n_feat:].copy_(x)
     if radius > 0:
-        indices = itertools.product(*[range(-radius, radius+1)])
+        indices = itertools.product(*[range(-radius, radius+1)] * dim)
         for index in indices:
             if sum(map(abs, index)) <= 1:
                 # center of first-ring neighbor -> skip
@@ -639,9 +641,94 @@ def mind(x, radius=0, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
 
     # normalize
     if norm == 'max':
-        mnd -= mnd.max(0).values
+        mnd /= mnd.max(0).values
     elif norm == 'mean':
-        mnd -= mnd.mean(0)
+        mnd /= mnd.mean(0)
+
+    return utils.movedim(mnd, 0, -1)
+
+
+def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
+    """Rotationally-Invariant Modality-Independent Neighborhood Descriptor
+
+    Parameters
+    ----------
+    x : (..., *shape) tensor
+        Input tensor
+    radius : float,
+        Radius of spatial search
+    fwhm : float
+        Full-width at half-maximum of Gaussian smoothing
+    dim : int, default=x.dim()
+        Number of spatial dimensions
+    bound : boundary-like
+        Boundary condition
+    robust : int
+        Power of robustness threshold (smaller = more robust, 0 = disabled)
+    norm : {'max', 'mean', None}
+        Normalization across features
+
+    Returns
+    -------
+    m : (..., *shape, K) tensor
+        MIND feature maps
+
+    References
+    ----------
+    "MIND: Modality Independent Neighbourhood Descriptor for Multi-Modal
+    Deformable Registration"
+    M.P. Heinrich et al.
+    Medical Image Analysis (2012)
+    """
+    dim = dim or x.dim()
+    fwhm = make_list(fwhm, dim)
+
+    inplace = not x.requires_grad
+    square_ = torch.square_ if inplace else torch.square
+    div_ = torch.Tensor.div_ if inplace else torch.div
+    exp_ = torch.Tensor.exp_ if inplace else torch.exp
+
+    iradius = int(pymath.floor(radius))
+    square = lambda x: x*x
+    sqnorm = lambda x: sum(map(square, x))
+    sqdist = set(map(sqnorm, itertools.combinations_with_replacement(range(iradius+1), r=dim)))
+    sqdist = list(filter(lambda d: 0 < d <= radius*radius, sqdist))
+    indices = itertools.product(*[range(-iradius, iradius+1)] * dim)
+    indices = filter(lambda x: 0 < sqnorm(x) <= radius*radius, indices)
+
+    nb_feat = len(sqdist)
+    mnd = x.new_zeros([nb_feat, *x.shape])
+
+    # compute differences
+    count = [0] * len(sqdist)
+    for index in indices:
+        sqd1 = sqnorm(index)
+        diff = square_(utils.roll(x, index, range(-dim, 0), bound=bound).sub_(x))
+        mnd[sqdist.index(sqd1)] += diff
+        count[sqdist.index(sqd1)] += 1
+    # normalize
+    for k, c in enumerate(count):
+        mnd[k] /= c
+    # smooth
+    mnd = smooth(mnd, fwhm=fwhm, dim=dim, bound=bound)
+
+    # compute variance in first-ring neighborhood
+    var = mnd[0]
+    if robust:
+        meanvar = var.mean(list(range(-3, 0)), keepdim=True)
+        mn = 10 ** (-robust) * meanvar
+        mx = 10 ** robust * meanvar
+        var = torch.min(torch.max(var, mn), mx)
+    mnd = mnd[1:]
+
+    # exponentiation
+    mnd = exp_(div_(mnd, var).neg_())
+
+    # normalize
+    if norm == 'max':
+        mnd /= mnd.max(0).values
+    elif norm == 'mean':
+        mnd /= mnd.mean(0)
 
     return utils.movedim(mnd, 0, -1)
 
@@ -954,6 +1041,103 @@ def frangi_diff(x, a=0.5, b=0.5, c=500, white_ridges=False, fwhm=range(1, 8, 2),
             if return_scale:
                 scale.masked_fill_(v1 > v0, i)
             v0 = torch.max(v0, v1)
+
+    return (v0, scale) if return_scale else v0
+
+
+def sato(x, gamma_long=0.5, gamma_ellipse=0.5, alpha=0.25, white_ridges=False,
+         fwhm=range(1, 8, 2), dim=None, bound='replicate', return_scale=False,
+         verbose=False):
+    """Non-differentiable Frangi filter."""
+    x = torch.as_tensor(x)
+    dim = dim or x.dim()
+    if dim not in (2, 3):
+        raise ValueError('Frangi filter is only implemented in 2D or 3D')
+
+    def single_scale3d(lam1, lam2, lam3):
+        # msk = mask of voxels to *exclude*
+        # msk_alpha = mask of voxels in which to use alpha weight instead of 1
+        if white_ridges:
+            msk = lam2 > 0
+            msk.bitwise_or_(lam3 > 0)
+            msk_alpha = lam1 < 0
+            msk_alpha.bitwise_and_(lam1 > -lam2 / alpha)
+        else:
+            msk = lam2 < 0
+            msk.bitwise_or_(lam3 < 0)
+            msk_alpha = lam1 > 0
+            msk_alpha.bitwise_and_(lam1 < -lam2 / alpha)
+
+        lam1 = lam1.abs_()
+        lam2 = lam2.abs_()
+        lam3 = lam3.abs_()
+
+        msk_alpha = torch.where(msk_alpha, float(alpha), 1.).to(lam1)
+        # one dimension is long
+        # if lam1 << lam2, p -> 1
+        # if lam1 == lam2, p -> 0
+        w = (1 - msk_alpha * (lam1 / lam2)).pow_(gamma_long)
+        # cross section is not an ellipse
+        # lam2 == lam3, p -> 1
+        # lam2 << lam3, p -> 0
+        w *= (lam2 / lam3).pow_(gamma_ellipse)
+        # cross section is small
+        # lam3 >> 0, p -> inf
+        w *= lam3
+        w.masked_fill_(msk, 0)
+        return w
+
+    def single_scale2d(lam1, lam2):
+        # msk = mask of voxels to *exclude*
+        # msk_alpha = mask of voxels in which to use alpha weight instead of 1
+        if white_ridges:
+            msk = lam2 > 0
+            msk_alpha = lam1 < 0
+            msk_alpha.bitwise_and_(lam1 > -lam2 / alpha)
+        else:
+            msk = lam2 < 0
+            msk_alpha = lam1 > 0
+            msk_alpha.bitwise_and_(lam1 < -lam2 / alpha)
+
+        lam1 = lam1.abs_()
+        lam2 = lam2.abs_()
+
+        msk_alpha = torch.where(msk_alpha, float(alpha), 1.).to(lam1)
+        # one dimension is long
+        # if lam1 << lam2, p -> 1
+        # if lam1 == lam2, p -> 0
+        w = (1 - msk_alpha * (lam1 / lam2)).pow_(gamma_long)
+        # cross section is small
+        # lam2 >> 0, p -> inf
+        w *= lam2
+        w.masked_fill_(msk, 0)
+        return w
+
+    single_scale = single_scale3d if dim == 3 else single_scale2d
+
+    v0 = None
+    scale = None
+    for i, f in enumerate(make_vector(fwhm)):
+
+        if verbose:
+            print('fwhm:', f.item())
+            print('Hessian...')
+        lam = hessian_eig(x, f, dim=dim, bound=bound)
+
+        if verbose:
+            print('Frangi...')
+        v1 = single_scale(*lam.unbind(-1))
+        v1.masked_fill_(torch.isfinite(v1).bitwise_not_(), 0)
+
+        # combine scales
+        if v0 is None:
+            v0 = v1
+            if return_scale:
+                scale = torch.zeros_like(v1, dtype=torch.int)
+        else:
+            if return_scale:
+                scale[v1 > v0] = i
+            v0 = torch.max(v0, v1, out=v0)
 
     return (v0, scale) if return_scale else v0
 
