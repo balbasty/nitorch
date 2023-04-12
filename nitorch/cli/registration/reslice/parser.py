@@ -22,6 +22,11 @@ usage:
     -id, --displacement-inverse      Inverse of a dense or ffd displacement field
     -iv, --velocity-inverse          Inverse of a diffeomorphic velocity field
    
+    It is also possible to append a '2' to specify that the affine is the 
+    square of the transform to apply (i.e., its square root will be applied):
+    -l2, --linear-square            Square of a linear transform
+    -v2, --velocity-square          Square of a diffeomorphic velocity field
+    
     Other tags are:
     -t, --target            Defines the target space.
                             If not provided, minimal reslicing is performed.
@@ -31,6 +36,7 @@ usage:
     -b, --bound             Boundary conditions (dct2)
     -x, --extrapolate       Extrapolate out-of-bounds data (no)
     -v, --voxel-size        Voxel size of the resliced space (default: from target)
+    -dt, --dtype            Output data type (default: from input)
     -cpu, -gpu              Device to use (cpu)
    
    The output image is
@@ -50,6 +56,13 @@ vel = ('-v', '--velocity')
 trf = [*lin, *disp, *vel]
 itrf = [t + '-inverse' if t.startswith('--') else '-i' + t[1:]
         for t in trf]
+trf2 = [t + '-square' if t.startswith('--') else t + '2'
+        for t in trf]
+itrf2 = [t + '-square' if t.startswith('--') else t + '2'
+         for t in itrf]
+itrf2 += [t + '-inverse' if t.startswith('--') else '-i' + t[1:]
+          for t in trf2]
+alltrf = trf + itrf + trf2 + itrf2
 
 
 # --- TRF PARSER -------------------------------------------------------
@@ -58,19 +71,28 @@ def parse_transform(args, options):
     tag, *args = args
 
     # is it an inversed transform?
-    inv = False
-    if tag in itrf:
-        inv = True
-        if tag.startswith('--'):
-            tag = tag.split('--inverse')[0]
+    inv = 'inverse' in tag or tag.startswith('-i')
+    square = 'square' in tag or tag.endswith('2')
+    if tag.startswith('--'):
+        if 'linear' in tag:
+            opt = struct.Linear
+        elif 'displacement' in tag:
+            opt = struct.Displacement
         else:
-            tag = '-' + tag[2:]
+            assert 'velocity' in tag
+            opt = struct.Velocity
+    else:
+        if 'l' in tag:
+            opt = struct.Linear
+        elif 'd' in tag:
+            opt = struct.Displacement
+        else:
+            assert 'v' in tag
+            opt = struct.Velocity
 
-    opt = (struct.Linear if tag in lin else
-           struct.Displacement if tag in disp else
-           struct.Velocity if tag in vel else None)
     opt = opt()
     opt.inv = inv
+    opt.square = square
 
     cli.check_next_isvalue(args, tag)
     opt.file, *args = args
@@ -113,7 +135,7 @@ def parse(args):
         tag, *args = args
 
         # Parse transforms
-        if tag in (*trf, *itrf):
+        if tag in alltrf:
             args = parse_transform([tag, *args], options)
 
         # Help -> return empty option
@@ -156,6 +178,9 @@ def parse(args):
             while cli.next_isvalue(args):
                 val, *args = args
                 options.voxel_size.append(float(val))
+        elif tag in ('-dt', '--dtype'):
+            cli.check_next_isvalue(args, tag)
+            options.dtype, *args = args
         elif tag in ('-cpu', '--cpu'):
             options.device = 'cpu'
         elif tag in ('-gpu', '--gpu'):

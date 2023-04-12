@@ -16,6 +16,7 @@ class FileWithInfo(Structure):
 class Transform(Structure):
     file: str = None
     inv: bool = False
+    square: bool = False
 
 
 class Linear(Transform):
@@ -41,6 +42,7 @@ class Reslicer(Structure):
     interpolation: int = 1
     bound: str = 'dct2'
     extrapolate: bool = False
+    dtype: str = None
     device: str = 'cpu'
     prefilter: bool = True
 

@@ -7,6 +7,7 @@ from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch.core import utils, py
 from nitorch.core.dtypes import dtype as nitype
+from nitorch.core.linalg import logm, expm
 from . import struct
 from .parser import parse, help
 from .. import helpers
@@ -128,6 +129,8 @@ def collapse_transforms(options):
     last_trf = None
     for trf in options.transformations:
         if isinstance(trf, struct.Linear):
+            if trf.square:
+                trf.affine = expm(logm(trf.affine).mul_(0.5))
             if trf.inv:
                 trf.affine = spatial.affine_inv(trf.affine)
                 trf.inv = False
@@ -158,6 +161,8 @@ def write_data(options):
             trf.dat = f.fdata(**backend).reshape(trf.shape)
             trf.shape = trf.shape[:3]
             if trf.json:
+                if trf.square:
+                    trf.dat.mul_(0.5)
                 with open(trf.json) as f:
                     prm = json.load(f)
                 prm['voxel_size'] = spatial.voxel_size(trf.affine)
@@ -166,10 +171,13 @@ def write_data(options):
                 if trf.inv:
                     trf.dat = trf.dat[-1]
             else:
+                if trf.square:
+                    trf.dat.mul_(0.5)
                 trf.dat = spatial.exp(trf.dat[None], displacement=True,
                                       inverse=trf.inv)
             trf.dat = trf.dat[0]  # drop batch dimension
             trf.inv = False
+            trf.square = False
             trf.order = 1
         elif isinstance(trf, struct.Displacement):
             f = io.volumes.map(trf.file)
@@ -271,8 +279,8 @@ def write_data(options):
         dat = utils.movedim(dat, 0, -1)
 
         if is_label:
-            io.volumes.save(dat, ofname, like=file.fname, affine=oaffine)
+            io.volumes.save(dat, ofname, like=file.fname, affine=oaffine, dtype=options.dtype)
         else:
-            io.volumes.savef(dat, ofname, like=file.fname, affine=oaffine)
+            io.volumes.savef(dat, ofname, like=file.fname, affine=oaffine, dtype=options.dtype)
 
 
