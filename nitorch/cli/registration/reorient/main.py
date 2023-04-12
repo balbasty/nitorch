@@ -87,7 +87,10 @@ def reorient(inp, layout='RAS', output=None, transform=None):
     if is_file:
         fname = inp
         f = io.volumes.map(inp)
-        inp = (f, f.affine)
+        try:
+            inp = (f.data(), f.affine)
+        except Exception:
+            inp = (f.data(dtype=torch.long), f.affine)
         if output is None:
             output = '{dir}{sep}{base}.{layout}{ext}'
         dir, base, ext = fileparts(fname)
