@@ -58,7 +58,7 @@ def info(inp, meta=None, stat=False):
         center = spatial.affine_matvec(aff, center)
         print(f'{title("center")} : {tuple(center.tolist())} mm (RAS)')
         if stat and torch.is_tensor(dat):
-            chandim = list(range(3, dat.ndim))
+            chandim = dat.shape[3:]
             if not chandim:
                 vmin = dat.min().tolist()
                 vmax = dat.max().tolist()
