@@ -340,7 +340,7 @@ class SpatialMixture:
             X = X.clone()
             X.masked_fill_(~W, 0)
         if W0 is not None:
-            W = W.to(W.dtype).mul_(W0.to(W.device))
+            W = W.to(W0.dtype).mul_(W0.to(W.device))
         if W.dtype is torch.bool:
             W = W.all(dim=0)
         else:

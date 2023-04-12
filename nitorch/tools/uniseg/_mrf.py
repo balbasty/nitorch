@@ -82,7 +82,7 @@ def mrf_suffstat(Z, W=None, vx=1):
 
 
 def mrf_logprior(Z, logP, W=None, vx=1):
-    """Compute the conditional MRf log-prior
+    """Compute the conditional MRF log-prior
 
     Notes
     -----
@@ -325,7 +325,8 @@ def mrf(Z, logP, L=None, W=None, vx=1, max_iter=5, tol=1e-4, inplace=False):
                     Z0 += L[slicer0]
 
                 # softmax
-                ll += _inplace_softmax(Z0, W[slicer0], dim)
+                W0 = W[slicer0] if W is not None else None
+                ll += _inplace_softmax(Z0, W0, dim)
 
         # gain
         if ll - oll < tol * Nw:

@@ -383,9 +383,9 @@ def get_data(x, w, affine, dim, **backend):
 
     if not torch.is_tensor(w) and w is not None:
         w = io.loadf(w, **backend)
-        if x.dim() > dim:
+        if w.dim() > dim:
             w = w.squeeze(-1)
-        if x.dim() > dim:
+        if w.dim() > dim:
             raise ValueError('Too many dimensions')
 
     step = min_intensity_step(x)
