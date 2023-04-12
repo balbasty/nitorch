@@ -6,6 +6,8 @@ from . import py, dtypes, bounds, jit
 from .._C.grid import GridCount, GridPull, GridPush
 from .optionals import numpy as np
 from .version import torch_version
+import math as pymath
+import itertools
 import numbers
 import os
 import random
@@ -1070,9 +1072,9 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
     """
     # Argument checking
-    if mode not in bounds.all_bounds:
-        raise ValueError(f'Padding mode should be one of {bounds.all_bounds}. '
-                         f'Got {mode}.')
+    # if mode not in bounds.all_bounds:
+    #     raise ValueError(f'Padding mode should be one of {bounds.all_bounds}. '
+    #                      f'Got {mode}.')
     padsize = tuple(padsize)
     if not side:
         if len(padsize) % 2:
@@ -1098,11 +1100,13 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
         raise ValueError('Padding length too large')
 
     # Pad
-    mode = bounds.to_nitorch(mode)
-    if mode == 'zero':
+    mode = py.ensure_list(mode)
+    mode = mode[:1] * max(0, inp.dim()-len(mode)) + mode
+    mode = list(map(bounds.to_nitorch, mode))
+    if all(m == 'zero' for m in mode):
         return _pad_constant(inp, padpre, padpost, value)
     else:
-        bound = getattr(bounds, mode + '_')
+        bound = [getattr(bounds, m + '_') for m in mode]
         return _pad_bound(inp, padpre, padpost, bound)
 
 
@@ -1122,7 +1126,7 @@ def _pad_bound(inp, padpre, padpost, bound):
     grid = [torch.arange(b, e, device=inp.device) for (b, e) in zip(begin, end)]
     mult = [None] * inp.dim()
     for d, n in enumerate(inp.shape):
-        grid[d], mult[d] = bound(grid[d], n)
+        grid[d], mult[d] = bound[d](grid[d], n)
     grid = list(meshgrid_ij(*grid))
     if any(map(torch.is_tensor, mult)):
         mult = meshgrid_ij(*mult)
@@ -2081,6 +2085,75 @@ def min_intensity_step(x, max_points=1e6):
     x = x[1:] - x[:-1]
     x = x[x > 0].min().item()
     return x
+
+
+def apply_patchwise(fn, img, patch=256, overlap=None, batchout=None,
+                    dim=None, device=None, bound='dct2'):
+    """Apply a function to a tensor patch-wise
+
+    Parameters
+    ----------
+    fn : callable[Tensor] -> Tensor
+        Function to apply, should return a tensor with the same shape
+        as the input tensor.
+    img : (*batchin, *spatial) tensor
+        Input tensor
+    patch : [list of] int
+        Patch size per dimension
+    overlap : [list of] int, optional
+        Amount of overlap across patches.
+        By default, half of the patch overlaps.
+    batchout : list[int], default=`batchin`
+        Output batch-size.
+    dim : int, optional
+        Number of spatial dimensions. By default, try to guess.
+    device : torch.device, default=`img.device`
+        Run patches on this device
+    bound : str, default='dct2'
+        Boundary conditions used to pad the input tensor, if needed.
+
+    Returns
+    -------
+    out : Output tensor
+
+    """
+    dim = dim or (len(patch) if hasattr(patch, '__len__') else img.dim())
+    patch = py.make_list(patch, dim)
+    overlap = py.make_list(overlap, dim)
+    overlap = [p//2 if o is None else o for o, p in zip(overlap, patch)]
+    opatch = [p-o for o, p in zip(overlap, patch)]
+
+    batchin, spatial = img.shape[:-dim], img.shape[-dim:]
+    if batchout is None:
+        batchout = batchin
+    out = img.new_zeros([*batchout, *spatial])
+
+    padsize = [_ for o in overlap for _ in (o//2, o)]
+    img = pad(img, padsize, mode=bound)
+
+    if device and torch.device(device).type == 'cuda' and img.device.type == 'cpu':
+        img = img.pin_memory()
+        out = out.pin_memory()
+
+    nb_patch = [int(pymath.ceil(s/p)) for s, p in zip(spatial, opatch)]
+    indices = itertools.product(*[range(n) for n in nb_patch])
+    for index in indices:
+        # extract input patch (with overlap)
+        img_slicer = [slice(op*i, op*i+p)
+                      for op, p, i in zip(opatch, patch, index)]
+        img_slicer = (Ellipsis, *img_slicer)
+        block = img[img_slicer].to(device)
+        # apply function
+        block = fn(block).detach()
+        # extract center of output patch and assign to output volume
+        out_shape = [min(s, op*(i+1)) - op*i
+                     for s, op, i in zip(spatial, opatch, index)]
+        blk_slicer = [slice(o//2, o//2+s) for o, s in zip(overlap, out_shape)]
+        blk_slicer = (Ellipsis, *blk_slicer)
+        out_slicer = [slice(op*i, op*(i+1)) for op, i in zip(opatch, index)]
+        out_slicer = (Ellipsis, *out_slicer)
+        out[out_slicer] = block[blk_slicer].to(out)
+    return out
 
 
 class benchmark:
