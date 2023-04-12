@@ -9,6 +9,8 @@ class Pool(Structure):
     window: list = 3
     stride: list = []
     method: str = 'mean'
+    padding: list = 0
+    bound: list = 0
     dim: int = 3
     output: list = '{dir}{sep}{base}.pool{ext}'
     device: str = 'cpu'
@@ -21,6 +23,7 @@ usage:
 
     -w, --window *WIN      Window size per dimension (default: 3)
     -s, --stride *STRD     Stride between output elements (default: *WIN)
+    -p, --padding *PAD     Padding on both sides. Can be 'same' (default: 0)
     -m, --method METHOD    Pooling function: {'mean', 'sum', 'min', 'max', 'median', 'ssq'} (default: 'mean')
     -d, --dimension DIM    Number of spatial dimensions (default: 3)
     -o, --output *FILES    Output filenames (default: {dir}/{base}.pool{ext})
@@ -65,6 +68,36 @@ def parse(args):
             while cli.next_isvalue(args):
                 val, *args = args
                 struct.stride.append(int(val))
+        elif tag in ('-p', '--padding'):
+            struct.padding = []
+            struct.bound = []
+            last_size = False
+            bound_default = 'dct2'
+            while cli.next_isvalue(args):
+                val, *args = args
+                try:
+                    val = int(val)
+                except ValueError:
+                    val = val.lower()
+                if isinstance(val, int) or val == 'same':
+                    if last_size:
+                        struct.bound.append(bound_default)
+                    last_size = True
+                    struct.padding.append(val)
+                else:
+                    last_size = False
+                    if len(struct.padding) == 0:
+                        # first argument -> default padding mode
+                        bound_default = val
+                    else:
+                        struct.bound.append(val)
+                        if not last_size:
+                            raise ParseError(
+                                'Padding type must follow padding size'
+                            )
+                        last_size = False
+            while len(struct.bound) < len(struct.padding):
+                struct.bound.append(bound_default)
         elif tag in ('-m', '--method'):
             cli.check_next_isvalue(args, tag)
             struct.method, *args = args
@@ -78,6 +111,7 @@ def parse(args):
         elif tag in ('-d', '--dim', '--dimension'):
             cli.check_next_isvalue(args, tag)
             struct.dim, *args = args
+            struct.dim = int(struct.dim)
         elif tag in ('-o', '--output'):
             struct.output = []
             while cli.next_isvalue(args):

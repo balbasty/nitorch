@@ -33,8 +33,9 @@ def _cli(args):
     options.output = make_list(options.output, len(options.files))
     for fname, ofname in zip(options.files, options.output):
         pool(fname, window=options.window, stride=options.stride,
-             method=options.method, dim=options.dim, output=ofname,
-             device=options.device)
+             padding=options.padding or 0, bound=options.bound or 'dct2',
+             method=options.method,
+             dim=options.dim, output=ofname, device=options.device)
 
 
 commands['pool'] = cli
