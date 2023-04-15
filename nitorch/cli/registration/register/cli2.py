@@ -91,13 +91,13 @@ def _main(options):
     affine = None
     if options.affine:
         if options.affine.is2d is not False:
-            # TODO: allow initial affine
             if isinstance(losses[0], objects.SumSimilarity):
                 affine0 = losses[0][0].fixed.affine
             else:
                 affine0 = losses[0].fixed.affine
             affine = make_affine_2d(options.affine.is2d, affine0,
-                                    options.affine.name, options.affine.position)
+                                    options.affine.name, options.affine.position,
+                                    init=options.affine.init)
         else:
             affine = make_affine(options.affine.name, options.affine.position,
                                  init=options.affine.init)

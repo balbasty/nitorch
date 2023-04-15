@@ -26,7 +26,7 @@ def reslice(argv=None):
             return
 
         read_info(options)
-        collapse_transforms(options)
+        collapse(options)
         write_data(options)
 
     except ParseError as e:
@@ -123,11 +123,15 @@ def read_info(options):
                                       factor=factor, anchor='f')
 
 
-def collapse_transforms(options):
+def collapse(options):
+    options.transformations = collapse_transforms(options.transformations)
+
+
+def collapse_transforms(transformations):
     """Pre-invert affines and combine sequential affines"""
     trfs = []
     last_trf = None
-    for trf in options.transformations:
+    for trf in transformations:
         if isinstance(trf, struct.Linear):
             if trf.square:
                 trf.affine = expm(logm(trf.affine).mul_(0.5))
@@ -145,7 +149,49 @@ def collapse_transforms(options):
             trfs.append(trf)
     if isinstance(last_trf, struct.Linear):
         trfs.append(last_trf)
-    options.transformations = trfs
+    return trfs
+
+
+def exponentiate_transforms(transformations, **backend):
+    for trf in transformations:
+        if isinstance(trf, struct.Velocity):
+            f = io.volumes.map(trf.file)
+            trf.affine = f.affine
+            trf.shape = squeeze_to_nd(f.shape, 3, 1)
+            trf.dat = f.fdata(**backend).reshape(trf.shape)
+            trf.shape = trf.shape[:3]
+            if trf.json:
+                if trf.square:
+                    trf.dat.mul_(0.5)
+                with open(trf.json) as f:
+                    prm = json.load(f)
+                prm['voxel_size'] = spatial.voxel_size(trf.affine)
+                trf.dat = spatial.shoot(trf.dat[None], displacement=True,
+                                        return_inverse=trf.inv)
+                if trf.inv:
+                    trf.dat = trf.dat[-1]
+            else:
+                if trf.square:
+                    trf.dat.mul_(0.5)
+                trf.dat = spatial.exp(trf.dat[None], displacement=True,
+                                      inverse=trf.inv)
+            trf.dat = trf.dat[0]  # drop batch dimension
+            trf.inv = False
+            trf.square = False
+            trf.order = 1
+        elif isinstance(trf, struct.Displacement):
+            f = io.volumes.map(trf.file)
+            trf.affine = f.affine
+            trf.shape = squeeze_to_nd(f.shape, 3, 1)
+            trf.dat = f.fdata(**backend).reshape(trf.shape)
+            trf.shape = trf.shape[:3]
+            if trf.unit == 'mm':
+                # convert mm displacement to vox displacement
+                trf.dat = spatial.affine_lmdiv(trf.affine, trf.dat[..., None])
+                trf.dat = trf.dat[..., 0]
+                trf.unit = 'vox'
+    return transformations
+
 
 
 def write_data(options):

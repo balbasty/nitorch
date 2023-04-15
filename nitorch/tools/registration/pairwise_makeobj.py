@@ -131,7 +131,7 @@ def make_affine(basis='rigid', position='symmetric', penalty=None, init=None):
 
 
 def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
-                   penalty=None):
+                   penalty=None, init=None):
     """Build an Affine2dModel object
 
     An Affine2dModel represents an in-plane affine within a 3D space.
@@ -162,8 +162,20 @@ def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
         return None
     if basis is True:
         basis = 'rigid'
-    return objects.Affine2dModel(basis, plane=plane, ref_affine=affine_ref,
-                                 position=position, penalty=penalty)
+    obj = objects.Affine2dModel(basis, plane=plane, ref_affine=affine_ref,
+                                position=position, penalty=penalty)
+    if init is not None:
+        if isinstance(init, str):
+            init = io.map(init)
+        if isinstance(init, io.transforms.MappedAffine):
+            init = init.fdata().squeeze()
+        if init.dim() > 1:
+            obj.set_dat()
+            rot = obj.rotation.to(init)
+            init = rot.T @ init @ rot
+            init, _ = spatial.affine_parameters(init, obj.basis.to(init))
+        obj.set_dat(init)
+    return obj
 
 
 def make_nonlin(shape_or_init=None, model='svf', affine=None, voxel_size=None,
@@ -290,7 +302,7 @@ def make_nonlin_2d(plane, affine_ref, *args, **kwargs):
     return nonlin
 
 
-def make_affine_optim(optim=None, order=None, ls='wolfe', lr=None,
+def make_affine_optim(optim=None, order=None, line_search='wolfe', lr=None,
                       max_iter=50, tolerance=1e-5, crit='diff', **kwargs):
     """Build an Optimizer for the affine model
 
@@ -300,7 +312,7 @@ def make_affine_optim(optim=None, order=None, ls='wolfe', lr=None,
         Optimizer name. If None, use one automatically based on `order`
     order : {0, 1, 2}, optional
         Maximum differentiability order of the loss
-    ls : 'wolfe' or int, default='wolfe'
+    line_search : 'wolfe' or int, default='wolfe'
         Line search.
         If a number, use a backtracking line search with maximum this
         number of iterations.
@@ -364,14 +376,14 @@ def make_affine_optim(optim=None, order=None, ls='wolfe', lr=None,
     lr = lr or (1 if issubclass(affine_optim, opt.SecondOrder) else 1e-3)
     affine_optim = affine_optim(lr, **kwargs)
 
-    if ls and not isinstance(affine_optim, (opt.Powell, opt.LBFGS)):
-        affine_optim.search = ls
+    if line_search and not isinstance(affine_optim, (opt.Powell, opt.LBFGS)):
+        affine_optim.search = line_search
 
     affine_optim.iter = opt.OptimIterator(max_iter=max_iter, tol=tolerance, stop=crit)
     return affine_optim
 
 
-def make_nonlin_optim(optim=None, order=None, ls='wolfe', lr=None,
+def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
                       max_iter=50, tolerance=1e-5, crit='diff',
                       nonlin=None, penalty=None, voxel_size=None,
                       preconditioner=None, **kwargs):
@@ -383,7 +395,7 @@ def make_nonlin_optim(optim=None, order=None, ls='wolfe', lr=None,
         Optimizer name. If None, use one automatically based on `order`
     order : {0, 1, 2}, optional
         Maximum differentiability order of the loss
-    ls : 'wolfe' or int, default='wolfe'
+    line_search : 'wolfe' or int, default='wolfe'
         Line search.
         If a number, use a backtracking line search with maximum this
         number of iterations.
@@ -472,8 +484,8 @@ def make_nonlin_optim(optim=None, order=None, ls='wolfe', lr=None,
     if preconditioner and isinstance(nonlin_optim, opt.FirstOrder):
         nonlin_optim.preconditioner = preconditioner
 
-    if ls and not isinstance(nonlin_optim, (opt.Powell, opt.LBFGS)):
-        nonlin_optim.search = ls
+    if line_search and not isinstance(nonlin_optim, (opt.Powell, opt.LBFGS)):
+        nonlin_optim.search = line_search
 
     nonlin_optim.iter = opt.OptimIterator(max_iter=max_iter, tol=tolerance, stop=crit)
     return nonlin_optim

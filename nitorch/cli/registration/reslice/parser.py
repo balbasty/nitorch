@@ -172,7 +172,7 @@ def parse(args):
                 False if options.prefilter.lower()[0] in 'fn' else
                 bool(int(options.prefilter)))
         elif tag in ('-x', '-ex', '--extrapolate'):
-            options.extrapolate = False
+            options.extrapolate = True
         elif tag in ('-v', '-vx', '--voxel-size'):
             options.voxel_size = []
             while cli.next_isvalue(args):

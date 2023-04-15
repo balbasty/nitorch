@@ -101,14 +101,14 @@ class PairwiseRegister:
         if self.nonlin:
             self.nonlin.to_(**backend)
 
-        # if self.verbose > 1:
-        #     print(self.losses)
-        #     if self.affine:
-        #         print(self.affine)
-        #     if self.nonlin:
-        #         print(self.nonlin)
-        #     print(self.optim)
-        #     print('')
+        if self.verbose > 1:
+            print(self.losses)
+            if self.affine:
+                print(self.affine)
+            if self.nonlin:
+                print(self.nonlin)
+            print(self.optim)
+            print('')
 
         if self.verbose:
             if self.nonlin:
@@ -286,9 +286,17 @@ class PairwiseRegisterStep:
             broad_shape = utils.expanded_shape(f.shape, w.shape)
             f = f.expand(broad_shape).clone()
             w = w.expand(broad_shape)
+            # red
             checker_unfold = utils.unfold(f, patch, [2*p for p in patch])
             warped_unfold = utils.unfold(w, patch, [2*p for p in patch])
             checker_unfold.copy_(warped_unfold)
+            # black
+            fblack = f[tuple(slice(p, None) for p in patch)]
+            wblack = w[tuple(slice(p, None) for p in patch)]
+            if fblack.numel() and wblack.numel():
+                checker_unfold = utils.unfold(fblack, patch, [2*p for p in patch])
+                warped_unfold = utils.unfold(wblack, patch, [2*p for p in patch])
+                checker_unfold.copy_(warped_unfold)
             checker.append(f)
 
         kdim = len(fixed)
