@@ -83,7 +83,7 @@ def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
         # Transform fixed grid
         grid = affine_matvec(M, grid0)
         # Resample to fixed grid
-        dat_new = grid_pull(dat[m], grid, bound='dft', extrapolate=False, interpolation=1)
+        dat_new = grid_pull(dat[m], grid, bound='dft', extrapolate=True, interpolation=1)
         if cost_fun in _costs_edge:
             jtv += dat_new
             if cost_fun == 'njtv':
