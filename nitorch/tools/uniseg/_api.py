@@ -163,7 +163,7 @@ def uniseg(x, w=None, affine=None, device=None,
         else:
             prior_for_align = prior
         aff = align_tpm((x, affine), (prior_for_align, affine_prior), w,
-                        verbose=verbose-1, joint=True, flexi=flexi)
+                        verbose=verbose-1, flexi=flexi)
         affine = aff.to(affine).matmul(affine)
         del prior_for_align
 
@@ -199,6 +199,9 @@ def uniseg(x, w=None, affine=None, device=None,
         parameters['affine'] = aff
     if do_mrf in ('learn', True):
         parameters['mrf'] = model.mrf
+    if prior is not None:
+        parameters['warped'] = model.warp_tpm(
+            aff=affine, mode='softmax', shape=z.shape[1:])
 
     return z, lb, parameters
 

@@ -46,7 +46,7 @@ import math as pymath
 mm = torch.matmul
 mv = linalg.matvec
 lmdiv = linalg.lmdiv
-rmdiv = linalg.lmdiv
+rmdiv = linalg.rmdiv
 t = lambda x: x.transpose(-1, -2)
 tiny = 1e-16
 
@@ -58,7 +58,7 @@ tiny = 1e-16
 # ======================================================================
 
 def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
-              basis='affine', joint=False, progressive=False, bins=256,
+              basis='affine', progressive=False, bins=256,
               fwhm=None, max_iter_gn=100, max_iter_em=32, max_line_search=6,
               flexi=False, verbose=1):
     """Align a Tissue Probability Map to an image
@@ -86,8 +86,6 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         Larger is faster but less accurate.
     basis : {'trans', 'rot', 'rigid', 'sim', 'aff'}, default='affine'
         Transformation model
-    joint : bool, default=False
-        Estimate a single affine for all images
     progressive : bool, default=False
         Fit prameters progressively (translation then rigid then affine)
     flexi : bool, default=False
@@ -108,7 +106,7 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
 
     Returns
     -------
-    aff : ([B], 4, 4) tensor
+    aff : (4, 4) tensor
         Affine matrix.
         Can be applied to the TPM by `aff \ tpm.affine`
         or to the image by `aff @ dat.affine`.
@@ -133,6 +131,12 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         weights = 1
     weights = weights * torch.isfinite(dat)
 
+    dat = dat.unsqueeze(1)
+    weights = weights.unsqueeze(1)
+    # dat:      [B, 1, *spatial]
+    # weights:  [B, 1, *spatial]
+    # tpm:      [K, *spatial]
+
     # ------------------------------------------------------------------
     #       DEFAULT ORIENTATION MATRICES
     # ------------------------------------------------------------------
@@ -142,10 +146,8 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         affine_tpm = spatial.affine_default(tpm.shape[-dim:], **backend)
     if affine_dat is None:
         affine_dat = spatial.affine_default(dat.shape[-dim:], **backend)
-
-    dat = dat.unsqueeze(1)                  # [B, 1, *spatial]
-    weights = weights.unsqueeze(1)          # [B, 1, *spatial]
-    tpm = tpm.unsqueeze(0)                  # [1, K, *spatial]
+    affine_dat = affine_dat.to(tpm)
+    affine_tpm = affine_tpm.to(tpm)
 
     # ------------------------------------------------------------------
     #       DISCRETIZE
@@ -157,7 +159,6 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
     # ------------------------------------------------------------------
     opt = dict(
         basis=basis,
-        joint=joint,
         progressive=progressive,
         fwhm=fwhm,
         max_iter_gn=max_iter_gn,
@@ -168,7 +169,7 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
 
     spacing = py.make_list(spacing) or [0]
     dat0, affine_dat0, weights0 = dat, affine_dat, weights
-    vx = spatial.voxel_size(affine_dat0).tolist()
+    vx = spatial.voxel_size(affine_dat0)
 
     def do_spacing(sp):
         if not sp:
@@ -183,53 +184,47 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
             weights = None
         return dat, affine_dat, weights
 
-    def make_reorient(layout, affine_dat0):
-        layout_matrix = spatial.layout_matrix(layout).to(affine_dat0)
-        affine_dat = layout_matrix.matmul(affine_dat0)
-        center = torch.as_tensor(dat.shape[-dim:]).to(affine_dat)[:, None]
-        center = (center - 1) / 2
-        affine_dat[..., :-1, -1:] = -affine_dat[..., :-1, :-1].matmul(center)
-        reorient = affine_dat.matmul(affine_dat0.inverse())
-        return affine_dat, reorient
-
     # ------------------------------------------------------------------
     #       FLEXIBLE INITIALIZATION
     # ------------------------------------------------------------------
-    reorient = prm = None
+    prm0 = reorient0 = None
     if flexi:
-        sp = spacing[0] * 2
-        dat, affine_dat1, weights = do_spacing(sp)
-
         opt1 = dict(opt)
         opt1['verbose'] = 0
 
         # first: trust header
-        reorient0 = torch.zeros_like(affine_dat0)
-        reorient0.diagonal(0, -1, -2).fill_(1)
-        mi0, _, prm0 = fit_affine_tpm(dat, tpm, affine_dat1, affine_tpm,
-                                         weights, **opt1)
-        best_name = spatial.volume_layout_to_name(spatial.affine_to_layout(affine_dat))
+        sp = spacing[0] * 2
+        dat, affine_dat1, weights = do_spacing(sp)
+        dat_com1 = torch.as_tensor(dat.shape[2:]).to(affine_dat1).sub_(1).div_(2)
+        dat_com1 = mv(affine_dat1[:-1, :-1], dat_com1).add_(affine_dat1[:-1, -1])
+        best_name = spatial.volume_layout_to_name(spatial.affine_to_layout(affine_dat0))
+        mi0, _, prm0 = fit_affine_tpm(dat, tpm, affine_dat0, affine_tpm, weights, **opt1)
+        mi0 = mi0.sum().item()
         if verbose:
-            print(f'best: {best_name} ({mi0.item():4.2f})', end='\r')
+            print(f'best: {best_name} ({mi0:4.2f})', end='\r')
+
+        # RAS coordinate of the center of the field of view
+        tpm_com = torch.as_tensor(tpm.shape[1:]).to(affine_tpm).sub_(1).div_(2)
+        tpm_com = mv(affine_tpm[:-1, :-1], tpm_com).add_(affine_tpm[:-1, -1])
 
         # next: try all possible orientations
         for layout in spatial.iter_layouts(dim, device=dat.device):
-            affine_dat, reorient = make_reorient(layout, affine_dat1)
+            reorient = spatial.layout_matrix(layout).to(affine_dat1)
+            reorient[:-1, -1] += tpm_com - mv(reorient[:-1, :-1], dat_com1)
+            affine_dat = mm(reorient, affine_dat1)
             name1 = spatial.volume_layout_to_name(spatial.affine_to_layout(affine_dat))
             if verbose:
-                print(f'best: {best_name} ({mi0.item():4.2f}) | {name1}', end='\r')
-
-            mi, _, prm = fit_affine_tpm(dat, tpm, affine_dat, affine_tpm,
-                                          weights, **opt1)
+                print(f'best: {best_name} ({mi0:4.2f}) | {name1}', end='')
+            mi, _, prm = fit_affine_tpm(dat, tpm, affine_dat, affine_tpm, weights, **opt1)
+            mi = mi.sum().item()
+            print(f' ({mi:4.2f})', end='\r')
             # update if better
             if mi > mi0:
-                prm0 = prm
-                reorient0 = reorient
-                mi0 = mi
-                best_name = name1
-        print(f'best: {best_name} ({mi0.item():4.2f})')
+                prm0, reorient0, mi0, best_name = prm, reorient, mi, name1
+        print(f'best: {best_name} ({mi0:4.2f})')
+        opt['progressive'] = False
 
-        prm, reorient = prm0, reorient0
+    prm, reorient = prm0, reorient0
 
     # ------------------------------------------------------------------
     #       SPACING
@@ -255,21 +250,20 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
 
 
 def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
-                   basis='affine', fwhm=None, joint=False, prm=None,
+                   basis='affine', fwhm=None, prm=None,
                    max_iter_gn=100, max_iter_em=32, max_line_search=6,
                    progressive=False, verbose=1):
     """
 
     Parameters
     ----------
-    dat : (B, J|1, *spatial) tensor
-    tpm : (B|1, K, *spatial) tensor
+    dat : ([B], 1|J, *spatial) tensor
+    tpm : (K, *spatial) tensor
     affine : (4, 4) tensor
     affine_tpm : (4, 4) tensor
-    weights : (B, 1, *spatial) tensor
+    weights : (*spatial) tensor
     basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
     fwhm : float, default=J/32
-    joint : bool, default=False
     max_iter_gn : int, default=100
     max_iter_em : int, default=32
     max_line_search : int, default=12
@@ -277,12 +271,12 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
 
     Returns
     -------
-    mi : (B,) tensor
-    aff : (B, 4, 4) tensor
-    prm : (B, F) tensor
+    mi : ([B]) tensor
+    aff : (4, 4) tensor
+    prm : (F) tensor
 
     """
-    dim = dat.dim() - 2
+    dim = tpm.dim() - 1
 
     # ------------------------------------------------------------------
     #       RECURSIVE PROGRESSIVE FIT
@@ -297,20 +291,20 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
         if next_basis:
             *_, prm = fit_affine_tpm(
                 dat, tpm, affine, affine_tpm, weights,
-                basis=next_basis, fwhm=fwhm, joint=joint, prm=prm,
+                basis=next_basis, fwhm=fwhm, prm=prm,
                 max_iter_gn=max_iter_gn, max_iter_em=max_iter_em,
-                max_line_search=max_line_search)
-            B = len(dat)
+                max_line_search=max_line_search, progressive=True,
+                verbose=verbose)
             F = basis_nb_feat[basis]
             prm0 = prm
-            prm = prm0.new_zeros([1 if joint else B, F])
+            prm = prm0.new_zeros([F])
             if basis == 'SE':
-                prm[:, :dim] = prm0[:, :dim]
+                prm[:dim] = prm0[:dim]
             else:
                 nb_se = dim*(dim+1)//2
-                prm[:, :nb_se] = prm0[:, :nb_se]
+                prm[:nb_se] = prm0[:nb_se]
                 if basis == 'Aff+':
-                    prm[:, nb_se:nb_se+dim] = prm0[:, nb_se] * (dim**(-0.5))
+                    prm[nb_se:nb_se+dim] = prm0[nb_se] * (dim**(-0.5))
 
     basis_name = basis
 
@@ -318,7 +312,12 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
     #       PREPARE
     # ------------------------------------------------------------------
 
-    B = len(dat)
+    if dat.ndim == dim:
+        dat = dat[None]
+    if dat.ndim == dim+1:
+        dat = dat[None]
+    tpm = tpm[None]
+
     if affine is None:
         affine = spatial.affine_default(dat.shape[-dim:])
     if affine_tpm is None:
@@ -327,12 +326,12 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
     affine_tpm = affine_tpm.to(**utils.backend(tpm))
     shape = dat.shape[-dim:]
 
-    tpm = tpm.to(dat.device)
+    tpm = tpm.to(dat.device).clamp(tiny, 1-tiny)
     basis = make_basis(basis, dim, **utils.backend(tpm))
     F = len(basis)
 
     if prm is None:
-        prm = tpm.new_zeros([1 if joint else B, F])
+        prm = tpm.new_zeros([F])
     aff, gaff = linalg._expm(prm, basis, grad_X=True)
 
     em_opt = dict(fwhm=fwhm, max_iter=max_iter_em, weights=weights,
@@ -376,7 +375,9 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
                 end = '\n' if verbose >= 3 else '\r'
                 happy = ':D' if success else ':('
                 print(f'(search) | {n_ls:02d} | {mi.mean():12.6g} | {happy}', end=end)
+
             if success:
+                armijo *= 2
                 break
             armijo *= 0.5
         # if verbose == 2:
@@ -386,19 +387,20 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
         #       DID IT WORK?
         # --------------------------------------------------------------
 
+        # DEBUG
+        # plot_registration(dat, mov, f'{basis_name} | {n_iter}')
+
         if not success:
             prior, prm, mi = prior0, prm0, mi0
             break
-
-        # DEBUG
-        # plot_registration(dat, mov, f'{basis_name} | {n_iter}')
 
         space = ' ' * max(0, 6 - len(basis_name))
         if verbose >= 1:
             end = '\n' if verbose >= 2 else '\r'
             print(f'({basis_name[:6]}){space} | {n_iter:02d} | {mi.mean():12.6g}', end=end)
 
-        if mi.mean() - mi0.mean() < 1e-5:
+        if mi.mean() - mi0.mean() < 1e-8:
+            print('converged', mi.mean() - mi0.mean())
             break
 
         # --------------------------------------------------------------
@@ -407,24 +409,19 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
 
         # --- derivatives ----------------------------------------------
         g, h = derivatives_intensity(mov, dat, prior, **drv_opt)
+        g = g.sum(0)
+        h = h.sum(0)
 
         # --- chain rule -----------------------------------------------
         gmov = spatial.grid_grad(tpm, phi, **pull_opt)
-        if joint and len(mov) == 1:
-            g = g.sum(0, keepdim=True)
-            h = h.sum(0, keepdim=True)
-        else:
-            gmov = gmov.expand([B, *gmov.shape[1:]])
         gaff = lmdiv(affine_tpm, mm(gaff, affine))
         g, h = chain_rule(g, h, gmov, gaff, maj=False)
         del gmov
 
-        if joint and len(g) > 1:
-            g = g.sum(0, keepdim=True)
-            h = h.sum(0, keepdim=True)
-
         # --- Gauss-Newton ---------------------------------------------
+        h.diagonal(0, -1, -2).add_(h.diagonal(0, -1, -2).abs().max() * 1e-5)
         delta = lmdiv(h, g.unsqueeze(-1)).squeeze(-1)
+        foo = 0
 
     if verbose == 1:
         print('')
@@ -440,26 +437,29 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
 
 def chain_rule(g, h, g_mu, g_aff, maj=True):
     """
-    g, h : (B, K|K2, *spatial) - gradient/Hessian of loss wrt moving image
-    g_mu : (B, K|K2, *spatial, 3) - spatial gradients of moving image
-    g_aff : (B, F, 4, 4) - gradient of affine matrix wrt Lie parameters
-    returns g, h: gradient/Hessian of loss wrt Lie parameters
+    parameters
+    g, h : (K|K2, *spatial) - gradient/Hessian of loss wrt moving image
+    g_mu : (K|K2, *spatial, 3) - spatial gradients of moving image
+    g_aff : (F, 4, 4) - gradient of affine matrix wrt Lie parameters
+    returns
+    g : (D*(D+1),) tensor - gradient of loss wrt Lie parameters
+    h : (D*(D+1),D*(D+1)) tensor - Hessian of loss wrt Lie parameters
     """
     # Note that `h` can be `None`, but the functions I
     # use deal with this case correctly.
-    dim = g.dim() - 2
-    B, K, *shape, D = g_mu.shape
-    _, F, _, _ = g_aff.shape
+    ndim = g.dim() - 1
+    K, *shape, D = g_mu.shape
+    F, _, _ = g_aff.shape
     D2 = D * (D + 1)
 
-    g = jg(g_mu, g, dim=dim)
-    h = jhj(g_mu, h, dim=dim)
+    g = jg(g_mu, g, dim=ndim)
+    h = jhj(g_mu, h, dim=ndim)
     g, h = affine_grid_backward(g, h)
-    g = g.reshape([B, D2])
-    g_aff = g_aff[:, :, :-1, :].reshape([B, F, D2])
+    g = g.reshape([D2])
+    g_aff = g_aff[:, :-1, :].reshape([F, D2])
     g = mv(g_aff, g)
     if h is not None:
-        h = h.reshape([B, D2, D2])
+        h = h.reshape([D2, D2])
         h = mm(mm(g_aff, h), t(g_aff))
         if maj:
             h = h.abs().sum(-1).diag_embed()
@@ -476,8 +476,8 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
 
     Parameters
     ----------
-    moving : (B, K, *spatial) tensor
-    fixed : (B, J|1, *spatial) tensor
+    moving : (K, *spatial) tensor
+    fixed : (B, 1|J, *spatial) tensor
     prior : (B, J, K) tensor, optional
     weights : (B, 1, *spatial) tensor, optional
     fwhm : float, optional
@@ -521,7 +521,7 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
     # ------------------------------------------------------------------
     if prior is None:
         prior = moving.new_ones([B, J, K])
-        prior /= prior.sum(dim=[-1, -2], keepdim=True)
+        prior /= prior.sum(dim=[-1, -2], keepdim=True) + tiny
         prior /= prior.sum(dim=-2, keepdim=True) * prior.sum(dim=-1, keepdim=True)
     else:
         prior = prior.clone()
@@ -569,7 +569,7 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
         scatter_prior(prior0, fixed, z)  # prior[fixed] <- z
         prior.copy_(prior0).add_(tiny)
         # make it a joint distribution
-        prior /= prior.sum(dim=[-1, -2], keepdim=True).add_(tiny)
+        prior /= prior.sum(dim=[-1, -2], keepdim=True) + tiny
 
         if fwhm:
             # smooth "prior" for the prior
@@ -578,7 +578,7 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
             prior = prior.transpose(-1, -2)
 
         # prior /= prior.sum(dim=-2, keepdim=True)
-        prior /= prior.sum(dim=-2, keepdim=True) * prior.sum(dim=-1, keepdim=True)
+        prior /= prior.sum(dim=-2, keepdim=True) * prior.sum(dim=-1, keepdim=True) + tiny
 
         if verbose > 0:
             success = ll.sum() > ll_prev
@@ -639,8 +639,8 @@ def derivatives_intensity(moving, fixed, prior, weights=None):
     # The objective function is \sum_n E[y_n]
     # > ll = \sum_n log p(x[n] == j[n] ; H, mu)
     #      = \sum_n log \sum_k p(x[n] == j[n] | z[n] == k; H) p(z[n] == k; mu)
-    g = moving.new_zeros([B, K, N])
     K2 = K * (K + 1) // 2
+    g = moving.new_zeros([B, K, N])
     h = moving.new_zeros([B, K2, N])
 
     # ------------------------------------------------------------------
@@ -674,11 +674,11 @@ def derivatives_intensity(moving, fixed, prior, weights=None):
             g += tmp * fixed[:, j, None, :]
 
             h[:, :K, :] += tmp.square() * fixed[:, j, None, :]
+            h[:, :K, :] -= tmp * fixed[:, j, None, :]
             c = K
             for k in range(K):
                 for kk in range(k + 1, K):
-                    h[:, c, :] += tmp[:, k, :] * tmp[:, kk, :] \
-                                    * fixed[:, j, :]
+                    h[:, c, :] += tmp[:, k, :] * tmp[:, kk, :] * fixed[:, j, :]
                     c += 1
 
     g *= weights
@@ -737,7 +737,7 @@ def plot_registration(dat, mov, title=None):
     if title:
         plt.suptitle(title)
     f.canvas.flush_events()
-    plt.show(block=False)
+    plt.show(block=True)
 
 
 def sample_prior(prior, fixed, out=None):
@@ -897,6 +897,7 @@ def discretize(dat, nbins=256, mask=None):
 
 
 def get_spm_prior(**backend):
+    """Download the SPM prior"""
     url = 'https://github.com/spm/spm12/raw/master/tpm/TPM.nii'
     fname = os.path.join(cache_dir, 'SPM12_TPM.nii')
     if not os.path.exists(fname):
@@ -922,6 +923,18 @@ def get_backend(x, prior, device=None):
 
 
 def get_prior(prior, affine_prior, **backend):
+    """Load TPM data
+
+    Parameters
+    ----------
+    prior : [list of] str or tensor
+    affine_prior : (4, 4) tensor, optional
+
+    Returns
+    -------
+    prior : (K, *spatial) tensor
+    affine_prior : (4, 4) tensor
+    """
     if prior is None:
         prior, _affine_prior = get_spm_prior(**backend)
         if affine_prior is None:
@@ -937,6 +950,21 @@ def get_prior(prior, affine_prior, **backend):
 
 
 def get_data(x, w, affine, dim, **backend):
+    """Load image data
+
+    Parameters
+    ----------
+    x : [list of] str or tensor
+    w : [list of] str or tensor
+    affine : (4, 4) tensor, optional
+    dim : int
+
+    Returns
+    -------
+    x : (B, *spatial) tensor
+    w : (B, *spatial) tensor
+    affine : (4, 4) tensor
+    """
     if not torch.is_tensor(x):
         if isinstance(x, str):
             f = io.map(x)

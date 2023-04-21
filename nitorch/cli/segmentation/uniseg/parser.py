@@ -24,6 +24,7 @@ output:
 Only native prob/labels are written by default.
     -o, --output PATH               Output directory                    [same as input]
         --prob-{space}    [FILE]    Posterior probabilities             [{dir}/{base}.prob.{space}{ext}]
+        --prior-{space}   [FILE]    Prior probabilities                 [{dir}/{base}.prior.{space}{ext}]
         --labels-{space}  [FILE]    Labels                              [{dir}/{base}.labels.{space}{ext}]
         --nobias-{space}  [FILE]    Bias-corrected MRI                  [{dir}/{base}.nobias.{space}{ext}]
         --bias-{space}    [FILE]    Bias field                          [{dir}/{base}.bias.{space}{ext}]
@@ -103,16 +104,22 @@ parser.add_option('mask', ('-m', '--mask'), nargs='?', default=None)
 parser.add_option('output', ('-o', '--output'), nargs=1, default=None)
 for space in ('nat', 'mni', 'wrp'):
     default_fname = '{dir}{sep}{base}.prob.' + space + '{ext}'
-    parser.add_option(f'prob_{space}', f'--prob-{space}', nargs='?',
+    parser.add_option(f'prob_{space}', (f'--post-{space}', f'--prob-{space}'), nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=default_fname if space == 'nat' else None)
-    parser.add_option(f'prob_{space}', f'--no-prob-{space}', nargs=0,
+    parser.add_option(f'prob_{space}', (f'--no-post-{space}', f'--no-prob-{space}'), nargs=0,
                       action=cli.Actions.store_value(None))
     default_fname = '{dir}{sep}{base}.labels.' + space + '{ext}'
     parser.add_option(f'labels_{space}', f'--labels-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=default_fname if space == 'nat' else None)
     parser.add_option(f'labels_{space}', f'--no-labels-{space}', nargs=0,
+                      action=cli.Actions.store_value(None))
+    default_fname = '{dir}{sep}{base}.prior.' + space + '{ext}'
+    parser.add_option(f'prior_{space}', f'--prior-{space}', nargs='?',
+                      action=cli.Actions.store_value(default_fname),
+                      default=None)
+    parser.add_option(f'prior_{space}', f'--no-prior-{space}', nargs=0,
                       action=cli.Actions.store_value(None))
     default_fname = '{dir}{sep}{base}.nobias.' + space + '{ext}'
     parser.add_option(f'nobias_{space}', f'--nobias-{space}', nargs='?',

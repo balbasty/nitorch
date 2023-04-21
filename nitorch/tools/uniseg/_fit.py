@@ -1652,12 +1652,13 @@ class UniSeg(SpatialMixture):
                 mu = self.mu[k].to(**utils.backend(X))
                 # Determine each class' contribution to gradient and Hessian
                 lam = sigma.inverse()[c].to(**utils.backend(X))
-                g1 = linalg.dot(X - mu, lam)
+                g1 = linalg.matvec(lam, X - mu)
                 g.addcmul_(Z[k], g1)
-                H1 = g1.abs().mul_(a).add_(lam[c]) if a > 0 else lam[c]
-                H.addcmul_(Z[k], H1)
+                H.addcmul_(Z[k], lam[c])
             g.mul_(X[:, c]).sub_(1)
-            H.mul_(X[:, c].square()).add_(1)
+            H.mul_(X[:, c]).mul_(X[:, c]).add_(1)
+            if a > 0:
+                H.add_(g.abs(), alpha=a)
 
             if W is not None:
                 g *= W
@@ -1670,12 +1671,14 @@ class UniSeg(SpatialMixture):
             #       with pure bending, as resizing does not induce that much
             #       additional curvature.
             lam = {'bending': self.lam_bias, 'voxel_size': vx}
-            Lb = spatial.regulariser(self.beta[None, c], **lam)
-            lb += self.beta[c].flatten().dot(Lb.flatten())
-            g += Lb
+            g += spatial.regulariser(self.beta[None, c], **lam)
 
             delta = spatial.solve_field_fmg(H, g, **lam)
-            self.beta[c] -= delta[0]
+            self.beta[c].sub_(delta[0])
+
+            Lb = spatial.regulariser(self.beta[None, c], **lam)
+            lb += self.beta[c].flatten().dot(Lb.flatten())
+            del Lb
 
         self.beta -= self.beta.mean()
         self._lb_bias = -0.5*lb.cpu() + self.beta.sum().cpu()
