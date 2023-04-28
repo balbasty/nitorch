@@ -19,7 +19,7 @@ plt = try_import('matplotlib.pyplot', _as=True)
 
 def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
                   samp=(3, 1.5), optimiser='powell', fix=0, verbose=False,
-                  fov=None, mx_int=1023, raw=False, jitter=False, fwhm=7.0):
+                  fov=None, mx_int=1023, raw=False, jitter=True, fwhm=7.0):
     """Affine registration of a collection of images.
 
     Parameters
@@ -107,7 +107,8 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
         if opt['cost_fun'] in _costs_hist and opt['mean_space']:
             raise ValueError('Option mean_space=True not defined for {} cost!'.format(opt['cost_fun']))
         # Get affine basis
-        B = affine_basis(group=opt['group'], device=device)
+        dim = mat[0].shape[0] - 1
+        B = affine_basis(group=opt['group'], device=device, dim=dim)
         Nq = B.shape[0]
         # Load data
         dat = _data_loader(dat, mat, opt)
@@ -134,7 +135,7 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
         q = torch.zeros((N, Nq), dtype=torch.float64, device=device)
         if N < 2:
             # Return identity
-            mat_a = torch.zeros((N, 4, 4),
+            mat_a = torch.zeros((N, dim + 1, dim + 1),
                                 dtype=torch.float64, device=device)
             for n in range(N):
                 mat_a[m, ...] = expm(q[n, ...], basis=B)
@@ -149,7 +150,7 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
             q, args = _fit_q(q, dat_fix, grid, mat_fix, dat, mat, mov,
                              B, s, opt)
     # To matrix form
-    mat_a = torch.zeros((N, 4, 4),
+    mat_a = torch.zeros((N, dim + 1, dim + 1),
                         dtype=torch.float64, device=device)
     for n in range(N):
         mat_a[n, ...] = expm(q[n, ...], basis=B)
