@@ -10,6 +10,7 @@ from nitorch.core.datasets import fetch_data
 from nitorch.plot.volumes import show_slices
 from nitorch.io import map
 from nitorch.spatial import (affine_default, affine_matrix_classic, voxel_size)
+from nitorch.core.linalg import lmdiv
 from .affine_reg._align import _atlas_align
 from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d, _msk_fov)
 from ._preproc_img import _world_reslice
@@ -115,7 +116,7 @@ def _atlas_crop(dat, mat_in, do_align=True, fov='head', mat_a=None):
     # # Mask field-of-view of image data to be the same as the atlas
     # dat = _msk_fov(dat, mat_in, mat_mu, dim_mu)
     # Get atlas corners in image space
-    mat = mat_mu.solve(mat_in)[0]
+    mat = lmdiv(mat_in, mat_mu)
     c = _get_corners_3d(dim_mu).type(torch.float64).to(device)
     c = mat[:3, ...].mm(c.t())
     # Make bounding-box

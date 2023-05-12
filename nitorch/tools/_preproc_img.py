@@ -5,6 +5,7 @@
 
 import torch
 from nitorch.spatial import (affine_matrix_classic, voxel_size)
+from nitorch.core.linalg import lmdiv
 from ._preproc_utils import (_get_corners_3d, _reslice_dat_3d)
 
 
@@ -36,7 +37,7 @@ def _reslice2ref(dat, mat, interpolation=1, ref=0):
     # reslice
     for i in range(len(dat)):
         if i == ref:  continue
-        mat_res = torch.linalg.solve(mat[i], mat_ref)
+        mat_res = lmdiv(mat[i], mat_ref)
         dat[i] = _reslice_dat_3d(dat[i], mat_res, dm_ref, 
             interpolation=interpolation)
     # replicate reference affine
@@ -99,7 +100,7 @@ def _world_reslice(dat, mat, interpolation=1, vx=None):
     I[0, 0] = -I[0, 0]
     mat_out = I.mm(mat_out)
     # Compute mapping from output to input
-    mat = mat_out.solve(mat)[0]
+    mat = lmdiv(mat, mat_out)
     # Reslice image data
     dat = _reslice_dat_3d(dat, mat, dim_out, interpolation=interpolation)
 
