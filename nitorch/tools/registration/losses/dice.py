@@ -5,9 +5,117 @@ from .base import OptimizationLoss, AutoGradLoss
 Tensor = torch.Tensor
 
 
-def dice_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None,
-               add_background=False, weighted=False):
+class Dice(OptimizationLoss):
+    """1 - Dice"""
+
+    order = 2  # Hessian defined
+
+    def __init__(self, add_background=False, weight=False,
+                 fisher=False, dim=None):
+        """
+        Parameters
+        ----------
+        add_background : bool, default=False
+            Include the Dice of the (implicit) background class in the loss.
+        weight : bool or tensor, default=False
+            Weights for each class. If True, weight by positive rate.
+        fisher : bool or {0..1}
+            Whether to use Fisher's scoring of the Hessian (True),
+            or a more robust approximation (False).
+            If a number between 0 and 1, both versions are weighted and used
+            (1: full Fisher, 0: full robust).
+        dim : int, default=`fixed.dim() - 1`
+            Number of spatial dimensions
+        """
+        super().__init__()
+        self.add_background = add_background
+        self.weight = weight
+        self.fisher = fisher
+        self.dim = dim
+
+    def set_default(self, kwargs):
+        kwargs.setdefault('dim', self.dim)
+        kwargs.setdefault('add_background', self.add_background)
+        kwargs.setdefault('weighted', self.weight)
+        kwargs.setdefault('fisher', self.fisher)
+        return kwargs
+
+    def loss(self, moving, fixed, **kwargs):
+        """Compute the [negative] Dice
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image. The background class should be omitted.
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        nll : () tensor
+            Negative Dice
+        """
+        kwargs = self.set_default(kwargs)
+        return dice(moving, fixed, **kwargs, grad=False, hess=False)
+
+    def loss_grad(self, moving, fixed, **kwargs):
+        """Compute the [negative] Dice
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image. The background class should be omitted.
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        nll : () tensor
+            Negative Dice
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+        """
+        kwargs = self.set_default(kwargs)
+        return dice(moving, fixed, **kwargs, grad=True, hess=False)
+
+    def loss_grad_hess(self, moving, fixed, **kwargs):
+        """Compute the [negative] Dice
+
+        Parameters
+        ----------
+        moving : (..., K, *spatial) tensor
+            Moving image. The background class should be omitted.
+        fixed : (..., K, *spatial) tensor
+            Fixed image
+
+        Returns
+        -------
+        nll : () tensor
+            Negative Dice
+        g : (..., K, *spatial) tensor, optional
+            Gradient with respect to the moving image
+        h : (..., K*(K+1)//2, *spatial) tensor, optional
+            Hessian with respect to the moving image.
+            Its spatial dimensions are singleton when `acceleration == 0`.
+        """
+        kwargs = self.set_default(kwargs)
+        return dice(moving, fixed, **kwargs, grad=True, hess=True)
+
+
+@torch.jit.script
+def dot(x, y, keepdim: bool = False):
+    """Dot product along the last dimension"""
+    xy = x.unsqueeze(-2).matmul(y.unsqueeze(-1)).squeeze(-1)
+    if not keepdim:
+        xy = xy.squeeze(-1)
+    return xy
+
+
+def dice(moving, fixed, dim=None, grad=True, hess=True, mask=None,
+         add_background=False, weighted=False, fisher=True):
     """Dice loss for optimisation-based registration.
+
+    Dice is implemented as 2 * dot(f, m) / (dot(f, f) + dot(m, m))
 
     Parameters
     ----------
@@ -28,6 +136,11 @@ def dice_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None,
         Include the Dice of the (implicit) background class in the loss.
     weighted : bool or tensor, default=False
         Weights for each class. If True, weight by positive rate.
+    fisher, bool or {0..1}, default=True
+        Whether to use Fisher's scoring of the Hessian (True),
+        or a more robust approximation (False).
+        If a number between 0 and 1, both versions are weighted and used
+        (1: full Fisher, 0: full robust).
 
     Returns
     -------
@@ -41,44 +154,40 @@ def dice_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None,
     """
     fixed, moving = utils.to_max_backend(fixed, moving)
     dim = dim or (fixed.dim() - 1)
-    nc = moving.shape[-dim-1]                               # nb classes - bck
+    nc, *spatial = moving.shape[-dim-1:]                    # nb classes - bck
     fixed = utils.slice_tensor(fixed, slice(nc), -dim-1)    # remove bkg class
     if mask is not None:
         mask = mask.to(moving.device)
-        nvox = mask.sum(list(range(-dim-1)), keepdim=True)
+        mask = mask.reshape([*mask.shape[:-dim], -1])
+        nvox = mask.sum(-1, keepdim=True)
     else:
         nvox = py.prod(fixed.shape[-dim:])
 
-    @torch.jit.script
-    def rescale(x, dim_channel: int, add_background: bool = False):
-        """Ensure that a tensor is in [0, 1]"""
-        x = x.clamp_min(0)
-        x = x / x.sum(dim_channel, keepdim=True).clamp_min_(1)
-        if add_background:
-            x = torch.stack([x, 1 - x.sum(dim_channel, keepdim=True)], dim_channel)
-        return x
+    # flatten spatial dimensions
+    moving = moving.reshape([*moving.shape[:-dim], -1])
+    fixed = fixed.reshape([*fixed.shape[:-dim], -1])
 
-    moving = rescale(moving, -dim-1, add_background)
-    fixed = rescale(fixed, -dim-1, add_background)
+    if add_background:
+        moving = torch.cat([moving, 1 - moving.sum(-2, keepdim=True)], -2)
+        fixed = torch.cat([fixed, 1 - fixed.sum(-2, keepdim=True)], -2)
+
     if mask is not None:
-        moving *= mask
-        fixed *= mask
+        moving = moving * mask
+        fixed = fixed * mask
 
     if weighted is True:
-            weighted = fixed.sum(list(range(-dim, 0)), keepdim=True).div_(nvox)
+        weighted = fixed.sum(-1, keepdim=True).div_(nvox)
     elif weighted is not False:
         weighted = torch.as_tensor(weighted, **utils.backend(moving))
-        for _ in range(dim):
-            weighted = weighted.unsqueeze(-1)
+        weighted = weighted.unsqueeze(-1)
     else:
         weighted = None
 
     @torch.jit.script
-    def loss_components(moving, fixed, dim: int, weighted: Optional[Tensor] = None):
+    def loss_components(moving, fixed, weighted: Optional[Tensor] = None):
         """Compute the (negative) DiceLoss, (positive) Dice and union"""
-        dims = [d for d in range(-dim, 0)]
-        overlap = (moving * fixed).sum(dims, keepdim=True)
-        union = (moving + fixed).sum(dims, keepdim=True)
+        overlap = dot(moving, fixed, True)
+        union = dot(moving, moving, True) + dot(fixed, fixed, True)
         union += 1e-5
         dice = 2 * overlap / union
         if weighted is not None:
@@ -88,164 +197,65 @@ def dice_nolog(moving, fixed, dim=None, grad=True, hess=True, mask=None,
         ll = ll.sum()
         return ll, dice, union
 
-    ll, dice, union = loss_components(moving, fixed, dim, weighted)
+    ll, dice, union = loss_components(moving, fixed, weighted)
     out = [ll]
 
+    fisher, g0 = float(fisher), None
+
     # gradient
-    if grad:
+    if grad or (hess and fisher < 1):
         @torch.jit.script
-        def do_grad(dice, fixed, union):
-            return (dice - 2 * fixed) / union
-        g = do_grad(dice, fixed, union)
-        if weighted is not None:
-            g *= weighted
-        if add_background:
-            g_last = utils.slice_tensor(g, slice(-1, None), -dim-1)
-            g = utils.slice_tensor(g, slice(-1), -dim-1)
-            g -= g_last
-        if mask is not None:
-            g *= mask
-        out.append(g)
+        def do_grad(moving, fixed, dice, union):
+            return 2 * (dice * moving - fixed) / union
+        g = do_grad(moving, fixed, dice, union)
+        if hess and fisher < 1:
+            g0 = g.clone()
+        if grad:
+            if weighted is not None:
+                g *= weighted
+            if add_background:
+                g_last = utils.slice_tensor(g, slice(-1, None), -2)
+                g = utils.slice_tensor(g, slice(-1), -2)
+                g -= g_last
+            if mask is not None:
+                g *= mask
+            g = g.reshape([*g.shape[:-1], *spatial])
+            out.append(g)
 
     # hessian
     if hess:
         @torch.jit.script
-        def do_hess(dice, fixed, union, nvox, dim: int):
-            dims = [d for d in range(-dim, 0)]
-            positive_rate = fixed.sum(dims, keepdim=True) / nvox
-            h = (dice - fixed - positive_rate).abs()
-            h = 2 * nvox * h / union.square()
-            return h
-        nvox = torch.as_tensor(nvox, device=moving.device)
-        h = do_hess(dice, fixed, union, nvox, dim)
+        def do_hess_fisher(dice, union):
+            return 2 * dice / union
+        @torch.jit.script
+        def do_hess_acc(moving, grad, dice, union, acc: float = 1.):
+            return 2 * (dice + 2 * (1 - acc) * moving * grad.abs()) / union
+        @torch.jit.script
+        def do_hess_diag(moving, grad, dice, union):
+            return 2 * (dice + 2 * moving * grad.abs()) / union
+        if fisher == 1:
+            h = do_hess_fisher(dice, union)
+        elif fisher == 0:
+            h = do_hess_diag(moving, g0, dice, union)
+        else:
+            h = do_hess_acc(moving, g0, dice, union, fisher)
         if weighted is not None:
             h *= weighted
         if add_background:
-            h_foreground = utils.slice_tensor(h, slice(-1), -dim-1)
-            h = utils.slice_tensor(h, slice(-1, None), -dim-1)  # h background
+            h_foreground = utils.slice_tensor(h, slice(-1), -2)
+            h = utils.slice_tensor(h, slice(-1, None), -2)  # h background
             hshape = list(h.shape)
-            hshape[-dim-1] = nc*(nc+1)//2
+            hshape[-2] = nc*(nc+1)//2
             h = h.expand(hshape).clone()
-            diag = utils.slice_tensor(h, range(nc), -dim-1)
+            diag = utils.slice_tensor(h, range(nc), -2)
             diag += h_foreground
         if mask is not None:
             h *= mask
+        h = h.reshape([*h.shape[:-1], *spatial])
         out.append(h)
 
     return tuple(out) if len(out) > 1 else out[0]
 
-
-
-
-class Dice(OptimizationLoss):
-    """1 - Dice"""
-
-    order = 2  # Hessian defined
-
-    def __init__(self, add_background=False, weighted=False,
-                 log=False, acceleration=0, dim=None):
-        """
-
-        Parameters
-        ----------
-        log : bool, default=False
-            Whether the input are logits (pre-softmax) or probits (post-softmax)
-        acceleration : (0..1) float
-            Acceleration. Only used if `log is True`.
-        dim : int, default=1fixed.dim() - 1`
-            Number of spatial dimensions
-        """
-        super().__init__()
-        self.add_background = add_background
-        self.weighted = weighted
-        self.log = log
-        self.acceleration = acceleration
-        self.dim = dim
-
-    def loss(self, moving, fixed, **kwargs):
-        """Compute the [weighted] mse (* 0.5)
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-
-        """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('add_background', self.add_background)
-        kwargs.setdefault('weighted', self.weighted)
-        log = kwargs.pop('log', self.log)
-        if log:
-            kwargs.setdefault('acceleration', self.acceleration)
-            raise NotImplementedError
-        else:
-            return dice_nolog(moving, fixed, **kwargs, grad=False, hess=False,)
-
-    def loss_grad(self, moving, fixed, **kwargs):
-        """Compute the [weighted] mse (* 0.5)
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-        g : (..., K, *spatial) tensor, optional
-            Gradient with respect to the moving image
-
-        """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('add_background', self.add_background)
-        kwargs.setdefault('weighted', self.weighted)
-        log = kwargs.pop('log', self.log)
-        if log:
-            kwargs.setdefault('acceleration', self.acceleration)
-            raise NotImplementedError
-        else:
-            return dice_nolog(moving, fixed, **kwargs, grad=True, hess=False)
-
-    def loss_grad_hess(self, moving, fixed, **kwargs):
-        """Compute the [weighted] mse (* 0.5)
-
-        Parameters
-        ----------
-        moving : (..., K, *spatial) tensor
-            Moving image
-        fixed : (..., K, *spatial) tensor
-            Fixed image
-
-        Returns
-        -------
-        ll : () tensor
-            Loss
-        g : (..., K, *spatial) tensor, optional
-            Gradient with respect to the moving image
-        h : (..., K*(K+1)//2, *spatial) tensor, optional
-            Hessian with respect to the moving image.
-            Its spatial dimensions are singleton when `acceleration == 0`.
-
-        """
-        kwargs.setdefault('dim', self.dim)
-        kwargs.setdefault('add_background', self.add_background)
-        kwargs.setdefault('weighted', self.weighted)
-        log = kwargs.pop('log', self.log)
-        if log:
-            kwargs.setdefault('acceleration', self.acceleration)
-            raise NotImplementedError
-        else:
-            return dice_nolog(moving, fixed, **kwargs, grad=True, hess=True)
 
 
 class AutoDice(AutoGradLoss):

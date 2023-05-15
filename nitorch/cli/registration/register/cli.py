@@ -27,7 +27,7 @@ def cli(args=None):
     except ParseError as e:
         print(help[1])
         print(f'[ERROR] {str(e)}', file=sys.stderr)
-    # except Exception as e:
+    # except Exception as e:f
     #     print(f'[ERROR] {str(e)}', file=sys.stderr)
 
 
@@ -436,7 +436,7 @@ def _get_loss(loss, dim):
         lossobj = losses.CC(dim=dim)
     elif loss.name == 'lcc':
         lossobj = losses.LCC(patch=loss.patch, dim=dim, stride=loss.stride,
-                             mode=loss.kernel)
+                             kernel=loss.kernel)
     elif loss.name == 'gmm':
         lossobj = losses.GMMH(bins=loss.bins, dim=dim,
                               max_iter=loss.max_iter)
@@ -829,21 +829,23 @@ def _build_losses(options, pyramids, device):
 
         # Forward loss
         factor = loss.factor / (2 if loss.symmetric else 1)
-        lossobj = objects.LossComponent(lossobj, mov, fix, factor=factor)
+        lossobj = objects.Similarity(lossobj, mov, fix, factor=factor)
         loss_list.append(lossobj)
 
         # Backward loss
         if loss.symmetric:
             lossobj = _get_loss(loss, dim)
             if loss.name != 'emmi':
-                lossobj = objects.LossComponent(
+                lossobj = objects.Similarity(
                     lossobj, fix, mov, factor=factor, backward=True)
             else:
                 loss.fix, loss.mov = loss.mov, loss.fix
                 loss.mov.rescale = (0, 0)
                 loss.fix.discretize = loss.fix.discretize or 256
                 loss.mov.soft_quantize = loss.mov.discretize or 16
-                lossobj = objects.LossComponent(
+                fix = _make_image(loss.fix, dim=options.dim, device=device)
+                mov = _make_image(loss.mov, dim=options.dim, device=device)
+                lossobj = objects.Similarity(
                     lossobj, mov, fix, factor=factor, backward=True)
             loss_list.append(lossobj)
 

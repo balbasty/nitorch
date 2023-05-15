@@ -8,13 +8,14 @@ from nitorch.core.py import make_list, prod
 from nitorch._C.grid import (GridPull, GridPush, GridCount, GridGrad,
                              BoundType, InterpolationType,
                              SplineCoeff, SplineCoeffND)
-from ._affine import affine_resize, affine_lmdiv
+from ._affine import affine_resize, affine_lmdiv, voxel_size
 from ._finite_differences import diff
 
 
 __all__ = ['grid_pull', 'grid_push', 'grid_count', 'grid_grad',
            'identity_grid', 'affine_grid', 'resize', 'resize_grid', 'reslice',
            'add_identity_grid', 'add_identity_grid_',
+           'sub_identity_grid', 'sub_identity_grid_',
            'grid_jacobian', 'grid_jacdet', 'BoundType', 'InterpolationType',
            'spline_coeff', 'spline_coeff_nd']
 
@@ -511,6 +512,33 @@ def add_identity_grid_(disp):
 
 
 @torch.jit.script
+def sub_identity_grid_(disp):
+    """Subtracts the identity grid to a displacement field, inplace.
+
+    Parameters
+    ----------
+    disp : (..., *spatial, dim) tensor
+        Transformation field
+
+    Returns
+    -------
+    grid : (..., *spatial, dim) tensor
+        Displacement field
+
+    """
+    dim = disp.shape[-1]
+    spatial = disp.shape[-dim-1:-1]
+    mesh1d = [torch.arange(s, dtype=disp.dtype, device=disp.device)
+              for s in spatial]
+    grid = utils.meshgrid_script_ij(mesh1d)
+    disp = _movedim1(disp, -1, 0)
+    for i, grid1 in enumerate(grid):
+        disp[i].sub_(grid1)
+    disp = _movedim1(disp, 0, -1)
+    return disp
+
+
+@torch.jit.script
 def add_identity_grid(disp):
     """Adds the identity grid to a displacement field.
 
@@ -526,6 +554,24 @@ def add_identity_grid(disp):
 
     """
     return add_identity_grid_(disp.clone())
+
+
+@torch.jit.script
+def sub_identity_grid(disp):
+    """Subtracts the identity grid to a displacement field.
+
+    Parameters
+    ----------
+    disp : (..., *spatial, dim) tensor
+        Transformation field
+
+    Returns
+    -------
+    grid : (..., *spatial, dim) tensor
+        Displacement field
+
+    """
+    return sub_identity_grid_(disp.clone())
 
 
 def affine_grid(mat, shape, jitter=False):
@@ -694,7 +740,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
 
     # compute orientation matrix
     if affine is not None:
-        affine, _ = affine_resize(affine, inshape, factor, anchor)
+        affine, _ = affine_resize(affine, inshape, factor, anchor, shape_out=outshape)
         if return_trf:
             return resized, affine, (scales, shifts)
         else:
@@ -840,6 +886,8 @@ def reslice(image, affine, affine_to, shape_to=None, **kwargs):
     # prepare tensors
     image = torch.as_tensor(image)
     backend = dict(dtype=image.dtype, device=image.device)
+    if not backend['dtype'].is_floating_point:
+        backend['dtype'] = torch.get_default_dtype()
     affine = torch.as_tensor(affine, **backend)
     affine_to = torch.as_tensor(affine_to, **backend)
 

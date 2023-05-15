@@ -17,7 +17,7 @@ __all__ = ['local_mean', 'cache']
 # ----------------------------------------------------------------------
 #                           JIT UTILS
 # ----------------------------------------------------------------------
-USE_JIT = True
+USE_JIT = False
 jit_script = torch.jit.script if USE_JIT else (lambda f: f)
 
 
@@ -384,7 +384,7 @@ def pre_reshape(x, dim: int):
     batch: List[int] = []
     if nb_batch > 0:
         batch = x.shape[:-dim-1]
-        x = x.reshape([-1] + x.shape[-dim-1:])
+        x = x.reshape(torch.Size([-1]) + x.shape[-dim-1:])
     if nb_batch < 0:
         x = x[None]
     if nb_batch < -1:

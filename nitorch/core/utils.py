@@ -1,70 +1,21 @@
 """PyTorch utilities."""
 
 import torch
-from . import py
 from .constants import inf, eps
-from .dtypes import as_torch as dtype_astorch
-from . import dtypes
-from nitorch._C.grid import GridCount, GridPull, GridPush
+from . import py, dtypes, bounds, jit
+from .._C.grid import GridCount, GridPull, GridPush
 from .optionals import numpy as np
+from .version import torch_version
+import math as pymath
+import itertools
 import numbers
 import os
 import random
 from typing import Optional, List
 import contextlib
+
+
 Tensor = torch.Tensor
-
-
-def _compare_versions(version1, mode, version2):
-    for v1, v2 in zip(version1, version2):
-        if mode in ('gt', '>'):
-            if v1 > v2:
-                return True
-            elif v1 < v2:
-                return False
-        elif mode in ('ge', '>='):
-            if v1 > v2:
-                return True
-            elif v1 < v2:
-                return False
-        elif mode in ('lt', '<'):
-            if v1 < v2:
-                return True
-            elif v1 > v2:
-                return False
-        elif mode in ('le', '<='):
-            if v1 < v2:
-                return True
-            elif v1 > v2:
-                return False
-    if mode in ('gt', 'lt', '>', '<'):
-        return False
-    else:
-        return True
-
-
-def torch_version(mode, version):
-    """Check torch version
-
-    Parameters
-    ----------
-    mode : {'<', '<=', '>', '>='}
-    version : tuple[int]
-
-    Returns
-    -------
-    True if "torch.version <mode> version"
-
-    """
-    current_version, *cuda_variant = torch.__version__.split('+')
-    major, minor, patch, *_ = current_version.split('.')
-    # strip alpha tags
-    for x in 'abcdefghijklmnopqrstuvwxy':
-        if x in patch:
-            patch = patch[:patch.index(x)]
-    current_version = (int(major), int(minor), int(patch))
-    version = py.make_list(version)
-    return _compare_versions(current_version, mode, version)
 
 
 def as_tensor(input, dtype=None, device=None):
@@ -652,19 +603,18 @@ def max_dtype(*args, force_float=False):
         if x is None:
             return None
         elif is_dtype(x):
-            return dtype_astorch(x)
+            return dtypes.as_torch(x)
         elif (is_tensor(x) or is_array(x)) and len(x.shape) > 0:
-            return dtype_astorch(x.dtype)
+            return dtypes.as_torch(x.dtype)
         elif is_tensor(x) or is_array(x):
             # scalar: only return if pass 2+
-            return dtype_astorch(x.dtype) if n_pass >= 2 else None
+            return dtypes.as_torch(x.dtype) if n_pass >= 2 else None
         elif isinstance(x, numbers.Number):
             # builtin type:  only return if pass 3+
-            return dtype_astorch(type(x)) if n_pass >= 3 else None
+            return dtypes.as_torch(type(x)) if n_pass >= 3 else None
         else:
             # assume it is a sequence: check what we find in there
-            dtypes = [explore_dtype(elem, n_pass) for elem in x]
-            return upcast(*dtypes)
+            return upcast(*[explore_dtype(elem, n_pass) for elem in x])
 
     # 1) tensors/arrays with dim > 0
     maxdtype = explore_dtype(args, n_pass=1)
@@ -1080,30 +1030,6 @@ def ensure_shape(inp, shape, mode='constant', value=0, side='post'):
     return inp
 
 
-_bounds = {
-    'circular': _bound_circular,
-    'replicate': _bound_replicate,
-    'reflect': _bound_reflect1,
-    'reflect1': _bound_reflect1,
-    'reflect2': _bound_reflect2,
-    }
-_bounds['dft'] = _bounds['circular']
-_bounds['dct2'] = _bounds['reflect2']
-_bounds['dct1'] = _bounds['reflect1']
-
-
-_modifiers = {
-    'circular': lambda x, i, n: x,
-    'replicate': lambda x, i, n: x,
-    'reflect': lambda x, i, n: x,
-    'reflect1': lambda x, i, n: x,
-    'reflect2': lambda x, i, n: x,
-    }
-_modifiers['dft'] = _modifiers['circular']
-_modifiers['dct2'] = _modifiers['reflect2']
-_modifiers['dct1'] = _modifiers['reflect1']
-
-
 def pad(inp, padsize, mode='constant', value=0, side=None):
     """Pad a tensor.
 
@@ -1151,9 +1077,9 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
 
     """
     # Argument checking
-    if mode not in tuple(_bounds.keys()) + ('constant', 'zero', 'zeros'):
-        raise ValueError('Padding mode should be one of {}. Got {}.'
-                         .format(tuple(_bounds.keys()) + ('constant',), mode))
+    # if mode not in bounds.all_bounds:
+    #     raise ValueError(f'Padding mode should be one of {bounds.all_bounds}. '
+    #                      f'Got {mode}.')
     padsize = tuple(padsize)
     if not side:
         if len(padsize) % 2:
@@ -1178,23 +1104,18 @@ def pad(inp, padsize, mode='constant', value=0, side=None):
     if inp.dim() != len(padpre) or inp.dim() != len(padpost):
         raise ValueError('Padding length too large')
 
-    padpre = torch.as_tensor(padpre)
-    padpost = torch.as_tensor(padpost)
-
     # Pad
-    if mode in ('zero', 'zeros'):
-        mode, value = ('constant', 0)
-    if mode == 'constant':
+    mode = py.ensure_list(mode)
+    mode = mode[:1] * max(0, inp.dim()-len(mode)) + mode
+    mode = list(map(bounds.to_nitorch, mode))
+    if all(m == 'zero' for m in mode):
         return _pad_constant(inp, padpre, padpost, value)
     else:
-        bound = _bounds[mode]
-        modifier = _modifiers[mode]
-        return _pad_bound(inp, padpre, padpost, bound, modifier)
+        bound = [getattr(bounds, m + '_') for m in mode]
+        return _pad_bound(inp, padpre, padpost, bound)
 
 
 def _pad_constant(inp, padpre, padpost, value):
-    padpre = padpre.tolist()
-    padpost = padpost.tolist()
     new_shape = [s + pre + post
                  for s, pre, post in zip(inp.shape, padpre, padpost)]
     out = inp.new_full(new_shape, value)
@@ -1203,16 +1124,77 @@ def _pad_constant(inp, padpre, padpost, value):
     return out
 
 
-def _pad_bound(inp, padpre, padpost, bound, modifier):
-    begin = -padpre
-    end = tuple(d+p for d, p in zip(inp.size(), padpost))
-    idx = tuple(range(b, e) for (b, e) in zip(begin, end))
-    idx = tuple(bound(torch.as_tensor(i, device=inp.device),
-                      torch.as_tensor(n, device=inp.device))
-                for (i, n) in zip(idx, inp.shape))
-    for d in range(inp.dim()):
-        inp = inp.index_select(d, idx[d])
-    return inp
+def _pad_bound(inp, padpre, padpost, bound):
+    begin = list(map(lambda x: -x, padpre))
+    end = tuple(d+p for d, p in zip(inp.shape, padpost))
+
+    grid = [torch.arange(b, e, device=inp.device) for (b, e) in zip(begin, end)]
+    mult = [None] * inp.dim()
+    for d, n in enumerate(inp.shape):
+        grid[d], mult[d] = bound[d](grid[d], n)
+    grid = list(meshgrid_ij(*grid))
+    if any(map(torch.is_tensor, mult)):
+        mult = meshgrid_ij(*mult)
+    mult = py.prod(mult)
+    grid = jit.sub2ind_list(grid, inp.shape)
+
+    out = inp.flatten()[grid]
+    if torch.is_tensor(mult) or mult != 1:
+        out *= mult
+    return out
+
+
+def roll(inp, shifts=1, dims=None, bound='dft'):
+    r"""Like torch.roll, but with any boundary condition
+
+    /!\ When dims is None, we do not flatten but shift all dimensions.
+    /!\ This differs from the behavior of torch.roll .
+
+    Parameters
+    ----------
+    inp : tensor
+        Input
+    shifts : [sequence of] int
+        Amount by which to roll.
+        Positive shifts to the right, negative to the left.
+    dims : [sequence of] int
+        Dimensions to roll.
+        By default, shifts apply to all dimensions if a scalar,
+        or to the last N if a sequence.
+    bound : bound-like
+        Boundary condition
+
+    Returns
+    -------
+    out : tensor
+        Rolled tensor
+
+    """
+    if dims is None:
+        if isinstance(shifts, int):
+            dims = list(range(inp.dim()))
+        else:
+            shifts = py.make_list(shifts)
+            dims = list(range(-len(shifts), 0))
+    dims = py.make_list(dims)
+    shifts = py.make_list(shifts, len(dims))
+    bound = map(bounds.to_nitorch, py.make_list(bound, len(dims)))
+    bound = [getattr(bounds, b + '_') for b in bound]
+
+    grid = [torch.arange(n, device=inp.device) for n in inp.shape]
+    mult = [1] * inp.dim()
+    for d, s, b in zip(dims, shifts, bound):
+        grid[d] -= s
+        grid[d], mult[d] = b(grid[d], inp.shape[d])
+    grid = list(meshgrid_ij(*grid))
+    if any(map(torch.is_tensor, mult)):
+        mult = meshgrid_ij(*mult)
+    mult = py.prod(mult)
+    grid = jit.sub2ind_list(grid, inp.shape)
+
+    out = inp.flatten()[grid]
+    out *= mult
+    return out
 
 
 def channel2last(tensor):
@@ -2108,6 +2090,75 @@ def min_intensity_step(x, max_points=1e6):
     x = x[1:] - x[:-1]
     x = x[x > 0].min().item()
     return x
+
+
+def apply_patchwise(fn, img, patch=256, overlap=None, batchout=None,
+                    dim=None, device=None, bound='dct2'):
+    """Apply a function to a tensor patch-wise
+
+    Parameters
+    ----------
+    fn : callable[Tensor] -> Tensor
+        Function to apply, should return a tensor with the same shape
+        as the input tensor.
+    img : (*batchin, *spatial) tensor
+        Input tensor
+    patch : [list of] int
+        Patch size per dimension
+    overlap : [list of] int, optional
+        Amount of overlap across patches.
+        By default, half of the patch overlaps.
+    batchout : list[int], default=`batchin`
+        Output batch-size.
+    dim : int, optional
+        Number of spatial dimensions. By default, try to guess.
+    device : torch.device, default=`img.device`
+        Run patches on this device
+    bound : str, default='dct2'
+        Boundary conditions used to pad the input tensor, if needed.
+
+    Returns
+    -------
+    out : Output tensor
+
+    """
+    dim = dim or (len(patch) if hasattr(patch, '__len__') else img.dim())
+    patch = py.make_list(patch, dim)
+    overlap = py.make_list(overlap, dim)
+    overlap = [p//2 if o is None else o for o, p in zip(overlap, patch)]
+    opatch = [p-o for o, p in zip(overlap, patch)]
+
+    batchin, spatial = img.shape[:-dim], img.shape[-dim:]
+    if batchout is None:
+        batchout = batchin
+    out = img.new_zeros([*batchout, *spatial])
+
+    padsize = [_ for o in overlap for _ in (o//2, o)]
+    img = pad(img, padsize, mode=bound)
+
+    if device and torch.device(device).type == 'cuda' and img.device.type == 'cpu':
+        img = img.pin_memory()
+        out = out.pin_memory()
+
+    nb_patch = [int(pymath.ceil(s/p)) for s, p in zip(spatial, opatch)]
+    indices = itertools.product(*[range(n) for n in nb_patch])
+    for index in indices:
+        # extract input patch (with overlap)
+        img_slicer = [slice(op*i, op*i+p)
+                      for op, p, i in zip(opatch, patch, index)]
+        img_slicer = (Ellipsis, *img_slicer)
+        block = img[img_slicer].to(device)
+        # apply function
+        block = fn(block).detach()
+        # extract center of output patch and assign to output volume
+        out_shape = [min(s, op*(i+1)) - op*i
+                     for s, op, i in zip(spatial, opatch, index)]
+        blk_slicer = [slice(o//2, o//2+s) for o, s in zip(overlap, out_shape)]
+        blk_slicer = (Ellipsis, *blk_slicer)
+        out_slicer = [slice(op*i, op*(i+1)) for op, i in zip(opatch, index)]
+        out_slicer = (Ellipsis, *out_slicer)
+        out[out_slicer] = block[blk_slicer].to(out)
+    return out
 
 
 class benchmark:

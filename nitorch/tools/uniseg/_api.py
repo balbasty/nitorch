@@ -149,7 +149,7 @@ def uniseg(x, w=None, affine=None, device=None,
         if len(prior) == 5:
             nb_classes = (4, 2, 2, 2, 2, 3)
         else:
-            nb_classes = len(prior) + 1
+            nb_classes = len(prior)
 
     # --- align --------------------------------------------------------
     aff = None
@@ -163,7 +163,7 @@ def uniseg(x, w=None, affine=None, device=None,
         else:
             prior_for_align = prior
         aff = align_tpm((x, affine), (prior_for_align, affine_prior), w,
-                        verbose=verbose-1, joint=True, flexi=flexi)
+                        verbose=verbose-1, flexi=flexi)
         affine = aff.to(affine).matmul(affine)
         del prior_for_align
 
@@ -199,6 +199,9 @@ def uniseg(x, w=None, affine=None, device=None,
         parameters['affine'] = aff
     if do_mrf in ('learn', True):
         parameters['mrf'] = model.mrf
+    if prior is not None:
+        parameters['warped'] = model.warp_tpm(
+            aff=affine, mode='softmax', shape=z.shape[1:])
 
     return z, lb, parameters
 
@@ -383,9 +386,9 @@ def get_data(x, w, affine, dim, **backend):
 
     if not torch.is_tensor(w) and w is not None:
         w = io.loadf(w, **backend)
-        if x.dim() > dim:
+        if w.dim() > dim:
             w = w.squeeze(-1)
-        if x.dim() > dim:
+        if w.dim() > dim:
             raise ValueError('Too many dimensions')
 
     step = min_intensity_step(x)

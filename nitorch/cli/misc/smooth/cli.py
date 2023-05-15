@@ -1,4 +1,7 @@
 import os.path
+
+import torch.cuda
+
 from nitorch.core.py import make_list, fileparts
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
@@ -40,6 +43,9 @@ def _cli(args):
     if isinstance(fwhm[-1], str):
         *fwhm, unit = fwhm
     fwhm = make_list(fwhm, 3)
+    device = 'cpu'
+    if options.gpu[0] == 'gpu' and torch.cuda.is_available():
+        device = f'cuda: {options.gpu[1]}'
 
     options.output = make_list(options.output, len(options.files))
     for fname, ofname in zip(options.files, options.output):
@@ -51,7 +57,7 @@ def _cli(args):
         else:
             fwhm1 = fwhm[:len(vx)]
 
-        dat = f.fdata()
+        dat = f.fdata(device=device)
         dat = movedim_front2back(dat, dim)
         dat = smooth(dat, type=options.method, fwhm=fwhm1, basis=options.basis,
                      bound=options.padding, dim=dim)

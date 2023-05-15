@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class View(cli.ParsedStructure):
+class View(Structure):
     """Structure that holds parameters of the `denoise_mri` command"""
     files: list = []
 

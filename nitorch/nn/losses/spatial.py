@@ -42,7 +42,7 @@ class GridLoss(Loss):
         bending : float, default=0.2
             Penalty on bending energy (second derivatives)
         lame : (float, float), default=(0.05, 0.2)
-            Penalty on linear-elastic energy (divergence and shears)
+            Penalty on linear-elastic energy (shears and divergence)
         reduction : {'mean', 'sum'} or callable, default='mean'
             Type of reduction to apply.
         """

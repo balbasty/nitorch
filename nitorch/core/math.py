@@ -5,9 +5,12 @@
 import torch
 import math as pymath
 from typing import List
+
 from .optionals import custom_fwd, custom_bwd
 from .constants import inf, ninf
-from nitorch.core import py, utils
+from . import py, utils
+from .version import torch_version
+
 Tensor = torch.Tensor
 
 
@@ -29,7 +32,7 @@ def round(t, decimals=0):
     return torch.round(t * 10 ** decimals) / (10 ** decimals)
 
 
-if utils.torch_version('>=', (1, 8)):
+if torch_version('>=', (1, 8)):
     def floor_div(x, y):
         return torch.div(x, y, rounding_mode='floor')
 else:

@@ -473,7 +473,7 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
     .. This is exactly equivalent to SPM's linear-elastic energy.
     .. It penalizes the square of the trace of the Jacobian
        (i.e., volume changes)
-    .. Formaly: `<f, Lf> = \int (\sum_i df_i/dx_i)^2 dx
+    .. Formally: `<f, Lf> = \int [(\sum_i df_i/dx_i)^2 - \sum_i (df_i/dx_i)^2] dx
 
     Parameters
     ----------
@@ -1092,9 +1092,9 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     if bending:
         y.add_(bending_grid(v, weights=wb, **fdopt), alpha=bending)
     if lame[0]:
-        y.add_(lame_div(v, weights=wl[0], **fdopt), alpha=lame[0])
+        y.add_(lame_shear(v, weights=wl[0], **fdopt), alpha=lame[1])
     if lame[1]:
-        y.add_(lame_shear(v, weights=wl[1], **fdopt), alpha=lame[1])
+        y.add_(lame_div(v, weights=wl[1], **fdopt), alpha=lame[0])
 
     return y
 
@@ -1118,7 +1118,7 @@ def regulariser_grid_kernel(dim, absolute=0, membrane=0, bending=0, lame=0,
     kernel : ([dim, [dim,]] *spatial) sparse tensor
 
     """
-    lame_div, lame_shear = core.py.make_list(lame, 2)
+    lame_shear, lame_div = core.py.make_list(lame, 2)
     backend = dict(dtype=dtype, device=device)
 
     kernels = []
@@ -1128,10 +1128,10 @@ def regulariser_grid_kernel(dim, absolute=0, membrane=0, bending=0, lame=0,
         kernels.append(membrane_grid_kernel(dim, voxel_size, **backend) * membrane)
     if bending:
         kernels.append(bending_grid_kernel(dim, voxel_size, **backend) * bending)
-    if lame_div:
-        kernels.append(lame_div_kernel(dim, voxel_size, **backend) * lame_div)
     if lame_shear:
         kernels.append(lame_shear_kernel(dim, voxel_size, **backend) * lame_shear)
+    if lame_div:
+        kernels.append(lame_div_kernel(dim, voxel_size, **backend) * lame_div)
     kernel = sum_kernels(dim, *kernels)
     kernel *= factor
     return kernel

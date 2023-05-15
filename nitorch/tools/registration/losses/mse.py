@@ -1,31 +1,54 @@
 from nitorch.core import utils, py
 from .base import OptimizationLoss
+import torch
 
 
-def weighted_precision(moving, fixed, weights=None, dim=None):
+def preproc_lam(lam, dim):
+    if lam is None:
+        lam = 1
+    elif lam.dim() <= 2:
+        if lam.dim() == 0:
+            lam = lam.flatten()
+        lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
+    return lam
+
+
+def sumweights(weights, spatial, keepdim=True):
+    dim = len(spatial)
+    if torch.is_tensor(weights):
+        return weights.sum(list(range(-dim, 0)), keepdim=keepdim)
+    else:
+        nvox = py.prod(spatial)
+        if weights:
+            nvox *= weights
+        return nvox
+
+
+def weighted_precision(moving, fixed, weights=None, dim=None, keepdim=False):
     """Estimate the (weighted) error precision (= inverse variance)
 
     Parameters
     ----------
-    moving : ([*batch], *spatial) tensor
-    fixed : ([*batch], *spatial) tensor
-    weights : ([*batch], *spatial) tensor, optional
+    moving : (..., *spatial) tensor
+    fixed : (... *spatial) tensor
+    weights : (..., *spatial) tensor, optional
     dim : int, default=`fixed.dim()-1`
+    keepdim
 
     Returns
     -------
-    lam : ([*batch])) tensor
-        Precision
+    lam : (...) tensor or (..., *ones) tensor
+        Precision. If `keepdim`, the spatial dimensions are preserved.
 
     """
     dim = dim or fixed.dim() - 1
     residuals = (moving - fixed).square_()
     if weights is not None:
         residuals.mul_(weights)
-        lam = residuals.sum(dim=list(range(-dim, 0)))
-        lam = lam.div_(weights.sum(dim=list(range(-dim, 0))))
+        lam = residuals.sum(dim=list(range(-dim, 0)), keepdim=keepdim)
+        lam = lam.div_(weights.sum(dim=list(range(-dim, 0)), keepdim=keepdim))
     else:
-        lam = residuals.mean(dim=list(range(-dim, 0)))
+        lam = residuals.mean(dim=list(range(-dim, 0)), keepdim=keepdim)
     lam = lam.reciprocal_()  # variance to precision
     return lam
 
@@ -62,37 +85,21 @@ def mse(moving, fixed, lam=1, dim=None, grad=True, hess=True, mask=None):
 
     """
     fixed, moving, lam = utils.to_max_backend(fixed, moving, lam)
-    if mask is not None:
-        mask = mask.to(fixed.device)
+    mask = mask.to(fixed.device) if mask is not None else 1
     dim = dim or (fixed.dim() - 1)
-    if lam.dim() <= 2:
-        if lam.dim() == 0:
-            lam = lam.flatten()
-        lam = utils.unsqueeze(lam, -1, dim)  # pad spatial dimensions
-    nvox = py.prod(fixed.shape[-dim:])
+    lam = preproc_lam(lam, dim)
+    nvox = sumweights(mask, fixed.shape[-dim:])
 
-    if moving.requires_grad:
-        ll = moving - fixed
-        if mask is not None:
-            ll = ll.mul_(mask)
-        ll = ll.square().mul_(lam).sum() / (2*nvox)
-    else:
-        ll = moving - fixed
-        if mask is not None:
-            ll = ll.mul_(mask)
-        ll = ll.square_().mul_(lam).sum() / (2*nvox)
+    ll = moving - fixed
+    ll = ll.square() if moving.requires_grad else ll.square_()
+    ll = 0.5 * ll.mul_(mask).mul_(lam).div_(nvox).sum()
 
     out = [ll]
     if grad:
-        g = moving - fixed
-        if mask is not None:
-            g = g.mul_(mask)
-        g = g.mul_(lam).div_(nvox)
+        g = (moving - fixed).mul_(mask).mul_(lam).div_(nvox)
         out.append(g)
     if hess:
-        h = lam/nvox
-        if mask is not None:
-            h = mask * h
+        h = lam * mask / nvox
         out.append(h)
 
     return tuple(out) if len(out) > 1 else out[0]
@@ -109,13 +116,25 @@ class MSE(OptimizationLoss):
         Parameters
         ----------
         lam : (K|1,) tensor_like
-            Precision
+            Precision. If None, ML-estimated before each step.
         dim : int, default=`fixed.dim() - 1`
             Number of spatial dimensions
         """
         super().__init__()
         self.lam = lam
         self.dim = dim
+
+    def compute_lam(self, lam, moving, fixed, mask, dim):
+        dim = dim or fixed.dim() - 1
+        lll = 0
+        if lam is None:
+            nvox = sumweights(mask, fixed.shape[-dim:], keepdim=True)
+            nvoxsum = nvox.sum() if torch.is_tensor(nvox) else nvox
+            lam = weighted_precision(moving, fixed, dim=dim, weights=mask, keepdim=True)
+            lll = -0.5 * lam.log().mul(nvox).sum().div(nvoxsum)
+            for _ in range(dim):
+                lam = lam.squeeze(-1)
+        return lam, lll
 
     def loss(self, moving, fixed, **kwargs):
         """Compute the [weighted] mse (* 0.5)
@@ -138,12 +157,9 @@ class MSE(OptimizationLoss):
         lam = kwargs.pop('lam', self.lam)
         dim = kwargs.pop('dim', self.dim)
         mask = kwargs.pop('mask', None)
-        lll = 0
-        if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
-            lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
-        llx = mse(moving, fixed, dim=dim, lam=lam, grad=False, hess=False,
-                  mask=mask)
+        lam, lll = self.compute_lam(lam, moving, fixed, mask, dim)
+        llx = mse(moving, fixed, dim=dim, lam=lam, mask=mask,
+                  grad=False, hess=False)
         return llx + lll
 
     def loss_grad(self, moving, fixed, **kwargs):
@@ -167,12 +183,9 @@ class MSE(OptimizationLoss):
         lam = kwargs.pop('lam', self.lam)
         dim = kwargs.pop('dim', self.dim)
         mask = kwargs.pop('mask', None)
-        lll = 0
-        if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
-            lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
-        llx, g = mse(moving, fixed, dim=dim, lam=lam, hess=False, mask=mask,
-                     **kwargs)
+        lam, lll = self.compute_lam(lam, moving, fixed, mask, dim)
+        llx, g = mse(moving, fixed, dim=dim, lam=lam, mask=mask,
+                     hess=False)
         return llx + lll, g
 
     def loss_grad_hess(self, moving, fixed, **kwargs):
@@ -198,9 +211,6 @@ class MSE(OptimizationLoss):
         lam = kwargs.pop('lam', self.lam)
         dim = kwargs.pop('dim', self.dim)
         mask = kwargs.pop('mask', None)
-        lll = 0
-        if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
-            lll = -0.5 * lam.log().sum()  # mse: no need to divide by voxels
-        llx, g, h = mse(moving, fixed, dim=dim, lam=lam, mask=mask, **kwargs)
+        lam, lll = self.compute_lam(lam, moving, fixed, mask, dim)
+        llx, g, h = mse(moving, fixed, dim=dim, lam=lam, mask=mask)
         return llx + lll, g, h

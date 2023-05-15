@@ -3,8 +3,8 @@ from nitorch.core import py, utils
 import os
 
 
-def pool(inp, window=3, stride=None, method='mean', dim=3, output=None,
-         device=None):
+def pool(inp, window=3, stride=None, padding=0, bound='dct2',
+         method='mean', dim=3, output=None, device=None):
     """Pool a ND volume, while preserving the orientation matrices.
 
     Parameters
@@ -18,6 +18,8 @@ def pool(inp, window=3, stride=None, method='mean', dim=3, output=None,
     stride : [sequence of] int, optional
         Stride between output elements.
         By default, it is the same as `window`.
+    padding : [sequence of] int or 'same', optional
+        Padding on both sides.
     method : {'mean', 'sum', 'min', 'max', 'median'}, default='mean'
         Pooling function.
     dim : int, default=3
@@ -61,8 +63,15 @@ def pool(inp, window=3, stride=None, method='mean', dim=3, output=None,
     batch = dat.shape[dim:]
     dat = dat.reshape([*spatial_in, -1])
     dat = utils.movedim(dat, -1, 0)
-    dat, aff = spatial.pool(dim, dat, kernel_size=window, stride=stride,
-                            reduction=method, affine=aff0)
+    dat, aff = spatial.pool(
+        dim, dat,
+        kernel_size=window,
+        stride=stride,
+        padding=padding,
+        bound=bound,
+        reduction=method,
+        affine=aff0
+    )
     dat = utils.movedim(dat, 0, -1)
     dat = dat.reshape([*dat.shape[:dim], *batch])
 

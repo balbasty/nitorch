@@ -10,12 +10,13 @@ from nitorch.core import py, dtypes
 from nitorch.io.mapping import AccessType
 from nitorch.io.utils.indexing import (is_fullslice, split_operation,
                                        slicer_sub2ind, invert_slice)
-from nitorch.io.utils import volutils
 from nitorch.io.volumes.mapping import MappedArray
 from nitorch.io.volumes.readers import reader_classes
+from nitorch.io.volumes.writers import writer_classes
 from nitorch.io.metadata import keys as metadata_keys
+from nitorch.io.volumes.loadsave import map as map_array
 # tiff
-from tifffile import TiffFile, TiffFileError
+from tifffile import TiffFile, TiffFileError, TiffWriter
 from .metadata import ome_zooms, parse_unit
 
 
@@ -25,6 +26,10 @@ class TiffArray(MappedArray):
     """
 
     FailedReadError = TiffFileError
+
+    @classmethod
+    def possible_extensions(cls):
+        return '.tif', '.tiff'
 
     def __init__(self, file_like, mode='r', keep_open=True, **hints):
         """
@@ -223,6 +228,78 @@ class TiffArray(MappedArray):
         with self.tiffobj() as f:
             return f.filename
 
+    _tiff_kinds = (
+        'shaped',
+        'bigtiff',
+        'lsm',
+        'mmstack',
+        'ome',
+        'imagej',
+        'ndtiff',
+        'fluoview',
+        'stk',
+        'sis',
+        'svs',
+        'scn',
+        'qpi',
+        'ndpi',
+        'bif',
+        'scanimage',
+        'nih',
+        'mdgel',
+        'uniform',
+    )
+
+    _metadata_types = (
+        'shaped',
+        'ome',
+        'scn',
+        'lsm',
+        'stk',
+        'imagej',
+        'fluoview',
+        'nih',
+        'fei',
+        'sem',
+        'sis',
+        'mdgel',
+        'andor',
+        'epics',
+        'metaseries',
+        'pilatus',
+        'micromanager',
+        'gdal',
+        'scanimage',
+        'geotiff',
+        'gdal',
+        'astrotiff',
+        'streak',
+        'eer',
+    )
+
+    def _info4writer(self):
+        info = {}
+        with self.tiffobj() as tiff:
+            info['byteorder'] = tiff.byteorder
+            for kind in self._tiff_kinds:
+                info['is_' + kind] = getattr(tiff, 'is_' + kind, None)
+            for metadata_dtype in self._metadata_types:
+                info[metadata_dtype + '_metadata'] = getattr(tiff, metadata_dtype + '_metadata', None)
+            info['dtype'] = tiff.pages.first.dtype
+            # shaped = [samplesperpixel_separate, imagedepth, imagelength, imagewidth, samplesperpixel_contig]
+            info['shaped'] = tiff.pages.first.shaped
+            info['axes'] = tiff.pages.first.axes  # "SXYZ"
+            info['photometric'] = tiff.pages.first.photometric
+            info['compression'] = tiff.pages.first.compression
+            info['predictor'] = tiff.pages.first.predictor
+            info['subsampling'] = tiff.pages.first.subsampling
+            info['colormap'] = tiff.pages.first.colormap
+            info['description'] = tiff.pages.first.description
+            info['datetime'] = tiff.pages.first.datetime
+            info['resolution'] = tiff.pages.first.resolution
+            info['resolutionunit'] = tiff.pages.first.resolutionunit
+        return info
+
     def raw_data(self):
         # --- check that view is not empty ---
         if py.prod(self.shape) == 0:
@@ -235,6 +312,110 @@ class TiffArray(MappedArray):
         dat = dat.transpose(perm)[newdim]
         return dat
 
+    @classmethod
+    def savef_new(cls, dat, file_like, like=None, **metadata):
+
+        if isinstance(dat, MappedArray):
+            if like is None:
+                like = dat
+            dat = dat.fdata(numpy=True)
+
+        # sanity check
+        dtype = dtypes.dtype(dat.dtype)
+        if not dtype.is_floating_point:
+            raise TypeError('Input data type should be a floating point '
+                            'type but got {}.'.format(dat.dtype))
+
+        # detach
+        if torch.is_tensor(dat):
+            dat = dat.detach().cpu().numpy()
+
+        # defer
+        cls.save_new(dat, file_like, like=like, casting='unsafe',
+                     _savef=True, **metadata)
+
+    @classmethod
+    def save_new(cls, dat, file_like, like=None, casting='unsafe',
+                 _savef=False, **metadata):
+
+        if isinstance(dat, MappedArray):
+            if like is None:
+                like = dat
+            dat = dat.data(numpy=True)
+        if torch.is_tensor(dat):
+            dat = dat.detach().cpu()
+        dat = np.asanyarray(dat)
+        if like is not None:
+            like = map_array(like)
+
+        # guess data type:
+        def guess_dtype():
+            dtype = None
+            if dtype is None:
+                dtype = metadata.get('dtype', None)
+            if dtype is None and like is not None:
+                dtype = like.dtype
+            if dtype is None:
+                dtype = dat.dtype
+            dtype = dtypes.dtype(dtype).numpy
+            return dtype
+
+        dtype = guess_dtype()
+
+        # build header
+        init_kwargs = {}
+        write_kwargs = {}
+        if isinstance(like, TiffArray):
+            info = like._info4writer()
+            default = lambda key: info[key] or None
+        else:
+            info = None
+            default = lambda key: None
+        init_kwargs['ome'] = metadata.get('ome', default('is_ome'))
+        init_kwargs['imagej'] = metadata.get('imagej', default('is_imagej'))
+        init_kwargs['bigtiff'] = metadata.get('bigtiff', default('is_bigtiff'))
+        # init_kwargs['shaped'] = metadata.get('shaped', default('is_shaped'))
+        init_kwargs['byteorder'] = metadata.get('byteorder', default('byteorder'))
+        write_kwargs['photometric'] = metadata.get('photometric', default('photometric') or 'MINISBLACK')
+        write_kwargs['compression'] = metadata.get('compression', default('compression'))
+        write_kwargs['predictor'] = metadata.get('predictor', default('predictor'))
+        write_kwargs['subsampling'] = metadata.get('subsampling', default('subsampling'))
+        write_kwargs['colormap'] = metadata.get('colormap', default('colormap'))
+        write_kwargs['description'] = metadata.get('description', default('description'))
+        write_kwargs['datetime'] = metadata.get('datetime', default('datetime'))
+        # if 'affine' in metadata:
+        #     vx = metadata['affine'].cpu().detach().square().sum(0).sqrt().numpy()
+        #     write_kwargs['resolution'] = 1/vx
+        #     write_kwargs['resolutionunit'] = metadata.get('voxel_size_unit', 'mm')
+        # else:
+        #     write_kwargs['resolution'] = metadata.get('resolution', default('resolution'))
+        #     write_kwargs['resolutionunit'] = metadata.get('resolutionunit', default('resolutionunit'))
+        if info:
+            if init_kwargs['ome']:
+                write_kwargs['metadata'] = info['ome_metadata'] or None
+            elif init_kwargs['imagej']:
+                write_kwargs['metadata'] = info['imagej_metadata'] or None
+            elif init_kwargs['shaped']:
+                write_kwargs['metadata'] = info['shaped_metadata'] or None
+            else:
+                for metadata_type in cls._metadata_types:
+                    if info.get(metadata_type + '_metadata', None):
+                        write_kwargs['metadata'] = info[metadata_type + '_metadata']
+                        break
+
+        if init_kwargs['bigtiff'] is None:
+            init_kwargs['bigtiff'] = (
+                dat.nbytes > 2 ** 32 - 2 ** 25
+                and not init_kwargs['imagej']
+                and write_kwargs['compression'] in (None, 0, 1, 'NONE', 'none')
+            )
+
+        dat = dat.squeeze()
+
+        # write everything
+        with TiffWriter(file_like, **init_kwargs) as writer:
+            writer.write(dat, dtype=dtype, **write_kwargs)
+            
     # --------------
     #   LOW LEVEL
     # --------------
@@ -450,3 +631,4 @@ class TiffArray(MappedArray):
 
 
 reader_classes.append(TiffArray)
+writer_classes.append(TiffArray)

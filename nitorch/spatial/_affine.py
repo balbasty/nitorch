@@ -813,7 +813,8 @@ def _build_affine_basis(basis, dim=None, dtype=None, device=None):
         basename = name.split('[')[0]
         if basename in affine_subbasis_choices:
             return affine_subbasis(name, dim, dtype=dtype, device=device)
-        elif basename in affine_basis_choices:
+        elif basename in affine_basis_choices \
+                or basename in [v for val in affine_basis_aliases.values() for v in val]:
             return affine_basis(name, dim, dtype=dtype, device=device)
         else:
             raise ValueError('Unknown basis name {}.'.format(basename))
@@ -1709,7 +1710,7 @@ def affine_rmdiv(a, b):
     return affine_matmul(a, affine_inv(b))
 
 
-def affine_resize(affine, shape, factor, anchor='c'):
+def affine_resize(affine, shape, factor, anchor='c', shape_out=None):
     """Update an affine matrix according to a resizing of the lattice.
 
     Notes
@@ -1757,7 +1758,8 @@ def affine_resize(affine, shape, factor, anchor='c'):
     info = {'dtype': affine.dtype, 'device': affine.device}
 
     # compute output shape
-    shape_out = [max(1, int(s * f)) for s, f in zip(shape, factor)]
+    if shape_out is None:
+        shape_out = [max(1, int(round(s * f))) for s, f in zip(shape, factor)]
 
     # compute shift and scale in each dimension
     shifts = []
@@ -2122,6 +2124,8 @@ def affine_conv(affine, shape, kernel_size, stride=1, padding=0,
     offset = []
     for L, S, Pi, D, K, Po in zip(shape, stride, padding,
                                   dilation, kernel_size, output_padding):
+        if K <= 0:
+            K = S
         if Pi == 'auto':
             if K % 2 == 0:
                 raise ValueError('Cannot compute automatic padding '
@@ -2622,6 +2626,8 @@ def compute_fov(mat, affines, shapes, pad=0, pad_unit='%'):
         corners = torch.matmul(M[:dim, :], corners)
         mx = torch.max(mx, torch.max(corners, dim=1)[0])
         mn = torch.min(mn, torch.min(corners, dim=1)[0])
+    if pad is None:
+        pad = 0
     pad = utils.make_vector(pad, dim, **backend)
     if pad_unit == '%':
         pad = pad / 100.
@@ -2664,7 +2670,8 @@ def fov_max(mat, affines, shapes, pad=0, pad_unit='%'):
     mx = torch.ceil(mx)
     mn = torch.floor(mn)
     shape = (mx - mn + 1).long()
-    M = mn - 1
+    # M = mn - 1
+    M = mn
     M = torch.cat((torch.eye(dim, **backend), M[:, None]), dim=1)
     M = affine_make_homogeneous(as_euclidean(M))
     mat = torch.matmul(mat, M)

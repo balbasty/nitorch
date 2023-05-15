@@ -1,4 +1,6 @@
 import torch
+
+import nitorch.core.version
 from nitorch.core import utils, py, linalg, constants
 from nitorch.core.fft import ifftshift
 from ._finite_differences import diff1d, diff
@@ -222,7 +224,7 @@ def mrfield_greens2(shape, zdim=-1, voxel_size=1, dtype=None, device=None):
     # fourier transform
     #   symmetric kernel -> real coefficients
 
-    if utils.torch_version('>=', (1, 8)):
+    if nitorch.core.version.torch_version('>=', (1, 8)):
         g = torch.fft.fftn(g, dim=dim).real()
     else:
         if torch.backends.mkl.is_available:
@@ -297,7 +299,7 @@ def mrfield_greens(shape, absolute=0, membrane=0, bending=0, factor=1,
     # fourier transform
     #   symmetric kernel -> real coefficients
 
-    if utils.torch_version('>=', (1, 8)):
+    if nitorch.core.version.torch_version('>=', (1, 8)):
         kernel = torch.fft.fftn(kernel, dim=dim).real()
     else:
         if torch.backends.mkl.is_available:
@@ -333,7 +335,7 @@ def mrfield_greens_apply(mom, greens):
     dim = greens.dim()
 
     # fourier transform
-    if utils.torch_version('>=', (1, 8)):
+    if nitorch.core.version.torch_version('>=', (1, 8)):
         mom = torch.fft.fftn(mom, dim=dim)
     else:
         if torch.backends.mkl.is_available:
@@ -348,7 +350,7 @@ def mrfield_greens_apply(mom, greens):
     mom = mom * greens[..., None]
 
     # inverse fourier transform
-    if utils.torch_version('>=', (1, 8)):
+    if nitorch.core.version.torch_version('>=', (1, 8)):
         mom = torch.fft.ifftn(mom, dim=dim).real()
     else:
         mom = torch.ifft(mom, dim)[..., 0]

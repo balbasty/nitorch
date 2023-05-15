@@ -493,11 +493,17 @@ class MappedArray(MappedFile):
 
         """
         # --- sanity check before reading ---
-        dtype = self.dtype if dtype is None else dtype
-        dtype = dtypes.dtype(dtype)
-        if not numpy and dtype.torch is None:
-            raise TypeError('Data type {} does not exist in PyTorch.'
-                            .format(dtype))
+        if not numpy:
+            if dtype is not None:
+                dtype = dtypes.dtype(dtype)
+                if dtype.torch is None:
+                    raise TypeError(
+                        f'Data type {dtype} does not exist in PyTorch.'
+                    )
+            dtype = dtypes.dtype(dtype or self.dtype)
+            dtype = dtypes.dtype(dtype.torch_upcast)
+        else:
+            dtype = dtypes.dtype(dtype or self.dtype)
 
         # --- load raw data ---
         dat = self.raw_data()
@@ -1194,6 +1200,15 @@ class CatArray(MappedArray):
         for d in dim:
             slicer[d] = slice(None, None, -1)
         return self[tuple(slicer)]
+
+    def raw_data(self, *args, **kwargs):
+        # read individual arrays and concatenate them
+        # TODO: it would be more efficient to preallocate the whole
+        #   array and pass the appropriate buffer to each reader but
+        #   (1) we don't have the option to provide a buffer yet
+        #   (2) everything's already quite inefficient
+        dats = [array.raw_data(*args, **kwargs) for array in self._arrays]
+        return volutils.cat(dats, dim=self._dim_cat)
 
     def data(self, *args, **kwargs):
         # read individual arrays and concatenate them

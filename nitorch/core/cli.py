@@ -3,6 +3,7 @@ from copy import copy
 import collections
 import pprint
 from functools import wraps
+from collections.abc import Mapping
 
 
 class ParseError(RuntimeError):
@@ -88,76 +89,36 @@ def check_next_isvalue(args, group='', symbols='-'):
         raise ParseError(f'Expected a value for tag {group} but found nothing.')
 
 
-class ParsedStructure:
-    """Base class that implements initialization/copy of parameters"""
-    def __init__(self, **kwargs):
-        """
-        """
-        # make a copy of all class attributes to avoid cross-talk
-        for k in dir(self):
-            if k.startswith('_'):
-                continue
-            v = getattr(self, k)
-            if callable(v):
-                continue
-            setattr(self, k, copy(v))
-        # update user-provided attributes
-        for k, v in kwargs.items():
-            setattr(self, k, copy(v))
+class Parsed(dict):
 
-    def _ordered_keys(self):
-        """Get all class attributes, including inherited ones, in order.
-        Private members and methods are skipped.
-        """
-        unrolled = [type(self)]
-        while unrolled[0].__base__ is not object:
-            unrolled = [unrolled[0].__base__, *unrolled]
-        keys = []
-        for klass in unrolled:
-            for key in klass.__dict__.keys():
-                if key.startswith('_'):
-                    continue
-                if key in keys:
-                    continue
-                val = getattr(self, key)
-                if callable(val):
-                    continue
-                keys.append(key)
-        return keys
+    def __getattr__(self, item):
+        if item in self:
+            return self[item]
+        return super().__getattr__(item)
 
-    def _lines(self):
-        """Build all lines of the representation of this object.
-        Returns a list of str.
-        """
-        lines = []
-        for k in self._ordered_keys():
-            v = getattr(self, k)
-            if (isinstance(v, (list, tuple)) and v and
-                    isinstance(v[0], ParsedStructure)):
-                lines.append(f'{k} = [')
-                pad = '  '
-                for vv in v:
-                    l = [pad + ll for ll in vv._lines()]
-                    lines.extend(l)
-                    lines[-1] += ','
-                lines.append(']')
-            elif isinstance(v, ParsedStructure):
-                ll = v._lines()
-                lines.append(f'{k} = {ll[0]}')
-                lines.extend(ll[1:])
-            else:
-                lines.append(f'{k} = {v}')
+    def __setattr__(self, key, value):
+        self.__setitem__(key, value)
 
-        superpad = '  '
-        lines = [superpad + line for line in lines]
-        lines = [f'{type(self).__name__}('] + lines + [')']
-        return lines
+    def merge(self, *others):
+        for other in others:
+            for key, value in other.items():
+                setattr(self, key, value)
+        return self
 
-    def __repr__(self):
-        return '\n'.join(self._lines())
+    @classmethod
+    def _recursive_to_dict(cls, item):
+        if isinstance(item, dict):
+            return {key: cls._recursive_to_dict(val)
+                    for key, val in item.items()}
+        if isinstance(item, (list, tuple)):
+            return type(item)(cls._recursive_to_dict(val) for val in item)
+        if isinstance(item, Parsed):
+            return {key: cls._recursive_to_dict(val)
+                    for key, val in item.__dict__.items()}
+        return item
 
     def __str__(self):
-        return repr(self)
+        return pprint.pformat(self, indent=2)
 
 
 class Actions:
@@ -285,35 +246,6 @@ class Conversions:
         step = int(step or 1)
         stop = int(stop)
         return range(start, stop, step)
-
-
-class Parsed(ParsedStructure):
-    def merge(self, *others):
-        for other in others:
-            for key, value in other.__dict__.items():
-                setattr(self, key, value)
-        return self
-
-    @classmethod
-    def _recursive_to_dict(cls, item):
-        if isinstance(item, dict):
-            return {key: cls._recursive_to_dict(val)
-                    for key, val in item.items()}
-        if isinstance(item, (list, tuple)):
-            return type(item)(cls._recursive_to_dict(val) for val in item)
-        if isinstance(item, Parsed):
-            return {key: cls._recursive_to_dict(val)
-                    for key, val in item.__dict__.items()}
-        return item
-
-    def todict(self):
-        return self._recursive_to_dict(self)
-
-    def __repr__(self):
-        return repr(self.todict())
-
-    def __str__(self):
-        return pprint.pformat(self.todict(), indent=2)
 
 
 def _n_to_minmax(n):

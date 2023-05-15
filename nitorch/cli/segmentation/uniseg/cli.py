@@ -126,14 +126,14 @@ def write_outputs(z, prm, options):
 
     # --- native space -------------------------------------------------
 
-    if options.prob_nat or options.all_nat:
+    if options.prob_nat or (options.all_nat and options.prob_nat is not False):
         fname = options.prob_nat or '{dir}{sep}{base}.prob.nat{ext}'
         fname = fname.format(**format_dict)
         if options.verbose > 0:
             print('prob.nat     ->', fname)
         io.savef(torch.movedim(z, 0, -1), fname, like=ref_native, dtype='float32')
 
-    if options.labels_nat or options.all_nat:
+    if options.labels_nat or (options.all_nat and options.labels_nat is not False):
         fname = options.labels_nat or '{dir}{sep}{base}.labels.nat{ext}'
         fname = fname.format(**format_dict)
         if options.verbose > 0:
@@ -182,6 +182,13 @@ def write_outputs(z, prm, options):
             print('warp.nat     ->', fname)
         io.savef(warp, fname, like=ref_native, dtype='float32')
 
+    if options.prior_nat or options.all_nat:
+        fname = options.prior_nat or '{dir}{sep}{base}.prior.nat{ext}'
+        fname = fname.format(**format_dict)
+        if options.verbose > 0:
+            print('prior.nat     ->', fname)
+        io.savef(torch.movedim(prm['warped'], 0, -1), fname, like=ref_native, dtype='float32')
+
     # --- MNI space ----------------------------------------------------
     if options.tpm is False:
         # No template -> no MNI space
@@ -217,6 +224,16 @@ def write_outputs(z, prm, options):
             io.save(z_mni.argmax(0), fname, like=ref_native,
                     affine=mni_affine, dtype='int16')
         del z_mni
+
+    if options.prior_mni or options.all_mni:
+        mu_mni = spatial.reslice(prm['warped'], dat_affine, mni_affine, mni_shape)
+        fname = options.prob_mni or '{dir}{sep}{base}.prior.mni{ext}'
+        fname = fname.format(**format_dict)
+        if options.verbose > 0:
+            print('prior.mni     ->', fname)
+        io.savef(torch.movedim(mu_mni, 0, -1), fname, like=ref_native,
+                 affine=mni_affine, dtype='float32')
+        del mu_mni
 
     if options.bias and (options.bias_mni or options.nobias_mni or options.all_mni):
         bias = spatial.reslice(prm['bias'], dat_affine, mni_affine, mni_shape,
@@ -303,6 +320,16 @@ def write_outputs(z, prm, options):
                 print('labels.wrp   ->', fname)
             io.save(z_mni.argmax(0), fname, like=ref_native,
                     affine=mni_affine, dtype='int16')
+        del z_mni
+
+    if options.prior_wrp or options.all_wrp:
+        mu_mni = spatial.grid_pull(prm['warped'], iwarp)
+        fname = options.prob_mni or '{dir}{sep}{base}.prior.wrp{ext}'
+        fname = fname.format(**format_dict)
+        if options.verbose > 0:
+            print('prior.wrp     ->', fname)
+        io.savef(torch.movedim(mu_mni, 0, -1), fname, like=ref_native,
+                 affine=mni_affine, dtype='float32')
         del z_mni
 
     if options.bias and (options.bias_wrp or options.nobias_wrp or options.all_wrp):

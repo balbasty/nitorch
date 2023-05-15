@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class FileWithInfo(cli.ParsedStructure):
+class FileWithInfo(Structure):
     fname: str = None               # Full path
     shape: tuple = None             # Spatial shape
     affine = None                   # Orientation matrix
@@ -13,7 +14,7 @@ class FileWithInfo(cli.ParsedStructure):
     float: bool = True              # Is raw dtype floating point
 
 
-class Transform(cli.ParsedStructure):
+class Transform(Structure):
     file: str = None
     inv: bool = False
 
@@ -33,7 +34,7 @@ class Velocity(Transform):
     pass
 
 
-class Composer(cli.ParsedStructure):
+class Composer(Structure):
     transformations: list = []
     target: str = None
     output: str = 'composed{ext}'

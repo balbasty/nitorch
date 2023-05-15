@@ -65,7 +65,7 @@ def vexp(inp, type='displacement', unit='voxel', inverse=False,
     aff = aff.to(device=device)
 
     # exponentiate
-    displacement = True if (type.lower()[0] == 'd') else False
+    displacement = (type.lower()[0] == 'd')
     dat = spatial.exp(dat[None], inverse=inverse, steps=steps, bound=bound,
                       displacement=displacement)[0]
     if unit == 'mm':

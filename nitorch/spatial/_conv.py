@@ -313,7 +313,7 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
         `ceil(spatial_in / stride)` if `ceil` is True).
     bound : str, default='constant'
         Boundary conditions used in the padding.
-    reduction : {'mean', 'max', 'min', 'median', 'sum'} or callable, default='mean'
+    reduction : {'mean', 'max', 'min', 'median', 'sum', 'ssq'} or callable, default='mean'
         Function to apply to the elements in a window.
     ceil : bool, default=False
         Use ceil instead of floor to compute output shape
@@ -405,6 +405,8 @@ def pool(dim, tensor, kernel_size=3, stride=None, dilation=1, padding=0,
             reduction = lambda x: math.max(x, dim=-1)
         elif reduction == 'median':
             reduction = lambda x: math.median(x, dim=-1)
+        if reduction == 'ssq':
+            reduction = lambda x: math.mean(x.square(), dim=-1).sqrt()
         elif not callable(reduction):
             raise ValueError(f'Unknown reduction {reduction}')
         pool_fn = lambda *a, **k: _pool(*a, **k, dilation=dilation, reduction=reduction)

@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class Vexp(cli.ParsedStructure):
+class Vexp(Structure):
     """Structure that holds parameters of the `crop` command"""
     files: list = []
     type: str = 'd'

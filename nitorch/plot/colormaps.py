@@ -284,9 +284,9 @@ def intensity_preproc(*images, min=None, max=None, eq=None):
            for image, mx in zip(images, max)]
     max, *othermax = max
     for mx in othermax:
-        max = torch.max(max, mx)
+        max = torch.maximum(max, mx)
     del othermax
-    images = [torch.max(torch.min(image, max), min)
+    images = [torch.maximum(torch.minimum(image, max), min)
               for image in images]
     images = [image.mul_(1 / (max - min + eps)).add_(1 / (1 - max / min))
               for image in images]

@@ -587,7 +587,6 @@ class BabelArray(MappedArray):
                 dat -= inter
             if slope not in (1, None):
                 dat /= slope
-
         # cast + setdtype
         dat, s, o = volutils.cast(dat, dtype, casting=casting,
                                   returns='dat+scale+offset')

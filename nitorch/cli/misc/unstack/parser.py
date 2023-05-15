@@ -1,8 +1,9 @@
 from nitorch.core import cli
 from nitorch.core.cli import ParseError
+from nitorch.core.struct import Structure
 
 
-class Unstack(cli.ParsedStructure):
+class Unstack(Structure):
     """Structure that holds parameters of the `unstack` command"""
     files: list = []
     dim: int = -1

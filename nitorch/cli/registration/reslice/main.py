@@ -7,6 +7,7 @@ from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from nitorch.core import utils, py
 from nitorch.core.dtypes import dtype as nitype
+from nitorch.core.linalg import logm, expm
 from . import struct
 from .parser import parse, help
 from .. import helpers
@@ -25,7 +26,7 @@ def reslice(argv=None):
             return
 
         read_info(options)
-        collapse_transforms(options)
+        collapse(options)
         write_data(options)
 
     except ParseError as e:
@@ -122,12 +123,18 @@ def read_info(options):
                                       factor=factor, anchor='f')
 
 
-def collapse_transforms(options):
+def collapse(options):
+    options.transformations = collapse_transforms(options.transformations)
+
+
+def collapse_transforms(transformations):
     """Pre-invert affines and combine sequential affines"""
     trfs = []
     last_trf = None
-    for trf in options.transformations:
+    for trf in transformations:
         if isinstance(trf, struct.Linear):
+            if trf.square:
+                trf.affine = expm(logm(trf.affine).mul_(0.5))
             if trf.inv:
                 trf.affine = spatial.affine_inv(trf.affine)
                 trf.inv = False
@@ -142,7 +149,49 @@ def collapse_transforms(options):
             trfs.append(trf)
     if isinstance(last_trf, struct.Linear):
         trfs.append(last_trf)
-    options.transformations = trfs
+    return trfs
+
+
+def exponentiate_transforms(transformations, **backend):
+    for trf in transformations:
+        if isinstance(trf, struct.Velocity):
+            f = io.volumes.map(trf.file)
+            trf.affine = f.affine
+            trf.shape = squeeze_to_nd(f.shape, 3, 1)
+            trf.dat = f.fdata(**backend).reshape(trf.shape)
+            trf.shape = trf.shape[:3]
+            if trf.json:
+                if trf.square:
+                    trf.dat.mul_(0.5)
+                with open(trf.json) as f:
+                    prm = json.load(f)
+                prm['voxel_size'] = spatial.voxel_size(trf.affine)
+                trf.dat = spatial.shoot(trf.dat[None], displacement=True,
+                                        return_inverse=trf.inv)
+                if trf.inv:
+                    trf.dat = trf.dat[-1]
+            else:
+                if trf.square:
+                    trf.dat.mul_(0.5)
+                trf.dat = spatial.exp(trf.dat[None], displacement=True,
+                                      inverse=trf.inv)
+            trf.dat = trf.dat[0]  # drop batch dimension
+            trf.inv = False
+            trf.square = False
+            trf.order = 1
+        elif isinstance(trf, struct.Displacement):
+            f = io.volumes.map(trf.file)
+            trf.affine = f.affine
+            trf.shape = squeeze_to_nd(f.shape, 3, 1)
+            trf.dat = f.fdata(**backend).reshape(trf.shape)
+            trf.shape = trf.shape[:3]
+            if trf.unit == 'mm':
+                # convert mm displacement to vox displacement
+                trf.dat = spatial.affine_lmdiv(trf.affine, trf.dat[..., None])
+                trf.dat = trf.dat[..., 0]
+                trf.unit = 'vox'
+    return transformations
+
 
 
 def write_data(options):
@@ -158,6 +207,8 @@ def write_data(options):
             trf.dat = f.fdata(**backend).reshape(trf.shape)
             trf.shape = trf.shape[:3]
             if trf.json:
+                if trf.square:
+                    trf.dat.mul_(0.5)
                 with open(trf.json) as f:
                     prm = json.load(f)
                 prm['voxel_size'] = spatial.voxel_size(trf.affine)
@@ -166,10 +217,13 @@ def write_data(options):
                 if trf.inv:
                     trf.dat = trf.dat[-1]
             else:
+                if trf.square:
+                    trf.dat.mul_(0.5)
                 trf.dat = spatial.exp(trf.dat[None], displacement=True,
                                       inverse=trf.inv)
             trf.dat = trf.dat[0]  # drop batch dimension
             trf.inv = False
+            trf.square = False
             trf.order = 1
         elif isinstance(trf, struct.Displacement):
             f = io.volumes.map(trf.file)
@@ -194,8 +248,10 @@ def write_data(options):
             file.affine = spatial.affine_lmdiv(aff, mat)
         options.transformations = options.transformations[1:]
 
-    def build_from_target(affine, shape):
+    def build_from_target(affine, shape, smart=False):
         """Compose all transformations, starting from the final orientation"""
+        if smart and all(isinstance(trf, struct.Linear) for trf in options.transformations):
+            return None
         grid = spatial.affine_grid(affine.to(**backend), shape)
         for trf in reversed(options.transformations):
             if isinstance(trf, struct.Linear):
@@ -246,7 +302,7 @@ def write_data(options):
             opt_pull = dict(opt_pull0)
             opt_pull['interpolation'] = 1
         else:
-            dat = io.volumes.loadf(file.fname, rand=options.interpolation>0, **backend)
+            dat = io.volumes.loadf(file.fname, rand=False, **backend)
             opt_pull = opt_pull0
         dat = dat.reshape([*file.shape, file.channels])
         dat = utils.movedim(dat, -1, 0)
@@ -259,17 +315,18 @@ def write_data(options):
                                         dtype=oaffine.dtype)
                 factor = spatial.voxel_size(oaffine) / ovx
                 oaffine, oshape = spatial.affine_resize(oaffine, oshape, factor=factor, anchor='f')
-            grid = build_from_target(oaffine, oshape)
-        mat = file.affine.to(**backend)
-        imat = spatial.affine_inv(mat)
-        if options.prefilter and not is_label:
-            dat = spatial.spline_coeff_nd(dat, **opt_coeff)
-        dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt_pull)
+            grid = build_from_target(oaffine, oshape, smart=not options.voxel_size)
+        if grid is not None:
+            mat = file.affine.to(**backend)
+            imat = spatial.affine_inv(mat)
+            if options.prefilter and not is_label:
+                dat = spatial.spline_coeff_nd(dat, **opt_coeff)
+            dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt_pull)
         dat = utils.movedim(dat, 0, -1)
 
         if is_label:
-            io.volumes.save(dat, ofname, like=file.fname, affine=oaffine)
+            io.volumes.save(dat, ofname, like=file.fname, affine=oaffine, dtype=options.dtype)
         else:
-            io.volumes.savef(dat, ofname, like=file.fname, affine=oaffine)
+            io.volumes.savef(dat, ofname, like=file.fname, affine=oaffine, dtype=options.dtype)
 
 
