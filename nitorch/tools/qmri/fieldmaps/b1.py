@@ -301,22 +301,23 @@ def flash_b1(x, fa, tr, lam=(0, 0, 0), penalty=('m', 'm', 'm'),
         vmin, vmax = 0, 2 * mu
         y = flash_signals(fa, tr, *theta)
         ex = 3
+        plt.clf()
         plt.rcParams["figure.figsize"] = (4, len(x)+ex)
         for i in range(len(x)):
             plt.subplot(len(x) + ex, 4, 4 * i + 1)
-            plt.imshow(x[i, ..., x.shape[-1] // 2], vmin=vmin, vmax=vmax)
+            plt.imshow(x[i, ..., x.shape[-1] // 2].cpu(), vmin=vmin, vmax=vmax)
             plt.axis('off')
             plt.subplot(len(x) + ex, 4, 4 * i + 2)
-            plt.imshow(y[i, ..., x.shape[-1] // 2], vmin=vmin, vmax=vmax)
+            plt.imshow(y[i, ..., x.shape[-1] // 2].cpu(), vmin=vmin, vmax=vmax)
             plt.axis('off')
             plt.subplot(len(x) + ex, 4, 4 * i + 3)
-            plt.imshow(x[i, ..., x.shape[-1] // 2] -
-                       y[i, ..., y.shape[1] // 2],
+            plt.imshow((x[i, ..., x.shape[-1] // 2] -
+                        y[i, ..., y.shape[1] // 2]).cpu(),
                        cmap=plt.get_cmap('coolwarm'))
             plt.axis('off')
             plt.colorbar()
             plt.subplot(len(x) + ex, 4, 4 * i + 4)
-            plt.imshow((theta[-1, ..., x.shape[-1] // 2].exp() * fa[i]) / pymath.pi)
+            plt.imshow(((theta[-1, ..., x.shape[-1] // 2].exp() * fa[i]) / pymath.pi).cpu())
             plt.axis('off')
             plt.colorbar()
         all_fa = torch.linspace(0, 2*pymath.pi, 512)
@@ -325,9 +326,10 @@ def flash_b1(x, fa, tr, lam=(0, 0, 0), penalty=('m', 'm', 'm'),
                (theta.shape[1]//3, theta.shape[2]//3, theta.shape[3]//2)]
         for j, (nx, ny, nz) in enumerate(loc):
             plt.subplot(len(x) + ex,  1, len(x) + j + 1)
-            plt.plot(all_fa, flash_signals(all_fa, tr[:1]*512, *theta[:, nx, ny, nz]))
-            plt.scatter(fa, x[:, nx, ny, nz])
-        plt.show()
+            plt.plot(all_fa.cpu(), flash_signals(all_fa, tr[:1]*512, *theta[:, nx, ny, nz]).cpu())
+            plt.scatter(fa, x[:, nx, ny, nz].cpu())
+        # plt.show(block=False)
+        plt.pause(0.1)
 
         if gain < 1e-4 * n:
             break
