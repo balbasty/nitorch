@@ -149,7 +149,7 @@ def uniseg(x, w=None, affine=None, device=None,
         if len(prior) == 5:
             nb_classes = (4, 2, 2, 2, 2, 3)
         else:
-            nb_classes = len(prior) + 1
+            nb_classes = len(prior)
 
     # --- align --------------------------------------------------------
     aff = None

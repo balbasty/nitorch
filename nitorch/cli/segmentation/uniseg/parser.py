@@ -23,14 +23,17 @@ output:
 {space} can be `nat` (native), `mni` (affine) or `wrp` (nonlin)
 Only native prob/labels are written by default.
     -o, --output PATH               Output directory                    [same as input]
+        --labels-{space}  [FILE]    Labels                              [{dir}/{base}.labels.{space}{ext}]
         --prob-{space}    [FILE]    Posterior probabilities             [{dir}/{base}.prob.{space}{ext}]
         --prior-{space}   [FILE]    Prior probabilities                 [{dir}/{base}.prior.{space}{ext}]
-        --labels-{space}  [FILE]    Labels                              [{dir}/{base}.labels.{space}{ext}]
         --nobias-{space}  [FILE]    Bias-corrected MRI                  [{dir}/{base}.nobias.{space}{ext}]
         --bias-{space}    [FILE]    Bias field                          [{dir}/{base}.bias.{space}{ext}]
         --warp-{space}    [FILE]    Warp field                          [{dir}/{base}.warp.{space}{ext}]
         --all-{space}               All outputs in this space           [no] 
         --mni-vx FLOAT              Voxel size of MNI space             [same as TPM]
+By default, --prob-nat and --labels-nat are on. To deactivate them, use:
+        --no-labels-nat             Do not write native labels
+        --no-prob-nat               Do not write native posterior probabilities
 
 components:
     -k, --clusters *INT             Number of clusters per class        [4 2 2 2 2 3]
@@ -52,7 +55,7 @@ regularization:
     --lam-wish  FLOAT               Wishart regularization              [1]
 
 optimization:
-    -s, --spacing   FLOAT           Space between sampled points, in mm [3]
+    -s, --spacing  *FLOAT           Space between sampled points, in mm [3]
     -n, --max-iter  INT             Maximum number of EM iterations     [30]
         --tolerance FLOAT           Tolerance for early stopping        [1e-3]
     
@@ -108,19 +111,17 @@ for space in ('nat', 'mni', 'wrp'):
                       action=cli.Actions.store_value(default_fname),
                       default=default_fname if space == 'nat' else None)
     parser.add_option(f'prob_{space}', (f'--no-post-{space}', f'--no-prob-{space}'), nargs=0,
-                      action=cli.Actions.store_value(None))
+                      action=cli.Actions.store_value(False))
     default_fname = '{dir}{sep}{base}.labels.' + space + '{ext}'
     parser.add_option(f'labels_{space}', f'--labels-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=default_fname if space == 'nat' else None)
     parser.add_option(f'labels_{space}', f'--no-labels-{space}', nargs=0,
-                      action=cli.Actions.store_value(None))
+                      action=cli.Actions.store_value(False))
     default_fname = '{dir}{sep}{base}.prior.' + space + '{ext}'
     parser.add_option(f'prior_{space}', f'--prior-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
                       default=None)
-    parser.add_option(f'prior_{space}', f'--no-prior-{space}', nargs=0,
-                      action=cli.Actions.store_value(None))
     default_fname = '{dir}{sep}{base}.nobias.' + space + '{ext}'
     parser.add_option(f'nobias_{space}', f'--nobias-{space}', nargs='?',
                       action=cli.Actions.store_value(default_fname),
@@ -191,8 +192,8 @@ parser.add_option(f'lam_mrf', '--lam-mrf', nargs=1, convert=float,
 parser.add_option(f'lam_wish', '--lam-wish', nargs=1, convert=float,
                   default=1)
 # --- optimization -----------------------------------------------------
-parser.add_option(f'spacing', ('-s', '--spacing'), nargs=1,
-                  convert=float, default=3)
+parser.add_option(f'spacing', ('-s', '--spacing'), nargs='+',
+                  convert=float, default=[3])
 parser.add_option(f'iter', ('-n', '--max-iter'), nargs=1,
                   convert=int, default=30)
 parser.add_option(f'tolerance', '--tolerance', nargs=1,

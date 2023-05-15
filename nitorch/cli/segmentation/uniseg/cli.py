@@ -126,14 +126,14 @@ def write_outputs(z, prm, options):
 
     # --- native space -------------------------------------------------
 
-    if options.prob_nat or options.all_nat:
+    if options.prob_nat or (options.all_nat and options.prob_nat is not False):
         fname = options.prob_nat or '{dir}{sep}{base}.prob.nat{ext}'
         fname = fname.format(**format_dict)
         if options.verbose > 0:
             print('prob.nat     ->', fname)
         io.savef(torch.movedim(z, 0, -1), fname, like=ref_native, dtype='float32')
 
-    if options.labels_nat or options.all_nat:
+    if options.labels_nat or (options.all_nat and options.labels_nat is not False):
         fname = options.labels_nat or '{dir}{sep}{base}.labels.nat{ext}'
         fname = fname.format(**format_dict)
         if options.verbose > 0:
