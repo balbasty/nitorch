@@ -69,7 +69,8 @@ def atlas_crop(img, write=False, nam=None, odir=None, prefix='ac_',
 
 def affine_align(img, write=None, nam=None, odir=None, prefix='aa_',
                  device='cpu', cost_fun='nmi', samp=(3, 1.5),
-                 mean_space=False, group='SE', fix=0, fwhm=7.):
+                 mean_space=False, group='SE', fix=0, fwhm=7.0,
+                 verbose=False):
     """Affinely align images.
 
     This function aligns N images affinely, either pairwise or groupwise,
@@ -145,6 +146,8 @@ def affine_align(img, write=None, nam=None, odir=None, prefix='aa_',
     samp : (float, ), default=(3, 1.5)
     fix : int, default=0
         Index of image to used as fixed image, not used if mean_space=True.
+    verbose : bool, default=False
+        Show registration results.
 
     Returns
     -------
@@ -162,7 +165,7 @@ def affine_align(img, write=None, nam=None, odir=None, prefix='aa_',
     # Do preprocessing
     mat_a, mat_fix, dim_fix, _ = _affine_align(dat, mat,
         samp=samp, cost_fun=cost_fun, mean_space=mean_space,
-        group=group, fix=fix, verbose=False, fwhm=fwhm)
+        group=group, fix=fix, verbose=verbose, fwhm=fwhm)
     # Get original data
     dat = _format_input(img, device=device)[0]
     # Process registration results

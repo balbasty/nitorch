@@ -181,7 +181,7 @@ def compose(*args, interpolation='linear', bound='dft'):
     # Id  = cat((Id, one))
     # AA = arg.transpose(1, 2).bmm(arg)                # LHS of linear system
     # AI = arg.transpose(1, 2).bmm(arg)                # RHS of linear system
-    # M, _ = torch.solve(AI, AA)                       # Solution
+    # M, _ = lmdiv(AI, AA)                       # Solution
     # arg = arg.bmm(M) - Id                            # Closest displacement
     # arg = arg[..., :-1].reshape(shape)
     # arg = utils.last2channel(arg)
@@ -191,7 +191,7 @@ def compose(*args, interpolation='linear', bound='dft'):
     # V = torch.as_tensor(shape[1:-1]).prod()
     # field = field.reshape(N, V, D)
     # one = torch.ones((N, V, 1), dtype=field.dtype, device=field.device)
-    # field, _ = torch.solve(field.transpose(1, 2), M.transpose(1, 2))
+    # field, _ = lmdiv(field.transpose(1, 2), M.transpose(1, 2))
     # field = field.transpose(1, 2)[..., :-1].reshape(shape)
 
     return field

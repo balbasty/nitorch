@@ -9,7 +9,7 @@ from nitorch.plot import show_slices
 from nitorch.core import linalg
 from nitorch.core.kernels import smooth
 from nitorch.core.utils import pad
-from nitorch.spatial import identity_grid, im_gradient, voxel_size
+from nitorch.spatial import identity_grid, im_gradient, voxel_size, mean_space
 from .._preproc_utils import _mean_space
 from ..img_statistics import estimate_noise
 from ._costs import (_compute_cost, _costs_edge, _costs_hist)
@@ -77,7 +77,7 @@ def _rescale(dat, mn_out=0, mx_out=511):
     return dat
 
 
-def _do_optimisation(q, args, s, opt):
+def _do_optimisation(q, args, s, opt, dim):
     """Run optimisation routine to fit q.
 
     Parameters
@@ -90,6 +90,8 @@ def _do_optimisation(q, args, s, opt):
         See run_affine_reg.
     s : float
         Current sub-sampling level.
+    dim : int
+        Number of dimensions.
 
     Returns
     ----------
@@ -115,15 +117,15 @@ def _do_optimisation(q, args, s, opt):
         # ----------
         # Feasible initial search directions
         # [translation, rotation, scaling, skew]
-        direc = np.concatenate([0.5*np.ones(3),   0.025*np.ones(3),
-                                0.005*np.ones(3), 0.005*np.ones(3)])
+        direc = np.concatenate([0.5*np.ones(dim),   0.025*np.ones(dim),
+                                0.005*np.ones(dim), 0.005*np.ones(dim)])
         direc = direc[:Nq]
         direc = np.tile(direc, N)
         direc = np.diag(direc)
         # Feasible upper and lower bounds
         # [translation, rotation, scaling, skew]
-        ub = np.concatenate([100*np.ones(3),   0.5*np.ones(3),
-                             0.15*np.ones(3), 0.15*np.ones(3)])
+        ub = np.concatenate([100*np.ones(dim),   0.5*np.ones(dim),
+                             0.15*np.ones(dim), 0.15*np.ones(dim)])
         ub = ub[:Nq]
         ub = np.tile(ub, N)
         lb = -ub
@@ -178,13 +180,14 @@ def _fit_q(q, dat_fix, grid, mat_fix, dat, mat, mov, B, s, opt):
         All arguments for optimiser (except the parameters to be fitted (q))
 
     """
+    dim = mat[0].shape[0] - 1
     if opt['cost_fun'] in _costs_edge:  # Groupwise optimisation
         # Arguments to _compute_cost
         m = mov
         args = (grid, dat_fix, mat_fix, dat, mat, m, opt['cost_fun'], B,
                 opt['mx_int'], opt['fwhm'])
         # Run groupwise optimisation
-        q[m, ...] = _do_optimisation(q[m, ...], args, s, opt)
+        q[m, ...] = _do_optimisation(q[m, ...], args, s, opt, dim)
         # Show results
         _show_results(q[m, ...], args, opt)
     else:  # Pairwise optimisation
@@ -193,7 +196,7 @@ def _fit_q(q, dat_fix, grid, mat_fix, dat, mat, mov, B, s, opt):
             args = (grid, dat_fix, mat_fix, dat, mat, [m],
                     opt['cost_fun'], B, opt['mx_int'], opt['fwhm'])
             # Run pairwise optimisation
-            q[m, ...] = _do_optimisation(q[m, ...], args, s, opt)
+            q[m, ...] = _do_optimisation(q[m, ...], args, s, opt, dim)
             # Show results
             _show_results(q[m, ...], args, opt)
 
@@ -207,7 +210,7 @@ def _get_dat_grid(dat, vx, samp, jitter=True, device='cpu'):
     ----------
     dat : (X0, Y0, Z0) tensor_like
         Fixed image data.
-    vx : (3,) tensor_like.
+    vx : (2|3,) tensor_like.
         Fixed voxel size.
     samp : int|float
         Sub-sampling level.
@@ -226,7 +229,7 @@ def _get_dat_grid(dat, vx, samp, jitter=True, device='cpu'):
         dat = torch.zeros(dat, dtype=torch.float32, device=device)
     # Modulate samp with voxel size
     device = dat.device
-    samp = torch.tensor((samp,) * 3).float().to(device)
+    samp = torch.tensor((samp,) * vx.numel()).float().to(device)
     samp = torch.clamp(samp / vx, 1)
     # Create grid of fixed image, possibly sub-sampled
     grid = identity_grid(dat.shape,
@@ -236,8 +239,12 @@ def _get_dat_grid(dat, vx, samp, jitter=True, device='cpu'):
         grid += torch.rand_like(grid)*samp
     # Sub-sampled
     samp = samp.round().int().tolist()
-    grid = grid[::samp[0], ::samp[1], ::samp[2], ...]
-    dat_samp = dat[::samp[0], ::samp[1], ::samp[2]]
+    if vx.numel() == 3:
+        grid = grid[::samp[0], ::samp[1], ::samp[2], ...]
+        dat_samp = dat[::samp[0], ::samp[1], ::samp[2]]
+    else:
+        grid = grid[::samp[0], ::samp[1], ...]
+        dat_samp = dat[::samp[0], ::samp[1]]
 
     return dat_samp, grid
 
@@ -261,18 +268,18 @@ def _get_mean_space(dat, mat):
 
     """
     # Copy matrices and dimensions to torch tensors
+    dim = mat[0].shape[0] - 1
     dtype = mat[0].dtype
     device = mat[0].device
     N = len(mat)
-    all_mat = torch.zeros((N, 4, 4), dtype=dtype, device=device)
-    all_dim = torch.zeros((N, 3), dtype=dtype, device=device)
+    all_mat = torch.zeros((N, dim + 1, dim + 1), dtype=dtype, device=device)
+    all_dim = torch.zeros((N, dim), dtype=dtype, device=device)
     for n in range(N):
         all_mat[n, ...] = mat[n]
         all_dim[n, ...] = torch.tensor(dat[n].shape,
-                                    dtype=dtype, device=device)
+                                       dtype=dtype, device=device)
     # Compute mean-space
-    mat, dim, _ = _mean_space(all_mat, all_dim)
-    dim = tuple(dim.int().tolist())
+    mat, dim = mean_space(all_mat, all_dim)
 
     return mat, dim
 
@@ -309,23 +316,27 @@ def _smooth_for_reg(dat, mat, samp):
 
     """
     if samp <= 0:
-        return dat
-    samp = torch.tensor((samp,) * 3, dtype=dat.dtype, device=dat.device)
+        return dat    
     # Make smoothing kernel
     vx = voxel_size(mat).to(dat.device).type(dat.dtype)
+    samp = torch.tensor((samp,) * vx.numel(), dtype=dat.dtype, device=dat.device)
     fwhm = torch.sqrt(torch.max(samp ** 2 - vx ** 2,
-        torch.zeros(3, device=dat.device, dtype=dat.dtype))) / vx
-    smo = smooth(('gauss',) * 3,
+        torch.zeros(vx.numel(), device=dat.device, dtype=dat.dtype))) / vx
+    smo = smooth(('gauss',) * vx.numel(),
         fwhm=fwhm, device=dat.device, dtype=dat.dtype, sep=True)
     # Padding amount for subsequent convolution
-    size_pad = (smo[0].shape[2], smo[1].shape[3], smo[2].shape[4])
+    size_pad = [s.shape[2 + i] for i, s in enumerate(smo)]
     size_pad = tuple(map(lambda x: (x - 1)//2, size_pad))
     # Smooth deformation with Gaussian kernel (by separable convolution)
     dat = pad(dat, size_pad, side='both')
     dat = dat[None, None]
-    dat = F.conv3d(dat, smo[0])
-    dat = F.conv3d(dat, smo[1])
-    dat = F.conv3d(dat, smo[2])[0, 0]
+    if vx.numel() == 3:
+        dat = F.conv3d(dat, smo[0])
+        dat = F.conv3d(dat, smo[1])
+        dat = F.conv3d(dat, smo[2])[0, 0]
+    else:
+        dat = F.conv2d(dat, smo[0])
+        dat = F.conv2d(dat, smo[1])[0, 0]
 
     return dat
 

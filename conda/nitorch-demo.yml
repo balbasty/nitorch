@@ -7,7 +7,7 @@ dependencies:
   - pytorch=1.5
   - cudatoolkit=10.1
   - numpy
-  - nibabel
+  - nibabel<=4
   - matplotlib
   - pip
   - scipy

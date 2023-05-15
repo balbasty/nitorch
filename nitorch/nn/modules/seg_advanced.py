@@ -21,6 +21,7 @@ import torch
 import torch.nn as tnn
 from nitorch import spatial
 from nitorch.core import utils, math
+from nitorch.core.linalg import lmdiv
 from .. import check
 from nitorch.nn.base import Module
 from .cnn import UNet, MRF
@@ -326,7 +327,7 @@ class MeanSpaceNet(Module):
 
         """
         self.mean_mat = self.mean_mat.type(mat_native.dtype).to(mat_native.device)
-        mat = mat_native.solve(self.mean_mat)[0]
+        mat = lmdiv(self.mean_mat, mat_native)
         grid = spatial.affine_grid(mat, dim_native)
 
         return grid

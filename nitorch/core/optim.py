@@ -76,7 +76,7 @@ def cg(A, b, x=None, precond=None, max_iter=None, tolerance=1e-5,
     A = U.matmul((S + S.max()).diag().matmul(U.t()))
     # Solve by inversion
     t0 = timer()
-    x1 = torch.solve(b, A)[0]
+    x1 = lmdiv(A, b)
     print('A.inv*b | elapsed time: {:0.4f} seconds'.format(timer() - t0))
     # Solve by CG
     t0 = timer()

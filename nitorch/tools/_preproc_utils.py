@@ -41,10 +41,11 @@ def _process_reg(dat, mat, mat_a, mat_fix, dim_fix, write):
     """Process registration results.
     """
     N = len(dat)
+    dim = len(dim_fix)
     rdat = torch.zeros((N, ) + dim_fix,
                        dtype=dat[0].dtype, device=dat[0].device)
     for n in range(N):  # loop over input images
-        if torch.all(mat_a[n] - torch.eye(4, device=mat_a[n].device) == 0):
+        if torch.all(mat_a[n] - torch.eye(dim + 1, device=mat_a[n].device) == 0):
             rdat[n] = dat[n]
         else:
             mat_r = lmdiv(mat[n], mat_a[n].mm(mat_fix))
@@ -73,7 +74,7 @@ def _write_output(dat, mat, file=None, prefix='', odir=None, nam=None):
         if file[n] is not None:
             filename = file[n].filename()
         else:
-            filename = 'nitorch_file'
+            filename = 'nitorch_file.nii.gz'
         pth.append(file_mod(filename,
             odir=odir, prefix=prefix, nam=nam))
         savef(dat[n], pth[n], like=file[n], affine=mat[n])
@@ -202,9 +203,6 @@ def _reslice_dat_3d(dat, affine, dim_out, interpolation='linear',
         Resliced image data.
 
     """
-    if len(dat.shape) != 3:
-        raise ValueError('Input error: len(dat.shape) != 3')
-
     grid = affine_grid(affine, dim_out).type(dat.dtype)
     grid = grid[None, ...]
     dat = dat[None, None, ...]
@@ -248,7 +246,7 @@ def _mean_space(Mat, Dim, vx=None):
     Dim = Dim.type(dtype)
     # Get affine basis
     basis = 'SE'
-    dim = 3 if Dim[0, 2] > 1 else 2
+    dim = 3 if Dim.shape[1] > 2 else 2
     B = affine_basis(basis, dim, device=device, dtype=dtype)
 
     # Find combination of 90 degree rotations and flips that brings all
