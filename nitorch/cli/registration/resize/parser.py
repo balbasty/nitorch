@@ -45,6 +45,13 @@ def check_interpolation(x):
     return True
 
 
+def convert_interpolation(x):
+    try:
+        return int(x)
+    except Exception:
+        return x
+
+
 def convert_prefilter(x):
     if x[0].lower() in 'ty':
         return True
@@ -76,7 +83,8 @@ parser.add_option('shape', ('-s', '--shape'), nargs='+',
 parser.add_option('anchor', ('-a', '--anchor'), nargs='+', default='c',
                   validation=check_anchor, help='Anchor')
 parser.add_option('interpolation', ('-i', '--interpolation'), nargs='+', default=1,
-                  convert=check_interpolation, help='Interpolation order')
+                  convert=convert_interpolation, validation=check_interpolation,
+                  help='Interpolation order')
 parser.add_option('bound', ('-b', '--bound'), nargs='+', default='dct2',
                   convert=bounds.to_nitorch, help='Boundary condition')
 parser.add_option('prefilter', ('-p', '--prefilter'), nargs=1, default=True,
