@@ -528,8 +528,8 @@ def meetup(data, dist=None, opt=None):
                         x[None], **lam_dist, dim=3, bound=DIST_BOUND,
                         voxel_size=distortion.voxel_size)[0]
                     solve_dist = lambda h, g: spatial.solve_field_fmg(
-                        h, g, **lam_dist, dim=3, bound=DIST_BOUND,
-                        voxel_size=distortion.voxel_size)
+                        h[None], g[None], **lam_dist, dim=3, bound=DIST_BOUND,
+                        voxel_size=distortion.voxel_size)[0]
 
                     # --- likelihood -----------------------------------
                     crit1, g, h = derivatives_distortion(

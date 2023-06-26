@@ -60,7 +60,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
           https://onlinelibrary.wiley.com/doi/full/10.1002/mrm.21732
 
     """
-    opt = VFAOptions().update(opt, **kwopt)
+    opt = VFAOptions().update(opt or {}, **kwopt)
     dtype = opt.backend.dtype
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
@@ -102,7 +102,7 @@ def vfa(data, transmit=None, receive=None, opt=None, **kwopt):
         del dats
 
         for vol, aff in zip(data + transmit + receive, affines):
-            aff, vol.affine = core.utils.to_max_device(aff, vol.affine)
+            aff, vol.affine = core.utils.to_max_backend(aff, vol.affine)
             vol.affine = torch.matmul(aff.inverse(), vol.affine)
 
     # --- repeat fields if not enough ---

@@ -31,8 +31,8 @@ def _format_input(img, device='cpu', rand=False, cutoff=None):
         else:
             # Input are tensors (clone so to not modify input data)
             file.append(None)
-            dat.append(img[n][0].clone().to(dtype=torch.float32, device=device))
-            mat.append(img[n][1].clone().to(dtype=torch.float64, device=device))
+            dat.append(img[n][0].to(dtype=torch.float32, device=device, copy=True))
+            mat.append(img[n][1].to(dtype=torch.float64, device=device, copy=True))
 
     return dat, mat, file
 

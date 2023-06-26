@@ -104,7 +104,7 @@ def greeq(data, transmit=None, receive=None, opt=None, **kwopt):
         Only returned is MT-weighted data is provided.
 
     """
-    opt = GREEQOptions().update(opt, **kwopt)
+    opt = GREEQOptions().update(opt or {}, **kwopt)
     dtype = opt.backend.dtype
     device = opt.backend.device
     backend = dict(dtype=dtype, device=device)
