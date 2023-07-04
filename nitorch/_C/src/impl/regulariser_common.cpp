@@ -2,7 +2,7 @@
 #include "../defines.h"            // useful macros
 #include "bounds_common.h"         // boundary conditions + enum
 #include "allocator.h"             // base class handling offset sizes
-// #include "utils.h"                 // unrolled for loop.h"
+#include "utils.h"                 // Pair/Triplet
 #include <ATen/ATen.h>             // tensors
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1317,7 +1317,7 @@ __global__ void regulariser_kernel(const RegulariserImpl<scalar_t, offset_t, red
 //                    ALLOCATE OUTPUT // RESHAPE WEIGHT
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-NI_HOST std::tuple<Tensor, Tensor, Tensor>
+NI_HOST Triplet<Tensor>
 prepare_tensors(const Tensor & input, Tensor output, Tensor weight, Tensor hessian)
 {
   if (!(output.defined() && output.numel() > 0))
@@ -1344,7 +1344,7 @@ prepare_tensors(const Tensor & input, Tensor output, Tensor weight, Tensor hessi
       hessian = hessian.expand({N, CC, X, Y, Z});
   }
 
-  return std::tuple<Tensor, Tensor, Tensor>(output, weight, hessian);
+  return Triplet<Tensor>(output, weight, hessian);
 }
 
 } // namespace
@@ -1363,9 +1363,9 @@ NI_HOST Tensor regulariser_impl(
   ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
   auto tensors = prepare_tensors(input, output, weight, hessian);
-  output       = std::get<0>(tensors);
-  weight       = std::get<1>(tensors);
-  hessian      = std::get<2>(tensors);
+  output       = tensors.x;
+  weight       = tensors.y;
+  hessian      = tensors.z;
 
   RegulariserAllocator info(input.dim()-2, absolute, membrane, bending, voxel_size, bound);
   info.ioset(input, output, weight, hessian);
@@ -1413,9 +1413,9 @@ NI_HOST Tensor regulariser_impl(
   ArrayRef<double> voxel_size, BoundVectorRef bound)
 {
   auto tensors = prepare_tensors(input, output, weight, hessian);
-  output       = std::get<0>(tensors);
-  weight       = std::get<1>(tensors);
-  hessian      = std::get<2>(tensors);
+  output       = tensors.x;
+  weight       = tensors.y;
+  hessian      = tensors.z;
 
   RegulariserAllocator info(input.dim()-2, absolute, membrane, bending, voxel_size, bound);
   info.ioset(input, output, weight, hessian);

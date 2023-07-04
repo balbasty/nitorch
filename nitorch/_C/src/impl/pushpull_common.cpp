@@ -25,9 +25,9 @@
 #include "common.h"
 #include "bounds_common.h"
 #include "interpolation_common.h"
+#include "allocator.h"
+#include "utils.h"
 #include <ATen/ATen.h>
-#include <tuple>
-#include <limits>
 //#include <cstdio>
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -60,6 +60,7 @@
 using at::Tensor;
 using at::TensorOptions;
 using c10::IntArrayRef;
+using TensorPair = ni::Pair<Tensor>;
 
 namespace ni {
 NI_NAMESPACE_DEVICE { // cpu / cuda / ...
@@ -80,10 +81,8 @@ namespace { // anonymous namespace > everything inside has internal linkage
 // (On CPU, we always use 64 bit offsets because it doesn't make a huge
 // difference. It would be different if we had a vectorized
 // implementation as in PyTorch).
-class PushPullAllocator {
+class PushPullAllocator: public Allocator {
 public:
-
-  static constexpr int64_t max_int32 = std::numeric_limits<int32_t>::max();
 
   // ~~~ CONSTRUCTORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -269,39 +268,6 @@ public:
 
 private:
 
-  // Copied from aten/src/ATen/native/IndexingUtils.cpp in PyTorch 1.6.
-  // It is used to decide to which pointer type we should dispatch to.
-  // Basically, we need to make sure that the "furthest" element we need
-  // to reach is less than max_elem away.
-  static bool tensorCanUse32BitIndexMath(
-    const Tensor &t, int64_t max_elem=max_int32)
-  {
-    int64_t elements = t.numel();
-    if (elements >= max_elem) {
-      return false;
-    }
-    if (elements == 0) {
-      return max_elem > 0;
-    }
-
-    int64_t offset = 0;
-    int64_t linearId = elements - 1;
-
-    // NOTE: Assumes all strides are positive, which is true for now
-    for (int i = t.dim() - 1; i >= 0; --i) {
-      int64_t curDimIndex = linearId % t.size(i);
-      int64_t curDimOffset = curDimIndex * t.stride(i);
-      offset += curDimOffset;
-      linearId /= t.size(i);
-    }
-
-    if (offset >= max_elem) {
-      return false;
-    }
-
-    return true;
-  }
-
   // ~~~ COMPONENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   NI_HOST void init_all();
   NI_HOST void init_source(const Tensor& source);
@@ -327,7 +293,8 @@ private:
   bool              do_sgrad;       // sample spatial gradients
 
   // ~~~ NAVIGATORS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  std::deque<Tensor> output;
+  Tensor output;
+  Tensor grad;
   TensorOptions src_opt;
   TensorOptions grid_opt;
   TensorOptions trgt_opt;
@@ -475,15 +442,14 @@ void PushPullAllocator::init_target(const Tensor& target)
 NI_HOST
 void PushPullAllocator::init_output()
 {
-  output.clear();
   if (do_pull) {
     if (dim == 1)
-      output.push_back(at::empty({N, C, trgt_X}, src_opt));
+      output = at::empty({N, C, trgt_X}, src_opt);
     else if (dim == 2)
-      output.push_back(at::empty({N, C, trgt_X, trgt_Y}, src_opt));
+      output = at::empty({N, C, trgt_X, trgt_Y}, src_opt);
     else
-      output.push_back(at::empty({N, C, trgt_X, trgt_Y, trgt_Z}, src_opt));
-    auto pull = output.back();
+      output = at::empty({N, C, trgt_X, trgt_Y, trgt_Z}, src_opt);
+    auto pull = output;
     out_sN   = pull.stride(0);
     out_sC   = pull.stride(1);
     out_sX   = pull.stride(2);
@@ -495,12 +461,12 @@ void PushPullAllocator::init_output()
   }
   else if (do_sgrad) {
     if (dim == 1)
-      output.push_back(at::empty({N, C, trgt_X, 1}, src_opt));
+      output = at::empty({N, C, trgt_X, 1}, src_opt);
     else if (dim == 2)
-      output.push_back(at::empty({N, C, trgt_X, trgt_Y, 2}, src_opt));
+      output = at::empty({N, C, trgt_X, trgt_Y, 2}, src_opt);
     else
-      output.push_back(at::empty({N, C, trgt_X, trgt_Y, trgt_Z, 3}, src_opt));
-    auto sgrad = output.back();
+      output = at::empty({N, C, trgt_X, trgt_Y, trgt_Z, 3}, src_opt);
+    auto sgrad = output;
     out_sN   = sgrad.stride(0);
     out_sC   = sgrad.stride(1);
     out_sX   = sgrad.stride(2);
@@ -517,12 +483,12 @@ void PushPullAllocator::init_output()
   }
   else if (do_push) {
     if (dim == 1)
-      output.push_back(at::zeros({N, C, src_X}, trgt_opt));
+      output = at::zeros({N, C, src_X}, trgt_opt);
     else if (dim == 2)
-      output.push_back(at::zeros({N, C, src_X, src_Y}, trgt_opt));
+      output = at::zeros({N, C, src_X, src_Y}, trgt_opt);
     else
-      output.push_back(at::zeros({N, C, src_X, src_Y, src_Z}, trgt_opt));
-    auto push = output.back();
+      output = at::zeros({N, C, src_X, src_Y, src_Z}, trgt_opt);
+    auto push = output;
     out_sN   = push.stride(0);
     out_sC   = push.stride(1);
     out_sX   = push.stride(2);
@@ -534,12 +500,12 @@ void PushPullAllocator::init_output()
   }
   else if (do_count) {
     if (dim == 1)
-      output.push_back(at::zeros({N, 1, src_X}, grid_opt));
+      output = at::zeros({N, 1, src_X}, grid_opt);
     else if (dim == 2)
-      output.push_back(at::zeros({N, 1, src_X, src_Y}, grid_opt));
+      output = at::zeros({N, 1, src_X, src_Y}, grid_opt);
     else
-      output.push_back(at::zeros({N, 1, src_X, src_Y, src_Z}, grid_opt));
-    auto count = output.back();
+      output = at::zeros({N, 1, src_X, src_Y, src_Z}, grid_opt);
+    auto count = output;
     out_sN   = count.stride(0);
     out_sC   = count.stride(1);
     out_sX   = count.stride(2);
@@ -551,12 +517,11 @@ void PushPullAllocator::init_output()
   }
   if (do_grad) {
     if (dim == 1)
-      output.push_back(at::zeros({N, trgt_X, 1}, grid_opt));
+      grad = at::zeros({N, trgt_X, 1}, grid_opt);
     else if (dim == 2)
-      output.push_back(at::zeros({N, trgt_X, trgt_Y, 2}, grid_opt));
+      grad = at::zeros({N, trgt_X, trgt_Y, 2}, grid_opt);
     else
-      output.push_back(at::zeros({N, trgt_X, trgt_Y, trgt_Z, 3}, grid_opt));
-    auto grad = output.back();
+      grad = at::zeros({N, trgt_X, trgt_Y, trgt_Z, 3}, grid_opt);
     grad_sN   = grad.stride(0);
     grad_sX   = grad.stride(1);
     grad_sY   = dim < 2 ? 0L : grad.stride(2);
@@ -584,6 +549,7 @@ public:
   // ~~~ CONSTRUCTOR ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   PushPullImpl(const PushPullAllocator & info):
     output(info.output),
+    grad(info.grad),
     dim(info.dim),
     bound0(info.bound0), bound1(info.bound1), bound2(info.bound2),
     interpolation0(info.interpolation0),
@@ -638,7 +604,8 @@ public:
 
   // ~~~ PUBLIC VALUE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-  std::deque<Tensor> output;
+  Tensor output;
+  Tensor grad;
 
   // NI_HOST NI_DEVICE void printInfo() const {
   //   printf("dim: %d\n", dim);
@@ -2469,10 +2436,10 @@ __global__ void pushpull_kernel(PushPullImpl<scalar_t,offset_t> f) {
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 #define PUSHPULL_INSTANTIATE3(BoundType0, InterpolationType0, SourceType0) \
-  template std::deque<Tensor> pushpull( \
+  template TensorPair pushpull( \
     const SourceType0 &, const Tensor&, const Tensor&, \
     BoundType0, InterpolationType0, int, bool, bool, bool, bool, bool); \
-  template std::deque<Tensor> pushpull( \
+  template TensorPair pushpull( \
     const SourceType0&, const Tensor&, \
     BoundType0, InterpolationType0, int, bool, bool, bool, bool, bool)
 #define PUSHPULL_INSTANTIATE2(BoundType0, InterpolationType0) \
@@ -2493,7 +2460,7 @@ __global__ void pushpull_kernel(PushPullImpl<scalar_t,offset_t> f) {
 // > `bound` and `interpolation` can be single arguments or vectors.
 template <typename BoundType, typename InterpolationType, typename SourceType> 
 NI_HOST
-std::deque<Tensor> pushpull(
+TensorPair pushpull(
   const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
@@ -2508,14 +2475,14 @@ std::deque<Tensor> pushpull(
       PushPullImpl<scalar_t, int32_t> algo(info);
       pushpull_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
                         at::cuda::getCurrentCUDAStream()>>>(algo);
-      return algo.output;
+      return TensorPair(algo.output, algo.grad);
     }
     else
     {
       PushPullImpl<scalar_t, int64_t> algo(info);
       pushpull_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
                         at::cuda::getCurrentCUDAStream()>>>(algo);
-      return algo.output;
+      return TensorPair(algo.output, algo.grad);
     }
   });
 }
@@ -2525,7 +2492,7 @@ std::deque<Tensor> pushpull(
 // > `source` can be a tensor or a vector of dimensions.
 template <typename BoundType, typename InterpolationType, typename SourceType> 
 NI_HOST
-std::deque<Tensor> pushpull(
+TensorPair pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
@@ -2540,14 +2507,14 @@ std::deque<Tensor> pushpull(
       PushPullImpl<scalar_t, int32_t> algo(info);
       pushpull_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
                         at::cuda::getCurrentCUDAStream()>>>(algo);
-      return algo.output;
+      return TensorPair(algo.output, algo.grad);
     }
     else
     {
       PushPullImpl<scalar_t, int64_t> algo(info);
       pushpull_kernel<<<GET_BLOCKS(algo.voxcount()), CUDA_NUM_THREADS, 0,
                         at::cuda::getCurrentCUDAStream()>>>(algo);
-      return algo.output;
+      return TensorPair(algo.output, algo.grad);
     }
   });
 
@@ -2571,7 +2538,7 @@ std::deque<Tensor> pushpull(
 // > `bound` and `interpolation` can be single arguments or vectors.
 template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
-std::deque<Tensor> pushpull(
+TensorPair pushpull(
   const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
@@ -2583,7 +2550,7 @@ std::deque<Tensor> pushpull(
   return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
     PushPullImpl<scalar_t, int64_t> algo(info);
     algo.loop();
-    return algo.output;
+    return TensorPair(algo.output, algo.grad);
   });
 }
 
@@ -2592,7 +2559,7 @@ std::deque<Tensor> pushpull(
 // > `source` can be a tensor or a vector of dimensions.
 template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
-std::deque<Tensor> pushpull(
+TensorPair pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
@@ -2604,7 +2571,7 @@ std::deque<Tensor> pushpull(
   return AT_DISPATCH_FLOATING_TYPES(grid.scalar_type(), "pushpull", [&] {
     PushPullImpl<scalar_t, int64_t> algo(info);
     algo.loop();
-    return algo.output;
+    return TensorPair(algo.output, algo.grad);
   });
 }
 
@@ -2620,7 +2587,7 @@ namespace notimplemented {
 
 template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
-std::deque<Tensor> pushpull(
+TensorPair pushpull(
   const SourceType& source, const Tensor& grid, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)
@@ -2630,7 +2597,7 @@ std::deque<Tensor> pushpull(
 
 template <typename BoundType, typename InterpolationType, typename SourceType>
 NI_HOST
-std::deque<Tensor> pushpull(
+TensorPair pushpull(
   const SourceType & source, const Tensor& grid, const Tensor& target, 
   BoundType bound, InterpolationType interpolation, int extrapolate,
   bool do_pull, bool do_push, bool do_count, bool do_grad, bool do_sgrad)

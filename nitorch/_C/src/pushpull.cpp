@@ -98,12 +98,12 @@ Tensor grid_pull(const Tensor& input, const Tensor& grid,
     return cudapushpull(input, grid, 
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/true, /*push*/false, /*count*/false,
-      /*grad*/false, /*sgrad*/false).front();
+      /*grad*/false, /*sgrad*/false).left;
   else
     return cpu::pushpull(input, grid, 
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/true, /*push*/false, /*count*/false,
-      /*grad*/false, /*sgrad*/false).front();
+      /*grad*/false, /*sgrad*/false).left;
 }
 
 std::deque<Tensor>
@@ -112,19 +112,29 @@ grid_pull_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
                    const std::vector<InterpolationType> & interpolation_mode, 
                    int extrapolate)
 {
+  std::deque<Tensor> output;
   if (input.is_cuda()) {
-    return cudapushpull(input, grid, grad,
+    auto pair = cudapushpull(input, grid, grad,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/false,
       /*push*/input.requires_grad(), /*count*/false,
       /*grad*/grid.requires_grad(), /*sgrad*/false);
+      if (input.requires_grad())
+        output.push_back(pair.left);
+      if (grid.requires_grad())
+        output.push_back(pair.right);
   } else {
-    return cpu::pushpull(input, grid, grad,
+    auto pair = cpu::pushpull(input, grid, grad,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/false,
       /*push*/input.requires_grad(), /*count*/false,
       /*grad*/grid.requires_grad(), /*sgrad*/false);
+      if (input.requires_grad())
+        output.push_back(pair.left);
+      if (grid.requires_grad())
+        output.push_back(pair.right);
   }
+  return output;
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ PUSH ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -160,12 +170,12 @@ Tensor grid_push(const Tensor& input, const Tensor& grid,
       return cudapushpull(size, grid, input,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
         extrapolate, /*pull*/false, /*push*/true, /*count*/false,
-        /*grad*/false, /*sgrad*/false).front();
+        /*grad*/false, /*sgrad*/false).left;
     else
       return cpu::pushpull(size, grid, input,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
         extrapolate, /*pull*/false, /*push*/true, /*count*/false,
-        /*grad*/false, /*sgrad*/false).front();
+        /*grad*/false, /*sgrad*/false).left;
   } 
   else 
   {
@@ -174,12 +184,12 @@ Tensor grid_push(const Tensor& input, const Tensor& grid,
       return cudapushpull(source_size, grid, input,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
         extrapolate, /*pull*/false, /*push*/true, /*count*/false,
-        /*grad*/false, /*sgrad*/false).front();
+        /*grad*/false, /*sgrad*/false).left;
     else
       return cpu::pushpull(source_size, grid, input,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
         extrapolate, /*pull*/false, /*push*/true, /*count*/false,
-        /*grad*/false, /*sgrad*/false).front();
+        /*grad*/false, /*sgrad*/false).left;
 
   }
 }
@@ -190,17 +200,27 @@ grid_push_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
                    const std::vector<InterpolationType> & interpolation_mode, 
                    int extrapolate)
 {
+  std::deque<Tensor> output;
   if (input.is_cuda()) {
-    return cudapushpull(grad, grid, input,
+    auto pair = cudapushpull(grad, grid, input,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/input.requires_grad(), /*push*/false, /*count*/false,
       /*grad*/grid.requires_grad(), /*sgrad*/false);
+    if (input.requires_grad())
+      output.push_back(pair.left);
+    if (grid.requires_grad())
+      output.push_back(pair.right);
   } else {
-    return cpu::pushpull(grad, grid, input,
+    auto pair = cpu::pushpull(grad, grid, input,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/input.requires_grad(), /*push*/false, /*count*/false,
       /*grad*/grid.requires_grad(), /*sgrad*/false);
+    if (input.requires_grad())
+      output.push_back(pair.left);
+    if (grid.requires_grad())
+      output.push_back(pair.right);
   }
+  return output;
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ COUNT ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -228,12 +248,12 @@ Tensor grid_count(const Tensor& grid,
       return cudapushpull(size, grid,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
         extrapolate, /*pull*/ false, /*push*/ false, /*count*/ true,
-        /*grad*/ false, /*sgrad*/ false).front();
+        /*grad*/ false, /*sgrad*/ false).left;
     else
       return cpu::pushpull(size, grid,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
         extrapolate, /*pull*/ false, /*push*/ false, /*count*/ true,
-        /*grad*/ false, /*sgrad*/ false).front();
+        /*grad*/ false, /*sgrad*/ false).left;
   } 
   else 
   {
@@ -242,12 +262,12 @@ Tensor grid_count(const Tensor& grid,
       return cudapushpull(source_size, grid,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
         extrapolate, /*pull*/ false, /*push*/ false, /*count*/ true,
-        /*grad*/ false, /*sgrad*/ false).front();
+        /*grad*/ false, /*sgrad*/ false).left;
     else
       return cpu::pushpull(source_size, grid,
         BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
         extrapolate, /*pull*/ false, /*push*/ false, /*count*/ true,
-        /*grad*/ false, /*sgrad*/ false).front();
+        /*grad*/ false, /*sgrad*/ false).left;
 
   }
 }
@@ -262,12 +282,12 @@ grid_count_backward(const Tensor& grad, const Tensor& grid,
     return cudapushpull(grad, grid,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/ false, /*push*/ false, /*count*/ false,
-      /*grad*/ grid.requires_grad(), /*sgrad*/ false).front();
+      /*grad*/ grid.requires_grad(), /*sgrad*/ false).right;
   } else {
     return cpu::pushpull(grad, grid,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/ false, /*push*/ false, /*count*/ false,
-      /*grad*/ grid.requires_grad(), /*sgrad*/ false).front();
+      /*grad*/ grid.requires_grad(), /*sgrad*/ false).right;
   }
 }
 
@@ -298,12 +318,12 @@ Tensor grid_grad(const Tensor& input, const Tensor& grid,
     return cudapushpull(input, grid, 
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/false, /*push*/false, /*count*/false,
-      /*grad*/false, /*sgrad*/true).front();
+      /*grad*/false, /*sgrad*/true).left;
   else
     return cpu::pushpull(input, grid, 
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/false, /*push*/false, /*count*/false,
-      /*grad*/false, /*sgrad*/true).front();
+      /*grad*/false, /*sgrad*/true).left;
 }
 
 std::deque<Tensor>
@@ -312,17 +332,27 @@ grid_grad_backward(const Tensor& grad, const Tensor& input, const Tensor& grid,
                    const std::vector<InterpolationType> & interpolation_mode, 
                    int extrapolate)
 {
+  std::deque<Tensor> output;
   if (input.is_cuda()) {
-    return cudapushpull(input, grid, grad,
+    auto pair = cudapushpull(input, grid, grad,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/false,  /*push*/input.requires_grad(),
       /*count*/false, /*grad*/grid.requires_grad(), /*sgrad*/false);
+    if (input.requires_grad())
+      output.push_back(pair.left);
+    if (grid.requires_grad())
+      output.push_back(pair.right);
   } else {
-    return cpu::pushpull(input, grid, grad,
+    auto pair = cpu::pushpull(input, grid, grad,
       BoundVectorRef(bound_mode), InterpolationVectorRef(interpolation_mode), 
       extrapolate, /*pull*/false,  /*push*/input.requires_grad(),
       /*count*/false, /*grad*/grid.requires_grad(), /*sgrad*/false);
+    if (input.requires_grad())
+      output.push_back(pair.left);
+    if (grid.requires_grad())
+      output.push_back(pair.right);
   }
+  return output;
 }
 
 } // namespace ni

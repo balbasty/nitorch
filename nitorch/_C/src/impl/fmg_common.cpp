@@ -1,5 +1,4 @@
 #include <ATen/ATen.h>
-#include <vector>
 #include "common.h"
 #include "../defines.h"
 #include "../bounds.h"
@@ -18,7 +17,6 @@
 using at::Tensor;
 using c10::IntArrayRef;
 using c10::ArrayRef;
-using std::vector;
 // using at::indexing::Slice;
 
 
@@ -36,9 +34,11 @@ namespace {
                           const Tensor             & output,
                           const BoundVectorRef     & bound) 
   {
+    double order[3] = {2., 2., 2.};
+    BoundType default_bound[1] = {BoundType::DCT2};
     return multires_impl(input, output, 
-                         ArrayRef<double>(std::vector<double>({2., 2., 2.})), 
-                         BoundVectorRef(bound.size() ? bound : vector<BoundType>({BoundType::DCT2})), 
+                         ArrayRef<double>(order, 3), 
+                         bound.size() ? bound : BoundVectorRef(default_bound, 1), 
                          false);
   }
 
@@ -46,9 +46,11 @@ namespace {
                          const Tensor             & output,
                          const BoundVectorRef     & bound) 
   {
+    double order[3] = {2., 2., 2.};
+    BoundType default_bound[1] = {BoundType::DCT2};
     return multires_impl(input, output, 
-                         ArrayRef<double>(std::vector<double>({2., 2., 2.})), 
-                         BoundVectorRef(bound.size() ? bound : vector<BoundType>({BoundType::DCT2})),
+                         ArrayRef<double>(order, 3), 
+                         bound.size() ? bound : BoundVectorRef(default_bound, 1), 
                          true);
   }
 
@@ -97,9 +99,10 @@ namespace {
   }
 
   template <typename T>
-  inline vector<T> slice(const vector<T> & v, int64_t i0, int64_t i1)
+  inline void slice(T * out, const T * v, int64_t i0, int64_t i1)
   {
-    return vector<T>(v.cbegin() + i0, v.cbegin() + i1);
+    for (int64_t i=0; i<(i1-i1); ++i)
+      out[i] = v[i0+i];
   }
 
   inline void restrict_vx(double * vx0, double * vx1, 
@@ -144,43 +147,46 @@ namespace {
     bool has_h = h.defined() && h.numel();
     bool has_w = w.defined() && w.numel();
 
-    vector<int64_t> shapes(5*max_levels);
-    get_shape(g, shapes.data());
+    int64_t * shapes = new int64_t[5*max_levels];
+    int64_t * shape1 = new int64_t[dim+2];
+    get_shape(g, shapes);
 
     int64_t n;
     for (n = 1; n < max_levels; ++n)
     {
       // compute shape
-      if (restrict_shape(shapes.data() + (n-1)*5, shapes.data() + n*5, dim))
+      if (restrict_shape(shapes + (n-1)*5, shapes + n*5, dim))
         break;
-      auto shape1 = slice(shapes, n*5, n*5 + dim + 2);
+      slice(shape1, shapes, n*5, n*5 + dim + 2);
       // voxel size
       restrict_vx(vx + (n-1)*3, vx + n*3, 
-                  shapes.data() + (n-1)*5 + 2, shapes.data() + n*5 + 2, dim);
+                  shapes + (n-1)*5 + 2, shapes + n*5 + 2, dim);
       // hessian
       if (has_h) {
         shape1[1] = h.size(1);
-        hh[n] = at::empty(shape1, h.options());
+        hh[n] = at::empty(IntArrayRef(shape1, dim+2), h.options());
         restrict_h(hh[n-1], hh[n]);
       }
       // gradient
       shape1[1] = g.size(1);
-      gg[n] = at::empty(shape1, g.options());
+      gg[n] = at::empty(IntArrayRef(shape1, dim+2), g.options());
       restrict_g(gg[n-1], gg[n]);
       // residuals
       rr[n] = at::empty_like(gg[n]);
       // solution
       shape1[1] = x.size(1);
-      xx[n] = at::empty(shape1, x.options());
+      xx[n] = at::empty(IntArrayRef(shape1, dim+2), x.options());
       restrict_g(xx[n-1], xx[n]);
       // weights
       if (has_w) {
         shape1[1] = w.size(1);
-        ww[n] = at::empty(shape1, w.options());
+        ww[n] = at::empty(IntArrayRef(shape1, dim+2), w.options());
         restrict_w(ww[n-1], ww[n]);
       }
     }
     
+    delete[] shapes;
+    delete[] shape1;
     return n; // nb_levels
   }
                 
@@ -190,7 +196,7 @@ inline void do_fmg(Tensor * h, Tensor * g, Tensor * x, Tensor * w, Tensor * r,
                    RelaxFn relax, ProlongFn prolongation, RestrictFn restriction, ResidualsFn residuals) 
 {
   int64_t dim = h[0].dim() - 2;
-  auto v = [vx, dim](int64_t n) { return vector<double>(vx + 3*n, vx + 3*n + dim); };
+  auto v = [vx, dim](int64_t n) { return ArrayRef<double>(vx + 3*n, dim); };
 
   relax(h[N-1], g[N-1], x[N-1], w[N-1], v(N-1));
 
@@ -301,27 +307,30 @@ Tensor fmg_impl(const Tensor & hessian,
 
   /* ---------------- initialize pyramid -------------------- */
   solution = init_solution(solution, gradient);
-  vector<Tensor> tensors(max_levels*5);
-  vector<double> vx(max_levels*3);
+  Tensor * tensors = new Tensor [max_levels*5];
+  double * vx = new double [max_levels*3];
   for (size_t d=0; d<(size_t)dim; ++d) 
     vx[d] = (voxel_size.size() == 0 ? 1.0 :
              voxel_size.size() > d  ? voxel_size[d] : vx[d-1]);
 
   int64_t N = prepare_tensors(hessian, gradient, solution, weight, 
-                              tensors.data(), vx.data(), 
+                              tensors, vx, 
                               restrict_, restrict_, restrict_,
                               max_levels);
 
-  Tensor * h = tensors.data();
+  Tensor * h = tensors;
   Tensor * g = h + max_levels;
   Tensor * x = g + max_levels;
   Tensor * w = x + max_levels;
   Tensor * r = w + max_levels;
 
   /* ------------------------ FMG algorithm ------------------ */
-  do_fmg(h, g, x, w, r, vx.data(), N, nb_cycles, 
+  do_fmg(h, g, x, w, r, vx, N, nb_cycles, 
          relax_, prolong_, restrict_, residuals_);
 
+
+  delete [] tensors;
+  delete [] vx;
   return solution;
 }
 
@@ -503,26 +512,29 @@ Tensor fmg_grid_impl(const Tensor & hessian,
   solution = init_solution(solution, gradient);
 
   {
-    vector<Tensor> tensors(max_levels*5);
-    vector<double> vx(max_levels*3);
+    Tensor * tensors = new Tensor [max_levels*5];
+    double * vx = new double [max_levels*3];
     for (size_t d=0; d<(size_t)dim; ++d) 
       vx[d] = (voxel_size.size() == 0 ? 1.0 :
                voxel_size.size() > d  ? voxel_size[d] : vx[d-1]);
 
     auto N = prepare_tensors(hessian, gradient, solution, weight, 
-                             tensors.data(), vx.data(), 
+                             tensors, vx, 
                              restrict_g_, restrict_h_, restrict_w_,
                              max_levels);
 
-    Tensor * h = tensors.data();
+    Tensor * h = tensors;
     Tensor * g = h + max_levels;
     Tensor * x = g + max_levels;
     Tensor * w = x + max_levels;
     Tensor * r = w + max_levels;
 
     /* ------------------------ FMG algorithm ------------------ */
-    do_fmg(h, g, x, w, r, vx.data(), N, nb_cycles, 
+    do_fmg(h, g, x, w, r, vx, N, nb_cycles, 
            relax_, prolong_, restrict_g_, residuals_);
+
+    delete [] tensors;
+    delete [] vx;
   }
   
 #ifdef __CUDACC__

@@ -13,8 +13,8 @@ some thinking to work with arbitrary scaling factors.
 #include "bounds_common.h"         // boundary conditions + enum
 #include "interpolation_common.h"  // interpolation weights + enum
 #include "allocator.h"             // base class handling offset sizes
+#include "utils.h"                 // Pair/Triplet
 #include <ATen/ATen.h>             // tensors
-#include <tuple>                   // needed by prepare_tensors
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // CPU/GPU -specific parameters
@@ -51,6 +51,7 @@ using at::Tensor;
 using at::TensorOptions;
 using c10::IntArrayRef;
 using c10::ArrayRef;
+using TensorPair = ni::Pair<Tensor>;
 
 namespace ni {
 NI_NAMESPACE_DEVICE { // cpu / cuda / ...
@@ -1486,7 +1487,7 @@ check_same_nonspatial(Tensor source, Tensor target)
   }
 }
 
-NI_HOST NI_INLINE std::tuple<Tensor, Tensor>
+NI_HOST NI_INLINE TensorPair
 prepare_tensors(Tensor source, Tensor target, ArrayRef<double> factor, bool do_adjoint)
 {
   bool source_defined = (source.defined() && source.numel() > 0);
@@ -1496,7 +1497,7 @@ prepare_tensors(Tensor source, Tensor target, ArrayRef<double> factor, bool do_a
     check_same_nonspatial(source, target);
     if (do_adjoint)
       source.zero_();
-    return std::tuple<Tensor, Tensor>(source, target);
+    return TensorPair(source, target);
   }
 
   double fx = factor.size() > 0 ? factor[0] : 1.;
@@ -1540,10 +1541,10 @@ prepare_tensors(Tensor source, Tensor target, ArrayRef<double> factor, bool do_a
 
   }
 
-  return std::tuple<Tensor, Tensor>(source, target);
+  return TensorPair(source, target);
 }
 
-NI_HOST NI_INLINE  std::pair<double, double>
+NI_HOST NI_INLINE  Pair<double>
 prepare_affine(double factor, double Ds, double Dt, GridAlignType mode)
 {
   double shift = 0., scale = 1./factor;
@@ -1562,10 +1563,10 @@ prepare_affine(double factor, double Ds, double Dt, GridAlignType mode)
     default:
       break;
   }
-  return std::make_pair(shift, scale);
+  return Pair<double>(shift, scale);
 }
 
-NI_HOST NI_INLINE std::pair<std::vector<double>,  std::vector<double> >
+NI_HOST NI_INLINE Pair<Triplet<double> >
 prepare_affines(Tensor source, Tensor target, ArrayRef<double> factor, GridAlignVectorRef mode, bool do_adjoint)
 {
 
@@ -1594,9 +1595,9 @@ prepare_affines(Tensor source, Tensor target, ArrayRef<double> factor, GridAlign
   auto affiney = prepare_affine(fy, static_cast<double>(Ys), static_cast<double>(Yt), my);
   auto affinez = prepare_affine(fz, static_cast<double>(Zs), static_cast<double>(Zt), mz);
 
-  return make_pair(
-      std::vector<double>({std::get<0>(affinex), std::get<0>(affiney), std::get<0>(affinez)}),
-      std::vector<double>({std::get<1>(affinex), std::get<1>(affiney), std::get<1>(affinez)})
+  return Pair<Triplet<double> >(
+      Triplet<double>(affinex.left, affiney.left, affinez.left),
+      Triplet<double>(affinex.right, affiney.right, affinez.right)
   );
 }
 
@@ -1613,13 +1614,15 @@ Tensor resize_impl(
   GridAlignVectorRef mode, bool do_adjoint, bool normalize)
 {
   auto tensors = prepare_tensors(source, target, factor, do_adjoint);
-  source = std::get<0>(tensors);
-  target = std::get<1>(tensors);
+  source = tensors.left;
+  target = tensors.right;
   auto affines = prepare_affines(source, target, factor, mode, do_adjoint);
-  ArrayRef<double> shifts(std::get<0>(affines));
-  ArrayRef<double> scales(std::get<1>(affines));
+  double shifts[3] = {affines.left.x, affines.left.y, affines.left.z};
+  double scales[3] = {affines.right.x, affines.right.y, affines.right.z};
 
-  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint);
+  ResizeAllocator info(source.dim()-2, bound, interpolation, 
+                       ArrayRef<double>(shifts, 3), ArrayRef<double>(scales, 3), 
+                       do_adjoint);
   info.ioset(source, target);
   auto stream = at::cuda::getCurrentCUDAStream();
 
@@ -1670,13 +1673,15 @@ Tensor resize_impl(
   GridAlignVectorRef mode, bool do_adjoint, bool normalize)
 {
   auto tensors = prepare_tensors(source, target, factor, do_adjoint);
-  source = std::get<0>(tensors);
-  target = std::get<1>(tensors);
+  source = tensors.left;
+  target = tensors.right;
   auto affines = prepare_affines(source, target, factor, mode, do_adjoint);
-  ArrayRef<double> shifts(std::get<0>(affines));
-  ArrayRef<double> scales(std::get<1>(affines));
+  double shifts[3] = {affines.left.x, affines.left.y, affines.left.z};
+  double scales[3] = {affines.right.x, affines.right.y, affines.right.z};
 
-  ResizeAllocator info(source.dim()-2, bound, interpolation, shifts, scales, do_adjoint);
+  ResizeAllocator info(source.dim()-2, bound, interpolation, 
+                       ArrayRef<double>(shifts, 3), ArrayRef<double>(scales, 3), 
+                       do_adjoint);
   info.ioset(source, target);
 
   AT_DISPATCH_FLOATING_TYPES(source.scalar_type(), "resize_impl", [&] {

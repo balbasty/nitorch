@@ -4,6 +4,27 @@
 
 namespace ni {
 
+template <typename T>
+class Pair {
+public:
+
+  Pair(const T & l, const T & r): left(l), right(r) {}
+
+  T left;
+  T right;
+};
+
+template <typename T>
+class Triplet {
+public:
+
+  Triplet(const T & x, const T & y, const T & z): x(x), y(y), z(z) {}
+
+  T x;
+  T y;
+  T z;
+};
+
 template <typename Fn, typename offset_t>
 static NI_INLINE NI_DEVICE void for_unroll(offset_t L, Fn fn) 
 {

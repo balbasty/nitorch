@@ -1,5 +1,4 @@
 #include <ATen/ATen.h>
-#include <vector>
 #include "common.h"
 #include "../defines.h"
 #include "../bounds.h"
@@ -11,7 +10,6 @@
 using c10::IntArrayRef;
 using c10::ArrayRef;
 using at::Tensor;
-using std::vector;
 
 namespace ni {
 NI_NAMESPACE_DEVICE {
