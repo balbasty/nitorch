@@ -224,8 +224,10 @@ def cuda_arch_flags():
         ('Maxwell+Tegra', '5.3'),
         ('Maxwell', '5.0;5.2+PTX'),
         ('Pascal', '6.0;6.1+PTX'),
+        ('Volta+Tegra', '7.2'),
         ('Volta', '7.0+PTX'),
         ('Turing', '7.5+PTX'),
+        ('Ampere+Tegra', '8.7'),
         ('Ampere', '8.0;8.6+PTX'),
         ('Ada', '8.9+PTX'),
         ('Hopper', '9.0+PTX'),
@@ -294,7 +296,11 @@ def torch_extension_flags(name):
 
 
 def gcc_clang_flags():
-    flags = ['-fPIC', '-std=c++14']
+    flags = ['-fPIC']
+    if torch_version()[0] >= 2:
+        flags += ['-std=c++17']
+    else:
+        flags += ['-std=c++14']
     if is_darwin() and darwin_cc_type() == 'apple_clang':
         flags += ['-stdlib=libc++']
     return flags
@@ -306,10 +312,11 @@ def msvc_flags():
 
 def nvcc_flags():
     return [
-      '-x=cu',
+      '-x=cu',  # required to compile .cpp files in cuda mode
       '-D__CUDA_NO_HALF_OPERATORS__',
       '-D__CUDA_NO_HALF_CONVERSIONS__',
       '-D__CUDA_NO_HALF2_OPERATORS__',
+      '-D__CUDA_NO_BFLOAT16_CONVERSIONS__',
       '--expt-relaxed-constexpr']
 
 
@@ -486,8 +493,8 @@ def cuda_flags():
             flags = ['-Xcompiler', flag] + flags
     else:
         for flag in common_flags():
-            # if flag == '-fPIC':
-            #     continue
+            if flag.startswith('-std'):
+                continue
             flags += ['--compiler-options', flag]
     return flags
 
