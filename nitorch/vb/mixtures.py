@@ -300,12 +300,12 @@ class Mixture:
         return X, N0, C
 
     @staticmethod
-    def full_resp(Z, msk, dm=[]):
+    def full_resp(Z, msk, dm=None):
         """ Converts masked responsibilities to full.
         Args:
             Z (torch.tensor): Masked responsibilities (N, K).
             msk (torch.tensor): Mask of original data (N0, ).
-            dm (torch.Size, optional): Reshapes Z_full using dm. Defaults to [].
+            dm (tuple/list, optional): Reshapes Z_full using dm.
         Returns:
             Z_full (torch.tensor): Full responsibilities (N0, K).
         """
@@ -314,8 +314,8 @@ class Mixture:
         Z_full = torch.zeros((N0, K), dtype=Z.dtype, device=Z.device)
         for k in range(K):
             Z_full[msk, k] = Z[:, k]
-        if len(dm) >= 3:
-            Z_full = torch.reshape(Z_full, (dm[0], dm[1], dm[2], K))
+        if isinstance(dm, (list, tuple)):
+            Z_full = torch.reshape(Z_full, tuple(dm) + (K,))
 
         return Z_full
 
@@ -323,11 +323,11 @@ class Mixture:
     def maximum_likelihood(Z):
         """ Return maximum likelihood map.
         Args:
-            Z (torch.tensor): Responsibilities (N, K).
+            Z (torch.tensor): Responsibilities (N/*spatial, K).
         Returns:
-            (torch.tensor): Maximum likelihood map (N, 1).
+            (torch.tensor): Maximum likelihood map (N/*spatial, 1).
         """
-        return torch.argmax(Z, dim=3)
+        return torch.argmax(Z, dim=-1)
 
 
 class GMM(Mixture):
