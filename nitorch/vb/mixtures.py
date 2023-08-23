@@ -152,6 +152,7 @@ class Mixture:
         # Start EM algorithm
         Z = torch.zeros((N, K), dtype=dtype, device=device)  # responsibility
         lb = torch.zeros(max_iter, dtype=torch.float64, device=device)
+        gain_count = 0
         for n_iter in range(max_iter):  # EM loop
             # ==========
             # E-step
@@ -170,7 +171,11 @@ class Mixture:
                 print('n_iter: {}, lb: {}, gain: {}'
                       .format(n_iter + 1, lb[n_iter], gain))
             if gain < tol:
-                break  # Finished
+                gain_count += 1
+                if gain_count >= 6:
+                    break  # Finished
+            else:
+                gain_count = 0
 
             if W is not None:  # Weight responsibilities
                 Z = Z * W
