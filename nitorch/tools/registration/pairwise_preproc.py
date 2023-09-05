@@ -147,7 +147,7 @@ def prepare_pyramid_levels(images, levels, dim=None, **opt):
 
     Parameters
     ----------
-    images : [list of] str or MappedArray
+    images : [list of] str or MappedArray or tensor or (tensor, tensor)
         images
     dim : int, optional
         Number of spatial dimensions
@@ -175,14 +175,22 @@ def prepare_pyramid_levels(images, levels, dim=None, **opt):
     vxs = []
     shapes = []
     for image in images:
-        if not isinstance(image, io.MappedArray):
+        if torch.is_tensor(image):
+            dat = image
+            dim = dim or dat.ndim
+            if dat.ndim == dim:
+                dat = dat[None]
+            affine = spatial.affine_default(dat.shape[-dim:])
+        elif isinstance(image, (list, tuple)):
+            dat, affine = image
+        elif not isinstance(image, io.MappedArray):
             dat, affine = map_image(image, dim=dim)
         else:
             affine = image.affine
             dat = image
-            if affine.dim() > 2:
-                affine = affine[0]
-        dim = dat.dim - 1
+        if affine.dim() > 2:
+            affine = affine[0]
+        dim = dat.ndim - 1
         vx = spatial.voxel_size(affine).tolist()
         shape = dat.shape[-dim:]
         vxs.append(vx)
@@ -281,7 +289,12 @@ def load_image(input, dim=None, device=None, label=False, missing=0):
             dat[i] = dat0 == l
         mask = None
     else:
-        dat = dat.fdata(device=device, rand=True, missing=missing)
+        if torch.is_tensor(dat):
+            if missing is not None:
+                mask = utils.isin(dat, make_list(missing))
+                dat = dat.to(torch.float32).masked_fill(mask, float('nan'))
+        else:
+            dat = dat.fdata(device=device, rand=True, missing=missing)
         mask = torch.isfinite(dat)
         mask = mask.all(dim=0)
         dat.masked_fill_(~mask, 0)
