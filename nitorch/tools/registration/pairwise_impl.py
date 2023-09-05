@@ -505,14 +505,16 @@ class PairwiseRegisterStep:
             # ----------------------------------------------------------
             # build left and right affine
             # ----------------------------------------------------------
-            aff_right = fixed.affine
+            aff_mov = moving.affine.to(aff00)
+            aff_nonlin = self.nonlin.affine.to(aff00)
+            aff_right = fixed.affine.to(aff00)
             if aff_pos in 'fs':  # affine position: fixed or symmetric
                 aff_right = aff00 @ aff_right
-            aff_right = linalg.lmdiv(self.nonlin.affine, aff_right)
-            aff_left = self.nonlin.affine
+            aff_right = linalg.lmdiv(aff_nonlin, aff_right)
+            aff_left = aff_nonlin
             if aff_pos in 'ms':  # affine position: moving or symmetric
                 aff_left = aff00 @ aff_left
-            aff_left = linalg.lmdiv(moving.affine, aff_left)
+            aff_left = linalg.lmdiv(aff_mov, aff_left)
 
             # ----------------------------------------------------------
             # build full transform
@@ -687,18 +689,21 @@ class PairwiseRegisterStep:
             # ----------------------------------------------------------
             # build left and right affine matrices
             # ----------------------------------------------------------
-            aff_right, gaff_right = fixed.affine, None
+            aff_nonlin = self.nonlin.affine.to(aff00)
+            aff_mov = moving.affine.to(aff00)
+            aff_fix = fixed.affine.to(aff00)
+            aff_right, gaff_right = aff_fix, None
             if aff_pos in 'fs':
                 gaff_right = gaff00 @ aff_right
-                gaff_right = linalg.lmdiv(self.nonlin.affine, gaff_right)
+                gaff_right = linalg.lmdiv(aff_nonlin, gaff_right)
                 aff_right = aff00 @ aff_right
-            aff_right = linalg.lmdiv(self.nonlin.affine, aff_right)
-            aff_left, gaff_left = self.nonlin.affine, None
+            aff_right = linalg.lmdiv(aff_nonlin, aff_right)
+            aff_left, gaff_left = aff_nonlin, None
             if aff_pos in 'ms':
                 gaff_left = gaff00 @ aff_left
-                gaff_left = linalg.lmdiv(moving.affine, gaff_left)
+                gaff_left = linalg.lmdiv(aff_mov, gaff_left)
                 aff_left = aff00 @ aff_left
-            aff_left = linalg.lmdiv(moving.affine, aff_left)
+            aff_left = linalg.lmdiv(aff_mov, aff_left)
 
             # ----------------------------------------------------------
             # build full transform
@@ -890,10 +895,12 @@ class PairwiseRegisterStep:
             # ----------------------------------------------------------
             # build full transform
             # ----------------------------------------------------------
-            aff = aff00 @ fixed.affine
-            aff = linalg.lmdiv(moving.affine, aff)
-            gaff = gaff00 @ fixed.affine
-            gaff = linalg.lmdiv(moving.affine, gaff)
+            aff_mov = moving.affine.to(aff00)
+            aff_fix = fixed.affine.to(aff00)
+            aff = aff00 @ aff_fix
+            aff = linalg.lmdiv(aff_mov, aff)
+            gaff = gaff00 @ aff_fix
+            gaff = linalg.lmdiv(aff_mov, gaff)
             phi = spatial.affine_grid(aff, fixed.shape)
 
             # ----------------------------------------------------------
