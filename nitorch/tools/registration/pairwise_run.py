@@ -11,7 +11,7 @@ import math
 
 
 def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
-        pyramid=True, interleaved=True, progressive=True,
+        pyramid=True, interleaved=True, progressive=True, affine_then_nonlin=True,
         max_iter=10, tolerance=1e-5, verbose=True, framerate=1, figure=None):
     """Run pairwise registration
 
@@ -33,6 +33,8 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
         Fit the affine and nonlinear components in an interleaved manner
     progressive : bool
         Initialize the affine transform by progressively freeing DoF.
+    affine_then_nonlin : bool
+        Fit the affine from coarse to fine, then fit everything from coarse to fine.
     max_iter : int, default=10
         Maximum number of outer iterations in the interleaved case
     tolerance : float, default=1e-5
@@ -80,20 +82,28 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
         if not nonlin_optim:
             nonlin.frozen = True
 
+    plotopt = dict(verbose=verbose, framerate=framerate, figure=figure)
+
     # --- progressive affine initialization ---
     if affine_optim and progressive:
         affine = run_progressive_init(
             first_level, affine, affine_optim,  line_size=line_size,
-            verbose=verbose, framerate=framerate, figure=figure)
+            **plotopt)
+
+    runner = run_pyramid if pyramid else run_single
+
+    # --- full affine ---
+    if affine_then_nonlin or not nonlin:
+        affine, _ = runner(losses, affine, None, affine_optim, **plotopt)
+    if not nonlin:
+        return affine, nonlin
 
     # --- joint affine and nonlinear  ---
     optim = build_joint_optim(
         affine_optim, nonlin_optim,
         sequential=not interleaved, max_iter=max_iter, tolerance=tolerance)
 
-    runner = run_pyramid if pyramid else run_single
-    return runner(losses, affine, nonlin, optim,
-                  verbose=verbose, framerate=framerate, figure=figure)
+    return runner(losses, affine, nonlin, optim, **plotopt)
 
 
 def flatten_list(nested_list):
