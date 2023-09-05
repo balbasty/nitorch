@@ -33,7 +33,7 @@ class Mixture:
 
     # Functions
     def fit(self, X, verbose=1, max_iter=10000, tol=1e-8, fig_num=1, W=None,
-            show_fit=False):
+            show_fit=False, samp=1):
         """ Fit mixture model.
         Args:
             X (torch.tensor): Observed data (N, C).
@@ -50,17 +50,34 @@ class Mixture:
             fig_num (int, optional): Defaults to 1.
             W (torch.tensor, optional): Observation weights (N, 1). Defaults to no weights.
             show_fit (bool, optional): Plot mixture fit, defaults to False.
+            samp (int, optional): Sub-sampling, defaults to 1.
         Returns:
             Z (torch.tensor): Responsibilities (N, K).
         """
+        if not isinstance(samp, int) or samp < 1:
+            raise ValueError(f"samp parameter needs to be an int >= 1, got {samp}")
+        
         if verbose:
             t0 = timer()  # Start timer
 
         # Set random seed
         torch.manual_seed(1)
 
+        if torch.is_floating_point(X) == False:
+            # Integer data type -> convert to float and add some noise
+            X = X.type(torch.float)
+            X += (0.001*X.max())*torch.randn_like(X)
+            
         self.dev = X.device
         self.dt = X.dtype
+        
+        if samp > 1:
+            # Sub-sample
+            X0 = X[::1, :]  # Ensures copy
+            X = X[::samp, :]
+            if W is not None:
+                W0 = W[::1, :]  # Ensures copy
+                W = W[::samp, :]
 
         if len(X.shape) == 1:
             X = X[:, None]
@@ -85,6 +102,16 @@ class Mixture:
 
         # EM loop
         Z, lb = self._em(X, max_iter=max_iter, tol=tol, verbose=verbose, W=W)
+
+        if samp > 1:
+            # Create original resolution responsibilites
+            X = X0
+            N = X.shape[0]
+            Z = torch.zeros((N, K), dtype=self.dt, device=self.dev)
+            for k in range(K):
+                Z[:, k] = torch.log(self.mp[k]) + self._log_likelihood(X, k)
+            if W is not None:  W = W0
+            Z, _ = softmax_lse(Z, lse=True, weights=W)
 
         # Print algorithm info
         if verbose >= 1:
@@ -125,6 +152,7 @@ class Mixture:
         # Start EM algorithm
         Z = torch.zeros((N, K), dtype=dtype, device=device)  # responsibility
         lb = torch.zeros(max_iter, dtype=torch.float64, device=device)
+        gain_count = 0
         for n_iter in range(max_iter):  # EM loop
             # ==========
             # E-step
@@ -143,7 +171,11 @@ class Mixture:
                 print('n_iter: {}, lb: {}, gain: {}'
                       .format(n_iter + 1, lb[n_iter], gain))
             if gain < tol:
-                break  # Finished
+                gain_count += 1
+                if gain_count >= 6:
+                    break  # Finished
+            else:
+                gain_count = 0
 
             if W is not None:  # Weight responsibilities
                 Z = Z * W
@@ -273,12 +305,12 @@ class Mixture:
         return X, N0, C
 
     @staticmethod
-    def full_resp(Z, msk, dm=[]):
+    def full_resp(Z, msk, dm=None):
         """ Converts masked responsibilities to full.
         Args:
             Z (torch.tensor): Masked responsibilities (N, K).
-            msk (torch.tensor): Mask of original data (N0, 1).
-            dm (torch.Size, optional): Reshapes Z_full using dm. Defaults to [].
+            msk (torch.tensor): Mask of original data (N0, ).
+            dm (tuple/list, optional): Reshapes Z_full using dm.
         Returns:
             Z_full (torch.tensor): Full responsibilities (N0, K).
         """
@@ -287,8 +319,8 @@ class Mixture:
         Z_full = torch.zeros((N0, K), dtype=Z.dtype, device=Z.device)
         for k in range(K):
             Z_full[msk, k] = Z[:, k]
-        if len(dm) >= 3:
-            Z_full = torch.reshape(Z_full, (dm[0], dm[1], dm[2], K))
+        if isinstance(dm, (list, tuple)):
+            Z_full = torch.reshape(Z_full, tuple(dm) + (K,))
 
         return Z_full
 
@@ -296,11 +328,11 @@ class Mixture:
     def maximum_likelihood(Z):
         """ Return maximum likelihood map.
         Args:
-            Z (torch.tensor): Responsibilities (N, K).
+            Z (torch.tensor): Responsibilities (N/*spatial, K).
         Returns:
-            (torch.tensor): Maximum likelihood map (N, 1).
+            (torch.tensor): Maximum likelihood map (N/*spatial, 1).
         """
-        return torch.argmax(Z, dim=3)
+        return torch.argmax(Z, dim=-1)
 
 
 class GMM(Mixture):
