@@ -71,7 +71,7 @@ def preproc_image(input, mask=None, label=False, missing=0,
     # load user-defined mask
     if mask is not None:
         mask1 = mask0
-        mask0, _, _ = load_image(mask, dim=dim, device=device, label=label)
+        mask0, _, _ = load_image(mask, dim=dim, device=device, missing=None)
         if mask0.shape[-dim:] != dat.shape[-dim:]:
             raise ValueError('Mask should have the same shape as the image. '
                              f'Got {mask0.shape[-dim:]} and {dat.shape[-dim:]}')
@@ -380,4 +380,3 @@ def soft_quantize_image(dat, nbins=16):
     dat = (centers - dat).square().mul_(-2.355**2).exp_()
     dat /= dat.sum(0, keepdims=True)
     return dat
-

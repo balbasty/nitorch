@@ -4,6 +4,9 @@ import torch
 from ..optionals import numpy as np
 
 
+_min = min
+
+
 def astype(dat, dtype, casting='unsafe'):
     """Casting (without rescaling)
 
@@ -94,7 +97,7 @@ def cat(dats, dim=None):
         return torch.cat(dats, dim=dim)
     else:
         return np.concatenate(dats, axis=dim)
-    
+
 
 def writeable(dat):
     """Check if a tensor or array is writeable"""
@@ -163,8 +166,12 @@ def cast(dat, dtype, casting='unsafe', returns='dat', indtype=None, mask=None):
             if not writeable(dat):
                 dat = copy(dat)
         if casting == 'rescale':
-            scale = (1 - minval / maxval) / (1 - outdtype.min / outdtype.max)
-            offset = (outdtype.max - outdtype.min) / (maxval - minval)
+            if maxval != minval:
+                scale = (outdtype.max - outdtype.min) / (maxval - minval)
+                offset = outdtype.max - maxval * (outdtype.max - outdtype.min) / (maxval - minval)
+            else:
+                scale = 1.0
+                offset = -minval
             if 'dat' in returns:
                 dat *= scale
                 dat += offset
@@ -172,8 +179,8 @@ def cast(dat, dtype, casting='unsafe', returns='dat', indtype=None, mask=None):
             assert casting == 'rescale_zero'
             if minval < 0 and not outdtype.is_signed:
                 warn("Converting negative values to an unsigned datatype")
-            scale = min(abs(outdtype.max / maxval) if maxval else float('inf'),
-                        abs(outdtype.min / minval) if minval else float('inf'))
+            scale = _min(abs(outdtype.max / maxval) if maxval else float('inf'),
+                         abs(outdtype.min / minval) if minval else float('inf'))
             if 'dat' in returns:
                 dat *= scale
         indtype = dtypes.dtype(dat.dtype)
@@ -289,7 +296,7 @@ def _np_addnoise(dat, amplitude=1, seed=0):
     return dat
 
 
-def _torch_addnoise(dat, amplitude=1, seed=0):    
+def _torch_addnoise(dat, amplitude=1, seed=0):
     with torch.random.fork_rng([] if dat.device.type == 'cpu' else [dat.device]):
         torch.random.manual_seed(seed)
         noise = torch.rand_like(dat)
@@ -308,4 +315,3 @@ def missing(dat, missing):
     else:
         mask = np.isin(dat, missing)
     return mask
-

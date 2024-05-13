@@ -47,9 +47,9 @@ from .utils import writeslice
 
 # With x, y, z being quaternions, NiBabel's reader requires that:
 # 1 - [x, y, z]*[x, y, z]' > threshold, where threshold = -1e-7 (by
-# default - see nibabel.quaternions.fillpositive - the dot product is 
-# supposed to be 1, but this sometimes does not hold because of numerical 
-# precision). As this is a bit conservative, we here decreases this 
+# default - see nibabel.quaternions.fillpositive - the dot product is
+# supposed to be 1, but this sometimes does not hold because of numerical
+# precision). As this is a bit conservative, we here decreases this
 # threshold.
 nib.Nifti1Header.quaternion_threshold = -1e-6
 
@@ -477,12 +477,12 @@ class BabelArray(MappedArray):
 
     @classmethod
     def savef_new(cls, dat, file_like, like=None, **metadata):
-        
+
         if isinstance(dat, MappedArray):
             if like is None:
                 like = dat
             dat = dat.fdata(numpy=True)
-        
+
         # sanity check
         dtype = dtypes.dtype(dat.dtype)
         if not dtype.is_floating_point:
@@ -560,7 +560,7 @@ class BabelArray(MappedArray):
         # set shape now so that we can set zooms/etc
         header.set_data_shape(dat.shape)
         header = metadata_to_header(header, metadata, shape=dat.shape)
-        
+
         # check endianness
         disk_byteorder = header.endianness
         data_byteorder = dtype.byteorder
@@ -596,6 +596,10 @@ class BabelArray(MappedArray):
         if hasattr(header, 'set_slope_inter'):
             slope = slope / s
             inter = inter - slope * o
+            if slope in (0, float('inf'), -float('inf'), float('nan')):
+                slope = None
+            if inter in (0, float('inf'), -float('inf'), float('nan')):
+                inter = 0
             header.set_slope_inter(slope, inter)
 
         # create image object
@@ -615,9 +619,12 @@ class BabelArray(MappedArray):
             fimg = fhdr
         else:
             fimg = fmap_image.get_prepare_fileobj('wb')
+        default_order = getattr(
+            image.ImageArrayProxy, '_default_order',
+            getattr(image.ImageArrayProxy, 'order'))
         array_to_file(dat, fimg, dtype,
                       offset=header.get_data_offset(),
-                      order=image.ImageArrayProxy.order)
+                      order=default_order)
         if fmap_image == fmap_footer:
             fftr = fimg
         else:

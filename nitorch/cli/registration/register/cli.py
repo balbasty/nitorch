@@ -167,14 +167,16 @@ def _main(options):
     # ------------------------------------------------------------------
     #                      PERFORM REGISTRATION
     # ------------------------------------------------------------------
-    affine, nonlin = run(losses, affine, nonlin, affine_optim, nonlin_optim,
-                         pyramid=not options.pyramid.concurrent,
-                         interleaved=options.optim.name != 'sequential',
-                         progressive=getattr(options.affine, 'progressive', False),
-                         max_iter=options.optim.max_iter,
-                         tolerance=options.optim.tolerance,
-                         verbose=options.verbose,
-                         framerate=options.framerate)
+    affine, nonlin = run(
+        losses, affine, nonlin, affine_optim, nonlin_optim,
+        pyramid=not options.pyramid.concurrent,
+        interleaved=options.optim.name != 'sequential',
+        progressive=getattr(options.affine, 'progressive', False),
+        max_iter=options.optim.max_iter,
+        tolerance=options.optim.tolerance,
+        verbose=options.verbose,
+        framerate=options.framerate,
+    )
 
     # ------------------------------------------------------------------
     #                           WRITE RESULTS
@@ -182,8 +184,8 @@ def _main(options):
 
     if affine and options.affine.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
-        fname = options.affine.output.format(dir=odir, sep=os.path.sep,
-                                             name=options.affine.name)
+        fname = options.affine.output.format(
+            dir=odir, sep=os.path.sep, name=options.affine.name)
         print('Affine ->', fname)
         aff = affine.exp(cache_result=True, recompute=True)
         if affine.position[0] == 's':
@@ -191,8 +193,8 @@ def _main(options):
         io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
     if nonlin and options.nonlin.output:
         odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
-        fname = options.nonlin.output.format(dir=odir, sep=os.path.sep,
-                                             name=options.nonlin.name)
+        fname = options.nonlin.output.format(
+            dir=odir, sep=os.path.sep, name=options.nonlin.name)
         io.savef(nonlin.dat.dat, fname, affine=nonlin.affine)
         if isinstance(nonlin, objects.ShootModel):
             nldir, nlbase, _ = py.fileparts(fname)
