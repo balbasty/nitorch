@@ -621,7 +621,7 @@ class BabelArray(MappedArray):
             fimg = fmap_image.get_prepare_fileobj('wb')
         default_order = getattr(
             image.ImageArrayProxy, '_default_order',
-            getattr(image.ImageArrayProxy, 'order'))
+            getattr(image.ImageArrayProxy, 'order', 'F'))
         array_to_file(dat, fimg, dtype,
                       offset=header.get_data_offset(),
                       order=default_order)
