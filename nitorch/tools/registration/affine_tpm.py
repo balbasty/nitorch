@@ -415,7 +415,7 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
             print(f'({basis_name[:6]}){space} | {n_iter:02d} | {mi.mean():12.6g}', end=end)
 
         if mi.mean() - mi0.mean() < 1e-4:
-            print('converged', mi.mean() - mi0.mean())
+            # print('converged', mi.mean() - mi0.mean())
             break
 
         # --------------------------------------------------------------
