@@ -414,7 +414,7 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
             end = '\n' if verbose >= 2 else '\r'
             print(f'({basis_name[:6]}){space} | {n_iter:02d} | {mi.mean():12.6g}', end=end)
 
-        if mi.mean() - mi0.mean() < 0: #1e-4:
+        if mi.mean() - mi0.mean() < 1e-4:
             print('converged', mi.mean() - mi0.mean())
             break
 
@@ -442,7 +442,7 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
         h.diagonal(0, -1, -2).add_(h.diagonal(0, -1, -2).abs().max() * 1e-5)
         delta = lmdiv(h, g.unsqueeze(-1)).squeeze(-1)
 
-    plot_registration(dat, mov, f'{basis_name} | {n_iter}')
+    # plot_registration(dat, mov, f'{basis_name} | {n_iter}')
 
     if verbose == 1:
         print('')
