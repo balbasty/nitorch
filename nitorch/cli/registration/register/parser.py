@@ -3,13 +3,13 @@ from nitorch.core import cli
 
 help1 = r"""[nitorch] register
 
-usage: 
-    nitorch register [options] 
+usage:
+    nitorch register [options]
                      @loss [NAME] [FACTOR] @@fix *FILE @@mov *FILE ...
                      @affine [NAME] [FACTOR] @@optim [NAME] ...
                      @nonlin [NAME] [FACTOR] @@optim [NAME] ...
                      @optim [NAME] ...
-    
+
     nitorch register -h [LEVEL]
         LEVEL can be:
            [1]      This help
@@ -20,8 +20,8 @@ usage:
 
 help2 = r"""[nitorch] register
 
-usage: 
-    nitorch register [options] 
+usage:
+    nitorch register [options]
                      @loss    [NAME] [FACTOR] @@fix *FILE @@mov *FILE ...
                      @affine  [NAME] [FACTOR] @@optim [NAME] ...
                      @nonlin  [NAME] [FACTOR] @@optim [NAME] ...
@@ -30,7 +30,7 @@ usage:
 
 @loss options:
     NAME can take values (with specific sub-options):
-       [mi, nmi]                        Mutual information (can be normalized) 
+       [mi, nmi]                        Mutual information (can be normalized)
         mse, l2                         Mean squared error (can be weighted)
         mad, l1                         Median absolute deviation (can be weighted)
         tuk, tukey                      Tukey's biweight function (can be weighted)
@@ -55,12 +55,12 @@ usage:
        [v, svf]                         Stationary velocity field
         g, shoot                        Geodesic shooting
         d, smalldef                     Dense deformation field
-        
+
 @optim options:
     NAME can take values:
        [i, interleaved]                 Interleaved optimization of affine and nonlin
         s, sequential                   Sequential optimization of affine, then nonlin
-    
+
 @@optim options:
     NAME can take values:
         gn, gauss-newton                Second-order method. Not all losses can be used.
@@ -77,13 +77,13 @@ General options:
     -h, --help [LEVEL]              Display this help: [1=minimal], 2=normal, 3=more details
     -v, --verbose [LVL]             Level of verbosity [1=print], 2=plot
     -r, --framerate                 Framerate of plotting function, in Hz [1]
-        
+
 """
 
 help3 = r"""[nitorch] register
 
-usage: 
-    nitorch register [options] 
+usage:
+    nitorch register [options]
                     @loss [NAME] [FACTOR] ...
                         @@fix *FILE [-o *FILE] [-r *FILE] [-p *LVL] ...
                         @@mov *FILE [-o *FILE] [-r *FILE] [-p *LVL] ...
@@ -93,11 +93,11 @@ usage:
                         @@optim [NAME] ...
                     @optim [NAME] ...
                     @pyramid [NAME] ...
-    
+
 @loss options:
     FACTOR must be a scalar value [1]
     NAME can take values (with specific sub-options):
-       [mi, nmi]                        Mutual information (can be normalized) 
+       [mi, nmi]                        Mutual information (can be normalized)
             -m, --norm NAME                 Normalization: [studholme], arithmetic, geometric, no
             -b, --bins VAL [VAL]            Number of bins in the joint histogram [32]
             -f, --fwhm VAL                  Full width half-max of histogram smoothing [1]
@@ -106,10 +106,10 @@ usage:
             -w, --weight [VAL]              Weight (= Gaussian precision): [auto]
         mad, l1                         Median absolute deviation (can be weighted)
             -w, --weight [VAL]              Weight (= Laplace precision): [auto]
-            -j, --joint                     Joint weight map across channels [false] 
+            -j, --joint                     Joint weight map across channels [false]
         tuk, tukey                      Tukey's biweight function (can be weighted)
             -w, --weight [VAL]              Weight (= Laplace precision): [auto]
-            -j, --joint                     Joint weight map across channels [false] 
+            -j, --joint                     Joint weight map across channels [false]
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
             -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
@@ -131,7 +131,7 @@ usage:
         -z, --slicewise [AXIS=-1]       Make loss slice-wise [False]
 
 @@fix/mov options:
-    *FILES must be one or several filenames, which will be concatenated 
+    *FILES must be one or several filenames, which will be concatenated
     across the channel dimension.
     -o, --output [PATH]             Path to the output with minimal reslicing: [True={base}.moved.{ext}]
     -r, --resliced [PATH]           Path to the output resliced to the other image's space: [False], True={base}.resliced.{ext}
@@ -150,6 +150,7 @@ usage:
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
         --mind  [FWHM=1 [RADIUS=0]] Compute MIND features
+    -c, --channels *C               Channels to load. Can be a range start:stop:step [:]
 
 @affine options:
     FACTOR must be a scalar value [1] and is a global penalty factor
@@ -191,13 +192,13 @@ usage:
             -n, --max-iter                  Maximum number of iterations
             -t, --tolerance                 Tolerance for early stopping
         s, sequential                   Sequential optimization of affine, then nonlin
-    
+
 @@optim options:
     The default solver is chosen based on the loss.
-    Usually, losses that define a Hessian are solved by Gauss-Newton, 
-    and the others by LBFGS for the affine component and Nesterov with 
+    Usually, losses that define a Hessian are solved by Gauss-Newton,
+    and the others by LBFGS for the affine component and Nesterov with
     Wolfe line search for the nonlinear component.
-    
+
     NAME can take values (with options):
         gn, gauss-newton                Second-order method. Not all losses can be used.
             -m, --marquardt                  Levenberg-Marquardt regularization [auto]
@@ -249,7 +250,7 @@ General options:
     -o, --output-dir                Output directory [same as input files]
     -h, --help [LEVEL]              Display this help: 0=minimal, [1=normal], 2=more details
     -v, --verbose [LVL]             Level of verbosity [0]
-        
+
 """
 
 help = {1: help1, 2: help2, 3: help3}
@@ -286,8 +287,10 @@ def parse_range(x):
     start, stop, step = x
     start = int(start or 0)
     step = int(step or 1)
-    stop = int(stop)
-    return range(start, stop, step)
+    if stop == '':
+        return slice(start, None, step)
+    else:
+        return range(start, int(stop), step)
 
 
 # Main options
@@ -440,6 +443,7 @@ file.add_option('missing', '--no-missing', nargs=0,
                 action=cli.Actions.store_value([]), help='No missing values')
 file.add_option('mind', '--mind', nargs='*2', default=[], convert=float,
                 action=cli.Actions.store_value([1, 2]))
+file.add_option('channels', ('-c', '--channels'), nargs='1*', convert=parse_range, default=[slice(None)])
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)
 mov = cli.Group('mov', '@@mov', n=1)
