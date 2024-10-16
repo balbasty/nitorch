@@ -69,6 +69,7 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         Input image(s)
     tpm : file(s) or tensor or (tensor, affine), optional
         Input tissue probability map. Uses SPM's TPM by default.
+        If a tensor, must have shape `(K, *spatial)`.
     weights : file(s) or tensor
         Input mask or weight map
     device : torch.device, optional
@@ -161,7 +162,7 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
     # ensure normalized
     logtpm = logtpm.clamp(tiny, 1-tiny).div_(logtpm.sum(0, keepdim=True))
     # transform to logits
-    logtpm = logtpm.add_(tiny).log_()
+    logtpm = logtpm.add_(1e-4).log_()
     # spline prefilter
     splineopt = dict(interpolation=2, bound='replicate')
     logtpm = spatial.spline_coeff_nd(logtpm, dim=3, inplace=True, **splineopt)
