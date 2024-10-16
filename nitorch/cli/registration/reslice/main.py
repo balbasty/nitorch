@@ -96,6 +96,18 @@ def read_info(options):
         o.channels = o.shape[-1]
         o.shape = o.shape[:3]
         o.affine = f.affine.float()
+
+        if options.channels is not None:
+            channels = py.make_list(options.channels)
+            channels = [
+                list(c) if isinstance(c, range) else
+                list(range(o.channels))[c] if isinstance(c, slice) else
+                c for c in channels
+            ]
+            if not all([isinstance(c, int) for c in channels]):
+                raise ValueError('Channel list should be a list of integers')
+            o.channels = len(channels)
+
         return o
 
     def read_affine(fname):
@@ -304,6 +316,16 @@ def write_data(options):
         else:
             dat = io.volumes.loadf(file.fname, rand=False, **backend)
             opt_pull = opt_pull0
+        if options.channels is not None:
+            channels = py.make_list(options.channels)
+            channels = [
+                list(c) if isinstance(c, range) else
+                list(range(dat.shape[-1]))[c] if isinstance(c, slice) else
+                c for c in channels
+            ]
+            if not all([isinstance(c, int) for c in channels]):
+                raise ValueError('Channel list should be a list of integers')
+            dat = dat[..., channels]
         dat = dat.reshape([*file.shape, file.channels])
         dat = utils.movedim(dat, -1, 0)
 
@@ -328,5 +350,3 @@ def write_data(options):
             io.volumes.save(dat, ofname, like=file.fname, affine=oaffine, dtype=options.dtype)
         else:
             io.volumes.savef(dat, ofname, like=file.fname, affine=oaffine, dtype=options.dtype)
-
-

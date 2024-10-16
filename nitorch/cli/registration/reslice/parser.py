@@ -4,29 +4,29 @@ from nitorch.core import cli
 help = r"""[nitorch] Reslice volumes
 
 usage:
-    nitorch reslice *FILES <*TRF> FILE [-t FILE] [-o *FILE] 
+    nitorch reslice *FILES <*TRF> FILE [-t FILE] [-o *FILE]
                     [-i ORDER] [-b BND] [-p] [-x] [-cpu|gpu]
-    
+
     <TRF> can take values (with additional options):
     -l, --linear            Linear transform (i.e., affine matrix)
     -d, --displacement      Dense or free-form displacement field
         -n, --order             Order of the encoding splines (1)
         -u, --unit              Unit/Space of the displacement (mm or [vox])
-    -v, --velocity          Diffeomorphic velocity field 
+    -v, --velocity          Diffeomorphic velocity field
                             [and JSON file of shooting parameters]
                             If no JSON file, assume stationary velocity.
-   
+
     Each of these transforms can be inverted by prepending 'i' in the
     short form or appending '-inverse' in the long form:
     -il, --linear-inverse            Inverse of a linear transform
     -id, --displacement-inverse      Inverse of a dense or ffd displacement field
     -iv, --velocity-inverse          Inverse of a diffeomorphic velocity field
-   
-    It is also possible to append a '2' to specify that the affine is the 
+
+    It is also possible to append a '2' to specify that the affine is the
     square of the transform to apply (i.e., its square root will be applied):
     -l2, --linear-square            Square of a linear transform
     -v2, --velocity-square          Square of a diffeomorphic velocity field
-    
+
     Other tags are:
     -t, --target            Defines the target space.
                             If not provided, minimal reslicing is performed.
@@ -36,12 +36,13 @@ usage:
     -b, --bound             Boundary conditions (dct2)
     -x, --extrapolate       Extrapolate out-of-bounds data (no)
     -v, --voxel-size        Voxel size of the resliced space (default: from target)
+    -c, --channels          Channels to load. Can be a range start:stop:step (default: all)
     -dt, --dtype            Output data type (default: from input)
     -cpu, -gpu              Device to use (cpu)
-   
+
    The output image is
     input_dat(inv(inpt_aff) o trf[0] o trf[1] o ... trf[-1] o target_aff)
-    
+
     For example, if `autoreg` has been run to register 'mov.nii' to 'fix.nii'
     and has generated transforms 'affine.lta' and 'velocity.nii':
     - reslicing mov to fix:
@@ -178,6 +179,11 @@ def parse(args):
             while cli.next_isvalue(args):
                 val, *args = args
                 options.voxel_size.append(float(val))
+        elif tag in ('-c', '--channels'):
+            options.channels = []
+            while cli.next_isvalue(args):
+                val, *args = args
+                options.channels.append(parse_range(val))
         elif tag in ('-dt', '--dtype'):
             cli.check_next_isvalue(args, tag)
             options.dtype, *args = args
@@ -197,3 +203,19 @@ def parse(args):
 
     return options
 
+
+def parse_range(x):
+    if ':' not in x:
+        return int(x)
+    x = x.split(':')
+    if len(x) == 2:
+        x = [*x, '']
+    elif len(x) == 1:
+        x = ['', *x, '']
+    start, stop, step = x
+    start = int(start or 0)
+    step = int(step or 1)
+    if stop == '':
+        return slice(start, None, step)
+    else:
+        return range(start, int(stop), step)

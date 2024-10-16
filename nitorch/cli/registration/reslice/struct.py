@@ -45,5 +45,4 @@ class Reslicer(Structure):
     dtype: str = None
     device: str = 'cpu'
     prefilter: bool = True
-
-
+    channels: list = None
