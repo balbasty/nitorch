@@ -12,7 +12,7 @@ import math as pymath
 
 def preproc_image(input, mask=None, label=False, missing=0,
                   world=None, affine=None, rescale=.95,
-                  pad=None, bound='zero', fwhm=None,
+                  pad=None, bound='zero', fwhm=None, channels=None,
                   dim=None, device=None, **kwargs):
     """Load an image and preprocess it as required
 
@@ -43,6 +43,8 @@ def preproc_image(input, mask=None, label=False, missing=0,
     fwhm : [sequence of] float
         Smooth the volume with a Gaussian kernel of that FWHM.
         If last element is "mm", values are in mm and converted to voxels.
+    channels : [sequence of] int or range or slice
+        Channels to load
     dim : int, optional
         Number of spatial dimensions
     device : torch.device
@@ -58,14 +60,30 @@ def preproc_image(input, mask=None, label=False, missing=0,
         Orientation matrix
 
     """
-    if not torch.is_tensor(input):
-        dat, mask0, affine0 = load_image(input, dim=dim, device=device,
-                                         label=label, missing=missing)
-    else:
-        dat = input
-        mask0 = torch.isfinite(dat)
-        dat = dat.masked_fill(~mask0, 0)
-        affine0 = spatial.affine_default(dat.shape[1:])
+    dat, mask0, affine0 = load_image(input, dim=dim, device=device,
+                                     label=label, missing=missing,
+                                     channels=channels)
+
+    # if not torch.is_tensor(input):
+    #     dat, mask0, affine0 = load_image(input, dim=dim, device=device,
+    #                                      label=label, missing=missing,
+    #                                      channels=channels)
+    # else:
+    #     dat = input
+    #     if channels is not None:
+    #         channels = make_list(channels)
+    #         channels = [
+    #             list(c) if isinstance(c, range) else
+    #             list(range(len(dat)))[c] if isinstance(c, slice) else
+    #             c for c in channels
+    #         ]
+    #         if not all([isinstance(c, int) for c in channels]):
+    #             raise ValueError('Channel list should be a list of integers')
+    #     dat = dat[channels]
+    #     mask0 = torch.isfinite(dat)
+    #     dat = dat.masked_fill(~mask0, 0)
+    #     affine0 = spatial.affine_default(dat.shape[1:])
+
     dim = dat.dim() - 1
 
     # load user-defined mask
@@ -199,7 +217,7 @@ def prepare_pyramid_levels(images, levels, dim=None, **opt):
     return pyrutils.pyramid_levels(vxs, shapes, levels, **opt)
 
 
-def map_image(fnames, dim=None):
+def map_image(fnames, dim=None, channels=None):
     """Map an ND image from disk
 
     Parameters
@@ -229,7 +247,6 @@ def map_image(fnames, dim=None):
             affine = img.affine
         if dim is None:
             dim = img.affine.shape[-1] - 1
-        # img = img.fdata(rand=True, device=device)
         if img.dim > dim:
             img = img.movedim(-1, 0)
         else:
@@ -241,10 +258,24 @@ def map_image(fnames, dim=None):
         imgs.append(img)
         del img
     imgs = io.cat(imgs, dim=0)
+
+    # select a subset of channels
+    if channels is not None:
+        channels = make_list(channels)
+        channels = [
+            list(c) if isinstance(c, range) else
+            list(range(len(imgs)))[c] if isinstance(c, slice) else
+            c for c in channels
+        ]
+        if not all([isinstance(c, int) for c in channels]):
+            raise ValueError('Channel list should be a list of integers')
+        imgs = io.stack([imgs[c] for c in channels])
+
     return imgs, affine
 
 
-def load_image(input, dim=None, device=None, label=False, missing=0):
+def load_image(input, dim=None, device=None, label=False, missing=0,
+               channels=None):
     """
     Load a N-D image from disk
 
@@ -272,15 +303,30 @@ def load_image(input, dim=None, device=None, label=False, missing=0):
         Orientation matrix
     """
     if not torch.is_tensor(input):
-        dat, affine = map_image(input, dim)
+        dat, affine = map_image(input, dim, channels=channels)
     else:
         dat, affine = input, spatial.affine_default(input.shape[1:])
+
+        if channels is not None:
+            channels = make_list(channels)
+            channels = [
+                list(c) if isinstance(c, range) else
+                list(range(len(dat)))[c] if isinstance(c, slice) else
+                c for c in channels
+            ]
+            if not all([isinstance(c, int) for c in channels]):
+                raise ValueError('Channel list should be a list of integers')
+            dat = dat[channels]
+
     if label:
         dtype = dat.dtype
         if isinstance(dtype, (list, tuple)):
             dtype = dtype[0]
         dtype = dtypes.as_torch(dtype, upcast=True)
-        dat0 = dat.data(device=device, dtype=dtype)[0]  # assume single channel
+        if torch.is_tensor(dat):
+            dat0 = dat[0]
+        else:
+            dat0 = dat.data(device=device, dtype=dtype)[0]  # assume single channel
         if label is True:
             label = dat0.unique(sorted=True)
             label = label[label != 0].tolist()

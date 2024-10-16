@@ -33,7 +33,7 @@ General idea
       𝓛 = 𝔼_q[ln p(𝒙)] = ∑ₙᵢ q(𝑥ₙ = 𝑖) ln ∑ⱼ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ
 """
 import torch
-from nitorch.core import linalg, utils, py
+from nitorch.core import linalg, utils, py, math
 from nitorch import spatial, io
 from .utils import jg, jhj, affine_grid_backward
 import nitorch.plot as niplt
@@ -155,6 +155,18 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
     dat = discretize(dat, nbins=bins, mask=weights)
 
     # ------------------------------------------------------------------
+    #       PREFILTER TPM
+    # ------------------------------------------------------------------
+    logtpm = tpm.clone()
+    # ensure normalized
+    logtpm = logtpm.clamp(tiny, 1-tiny).div_(logtpm.sum(0, keepdim=True))
+    # transform to logits
+    logtpm = logtpm.add_(tiny).log_()
+    # spline prefilter
+    splineopt = dict(interpolation=2, bound='replicate')
+    logtpm = spatial.spline_coeff_nd(logtpm, dim=3, inplace=True, **splineopt)
+
+    # ------------------------------------------------------------------
     #       OPTIONS
     # ------------------------------------------------------------------
     opt = dict(
@@ -175,8 +187,8 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         if not sp:
             return dat0, affine_dat0, weights0
         sp = [max(1, int(pymath.floor(sp / vx1))) for vx1 in vx]
-        sp = [slice(None, None, sp1) for sp1 in sp]
-        affine_dat, _ = spatial.affine_sub(affine_dat0, dat0.shape[-dim:], tuple(sp))
+        sp = tuple([slice(None, None, sp1) for sp1 in sp])
+        affine_dat, _ = spatial.affine_sub(affine_dat0, dat0.shape[-dim:], sp)
         dat = dat0[(Ellipsis, *sp)]
         if weights0 is not None:
             weights = weights0[(Ellipsis, *sp)]
@@ -234,7 +246,7 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
         if reorient is not None:
             affine_dat = reorient.matmul(affine_dat)
 
-        mi, aff, prm = fit_affine_tpm(dat, tpm, affine_dat, affine_tpm,
+        mi, aff, prm = fit_affine_tpm(dat, logtpm, affine_dat, affine_tpm,
                                       weights, **opt, prm=prm)
 
     if reorient is not None:
@@ -263,7 +275,7 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
     affine_tpm : (4, 4) tensor
     weights : (*spatial) tensor
     basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
-    fwhm : float, default=J/32
+    fwhm : float, default=J/64
     max_iter_gn : int, default=100
     max_iter_em : int, default=32
     max_line_search : int, default=12
@@ -276,6 +288,8 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
     prm : (F) tensor
 
     """
+    # !!! NOTE: `tpm` must contain spline-prefiltered log-probabilities
+
     dim = tpm.dim() - 1
 
     # ------------------------------------------------------------------
@@ -326,7 +340,7 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
     affine_tpm = affine_tpm.to(**utils.backend(tpm))
     shape = dat.shape[-dim:]
 
-    tpm = tpm.to(dat.device).clamp(tiny, 1-tiny)
+    tpm = tpm.to(dat.device)
     basis = make_basis(basis, dim, **utils.backend(tpm))
     F = len(basis)
 
@@ -337,7 +351,7 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
     em_opt = dict(fwhm=fwhm, max_iter=max_iter_em, weights=weights,
                   verbose=verbose-2)
     drv_opt = dict(weights=weights)
-    pull_opt = dict(bound='replicate', extrapolate=True)
+    pull_opt = dict(bound='replicate', extrapolate=True, interpolation=2)
 
     # ------------------------------------------------------------------
     #       OPTIMIZE
@@ -365,6 +379,7 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
 
             # --- warp TPM ---------------------------------------------
             mov = spatial.grid_pull(tpm, phi, **pull_opt)
+            mov = math.softmax(mov, dim=1)
 
             # --- mutual info ------------------------------------------
             mi, Nm, prior = em_prior(mov, dat, prior0, **em_opt)
@@ -399,8 +414,8 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
             end = '\n' if verbose >= 2 else '\r'
             print(f'({basis_name[:6]}){space} | {n_iter:02d} | {mi.mean():12.6g}', end=end)
 
-        if mi.mean() - mi0.mean() < 1e-4:
-            # print('converged', mi.mean() - mi0.mean())
+        if mi.mean() - mi0.mean() < 0: #1e-4:
+            print('converged', mi.mean() - mi0.mean())
             break
 
         # --------------------------------------------------------------
@@ -412,8 +427,13 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
         g = g.sum(0)
         h = h.sum(0)
 
-        # --- chain rule -----------------------------------------------
+        # --- spatial derivatives --------------------------------------
+        mov = mov.unsqueeze(-1)
         gmov = spatial.grid_grad(tpm, phi, **pull_opt)
+        gmov = mov * (gmov - (mov * gmov).sum(1, keepdim=True))
+        mov = mov.squeeze(-1)
+
+        # --- chain rule -----------------------------------------------
         gaff = lmdiv(affine_tpm, mm(gaff, affine))
         g, h = chain_rule(g, h, gmov, gaff, maj=False)
         del gmov
@@ -421,7 +441,8 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
         # --- Gauss-Newton ---------------------------------------------
         h.diagonal(0, -1, -2).add_(h.diagonal(0, -1, -2).abs().max() * 1e-5)
         delta = lmdiv(h, g.unsqueeze(-1)).squeeze(-1)
-        foo = 0
+
+    plot_registration(dat, mov, f'{basis_name} | {n_iter}')
 
     if verbose == 1:
         print('')
@@ -898,7 +919,8 @@ def discretize(dat, nbins=256, mask=None):
 
 def get_spm_prior(**backend):
     """Download the SPM prior"""
-    url = 'https://github.com/spm/spm12/raw/master/tpm/TPM.nii'
+    # url = 'https://github.com/spm/spm12/raw/master/tpm/TPM.nii'
+    url = 'https://github.com/spm/spm12/raw/refs/heads/main/tpm/TPM.nii'
     fname = os.path.join(cache_dir, 'SPM12_TPM.nii')
     if not os.path.exists(fname):
         os.makedirs(cache_dir, exist_ok=True)
