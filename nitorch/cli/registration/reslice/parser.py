@@ -32,14 +32,15 @@ usage:
     Other tags are:
     -t, --target            Defines the target space.
                             If not provided, minimal reslicing is performed.
-    -o, --output            Name of the output file (default: '*.resliced*')
-    -i, --interpolation     Interpolation order. Use `l` for labels. (1)
-    -p, --prefilter         Apply spline prefilter (yes)
-    -b, --bound             Boundary conditions (dct2)
-    -x, --extrapolate       Extrapolate out-of-bounds data (no)
-    -v, --voxel-size        Voxel size of the resliced space (default: from target)
-    -c, --channels          Channels to load. Can be a range start:stop:step (default: all)
-    -dt, --dtype            Output data type (default: from input)
+    -o,  --output           Name of the output file (default: '*.resliced*')
+    -i,  --interpolation    Interpolation order. Use `l` for labels. (1)
+    -p,  --prefilter        Apply spline prefilter (yes)
+    -b,  --bound            Boundary conditions (dct2)
+    -x,  --extrapolate      Extrapolate out-of-bounds data (no)
+    -vx, --voxel-size       Voxel size of the resliced space (from target)
+    -c,  --channels         Channels to load. Can be a range start:stop:step (all)
+    -k,  --chunk            Process data one chunk--of this size--at a time (no)
+    -dt, --dtype            Output data type (from input)
     -cpu, -gpu              Device to use (cpu)
 
    The output image is
@@ -176,11 +177,18 @@ def parse(args):
                 bool(int(options.prefilter)))
         elif tag in ('-x', '-ex', '--extrapolate'):
             options.extrapolate = True
-        elif tag in ('-v', '-vx', '--voxel-size'):
+        elif tag in ('-vx', '--voxel-size'):
             options.voxel_size = []
             while cli.next_isvalue(args):
                 val, *args = args
                 options.voxel_size.append(float(val))
+        elif tag in ('-k', '--chunk'):
+            options.chunk = []
+            while cli.next_isvalue(args):
+                val, *args = args
+                options.chunk.append(int(val))
+            if not options.chunk:
+                options.chunk = [128]
         elif tag in ('-c', '--channels'):
             options.channels = []
             while cli.next_isvalue(args):

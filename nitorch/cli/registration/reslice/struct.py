@@ -39,6 +39,7 @@ class Reslicer(Structure):
     transformations: list = []
     target: str = None
     voxel_size: list = None
+    chunk: list = None
     output: str = '{dir}/{base}.resliced{ext}'
     interpolation: int = 1
     bound: str = 'dct2'
