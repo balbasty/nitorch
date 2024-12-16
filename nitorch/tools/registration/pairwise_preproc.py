@@ -2,7 +2,7 @@ __all__ = ['preproc_image', 'map_image', 'load_image', 'prepare_pyramid_levels',
            'rescale_image', 'discretize_image', 'soft_quantize_image']
 
 from nitorch import io
-from nitorch.core.py import make_list
+from nitorch.core.py import make_list, flatten
 from nitorch.core import dtypes, utils
 from nitorch import spatial
 from . import pairwise_pyramid as pyrutils
@@ -267,8 +267,12 @@ def map_image(fnames, dim=None, channels=None):
             list(range(len(imgs)))[c] if isinstance(c, slice) else
             c for c in channels
         ]
+        channels = flatten(channels)
         if not all([isinstance(c, int) for c in channels]):
-            raise ValueError('Channel list should be a list of integers')
+            raise ValueError(
+                'Channel list should be a list of integers but received:',
+                channels
+            )
         imgs = io.stack([imgs[c] for c in channels])
 
     return imgs, affine

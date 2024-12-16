@@ -206,10 +206,12 @@ from . import volumes
 from . import metadata
 from . import optionals
 from . import readers
+from . import streamlines
 from . import transforms
 from . import utils
 from . import writers
 
 from .volumes import MappedArray, CatArray, cat, stack
 from .transforms import MappedAffine
+from .streamlines import MappedStreamlines
 from .loadsave import map, load, loadf, save, savef

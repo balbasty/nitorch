@@ -104,7 +104,7 @@ class LTAStruct(Structure):
     exposed to the user.
     """
 
-    type: int = Constants.LINEAR_VOX_TO_VOX     # Affine type
+    type: int = Constants.LINEAR_RAS_TO_RAS     # Affine type
     nxforms: int = 1                             # Number of affines stored
     mean: tuple = None                          # ?
     sigma: float = None                         # ?

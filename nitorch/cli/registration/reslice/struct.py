@@ -11,6 +11,7 @@ class FileWithInfo(Structure):
     ext: str = None                 # Extension
     channels: int = None            # Number of channels
     float: bool = True              # Is raw dtype floating point
+    type: str = None
 
 
 class Transform(Structure):

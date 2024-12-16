@@ -7,6 +7,8 @@ usage:
     nitorch reslice *FILES <*TRF> FILE [-t FILE] [-o *FILE]
                     [-i ORDER] [-b BND] [-p] [-x] [-cpu|gpu]
 
+    <FILES> can be paths to volumes or to streamlines.
+
     <TRF> can take values (with additional options):
     -l, --linear            Linear transform (i.e., affine matrix)
     -d, --displacement      Dense or free-form displacement field
