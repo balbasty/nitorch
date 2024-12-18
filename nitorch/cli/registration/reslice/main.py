@@ -407,8 +407,12 @@ def write_volumes(options):
         # --------------------------------------------------------------
         # chunkwise processing
         # --------------------------------------------------------------
-        chunk = py.make_list(options.chunk, 3)
-        if resample and chunk and any(c < x for x, c in zip(file.shape, chunk)):
+        need_chunk = bool(options.chunk)
+        if need_chunk:
+            chunk = py.make_list(options.chunk, 3)
+            need_chunk = need_chunk and any(c < x for x, c in zip(file.shape, chunk))
+
+        if resample and need_chunk:
 
             odat = utils.movedim(torch.empty(
                 [*oshape, file.channels],
@@ -470,9 +474,9 @@ def write_volumes(options):
         # --------------------------------------------------------------
         else:
             if is_label:
-                dat = dat.data(**backend_int)
+                dat = vol.data(**backend_int)
             else:
-                dat = dat.fdata(rand=False, **backend)
+                dat = vol.fdata(rand=False, **backend)
             dat = dat[..., channels]
             dat = dat.reshape([*file.shape, file.channels])
             dat = utils.movedim(dat, -1, 0)
