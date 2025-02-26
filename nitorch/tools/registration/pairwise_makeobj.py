@@ -260,6 +260,8 @@ def make_nonlin(shape_or_init=None, model='svf', affine=None, voxel_size=None,
 
     # build model
     Model = objects.NonLinModel.subclass(model)
+    if isinstance(factor, (list, tuple)):
+        factor = factor[0]
     nonlin = Model(dat=vel, factor=factor, penalty=penalty, **kwargs)
     return nonlin
 

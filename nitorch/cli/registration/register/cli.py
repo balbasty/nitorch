@@ -278,7 +278,8 @@ def build_losses(options, pyramids, device):
         image_dict[loss.mov.name or loss.mov.files[0]] = mov
 
         # Forward loss
-        factor = loss.factor / (2 if loss.symmetric else 1)
+        loss.factor = py.ensure_list(loss.factor, len(pyramid))[::-1]
+        factor = loss.factor[-1] / (2 if loss.symmetric else 1)
         sumloss = sumloss + factor * objects.Similarity(lossobj, mov, fix)
 
         # Backward loss
@@ -296,6 +297,40 @@ def build_losses(options, pyramids, device):
     pyramid_fn = (concurrent_pyramid if options.pyramid.concurrent else
                   sequential_pyramid)
     loss_list = pyramid_fn(sumloss)
+
+    if options.pyramid.concurrent:
+        if not isinstance(loss_list, objects.SumSimilarity):
+            loss_list = objects.SumSimilarity([loss_list])
+        loss_list = list(loss_list)
+        new_list = []
+        nb_levels = len(loss_list) // len(options.loss)
+        nb_losses = len(options.loss)
+        for i in range(nb_levels):
+            for j in range(nb_losses):
+                rel_factor = (
+                    options.loss[j].factor[i] /
+                    options.loss[j].factor[-1]
+                )
+                new_list.append(loss_list[i*nb_losses+j] * rel_factor)
+        loss_list = objects.SumSimilarity.sum(new_list)
+    else:
+        new_list = []
+        for i, level in enumerate(loss_list):
+            if not isinstance(level, objects.SumSimilarity):
+                level = objects.SumSimilarity([level])
+            level = list(level)
+            new_level = []
+            for j, loss_elem in enumerate(level):
+                i = min(i, len(options.loss[j].factor) - 1)
+                rel_factor = (
+                    options.loss[j].factor[i] /
+                    options.loss[j].factor[-1]
+                )
+                new_level.append(loss_elem * rel_factor)
+            new_level = objects.SumSimilarity.sum(new_level)
+            new_list.append(new_level)
+        loss_list = new_list
+
     return loss_list, image_dict
 
 

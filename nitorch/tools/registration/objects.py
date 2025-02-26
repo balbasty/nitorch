@@ -138,6 +138,7 @@ class Similarity(BaseSimilarity):
         p = getattr(self.loss, 'patch', None)
         if p is not None:
             s += [f'patch={p}']
+        s += [f'moving={self.moving}', f'fixed={self.fixed}']
         return s
 
     def __repr__(self):
@@ -581,7 +582,7 @@ class ImagePyramid(ImageSequence):
         """
         # I don't call super().__init__() on purpose
         self.method = method
-        
+
         if isinstance(dat, Image):
             if affine is None:
                 affine = dat.affine
@@ -776,7 +777,7 @@ class Displacement(SpatialTensor, DenseTransform):
         extrapolate=True,
         type='displacement',
     )
-    
+
     def downsample_(self, factor=2, **kwargs):
         new_shape = [int(math.ceil(s/factor)) for s in self.shape]
         kwargs.setdefault('shape', new_shape)
@@ -816,7 +817,7 @@ class Displacement(SpatialTensor, DenseTransform):
 
 class LogAffine(AffineTransform):
     """Data + Metadata (basis) of a "Lie" affine matrix"""
-    def __init__(self, dat=None, basis=None, dim=3, **backend):
+    def __init__(self, dat=None, basis=None, *, optim=None, dim=3, **backend):
         """
         Parameters
         ----------
@@ -824,6 +825,8 @@ class LogAffine(AffineTransform):
             Pre-allocated log-affine
         basis : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
             Name of an Affine basis
+        optim : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
+            Subset of parameters to optimize. If `None`, all of them.
         dim : int, default=3
             Number of spatial dimensions
         **backend
@@ -841,6 +844,7 @@ class LogAffine(AffineTransform):
         dim = dim or 3
         self.dim = dim
         self.basis = basis
+        self.optim = optim
         if dat is None:
             dat = torch.zeros(spatial.affine_basis_size(basis, dim), **backend)
         self.dat = dat
@@ -875,12 +879,12 @@ class LogAffine(AffineTransform):
     @property
     def basis(self):
         if self._basis is None:
-            begin_rot = self.dim
-            begin_scl = begin_rot + (self.dim*(self.dim-1))//2
-            if self._basis_name == 'affine':
-                end_scl = begin_scl + self.dim
-            else:
-                end_scl = begin_scl + 1
+            # begin_rot = self.dim
+            # begin_scl = begin_rot + (self.dim*(self.dim-1))//2
+            # if self._basis_name == 'affine':
+            #     end_scl = begin_scl + self.dim
+            # else:
+            #     end_scl = begin_scl + 1
             self._basis = spatial.affine_basis(self._basis_name, self.dim,
                                                **utils.backend(self.dat))
             # self._basis[begin_rot:begin_scl] /= 40  # rotations ~ 1 deg
@@ -892,6 +896,94 @@ class LogAffine(AffineTransform):
     def basis(self, x):
         self._basis_name = x
         self._basis = None
+
+    def _optim_grad(self, grad):
+        """
+        Transform gradients wrt to all parameters into gradients wrt
+        optimized parameters.
+        """
+        optim = (self.optim or self._basis_name)[:3].lower()
+        basis = self._basis_name[:3].lower()
+        D = self.dim
+        D2 = (D*(D-1)) // 2
+        if optim == "tra":
+            if basis == "rot":
+                raise ValueError("Cannot optimize translation in a rotation basis")
+            return grad[..., :D, :, :]
+        if optim == "rot":
+            if basis == "tra":
+                raise ValueError("Cannot optimize rotation in a translation basis")
+            return grad[..., D:D+D2, :, :]
+        if optim == "rig":
+            if basis in ("tra", "rot"):
+                raise ValueError("Cannot optimize rigid in a rotation or translation basis")
+            return grad[..., :D+D2, :, :]
+        if optim == "sim":
+            if basis in ("tra", "rot", "rig"):
+                raise ValueError("Cannot optimize similitude in a rigid basis")
+            if basis == "sim":
+                return grad
+            else:
+                grig = grad[..., :D+D2, :, :]
+                gscl = grad[..., D+D2:2*D+D2, :, :]
+                gscl = gscl.sum(-3, keepdim=True)
+                return torch.cat([grig, gscl], dim=-3)
+        if optim == "aff":
+            if basis != "aff":
+                raise ValueError("Cannot optimize affine in a rigid or similitude basis")
+            return grad
+        assert False, f"Unknown (optim, basis): ({optim}, {basis})"
+
+    @classmethod
+    def _switch_basis(cls, dat, src, dst, dim=3):
+        src_dat = dat
+        dst_dat = None
+        dst = dst[:2].lower()
+        src = src[:2].lower()
+        if dst[0] == 't':
+            dst_dat = src_dat[:dim].clone()
+        elif dst == 'ro':
+            nb_prm = dim*(dim-1)//2
+            if src == 'ro':
+                dst_dat = src_dat.clone()
+            elif len(src_dat) >= dim + nb_prm:
+                dst_dat = src_dat[dim:dim+nb_prm].clone()
+            else:
+                dst_dat = src_dat.new_zeros([nb_prm])
+                dat1 = src_dat[dim:dim+nb_prm]
+                dst_dat[:len(dat1)] = dat1
+        elif dst[0] == 'r':
+            nb_prm = dim + dim*(dim-1)//2
+            if src == 'ro':
+                dst_dat = src_dat.new_zeros([nb_prm])
+                dst_dat[dim:] = src_dat
+            elif len(src_dat) >= dim + nb_prm:
+                dst_dat = src_dat[:nb_prm].clone()
+            else:
+                dst_dat = src_dat.new_zeros([nb_prm])
+                dst_dat[:len(src_dat)] = src_dat
+        elif dst[0] == 's':
+            nb_prm = dim + dim*(dim-1)//2 + 1
+            dst_dat = src_dat.new_zeros([nb_prm])
+            if src == 'ro':
+                dst_dat[dim:-1] = src_dat
+            elif len(src_dat) >= dim + nb_prm:
+                # old_basis is full affine
+                dst_dat[:nb_prm-1] = src_dat[:nb_prm-1]
+                dst_dat[-1] = src_dat[nb_prm-1:nb_prm+2].mean()
+            else:
+                dst_dat[:len(src_dat)] = src_dat
+        else:
+            nb_prm = dim*(dim+1)
+            dst_dat = src_dat.new_zeros([nb_prm])
+            if src == 'ro':
+                dst_dat[dim:dim+dim*(dim-1)//2] = src_dat
+            elif src[0] == 's':
+                dst_dat[:len(src_dat)-1] = src_dat[:-1]
+                dst_dat[len(src_dat)-1:len(src_dat)+dim-1] = src_dat[-1]
+            else:
+                dst_dat[:len(src_dat)] = src_dat
+        return dst_dat
 
     def switch_basis(self, basis):
         """Return a transform with the same log-parameters but a different basis
@@ -908,54 +1000,9 @@ class LogAffine(AffineTransform):
 
         """
         dat = None
-        dim = self.dim
         if self._basis_name is not None and self.dat is not None:
-            new_basis = basis[:2].lower()
-            old_basis = self._basis_name[:2].lower()
-            if new_basis[0] == 't':
-                dat = self.dat[:dim].clone()
-            elif new_basis == 'ro':
-                nb_prm = dim*(dim-1)//2
-                if old_basis == 'ro':
-                    dat = self.dat.clone()
-                elif len(self.dat) >= dim + nb_prm:
-                    dat = self.dat[dim:dim+nb_prm].clone()
-                else:
-                    dat = self.dat.new_zeros([nb_prm])
-                    dat1 = self.dat[dim:dim+nb_prm]
-                    dat[:len(dat1)] = dat1
-            elif new_basis[0] == 'r':
-                nb_prm = dim + dim*(dim-1)//2
-                if old_basis == 'ro':
-                    dat = self.dat.new_zeros([nb_prm])
-                    dat[dim:] = self.dat
-                elif len(self.dat) >= dim + nb_prm:
-                    dat = self.dat[:nb_prm].clone()
-                else:
-                    dat = self.dat.new_zeros([nb_prm])
-                    dat[:len(self.dat)] = self.dat
-            elif new_basis[0] == 's':
-                nb_prm = dim + dim*(dim-1)//2 + 1
-                dat = self.dat.new_zeros([nb_prm])
-                if old_basis == 'ro':
-                    dat[dim:-1] = self.dat
-                elif len(self.dat) >= dim + nb_prm:
-                    # old_basis is full affine
-                    dat[:nb_prm-1] = self.dat[:nb_prm-1]
-                    dat[-1] = self.dat[nb_prm-1:nb_prm+2].mean()
-                else:
-                    dat[:len(self.dat)] = self.dat
-            else:
-                nb_prm = dim*(dim+1)
-                dat = self.dat.new_zeros([nb_prm])
-                if old_basis == 'ro':
-                    dat[dim:dim+dim*(dim-1)//2] = self.dat
-                elif old_basis[0] == 's':
-                    dat[:len(self.dat)-1] = self.dat[:-1]
-                    dat[len(self.dat)-1:len(self.dat)+dim-1] = self.dat[-1]
-                else:
-                    dat[:len(self.dat)] = self.dat
-        return LogAffine(dat, basis, self.dim)
+            dat = self._switch_basis(self.dat, self._basis_name, basis, self.dim)
+        return LogAffine(dat, basis, dim=self.dim, optim=self.optim)
 
     def clear_cache(self):
         self._cache = None
@@ -970,8 +1017,11 @@ class LogAffine(AffineTransform):
             recompute = True
         if recompute or getattr(self, '_cache') is None:
             aff = linalg._expm(q.double(), self.basis, grad_X=grad)
-            if sqrt and grad:
-                aff[1].mul_(0.5)
+            if grad:
+                aff = list(aff)
+                aff[1] = self._optim_grad(aff[1])
+                if sqrt:
+                    aff[1].mul_(0.5)
             aff = (list(map(lambda x: x.to(q.dtype), aff))
                    if isinstance(aff, (list, tuple)) else aff.to(q.dtype))
         else:
@@ -989,8 +1039,11 @@ class LogAffine(AffineTransform):
             recompute = True
         if recompute or self._icache is None:
             iaff = linalg._expm(-q.double(), self.basis, grad_X=grad)
-            if sqrt and grad:
-                iaff[1].mul_(0.5)
+            if grad:
+                iaff = list(iaff)
+                iaff[1] = self._optim_grad(iaff[1])
+                if sqrt:
+                    iaff[1].mul_(0.5)
             iaff = (list(map(lambda x: x.to(q.dtype), iaff))
                     if isinstance(iaff, (list, tuple)) else iaff.to(q.dtype))
         else:
@@ -1022,7 +1075,7 @@ class LogAffine(AffineTransform):
 class LogAffine2d(LogAffine):
     """2d affine transform in a 3D world space"""
     def __init__(self, dat=None, basis=None, rotation=None,
-                 plane=0, dim=3, **backend):
+                 plane=0, *, optim=None, dim=3, **backend):
         """
         Parameters
         ----------
@@ -1038,7 +1091,7 @@ class LogAffine2d(LogAffine):
         """
         if dat is None:
             dat = torch.zeros(spatial.affine_basis_size(basis, 2), **backend)
-        super().__init__(dat, basis, dim, **backend)
+        super().__init__(dat, basis, dim=dim, optim=optim, **backend)
         if rotation is None:
             rotation = torch.eye(self.dim + 1, **backend)
         self.rotation = rotation
@@ -1096,6 +1149,69 @@ class LogAffine2d(LogAffine):
         self._basis_name = x
         self._basis = None
 
+    def _optim_grad(self, grad):
+        """
+        Transform gradients wrt to all parameters into gradients wrt
+        optimized parameters.
+        """
+        dim = self.dim
+        self.dim = 2
+        grad = super()._optim_grad(grad)
+        self.dim = dim
+        return grad
+
+    @classmethod
+    def _switch_basis(cls, dat, src, dst):
+        dim = 2
+        src_dat = dat
+        dst_dat = None
+        dst = dst[:2].lower()
+        src = src[:2].lower()
+        if dst[0] == 't':
+            dst_dat = src_dat[:dim].clone()
+        elif dst == 'ro':
+            nb_prm = dim*(dim-1)//2
+            if src == 'ro':
+                dst_dat = src_dat.clone()
+            elif len(src_dat) >= dim + nb_prm:
+                dst_dat = src_dat[dim:dim+nb_prm].clone()
+            else:
+                dst_dat = src_dat.new_zeros([nb_prm])
+                dat1 = src_dat[dim:dim+nb_prm]
+                dst_dat[:len(dat1)] = dat1
+        elif dst[0] == 'r':
+            nb_prm = dim + dim*(dim-1)//2
+            if src == 'ro':
+                dst_dat = src_dat.new_zeros([nb_prm])
+                dst_dat[dim:] = src_dat
+            elif len(src_dat) >= nb_prm:
+                dst_dat = src_dat[:nb_prm].clone()
+            else:
+                dst_dat = src_dat.new_zeros([nb_prm])
+                dst_dat[:len(src_dat)] = src_dat
+        elif dst[0] == 's':
+            nb_prm = dim + dim*(dim-1)//2 + 1
+            dst_dat = src_dat.new_zeros([nb_prm])
+            if src == 'ro':
+                dst_dat[dim:-1] = src_dat
+            elif len(src_dat) >= nb_prm:
+                # old_basis is full affine
+                dst_dat[:nb_prm-1] = src_dat[:nb_prm-1]
+                dst_dat[-1] = src_dat[nb_prm-1:nb_prm+2].mean()
+            else:
+                dst_dat[:len(src_dat)] = src_dat
+        else:
+            nb_prm = dim*(dim+1)
+            dst_dat = src_dat.new_zeros([nb_prm])
+            if src == 'ro':
+                dst_dat[dim:dim+dim*(dim-1)//2] = src_dat
+            elif src[0] == 's':
+                dst_dat[:len(src_dat)-1] = src_dat[:-1]
+                dst_dat[len(src_dat)-1:] = src_dat[-1]
+            else:
+                dst_dat[:len(src_dat)] = src_dat
+        return dst_dat
+
     def switch_basis(self, basis):
         """Return a transform with the same log-parameters but a different basis
 
@@ -1111,54 +1227,9 @@ class LogAffine2d(LogAffine):
 
         """
         dat = None
-        dim = 2
         if self._basis_name is not None and self.dat is not None:
-            new_basis = basis[:2].lower()
-            old_basis = self._basis_name[:2].lower()
-            if new_basis[0] == 't':
-                dat = self.dat[:dim].clone()
-            elif new_basis == 'ro':
-                nb_prm = dim*(dim-1)//2
-                if old_basis == 'ro':
-                    dat = self.dat.clone()
-                elif len(self.dat) >= dim + nb_prm:
-                    dat = self.dat[dim:dim+nb_prm].clone()
-                else:
-                    dat = self.dat.new_zeros([nb_prm])
-                    dat1 = self.dat[dim:dim+nb_prm]
-                    dat[:len(dat1)] = dat1
-            elif new_basis[0] == 'r':
-                nb_prm = dim + dim*(dim-1)//2
-                if old_basis == 'ro':
-                    dat = self.dat.new_zeros([nb_prm])
-                    dat[dim:] = self.dat
-                elif len(self.dat) >= nb_prm:
-                    dat = self.dat[:nb_prm].clone()
-                else:
-                    dat = self.dat.new_zeros([nb_prm])
-                    dat[:len(self.dat)] = self.dat
-            elif new_basis[0] == 's':
-                nb_prm = dim + dim*(dim-1)//2 + 1
-                dat = self.dat.new_zeros([nb_prm])
-                if old_basis == 'ro':
-                    dat[dim:-1] = self.dat
-                elif len(self.dat) >= nb_prm:
-                    # old_basis is full affine
-                    dat[:nb_prm-1] = self.dat[:nb_prm-1]
-                    dat[-1] = self.dat[nb_prm-1:nb_prm+2].mean()
-                else:
-                    dat[:len(self.dat)] = self.dat
-            else:
-                nb_prm = dim*(dim+1)
-                dat = self.dat.new_zeros([nb_prm])
-                if old_basis == 'ro':
-                    dat[dim:dim+dim*(dim-1)//2] = self.dat
-                elif old_basis[0] == 's':
-                    dat[:len(self.dat)-1] = self.dat[:-1]
-                    dat[len(self.dat)-1:] = self.dat[-1]
-                else:
-                    dat[:len(self.dat)] = self.dat
-        return LogAffine2d(dat, basis, dim=self.dim,
+            dat = self._switch_basis(self.dat, self._basis_name, basis)
+        return LogAffine2d(dat, basis, dim=self.dim, optim=self.optim,
                            plane=self.plane, rotation=self.rotation)
 
     def exp(self, q=None, grad=False, cache_result=False, recompute=True, sqrt=False):
@@ -1926,7 +1997,33 @@ class Nonlin2dModel(NonLinModel):
 class AffineModel(TransformationModel):
     """Affine transformation model encoded in a Lie algebra"""
 
-    def __init__(self, basis, factor=1, penalty=None, dat=None, position='symmetric'):
+    class Parameters:
+
+        def __init__(self, model: "AffineModel"):
+            self.model = model
+
+        dat = property(lambda self: self.model.dat.dat)
+        shape = property(lambda self: self.dat.shape)
+        dtype = property(lambda self: self.dat.dtype)
+        device = property(lambda self: self.dat.device)
+        double = lambda self: self.dat.double()
+        float = lambda self: self.dat.float()
+
+        optim = property(lambda self: self.model.optim)
+        basis = property(lambda self: self.model.basis_name)
+
+        def add_(self, value, **kwargs):
+            if self.optim not in (None, self.basis):
+                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
+            self.dat.add_(value, **kwargs)
+            return self
+
+        def add(self, value, **kwargs):
+            if self.optim not in (None, self.basis):
+                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
+            return self.dat.add(value, **kwargs)
+
+    def __init__(self, basis, factor=1, penalty=None, optim=None, position='symmetric', dat=None):
         """
 
         Parameters
@@ -1939,18 +2036,21 @@ class AffineModel(TransformationModel):
             L2 penalty
             If a list, one value per parameters.
             If a dict, keys "translation", "rotation", "zoom", "shear"
-        dat : LogAffine or tensor, optional
-            Pre-allocated log-parameters.
+        optim : {'translation', 'rotation', 'rigid', 'similitude', 'affine'}
+            Parameters to optimize.
         position : {'moving', 'fixed', 'symmetric'}, default='symmetric'
             Which image should be rotated by this transformation.
             If 'symmetric', both images are rotated by the transformation and
             its inverse, towards a mean space; thereby making the model fully
             symmetric.
+        dat : LogAffine or tensor, optional
+            Pre-allocated log-parameters.
         """
         self.factor = factor
         self._penalty = penalty or None  # regutils.defaults_affine()
         self._penalty_list = None
         self._basis = basis
+        self._optim = optim
         self.position = position.lower()[0]
         if dat is not None:
             self.set_dat(dat)
@@ -2025,16 +2125,27 @@ class AffineModel(TransformationModel):
         return obj
 
     def set_dat(self, dat=None, dim=None, **backend):
-        self.dat = LogAffine(dat, basis=self._basis, dim=dim, **backend)
+        self.dat = LogAffine(dat, basis=self._basis, optim=self._optim, dim=dim, **backend)
         return self
 
     def parameters(self):
         if not self.dat:
             return None
-        return self.dat.dat
+        return self.Parameters(self)
+        # return self.dat.dat
 
     basis = property(lambda self: self.dat.basis if self.dat is not None else None)
     basis_name = property(lambda self: self._basis)
+
+    @property
+    def optim(self):
+        return self.dat.optim if self.dat else self._optim
+
+    @optim.setter
+    def optim(self, value):
+        if self.dat:
+            self.dat.optim = value
+        self._optim = value
 
     def to(self, *args, **kwargs):
         return copy.copy(self).to_(*args, **kwargs)
@@ -2087,6 +2198,19 @@ class AffineModel(TransformationModel):
 class Affine2dModel(AffineModel):
     """A 2D affine in a 3D world"""
 
+    class Parameters(AffineModel.Parameters):
+
+        def add_(self, value, **kwargs):
+            if self.optim not in (None, self.basis):
+                value = LogAffine2d._switch_basis(value, self.optim, self.basis)
+            self.dat.add_(value, **kwargs)
+            return self
+
+        def add(self, value, **kwargs):
+            if self.optim not in (None, self.basis):
+                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
+            return self.dat.add(value, **kwargs)
+
     def __init__(self, basis, plane, ref_affine=None, factor=1, penalty=None,
                  dat=None, position='symmetric'):
         super().__init__(basis, factor, penalty, dat, position)
@@ -2116,4 +2240,3 @@ class Affine2dModel(AffineModel):
                                rotation=self._rotation,
                                plane=self._plane, **backend)
         return self
-

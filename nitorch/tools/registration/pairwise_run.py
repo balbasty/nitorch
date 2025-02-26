@@ -84,17 +84,18 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
 
     plotopt = dict(verbose=verbose, framerate=framerate, figure=figure)
 
+    runner = run_pyramid if pyramid else run_single
+
     # --- progressive affine initialization ---
     if affine_optim and progressive:
-        affine = run_progressive_init(
-            first_level, affine, affine_optim,  line_size=line_size,
+        affine, figure = run_progressive_init(
+            runner, losses, affine, affine_optim, line_size=line_size,
             **plotopt)
-
-    runner = run_pyramid if pyramid else run_single
+        plotopt["figure"] = figure
 
     # --- full affine ---
     if affine_then_nonlin or not nonlin:
-        affine, _ = runner(losses, affine, None, affine_optim, **plotopt)
+        affine, _, _ = runner(losses, affine, None, affine_optim, **plotopt)
     if not nonlin:
         return affine, nonlin
 
@@ -115,7 +116,7 @@ def flatten_list(nested_list):
     return flat
 
 
-def run_progressive_init(losses, affine, affine_optim,
+def run_progressive_init(runner, losses, affine, affine_optim,
                          line_size=74, verbose=True, framerate=1, figure=None):
     """Initialize the affine model by running registration on a subset
     of degrees of freedom in a preogressive fashion.
@@ -141,6 +142,8 @@ def run_progressive_init(losses, affine, affine_optim,
         Initialized affine model
 
     """
+    plotopt = dict(verbose=verbose, framerate=framerate, figure=figure)
+
     names = []
     name = affine.basis_name
     while name:
@@ -156,25 +159,25 @@ def run_progressive_init(losses, affine, affine_optim,
 
     if verbose:
         print('-' * line_size)
-        print(f'   PROGRESSIVE INITIALIZATION')
+        print('   PROGRESSIVE INITIALIZATION')
         print('-' * line_size)
 
-    affine = affine.switch_basis(names.pop(0))
+    affine.optim = names.pop(0)
     while names:
         if verbose:
-            line_pad = line_size - len(affine.basis_name) - 5
-            print(f'--- {affine.basis_name} ', end='')
+            line_pad = line_size - len(affine.optim) - 5
+            print(f'--- {affine.optim} ', end='')
             print('-' * max(0, line_pad))
         affine_optim.reset_state()
-        register = PairwiseRegister(losses, affine, None, affine_optim,
-                                    verbose=verbose, framerate=framerate,
-                                    figure=figure)
         torch.cuda.empty_cache()
-        register.fit()
-        figure = register.figure
-        affine = affine.switch_basis(names.pop(0))
 
-    return affine
+        affine, _, figure = runner(losses, affine, None, affine_optim, **plotopt)
+        plotopt["figure"] = figure
+
+        affine.optim = names.pop(0)
+
+    affine.optim = None
+    return affine, figure
 
 
 def run_single(losses, affine, nonlin, optim, verbose=True, framerate=1,
@@ -197,7 +200,7 @@ def run_single(losses, affine, nonlin, optim, verbose=True, framerate=1,
                                 figure=figure)
     torch.cuda.empty_cache()
     register.fit()
-    return affine, nonlin
+    return affine, nonlin, figure
 
 
 def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
@@ -225,10 +228,10 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
             nonlin = nonlin.downsample(shape=shapes[n_level])
         else:
             nonlin = nonlin.downsample_(shape=shapes[n_level])
-        
+
     if nonlin and hasattr(nonlin_optim, 'penalty'):
         nonlin_optim.penalty = nonlin.penalty
-        
+
     while losses:
         loss_level = losses.pop(0)
         print('-' * line_size)
@@ -258,7 +261,7 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
                     elif n_level > 0:
                         nonlin.upsample_(shape=shapes[n_level])
 
-    return affine, nonlin
+    return affine, nonlin, figure
 
 
 def build_joint_optim(affine_optim, nonlin_optim, max_iter=10, tolerance=1e-5,

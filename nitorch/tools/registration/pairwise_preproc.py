@@ -247,6 +247,8 @@ def map_image(fnames, dim=None, channels=None):
             affine = img.affine
         if dim is None:
             dim = img.affine.shape[-1] - 1
+        while len(img.shape) > dim and img.shape[dim] == 1:
+            img = img.squeeze(dim)
         if img.dim > dim:
             img = img.movedim(-1, 0)
         else:

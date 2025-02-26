@@ -95,7 +95,6 @@ usage:
                     @pyramid [NAME] ...
 
 @loss options:
-    FACTOR must be a scalar value [1]
     NAME can take values (with specific sub-options):
        [mi, nmi]                        Mutual information (can be normalized)
             -m, --norm NAME                 Normalization: [studholme], arithmetic, geometric, no
@@ -126,6 +125,7 @@ usage:
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
             -w, --weight *VAL               Weight per class [1]
+    FACTOR must be a scalar value [1]
     Common options:
         -s, --symmetric                 Make loss symmetric [False]
         -z, --slicewise [AXIS=-1]       Make loss slice-wise [False]
@@ -153,13 +153,13 @@ usage:
     -c, --channels *C               Channels to load. Can be a range start:stop:step [:]
 
 @affine options:
-    FACTOR must be a scalar value [1] and is a global penalty factor
     NAME can take values:
         t, translation                  Translations only
         o, rotation                     Rotations only
        [r, rigid]                       Translations + Rotations
         s, similitude                   Translations + Rotations + Iso zoom
         a, affine                       Full affine
+    FACTOR must be a scalar value [1] and is a global penalty factor
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
@@ -168,11 +168,11 @@ usage:
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
 
 @nonlin options:
-    FACTOR must be a scalar value [1] and is a global penalty factor
     NAME can take values:
        [v, svf]                         Stationary velocity field
         g, shoot                        Geodesic shooting
         d, smalldef                     Dense deformation field
+    FACTOR must be a scalar value [1] and is a global penalty factor
     Common options:
         -i, --input                     Path to initial transform
         -o, --output                    Path to the output transform: [{dir}/{name}.nii.gz]
@@ -336,7 +336,7 @@ loss_choices = cli.Positional('name', nargs='?', default='mi',
                               help='Name of the image loss')
 loss = cli.NamedGroup('loss', loss_choices, '@loss', n='+',
                       help='A loss between two images')
-loss.add_positional('factor', nargs='?', default=1., convert=float,
+loss.add_positional('factor', nargs='*', default=[1.], convert=float,
                     help='Weight it this component in the global loss')
 loss.add_option('symmetric', ('-s', '--symmetric'), nargs=0, default=False,
                 help='Make the loss symmetric')
@@ -529,7 +529,7 @@ affine_choices = cli.Positional('name', nargs='?', default='rigid',
                                 convert=lambda x: affine_aliases.get(x, x),
                                 help='Name of the affine transform')
 affine = cli.NamedGroup('affine', affine_choices, '@affine', n='?', make_default=False)
-affine.add_positional('factor', nargs='?', default=1., convert=float,
+affine.add_positional('factor', nargs='*', default=[1.], convert=float,
                       help='Penalty factor')
 affine.add_option('position', ('-p', '--position'), default='sym', nargs=1,
                   validation=cli.Validations.choice(['sym', 'mov', 'fix']),
@@ -556,7 +556,7 @@ nonlin_choices = cli.Positional('name', nargs='?', default='svf',
                                 convert=lambda x: nonlin_aliases.get(x, x),
                                 help='Name of the nonlinear transform')
 nonlin = cli.NamedGroup('nonlin', nonlin_choices, '@nonlin', n='?', make_default=False)
-nonlin.add_positional('factor', nargs='?', default=1., convert=float,
+nonlin.add_positional('factor', nargs='*', default=[1.], convert=float,
                       help='Penalty factor')
 nonlin.add_option('steps', ('-s', '--steps'), nargs=1, default=8, convert=int,
                   help='Number of integration steps')

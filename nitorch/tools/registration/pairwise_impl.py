@@ -446,7 +446,7 @@ class PairwiseRegisterStep:
             self.n_iter += 1
 
         return ll
-    
+
     def do_vel(self, vel, grad=False, hess=False, in_line_search=False):
         """Forward pass for updating the nonlinear component"""
 
@@ -616,7 +616,6 @@ class PairwiseRegisterStep:
                                sumhess.add_(h, alpha=factor))
             sumloss = (llx.mul_(factor) if sumloss is None else
                        sumloss.add_(llx, alpha=factor))
-            
 
         # ==============================================================
         #                       REGULARIZATION
@@ -1028,5 +1027,3 @@ class PairwiseRegisterStep:
         if hess:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
-
-
