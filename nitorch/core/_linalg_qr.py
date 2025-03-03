@@ -248,7 +248,7 @@ def mask_tri(n, diagonal=0, upper=True, **backend):
     def mask_upper():
         """Return a mask of upper triangular elements"""
         i = torch.arange(n, **backend)
-        i, j = torch.meshgrid(i, i)
+        i, j = utils.meshgrid_ij(i, i)
         i = i - j
         return i <= -diagonal
 

@@ -205,21 +205,29 @@ def make_nonlin(shape_or_init=None, model='svf', affine=None, voxel_size=None,
     if not model:
         return None
 
+    if kwargs.get('shape', None) is not None:
+        shape_or_init = kwargs.pop('shape')
+    elif kwargs.get('init', None) is not None:
+        shape_or_init = kwargs.pop('init')
+
     if shape_or_init is None:
-        if 'shape' in kwargs:
-            shape_or_init = kwargs.pop('shape')
-        elif 'init' in kwargs:
-            shape_or_init = kwargs.pop('shape')
-        else:
-            raise ValueError('`shape` or `init` required')
+        raise ValueError('`shape` or `init` required')
 
     # check if file provided
     if isinstance(shape_or_init, str):
         shape_or_init = io.map(shape_or_init)
 
     if isinstance(shape_or_init, io.MappedArray):
-        vel = objects.Displacement(shape_or_init.fdata(device=device),
-                                   affine=shape_or_init.affine)
+        vel = shape_or_init.fdata(device=device)
+        if vel.shape[3:4] == (1,):
+            # unused time axis in some niftis
+            vel = vel.squeeze(3)
+        if vel.shape[-1] != (vel.ndim-1):
+            # This assumes we only care about the space of the input
+            vel = vel.new_zeros(vel.shape + (len(vel.shape),))
+        if vel.shape[-1] not in (2, 3):
+            raise ValueError("Expected a 2D or 3D displacement field")
+        vel = objects.Displacement(vel, affine=shape_or_init.affine)
 
     else:
         shape = shape_or_init

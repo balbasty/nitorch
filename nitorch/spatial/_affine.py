@@ -11,7 +11,6 @@ This
 import torch
 from ast import literal_eval
 from warnings import warn
-from nitorch import core
 from nitorch.core import utils
 from nitorch.core import py
 from nitorch.core import itertools
@@ -673,8 +672,8 @@ def affine_basis(group='SE', dim=3, dtype=None, device=None):
                 for sub in affine_basis_components[group]]
     return subbases[0] if len(subbases) == 1 else torch.cat(subbases)
 
-    
-def affine_basis_size(group, dim=3):  
+
+def affine_basis_size(group, dim=3):
     """Return the number of parameters in a given group."""
 
     if group not in affine_basis_choices:
@@ -2299,7 +2298,7 @@ def max_bb(all_mat, all_dim, vx=None):
     # Make output affine matrix and image dimensions
     mat = affine_matrix_classic(torch.cat((mn, torch.zeros(3, dtype=dtype, device=device), vx)))\
         .mm(affine_matrix_classic(-torch.ones(3, dtype=dtype, device=device)))
-    dm = linalg.lmdiv(mat, torch.cat((mx, torch.ones(1, dtype=dtype, device=device)))[..., None])    
+    dm = linalg.lmdiv(mat, torch.cat((mx, torch.ones(1, dtype=dtype, device=device)))[..., None])
     dm = dm[:3].round().flatten()
 
     return mat, dm
@@ -2393,7 +2392,7 @@ def affine_reorient(mat, shape_or_tensor=None, layout=None):
             tensor = np.transpose(current_to_target)
         else:
             tensor = tensor.permute(current_to_target)
-        dim_flip = [nb_dim_left + d for d, idx in enumerate(index) 
+        dim_flip = [nb_dim_left + d for d, idx in enumerate(index)
                     if idx.step == -1]
         if dim_flip:
             if is_numpy:

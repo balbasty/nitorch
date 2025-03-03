@@ -146,10 +146,10 @@ def estatics_solve(hess, grad):
 
 def prolong(x, shape=None, bound='dct2', order=2, dim=None, grid=None):
     """Prolongation of a tensor to a finer grid.
-    
+
     Uses the pulling operator (2nd order by default).
     Corresponds to mode "edges" in `spatial.resize`.
-    
+
     Parameters
     ----------
     x : (..., *spatial, K) tensor
@@ -157,11 +157,11 @@ def prolong(x, shape=None, bound='dct2', order=2, dim=None, grid=None):
     bound : [sequence of] bound_type, default='dct2'
     order : [sequence of] int, default=1
     dim : int, default=`x.dim()-1`
-    
+
     Returns
     -------
     y : (..., *out_spatial, K) tensor
-    
+
     """
     if not x.dtype.is_floating_point:
         x = x.to(torch.get_default_dtype())
@@ -174,7 +174,7 @@ def prolong(x, shape=None, bound='dct2', order=2, dim=None, grid=None):
                   for inshp, outshp in zip(in_spatial, out_spatial)]
         grid = [torch.arange(0., outshp, **backend).mul_(inshp/outshp).add_(shift)
                 for inshp, outshp, shift in zip(in_spatial, out_spatial, shifts)]
-        grid = torch.stack(torch.meshgrid(*grid), dim=-1)
+        grid = torch.stack(utils.meshgrid_ij(*grid), dim=-1)
     x = utils.fast_movedim(x, -1, -dim-1)
     x = grid_pull(x, grid, bound=bound, interpolation=order, extrapolate=True)
     x = utils.fast_movedim(x, -dim-1, -1)
@@ -183,10 +183,10 @@ def prolong(x, shape=None, bound='dct2', order=2, dim=None, grid=None):
 
 def restrict(x, shape=None, bound='dct2', order=1, dim=None, grid=None):
     """Restriction of a tensor to a coarser grid.
-    
+
     Uses the pushing operator (1st order by default).
     Corresponds to mode "edges" in `spatial.resize`.
-    
+
     Parameters
     ----------
     x : (..., *spatial, K) tensor
@@ -194,11 +194,11 @@ def restrict(x, shape=None, bound='dct2', order=1, dim=None, grid=None):
     bound : [sequence of] bound_type, default='dct2'
     order : [sequence of] int, default=1
     dim : int, default=`x.dim()-1`
-    
+
     Returns
     -------
     y : (..., *out_spatial, K) tensor
-    
+
     """
     if not x.dtype.is_floating_point:
         x = x.to(torch.get_default_dtype())
@@ -211,7 +211,7 @@ def restrict(x, shape=None, bound='dct2', order=1, dim=None, grid=None):
                   for inshp, outshp in zip(in_spatial, out_spatial)]
         grid = [torch.arange(0., outshp, **backend).mul_(inshp/outshp).add_(shift)
                 for inshp, outshp, shift in zip(in_spatial, out_spatial, shifts)]
-        grid = torch.stack(torch.meshgrid(*grid), dim=-1)
+        grid = torch.stack(utils.meshgrid_ij(*grid), dim=-1)
     x = utils.fast_movedim(x, -1, -dim-1)
     x = grid_push(x, grid, in_spatial, bound=bound, interpolation=order,
                   extrapolate=True)
@@ -232,7 +232,7 @@ def make_grid(highshape=None, lowshape=None, **backend):
     grid = [
         torch.arange(0., highshp, **backend).mul_(lowshp / highshp).add_(shift)
         for lowshp, highshp, shift in zip(lowshape, highshape, shifts)]
-    grid = torch.stack(torch.meshgrid(*grid), dim=-1)
+    grid = torch.stack(utils.meshgrid_ij(*grid), dim=-1)
     return grid
 
 

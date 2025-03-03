@@ -389,7 +389,7 @@ class InterleavedOptimIterator(OptimIterator):
             loss_prev = loss
             loss_max = max(loss, loss_max)
 
-        return list(_ for _ in zip(*outputs))
+        return list(zip(*outputs))
 
     def _repr(self):
         s = self._repr_simple()
@@ -499,6 +499,3 @@ class MultiOptim(Optim):
         for p, s in zip(param, step):
             p.add_(s)
         return param
-
-
-

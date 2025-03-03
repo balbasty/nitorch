@@ -74,6 +74,11 @@ class PairwiseRegister:
             - 3: plot stuff (much slower).
         framerate : float, default=1
             Update plot at most `framerate` times per second.
+
+        Returns
+        -------
+        total_loss : scalar
+            Total loss of the joint problem
         """
         self.losses = SumSimilarity.sum(losses)
         self.verbose = verbose
@@ -150,26 +155,56 @@ class PairwiseRegister:
                     self.nonlin.set_kernel()
                 nonlin_optim.preconditioner = self.nonlin.greens_apply
             if getattr(self.affine, 'frozen', False):
-                self.optim.iter(self.nonlin.parameters(), step.do_vel)
+                out = self.optim.iter(self.nonlin.parameters(), step.do_vel)
             elif getattr(self.nonlin, 'frozen', False):
-                self.optim.iter(self.affine.parameters(), step.do_affine)
+                out = self.optim.iter(self.affine.parameters(), step.do_affine)
             else:
-                self.optim.iter([self.affine.parameters(), self.nonlin.parameters()],
-                                [step.do_affine, step.do_vel])
+                out = self.optim.iter(
+                    [self.affine.parameters(), self.nonlin.parameters()],
+                    [step.do_affine, step.do_vel]
+                )
         elif self.affine:
-            self.optim.iter(self.affine.parameters(), step.do_affine_only)
+            out = self.optim.iter(self.affine.parameters(), step.do_affine_only)
         elif self.nonlin:
             if isinstance(self.optim, optm.FirstOrder):
                 if self.nonlin.kernel is None:
                     self.nonlin.set_kernel()
                 self.optim.preconditioner = self.nonlin.greens_apply
-            self.optim.iter(self.nonlin.parameters(), step.do_vel)
+            out = self.optim.iter(self.nonlin.parameters(), step.do_vel)
 
         if self.verbose:
             print('')
 
-        if self .affine and not self.nonlin:
+        if self.affine and not self.nonlin:
             self.affine.position = pos
+
+        if self.affine:
+            self.affine.grad = None
+            self.affine.hess = None
+            if len(out) > 2:
+                grad = out[2]
+                if isinstance(grad, (list, tuple)):
+                    grad = grad[0]
+                self.affine.grad = grad
+            if len(out) > 3:
+                hess = out[3]
+                if isinstance(hess, (list, tuple)):
+                    hess = hess[0]
+                self.affine.hess = hess
+
+        if self.nonlin:
+            self.nonlin.grad = None
+            self.nonlin.hess = None
+            if len(out) > 2:
+                grad = out[2]
+                if isinstance(grad, (list, tuple)):
+                    grad = grad[-1]
+                self.nonlin.grad = grad
+            if len(out) > 3:
+                hess = out[3]
+                if isinstance(hess, (list, tuple)):
+                    hess = hess[-1]
+                self.nonlin.hess = hess
 
         return step.ll
 

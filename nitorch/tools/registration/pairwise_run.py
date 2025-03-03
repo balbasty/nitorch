@@ -5,14 +5,27 @@ from .pairwise_impl import PairwiseRegister
 from .pairwise_makeobj import make_affine, make_affine_optim, make_nonlin, make_nonlin_optim
 from .optim import InterleavedOptimIterator, Optim
 from . import objects
-from nitorch.core.py import make_list, prod
+from nitorch.core.py import make_list
 import torch
 import math
 
 
-def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
-        pyramid=True, interleaved=True, progressive=True, affine_then_nonlin=True,
-        max_iter=10, tolerance=1e-5, verbose=True, framerate=1, figure=None):
+def run(
+    losses,
+    affine=None,
+    nonlin=False,
+    affine_optim=None,
+    nonlin_optim=None,
+    pyramid=True,
+    interleaved=True,
+    progressive=True,
+    affine_then_nonlin=True,
+    max_iter=10,
+    tolerance=1e-5,
+    verbose=True,
+    framerate=1,
+    figure=None
+):
     """Run pairwise registration
 
     Parameters
@@ -76,27 +89,31 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
         affine_optim = make_affine_optim(affine_optim, order)
         if not affine_optim:
             affine.frozen = True
+    if affine and not hasattr(affine, "frozen"):
+        affine.frozen = False
     if nonlin and not isinstance(nonlin_optim, Optim):
         order = min(loss.loss.order for loss in last_level)
         nonlin_optim = make_nonlin_optim(nonlin_optim, order, nonlin=nonlin)
         if not nonlin_optim:
             nonlin.frozen = True
+    if nonlin and not hasattr(nonlin, "frozen"):
+        nonlin.frozen = False
 
     plotopt = dict(verbose=verbose, framerate=framerate, figure=figure)
 
     runner = run_pyramid if pyramid else run_single
 
     # --- progressive affine initialization ---
-    if affine_optim and progressive:
+    if affine and not affine.frozen and progressive:
         affine, figure = run_progressive_init(
             runner, losses, affine, affine_optim, line_size=line_size,
             **plotopt)
         plotopt["figure"] = figure
 
     # --- full affine ---
-    if affine_then_nonlin or not nonlin:
+    if affine and not affine.frozen and (affine_then_nonlin or not nonlin):
         affine, _, _ = runner(losses, affine, None, affine_optim, **plotopt)
-    if not nonlin:
+    if not nonlin or nonlin.frozen:
         return affine, nonlin
 
     # --- joint affine and nonlinear  ---
@@ -104,7 +121,9 @@ def run(losses, affine=None, nonlin=False, affine_optim=None, nonlin_optim=None,
         affine_optim, nonlin_optim,
         sequential=not interleaved, max_iter=max_iter, tolerance=tolerance)
 
-    return runner(losses, affine, nonlin, optim, **plotopt)
+    affine, nonlin, _ = runner(losses, affine, nonlin, optim, **plotopt)
+
+    return affine, nonlin
 
 
 def flatten_list(nested_list):
@@ -116,8 +135,16 @@ def flatten_list(nested_list):
     return flat
 
 
-def run_progressive_init(runner, losses, affine, affine_optim,
-                         line_size=74, verbose=True, framerate=1, figure=None):
+def run_progressive_init(
+    runner,
+    losses,
+    affine,
+    affine_optim,
+    line_size=74,
+    verbose=True,
+    framerate=1,
+    figure=None
+):
     """Initialize the affine model by running registration on a subset
     of degrees of freedom in a preogressive fashion.
 
@@ -155,7 +182,7 @@ def run_progressive_init(runner, losses, affine, affine_optim,
         else:
             name = ''
     if len(names) == 1:
-        return affine
+        return affine, None
 
     if verbose:
         print('-' * line_size)
@@ -180,8 +207,15 @@ def run_progressive_init(runner, losses, affine, affine_optim,
     return affine, figure
 
 
-def run_single(losses, affine, nonlin, optim, verbose=True, framerate=1,
-               figure=None):
+def run_single(
+    losses,
+    affine,
+    nonlin,
+    optim,
+    verbose=True,
+    framerate=1,
+    figure=None
+):
     """Run pairwise registration at a single level"""
 
     losses = make_list(losses)
@@ -203,8 +237,15 @@ def run_single(losses, affine, nonlin, optim, verbose=True, framerate=1,
     return affine, nonlin, figure
 
 
-def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
-                figure=None):
+def run_pyramid(
+    losses,
+    affine,
+    nonlin,
+    optim,
+    verbose=True,
+    framerate=1,
+    figure=None
+):
     """Run sequential pyramid registration"""
     line_size = 89 if nonlin else 74
 
@@ -264,8 +305,14 @@ def run_pyramid(losses, affine, nonlin, optim, verbose=True, framerate=1,
     return affine, nonlin, figure
 
 
-def build_joint_optim(affine_optim, nonlin_optim, max_iter=10, tolerance=1e-5,
-                      crit='diff', sequential=True):
+def build_joint_optim(
+    affine_optim,
+    nonlin_optim,
+    max_iter=10,
+    tolerance=1e-5,
+    crit='diff',
+    sequential=True
+):
     if nonlin_optim:
         if affine_optim:
             if sequential:

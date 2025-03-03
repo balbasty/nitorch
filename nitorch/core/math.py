@@ -69,7 +69,7 @@ def fn(input, dim=None, keepdim=False, omitnan=False, inplace=False, out=None):
   out     : tensor, Output placeholder
   \"\"\"
 ```
-Reduction functions that pick a value from the input tensor (e.g., `max`) 
+Reduction functions that pick a value from the input tensor (e.g., `max`)
 have the additional argument:
 ```{python}
 def fn(..., return_indices=False):
@@ -696,26 +696,26 @@ Simplex
 =======
 This section concerns functions that deal with data lying on the simplex,
 i.e., probabilities. Specifically, we implement `softmax`, `log_softmax`,
-`logsumexp` and `logit`. While most of these functions already exist in 
+`logsumexp` and `logit`. While most of these functions already exist in
 PyTorch, we define more generic function that accept an "implicit" class.
-This implicit class exists due to the constrained nature of discrete 
+This implicit class exists due to the constrained nature of discrete
 probabilities, which must sum to one, meaning that their space ("the simplex")
 has one less dimensions than the number of classes. Similarly, we can restrain
-the logit (= log probability) space to be of dimension K-1 by forcing one of 
-the classes to have logits of arbitrary value (e.g., zero). This trick 
+the logit (= log probability) space to be of dimension K-1 by forcing one of
+the classes to have logits of arbitrary value (e.g., zero). This trick
 makes functions like softmax invertible.
-Note that in the 2-class case, it is extremely common to work in this 
-implicit setting by using the sigmoid function over a single logit instead 
-of the softmax function over two logits. 
-All functions below accept an argument `implicit` which takes either one 
-(boolean) value or a tuple of two (boolean) values. The first value 
-specifies if the input tensor has an explicit class while the second value 
-specified if the output tensor should have an implicit class. 
-Note that to minimize the memory footprint and numerical errors, most 
-backward passes are explicitely reimplemented (rather than relying on 
-autmatic diffentiation). This is because these function involve multiple 
-calls to `log` and `exp`, which must all store their input in order to 
-backpropagate, whereas a single tensor needs to be stored to backpropagate 
+Note that in the 2-class case, it is extremely common to work in this
+implicit setting by using the sigmoid function over a single logit instead
+of the softmax function over two logits.
+All functions below accept an argument `implicit` which takes either one
+(boolean) value or a tuple of two (boolean) values. The first value
+specifies if the input tensor has an explicit class while the second value
+specified if the output tensor should have an implicit class.
+Note that to minimize the memory footprint and numerical errors, most
+backward passes are explicitely reimplemented (rather than relying on
+autmatic diffentiation). This is because these function involve multiple
+calls to `log` and `exp`, which must all store their input in order to
+backpropagate, whereas a single tensor needs to be stored to backpropagate
 through the entire softmax function.
 """
 
@@ -827,14 +827,17 @@ def _remove_class(x, dim, index):
     return x
 
 
-def _softmax_fwd(input, dim=-1, implicit=False, implicit_index=0):
+def _softmax_fwd(input, dim=-1, implicit=False, implicit_index=0, inplace=False):
     implicit_in, implicit_out = py.ensure_list(implicit, 2)
 
     maxval, _ = torch.max(input, dim=dim, keepdim=True)
     if implicit_in:
         maxval.clamp_min_(0)  # don't forget the class full of zeros
 
-    input = input.clone().sub_(maxval).exp_()
+    if not inplace:
+        input = input.clone()
+
+    input = input.sub_(maxval).exp_()
     sumval = torch.sum(input, dim=dim, keepdim=True,
                        out=maxval if not implicit_in else None)
     if implicit_in:
@@ -875,13 +878,13 @@ class _Softmax(torch.autograd.Function):
 
     @staticmethod
     @custom_fwd
-    def forward(ctx, input, dim, implicit, implicit_index):
+    def forward(ctx, input, dim, implicit, implicit_index, inplace):
 
         # Save precomputed components of the backward pass
         needs_grad = torch.is_tensor(input) and input.requires_grad
         # Compute matrix exponential
         s = _softmax_fwd(input, dim=dim, implicit=implicit,
-                         implicit_index=implicit_index)
+                         implicit_index=implicit_index, inplace=inplace)
 
         if needs_grad:
             ctx.save_for_backward(s)
@@ -892,13 +895,12 @@ class _Softmax(torch.autograd.Function):
     @staticmethod
     @custom_bwd
     def backward(ctx, output_grad):
-
         s, = ctx.saved_tensors
-        return _softmax_bwd(s, output_grad,  dim=ctx.args['dim'],
-                            implicit=ctx.args['implicit']), None, None, None
+        out = _softmax_bwd(s, output_grad,  dim=ctx.args['dim'], implicit=ctx.args['implicit'])
+        return out, None, None, None, None
 
 
-def logit(input, dim=-1, implicit=False, implicit_index=0):
+def logit(input, dim=-1, implicit=False, implicit_index=0, inplace=False):
     """(Multiclass) logit function
 
     Notes
@@ -929,6 +931,8 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
     implicit_index : int, default=0
         Index of the implicit channel. This is the channel whose logits
         are assumed equal to zero.
+    inplace : bool, default=False
+        Perform conversion in-place if possible.
 
     Returns
     -------
@@ -950,7 +954,7 @@ def logit(input, dim=-1, implicit=False, implicit_index=0):
     return input
 
 
-def softmax(input, dim=-1, implicit=False, implicit_index=0):
+def softmax(input, dim=-1, implicit=False, implicit_index=0, inplace=False):
     """ SoftMax (safe).
 
     Parameters
@@ -967,6 +971,8 @@ def softmax(input, dim=-1, implicit=False, implicit_index=0):
         - implicit[1] == True drops the last class from the
           softmaxed tensor.
     implicit_index : int, default=0
+    inplace : bool, default=False
+        Apply function in-place, if possible.
 
     Returns
     -------
@@ -974,7 +980,7 @@ def softmax(input, dim=-1, implicit=False, implicit_index=0):
         Soft-maxed tensor with values.
     """
     input = torch.as_tensor(input)
-    return _Softmax.apply(input, dim, implicit, implicit_index)
+    return _Softmax.apply(input, dim, implicit, implicit_index, inplace)
 
 
 def log_softmax(input, dim=-1, implicit=False, implicit_index=0):

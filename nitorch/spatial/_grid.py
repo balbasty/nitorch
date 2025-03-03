@@ -51,7 +51,7 @@ _doc_bound = \
         https://en.wikipedia.org/wiki/Discrete_sine_transform"""
 
 _doc_bound_coeff = \
-"""`bound` can be an int, a string or a BoundType. 
+"""`bound` can be an int, a string or a BoundType.
     Possible values are:
         - 'replicate'  or BoundType.replicate
         - 'dct1'       or BoundType.dct1
@@ -67,7 +67,7 @@ _doc_bound_coeff = \
     - `dct1` corresponds to mirroring about the center of hte first/last voxel
     See https://en.wikipedia.org/wiki/Discrete_cosine_transform
         https://en.wikipedia.org/wiki/Discrete_sine_transform
-        
+
     /!\ Only 'dct1', 'dct2' and 'dft' are implemented for interpolation
         orders >= 6."""
 
@@ -150,11 +150,11 @@ def grid_pull(input, grid, interpolation='linear', bound='zero',
     {interpolation}
 
     {bound}
-    
-    If the input dtype is not a floating point type, the input image is 
-    assumed to contain labels. Then, unique labels are extracted 
-    and resampled individually, making them soft labels. Finally, 
-    the label map is reconstructed from the individual soft labels by 
+
+    If the input dtype is not a floating point type, the input image is
+    assumed to contain labels. Then, unique labels are extracted
+    and resampled individually, making them soft labels. Finally,
+    the label map is reconstructed from the individual soft labels by
     assigning the label with maximum soft value.
 
     Parameters
@@ -288,7 +288,7 @@ def grid_count(grid, shape=None, interpolation='linear', bound='zero',
 def grid_grad(input, grid, interpolation='linear', bound='zero',
               extrapolate=False, prefilter=False):
     """Sample spatial gradients of an image with respect to a deformation field.
-    
+
     Notes
     -----
     {interpolation}
@@ -732,7 +732,7 @@ def resize(image, factor=None, shape=None, affine=None, anchor='c',
             raise ValueError('Unknown anchor {}'.format(anch))
         if inshp == outshp == 1:
             scales[-1] = 1/f
-    grid = torch.stack(torch.meshgrid(*lin), dim=-1)
+    grid = torch.stack(utils.meshgrid_ij(*lin), dim=-1)
 
     # resize input image
     kwargs.setdefault('prefilter', True)

@@ -40,7 +40,7 @@ class Reslicer(Structure):
     target: str = None
     voxel_size: list = None
     chunk: list = None
-    output: str = '{dir}/{base}.resliced{ext}'
+    output: str = '{dir}{sep}{base}.resliced{ext}'
     interpolation: int = 1
     bound: str = 'dct2'
     extrapolate: bool = False
@@ -48,3 +48,6 @@ class Reslicer(Structure):
     device: str = 'cpu'
     prefilter: bool = True
     channels: list = None
+    log: bool = False
+    logit: bool = False
+    clip: bool = False

@@ -60,7 +60,7 @@ def as_tensor(input, dtype=None, device=None):
     return _stack(input, dtype, device)
 
 
-def make_vector(input, n=None, crop=True, *args, 
+def make_vector(input, n=None, crop=True, *args,
                 dtype=None, device=None, **kwargs):
     """Ensure that the input is a (tensor) vector and pad/crop if necessary.
 
@@ -102,7 +102,7 @@ def make_vector(input, n=None, crop=True, *args,
         return ensure_shape(input, n, mode='constant', value=default)
     else:
         return ensure_shape(input, n, mode='replicate')
-        
+
 
 def unsqueeze(input, dim=0, ndim=1):
     """Adds singleton dimensions to a tensor.
@@ -2290,5 +2290,3 @@ else:
             grid[0] = grid[0].transpose(0, 1)
             grid[1] = grid[1].transpose(0, 1)
         return grid
-
-

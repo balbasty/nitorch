@@ -69,7 +69,7 @@ def window_partition(x, window_size, dim=3):
         windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size[0], window_size[1], C)
     elif dim==2:
         B, H, W, D, C = x.shape
-        x = x.view(B, H // window_size[0], window_size[0], W // window_size[1], window_size[1], 
+        x = x.view(B, H // window_size[0], window_size[0], W // window_size[1], window_size[1],
                    D // window_size[2], window_size[2], C)
         windows = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(-1, window_size[0], window_size[1],
                                                                       window_size[2], C)
@@ -85,7 +85,7 @@ def window_reverse(windows, window_size, shape):
         x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
     elif dim==2:
         H, W, D = shape
-        x = windows.view(B, H // window_size[0], W // window_size[1], D // window_size[2], 
+        x = windows.view(B, H // window_size[0], W // window_size[1], D // window_size[2],
                          window_size[0], window_size[1], window_size[2], -1)
         x = x.permute(0, 1, 3, 5, 2, 4, 6, 7).contiguous().view(B, H, W, D, -1)
     return x
@@ -103,7 +103,7 @@ class PatchEmbed(Module):
         self.patch_size = patch_size
         self.flatten = flatten
 
-        self.proj = ConvBlock(dim, in_channels, embed_dim, 
+        self.proj = ConvBlock(dim, in_channels, embed_dim,
                               kernel_size=patch_size, stride=patch_size,
                               norm=norm, activation=None, order='cnda')
 
@@ -188,7 +188,7 @@ class TimeEmbed(Module):
     def __init__(self, in_channels):
         super().__init__()
         self.in_channels = in_channels
-    
+
     def forward(self, x):
         device = x.device
         half_channels = self.in_channels // 2
@@ -223,25 +223,25 @@ class PatchMerge(Module):
 
         assert L == np.prod(self.input_resolution), 'input feature has wrong size'
         for d in self.input_resolution:
-            assert d%2==0,  f"x size ({self.input_resolution}) not even." 
+            assert d%2==0,  f"x size ({self.input_resolution}) not even."
 
         if self.dim==2:
             x = x.view(B, H, W, C)
-            x0 = x[:, 0::2, 0::2, :]  
-            x1 = x[:, 1::2, 0::2, :]  
-            x2 = x[:, 0::2, 1::2, :]  
-            x3 = x[:, 1::2, 1::2, :]  
+            x0 = x[:, 0::2, 0::2, :]
+            x1 = x[:, 1::2, 0::2, :]
+            x2 = x[:, 0::2, 1::2, :]
+            x3 = x[:, 1::2, 1::2, :]
 
         elif self.dim==3:
             # TODO: fix x0:x3 for 3D
             x = x.view(B, H, W, D, C)
-            x0 = x[:, 0::2, 0::2, :]  
-            x1 = x[:, 1::2, 0::2, :]  
-            x2 = x[:, 0::2, 1::2, :]  
-            x3 = x[:, 1::2, 1::2, :] 
-       
-        x = torch.cat([x0, x1, x2, x3], -1)  
-        x = x.view(B, -1, 4 * C) 
+            x0 = x[:, 0::2, 0::2, :]
+            x1 = x[:, 1::2, 0::2, :]
+            x2 = x[:, 0::2, 1::2, :]
+            x3 = x[:, 1::2, 1::2, :]
+
+        x = torch.cat([x0, x1, x2, x3], -1)
+        x = x.view(B, -1, 4 * C)
 
         if self.norm:
             x = self.norm(x)
@@ -290,12 +290,12 @@ class WindowAttention(Attention):
     def __init__(self, dim, in_channels, window_size,
                  nb_heads=8, qkv_bias=False,
                  attn_dropout=None, proj_dropout=None):
-        super().__init__(dim, in_channels, nb_heads, qkv_bias, 
+        super().__init__(dim, in_channels, nb_heads, qkv_bias,
                          attn_dropout, proj_dropout)
         self.window_size = window_size
         self.dim = dim
 
-        coords = torch.stack(torch.meshgrid([torch.arange(w) for w in self.window_size]))
+        coords = torch.stack(utils.meshgrid_ij([torch.arange(w) for w in self.window_size]))
         print(coords.shape)
         coords_flat = coords.flatten(1) # should be of shape [dim, prod(*Spatial)]
         print(coords_flat.shape)
@@ -330,11 +330,11 @@ class WindowAttention(Attention):
 
         print(self.pos_bias_table.shape, self.pos_index.shape, self.pos_index.view(-1).shape, self.window_size)
         pos_bias = self.pos_bias_table[self.pos_index.view(-1)].view(tuple([np.prod(self.window_size) \
-             for i in self.window_size]) + (-1,)) 
+             for i in self.window_size]) + (-1,))
         if self.dim==2:
-            pos_bias = pos_bias.permute(2, 0, 1).contiguous() 
+            pos_bias = pos_bias.permute(2, 0, 1).contiguous()
         elif self.dim==3:
-            pos_bias = pos_bias.permute(3, 0, 1, 2).contiguous() 
+            pos_bias = pos_bias.permute(3, 0, 1, 2).contiguous()
         attn = attn + pos_bias.unsqueeze(0)
 
         if mask is not None:
@@ -343,7 +343,7 @@ class WindowAttention(Attention):
             attn = attn.view(-1, self.num_heads, N, N).softmax(-1)
         else:
             attn = attn.softmax(-1)
-        
+
         if self.attn_dropout:
             attn = self.attn_dropout(attn)
 
@@ -371,7 +371,7 @@ class LeWinAttention(Module):
         self.scale = hidden_channels ** -0.5
         self.nb_heads = nb_heads
         if isinstance(window_size, int):
-            window_size = [window_size] * dim 
+            window_size = [window_size] * dim
         self.window_size = window_size
         inner_channels = hidden_channels * nb_heads
 
@@ -388,14 +388,14 @@ class LeWinAttention(Module):
                 x+= time_embed[..., None, None]
             elif self.dim==3:
                 x+= time_embed[..., None, None, None]
-        
+
         q = self.to_q(x)
 
         kv_input = x
 
         if skip is not None:
             kv_input = torch.cat([kv_input, skip], dim=0)
-        
+
         k, v = self.to_kv(kv_input).chunk(2, dim=1)
         q, k, v = [item.reshape(self.nb_heads*item.shape[0], *x.shape[2:], -1) for item in [q,k,v]]
         # may need permute rather than straight reshape for channel dim moving to last axis
@@ -495,7 +495,7 @@ class ViTBlock(Module):
 
         mlp_hidden_dim = int(mlp_ratio * in_channels)
         # note - MLP dim may need correcting
-        self.mlp = MLP(in_channels, in_channels, mlp_hidden_dim, 
+        self.mlp = MLP(in_channels, in_channels, mlp_hidden_dim,
                        activation=activation, dropout=dropout, linear_dim=-1)
 
     def forward(self, x):
@@ -524,15 +524,15 @@ class ViT(Module):
     References
     ----------
     ..[1] "An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale"
-           Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, 
-           Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, 
+           Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn,
+           Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer,
            Georg Heigold, Sylvain Gelly, Jakob Uszkoreit, Neil Houlsby
            https://arxiv.org/abs/2010.11929
     """
     def __init__(self, dim, in_channels, out_channels, img_size, patch_size=16, embed_dim=768,
-                 depth=12, nb_heads=12,  mlp_ratio=4, qkv_bias=True, 
+                 depth=12, nb_heads=12,  mlp_ratio=4, qkv_bias=True,
                  representation_size=None, distilled=False,
-                 dropout=None, attn_dropout=None, path_dropout=None, 
+                 dropout=None, attn_dropout=None, path_dropout=None,
                  embed_layer=PatchEmbed, norm='layer', activation='GELU'):
         super().__init__()
         if isinstance(img_size, int):
@@ -605,7 +605,7 @@ class ViT(Module):
                 x = x[:, 0]
         else:
             x = (x[:, 0], x[:, 1])
-        
+
         if self.head_dist is not None:
             x, x_dist = x[0], x[1]
             if self.head:
@@ -622,7 +622,7 @@ class ViT(Module):
 
 class SwinBlock(Module):
     def __init__(self, dim, in_channels, input_resolution, nb_heads, window_size=7, shift_size=0,
-                 mlp_ratio=4, qkv_bias=True, qk_scale=None, dropout=None, attn_dropout=None, 
+                 mlp_ratio=4, qkv_bias=True, qk_scale=None, dropout=None, attn_dropout=None,
                  path_dropout=None, activation='GELU', norm='layer'):
         # TODO: make compatible with anisotropic window and 3D
         super().__init__()
@@ -658,7 +658,7 @@ class SwinBlock(Module):
         self.path_dropout = _build_dropout(path_dropout, dim, path=True)
 
         mlp_hidden_dim = int(in_channels * mlp_ratio)
-        self.mlp = MLP(in_channels, in_channels, mlp_hidden_dim, 
+        self.mlp = MLP(in_channels, in_channels, mlp_hidden_dim,
                        activation=activation, dropout=dropout, dim=-1)
 
         if max(self.shift_size) > 0:
@@ -704,7 +704,7 @@ class SwinBlock(Module):
             x = x.view(B, H, W, C)
         elif self.dim==3:
             x = x.view(B, H, W, D, C)
-        
+
         if max(self.shift_size) > 0:
             shifted_x = torch.roll(x, shifts=tuple([-s for s in self.shift_size]),
                                    dims=tuple([i+1 for i in range(self.dim)]))
@@ -720,7 +720,7 @@ class SwinBlock(Module):
         shifted_x = window_reverse(attn_windows, self.window_size, self.input_resolution)
 
         if max(self.shift_size) > 0:
-            x = torch.roll(shifted_x, shifts=tuple(self.shift_size), 
+            x = torch.roll(shifted_x, shifts=tuple(self.shift_size),
                            dims=tuple([i+1 for i in range(self.dim)]))
         else:
             x = shifted_x
@@ -750,8 +750,8 @@ class SwinLayer(Module):
             window_size = [window_size] * dim
 
         self.blocks = ModuleList([
-            SwinBlock(dim, in_channels, input_resolution, nb_heads, window_size, 
-            shift_size = 0 if (i % 2 == 0) else [w // 2 for w in window_size], mlp_ratio=mlp_ratio, 
+            SwinBlock(dim, in_channels, input_resolution, nb_heads, window_size,
+            shift_size = 0 if (i % 2 == 0) else [w // 2 for w in window_size], mlp_ratio=mlp_ratio,
             qkv_bias=qkv_bias, dropout=dropout, attn_dropout=attn_dropout, norm=norm,
             path_dropout = path_dropout if isinstance(path_dropout, (list, tuple)) else path_dropout)
         for i in range(depth)])
@@ -782,7 +782,7 @@ class Swin(Module):
     References
     ----------
     ..[1] "Swin Transformer: Hierarchical Vision Transformer using Shifted Windows"
-           Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng Zhang, 
+           Ze Liu, Yutong Lin, Yue Cao, Han Hu, Yixuan Wei, Zheng Zhang,
            Stephen Lin, Baining Guo
            https://arxiv.org/abs/2103.14030
     """
@@ -905,7 +905,7 @@ class LeWinEncoder(Module):
     """
     Made for UFormer but could also have use for classifier, VAE or other architecture.
     """
-    def __init__(self, dim, in_channels=None, out_channels=None, hidden_channels=64, depth=4, 
+    def __init__(self, dim, in_channels=None, out_channels=None, hidden_channels=64, depth=4,
                  nb_blocks=2, head_channels=64, window_size=16, rotary_embed=True,
                  nb_heads=8, ff_mult=4, time_embed=False, activation='GELU', norm='layer', time_from_uform=False
                  ):
@@ -963,7 +963,7 @@ class LeWinEncoder(Module):
             time = time.to(x)
             if self.to_time_embed:
                 time = self.to_time_embed(time)
-        
+
         if self.proj_in:
             x = self.proj_in(x)
 
@@ -982,7 +982,7 @@ class LeWinEncoder(Module):
 
 
 class LeWinDecoder(Module):
-    def __init__(self, dim, in_channels=None, out_channels=None, hidden_channels=64, depth=4, 
+    def __init__(self, dim, in_channels=None, out_channels=None, hidden_channels=64, depth=4,
                  nb_blocks=2, head_channels=64, window_size=16, rotary_embed=True,
                  nb_heads=8, ff_mult=4, time_embed=False, activation='GELU', norm='layer', time_from_uform=False
                  ):
@@ -1040,7 +1040,7 @@ class LeWinDecoder(Module):
             time = time.to(x)
             if self.to_time_embed:
                 time = self.to_time_embed(time)
-        
+
         if self.proj_in:
             x = self.proj_in(x)
 
@@ -1069,7 +1069,7 @@ class UFormer(Module):
     ----------
     ..[1] ""
     """
-    def __init__(self, dim, in_channels, out_channels=None, hidden_channels=64, depth=4, 
+    def __init__(self, dim, in_channels, out_channels=None, hidden_channels=64, depth=4,
                  nb_blocks=2, head_channels=64, window_size=16, rotary_embed=True,
                  nb_heads=8, ff_mult=4, time_embed=False, activation='GELU', norm='layer',
                  ):

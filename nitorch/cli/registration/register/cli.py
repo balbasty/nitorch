@@ -2,14 +2,20 @@ from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import parser, help
 from nitorch.tools.registration import objects
-from nitorch.tools.registration.pairwise_preproc import map_image, load_image, preproc_image
-from nitorch.tools.registration.pairwise_postproc import warp_images
+from nitorch.tools.registration.pairwise_preproc import (
+    map_image, load_image, preproc_image
+)
+from nitorch.tools.registration.pairwise_postproc import (
+    warp_images
+)
 from nitorch.tools.registration.pairwise_pyramid import (
-    pyramid_levels, concurrent_pyramid, sequential_pyramid)
+    pyramid_levels, concurrent_pyramid, sequential_pyramid
+)
 from nitorch.tools.registration.pairwise_makeobj import (
     make_image, make_loss,
     make_affine, make_affine_2d, make_affine_optim,
-    make_nonlin, make_nonlin_2d, make_nonlin_optim)
+    make_nonlin, make_nonlin_2d, make_nonlin_optim
+)
 from nitorch.tools.registration.pairwise_run import run
 from nitorch import io, spatial
 from nitorch.core import py
@@ -181,29 +187,41 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           WRITE RESULTS
     # ------------------------------------------------------------------
+    odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
 
-    if affine and options.affine.output:
-        odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
-        fname = options.affine.output.format(
-            dir=odir, sep=os.path.sep, name=options.affine.name)
-        print('Affine ->', fname)
-        aff = affine.exp(cache_result=True, recompute=True)
-        if affine.position[0] == 's':
-            aff = aff.matmul(aff)
-        io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
-    if nonlin and options.nonlin.output:
-        odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
-        fname = options.nonlin.output.format(
-            dir=odir, sep=os.path.sep, name=options.nonlin.name)
-        io.savef(nonlin.dat.dat, fname, affine=nonlin.affine)
-        if isinstance(nonlin, objects.ShootModel):
-            nldir, nlbase, _ = py.fileparts(fname)
-            fname = os.path.join(nldir, nlbase + '.json')
-            with open(fname, 'w') as f:
-                prm = dict(nonlin.penalty)
-                prm['factor'] = nonlin.factor / py.prod(nonlin.shape)
-                json.dump(prm, f)
-        print('Nonlin ->', fname)
+    if affine:
+        if options.affine.output:
+            fname = options.affine.output.format(
+                dir=odir, sep=os.path.sep, name=options.affine.name)
+            print('Affine ->', fname)
+            aff = affine.exp(cache_result=True, recompute=True)
+            if affine.position[0] == 's':
+                aff = aff.matmul(aff)
+            io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
+
+    if nonlin:
+        if options.nonlin.output:
+            fname = options.nonlin.output.format(
+                dir=odir, sep=os.path.sep, name=options.nonlin.name)
+            io.savef(nonlin.dat.dat, fname, affine=nonlin.affine)
+            if isinstance(nonlin, objects.ShootModel):
+                nldir, nlbase, _ = py.fileparts(fname)
+                fname = os.path.join(nldir, nlbase + '.json')
+                with open(fname, 'w') as f:
+                    prm = dict(nonlin.penalty)
+                    prm['factor'] = nonlin.factor / py.prod(nonlin.shape)
+                    json.dump(prm, f)
+            print('Nonlin ->', fname)
+
+        if (
+            options.nonlin.hessian and
+            getattr(nonlin, 'hess', None) is not None
+        ):
+            fname = options.nonlin.hessian.format(
+                dir=odir, sep=os.path.sep, name=options.nonlin.name)
+            io.savef(nonlin.hess, fname, affine=nonlin.affine)
+            print('Hessian ->', fname)
+
     for loss in options.loss:
         warp_images(loss.fix, loss.mov, affine=affine, nonlin=nonlin,
                     dim=dim, device=device, odir=options.odir)

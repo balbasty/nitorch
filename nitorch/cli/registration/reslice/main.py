@@ -11,6 +11,7 @@ from nitorch.core.cli import ParseError
 from nitorch.core import utils, py
 from nitorch.core.dtypes import dtype as nitype
 from nitorch.core.linalg import logm, expm
+from nitorch.core.math import logit, softmax
 from . import struct
 from .parser import parse, help
 from .. import helpers
@@ -461,10 +462,45 @@ def write_volumes(options):
                 idatc = idatc.reshape([*ishapec, file.channels])
                 idatc = utils.movedim(idatc, -1, 0)
 
+                if options.clip:
+                    imin = idatc[idatc.isfinite()].min()
+                    imax = idatc[idatc.isfinite()].max()
+
+                # pre-transform intensities
+                if options.log or options.logit:
+                    mx = idatc.abs().max()
+                    idatc = idatc.clamp_min_(mx*1e-8)
+                    idatc = idatc.log_()
+
+                    if (
+                        options.logit and
+                        isinstance(options.logit, str) and
+                        options.logit[:1].lower() == "i"
+                    ):
+                        idatc = logit(idatc, implicit=True, inplace=True)
+                    else:
+                        idatc = idatc.log_()
+
                 # reslice
                 if options.prefilter and not is_label:
                     idatc = spatial.spline_coeff_nd(idatc, **opt_coeff)
                 idatc = helpers.pull(idatc, grid, **opt_pull)
+
+                # post-transform intensities
+                if options.log or options.logit:
+                    if options.logit:
+                        implicit = (
+                            isinstance(options.logit, str) and
+                            options.logit[:1].lower() == "i"
+                        )
+                        idatc = softmax(idatc, implicit=implicit, inplace=True)
+                    else:
+                        idatc = idatc.exp_()
+
+                if options.clip:
+                    idatc.clamp_(imin, imax)
+
+                # copy to output
                 odatc.copy_(idatc)
 
             dat = utils.movedim(odat, 0, -1)
@@ -486,9 +522,44 @@ def write_volumes(options):
             if grid is not None:
                 mat = file.affine.to(**backend)
                 imat = spatial.affine_inv(mat)
+
+                if options.clip:
+                    imin = dat[dat.isfinite()].min()
+                    imax = dat[dat.isfinite()].max()
+
+                # pre-transform intensities
+                if options.log or options.logit:
+                    mn = dat[dat.isfinite() & (dat > 0)].min()
+                    dat = dat.clamp_min_(mn*1e-3)
+
+                    if (
+                        options.logit and
+                        isinstance(options.logit, str) and
+                        options.logit[:1].lower() == "i"
+                    ):
+                        dat = logit(dat, implicit=True, inplace=True)
+                    else:
+                        dat = dat.log_()
+
+                # reslice
                 if options.prefilter and not is_label:
                     dat = spatial.spline_coeff_nd(dat, **opt_coeff)
                 dat = helpers.pull(dat, spatial.affine_matvec(imat, grid), **opt_pull)
+
+                # post-transform intensities
+                if options.log or options.logit:
+                    if options.logit:
+                        implicit = (
+                            isinstance(options.logit, str) and
+                            options.logit[:1].lower() == "i"
+                        )
+                        dat = softmax(dat, implicit=implicit, inplace=True)
+                    else:
+                        dat = dat.exp_()
+
+                if options.clip:
+                    dat.clamp_(imin, imax)
+
             dat = utils.movedim(dat, 0, -1)
 
         if is_label:
@@ -562,7 +633,7 @@ def write_streamlines(options):
     # 4) Loop across input files
     output = py.make_list(options.output, len(options.streamlines))
     for file, ofname in zip(options.streamlines, output):
-        ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext)
+        ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext, sep=os.path.sep)
         print(f'Reslicing:   {file.fname}\n'
               f'          -> {ofname}')
         dat = list(io.streamlines.loadf(file.fname, **backend))

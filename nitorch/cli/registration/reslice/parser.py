@@ -41,6 +41,9 @@ usage:
     -c,  --channels         Channels to load. Can be a range start:stop:step (all)
     -k,  --chunk            Process data one chunk--of this size--at a time (no)
     -dt, --dtype            Output data type (from input)
+         --log              Interpolate in log space (no)
+         --logit [implicit] Interpolate in logit space (no)
+         --clip             Clip values outside of the input range (no)
     -cpu, -gpu              Device to use (cpu)
 
    The output image is
@@ -197,6 +200,15 @@ def parse(args):
         elif tag in ('-dt', '--dtype'):
             cli.check_next_isvalue(args, tag)
             options.dtype, *args = args
+        elif tag in ('--log',):
+            options.log = True
+        elif tag in ('--logit',):
+            if cli.next_isvalue(args):
+                options.logit, *args = args
+            else:
+                options.logit = True
+        elif tag in ('--clip',):
+            options.clip = True
         elif tag in ('-cpu', '--cpu'):
             options.device = 'cpu'
         elif tag in ('-gpu', '--gpu'):

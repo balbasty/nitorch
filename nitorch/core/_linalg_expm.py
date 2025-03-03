@@ -152,8 +152,8 @@ def _expm(X, basis=None, grad_X=False, grad_basis=False, hess_X=False,
     for n_order in range(2, max_order+1):
         # Compute coefficients at order `n_order`, and accumulate
         if hess_X:
-            dEB = torch.matmul(dEn, basis[..., None, :, :])
-            hEn = torch.matmul(hEn, X) + dEB + dEB.transpose(-3, -4)
+            dEB = torch.matmul(dEn[..., None, :, :, :], basis[..., None, :, :])
+            hEn = torch.matmul(hEn, X[..., None, :, :]) + dEB + dEB.transpose(-3, -4)
             hEn /= n_order
             hE = smart_incr(hE, hEn)
             del dEB

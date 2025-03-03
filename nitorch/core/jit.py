@@ -403,17 +403,22 @@ else:
         return grid
 
 
+meshgrid_ij_list = meshgrid_ij
+meshgrid_xy_list = meshgrid_xy
+meshgrid_ij_args = lambda x: meshgrid_ij_list(*x)
+meshgrid_xy_args = lambda x: meshgrid_xy_list(*x)
+
+
 # cartesian_prod takes multiple inout tensors as input in eager mode
 # but takes a list of tensor in jit mode. This is a helper that works
 # in both cases.
 if not int(os.environ.get('PYTORCH_JIT', '1')):
     cartesian_prod = lambda x: torch.cartesian_prod(*x)
-    meshgrid_ij_list = meshgrid_ij
-    meshgrid_xy_list = meshgrid_xy
-    meshgrid_ij = lambda x: meshgrid_ij_list(*x)
-    meshgrid_xy = lambda x: meshgrid_xy_list(*x)
+    meshgrid_ij = meshgrid_ij_args
+    meshgrid_xy = meshgrid_xy_args
 else:
     cartesian_prod = torch.cartesian_prod
+
 
 
 meshgrid = meshgrid_ij

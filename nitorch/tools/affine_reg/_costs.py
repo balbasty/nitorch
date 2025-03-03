@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 from nitorch.core.kernels import smooth
-from nitorch.core.utils import pad
+from nitorch.core.utils import pad, meshgrid_ij
 from nitorch.spatial import (affine_matvec, grid_pull)
 from nitorch.core.linalg import expm, lmdiv
 from nitorch.plot import show_slices
@@ -135,7 +135,7 @@ def _compute_cost(q, grid0, dat_fix, mat_fix, dat, mat, mov, cost_fun, B,
             m2 = torch.sum(px*j[None, ...])
             sig1 = torch.sqrt(torch.sum(py[..., 0]*(i - m1)**2))
             sig2 = torch.sqrt(torch.sum(px[0, ...]*(j - m2)**2))
-            i, j = torch.meshgrid(i - m1, j - m2)
+            i, j = meshgrid_ij(i - m1, j - m2)
             ncc = torch.sum(torch.sum(pxy*i*j))/(sig1*sig2)
             c = -ncc
     elif cost_fun in _costs_edge:

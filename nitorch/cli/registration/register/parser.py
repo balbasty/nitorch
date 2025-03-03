@@ -176,6 +176,7 @@ usage:
     Common options:
         -i, --input                     Path to initial transform
         -o, --output                    Path to the output transform: [{dir}/{name}.nii.gz]
+        -h, --hessian                   Path to the output hessian: [{dir}/{name}_hessian.nii.gz]
         -s, --steps                     Number of integration steps
         -a, --absolute                  Penalty on absolute displacements (0th) [1e-4]
         -m, --membrane                  Penalty on membrane energy (1st) [1e-3]
@@ -288,9 +289,10 @@ def parse_range(x):
     start = int(start or 0)
     step = int(step or 1)
     if stop == '':
-        return slice(start, None, step)
+        out = slice(start, None, step)
     else:
-        return range(start, int(stop), step)
+        out = range(start, int(stop), step)
+    return out
 
 
 # Main options
@@ -574,11 +576,14 @@ nonlin.add_option('pad', ('-p', '--pad'), nargs='1*', default=[0, '%'],
                   convert=number_or_str(float), help='Pad field of view by some amount')
 nonlin.add_option('fov', ('-f', '--fov'), nargs='1*',
                   help='Name of inputs used to compute mean space')
+nonlin.add_option('init', ('-i', '--input', '--init'), nargs=1,
+                  help='Path to the input transform')
 nonlin.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{name}.nii.gz',
                   help='Path to the output transform')
-nonlin.add_option('init', ('-i', '--input', '--init'), nargs=1,
-                  help='Path to the input transform')
+nonlin.add_option('hessian', ('-h', '--hessian'), nargs=1,
+                  default='{dir}{sep}{name}_hessian.nii.gz',
+                  help='Path to the output hessian')
 nonlin.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
                   convert=number_or_str(int))

@@ -49,6 +49,7 @@ corresponding ND-array.
 
 
 from ._affine import *
+from ._affine_optimal import *
 from ._conv import *
 from ._spconv import *
 from ._finite_differences import *
@@ -59,6 +60,7 @@ from ._mrfield import *
 from ._regularisers import *
 from ._solvers import *
 from ._svf import *
+from ._svf_optimal import *
 from ._svf1d import *
 from ._shoot import *
 from ._distances import *
