@@ -34,26 +34,26 @@ solving inverse problems in Magnetic Resonance Imaging.
 
 Clone and install `nitorch`
 ```shell
-pip install git+https://github.com/balbasty/nitorch
-
-# Or, alternatively
-git clone git@github.com:balbasty/nitorch.git
-pip install ./nitorch
-```
-
-However, this only installs the core dependencies (torch and numpy). 
-If you wish to automatically install dependencies used by, _e.g._, 
-readers and writers, plotters and/or dataset loaders, you can specify 
-the extra tags `io`, `plot`, `data`. Alternatively, the tag `all` 
-combines all of these dependencies.
-
-```shell
 pip install git+https://github.com/balbasty/nitorch#egg=nitorch[all]
 
 # Or, alternatively
 git clone git@github.com:balbasty/nitorch.git
 pip install -e "./nitorch[all]"
 ```
+
+To only install the core dependencies (torch and numpy), you can strip the tag `all` from the previous command.
+
+```shell
+pip install git+https://github.com/balbasty/nitorch
+
+# Or, alternatively
+git clone git@github.com:balbasty/nitorch.git
+pip install -e ./nitorch
+```
+
+If you wish to automatically install dependencies used by specific 
+readers and writers, plotters and/or dataset loaders, you can specify 
+the extra tags `io`, `plot`, `data`.
 
 You may then start using NITorch in a Python program:
 ```python
