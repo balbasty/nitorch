@@ -923,6 +923,13 @@ class MappedArray(MappedFile):
             previous_chunks += chunk
         return out
 
+    def flip(self, dim):
+        dim = make_list(dim)
+        slicer = [slice(None)] * self.dim
+        for d in dim:
+            slicer[d] = slice(None, None, -1)
+        return self[tuple(slicer)]
+
     def channel_first(self, atleast=0):
         """Permute the dimensions such that all spatial axes are on the right.
 
@@ -1193,13 +1200,6 @@ class CatArray(MappedArray):
         new._dim_cat = iperm[new._dim_cat]
         new.shape = tuple(self.shape[d] for d in dims)
         return new
-
-    def flip(self, dim):
-        dim = make_list(dim)
-        slicer = [slice(None)] * self.dim
-        for d in dim:
-            slicer[d] = slice(None, None, -1)
-        return self[tuple(slicer)]
 
     def raw_data(self, *args, **kwargs):
         # read individual arrays and concatenate them
