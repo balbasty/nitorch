@@ -24,7 +24,7 @@ def _crop_to_param(aff0, aff, shape):
     return size, center, unit, layout
 
 
-def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
+def crop(inp, size=None, center=None, space='vox', like=None, bbox=False,
          output=None, transform=None):
     """Crop a ND volume, while preserving the orientation matrices.
 
@@ -99,8 +99,12 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
     aff00 = aff0
     shape00 = shape0
 
-    if bool(size) + bool(like) + bool(bbox or isinstance(bbox, float)) > 1:
+    has_size = torch.is_tensor(size) or bool(size)
+    has_center = torch.is_tensor(center) or center == 0 or bool(center)
+    if (has_size or bool(like)) and bool(bbox or isinstance(bbox, float)) > 1:
         raise ValueError('Can only use one of `size`, `like` and `bbox`.')
+
+    space_size, space_center = py.make_list(space, 2)
 
     # --- Open reference and compute size/center ---
     if like:
@@ -115,8 +119,15 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
             shape0 = dat.shape[:dim]
         if torch.is_tensor(like_shape):
             like_shape = like_shape.shape
-        size, center, unit, layout = _crop_to_param(aff0, like_aff, like_shape)
-        space = 'vox'
+
+        size_, center_, _, _ = _crop_to_param(aff0, like_aff, like_shape)
+
+        if not has_size:
+            size = size_
+            space_size = 'vox'
+        if not has_center:
+            center = center_
+            space_center = 'vox'
 
     elif bbox or isinstance(bbox, float):
         if bbox is True:
@@ -131,34 +142,53 @@ def crop(inp, size=None, center=None, space='vx', like=None, bbox=False,
             idx = utils.movedim(mask, d, 0).reshape([n, -1]).any(-1).nonzero(as_tuple=False)
             mins.append(idx.min())
             maxs.append(idx.max())
+        del mask
         mins = utils.as_tensor(mins)
         maxs = utils.as_tensor(maxs)
-        size = maxs + 1 - mins
-        center = (maxs + 1 + mins).float()/2
-        space = 'vox'
-        del mask
+        size_ = maxs + 1 - mins
+        center_ = (maxs + 1 + mins).float()/2
+
+        if not has_size:
+            size = size_
+            space_size = 'vox'
+            has_size = True
+        if not has_center:
+            center = center_
+            space_center = 'vox'
+            has_center = True
 
     # --- Open transformation file and compute size/center ---
-    elif not size:
-        if not transform:
-            raise ValueError('At least one of size/like/transform must '
-                             'be provided')
+    elif transform:
         transform_in = True
         t = io.transforms.map(transform)
         if not isinstance(t, io.transforms.LinearTransformArray):
             raise TypeError('Expected an LTA file')
         like_aff, like_shape = t.destination_space()
-        size, center, unit, layout = _crop_to_param(aff0, like_aff, like_shape)
+        size_, center_, unit, layout = _crop_to_param(aff0, like_aff, like_shape)
+
+        if not has_size:
+            size = size_
+            space_size = 'vox'
+            has_size = True
+        if not has_center:
+            center = center_
+            space_center = 'vox'
+            has_center = True
+
+    if not has_size:
+        raise ValueError('At least one of size/like/transform must '
+                         'be provided')
 
     # --- use center of the FOV ---
-    if not torch.is_tensor(center) and not center:
+    if not has_center:
         center = torch.as_tensor(shape0[:dim], dtype=torch.float)
         center = center.sub_(1).mul_(0.5)
+        space_center = 'vox'
+        has_center = True
 
     # --- convert size/center to voxels ---
     size = utils.make_vector(size, dim, dtype=torch.long)
     center = utils.make_vector(center, dim, dtype=torch.float)
-    space_size, space_center = py.make_list(space, 2)
     if space_center.lower() == 'ras':
         center = spatial.affine_matvec(spatial.affine_inv(aff0), center)
     if space_size.lower() == 'ras':
