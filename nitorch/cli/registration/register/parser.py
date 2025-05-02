@@ -421,7 +421,7 @@ file.add_option('bound', ('-b', '--bound'), nargs=1, default='dct2',
                 help='Boundary condition')
 file.add_option('order', ('-n', '--order'), nargs=1, default=1,
                 convert=int, help='Interpolation order')
-file.add_option('extrapolate', ('-x', '--extrapolate'), nargs=0, default=True,
+file.add_option('extrapolate', ('--extrapolate',), nargs=0, default=False,
                 convert=bool, help='Extrapolate out-of-bounds')
 file.add_option('affine', ('-a', '--affine'), nargs='+', default=[],
                 help='Path to one or more world-to-world affine transforms to apply')
