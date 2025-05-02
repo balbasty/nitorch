@@ -12,7 +12,7 @@ from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_ima
 def make_image(dat, mask=None, affine=None,
                pyramid=0, pyramid_method='gaussian',
                discretize=False, soft=False, mind=None,
-               bound='zero', extrapolate=True, **kwargs):
+               bound='zero', extrapolate=False, **kwargs):
     """Create an image pyramid (eventually with a single level)
 
     Parameters
