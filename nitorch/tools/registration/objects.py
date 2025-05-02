@@ -1522,9 +1522,11 @@ class ShootModel(NonLinModel):
         if v is None:
             v = self.dat.dat
         if recompute or self._cache is None:
+            penalty = dict(self.penalty)
+            factor = penalty.pop('factor')
             grid = spatial.shoot(v, self.kernel, steps=self.steps,
-                                 factor=self.factor / py.prod(self.shape),
-                                 voxel_size=self.voxel_size, **self.penalty,
+                                 factor=factor / py.prod(self.shape),
+                                 voxel_size=self.voxel_size, **penalty,
                                  displacement=True)
         else:
             grid = self._cache
@@ -1546,9 +1548,11 @@ class ShootModel(NonLinModel):
         if v is None:
             v = self.dat.dat
         if recompute or self._icache is None:
+            penalty = dict(self.penalty)
+            factor = penalty.pop('factor')
             _, grid = spatial.shoot(v, self.kernel, steps=self.steps,
-                                    factor=self.factor / py.prod(self.shape),
-                                    voxel_size=self.voxel_size, **self.penalty,
+                                    factor=factor / py.prod(self.shape),
+                                    voxel_size=self.voxel_size, **penalty,
                                     return_inverse=True, displacement=True)
         else:
             grid = self._icache
@@ -1570,9 +1574,11 @@ class ShootModel(NonLinModel):
         if v is None:
             v = self.dat.dat
         if recompute or self._cache is None or self._icache is None:
+            penalty = dict(self.penalty)
+            factor = penalty.pop('factor')
             grid, igrid = spatial.shoot(v, self.kernel, steps=self.steps,
-                                        factor=self.factor / py.prod(self.shape),
-                                        voxel_size=self.voxel_size, **self.penalty,
+                                        factor=factor / py.prod(self.shape),
+                                        voxel_size=self.voxel_size, **penalty,
                                         return_inverse=True, displacement=True)
         if cache_result:
             self._cache = grid
@@ -2023,6 +2029,35 @@ class AffineModel(TransformationModel):
                 value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
             return self.dat.add(value, **kwargs)
 
+        def mul_(self, value, **kwargs):
+            if self.optim not in (None, self.basis):
+                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
+            self.dat.mul_(value, **kwargs)
+            return self
+
+        def mul(self, value, **kwargs):
+            if self.optim not in (None, self.basis):
+                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
+            return self.dat.mul(value, **kwargs)
+
+        def __add__(self, other):
+            return self.add(other)
+
+        def __radd__(self, other):
+            return self.add(other)
+
+        def __iadd__(self, other):
+            return self.add_(other)
+
+        def __mul__(self, other):
+            return self.mul(other)
+
+        def __rmul__(self, other):
+            return self.mul(other)
+
+        def __imul__(self, other):
+            return self.mul_(other)
+
     def __init__(self, basis, factor=1, penalty=None, optim=None, position='symmetric', dat=None):
         """
 
@@ -2210,6 +2245,17 @@ class Affine2dModel(AffineModel):
             if self.optim not in (None, self.basis):
                 value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
             return self.dat.add(value, **kwargs)
+
+        def mul_(self, value, **kwargs):
+            if self.optim not in (None, self.basis):
+                value = LogAffine2d._switch_basis(value, self.optim, self.basis)
+            self.dat.mul_(value, **kwargs)
+            return self
+
+        def mul(self, value, **kwargs):
+            if self.optim not in (None, self.basis):
+                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
+            return self.dat.mul(value, **kwargs)
 
     def __init__(self, basis, plane, ref_affine=None, factor=1, penalty=None,
                  dat=None, position='symmetric'):
