@@ -1198,7 +1198,7 @@ def roll(inp, shifts=1, dims=None, bound='dft'):
 
 
 def channel2last(tensor):
-    """Warps: Channel to Last dimension order.
+    r"""Warps: Channel to Last dimension order.
 
     . Channel ordering is: (Batch, Channel, X, Y, Z)
     . Last ordering is: (Batch, X, Y, Z, Channel))
@@ -1212,7 +1212,7 @@ def channel2last(tensor):
 
 
 def last2channel(tensor):
-    """Warps: Last to Channel dimension order.
+    r"""Warps: Last to Channel dimension order.
 
     . Channel ordering is: (Batch, Channel, X, Y, Z)
     . Last ordering is: (Batch, X, Y, Z, Channel))
@@ -1226,7 +1226,7 @@ def last2channel(tensor):
 
 
 def ensure_channel_last(x, dim=1):
-    """Ensure that the channel dimension is the most rapidly changing one
+    r"""Ensure that the channel dimension is the most rapidly changing one
 
     /!\ This function does not change the *shape* of the tensor but
     may change its *memory layout*.
@@ -1253,7 +1253,7 @@ def ensure_channel_last(x, dim=1):
 
 
 def ensure_contiguous(x):
-    """Ensure that the tensor is contiguous, with the most rapidly
+    r"""Ensure that the tensor is contiguous, with the most rapidly
     changing dimension on the right.
 
     /!\ This function does not change the *shape* of the tensor but

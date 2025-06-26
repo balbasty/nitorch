@@ -3,7 +3,6 @@
 from ._grid import grid_pull, grid_push, identity_grid, grid_jacobian
 from nitorch.core import utils, py, linalg
 import torch
-from nitorch.core.optionals import custom_fwd, custom_bwd
 
 
 __all__ = ['exp', 'exp_forward', 'exp_backward']
@@ -301,7 +300,6 @@ def exp_backward(vel, *gradhess, inverse=False, steps=8,
 class _Exp(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float32)  # det() only implemented in f32
     def forward(ctx, vel, inverse, steps, interpolation, bound, displacement):
         if vel.requires_grad:
             ctx.save_for_backward(vel)
@@ -311,7 +309,6 @@ class _Exp(torch.autograd.Function):
                            displacement, _anagrad=True)
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad):
         vel, = ctx.saved_tensors
         grad = exp_backward(vel, grad,
@@ -482,5 +479,3 @@ def _composition_jac(jac, rhs, lhs=None, type='grid', identity=None, **kwargs):
     jac_left = _pull_jac(jac_left, rhs)
     jac = torch.matmul(jac_left, jac)
     return jac
-
-

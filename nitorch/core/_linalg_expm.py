@@ -9,7 +9,6 @@ object of future work.
 """
 import torch
 import torch.nn.functional as F
-from .optionals import custom_fwd, custom_bwd
 from . import utils
 
 
@@ -191,7 +190,6 @@ class _ExpM(torch.autograd.Function):
     """Matrix exponential with automatic differentiation."""
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, X, basis, max_order, tol):
         # Save precomputed components of the backward pass
         needs_grad_X = torch.is_tensor(X) and X.requires_grad
@@ -212,7 +210,6 @@ class _ExpM(torch.autograd.Function):
         return E
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, output_grad):
         # DEBUG
         # import pydevd

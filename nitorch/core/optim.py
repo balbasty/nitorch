@@ -139,7 +139,7 @@ def cg(A, b, x=None, precond=None, max_iter=None, tolerance=1e-5,
         rz0 = rz
         rz = _dot(r, z)
         beta = rz / rz0.clamp_min_(1e-12)
-        
+
         # Check convergence
         if tolerance or verbose:
             obj[n_iter] = alpha * (alpha * pAp + 2 * rz)
@@ -158,7 +158,7 @@ def cg(A, b, x=None, precond=None, max_iter=None, tolerance=1e-5,
 
 def jacobi(A, b, x=None, precond=lambda y: y, max_iter=None,
            tolerance=1e-5, verbose=False, inplace=True, stop='max_gain'):
-    """Solve `A*x = b` by the Jacobi method.
+    r"""Solve `A*x = b` by the Jacobi method.
 
     The Jacobi method solves linear systems of the form `A*x = b`,
     where A is diagonal dominant.
@@ -302,7 +302,7 @@ def relax_slicers(shape, scheme='checkerboard'):
 def relax(A, b, precond, x=None, scheme='checkerboard', max_iter=None,
           dim=None, tolerance=1e-5, verbose=False, inplace=True,
           stop='max_gain', mode=1):
-    """Solve `A*x = b` by block-relaxation (e.g., checkerboard Gauss-Seidel).
+    r"""Solve `A*x = b` by block-relaxation (e.g., checkerboard Gauss-Seidel).
 
     The Gauss-Seidel method solves linear systems of the form `A*x = b`,
     where A is either positive definite or diagonal dominant.

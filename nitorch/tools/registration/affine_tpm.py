@@ -61,7 +61,7 @@ def align_tpm(dat, tpm=None, weights=None, spacing=(8, 4), device=None,
               basis='affine', progressive=False, bins=256,
               fwhm=None, max_iter_gn=100, max_iter_em=32, max_line_search=6,
               flexi=False, verbose=1):
-    """Align a Tissue Probability Map to an image
+    r"""Align a Tissue Probability Map to an image
 
     Input Parameters
     ----------------

@@ -5,7 +5,6 @@
 #   In the meantime, we should use scipy's implementation (which
 #   does not accept batched matrices either) with a (parallel?) loop
 import torch
-from .optionals import custom_fwd, custom_bwd
 from .optionals import numpy as np
 
 
@@ -67,7 +66,6 @@ class _LogM(torch.autograd.Function):
     """
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, mat):
         from scipy.linalg import logm
         logm_nowarn = lambda x: logm(x, disp=False)[0]
@@ -83,7 +81,6 @@ class _LogM(torch.autograd.Function):
         return mat
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, output_grad):
         from scipy.linalg import logm
         logm_nowarn = lambda x: logm(x, disp=False)[0]

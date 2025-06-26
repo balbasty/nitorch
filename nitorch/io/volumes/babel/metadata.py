@@ -5,11 +5,10 @@ import numpy as np
 import re
 import ast
 from nibabel.freesurfer.mghformat import MGHHeader
-from nibabel import (Nifti1Header, Spm99AnalyzeHeader, AnalyzeHeader)
+from nibabel import (Nifti1Header, Spm99AnalyzeHeader)
 from nibabel.spatialimages import HeaderDataError
 from nitorch.spatial import voxel_size
 from nitorch.core import dtypes, constants
-from nitorch.core.utils import make_vector
 
 
 def set_affine(header, affine, shape=None):
@@ -46,7 +45,7 @@ def set_affine(header, affine, shape=None):
              'It will be discarded.'.format(type(header).__name__),
              RuntimeWarning)
     return header
-    
+
 
 def set_voxel_size(header, vx, shape=None):
     vx0 = header.get_zooms()
@@ -59,7 +58,7 @@ def set_voxel_size(header, vx, shape=None):
     aff[:-1, :] *= vx[:3, None] / vx0[:3, None]
     header = set_affine(header, aff, shape)
     return header
-    
+
 
 def metadata_to_header(header, metadata, shape=None, dtype=None):
     """Register metadata into a nibabel Header object
@@ -287,7 +286,7 @@ def header_to_metadata(header, metadata):
             time_unit = 'ms' if isinstance(header, MGHHeader) else 'sec'
         if time_step is None and isinstance(header, Nifti1Header):
             descrip = header['descrip'].tobytes().decode().rstrip('\x00')
-            parse = re.search('tr=(?P<tr>[\d.]+)\s*(?P<unit>([m]?s)?)',
+            parse = re.search(r'tr=(?P<tr>[\d.]+)\s*(?P<unit>([m]?s)?)',
                               descrip, re.IGNORECASE)
             if parse:
                 time_step = float(parse.group('tr'))
@@ -317,7 +316,7 @@ def header_to_metadata(header, metadata):
             te_unit = 'sec'
         if te is None and isinstance(header, Nifti1Header):
             descrip = header['descrip'].tobytes().decode().rstrip('\x00')
-            parse = re.search('te=(?P<te>[\d.]+)\s*(?P<unit>([m]?s)?)',
+            parse = re.search(r'te=(?P<te>[\d.]+)\s*(?P<unit>([m]?s)?)',
                               descrip, re.IGNORECASE)
             if parse:
                 te = float(parse.group('te'))
@@ -336,7 +335,7 @@ def header_to_metadata(header, metadata):
             ti_unit = 'sec'
         if ti is None and isinstance(header, Nifti1Header):
             descrip = header['descrip'].tobytes().decode().rstrip('\x00')
-            parse = re.search('ti=(?P<ti>[\d.]+)\s*(?P<unit>([m]?s)?)',
+            parse = re.search(r'ti=(?P<ti>[\d.]+)\s*(?P<unit>([m]?s)?)',
                               descrip, re.IGNORECASE)
             if parse:
                 ti = float(parse.group('ti'))
@@ -355,7 +354,7 @@ def header_to_metadata(header, metadata):
             fa_unit = 'deg'
         if fa is None and isinstance(header, Nifti1Header):
             descrip = header['descrip'].tobytes().decode().rstrip('\x00')
-            parse = re.search('fa=(?P<fa>[\d.]+)\s*(?P<unit>(deg|rad)?)',
+            parse = re.search(r'fa=(?P<fa>[\d.]+)\s*(?P<unit>(deg|rad)?)',
                               descrip, re.IGNORECASE)
             if parse:
                 fa = float(parse.group('fa'))
@@ -372,4 +371,3 @@ def header_to_metadata(header, metadata):
         metadata['format'] = header.__class__.__name__.split('Header')[0]
 
     return metadata
-

@@ -11,7 +11,6 @@ from nitorch._C.grid import bound_to_nitorch, inter_to_nitorch
 from nitorch.spatial import smooth, grid_grad, grid_pull, grid_push, grid_count
 from nitorch.core import kernels
 import torch
-from .optionals import custom_fwd, custom_bwd
 from typing import List
 from . import py, dtypes
 
@@ -1013,7 +1012,6 @@ def histc_backward(g, x, min=None, max=None, dim=None, weights=None,
 class _HistC_AutoGrad(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, x, n=64, min=None, max=None, dim=None, keepdim=False,
                 weights=None, order=1, bound='replicate', extrapolate=False,
                 dtype=None):
@@ -1039,7 +1037,6 @@ class _HistC_AutoGrad(torch.autograd.Function):
         return h
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, g):
         n = g.shape[-1]
         g = g.reshape([-1, n])

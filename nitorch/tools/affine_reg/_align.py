@@ -159,7 +159,7 @@ def _affine_align(dat, mat, cost_fun='nmi', group='SE', mean_space=False,
 
 
 def _atlas_align(dat, mat, rigid=True, pth_atlas=None, default_atlas='atlas_t1'):
-    """Affinely align image to some atlas space.
+    r"""Affinely align image to some atlas space.
 
     Parameters
     ----------

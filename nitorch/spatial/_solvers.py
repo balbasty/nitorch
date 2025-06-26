@@ -414,7 +414,7 @@ class _FieldFMG(_FMG):
         self.voxel_size = voxel_size
 
     def set_data(self, hessian, gradient, weights=None, init=None, dim=None):
-        """
+        r"""
 
         Parameters
         ----------
@@ -740,7 +740,7 @@ class _GridFMG(_FMG):
         return x
 
     def set_data(self, hessian, gradient, weights=None, init=None):
-        """
+        r"""
 
         Parameters
         ----------

@@ -8,15 +8,15 @@ from ._regularisers import regulariser
 from ._grid import identity_grid
 
 
-"""
+r"""
 Absolute MR susceptibility values.
 
-/!\ the `mrfield` function takes *delta* susceptibility values, with 
-respect to the air susceptibility. The susceptibility of the air should 
-thererfore be subtracted from these values before being passed to 
+/!\ the `mrfield` function takes *delta* susceptibility values, with
+respect to the air susceptibility. The susceptibility of the air should
+thererfore be subtracted from these values before being passed to
 `mrfield`.
 
-All values are expressed in ppm (parts per million). 
+All values are expressed in ppm (parts per million).
 They get multiplied by 1e-6 in `mrfield`
 
 References
@@ -27,21 +27,21 @@ References
       MRM, 2004
       https://onlinelibrary.wiley.com/doi/epdf/10.1002/mrm.20194
 ..[2] "Susceptibility mapping of air, bone, and calcium in the head"
-      Sagar Buch, Saifeng Liu, Yongquan Ye, Yu‐Chung Norman Cheng, 
+      Sagar Buch, Saifeng Liu, Yongquan Ye, Yu‐Chung Norman Cheng,
       Jaladhar Neelavalli, and E. Mark Haacke
       MRM, 2014
-..[3] "Whole-brain susceptibility mapping at high field: A comparison 
+..[3] "Whole-brain susceptibility mapping at high field: A comparison
        of multiple- and single-orientation methods"
       Sam Wharton, and Richard Bowtell
       NeuroImage, 2010
-..[4] "Quantitative susceptibility mapping of human brain reflects 
+..[4] "Quantitative susceptibility mapping of human brain reflects
        spatial variation in tissue composition"
       Wei Li, Bing Wua, and Chunlei Liu
       NeuroImage 2011
-..[5] "Human brain atlas for automated region of interest selection in 
-       quantitative susceptibility mapping: Application to determine iron 
+..[5] "Human brain atlas for automated region of interest selection in
+       quantitative susceptibility mapping: Application to determine iron
        content in deep gray matter structures"
-      Issel Anne L.Lim, Andreia V. Faria, Xu Li, Johnny T.C.Hsu, 
+      Issel Anne L.Lim, Andreia V. Faria, Xu Li, Johnny T.C.Hsu,
       Raag D.Airan, Susumu Mori, Peter C.M. van Zijl
       NeuroImage, 2013
 """
@@ -460,7 +460,7 @@ def shim(fmap, max_order=2, mask=None, isocenter=None, dim=None,
                          utils.unsqueeze(prm, -2, dim))
     comb = comb[..., 0]
     fmap = fmap - comb
-    
+
     returns = returns.split('+')
     out = []
     for ret in returns:

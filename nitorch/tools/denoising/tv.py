@@ -7,7 +7,7 @@ from ..registration import losses, phantoms
 
 def denoise(image=None, lam=1, sigma=1, max_iter=64, sub_iter=32, optim='cg',
             tol=1e-5, sub_tol=1e-5, plot=False, jtv=True, dim=None, **prm):
-    """Denoise an image using a (joint) total variation prior.
+    r"""Denoise an image using a (joint) total variation prior.
 
     This implementation uses a reweighted least squares approach.
 
@@ -44,7 +44,7 @@ def denoise(image=None, lam=1, sigma=1, max_iter=64, sub_iter=32, optim='cg',
     prm['factor'] = lam
 
     # noise variance (likelihood)
-    sigma = make_vector(sigma, image.shape[-dim-1], 
+    sigma = make_vector(sigma, image.shape[-dim-1],
                         dtype=image.dtype, device=image.device)
     isigma2 = 1 / (sigma * sigma)
 

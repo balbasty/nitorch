@@ -7,7 +7,7 @@ from ._solvers import solve_grid_fmg
 
 def grid_inv(grid, type='grid', bound='dft',
              extrapolate=True, **prm):
-    """Invert a dense deformation (or displacement) grid
+    r"""Invert a dense deformation (or displacement) grid
 
     Notes
     -----

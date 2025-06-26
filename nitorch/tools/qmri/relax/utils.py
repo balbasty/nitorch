@@ -154,7 +154,7 @@ def hessian_sym_inv(hess, diag=False):
 
 
 def hessian_sym_solve(hess, grad, lam=None):
-    """Left matrix division for sparse symmetric hessians.
+    r"""Left matrix division for sparse symmetric hessians.
 
     `>>> hess \ grad`
 
@@ -188,7 +188,7 @@ def hessian_sym_solve(hess, grad, lam=None):
     grad_shape = (1,) * max(0, len(hess_shape) - len(grad_shape)) + grad_shape
     hess_shape = (1,) * max(0, len(grad_shape) - len(hess_shape)) + hess_shape
     res_shape = tuple([max(g, h) for g, h in zip(grad_shape, hess_shape)])
-    
+
     diag = hess[:nb_prm]  # diagonal
     uppr = hess[nb_prm:]  # upper triangular part
 
@@ -450,7 +450,7 @@ def reg(tensor, vx=1., rls=None, lam=1., do_grad=True):
     backend = dict(dtype=tensor.dtype, device=tensor.device)
     vx = core.utils.make_vector(vx, 3, **backend)
     lam = core.utils.make_vector(lam, nb_prm, **backend)
-    
+
     grad_fwd = spatial.diff(tensor, dim=[1, 2, 3], voxel_size=vx, side='f')
     grad_bwd = spatial.diff(tensor, dim=[1, 2, 3], voxel_size=vx, side='b')
     if rls is not None:
@@ -470,7 +470,7 @@ def reg(tensor, vx=1., rls=None, lam=1., do_grad=True):
     else:
         grad *= tensor
         return 0.5 * grad.sum(dtype=torch.double)
-    
+
 
 def reg1(tensor, vx=1., rls=None, lam=1., do_grad=True):
     """Compute the gradient of the regularisation term.
@@ -524,7 +524,7 @@ def reg1(tensor, vx=1., rls=None, lam=1., do_grad=True):
 
 def rls_maj(rls, vx=1., lam=1.):
     """Diagonal majoriser of the RLS regulariser.
-    
+
     Parameters
     ----------
     rls : (..., *shape) tensor
@@ -540,104 +540,104 @@ def rls_maj(rls, vx=1., lam=1.):
         Convolved weights
 
     """
-    
+
     nb_prm = rls.shape[0] if rls.dim() > 3 else 1
     backend = dict(dtype=rls.dtype, device=rls.device)
     vx = core.utils.make_vector(vx, 3, **backend)
     lam = core.utils.make_vector(lam, nb_prm, **backend)
     vx = vx.square().reciprocal()
-    
+
     if rls.dim() > 3:
         rls = core.utils.movedim(rls, 0, -1)
-    
+
     out = (2*vx.sum())*rls
     # center
-    out[1:-1, 1:-1, 1:-1] += ((rls[ :-2, 1:-1, 1:-1] + rls[2:  , 1:-1, 1:-1])*vx[0] + 
-                              (rls[1:-1,  :-2, 1:-1] + rls[1:-1, 2:,   1:-1])*vx[1] + 
+    out[1:-1, 1:-1, 1:-1] += ((rls[ :-2, 1:-1, 1:-1] + rls[2:  , 1:-1, 1:-1])*vx[0] +
+                              (rls[1:-1,  :-2, 1:-1] + rls[1:-1, 2:,   1:-1])*vx[1] +
                               (rls[1:-1, 1:-1,  :-2] + rls[1:-1, 1:-1, 2:  ])*vx[2])
     # sides
-    out[0, 1:-1, 1:-1]  += ((rls[   0, 1:-1, 1:-1] + rls[   1, 1:-1, 1:-1])*vx[0] + 
-                            (rls[   0,  :-2, 1:-1] + rls[   0, 2:  , 1:-1])*vx[1] + 
+    out[0, 1:-1, 1:-1]  += ((rls[   0, 1:-1, 1:-1] + rls[   1, 1:-1, 1:-1])*vx[0] +
+                            (rls[   0,  :-2, 1:-1] + rls[   0, 2:  , 1:-1])*vx[1] +
                             (rls[   0, 1:-1,  :-2] + rls[   0, 1:-1, 2:  ])*vx[2])
-    out[-1, 1:-1, 1:-1] += ((rls[  -2, 1:-1, 1:-1] + rls[  -1, 1:-1, 1:-1])*vx[0] + 
-                            (rls[  -1,  :-2, 1:-1] + rls[  -1, 2:  , 1:-1])*vx[1] + 
+    out[-1, 1:-1, 1:-1] += ((rls[  -2, 1:-1, 1:-1] + rls[  -1, 1:-1, 1:-1])*vx[0] +
+                            (rls[  -1,  :-2, 1:-1] + rls[  -1, 2:  , 1:-1])*vx[1] +
                             (rls[  -1, 1:-1,  :-2] + rls[  -1, 1:-1, 2:  ])*vx[2])
-    out[1:-1, 0, 1:-1]  += ((rls[ :-2,    0, 1:-1] + rls[2:  ,    0, 1:-1])*vx[0] + 
-                            (rls[1:-1,    0, 1:-1] + rls[1:-1,    1, 1:-1])*vx[1] + 
+    out[1:-1, 0, 1:-1]  += ((rls[ :-2,    0, 1:-1] + rls[2:  ,    0, 1:-1])*vx[0] +
+                            (rls[1:-1,    0, 1:-1] + rls[1:-1,    1, 1:-1])*vx[1] +
                             (rls[1:-1,    0,  :-2] + rls[1:-1,    0, 2:  ])*vx[2])
-    out[1:-1, -1, 1:-1] += ((rls[ :-2,   -1, 1:-1] + rls[2:  ,   -1, 1:-1])*vx[0] + 
-                            (rls[1:-1,   -2, 1:-1] + rls[1:-1,   -1, 1:-1])*vx[1] + 
+    out[1:-1, -1, 1:-1] += ((rls[ :-2,   -1, 1:-1] + rls[2:  ,   -1, 1:-1])*vx[0] +
+                            (rls[1:-1,   -2, 1:-1] + rls[1:-1,   -1, 1:-1])*vx[1] +
                             (rls[1:-1,   -1,  :-2] + rls[1:-1,   -1, 2:  ])*vx[2])
-    out[1:-1, 1:-1, 0]  += ((rls[ :-2, 1:-1,    0] + rls[2:  , 1:-1,    0])*vx[0] + 
-                            (rls[1:-1,  :-2,    0] + rls[1:-1, 2:  ,    0])*vx[1] + 
+    out[1:-1, 1:-1, 0]  += ((rls[ :-2, 1:-1,    0] + rls[2:  , 1:-1,    0])*vx[0] +
+                            (rls[1:-1,  :-2,    0] + rls[1:-1, 2:  ,    0])*vx[1] +
                             (rls[1:-1, 1:-1,    0] + rls[1:-1, 1:-1,    1])*vx[2])
-    out[1:-1, 1:-1, -1] += ((rls[ :-2, 1:-1,   -1] + rls[2:  , 1:-1,   -1])*vx[0] + 
-                            (rls[1:-1,  :-2,   -1] + rls[1:-1, 2:  ,   -1])*vx[1] + 
+    out[1:-1, 1:-1, -1] += ((rls[ :-2, 1:-1,   -1] + rls[2:  , 1:-1,   -1])*vx[0] +
+                            (rls[1:-1,  :-2,   -1] + rls[1:-1, 2:  ,   -1])*vx[1] +
                             (rls[1:-1, 1:-1,   -2] + rls[1:-1, 1:-1,   -1])*vx[2])
     # edges
-    out[0, 0, 1:-1]   += ((rls[   0,    0, 1:-1] + rls[   1,    0, 1:-1])*vx[0] + 
-                          (rls[   0,    0, 1:-1] + rls[   0,    1, 1:-1])*vx[1] + 
+    out[0, 0, 1:-1]   += ((rls[   0,    0, 1:-1] + rls[   1,    0, 1:-1])*vx[0] +
+                          (rls[   0,    0, 1:-1] + rls[   0,    1, 1:-1])*vx[1] +
                           (rls[   0,    0,  :-2] + rls[   0,    0, 2:  ])*vx[2])
-    out[0, -1, 1:-1]  += ((rls[   0,   -1, 1:-1] + rls[   1,   -1, 1:-1])*vx[0] + 
-                          (rls[   0,   -2, 1:-1] + rls[   0,   -1, 1:-1])*vx[1] + 
+    out[0, -1, 1:-1]  += ((rls[   0,   -1, 1:-1] + rls[   1,   -1, 1:-1])*vx[0] +
+                          (rls[   0,   -2, 1:-1] + rls[   0,   -1, 1:-1])*vx[1] +
                           (rls[   0,   -1,  :-2] + rls[   0,   -1, 2:  ])*vx[2])
-    out[-1, 0, 1:-1]  += ((rls[  -1,    0, 1:-1] + rls[  -1,    0, 1:-1])*vx[0] + 
-                          (rls[  -1,    0, 1:-1] + rls[  -1,    1, 1:-1])*vx[1] + 
+    out[-1, 0, 1:-1]  += ((rls[  -1,    0, 1:-1] + rls[  -1,    0, 1:-1])*vx[0] +
+                          (rls[  -1,    0, 1:-1] + rls[  -1,    1, 1:-1])*vx[1] +
                           (rls[  -1,    0,  :-2] + rls[  -1,    0, 2:  ])*vx[2])
-    out[-1, -1, 1:-1] += ((rls[  -2,   -1, 1:-1] + rls[  -1,   -1, 1:-1])*vx[0] + 
-                          (rls[  -1,   -2, 1:-1] + rls[  -1,   -1, 1:-1])*vx[1] + 
+    out[-1, -1, 1:-1] += ((rls[  -2,   -1, 1:-1] + rls[  -1,   -1, 1:-1])*vx[0] +
+                          (rls[  -1,   -2, 1:-1] + rls[  -1,   -1, 1:-1])*vx[1] +
                           (rls[  -1,   -1,  :-2] + rls[  -1,   -1, 2:  ])*vx[2])
-    out[0, 1:-1, 0]   += ((rls[   0, 1:-1,    0] + rls[   1, 1:-1,    0])*vx[0] + 
-                          (rls[   0,  :-2,    0] + rls[   0, 2:  ,    0])*vx[1] + 
+    out[0, 1:-1, 0]   += ((rls[   0, 1:-1,    0] + rls[   1, 1:-1,    0])*vx[0] +
+                          (rls[   0,  :-2,    0] + rls[   0, 2:  ,    0])*vx[1] +
                           (rls[   0, 1:-1,    0] + rls[   0, 1:-1,    1])*vx[2])
-    out[0, 1:-1, -1]  += ((rls[   0, 1:-1,   -1] + rls[   1, 1:-1,   -1])*vx[0] + 
-                          (rls[   0,  :-2,   -1] + rls[   0, 2: ,    -1])*vx[1] + 
+    out[0, 1:-1, -1]  += ((rls[   0, 1:-1,   -1] + rls[   1, 1:-1,   -1])*vx[0] +
+                          (rls[   0,  :-2,   -1] + rls[   0, 2: ,    -1])*vx[1] +
                           (rls[   0, 1:-1,   -2] + rls[   0, 1:-1,   -1])*vx[2])
-    out[-1, 1:-1, 0]  += ((rls[  -2, 1:-1,    0] + rls[  -1, 1:-1,    0])*vx[0] + 
-                          (rls[  -1,  :-2,    0] + rls[  -1, 2:  ,    0])*vx[1] + 
+    out[-1, 1:-1, 0]  += ((rls[  -2, 1:-1,    0] + rls[  -1, 1:-1,    0])*vx[0] +
+                          (rls[  -1,  :-2,    0] + rls[  -1, 2:  ,    0])*vx[1] +
                           (rls[  -1, 1:-1,    0] + rls[  -1, 1:-1,   -1])*vx[2])
-    out[-1, 1:-1, -1] += ((rls[  -2, 1:-1,   -1] + rls[  -1, 1:-1,   -1])*vx[0] + 
-                          (rls[  -1,  :-2,   -1] + rls[  -1, 2:  ,   -1])*vx[1] + 
+    out[-1, 1:-1, -1] += ((rls[  -2, 1:-1,   -1] + rls[  -1, 1:-1,   -1])*vx[0] +
+                          (rls[  -1,  :-2,   -1] + rls[  -1, 2:  ,   -1])*vx[1] +
                           (rls[  -1, 1:-1,   -2] + rls[  -1, 1:-1,   -1])*vx[2])
-    out[1:-1, 0, 0]   += ((rls[ :-2,    0,    0] + rls[2:  ,    0,    0])*vx[0] + 
-                          (rls[1:-1,    0,    0] + rls[1:-1,    1,    0])*vx[1] + 
+    out[1:-1, 0, 0]   += ((rls[ :-2,    0,    0] + rls[2:  ,    0,    0])*vx[0] +
+                          (rls[1:-1,    0,    0] + rls[1:-1,    1,    0])*vx[1] +
                           (rls[1:-1,    0,    0] + rls[1:-1,    0,    1])*vx[2])
-    out[1:-1, 0, -1]  += ((rls[ :-2,    0,   -1] + rls[2:  ,    0,   -1])*vx[0] + 
-                          (rls[1:-1,    0,   -1] + rls[1:-1,    1,   -1])*vx[1] + 
+    out[1:-1, 0, -1]  += ((rls[ :-2,    0,   -1] + rls[2:  ,    0,   -1])*vx[0] +
+                          (rls[1:-1,    0,   -1] + rls[1:-1,    1,   -1])*vx[1] +
                           (rls[1:-1,    0,   -2] + rls[1:-1,    0,   -1])*vx[2])
-    out[1:-1, -1, 0]  += ((rls[ :-2,    0,    0] + rls[2:  ,   -1,    0])*vx[0] + 
-                          (rls[1:-1,   -2,    0] + rls[1:-1,   -1,    0])*vx[1] + 
+    out[1:-1, -1, 0]  += ((rls[ :-2,    0,    0] + rls[2:  ,   -1,    0])*vx[0] +
+                          (rls[1:-1,   -2,    0] + rls[1:-1,   -1,    0])*vx[1] +
                           (rls[1:-1,    0,    0] + rls[1:-1,   -1,    1])*vx[2])
-    out[1:-1, -1, -1] += ((rls[ :-2,   -1,   -1] + rls[2:  ,   -1,   -1])*vx[0] + 
-                          (rls[1:-1,   -2,   -1] + rls[1:-1,   -1,   -1])*vx[1] + 
+    out[1:-1, -1, -1] += ((rls[ :-2,   -1,   -1] + rls[2:  ,   -1,   -1])*vx[0] +
+                          (rls[1:-1,   -2,   -1] + rls[1:-1,   -1,   -1])*vx[1] +
                           (rls[1:-1,   -1,   -2] + rls[1:-1,   -1,   -1])*vx[2])
-    
+
     # corners
-    out[0, 0, 0]    += ((rls[ 0,  0,  0] + rls[ 1,  0,  0])*vx[0] + 
-                        (rls[ 0,  0,  0] + rls[ 0,  1,  0])*vx[1] + 
+    out[0, 0, 0]    += ((rls[ 0,  0,  0] + rls[ 1,  0,  0])*vx[0] +
+                        (rls[ 0,  0,  0] + rls[ 0,  1,  0])*vx[1] +
                         (rls[ 0,  0,  0] + rls[ 0,  0,  1])*vx[2])
-    out[0, 0, -1]   += ((rls[ 0,  0, -1] + rls[ 1,  0, -1])*vx[0] + 
-                        (rls[ 0,  0, -1] + rls[ 0,  1, -1])*vx[1] + 
+    out[0, 0, -1]   += ((rls[ 0,  0, -1] + rls[ 1,  0, -1])*vx[0] +
+                        (rls[ 0,  0, -1] + rls[ 0,  1, -1])*vx[1] +
                         (rls[ 0,  0, -2] + rls[ 0,  0, -1])*vx[2])
-    out[0, -1, 0]   += ((rls[ 0, -1,  0] + rls[ 1, -1,  0])*vx[0] + 
-                        (rls[ 0, -2,  0] + rls[ 0, -1,  0])*vx[1] + 
+    out[0, -1, 0]   += ((rls[ 0, -1,  0] + rls[ 1, -1,  0])*vx[0] +
+                        (rls[ 0, -2,  0] + rls[ 0, -1,  0])*vx[1] +
                         (rls[ 0, -1,  0] + rls[ 0, -1,  1])*vx[2])
-    out[0, -1, -1]  += ((rls[ 0, -1, -1] + rls[ 1, -1, -1])*vx[0] + 
-                        (rls[ 0, -2, -1] + rls[ 0, -1, -1])*vx[1] + 
+    out[0, -1, -1]  += ((rls[ 0, -1, -1] + rls[ 1, -1, -1])*vx[0] +
+                        (rls[ 0, -2, -1] + rls[ 0, -1, -1])*vx[1] +
                         (rls[ 0, -1, -2] + rls[ 0, -1, -1])*vx[2])
-    out[-1, 0, 0]   += ((rls[-2,  0,  0] + rls[-1,  0,  0])*vx[0] + 
-                        (rls[-1,  0,  0] + rls[-1,  1,  0])*vx[1] + 
+    out[-1, 0, 0]   += ((rls[-2,  0,  0] + rls[-1,  0,  0])*vx[0] +
+                        (rls[-1,  0,  0] + rls[-1,  1,  0])*vx[1] +
                         (rls[-1,  0,  0] + rls[-1,  0,  1])*vx[2])
-    out[-1, 0, -1]  += ((rls[-2,  0, -1] + rls[-1,  0, -1])*vx[0] + 
-                        (rls[-1,  0, -1] + rls[-1,  1, -1])*vx[1] + 
+    out[-1, 0, -1]  += ((rls[-2,  0, -1] + rls[-1,  0, -1])*vx[0] +
+                        (rls[-1,  0, -1] + rls[-1,  1, -1])*vx[1] +
                         (rls[-1,  0, -2] + rls[-1,  0, -1])*vx[2])
-    out[-1, -1, 0]  += ((rls[-2, -1,  0] + rls[-1, -1,  0])*vx[0] + 
-                        (rls[-1, -2,  0] + rls[-1, -1,  0])*vx[1] + 
+    out[-1, -1, 0]  += ((rls[-2, -1,  0] + rls[-1, -1,  0])*vx[0] +
+                        (rls[-1, -2,  0] + rls[-1, -1,  0])*vx[1] +
                         (rls[-1, -1,  0] + rls[-1, -1,  1])*vx[2])
-    out[-1, -1, -1] += ((rls[-2, -1, -1] + rls[-1, -1, -1])*vx[0] + 
-                        (rls[-1, -2, -1] + rls[-1, -1, -1])*vx[1] + 
+    out[-1, -1, -1] += ((rls[-2, -1, -1] + rls[-1, -1, -1])*vx[0] +
+                        (rls[-1, -2, -1] + rls[-1, -1, -1])*vx[1] +
                         (rls[-1, -1, -2] + rls[-1, -1, -1])*vx[2])
-    
+
     out *= lam
     if out.dim() > 3:
         out = core.utils.movedim(-1, 0)

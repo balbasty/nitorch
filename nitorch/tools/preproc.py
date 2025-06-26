@@ -71,7 +71,7 @@ def affine_align(img, write=None, nam=None, odir=None, prefix='aa_',
                  device='cpu', cost_fun='nmi', samp=(3, 1.5),
                  mean_space=False, group='SE', fix=0, fwhm=7.0,
                  verbose=False):
-    """Affinely align images.
+    r"""Affinely align images.
 
     This function aligns N images affinely, either pairwise or groupwise,
     by non-gradient based optimisation. An affine transformation has maximum
@@ -182,7 +182,7 @@ def affine_align(img, write=None, nam=None, odir=None, prefix='aa_',
 
 def atlas_align(img, rigid=True, write=None, nam=None, odir=None, prefix='aa_',
                 device='cpu', pth_atlas=None, default_atlas='atlas_t1'):
-    """Affinely align an image to some atlas space.
+    r"""Affinely align an image to some atlas space.
 
     Parameters
     ----------

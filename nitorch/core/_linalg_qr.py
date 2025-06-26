@@ -18,7 +18,6 @@ References
       https://en.wikipedia.org/wiki/QR_algorithm#The_implicit_QR_algorithm
 """
 import torch
-from .optionals import custom_fwd, custom_bwd
 from . import utils, py, constants
 
 
@@ -978,7 +977,6 @@ class EigSym(torch.autograd.Function):
     """
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, a, compute_u, upper, max_iter, tol):
 
         if hasattr(ctx, 'set_materialize_grads'):
@@ -996,7 +994,6 @@ class EigSym(torch.autograd.Function):
         return (val, vec) if compute_u else val
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, *grad_outputs):
         # notations form ref [1] are used
 

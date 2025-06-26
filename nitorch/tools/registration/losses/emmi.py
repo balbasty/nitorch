@@ -404,7 +404,7 @@ def sample_prior_hard(prior, fixed, out=None):
 
 
 def sample_prior_soft(prior, fixed, out=None):
-    """ out = \sum_j prior[j] * fixed[j]
+    r""" out = \sum_j prior[j] * fixed[j]
     prior : (*B, J, K)
     fixed : (*B, J, N)
     out : (*B, K, N)

@@ -23,7 +23,7 @@ def _inplace_softmax(Z, W=None, dim=0):
 
 
 def mrf_suffstat(Z, W=None, vx=1):
-    """ Compute the sum of probabilities across neighbors
+    r""" Compute the sum of probabilities across neighbors
 
     Notes
     -----
@@ -82,7 +82,7 @@ def mrf_suffstat(Z, W=None, vx=1):
 
 
 def mrf_logprior(Z, logP, W=None, vx=1):
-    """Compute the conditional MRF log-prior
+    r"""Compute the conditional MRF log-prior
 
     Notes
     -----
@@ -152,7 +152,7 @@ def mrf_logprior(Z, logP, W=None, vx=1):
 
 
 def mrf_covariance(Z, W=None, vx=1):
-    """Compute the covariance of the MRF term
+    r"""Compute the covariance of the MRF term
 
     Notes
     -----

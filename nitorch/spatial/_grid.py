@@ -3,12 +3,14 @@
 
 import torch
 from nitorch.core import utils, linalg
-from nitorch.core.utils import expand, make_vector
+from nitorch.core.utils import make_vector
 from nitorch.core.py import make_list, prod
-from nitorch._C.grid import (GridPull, GridPush, GridCount, GridGrad,
-                             BoundType, InterpolationType,
-                             SplineCoeff, SplineCoeffND)
-from ._affine import affine_resize, affine_lmdiv, voxel_size
+from nitorch._C.grid import (
+    GridPull, GridPush, GridCount, GridGrad,
+    BoundType, InterpolationType,
+    SplineCoeff, SplineCoeffND
+)
+from ._affine import affine_resize, affine_lmdiv
 from ._finite_differences import diff
 
 
@@ -51,7 +53,7 @@ _doc_bound = \
         https://en.wikipedia.org/wiki/Discrete_sine_transform"""
 
 _doc_bound_coeff = \
-"""`bound` can be an int, a string or a BoundType.
+r"""`bound` can be an int, a string or a BoundType.
     Possible values are:
         - 'replicate'  or BoundType.replicate
         - 'dct1'       or BoundType.dct1
@@ -86,7 +88,7 @@ _ref_coeff = \
 
 
 def _preproc(grid, input=None, mode=None):
-    """Preprocess tensors for pull/push/count/grad
+    r"""Preprocess tensors for pull/push/count/grad
 
     Low level C bindings expect inputs of shape
     [batch, channel, *spatial] and [batch, *spatial, dim], whereas
@@ -94,7 +96,7 @@ def _preproc(grid, input=None, mode=None):
     [..., [channel], *spatial] and [..., *spatial, dim].
 
     This function broadcasts and reshapes the input tensors accordingly.
-            /!\\ This *can* trigger large allocations /!\\
+            /!\ This *can* trigger large allocations /!\
     """
     dim = grid.shape[-1]
     if input is None:

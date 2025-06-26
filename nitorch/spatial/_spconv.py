@@ -2,13 +2,12 @@ import math as pymath
 import itertools
 import torch
 from nitorch import core
-from nitorch.core import utils, math
 from nitorch.core.utils import unsqueeze
 import functools
 
 
 def spconv(input, kernel, step=1, start=0, stop=None, inplace=False, bound='dct2', dim=None):
-    """Convolution with a sparse kernel.
+    r"""Convolution with a sparse kernel.
 
     Notes
     -----

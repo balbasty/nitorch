@@ -328,7 +328,7 @@ def _sym_solve4(diag, uppr, vec, shape: List[int]):
 
 
 def sym_solve(mat, vec, eps=None):
-    """Left matrix division for sparse symmetric matrices.
+    r"""Left matrix division for sparse symmetric matrices.
 
     `>>> mat \ vec`
 

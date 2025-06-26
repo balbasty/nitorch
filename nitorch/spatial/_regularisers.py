@@ -348,7 +348,7 @@ def bending_grid(grid, voxel_size=1, bound='dft', weights=None):
 
 
 def lame_shear(grid, voxel_size=1, bound='dft', weights=None):
-    """Precision matrix for the Shear component of the Linear-Elastic energy.
+    r"""Precision matrix for the Shear component of the Linear-Elastic energy.
 
     Notes
     -----
@@ -375,7 +375,7 @@ def lame_shear(grid, voxel_size=1, bound='dft', weights=None):
     """
     if weights is None:
         return _lame_shear_l2(grid, voxel_size, bound)
-    
+
     backend = dict(dtype=grid.dtype, device=grid.device)
     dim = grid.shape[-1]
     voxel_size = core.utils.make_vector(voxel_size, dim, **backend)
@@ -432,7 +432,7 @@ def _lame_shear_l2(grid, voxel_size=1, bound='dft'):
         buf3 = torch.empty_like(buf1)
     else:
         buf1 = buf2 = buf3 = None
-        
+
     mom = torch.zeros_like(grid)
     for i in range(dim):
         # symmetric part
@@ -464,7 +464,7 @@ def _lame_shear_l2(grid, voxel_size=1, bound='dft'):
 
 
 def lame_div(grid, voxel_size=1, bound='dft', weights=None):
-    """Precision matrix for the Divergence component of the Linear-Elastic energy.
+    r"""Precision matrix for the Divergence component of the Linear-Elastic energy.
 
     Notes
     -----
@@ -489,7 +489,7 @@ def lame_div(grid, voxel_size=1, bound='dft', weights=None):
     """
     if weights is None:
         return _lame_div_l2(grid, voxel_size, bound)
-    
+
     dim = grid.shape[-1]
     bound = ensure_list(bound, dim)
     dims = list(range(grid.dim() - 1 - dim, grid.dim() - 1))
@@ -537,13 +537,13 @@ def _lame_div_l2(grid, voxel_size=1, bound='dft'):
             opt_i = dict(dim=dims[i], side=side, bound=bound[i])
             grad[i][side] = diff1d(x_i, **opt_i)
             opt[i][side] = opt_i
-            
+
     if not grid.requires_grad:
         buf1 = torch.empty_like(grid[..., 0])
         buf2 = torch.empty_like(grid[..., 0])
     else:
         buf1 = buf2 = None
-            
+
     # compute divergence
     mom = torch.zeros_like(grid)
     all_sides = list(itertools.product(['f', 'b'], repeat=dim))
@@ -1083,7 +1083,7 @@ def regulariser_grid(v, absolute=0, membrane=0, bending=0, lame=0,
     else:
         wa = wm = wb = wl = weights
     wl = ensure_list(wl, 2)
-    
+
     y = torch.zeros_like(v)
     if absolute:
         y.add_(absolute_grid(v, weights=wa, voxel_size=voxel_size), alpha=absolute)

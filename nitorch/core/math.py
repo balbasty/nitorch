@@ -6,7 +6,6 @@ import torch
 import math as pymath
 from typing import List
 
-from .optionals import custom_fwd, custom_bwd
 from .constants import inf, ninf
 from . import py, utils
 from .version import torch_version
@@ -751,7 +750,6 @@ class _LSE(torch.autograd.Function):
     """Log-Sum-Exp with implicit class."""
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, input, dim, keepdim, implicit):
 
         # Save precomputed components of the backward pass
@@ -763,7 +761,6 @@ class _LSE(torch.autograd.Function):
         return _lse_fwd(input, dim=dim, keepdim=keepdim, implicit=implicit)
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, output_grad):
 
         input, = ctx.saved_tensors
@@ -877,7 +874,6 @@ class _Softmax(torch.autograd.Function):
     """Softmax with implicit class."""
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, input, dim, implicit, implicit_index, inplace):
 
         # Save precomputed components of the backward pass
@@ -893,7 +889,6 @@ class _Softmax(torch.autograd.Function):
         return s
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, output_grad):
         s, = ctx.saved_tensors
         out = _softmax_bwd(s, output_grad,  dim=ctx.args['dim'], implicit=ctx.args['implicit'])

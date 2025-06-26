@@ -2,9 +2,8 @@
 
 from ._grid import grid_pull, add_identity_grid
 from ._finite_differences import diff1d
-from nitorch.core import utils, py, linalg
+from nitorch.core import utils
 import torch
-from nitorch.core.optionals import custom_fwd, custom_bwd
 
 
 __all__ = ['exp1d', 'exp1d_forward', 'exp1d_backward']
@@ -192,7 +191,6 @@ def exp1d_backward(vel, *grad_and_hess, dim=-1, steps=8,
 class _Exp1d(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float32)  # det() only implemented in f32
     def forward(ctx, vel, dim, steps, interpolation, bound, ndim, inplace):
         if vel.requires_grad:
             ctx.save_for_backward(vel.clone() if inplace else vel)
@@ -202,7 +200,6 @@ class _Exp1d(torch.autograd.Function):
                              ndim, inplace, _anagrad=True)
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad):
         vel, = ctx.saved_tensors
         grad = exp1d_backward(vel, grad,
@@ -281,5 +278,3 @@ def _composition_jac(jac, rhs, lhs=None, dim=-1, ndim=None, **kwargs):
     jac_left = _pull_vel(jac_left, rhs, dim, ndim).add_(1)
     jac = jac_left.mul_(jac)
     return jac
-
-

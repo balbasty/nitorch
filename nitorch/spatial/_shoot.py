@@ -1,6 +1,5 @@
 """Geodesic shooting of initial velocity fields."""
 import torch
-from nitorch.core.optionals import custom_fwd, custom_bwd
 from nitorch.core import py, utils, linalg, fft
 from ._finite_differences import diff
 from ._regularisers import regulariser, regulariser_grid
@@ -447,9 +446,8 @@ def shoot(vel, greens=None,
 
 
 class _ApproximateShoot(torch.autograd.Function):
-    
+
     @staticmethod
-    @custom_fwd
     def forward(ctx, *args):
         has_inverse = args[7]
         displacement = args[8]
@@ -466,7 +464,6 @@ class _ApproximateShoot(torch.autograd.Function):
         return outputs
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad_output):
         grid, = ctx.saved_tensors
         if ctx.args['inverse']:
@@ -538,7 +535,7 @@ def shoot_approx(vel, greens=None,
     args = (vel, greens, absolute, membrane, bending, lame, factor, voxel_size,
             return_inverse, displacement, steps, fast, verbose)
     return _ApproximateShoot.apply(*args)
-        
+
 
 def _jacobian(disp, bound='dft', voxel_size=1):
     """Compute the Jacobian of a transformation field

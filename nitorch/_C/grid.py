@@ -6,12 +6,6 @@ from interpol.pushpull import grid_push as ts_grid_push
 from interpol.bounds import BoundType as _TSBoundType
 from interpol.splines import InterpolationType as _TSInterpolationType
 
-try:
-    from torch.cuda.amp import custom_fwd, custom_bwd
-except ImportError:
-    custom_fwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
-    custom_bwd = lambda *a, **k: a[0] if a and callable(a[0]) else (lambda x: x)
-
 _compiled_backend = os.environ.get('NI_COMPILED_BACKEND', None)
 COMPILED_BACKEND = None
 
@@ -198,7 +192,6 @@ enum_type = 'int' if COMPILED_BACKEND == 'TS' else 'enum'
 class GridPull(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, input, grid, interpolation, bound, extrapolate):
 
         bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
@@ -216,7 +209,6 @@ class GridPull(torch.autograd.Function):
         return output
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad):
         var = ctx.saved_tensors
         opt = ctx.opt
@@ -237,7 +229,6 @@ class GridPull(torch.autograd.Function):
 class GridPush(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, input, grid, shape, interpolation, bound, extrapolate):
 
         bound = bound_to_nitorch(make_list(bound), as_type=enum_type)  # enum_type
@@ -256,7 +247,6 @@ class GridPush(torch.autograd.Function):
         return output
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad):
         var = ctx.saved_tensors
         opt = ctx.opt
@@ -277,7 +267,6 @@ class GridPush(torch.autograd.Function):
 class GridCount(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, grid, shape, interpolation, bound, extrapolate):
 
         bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
@@ -295,7 +284,6 @@ class GridCount(torch.autograd.Function):
         return output
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad):
         var = ctx.saved_tensors
         opt = ctx.opt
@@ -308,7 +296,6 @@ class GridCount(torch.autograd.Function):
 class GridGrad(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, input, grid, interpolation, bound, extrapolate):
 
         bound = bound_to_nitorch(make_list(bound), as_type=enum_type)
@@ -326,7 +313,6 @@ class GridGrad(torch.autograd.Function):
         return output
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad):
         var = ctx.saved_tensors
         opt = ctx.opt
@@ -348,7 +334,6 @@ class GridGrad(torch.autograd.Function):
 class SplineCoeff(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, input, bound, interpolation, dim, inplace):
 
         bound = bound_to_nitorch(bound, as_type='int')
@@ -365,7 +350,6 @@ class SplineCoeff(torch.autograd.Function):
         return output
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad):
         # symmetric filter -> backward == forward
         # (I don't know if I can write into grad, so inplace=False to be safe)
@@ -376,7 +360,6 @@ class SplineCoeff(torch.autograd.Function):
 class SplineCoeffND(torch.autograd.Function):
 
     @staticmethod
-    @custom_fwd
     def forward(ctx, input, bound, interpolation, dim, inplace):
 
         bound = bound_to_nitorch(make_list(bound), as_type='int')
@@ -393,7 +376,6 @@ class SplineCoeffND(torch.autograd.Function):
         return output
 
     @staticmethod
-    @custom_bwd
     def backward(ctx, grad):
         # symmetric filter -> backward == forward
         # (I don't know if I can write into grad, so inplace=False to be safe)
