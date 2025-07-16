@@ -679,7 +679,7 @@ class SpatialMixture:
                     self._update_bias(XB, Z, W, vx=vx)
                     XB = torch.exp(self.beta, out=XB).mul_(X)
                     plot_mode = 'bias'
-                    
+
                     if n_iter_bias > 1 and lb-olb < self.tol * nW:
                         break
 
@@ -1297,7 +1297,7 @@ class SpatialMixture:
         return linalg._expm(self.eta, self.affine_basis, grad_X=True)[1]
 
     def _full_affine_gradient(self, aff):
-        """Derivative of the full affine (aff_prior \ (aff_align @ aff_dat))
+        r"""Derivative of the full affine (aff_prior \ (aff_align @ aff_dat))
         with respect to the Lie parameters if aff_align."""
         g_aff = self._affine_gradient
         g_aff = torch.matmul(g_aff, aff)
@@ -1305,7 +1305,7 @@ class SpatialMixture:
         return g_aff
 
     def _full_affine(self, aff):
-        """Full affine matrix: aff_prior \ (aff_align @ aff_dat)"""
+        r"""Full affine matrix: aff_prior \ (aff_align @ aff_dat)"""
         if self.eta is not None:
             aff = torch.matmul(self.affine.to(aff), aff)
         aff = torch.matmul(self.affine_prior.inverse().to(aff), aff)
@@ -1583,12 +1583,12 @@ class UniSeg(SpatialMixture):
         sigma0, df0 = self.wishart
 
         # Kullbeck-Leibler divergence between inverse-Wishart distributions
-        # 2*KL(q||p) = N0 * (logdet(S1) - logdet(S0)) 
+        # 2*KL(q||p) = N0 * (logdet(S1) - logdet(S0))
         #            + N1 * tr(S1\S0)
         #            + 2 * (gammal(N0/2) - gammal(N1/2))
-        #            + (N1 - N0) * digamma(N1/2) 
+        #            + (N1 - N0) * digamma(N1/2)
         #            - N1 * C
-        #  
+        #
         # If we use Sigma1 = S1/N1 and Sigma0 = S0/N0, the first term becomes
         #     N0 * (logdet(Sigma1) - logdet(Sigma0)) + N0 * C * (log(N1) - log(N0))
         # and the second term becomes
@@ -1821,7 +1821,7 @@ def digamma(x):
         d1 = -0.5772156649015328606065121  # = digamma(1)
         d2 = (pymath.pi*pymath.pi)/6
         return d1 - 1/x + d2*x
-    # --- not large: reduce to digamma(x + n) where (x + n) is large 
+    # --- not large: reduce to digamma(x + n) where (x + n) is large
     large = 9.5
     y = 0
     while x < large:
@@ -1852,5 +1852,3 @@ def mvlgamma(x, order=1):
     for p in range(1, order + 1):
         y += pymath.lgamma(x + (1 - p) / 2)
     return y
-
-
