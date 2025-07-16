@@ -7,4 +7,8 @@ from .mapping import MappedStreamlines
 from .loadsave import map, load, loadf, save, savef
 
 # Import implementations
-from .trk import TrkStreamlines
+
+from .. import optionals
+
+if optionals.nibabel:
+    from .trk import TrkStreamlines
