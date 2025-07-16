@@ -445,11 +445,15 @@ class NVCCompiler(unixccompiler.UnixCCompiler):
         home = cuda_home()
         nvcc = op.join(home, 'bin', 'nvcc')
 
-        self.set_executables(compiler=nvcc,
-                             compiler_so=nvcc,
-                             compiler_cxx=nvcc,
-                             linker_exe=nvcc,
-                             linker_so='{} -shared'.format(nvcc))
+        self.set_executables(
+            compiler=nvcc,
+            compiler_so=nvcc,
+            compiler_cxx=nvcc,
+            compiler_so_cxx=nvcc,
+            linker_so='{} -shared'.format(nvcc),
+            linker_so_cxx='{} -shared'.format(nvcc),
+            linker_exe=nvcc,
+        )
         self.src_extensions += ['.cu']
 
 
