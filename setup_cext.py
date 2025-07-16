@@ -427,7 +427,7 @@ def find_omp_darwin():
                 flag = '-fopenmp=libgomp'
         return [flag], [flag], [], None
 
-    # Else, opnemp is no different than any other dependency
+    # Else, openmp is no different than any other dependency
 
     # First, check if omp/iomp5 has been installed (e.g., using homebrew)
     lib_name, lib_dir = find_lib([torch_omp_lib(), 'iomp5', 'omp'])
@@ -435,7 +435,10 @@ def find_omp_darwin():
     if lib_name is None:
         # OpenMP not found.
         # Let's just hope that the compiler knows what it's doing.
-        return ['-fopenmp'], ['-fopenmp'], [], None
+        flags = ['-fopenmp']
+        if CC_type == 'apple_clang':
+            flags.insert(0, '-Xpreprocessor')
+        return flags, flags, [], None
     else:
         return ['-Xpreprocessor', '-fopenmp'], [], [], lib_dir
         # return ['-Xpreprocessor', '-fopenmp'], [lib_name], [], lib_dir
@@ -457,6 +460,7 @@ def omp_flags():
     if is_windows():
         return ['/openmp']
     elif is_darwin():
+        print(find_omp_darwin())
         return find_omp_darwin()[0]
     else:
         return ['-fopenmp']
