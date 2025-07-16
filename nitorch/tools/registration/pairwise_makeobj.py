@@ -109,6 +109,10 @@ def make_affine(basis='rigid', position='symmetric', penalty=None, init=None):
         If 'symmetric', both images are rotated by the transformation and
         its inverse, towards a mean space; thereby making the model fully
         symmetric.
+    penalty : None
+        Not implemented
+    init : str | MappedAffine | (4, 4) tensor
+        Initial affine
 
     Returns
     -------

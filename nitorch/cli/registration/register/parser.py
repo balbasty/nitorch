@@ -163,7 +163,7 @@ usage:
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
-        -i, --input                     Path to initial transform
+        -i, --input                     Path to initial transform (fov, com, or file path)
         -o, --output                    Path to the output transform: [{dir}/{name}.lta]
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
 

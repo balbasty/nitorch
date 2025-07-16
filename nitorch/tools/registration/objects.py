@@ -334,6 +334,7 @@ class SpatialTensor:
 
     voxel_size = property(lambda self: spatial.voxel_size(self.affine))
     shape = property(lambda self: self.dat.shape[-self.dim:])
+    ndim = property(lambda self: len(self.shape))
     dtype = property(lambda self: self.dat.dtype)
     device = property(lambda self: self.dat.device)
 
@@ -430,13 +431,13 @@ class Image(SpatialTensor):
         if mask:
             msk = None
             if self.masked:
-                msk = self.mask.to(self.dat.dtype)
+                msk = self.mask.to(self.dtype)
                 msk = regutils.smart_pull(msk, grid, bound=self.bound,
                                           extrapolate=self.extrapolate)
             out += [msk]
         if preview:
             if self.previewed:
-                prv = self.preview.to(self.dat.dtype)
+                prv = self.preview.to(self.dtype)
                 prv = regutils.smart_pull(prv, grid, bound=self.bound,
                                           extrapolate=self.extrapolate)
             else:
@@ -480,6 +481,30 @@ class Image(SpatialTensor):
         """
         return spatial.diff(self.dat, dim=list(range(-self.dim, 0)),
                             bound=self.bound)
+
+    def get_center(self):
+        """Compute the RAS coordinate of the center of the field of view."""
+        ndim = self.ndim
+        backend = dict(dtype=self.dtype, device=self.device)
+        affine = self.affine.to(**backend)
+        shape = torch.as_tensor(self.shape, **backend)
+        center = affine[:ndim, :ndim].matmul((shape[:, None] - 1)*0.5)
+        center += affine[:ndim, -1:]
+        return center.squeeze(-1)
+
+    def get_center_of_mass(self, masked=True, **backend):
+        """Compute the RAS coordinate of the center of mass."""
+        backend = dict(dtype=self.dtype, device=self.device)
+        grid = spatial.identity_grid(self.shape, **backend)
+        dat = self.dat
+        if masked and self.masked:
+            msk = self.mask.to(**backend)
+            dat = dat * msk
+            den = msk.sum()
+            if len(msk) == 1:
+                den *= len(dat)
+        num = (dat[..., None] * grid).sum(list(range(dat.ndim)))
+        return num / den
 
     def _prm_as_str(self):
         s = []

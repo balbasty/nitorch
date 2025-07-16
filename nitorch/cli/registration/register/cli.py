@@ -97,6 +97,32 @@ def _main(options):
     # ------------------------------------------------------------------
     affine = None
     if options.affine:
+
+        # initialization
+        affine_init = options.affine.init
+        if isinstance(affine_init, str):
+            if affine_init.lower() in ('fov', 'com'):
+                if affine_init.lower() == 'fov':
+                    get_center = 'get_center'
+                else:
+                    get_center = 'get_center_of_mass'
+                loss_list = losses if isinstance(losses, list) else [losses]
+                num = den = 0
+                for loss_sum in loss_list:
+                    for loss in loss_sum:
+                        fix = getattr(loss.fixed, get_center)()
+                        mov = getattr(loss.moving, get_center)()
+                        wgt = 0.5 * (
+                            torch.Size(fix.shape[1:]).numel() +
+                            torch.Size(mov.shape[1:]).numel()
+                        )
+                        num += (mov - fix) * wgt
+                        den += wgt
+                shift = num / den
+                affine_init = torch.eye(4)
+                affine_init[:-1, -1] = shift
+
+        # build affine object
         if options.affine.is2d is not False:
             if isinstance(losses[0], objects.SumSimilarity):
                 affine0 = losses[0][0].fixed.affine
@@ -104,10 +130,10 @@ def _main(options):
                 affine0 = losses[0].fixed.affine
             affine = make_affine_2d(options.affine.is2d, affine0,
                                     options.affine.name, options.affine.position,
-                                    init=options.affine.init)
+                                    init=affine_init)
         else:
             affine = make_affine(options.affine.name, options.affine.position,
-                                 init=options.affine.init)
+                                 init=affine_init)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
