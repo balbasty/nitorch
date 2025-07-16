@@ -1,9 +1,24 @@
 import collections
-from setuptools import Extension
-from buildtools import *
-import torch
 import os
+import os.path as op
+import re
+import sys
 from glob import glob as glob_
+
+import torch
+
+from setuptools import Extension
+
+from buildtools import (
+    is_darwin,
+    is_windows,
+    cuda_home,
+    cuda_version,
+    cudnn_home,
+    cudnn_version,
+    link_relative,
+    SharedLibrary,
+)
 
 
 # # ~~~ libnitorch files
@@ -77,7 +92,11 @@ def torch_cudnn_version(astuple=True):
 
 def torch_parallel_backend():
     # check if set by user
-    valid_backends = ('AT_PARALLEL_OPENMP', 'AT_PARALLEL_NATIVE', 'AT_PARALLEL_NATIVE_TBB')
+    valid_backends = (
+        'AT_PARALLEL_OPENMP',
+        'AT_PARALLEL_NATIVE',
+        'AT_PARALLEL_NATIVE_TBB'
+    )
     backend = os.environ.get('NI_PARALLEL_BACKEND', None)
     if backend:
         if backend not in valid_backends:
@@ -101,14 +120,14 @@ def torch_parallel_backend():
 
 
 def torch_abi():
-  return str(int(torch._C._GLIBCXX_USE_CXX11_ABI))
+    return str(int(torch._C._GLIBCXX_USE_CXX11_ABI))
 
 
 def torch_omp_lib():
-    torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
-    torch_library_dir = os.path.join(torch_dir, 'lib')
+    torch_dir = op.dirname(op.abspath(torch.__file__))
+    torch_library_dir = op.join(torch_dir, 'lib')
     if is_darwin():
-        libtorch = os.path.join(torch_library_dir, 'libtorch.dylib')
+        libtorch = op.join(torch_library_dir, 'libtorch.dylib')
         linked_libs = os.popen('otool -L "{}"'.format(libtorch)).read()
         if 'libiomp5' in linked_libs:
             return 'iomp5'
@@ -134,41 +153,43 @@ def torch_libraries(use_cuda=False):
 
 
 def torch_library_dirs(use_cuda=False, use_cudnn=False):
-    torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
-    torch_library_dir = os.path.join(torch_dir, 'lib')
+    torch_dir = op.dirname(op.abspath(torch.__file__))
+    torch_library_dir = op.join(torch_dir, 'lib')
     library_dirs = [torch_library_dir]
     if use_cuda:
         if is_windows():
-            library_dirs += [os.path.join(cuda_home(), 'lib/x64')]
-        elif os.path.exists(os.path.join(cuda_home(), 'lib64')):
-            library_dirs += [os.path.join(cuda_home(), 'lib64')]
-        elif os.path.exists(os.path.join(cuda_home(), 'lib')):
-            library_dirs += [os.path.join(cuda_home(), 'lib')]
+            library_dirs += [op.join(cuda_home(), 'lib/x64')]
+        elif op.exists(op.join(cuda_home(), 'lib64')):
+            library_dirs += [op.join(cuda_home(), 'lib64')]
+        elif op.exists(op.join(cuda_home(), 'lib')):
+            library_dirs += [op.join(cuda_home(), 'lib')]
     if use_cudnn:
         if is_windows():
-            library_dirs += [os.path.join(cudnn_home(), 'lib/x64')]
-        elif os.path.exists(os.path.join(cudnn_home(), 'lib64')):
-            library_dirs += [os.path.join(cudnn_home(), 'lib64')]
-        elif os.path.exists(os.path.join(cudnn_home(), 'lib')):
-            library_dirs += [os.path.join(cudnn_home(), 'lib')]
+            library_dirs += [op.join(cudnn_home(), 'lib/x64')]
+        elif op.exists(op.join(cudnn_home(), 'lib64')):
+            library_dirs += [op.join(cudnn_home(), 'lib64')]
+        elif op.exists(op.join(cudnn_home(), 'lib')):
+            library_dirs += [op.join(cudnn_home(), 'lib')]
     if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
         library_dirs += omp_library_dirs()
     return library_dirs
 
 
 def torch_include_dirs(use_cuda=False, use_cudnn=False):
-    torch_dir = os.path.dirname(os.path.abspath(torch.__file__))
-    torch_include_dir = os.path.join(torch_dir, 'include')
-    include_dirs = [torch_include_dir,
-                    os.path.join(torch_include_dir, 'torch', 'csrc', 'api', 'include'),
-                    os.path.join(torch_include_dir, 'TH'),
-                    os.path.join(torch_include_dir, 'THC')]
+    torch_dir = op.dirname(op.abspath(torch.__file__))
+    torch_include_dir = op.join(torch_dir, 'include')
+    include_dirs = [
+        torch_include_dir,
+        op.join(torch_include_dir, 'torch', 'csrc', 'api', 'include'),
+        op.join(torch_include_dir, 'TH'),
+        op.join(torch_include_dir, 'THC')
+    ]
     if use_cuda:
-        cuda_include_dir = os.path.join(cuda_home(), 'include')
+        cuda_include_dir = op.join(cuda_home(), 'include')
         if cuda_include_dir != '/usr/include':
             include_dirs += [cuda_include_dir]
     if use_cudnn:
-        include_dirs += [os.path.join(cudnn_home(), 'include')]
+        include_dirs += [op.join(cudnn_home(), 'include')]
     if not use_cuda and torch_parallel_backend() == 'AT_PARALLEL_OPENMP':
         include_dirs += omp_include_dirs()
     return include_dirs
@@ -183,10 +204,13 @@ def cuda_check():
     ok = (local_version[0] == torch_version[0] and
           local_version[1] == torch_version[1])
     if not ok:
-        print('Your version of CUDA is v{}.{} while PyTorch was compiled with'
-              'CUDA v{}.{}. NiTorch cannot be compiled with CUDA.'.format(
-              local_version[0], local_version[1],
-              torch_version[0], torch_version[1]))
+        print(
+            f'Your version of CUDA is '
+            f'v{local_version[0]}.{local_version[1]} '
+            f'while PyTorch was compiled with CUDA '
+            f'v{torch_version[0]}.{torch_version[1]}. '
+            'NiTorch cannot be compiled with CUDA.'
+        )
     return ok
 
 
@@ -196,10 +220,13 @@ def cudnn_check():
     ok = (local_version[0] == torch_version[0] and
           local_version[1] == torch_version[1])
     if not ok:
-        print('Your version of CuDNN is v{}.{} while PyTorch was compiled with'
-              'CuDNN v{}.{}. NiTorch cannot be compiled with CuDNN.'.format(
-              local_version[0], local_version[1],
-              torch_version[0], torch_version[1]))
+        print(
+            f'Your version of CuDNN is '
+            f'v{local_version[0]}.{local_version[1]} '
+            f'while PyTorch was compiled with CuDNN '
+            f'v{torch_version[0]}.{torch_version[1]}. '
+            f'NiTorch cannot be compiled with CuDNN.'
+        )
     return ok
 
 
@@ -231,11 +258,18 @@ def cuda_arch_flags():
         ('Ampere', '8.0;8.6+PTX'),
         ('Ada', '8.9+PTX'),
         ('Hopper', '9.0+PTX'),
+        ('Blackwell+Tegra', '10.1'),
+        ('Blackwell', '10.0;10.3;12.0;12.1+PTX'),
     ])
 
-    supported_arches = ['3.5', '3.7', '5.0', '5.2', '5.3', '6.0', '6.1', '6.2',
-                        '7.0', '7.2', '7.5', '8.0', '8.6', '8.7', '8.9', '9.0']
-    valid_arch_strings = supported_arches + [s + "+PTX" for s in supported_arches]
+    supported_arches = [
+        '3.5', '3.7', '5.0', '5.2', '5.3', '6.0', '6.1', '6.2',
+        '7.0', '7.2', '7.5', '8.0', '8.6', '8.7', '8.9', '9.0', '9.0a',
+        '10.0', '10.0a', '10.1', '10.1a', '10.3', '10.3a',
+        '12.0', '12.0a', '12.1', '12.1a',
+    ]
+    supported_arches_ptx = [s + "+PTX" for s in supported_arches]
+    valid_arch_strings = supported_arches + supported_arches_ptx
 
     # The default is sm_30 for CUDA 9.x and 10.x
     # First check for an env var (same as used by the main setup.py)
@@ -245,21 +279,21 @@ def cuda_arch_flags():
 
     # If not given, look into libtorch_cuda
     if not arch_list or arch_list.lower() == 'all':
-        cuobjdump = os.path.join(cuda_home(), 'bin', 'cuobjdump')
-        torchdir = os.path.dirname(os.path.abspath(torch.__file__))
-        libtorch = os.path.join(torchdir, 'lib')
+        cuobjdump = op.join(cuda_home(), 'bin', 'cuobjdump')
+        torchdir = op.dirname(op.abspath(torch.__file__))
+        libtorch = op.join(torchdir, 'lib')
         if is_windows():
-            libtorch = os.path.join(libtorch, 'torch_cuda.lib')
+            libtorch = op.join(libtorch, 'torch_cuda.lib')
         else:
             assert not is_darwin()
-            libtorch = os.path.join(libtorch, 'libtorch_cuda.so')
-        arch_list = os.popen(cuobjdump + " '" + libtorch + \
-                             "' -lelf | awk -F. '{print $3}' | " \
+            libtorch = op.join(libtorch, 'libtorch_cuda.so')
+        arch_list = os.popen(cuobjdump + " '" + libtorch +
+                             "' -lelf | awk -F. '{print $3}' | "
                              "grep sm | sort -u").read().split('\n')
         arch_list = [arch[3] + '.' + arch[4] for arch in arch_list if arch]
-        ptx_list = os.popen(cuobjdump + " '" + libtorch + \
-                             "' -lptx | awk -F. '{print $3}' | " \
-                             "grep sm | sort -u").read().split('\n')
+        ptx_list = os.popen(cuobjdump + " '" + libtorch +
+                            "' -lptx | awk -F. '{print $3}' | "
+                            "grep sm | sort -u").read().split('\n')
         ptx_list = [arch[3] + '.' + arch[4] for arch in ptx_list if arch]
         arch_list = [arch + '+PTX' if arch in ptx_list else arch
                      for arch in arch_list]
@@ -280,12 +314,14 @@ def cuda_arch_flags():
     flags = []
     for arch in arch_list:
         if arch not in valid_arch_strings:
-            raise ValueError("Unknown CUDA arch ({}) or GPU not supported".format(arch))
+            raise ValueError(
+                f"Unknown CUDA arch ({arch}) or GPU not supported"
+            )
         else:
             num = arch[0] + arch[2]
-            flags.append('-gencode=arch=compute_{},code=sm_{}'.format(num, num))
+            flags.append(f'-gencode=arch=compute_{num},code=sm_{num}')
             if arch.endswith('+PTX'):
-                flags.append('-gencode=arch=compute_{},code=compute_{}'.format(num, num))
+                flags.append(f'-gencode=arch=compute_{num},code=compute_{num}')
 
     return list(set(flags))
 
@@ -363,11 +399,17 @@ def find_omp_darwin():
         for name in names:
             if not name:
                 continue
-            dirs = ['.', '/usr/', '/usr/local/', '/opt/local/', '/usr/local/opt/libomp/']
+            dirs = [
+                '.',
+                '/usr/',
+                '/usr/local/',
+                '/opt/local/',
+                '/usr/local/opt/libomp/'
+            ]
             if os.environ.get('LD_LIBRARY_PATH'):
                 dirs += os.environ.get('LD_LIBRARY_PATH').split(':')
             for dir in dirs:
-                if os.path.exists(os.path.join(dir, 'lib', 'lib' + name + '.dylib')):
+                if op.exists(op.join(dir, 'lib', 'lib' + name + '.dylib')):
                     return name, dir
         return None, None
 
@@ -437,7 +479,7 @@ def omp_libraries():
 def omp_library_dirs():
     if is_darwin():
         ompdir = find_omp_darwin()[3]
-        return [os.path.join(ompdir, 'lib')] if ompdir else []
+        return [op.join(ompdir, 'lib')] if ompdir else []
     else:
         return []
 
@@ -445,7 +487,7 @@ def omp_library_dirs():
 def omp_include_dirs():
     if is_darwin():
         ompdir = find_omp_darwin()[3]
-        return [os.path.join(ompdir, 'include')] if ompdir else []
+        return [op.join(ompdir, 'include')] if ompdir else []
     else:
         return []
 
@@ -459,7 +501,7 @@ def common_flags():
 
 def torch_flags(cuda=False):
     version = torch_version()
-    version = version[0]*10000+version[1]*100+version[2]
+    version = version[0]*10000 + version[1]*100 + version[2]
     flags = ['-DNI_TORCH_VERSION=' + str(version)]
     backend = torch_parallel_backend()
     flags += [
@@ -500,13 +542,14 @@ def cuda_flags():
 
 
 def abspathC(files, glob=False):
-    scriptdir = os.path.abspath(os.path.dirname(__file__))
-    sourcedir = os.path.join(scriptdir, 'nitorch', '_C')
-    files = [os.path.join(sourcedir, f) for f in files]
+    scriptdir = op.abspath(op.dirname(__file__))
+    sourcedir = op.join(scriptdir, 'nitorch', '_C')
+    files = [op.join(sourcedir, f) for f in files]
     if glob:
         files = [list(glob_(f)) for f in files]
         files = [f for file in files for f in file]
     return files
+
 
 def prepare_extensions():
     build_extensions = []
@@ -514,7 +557,6 @@ def prepare_extensions():
     use_cuda = bool(int(os.environ.get('NI_USE_CUDA', '1')))
     use_cuda = use_cuda and cuda_home() and cuda_check()
     use_cudnn = False  # cudnn_home() and cudnn_check()
-
 
     nitorch_lib = []
     nitorch_libext = []
@@ -555,7 +597,11 @@ def prepare_extensions():
         libraries=torch_libraries() + nitorch_lib,
         library_dirs=torch_library_dirs(),
         include_dirs=torch_include_dirs(),
-        extra_compile_args=common_flags() + torch_flags() + (['-DNI_WITH_CUDA'] if use_cuda else []),
+        extra_compile_args=(
+            common_flags() +
+            torch_flags() +
+            (['-DNI_WITH_CUDA'] if use_cuda else [])
+        ),
         extra_link_args=common_links_flags(),
         runtime_library_dirs=[link_relative('.')],
         language='c++',
@@ -564,17 +610,24 @@ def prepare_extensions():
     nitorch_libext = [NiTorchLibrary]
     nitorch_lib = ['nitorch']
     # ~~~ setup extensions
-    python_library_dirs = [os.path.join(sys.exec_prefix, 'lib')]
+    python_library_dirs = [op.join(sys.exec_prefix, 'lib')]
     SpatialExtension = Extension(
         name='_C.spatial',
         sources=abspathC(ext_spatial_sources, glob=True),
         depends=nitorch_libext + abspathC(ext_spatial_headers, glob=True),
         libraries=torch_libraries(use_cuda) + nitorch_lib,
-        library_dirs=torch_library_dirs(use_cuda, use_cudnn) + python_library_dirs,
+        library_dirs=(
+            torch_library_dirs(use_cuda, use_cudnn) +
+            python_library_dirs
+        ),
         include_dirs=torch_include_dirs(use_cuda, use_cudnn),
-        extra_compile_args=common_flags() + torch_flags() + torch_extension_flags('spatial'),
+        extra_compile_args=(
+            common_flags() +
+            torch_flags() +
+            torch_extension_flags('spatial')
+        ),
         extra_link_args=common_links_flags(),
-        runtime_library_dirs=[link_relative(os.path.join('..', 'lib'))]
+        runtime_library_dirs=[link_relative(op.join('..', 'lib'))]
     )
     build_extensions += [SpatialExtension]
     return build_extensions

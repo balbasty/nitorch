@@ -2,22 +2,23 @@
 
 # python
 import os
-import os.path
+import os.path as op
 import sys
 import subprocess
 import glob
 import re
 import shlex
+from copy import copy
 
 # (from sklearn) import setuptools before because it monkey-patches distutils
-from setuptools import Extension as stExtension
 import distutils
 from distutils import ccompiler, unixccompiler
 from distutils.command import build_ext as build_ext_base
 from distutils.sysconfig import customize_compiler
 from distutils.extension import Extension as duExtension
+from setuptools import Extension as stExtension
 
-_all__ = [
+__all__ = [
     'is_windows',
     'is_darwin',
     'cuda_home',
@@ -31,6 +32,7 @@ _all__ = [
 # We start with a few exported utilities that inform about the
 # current system (os, location of the cuda install, ...)
 # ======================================================================
+
 
 def is_windows():
     return sys.platform == 'win32'
@@ -49,9 +51,10 @@ def cuda_home():
         try:
             which = 'where' if is_windows() else 'which'
             with open(os.devnull, 'w') as devnull:
-                nvcc = subprocess.check_output([which, 'nvcc'],
-                                               stderr=devnull).decode().rstrip('\r\n')
-                home = os.path.dirname(os.path.dirname(nvcc))
+                nvcc = subprocess.check_output(
+                    [which, 'nvcc'], stderr=devnull
+                ).decode().strip()
+                home = op.dirname(op.dirname(nvcc))
         except Exception:
             # Guess #3
             if is_windows():
@@ -63,7 +66,7 @@ def cuda_home():
                     home = homes[0]
             else:
                 home = '/usr/local/cuda'
-        if not os.path.exists(home):
+        if not op.exists(home):
             home = None
     if not home:
         print('-- CUDA not found.')
@@ -72,11 +75,13 @@ def cuda_home():
 
 def cuda_version():
     """Version of local CUDA toolkit: (MAJOR, MINOR, PATCH)."""
-    nvcc = os.path.join(cuda_home(), 'bin', 'nvcc')
+    nvcc = op.join(cuda_home(), 'bin', 'nvcc')
     if not nvcc:
         return None
     with open(os.devnull, 'w') as devnull:
-        version = subprocess.check_output([nvcc, '--version'], stderr=devnull).decode()
+        version = subprocess.check_output(
+            [nvcc, '--version'], stderr=devnull
+        ).decode().strip()
     match = None
     for line in version.split('\n'):
         match = re.search(r'V(?P<version>[0-9\.]+)$', line)
@@ -94,7 +99,7 @@ def cudnn_home():
     home = os.environ.get('CUDNN_HOME') or os.environ.get('CUDNN_PATH')
     if home is None:
         home = cuda_home()
-    if home and not os.path.exists(os.path.join(home, 'include', 'cudnn.h')):
+    if home and not op.exists(op.join(home, 'include', 'cudnn.h')):
         home = None
     if not home:
         print('-- CUDNN not found.')
@@ -114,7 +119,7 @@ def cudnn_version():
     home = cudnn_home()
     if not home:
         return None
-    header = os.path.join(home, 'include', 'cudnn.h')
+    header = op.join(home, 'include', 'cudnn.h')
     with open(header, 'r') as file:
         lines = file.readlines()
     version = [None, None, None]
@@ -132,7 +137,7 @@ def cudnn_version():
 # Here, we monkey-patch distutils to:
 # 1) Compile "shared library extensions", which are not python extensions
 #    but dynamic libraries that python extensions will link against.
-#    For this, we define a `SharedLibrary` extension class and write our
+#    For this, we define a `SharedLibrary` extension class and write
 #    a specialized `build_ext` that knows about it.
 # 2) Compile cuda code.
 #    For this, we define and register a new `NVCCompiler` class.
@@ -151,9 +156,9 @@ def link_relative(path):
     if is_windows():
         return None
     elif is_darwin():
-        return os.path.join('@loader_path', path)
+        return op.join('@loader_path', path)
     else:
-        return os.path.join('$ORIGIN', path)
+        return op.join('$ORIGIN', path)
 
 
 class SharedLibrary(stExtension):
@@ -175,12 +180,15 @@ def customize_compiler_for_shared_lib(self):
     #   manner.
 
     def _link(objects, libpath, *args, **kwargs):
+
         def add_install_name(extra_args, libpath):
             has_install_name = any([a.startswith('-install_name')
                                     for a in extra_args])
             if not has_install_name:
-                extra_args += ['-install_name',
-                               os.path.join('@rpath', os.path.basename(libpath))]
+                extra_args += [
+                    '-install_name',
+                    op.join('@rpath', op.basename(libpath))
+                ]
             return extra_args
 
         # On MacOS: we need to manually specify a name stored inside the dylib
@@ -189,20 +197,25 @@ def customize_compiler_for_shared_lib(self):
             if len(args) > 4:
                 args[3] = add_install_name(args[3], libpath)
             else:
-                kwargs['extra_postargs'] = add_install_name(kwargs.get('extra_postargs', []), libpath)
+                extra = kwargs.get('extra_postargs', [])
+                kwargs['extra_postargs'] = add_install_name(extra, libpath)
 
-        return self.link(ccompiler.CCompiler.SHARED_LIBRARY, objects,
-                         libpath, *args, **kwargs)
+        return self.link(
+            ccompiler.CCompiler.SHARED_LIBRARY, objects, libpath,
+            *args, **kwargs
+        )
+
     self.link_shared_object = _link
 
 
 def fix_compiler_rpath(self):
     # On MacOS, the rpath option is a bit different
+
     if isinstance(self, unixccompiler.UnixCCompiler):
         func_original = self.runtime_library_dir_option
 
         def func_fixed(dir):
-            if sys.platform[:6] == "darwin":
+            if is_darwin():
                 return "-Wl,-rpath," + dir
                 # return "-Xlinker -rpath -Xlinker " + dir
             else:
@@ -213,10 +226,17 @@ def fix_compiler_rpath(self):
 
 def fix_compile_parallel(self):
     # Patch `compile` so that it parallelizes compilation of cpp sources
+
     def compile_parallel(
-            sources, output_dir=None, macros=None,
-            include_dirs=None, debug=0, extra_preargs=None,
-            extra_postargs=None, depends=None):
+        sources,
+        output_dir=None,
+        macros=None,
+        include_dirs=None,
+        debug=0,
+        extra_preargs=None,
+        extra_postargs=None,
+        depends=None
+    ):
         macros, objects, extra_postargs, pp_opts, build = \
                 self._setup_compile(output_dir, macros, include_dirs, sources,
                                     depends, extra_postargs)
@@ -261,7 +281,6 @@ class build_ext(build_ext_base.build_ext):
 
     def _build_dependency_graph(self, extensions):
         # Build layers of stuff that can be compiled in parallel
-        from copy import copy
         compiled = []  # Stuff that already found its layer
         uncompiled = copy(extensions)  # Stuff that is not in a layer yet
         layers = []  # Actual layers
@@ -311,7 +330,7 @@ class build_ext(build_ext_base.build_ext):
         into the name of the file from which it will be loaded (eg.
         "foo/libbar.so", or "foo/libbar.dylib").
         """
-        if sys.platform[:6] == "darwin":
+        if is_darwin():
             lib_type = 'dylib'
         else:
             lib_type = 'shared'
@@ -326,7 +345,7 @@ class build_ext(build_ext_base.build_ext):
         return output_path
 
     def _get_ext_dir(self, ext):
-        return os.path.dirname(self.get_ext_fullpath(ext.name))
+        return op.dirname(self.get_ext_fullpath(ext.name))
 
     def get_libraries(self, ext):
         """SharedLibrary extensions do not link against python."""
@@ -347,15 +366,14 @@ class build_ext(build_ext_base.build_ext):
         # (we compile the same sources with different compilers/flags
         #  to generate libnitorch_cpu and libnitorch_cuda)
         build_temp0 = self.build_temp
-        self.build_temp = os.path.join(
-            build_temp0, os.path.join(*ext.name.split('.')))
+        self.build_temp = op.join(build_temp0, *ext.name.split('.'))
 
         # Select appropriate compiler for the extensions's language
         compiler0 = self.compiler
         self.compiler = make_compiler(language=ext.language,
                                       dry_run=self.dry_run,
                                       force=self.force)
-        distutils.sysconfig.customize_compiler(self.compiler)
+        customize_compiler(self.compiler)
         fix_compiler_rpath(self.compiler)
         if self.include_dirs is not None:
             self.compiler.set_include_dirs(self.include_dirs)
@@ -393,7 +411,15 @@ class build_ext(build_ext_base.build_ext):
             linker_so += shlex.split(arg)
         linker_so = ['-dynamiclib' if arg == '-bundle' else arg
                      for arg in linker_so]
-        self.compiler.set_executables(linker_so=linker_so)
+        linker_so_cxx = []
+        for arg in self.compiler.linker_so_cxx:
+            linker_so_cxx += shlex.split(arg)
+        linker_so_cxx = ['-dynamiclib' if arg == '-bundle' else arg
+                         for arg in linker_so_cxx]
+        self.compiler.set_executables(
+            linker_so=linker_so,
+            linker_so_cxx=linker_so_cxx,
+        )
 
         try:
             # Build extension
@@ -417,7 +443,7 @@ class NVCCompiler(unixccompiler.UnixCCompiler):
         unixccompiler.UnixCCompiler.__init__(self, verbose, dry_run, force)
 
         home = cuda_home()
-        nvcc = os.path.join(home, 'bin', 'nvcc')
+        nvcc = op.join(home, 'bin', 'nvcc')
 
         self.set_executables(compiler=nvcc,
                              compiler_so=nvcc,
@@ -436,7 +462,7 @@ def get_compiler_type(compiler, plat=None):
         plat = os.name
     if isinstance(compiler, distutils.ccompiler.CCompiler):
         return compiler.compiler_type
-    compiler = os.path.basename(str(compiler).lower())
+    compiler = op.basename(str(compiler).lower())
     if compiler in ('unix', 'msvc', 'cygwin', 'mingw32', 'bcpp', 'nvcc'):
         return compiler
     if compiler in ('cc', 'c++', 'gcc', 'g++'):
@@ -476,7 +502,7 @@ def make_compiler(plat=None, compiler=None, language=None,
     except KeyError:
         msg = "don't know how to compile C/C++ code on platform '%s'" % plat
         if compiler is not None:
-            msg = msg + " with '%s' compiler" % compiler
+            msg += " with '%s' compiler" % compiler
         raise distutils.error.DistutilsPlatformError(msg)
 
     try:
@@ -485,12 +511,13 @@ def make_compiler(plat=None, compiler=None, language=None,
         klass = vars(module)[class_name]
     except ImportError:
         raise distutils.error.DistutilsModuleError(
-              "can't compile C/C++ code: unable to load module '%s'" % \
-              module_name)
+            f"can't compile C/C++ code: unable to load module '{module_name}'"
+        )
     except KeyError:
         raise distutils.error.DistutilsModuleError(
-               "can't compile C/C++ code: unable to find class '%s' "
-               "in module '%s'" % (class_name, module_name))
+            f"can't compile C/C++ code: unable to find class '{class_name}' "
+            f"in module '{module_name}'"
+        )
 
     compiler_object = klass(None, dry_run, force)
     fix_compile_parallel(compiler_object)
