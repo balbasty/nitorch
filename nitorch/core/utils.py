@@ -637,7 +637,10 @@ def max_dtype(*args, force_float=False):
 def same_storage(x, y):
     # type: (torch.Tensor, torch.Tensor) -> bool
     """Return true if `x` and `y` share the same underlying storage."""
-    return x.storage().data_ptr() == y.storage().data_ptr()
+    if hasattr(x, 'untyped_storage'):
+        return x.untyped_storage().data_ptr() == y.untyped_storage().data_ptr()
+    else:
+        return x.storage().data_ptr() == y.storage().data_ptr()
 
 
 def all_resident_tensors(no_duplicates=True):
