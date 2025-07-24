@@ -227,7 +227,7 @@ def exponentiate_transforms(transformations, **backend):
                     prm = json.load(f)
                 prm['voxel_size'] = spatial.voxel_size(trf.affine)
                 trf.dat = spatial.shoot(trf.dat[None], displacement=True,
-                                        return_inverse=trf.inv)
+                                        return_inverse=trf.inv, **prm)
                 if trf.inv:
                     trf.dat = trf.dat[-1]
             else:

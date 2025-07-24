@@ -1,5 +1,8 @@
+import os.path
+import json
 from . import struct
 from nitorch.core import cli
+from nitorch.core.pyutils import file_mod
 
 help = r"""[nitorch] Reslice volumes
 
@@ -103,8 +106,15 @@ def parse_transform(args, options):
 
     cli.check_next_isvalue(args, tag)
     opt.file, *args = args
-    if isinstance(opt, struct.Velocity) and cli.next_isvalue(args):
-        opt.json, *args = args
+    if isinstance(opt, struct.Velocity):
+        if cli.next_isvalue(args):
+            opt.json, *args = args
+        elif os.path.exists(file_mod(opt.file, ext='.json')):
+            fname = file_mod(opt.file, ext='.json')
+            with open(fname, "r") as f:
+                sidecar = json.load(f)
+                if 'bending' in sidecar:
+                    opt.json = fname
 
     while cli.next_istag(args):
         tag, *args = args
