@@ -11,10 +11,24 @@ from nitorch.spatial import voxel_size
 from nitorch.core import dtypes, constants
 
 
+def get_unit_scale(header):
+    if isinstance(header, Nifti1Header):
+        unit, _ = header.get_xyzt_units()
+        return unit, {'meter': 1e3, 'micron': 1e-3}.get(unit, 1.0)
+    else:
+        return 'mm', 1.0
+
+
+def get_affine(header):
+    scale = get_unit_scale(header)[1]
+    return torch.as_tensor(header.get_best_affine()) * scale
+
+
 def set_affine(header, affine, shape=None):
     if torch.is_tensor(affine):
         affine = affine.detach().cpu()
     affine = np.asanyarray(affine)
+    affine = affine / get_unit_scale(header)[1]
     vx = np.asanyarray(voxel_size(affine))
     vx0 = header.get_zooms()
     vx = [vx[i] if i < len(vx) else vx0[i] for i in range(len(vx0))]
@@ -52,7 +66,7 @@ def set_voxel_size(header, vx, shape=None):
     nb_dim = max(len(vx0), len(vx))
     vx = [vx[i] if i < len(vx) else vx0[i] for i in range(nb_dim)]
     header.set_zooms(vx)
-    aff = torch.as_tensor(header.get_best_affine())
+    aff = get_affine(header)
     vx = torch.as_tensor(vx, dtype=aff.dtype, device=aff.device)
     vx0 = voxel_size(aff)
     aff[:-1, :] *= vx[:3, None] / vx0[:3, None]
@@ -259,7 +273,7 @@ def header_to_metadata(header, metadata):
             metadata['voxel_size_unit'] = 'mm'
 
     if 'affine' in metadata:
-        metadata['affine'] = torch.as_tensor(header.get_best_affine())
+        metadata['affine'] = get_affine(header)
 
     if 'slope' in metadata:
         if hasattr(header, 'get_slope_inter'):

@@ -82,7 +82,7 @@ class BabelArray(MappedArray):
             self._image = nib.load(file_like, mmap=False, keep_file_open=False)
 
         # deal with file openers
-        if not mode in ('r', 'r+'):
+        if mode not in ('r', 'r+'):
             raise ValueError(f"Mode expected in ('r', 'r+'). Got {mode}.")
         self.mode = mode            # Decides if the user lets us write
         self.keep_open = keep_open  # Keep file descriptor open (user value)?
@@ -107,12 +107,22 @@ class BabelArray(MappedArray):
     # when that's the case
 
     fname = property(lambda self: self._image.file_map['image'].filename)
-    _affine = property(lambda self: torch.as_tensor(self._image.affine, dtype=torch.double))
     _spatial = property(lambda self: tuple([True]*3 + [False]*max(0, self._dim-3)))
-    _shape = property(lambda self: [int(d) for d in self._image.shape])
+    _shape = property(lambda self: [int(d) for d in self._image.shape] + [1]*max(0, 3-len(self._image.shape)))
     dtype = property(lambda self: self._image.get_data_dtype())
     slope = property(lambda self: float(getattr(self._image.dataobj, 'slope', None)))
     inter = property(lambda self: float(getattr(self._image.dataobj, 'inter', None)))
+
+    @property
+    def _affine(self):
+        aff = torch.as_tensor(self._image.affine, dtype=torch.double)
+        if hasattr(self._image.header, 'get_xyzt_units'):
+            unit, _ = self._image.header.get_xyzt_units()
+            if unit == "micron":
+                aff = aff * 1e-3
+            elif unit == "meter":
+                aff = aff * 1e3
+        return aff
 
     @slope.setter
     def slope(self, val):
