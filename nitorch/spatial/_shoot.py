@@ -13,14 +13,12 @@ _default_lame = (0.05, 0.2)
 
 @torch.jit.script
 def _det2(A):
-    # type: (Tensor) -> Tensor
     dt = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
     return dt
 
 
 @torch.jit.script
 def _det3(A):
-    # type: (Tensor) -> Tensor
     dt = A[0, 0] * (A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1]) + \
          A[0, 1] * (A[1, 2] * A[2, 0] - A[1, 0] * A[2, 2]) + \
          A[0, 2] * (A[1, 0] * A[2, 1] - A[1, 1] * A[2, 0])
@@ -29,7 +27,6 @@ def _det3(A):
 
 @torch.jit.script
 def _inv2(A):
-    # type: (Tensor) -> Tensor
     F = torch.empty_like(A)
     F[0, 0] = A[1, 1]
     F[1, 1] = A[0, 0]
@@ -45,7 +42,6 @@ def _inv2(A):
 
 @torch.jit.script
 def _inv3(A):
-    # type: (Tensor) -> Tensor
     F = torch.empty_like(A)
     F[0, 0] = A[1, 1] * A[2, 2] - A[1, 2] * A[2, 1]
     F[1, 1] = A[0, 0] * A[2, 2] - A[0, 2] * A[2, 0]
@@ -283,11 +279,21 @@ def greens_apply(mom, greens, factor=1, voxel_size=1):
     return mom
 
 
-def shoot(vel, greens=None,
-          absolute=_default_absolute, membrane=_default_membrane,
-          bending=_default_bending, lame=_default_lame, factor=1,
-          voxel_size=1, return_inverse=False, displacement=False, steps=8,
-          fast=True, verbose=False):
+def shoot(
+    vel,
+    greens=None,
+    absolute=_default_absolute,
+    membrane=_default_membrane,
+    bending=_default_bending,
+    lame=_default_lame,
+    factor=1,
+    voxel_size=1,
+    return_inverse=False,
+    displacement=False,
+    steps=8,
+    fast=True,
+    verbose=False,
+):
     """Exponentiate a velocity field by geodesic shooting.
 
     Notes
