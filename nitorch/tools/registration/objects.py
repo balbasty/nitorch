@@ -2043,27 +2043,24 @@ class AffineModel(TransformationModel):
         optim = property(lambda self: self.model.optim)
         basis = property(lambda self: self.model.basis_name)
 
-        def add_(self, value, **kwargs):
+        def _switch(self, value):
             if self.optim not in (None, self.basis):
                 value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
-            self.dat.add_(value, **kwargs)
+            return value
+
+        def add_(self, value, **kwargs):
+            self.dat.add_(self._switch(value), **kwargs)
             return self
 
         def add(self, value, **kwargs):
-            if self.optim not in (None, self.basis):
-                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
-            return self.dat.add(value, **kwargs)
+            return self.dat.add(self._switch(value), **kwargs)
 
         def mul_(self, value, **kwargs):
-            if self.optim not in (None, self.basis):
-                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
-            self.dat.mul_(value, **kwargs)
+            self.dat.mul_(self._switch(value), **kwargs)
             return self
 
         def mul(self, value, **kwargs):
-            if self.optim not in (None, self.basis):
-                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
-            return self.dat.mul(value, **kwargs)
+            return self.dat.mul(self._switch(value), **kwargs)
 
         def __add__(self, other):
             return self.add(other)
@@ -2247,6 +2244,8 @@ class AffineModel(TransformationModel):
         else:
             s += ['<uninitialized>']
         s += [f'basis={self._basis}']
+        if self.optim is not None:
+            s += [f'optim={self.optim}']
         s += [f'factor={self.factor}']
         s += [f'position={self.position}']
         if self.penalty is not None:
@@ -2260,27 +2259,10 @@ class Affine2dModel(AffineModel):
 
     class Parameters(AffineModel.Parameters):
 
-        def add_(self, value, **kwargs):
+        def _switch(self, value):
             if self.optim not in (None, self.basis):
                 value = LogAffine2d._switch_basis(value, self.optim, self.basis)
-            self.dat.add_(value, **kwargs)
-            return self
-
-        def add(self, value, **kwargs):
-            if self.optim not in (None, self.basis):
-                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
-            return self.dat.add(value, **kwargs)
-
-        def mul_(self, value, **kwargs):
-            if self.optim not in (None, self.basis):
-                value = LogAffine2d._switch_basis(value, self.optim, self.basis)
-            self.dat.mul_(value, **kwargs)
-            return self
-
-        def mul(self, value, **kwargs):
-            if self.optim not in (None, self.basis):
-                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
-            return self.dat.mul(value, **kwargs)
+            return value
 
     def __init__(self, basis, plane, ref_affine=None, factor=1, penalty=None,
                  dat=None, position='symmetric'):
@@ -2307,7 +2289,13 @@ class Affine2dModel(AffineModel):
         return self._plane
 
     def set_dat(self, dat=None, dim=None, **backend):
-        self.dat = LogAffine2d(dat, basis=self._basis, dim=dim,
-                               rotation=self._rotation,
-                               plane=self._plane, **backend)
+        self.dat = LogAffine2d(
+            dat,
+            basis=self._basis,
+            optim=self._optim,
+            dim=dim,
+            rotation=self._rotation,
+            plane=self._plane,
+            **backend
+        )
         return self

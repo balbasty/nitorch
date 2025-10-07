@@ -106,8 +106,7 @@ def run(
     # --- progressive affine initialization ---
     if affine and not affine.frozen and progressive:
         affine, figure = run_progressive_init(
-            runner, losses, affine, affine_optim, line_size=line_size,
-            **plotopt)
+            runner, losses, affine, affine_optim, **plotopt)
         plotopt["figure"] = figure
 
     # --- full affine ---
@@ -185,16 +184,16 @@ def run_progressive_init(
         return affine, None
 
     if verbose:
-        print('-' * line_size)
+        print('=' * line_size)
         print('   PROGRESSIVE INITIALIZATION')
-        print('-' * line_size)
+        print('=' * line_size)
 
     affine.optim = names.pop(0)
     while names:
         if verbose:
             line_pad = line_size - len(affine.optim) - 5
-            print(f'--- {affine.optim} ', end='')
-            print('-' * max(0, line_pad))
+            print(f'*** {affine.optim} ', end='')
+            print('*' * max(0, line_pad))
         affine_optim.reset_state()
         torch.cuda.empty_cache()
 
@@ -244,10 +243,20 @@ def run_pyramid(
     optim,
     verbose=True,
     framerate=1,
-    figure=None
+    figure=None,
 ):
     """Run sequential pyramid registration"""
     line_size = 89 if nonlin else 74
+
+    if verbose:
+        print('=' * line_size)
+        if affine and not nonlin:
+            print('   AFFINE')
+        elif nonlin and not affine:
+            print('   NONLINEAR')
+        else:
+            print('   AFFINE & NONLINEAR')
+        print('=' * line_size)
 
     nonlin_optim = None
     if nonlin and not getattr(nonlin, 'frozen', False):
