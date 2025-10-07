@@ -154,7 +154,7 @@ class TiffArray(MappedArray):
                 shape = [shp for shp, msk in zip(self._shape, self._spatial)
                          if msk]
                 zooms = [ax2zoom.get(ax, 1.) for ax in axes]
-                layout = [('R' if ax == 'Z' else 'P' if ax == 'Y' else 'S')
+                layout = [('R' if ax == 'Z' else 'A' if ax == 'Y' else 'S')
                           for ax in axes]
                 aff = affine_default(shape, zooms, layout=''.join(layout))
                 self._cache['_affine'] = aff
@@ -415,7 +415,7 @@ class TiffArray(MappedArray):
         # write everything
         with TiffWriter(file_like, **init_kwargs) as writer:
             writer.write(dat, dtype=dtype, **write_kwargs)
-            
+
     # --------------
     #   LOW LEVEL
     # --------------
