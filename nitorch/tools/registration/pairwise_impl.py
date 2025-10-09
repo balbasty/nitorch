@@ -10,6 +10,7 @@ registration.objects) to encode the images, transformations and optimizers.
 The command line function `nitorch register` calls this model under the hood.
 
 """
+from threading import Thread, Lock
 from nitorch import spatial
 from nitorch.core import utils, linalg
 import torch
@@ -245,19 +246,30 @@ class PairwiseRegisterStep:
         self.framerate = framerate
         self.figure = figure
         self._last_plot = 0
+        self._plot_lock = Lock()
         if self.verbose > 2 and not self.figure:
             import matplotlib.pyplot as plt
             self.figure = plt.figure()
+            self._plot_pending = None
 
-    def mov2fix(self, fixed, moving, warped, vel=None, title=None, lam=None):
+    def mov2fix(self, *args, **kwargs):
+        thread = Thread(target=(lambda: self._mov2fix(*args, **kwargs)))
+        if self._plot_lock.locked():
+            self._plot_pending = thread
+        else:
+            thread.run()
+
+    def _mov2fix(self, fixed, moving, warped, vel=None, title=None, lam=None):
         """Plot registration live"""
 
+        self._plot_lock.acquire()
+        self._plot_pending = None
+
         import time
-        tic = self._last_plot
-        toc = time.time()
-        if toc - tic < 1/self.framerate:
-            return
-        self._last_plot = toc
+        # tic = self._last_plot
+        # toc = time.time()
+        # if toc - tic < 1/self.framerate:
+        #     return
 
         import matplotlib.pyplot as plt
 
@@ -277,7 +289,9 @@ class PairwiseRegisterStep:
         def rescale2d(x):
             if not x.dtype.is_floating_point:
                 x = x.float()
-            mn, mx = utils.quantile(x, [0.005, 0.995],
+            mask = (x == 0).any(dim=list(range(x.ndim-2)))
+            xmasked = x[~mask]
+            mn, mx = utils.quantile(xmasked, [0.005, 0.995],
                                     dim=range(-2, 0), bins=1024).unbind(-1)
             mx = mx.max(mn + 1e-8)
             mn, mx = mn[..., None, None], mx[..., None, None]
@@ -314,6 +328,11 @@ class PairwiseRegisterStep:
             vel = [vel.square().sum(-1).sqrt()] if vel is not None else []
             lam = [rescale2d(lam)] if lam is not None else []
 
+        if vel:
+            vmax = max(v.max().item() for v in vel)
+        if lam:
+            lmax = max(x.max().item() for x in lam)
+
         checker = []
         for f, w in zip(fixed, warped):
             patch = max([s // 8 for s in f.shape])
@@ -340,8 +359,24 @@ class PairwiseRegisterStep:
 
         imkwargs = dict(interpolation='nearest')
 
+        def bbox2rect(text):
+            (left, bottom, width, height) = text.get_tightbbox().bounds
+            (_, _, figwidth, figheight) = text.figure.bbox.bounds
+            return (left / figwidth, bottom / figheight, width / figwidth, height / figheight)
+
+        def add_title_axis(fig, title):
+            _title = fig.suptitle(title)
+            ax: plt.Axes = fig.add_axes(bbox2rect(_title))
+            ax.axis("off")
+            ax.text(0, 0, title, animated=True, font=_title.get_fontproperties())
+            fig.suptitle("")
+            return ax
+
+        all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
+        lldata = (range(1, len(all_ll)+1), all_ll)
+
         fig = self.figure
-        replot = len(getattr(self, 'axes_saved', [])) != (nb_rows - 1) * nb_cols + 1
+        replot = len(getattr(self, 'axes_saved', [])) != (nb_rows - 1) * nb_cols + 1 + bool(title)
         if replot:
             fig.clf()
 
@@ -352,95 +387,144 @@ class PairwiseRegisterStep:
                 ax.imshow(moving[k].cpu(), **imkwargs)
                 if k == 0:
                     ax.set_title('moving')
-                ax.axis('off')
+                ax.axis('image')
+                ax.set_xticks([])
+                ax.set_yticks([])
                 ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 2)
                 axes += [ax]
                 ax.imshow(warped[k].cpu(), **imkwargs)
                 if k == 0:
                     ax.set_title('moved')
-                ax.axis('off')
+                ax.axis('image')
+                ax.set_xticks([])
+                ax.set_yticks([])
                 ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 3)
                 axes += [ax]
                 ax.imshow(checker[k].cpu(), **imkwargs)
                 if k == 0:
                     ax.set_title('checker')
-                ax.axis('off')
+                ax.axis('image')
+                ax.set_xticks([])
+                ax.set_yticks([])
                 ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 4)
                 axes += [ax]
                 ax.imshow(fixed[k].cpu(), **imkwargs)
                 if k == 0:
                     ax.set_title('fixed')
-                ax.axis('off')
+                ax.axis('image')
+                ax.set_xticks([])
+                ax.set_yticks([])
                 if vel:
                     ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 5)
                     axes += [ax]
-                    d = ax.imshow(vel[k].cpu(), **imkwargs)
+                    d = ax.imshow(vel[k].cpu(), **imkwargs, vmin=0, vmax=vmax)
                     if k == 0:
                         ax.set_title('displacement')
-                    ax.axis('off')
-                    fig.colorbar(d, None, ax)
+                    ax.axis('image')
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    if k == 0:
+                        v0 = d
                 if lam:
                     ax = fig.add_subplot(nb_rows, nb_cols, k * nb_cols + 5 + bool(vel))
                     axes += [ax]
-                    d = ax.imshow(lam[k].cpu(), **imkwargs)
+                    d = ax.imshow(lam[k].cpu(), **imkwargs, vmin=0, vmax=lmax)
                     if k == 0:
                         ax.set_title('precision')
-                    ax.axis('off')
-                    fig.colorbar(d, None, ax)
+                    ax.axis('image')
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                    if k == 0:
+                        l0 = d
+
+            if title:
+                axtitle = add_title_axis(fig, title)
+                axes += [axtitle]
+
             ax = fig.add_subplot(nb_rows, 1, nb_rows)
             axes += [ax]
-            all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
-            # ax.plot(range(1, len(all_ll)+1), all_ll)
-            ax.plot([])
+            ax.plot(*lldata, animated=True)
             ax.set_ylabel('NLL')
             ax.set_xlabel('iteration')
-            if title:
-                fig.suptitle(title)
+            ax.set_xticks([])
+            ax.set_yticks([])
 
-            fig.canvas.draw()
-            self.plt_saved = [fig.canvas.copy_from_bbox(ax.bbox)
-                              for ax in axes]
-            self.axes_saved = axes
-            fig.canvas.flush_events()
-            plt.show(block=False)
-
-            lldata = (range(1, len(all_ll)+1), all_ll)
-            axes[-1].lines[0].set_data(lldata)
-            axes[-1].draw_artist(axes[-1].lines[0])
-            fig.canvas.blit(ax.bbox)
-            fig.canvas.flush_events()
-        else:
-            for elem in self.plt_saved:
-                fig.canvas.restore_region(elem)
-
-            for k in range(kdim):
-                j = k * nb_cols
-                self.axes_saved[j].images[0].set_data(moving[k].cpu())
-                self.axes_saved[j+1].images[0].set_data(warped[k].cpu())
-                self.axes_saved[j+2].images[0].set_data(checker[k].cpu())
-                self.axes_saved[j+3].images[0].set_data(fixed[k].cpu())
+            if vel or lam:
+                fig.subplots_adjust(right=0.9)
+                if vel and not lam:
+                    vbar_ax = fig.add_axes([0.92, 0.15, 0.025, 0.7])
+                elif lam and not vel:
+                    lbar_ax = fig.add_axes([0.92, 0.15, 0.025, 0.7])
+                else:
+                    vbar_ax = fig.add_axes([0.92, 0.10, 0.025, 0.35])
+                    lbar_ax = fig.add_axes([0.92, 0.55, 0.025, 0.35])
                 if vel:
-                    self.axes_saved[j+4].images[0].set_data(vel[k].cpu())
-                    j += 1
+                    self._vbar = fig.colorbar(v0, cax=vbar_ax)
+                    self._vbar_ax = vbar_ax
                 if lam:
-                    self.axes_saved[j+4].images[0].set_data(lam[k].cpu())
-            all_ll = torch.stack(self.all_ll).cpu() if self.all_ll else []
-            lldata = (range(1, len(all_ll)+1), all_ll)
-            self.axes_saved[-1].lines[0].set_data(lldata)
-            self.axes_saved[-1].relim()
-            self.axes_saved[-1].autoscale_view()
-            if title:
-                fig._suptitle.set_text(title)
+                    self._lbar = fig.colorbar(l0, cax=lbar_ax)
+                    self._lbar_ax = lbar_ax
 
-            for ax in self.axes_saved:
-                for elem in (ax.images or []):
-                    ax.draw_artist(elem)
-                for elem in (ax.lines or []):
-                    ax.draw_artist(elem)
-                fig.canvas.blit(ax.bbox)
-            fig.canvas.flush_events()
+            # fig.canvas.draw()
+            plt.show(block=False)
+            self._plt_background = fig.canvas.copy_from_bbox(fig.bbox)
+            self.axes_saved = axes
+
+        # --- Actually plot the stuff by blitting ---
+        fig.canvas.restore_region(self._plt_background)
+
+        for k in range(kdim):
+            j = k * nb_cols
+            self.axes_saved[j].images[0].set_data(moving[k].cpu())
+            self.axes_saved[j+1].images[0].set_data(warped[k].cpu())
+            self.axes_saved[j+2].images[0].set_data(checker[k].cpu())
+            self.axes_saved[j+3].images[0].set_data(fixed[k].cpu())
+            if vel:
+                self.axes_saved[j+4].images[0].set_data(vel[k].cpu())
+                self.axes_saved[j+4].images[0].set_clim(0, vmax)
+                j += 1
+            if lam:
+                self.axes_saved[j+4].images[0].set_data(lam[k].cpu())
+                self.axes_saved[j+4].images[0].set_clim(0, lmax)
+
+        self.axes_saved[-1].lines[0].set_data(lldata)
+        self.axes_saved[-1].relim()
+        self.axes_saved[-1].autoscale_view()
+
+        if title:
+            self.axes_saved[-2].texts[0].set_text(title)
+
+        if vel or lam:
+            if vel:
+                self._vbar.update_ticks()
+                self._vbar.update_normal()
+            if lam:
+                self._lbar.update_ticks()
+                self._lbar.update_normal()
+            fig.canvas.draw()
+
+        for ax in self.axes_saved:
+            ax.draw_artist(ax.patch)
+            if not ax.texts:
+                for spine in ax.spines.values():
+                    ax.draw_artist(spine)
+            for elem in (ax.images or []):
+                ax.draw_artist(elem)
+            for elem in (ax.lines or []):
+                ax.draw_artist(elem)
+            for elem in (ax.texts or []):
+                ax.draw_artist(elem)
+            fig.canvas.blit(ax.bbox)
+
+        fig.canvas.flush_events()
 
         self.figure = fig
+        self._last_plot = time.time()
+
+        # Run next ploting thread if there is one
+        self._plot_lock.release()
+        if self._plot_pending:
+            self._plot_pending.run()
 
     def print(self, step, ll, lla=None, llv=None, in_line_search=False):
 
