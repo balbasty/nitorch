@@ -69,6 +69,8 @@ def pyramid_levels(vxs, shapes, levels, **opt):
     for level in levels:
         if isinstance(level, int):
             select_levels.append(level)
+        elif isinstance(level, slice):
+            select_levels.extend(list(range(max_level))[level])
         else:
             select_levels.extend(list(level))
 
