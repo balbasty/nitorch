@@ -253,7 +253,7 @@ def get_subject_id(path):
     return basename
 
 
-def register(loss, pair, reg_lambda=10, verbose=True):
+def register(loss, pair, reg_lambda=10, verbose=True, print_gpu_use=True):
     """
     Perform affine and nonlinear registration using nitorch.
     
@@ -271,6 +271,8 @@ def register(loss, pair, reg_lambda=10, verbose=True):
         Regularization weight for the nonlinear registration. Default is 10.
     verbose : bool, optional
         If True, print the registration command. Default is True.
+    print_gpu_use : bool, optional
+        If True, print the GPU memory usage. Default is True.
     """
     def get_register_cmd(loss, pair, reg_lambda, verbose):
         verbose_str = "1" if verbose else "0"
@@ -308,7 +310,7 @@ def register(loss, pair, reg_lambda=10, verbose=True):
 
     elapsed_time, peak_gpu_mb = run_with_monitoring(cmd, gpu_id=0)
 
-    if verbose:
+    if print_gpu_use:
         print(f"\n{'='*60}")
         print(f"{loss.upper()} registration completed...")
         print(f"Runtime: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")

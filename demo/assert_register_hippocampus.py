@@ -115,7 +115,7 @@ def main():
     print("=" * 60)
     loss = "lcc"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False)
+    register(loss, pair, verbose=False, print_gpu_use=True)
     pair = create_displacement_field(pair, loss)
     reslice(pair, loss, verbose=False)
     
@@ -135,7 +135,7 @@ def main():
     print("=" * 60)
     loss = "dice"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False)
+    register(loss, pair, verbose=False, print_gpu_use=True)
     pair = create_displacement_field(pair, loss)
     reslice(pair, loss, verbose=False)
     
@@ -155,7 +155,7 @@ def main():
     print("=" * 60)
     loss = "nmi"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False)
+    register(loss, pair, verbose=False, print_gpu_use=True)
     pair = create_displacement_field(pair, loss)
     reslice(pair, loss, verbose=False)
     
@@ -175,7 +175,7 @@ def main():
     print("=" * 60)
     loss = "mse"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False)
+    register(loss, pair, verbose=False, print_gpu_use=True)
     pair = create_displacement_field(pair, loss)
     reslice(pair, loss, verbose=False)
     
@@ -195,7 +195,7 @@ def main():
     print("=" * 60)
     loss = "mad"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False)
+    register(loss, pair, verbose=False, print_gpu_use=True)
     pair = create_displacement_field(pair, loss)
     reslice(pair, loss, verbose=False)
     
