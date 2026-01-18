@@ -97,11 +97,11 @@ install it beforehand and call `pip install` with the option
 ```shell
 git clone git@github.com:balbasty/nitorch.git
 cd nitorch
-NI_COMPILED_BACKEND="C" pip install .
+NI_COMPILED_BACKEND="C" pip install -e .
 
 # Or, alternatively (the version used is an arbitrary example)
 pip install torch==1.9.0+cu111
-NI_COMPILED_BACKEND="C" pip install --no-build-isolation .
+NI_COMPILED_BACKEND="C" pip install --no-build-isolation -e .
 ```
 
 ## Compiling your own wheel

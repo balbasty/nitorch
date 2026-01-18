@@ -549,12 +549,15 @@ def make_loss(loss, slicewise=False, **kwargs):
 
     """
     loss = loss.lower()
+    mi_keys = ('dim', 'bins', 'spline', 'fwhm', 'norm')
     if loss == 'mi':
         kwargs.setdefault('norm', None)
-        lossobj = losses.MI(**kwargs)
+        mi_kwargs = {k: v for k, v in kwargs.items() if k in mi_keys}
+        lossobj = losses.MI(**mi_kwargs)
     elif loss == 'nmi':
         kwargs.setdefault('norm', 'studholme')
-        lossobj = losses.MI(**kwargs)
+        mi_kwargs = {k: v for k, v in kwargs.items() if k in mi_keys}
+        lossobj = losses.MI(**mi_kwargs)
     elif loss == 'ent':
         lossobj = losses.Entropy(**kwargs)
     elif loss in ('mse', 'l2'):
