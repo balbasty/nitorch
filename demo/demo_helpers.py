@@ -60,7 +60,7 @@ def add_loss(pair, loss):
     return pair
 
 
-def compute_dice_scores(label1, label2, exclude_zero=True, loss=None):
+def compute_dice_scores(label1, label2, exclude_zero=True, loss=None, verbose=True):
     """
     Compute Dice score for each label between two segmentation masks.
     
@@ -75,6 +75,8 @@ def compute_dice_scores(label1, label2, exclude_zero=True, loss=None):
     loss : str, optional
         Name of the loss function used for registration. If provided, will be
         included in the printed output.
+    verbose : bool, optional
+        If True, print the mean dice score. Default is True.
     
     Returns
     -------
@@ -116,13 +118,14 @@ def compute_dice_scores(label1, label2, exclude_zero=True, loss=None):
     
     mean_dice = np.mean(list(dice_scores.values())) if dice_scores else 0.0
     
-    # Print mean dice score
-    print(f"\n{'='*60}")
-    if loss is not None:
-        print(f"{loss.upper()} loss mean dice score: {mean_dice:.6f}")
-    else:
-        print(f"Mean dice score: {mean_dice:.6f}")
-    print(f"{'='*60}")
+    if verbose:
+        # Print mean dice score
+        print(f"\n{'='*60}")
+        if loss is not None:
+            print(f"{loss.upper()} loss mean dice score: {mean_dice:.6f}")
+        else:
+            print(f"Mean dice score: {mean_dice:.6f}")
+        print(f"{'='*60}")
     
     return dice_scores, mean_dice
 
@@ -203,9 +206,9 @@ def get_pair(meta, id_pair, dir_data, verbose=False):
         "moving": {"image": moving_image, "label": moving_label},
     }
     if verbose:
-        print(f"{'='*60}")
+        print(f"\n{'='*60}")
         for role in ["fixed", "moving"]:
-            print(f"\n{role.upper()}:")
+            print(f"{role.upper()}:")
             # Load and print image info
             img = nib.load(pair[role]["image"])
             img_data = img.get_fdata()
@@ -250,7 +253,7 @@ def get_subject_id(path):
     return basename
 
 
-def register(loss, pair, reg_lambda=10):
+def register(loss, pair, reg_lambda=10, verbose=True):
     """
     Perform affine and nonlinear registration using nitorch.
     
@@ -266,8 +269,11 @@ def register(loss, pair, reg_lambda=10):
         Dictionary containing paths to fixed/moving images and output locations.
     reg_lambda : float, optional
         Regularization weight for the nonlinear registration. Default is 10.
+    verbose : bool, optional
+        If True, print the registration command. Default is True.
     """
-    def get_register_cmd(loss, pair, reg_lambda):
+    def get_register_cmd(loss, pair, reg_lambda, verbose):
+        verbose_str = "1" if verbose else "0"
         pth_affine = pair["loss"][loss]["affine"]
         pth_svf = pair["loss"][loss]["svf"]
         if loss in ["dice", "cat", "cce"]:
@@ -284,7 +290,7 @@ def register(loss, pair, reg_lambda=10):
             label = ""
         
         cmd = "nitorch register" \
-            + " --verbose 1" \
+            + " --verbose " + verbose_str \
             + " --gpu 0" \
             + " @loss " + loss \
             + " @@fix " + pth_fixed + label + " --fwhm 1 -b dct2 -o false -r " + pth_fixed_moved \
@@ -298,18 +304,19 @@ def register(loss, pair, reg_lambda=10):
         
         return cmd
     
-    cmd = get_register_cmd(loss, pair, reg_lambda)
+    cmd = get_register_cmd(loss, pair, reg_lambda, verbose)
 
     elapsed_time, peak_gpu_mb = run_with_monitoring(cmd, gpu_id=0)
 
-    print(f"\n{'='*60}")
-    print(f"{loss.upper()} registration completed...")
-    print(f"Runtime: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
-    print(f"Peak GPU Memory: {peak_gpu_mb:.1f} MB ({peak_gpu_mb/1024:.2f} GB)")
-    print(f"{'='*60}")
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"{loss.upper()} registration completed...")
+        print(f"Runtime: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+        print(f"Peak GPU Memory: {peak_gpu_mb:.1f} MB ({peak_gpu_mb/1024:.2f} GB)")
+        print(f"{'='*60}")
 
 
-def reslice(pair, loss):
+def reslice(pair, loss, verbose=True):
     """
     Reslice images or labels using the computed registration transforms.
     
@@ -322,6 +329,8 @@ def reslice(pair, loss):
         Dictionary containing paths to images and registration transforms.
     loss : str
         Name of the loss function used for registration.
+    verbose : bool, optional
+        Whether to print progress messages. Default is True.
     """
     def get_reslice_cmd(pth_moving, pth_fixed, pth_resliced, pth_affine, pth_svf, interpolation):
         cmd = "nitorch reslice" \
@@ -334,6 +343,8 @@ def reslice(pair, loss):
             + " --interpolation " + interpolation \
             + " -gpu 0" \
             + " --bound zero"
+        if not verbose:
+            cmd += " --quiet"
         return cmd
 
     if loss in ["dice", "cat", "cce"]:

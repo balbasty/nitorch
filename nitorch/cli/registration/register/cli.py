@@ -219,7 +219,8 @@ def _main(options):
         if options.affine.output:
             fname = options.affine.output.format(
                 dir=odir, sep=os.path.sep, name=options.affine.name)
-            print('Affine ->', fname)
+            if options.verbose:
+                print('Affine ->', fname)
             aff = affine.exp(cache_result=True, recompute=True)
             if affine.position[0] == 's':
                 aff = aff.matmul(aff)
@@ -237,7 +238,8 @@ def _main(options):
                     prm = dict(nonlin.penalty)
                     prm['factor'] = nonlin.factor / py.prod(nonlin.shape)
                     json.dump(prm, f)
-            print('Nonlin ->', fname)
+            if options.verbose:
+                print('Nonlin ->', fname)
 
         if (
             options.nonlin.hessian and
@@ -246,11 +248,13 @@ def _main(options):
             fname = options.nonlin.hessian.format(
                 dir=odir, sep=os.path.sep, name=options.nonlin.name)
             io.savef(nonlin.hess, fname, affine=nonlin.affine)
-            print('Hessian ->', fname)
+            if options.verbose:
+                print('Hessian ->', fname)
 
     for loss in options.loss:
         warp_images(loss.fix, loss.mov, affine=affine, nonlin=nonlin,
-                    dim=dim, device=device, odir=options.odir)
+                    dim=dim, device=device, odir=options.odir,
+                    verbose=options.verbose)
 
 
 def setup_device(device='cpu', ndevice=0):
