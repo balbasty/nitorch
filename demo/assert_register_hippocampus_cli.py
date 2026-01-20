@@ -78,7 +78,7 @@ def main():
     dir_out = "/home/mbrudfors/Data/Learn2Reg/HippocampusMR_registered"
     os.makedirs(dir_out, exist_ok=True)
     json_meta = os.path.join(dir_data, "HippocampusMR_dataset.json")
-    # Remember, if you change the id_pair, you need to change the expected dice scores above
+    # Remember, if you change the parameters below, you need to change the expected dice scores above
     id_pair = 0
     resize_factor = 3  # Downsampling factor for faster testing
     use_gpu = False  # Run on CPU for reproducibility
@@ -88,7 +88,6 @@ def main():
         meta = json.load(f)
         
     # Get pair
-    print(f"Getting pair {id_pair + 1} of {len(meta['registration_val'])}")
     pair = get_pair(meta, id_pair, dir_data, verbose=False)
 
     # Create unique subfolder for this fixed-moving pair
