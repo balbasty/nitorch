@@ -119,9 +119,6 @@ def main():
     # =========================================================================
     # LCC Registration
     # =========================================================================
-    print("\n" + "=" * 60)
-    print("Running LCC registration...")
-    print("=" * 60)
     loss = "lcc"
     pair = add_loss(pair, loss)
     elapsed_time = register(loss, pair, verbose=False, print_gpu_use=True, use_gpu=use_gpu)
@@ -140,9 +137,6 @@ def main():
     # =========================================================================
     # Dice Registration
     # =========================================================================
-    print("\n" + "=" * 60)
-    print("Running Dice registration...")
-    print("=" * 60)
     loss = "dice"
     pair = add_loss(pair, loss)
     elapsed_time = register(loss, pair, verbose=False, print_gpu_use=True, use_gpu=use_gpu)
@@ -161,9 +155,6 @@ def main():
     # =========================================================================
     # NMI Registration
     # =========================================================================
-    print("\n" + "=" * 60)
-    print("Running NMI registration...")
-    print("=" * 60)
     loss = "nmi"
     pair = add_loss(pair, loss)
     elapsed_time = register(loss, pair, verbose=False, print_gpu_use=True, use_gpu=use_gpu)
@@ -182,9 +173,6 @@ def main():
     # =========================================================================
     # MSE Registration
     # =========================================================================
-    print("\n" + "=" * 60)
-    print("Running MSE registration...")
-    print("=" * 60)
     loss = "mse"
     pair = add_loss(pair, loss)
     elapsed_time = register(loss, pair, verbose=False, print_gpu_use=True, use_gpu=use_gpu)
@@ -205,15 +193,8 @@ def main():
     # =========================================================================
     print("\n" + "=" * 60)
     print("ALL TESTS PASSED!")
-    print("=" * 60)
-    print("\nDice score summary:")
-    print(f"  Before registration: {EXPECTED_DICE_BEFORE:.6f}")
-    print(f"  LCC:  {EXPECTED_DICE_LCC:.6f}")
-    print(f"  Dice: {EXPECTED_DICE_DICE:.6f}")
-    print(f"  NMI:  {EXPECTED_DICE_NMI:.6f}")
-    print(f"  MSE:  {EXPECTED_DICE_MSE:.6f}")
     print(f"\nTotal registration runtime: {total_elapsed_time:.2f} seconds ({total_elapsed_time/60:.2f} minutes)")
-
+    print("=" * 60)
 
 if __name__ == "__main__":
     main()
