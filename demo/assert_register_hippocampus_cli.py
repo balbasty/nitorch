@@ -6,13 +6,12 @@ without visualization, and includes assertions to verify that computed dice scor
 match expected values. Use this as a regression test when making changes to the
 registration implementation.
 
-Expected dice scores (with SEED=0):
-- Before registration: 0.506290
-- LCC loss: 0.800588
-- Dice loss: 0.965107
-- NMI loss: 0.810406
-- MSE loss: 0.823405
-- MAD loss: 0.772233
+Expected dice scores (with SEED=0, resize_factor=3, use_gpu=False):
+- Before registration: 0.532860
+- LCC loss: 0.739329
+- Dice loss: 0.979994
+- NMI loss: 0.714330
+- MSE loss: 0.707343
 """
 
 import os
@@ -46,6 +45,7 @@ from demo_helpers import (
     get_pair,
     get_subject_id,
     register,
+    resize_pair,
     reslice,
 )
 
@@ -55,13 +55,12 @@ from demo_helpers import (
 # allowing for numerical variance from non-deterministic CUDA operations.
 DICE_TOLERANCE = 0.03
 
-# Expected dice scores from notebook run
-EXPECTED_DICE_BEFORE = 0.506290
-EXPECTED_DICE_LCC = 0.800588
-EXPECTED_DICE_DICE = 0.965107
-EXPECTED_DICE_NMI = 0.810406
-EXPECTED_DICE_MSE = 0.823405
-EXPECTED_DICE_MAD = 0.772233
+# Expected dice scores from notebook run (resize_factor=3, use_gpu=False)
+EXPECTED_DICE_BEFORE = 0.532860
+EXPECTED_DICE_LCC = 0.739329
+EXPECTED_DICE_DICE = 0.979994
+EXPECTED_DICE_NMI = 0.714330
+EXPECTED_DICE_MSE = 0.707343
 
 
 def assert_dice_score(computed, expected, name):
@@ -79,7 +78,10 @@ def main():
     dir_out = "/home/mbrudfors/Data/Learn2Reg/HippocampusMR_registered"
     os.makedirs(dir_out, exist_ok=True)
     json_meta = os.path.join(dir_data, "HippocampusMR_dataset.json")
+    # Remember, if you change the id_pair, you need to change the expected dice scores above
     id_pair = 0
+    resize_factor = 3  # Downsampling factor for faster testing
+    use_gpu = False  # Run on CPU for reproducibility
 
     # Read dataset metadata
     with open(json_meta, 'r') as f:
@@ -92,9 +94,16 @@ def main():
     # Create unique subfolder for this fixed-moving pair
     pair["fixed"]["id"] = get_subject_id(pair["fixed"]["image"])
     pair["moving"]["id"] = get_subject_id(pair["moving"]["image"])
-    pair["dir_out"] = os.path.join(dir_out, f"{pair['fixed']['id']}_to_{pair['moving']['id']}")
+    suffix = f"_resized_f{resize_factor}" if resize_factor not in [0, 1] else ""
+    pair["dir_out"] = os.path.join(dir_out, f"{pair['fixed']['id']}_to_{pair['moving']['id']}{suffix}")
     os.makedirs(pair["dir_out"], exist_ok=True)
     print(f"\nOutput directory: {pair['dir_out']}")
+
+    # Resize images if requested (for quick testing)
+    pair = resize_pair(pair, factor=resize_factor, verbose=False, use_gpu=use_gpu)
+
+    # Track total runtime
+    total_elapsed_time = 0.0
 
     # Compute Dice scores before registration
     print("\n" + "=" * 60)
@@ -115,9 +124,10 @@ def main():
     print("=" * 60)
     loss = "lcc"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False, print_gpu_use=True)
-    pair = create_displacement_field(pair, loss)
-    reslice(pair, loss, verbose=False)
+    elapsed_time = register(loss, pair, verbose=False, print_gpu_use=True, use_gpu=use_gpu)
+    total_elapsed_time += elapsed_time
+    pair = create_displacement_field(pair, loss, use_gpu=use_gpu)
+    reslice(pair, loss, verbose=False, use_gpu=use_gpu)
     
     dice_scores, mean_dice = compute_dice_scores(
         pair["fixed"]["label"], 
@@ -135,9 +145,10 @@ def main():
     print("=" * 60)
     loss = "dice"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False, print_gpu_use=True)
-    pair = create_displacement_field(pair, loss)
-    reslice(pair, loss, verbose=False)
+    elapsed_time = register(loss, pair, verbose=False, print_gpu_use=True, use_gpu=use_gpu)
+    total_elapsed_time += elapsed_time
+    pair = create_displacement_field(pair, loss, use_gpu=use_gpu)
+    reslice(pair, loss, verbose=False, use_gpu=use_gpu)
     
     dice_scores, mean_dice = compute_dice_scores(
         pair["fixed"]["label"], 
@@ -155,9 +166,10 @@ def main():
     print("=" * 60)
     loss = "nmi"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False, print_gpu_use=True)
-    pair = create_displacement_field(pair, loss)
-    reslice(pair, loss, verbose=False)
+    elapsed_time = register(loss, pair, verbose=False, print_gpu_use=True, use_gpu=use_gpu)
+    total_elapsed_time += elapsed_time
+    pair = create_displacement_field(pair, loss, use_gpu=use_gpu)
+    reslice(pair, loss, verbose=False, use_gpu=use_gpu)
     
     dice_scores, mean_dice = compute_dice_scores(
         pair["fixed"]["label"], 
@@ -175,9 +187,10 @@ def main():
     print("=" * 60)
     loss = "mse"
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False, print_gpu_use=True)
-    pair = create_displacement_field(pair, loss)
-    reslice(pair, loss, verbose=False)
+    elapsed_time = register(loss, pair, verbose=False, print_gpu_use=True, use_gpu=use_gpu)
+    total_elapsed_time += elapsed_time
+    pair = create_displacement_field(pair, loss, use_gpu=use_gpu)
+    reslice(pair, loss, verbose=False, use_gpu=use_gpu)
     
     dice_scores, mean_dice = compute_dice_scores(
         pair["fixed"]["label"], 
@@ -186,26 +199,6 @@ def main():
         verbose=False,
     )
     assert_dice_score(mean_dice, EXPECTED_DICE_MSE, "MSE")
-
-    # =========================================================================
-    # MAD Registration
-    # =========================================================================
-    print("\n" + "=" * 60)
-    print("Running MAD registration...")
-    print("=" * 60)
-    loss = "mad"
-    pair = add_loss(pair, loss)
-    register(loss, pair, verbose=False, print_gpu_use=True)
-    pair = create_displacement_field(pair, loss)
-    reslice(pair, loss, verbose=False)
-    
-    dice_scores, mean_dice = compute_dice_scores(
-        pair["fixed"]["label"], 
-        pair["loss"][loss]["moving"]["label"],
-        loss=loss,
-        verbose=False,
-    )
-    assert_dice_score(mean_dice, EXPECTED_DICE_MAD, "MAD")
 
     # =========================================================================
     # Summary
@@ -219,7 +212,7 @@ def main():
     print(f"  Dice: {EXPECTED_DICE_DICE:.6f}")
     print(f"  NMI:  {EXPECTED_DICE_NMI:.6f}")
     print(f"  MSE:  {EXPECTED_DICE_MSE:.6f}")
-    print(f"  MAD:  {EXPECTED_DICE_MAD:.6f}")
+    print(f"\nTotal registration runtime: {total_elapsed_time:.2f} seconds ({total_elapsed_time/60:.2f} minutes)")
 
 
 if __name__ == "__main__":

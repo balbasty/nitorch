@@ -6,6 +6,7 @@ This module provides utilities for:
 - Computing Dice scores for registration evaluation
 - Running nitorch CLI commands with GPU monitoring
 - Visualizing registration results
+- Resizing image pairs for faster testing
 """
 
 import os
@@ -18,6 +19,168 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 import pynvml
+
+
+def resize_pair(pair, factor, output_dir=None, verbose=True, use_gpu=True):
+    """
+    Resize a fixed-moving image pair for faster registration testing.
+    
+    Uses the nitorch resize CLI to create smaller versions of the images
+    and labels.
+    
+    Parameters
+    ----------
+    pair : dict
+        Dictionary containing 'fixed' and 'moving' keys, each with 'image' 
+        and 'label' paths to NIfTI files.
+    factor : float
+        Downsampling factor (intuitive definition):
+        - factor > 1: downsample (e.g., factor=2 gives half resolution, fewer voxels)
+        - factor < 1: upsample (e.g., factor=0.5 gives double resolution, more voxels)
+        - factor == 0 or 1: no resizing, return original pair
+    output_dir : str, optional
+        Directory where resized NIfTI files will be saved. If None, uses
+        the pair's output directory with a 'resized' subdirectory.
+    verbose : bool, optional
+        If True, print information about the resizing. Default is True.
+    use_gpu : bool, optional
+        If True, use GPU for resizing (faster). If False, use CPU. Default is True.
+    
+    Returns
+    -------
+    pair : dict
+        Updated pair dictionary with paths pointing to resized NIfTI files.
+        Original paths are preserved as 'image_orig' and 'label_orig'.
+    """
+    # Skip resizing if factor is 0 or 1
+    if factor == 0 or factor == 1:
+        if verbose:
+            print("Resize factor is 0 or 1, skipping resizing.")
+        return pair
+    
+    # Convert intuitive factor to nitorch factor
+    # User wants: factor=2 means half the voxels (downsample)
+    # Nitorch uses: factor=2 means twice the voxels (upsample)
+    # So we invert: nitorch_factor = 1/factor
+    nitorch_factor = 1.0 / factor
+    
+    if output_dir is None:
+        output_dir = os.path.join(pair.get("dir_out", "."), "resized")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Resizing pair with factor {factor}...")
+        print(f"  Output directory: {output_dir}")
+    
+    def resize_file(input_path, output_path, is_label=False):
+        """Resize a single NIfTI file using nitorch resize CLI."""
+        # For labels, use nearest neighbor interpolation
+        # For images, use cubic interpolation
+        interp_order = 0 if is_label else 3
+        
+        cmd = (
+            f"nitorch resize {input_path} "
+            f"-f {nitorch_factor} "
+            f"-i {interp_order} "
+            f"-o {output_path} "
+            f"-b dct2"
+        )
+        if use_gpu:
+            cmd += " --gpu"
+        
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if result.returncode != 0:
+            error_msg = result.stderr if result.stderr else result.stdout
+            raise RuntimeError(f"Resize failed for {input_path}:\n{error_msg}\nCommand: {cmd}")
+        
+        # Verify file was created
+        if not os.path.exists(output_path):
+            # Check if nitorch wrote to a default location instead
+            stdout_info = result.stdout if result.stdout else "(no stdout)"
+            stderr_info = result.stderr if result.stderr else "(no stderr)"
+            raise RuntimeError(
+                f"Resize command completed but output file not found: {output_path}\n"
+                f"Command: {cmd}\n"
+                f"stdout: {stdout_info}\n"
+                f"stderr: {stderr_info}"
+            )
+        
+        return output_path
+    
+    # Generate output paths
+    paths_resized = {}
+    for role in ["fixed", "moving"]:
+        img_basename = os.path.basename(pair[role]["image"]).replace(
+            '.nii.gz', f'.resized_f{factor}.nii.gz'
+        )
+        lbl_basename = os.path.basename(pair[role]["label"]).replace(
+            '.nii.gz', f'.label.resized_f{factor}.nii.gz'
+        )
+        paths_resized[role] = {
+            "image": os.path.join(output_dir, img_basename),
+            "label": os.path.join(output_dir, lbl_basename),
+        }
+    
+    # Resize each image and label (always regenerate, no caching)
+    for role in ["fixed", "moving"]:
+        if verbose:
+            print(f"\n  Resizing {role}...")
+        
+        # Get original info
+        nii_orig_img = nib.load(pair[role]["image"])
+        nii_orig_lbl = nib.load(pair[role]["label"])
+        
+        # Resize image
+        resize_file(
+            pair[role]["image"],
+            paths_resized[role]["image"],
+            is_label=False
+        )
+        
+        # Resize label
+        resize_file(
+            pair[role]["label"],
+            paths_resized[role]["label"],
+            is_label=True
+        )
+        
+        # Print info about resized files immediately after resizing
+        if verbose:
+            nii_resized_img = nib.load(paths_resized[role]["image"])
+            nii_resized_lbl = nib.load(paths_resized[role]["label"])
+            
+            # Get shapes (squeeze singleton dimensions for display)
+            resized_img_shape = tuple(s for s in nii_resized_img.shape if s > 1)
+            resized_lbl_shape = tuple(s for s in nii_resized_lbl.shape if s > 1)
+            
+            print(f"    Image:")
+            print(f"      Original: shape={nii_orig_img.shape}, "
+                  f"voxel_size={tuple(np.round(nii_orig_img.header.get_zooms()[:3], 2))}")
+            print(f"      Resized:  shape={resized_img_shape}, "
+                  f"voxel_size={tuple(np.round(nii_resized_img.header.get_zooms()[:3], 2))}")
+            
+            print(f"    Label:")
+            print(f"      Original: shape={nii_orig_lbl.shape}, "
+                  f"labels={list(np.unique(nii_orig_lbl.get_fdata()).astype(int))}")
+            print(f"      Resized:  shape={resized_lbl_shape}, "
+                  f"labels={list(np.unique(nii_resized_lbl.get_fdata()).astype(int))}")
+    
+    # Update pair with resized paths, preserving originals
+    for role in ["fixed", "moving"]:
+        pair[role]["image_orig"] = pair[role]["image"]
+        pair[role]["label_orig"] = pair[role]["label"]
+        pair[role]["image"] = paths_resized[role]["image"]
+        pair[role]["label"] = paths_resized[role]["label"]
+    
+    if verbose:
+        print(f"\n{'='*60}\n")
+    
+    # Store resize info
+    pair["resize_factor"] = factor
+    pair["dir_resized"] = output_dir
+    
+    return pair
 
 
 def add_loss(pair, loss):
@@ -42,6 +205,11 @@ def add_loss(pair, loss):
     """
     dir_out_loss = os.path.join(pair["dir_out"], loss)
     os.makedirs(dir_out_loss, exist_ok=True)
+    
+    # Get resize factor suffix if resizing was applied
+    resize_factor = pair.get("resize_factor", 0)
+    factor_suffix = f"_f{resize_factor}" if resize_factor not in [0, 1] else ""
+    
     pair["loss"] = {
         loss: {
             "dir_out": dir_out_loss,
@@ -53,8 +221,8 @@ def add_loss(pair, loss):
                     "image": os.path.join(dir_out_loss, os.path.basename(pair["moving"]["image"]).replace('.nii.gz', '.image.moved.nii.gz')),
                     "label": os.path.join(dir_out_loss, os.path.basename(pair["moving"]["label"]).replace('.nii.gz', '.label.moved.nii.gz'))
                 },
-            "affine": os.path.join(dir_out_loss, 'affine.lta'),
-            "svf": os.path.join(dir_out_loss, 'svf.nii.gz')
+            "affine": os.path.join(dir_out_loss, f'affine{factor_suffix}.lta'),
+            "svf": os.path.join(dir_out_loss, f'svf{factor_suffix}.nii.gz')
         }
     }
     return pair
@@ -130,7 +298,7 @@ def compute_dice_scores(label1, label2, exclude_zero=True, loss=None, verbose=Tr
     return dice_scores, mean_dice
 
 
-def create_displacement_field(pair, loss):
+def create_displacement_field(pair, loss, use_gpu=True):
     """
     Create a displacement field by exponentiating the stationary velocity field.
     
@@ -143,24 +311,28 @@ def create_displacement_field(pair, loss):
         Dictionary containing registration paths including the SVF.
     loss : str
         Name of the loss function used for registration.
+    use_gpu : bool, optional
+        If True, use GPU for computation (faster). If False, use CPU. Default is True.
     
     Returns
     -------
     pair : dict
         Updated pair dictionary with displacement field path added.
     """
+    # Get resize factor suffix if resizing was applied
+    resize_factor = pair.get("resize_factor", 0)
+    factor_suffix = f"_f{resize_factor}" if resize_factor not in [0, 1] else ""
+    
     # Exponentiate stationary velocity field to create displacement field
     pair["loss"][loss]["u"] = os.path.join(
         pair["loss"][loss]["dir_out"],
-        'u.nii.gz'
+        f'u{factor_suffix}.nii.gz'
     )
-    get_cmd = lambda pth_svf, pth_u: \
-        "nitorch vexp " \
-        + pth_svf \
-        + " -gpu 0" \
-        + " -o " + pth_u
+    cmd = "nitorch vexp " + pair["loss"][loss]["svf"]
+    if use_gpu:
+        cmd += " -gpu 0"
+    cmd += " -o " + pair["loss"][loss]["u"]
     # Exponentiate
-    cmd = get_cmd(pair["loss"][loss]["svf"], pair["loss"][loss]["u"])
     subprocess.run(cmd, shell=True, check=True)
     return pair
 
@@ -253,7 +425,7 @@ def get_subject_id(path):
     return basename
 
 
-def register(loss, pair, reg_lambda=10, verbose=True, print_gpu_use=True):
+def register(loss, pair, reg_lambda=10, verbose=True, print_gpu_use=True, use_gpu=True):
     """
     Perform affine and nonlinear registration using nitorch.
     
@@ -273,8 +445,15 @@ def register(loss, pair, reg_lambda=10, verbose=True, print_gpu_use=True):
         If True, print the registration command. Default is True.
     print_gpu_use : bool, optional
         If True, print the GPU memory usage. Default is True.
+    use_gpu : bool, optional
+        If True, use GPU for registration (faster). If False, use CPU. Default is True.
+    
+    Returns
+    -------
+    elapsed_time : float
+        Total runtime in seconds.
     """
-    def get_register_cmd(loss, pair, reg_lambda, verbose):
+    def get_register_cmd(loss, pair, reg_lambda, verbose, use_gpu):
         verbose_str = "1" if verbose else "0"
         pth_affine = pair["loss"][loss]["affine"]
         pth_svf = pair["loss"][loss]["svf"]
@@ -292,13 +471,14 @@ def register(loss, pair, reg_lambda=10, verbose=True, print_gpu_use=True):
             label = ""
         
         cmd = "nitorch register" \
-            + " --verbose " + verbose_str \
-            + " --gpu 0" \
-            + " @loss " + loss \
+            + " --verbose " + verbose_str
+        if use_gpu:
+            cmd += " --gpu 0"
+        cmd += " @loss " + loss \
             + " @@fix " + pth_fixed + label + " --fwhm 1 -b dct2 -o false -r " + pth_fixed_moved \
             + " @@mov " + pth_moving + label + " --fwhm 1 -b dct2 -o false -r " + pth_moving_moved \
             + " @affine affine -o " + pth_affine \
-            + " @@optim -t 1e-4 -n 128" \
+            + " @@optim -t 1e-3 -n 64" \
             + " @nonlin svf " + str(reg_lambda) + " -o " + pth_svf + " -h \"\"" \
             + " @@optim -t 1e-3 -n 64" \
             + " @optim i -t 1e-3 -n 64" \
@@ -306,19 +486,31 @@ def register(loss, pair, reg_lambda=10, verbose=True, print_gpu_use=True):
         
         return cmd
     
-    cmd = get_register_cmd(loss, pair, reg_lambda, verbose)
+    cmd = get_register_cmd(loss, pair, reg_lambda, verbose, use_gpu)
 
-    elapsed_time, peak_gpu_mb = run_with_monitoring(cmd, gpu_id=0)
+    if use_gpu:
+        elapsed_time, peak_gpu_mb = run_with_monitoring(cmd, gpu_id=0)
+    else:
+        import time
+        start_time = time.time()
+        result = subprocess.run(cmd, shell=True)
+        elapsed_time = time.time() - start_time
+        if result.returncode != 0:
+            raise RuntimeError(f"Command failed with exit code {result.returncode}: {cmd}")
+        peak_gpu_mb = 0
 
     if print_gpu_use:
         print(f"\n{'='*60}")
         print(f"{loss.upper()} registration completed...")
         print(f"Runtime: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
-        print(f"Peak GPU Memory: {peak_gpu_mb:.1f} MB ({peak_gpu_mb/1024:.2f} GB)")
+        if use_gpu:
+            print(f"Peak GPU Memory: {peak_gpu_mb:.1f} MB ({peak_gpu_mb/1024:.2f} GB)")
         print(f"{'='*60}")
 
+    return elapsed_time
 
-def reslice(pair, loss, verbose=True):
+
+def reslice(pair, loss, verbose=True, use_gpu=True):
     """
     Reslice images or labels using the computed registration transforms.
     
@@ -333,6 +525,8 @@ def reslice(pair, loss, verbose=True):
         Name of the loss function used for registration.
     verbose : bool, optional
         Whether to print progress messages. Default is True.
+    use_gpu : bool, optional
+        If True, use GPU for reslicing (faster). If False, use CPU. Default is True.
     """
     def get_reslice_cmd(pth_moving, pth_fixed, pth_resliced, pth_affine, pth_svf, interpolation):
         cmd = "nitorch reslice" \
@@ -342,9 +536,10 @@ def reslice(pair, loss, verbose=True):
             + " --linear-square " + pth_affine \
             + " --target " + pth_fixed \
             + " --output " + pth_resliced \
-            + " --interpolation " + interpolation \
-            + " -gpu 0" \
-            + " --bound zero"
+            + " --interpolation " + interpolation
+        if use_gpu:
+            cmd += " -gpu 0"
+        cmd += " --bound zero"
         if not verbose:
             cmd += " --quiet"
         return cmd
