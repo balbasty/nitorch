@@ -80,7 +80,7 @@ def main():
     # Remember, if you change the parameters below, you need to change the expected dice scores above
     id_pair = 0
     resize_factor = 3  # Downsampling factor for faster testing    
-    use_gpu = True  # Run on CPU for reproducibility
+    use_gpu = False  # Run on CPU for reproducibility
     
     device = 'cuda:0' if use_gpu and torch.cuda.is_available() else 'cpu'
     
