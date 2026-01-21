@@ -7,6 +7,7 @@ This module provides utilities for:
 - Running nitorch CLI commands with GPU monitoring
 - Visualizing registration results
 - Resizing image pairs for faster testing
+- Python API equivalents of CLI functions (resize, register, reslice)
 """
 
 import os
@@ -19,6 +20,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 import pynvml
+import torch
+
+# Import nitorch modules for Python API functions
+from nitorch import io, spatial
 
 
 def resize_pair(pair, factor, output_dir=None, verbose=True, use_gpu=True):
@@ -860,3 +865,588 @@ def visualize_pair(fixed_image, moving_image, fixed_label=None, moving_label=Non
     
     fig.suptitle(title, fontsize=14, fontweight='bold')
     plt.tight_layout()
+
+
+# =============================================================================
+# Python API Functions (equivalents of CLI commands)
+# =============================================================================
+
+def resize_image_api(input_path, output_path, factor, is_label=False, device='cpu'):
+    """
+    Resize a NIfTI file using the nitorch Python API.
+    
+    Parameters
+    ----------
+    input_path : str
+        Path to input NIfTI file.
+    output_path : str
+        Path to output NIfTI file.
+    factor : float
+        Downsampling factor (intuitive definition):
+        - factor > 1: downsample (e.g., factor=2 gives half resolution)
+        - factor < 1: upsample (e.g., factor=0.5 gives double resolution)
+    is_label : bool
+        If True, use nearest neighbor interpolation for labels.
+    device : str
+        Device to use for computation.
+    """
+    # Convert intuitive factor to nitorch factor
+    # User wants: factor=2 means half the voxels (downsample)
+    # Nitorch uses: factor=2 means twice the voxels (upsample)
+    nitorch_factor = 1.0 / factor
+    
+    # Load the input file
+    f = io.volumes.map(input_path)
+    dat = f.fdata(device=device)
+    affine = f.affine.to(device)
+    original_ndim = dat.dim()
+    
+    # Ensure data has batch and channel dimensions
+    # nitorch resize expects (batch, channel, *spatial)
+    while dat.dim() < 5:
+        dat = dat.unsqueeze(0)
+    
+    # Set interpolation order
+    interpolation = 0 if is_label else 3
+    
+    # Perform resize
+    dat_resized, affine_resized = spatial.resize(
+        dat, 
+        factor=nitorch_factor,
+        affine=affine,
+        anchor='c',  # center anchor
+        interpolation=interpolation,
+        bound='dct2',
+        prefilter=True
+    )
+    
+    # Remove batch and channel dimensions to match original file format
+    # dat_resized is (batch, channel, *spatial) = (1, 1, X, Y, Z) for 3D
+    dat_resized = dat_resized.squeeze(0)  # Remove batch -> (1, X, Y, Z)
+    if original_ndim == 3:
+        # Original was 3D (X, Y, Z), squeeze the channel dim too
+        dat_resized = dat_resized.squeeze(0)  # Remove channel -> (X, Y, Z)
+    
+    # Save the output
+    if is_label:
+        # For labels, save as integers
+        io.volumes.save(dat_resized.cpu().round().to(torch.int32), output_path, like=input_path, affine=affine_resized.cpu())
+    else:
+        io.volumes.savef(dat_resized.cpu(), output_path, like=input_path, affine=affine_resized.cpu())
+
+
+def resize_pair_api(pair, factor, output_dir=None, verbose=True, device='cpu'):
+    """
+    Resize a fixed-moving image pair using the nitorch Python API.
+    
+    Parameters
+    ----------
+    pair : dict
+        Dictionary containing 'fixed' and 'moving' keys, each with 'image' 
+        and 'label' paths to NIfTI files.
+    factor : float
+        Downsampling factor.
+    output_dir : str, optional
+        Directory where resized NIfTI files will be saved.
+    verbose : bool
+        If True, print information about the resizing.
+    device : str
+        Device to use for computation.
+    
+    Returns
+    -------
+    pair : dict
+        Updated pair dictionary with paths pointing to resized NIfTI files.
+    """
+    # Skip resizing if factor is 0 or 1
+    if factor == 0 or factor == 1:
+        if verbose:
+            print("Resize factor is 0 or 1, skipping resizing.")
+        return pair
+    
+    if output_dir is None:
+        output_dir = os.path.join(pair.get("dir_out", "."), "resized")
+    os.makedirs(output_dir, exist_ok=True)
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"Resizing pair with factor {factor} (using Python API)...")
+        print(f"  Output directory: {output_dir}")
+    
+    # Generate output paths
+    paths_resized = {}
+    for role in ["fixed", "moving"]:
+        img_basename = os.path.basename(pair[role]["image"]).replace(
+            '.nii.gz', f'.resized_f{factor}.nii.gz'
+        )
+        lbl_basename = os.path.basename(pair[role]["label"]).replace(
+            '.nii.gz', f'.label.resized_f{factor}.nii.gz'
+        )
+        paths_resized[role] = {
+            "image": os.path.join(output_dir, img_basename),
+            "label": os.path.join(output_dir, lbl_basename),
+        }
+    
+    # Resize each image and label
+    for role in ["fixed", "moving"]:
+        if verbose:
+            print(f"\n  Resizing {role}...")
+        
+        # Get original info
+        nii_orig_img = nib.load(pair[role]["image"])
+        nii_orig_lbl = nib.load(pair[role]["label"])
+        
+        # Resize image
+        resize_image_api(
+            pair[role]["image"],
+            paths_resized[role]["image"],
+            factor,
+            is_label=False,
+            device=device
+        )
+        
+        # Resize label
+        resize_image_api(
+            pair[role]["label"],
+            paths_resized[role]["label"],
+            factor,
+            is_label=True,
+            device=device
+        )
+        
+        if verbose:
+            nii_resized_img = nib.load(paths_resized[role]["image"])
+            nii_resized_lbl = nib.load(paths_resized[role]["label"])
+            
+            resized_img_shape = tuple(s for s in nii_resized_img.shape if s > 1)
+            resized_lbl_shape = tuple(s for s in nii_resized_lbl.shape if s > 1)
+            
+            print(f"    Image:")
+            print(f"      Original: shape={nii_orig_img.shape}, "
+                  f"voxel_size={tuple(np.round(nii_orig_img.header.get_zooms()[:3], 2))}")
+            print(f"      Resized:  shape={resized_img_shape}, "
+                  f"voxel_size={tuple(np.round(nii_resized_img.header.get_zooms()[:3], 2))}")
+            
+            print(f"    Label:")
+            print(f"      Original: shape={nii_orig_lbl.shape}, "
+                  f"labels={list(np.unique(nii_orig_lbl.get_fdata()).astype(int))}")
+            print(f"      Resized:  shape={resized_lbl_shape}, "
+                  f"labels={list(np.unique(nii_resized_lbl.get_fdata()).astype(int))}")
+    
+    # Update pair with resized paths
+    for role in ["fixed", "moving"]:
+        pair[role]["image_orig"] = pair[role]["image"]
+        pair[role]["label_orig"] = pair[role]["label"]
+        pair[role]["image"] = paths_resized[role]["image"]
+        pair[role]["label"] = paths_resized[role]["label"]
+    
+    if verbose:
+        print(f"\n{'='*60}\n")
+    
+    pair["resize_factor"] = factor
+    pair["dir_resized"] = output_dir
+    
+    return pair
+
+
+def register_api(loss_name, pair, reg_lambda=10, verbose=True, print_gpu_use=True, device='cpu'):
+    """
+    Perform affine and nonlinear registration using the nitorch Python API.
+    
+    Parameters
+    ----------
+    loss_name : str
+        Loss function to use ('lcc', 'dice', 'nmi', 'mse', etc.).
+    pair : dict
+        Dictionary containing paths to fixed/moving images and output locations.
+    reg_lambda : float
+        Regularization weight for the nonlinear registration.
+    verbose : bool
+        If True, print progress information.
+    print_gpu_use : bool
+        If True, print timing information.
+    device : str
+        Device to use for computation.
+    
+    Returns
+    -------
+    affine_model : AffineModel
+        The fitted affine transformation.
+    nonlin_model : NonLinModel
+        The fitted nonlinear transformation (SVF).
+    elapsed_time : float
+        Total runtime in seconds.
+    """
+    from nitorch.tools.registration.pairwise_preproc import preproc_image
+    from nitorch.tools.registration.pairwise_makeobj import (
+        make_image, make_loss, make_affine, make_nonlin,
+        make_affine_optim, make_nonlin_optim
+    )
+    from nitorch.tools.registration.pairwise_pyramid import sequential_pyramid
+    from nitorch.tools.registration.pairwise_run import run
+    from nitorch.tools.registration import objects
+    
+    # Determine which files to use based on loss type
+    if loss_name in ["dice", "cat", "cce"]:
+        pth_fixed = pair["fixed"]["label"]
+        pth_moving = pair["moving"]["label"]
+        is_label = True
+    else:
+        pth_fixed = pair["fixed"]["image"]
+        pth_moving = pair["moving"]["image"]
+        is_label = False
+    
+    # Output paths
+    pth_affine = pair["loss"][loss_name]["affine"]
+    pth_svf = pair["loss"][loss_name]["svf"]
+    
+    # =========================================================================
+    # Load and preprocess images
+    # Matching CLI parameters: --fwhm 1 -b dct2 -o false
+    # CLI default rescale is (0, 95) but for 'dice'/'cat' it's set to (0, 0)
+    # =========================================================================
+    if loss_name in ('cat', 'dice'):
+        rescale = (0, 0)
+    else:
+        rescale = (0, 95)
+    
+    fix_dat, fix_mask, fix_affine = preproc_image(
+        pth_fixed, 
+        label=is_label,
+        rescale=rescale,
+        fwhm=1,
+        bound='dct2',
+        dim=3,
+        device=device
+    )
+    mov_dat, mov_mask, mov_affine = preproc_image(
+        pth_moving,
+        label=is_label,
+        rescale=rescale,
+        fwhm=1,
+        bound='dct2',
+        dim=3,
+        device=device
+    )
+    
+    
+    # =========================================================================
+    # Create image objects with pyramid
+    # CLI uses @pyramid --levels 0 1 2
+    # =========================================================================
+    pyramid_levels = [0, 1, 2]
+    
+    fix_img = make_image(
+        fix_dat, mask=fix_mask, affine=fix_affine,
+        pyramid=pyramid_levels, 
+        pyramid_method='gaussian',  # CLI default
+        bound='dct2', 
+        extrapolate=False
+    )
+    mov_img = make_image(
+        mov_dat, mask=mov_mask, affine=mov_affine,
+        pyramid=pyramid_levels, 
+        pyramid_method='gaussian',
+        bound='dct2', 
+        extrapolate=False
+    )
+    
+    # =========================================================================
+    # Create loss object
+    # Match CLI defaults for each loss type
+    # =========================================================================
+    loss_kwargs = {}
+    if loss_name in ('lcc', 'lncc'):
+        # CLI defaults: patch=10, stride=1, kernel='g'
+        loss_kwargs = {'patch': 10, 'stride': 1, 'kernel': 'g'}
+    elif loss_name in ('nmi', 'mi'):
+        # CLI defaults: bins=32, fwhm=0, norm='studholme' (for nmi)
+        loss_kwargs = {'bins': 32, 'fwhm': 0, 'norm': 'studholme'}
+    loss_obj = make_loss(loss_name, **loss_kwargs)
+    
+    # =========================================================================
+    # Create similarity object (matching CLI: Similarity(lossobj, mov, fix))
+    # =========================================================================
+    similarity = objects.Similarity(loss_obj, mov_img, fix_img)
+    
+    # =========================================================================
+    # Build pyramid of losses
+    # =========================================================================
+    loss_list = sequential_pyramid(similarity)
+    
+    
+    # =========================================================================
+    # Create affine model
+    # CLI: @affine affine (position='symmetric' is default)
+    # =========================================================================
+    affine_model = make_affine(basis='affine', position='symmetric')
+    
+    
+    # =========================================================================
+    # Create nonlinear model (SVF)
+    # CLI: @nonlin svf 10 (factor=10, voxel_size=[100, '%'] is default)
+    # =========================================================================
+    # Get images from the finest level for computing mean space
+    if isinstance(loss_list[-1], objects.SumSimilarity):
+        images = list(loss_list[-1].images())
+    else:
+        images = list(loss_list[-1].images())
+    
+    # Penalty parameters - CLI defaults
+    penalty = {
+        'absolute': 0.0001,
+        'membrane': 0.001,
+        'bending': 0.2,
+        'lame': (0.05, 0.2),
+    }
+    
+    nonlin_model = make_nonlin(
+        images, 'svf', 
+        factor=reg_lambda, 
+        penalty=penalty,
+        voxel_size=[100, '%'],  # CLI default
+        device=device
+    )
+    
+    
+    # =========================================================================
+    # Create optimizers
+    # CLI: @@optim -t 1e-3 -n 64 (tolerance=1e-3, max_iter=64)
+    # =========================================================================
+    order = loss_obj.order  # LCC has order 2, so GaussNewton is used
+    
+    affine_optim = make_affine_optim(
+        'gn' if order >= 2 else 'lbfgs',
+        order,
+        max_iter=64,
+        tolerance=1e-3
+    )
+    nonlin_optim = make_nonlin_optim(
+        'gn' if order >= 2 else 'lbfgs',
+        order,
+        max_iter=64,
+        tolerance=1e-3,
+        nonlin=nonlin_model
+    )
+    
+    # =========================================================================
+    # Run registration
+    # CLI: @optim i -t 1e-3 -n 64 (interleaved, tolerance=1e-3, max_iter=64)
+    # =========================================================================
+    start_time = time.time()
+    
+    affine_model, nonlin_model = run(
+        loss_list,
+        affine=affine_model,
+        nonlin=nonlin_model,
+        affine_optim=affine_optim,
+        nonlin_optim=nonlin_optim,
+        pyramid=True,
+        interleaved=True,
+        progressive=False,
+        max_iter=64,
+        tolerance=1e-3,
+        verbose=0,
+        framerate=0
+    )
+    
+    elapsed_time = time.time() - start_time
+    
+    
+    # =========================================================================
+    # Save outputs
+    # =========================================================================
+    # Save affine transform
+    aff_sqrt = affine_model.exp(cache_result=True, recompute=True)
+    
+    if affine_model.position[0] == 's':
+        aff = aff_sqrt.matmul(aff_sqrt)
+    else:
+        aff = aff_sqrt
+    
+    
+    io.transforms.savef(aff.cpu(), pth_affine, type=1)  # 1 = RAS_TO_RAS
+    
+    # Save SVF
+    io.savef(nonlin_model.dat.dat, pth_svf, affine=nonlin_model.affine)
+    
+    if print_gpu_use:
+        print(f"\n{'='*60}")
+        print(f"{loss_name.upper()} registration completed (Python API)...")
+        print(f"Runtime: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+        print(f"{'='*60}")
+    
+    return affine_model, nonlin_model, elapsed_time
+
+
+def create_displacement_field_api(pair, loss_name, device='cpu'):
+    """
+    Create a displacement field by exponentiating the SVF using Python API.
+    
+    Parameters
+    ----------
+    pair : dict
+        Dictionary containing registration paths including the SVF.
+    loss_name : str
+        Name of the loss function used for registration.
+    device : str
+        Device to use for computation.
+    
+    Returns
+    -------
+    pair : dict
+        Updated pair dictionary with displacement field path added.
+    """
+    # Get resize factor suffix
+    resize_factor = pair.get("resize_factor", 0)
+    factor_suffix = f"_f{resize_factor}" if resize_factor not in [0, 1] else ""
+    
+    # Define output path
+    pair["loss"][loss_name]["u"] = os.path.join(
+        pair["loss"][loss_name]["dir_out"],
+        f'u{factor_suffix}.nii.gz'
+    )
+    
+    # Load SVF
+    svf_path = pair["loss"][loss_name]["svf"]
+    f = io.volumes.map(svf_path)
+    svf_dat = f.fdata(device=device)
+    svf_affine = f.affine.to(device)
+    
+    # Ensure correct shape (add batch dimension if needed)
+    if svf_dat.dim() == 4:  # (*spatial, 3)
+        svf_dat = svf_dat.unsqueeze(0)  # (1, *spatial, 3)
+    
+    # Exponentiate SVF to get displacement field
+    disp = spatial.exp(svf_dat, displacement=True)
+    disp = disp.squeeze(0)  # Remove batch dimension
+    
+    # Save displacement field
+    io.savef(disp.cpu(), pair["loss"][loss_name]["u"], affine=svf_affine.cpu())
+    
+    return pair
+
+
+def reslice_api(pair, loss_name, affine_model=None, nonlin_model=None, verbose=True, device='cpu'):
+    """
+    Reslice labels using computed registration transforms (pure Python API).
+    
+    Implements the same transform composition as CLI:
+        nitorch reslice {src} --linear-square {affine} --velocity {svf} 
+                        --linear-square {affine} --target {tgt}
+    
+    Key insight: Labels must be interpolated as int64, not float32, to match
+    CLI behavior exactly.
+    
+    Parameters
+    ----------
+    pair : dict
+        Dictionary containing paths to images and registration transforms.
+    loss_name : str
+        Name of the loss function used for registration.
+    affine_model : objects.AffineModel, optional
+        Not used - transforms are loaded from files.
+    nonlin_model : objects.NonLinModel, optional  
+        Not used - transforms are loaded from files.
+    verbose : bool
+        Whether to print progress messages.
+    device : str
+        Device to use for computation.
+    """
+    from nitorch.core.linalg import logm, expm
+    from nitorch.core.utils import movedim
+    from nitorch.cli.registration import helpers
+    
+    # Always reslice labels (needed for dice score computation)
+    what = "label"
+    
+    # Get transform paths
+    pth_affine = pair["loss"][loss_name]["affine"]
+    pth_svf = pair["loss"][loss_name]["svf"]
+    
+    # Load affine transform and compute square root
+    affine_mat = io.transforms.loadf(pth_affine).to(device).float()
+    while affine_mat.dim() > 2:
+        affine_mat = affine_mat.squeeze(0)
+    affine_sqrt = expm(logm(affine_mat) * 0.5).float()
+    
+    # Load SVF and exponentiate to displacement
+    f_svf = io.volumes.map(pth_svf)
+    svf_dat = f_svf.fdata(device=device)
+    svf_affine = f_svf.affine.to(device).float()
+    
+    # Squeeze SVF to (*spatial, 3)
+    while svf_dat.dim() > 4 and svf_dat.shape[0] == 1:
+        svf_dat = svf_dat.squeeze(0)
+    while svf_dat.dim() > 4 and svf_dat.shape[-1] == 1:
+        svf_dat = svf_dat.squeeze(-1)
+    
+    # Exponentiate SVF
+    disp = spatial.exp(svf_dat[None], displacement=True)[0]
+    
+    def reslice_volume(pth_src, pth_tgt, pth_out):
+        """
+        Reslice source label to target space.
+        
+        Uses CLI's transform composition:
+        1. First linear (sqrt(A)) modifies source affine
+        2. Remaining transforms [V, sqrt(A)] applied to grid in reverse
+        3. Grid converted to modified source voxels
+        4. CRITICAL: Labels sampled as int64 (not float32) for correct interpolation
+        """
+        # Load source volume
+        f_src = io.volumes.map(pth_src)
+        src_affine_orig = f_src.affine.to(device).float()
+        
+        # Load target for output space
+        f_tgt = io.volumes.map(pth_tgt)
+        tgt_shape = f_tgt.shape[:3]
+        tgt_affine = f_tgt.affine.to(device).float()
+        
+        # CLI's special handling: first linear modifies source affine
+        # src_affine = affine_lmdiv(sqrt(A), src_affine) = inv(sqrt(A)) @ src_affine
+        src_affine_modified = spatial.affine_lmdiv(affine_sqrt, src_affine_orig)
+        
+        # Build grid from target space
+        grid = spatial.affine_grid(tgt_affine, tgt_shape)
+        
+        # Apply remaining transforms in reverse: [V, sqrt(A)] -> [sqrt(A), V]
+        # 1. Apply sqrt(A) (the last linear in collapsed list)
+        grid = spatial.affine_matvec(affine_sqrt, grid)
+        
+        # 2. Apply V (velocity)
+        imat = spatial.affine_inv(svf_affine)
+        grid = spatial.affine_matvec(imat, grid)
+        grid = grid + helpers.pull_grid(disp, grid, interpolation=1, bound='dft', extrapolate=True)
+        grid = spatial.affine_matvec(svf_affine, grid)
+        
+        # Convert to modified source voxels
+        src_imat = spatial.affine_inv(src_affine_modified)
+        grid = spatial.affine_matvec(src_imat, grid)
+        
+        # Load data as int64 (CRITICAL for correct label interpolation)
+        src_dat = f_src.data(dtype=torch.long, device=device)
+        src_dat = src_dat.reshape([*f_src.shape[:3], 1])
+        src_dat = movedim(src_dat, -1, 0)
+        
+        # Sample with int64 data - this is key to matching CLI behavior
+        out = helpers.pull(src_dat, grid, interpolation=1, bound='zero', extrapolate=False)
+        
+        # Move channel back and save
+        out = movedim(out, 0, -1)
+        io.volumes.save(out.cpu(), pth_out, like=pth_src, affine=tgt_affine.cpu())
+        
+    
+    # Reslice moving label to fixed space
+    reslice_volume(
+        pair["moving"][what],
+        pair["fixed"][what],
+        pair["loss"][loss_name]["moving"][what]
+    )
+    
+    # Reslice fixed label to moving space
+    reslice_volume(
+        pair["fixed"][what],
+        pair["moving"][what],
+        pair["loss"][loss_name]["fixed"][what]
+    )
