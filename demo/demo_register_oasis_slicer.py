@@ -21,12 +21,14 @@ import warnings
 
 import nibabel as nib
 import numpy as np
-from scipy.interpolate import interpn
+import torch
 from scipy.linalg import sqrtm
 
 # Suppress FutureWarnings from interpol package
 warnings.filterwarnings("ignore", category=FutureWarning, module="interpol")
 os.environ["PYTHONWARNINGS"] = "ignore::FutureWarning"
+
+from nitorch.spatial import identity_grid, grid_pull
 
 from demo_helpers import (
     add_loss,
@@ -42,59 +44,39 @@ from demo_helpers import (
 # Grid transform helper functions
 # =============================================================================
 
-def load_affine_lta(path, nitorch=True):
+def load_affine_lta(path):
     """Load a 4x4 affine matrix from an LTA file and return its square root.
 
     Parameters
     ----------
     path : str
         Path to the .lta file.
-    nitorch : bool
-        If True, read the raw matrix (lines 3-6 of the affine block).
 
     Returns
     -------
-    np.ndarray
-        (4, 4) matrix square root of the affine.
+    torch.Tensor
+        (4, 4) matrix square root of the affine (float64).
     """
-    # Read the raw 4x4 matrix from the LTA file
     rows = []
     in_matrix = False
-    for line in open(path, "r"):
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        # After seeing the shape line (e.g. "1 4 4"), read 4 rows
-        parts = line.split()
-        if parts == ["1", "4", "4"]:
-            in_matrix = True
-            continue
-        if in_matrix:
-            row = [float(x) for x in parts]
-            if len(row) == 4:
-                rows.append(row)
-            if len(rows) == 4:
-                break
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if parts == ["1", "4", "4"]:
+                in_matrix = True
+                continue
+            if in_matrix:
+                row = [float(x) for x in parts]
+                if len(row) == 4:
+                    rows.append(row)
+                if len(rows) == 4:
+                    break
     mat = np.array(rows, dtype=np.float64)
-    # Return the matrix square root
-    return np.real(sqrtm(mat))
-
-
-def get_id(shape):
-    """Create an identity grid for a given 3D volume shape.
-
-    Returns
-    -------
-    np.ndarray
-        (X, Y, Z, 3) array of voxel coordinates.
-    """
-    coords = np.meshgrid(
-        np.arange(shape[0], dtype=np.float64),
-        np.arange(shape[1], dtype=np.float64),
-        np.arange(shape[2], dtype=np.float64),
-        indexing="ij",
-    )
-    return np.stack(coords, axis=-1)
+    mat_sqrt = np.real(sqrtm(mat))
+    return torch.from_numpy(mat_sqrt)
 
 
 def affine_transform(grid, mat):
@@ -102,97 +84,18 @@ def affine_transform(grid, mat):
 
     Parameters
     ----------
-    grid : np.ndarray
+    grid : torch.Tensor
         (..., 3) coordinate array.
-    mat : np.ndarray
+    mat : torch.Tensor
         (4, 4) affine matrix.
 
     Returns
     -------
-    np.ndarray
+    torch.Tensor
         (..., 3) transformed coordinates.
     """
-    shape = grid.shape
-    flat = grid.reshape(-1, 3)
-    # Homogeneous coordinates
-    ones = np.ones((flat.shape[0], 1), dtype=flat.dtype)
-    homo = np.concatenate([flat, ones], axis=1)
-    transformed = (mat @ homo.T).T[:, :3]
-    return transformed.reshape(shape)
-
-
-def inv(mat):
-    """Invert a 4x4 matrix."""
-    return np.linalg.inv(mat)
-
-
-def displace(grid, u):
-    """Add a displacement field to a coordinate grid.
-
-    Parameters
-    ----------
-    grid : np.ndarray
-        (..., 3) coordinates.
-    u : np.ndarray
-        (..., 3) displacements (already sampled at grid locations).
-
-    Returns
-    -------
-    np.ndarray
-        (..., 3) displaced coordinates.
-    """
-    return grid + u
-
-
-def pull(dat, grid):
-    """Resample a vector field at given coordinates using linear interpolation.
-
-    Parameters
-    ----------
-    dat : np.ndarray
-        (X, Y, Z, 3) vector field data.
-    grid : np.ndarray
-        (..., 3) sampling coordinates in voxel space.
-
-    Returns
-    -------
-    np.ndarray
-        (..., 3) resampled vectors.
-    """
-    shape = dat.shape[:3]
-    points = (
-        np.arange(shape[0], dtype=np.float64),
-        np.arange(shape[1], dtype=np.float64),
-        np.arange(shape[2], dtype=np.float64),
-    )
-    out = np.zeros_like(grid)
-    for c in range(3):
-        out[..., c] = interpn(
-            points,
-            dat[..., c],
-            grid[..., :3],
-            method="linear",
-            bounds_error=False,
-            fill_value=0.0,
-        )
-    return out
-
-
-def save_nii(path, data, affine_mat):
-    """Save a displacement field as a NIfTI file with vector intent.
-
-    Parameters
-    ----------
-    path : str
-        Output file path.
-    data : np.ndarray
-        (X, Y, Z, 1, 3) displacement data (Slicer grid format).
-    affine_mat : np.ndarray
-        (4, 4) affine matrix for the NIfTI header.
-    """
-    img = nib.Nifti1Image(data.astype(np.float32), affine_mat)
-    img.header['intent_code'] = 1006  # NIFTI_INTENT_DISPVECT
-    nib.save(img, path)
+    mat = mat.to(grid.dtype)
+    return grid @ mat[:3, :3].T + mat[:3, 3]
 
 
 def create_slicer_grid_transform(
@@ -200,11 +103,12 @@ def create_slicer_grid_transform(
     affine_lta_path,
     displacement_nii_path,
     output_path,
+    device='cpu',
 ):
     """Convert nitorch registration transforms to a 3D Slicer grid transform.
 
     Composes the affine (split as square root, applied twice) and displacement
-    field into a single grid transform in LPS convention for 3D Slicer.
+    field into a single grid transform in RAS convention for 3D Slicer.
 
     Parameters
     ----------
@@ -216,43 +120,51 @@ def create_slicer_grid_transform(
         Path to the displacement field NIfTI (u.nii.gz).
     output_path : str
         Path to save the output grid transform NIfTI.
+    device : str
+        Torch device ('cpu' or 'cuda').
     """
     # Load data
     nii_fixed = nib.load(fixed_nii_path)
     nii_disp = nib.load(displacement_nii_path)
-    dat_disp = nii_disp.get_fdata()
 
-    # Squeeze trailing singleton dims from displacement field if needed
-    # nitorch displacement fields can be (X, Y, Z, 1, 3) — squeeze to (X, Y, Z, 3)
+    fixed_affine = torch.from_numpy(nii_fixed.affine.astype(np.float64)).to(device)
+    disp_affine = torch.from_numpy(nii_disp.affine.astype(np.float64)).to(device)
+
+    dat_disp = torch.from_numpy(nii_disp.get_fdata()).to(dtype=torch.float64, device=device)
+    # Squeeze trailing singleton dims: (X, Y, Z, 1, 3) -> (X, Y, Z, 3)
     while dat_disp.ndim > 4:
         dat_disp = dat_disp.squeeze(-2)
 
-    # Load affine square root
-    affine_sqrt = load_affine_lta(affine_lta_path)
+    affine_sqrt = load_affine_lta(affine_lta_path).to(device)
 
     # 1. Identity grid in fixed voxel space
-    id_grid = get_id(nii_fixed.shape[:3])
+    fixed_shape = nii_fixed.shape[:3]
+    id_grid = identity_grid(fixed_shape, dtype=torch.float64, device=device)
 
     # 2. Voxel -> RAS (fixed image affine)
-    grid = affine_transform(id_grid, nii_fixed.affine)
+    grid = affine_transform(id_grid, fixed_affine)
 
     # 3. First half of affine (square root)
     grid = affine_transform(grid, affine_sqrt)
 
     # 4. Sample displacement field
     #    Map grid to displacement voxel space
-    grid = affine_transform(grid, inv(nii_disp.affine))
+    grid = affine_transform(grid, torch.linalg.inv(disp_affine))
     #    Sample the displacement at these voxel coordinates
-    sampled_disp = pull(dat_disp, grid)
+    #    grid_pull expects: input (batch, channel, *spatial), grid (batch, *spatial, dim)
+    dat_disp_bcxyz = dat_disp.permute(3, 0, 1, 2).unsqueeze(0)  # (1, 3, X, Y, Z)
+    grid_batch = grid.unsqueeze(0)  # (1, X, Y, Z, 3)
+    sampled_disp = grid_pull(dat_disp_bcxyz, grid_batch, bound='zero', extrapolate=True)
+    sampled_disp = sampled_disp[0].permute(1, 2, 3, 0)  # (X, Y, Z, 3)
     #    Map back to displacement RAS space and add displacement
-    grid = affine_transform(grid, nii_disp.affine)
-    grid = displace(grid, sampled_disp)
+    grid = affine_transform(grid, disp_affine)
+    grid = grid + sampled_disp
 
     # 5. Second half of affine (square root)
     grid = affine_transform(grid, affine_sqrt)
 
     # Convert deformation to displacement (subtract fixed RAS positions)
-    grid -= affine_transform(id_grid, nii_fixed.affine)
+    grid -= affine_transform(id_grid, fixed_affine)
 
     # NOTE: With intent code 1006 (NIFTI_INTENT_DISPVECT), Slicer expects
     # displacement vectors in RAS, so no LPS conversion is needed.
@@ -260,10 +172,13 @@ def create_slicer_grid_transform(
     # so you would need: grid[..., 0] *= -1; grid[..., 1] *= -1
 
     # Add singleton dimension for Slicer grid format: (X, Y, Z, 1, 3)
-    grid = np.expand_dims(grid, axis=-2)
+    grid = grid.unsqueeze(-2)
 
-    # Save
-    save_nii(output_path, grid, nii_fixed.affine)
+    # Save as NIfTI
+    grid_np = grid.cpu().to(torch.float32).numpy()
+    img = nib.Nifti1Image(grid_np, nii_fixed.affine)
+    img.header['intent_code'] = 1006  # NIFTI_INTENT_DISPVECT
+    nib.save(img, output_path)
     print(f"  Grid transform saved: {output_path}")
 
 
@@ -330,12 +245,14 @@ def main():
     slicer_dir = os.path.join(pair["dir_out"], "slicer")
     os.makedirs(slicer_dir, exist_ok=True)
 
+    device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
     grid_path = os.path.join(slicer_dir, "Grid.nii.gz")
     create_slicer_grid_transform(
         fixed_nii_path=pair["fixed"]["image"],
         affine_lta_path=pair["loss"][loss]["affine"],
         displacement_nii_path=pair["loss"][loss]["u"],
         output_path=grid_path,
+        device=device,
     )
 
     # -------------------------------------------------------------------------
