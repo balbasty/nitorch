@@ -32,12 +32,11 @@ from nitorch.spatial import identity_grid, grid_pull
 
 from demo_helpers import (
     add_loss,
-    create_displacement_field,
+    create_displacement_field_api,
     get_pair,
     get_subject_id,
-    register,
-    resize_pair,
-    reslice,
+    register_api,
+    resize_pair_api,
 )
 
 # =============================================================================
@@ -98,17 +97,16 @@ def affine_transform(grid, mat):
     return grid @ mat[:3, :3].T + mat[:3, 3]
 
 
-def create_slicer_grid_transform(
+def compose_deformation_grid(
     fixed_nii_path,
     affine_lta_path,
     displacement_nii_path,
-    output_path,
     device='cpu',
 ):
-    """Convert nitorch registration transforms to a 3D Slicer grid transform.
+    """Compose nitorch registration transforms into a full deformation grid.
 
     Composes the affine (split as square root, applied twice) and displacement
-    field into a single grid transform in RAS convention for 3D Slicer.
+    field into a single deformation field in RAS coordinates.
 
     Parameters
     ----------
@@ -118,12 +116,17 @@ def create_slicer_grid_transform(
         Path to the affine .lta file from nitorch registration.
     displacement_nii_path : str
         Path to the displacement field NIfTI (u.nii.gz).
-    output_path : str
-        Path to save the output grid transform NIfTI.
     device : str
         Torch device ('cpu' or 'cuda').
+
+    Returns
+    -------
+    grid : torch.Tensor
+        (X, Y, Z, 3) deformation field — RAS positions that each fixed voxel
+        maps to after registration.
+    nii_fixed : nib.Nifti1Image
+        The loaded fixed image (for accessing affine/shape).
     """
-    # Load data
     nii_fixed = nib.load(fixed_nii_path)
     nii_disp = nib.load(displacement_nii_path)
 
@@ -131,7 +134,6 @@ def create_slicer_grid_transform(
     disp_affine = torch.from_numpy(nii_disp.affine.astype(np.float64)).to(device)
 
     dat_disp = torch.from_numpy(nii_disp.get_fdata()).to(dtype=torch.float64, device=device)
-    # Squeeze trailing singleton dims: (X, Y, Z, 1, 3) -> (X, Y, Z, 3)
     while dat_disp.ndim > 4:
         dat_disp = dat_disp.squeeze(-2)
 
@@ -148,38 +150,91 @@ def create_slicer_grid_transform(
     grid = affine_transform(grid, affine_sqrt)
 
     # 4. Sample displacement field
-    #    Map grid to displacement voxel space
     grid = affine_transform(grid, torch.linalg.inv(disp_affine))
-    #    Sample the displacement at these voxel coordinates
-    #    grid_pull expects: input (batch, channel, *spatial), grid (batch, *spatial, dim)
-    dat_disp_bcxyz = dat_disp.permute(3, 0, 1, 2).unsqueeze(0)  # (1, 3, X, Y, Z)
-    grid_batch = grid.unsqueeze(0)  # (1, X, Y, Z, 3)
+    dat_disp_bcxyz = dat_disp.permute(3, 0, 1, 2).unsqueeze(0)
+    grid_batch = grid.unsqueeze(0)
     sampled_disp = grid_pull(dat_disp_bcxyz, grid_batch, bound='zero', extrapolate=True)
-    sampled_disp = sampled_disp[0].permute(1, 2, 3, 0)  # (X, Y, Z, 3)
-    #    Map back to displacement RAS space and add displacement
+    sampled_disp = sampled_disp[0].permute(1, 2, 3, 0)
     grid = affine_transform(grid, disp_affine)
     grid = grid + sampled_disp
 
     # 5. Second half of affine (square root)
     grid = affine_transform(grid, affine_sqrt)
 
+    return grid, nii_fixed
+
+
+def save_slicer_grid_transform(grid, nii_fixed, output_path):
+    """Save a deformation grid as a 3D Slicer grid transform NIfTI.
+
+    Parameters
+    ----------
+    grid : torch.Tensor
+        (X, Y, Z, 3) deformation field in RAS coordinates.
+    nii_fixed : nib.Nifti1Image
+        Fixed image (for affine and shape).
+    output_path : str
+        Path to save the output grid transform NIfTI.
+    """
+    fixed_affine = torch.from_numpy(nii_fixed.affine.astype(np.float64)).to(grid.device)
+    id_grid = identity_grid(nii_fixed.shape[:3], dtype=torch.float64, device=grid.device)
+
     # Convert deformation to displacement (subtract fixed RAS positions)
-    grid -= affine_transform(id_grid, fixed_affine)
+    disp = grid - affine_transform(id_grid, fixed_affine)
 
     # NOTE: With intent code 1006 (NIFTI_INTENT_DISPVECT), Slicer expects
     # displacement vectors in RAS, so no LPS conversion is needed.
-    # With intent code 1007 (NIFTI_INTENT_VECTOR), Slicer assumes LPS,
-    # so you would need: grid[..., 0] *= -1; grid[..., 1] *= -1
 
     # Add singleton dimension for Slicer grid format: (X, Y, Z, 1, 3)
-    grid = grid.unsqueeze(-2)
+    disp = disp.unsqueeze(-2)
 
-    # Save as NIfTI
-    grid_np = grid.cpu().to(torch.float32).numpy()
-    img = nib.Nifti1Image(grid_np, nii_fixed.affine)
+    disp_np = disp.cpu().to(torch.float32).numpy()
+    img = nib.Nifti1Image(disp_np, nii_fixed.affine)
     img.header['intent_code'] = 1006  # NIFTI_INTENT_DISPVECT
     nib.save(img, output_path)
     print(f"  Grid transform saved: {output_path}")
+
+
+def reslice_volume(grid, nii_fixed, moving_nii_path, output_path, interpolation=1):
+    """Reslice a volume from moving to fixed space using a deformation grid.
+
+    Parameters
+    ----------
+    grid : torch.Tensor
+        (X, Y, Z, 3) deformation field in RAS coordinates.
+    nii_fixed : nib.Nifti1Image
+        Fixed image (for affine).
+    moving_nii_path : str
+        Path to the moving volume to reslice.
+    output_path : str
+        Path to save the resliced volume.
+    interpolation : int
+        Interpolation order (1=linear for images, 0=nearest for labels).
+    """
+    nii_moving = nib.load(moving_nii_path)
+    moving_affine = torch.from_numpy(nii_moving.affine.astype(np.float64)).to(grid.device)
+
+    # Convert RAS deformation grid to moving voxel coordinates
+    grid_mov_vox = affine_transform(grid, torch.linalg.inv(moving_affine))
+
+    # Load moving volume data
+    dat_moving = torch.from_numpy(nii_moving.get_fdata()).to(
+        dtype=torch.float64, device=grid.device,
+    )
+    while dat_moving.ndim > 3 and dat_moving.shape[-1] == 1:
+        dat_moving = dat_moving.squeeze(-1)
+
+    # grid_pull expects: input (batch, channel, *spatial), grid (batch, *spatial, dim)
+    dat_batch = dat_moving.unsqueeze(0).unsqueeze(0)  # (1, 1, X, Y, Z)
+    grid_batch = grid_mov_vox.unsqueeze(0)  # (1, X, Y, Z, 3)
+    resliced = grid_pull(dat_batch, grid_batch, interpolation=interpolation, bound='zero')
+    resliced = resliced[0, 0]  # (X, Y, Z)
+
+    # Save
+    resliced_np = resliced.cpu().to(torch.float32).numpy()
+    img = nib.Nifti1Image(resliced_np, nii_fixed.affine)
+    nib.save(img, output_path)
+    print(f"  Resliced: {output_path}")
 
 
 # =============================================================================
@@ -198,6 +253,7 @@ def main():
     use_gpu = True
     loss = "lcc"
 
+    device = 'cuda:0' if use_gpu and torch.cuda.is_available() else 'cpu'
     os.makedirs(dir_out, exist_ok=True)
 
     # -------------------------------------------------------------------------
@@ -223,52 +279,57 @@ def main():
     print(f"Output directory: {pair['dir_out']}")
 
     # Resize if requested
-    pair = resize_pair(pair, factor=resize_factor, use_gpu=use_gpu)
+    pair = resize_pair_api(pair, factor=resize_factor, device=device)
 
     # Register
     pair = add_loss(pair, loss)
-    register(loss, pair, verbose=True, print_gpu_use=True, use_gpu=use_gpu)
+    register_api(loss, pair, verbose=True, print_gpu_use=True, device=device)
 
     # Create displacement field
-    pair = create_displacement_field(pair, loss, use_gpu=use_gpu)
-
-    # Reslice images and labels
-    reslice(pair, loss, verbose=True, use_gpu=use_gpu)
+    pair = create_displacement_field_api(pair, loss, device=device)
 
     # -------------------------------------------------------------------------
-    # Part 2: Convert to 3D Slicer grid transform
+    # Part 2: Compose deformation grid, reslice, and export for 3D Slicer
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
-    print("Part 2: Creating 3D Slicer Grid Transform")
+    print("Part 2: Composing Deformation Grid & Reslicing")
     print("=" * 60)
 
     slicer_dir = os.path.join(pair["dir_out"], "slicer")
     os.makedirs(slicer_dir, exist_ok=True)
 
-    device = 'cuda' if use_gpu and torch.cuda.is_available() else 'cpu'
-    grid_path = os.path.join(slicer_dir, "Grid.nii.gz")
-    create_slicer_grid_transform(
+    # Compose the full deformation grid (used for both reslicing and Slicer export)
+    grid, nii_fixed = compose_deformation_grid(
         fixed_nii_path=pair["fixed"]["image"],
         affine_lta_path=pair["loss"][loss]["affine"],
         displacement_nii_path=pair["loss"][loss]["u"],
-        output_path=grid_path,
         device=device,
     )
 
+    # Reslice moving image and labels using the deformation grid
+    reslice_volume(grid, nii_fixed, pair["moving"]["image"],
+                   os.path.join(slicer_dir, "moving_image_resliced.nii.gz"),
+                   interpolation=1)
+    reslice_volume(grid, nii_fixed, pair["moving"]["label"],
+                   os.path.join(slicer_dir, "moving_label_resliced.nii.gz"),
+                   interpolation=0)
+
+    # Save 3D Slicer grid transform
+    save_slicer_grid_transform(grid, nii_fixed,
+                               os.path.join(slicer_dir, "Grid.nii.gz"))
+
     # -------------------------------------------------------------------------
-    # Part 3: Copy files for 3D Slicer
+    # Part 3: Copy original files for 3D Slicer
     # -------------------------------------------------------------------------
     print("\n" + "=" * 60)
-    print("Part 3: Copying files for 3D Slicer")
+    print("Part 3: Copying original files for 3D Slicer")
     print("=" * 60)
 
     files_to_copy = {
         "fixed_image.nii.gz": pair["fixed"]["image"],
         "moving_image.nii.gz": pair["moving"]["image"],
-        "moving_image_resliced.nii.gz": pair["loss"][loss]["moving"]["image"],
         "fixed_label.nii.gz": pair["fixed"]["label"],
         "moving_label.nii.gz": pair["moving"]["label"],
-        "moving_label_resliced.nii.gz": pair["loss"][loss]["moving"]["label"],
     }
 
     for dest_name, src_path in files_to_copy.items():
