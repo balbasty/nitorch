@@ -51,3 +51,4 @@ class Reslicer(Structure):
     log: bool = False
     logit: bool = False
     clip: bool = False
+    verbose: bool = True

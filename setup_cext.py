@@ -532,6 +532,11 @@ def common_links_flags():
 
 def cuda_flags():
     flags = nvcc_flags() + cuda_arch_flags()
+    # Add C++ standard directly to nvcc (required for PyTorch 2.x with C++17)
+    if torch_version()[0] >= 2:
+        flags += ['-std=c++17']
+    else:
+        flags += ['-std=c++14']
     if is_windows():
         for flag in common_flags():
             # if flag == '-fPIC':

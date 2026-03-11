@@ -364,8 +364,9 @@ def write_volumes(options):
     for file, ofname in zip(options.volumes, output):
         is_label = isinstance(options.interpolation, str) and options.interpolation == 'l'
         ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext)
-        print(f'Reslicing:   {file.fname}\n'
-              f'          -> {ofname}')
+        if options.verbose:
+            print(f'Reslicing:   {file.fname}\n'
+                  f'          -> {ofname}')
         vol = io.volumes.map(file.fname)
         if is_label:
             backend_int = dict(dtype=torch.long, device=backend['device'])
@@ -634,8 +635,9 @@ def write_streamlines(options):
     output = py.make_list(options.output, len(options.streamlines))
     for file, ofname in zip(options.streamlines, output):
         ofname = ofname.format(dir=file.dir, base=file.base, ext=file.ext, sep=os.path.sep)
-        print(f'Reslicing:   {file.fname}\n'
-              f'          -> {ofname}')
+        if options.verbose:
+            print(f'Reslicing:   {file.fname}\n'
+                  f'          -> {ofname}')
         dat = list(io.streamlines.loadf(file.fname, **backend))
         offsets = py.cumsum(map(len, dat), exclusive=True)
         dat = torch.cat(list(dat))

@@ -48,6 +48,7 @@ usage:
          --logit [implicit] Interpolate in logit space (no)
          --clip             Clip values outside of the input range (no)
     -cpu, -gpu              Device to use (cpu)
+    -q,  --quiet            Suppress output messages (no)
 
    The output image is
     input_dat(inv(inpt_aff) o trf[0] o trf[1] o ... trf[-1] o target_aff)
@@ -226,6 +227,8 @@ def parse(args):
             if cli.next_isvalue(args):
                 gpu, *args = args
                 options.device = 'cuda:{:d}'.format(int(gpu))
+        elif tag in ('-q', '--quiet'):
+            options.verbose = False
 
         # Something went wrong
         else:
