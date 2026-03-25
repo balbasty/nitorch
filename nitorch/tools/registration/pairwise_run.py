@@ -284,9 +284,10 @@ def run_pyramid(
 
     while losses:
         loss_level = losses.pop(0)
-        print('-' * line_size)
-        print(f'   PYRAMID LEVEL {n_level}')
-        print('-' * line_size)
+        if verbose:
+            print('-' * line_size)
+            print(f'   PYRAMID LEVEL {n_level}')
+            print('-' * line_size)
         if nonlin and hasattr(nonlin_optim, 'voxel_size'):
             nonlin_optim.voxel_size = nonlin.voxel_size
         optim.reset_state()

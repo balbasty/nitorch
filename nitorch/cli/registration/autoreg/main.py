@@ -63,22 +63,23 @@ def _autoreg(argv=None):
     load_data(options)
     load_transforms(options)
 
-    print('Losses:')
-    for loss in options.losses:
-        print(f' - {loss.name}')
-        for f, m in zip(loss.fixed.dat, loss.moving.dat):
-            print(f'   -| {list(m[0].shape)}, {spatial.voxel_size(m[1]).tolist()}')
-            print(f'   -> {list(f[0].shape)}, {spatial.voxel_size(f[1]).tolist()}')
-    print('Transforms')
-    for trf in options.transformations:
-        print(f' - {trf.name}')
-        if isinstance(trf, struct.NonLinear):
-            pyramid0 = trf.pyramid[-1]
-            for pyramid in reversed(trf.pyramid):
-                factor = 2**(pyramid0 - pyramid)
-                shape = [s*factor for s in trf.dat.shape]
-                vx = spatial.voxel_size(trf.affine) / factor
-                print(f'   - {list(shape)}, {vx.tolist()}')
+    if options.verbose:
+        print('Losses:')
+        for loss in options.losses:
+            print(f' - {loss.name}')
+            for f, m in zip(loss.fixed.dat, loss.moving.dat):
+                print(f'   -| {list(m[0].shape)}, {spatial.voxel_size(m[1]).tolist()}')
+                print(f'   -> {list(f[0].shape)}, {spatial.voxel_size(f[1]).tolist()}')
+        print('Transforms')
+        for trf in options.transformations:
+            print(f' - {trf.name}')
+            if isinstance(trf, struct.NonLinear):
+                pyramid0 = trf.pyramid[-1]
+                for pyramid in reversed(trf.pyramid):
+                    factor = 2**(pyramid0 - pyramid)
+                    shape = [s*factor for s in trf.dat.shape]
+                    vx = spatial.voxel_size(trf.affine) / factor
+                    print(f'   - {list(shape)}, {vx.tolist()}')
 
     while not all_optimized(options):
         add_freedom(options)

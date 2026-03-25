@@ -10,7 +10,7 @@ import torch
 import os
 
 
-def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=None):
+def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=None, verbose=True):
     """Warp and save the moving and fixed images from a loss object
 
     Parameters
@@ -42,6 +42,8 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
         Device to use to perform the warping
     odir : str, optional
         Output directory
+    verbose : bool, optional
+        Whether to print progress messages. Default is True.
 
     """
 
@@ -114,12 +116,14 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
                 target_affine = spatial.affine_lmdiv(aff, target_affine)
 
             fname = mov.output.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
-            print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
+            if verbose:
+                print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin)
             save = io.save if mov.label else io.savef
             save(warped, fname, like=ifname, affine=target_affine)
-            print('done.')
+            if verbose:
+                print('done.')
             del warped
 
         if mov.resliced:
@@ -127,12 +131,14 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             target_shape = dat_fix.shape[1:]
 
             fname = mov.resliced.format(dir=odir_mov, base=base, sep=os.path.sep, ext=ext)
-            print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
+            if verbose:
+                print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin, reslice=True)
             save = io.save if mov.label else io.savef
             save(warped, fname, like=ifname, affine=target_affine)
-            print('done.')
+            if verbose:
+                print('done.')
             del warped
 
     # fixed
@@ -155,12 +161,14 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
                 target_affine = spatial.affine_matmul(aff, target_affine)
 
             fname = fix.output.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
-            print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
+            if verbose:
+                print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin, backward=True)
             save = io.save if fix.label else io.savef
             save(warped, fname, like=ifname, affine=target_affine)
-            print('done.')
+            if verbose:
+                print('done.')
             del warped
 
         if fix.resliced:
@@ -168,13 +176,15 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             target_shape = dat_mov.shape[1:]
 
             fname = fix.resliced.format(dir=odir_fix, base=base, sep=os.path.sep, ext=ext)
-            print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
+            if verbose:
+                print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin,
                                     backward=True, reslice=True)
             save = io.save if fix.label else io.savef
             save(warped, fname, like=ifname, affine=target_affine)
-            print('done.')
+            if verbose:
+                print('done.')
             del warped
 
 

@@ -160,8 +160,6 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
         dat = dat.fdata(rand=True, missing=0, dtype=DTYPE)
     dat = torch.as_tensor(dat, dtype=DTYPE).flatten()
     device = dat.device
-    if not slope and not dat.dtype.is_floating_point:
-        slope = 1
 
     # exclude missing values
     dat = dat[torch.isfinite(dat)]
@@ -172,8 +170,13 @@ def estimate_noise(dat, show_fit=False, fig_num=1, num_class=2,
     mx = dat.max()
     dat = dat[dat != mn]
     dat = dat[dat != mx]
-    mn = mn.round()
-    mx = mx.round()
+    
+    if not dat.dtype.is_floating_point:
+        mn = mn.round()
+        mx = mx.round()
+        if not slope:
+            slope = 1
+            
     if slope:
         # ensure bin width aligns with integer width
         width = (mx - mn) / bins
