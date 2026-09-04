@@ -117,7 +117,7 @@ def make_image(dat, mask=None, affine=None,
             level.dat = level.dat.reshape([-1, *level.shape])
 
     anatomix = _normalize_anatomix_config(anatomix)
-    if anatomix:
+    if anatomix is not None:
         extractor = AnatomixFeatureExtractor(**anatomix)
         for level in image:
             if level.dat.shape[0] != 1:

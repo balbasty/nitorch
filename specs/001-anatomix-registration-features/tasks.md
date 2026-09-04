@@ -94,12 +94,12 @@ Acceptance Scenario 1).
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T014 [P] [US2] Test that `extract_features(volume, weights_path=...)` returns a tensor of shape `(1, output_nc, *spatial)` on the same device as `volume`, independent of any registration object, in `nitorch/tests/test_anatomix_extraction.py` (contracts/anatomix-api.md §2, spec.md SC-003).
+- [X] T014 [P] [US2] Test that `extract_features(volume, weights_path=...)` returns a tensor of shape `(1, output_nc, *spatial)` on the same device as `volume`, independent of any registration object, in `nitorch/tests/test_anatomix_extraction.py` (contracts/anatomix-api.md §2, spec.md SC-003).
 
 ### Implementation for User Story 2
 
-- [ ] T015 [US2] Verify and document `extract_features`'s standalone usage contract (already implemented in Phase 2/T004) with a docstring in `nitorch/_models/anatomix/__init__.py` covering shape, device, and weight-resolution behavior for callers outside the registration workflow.
-- [ ] T016 [US2] Run T014 and manually walk through quickstart.md Scenario 1.
+- [X] T015 [US2] Verify and document `extract_features`'s standalone usage contract (already implemented in Phase 2/T004) with a docstring in `nitorch/_models/anatomix/__init__.py` covering shape, device, and weight-resolution behavior for callers outside the registration workflow.
+- [X] T016 [US2] Run T014 and manually walk through quickstart.md Scenario 1.
 
 **Checkpoint**: User Story 2 is independently testable (validates functionality already delivered in Phase 2).
 
@@ -116,14 +116,14 @@ Scenarios 1-2).
 
 ### Tests for User Story 3 ⚠️
 
-- [ ] T017 [P] [US3] Test that `make_image(dat, anatomix=True)` with no reachable weights (e.g. `auto_download` fails/is unreachable) raises a descriptive error naming the missing prerequisite and a remedy, in `nitorch/tests/test_anatomix_image.py` (FR-006, SC-005).
-- [ ] T018 [P] [US3] Test that `make_image(dat, anatomix="/nonexistent/path.pth")` raises the same class of descriptive error, in `nitorch/tests/test_anatomix_image.py`.
-- [ ] T019 [P] [US3] Test that `extract_features(volume)` called with no weight source raises the same descriptive error contract, in `nitorch/tests/test_anatomix_extraction.py`.
+- [X] T017 [P] [US3] Test that `make_image(dat, anatomix=True)` with no reachable weights (e.g. `auto_download` fails/is unreachable) raises a descriptive error naming the missing prerequisite and a remedy, in `nitorch/tests/test_anatomix_image.py` (FR-006, SC-005).
+- [X] T018 [P] [US3] Test that `make_image(dat, anatomix="/nonexistent/path.pth")` raises the same class of descriptive error, in `nitorch/tests/test_anatomix_image.py`.
+- [X] T019 [P] [US3] Test that `extract_features(volume)` called with no weight source raises the same descriptive error contract, in `nitorch/tests/test_anatomix_extraction.py`.
 
 ### Implementation for User Story 3
 
-- [ ] T020 [US3] Review and, if needed, refine the error type/messages raised in `nitorch/_models/anatomix/weights.py` (implemented in Phase 2/T003) against contracts/anatomix-api.md §1's error contract (a `RuntimeError` or dedicated `AnatomixWeightsError`, never a bare `KeyError`/`AttributeError`).
-- [ ] T021 [US3] Run T017-T019, confirm they pass, and manually walk through quickstart.md Scenario 4.
+- [X] T020 [US3] Review and, if needed, refine the error type/messages raised in `nitorch/_models/anatomix/weights.py` (implemented in Phase 2/T003) against contracts/anatomix-api.md §1's error contract (a `RuntimeError` or dedicated `AnatomixWeightsError`, never a bare `KeyError`/`AttributeError`).
+- [X] T021 [US3] Run T017-T019, confirm they pass, and manually walk through quickstart.md Scenario 4.
 
 **Checkpoint**: All three user stories are independently functional and tested.
 

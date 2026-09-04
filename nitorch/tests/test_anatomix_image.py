@@ -61,6 +61,15 @@ def test_make_image_anatomix_rejects_multichannel_input(fake_checkpoint):
         make_image(dat, anatomix=dict(weights_path=fake_checkpoint, **ARCH))
 
 
+def test_make_image_anatomix_empty_dict_still_enabled():
+    # anatomix={} means "enabled, all defaults" -- an empty dict is falsy
+    # in Python, so a naive `if anatomix:` check would wrongly treat it as
+    # disabled instead of raising the expected missing-weights error.
+    dat = torch.rand(1, 16, 16, 16)
+    with pytest.raises(AnatomixWeightsError):
+        make_image(dat, anatomix={})
+
+
 def test_sc002_comparison_mechanism_runs_for_both_configurations(fake_checkpoint):
     """Automated, network-free stand-in for the SC-002 comparison: both the
     intensity-based and the anatomix-based registration configurations run
