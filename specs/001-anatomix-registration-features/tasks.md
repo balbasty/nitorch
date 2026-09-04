@@ -133,10 +133,10 @@ Scenarios 1-2).
 
 **Purpose**: Documentation and final regression validation across all stories.
 
-- [ ] T022 [P] Document the `anatomix=` parameter in `make_image()`'s docstring in `nitorch/tools/registration/pairwise_makeobj.py`, mirroring the existing `mind` docstring entry's style.
-- [ ] T023 [P] Polish the `--anatomix` help text in `nitorch/cli/registration/register/parser.py` for consistency with the surrounding `--mind`/`--discretize` entries.
-- [ ] T024 Walk through all five quickstart.md scenarios end-to-end as a final combined validation.
-- [ ] T025 Run the full existing nitorch test suite (`nitorch/tests/`, `nitorch/io/tests/`) and confirm no regressions, as the final check for FR-008.
+- [X] T022 [P] Document the `anatomix=` parameter in `make_image()`'s docstring in `nitorch/tools/registration/pairwise_makeobj.py`, mirroring the existing `mind` docstring entry's style.
+- [X] T023 [P] Polish the `--anatomix` help text in `nitorch/cli/registration/register/parser.py` for consistency with the surrounding `--mind`/`--discretize` entries.
+- [X] T024 Walk through all five quickstart.md scenarios end-to-end as a final combined validation.
+- [X] T025 Run the full existing nitorch test suite (`nitorch/tests/`, `nitorch/io/tests/`) and confirm no regressions, as the final check for FR-008.
 
 ---
 

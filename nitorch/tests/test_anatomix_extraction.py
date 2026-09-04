@@ -30,6 +30,13 @@ def test_extract_features_standalone_no_registration_objects(fake_checkpoint):
     assert features.shape == (1, ARCH['output_nc'], 16, 16, 16)
 
 
+def test_extract_features_indivisible_spatial_shape_raises_clear_error(fake_checkpoint):
+    # num_downs=2 requires spatial dims divisible by 4; 15 is not
+    volume = torch.rand(1, 1, 15, 16, 16)
+    with pytest.raises(ValueError, match='divisible'):
+        extract_features(volume, weights_path=fake_checkpoint, **ARCH)
+
+
 def test_extract_features_missing_weights_raises_descriptive_error():
     volume = torch.rand(1, 1, 16, 16, 16)
     with pytest.raises(AnatomixWeightsError, match='weights_path'):

@@ -157,6 +157,17 @@ class AnatomixUNet(tnn.Module):
         self.out_conv = tnn.Conv3d(in_ch, output_nc, kernel_size=3, padding=1, bias=False)
 
     def forward(self, x):
+        factor = 2 ** self.num_downs
+        bad = [s for s in x.shape[2:] if s % factor != 0]
+        if bad:
+            raise ValueError(
+                f"AnatomixUNet with num_downs={self.num_downs} requires "
+                f"every spatial dimension to be divisible by {factor} "
+                f"(so encoder/decoder feature maps line up at each skip "
+                f"connection); got spatial shape {tuple(x.shape[2:])}. Pad "
+                f"or crop the input, or use a smaller `num_downs`."
+            )
+
         x = self.stem(x)
         skips = []
         for encoder, pool in zip(self.encoders, self.pools):
