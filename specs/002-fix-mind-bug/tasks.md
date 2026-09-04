@@ -54,7 +54,7 @@ the entire feature (single-story MVP).
 
 **Purpose**: Final regression validation.
 
-- [ ] T006 Run the full existing nitorch test suite (`nitorch/tests/`, `nitorch/io/tests/`) and confirm zero new failures (spec.md SC-003, quickstart.md Scenario 4).
+- [X] T006 Run the full existing nitorch test suite (`nitorch/tests/`, `nitorch/io/tests/`) and confirm zero new failures (spec.md SC-003, quickstart.md Scenario 4).
 
 ---
 
