@@ -239,6 +239,52 @@ def replicate_(i, n):
     return i.clamp_(min=0, max=n-1), 1
 
 
+def zero(i, n):
+    """Apply zero (constant) boundary conditions to an index
+
+    Out-of-bounds samples are treated as exactly zero: the index is
+    clamped into the field of view (so it can be safely used to gather a
+    value), and the returned multiplier is 0 for any index that was
+    originally out of bounds -- consistent with how `utils.roll` applies
+    it (`out = inp.flatten()[grid]; out *= mult`), so `0 * anything == 0`.
+
+    Parameters
+    ----------
+    i : int                 Index
+    n : int                 Length of the field of view
+
+    Returns
+    -------
+    i : int                 Index that falls inside the field of view [0, n-1]
+    s : {0, 1}              1 if the original index was in bounds, else 0
+
+    """
+    if isinstance(i, int):
+        return min(max(i, 0), n-1), int(0 <= i < n)
+    inbounds = ((i >= 0) & (i < n)).to(i.dtype)
+    return i.clamp(min=0, max=n-1), inbounds
+
+
+def zero_(i, n):
+    """Apply zero (constant) boundary conditions to an index, in-place
+
+    Parameters
+    ----------
+    i : int                 Index
+    n : int                 Length of the field of view
+
+    Returns
+    -------
+    i : int                 Index that falls inside the field of view [0, n-1]
+    s : {0, 1}              1 if the original index was in bounds, else 0
+
+    """
+    if isinstance(i, int):
+        return zero(i, n)
+    inbounds = ((i >= 0) & (i < n)).to(i.dtype)
+    return i.clamp_(min=0, max=n-1), inbounds
+
+
 def dct2(i, n):
     """Apply DCT-II (reflect) boundary conditions to an index
 
