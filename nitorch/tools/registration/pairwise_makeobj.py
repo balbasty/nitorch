@@ -7,11 +7,36 @@ from nitorch.core.py import make_list
 from nitorch.core import utils
 from . import losses, objects, optim as opt
 from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_image
+from nitorch._models.anatomix import AnatomixFeatureExtractor
+
+
+def _normalize_anatomix_config(anatomix):
+    """Normalize the `anatomix=` make_image() argument into a kwargs dict.
+
+    Mirrors `mind`'s own True/explicit-value shorthand (see the `mind`
+    handling just below): `None`/`False` disables the feature, `True` is
+    shorthand for opting into automatic weight download, a `str` is
+    shorthand for a local weights path, and a `dict` gives full control
+    (weights source plus architecture overrides). See
+    ``specs/001-anatomix-registration-features/research.md`` (decision 5).
+    """
+    if anatomix is None or anatomix is False:
+        return None
+    if anatomix is True:
+        return {'auto_download': True}
+    if isinstance(anatomix, str):
+        return {'weights_path': anatomix}
+    if isinstance(anatomix, dict):
+        return dict(anatomix)
+    raise TypeError(
+        f"`anatomix` must be None, bool, str or dict, got "
+        f"{type(anatomix).__name__}"
+    )
 
 
 def make_image(dat, mask=None, affine=None,
                pyramid=0, pyramid_method='gaussian',
-               discretize=False, soft=False, mind=None,
+               discretize=False, soft=False, mind=None, anatomix=None,
                bound='zero', extrapolate=False, **kwargs):
     """Create an image pyramid (eventually with a single level)
 
@@ -35,6 +60,14 @@ def make_image(dat, mask=None, affine=None,
         Compute MIND features at each pyramid level.
         First parameter is the FWHM (default = 1)
         Second parameter is the radius (default = 0 = first-ring neighbors)
+    anatomix : bool or str or dict, optional
+        Compute anatomix modality-agnostic features at each pyramid level,
+        in place of raw intensities (`dat` must be single-channel).
+        `True` opts into automatically downloading the pretrained weights;
+        a `str` is a local path to a pretrained `.pth` checkpoint; a
+        `dict` gives full control (`weights_path`, `auto_download`, and
+        architecture overrides `num_downs`/`ngf`/`output_nc`/`norm`/
+        `interp`/`pooling`). Disabled by default (`None`).
     bound : [sequence of] str
         Boundary conditions
     extrapolate : bool, default=True
@@ -82,6 +115,18 @@ def make_image(dat, mask=None, affine=None,
                                      bound=level.bound)
             level.dat = utils.movedim(level.dat, -1, 0)
             level.dat = level.dat.reshape([-1, *level.shape])
+
+    anatomix = _normalize_anatomix_config(anatomix)
+    if anatomix:
+        extractor = AnatomixFeatureExtractor(**anatomix)
+        for level in image:
+            if level.dat.shape[0] != 1:
+                raise ValueError(
+                    f"anatomix expects a single-channel image, got "
+                    f"{level.dat.shape[0]} channels"
+                )
+            level.preview = level.dat
+            level.dat = extractor(level.dat[None])[0]
 
     if discretize:
         if soft:

@@ -150,6 +150,8 @@ usage:
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
         --mind  [FWHM=1 [RADIUS=0]] Compute MIND features
+        --anatomix [PATH]           Compute anatomix features (path to local weights;
+                                    bare flag opts into automatic download) [False]
     -c, --channels *C               Channels to load. Can be a range start:stop:step [:]
 
 @affine options:
@@ -445,6 +447,10 @@ file.add_option('missing', '--no-missing', nargs=0,
                 action=cli.Actions.store_value([]), help='No missing values')
 file.add_option('mind', '--mind', nargs='*2', default=[], convert=float,
                 action=cli.Actions.store_value([1, 2]))
+file.add_option('anatomix', '--anatomix', nargs='?', default=None, convert=str,
+                action=cli.Actions.store_value(True),
+                help='Compute anatomix features (path to local weights; '
+                     'bare flag opts into automatic download)')
 file.add_option('channels', ('-c', '--channels'), nargs='1*', convert=parse_range, default=[slice(None)])
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)
