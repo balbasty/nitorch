@@ -58,13 +58,19 @@ def _pool_layer(pooling):
 
 
 class ConvBlock(tnn.Module):
-    """Two (Conv3d -> Norm -> ReLU) layers, preserving spatial shape."""
+    """Two (Conv3d -> Norm -> ReLU) layers, preserving spatial shape.
+
+    Convolutions carry no bias (redundant ahead of a normalization layer),
+    matching the published anatomix checkpoint.
+    """
 
     def __init__(self, in_channels, out_channels, norm='batch'):
         super().__init__()
-        self.conv1 = tnn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.conv1 = tnn.Conv3d(in_channels, out_channels, kernel_size=3,
+                                padding=1, bias=False)
         self.norm1 = _norm_layer(norm, out_channels)
-        self.conv2 = tnn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.conv2 = tnn.Conv3d(out_channels, out_channels, kernel_size=3,
+                                padding=1, bias=False)
         self.norm2 = _norm_layer(norm, out_channels)
         self.act = tnn.ReLU(inplace=True)
 
@@ -77,10 +83,12 @@ class ConvBlock(tnn.Module):
 class AnatomixUNet(tnn.Module):
     """Parameterized 3D U-Net matching anatomix's published architecture.
 
-    Encoder/decoder channel counts double at each of ``num_downs`` levels,
-    starting from ``ngf``; skip connections concatenate encoder features
-    into the corresponding decoder level. A final 1x1x1 convolution maps
-    the last decoder level to ``output_nc`` feature channels.
+    A single (Conv3d -> Norm -> ReLU) "stem" maps `input_nc` to `ngf`
+    channels; encoder/decoder channel counts then double at each of
+    `num_downs` levels. Skip connections concatenate encoder features into
+    the corresponding decoder level. A final, bias-free 3x3x3 convolution
+    (no norm/activation after it) maps the last decoder level to
+    `output_nc` raw feature channels.
 
     Parameters
     ----------
@@ -119,9 +127,15 @@ class AnatomixUNet(tnn.Module):
         enc_channels = [ngf * (2 ** i) for i in range(num_downs)]
         bottleneck_channels = ngf * (2 ** num_downs)
 
+        self.stem = tnn.Sequential(
+            tnn.Conv3d(input_nc, ngf, kernel_size=3, padding=1, bias=False),
+            _norm_layer(norm, ngf),
+            tnn.ReLU(inplace=True),
+        )
+
         self.encoders = tnn.ModuleList()
         self.pools = tnn.ModuleList()
-        in_ch = input_nc
+        in_ch = ngf
         for out_ch in enc_channels:
             self.encoders.append(ConvBlock(in_ch, out_ch, norm=norm))
             self.pools.append(_pool_layer(pooling))
@@ -140,9 +154,10 @@ class AnatomixUNet(tnn.Module):
             self.decoders.append(ConvBlock(in_ch + skip_ch, skip_ch, norm=norm))
             in_ch = skip_ch
 
-        self.out_conv = tnn.Conv3d(in_ch, output_nc, kernel_size=1)
+        self.out_conv = tnn.Conv3d(in_ch, output_nc, kernel_size=3, padding=1, bias=False)
 
     def forward(self, x):
+        x = self.stem(x)
         skips = []
         for encoder, pool in zip(self.encoders, self.pools):
             x = encoder(x)

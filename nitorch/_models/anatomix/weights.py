@@ -131,12 +131,77 @@ def resolve_weights_path(weights_path=None, auto_download=False,
     )
 
 
+def _flat_index_to_name_map(num_downs):
+    """Map the upstream anatomix checkpoint's flat `nn.Sequential` layer
+    indices to this package's named-module structure (`AnatomixUNet`).
+
+    The upstream model is built as a single `nn.Sequential`, so its
+    checkpoint keys look like `model.<index>.<param>`. This reproduces the
+    exact index arithmetic of that builder (verified against the published
+    `anatomix.pth` checkpoint's 115 keys): a 3-item stem
+    (conv, norm, act), `num_downs` encoder levels of two (conv, norm, act)
+    triples plus a (parameter-free) pool, a bottleneck of two triples, then
+    `num_downs` decoder levels of a (parameter-free) upsample plus two
+    triples, and a final bias-free output conv.
+    """
+    idx = 0
+    name = {idx: 'stem.0', idx + 1: 'stem.1'}
+    idx += 3
+    for level in range(num_downs):
+        name[idx] = f'encoders.{level}.conv1'
+        name[idx + 1] = f'encoders.{level}.norm1'
+        idx += 3
+        name[idx] = f'encoders.{level}.conv2'
+        name[idx + 1] = f'encoders.{level}.norm2'
+        idx += 3
+        idx += 1  # pool, no parameters
+    name[idx] = 'bottleneck.conv1'
+    name[idx + 1] = 'bottleneck.norm1'
+    idx += 3
+    name[idx] = 'bottleneck.conv2'
+    name[idx + 1] = 'bottleneck.norm2'
+    idx += 3
+    for level in range(num_downs):
+        idx += 1  # upsample, no parameters
+        name[idx] = f'decoders.{level}.conv1'
+        name[idx + 1] = f'decoders.{level}.norm1'
+        idx += 3
+        name[idx] = f'decoders.{level}.conv2'
+        name[idx + 1] = f'decoders.{level}.norm2'
+        idx += 3
+    name[idx] = 'out_conv'
+    return name
+
+
+def _remap_flat_sequential_state_dict(state_dict, num_downs):
+    """Translate a `model.<index>.<param>` state dict into this package's
+    named-module keys, or return None if `state_dict` isn't in that format.
+    """
+    index_to_name = _flat_index_to_name_map(num_downs)
+    remapped = {}
+    for key, value in state_dict.items():
+        if not key.startswith('model.'):
+            return None
+        flat_idx_str, _, param = key[len('model.'):].partition('.')
+        try:
+            flat_idx = int(flat_idx_str)
+        except ValueError:
+            return None
+        if flat_idx not in index_to_name or not param:
+            return None
+        remapped[f'{index_to_name[flat_idx]}.{param}'] = value
+    return remapped
+
+
 def load_state_dict_into(model, weights_path):
     """Load a checkpoint's weights into `model` in place.
 
     Transparently strips a `_orig_mod.` prefix from state-dict keys, which
     `torch.compile()`-saved checkpoints (including some anatomix releases)
-    may carry.
+    may carry, and transparently remaps the upstream anatomix checkpoint's
+    flat `nn.Sequential`-style keys (`model.<index>.<param>`) onto this
+    package's named-module structure when a direct load fails (see
+    `_flat_index_to_name_map`).
 
     Parameters
     ----------
@@ -174,10 +239,25 @@ def load_state_dict_into(model, weights_path):
 
     try:
         model.load_state_dict(state_dict)
-    except RuntimeError as e:
-        raise AnatomixWeightsError(
-            f"Checkpoint at {weights_path!r} is incompatible with the "
-            f"configured anatomix architecture (num_downs/ngf/output_nc/"
-            f"norm/interp/pooling). Verify these match the checkpoint you "
-            f"are loading. Original error: {e}"
-        ) from e
+        return
+    except RuntimeError as first_error:
+        num_downs = getattr(model, 'num_downs', None)
+        remapped = (_remap_flat_sequential_state_dict(state_dict, num_downs)
+                    if num_downs is not None else None)
+        if remapped is None:
+            raise AnatomixWeightsError(
+                f"Checkpoint at {weights_path!r} is incompatible with the "
+                f"configured anatomix architecture (num_downs/ngf/output_nc/"
+                f"norm/interp/pooling). Verify these match the checkpoint "
+                f"you are loading. Original error: {first_error}"
+            ) from first_error
+        try:
+            model.load_state_dict(remapped)
+        except RuntimeError as second_error:
+            raise AnatomixWeightsError(
+                f"Checkpoint at {weights_path!r} looks like an upstream "
+                f"anatomix checkpoint but does not match the configured "
+                f"architecture (num_downs={num_downs}/ngf/output_nc/norm). "
+                f"Verify these match the checkpoint you are loading. "
+                f"Original error: {second_error}"
+            ) from second_error

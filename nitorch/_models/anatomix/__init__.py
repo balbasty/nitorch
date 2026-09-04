@@ -45,6 +45,9 @@ class AnatomixFeatureExtractor:
     auto_download : bool, default=False
         Opt in to downloading the checkpoint from the official anatomix
         HuggingFace Hub distribution and caching it locally.
+    cache_dir : str, optional
+        Directory to cache downloaded weights in, if `auto_download=True`.
+        Defaults to a nitorch-specific user cache directory.
     num_downs, ngf, output_nc, norm, interp, pooling
         Architecture parameters forwarded to `AnatomixUNet`. Default to
         `ARCHITECTURE_DEFAULTS`, matching the published checkpoint; only
@@ -58,9 +61,11 @@ class AnatomixFeatureExtractor:
 
     """
 
-    def __init__(self, weights_path=None, auto_download=False, **architecture):
+    def __init__(self, weights_path=None, auto_download=False, cache_dir=None,
+                 **architecture):
         self.weights_path = resolve_weights_path(
-            weights_path=weights_path, auto_download=auto_download)
+            weights_path=weights_path, auto_download=auto_download,
+            cache_dir=cache_dir)
         config = dict(ARCHITECTURE_DEFAULTS)
         config.update(architecture)
         self.architecture = config
