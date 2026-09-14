@@ -8,6 +8,20 @@ import torch
 from .optionals import numpy as np
 
 
+def _scipy_logm(mat):
+    """Wrap `scipy.linalg.logm`, compatible with old and new scipy.
+
+    scipy < 1.18 returns `(result, errest)` and accepts `disp=False` to
+    suppress its convergence warning; scipy >= 1.18 dropped the `disp`
+    argument entirely and always returns the matrix directly.
+    """
+    from scipy.linalg import logm
+    try:
+        return logm(mat, disp=False)[0]
+    except TypeError:
+        return logm(mat)
+
+
 def matrix_chain_rule(A, G, f):
     """Analytical chain rule for functions of square matrices.
 
@@ -67,8 +81,7 @@ class _LogM(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, mat):
-        from scipy.linalg import logm
-        logm_nowarn = lambda x: logm(x, disp=False)[0]
+        logm_nowarn = _scipy_logm
         if mat.requires_grad:
             ctx.save_for_backward(mat)
         device = mat.device
@@ -82,8 +95,7 @@ class _LogM(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, output_grad):
-        from scipy.linalg import logm
-        logm_nowarn = lambda x: logm(x, disp=False)[0]
+        logm_nowarn = _scipy_logm
         mat, = ctx.saved_tensors
         device = output_grad.device
         input_complex = output_grad.is_complex()
