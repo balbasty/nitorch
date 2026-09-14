@@ -494,17 +494,20 @@ class Image(SpatialTensor):
 
     def get_center_of_mass(self, masked=True, **backend):
         """Compute the RAS coordinate of the center of mass."""
+        ndim = self.ndim
         backend = dict(dtype=self.dtype, device=self.device)
+        affine = self.affine.to(**backend)
         grid = spatial.identity_grid(self.shape, **backend)
         dat = self.dat
         if masked and self.masked:
             msk = self.mask.to(**backend)
             dat = dat * msk
-            den = msk.sum()
-            if len(msk) == 1:
-                den *= len(dat)
         num = (dat[..., None] * grid).sum(list(range(dat.ndim)))
-        return num / den
+        den = dat.sum()
+        center = num / den
+        center = affine[:ndim, :ndim].matmul(center[:, None])
+        center += affine[:ndim, -1:]
+        return center.squeeze(-1)
 
     def _prm_as_str(self):
         s = []
