@@ -1137,6 +1137,13 @@ def _pad_bound(inp, padpre, padpost, bound):
         grid[d], mult[d] = bound[d](grid[d], n)
     grid = list(meshgrid_ij(*grid))
     if any(map(torch.is_tensor, mult)):
+        # a per-dimension bound that always returns a scalar sign (e.g.
+        # dct2/replicate) mixed with one that returns a real per-index
+        # tensor (e.g. zero) would otherwise leave a bare int in `mult`,
+        # which meshgrid rejects -- wrap any remaining scalars as a
+        # 1-element tensor (broadcasts fine against the others)
+        mult = [m if torch.is_tensor(m) else torch.as_tensor([m], device=inp.device)
+                for m in mult]
         mult = meshgrid_ij(*mult)
     mult = py.prod(mult)
     grid = jit.sub2ind_list(grid, inp.shape)
@@ -1191,6 +1198,13 @@ def roll(inp, shifts=1, dims=None, bound='dft'):
         grid[d], mult[d] = b(grid[d], inp.shape[d])
     grid = list(meshgrid_ij(*grid))
     if any(map(torch.is_tensor, mult)):
+        # dims outside `dims` (e.g. an untouched channel dim) were never
+        # passed through a bound function and are still the scalar `1`
+        # initializer -- meshgrid requires every argument to be a tensor,
+        # so wrap any remaining scalars as a 1-element tensor (broadcasts
+        # fine against the other, real per-index multipliers)
+        mult = [m if torch.is_tensor(m) else torch.as_tensor([m], device=inp.device)
+                for m in mult]
         mult = meshgrid_ij(*mult)
     mult = py.prod(mult)
     grid = jit.sub2ind_list(grid, inp.shape)
