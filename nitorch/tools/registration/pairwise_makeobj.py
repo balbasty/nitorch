@@ -2,16 +2,42 @@ __all__ = ['make_image', 'make_loss',
            'make_affine', 'make_affine_2d', 'make_affine_optim',
            'make_nonlin', 'make_nonlin_2d', 'make_nonlin_optim']
 
+import torch
 from nitorch import spatial, io
 from nitorch.core.py import make_list
 from nitorch.core import utils
 from . import losses, objects, optim as opt
 from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_image
+from nitorch._models.anatomix import AnatomixFeatureExtractor
+
+
+def _normalize_anatomix_config(anatomix):
+    """Normalize the `anatomix=` make_image() argument into a kwargs dict.
+
+    Mirrors `mind`'s own True/explicit-value shorthand (see the `mind`
+    handling just below): `None`/`False` disables the feature, `True` is
+    shorthand for opting into automatic weight download, a `str` is
+    shorthand for a local weights path, and a `dict` gives full control
+    (weights source plus architecture overrides). See
+    ``specs/001-anatomix-registration-features/research.md`` (decision 5).
+    """
+    if anatomix is None or anatomix is False:
+        return None
+    if anatomix is True:
+        return {'auto_download': True}
+    if isinstance(anatomix, str):
+        return {'weights_path': anatomix}
+    if isinstance(anatomix, dict):
+        return dict(anatomix)
+    raise TypeError(
+        f"`anatomix` must be None, bool, str or dict, got "
+        f"{type(anatomix).__name__}"
+    )
 
 
 def make_image(dat, mask=None, affine=None,
                pyramid=0, pyramid_method='gaussian',
-               discretize=False, soft=False, mind=None,
+               discretize=False, soft=False, mind=None, anatomix=None,
                bound='zero', extrapolate=False, **kwargs):
     """Create an image pyramid (eventually with a single level)
 
@@ -35,6 +61,17 @@ def make_image(dat, mask=None, affine=None,
         Compute MIND features at each pyramid level.
         First parameter is the FWHM (default = 1)
         Second parameter is the radius (default = 0 = first-ring neighbors)
+    anatomix : bool or str or dict, optional
+        Compute anatomix modality-agnostic features at each pyramid level,
+        in place of raw intensities (`dat` must be single-channel).
+        `True` opts into automatically downloading the pretrained weights;
+        a `str` is a local path to a pretrained `.pth` checkpoint; a
+        `dict` gives full control (`weights_path`, `auto_download`, and
+        architecture overrides `num_downs`/`ngf`/`output_nc`/`norm`/
+        `interp`/`pooling`). Disabled by default (`None`).
+        `mind` and `anatomix` may be enabled together: both are computed
+        from the same raw intensities (never from each other's output) and
+        their feature channels are concatenated.
     bound : [sequence of] str
         Boundary conditions
     extrapolate : bool, default=True
@@ -73,15 +110,35 @@ def make_image(dat, mask=None, affine=None,
 
     mind = [] if mind is False else [1, 2] if mind is True else mind
     mind = make_list(mind or [])
-    if mind:
-        fwhm, radius = make_list(mind, 2, default=2)
+    anatomix = _normalize_anatomix_config(anatomix)
+
+    if mind or anatomix is not None:
+        # Both feature extractors read the *original* per-level intensities
+        # (never each other's output) so they can be requested jointly: their
+        # feature channels are concatenated into level.dat rather than one
+        # silently overwriting the other's input.
+        if anatomix is not None:
+            extractor = AnatomixFeatureExtractor(**anatomix)
         for level in image:
-            level.preview = level.dat
-            level.dat = spatial.rmind(level.dat, dim=dim,
-                                     radius=int(radius), fwhm=fwhm,
-                                     bound=level.bound)
-            level.dat = utils.movedim(level.dat, -1, 0)
-            level.dat = level.dat.reshape([-1, *level.shape])
+            raw = level.dat
+            level.preview = raw
+            feats = []
+            if mind:
+                fwhm, radius = make_list(mind, 2, default=2)
+                mind_feat = spatial.rmind(raw, dim=dim,
+                                          radius=int(radius), fwhm=fwhm,
+                                          bound=level.bound)
+                mind_feat = utils.movedim(mind_feat, -1, 0)
+                mind_feat = mind_feat.reshape([-1, *level.shape])
+                feats.append(mind_feat)
+            if anatomix is not None:
+                if raw.shape[0] != 1:
+                    raise ValueError(
+                        f"anatomix expects a single-channel image, got "
+                        f"{raw.shape[0]} channels"
+                    )
+                feats.append(extractor(raw[None])[0])
+            level.dat = feats[0] if len(feats) == 1 else torch.cat(feats, dim=0)
 
     if discretize:
         if soft:
