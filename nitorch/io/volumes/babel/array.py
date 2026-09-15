@@ -456,7 +456,11 @@ class BabelArray(MappedArray):
     def metadata(self, keys=None):
         if not keys:
             keys = metadata_keys
-        header = getattr(self._image.dataobj, '_header', self._image.header)
+        dataobj = self._image.dataobj
+        header = getattr(dataobj, '_header', self._image.header)
+        if hasattr(header, 'set_slope_inter'):
+            header = header.copy()
+            header.set_slope_inter(dataobj.slope, dataobj.inter)
         meta = header_to_metadata(header, keys)
         return meta
 
@@ -558,7 +562,8 @@ class BabelArray(MappedArray):
         # build header
         if isinstance(like, BabelArray):
             # defer metadata conversion to nibabel
-            header = getattr(like._image.dataobj, '_header', like._image.header)
+            dataobj = like._image.dataobj
+            header = getattr(dataobj, '_header', like._image.header)
             header = format.header_class.from_header(header)
         else:
             header = format.header_class()
