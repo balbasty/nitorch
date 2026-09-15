@@ -114,8 +114,6 @@ class Structure:
     DefaultField = Field
 
     def __init__(self, as_dict=None, **kwargs):
-        """
-        """
         as_dict = as_dict or {}
         as_dict.update(kwargs)
         kwargs = as_dict
