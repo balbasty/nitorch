@@ -74,6 +74,7 @@ General options:
     --cpu [THREADS], --gpu          Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
+    -s, --save-progress             Save results after each pyramid level [false]
     -h, --help [LEVEL]              Display this help: [1=minimal], 2=normal, 3=more details
     -v, --verbose [LVL]             Level of verbosity [1=print], 2=plot
     -r, --framerate                 Framerate of plotting function, in Hz [1]
@@ -251,6 +252,7 @@ General options:
     --cpu [THREADS], --gpu [ID]     Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
+    -s, --save-progress             Save results after each pyramid level [false]
     -h, --help [LEVEL]              Display this help: 0=minimal, [1=normal], 2=more details
     -v, --verbose [LVL]             Level of verbosity [0]
 
@@ -326,6 +328,9 @@ parser.add_option('dim', ('-d', '--dim'), nargs=1, convert=int,
                   help='Number of spatial dimensions')
 parser.add_option('odir', ('-o', '--output-dir'), nargs=1,
                   help='Output directory')
+parser.add_option('save_progress', ('-s', '--save-progress'), nargs=0,
+                  default=False, action=cli.Actions.store_true,
+                  help='Save results after each pyramid level')
 parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
                   default=1., help='Framerate of plotting function, in Hz')
 

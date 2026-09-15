@@ -10,6 +10,14 @@ import torch
 import math
 
 
+class UserInterruption(Exception):
+
+    def __new__(cls, affine=None, nonlin=None):
+        cls.affine = affine
+        cls.nonlin = nonlin
+        return super().__new__(cls)
+
+
 def run(
     losses,
     affine=None,
@@ -24,7 +32,8 @@ def run(
     tolerance=1e-5,
     verbose=True,
     framerate=1,
-    figure=None
+    figure=None,
+    save=None,
 ):
     """Run pairwise registration
 
@@ -99,28 +108,38 @@ def run(
     if nonlin and not hasattr(nonlin, "frozen"):
         nonlin.frozen = False
 
-    plotopt = dict(verbose=verbose, framerate=framerate, figure=figure)
+    plotopt = {
+        'verbose': verbose,
+        'framerate': framerate,
+        'figure': figure,
+        'save': save
+    }
 
     runner = run_pyramid if pyramid else run_single
 
-    # --- progressive affine initialization ---
-    if affine and not affine.frozen and progressive:
-        affine, figure = run_progressive_init(
-            runner, losses, affine, affine_optim, **plotopt)
-        plotopt["figure"] = figure
+    try:
 
-    # --- full affine ---
-    if affine and not affine.frozen and (affine_then_nonlin or not nonlin):
-        affine, _, _ = runner(losses, affine, None, affine_optim, **plotopt)
-    if not nonlin or nonlin.frozen:
-        return affine, nonlin
+        # --- progressive affine initialization ---
+        if affine and not affine.frozen and progressive:
+            affine, figure = run_progressive_init(
+                runner, losses, affine, affine_optim, **plotopt)
+            plotopt["figure"] = figure
 
-    # --- joint affine and nonlinear  ---
-    optim = build_joint_optim(
-        affine_optim, nonlin_optim,
-        sequential=not interleaved, max_iter=max_iter, tolerance=tolerance)
+        # --- full affine ---
+        if affine and not affine.frozen and (affine_then_nonlin or not nonlin):
+            affine, _, _ = runner(losses, affine, None, affine_optim, **plotopt)
+        if not nonlin or nonlin.frozen:
+            return affine, nonlin
 
-    affine, nonlin, _ = runner(losses, affine, nonlin, optim, **plotopt)
+        # --- joint affine and nonlinear  ---
+        optim = build_joint_optim(
+            affine_optim, nonlin_optim,
+            sequential=not interleaved, max_iter=max_iter, tolerance=tolerance)
+
+        affine, nonlin, _ = runner(losses, affine, nonlin, optim, **plotopt)
+
+    except UserInterruption as e:
+        return e.affine, e.nonlin
 
     return affine, nonlin
 
@@ -142,7 +161,8 @@ def run_progressive_init(
     line_size=74,
     verbose=True,
     framerate=1,
-    figure=None
+    figure=None,
+    save=None
 ):
     """Initialize the affine model by running registration on a subset
     of degrees of freedom in a preogressive fashion.
@@ -161,6 +181,8 @@ def run_progressive_init(
         Verbosity level
     framerate : float, default=1
         Framerate of live plot
+    save : callable[[objects.AffineModel], None], optional
+        Function to call to save results after each progressive step
 
     Returns
     -------
@@ -168,7 +190,12 @@ def run_progressive_init(
         Initialized affine model
 
     """
-    plotopt = dict(verbose=verbose, framerate=framerate, figure=figure)
+    plotopt = {
+        'verbose': verbose,
+        'framerate': framerate,
+        'figure': figure,
+        'save': save
+    }
 
     names = []
     name = affine.basis_name
@@ -213,7 +240,8 @@ def run_single(
     optim,
     verbose=True,
     framerate=1,
-    figure=None
+    figure=None,
+    save=None,
 ):
     """Run pairwise registration at a single level"""
 
@@ -232,7 +260,16 @@ def run_single(
                                 verbose=verbose, framerate=framerate,
                                 figure=figure)
     torch.cuda.empty_cache()
-    register.fit()
+
+    try:
+        register.fit()
+    except EOFError:
+        # Ctrl+D -> "soft" interruption
+        print('!!! REGISTRATION INTERRUPTED BY USER !!!')
+        raise UserInterruption(affine, nonlin)
+
+    if save:
+        save(affine, nonlin)
     return affine, nonlin, figure
 
 
@@ -244,6 +281,7 @@ def run_pyramid(
     verbose=True,
     framerate=1,
     figure=None,
+    save=None
 ):
     """Run sequential pyramid registration"""
     line_size = 89 if nonlin else 74
@@ -295,8 +333,18 @@ def run_pyramid(
                                     verbose=verbose, framerate=framerate,
                                     figure=figure)
         torch.cuda.empty_cache()
-        register.fit()
+
+        try:
+            register.fit()
+        except EOFError:
+            # Ctrl+D -> "soft" interruption
+            print('!!! REGISTRATION INTERRUPTED BY USER !!!')
+            raise UserInterruption(affine, nonlin)
+
         figure = register.figure
+
+        if save:
+            save(affine, nonlin)
 
         if n_level:
             n_level -= 1
