@@ -74,6 +74,7 @@ General options:
     --cpu [THREADS], --gpu          Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
+    -s, --save-progress             Save results after each pyramid level [false]
     -h, --help [LEVEL]              Display this help: [1=minimal], 2=normal, 3=more details
     -v, --verbose [LVL]             Level of verbosity [1=print], 2=plot
     -r, --framerate                 Framerate of plotting function, in Hz [1]
@@ -150,6 +151,8 @@ usage:
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
         --mind  [FWHM=1 [RADIUS=0]] Compute MIND features
+        --anatomix [PATH]           Compute anatomix features (path to local weights;
+                                    bare flag opts into automatic download) [False]
     -c, --channels *C               Channels to load. Can be a range start:stop:step [:]
 
 @affine options:
@@ -249,6 +252,7 @@ General options:
     --cpu [THREADS], --gpu [ID]     Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
+    -s, --save-progress             Save results after each pyramid level [false]
     -h, --help [LEVEL]              Display this help: 0=minimal, [1=normal], 2=more details
     -v, --verbose [LVL]             Level of verbosity [0]
 
@@ -324,6 +328,9 @@ parser.add_option('dim', ('-d', '--dim'), nargs=1, convert=int,
                   help='Number of spatial dimensions')
 parser.add_option('odir', ('-o', '--output-dir'), nargs=1,
                   help='Output directory')
+parser.add_option('save_progress', ('-s', '--save-progress'), nargs=0,
+                  default=False, action=cli.Actions.store_true,
+                  help='Save results after each pyramid level')
 parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
                   default=1., help='Framerate of plotting function, in Hz')
 
@@ -445,6 +452,10 @@ file.add_option('missing', '--no-missing', nargs=0,
                 action=cli.Actions.store_value([]), help='No missing values')
 file.add_option('mind', '--mind', nargs='*2', default=[], convert=float,
                 action=cli.Actions.store_value([1, 2]))
+file.add_option('anatomix', '--anatomix', nargs='?', default=None, convert=str,
+                action=cli.Actions.store_value(True),
+                help='Compute anatomix features (path to local weights; '
+                     'bare flag opts into automatic download)')
 file.add_option('channels', ('-c', '--channels'), nargs='1*', convert=parse_range, default=[slice(None)])
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)

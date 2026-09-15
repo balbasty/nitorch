@@ -1,3 +1,5 @@
+from functools import partial
+
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
 from .parser import parser, help
@@ -72,6 +74,8 @@ def _main(options):
     if options.odir:
         os.makedirs(options.odir, exist_ok=True)
 
+    save_now = partial(save_results, options=options, dim=dim, device=device)
+
     # ------------------------------------------------------------------
     #                       COMPUTE PYRAMID
     # ------------------------------------------------------------------
@@ -134,6 +138,9 @@ def _main(options):
         else:
             affine = make_affine(options.affine.name, options.affine.position,
                                  init=affine_init)
+
+    if options.save_progress:
+        save_now(affine, None)
 
     # ------------------------------------------------------------------
     #                           BUILD DENSE
@@ -208,23 +215,30 @@ def _main(options):
         tolerance=options.optim.tolerance,
         verbose=options.verbose,
         framerate=options.framerate,
+        save=save_now if options.save_progress else None
     )
 
     # ------------------------------------------------------------------
     #                           WRITE RESULTS
     # ------------------------------------------------------------------
-    odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
+    save_now(affine, nonlin)
 
-    if affine:
-        if options.affine.output:
-            fname = options.affine.output.format(
-                dir=odir, sep=os.path.sep, name=options.affine.name)
-            if options.verbose:
-                print('Affine ->', fname)
-            aff = affine.exp(cache_result=True, recompute=True)
-            if affine.position[0] == 's':
-                aff = aff.matmul(aff)
-            io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
+
+
+def save_results(affine, nonlin=None, options=None, dim=None, device=None):
+    odir = options.odir or py.fileparts(options.loss[0].fix.files[0])[0] or '.'
+    device = device or setup_device(*options.device)
+    dim = dim or 3
+
+    if affine and options.affine.output:
+        fname = options.affine.output.format(
+            dir=odir, sep=os.path.sep, name=options.affine.name)
+        if options.verbose:
+            print('Affine ->', fname)
+        aff = affine.exp(cache_result=True, recompute=True)
+        if affine.position[0] == 's':
+            aff = aff.matmul(aff)
+        io.transforms.savef(aff.cpu(), fname, type=1)  # 1 = RAS_TO_RAS
 
     if nonlin:
         if options.nonlin.output:
@@ -293,7 +307,7 @@ def build_losses(options, pyramids, device):
     loadkeys = ('label', 'missing', 'world', 'affine', 'rescale',
                 'pad', 'bound', 'fwhm', 'mask', 'channels')
     imagekeys = ('pyramid', 'pyramid_method', 'discretize',
-                 'soft', 'bound', 'extrapolate', 'mind')
+                 'soft', 'bound', 'extrapolate', 'mind', 'anatomix')
 
     image_dict = {}
     sumloss = 0
