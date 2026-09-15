@@ -14,6 +14,10 @@ nitorch) is needed for inference; the optional weight download path uses
 the standard library's `urllib`.
 """
 
+from math import ceil
+
+from nitorch.core.utils import pad
+
 from .unet import AnatomixUNet
 from .weights import AnatomixWeightsError, resolve_weights_path, load_state_dict_into
 
@@ -98,10 +102,18 @@ class AnatomixFeatureExtractor:
         """
         if volume.dim() < 4:
             volume = volume.reshape(1, 1, *volume.shape)
+        multiple = 2**self.architecture['num_downs']
+        inpshape = volume.shape[-3:]
+        padshape = [int(ceil(s / multiple) * multiple) for s in inpshape]
+        padsize = [p - s for p, s in zip(padshape, inpshape)]
+        volume = pad(volume, padsize, mode='replicate', side='right')
         device = volume.device
         if self._model is None or self._device != device:
             self._build(device)
-        return self._model(volume)
+        volume = self._model(volume)
+        crop = [slice(0, s) for s in inpshape]
+        volume = volume[(..., *crop)]
+        return volume
 
 
 def extract_features(volume, weights_path=None, auto_download=False, **architecture):
