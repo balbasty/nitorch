@@ -72,6 +72,36 @@ def _ome2affine(ome, level=0):
     return affine
 
 
+def axis_order(raw_ndim, ome):
+    """Return the raw on-disk axis names, in the store's own order.
+
+    Mirrors `nifti-zarr-py`'s `_zarr2nii.py` axis-order defaulting: when no
+    OME axes metadata is present (a nifti-zarr store with an embedded
+    header but no multiscale metadata), the nifti-zarr spec's storage
+    convention is assumed -- axes in the reverse of standard NIfTI order.
+    """
+    if ome:
+        return [axis['name'] for axis in ome[0]['axes']]
+    return list(('x', 'y', 'z', 'c', 't')[:raw_ndim][::-1])
+
+
+def ome_permutation(names):
+    """Permutation mapping the raw on-disk axis order (`names`) onto
+    standard NIfTI x/y/z/t/c order.
+
+    Mirrors `nifti-zarr-py`'s own axis-permutation logic in `_zarr2nii.py`
+    exactly (`perm[i] = names.index(name)` for each NIfTI axis name in
+    turn). Correct whenever every axis in `names` is one of x/y/z/t/c and
+    every declared axis has a corresponding raw dimension -- true for the
+    common case where OME axes metadata (or the nifti-zarr fallback order)
+    covers exactly the store's own raw dimensions (see `ome_shape`, which
+    can add synthetic size-1 t/c axes with no raw counterpart -- callers
+    should verify the returned permutation's length against the raw and
+    declared dimensionality before using it).
+    """
+    return tuple(names.index(name) for name in 'xyztc' if name in names)
+
+
 def ome_shape(array_shape, ome):
     """Map an OME-Zarr array's raw shape onto standard x/y/z/t/c ordering."""
     names = [axis['name'] for axis in ome[0]['axes']]

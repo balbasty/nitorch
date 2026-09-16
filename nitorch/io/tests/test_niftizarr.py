@@ -35,7 +35,16 @@ def _nifti_header_bytes(shape, affine, dtype='float32'):
 
 @pytest.fixture
 def reference_nifti(tmp_path):
-    """A real NIfTI file and the equivalent nifti-zarr store built from it."""
+    """A real NIfTI file and the equivalent nifti-zarr store built from it.
+
+    `data`/`affine` describe the store in standard NIfTI (x, y, z) axis
+    order. The underlying Zarr array is written in the nifti-zarr spec's
+    own on-disk convention -- the reverse of NIfTI order (z, y, x), absent
+    OME axes metadata saying otherwise -- so this fixture exercises the
+    same axis permutation a real nifti-zarr store requires (a non-cubic
+    shape makes a wrong or missing permutation produce visibly wrong data,
+    not just a shape mismatch).
+    """
     data = np.arange(2 * 3 * 4).reshape(2, 3, 4).astype('float32')
     affine = np.diag([1.5, 2.5, 3.5, 1.0])
     affine[:3, -1] = [10, 20, 30]
@@ -44,13 +53,19 @@ def reference_nifti(tmp_path):
 
     img = nib.load(str(nii_path))
     zarr_path = tmp_path / 'ref.nii.zarr'
-    _write_group(zarr_path, {'0': data}, header_bytes=img.header.binaryblock)
+    _write_group(zarr_path, {'0': data.transpose(2, 1, 0)},
+                 header_bytes=img.header.binaryblock)
     return str(nii_path), str(zarr_path), data, affine
 
 
 @pytest.fixture
 def plain_ome_zarr(tmp_path):
-    """A plain OME-Zarr store (no embedded header), single scale."""
+    """A plain OME-Zarr store (no embedded header), single scale.
+
+    `data` is in standard (x, y, z) order; the store's declared axes are
+    (z, y, x), so the underlying array is written transposed accordingly
+    (see `reference_nifti`).
+    """
     data = np.arange(8 * 8 * 8).reshape(8, 8, 8).astype('float32')
     path = tmp_path / 'plain.ome.zarr'
     multiscales = [{
@@ -60,13 +75,18 @@ def plain_ome_zarr(tmp_path):
         'datasets': [{'path': '0', 'coordinateTransformations':
                       [{'type': 'scale', 'scale': [1.0, 2.0, 3.0]}]}],
     }]
-    _write_group(path, {'0': data}, multiscales=multiscales)
+    _write_group(path, {'0': data.transpose(2, 1, 0)}, multiscales=multiscales)
     return str(path), data
 
 
 @pytest.fixture
 def multiscale_ome_zarr(tmp_path):
-    """A multiscale (3-level) plain OME-Zarr store, no embedded header."""
+    """A multiscale (3-level) plain OME-Zarr store, no embedded header.
+
+    `arrays` (returned, used for assertions) are in standard (x, y, z)
+    order; the declared axes are (z, y, x), so the underlying arrays are
+    written transposed accordingly (see `reference_nifti`).
+    """
     shapes = [(16, 16, 16), (8, 8, 8), (4, 4, 4)]
     rs = np.random.RandomState(0)
     arrays = {str(i): (rs.rand(*shp) * 100).astype('float32')
@@ -82,7 +102,8 @@ def multiscale_ome_zarr(tmp_path):
             {'path': '2', 'coordinateTransformations': [{'type': 'scale', 'scale': [4.0, 4.0, 4.0]}]},
         ],
     }]
-    _write_group(path, arrays, multiscales=multiscales)
+    _write_group(path, {k: v.transpose(2, 1, 0) for k, v in arrays.items()},
+                 multiscales=multiscales)
     return str(path), arrays
 
 
@@ -97,6 +118,25 @@ def test_map_nifti_zarr_matches_plain_nifti(reference_nifti):
     assert np.allclose(vol_nii.voxel_size, vol_zarr.voxel_size)
     assert vol_nii.dtype == vol_zarr.dtype
     assert np.allclose(vol_nii.fdata(numpy=True), vol_zarr.fdata(numpy=True))
+
+
+def test_nifti_zarr_axis_order_matches_disk_layout(reference_nifti):
+    # regression: the raw Zarr array is stored in the nifti-zarr spec's own
+    # on-disk order (here, no OME axes metadata -> reversed NIfTI order,
+    # z/y/x for this 3D case), not the same x/y/z order `.shape`/`.fdata()`
+    # report. A missing or wrong `self.permutation` reorders the *shape*
+    # correctly (both are length-3 tuples) but returns the wrong *data* --
+    # invisible on a cubic fixture, caught here by using a non-cubic shape
+    # (2, 3, 4) and comparing raw on-disk storage against the logical data.
+    import numpy as np
+    import zarr as zarr_module
+    nii_path, zarr_path, data, affine = reference_nifti
+    vol_zarr = nio.map(zarr_path)
+    assert vol_zarr.permutation == (2, 1, 0)
+    raw_on_disk = np.asarray(zarr_module.open(store=zarr_path, mode='r')['0'])
+    assert raw_on_disk.shape == data.shape[::-1]
+    assert np.array_equal(raw_on_disk.transpose(2, 1, 0), data)
+    assert np.array_equal(vol_zarr.fdata(numpy=True), data)
 
 
 def test_map_plain_ome_zarr_derives_header(plain_ome_zarr):

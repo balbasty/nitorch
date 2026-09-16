@@ -8,7 +8,13 @@ from nitorch.tools.registration.objects import ImagePyramid
 
 @pytest.fixture
 def multiscale_ome_zarr(tmp_path):
-    """A multiscale (3-level) plain OME-Zarr store, no embedded header."""
+    """A multiscale (3-level) plain OME-Zarr store, no embedded header.
+
+    `arrays` (returned, used for assertions) are in standard (x, y, z)
+    order; the declared axes below are (z, y, x), so the underlying arrays
+    are written transposed accordingly -- exercising the same axis
+    permutation a real nifti-zarr/OME-Zarr store requires.
+    """
     shapes = [(16, 16, 16), (8, 8, 8), (4, 4, 4)]
     rs = np.random.RandomState(0)
     arrays = {}
@@ -17,7 +23,7 @@ def multiscale_ome_zarr(tmp_path):
     for i, shp in enumerate(shapes):
         data = (rs.rand(*shp) * 100).astype('float32')
         arr = root.create_array(str(i), shape=shp, dtype='float32', chunks=shp)
-        arr[:] = data
+        arr[:] = data.transpose(2, 1, 0)
         arrays[str(i)] = data
     root.attrs['multiscales'] = [{
         'axes': [{'name': 'z', 'type': 'space', 'unit': 'millimeter'},

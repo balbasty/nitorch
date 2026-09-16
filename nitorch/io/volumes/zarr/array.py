@@ -134,6 +134,20 @@ class NiftiZarrArray(MappedArray):
         self._level_index = _level_index
         self._array = self._level_array(_level_index)
 
+        # The raw Zarr array is stored in whatever axis order the store
+        # itself declares (OME-Zarr axes, e.g. z/y/x -- or, lacking OME
+        # metadata, the nifti-zarr spec's own reversed-NIfTI-order
+        # convention), which is generally *not* the same order as the
+        # x/y/z/t/c order `self._shape`/`self._affine` (derived from the
+        # header) describe. Set `self.permutation` so `raw_data()` reorders
+        # the raw array to match -- mirroring `nifti-zarr-py`'s own
+        # `_zarr2nii.py` axis-permutation logic exactly (see
+        # specs/003-nifti-zarr-support/research.md).
+        names = niizarr_ome.axis_order(len(self._array.shape), self._ome)
+        perm = niizarr_ome.ome_permutation(names)
+        if len(perm) == len(self._array.shape) == len(self._shape):
+            self.permutation = perm
+
         super().__init__()
 
     def _level_array(self, index):
@@ -248,13 +262,20 @@ class NiftiZarrArray(MappedArray):
     # ------------------------------------------------------------------
 
     def as_dask(self):
-        """Return this level's data as a lazily evaluated dask array.
+        """Return this level's data as a lazily evaluated dask array, in
+        the same (x, y, z, ...) axis order as `.shape`/`.fdata()` (not
+        necessarily the store's own raw on-disk axis order).
 
         Returns
         -------
         dask.array.Array
 
         """
+        return self._as_dask_raw().transpose(self.permutation)
+
+    def _as_dask_raw(self):
+        """This level's data as a dask array, in the store's own raw
+        on-disk axis order (i.e. before `self.permutation` is applied)."""
         import dask.array as da
         return da.from_array(self._array)
 
@@ -273,7 +294,7 @@ class NiftiZarrArray(MappedArray):
         if py.prod(self.shape) == 0:
             return np.zeros(self.shape, dtype=self.dtype)
         slicer, perm, newdim = split_operation(self.permutation, self.slicer, 'r')
-        dat = np.asarray(self.as_dask()[slicer].compute())
+        dat = np.asarray(self._as_dask_raw()[slicer].compute())
         dat = dat.transpose(perm)[newdim]
         return dat
 
