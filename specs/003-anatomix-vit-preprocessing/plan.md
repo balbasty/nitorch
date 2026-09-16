@@ -23,7 +23,14 @@ extractor already presents (any shape in, same shape out).
 
 **Language/Version**: Python 3.x (matches existing `nitorch` codebase; no version change)
 
-**Primary Dependencies**: PyTorch only (`torch`), matching the existing anatomix U-Net's "no new hard dependency" precedent (`nitorch/_models/anatomix/__init__.py` docstring). Checkpoint download reuses `urllib` (stdlib), already used by `weights.py`.
+**Primary Dependencies**: `torch` (existing), plus a **new optional
+dependency**, `dynamic_network_architectures` (PyPI, real published
+nnU-Net-ecosystem package), added as a new optional extra — revised during
+implementation (T001, see `research.md` §4) once the real `anatomix-dev-vit`
+architecture (`PrimusV2`: CNN tokenizer + EVA transformer + CNN decoder) was
+found to be a genuine hybrid research architecture, not a small vanilla ViT
+reasonably vendored dependency-free like the U-Net. Checkpoint download
+still reuses `urllib` (stdlib), already used by `weights.py`, unchanged.
 
 **Storage**: N/A (stateless preprocessing transform); downloaded checkpoint cached to the same user cache directory the U-Net extractor already uses (`_default_cache_dir()`).
 
@@ -43,13 +50,20 @@ extractor already presents (any shape in, same shape out).
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-- **I. Code Quality**: PASS. Follows the exact existing convention set by the U-Net anatomix integration (vendored, dependency-light, PyTorch-only implementation; docstrings on public classes/functions; no speculative generalization beyond what MIND+anatomix already established for combinability).
-- **II. Atomic & Regular Commits**: PASS (process constraint, not a design gate) — implementation will be delivered as separate atomic commits per logical unit (vendored `AnatomixViT` module, `SlidingWindowRunner`, `make_image()` integration, CLI option, tests), matching how the original anatomix U-Net feature (spec 001) was delivered.
+- **I. Code Quality**: PASS. Follows the existing convention set by the U-Net anatomix integration (docstrings on public classes/functions; no speculative generalization beyond what MIND+anatomix already established for combinability). One deviation, justified below: the new optional dependency on `dynamic_network_architectures`, since the real architecture is not reasonably vendored dependency-free — see Complexity Tracking.
+- **II. Atomic & Regular Commits**: PASS (process constraint, not a design gate) — implementation will be delivered as separate atomic commits per logical unit (new optional extra + dependency, vendored `AnatomixViT` wrapper module, `SlidingWindowRunner`, `make_image()` integration, CLI option, tests), matching how the original anatomix U-Net feature (spec 001) was delivered.
 - **III. Testing Discipline**: PASS. `contracts/anatomix-vit-api.md` §5 and `quickstart.md` enumerate the required automated tests (regression guard for unchanged existing behavior, shape-handling pad/tile paths, combinability, error paths) up front, before implementation.
 
-No constitution violations requiring justification — no entries needed in Complexity Tracking.
-
-*Post-Phase-1 re-check*: PASS, unchanged. `data-model.md` and the contract confirm the design reuses existing infrastructure (`resolve_weights_path`, the `mind`/`anatomix` concatenation pattern) rather than introducing parallel/competing mechanisms, and introduces exactly one genuinely new component (`SlidingWindowRunner`), scoped to the one genuinely new problem (fixed input size) this feature has that the U-Net didn't.
+*Post-Phase-1 re-check (post-T001 architecture discovery)*: PASS, with one
+tracked, user-approved exception (see Complexity Tracking at the end of this
+document). `data-model.md` and the contract still hold at the API-contract
+level (`AnatomixViTFeatureExtractor`'s external shape contract is
+unchanged); the *internal* implementation of `AnatomixViT` now wraps
+`dynamic_network_architectures.PrimusV2` plus anatomix's own small
+QK-norm/demean addition (`research.md` §4, verified via a strict,
+zero-mismatch `load_state_dict` against the real checkpoint) rather than a
+from-scratch reimplementation. `SlidingWindowRunner` remains the one
+genuinely new component, unaffected by this change.
 
 ## Project Structure
 
@@ -69,6 +83,11 @@ specs/003-anatomix-vit-preprocessing/
 ### Source Code (repository root)
 
 ```text
+setup.cfg   # MODIFIED: add a new `anatomix-vit` optional extra
+            #   (dynamic_network_architectures), mirroring the existing
+            #   `zarr`/`dask` optional-extra pattern from the nifti-zarr
+            #   feature; not part of the default install
+
 nitorch/_models/anatomix/
 ├── __init__.py         # MODIFIED: add AnatomixViTFeatureExtractor,
 │                       #   VIT_ARCHITECTURE_DEFAULTS, and generalize
@@ -124,4 +143,9 @@ patterns.
 
 ## Complexity Tracking
 
-*No violations — table intentionally omitted.*
+> One deviation, discovered during T001 (not assumed up front) and
+> explicitly discussed with and approved by the user before proceeding.
+
+| Violation | Why Needed | Simpler Alternative Rejected Because |
+|-----------|------------|---------------------------------------|
+| New optional dependency: `dynamic_network_architectures` (Principle I's established "no new hard dependency" precedent from the U-Net) | The real `anatomix-dev-vit` architecture (`PrimusV2`: 4-stage residual CNN tokenizer + 12-block EVA transformer with SwiGLU/LayerScale/QK-norm + 3-stage transpose-conv decoder) is a substantial published research architecture, not a small model reasonably vendored dependency-free the way the 6M-param U-Net was. Verified via `research.md` §4: a strict `load_state_dict(strict=True)` against the real checkpoint succeeds with zero key/shape mismatches once `PrimusV2` is constructed with anatomix's documented kwargs. | Hand-reimplementing `PrimusV2` bit-exactly (CNN tokenizer InstanceNorm epsilons, EVA attention/SwiGLU/LayerScale internals, transpose-conv decoder) was considered and rejected: substantially more implementation effort than depending on the verified-correct upstream package, and — critically — a subtle mistake in a from-scratch reimplementation would not necessarily crash (shapes could still match) but could silently produce numerically-wrong features, a harder class of bug to catch than a dependency's already-tested behavior. |
