@@ -2,42 +2,46 @@ __all__ = ['make_image', 'make_loss',
            'make_affine', 'make_affine_2d', 'make_affine_optim',
            'make_nonlin', 'make_nonlin_2d', 'make_nonlin_optim']
 
+import torch
 from nitorch import spatial, io
 from nitorch.core.py import make_list
 from nitorch.core import utils
 from . import losses, objects, optim as opt
 from .pairwise_preproc import soft_quantize_image, discretize_image, preproc_image
-from nitorch._models.anatomix import AnatomixFeatureExtractor
+from nitorch._models.anatomix import AnatomixFeatureExtractor, AnatomixViTFeatureExtractor
 
 
-def _normalize_anatomix_config(anatomix):
-    """Normalize the `anatomix=` make_image() argument into a kwargs dict.
+def _normalize_feature_config(config, name):
+    """Normalize a `make_image()` feature-extractor argument into a kwargs
+    dict, shared by both `anatomix=` and `anatomix_vit=`.
 
     Mirrors `mind`'s own True/explicit-value shorthand (see the `mind`
     handling just below): `None`/`False` disables the feature, `True` is
     shorthand for opting into automatic weight download, a `str` is
     shorthand for a local weights path, and a `dict` gives full control
     (weights source plus architecture overrides). See
-    ``specs/001-anatomix-registration-features/research.md`` (decision 5).
+    ``specs/001-anatomix-registration-features/research.md`` (decision 5),
+    generalized for a second feature-extraction option in
+    ``specs/003-anatomix-vit-preprocessing``.
     """
-    if anatomix is None or anatomix is False:
+    if config is None or config is False:
         return None
-    if anatomix is True:
+    if config is True:
         return {'auto_download': True}
-    if isinstance(anatomix, str):
-        return {'weights_path': anatomix}
-    if isinstance(anatomix, dict):
-        return dict(anatomix)
+    if isinstance(config, str):
+        return {'weights_path': config}
+    if isinstance(config, dict):
+        return dict(config)
     raise TypeError(
-        f"`anatomix` must be None, bool, str or dict, got "
-        f"{type(anatomix).__name__}"
+        f"`{name}` must be None, bool, str or dict, got "
+        f"{type(config).__name__}"
     )
 
 
 def make_image(dat, mask=None, affine=None,
                pyramid=0, pyramid_method='gaussian',
                discretize=False, soft=False, mind=None, anatomix=None,
-               bound='zero', extrapolate=False, **kwargs):
+               anatomix_vit=None, bound='zero', extrapolate=False, **kwargs):
     """Create an image pyramid (eventually with a single level)
 
     Parameters
@@ -61,13 +65,28 @@ def make_image(dat, mask=None, affine=None,
         First parameter is the FWHM (default = 1)
         Second parameter is the radius (default = 0 = first-ring neighbors)
     anatomix : bool or str or dict, optional
-        Compute anatomix modality-agnostic features at each pyramid level,
-        in place of raw intensities (`dat` must be single-channel).
-        `True` opts into automatically downloading the pretrained weights;
-        a `str` is a local path to a pretrained `.pth` checkpoint; a
-        `dict` gives full control (`weights_path`, `auto_download`, and
-        architecture overrides `num_downs`/`ngf`/`output_nc`/`norm`/
-        `interp`/`pooling`). Disabled by default (`None`).
+        Compute anatomix (U-Net) modality-agnostic features at each
+        pyramid level, in place of raw intensities (`dat` must be
+        single-channel). `True` opts into automatically downloading the
+        pretrained weights; a `str` is a local path to a pretrained `.pth`
+        checkpoint; a `dict` gives full control (`weights_path`,
+        `auto_download`, and architecture overrides `num_downs`/`ngf`/
+        `output_nc`/`norm`/`interp`/`pooling`). Disabled by default
+        (`None`).
+    anatomix_vit : bool or str or dict, optional
+        Compute anatomix's experimental 3D ViT (`anatomix-dev-vit`)
+        modality-agnostic features at each pyramid level, in place of raw
+        intensities (`dat` must be single-channel). Same `True`/`str`/
+        `dict` shorthand as `anatomix=`. Accepts an input of any spatial
+        shape (padded or tiled internally to the ViT's fixed 128^3 working
+        resolution). Disabled by default (`None`). Requires the optional
+        `dynamic_network_architectures` dependency (``pip install
+        nitorch[anatomix-vit]``).
+
+        `mind`, `anatomix`, and `anatomix_vit` may be enabled together:
+        all are computed from the same raw intensities (never from each
+        other's output) and their feature channels are concatenated, in
+        that fixed order.
     bound : [sequence of] str
         Boundary conditions
     extrapolate : bool, default=True
@@ -106,27 +125,40 @@ def make_image(dat, mask=None, affine=None,
 
     mind = [] if mind is False else [1, 2] if mind is True else mind
     mind = make_list(mind or [])
-    if mind:
-        fwhm, radius = make_list(mind, 2, default=2)
-        for level in image:
-            level.preview = level.dat
-            level.dat = spatial.rmind(level.dat, dim=dim,
-                                     radius=int(radius), fwhm=fwhm,
-                                     bound=level.bound)
-            level.dat = utils.movedim(level.dat, -1, 0)
-            level.dat = level.dat.reshape([-1, *level.shape])
+    anatomix = _normalize_feature_config(anatomix, 'anatomix')
+    anatomix_vit = _normalize_feature_config(anatomix_vit, 'anatomix_vit')
 
-    anatomix = _normalize_anatomix_config(anatomix)
-    if anatomix is not None:
-        extractor = AnatomixFeatureExtractor(**anatomix)
+    if mind or anatomix is not None or anatomix_vit is not None:
+        # Every enabled feature extractor reads the *original* per-level
+        # intensities (never each other's output) so they can be requested
+        # jointly: their feature channels are concatenated into level.dat,
+        # in a fixed mind -> anatomix -> anatomix_vit order.
+        if anatomix is not None:
+            extractor = AnatomixFeatureExtractor(**anatomix)
+        if anatomix_vit is not None:
+            extractor_vit = AnatomixViTFeatureExtractor(**anatomix_vit)
         for level in image:
-            if level.dat.shape[0] != 1:
-                raise ValueError(
-                    f"anatomix expects a single-channel image, got "
-                    f"{level.dat.shape[0]} channels"
-                )
-            level.preview = level.dat
-            level.dat = extractor(level.dat[None])[0]
+            raw = level.dat
+            level.preview = raw
+            feats = []
+            if mind:
+                fwhm, radius = make_list(mind, 2, default=2)
+                mind_feat = spatial.rmind(raw, dim=dim,
+                                          radius=int(radius), fwhm=fwhm,
+                                          bound=level.bound)
+                mind_feat = utils.movedim(mind_feat, -1, 0)
+                mind_feat = mind_feat.reshape([-1, *level.shape])
+                feats.append(mind_feat)
+            if anatomix is not None:
+                if raw.shape[0] != 1:
+                    raise ValueError(
+                        f"anatomix expects a single-channel image, got "
+                        f"{raw.shape[0]} channels"
+                    )
+                feats.append(extractor(raw[None])[0])
+            if anatomix_vit is not None:
+                feats.append(extractor_vit(raw[None])[0])
+            level.dat = feats[0] if len(feats) == 1 else torch.cat(feats, dim=0)
 
     if discretize:
         if soft:

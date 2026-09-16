@@ -293,7 +293,8 @@ def build_losses(options, pyramids, device):
     loadkeys = ('label', 'missing', 'world', 'affine', 'rescale',
                 'pad', 'bound', 'fwhm', 'mask', 'channels')
     imagekeys = ('pyramid', 'pyramid_method', 'discretize',
-                 'soft', 'bound', 'extrapolate', 'mind', 'anatomix')
+                 'soft', 'bound', 'extrapolate', 'mind', 'anatomix',
+                 'anatomix_vit')
 
     image_dict = {}
     sumloss = 0

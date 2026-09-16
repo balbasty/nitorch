@@ -150,8 +150,12 @@ usage:
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
         --mind  [FWHM=1 [RADIUS=0]] Compute MIND features
-        --anatomix [PATH]           Compute anatomix features (path to local weights;
-                                    bare flag opts into automatic download) [False]
+        --anatomix [PATH]           Compute anatomix (U-Net) features (path to local
+                                    weights; bare flag opts into automatic download) [False]
+        --anatomix-vit [PATH]       Compute anatomix-dev-vit (3D ViT) features (path to
+                                    local weights; bare flag opts into automatic
+                                    download) [False]. Accepts any input shape.
+                                    Combinable with --mind/--anatomix (concatenated).
     -c, --channels *C               Channels to load. Can be a range start:stop:step [:]
 
 @affine options:
@@ -449,8 +453,19 @@ file.add_option('mind', '--mind', nargs='*2', default=[], convert=float,
                 action=cli.Actions.store_value([1, 2]))
 file.add_option('anatomix', '--anatomix', nargs='?', default=None, convert=str,
                 action=cli.Actions.store_value(True),
-                help='Compute anatomix features (path to local weights; '
-                     'bare flag opts into automatic download)')
+                help='Compute anatomix (U-Net) features (path to local '
+                     'weights; bare flag opts into automatic download)')
+file.add_option('anatomix_vit', '--anatomix-vit', nargs='?', default=None, convert=str,
+                action=cli.Actions.store_value(True),
+                help='Compute anatomix-dev-vit (3D ViT) features (path to '
+                     'local weights; bare flag opts into automatic '
+                     'download). Unlike --anatomix (a U-Net), this uses a '
+                     'transformer architecture and accepts any input '
+                     'shape (internally padded/tiled to its fixed 128^3 '
+                     'working resolution). Can be combined with --mind '
+                     'and/or --anatomix; features are concatenated. '
+                     'Requires the optional dynamic_network_architectures '
+                     'dependency (pip install nitorch[anatomix-vit]).')
 file.add_option('channels', ('-c', '--channels'), nargs='1*', convert=parse_range, default=[slice(None)])
 fix = cli.Group('fix', '@@fix', n=1)
 fix.copy_from(file)
