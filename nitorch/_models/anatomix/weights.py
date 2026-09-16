@@ -261,3 +261,57 @@ def load_state_dict_into(model, weights_path):
                 f"Verify these match the checkpoint you are loading. "
                 f"Original error: {second_error}"
             ) from second_error
+
+
+def load_vit_state_dict_into(model, weights_path):
+    """Load a `anatomix-dev-vit` checkpoint's weights into `model` in place.
+
+    Unlike the U-Net (`load_state_dict_into`), the published
+    `anatomix-dev-vit` checkpoint's keys already match `AnatomixViT`'s
+    wrapped `PrimusV2` structure exactly (verified: a strict
+    `load_state_dict` succeeds with zero key/shape mismatches, see
+    ``specs/003-anatomix-vit-preprocessing/research.md`` §4) once the
+    checkpoint's keys are prefixed with `_primus.` (the attribute name
+    `AnatomixViT` stores the wrapped upstream model under) -- no
+    flat-`nn.Sequential`-style remapping is needed.
+
+    Parameters
+    ----------
+    model : AnatomixViT
+    weights_path : str
+
+    Raises
+    ------
+    AnatomixWeightsError
+        If the checkpoint cannot be read, or its keys/shapes are
+        incompatible with `model`.
+
+    """
+    try:
+        state_dict = torch.load(weights_path, map_location='cpu')
+    except Exception as e:
+        raise AnatomixWeightsError(
+            f"Failed to read anatomix-dev-vit checkpoint at "
+            f"{weights_path!r}: {e}. The file may be corrupt or not a "
+            f"valid PyTorch checkpoint."
+        ) from e
+
+    if not isinstance(state_dict, dict):
+        raise AnatomixWeightsError(
+            f"Checkpoint at {weights_path!r} does not contain a "
+            f"recognizable state_dict (got a {type(state_dict).__name__})."
+        )
+    state_dict = {
+        (k[len('_orig_mod.'):] if k.startswith('_orig_mod.') else k): v
+        for k, v in state_dict.items()
+    }
+    state_dict = {f'_primus.{k}': v for k, v in state_dict.items()}
+
+    try:
+        model.load_state_dict(state_dict, strict=True)
+    except RuntimeError as e:
+        raise AnatomixWeightsError(
+            f"Checkpoint at {weights_path!r} is incompatible with the "
+            f"anatomix-dev-vit architecture. Verify this is a genuine "
+            f"anatomix-dev-vit checkpoint. Original error: {e}"
+        ) from e
