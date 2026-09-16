@@ -25,3 +25,15 @@ try:
 except ImportError:
     freesurfer = None
 
+# Zarr
+try:
+    import zarr
+except ImportError:
+    zarr = None
+
+# Dask
+try:
+    import dask
+except ImportError:
+    dask = None
+

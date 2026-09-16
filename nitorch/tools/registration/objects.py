@@ -619,9 +619,18 @@ class ImagePyramid(ImageSequence):
             dat = dat.dat
         if isinstance(dat, str):
             dat = io.map(dat)
+        native_source = None
         if isinstance(dat, io.MappedArray):
             if affine is None:
                 affine = dat.affine
+            # if `dat` exposes native multiscale levels (e.g. a multiscale
+            # nifti-zarr store), reuse its own per-level data directly
+            # instead of downsampling from the finest level (FR-008,
+            # research.md §6): a capability check, not an isinstance check,
+            # so any future format with native levels is supported the
+            # same way, without this class needing to know about it by name
+            if getattr(dat, 'nb_levels', 1) > 1 and hasattr(dat, 'level'):
+                native_source = dat
             dat = dat.fdata(rand=True, **backend)[None]
 
         if isinstance(levels, int):
@@ -639,7 +648,8 @@ class ImagePyramid(ImageSequence):
                 shape = dat.shape[-dim:]
                 affine = spatial.affine_default(shape, **utils.backend(dat[0]))
             dat, mask, preview = self._build_pyramid(
-                dat, levels, method, dim, bound, mask, preview)
+                dat, levels, method, dim, bound, mask, preview,
+                native_source=native_source, backend=backend)
         dat = list(dat)
         if not mask:
             mask = [None] * len(dat)
@@ -670,11 +680,14 @@ class ImagePyramid(ImageSequence):
         return [f'nb_levels={len(self)}'] + super()._prm_as_str() + s
 
     def _build_pyramid(self, dat, levels, method, dim, bound,
-                       mask=None, preview=None):
+                       mask=None, preview=None, native_source=None,
+                       backend=None):
         levels = list(levels)
         indexed_levels = list(enumerate(levels))
         indexed_levels.sort(key=lambda x: x[1])
         nb_levels = max(levels)
+        nb_native = getattr(native_source, 'nb_levels', 1) if native_source is not None else 1
+        backend = backend or {}
         if mask is not None:
             mask = mask.to(dat.device)
         dats = [dat] * levels.count(0)
@@ -704,7 +717,14 @@ class ImagePyramid(ImageSequence):
                 smooth = lambda x: x[(Ellipsis, *slicer)]
             else:
                 raise ValueError(method)
-            dat = smooth(dat)
+            if level < nb_native:
+                # reuse the store's own native data for this level (FR-008)
+                # instead of downsampling `dat` -- mask/preview (not part of
+                # the store's native multiscale content) are still derived
+                # by downsampling alongside, exactly as before
+                dat = native_source.level(level).fdata(rand=True, **backend)[None]
+            else:
+                dat = smooth(dat)
             if mask is not None:
                 mask = smooth(mask)
             if preview is not None:
