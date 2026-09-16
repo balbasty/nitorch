@@ -27,15 +27,23 @@ point or dispatch mechanism.
 
 **Purpose**: Resolve the one genuinely unknown fact blocking all implementation — the ViT's real architecture parameters.
 
-- [ ] T001 Download the real `anatomix-dev-vit` checkpoint via
+- [X] T001 Download the real `anatomix-dev-vit` checkpoint via
       `nitorch._models.anatomix.weights.resolve_weights_path(auto_download=True, variant='anatomix-dev-vit')`
       (reused unmodified, per `research.md` §1) and inspect its `state_dict`
       keys/tensor shapes to determine `AnatomixViT`'s real patch size,
       embedding dimension, depth, number of attention heads, and
       `output_nc`. Append findings to `specs/003-anatomix-vit-preprocessing/research.md`
       §4 (replacing the "deferred" note with the actual values).
+      **Result**: real architecture is `PrimusV2` (from the third-party
+      `dynamic_network_architectures` package) + anatomix's own small
+      QK-norm/demean addition — not a vanilla ViT. Verified via a strict,
+      zero-mismatch `load_state_dict(strict=True)` against the real
+      checkpoint. Discussed with the user; decided to depend on
+      `dynamic_network_architectures` rather than hand-reimplement (see
+      `research.md` §4, `plan.md` Complexity Tracking). Downstream tasks
+      (T002, T004) updated accordingly.
 
-**Checkpoint**: Architecture parameters known; `AnatomixViT` can now be implemented with real values instead of placeholders.
+**Checkpoint**: Real architecture and dependency approach confirmed; `AnatomixViT` can now be implemented as a thin, verified-correct wrapper.
 
 ---
 
@@ -45,30 +53,41 @@ point or dispatch mechanism.
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T002 [P] Implement `AnatomixViT` (nn.Module) in
-      `nitorch/_models/anatomix/vit.py`, using the architecture parameters
-      determined in T001 (FR-002). Docstring describing input/output
-      shapes and dtypes (Constitution Principle I). Depends on T001.
-- [ ] T003 [P] Implement `SlidingWindowRunner` in
+- [X] T002 [P] Add a new `anatomix-vit` optional extra to `setup.cfg`
+      (`dynamic_network_architectures`), mirroring the existing
+      `zarr`/`dask` optional-extra pattern. Implement `AnatomixViT`
+      (nn.Module) in `nitorch/_models/anatomix/vit.py` as a thin wrapper:
+      construct `dynamic_network_architectures.architectures.primus.PrimusV2`
+      with anatomix's exact documented kwargs, then attach the per-head
+      QK-`LayerNorm`s and the stateless channel-demean output norm
+      (`research.md` §4's verified recipe) (FR-002). Docstring describing
+      input/output shapes and dtypes (Constitution Principle I). Depends
+      on T001.
+- [X] T003 [P] Implement `SlidingWindowRunner` in
       `nitorch/_models/anatomix/sliding_window.py`: pads to exactly 128³
       (replicate padding, crop back after) when every spatial axis of the
       input is ≤ 128; otherwise tiles into overlapping 128³ windows and
       reassembles via blended overlap (FR-002) — per `research.md` §2 and
       `data-model.md`. Docstring per Constitution Principle I.
-- [ ] T004 Extend `nitorch/_models/anatomix/weights.py`: confirm
-      `resolve_weights_path(variant='anatomix-dev-vit')` resolves correctly
-      against the real checkpoint from T001 (per `research.md` §1, expected
-      to work unmodified) (FR-005); add a ViT-specific state-dict loader
-      (mirroring `load_state_dict_into`/`_remap_flat_sequential_state_dict`'s
-      pattern, adapted to the ViT's own key structure) for cases where a
-      direct `load_state_dict` fails. Depends on T001, T002.
-- [ ] T005 Add `AnatomixViTFeatureExtractor` and `VIT_ARCHITECTURE_DEFAULTS`
+- [X] T004 Add a thin `load_vit_state_dict_into(model, weights_path)` to
+      `nitorch/_models/anatomix/weights.py` (FR-005): loads the checkpoint,
+      strips a `_orig_mod.` prefix if present (mirroring
+      `load_state_dict_into`'s existing behavior), and calls
+      `model.load_state_dict(state_dict, strict=True)`, raising
+      `AnatomixWeightsError` with an actionable message on any failure
+      (mismatched keys/shapes = wrong checkpoint file, not an
+      architecture-remapping problem — confirmed in T001/`research.md` §4
+      that no custom remapping is needed for `anatomix-dev-vit`, unlike the
+      U-Net's flat-`nn.Sequential` quirk). `resolve_weights_path` itself
+      needs no changes (verified in T001 that `variant='anatomix-dev-vit'`
+      already resolves correctly). Depends on T001, T002.
+- [X] T005 Add `AnatomixViTFeatureExtractor` and `VIT_ARCHITECTURE_DEFAULTS`
       to `nitorch/_models/anatomix/__init__.py` (FR-005): wires
       `AnatomixViT` + `SlidingWindowRunner` + `weights.py` weight
       resolution + the `research.md` §3 per-voxel feature normalization
       together, mirroring `AnatomixFeatureExtractor`'s existing structure
       (lazy build-on-first-use, frozen weights). Depends on T002, T003, T004.
-- [ ] T006 Generalize `_normalize_anatomix_config` in
+- [X] T006 Generalize `_normalize_anatomix_config` in
       `nitorch/tools/registration/pairwise_makeobj.py` into a shared helper
       usable for both the existing `anatomix=` and the new `anatomix_vit=`
       (same `None`/`False`/`True`/`str`/`dict` normalization contract).
@@ -95,17 +114,17 @@ transform, exactly as it does today with `--anatomix`.
 
 > Write these tests FIRST; confirm they fail before implementing T010-T012
 
-- [ ] T007 [P] [US1] Regression test in `nitorch/tests/test_anatomix_image.py`:
+- [X] T007 [P] [US1] Regression test in `nitorch/tests/test_anatomix_image.py`:
       `make_image()` calls that do not pass `anatomix_vit` produce
       byte-identical output to before this feature (FR-003). Fails before
       T010 (parameter doesn't exist yet → `TypeError`), passes after.
-- [ ] T008 [P] [US1] Standalone extractor test in new
+- [X] T008 [P] [US1] Standalone extractor test in new
       `nitorch/tests/test_anatomix_vit_extraction.py`: a synthetic fixture
       checkpoint (mirroring `test_anatomix_extraction.py`'s
       `fake_checkpoint` pattern, matching `AnatomixViT`'s real shapes from
       T002) run through `AnatomixViTFeatureExtractor` on a `(1, 1,
       *spatial)` input produces `(1, output_nc, *spatial)` output.
-- [ ] T009 [P] [US1] `make_image()` integration test in
+- [X] T009 [P] [US1] `make_image()` integration test in
       `nitorch/tests/test_anatomix_image.py`: `anatomix_vit=True`/dict
       transforms `level.dat` into ViT features and keeps `level.preview`
       as the raw input, mirroring
@@ -116,27 +135,27 @@ transform, exactly as it does today with `--anatomix`.
 
 ### Implementation for User Story 1
 
-- [ ] T010 [US1] Add `anatomix_vit=` parameter to `make_image()` in
+- [X] T010 [US1] Add `anatomix_vit=` parameter to `make_image()` in
       `nitorch/tools/registration/pairwise_makeobj.py` (FR-001), using the
       generalized config normalization (T006) and
       `AnatomixViTFeatureExtractor` (T005), extending the existing
       mind/anatomix feature-concatenation block. Depends on T005, T006,
       and T007-T009 (tests exist and fail first).
-- [ ] T011 [US1] Add `--anatomix-vit [PATH]` option to the `file` group in
+- [X] T011 [US1] Add `--anatomix-vit [PATH]` option to the `file` group in
       `nitorch/cli/registration/register/parser.py` (FR-001), mirroring
       the existing `--anatomix` option's `nargs`/`convert`/`action`
       exactly (bare flag = auto-download, string = local path).
-- [ ] T012 [US1] Thread `anatomix_vit` through
+- [X] T012 [US1] Thread `anatomix_vit` through
       `nitorch/cli/registration/register/cli.py`'s `build_losses` (and any
       other `anatomix`-forwarding call site) the same way `anatomix`
       already is (FR-001). Depends on T010, T011.
-- [ ] T013 [US1] CLI end-to-end test: `nitorch register ... --anatomix-vit
+- [X] T013 [US1] CLI end-to-end test: `nitorch register ... --anatomix-vit
       ...` completes and writes a transform file, mirroring
       `quickstart.md` Scenario 6. Add alongside existing registration CLI
       tests (or extend `nitorch/tests/test_anatomix_image.py` with a
       `run()`-based end-to-end case, matching
       `test_make_image_anatomix_registration_end_to_end`'s pattern).
-- [ ] T014 [US1] Run T007-T009 and T013, confirm they pass; manually walk
+- [X] T014 [US1] Run T007-T009 and T013, confirm they pass; manually walk
       through `quickstart.md` Scenarios 1 and 6.
 
 **Checkpoint**: User Story 1 is fully functional and independently testable
@@ -156,7 +175,7 @@ individually-enabled output.
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T015 [P] [US2] Test in `nitorch/tests/test_anatomix_image.py`
+- [X] T015 [P] [US2] Test in `nitorch/tests/test_anatomix_image.py`
       (FR-004): `anatomix` (U-Net) + `anatomix_vit` together produce
       channel-wise-concatenated output equal to `[anatomix_only.dat;
       anatomix_vit_only.dat]` — incidentally also exercises the
@@ -164,18 +183,18 @@ individually-enabled output.
       since the U-Net's `output_nc` and the ViT's `output_nc` are not
       expected to match. Mirrors
       `test_make_image_mind_and_anatomix_concatenate_channels`.
-- [ ] T016 [P] [US2] Test (FR-004): `mind` + `anatomix` + `anatomix_vit`
+- [X] T016 [P] [US2] Test (FR-004): `mind` + `anatomix` + `anatomix_vit`
       all three together concatenate without error, in the fixed mind →
       anatomix → anatomix_vit order.
 
 ### Implementation for User Story 2
 
-- [ ] T017 [US2] Verify/adjust the concatenation ordering in T010's
+- [X] T017 [US2] Verify/adjust the concatenation ordering in T010's
       implementation for the 3-way case (mind, anatomix, anatomix_vit all
       enabled) — should already follow from T010's general design; this
       task confirms via T015-T016 and fixes ordering if needed. Depends on
       T010, T015, T016.
-- [ ] T018 [US2] Run T015-T016, confirm they pass; manually walk through
+- [X] T018 [US2] Run T015-T016, confirm they pass; manually walk through
       `quickstart.md` Scenario 2.
 
 **Checkpoint**: User Stories 1 AND 2 both work independently
@@ -196,7 +215,7 @@ checkpoint file is corrupt or architecturally mismatched.
 
 ### Tests for User Story 3 ⚠️
 
-- [ ] T019 [P] [US3] Test in `nitorch/tests/test_anatomix_image.py` (or
+- [X] T019 [P] [US3] Test in `nitorch/tests/test_anatomix_image.py` (or
       `test_anatomix_vit_extraction.py`) (FR-005): `anatomix_vit=True`
       with no local path resolves via
       `resolve_weights_path(auto_download=True, variant='anatomix-dev-vit')`
@@ -204,10 +223,10 @@ checkpoint file is corrupt or architecturally mismatched.
       re-downloading (mock the network call, mirroring
       `test_make_image_anatomix_true_download_failure_raises_descriptive_error`'s
       `monkeypatch` pattern).
-- [ ] T020 [P] [US3] Test (FR-006): no local path + `auto_download=False`
+- [X] T020 [P] [US3] Test (FR-006): no local path + `auto_download=False`
       (and nothing cached) raises `AnatomixWeightsError` with an
       actionable message.
-- [ ] T021 [P] [US3] Test (FR-006, spec.md Edge Cases — "checkpoint file
+- [X] T021 [P] [US3] Test (FR-006, spec.md Edge Cases — "checkpoint file
       that does not match the expected architecture"): supplying a local
       `weights_path` that exists but is corrupt or whose `state_dict`
       shapes don't match `AnatomixViT` raises `AnatomixWeightsError` with
@@ -218,11 +237,11 @@ checkpoint file is corrupt or architecturally mismatched.
 
 ### Implementation for User Story 3
 
-- [ ] T022 [US3] Verify T004/T005's weight resolution already satisfies
+- [X] T022 [US3] Verify T004/T005's weight resolution already satisfies
       T019-T021 unmodified (per `research.md` §1, the existing
       `resolve_weights_path` is expected to need no changes for the new
       `variant` value); fix if any gap is found.
-- [ ] T023 [US3] Run T019-T021, confirm they pass; manually walk through
+- [X] T023 [US3] Run T019-T021, confirm they pass; manually walk through
       `quickstart.md` Scenario 3.
 
 **Checkpoint**: All user stories independently functional
@@ -233,33 +252,37 @@ checkpoint file is corrupt or architecturally mismatched.
 
 **Purpose**: Shape-handling edge cases, documentation, and final regression validation
 
-- [ ] T024 [P] Shape-handling tests in `nitorch/tests/test_anatomix_vit_extraction.py`
+- [X] T024 [P] Shape-handling tests in `nitorch/tests/test_anatomix_vit_extraction.py`
       (FR-002): an input with every axis ≤ 128 (pad path) and an input
       with some axis > 128 (sliding-window path) both return features of
       the same spatial shape as the input, with no sharp discontinuity at
       tile-blend borders in the tiled case — mirrors `quickstart.md`
       Scenario 4.
-- [ ] T025 [P] Multi-channel-input error test (FR-007) in
+- [X] T025 [P] Multi-channel-input error test (FR-007) in
       `nitorch/tests/test_anatomix_vit_extraction.py`, mirroring
       `test_make_image_anatomix_rejects_multichannel_input` —
       `quickstart.md` Scenario 5.
-- [ ] T026 [P] Degenerate-shape error test (FR-007) in
+- [X] T026 [P] Degenerate-shape error test (FR-007) in
       `nitorch/tests/test_anatomix_vit_extraction.py`: a spatial shape
       `SlidingWindowRunner` cannot handle even after padding/tiling (e.g.,
       a zero-size dimension) raises a clear error rather than crashing
       inside the pad/tile logic.
-- [ ] T027 [P] Add/verify docstrings for `AnatomixViT`, `SlidingWindowRunner`,
+- [X] T027 [P] Add/verify docstrings for `AnatomixViT`, `SlidingWindowRunner`,
       and `AnatomixViTFeatureExtractor` describing shapes/dtypes/behavior
       per Constitution Principle I.
-- [ ] T028 [P] Update `nitorch register -h 3` help text in
+- [X] T028 [P] Update `nitorch register -h 3` help text in
       `nitorch/cli/registration/register/parser.py` documenting how
       `--anatomix-vit` differs from `--anatomix` (U-Net vs. ViT, both
       usable together) (FR-008).
-- [ ] T029 Walk through all of `quickstart.md`'s scenarios (1-7) end-to-end
+- [X] T029 Walk through all of `quickstart.md`'s scenarios (1-7) end-to-end
       as a final combined validation.
-- [ ] T030 Run the full existing nitorch test suite
+- [X] T030 Run the full existing nitorch test suite
       (`nitorch/tests/`, `nitorch/io/tests/`) and confirm zero new
-      failures, as the final check for FR-003.
+      failures, as the final check for FR-003. **Result**: 1757 passed,
+      2 failed (test_babel.py::test_nifti, test_babel.py::test_mgh --
+      pre-existing, unrelated: nibabel API drift and a network-dependent
+      fixture, confirmed via git stash earlier this session), 0 new
+      regressions, in 20:01.
 
 ---
 
