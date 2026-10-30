@@ -1903,6 +1903,10 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
     bins : int, optional
         Number of histogram bins to use for fast quantile computation.
         By default: exact (but slow) computation using sorting.
+    mask : tensor, optional
+        Only values where `mask > 0` are used. With `bins`, the mask is
+        used as histogram weights; in the exact (sorting) mode it is
+        treated as binary.
     out : tensor, optional
         Output placeholder.
 
@@ -1953,12 +1957,26 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
         q = q.mul_(input.shape[-1]-1)
         q = GridPull.apply(input[None], q[None, :, None], 1, 'replicate', 0)[0]
     elif not bins:
-        input, index = input.sort(-1)
-        mask = mask.gather(-1, index)
-        mask = mask.cumsum(-1) / mask.sum(-1, keepdim=True)
-        mask[:, -1] = 1
-        q = _hist_to_quantile(mask, q)
-        q = GridPull.apply(input[:, None], q[:, :, None], 1, 'replicate', 0)[:, 0]
+        # Exact quantiles over in-mask values only (mask > 0), with the
+        # same linear interpolation as the unmasked path / torch.quantile.
+        # Masked-out values are sorted to the end (+inf) and never sampled.
+        # (This used a weighted CDF that let masked-out values leak into
+        # q=0 / q=1 and returned NaN when the smallest values were masked.)
+        valid = mask > 0
+        if not input.dtype.is_floating_point:
+            input = input.to(q.dtype)
+        input = input.masked_fill(~valid, float('inf'))
+        input, _ = input.sort(-1)
+        count = valid.sum(-1, keepdim=True).to(q.dtype)  # (B, 1)
+        pos = q[None, :] * (count - 1).clamp_min(0)       # (B, Q)
+        lo = pos.floor().long()
+        hi = (lo + 1).minimum((count - 1).clamp_min(0).long())
+        w = pos - lo.to(pos.dtype)
+        vlo = input.gather(-1, lo)
+        vhi = input.gather(-1, hi)
+        q = vlo + w.to(vlo.dtype) * (vhi - vlo)
+        q = torch.where(w == 0, vlo, q)  # avoid inf*0 when hi is masked
+        q = q.masked_fill(count == 0, float('nan'))
     else:
         # compute cumulative histogram
         min = input.min(-1).values
