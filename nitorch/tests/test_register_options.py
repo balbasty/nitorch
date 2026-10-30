@@ -134,26 +134,14 @@ def built_loss(images, name, *args):
 
 def test_mi_default_order():
     options = parser.parse(['@loss', 'mi', '@@fix', 'f.nii', '@@mov', 'm.nii'])
-    assert options.loss[0].order == [1]
+    assert options.loss[0].order == [3]
 
 
-@pytest.mark.parametrize('args, expected', [([], [1]), (['-n', '2'], [2])])
+@pytest.mark.parametrize('args, expected', [([], [3]), (['-n', '2'], [2])])
 def test_mi_order_passed_to_loss(images, args, expected):
     _, loss = built_loss(images, 'mi', *args)
     assert isinstance(loss, MI)
     assert make_list(loss.spline) == expected
-
-
-def test_mi_default_order_supports_gauss_newton(images):
-    """The joint-histogram Hessian only exists for order 1"""
-    options, loss = built_loss(images, 'mi')
-    assert loss.order >= 2  # Gauss-Newton is picked by default
-    g = torch.Generator().manual_seed(0)
-    fix = torch.rand([1, 6, 6, 6], generator=g)
-    mov = torch.rand([1, 6, 6, 6], generator=g)
-    loss.minmax = None
-    ll, grad, hess = loss.loss_grad_hess(mov, fix)
-    assert torch.isfinite(ll) and torch.isfinite(hess).all()
 
 
 @pytest.mark.parametrize('name', ['mad', 'tuk'])

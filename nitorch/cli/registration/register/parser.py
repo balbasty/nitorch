@@ -100,7 +100,7 @@ usage:
             -m, --norm NAME                 Normalization: [studholme], arithmetic, geometric, no
             -b, --bins VAL [VAL]            Number of bins in the joint histogram [32]
             -f, --fwhm VAL                  Full width half-max of histogram smoothing [0]
-            -n, --order VAL                 Spline order of parzen window [1] (Gauss-Newton needs 1)
+            -n, --order VAL                 Spline order of parzen window [3]
         mse, l2                         Mean squared error (can be weighted)
             -w, --weight [VAL]              Weight (= Gaussian precision): [auto]
         mad, l1                         Median absolute deviation (can be weighted)
@@ -387,14 +387,14 @@ loss.add_suboption('mi', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
                    convert=int, help='Number of bins in joint histogram')
 loss.add_suboption('mi', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
                    convert=float, help='Smoothing of the joint histogram, in bins.')
-loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=[1],
+loss.add_suboption('mi', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
                    convert=int, help='Spline order of the joint histogram')
 loss.add_suboption('mi', patch_option)
 loss.add_suboption('ent', 'bins', ('-b', '--bins'), nargs='1*2?', default=32,
                    convert=int, help='Number of bins in joint histogram')
 loss.add_suboption('ent', 'fwhm', ('-f', '--fwhm'), nargs='1*', default=0,
                    convert=float, help='Smoothing of the joint histogram, in bins.')
-loss.add_suboption('ent', 'order', ('-n', '--order'), nargs='1*2?', default=[1],
+loss.add_suboption('ent', 'order', ('-n', '--order'), nargs='1*2?', default=[3],
                    convert=int, help='Spline order of the joint histogram')
 loss.add_suboption('lcc', patch_option)
 loss.add_suboption('lcc', stride_option)
