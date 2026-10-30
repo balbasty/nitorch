@@ -1824,7 +1824,9 @@ class SVFModel(NonLinModel):
         """
         if inv:
             g = g.neg_()
-        kwargs = dict(bound='dft', extrapolate=True)
+        # same boundary as when sampling the displacement at the fixed
+        # voxels in the forward pass (it is zero outside the field of view)
+        kwargs = dict(bound='zero', extrapolate=True)
 
         # build bits of warp
         dim = phi.shape[-1]

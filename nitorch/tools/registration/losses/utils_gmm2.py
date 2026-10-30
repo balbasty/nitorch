@@ -37,6 +37,18 @@ def sumspatial(x: Tensor, ndim: int) -> Tensor:
 
 
 # cannot use TorchScript because of `quantile`.
+def _masked_quantile(x, q, dim, mask):
+    """Quantiles over the last `dim` axes, using only voxels where mask > 0.
+    Returns a (*batch, *ones, K) tensor."""
+    batch = torch.broadcast_shapes(x.shape[:-dim], mask.shape[:-dim])
+    spatial = x.shape[-dim:]
+    x = x.expand([*batch, *spatial]).reshape([-1, py.prod(spatial)])
+    mask = mask.expand([*batch, *spatial]).reshape([-1, py.prod(spatial)])
+    out = torch.stack([torch.quantile(x1[m1 > 0], q)
+                       for x1, m1 in zip(x, mask)])
+    return out.reshape([*batch, *([1] * dim), len(q)])
+
+
 def init_gmm2(x, y, bins=6, dim=None, mask=None):
     """Initialize parameters of a 2D GMM by drawing quantiles.
 
@@ -69,12 +81,22 @@ def init_gmm2(x, y, bins=6, dim=None, mask=None):
         prior : (..., *1, bins) tensor
             Proportion of each class
     """
-    if mask is not None:
-        mask = mask[..., 0]
-    dim = dim or x.dim() - 1
+    # NOTE: `x`, `y` and `mask` are (..., *spatial) -- without the trailing
+    # class dimension. This used to index `[..., 0]`, which (since the only
+    # caller passes un-expanded tensors) dropped the last *spatial* axis:
+    # quantiles were computed on a single slice, and a mask that was zero
+    # on that slice gave NaN parameters.
+    dim = dim or y.dim() - 1
     quantiles = torch.arange(bins + 1, dtype=x.dtype, device=x.device).div_(bins)
-    xmean = utils.quantile(x[..., 0], quantiles, dim=range(-dim, 0), keepdim=True, mask=mask)
-    ymean = utils.quantile(y[..., 0], quantiles, dim=range(-dim, 0), keepdim=True, mask=mask)
+    if mask is None:
+        xmean = utils.quantile(x, quantiles, dim=range(-dim, 0), keepdim=True)
+        ymean = utils.quantile(y, quantiles, dim=range(-dim, 0), keepdim=True)
+    else:
+        # `utils.quantile(..., mask=)` lets masked-out values leak into the
+        # extreme quantiles (and returns NaN for q=0 when the smallest
+        # values are masked out), so compute quantiles on in-mask voxels.
+        xmean = _masked_quantile(x, quantiles, dim, mask)
+        ymean = _masked_quantile(y, quantiles, dim, mask)
     xvar = (xmean[..., 1:] - xmean[..., :-1]).div_(2.355).square_()
     yvar = (ymean[..., 1:] - ymean[..., :-1]).div_(2.355).square_()
     xmean = (xmean[..., 1:] + xmean[..., :-1]).div_(2)
@@ -263,7 +285,7 @@ def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, prior,
     # print('')
     nmsk = sum_weights(x, y, mask, ndim)
 
-    nll, z = e_step(x, y, xmean, ymean, xvar, yvar, cov, prior)
+    nll, z = e_step(x, y, xmean, ymean, xvar, yvar, cov, prior, mask=mask)
     nll /= nmsk
     nll_max = nll_prev = nll
     for nit in range(max_iter):
@@ -271,9 +293,19 @@ def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, prior,
         nll, z = e_step(x, y, xmean, ymean, xvar, yvar, cov, prior, mask=mask)
         nll /= nmsk
 
-        gain = ((nll_prev - nll) / (nll_max - nll)).abs()
-        # print('gmm', nit, nll.item(), gain.item())
-        if gain < 1e-5:
+        # Convergence: relative gain w.r.t. the total improvement so far.
+        # - The denominator is guarded: a warm start at a fixed point
+        #   (nll == nll_max) used to give 0/0 = NaN, which never satisfies
+        #   `gain < tol`, so EM ran all `max_iter` iterations.
+        # - Also stop when the absolute change is negligible: on a warm
+        #   start the total improvement is itself tiny, so the relative
+        #   criterion alone keeps iterating on ~1e-10 changes.
+        delta = (nll_prev - nll).abs()
+        denom = _maximum((nll_max - nll).abs(), 1e-12 * (1 + nll.abs()))
+        gain = delta / denom
+        # print("gmm", nit, nll.item(), gain.item())
+        if (gain < 1e-5 or delta < 1e-9 * (1 + nll.abs())
+                or not bool(torch.isfinite(gain))):
             break
         nll_prev = nll
         nll_max = _maximum(nll_max, nll)
@@ -458,9 +490,20 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, max_iter: int,
         # E-step
         nll, z = e_step_local(bwd, x, y, xmean, ymean, xvar, yvar, cov, pi)
 
-        gain = (nll - nll_prev).abs() / (nll_max - nll).abs()
+        # Same guarded criterion as `em_loop`. When EM starts from
+        # responsibilities, nll_max is +inf: inf/inf = NaN at the first
+        # iteration and finite/inf = 0 at the second (spurious stop), so
+        # skip the check until a finite reference exists.
+        delta = (nll - nll_prev).abs()
+        if not bool(torch.isfinite(nll_max)):
+            nll_prev = nll
+            nll_max = nll
+            continue
+        denom = _maximum((nll_max - nll).abs(), 1e-12 * (1 + nll.abs()))
+        gain = delta / denom
         # print('lgmm', nit, nll.item(), gain.item())
-        if gain < 1e-6:
+        if (gain < 1e-6 or delta < 1e-9 * (1 + nll.abs())
+                or not bool(torch.isfinite(gain))):
             break
         nll_prev = nll
         nll_max = _maximum(nll_max, nll)

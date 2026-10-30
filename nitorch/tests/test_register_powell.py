@@ -54,6 +54,7 @@ def test_powell_rejects_dense_field():
         opt.step(vel, lambda x, **k: x.square().sum())
 
 
+@pytest.mark.slow
 def test_register_nonlin_powell_error(tmp_path):
     f, _ = make_pair(tmp_path, shift=SHIFT, rot=ROT)
     with pytest.raises(ValueError, match='only supported for affine'):
@@ -117,6 +118,7 @@ def test_register_powell_verbose1_in_place(tmp_path, capsys):
     assert len(lines) == 1 and lines[0].count('\r') > 1, out
 
 
+@pytest.mark.slow
 def test_affreg_default_recovers_rigid(tmp_path):
     f, expected = make_pair(tmp_path, shift=SHIFT, rot=ROT)
     affreg(['-m', f['mov'], '-f', f['fix'], '-o', f['out'], '-x', 'false',
