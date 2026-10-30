@@ -1979,8 +1979,19 @@ def quantile(input, q, dim=None, keepdim=False, bins=None, mask=None, *, out=Non
         q = q.masked_fill(count == 0, float('nan'))
     else:
         # compute cumulative histogram
-        min = input.min(-1).values
-        max = input.max(-1).values
+        if mask is None:
+            min = input.min(-1).values
+            max = input.max(-1).values
+        else:
+            # bin range over in-mask values only, so that masked-out
+            # outliers do not coarsen the bins (they get zero weight and
+            # fall outside [min, max] -> discarded by histc)
+            valid = mask > 0
+            if not input.dtype.is_floating_point:
+                input = input.to(q.dtype)
+            min = input.masked_fill(~valid, float('inf')).min(-1).values
+            max = input.masked_fill(~valid, -float('inf')).max(-1).values
+            mask = mask * valid  # drop negative weights, if any
         bin_width = (max-min)/bins
         hist = histc(input, bins, dim=-1, min=min, max=max, weights=mask)
         del max, input
