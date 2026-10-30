@@ -2,9 +2,9 @@
 `nitorch.tools.registration.losses.emmi`).
 
 The value is the negative, averaged marginal log-likelihood
-    -L/N = -1/N sum_n log sum_j H[x_n, j] mu[n, j]
-of the fixed labels x (bins i) given the moving probabilities mu
-(classes j), where H is estimated by EM. The value, gradient and Hessian
+    -L/N = -1/N sum_n log sum_k H[x_n, k] (mu o phi)[n, k]
+of the fixed labels x (bins j) given the deformed moving probabilities
+mu o phi (classes k), where H is estimated by EM. The value, gradient and Hessian
 must describe the same function."""
 import torch
 import pytest
