@@ -64,8 +64,7 @@ class Powell(ZerothOrder):
                 'Powell is only supported for affine registration '
                 '(its direction set over the flattened parameters of a '
                 f'dense field of shape {tuple(x.shape)} is infeasible). '
-                'Use another optimiser for the nonlinear component, '
-                'e.g. `@nonlin @@optim gn` or `lbfgs`.')
+                'Use another optimiser for the nonlinear component.')
         self.brent.tol = self._get_line_tol()
 
         n = len(x)
