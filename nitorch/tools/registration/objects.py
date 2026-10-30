@@ -106,7 +106,7 @@ class Similarity(BaseSimilarity):
 
     def __truediv__(self, factor: float):
         obj = self.copy()
-        obj.factor = factor / obj.factor
+        obj.factor = obj.factor / factor
         return obj
 
     def __itruediv__(self, factor: float):
