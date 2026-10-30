@@ -693,14 +693,14 @@ def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     sqnorm = lambda x: sum(map(square, x))
     sqdist = set(map(sqnorm, itertools.combinations_with_replacement(range(iradius+1), r=dim)))
     sqdist = list(filter(lambda d: 0 < d <= radius*radius, sqdist))
-    if len(sqdist) < 2:
-        # the first ring is only used to normalize the other ones
-        raise ValueError(f'rmind requires at least two rings of neighbours '
-                         f'(radius >= sqrt(2)) but got radius={radius}')
     indices = itertools.product(*[range(-iradius, iradius+1)] * dim)
     indices = filter(lambda x: 0 < sqnorm(x) <= radius*radius, indices)
 
     nb_feat = len(sqdist)
+    if nb_feat < 2:
+        # the first ring is only used to normalize the other ones
+        raise ValueError(f'rmind requires at least two rings of neighbours '
+                         f'(radius >= sqrt(2)) but got radius={radius}')
     mnd = x.new_zeros([nb_feat, *x.shape])
 
     # compute differences
