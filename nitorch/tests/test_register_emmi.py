@@ -113,3 +113,90 @@ def test_emmi_class_cache_and_batch():
     assert g.shape == mu.movedim(-1, 0).shape
     ll2 = loss.loss(mu.movedim(-1, 0), fix.movedim(-1, 0))
     assert torch.allclose(ll, ll2)
+
+
+# ----------------------------------------------------------------------
+#   End-to-end: recover a known translation with `nitorch register`
+# ----------------------------------------------------------------------
+SHIFT = [3., -2., 1.5]
+
+
+def shifted_pair(odir, shape=(24, 24, 24)):
+    import os
+    from nitorch import io, spatial
+    grid = spatial.identity_grid(shape, dtype=dt)
+    center = torch.as_tensor(shape, dtype=dt) / 2
+
+    def blobs(shift):
+        x = grid - (center + torch.as_tensor(shift, dtype=dt))
+        a = (x / torch.as_tensor([5., 3.5, 4.])).square().sum(-1).neg().exp()
+        b = ((x - torch.as_tensor([4., -3., 2.])) / 2.5).square().sum(-1)
+        return (a + 0.7 * b.neg().exp()).float()
+
+    affine = spatial.affine_default(shape, voxel_size=1.)
+    fix, mov = os.path.join(odir, 'fix.nii.gz'), os.path.join(odir, 'mov.nii.gz')
+    io.savef(blobs([0, 0, 0]), fix, affine=affine)
+    io.savef(blobs(SHIFT), mov, affine=affine)
+    return fix, mov
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize('symmetric', [False, True])
+def test_register_emmi_soft_quantizes_moving(tmp_path, monkeypatch, symmetric):
+    """`@loss emmi` passes a soft-quantised (16-channel) moving image and a
+    discretised fixed image to the loss. It used to pass the raw
+    single-channel moving image, for which the loss is constant."""
+    import os
+    from nitorch.cli.registration.register.cli import _cli as register
+    fix, mov = shifted_pair(str(tmp_path), shape=(12, 12, 12))
+    seen = []
+
+    def make_spy(grad, hess):
+        def spy(self, moving, fixed, **kwargs):
+            seen.append((moving.shape[0], moving.sum(0), fixed.dtype))
+            if len(seen) == (2 if symmetric else 1):
+                raise _Stop
+            return emmi(moving, fixed, dim=3, max_iter=1, grad=grad, hess=hess)
+        return spy
+
+    monkeypatch.setattr(EMMI, 'loss', make_spy(False, False))
+    monkeypatch.setattr(EMMI, 'loss_grad', make_spy(True, False))
+    monkeypatch.setattr(EMMI, 'loss_grad_hess', make_spy(True, True))
+    lta = os.path.join(str(tmp_path), 'emmi.lta')
+    with pytest.raises(_Stop):
+        register(['-v', '0', '--cpu', '@loss', 'emmi',
+                  *(['--symmetric'] if symmetric else []),
+                  '@@fix', fix, '-o', 'false', '-r', 'false',
+                  '@@mov', mov, '-o', 'false', '-r', 'false',
+                  '@affine', 'translation', '-o', lta,
+                  '@@optim', 'gn', '-n', '1', '@pyramid', '--levels', '0'])
+    for nchannels, total, fixdtype in seen:
+        assert nchannels == 16
+        assert not fixdtype.is_floating_point
+        # soft bins sum to one in voxels inside the field of view
+        inside = total > 0
+        assert torch.allclose(total[inside], torch.ones_like(total[inside]),
+                              atol=1e-3)
+
+
+def test_register_emmi_translation(tmp_path):
+    """`nitorch register @loss emmi` recovers a known translation.
+
+    About 15 s on an idle CPU with the TorchScript backend. With 32 bins
+    for the fixed image; on smaller pairs (16^3-20^3), or with 8 moving
+    bins, the optimum of the loss itself is 0.4-0.9 mm short in x."""
+    import os
+    from nitorch import io
+    from nitorch.cli.registration.register.cli import _cli as register
+    fix, mov = shifted_pair(str(tmp_path))
+    lta = os.path.join(str(tmp_path), 'emmi.lta')
+    register(['-v', '0', '--cpu', '@loss', 'emmi',
+              '@@fix', fix, '-o', 'false', '-r', 'false', '-d', '32',
+              '@@mov', mov, '-o', 'false', '-r', 'false',
+              '@affine', 'translation', '-o', lta,
+              '@@optim', 'gn', '-n', '50', '@pyramid', '--levels', '0'])
+    t = io.transforms.loadf(lta).reshape([4, 4])[:3, -1].tolist()
+    assert all(abs(a - b) < 0.5 for a, b in zip(t, SHIFT)), t
