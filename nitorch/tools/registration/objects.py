@@ -1364,6 +1364,49 @@ def _rotate_grad(grad, aff=None, dense=None):
     return grad
 
 
+def _push_grad_fixed(g, h, moving, disp, left, right, shape):
+    """Chain rule on the fixed lattice, then push to the nonlinear lattice.
+
+    Used when the fixed lattice differs from the nonlinear lattice.
+    The warp of the forward pass is `Left o (Id + D) o Right`, with the
+    displacement D linearly interpolated at `Right` with zero boundary.
+    Its exact gradient wrt the nodes of D is
+        push_Right( g * Left' (∇mu o warp) ),
+    so the image gradients are sampled at the fixed voxels, and the
+    (vector) gradient is pushed afterwards. The (symmetric) Gauss-Newton
+    Hessian is pushed the same way, which approximates it as before.
+
+    g : (K, *fixed) tensor              Gradient wrt warped image
+    h : (K|K*(K+1)//2, *fixed) tensor   Hessian wrt warped image, optional
+    moving : Image                      Moving image
+    disp : (*shape, D) tensor           Displacement (nonlinear lattice)
+    left : (D+1, D+1) tensor            Left affine, optional
+    right : (D+1, D+1) tensor           Right affine
+    shape : list[int]                   Nonlinear lattice
+    returns : (D, *shape) tensor        Pushed gradient wrt D
+              (D*(D+1)//2, *shape)      Pushed Hessian wrt D (or None)
+    """
+    dim = disp.shape[-1]
+    right = spatial.affine_grid(right, g.shape[-dim:])
+    grid = regutils.smart_pull_grid(disp, right, bound='zero')
+    grid += right
+    if left is not None:
+        grid = spatial.affine_matvec(left, grid)
+    mugrad = moving.pull_grad(grid, rotate=False)
+    del grid
+    mugrad = _rotate_grad(mugrad, left)
+
+    # same boundary as when sampling the displacement in the forward pass
+    kwargs = dict(shape=shape, bound='zero', extrapolate=True)
+    g = regutils.jg(mugrad, g)
+    g = regutils.smart_push(utils.fast_movedim(g, -1, 0), right, **kwargs)
+    h = regutils.jhj(mugrad, h)
+    del mugrad
+    if h is not None:
+        h = regutils.smart_push(utils.fast_movedim(h, -1, 0), right, **kwargs)
+    return g, h
+
+
 class TransformationModel:
     def parameters(self):
         raise NotImplementedError
@@ -1821,26 +1864,21 @@ class SVFModel(NonLinModel):
             g (tensor) : pushed gradient
             h (tensor) : pushed hessian
             gmu (tensor) : rotated spatial gradients
+                If `right` is used, `g` and `h` are already wrt the
+                displacement and `gmu` is Jac(Phi) as a (D, *spatial, D)
+                tensor, so that the caller's `jg`/`jhj` apply Jac(Phi)'.
         """
         if inv:
             g = g.neg_()
-        # same boundary as when sampling the displacement at the fixed
-        # voxels in the forward pass (it is zero outside the field of view)
-        kwargs = dict(bound='zero', extrapolate=True)
-
-        # build bits of warp
-        dim = phi.shape[-1]
-        fixed_shape = g.shape[-dim:]
-        moving_shape = moving.shape
 
         # differentiate wrt δ in: Left o Phi o (Id + δ) o Right
         # we'll then propagate them through Phi by scaling and squaring
         if right is not None:
-            right = spatial.affine_grid(right, fixed_shape)
-        g = regutils.smart_push(g, right, shape=self.shape, **kwargs)
-        if h is not None:
-            h = regutils.smart_push(h, right, shape=self.shape, **kwargs)
-        del right
+            # chain rule on the fixed lattice, wrt the displacement D;
+            # Phi o (Id + δ) ~ Phi + Jac(Phi) δ, hence the rotation.
+            g, h = _push_grad_fixed(g, h, moving, phi, left, right, self.shape)
+            jac = spatial.grid_jacobian(phi, type='disp')
+            return g, h, utils.fast_movedim(jac, -2, 0)
 
         phi_left = spatial.identity_grid(self.shape, **utils.backend(phi))
         phi_left += phi
@@ -1923,21 +1961,22 @@ class SmallDefModel(NonLinModel):
             g (tensor) : pushed gradient
             h (tensor) : pushed hessian
             gmu (tensor) : rotated spatial gradients
+                If `right` is used, `g` and `h` are already wrt the
+                displacement and `gmu` is the identity, as a
+                (D, *spatial, D) tensor.
         """
         if inv:
             g = g.neg_()
 
-        # build bits of warp
-        dim = phi.shape[-1]
-        fixed_shape = g.shape[-dim:]
-
         # differentiate wrt δ in: Left o (Id + D + δ) o Right
         # (If `inv`, we assume that inv(Id + D) = Id - D)
         if right is not None:
-            right = spatial.affine_grid(right, fixed_shape)
-        g = regutils.smart_push(g, right, shape=self.shape)
-        h = regutils.smart_push(h, right, shape=self.shape)
-        del right
+            # chain rule on the fixed lattice, wrt the displacement D
+            g, h = _push_grad_fixed(g, h, moving, phi, left, right, self.shape)
+            dim = phi.shape[-1]
+            eye = torch.eye(dim, **utils.backend(g))
+            eye = eye.reshape([dim] + [1] * dim + [dim])
+            return g, h, eye.expand([dim, *self.shape, dim])
 
         phi_left = spatial.identity_grid(self.shape, **utils.backend(phi))
         phi_left += phi
