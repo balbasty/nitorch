@@ -31,7 +31,7 @@ jobs:
     runs-on: ${{ github.event.inputs.os }}
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
 
     - if: runner.os == 'Windows' && github.event.inputs.compiled-backend == 'C' && github.event.inputs.cuda-version != 'cpu'
       # Windows -> powershell
@@ -75,7 +75,7 @@ jobs:
         fi
 
     - name: Set up Python ${{ github.event.inputs.python-version }} on ${{ github.event.inputs.os }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ github.event.inputs.python-version }}
 
