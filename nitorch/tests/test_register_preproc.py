@@ -57,8 +57,11 @@ def test_cli_concurrent_pyramid_runs(tmp_path):
     nib = pytest.importorskip('nibabel')
     import numpy as np
     from nitorch.cli.registration.register.cli import cli
-    x = np.zeros([8, 8, 8], dtype='float32')
-    x[2:6, 2:6, 2:6] = 1
+    # Background must be non-zero and noisy: zeros are treated as missing
+    # (missing=0), and a near-zero residual inside the mask makes the MSE
+    # precision estimate blow up to inf/NaN.
+    x = np.random.RandomState(0).rand(8, 8, 8).astype('float32') + 1
+    x[2:6, 2:6, 2:6] += 1
     fix, mov = str(tmp_path / 'fix.nii'), str(tmp_path / 'mov.nii')
     nib.save(nib.Nifti1Image(x, np.eye(4)), fix)
     nib.save(nib.Nifti1Image(np.roll(x, 1, 0), np.eye(4)), mov)
@@ -68,3 +71,19 @@ def test_cli_concurrent_pyramid_runs(tmp_path):
          '@@optim', 'gn', '-n', '1', '@optim', '-n', '1',
          '@pyramid', '-l', '0:2', '-c'])
     assert (tmp_path / 'aff.lta').exists()
+
+
+def test_expm_nan_returns_quickly():
+    import time
+    from nitorch.core import linalg
+    basis = torch.zeros([3, 4, 4], dtype=torch.double)
+    for i in range(3):
+        basis[i, i, -1] = 1
+    linalg._expm(torch.full([3], 0.1, dtype=torch.double), basis,
+                 grad_X=True)  # warm-up
+    q = torch.full([3], float('nan'), dtype=torch.double)
+    tic = time.time()
+    out = linalg._expm(q, basis, grad_X=True)
+    # (unguarded, the series runs all 10000 orders: ~0.3s here)
+    assert time.time() - tic < 0.1
+    assert torch.isnan(out[0]).all()
