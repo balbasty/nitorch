@@ -120,6 +120,7 @@ def test_histcount_backward2():
     assert hc.backward2(h, x).shape == x.shape
 
 
+@pytest.mark.slow
 def test_register_gn_mi_order3(tmp_path):
     from nitorch.tests.test_register_optim import make_pair, check_affine
     from nitorch.cli.registration.register.cli import cli as register
