@@ -1,6 +1,7 @@
 """Scaling and finite-difference checks of the GMM entropy loss used by
 `nitorch register` (`nitorch.tools.registration.losses.gmm`)."""
 import math
+import pytest
 import torch
 from nitorch.tools.registration.losses.gmm import gmmh, GMMH
 
@@ -60,6 +61,7 @@ def _fd(fn, mov, eps=1e-5):
     return out
 
 
+@pytest.mark.slow
 def test_gmm_grad_hess_fd():
     mov, fix = make_data([10, 10])
     kw = dict(dim=2, bins=3)
