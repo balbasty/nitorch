@@ -526,18 +526,20 @@ def split_patch_unit(patch):
     return [float(p) for p in patch], unit
 
 
-def patch_to_voxels(patch, unit, affine=None, shape=None):
+def patch_to_voxels(patch, unit, affine=None, shape=None, voxel_size=None):
     """Convert a patch size to voxels for a given lattice.
 
     patch : list[float] (broadcast to `dim`)
     unit : {'vox', 'mm', 'pct'}
-    affine : (D+1, D+1) tensor, required if unit == 'mm'
+    affine : (D+1, D+1) tensor, required if unit == 'mm' (or `voxel_size`)
     shape : list[int], required if unit == 'pct'
+    voxel_size : list[float], alternative to `affine`
     """
     if unit == 'vox':
         return list(patch)
     if unit == 'mm':
-        vx = spatial.voxel_size(affine).tolist()
+        vx = (list(voxel_size) if voxel_size is not None else
+              spatial.voxel_size(affine).tolist())
         patch = make_list(patch, len(vx))
         return [p / v for p, v in zip(patch, vx)]
     if unit == 'pct':

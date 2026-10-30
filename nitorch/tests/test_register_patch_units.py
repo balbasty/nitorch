@@ -74,3 +74,24 @@ def test_register_lcc_mm_end_to_end(tmp_path):
          '@affine', 'rigid', '@@optim', 'gn', '-n', '3',
          '@pyramid', '-l', '0:2'])
     assert any(f.endswith('.lta') for f in os.listdir(tmp_path))
+
+
+@pytest.mark.parametrize('axis', [0, -1])
+def test_slicewise_mm_matches_vox(axis):
+    vxs = [1., 2., 4.]
+    shape = [12, 10, 8]
+    aff = spatial.affine_default(shape, vxs)
+    g = torch.Generator().manual_seed(0)
+    fix = objects.Image(torch.rand([1, *shape], generator=g), affine=aff)
+    mov = torch.rand([1, *shape], generator=g)
+    lmm = make_loss('lcc', slicewise=axis, patch=[4, 'mm'])
+    kw = _patch_kwargs(lmm, fix)
+    inplane = [v for i, v in enumerate(vxs) if i != axis % 3]
+    expected = [4 / v for v in inplane]
+    assert kw['patch'] == pytest.approx(expected)
+    lvx = make_loss('lcc', slicewise=axis, patch=expected)
+    assert _patch_kwargs(lvx, fix) == {}
+    a = lmm.loss_grad(mov, fix.dat, dim=3, **kw)
+    b = lvx.loss_grad(mov, fix.dat, dim=3)
+    for x, y in zip(a, b):
+        assert torch.allclose(x, y)

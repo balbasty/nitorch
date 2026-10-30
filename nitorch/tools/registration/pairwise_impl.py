@@ -1153,9 +1153,20 @@ class PairwiseRegisterStep:
 
 
 def _patch_kwargs(lossobj, fixed):
-    """Patch size (in voxels of the current level) for local losses."""
-    unit = getattr(lossobj, 'patch_unit', 'vox')
+    """Patch size (in voxels of the current level) for local losses.
+
+    For slice-wise losses, the patch lives in the slice plane: the
+    slice axis is dropped from the voxel size / shape before converting.
+    """
+    from .losses.base import SliceWiseLoss
+    inner = lossobj.base_loss if isinstance(lossobj, SliceWiseLoss) else lossobj
+    unit = getattr(inner, 'patch_unit', 'vox')
     if unit == 'vox':
         return {}
-    return dict(patch=patch_to_voxels(lossobj.patch, unit,
-                                      fixed.affine, fixed.shape))
+    vx = spatial.voxel_size(fixed.affine).tolist()
+    shape = list(fixed.shape)
+    if inner is not lossobj:
+        axis = lossobj.axis % fixed.dim
+        del vx[axis], shape[axis]
+    return dict(patch=patch_to_voxels(inner.patch, unit, shape=shape,
+                                      voxel_size=vx))
