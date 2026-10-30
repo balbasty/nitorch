@@ -334,7 +334,8 @@ def make_affine_optim(optim=None, order=None, line_search='wolfe', lr=None,
         satisfied.
     lr : float, optional
         Learning rate.
-        By default: 1 for second order methods, 1e-3 for first order methods.
+        By default: 1 for second order methods, 1e-3 for first order
+        methods, and Powell's own default (0.02) for Powell.
     max_iter : int, default=50
         Maximum number of iterations
     tolerance : float, default=1e-5
@@ -387,8 +388,11 @@ def make_affine_optim(optim=None, order=None, line_search='wolfe', lr=None,
     else:
         raise ValueError(optim)
 
-    lr = lr or (1 if issubclass(affine_optim, opt.SecondOrder) else 1e-3)
-    affine_optim = affine_optim(lr, **kwargs)
+    if not lr and issubclass(affine_optim, opt.Powell):
+        affine_optim = affine_optim(**kwargs)  # Powell's own default step
+    else:
+        lr = lr or (1 if issubclass(affine_optim, opt.SecondOrder) else 1e-3)
+        affine_optim = affine_optim(lr, **kwargs)
 
     if line_search and not isinstance(affine_optim, (opt.Powell, opt.LBFGS)):
         affine_optim.search = line_search
