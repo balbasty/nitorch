@@ -37,6 +37,18 @@ def sumspatial(x: Tensor, ndim: int) -> Tensor:
 
 
 # cannot use TorchScript because of `quantile`.
+def _masked_quantile(x, q, dim, mask):
+    """Quantiles over the last `dim` axes, using only voxels where mask > 0.
+    Returns a (*batch, *ones, K) tensor."""
+    batch = torch.broadcast_shapes(x.shape[:-dim], mask.shape[:-dim])
+    spatial = x.shape[-dim:]
+    x = x.expand([*batch, *spatial]).reshape([-1, py.prod(spatial)])
+    mask = mask.expand([*batch, *spatial]).reshape([-1, py.prod(spatial)])
+    out = torch.stack([torch.quantile(x1[m1 > 0], q)
+                       for x1, m1 in zip(x, mask)])
+    return out.reshape([*batch, *([1] * dim), len(q)])
+
+
 def init_gmm2(x, y, bins=6, dim=None, mask=None):
     """Initialize parameters of a 2D GMM by drawing quantiles.
 
@@ -69,12 +81,22 @@ def init_gmm2(x, y, bins=6, dim=None, mask=None):
         prior : (..., *1, bins) tensor
             Proportion of each class
     """
-    if mask is not None:
-        mask = mask[..., 0]
-    dim = dim or x.dim() - 1
+    # NOTE: `x`, `y` and `mask` are (..., *spatial) -- without the trailing
+    # class dimension. This used to index `[..., 0]`, which (since the only
+    # caller passes un-expanded tensors) dropped the last *spatial* axis:
+    # quantiles were computed on a single slice, and a mask that was zero
+    # on that slice gave NaN parameters.
+    dim = dim or y.dim() - 1
     quantiles = torch.arange(bins + 1, dtype=x.dtype, device=x.device).div_(bins)
-    xmean = utils.quantile(x[..., 0], quantiles, dim=range(-dim, 0), keepdim=True, mask=mask)
-    ymean = utils.quantile(y[..., 0], quantiles, dim=range(-dim, 0), keepdim=True, mask=mask)
+    if mask is None:
+        xmean = utils.quantile(x, quantiles, dim=range(-dim, 0), keepdim=True)
+        ymean = utils.quantile(y, quantiles, dim=range(-dim, 0), keepdim=True)
+    else:
+        # `utils.quantile(..., mask=)` lets masked-out values leak into the
+        # extreme quantiles (and returns NaN for q=0 when the smallest
+        # values are masked out), so compute quantiles on in-mask voxels.
+        xmean = _masked_quantile(x, quantiles, dim, mask)
+        ymean = _masked_quantile(y, quantiles, dim, mask)
     xvar = (xmean[..., 1:] - xmean[..., :-1]).div_(2.355).square_()
     yvar = (ymean[..., 1:] - ymean[..., :-1]).div_(2.355).square_()
     xmean = (xmean[..., 1:] + xmean[..., :-1]).div_(2)

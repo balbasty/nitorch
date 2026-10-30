@@ -125,6 +125,25 @@ def test_gmm_em_stops_at_fixed_point():
     assert t500 < 10 * t1 + 1, (t1, t500)
 
 
+def test_gmm_masked_fit_ignores_masked_voxels():
+    """Masked-out voxels have no influence: value, gradient and Hessian
+    equal those of the fit on the cropped in-mask data, and the gradient
+    and Hessian are zero outside the mask. (Used to return NaN.)"""
+    mov, fix = make_data([8, 8])
+    mask = torch.ones_like(fix)
+    mask[..., :2] = 0
+    m, f = mov.clone(), fix.clone()
+    m[..., :2] = 5.  # outliers in the masked-out region
+    f[..., :2] = -3.
+    ll, g, h = gmmh(m, f, dim=2, bins=3, mask=mask)
+    llc, gc, hc = gmmh(mov[..., 2:], fix[..., 2:], dim=2, bins=3)
+    assert torch.isfinite(ll)
+    assert torch.allclose(ll, llc, rtol=1e-6), (ll.item(), llc.item())
+    assert (g[..., :2] == 0).all() and (h[..., :2] == 0).all()
+    assert torch.allclose(g[..., 2:], gc, rtol=1e-6, atol=1e-12)
+    assert torch.allclose(h[..., 2:], hc, rtol=1e-6, atol=1e-12)
+
+
 # --- local GMM -------------------------------------------------------------
 
 
