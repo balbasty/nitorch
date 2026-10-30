@@ -99,8 +99,8 @@ usage:
        [mi, nmi]                        Mutual information (can be normalized)
             -m, --norm NAME                 Normalization: [studholme], arithmetic, geometric, no
             -b, --bins VAL [VAL]            Number of bins in the joint histogram [32]
-            -f, --fwhm VAL                  Full width half-max of histogram smoothing [1]
-            -n, --order VAL                 Spline order of parzen window [1]
+            -f, --fwhm VAL                  Full width half-max of histogram smoothing [0]
+            -n, --order VAL                 Spline order of parzen window [3]
         mse, l2                         Mean squared error (can be weighted)
             -w, --weight [VAL]              Weight (= Gaussian precision): [auto]
         mad, l1                         Median absolute deviation (can be weighted)
@@ -112,15 +112,19 @@ usage:
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
             -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
+                                            (gauss: FWHM; square: full width)
+                --stride *VAL               Stride between patches [1]
+            -k, --kernel VAL                Kernel type: [gauss]/square
         gmm                             Gaussian Mixture likelihood
             -b, --bins                      Number of clusters in the mixture [6]
-            -n, --iter VAL                  Number of EM iterations [128]
+            -n, --max-iter VAL              Number of EM iterations [128]
         lgmm                            Local Gaussian Mixture likelihood
             -b, --bins                      Number of clusters in the mixture [6]
-            -n, --iter VAL                  Number of EM iterations [128]
+            -n, --max-iter VAL              Number of EM iterations [128]
             -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
+                                            (gauss: FWHM; square: full width)
             -k, --kernel VAL                Kernel type: [gauss]/square
-            -s, --stride *VAL               Stride between patches [0]
+                --stride *VAL               Stride between patches [1]
         emmi                            EM-based Mutual Information
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
@@ -160,6 +164,7 @@ usage:
         s, similitude                   Translations + Rotations + Iso zoom
         a, affine                       Full affine
     FACTOR must be a scalar value [1] and is a global penalty factor
+    (no affine penalty is implemented yet, so FACTOR currently has no effect)
     Common options:
         -p, --position                  Position of the affine: [sym], mov, fix
         -g, --progressive               Progressive optimization (t -> r -> s -> a) [false]
@@ -177,11 +182,11 @@ usage:
         -i, --input                     Path to initial transform
         -o, --output                    Path to the output transform: [{dir}/{name}.nii.gz]
         -h, --hessian [PATH]            Path to the output hessian: [False], True={dir}/{name}_hessian.nii.gz
-        -s, --steps                     Number of integration steps
+        -s, --steps                     Number of integration steps [8]
         -a, --absolute                  Penalty on absolute displacements (0th) [1e-4]
         -m, --membrane                  Penalty on membrane energy (1st) [1e-3]
         -b, --bending                   Penalty on bending energy (2nd) [0.2]
-        -l, --lame                      Penalty on linear elastic energy [0.05, 0.2]]
+        -l, --lame                      Penalty on linear elastic energy [0.05, 0.2]
         -v, --voxel-size VAL [UNIT]     Voxel size and unit [100 %]
         -f, --fov *NAMES                Name of inputs used to compute mean space [all]
         -p, --pad VAL [UNIT]            Pad field of view by some amount [0 %]
@@ -190,21 +195,24 @@ usage:
 @optim options:
     NAME can take values:
        [i, interleaved]                 Interleaved optimization of affine and nonlin
-            -n, --max-iter                  Maximum number of iterations
-            -t, --tolerance                 Tolerance for early stopping
+            -n, --max-iter                  Maximum number of iterations [5]
+            -t, --tolerance                 Tolerance for early stopping [1e-5]
         s, sequential                   Sequential optimization of affine, then nonlin
+            -n, --max-iter                  Number of (full affine, then full nonlin) passes [1]
+            -t, --tolerance                 Tolerance for early stopping between passes [0]
 
 @@optim options:
     The default solver is chosen based on the loss.
     Usually, losses that define a Hessian are solved by Gauss-Newton,
-    and the others by LBFGS for the affine component and Nesterov with
-    Wolfe line search for the nonlinear component.
+    and the others by LBFGS.
 
     NAME can take values (with options):
         gn, gauss-newton                Second-order method. Not all losses can be used.
             -m, --marquardt                  Levenberg-Marquardt regularization [auto]
             -q, --solver                     Linear solver: [cg], relax (used for @nonlin only)
-            -j, --sub-iter                   Number of linear solver iterations [32]
+            -j, --sub-iter                   Number of linear solver iterations
+                                             [2 per FMG cycle, 16 without FMG] (@nonlin only)
+            -g, --fmg                        Number of FMG cycles, 0 = no FMG [2] (@nonlin only)
         gd, gradient-descent            Simple gradient descent
         cg, conjugate-gradient          Conjugate gradient descent
             -b, --beta                      Update rule: [pr], fr, hs, dy
@@ -223,7 +231,7 @@ usage:
             -h, --history                   History size [100]
         none                            Do not optimize
     Common options:
-        -l, --lr                        Learning rate [1]
+        -l, --lr                        Learning rate [2nd order: 1, 1st order: 1e-3]
         -s, --line-search               Number of backtracking line search [wolfe]
         -t, --tolerance                 Tolerance for early stopping [1e-4]
         -c, --crit                      Stopping criterion: [diff], gain
@@ -249,8 +257,9 @@ General options:
     --cpu [THREADS], --gpu [ID]     Device to use [cpu]
     -d, --dim [DIM]                 Number of spatial dimensions [try to guess]
     -o, --output-dir                Output directory [same as input files]
-    -h, --help [LEVEL]              Display this help: 0=minimal, [1=normal], 2=more details
-    -v, --verbose [LVL]             Level of verbosity [0]
+    -h, --help [LEVEL]              Display this help: [1=minimal], 2=normal, 3=more details
+    -v, --verbose [LVL]             Level of verbosity [0], 1=print, 2=plot
+    -r, --framerate                 Framerate of plotting function, in Hz [1]
 
 """
 
@@ -278,6 +287,15 @@ def bool_or_str(x):
         return bool(int(x))
     except ValueError:
         return x
+
+
+def float_or_auto(x):
+    """'auto' (or 'true') -> True, 'false' -> False, else float"""
+    if x.lower() in ('auto', 'true', 'yes'):
+        return True
+    if x.lower() in ('false', 'no'):
+        return False
+    return float(x)
 
 
 def parse_range(x):
@@ -470,7 +488,7 @@ optim_choices = cli.Positional('name', nargs='?', default='unset',
                                convert=lambda x: optim_aliases.get(x, x),
                                help='Name of the optimizer')
 optim = cli.NamedGroup('optim', optim_choices, '@@optim', n='?')
-optim.add_option('lr', ('-l', '--lr'), nargs=1, default=1, convert=float,
+optim.add_option('lr', ('-l', '--lr'), nargs=1, default=None, convert=float,
                  help='Learning rate')
 optim.add_option('max_iter', ('-n', '--max-iter'), nargs=1, default=None,
                  convert=int, help='Maximum number of iterations')
@@ -485,7 +503,7 @@ optim.add_option('crit', ('-c', '--crit'), nargs=1,
                  default='diff', validation=cli.Validations.choice(['gain', 'diff']),
                  help='Criterion for early stopping')
 optim.add_suboption('gn', 'marquardt', ('-m', '--marquardt'), nargs=1,
-                    default=None, convert=number_or_str(float),
+                    default=True, convert=float_or_auto,
                     help='Levenberg-Marquardt regularization')
 optim.add_suboption('gn', 'solver', ('-q', '--solver'), nargs=1,
                     default='cg', validation=cli.Validations.choice(['cg', 'relax']),
@@ -498,7 +516,7 @@ optim.add_suboption('mom', 'momentum', ('-m', '--momentum'), nargs=1,
 optim.add_suboption('nes', 'momentum', ('-m', '--momentum'), nargs=1,
                     default=0, convert=float, help='Momentum factor')
 optim.add_suboption('nes', 'restart', ('-r', '--restart'), nargs=1,
-                    default=True, convert=bool, help='Automatic restart')
+                    default=True, convert=bool_or_str, help='Automatic restart')
 optim.add_suboption('nes', 'output', ('-o', '--output'), nargs='?',
                     default='', action=cli.Actions.store_value('{dir}{sep}momentum.{iter}.nii.gz'),
                     help='Write momentum maps')
@@ -507,7 +525,7 @@ optim.add_suboption('ogm', 'momentum', ('-m', '--momentum'), nargs=1,
 optim.add_suboption('ogm', 'relax', ('-x', '--relax'), nargs=1,
                     default=0, convert=float, help='Relaxation factor')
 optim.add_suboption('ogm', 'restart', ('-r', '--restart'), nargs=1,
-                    default=True, convert=bool, help='Automatic restart')
+                    default=True, convert=bool_or_str, help='Automatic restart')
 optim.add_suboption('ogm', 'output', ('-o', '--output'), nargs='?',
                     default='', action=cli.Actions.store_value('{dir}{sep}momentum.{iter}.nii.gz'),
                     help='Write momentum maps')
@@ -607,6 +625,12 @@ joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
                      default=5, convert=int, help='Maximum number of iterations')
 joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
                      convert=float, default=1e-5, help='Tolerance for early stopping')
+joptim.add_suboption('sequential', 'max_iter', ('-n', '--max-iter'), nargs=1,
+                     default=1, convert=int,
+                     help='Number of (full affine, then full nonlin) passes')
+joptim.add_suboption('sequential', 'tolerance', ('-t', '--tolerance'), nargs=1,
+                     convert=float, default=0,
+                     help='Tolerance for early stopping between passes')
 
 # pyramid group
 pyr_aliases = {'g': 'gaussian',

@@ -63,7 +63,7 @@ def init_device(device):
 #     vol.requires_grad = True
 #     grid.requires_grad = True
 #     assert gradcheck(grid_grad, (vol, grid, interpolation, bound, extrapolate),
-#                      rtol=1., raise_exception=True)
+#                      rtol=1., nondet_tol=1e-12, raise_exception=True)
 
 
 @pytest.mark.parametrize("device", devices)
@@ -78,7 +78,7 @@ def test_gradcheck_grid_pull(device, dim, bound, interpolation):
     vol.requires_grad = True
     grid.requires_grad = True
     assert gradcheck(grid_pull, (vol, grid, interpolation, bound, extrapolate),
-                     rtol=1., raise_exception=True)
+                     rtol=1., nondet_tol=1e-12, raise_exception=True)
 
 
 @pytest.mark.parametrize("device", devices)
@@ -93,7 +93,7 @@ def test_gradcheck_grid_push(device, dim, bound, interpolation):
     vol.requires_grad = True
     grid.requires_grad = True
     assert gradcheck(grid_push, (vol, grid, shape, interpolation, bound, extrapolate),
-                     rtol=1., raise_exception=True)
+                     rtol=1., nondet_tol=1e-12, raise_exception=True)
 
 
 @pytest.mark.parametrize("device", devices)
@@ -107,4 +107,4 @@ def test_gradcheck_grid_count(device, dim, bound, interpolation):
     _, grid = make_data(shape, device, dtype)
     grid.requires_grad = True
     assert gradcheck(grid_count, (grid, shape, interpolation, bound, extrapolate),
-                     rtol=1., raise_exception=True)
+                     rtol=1., nondet_tol=1e-12, raise_exception=True)

@@ -87,4 +87,4 @@ jobs:
     - name: Tests
       run: |
         pip install pytest
-        pytest --ignore nitorch/tests/test_gradcheck_spatial.py
+        pytest --durations=20 --ignore nitorch/tests/test_gradcheck_spatial.py

@@ -70,7 +70,8 @@ def log_optimal_affine(parameters):
     for p, (i, j) in enumerate(parameters.keys()):
         w[p, labels.index(i)], w[p, labels.index(j)] = 1, -1
     x = torch.stack(list(parameters.values()), -2)
-    w = inv(w, method='pinv')
+    # (rcond: w has a null space -- adding a constant to all z)
+    w = inv(w, method='pinv', rcond=1e-5)
     z = torch.matmul(w.to(x), x)
     z -= torch.mean(z, dim=-2, keepdim=True)  # zero-center
     return z

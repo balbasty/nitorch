@@ -106,7 +106,7 @@ class Similarity(BaseSimilarity):
 
     def __truediv__(self, factor: float):
         obj = self.copy()
-        obj.factor = factor / obj.factor
+        obj.factor = obj.factor / factor
         return obj
 
     def __itruediv__(self, factor: float):
@@ -217,7 +217,7 @@ class SumSimilarity(BaseSimilarity):
         return self
 
     def __truediv__(self, factor):
-        return SumSimilarity([factor / loss for loss in self])
+        return SumSimilarity([loss / factor for loss in self])
 
     def __itruediv__(self, factor):
         for loss in self:
@@ -485,7 +485,8 @@ class Image(SpatialTensor):
     def get_center(self):
         """Compute the RAS coordinate of the center of the field of view."""
         ndim = self.ndim
-        backend = dict(dtype=self.dtype, device=self.device)
+        dtype = self.dtype if self.dtype.is_floating_point else torch.get_default_dtype()
+        backend = dict(dtype=dtype, device=self.device)
         affine = self.affine.to(**backend)
         shape = torch.as_tensor(self.shape, **backend)
         center = affine[:ndim, :ndim].matmul((shape[:, None] - 1)*0.5)
@@ -1823,7 +1824,9 @@ class SVFModel(NonLinModel):
         """
         if inv:
             g = g.neg_()
-        kwargs = dict(bound='dft', extrapolate=True)
+        # same boundary as when sampling the displacement at the fixed
+        # voxels in the forward pass (it is zero outside the field of view)
+        kwargs = dict(bound='zero', extrapolate=True)
 
         # build bits of warp
         dim = phi.shape[-1]

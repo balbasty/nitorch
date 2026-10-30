@@ -1,0 +1,91 @@
+name: nitorch-test-slow
+
+on:
+  workflow_dispatch:
+    inputs:
+      fail-fast:
+        description: 'Fail fast mode'
+        required: false
+        default: 'true'
+  push:
+    paths:
+      # all library files
+      - "nitorch/**"
+    branches: [ master ]
+  schedule:
+    # weekly, Monday 04:17 UTC
+    - cron: '17 4 * * 1'
+# Full suite, including tests marked `slow` (skipped by default and on PRs)
+
+jobs:
+
+  test:
+
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: ${{ github.event.inputs.fail-fast == 'true' }}
+      matrix:
+        # we only run tests on ubuntu/cpu
+        include:
+          # oldest versions available on current runners
+          - os: ubuntu-24.04
+            python-version: '3.9'
+            pytorch-version: '1.13.1'
+            numpy-version: '<2'         # torch 1.x is not compatible with numpy 2
+          # recent versions
+          - os: ubuntu-24.04
+            python-version: '3.12'
+            pytorch-version: '2.5.1'
+            numpy-version: ''
+
+    steps:
+
+    - uses: actions/checkout@v5
+
+    - name: Set up Python ${{ matrix.python-version }} on ${{ matrix.os }}
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install pip
+      run: |
+        python -m pip install --upgrade pip setuptools wheel
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install "numpy${{ matrix.numpy-version }}"
+        pip install nibabel
+        pip install tifffile
+
+    - name: Install PyTorch ${{ matrix.pytorch-version }}
+      env:
+        cuda: cpu
+        torch: ${{ matrix.pytorch-version }}
+      shell: bash
+      run: |
+        os="$(cut -d'-' -f1 <<< ${{ matrix.os }})"
+        echo "$os"
+        if [ ! -f "./scripts/actions/install_pytorch_${os}.sh" ]; then
+          echo "pytorch not available on ${os}"
+          exit 1
+        fi
+        source "./scripts/actions/install_pytorch_${os}.sh"
+
+    # we must build in development mode for pytest to work in place
+    - name: Build nitorch
+      run: |
+        # install scipy ourselves because setuptools does a poor job
+        pip install scipy
+        # wget needed for io test
+        pip install wget
+        # TorchScript backend only: compiling the C++ backend takes too long
+        NI_USE_CUDA=0 NI_COMPILED_BACKEND="TS" pip install --no-build-isolation -e .
+        NI_SHOW_COMPILED_BACKEND=1 python -c "from nitorch._C import grid"
+
+#    - name: Lint
+#      run: |
+#        pip install flake8
+#        flake8 .
+
+    - name: Tests
+      run: |
+        pip install pytest
+        pytest --runslow --durations=20 --ignore nitorch/tests/test_gradcheck_spatial.py

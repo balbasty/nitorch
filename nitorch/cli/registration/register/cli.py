@@ -114,8 +114,8 @@ def _main(options):
                         fix = getattr(loss.fixed, get_center)()
                         mov = getattr(loss.moving, get_center)()
                         wgt = 0.5 * (
-                            torch.Size(fix.shape[1:]).numel() +
-                            torch.Size(mov.shape[1:]).numel()
+                            torch.Size(loss.fixed.shape).numel() +
+                            torch.Size(loss.moving.shape).numel()
                         )
                         num += (mov - fix) * wgt
                         den += wgt
@@ -289,8 +289,9 @@ def get_spaces(fnames):
 def build_losses(options, pyramids, device):
     dim = 3
 
-    losskeys = ('kernel', 'patch', 'bins', 'norm', 'fwhm',
-                'spline', 'weight', 'weighted', 'max_iter', 'slicewise')
+    losskeys = ('kernel', 'patch', 'bins', 'norm', 'fwhm', 'order',
+                'spline', 'weight', 'weighted', 'max_iter', 'slicewise',
+                'joint', 'stride')
     loadkeys = ('label', 'missing', 'world', 'affine', 'rescale',
                 'pad', 'bound', 'fwhm', 'mask', 'channels')
     imagekeys = ('pyramid', 'pyramid_method', 'discretize',
