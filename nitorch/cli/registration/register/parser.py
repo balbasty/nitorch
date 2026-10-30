@@ -149,7 +149,7 @@ usage:
         --name NAME                 A name to use with `@nonlin --fov`
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
-        --mind  [FWHM=1 [RADIUS=0]] Compute MIND features
+        --mind  [FWHM=1 [RADIUS=2]] Compute MIND features
     -c, --channels *C               Channels to load. Can be a range start:stop:step [:]
 
 @affine options:
