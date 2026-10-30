@@ -1800,8 +1800,9 @@ class SVFModel(NonLinModel):
             if cache_result:
                 self._cache = grid
                 self._icache = igrid
-            grid = self.add_identity(grid)
-            igrid = self.add_identity(igrid)
+            if add_identity:
+                grid = self.add_identity(grid)
+                igrid = self.add_identity(igrid)
             return grid, igrid
 
     def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False):
