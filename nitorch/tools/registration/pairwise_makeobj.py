@@ -533,7 +533,7 @@ def make_loss(loss, slicewise=False, **kwargs):
     Keyword Parameters
     ------------------
     bins, if 'mi' or 'ent' : int
-    norm, if 'nmi': {'studholme', 'arithmetic'}
+    norm, if 'nmi': {'studholme', 'arithmetic', 'geometric'}
     fwhm, if 'mi', 'ent' or 'emmi' : float
     spline, if 'mi' or 'ent' : {0..7}
     weight, if 'mse', 'mad' or 'tuk' : float or None

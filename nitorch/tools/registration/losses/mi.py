@@ -98,10 +98,11 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
         Number of bins in the joing histogram.
     order : int, default=1
         Order of B-splines encoding the histogram.
-    norm : {'studholme', 'arithmetic', None}, default='studholme'
+    norm : {'studholme', 'arithmetic', 'geometric', None}, default='studholme'
         Normalization method:
         None : mi = H[x] + H[y] - H[xy]
-        'arithmetic' : nmi = 0.5 * mi / (H[x] + H[y])
+        'arithmetic' : nmi = mi / (H[x] + H[y])
+        'geometric' : nmi = mi / sqrt(H[x] * H[y])
         'studholme' : nmi = mi / H[xy]
     grad : bool, default=True
         Compute an return gradient
@@ -111,11 +112,13 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
     Returns
     -------
     ll : () tensor
-        1 -  NMI
+        1 -  NMI (or -MI if `norm` is None)
     grad : (..., K, *spatial) tensor
     hess : (..., K, *spatial) tensor
 
     """
+    if norm not in ('studholme', 'arithmetic', 'geometric', None, 'none', 'no'):
+        raise ValueError(f'Unknown normalization: {norm}')
     hist = JointHistCount(bins=bins, order=order, fwhm=fwhm)
 
     shape = moving.shape
@@ -126,7 +129,8 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
     if mask is not None:
         mask = mask.to(fixed.device)
         mask = mask.reshape([*mask.shape[:-dim], -1])
-        nvox = mask.sum(-1, keepdim=True)  # shape: [*batch, 1, 1]
+        nvox = mask.sum(-1, keepdim=True).unsqueeze(-1)  # [*batch, 1, 1, 1]
+        nvox.masked_fill_(nvox == 0, 1)  # empty (e.g., slice) mask -> no NaNs
     else:
         nvox = pyutils.prod(shape[-dim:])
     del moving, fixed
@@ -137,7 +141,7 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
     else:
         h, mn, mx = hist.forward(idx, w=mask, return_minmax=True)
     h = h.clamp(1e-8)
-    h /= (nvox.unsqueeze(-1) if torch.is_tensor(nvox) else nvox)
+    h /= nvox
 
     pxy = h
     px = pxy.sum(-1, keepdim=True)
@@ -153,6 +157,13 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
     elif norm == 'arithmetic':
         # arithmetic nmi = mi / (hx + hy) = 1 - hxy / (hx + hy)
         nmi = -hxy / (hx + hy)
+    elif norm == 'geometric':
+        # geometric nmi = mi / sqrt(hx * hy)
+        hxhy = (hx * hy).sqrt()
+        nmi = (hx + hy - hxy) / hxhy
+        # weights of d(hx) and d(hy) in sqrt(hx * hy) * d(nmi)
+        ax = 1 - 0.5 * nmi * (hy / hx).sqrt()
+        ay = 1 - 0.5 * nmi * (hx / hy).sqrt()
     else:
         # unnormalized mutual info
         nmi = hx + hy - hxy
@@ -163,8 +174,11 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
             g = ((1 + px.log()) + (1 + py.log())) - nmi * (1 + pxy.log())
             g /= hxy
         elif norm == 'arithmetic':
-            g = -nmi * ((1 + px.log()) + (1 + py.log())) + (1 + pxy.log())
+            g = -nmi * ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
             g /= (hx + hy)
+        elif norm == 'geometric':
+            g = ax * (1 + px.log()) + ay * (1 + py.log()) - (1 + pxy.log())
+            g /= hxhy
         else:
             # g = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
             g = pxy.log().neg_().add_(px.log()).add_(py.log()).add_(1)
@@ -178,6 +192,8 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
             H = (nmi / pxy - 1 / px + 1 / py) / hxy
         elif norm == 'arithmetic':
             H = (1 / pxy + nmi * (1 / px + 1 / py)) / (hx + hy)
+        elif norm == 'geometric':
+            H = (1 / pxy - ax / px - ay / py) / hxhy
         else:
             H = 1 / pxy - 1 / px - 1 / py
         H = H.div_(nvox**2)
@@ -188,8 +204,8 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
     nmi = -nmi
     if norm == 'studholme':
         nmi = (2+nmi)
-    elif norm in (None, 'none'):
-        nmi = nmi/hy
+    elif norm == 'geometric':
+        nmi = (1+nmi)
     nmi = nmi.sum()
 
     out = [nmi, *out]
