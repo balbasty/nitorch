@@ -192,6 +192,7 @@ def sequential_pyramid(loss):
             slice_loss = loss.loss
             tmp_loss = Similarity(loss.loss.base_loss, loss.moving, loss.fixed)
             tmp_loss = get_level(tmp_loss, level)
+            _drop_slice_axis(tmp_loss.loss, slice_loss.axis, tmp_loss.fixed)
             slice_loss = SliceWiseLoss(tmp_loss.loss, slice_loss.axis)
             new_loss = Similarity(slice_loss, tmp_loss.moving, tmp_loss.fixed)
         if isinstance(new_loss, SumSimilarity):
@@ -233,11 +234,25 @@ def concurrent_pyramid(loss):
         if hasattr(new_loss, 'moving'):
             new_loss.moving = new_loss.moving[level]
         if hasattr(loss, 'loss') and hasattr(loss.loss, 'patch'):
+            # shallow copy: do not convert the shared loss in place
+            new_loss.loss = copy.copy(loss.loss)
             dim = new_loss.fixed.affine.shape[-1] - 1
             shape = new_loss.fixed.shape[-dim:]
             new_loss.loss.patch = compute_patch_size(
-                new_loss.loss.patch, new_loss.fixed.affine, shape, level)
-        if hasattr(new_loss, '__len__'):
+                loss.loss.patch, new_loss.fixed.affine, shape, level)
+        if (hasattr(loss, 'loss') and isinstance(loss.loss, SliceWiseLoss)
+                and hasattr(loss.loss.base_loss, 'patch')):
+            base = copy.copy(loss.loss.base_loss)
+            dim = new_loss.fixed.affine.shape[-1] - 1
+            shape = new_loss.fixed.shape[-dim:]
+            base.patch = compute_patch_size(
+                base.patch, new_loss.fixed.affine, shape, level)
+            _drop_slice_axis(base, loss.loss.axis, new_loss.fixed)
+            new_loss.loss = SliceWiseLoss(base, loss.loss.axis)
+        if isinstance(new_loss, SumSimilarity):
+            # (Similarity also has __len__/__getitem__ but no __setitem__,
+            #  which used to raise and silently empty the pyramid)
+            new_loss.similarities = list(new_loss.similarities)
             for i in range(len(new_loss)):
                 new_loss[i] = get_level(new_loss[i], level)
         return new_loss
@@ -262,6 +277,15 @@ def ras_to_layout(x, affine):
     layout = spatial.affine_to_layout(affine)
     ras_to_layout = layout[..., 0]
     return [x[i] for i in ras_to_layout]
+
+
+def _drop_slice_axis(base_loss, axis, fixed):
+    """Remove the slice-axis entry from a (converted) full-dim patch,
+    so that the slice loss (which runs with dim-1) sees in-plane sizes."""
+    dim = fixed.affine.shape[-1] - 1
+    patch = make_list(base_loss.patch, dim)
+    del patch[axis % dim]
+    base_loss.patch = patch
 
 
 def compute_patch_size(patch, affine, shape, level):
