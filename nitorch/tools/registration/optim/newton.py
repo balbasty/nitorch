@@ -52,7 +52,8 @@ class GaussNewton(SecondOrder):
             hess.diagonal(0, -1, -2).add_(maj, alpha=tiny)
             # hess[..., :dim] += tiny
         elif self.marquardt:
-            hess[..., :dim] += self.marquardt
+            # `hess` is a full (N, N) matrix: only load its diagonal
+            hess.diagonal(0, -1, -2).add_(self.marquardt)
         return grad, hess
 
     def search_direction(self, grad, hess):
