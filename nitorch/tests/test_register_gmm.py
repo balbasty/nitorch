@@ -2,7 +2,7 @@
 `nitorch register` (`nitorch.tools.registration.losses.gmm`)."""
 import math
 import torch
-from nitorch.tools.registration.losses.gmm import gmmh, GMMH
+from nitorch.tools.registration.losses.gmm import gmmh, GMMH, lgmmh
 
 
 def make_data(shape, seed=0):
@@ -123,3 +123,61 @@ def test_gmm_em_stops_at_fixed_point():
     t500 = time.time() - tic
     assert torch.allclose(ll1, ll500)
     assert t500 < 10 * t1 + 1, (t1, t500)
+
+
+# --- local GMM -------------------------------------------------------------
+
+
+def test_lgmm_scaling_consistent():
+    """Duplicating voxels 2x2 (and doubling the patch size so that local
+    statistics are preserved) leaves the value unchanged and divides the
+    voxel-wise gradient and Hessian by 4: everything is normalised by the
+    voxel count exactly once."""
+    mov, fix = make_data([10, 10])
+    ll1, g1, h1 = lgmmh(mov, fix, dim=2, bins=3, patch=5)
+    ll2, g2, h2 = lgmmh(repeat2(mov), repeat2(fix), dim=2, bins=3, patch=10)
+    assert math.isclose(ll1.item(), ll2.item(), rel_tol=1e-2), (ll1, ll2)
+    assert math.isclose(g1.abs().sum().item(), g2.abs().sum().item(),
+                        rel_tol=2e-2)
+    assert math.isclose(h1.sum().item(), h2.sum().item(), rel_tol=2e-2)
+
+
+def test_lgmm_grad_hess_fd():
+    """Directional FD check at fixed (fitted) local GMM parameters.
+
+    Each local-GMM evaluation is slow (local smoothing), so instead of a
+    voxel-wise FD we check directional derivatives along a few random
+    directions v: <g, v> vs (L(m + eps v) - L(m - eps v)) / 2 eps, and the
+    curvature <v, h v> against the FD of <g, v>."""
+    mov, fix = make_data([8, 8])
+    _, theta = lgmmh(mov, fix, dim=2, bins=3, patch=4, grad=False,
+                     hess=False, return_theta=True)
+    theta = {k: theta[k] for k in
+             ('xmean', 'ymean', 'xvar', 'yvar', 'corr', 'prior')}
+    kw = dict(dim=2, bins=3, patch=4, max_iter=0)
+
+    def fn(m, **k):
+        # `theta` is consumed (popped) by the fit: pass a copy
+        return lgmmh(m, fix, theta=dict(theta), **kw, **k)
+
+    ll, g, h = fn(mov)
+    assert ll.abs() > 0.1  # per-voxel average, not divided twice
+
+    gen = torch.Generator().manual_seed(1)
+    eps = 1e-6
+    for _ in range(3):
+        # random directions correlated with g, so that <g, v> is not
+        # dominated by cancellation (the gradient is only ~1% accurate)
+        v = g * (1 + torch.randn(mov.shape, dtype=mov.dtype, generator=gen))
+        v = v / v.norm()
+        fd = (fn(mov + eps * v, grad=False, hess=False) -
+              fn(mov - eps * v, grad=False, hess=False)) / (2 * eps)
+        an = (g * v).sum()
+        assert abs(fd / an - 1) < 0.05, (fd.item(), an.item())
+
+        # Hessian: Fisher-scoring diagonal approximation, check magnitude
+        gp = fn(mov + eps * v, hess=False)[1]
+        gm = fn(mov - eps * v, hess=False)[1]
+        hfd = ((gp - gm) / (2 * eps) * v).sum()
+        han = (h * v * v).sum()
+        assert 0.4 < hfd / han < 2.5, (hfd.item(), han.item())
