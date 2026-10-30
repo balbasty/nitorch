@@ -1,7 +1,7 @@
 
 
 def parse_svg_allen(root):
-    """Parse an SVG file of manual labels from the Allen brain atlas
+    r"""Parse an SVG file of manual labels from the Allen brain atlas
 
     /!\ This is a very specific parser that does not work on most SVGss
 

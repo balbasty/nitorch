@@ -161,7 +161,7 @@ def grid_grad(inp, grid, bound: List[int], interpolation: List[int],
 # @torch.jit.script
 def grid_pushgrad(inp, grid, shape: List[int], bound: List[int],
                   interpolation: List[int], extrapolate: int):
-    """ /!\ Used only in backward pass of grid_grad
+    r""" /!\ Used only in backward pass of grid_grad
     inp: (B, C, *spatial_in, D) tensor
     grid: (B, *spatial_in, D) tensor
     shape: List{D}[int], optional
@@ -192,7 +192,7 @@ def grid_pushgrad(inp, grid, shape: List[int], bound: List[int],
 # @torch.jit.script
 def grid_hess(inp, grid, bound: List[int], interpolation: List[int],
               extrapolate: int):
-    """ /!\ Used only in backward pass of grid_grad
+    r""" /!\ Used only in backward pass of grid_grad
     inp: (B, C, *spatial_in) tensor
     grid: (B, *spatial_out, D) tensor
     bound: List{D}[int] tensor
