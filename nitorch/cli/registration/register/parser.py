@@ -111,14 +111,16 @@ usage:
             -j, --joint                     Joint weight map across channels [false]
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
-            -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
+            -p, --patch *VAL [UNIT]         Patch size [10] and unit: [vox], mm, pct/%
+                                            (gauss: FWHM; square: width; per dim)
         gmm                             Gaussian Mixture likelihood
             -b, --bins                      Number of clusters in the mixture [6]
             -n, --iter VAL                  Number of EM iterations [128]
         lgmm                            Local Gaussian Mixture likelihood
             -b, --bins                      Number of clusters in the mixture [6]
             -n, --iter VAL                  Number of EM iterations [128]
-            -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
+            -p, --patch *VAL [UNIT]         Patch size [10] and unit: [vox], mm, pct/%
+                                            (gauss: FWHM; square: width; per dim)
             -k, --kernel VAL                Kernel type: [gauss]/square
             -s, --stride *VAL               Stride between patches [0]
         emmi                            EM-based Mutual Information

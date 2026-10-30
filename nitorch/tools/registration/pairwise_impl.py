@@ -15,6 +15,7 @@ from nitorch import spatial
 from nitorch.core import utils, linalg
 import torch
 from . import optim as optm, utils as regutils
+from .pairwise_makeobj import patch_to_voxels
 from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilarity
 
 
@@ -700,6 +701,7 @@ class PairwiseRegisterStep:
             g = h = None
             loss_args = (warped, fixed.dat)
             loss_kwargs = dict(dim=fixed.dim, mask=mask)
+            loss_kwargs.update(_patch_kwargs(loss.loss, fixed))
             state = loss.loss.get_state()
             if not grad and not hess:
                 llx = loss.loss.loss(*loss_args, **loss_kwargs)
@@ -885,6 +887,7 @@ class PairwiseRegisterStep:
             g = h = None
             loss_args = (warped, fixed.dat)
             loss_kwargs = dict(dim=fixed.dim, mask=mask)
+            loss_kwargs.update(_patch_kwargs(loss.loss, fixed))
             state = loss.loss.get_state()
             if not grad and not hess:
                 llx = loss.loss.loss(*loss_args, **loss_kwargs)
@@ -1066,6 +1069,7 @@ class PairwiseRegisterStep:
             g = h = None
             loss_args = (warped, fixed.dat)
             loss_kwargs = dict(dim=fixed.dim, mask=mask)
+            loss_kwargs.update(_patch_kwargs(loss.loss, fixed))
             state = loss.loss.get_state()
             if not grad and not hess:
                 llx = loss.loss.loss(*loss_args, **loss_kwargs)
@@ -1146,3 +1150,12 @@ class PairwiseRegisterStep:
         if hess:
             out.append(sumhess)
         return tuple(out) if len(out) > 1 else out[0]
+
+
+def _patch_kwargs(lossobj, fixed):
+    """Patch size (in voxels of the current level) for local losses."""
+    unit = getattr(lossobj, 'patch_unit', 'vox')
+    if unit == 'vox':
+        return {}
+    return dict(patch=patch_to_voxels(lossobj.patch, unit,
+                                      fixed.affine, fixed.shape))

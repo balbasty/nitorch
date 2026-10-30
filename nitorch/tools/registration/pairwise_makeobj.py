@@ -505,6 +505,48 @@ def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
     return nonlin_optim
 
 
+PATCH_UNITS = {'vox': 'vox', 'voxel': 'vox', 'voxels': 'vox',
+               'mm': 'mm', 'pct': 'pct', '%': 'pct'}
+
+
+def split_patch_unit(patch):
+    """Split a `[*values, unit]` patch option into (values, unit).
+
+    The unit defaults to 'vox'. Returns `(list[float], {'vox','mm','pct'})`.
+    """
+    patch = make_list(patch)
+    unit = 'vox'
+    if patch and isinstance(patch[-1], str):
+        *patch, unit = patch
+        if unit.lower() not in PATCH_UNITS:
+            raise ValueError(f'Unknown patch unit {unit!r}')
+        unit = PATCH_UNITS[unit.lower()]
+    if not patch:
+        raise ValueError('Patch size requires at least one value')
+    return [float(p) for p in patch], unit
+
+
+def patch_to_voxels(patch, unit, affine=None, shape=None):
+    """Convert a patch size to voxels for a given lattice.
+
+    patch : list[float] (broadcast to `dim`)
+    unit : {'vox', 'mm', 'pct'}
+    affine : (D+1, D+1) tensor, required if unit == 'mm'
+    shape : list[int], required if unit == 'pct'
+    """
+    if unit == 'vox':
+        return list(patch)
+    if unit == 'mm':
+        vx = spatial.voxel_size(affine).tolist()
+        patch = make_list(patch, len(vx))
+        return [p / v for p, v in zip(patch, vx)]
+    if unit == 'pct':
+        shape = list(shape)
+        patch = make_list(patch, len(shape))
+        return [p * s / 100 for p, s in zip(patch, shape)]
+    raise ValueError(f'Unknown patch unit {unit!r}')
+
+
 def make_loss(loss, slicewise=False, **kwargs):
     """Instantiate a loss object
 
@@ -537,7 +579,9 @@ def make_loss(loss, slicewise=False, **kwargs):
     fwhm, if 'mi', 'ent' or 'emmi' : float
     spline, if 'mi' or 'ent' : {0..7}
     weight, if 'mse', 'mad' or 'tuk' : float or None
-    patch, if 'lcc' or 'lgmm' : [list of] float
+    patch, if 'lcc' or 'lgmm' : [list of] float [, unit]
+        Gaussian kernel: FWHM; square kernel: width.
+        Unit in {'vox' (default), 'mm', 'pct'/'%'}.
     stride, if 'lcc' or 'lgmm' : [list of] int
     kernel, if 'lcc' or 'lgmm' : {'gaussian', 'hat'}
     max_iter, if 'gmm', 'lgmm' : int
@@ -549,6 +593,9 @@ def make_loss(loss, slicewise=False, **kwargs):
 
     """
     loss = loss.lower()
+    patch_unit = 'vox'
+    if 'patch' in kwargs:
+        kwargs['patch'], patch_unit = split_patch_unit(kwargs['patch'])
     mi_keys = ('dim', 'bins', 'spline', 'fwhm', 'norm')
     if loss == 'mi':
         kwargs.setdefault('norm', None)
@@ -595,6 +642,10 @@ def make_loss(loss, slicewise=False, **kwargs):
         lossobj = None
     else:
         raise ValueError(loss)
+    if loss in ('lcc', 'lncc', 'lgmm'):
+        # patch size in physical/relative units: converted to voxels
+        # at each pyramid level (see pairwise_impl._patch_kwargs)
+        lossobj.patch_unit = patch_unit
     if slicewise is not False:
         lossobj = losses.SliceWiseLoss(lossobj, slicewise)
     return lossobj
