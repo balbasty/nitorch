@@ -1,36 +1,61 @@
 r"""
-This loss has the same behaviour as `spm_maff8`
+EM Mutual Information. This loss has (mostly) the same behaviour as
+`spm_maff8` (see also `nitorch.tools.registration.affine_tpm`, which
+uses the same model with a TPM as moving image).
 
-General idea
-------------
-. Let 𝒙 ∈ ⟦1,K⟧ᴺ be an *observed* label map.
-  Typically, an image is discretized into K bins, and 𝑥ₙ indexes
+Notation (matching the code)
+----------------------------
+. Let 𝒙 ∈ ⟦1,J⟧ᴺ be the *observed* label map (the fixed image).
+  Typically, an image is discretized into J bins, and 𝑥ₙ indexes
   the bin in which voxel n falls. But it could also be any segmentation.
-. Let 𝒚 ∈ ⟦1,J⟧ᴺ be a *hidden* label map (with a potentially different
-  labelling scheme: J != K), such that p(𝑥ₙ = 𝑖 | 𝑦ₙ = 𝑗) = 𝐻ᵢⱼ
-. Let 𝜇 ∈ ℝᴺᴶ be a (deformable) prior probability to see
-  label j in voxel n, and 𝜙 ∈ ℝᴺᴰ be the corresponding
-  deformation field, such that: p(𝑦ₙ = 𝑗) = (𝜇 ∘ 𝜙)ₙⱼ
-. We want to find the parameters {𝐻, 𝜙} that maximize the marginal
+. Let 𝒚 ∈ ⟦1,K⟧ᴺ be a *hidden* label map: the K classes of the moving
+  image (with a potentially different labelling scheme: J != K).
+. Let 𝜇 ∈ ℝᴺᴷ be the (deformed) moving image, i.e., the prior
+  probability to see class k in voxel n: p(𝑦ₙ = 𝑘) = 𝜇ₙₖ.
+. Let 𝑯 ∈ ℝᴶᴷ link the two labellings (`prior`, of shape (..., J, K)
+  in the code):  p(𝑥ₙ = 𝑗 | 𝑦ₙ = 𝑘) ∝ 𝐻ⱼₖ.
+
+Objective
+---------
+. We want to find the parameters {𝑯, 𝜇} that maximize the marginal
   likelihood:
-      p(𝒙; 𝑯, 𝜇, 𝜙) = ∏ₙ ∑ⱼ p(𝑥ₙ | 𝑦ₙ = 𝑗; 𝑯) p(𝑦ₙ; 𝜇, 𝜙)
-  where we use ";" to separate random variables from parameters.
-. Note that 𝜇 is assumed constant in this problem: only H and 𝜙 are
-  optimized.
-. In order to maximize H, we use an EM algorithm:
-  We introduce an approximate parameter H and compute the approximate
-  posterior distribution:
-      q(𝑦ₙ = 𝑗 | 𝑥ₙ = 𝑖) ∝ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ                   (E-step)
-  We then compute the expected value of the joint log-likelihood with respect
-  to q, and maximize it with respect to H:
-      𝐻ᵢⱼ ∝ ∑ₙ (𝑥ₙ = 𝑖) q(𝑦ₙ = 𝑗)                          (M-step)
-. With H fixed, in order to maximize 𝜙, we go back to the
-  marginal log-likelihood:
-      𝓛 = ln p(𝒙) = ∑ₙ ln ∑ⱼ 𝐻{[𝑥ₙ],𝑗} (𝜇 ∘ 𝜙)ₙⱼ
-  which we differentiate with respect to 𝜙.
+      p(𝒙; 𝑯, 𝜇) = ∏ₙ ∑ₖ p(𝑥ₙ | 𝑦ₙ = 𝑘; 𝑯) p(𝑦ₙ = 𝑘; 𝜇)
+  where we use ";" to separate random variables from parameters, i.e.,
+      𝓛(𝑯, 𝜇) = ∑ₙ ln ∑ₖ 𝐻[𝑥ₙ, 𝑘] 𝜇ₙₖ
+. In order to maximize 𝑯, we use an EM algorithm:
+      q(𝑦ₙ = 𝑘 | 𝑥ₙ) ∝ 𝐻[𝑥ₙ, 𝑘] 𝜇ₙₖ                             (E-step)
+      p(𝑥 = 𝑗, 𝑦 = 𝑘) ∝ ∑ₙ 𝛿(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘 | 𝑥ₙ)               (M-step)
+      𝐻ⱼₖ = p(𝑥 = 𝑗, 𝑦 = 𝑘) / (p(𝑥 = 𝑗) p(𝑦 = 𝑘))
+. 𝑯 is therefore the "normalized" joint histogram p(x,y) / (p(x) p(y))
+  = p(x|y) / p(x), not the conditional p(x|y). The factor 1/p(𝑥ₙ)
+  cancels in the E-step, and only shifts 𝓛 by -∑ₙ ln p(𝑥ₙ), a constant
+  that depends on the fixed image histogram only. With this
+  normalization, when 𝜇 is one-hot (and the histogram is not smoothed),
+  𝓛/N is the mutual information between 𝒙 and 𝒚.
+. If `fwhm` is set, the joint histogram is smoothed along the fixed-bin
+  axis (j) after each M-step. The M-step is then not an exact maximizer
+  of 𝓛, and EM is not guaranteed to be monotonic: it stops when the
+  absolute change of 𝓛 is below `tolerance * N`.
+. With 𝑯 fixed, we differentiate 𝓛 with respect to 𝜇. If 𝑯 were the
+  exact maximizer 𝑯*(𝜇), this would be the gradient of the profile
+  log-likelihood 𝓛(𝑯*(𝜇), 𝜇) (envelope theorem). Because EM is
+  stopped early (and the histogram may be smoothed), this is only
+  approximate.
 . If we do not have an observed hard segmentation, but a (fixed) separable
-  distribution q over x, we can maximize the expected log-likelihood instead:
-      𝓛 = 𝔼_q[ln p(𝒙)] = ∑ₙᵢ q(𝑥ₙ = 𝑖) ln ∑ⱼ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ
+  distribution qₙⱼ = q(𝑥ₙ = 𝑗) over 𝒙, we maximize the expected
+  log-likelihood instead:
+      𝓛 = 𝔼_q[ln p(𝒙)] = ∑ₙⱼ qₙⱼ ln ∑ₖ 𝐻ⱼₖ 𝜇ₙₖ
+  EM then treats each pair (n, j) as an observation with weight qₙⱼ:
+      rₙⱼₖ ∝ 𝐻ⱼₖ 𝜇ₙₖ                                           (E-step)
+      p(𝑥 = 𝑗, 𝑦 = 𝑘) ∝ ∑ₙ qₙⱼ rₙⱼₖ                              (M-step)
+
+Sign and scale conventions
+--------------------------
+. `emmi` (and the `EMMI` loss) return the value to *minimize*:
+  -𝓛/N, evaluated at the final 𝑯, where N is the total voxel weight,
+  together with its gradient and Hessian with respect to 𝜇 (𝑯 fixed).
+. `affine_tpm.em_prior` returns +𝓛 (summed over voxels, to maximize),
+  with the same 𝑯 and the same EM.
 """
 from nitorch.core import utils, linalg
 from nitorch import spatial
@@ -45,18 +70,34 @@ def emmi(moving, fixed, *args, **kwargs):
     ----------
     moving : (..., K, *spatial) tensor
     fixed : (..., J|1, *spatial) tensor
+        Moving probabilities 𝜇 (K classes)
+    fixed : (..., J|1, *spatial) tensor
+        Fixed image: discretized into J bins (integer, one channel)
+        or a soft (float) distribution over J bins.
     dim : int, default=`moving.dim()-1`
     prior : (..., J, K) tensor
+        Initial normalized joint histogram H = p(x,y)/(p(x)p(y))
     fwhm : float, optional
+        Smoothing of the joint histogram along the fixed-bin axis.
+        Default: no smoothing.
     max_iter : int, default=32
+        Maximum number of EM iterations (0 = H fixed).
+    tolerance : float, default=1e-5
+        Stop EM when the absolute change of the log-likelihood is
+        less than `tolerance * N`.
     weights : tensor (..., 1, *spatial) tensor, optional
 
     Returns
     -------
     ll : () tensor
+        Negative average log-likelihood -𝓛/N, at the final H.
     grad : (..., K, *spatial) tensor, if `grad`
-    hess : (..., K, *spatial) tensor, if `hess`
+        Gradient of -𝓛/N with respect to 𝜇 (H fixed)
+    hess : (..., K*(K+1)//2, *spatial) tensor, if `hess`
+        Hessian of -𝓛/N with respect to 𝜇 (H fixed), packed: K diagonal
+        elements, then the (k, l), k < l, elements in row-major order.
     prior : (..., J, K) tensor, if `return_prior`
+        Final H
 
     """
     if fixed.dtype.is_floating_point:
@@ -120,8 +161,21 @@ def emmi_prepare(moving, fixed, weights, prior, dim):
     return moving, fixed, weights, prior, shape
 
 
+def em_converged(ll, ll_prev, tolerance, nvox):
+    """EM stopping test.
+
+    With a smoothed histogram, EM is not monotonic, so a decrease of the
+    log-likelihood does not mean that it has converged: stop only when
+    the absolute change is small (or the value is not finite).
+    """
+    if not torch.isfinite(ll).all():
+        return True
+    return bool(((ll - ll_prev).abs() <= tolerance * nvox).all())
+
+
 def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
-              weights=None, grad=True, hess=True, return_prior=False):
+              weights=None, grad=True, hess=True, return_prior=False,
+              tolerance=1e-5):
     # ------------------------------------------------------------------
     #           PREPARATION
     # ------------------------------------------------------------------
@@ -138,7 +192,7 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     # ------------------------------------------------------------------
     #           EM LOOP
     # ------------------------------------------------------------------
-    ll = -float('inf')
+    ll = torch.as_tensor(-float('inf'), dtype=torch.double)
     z = moving.new_empty([*batch, K, N])
     prior0 = torch.empty_like(prior)
     for n_iter in range(max_iter):
@@ -190,7 +244,7 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         # prior /= prior.sum(dim=[-1, -2], keepdim=True)
         # MI-like normalization
         prior /= add_tiny_(prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True), Nb)
-        if ll - ll_prev < 1e-5 * Nm:
+        if em_converged(ll, ll_prev, tolerance, Nm):
             break
 
     # ------------------------------------------------------------------
@@ -200,7 +254,7 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     # evaluated at the final prior H = p(x,y) / (p(x) p(y)):
     #   𝓛 = -1/N Σₙ ln Σₖ H[x[n], k] μ[n, k]
     # This is the function whose gradient and Hessian are returned below.
-    # When μ is a hard (one-hot) map, 𝓛 = -MI[x, y].
+    # When μ is a hard (one-hot) map (and fwhm=0), 𝓛 = -MI[x, y].
     #
     # The previous implementation returned -Σ_{jk} p(j,k) log H[j,k],
     # the MI of the expected joint histogram, which is a different
@@ -245,7 +299,8 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
 
 
 def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
-              weights=None, grad=True, hess=True, return_prior=False):
+              weights=None, grad=True, hess=True, return_prior=False,
+              tolerance=1e-5):
     # The fixed image is a (fixed) separable distribution q over x, and
     # the objective is the expected marginal log-likelihood
     #   𝓛 = -1/N Σₙ Σⱼ q[n, j] ln Σₖ H[j, k] μ[n, k]
@@ -272,7 +327,7 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     # ------------------------------------------------------------------
     #           EM LOOP
     # ------------------------------------------------------------------
-    ll = -float('inf')
+    ll = torch.as_tensor(-float('inf'), dtype=torch.double)
     for n_iter in range(max_iter):
         ll_prev = ll
         # E-step: responsibilities r[n, j, k] ∝ H[j, k] μ[n, k]
@@ -292,7 +347,7 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
             prior = prior.transpose(-1, -2)
         # MI-like normalization
         prior /= add_tiny_(prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True), Nb)
-        if ll - ll_prev < 1e-5 * Nm:
+        if em_converged(ll, ll_prev, tolerance, Nm):
             break
 
     # ------------------------------------------------------------------
@@ -457,17 +512,34 @@ class EMMI(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, fwhm=None, max_iter=32, cache=True):
+    def __init__(self, dim=None, fwhm=None, max_iter=32, cache=True,
+                 tolerance=1e-5):
+        """
+        Parameters
+        ----------
+        dim : int, optional
+        fwhm : float, optional
+            Smoothing of the joint histogram along the fixed-bin axis
+        max_iter : int, default=32
+            Maximum number of EM iterations per call
+        cache : bool, default=True
+            Warm-start EM from the previous joint histogram
+        tolerance : float, default=1e-5
+            Stop EM when the absolute change of the log-likelihood is
+            less than `tolerance * N`
+        """
         super().__init__()
         self.dim = dim
         self.fwhm = fwhm
         self.max_iter = max_iter
         self.cache = cache
+        self.tolerance = tolerance
 
     def loss(self, moving, fixed, **kwargs):
         dim = kwargs.pop('dim', self.dim)
         fwhm = kwargs.pop('fwhm', self.fwhm)
         max_iter = kwargs.pop('max_iter', self.max_iter)
+        kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
         prior = getattr(self, '_prior', None) if self.cache else None
         ll, prior = emmi(moving, fixed, grad=False, hess=False, weights=mask,
@@ -481,6 +553,7 @@ class EMMI(OptimizationLoss):
         dim = kwargs.pop('dim', self.dim)
         fwhm = kwargs.pop('fwhm', self.fwhm)
         max_iter = kwargs.pop('max_iter', self.max_iter)
+        kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
         prior = getattr(self, '_prior', None) if self.cache else None
         ll, g, prior = emmi(moving, fixed, grad=True, hess=False, weights=mask,
@@ -494,6 +567,7 @@ class EMMI(OptimizationLoss):
         dim = kwargs.pop('dim', self.dim)
         fwhm = kwargs.pop('fwhm', self.fwhm)
         max_iter = kwargs.pop('max_iter', self.max_iter)
+        kwargs.setdefault('tolerance', self.tolerance)
         mask = kwargs.pop('mask', None)
         prior = getattr(self, '_prior', None) if self.cache else None
         ll, g, h, prior = emmi(moving, fixed, grad=True, hess=True, weights=mask,

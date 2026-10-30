@@ -103,6 +103,36 @@ def test_emmi_hard_moving_is_mi():
     assert torch.allclose(ll, -mi, atol=1e-6), (ll, -mi)
 
 
+def test_emmi_em_stopping():
+    """EM stops on a small absolute change only (with a smoothed
+    histogram it is not monotonic, so a decrease is not convergence),
+    and on a non-finite value."""
+    from nitorch.tools.registration.losses.emmi import em_converged
+    t = lambda x: torch.as_tensor(x, dtype=dt)
+    assert not em_converged(t(-10.), t(-float('inf')), 1e-5, 100)
+    assert not em_converged(t(-10.), t(-9.), 1e-5, 100)     # decrease
+    assert not em_converged(t(-9.), t(-10.), 1e-5, 100)     # increase
+    assert em_converged(t(-10.), t(-10. + 1e-4), 1e-5, 100)
+    assert em_converged(t(-10. + 1e-4), t(-10.), 1e-5, 100)
+    assert em_converged(t(float('nan')), t(-10.), 1e-5, 100)
+    assert em_converged(t(0.), t(0.), 1e-5, 0)              # empty mask
+
+
+@pytest.mark.parametrize('soft_fixed', [False, True])
+def test_emmi_tolerance(soft_fixed):
+    """The EM tolerance is a parameter (default 1e-5 * N)"""
+    mu, fix, _ = make_data(soft_fixed)
+    kw = dict(dim=3, grad=False, hess=False, fwhm=1.)
+    # a huge tolerance stops after the second iteration
+    assert torch.allclose(emmi(mu, fix, max_iter=32, tolerance=1e30, **kw),
+                          emmi(mu, fix, max_iter=2, tolerance=0, **kw))
+    assert torch.allclose(emmi(mu, fix, **kw),
+                          emmi(mu, fix, tolerance=1e-5, **kw))
+    loss = EMMI(dim=3, fwhm=1., cache=False, tolerance=1e30)
+    assert torch.allclose(loss.loss(mu, fix),
+                          emmi(mu, fix, max_iter=2, tolerance=0, **kw))
+
+
 def test_emmi_class_cache_and_batch():
     """The loss object runs (with a batch dimension, as in slicewise
     losses) and its value matches the functional form"""
@@ -182,6 +212,7 @@ def test_register_emmi_soft_quantizes_moving(tmp_path, monkeypatch, symmetric):
                               atol=1e-3)
 
 
+@pytest.mark.slow
 def test_register_emmi_translation(tmp_path):
     """`nitorch register @loss emmi` recovers a known translation.
 
