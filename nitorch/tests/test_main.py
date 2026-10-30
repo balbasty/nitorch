@@ -25,3 +25,10 @@ def test_python_m_nitorch_help(args):
 def test_python_m_nitorch_unknown_command():
     res = _run('this-command-does-not-exist')
     assert res.returncode != 0
+
+
+def test_python_m_nitorch_help_unknown_command():
+    res = _run('help', 'this-command-does-not-exist')
+    assert res.returncode != 0
+    assert '<function' not in res.stdout
+    assert 'Unknown command' in res.stderr

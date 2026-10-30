@@ -57,7 +57,7 @@ def cli(args=None):
             if args[0] in commands.keys():
                 return commands[args[0]](['-h'])
             else:
-                print(help)
+                print(help())
                 print(f'[ERROR] Unknown command "{args[0]}"', file=sys.stderr)
                 return 1
         else:
