@@ -331,12 +331,20 @@ def torch_extension_flags(name):
             '-DTORCH_API_INCLUDE_EXTENSION_H']
 
 
+def cxx_standard():
+    """C++ standard required by the installed version of PyTorch"""
+    aten = op.join(op.dirname(torch.__file__), 'include', 'ATen', 'ATen.h')
+    try:
+        with open(aten) as f:
+            if 'C++20 or later' in f.read():
+                return 'c++20'
+    except OSError:
+        pass
+    return 'c++17' if torch_version()[0] >= 2 else 'c++14'
+
+
 def gcc_clang_flags():
-    flags = ['-fPIC']
-    if torch_version()[0] >= 2:
-        flags += ['-std=c++17']
-    else:
-        flags += ['-std=c++14']
+    flags = ['-fPIC', '-std=' + cxx_standard()]
     if is_darwin() and darwin_cc_type() == 'apple_clang':
         flags += ['-stdlib=libc++']
     return flags
@@ -533,10 +541,7 @@ def common_links_flags():
 def cuda_flags():
     flags = nvcc_flags() + cuda_arch_flags()
     # Add C++ standard directly to nvcc (required for PyTorch 2.x with C++17)
-    if torch_version()[0] >= 2:
-        flags += ['-std=c++17']
-    else:
-        flags += ['-std=c++14']
+    flags += ['-std=' + cxx_standard()]
     if is_windows():
         for flag in common_flags():
             # if flag == '-fPIC':

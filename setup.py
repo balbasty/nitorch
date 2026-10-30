@@ -59,7 +59,9 @@ if COMPILED_BACKEND.upper() == 'C':
     from setup_cext import prepare_extensions
     from buildtools import build_ext
     from torch import __version__ as torch_version
-    torch_version = torch_version.split('.')
+    # drop the local version label (e.g., "+cpu"), which is not always
+    # part of the version in the installed package's metadata
+    torch_version = torch_version.split('+')[0].split('.')
     if '.'.join(torch_version[:2]) == '1.7':
         torch_version = '.'.join(torch_version[:3])  # we need the patch
     else:
