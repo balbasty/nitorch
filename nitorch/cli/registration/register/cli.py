@@ -1,6 +1,6 @@
 from nitorch.cli.cli import commands
 from nitorch.core.cli import ParseError
-from .parser import parser, help
+from .parser import parser, help, default_hessian
 from nitorch.tools.registration import objects
 from nitorch.tools.registration.pairwise_preproc import (
     map_image, load_image, preproc_image
@@ -241,11 +241,11 @@ def _main(options):
             if options.verbose:
                 print('Nonlin ->', fname)
 
-        if (
-            options.nonlin.hessian and
-            getattr(nonlin, 'hess', None) is not None
-        ):
-            fname = options.nonlin.hessian.format(
+        hessian = options.nonlin.hessian
+        if hessian and getattr(nonlin, 'hess', None) is not None:
+            if hessian is True:
+                hessian = default_hessian
+            fname = hessian.format(
                 dir=odir, sep=os.path.sep, name=options.nonlin.name)
             io.savef(nonlin.hess, fname, affine=nonlin.affine)
             if options.verbose:

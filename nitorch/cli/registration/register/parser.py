@@ -176,7 +176,7 @@ usage:
     Common options:
         -i, --input                     Path to initial transform
         -o, --output                    Path to the output transform: [{dir}/{name}.nii.gz]
-        -h, --hessian                   Path to the output hessian: [{dir}/{name}_hessian.nii.gz]
+        -h, --hessian [PATH]            Path to the output hessian: [False], True={dir}/{name}_hessian.nii.gz
         -s, --steps                     Number of integration steps
         -a, --absolute                  Penalty on absolute displacements (0th) [1e-4]
         -m, --membrane                  Penalty on membrane energy (1st) [1e-3]
@@ -264,6 +264,9 @@ def number_or_str(type=float):
         except ValueError:
             return x
     return _number_or_str
+
+
+default_hessian = '{dir}{sep}{name}_hessian.nii.gz'
 
 
 def bool_or_str(x):
@@ -581,8 +584,9 @@ nonlin.add_option('init', ('-i', '--input', '--init'), nargs=1,
 nonlin.add_option('output', ('-o', '--output'), nargs=1,
                   default='{dir}{sep}{name}.nii.gz',
                   help='Path to the output transform')
-nonlin.add_option('hessian', ('-h', '--hessian'), nargs=1,
-                  default='{dir}{sep}{name}_hessian.nii.gz',
+nonlin.add_option('hessian', ('-h', '--hessian'), nargs='?',
+                  default=False, convert=bool_or_str,
+                  action=cli.Actions.store_value(default_hessian),
                   help='Path to the output hessian')
 nonlin.add_option('is2d', '-2d', default=False, nargs='?',
                   action=cli.Actions.store_value(2),
