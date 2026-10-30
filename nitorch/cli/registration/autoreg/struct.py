@@ -291,14 +291,10 @@ class LinearElasticLoss(TransformationLoss):
         loss = 0
         if factor[0]:
             m = spatial.lame_div(v)
-            loss += (v*m).sum(-1).mean()
-            if factor[0] != 1:
-                loss = loss * factor[0]
+            loss += (v*m).sum(-1).mean() * factor[0]
         if factor[1]:
             m = spatial.lame_shear(v)
-            loss += (v*m).sum(-1).mean()
-            if factor[1] != 1:
-                loss = loss * factor[1]
+            loss += (v*m).sum(-1).mean() * factor[1]
         return loss
 
 
