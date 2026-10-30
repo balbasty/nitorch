@@ -7,20 +7,7 @@ on:
         description: 'Fail fast mode'
         required: false
         default: 'true'
-  push:
-    paths:
-      - "nitorch/_C/*.py"
-      - "nitorch/_C/*.cpp"
-      - "nitorch/_C/*.h"
-      - "nitorch/spatial/_grid.py"
-    branches: [ master ]
-  pull_request:
-    paths:
-      - "nitorch/_C/*.py"
-      - "nitorch/_C/*.cpp"
-      - "nitorch/_C/*.h"
-      - "nitorch/spatial/_grid.py"
-    branches: [ master ]
+  # The compiled backend takes too long to build: run manually only
 
 jobs:
 
@@ -30,23 +17,33 @@ jobs:
     strategy:
       fail-fast: ${{ github.event.inputs.fail-fast == 'true' }}
       matrix:
-        os: [ ubuntu-18.04 ]                # we only run tests on ubuntu/cpu
-        python-version: [ '3.6' ]           # smallest version supported
-        pytorch-version: [ '1.4', '1.10' ]  # smallest and biggest versions
+        # we only run tests on ubuntu/cpu
+        include:
+          # oldest versions available on current runners
+          - os: ubuntu-24.04
+            python-version: '3.9'
+            pytorch-version: '1.13.1'
+            numpy-version: '<2'         # torch 1.x is not compatible with numpy 2
+          # recent versions
+          - os: ubuntu-24.04
+            python-version: '3.12'
+            pytorch-version: '2.5.1'
+            numpy-version: ''
 
     steps:
 
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v5
 
     - name: Set up Python ${{ matrix.python-version }} on ${{ matrix.os }}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
 
     - name: Install pip
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade pip setuptools wheel
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install "numpy${{ matrix.numpy-version }}"
         pip install nibabel
         pip install tifffile
 
@@ -69,7 +66,7 @@ jobs:
       run: |
         # install scipy ourselves because setuptools does a poor job
         pip install scipy
-        NI_USE_CUDA=0 NI_COMPILED_BACKEND="C" python setup.py develop
+        NI_USE_CUDA=0 NI_COMPILED_BACKEND="C" pip install --no-build-isolation -e .
         python -c "from nitorch._C import spatial"
         NI_SHOW_COMPILED_BACKEND=1 python -c "from nitorch._C import grid"
 
