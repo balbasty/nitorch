@@ -342,7 +342,9 @@ class BabelArray(MappedArray):
         if header is None:
             header = disk_header(self._image)
         header.set_data_dtype(self.dtype)
-        header.set_data_shape(self._shape)
+        if tuple(header.get_data_shape()) != tuple(self._shape):
+            # (only if needed: MGHHeader.set_data_shape resets voxel sizes)
+            header.set_data_shape(self._shape)
         if hasattr(header, 'writehdr_to'):
             header.writehdr_to(fileobj)
         elif hasattr(header, 'write_to'):
@@ -375,7 +377,9 @@ class BabelArray(MappedArray):
         if header is None:
             header = disk_header(self._image)
         header.set_data_dtype(self.dtype)
-        header.set_data_shape(self._shape)
+        if tuple(header.get_data_shape()) != tuple(self._shape):
+            # (only if needed: MGHHeader.set_data_shape resets voxel sizes)
+            header.set_data_shape(self._shape)
         if hasattr(header, 'writeftr_to'):
             header.writeftr_to(fileobj)
         return self
