@@ -1027,6 +1027,73 @@ def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
     return gx
 
 
+def _jhistc_backward_hess(g, x, w=None, order=1, bound='replicate',
+                          extrapolate=True):
+    """Second derivative of `<g, hist(x)>` with respect to each sample.
+
+    The input must already be a soft mapping to bins indices.
+
+    Parameters
+    ----------
+    g : (b, bins, bins) tensor
+    x : (b, n, 2) tensor
+    w : ([b], n) tensor, optional
+    order : int, default=1
+    bound : {'zero', 'nearest'}, default='nearest'
+    extrapolate : bool, default=True
+
+    Returns
+    -------
+    hx : (b, n, 2) tensor
+        `[sum_ab g[a, b] B''(u - a) B(v - b), sum_ab g[a, b] B(u - a) B''(v - b)]`
+
+    Notes
+    -----
+    This is the (voxel-diagonal) term of the Hessian that Gauss-Newton
+    drops. For order 1, `B''` is a sum of Diracs at the bin edges; we
+    return its average over the sub-bin position instead, which is
+    exactly the order-2 `B''` (since `B1 * B0 = B2`).
+    """
+    order = py.make_list(order, 2)
+    order = [inter_to_nitorch(o, 'int') for o in order]
+    if any(o == 0 for o in order):
+        raise NotImplementedError(_ORDER0_MSG)
+    bound = make_bound([bound_to_nitorch(bound, 'int')]*2)
+    extrapolate = 1 if extrapolate else 2
+    shape = list(g.shape[-2:])
+    batch = max(g.shape[0], x.shape[0])
+    g = g.reshape([g.shape[0], 1, -1]).expand([batch, 1, -1])
+    x = x.expand([batch, *x.shape[1:]])
+
+    out = []
+    for d in range(2):
+        orders = list(order)
+        orders[d] = max(orders[d], 2)
+        weights, _, hesss, coords, signs = nd.get_weights(
+            x.unsqueeze(1), bound, make_spline(orders), shape, hess=True)
+        weights = [list(wd) for wd in weights]
+        weights[d] = hesss[d]
+        out1 = 0
+        for i in range(orders[0] + 1):
+            for j in range(orders[1] + 1):
+                idx = coords[0][i] * shape[1] + coords[1][j]
+                val = g.gather(-1, idx) * weights[0][i] * weights[1][j]
+                sign = ts_utils.make_sign([signs[0][i], signs[1][j]])
+                if sign is not None:
+                    val = val * sign
+                out1 = out1 + val
+        out.append(out1.squeeze(1))
+    out = torch.stack(out, -1)
+
+    mask = nd.inbounds_mask(extrapolate, x, shape)
+    if mask is not None:
+        out = out * mask.squeeze(1).unsqueeze(-1)
+    if w is not None:
+        # the histogram is linear in w
+        out = out * w.unsqueeze(-1)
+    return out
+
+
 # ======================================================================
 #                              HISTOGRAM
 # ======================================================================
@@ -1596,6 +1663,68 @@ class JointHistCount:
         # reshape
         g = g.reshape([*batch, n, 2])
         return g
+
+    def backward_hess(self, g, x, w=None, min=None, max=None):
+        """Second derivative of `<g, hist(x)>` with respect to each sample.
+
+        If `g` is the gradient of a loss with respect to the histogram,
+        this is the voxel-diagonal term of the Hessian of the loss that
+        Gauss-Newton drops (`sum_ab g[a, b] d2 hist[a, b] / dx_n^2`).
+        For spline order 1, it is averaged over the sub-bin position
+        (see `_jhistc_backward_hess`).
+
+        Parameters
+        ----------
+        g : (..., *bins) tensor
+        x : (..., n, 2) tensor
+        w : (..., n) tensor, optional
+        min : (...) tensor_like, optional
+        max : (...) tensor_like, optional
+
+        Returns
+        -------
+        h : (..., n, 2) tensor
+
+        """
+        backend = dict(dtype=x.dtype, device=x.device)
+        n = x.shape[-2]
+        xbatch = x.shape[:-2]
+        if w is not None:
+            _, w = torch.broadcast_tensors(x[..., 0], w)
+            batch = w.shape[:-1]
+            x = x.expand([*batch, *x.shape[-2:]])
+            w = w.reshape([-1, n])
+        else:
+            batch = xbatch
+        x = x.reshape([-1, n, 2])
+
+        if min is None:
+            min = x.min(-2, keepdim=True).values
+        else:
+            min = torch.as_tensor(min, **backend).expand([*xbatch, 2]).reshape([-1, 1, 2])
+        if max is None:
+            max = x.max(-2, keepdim=True).values
+        else:
+            max = torch.as_tensor(max, **backend).expand([*xbatch, 2]).reshape([-1, 1, 2])
+
+        x = x.clone()
+        bins = torch.as_tensor(self.bins, **backend)
+        x = x.mul_(bins / (max - min)).add_(bins / (1 - max / min)).sub_(0.5)
+
+        g = g.reshape([-1, *self.bins])
+
+        # smooth backward (adjoint of the forward smoothing)
+        if any(self.fwhm):
+            kx, ky = self.smoothing_matrices(**backend)
+            g = kx.transpose(0, 1).matmul(g).matmul(ky)
+
+        h = _jhistc_backward_hess(g, x, w, self.order, self.bound,
+                                  self.extrapolate)
+        h = h.mul_((bins / (max - min)).square_())
+
+        # reshape
+        h = h.reshape([*batch, n, 2])
+        return h
 
     def backward2(self, h, x, w=None, min=None, max=None, hx=None, hy=None):
         """Per-sample diagonal of the Gauss-Newton term `J^T M J`.

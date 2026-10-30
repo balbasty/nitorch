@@ -5,7 +5,7 @@ from .base import HistBasedOptimizationLoss
 pyutils = py
 
 
-def entropy(moving, fixed, dim=None, bins=64, order=1, fwhm=2,
+def entropy(moving, fixed, dim=None, bins=64, order=3, fwhm=2,
             grad=True, hess=True, minmax=False, mask=None):
     """(Negative) Entropy
 
@@ -58,19 +58,22 @@ def entropy(moving, fixed, dim=None, bins=64, order=1, fwhm=2,
 
     out = []
     if grad or hess:
-        if grad:
-            g = pxy.log().add_(1).neg_()
-            g = g.div_(nvox)
-            g = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
-            g = g.reshape(shape)
-            out.append(g)
+        g = pxy.log().add_(1).neg_()
+        g = g.div_(nvox)
 
-        if hess:
-            H = pxy.reciprocal()
-            H = H.div_(nvox*nvox)
-            H = hist.backward2(H, idx, w=mask)[..., 0]
-            H = H.reshape(shape)
-            out.append(H)
+    if grad:
+        gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
+        gx = gx.reshape(shape)
+        out.append(gx)
+
+    if hess:
+        # The joint entropy is concave in the histogram, so the
+        # Gauss-Newton term is negative semi-definite: bound it by zero
+        # and use the absolute value of the (voxel-diagonal) second term.
+        # See `mi`.
+        H = hist.backward_hess(g, idx, min=mn, max=mx, w=mask)[..., 0]
+        H = H.abs_().reshape(shape)
+        out.append(H)
 
     out = [hxy, *out]
     if minmax is True:
@@ -78,7 +81,7 @@ def entropy(moving, fixed, dim=None, bins=64, order=1, fwhm=2,
     return tuple(out) if len(out) > 1 else out[0]
 
 
-def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
+def mi(moving, fixed, dim=None, bins=64, order=3, fwhm=2, norm='studholme',
        grad=True, hess=True, minmax=False, mask=None):
     """(Normalized) Mutual Information
 
@@ -96,8 +99,11 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
         Number of spatial dimensions.
     bins : int, default=64
         Number of bins in the joing histogram.
-    order : int, default=1
+    order : int, default=3
         Order of B-splines encoding the histogram.
+        The Hessian uses the second derivative of the B-splines: with
+        order 1 (where it is zero almost everywhere), its average over a
+        bin is used instead.
     norm : {'studholme', 'arithmetic', 'geometric', None}, default='studholme'
         Normalization method:
         None : mi = H[x] + H[y] - H[xy]
@@ -115,6 +121,7 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
         1 -  NMI (or -MI if `norm` is None)
     grad : (..., K, *spatial) tensor
     hess : (..., K, *spatial) tensor
+        Non-negative diagonal preconditioner (see notes in the code)
 
     """
     if norm not in ('studholme', 'arithmetic', 'geometric', None, 'none', 'no'):
@@ -169,7 +176,8 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
         nmi = hx + hy - hxy
 
     out = []
-    if grad:
+    if grad or hess:
+        # gradient of the loss with respect to the histogram
         if norm == 'studholme':
             g = ((1 + px.log()) + (1 + py.log())) - nmi * (1 + pxy.log())
             g /= hxy
@@ -183,36 +191,25 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
             # g = ((1 + px.log()) + (1 + py.log())) - (1 + pxy.log())
             g = pxy.log().neg_().add_(px.log()).add_(py.log()).add_(1)
         g = g.div_(nvox)
-        g = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
-        g = g.reshape(shape)
-        out.append(g)
+
+    if grad:
+        gx = hist.backward(g, idx, min=mn, max=mx, w=mask)[..., 0]
+        gx = gx.reshape(shape)
+        out.append(gx)
 
     if hess:
-        # Gauss-Newton (Fisher) form: minus the histogram-space Hessian
-        # of the loss, without the rank-2 terms from the normalisation:
-        #   M = diag(cxy / pxy) + [a == c] * cx / px + [b == d] * cy / py
-        # The marginal terms are passed separately so that backward2
-        # computes the per-voxel diagonal of J^T M J exactly (taking only
-        # their bin-diagonal would be wrong and can make it negative).
-        # Since moving the moving image leaves py unchanged, the cy term
-        # contributes (almost) nothing to the moving-image Hessian.
-        if norm == 'studholme':
-            Hxy, Hx, Hy = nmi / pxy, -1 / px, -1 / py
-            scl = hxy
-        elif norm == 'arithmetic':
-            Hxy, Hx, Hy = 1 / pxy, nmi / px, nmi / py
-            scl = hx + hy
-        elif norm == 'geometric':
-            Hxy, Hx, Hy = 1 / pxy, -ax / px, -ay / py
-            scl = hxhy
-        else:
-            Hxy, Hx, Hy = 1 / pxy, -1 / px, -1 / py
-            scl = 1
-        scl = scl * nvox ** 2
-        Hxy, Hx, Hy = Hxy / scl, Hx / scl, Hy / scl
-        H = hist.backward2(Hxy, idx, w=mask,
-                           hx=Hx.squeeze(-1), hy=Hy.squeeze(-2))[..., 0]
-        H = H.reshape(shape)
+        # The Hessian with respect to the moving voxels is
+        #   J^T F J + diag_n(sum_ab g_ab d2 p_ab / dx_n^2)
+        # Along moving-image directions, every norm is a function of
+        # H(Y|X) and Hx with non-negative coefficients, and both are
+        # concave in the histogram, so the first (Gauss-Newton) term is
+        # negative semi-definite: we bound it by zero. The rank-2 terms
+        # of the normalisation are dropped, which amounts to Newton on
+        # the Dinkelbach surrogate of the ratio. The second term is
+        # voxel-diagonal; we use its absolute value as preconditioner
+        # (Balbastre et al., MedIA 2021, eq. 24).
+        H = hist.backward_hess(g, idx, min=mn, max=mx, w=mask)[..., 0]
+        H = H.abs_().reshape(shape)
         out.append(H)
 
     nmi = -nmi
@@ -233,7 +230,7 @@ class Entropy(HistBasedOptimizationLoss):
 
     order = 2  # Gradient defined
 
-    def __init__(self, dim=None, bins=None, spline=1, fwhm=2):
+    def __init__(self, dim=None, bins=None, spline=3, fwhm=2):
         """
 
         Parameters
@@ -350,7 +347,7 @@ class MI(HistBasedOptimizationLoss):
 
     order = 2  # Gradient defined
 
-    def __init__(self, dim=None, bins=None, spline=1, fwhm=2, norm='studholme'):
+    def __init__(self, dim=None, bins=None, spline=3, fwhm=2, norm='studholme'):
         """
 
         Parameters
