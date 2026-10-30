@@ -152,14 +152,15 @@ class RobustLoss(OptimizationLoss):
         if not compute_lam:
             weights = self.reweight(moving, fixed, lam=lam, joint=joint,
                                     dim=dim, mask=mask, **kwargs)
-            llw = 0.5 * mask_inf_(weights.reciprocal_()).mul_(mask).div_(nvox).sum()
+            llw = 0.5 * mask_inf_(weights.reciprocal()).mul_(mask).div_(nvox).sum()
             lam = preproc_lam(lam, dim)
             lam = lam * weights
             return lll, llw, lam
 
         # --- Estimated lam -> IRLS loop -------------------------------
         if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim, weights=mask)
+            lam = weighted_precision(moving, fixed, dim=dim,
+                                     weights=mask if torch.is_tensor(mask) else None)
         lam = preproc_lam(lam, dim)
         lll = llw = float('inf')
         for n_iter in range(32):
@@ -170,7 +171,7 @@ class RobustLoss(OptimizationLoss):
             lam = preproc_lam(lam, dim)
             # lam /= weights.mean(list(range(-dim, 0)))
             lll = -0.5 * (lam.log() * weights * mask / nvox).sum()
-            llw = 0.5 * mask_inf_(weights.reciprocal_()).mul_(mask).div_(nvox).sum()
+            llw = 0.5 * mask_inf_(weights.reciprocal()).mul_(mask).div_(nvox).sum()
             if abs(lll_prev - lll) < 1e-4:
                 break
         if self.cache:
