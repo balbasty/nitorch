@@ -569,6 +569,54 @@ def _histc_backward(g, x, w=None, order=0, bound='replicate',
     return out[0] if len(out) == 1 else tuple(out)
 
 
+_SPLINE_SQ_CACHE = {}
+
+
+def _spline_sq_integrals(order):
+    """Return (w, d) = (integral of B_k^2, integral of (B_k')^2).
+
+    Computed once (exactly, by piecewise Gauss-Legendre quadrature) using
+    nitorch's own spline weight/grad functions, then cached.
+    w = mean_t sum_i B_k(t-i)^2 and d = mean_t sum_i B_k'(t-i)^2.
+    """
+    order = int(order)
+    if order not in _SPLINE_SQ_CACHE:
+        import numpy as np
+        from nitorch._C._ts.splines import Spline
+        nodes, weights = np.polynomial.legendre.leggauss(16)
+        nodes = torch.as_tensor(nodes, dtype=torch.double)
+        weights = torch.as_tensor(weights, dtype=torch.double)
+        # B_k is piecewise polynomial with knots on the half-integer grid
+        half = (order + 1) / 2
+        edges = torch.arange(-half, half, 0.5, dtype=torch.double)
+        t = (edges[:, None] + 0.25 * (nodes[None, :] + 1)).reshape(-1)
+        q = (weights.repeat(len(edges)) * 0.25)
+        spline = Spline(order)
+        w = (spline.weight(t).square() * q).sum().item()
+        d = (spline.grad(t).square() * q).sum().item() if order > 0 else 0.
+        _SPLINE_SQ_CACHE[order] = (w, d)
+    return _SPLINE_SQ_CACHE[order]
+
+
+def _hess_order_scale(order):
+    """Factors that rescale order-1 Gauss-Newton Hessians to order `order`.
+
+    For a single dimension, returns d_k / d_1.
+    For a list [kx, ky], returns the factors for the x and y components:
+    (d_kx*w_ky)/(d_1*w_1) and (w_kx*d_ky)/(w_1*d_1).
+    """
+    w1, d1 = _spline_sq_integrals(1)
+    if isinstance(order, (list, tuple)):
+        (wx, dx), (wy, dy) = [_spline_sq_integrals(o) for o in order]
+        return [(dx * wy) / (d1 * w1), (wx * dy) / (w1 * d1)]
+    return _spline_sq_integrals(order)[1] / d1
+
+
+_ORDER0_MSG = ('Gauss-Newton Hessian of a histogram with spline order 0 is '
+               'not defined (the derivative of B0 is zero almost '
+               'everywhere). Use order >= 1.')
+
+
 def _histc_backward2(h, x, w=None, order=0, bound='replicate',
                      extrapolate=True):
     """Compute (Fisher's) second derivative of the histogram.
@@ -588,6 +636,14 @@ def _histc_backward2(h, x, w=None, order=0, bound='replicate',
     -------
     hx : (b, n) tensor
 
+    Notes
+    -----
+    Only an order-1 Hessian kernel is implemented. For order != 1, the
+    order-1 result is rescaled (per component) so that its expectation
+    over the sub-bin position matches the expected Gauss-Newton curvature
+    of the order-k histogram. This is an approximate, position-averaged
+    Hessian. Order 0 is not supported (zero derivative a.e.).
+
     """
     order = inter_to_nitorch(order, 'int')
     bound = make_bound([bound_to_nitorch(bound, 'int')])
@@ -595,16 +651,15 @@ def _histc_backward2(h, x, w=None, order=0, bound='replicate',
 
     is_diag = h.dim() == 2
 
-    args = (h.unsqueeze(-1), x.unsqueeze(-1), bound, extrapolate)
+    args = (h.unsqueeze(1), x.unsqueeze(-1), bound, extrapolate)
     if order == 0:
-        raise NotImplementedError
-    elif order == 1:
-        if is_diag:
-            gx = iso1_grad2_diag_1d(*args)
-        else:
-            gx = iso1_grad2_1d(*args)
+        raise NotImplementedError(_ORDER0_MSG)
+    if is_diag:
+        gx = iso1_grad2_diag_1d(*args)
     else:
-        raise NotImplementedError
+        gx = iso1_grad2_1d(*args)
+    if order != 1:
+        gx = gx * _hess_order_scale(order)
     gx = gx.squeeze(1).squeeze(-1)
     if w is not None:
         gx *= w if is_diag else w.unsqueeze(-1)
@@ -790,6 +845,14 @@ def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
     -------
     hx : (b, n, 2) tensor
 
+    Notes
+    -----
+    Only an order-1 Hessian kernel is implemented. For order != 1, the
+    order-1 result is rescaled (per component) so that its expectation
+    over the sub-bin position matches the expected Gauss-Newton curvature
+    of the order-k histogram. This is an approximate, position-averaged
+    Hessian. Order 0 is not supported (zero derivative a.e.).
+
     """
     order = py.make_list(order, 2)
     order = [inter_to_nitorch(o, 'int') for o in order]
@@ -799,15 +862,16 @@ def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
     is_diag = h.dim() == 3
 
     args = (h.unsqueeze(1), x.unsqueeze(1), bound, extrapolate)
-    if all(o == 0 for o in order):
-        raise NotImplementedError
-    elif all(o == 1 for o in order):
-        if is_diag:
-            gx = iso1_grad2_diag_2d(*args)
-        else:
-            gx = iso1_grad2_2d(*args)
+    if any(o == 0 for o in order):
+        raise NotImplementedError(_ORDER0_MSG)
+    if is_diag:
+        gx = iso1_grad2_diag_2d(*args)
     else:
-        raise NotImplementedError
+        gx = iso1_grad2_2d(*args)
+    if any(o != 1 for o in order):
+        sx, sy = _hess_order_scale(order)
+        scl = torch.as_tensor([sx, sy], dtype=gx.dtype, device=gx.device)
+        gx = gx * scl
     gx = gx.squeeze(1).squeeze(1)
     if w is not None:
         w = w.unsqueeze(-1)
@@ -1236,11 +1300,11 @@ class HistCount:
             raise ValueError('Don\'t know what to do with input shape')
 
         if min is None:
-            min = x.min(-1).values
+            min = x.min(-1, keepdim=True).values
         else:
             min = torch.as_tensor(min, **backend).expand(xbatch).reshape([-1, 1])
         if max is None:
-            max = x.max(-1).values
+            max = x.max(-1, keepdim=True).values
         else:
             max = torch.as_tensor(max, **backend).expand(xbatch).reshape([-1, 1])
 
@@ -1249,10 +1313,10 @@ class HistCount:
 
         # push data into the histogram
         h = _histc_backward2(h, x, w, self.order, self.bound, self.extrapolate)
-        h = h.mul_(self.bins / (max - min)).add_(self.bins / (1 - max / min)).sub_(0.5)
+        h = h.mul_((self.bins / (max - min)).square_())
 
         # reshape
-        h = h.reshape(h, [*batch, n])
+        h = h.reshape([*batch, n])
         return h
 
 
