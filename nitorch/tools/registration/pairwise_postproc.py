@@ -124,7 +124,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
                 print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin,
-                                    order=mov.order)
+                                    order=mov.order, label=bool(mov.label))
             save = io.save if mov.label else io.savef
             save(warped, fname, like=ifname, affine=target_affine)
             if verbose:
@@ -140,7 +140,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
                 print(f'Full reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin, reslice=True,
-                                    order=mov.order)
+                                    order=mov.order, label=bool(mov.label))
             save = io.save if mov.label else io.savef
             save(warped, fname, like=ifname, affine=target_affine)
             if verbose:
@@ -171,7 +171,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
                 print(f'Minimal reslice: {ifname} -> {fname} ...', end=' ')
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin, backward=True,
-                                    order=fix.order)
+                                    order=fix.order, label=bool(fix.label))
             save = io.save if fix.label else io.savef
             save(warped, fname, like=ifname, affine=target_affine)
             if verbose:
@@ -188,7 +188,7 @@ def warp_images(fix, mov, affine=None, nonlin=None, dim=None, device=None, odir=
             warped = warp_one_image(image, target_affine, target_shape,
                                     affine=affine, nonlin=nonlin,
                                     backward=True, reslice=True,
-                                    order=fix.order)
+                                    order=fix.order, label=bool(fix.label))
             save = io.save if fix.label else io.savef
             save(warped, fname, like=ifname, affine=target_affine)
             if verbose:
@@ -202,7 +202,7 @@ def _almost_identity(aff):
 
 
 def warp_one_image(image, target, shape=None, affine=None, nonlin=None,
-                   backward=False, reslice=False, order=1):
+                   backward=False, reslice=False, order=1, label=False):
     """Returns the warped image, with channel dimension last
 
     Parameters
@@ -223,6 +223,10 @@ def warp_one_image(image, target, shape=None, affine=None, nonlin=None,
         Whether to reslice to the target grid, or keep the input grid.
     order : int, default=1
         Interpolation order.
+    label : bool, default=False
+        Whether the image is a label map. Intensity images are
+        prefiltered (spline interpolation); label maps (or integer
+        data) are not.
 
     Returns
     -------
@@ -274,9 +278,11 @@ def warp_one_image(image, target, shape=None, affine=None, nonlin=None,
 
     # warp image
     if phi is not None:
+        prefilter = not label and image.dat.dtype.is_floating_point
         warped = regutils.smart_pull(image.dat, phi, bound=image.bound,
                                      extrapolate=image.extrapolate,
-                                     interpolation=order)
+                                     interpolation=order,
+                                     prefilter=prefilter)
     else:
         warped = image.dat
 

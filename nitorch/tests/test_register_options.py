@@ -196,3 +196,34 @@ def test_warp_order_honoured(tmp_path, side):
     linear = warp_shifted(tmp_path, side, 1)
     # the 1|5 boundary is interpolated
     assert ((linear > 1) & (linear < 5)).any()
+
+
+def reslice_identity(tmp_path, dat, label, order):
+    dtype = 'int16' if label else 'float32'
+    fix = write(str(tmp_path / 'fix.nii.gz'), np.zeros_like(dat))
+    mov = write(str(tmp_path / 'mov.nii.gz'), dat, dtype)
+    out = str(tmp_path / 'resliced.nii.gz')
+    affine = make_affine('translation', 'sym',
+                         init=torch.eye(4, dtype=torch.double))
+    warp_images(dict(files=[fix]),
+                dict(files=[mov], resliced=out, label=label, order=order),
+                affine=affine, dim=3, device=torch.device('cpu'),
+                verbose=False)
+    return np.asarray(nib.load(out).dataobj)
+
+
+def test_warp_spline_identity_reproduces_intensities(tmp_path):
+    """Order > 1 interpolates the spline coefficients of the
+    (prefiltered) image, so the identity reproduces the input."""
+    dat = np.random.default_rng(0).random([8, 7, 6]).astype('float32')
+    out = reslice_identity(tmp_path, dat, False, 3)
+    assert np.allclose(out, dat, atol=1e-5), np.abs(out - dat).max()
+
+
+def test_warp_spline_labels_stay_labels(tmp_path):
+    lab = np.random.default_rng(0).choice([0, 1, 4, 7], size=[8, 7, 6])
+    out = reslice_identity(tmp_path, lab, True, 3)
+    # (no prefilter: order-3 weights vote between labels, so the
+    # output need not equal the input, but it only contains labels)
+    assert not np.issubdtype(out.dtype, np.floating)
+    assert set(np.unique(out).tolist()) <= {0, 1, 4, 7}
