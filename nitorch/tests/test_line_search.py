@@ -111,3 +111,67 @@ def test_register_progress_output_clean(tmp_path, capsys, monkeypatch, verbose):
         assert len(rows) == 1           # all progress on one in-place line
     else:
         assert len(rows) > 1
+
+
+def test_stepsize_line_search_applies_lr_once():
+    # f(x) = x^2/2, grad = x; GD with lr=0.1 from x=1 -> x=0.9 (not 0.99)
+    def closure(param, grad=False, hess=False):
+        f = param.square().sum() / 2
+        return (f, param.clone()) if grad else f
+    search = StepSizeLineSearch(GradientDescent(lr=0.1), max_iter=4)
+    param = search.step(torch.tensor([1.]), closure)[0]
+    assert torch.allclose(param, torch.tensor([0.9]))
+
+
+def _blobs(tmp_path, shift=1):
+    import numpy as np
+    import nibabel as nib
+    x = np.stack(np.meshgrid(*[np.arange(16.)] * 3, indexing='ij'))
+    for name, sh in [('fix', 0), ('mov', shift)]:
+        c = np.array([8., 8., 8. + sh])
+        dat = np.exp(-((x - c[:, None, None, None]) ** 2).sum(0) / 8)
+        nib.save(nib.Nifti1Image(dat.astype(np.float32), np.eye(4)),
+                 str(tmp_path / f'{name}.nii'))
+    return str(tmp_path / 'fix.nii'), str(tmp_path / 'mov.nii')
+
+
+@pytest.mark.parametrize('search', ['3', 'wolfe'])
+def test_register_affine_gn_line_search(tmp_path, search):
+    from nitorch.cli.registration.register.cli import _cli
+    from nitorch import io
+    fix, mov = _blobs(tmp_path, shift=1)
+    out = str(tmp_path / 'aff.lta')
+    _cli(['-v', '0', '-o', str(tmp_path), '@loss', 'mse', '@@fix', fix,
+          '@@mov', mov, '@affine', 'rigid', '-o', out,
+          '@@optim', 'gn', '-n', '10', '-s', search,
+          '@pyramid', '--levels', '1'])
+    aff = torch.as_tensor(io.transforms.map(out).fdata(), dtype=torch.double)
+    # displacement of the blob centre (rotations about the corner also
+    # contribute to the translation column)
+    c = torch.tensor([8., 8., 8., 1.], dtype=torch.double)
+    shift = (aff.reshape(4, 4) @ c - c)[:3]
+    expected = torch.tensor([0., 0., 1.], dtype=torch.double)
+    assert torch.allclose(shift.abs(), expected, atol=0.1), shift
+
+
+@pytest.mark.parametrize('verbose', [2, 3])
+def test_register_verbose_headless(tmp_path, verbose):
+    pytest.importorskip('matplotlib')
+    import os
+    import subprocess
+    import sys
+    fix, mov = _blobs(tmp_path)
+    env = {k: v for k, v in os.environ.items()
+           if k not in ('MPLBACKEND', 'DISPLAY', 'WAYLAND_DISPLAY')}
+    root = os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+    env['PYTHONPATH'] = root + os.pathsep + env.get('PYTHONPATH', '')
+    code = ('import sys; '
+            'from nitorch.cli.registration.register.cli import _cli; '
+            '_cli(sys.argv[1:])')
+    r = subprocess.run(
+        [sys.executable, '-c', code, '-v', str(verbose), '-o', str(tmp_path),
+         '@loss', 'mse', '@@fix', fix, '@@mov', mov, '@affine', 'translation',
+         '@@optim', 'gn', '-n', '2', '@pyramid', '--levels', '1'],
+        env=env, capture_output=True, text=True, timeout=300)
+    assert r.returncode == 0, r.stderr[-2000:]

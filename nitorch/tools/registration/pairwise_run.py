@@ -67,8 +67,8 @@ def run(
 
     """
     if verbose >= 3 and not figure:
-        import matplotlib.pyplot as plt
-        figure = plt.figure()
+        from .pairwise_impl import _new_figure
+        figure = _new_figure()
 
     line_size = 89 if nonlin else 74
     if not pyramid:
