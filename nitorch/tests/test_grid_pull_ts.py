@@ -26,3 +26,17 @@ def test_grid_pull_edge_tolerance(dim):
     grid[..., 0] = -0.1
     out = grid_pull(x, grid, interpolation=1, bound='dct2', extrapolate=False)
     assert out.item() == 0
+
+
+@pytest.mark.parametrize('order', [1, 3])
+def test_grid_pull_labels_prefilter(order):
+    # label maps: each label is (optionally) prefiltered separately and the
+    # most likely label is kept, so an identity resampling returns the input
+    g = torch.Generator().manual_seed(0)
+    lab = torch.randint(0, 4, [1, 1, 8, 8], generator=g)
+    grid = torch.stack(torch.meshgrid(torch.arange(8.), torch.arange(8.),
+                                      indexing='ij'), -1)[None].double()
+    out = grid_pull(lab, grid, interpolation=order, bound='dct2',
+                    extrapolate=True, prefilter=True)
+    assert out.dtype == lab.dtype
+    assert torch.equal(out, lab)
