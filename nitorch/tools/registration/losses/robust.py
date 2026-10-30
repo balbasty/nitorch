@@ -118,6 +118,12 @@ class RobustLoss(OptimizationLoss):
     reweight = None         # Reweighting function
     reweight_param = []     # Additional parameters of reweight function
 
+    @staticmethod
+    def dual(weights, **kwargs):
+        """Half-quadratic dual term phi(w) such that
+        min_w 0.5 * w * r**2 + phi(w) = rho(r) (r in units of sqrt(lam))"""
+        raise NotImplementedError
+
     def __init__(self, lam=None, joint=False, dim=None, cache=True):
         """
 
@@ -152,7 +158,7 @@ class RobustLoss(OptimizationLoss):
         if not compute_lam:
             weights = self.reweight(moving, fixed, lam=lam, joint=joint,
                                     dim=dim, mask=mask, **kwargs)
-            llw = 0.5 * mask_inf_(weights.reciprocal()).mul_(mask).div_(nvox).sum()
+            llw = (self.dual(weights, **kwargs) * mask / nvox).sum()
             lam = preproc_lam(lam, dim)
             lam = lam * weights
             return lll, llw, lam
@@ -171,7 +177,7 @@ class RobustLoss(OptimizationLoss):
             lam = preproc_lam(lam, dim)
             # lam /= weights.mean(list(range(-dim, 0)))
             lll = -0.5 * (lam.log() * weights * mask / nvox).sum()
-            llw = 0.5 * mask_inf_(weights.reciprocal()).mul_(mask).div_(nvox).sum()
+            llw = (self.dual(weights, **kwargs) * mask / nvox).sum()
             if abs(lll_prev - lll) < 1e-4:
                 break
         if self.cache:
@@ -300,12 +306,23 @@ class MAD(RobustLoss):
 
     reweight = staticmethod(irls_laplace_reweight)
 
+    @staticmethod
+    def dual(weights, **kwargs):
+        # rho(r) = |r|  ->  phi(w) = 1 / (2w)
+        return mask_inf_(weights.reciprocal()).mul_(0.5)
+
 
 class Tukey(RobustLoss):
     """Tukey's biweight loss (using IRLS)"""
 
     reweight = staticmethod(irls_tukey_reweight)
     reweight_param = ['c']
+
+    @staticmethod
+    def dual(weights, c=4.685, **kwargs):
+        # rho(r) = c^2/6 * (1 - (1 - r^2/c^2)^3) for |r| < c, c^2/6 otherwise
+        # ->  phi(w) = c^2/6 * (1 - 3w + 2w^(3/2)),  w in [0, 1]
+        return (1 - 3 * weights + 2 * weights.pow(1.5)) * (c * c / 6)
 
     def __init__(self, lam=None, c=4.685, joint=False, dim=None, cache=True):
         """

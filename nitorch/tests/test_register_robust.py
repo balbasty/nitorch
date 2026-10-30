@@ -59,3 +59,40 @@ BASE = ['@@fix', 'fix.nii', '@@mov', 'mov.nii', '@nonlin', 'svf']
 def test_register_loss_aliases(alias, name):
     options = parser.parse(['@loss', alias] + BASE)
     assert options.loss[0].name == name
+
+
+def tukey_rho(r, c):
+    rho = (c * c / 6) * (1 - (1 - (r / c) ** 2) ** 3)
+    return torch.where(r.abs() < c, rho, torch.full_like(r, c * c / 6))
+
+
+@pytest.mark.parametrize('lam', [1., 4.])
+def test_tukey_value_is_rho(lam):
+    c = 4.685
+    r = torch.linspace(0, 2 * c, 101, dtype=torch.double) / lam ** 0.5
+    fix = torch.zeros([1, 1, 1], dtype=torch.double)
+    loss = Tukey(lam=lam, c=c)
+    vals = torch.stack([loss.loss(ri.reshape(1, 1, 1), fix) for ri in r])
+    assert torch.allclose(vals, tukey_rho(r * lam ** 0.5, c), atol=1e-8)
+
+
+def test_mad_value_is_abs():
+    r = torch.linspace(-5, 5, 40, dtype=torch.double)  # excludes 0
+    fix = torch.zeros([1, 1, 1], dtype=torch.double)
+    loss = MAD(lam=4.)
+    vals = torch.stack([loss.loss(ri.reshape(1, 1, 1), fix) for ri in r])
+    assert torch.allclose(vals, 2 * r.abs())  # sqrt(lam) * |r|
+
+
+def test_tukey_grad_fd():
+    mov, fix = make_data()
+    loss = Tukey(lam=1.)
+    _, g = loss.loss_grad(mov, fix)
+    eps = 1e-6
+    fd = torch.zeros_like(mov)
+    for i in range(mov.numel()):
+        m1 = mov.clone().view(-1); m1[i] += eps
+        m2 = mov.clone().view(-1); m2[i] -= eps
+        fd.view(-1)[i] = (loss.loss(m1.view(mov.shape), fix)
+                          - loss.loss(m2.view(mov.shape), fix)) / (2 * eps)
+    assert torch.allclose(g, fd, rtol=1e-4, atol=1e-8)
