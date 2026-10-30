@@ -227,6 +227,9 @@ def concurrent_pyramid(loss):
 
     """
     def get_level(loss, level):
+        if isinstance(loss, SumSimilarity):
+            # (do not recurse into Similarity, whose len/getitem return self)
+            return SumSimilarity([get_level(x, level) for x in loss])
         new_loss = copy.copy(loss)
         if hasattr(new_loss, 'fixed'):
             new_loss.fixed = new_loss.fixed[level]
@@ -237,9 +240,6 @@ def concurrent_pyramid(loss):
             shape = new_loss.fixed.shape[-dim:]
             new_loss.loss.patch = compute_patch_size(
                 new_loss.loss.patch, new_loss.fixed.affine, shape, level)
-        if hasattr(new_loss, '__len__'):
-            for i in range(len(new_loss)):
-                new_loss[i] = get_level(new_loss[i], level)
         return new_loss
 
     pyramid = []
