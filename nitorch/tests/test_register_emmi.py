@@ -1,11 +1,11 @@
 """Checks of the EM mutual information loss (`@loss emmi`,
 `nitorch.tools.registration.losses.emmi`).
 
-The objective is the negative marginal log-likelihood
-    L(mu) = -1/N sum_n log sum_k H[x_n, k] mu[n, k]
-of the fixed labels x given the moving probabilities mu, where H is
-estimated by EM. The value, gradient and Hessian must describe the
-same function."""
+The value is the negative, averaged marginal log-likelihood
+    -L/N = -1/N sum_n log sum_j H[x_n, j] mu[n, j]
+of the fixed labels x (bins i) given the moving probabilities mu
+(classes j), where H is estimated by EM. The value, gradient and Hessian
+must describe the same function."""
 import torch
 import pytest
 from nitorch.tools.registration.losses.emmi import emmi, EMMI
