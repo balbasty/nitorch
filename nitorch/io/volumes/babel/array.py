@@ -24,12 +24,10 @@ import torch
 import numpy as np
 import nibabel as nib
 # nibabel imports
-from nibabel.spatialimages import SpatialImage
-from nibabel.imageclasses import all_image_classes
-from nibabel.volumeutils import _is_compressed_fobj as is_compressed_fobj, \
-                                array_from_file, array_to_file
-from nibabel.fileslice import fileslice
-from nibabel.filebasedimages import ImageFileError
+from ._compat import (
+    SpatialImage, all_image_classes, is_compressed_fobj, array_from_file,
+    array_to_file, fileslice, ImageFileError, disk_header,
+    set_quaternion_tolerance)
 # nitorch imports
 from nitorch.core import py, dtypes
 # io imports
@@ -49,9 +47,9 @@ from .utils import writeslice
 # 1 - [x, y, z]*[x, y, z]' > threshold, where threshold = -1e-7 (by
 # default - see nibabel.quaternions.fillpositive - the dot product is
 # supposed to be 1, but this sometimes does not hold because of numerical
-# precision). As this is a bit conservative, we here decreases this
-# threshold.
-nib.Nifti1Header.quaternion_threshold = -1e-6
+# precision). As this is a bit conservative, we here increase this
+# tolerance (the sign convention depends on the nibabel version).
+set_quaternion_tolerance(1e-6)
 
 
 class BabelArray(MappedArray):
@@ -326,7 +324,7 @@ class BabelArray(MappedArray):
 
         Parameters
         ----------
-        header : nibabel.Header, default=`self._image.dataobj._header`
+        header : nibabel.Header, default=`disk_header(self._image)`
             Header object from nibabel.
         fileobj : Opener, default=`self.fileobj('header')`
             File object., with `seek` and `write`.
@@ -342,7 +340,7 @@ class BabelArray(MappedArray):
             with self.fileobj('header', 'w') as f:
                 return self._set_header_raw(header, f)
         if header is None:
-            header = self._image.dataobj._header
+            header = disk_header(self._image)
         header.set_data_dtype(self.dtype)
         header.set_data_shape(self._shape)
         if hasattr(header, 'writehdr_to'):
@@ -375,7 +373,7 @@ class BabelArray(MappedArray):
             with self.fileobj('footer', 'a') as f:
                 return self._set_footer_raw(header, f)
         if header is None:
-            header = self._image.dataobj._header
+            header = disk_header(self._image)
         header.set_data_dtype(self.dtype)
         header.set_data_shape(self._shape)
         if hasattr(header, 'writeftr_to'):
@@ -470,7 +468,7 @@ class BabelArray(MappedArray):
                                'Re-map in mode "r+" to allow in-place '
                                'writing.')
 
-        header = self._image.dataobj._header
+        header = disk_header(self._image)
         if meta:
             header = metadata_to_header(header, meta, shape=self.shape)
 

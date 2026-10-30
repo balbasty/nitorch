@@ -41,9 +41,9 @@ def convert(inp, meta=None, dtype=None, casting='unsafe', format=None, output=No
 
     odtype = meta.get('dtype', None) or f.dtype
     if ext in ('.mgh', '.mgz'):
-        from nibabel.freesurfer.mghformat import _dtdefs
+        from nitorch.io.volumes.babel._compat import mgh_dtypes as get_mgh_dtypes
         odtype = dtypes.dtype(odtype)
-        mgh_dtypes = [dtypes.dtype(dt[2]) for dt in _dtdefs]
+        mgh_dtypes = [dtypes.dtype(dt) for dt in get_mgh_dtypes()]
         for mgh_dtype in mgh_dtypes:
             if odtype <= mgh_dtype:
                 odtype = mgh_dtype

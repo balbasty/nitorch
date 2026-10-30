@@ -1,9 +1,12 @@
 """Additional utilities for nibabel."""
+import operator
+from functools import reduce
+
 import numpy as np
 
-from nibabel.fileslice import (
+from ._compat import (
     _NullLock, threshold_heuristic, is_fancy, fill_slicer,
-    _positive_slice, canonical_slicers, reduce, operator, read_segments,
+    _positive_slice, canonical_slicers, read_segments,
     predict_shape, slicers2segments)
 
 
