@@ -154,6 +154,9 @@ class BacktrackingLineSearch(torch.optim.Optimizer):
                 params.extend(group['params'])
             return params
 
+        # the closure backpropagates, so it must run with autograd enabled
+        closure = torch.enable_grad()(closure)
+
         with torch.no_grad():
             if loss is None:
                 loss = closure()
@@ -166,6 +169,7 @@ class BacktrackingLineSearch(torch.optim.Optimizer):
             for n_iter in range(self.max_iter):
                 new_loss = closure()
                 if new_loss < loss:
+                    # NOTE: the increased step is not kept across calls
                     armijo = 2 * armijo
                     self.last_ok = True
                     break
@@ -174,6 +178,13 @@ class BacktrackingLineSearch(torch.optim.Optimizer):
                     for param, param0, delta in zip(get_params(), params0,
                                                     deltas):
                         param.copy_(param0 + armijo * delta)
+            if not self.last_ok:
+                # no step decreased the loss: restore the initial parameters
+                # (otherwise we would keep an untested step, and return
+                # the loss of the previous one)
+                for param, param0 in zip(get_params(), params0):
+                    param.copy_(param0)
+                new_loss = loss
         return new_loss
 
     def add_param_group(self, param_group: dict) -> None:

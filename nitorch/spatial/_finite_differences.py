@@ -692,7 +692,8 @@ def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     square = lambda x: x*x
     sqnorm = lambda x: sum(map(square, x))
     sqdist = set(map(sqnorm, itertools.combinations_with_replacement(range(iradius+1), r=dim)))
-    sqdist = list(filter(lambda d: 0 < d <= radius*radius, sqdist))
+    # sorted, so that the first feature is the first ring (used for `var`)
+    sqdist = sorted(filter(lambda d: 0 < d <= radius*radius, sqdist))
     indices = itertools.product(*[range(-iradius, iradius+1)] * dim)
     indices = filter(lambda x: 0 < sqnorm(x) <= radius*radius, indices)
 

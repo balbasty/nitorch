@@ -9,7 +9,7 @@ from nitorch import io
 from nitorch.cli.registration.reslice.main import reslice
 from nitorch.spatial import mean_space
 from nitorch.core.py import make_list, fileparts
-from .parser import parser
+from .parser import parser, help
 
 
 def cli(args=None):
@@ -31,44 +31,6 @@ def cli(args=None):
 
 
 commands['meanspace'] = cli
-
-help = r"""
-Compute an average "oriented voxel space" from a series of oriented images.
-
-usage:
-    nitorch meanspace --input <path> [--input ...]
-
-arguments:
-    -i, --input         Affine transform for one pair of images
-                          <fix>   Index (or label) of fixed image
-                          <mov>   Index (or label) of moving image
-                          <path>  Path to an LTA file that warps <mov> to <fix>
-    -o, --output        Path to output transforms (default: {label}_optimal.lta)
-    -l, --log           Minimize L2 in Lie algebra (default: L2 in matrix space)
-    -a, --affine        Assume transforms are all affine (default)
-    -s, --similitude    Assume transforms are all similitude
-    -r, --rigid         Assume transforms are all rigid
-
-example:
-    optimal_affine \
-      -i mtw pdw mtw_to_pdw.lta \
-      -i mtw t1w mtw_to_t1w.lta \
-      -i pdw mtw pdw_to_mtw.lta \
-      -i pdw t1w pdw_to_t1w.lta \
-      -i t1w mtw t1w_to_mtw.lta \
-      -i t1w pdw t1w_to_pdw.lta \
-      -o out/{label}_to_mean.lta
-
-references:
-    "Consistent multi-time-point brain atrophy estimation from the
-    boundary shift integral"
-    Leung, Ridgway, Ourselin, Fox
-    NeuroImage (2011)
-
-    "Symmetric Diffeomorphic Modeling of Longitudinal Structural MRI"
-    Ashburner, Ridgway
-    Front Neurosci. (2012)
-"""
 
 
 def _cli(args):
