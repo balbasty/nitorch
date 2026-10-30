@@ -152,11 +152,33 @@ class StrongWolfe(FirstOrder):
             return False, ba, bf, bg, bdg
 
         # value at initial step size
-        f, g = closure(a, grad=True)
-        while not math.isfinite(f):
-            a = 0.5 * a
+        def finite(f, dg):
+            return math.isfinite(f) and math.isfinite(dg)
+
+        def eval_finite(a, a_low):
+            # evaluate at `a`, bisecting towards `a_low` (a point known
+            # to be finite) while the loss or its derivative is non-finite
+            nonlocal ls_iter
             f, g = closure(a, grad=True)
-        dg = delta.flatten().dot(g.flatten())
+            dg = delta.flatten().dot(g.flatten())
+            while not finite(f, dg):
+                if ls_iter >= self.max_iter:
+                    return None
+                ls_iter += 1
+                a = 0.5 * (a + a_low)
+                f, g = closure(a, grad=True)
+                dg = delta.flatten().dot(g.flatten())
+            return a, f, g, dg
+
+        if not finite(f0, dg0):
+            # nothing sensible can be done from a non-finite start
+            return 0, f0, g0
+
+        # value at initial step size
+        new = eval_finite(a, a0)
+        if new is None:
+            return 0, f0, g0
+        a, f, g, dg = new
 
         # We first want to find an upper bound for the step size.
         # We explore the space on the right of the initial step size
@@ -187,8 +209,11 @@ class StrongWolfe(FirstOrder):
                 bracket = (a1, a), (f1, f), (dg1, dg)
                 a1, f1, g1, dg1 = a, f, g, dg
                 a = self.interpolate_bracket(*bracket, bound=True)
-                f, g = closure(a, grad=True)
-                dg = delta.flatten().dot(g.flatten())
+                new = eval_finite(a, a1)
+                if new is None:
+                    a, f, g, dg = a1, f1, g1, dg1
+                    break
+                a, f, g, dg = new
 
         if ls_iter == self.max_iter:
             a1 = 0
@@ -218,12 +243,15 @@ class StrongWolfe(FirstOrder):
             new_a, progress = self.check_progress(new_a, (a, a1), progress)
             new_f, new_g = closure(new_a, grad=True)
             new_dg = delta.flatten().dot(new_g.flatten())
+            if not finite(new_f, new_dg):
+                # non-finite inside the bracket: stop and keep the best point
+                break
             debug('new:', new_a, new_f.item(), "\\" if new_dg < 0 else '//')
             success, (a, a1), (f, f1), (g, g1), (dg, dg1) \
                 = update_bracket(new_a, new_f, new_g, new_dg,
                                  (a, a1), (f, f1), (g, g1), (dg, dg1))
 
-        if f > f0:
+        if not math.isfinite(f) or f > f0:
             return 0, f0, g0
         return a, f, g
 

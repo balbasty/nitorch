@@ -45,7 +45,8 @@ def test_order1_unchanged():
     ref = iso1_grad2_diag_2d(h.unsqueeze(1), x.unsqueeze(1),
                              make_bound([_hist.bound_to_nitorch('replicate', 'int')] * 2),
                              1).squeeze(1).squeeze(1)
-    assert torch.equal(out, ref)
+    # interior points, no smoothing: same as the bin-diagonal kernel
+    assert torch.allclose(out, ref, rtol=1e-12, atol=0)
 
 
 def test_order0_raises():

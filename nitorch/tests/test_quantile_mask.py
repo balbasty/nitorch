@@ -62,3 +62,36 @@ def test_quantile_mask_all_ones_matches_unmasked():
     out = utils.quantile(x, qs, dim=-1, mask=torch.ones_like(x))
     ref = utils.quantile(x, qs, dim=-1)
     assert torch.allclose(out, ref, atol=1e-12)
+
+
+@pytest.mark.parametrize('where', ['min', 'max', 'both', 'random'])
+def test_quantile_mask_bins_ignores_outliers(where):
+    """Histogram path: masked-out outliers must not affect the bin range."""
+    bins = 256
+    x = make([3, 40, 50])  # enough samples for a histogram
+    flat = x.reshape([3, -1])
+    mask = torch.ones_like(flat)
+    if where in ('min', 'both'):
+        mask.scatter_(-1, flat.argsort(-1)[:, :100], 0)
+    if where in ('max', 'both'):
+        mask.scatter_(-1, flat.argsort(-1)[:, -100:], 0)
+    if where == 'random':
+        g = torch.Generator().manual_seed(1)
+        mask = (torch.rand(mask.shape, generator=g) > 0.4).double()
+    clean = flat.clone()
+    flat = flat.clone()
+    flat[mask == 0] = 1e3 * (torch.arange((mask == 0).sum()) % 2 * 2 - 1).double()
+
+    out = utils.quantile(flat, qs, dim=-1, mask=mask, bins=bins)
+    assert torch.isfinite(out).all()
+    # same as the bins= result with masked-out voxels set to in-mask values
+    # (which only changes values with zero weight) -- i.e. outliers ignored
+    clean[mask == 0] = clean[mask > 0].min()  # within the in-mask range
+    ref_bins = utils.quantile(clean, qs, dim=-1, mask=mask, bins=bins)
+    assert torch.allclose(out, ref_bins, atol=1e-10), (out, ref_bins)
+    # close to the exact quantiles on in-mask values (within a bin width)
+    ref = reference(flat.reshape(x.shape), qs, mask.reshape(x.shape))
+    width = torch.stack([(r[m > 0].max() - r[m > 0].min()) / bins
+                         for r, m in zip(flat, mask)])
+    assert ((out - ref).abs() <= 1.5 * width[:, None] + 1e-12).all(), \
+        (out, ref, width)
