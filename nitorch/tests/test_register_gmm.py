@@ -20,7 +20,7 @@ def repeat2(x):
 
 
 def _gmm_logp(mov, fix, theta):
-    """Joint and marginal log-likelihoods under the fitted mixture
+    """Joint and moving-marginal log-likelihoods under the fitted mixture
     (without the 2*pi constants)"""
     x = mov[..., None] - theta['xmean']
     y = fix[..., None] - theta['ymean']
@@ -30,30 +30,29 @@ def _gmm_logp(mov, fix, theta):
     q = q / (1 - r * r)
     lxy = -0.5 * q - torch.log(sx * sy * (1 - r * r).sqrt()) + logpi
     lx = -0.5 * (x / sx) ** 2 - sx.log() + logpi
-    ly = -0.5 * (y / sy) ** 2 - sy.log() + logpi
-    return [torch.logsumexp(l, -1).mean() for l in (lxy, lx, ly)]
+    return [torch.logsumexp(l, -1).mean() for l in (lxy, lx)]
 
 
-@pytest.mark.parametrize('measure', ['joint', 'cond', 'mi'])
+@pytest.mark.parametrize('measure', ['joint', 'mi'])
 def test_gmm_value_is_mean_nll(measure):
     """Loss equals the *average* negative log-likelihood under the fit:
-    joint, conditional (fixed | moving), or minus the mutual information."""
+    joint, or conditional (fixed | moving) = minus the mutual information
+    up to the (constant) fixed entropy."""
     mov, fix = make_data([12, 12])
     ll, theta = gmmh(mov, fix, dim=2, bins=3, grad=False, hess=False,
                      measure=measure, return_theta=True)
-    lxy, lx, ly = _gmm_logp(mov, fix, theta)
-    expected = {'joint': -lxy, 'cond': lx - lxy, 'mi': lx + ly - lxy}
-    expected = expected[measure]
+    lxy, lx = _gmm_logp(mov, fix, theta)
+    expected = {'joint': -lxy, 'mi': lx - lxy}[measure]
     assert torch.allclose(ll, expected, rtol=1e-4), (ll.item(), expected.item())
 
 
-def test_gmm_cond_default_and_one_class_is_correlation():
-    """The default measure is the conditional entropy. With one class, it
-    is 0.5 * log(1 - corr^2) + 0.5 * log(var(fixed)) + 0.5."""
+def test_gmm_mi_default_and_one_class_is_correlation():
+    """The default measure is MI (i.e., the conditional entropy). With one
+    class, it is 0.5 * log(1 - corr^2) + 0.5 * log(var(fixed)) + 0.5."""
     mov, fix = make_data([12, 12])
     ll = gmmh(mov, fix, dim=2, bins=1, grad=False, hess=False)
     llc = gmmh(mov, fix, dim=2, bins=1, grad=False, hess=False,
-               measure='cond')
+               measure='mi')
     assert torch.allclose(ll, llc)
     x, y = mov.flatten(), fix.flatten()
     r = torch.corrcoef(torch.stack([x, y]))[0, 1]
@@ -62,22 +61,22 @@ def test_gmm_cond_default_and_one_class_is_correlation():
     assert torch.allclose(ll, expected, rtol=1e-6), (ll.item(), expected.item())
 
 
-def test_gmm_cond_invariant_to_moving_scale():
+def test_gmm_mi_invariant_to_moving_scale():
     """The joint entropy can be decreased by shrinking the moving
     intensities (by log(s)), irrespective of the fixed image. The
-    conditional entropy and the mutual information cannot."""
+    mutual information cannot."""
     mov, fix = make_data([12, 12])
     kw = dict(dim=2, bins=3, grad=False, hess=False)
-    for measure, shift in (('joint', math.log(0.1)), ('cond', 0), ('mi', 0)):
+    for measure, shift in (('joint', math.log(0.1)), ('mi', 0)):
         ll1 = gmmh(mov, fix, measure=measure, **kw)
         ll2 = gmmh(0.1 * mov, fix, measure=measure, **kw)
         assert math.isclose(ll2.item(), ll1.item() + shift, abs_tol=1e-6), \
             (measure, ll1.item(), ll2.item())
 
 
-def test_gmm_cond_not_degenerate_under_shrinking():
+def test_gmm_mi_not_degenerate_under_shrinking():
     """Shrinking the moving image into a zero background (zoom out)
-    lowers the joint entropy, but not the conditional entropy."""
+    lowers the joint entropy, but not the mutual information."""
     from nitorch import spatial
     n = 48
     yy, xx = torch.meshgrid(torch.arange(n).double(),
@@ -96,11 +95,11 @@ def test_gmm_cond_not_degenerate_under_shrinking():
     kw = dict(dim=2, bins=5, grad=False, hess=False)
     assert gmmh(shrunk, fix, measure='joint', **kw) < \
         gmmh(mov, fix, measure='joint', **kw)
-    assert gmmh(shrunk, fix, measure='cond', **kw) > \
-        gmmh(mov, fix, measure='cond', **kw)
+    assert gmmh(shrunk, fix, measure='mi', **kw) > \
+        gmmh(mov, fix, measure='mi', **kw)
 
 
-@pytest.mark.parametrize('measure', ['joint', 'cond'])
+@pytest.mark.parametrize('measure', ['joint', 'mi'])
 def test_gmm_scaling_consistent(measure):
     """Value, gradient and Hessian are all normalised by the voxel count:
     duplicating voxels leaves the value unchanged and divides the voxel-wise
@@ -127,7 +126,7 @@ def _fd(fn, mov, eps=1e-5):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize('measure', ['joint', 'cond', 'mi'])
+@pytest.mark.parametrize('measure', ['joint', 'mi'])
 def test_gmm_grad_hess_fd(measure):
     """FD check at fixed (fitted) GMM parameters.
 
@@ -162,7 +161,7 @@ def test_gmm_grad_hess_fd(measure):
 
 def test_gmm_class_loss_matches_function():
     mov, fix = make_data([12, 12])
-    for measure in ('joint', 'cond', 'mi'):
+    for measure in ('joint', 'mi'):
         loss = GMMH(dim=2, bins=3, measure=measure, cache=False)
         ll = loss.loss(mov, fix)
         ll2, g, h = loss.loss_grad_hess(mov, fix)
@@ -209,7 +208,7 @@ def test_gmm_em_stops_at_fixed_point():
     assert t500 < 10 * t1 + 1, (t1, t500)
 
 
-@pytest.mark.parametrize('measure', ['joint', 'cond', 'mi'])
+@pytest.mark.parametrize('measure', ['joint', 'mi'])
 def test_gmm_masked_fit_ignores_masked_voxels(measure):
     """Masked-out voxels have no influence: value, gradient and Hessian
     equal those of the fit on the cropped in-mask data, and the gradient
@@ -233,7 +232,7 @@ def test_gmm_masked_fit_ignores_masked_voxels(measure):
 # --- local GMM -------------------------------------------------------------
 
 
-@pytest.mark.parametrize('measure', ['joint', 'cond'])
+@pytest.mark.parametrize('measure', ['joint', 'mi'])
 def test_lgmm_scaling_consistent(measure):
     """Duplicating voxels 2x2 (and doubling the patch size so that local
     statistics are preserved) leaves the value unchanged and divides the
@@ -249,7 +248,7 @@ def test_lgmm_scaling_consistent(measure):
     assert math.isclose(h1.sum().item(), h2.sum().item(), rel_tol=2e-2)
 
 
-@pytest.mark.parametrize('measure', ['joint', 'cond', 'mi'])
+@pytest.mark.parametrize('measure', ['joint', 'mi'])
 def test_lgmm_grad_hess_fd(measure):
     """Directional FD check at fixed (fitted) local GMM parameters.
 
@@ -294,14 +293,14 @@ def test_lgmm_grad_hess_fd(measure):
 def test_lgmm_one_class_hessian_not_zero():
     """With a single class, the Hessian used to be identically zero."""
     mov, fix = make_data([10, 10])
-    for measure in ('joint', 'cond'):
+    for measure in ('joint', 'mi'):
         _, _, h = lgmmh(mov, fix, dim=2, bins=1, patch=5, max_iter=8,
                         measure=measure)
         assert (h > 0).all(), measure
 
 
-def test_gmm_hessian_cond_one_class():
-    """With one class and fixed parameters, the conditional Hessian is
+def test_gmm_hessian_mi_one_class():
+    """With one class and fixed parameters, the MI Hessian is
     exact: corr^2 / (var(moving) * (1 - corr^2)) / N."""
     mov, fix = make_data([12, 12])
     _, _, h, theta = gmmh(mov, fix, dim=2, bins=1, return_theta=True)

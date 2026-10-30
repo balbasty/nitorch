@@ -120,13 +120,11 @@ def _plot_gmm(moving, fixed, prm, bins=64):
     plt.show()
 
 
-_measures = ('cond', 'mi', 'joint')
+_measures = ('mi', 'joint')
 
 
 def _check_measure(measure):
-    measure = (measure or 'cond').lower()
-    if measure.startswith('cond'):
-        measure = 'cond'
+    measure = (measure or 'mi').lower()
     if measure not in _measures:
         raise ValueError(f'Unknown measure {measure}. '
                          f'Expected one of {_measures}.')
@@ -134,7 +132,7 @@ def _check_measure(measure):
 
 
 def lgmmh(moving, fixed, dim=None, bins=6, patch=20, stride=1,
-          grad=True, hess=True, kernel='g', max_iter=128, measure='cond',
+          grad=True, hess=True, kernel='g', max_iter=128, measure='mi',
           theta=None, return_theta=False):
     """Entropy estimated by a Local Gaussian Mixture Model
 
@@ -160,7 +158,7 @@ def lgmmh(moving, fixed, dim=None, bins=6, patch=20, stride=1,
         Patch kernel: gaussian or constant (square)
     max_iter : int, default=128
         Number of EM iterations
-    measure : {'cond', 'mi', 'joint'}, default='cond'
+    measure : {'mi', 'joint'}, default='mi'
         See `gmmh`.
     grad : bool, default=True
     hess : bool, default=True
@@ -224,15 +222,6 @@ def lgmmh(moving, fixed, dim=None, bins=6, patch=20, stride=1,
         lx = moving * moving * ixvar - 2 * moving * ixmean + cst
         lx *= -0.5
         ll = ll + torch.logsumexp(lx, -dim-1).mean()
-        if measure == 'mi':
-            iyvar = yvar.reciprocal()
-            stats = torch.stack([iyvar, ymean * iyvar,
-                                 ymean * ymean * iyvar + yvar.log()
-                                 - 2 * prior.log()])
-            iyvar, iymean, cst = bwd(stats, None, None).unbind(0)
-            ly = fixed * fixed * iyvar - 2 * fixed * iymean + cst
-            ly *= -0.5
-            ll = ll + torch.logsumexp(ly, -dim-1).mean()
     out = [ll]
 
     if grad:
@@ -272,7 +261,7 @@ def lgmmh(moving, fixed, dim=None, bins=6, patch=20, stride=1,
 
 
 def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
-         measure='cond', grad=True, hess=True, theta=None,
+         measure='mi', grad=True, hess=True, theta=None,
          return_theta=False):
     """Entropy estimated by Gaussian Mixture Modeling
 
@@ -284,16 +273,17 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
     registration objective on its own: it can also be decreased by
     making the warped moving image more uniform (e.g., by shrinking it
     or expanding homogeneous regions), irrespective of the fixed image.
-    The conditional entropy H[fixed | moving] = H[moving, fixed] - H[moving]
-    (`measure='cond'`, default) is the negative mutual information, up to
-    the constant H[fixed]. With one cluster, it reduces to
-    0.5 * log(1 - corr^2) (+ cte), i.e., it is equivalent to the
-    (global) correlation coefficient.
 
-    The marginal entropies are estimated with the marginals of the
-    fitted joint mixture. Constant terms (log 2*pi) are omitted, so that
-    the 'mi' value is exactly the negative mutual information of the
-    fitted mixture.
+    The negative mutual information (`measure='mi'`, default) is
+    H[moving, fixed] - H[moving] - H[fixed]. Since the fixed image is
+    never warped, its entropy is a constant and is dropped, i.e., the
+    returned value is the conditional entropy
+    H[fixed | moving] = H[moving, fixed] - H[moving]. With one cluster,
+    it reduces to 0.5 * log(1 - corr^2) (+ cte), i.e., it is equivalent
+    to the (global) correlation coefficient.
+
+    The marginal entropy H[moving] is estimated with the marginal of the
+    fitted joint mixture. Constant terms (log 2*pi) are omitted.
 
     Parameters
     ----------
@@ -308,11 +298,9 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
     max_iter : int, default=128
         Number of EM iterations
     mask : tensor, optional
-    measure : {'cond', 'mi', 'joint'}, default='cond'
-        - 'cond':  Conditional entropy H[fixed | moving]
-        - 'mi':    Negative mutual information:
-                   H[moving, fixed] - H[moving] - H[fixed].
-                   Same gradient as 'cond'.
+    measure : {'mi', 'joint'}, default='mi'
+        - 'mi':    Negative mutual information, without the constant
+                   fixed entropy: H[moving, fixed] - H[moving]
         - 'joint': Joint entropy H[moving, fixed]
     grad : bool, default=True
     hess : bool, default=True
@@ -366,8 +354,6 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
     if measure != 'joint':
         lx, lpx = marginal(moving, moving_mean, moving_var)
         ll = ll + lpx
-        if measure == 'mi':
-            ll = ll + marginal(fixed, fixed_mean, fixed_var)[1]
     out = [ll]
 
     if grad:
@@ -415,7 +401,7 @@ class GMMH(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, bins=6, max_iter=128, measure='cond',
+    def __init__(self, dim=None, bins=6, max_iter=128, measure='mi',
                  cache=True):
         """
 
@@ -427,10 +413,9 @@ class GMMH(OptimizationLoss):
             Number of clusters in the mixture
         max_iter : int, default=128
             Maximum number of EM iterations
-        measure : {'cond', 'mi', 'joint'}, default='cond'
-            Conditional entropy H[fixed | moving], negative mutual
-            information, or joint entropy H[moving, fixed].
-            See `gmmh`.
+        measure : {'mi', 'joint'}, default='mi'
+            Negative mutual information (without the constant fixed
+            entropy), or joint entropy H[moving, fixed]. See `gmmh`.
         cache : bool, default=True
             Warm-start EM with the parameters of the previous call
         """
@@ -531,7 +516,7 @@ class LGMMH(OptimizationLoss):
     order = 2
 
     def __init__(self, dim=None, bins=6, patch=20, stride=1, kernel='g',
-                 max_iter=128, measure='cond', cache=True):
+                 max_iter=128, measure='mi', cache=True):
         """
 
         Parameters
@@ -548,10 +533,9 @@ class LGMMH(OptimizationLoss):
             Patch kernel: gaussian or constant (square)
         max_iter : int, default=128
             Maximum number of EM iterations
-        measure : {'cond', 'mi', 'joint'}, default='cond'
-            Conditional entropy H[fixed | moving], negative mutual
-            information, or joint entropy H[moving, fixed].
-            See `gmmh`.
+        measure : {'mi', 'joint'}, default='mi'
+            Negative mutual information (without the constant fixed
+            entropy), or joint entropy H[moving, fixed]. See `gmmh`.
         cache : bool, default=True
             Keep the parameters of the last fit
         """

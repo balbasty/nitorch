@@ -159,7 +159,7 @@ def test_local_stride_passed_to_loss(images, name):
 
 @pytest.mark.parametrize('name', ['gmm', 'lgmm'])
 @pytest.mark.parametrize('args, measure', [
-    ([], 'cond'), (['-m', 'mi'], 'mi'), (['-m', 'joint'], 'joint')])
+    ([], 'mi'), (['-m', 'mi'], 'mi'), (['-m', 'joint'], 'joint')])
 def test_gmm_measure_passed_to_loss(images, name, args, measure):
     _, loss = built_loss(images, name, *args)
     assert loss.measure == measure

@@ -558,7 +558,7 @@ def make_loss(loss, slicewise=False, **kwargs):
     kernel, if 'lcc' or 'lgmm' : {'gaussian', 'hat'}
     max_iter, if 'gmm', 'lgmm' : int
     bins, if 'gmm', 'lgmm' : int
-    measure, if 'gmm', 'lgmm' : {'cond', 'mi', 'joint'}
+    measure, if 'gmm', 'lgmm' : {'mi', 'joint'}
     weighted, if 'dice' : list[float]
 
     Returns

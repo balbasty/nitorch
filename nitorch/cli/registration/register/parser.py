@@ -118,12 +118,12 @@ usage:
         gmm                             Gaussian Mixture entropy
             -b, --bins                      Number of clusters in the mixture [6]
             -n, --max-iter VAL              Number of EM iterations [128]
-            -m, --measure NAME              Entropy: [cond] H(fix|mov), mi -MI(mov,fix),
+            -m, --measure NAME              Entropy: [mi] mutual information,
                                             joint H(mov,fix) (can be degenerate)
         lgmm                            Local Gaussian Mixture entropy
             -b, --bins                      Number of clusters in the mixture [6]
             -n, --max-iter VAL              Number of EM iterations [128]
-            -m, --measure NAME              Entropy: [cond] H(fix|mov), mi -MI(mov,fix),
+            -m, --measure NAME              Entropy: [mi] mutual information,
                                             joint H(mov,fix) (can be degenerate)
             -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
                                             (gauss: FWHM; square: full width)
@@ -387,9 +387,9 @@ kernel_option = cli.Option('kernel', ('-k', '--kernel'), nargs=1, default='g',
                            help='Kernel type: [gauss], square')
 iter_option = cli.Option('max_iter', ('-n', '--max-iter'), nargs=1, default=128,
                          convert=int, help='Maximum number of EM iterations')
-measure_option = cli.Option('measure', ('-m', '--measure'), nargs=1, default='cond',
-                            validation=cli.Validations.choice(['cond', 'mi', 'joint']),
-                            help='Entropy measure: [cond], mi, joint')
+measure_option = cli.Option('measure', ('-m', '--measure'), nargs=1, default='mi',
+                            validation=cli.Validations.choice(['mi', 'joint']),
+                            help='Entropy measure: [mi], joint')
 loss.add_suboption('mi', 'norm', ('-m', '--norm'),
                    validation=cli.Validations.choice(['studholme', 'arithmetic', 'geometric', 'no']),
                    nargs='1', default='studholme',
