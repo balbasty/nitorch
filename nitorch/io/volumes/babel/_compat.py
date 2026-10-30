@@ -49,41 +49,18 @@ except ImportError:
     import bz2
     import gzip
     from nibabel import volumeutils as _volumeutils
+    _COMPRESSED_FILE_LIKES = (gzip.GzipFile, bz2.BZ2File)
+    try:
+        from indexed_gzip import IndexedGzipFile
+        _COMPRESSED_FILE_LIKES += (IndexedGzipFile,)
+    except ImportError:
+        pass
     _COMPRESSED_FILE_LIKES = getattr(
-        _volumeutils, 'COMPRESSED_FILE_LIKES', (gzip.GzipFile, bz2.BZ2File))
+        _volumeutils, 'COMPRESSED_FILE_LIKES', _COMPRESSED_FILE_LIKES)
 
     def is_compressed_fobj(fobj):
         """Return True if fobj represents a compressed data file-like object"""
         return isinstance(fobj, _COMPRESSED_FILE_LIKES)
-
-try:
-    from nibabel.fileslice import _NullLock
-except ImportError:
-    class _NullLock:
-        """No-op object that can be used in place of a ``threading.Lock``"""
-        def __enter__(self):
-            pass
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            return False
-
-try:
-    from nibabel.fileslice import _positive_slice
-except ImportError:
-    def _positive_slice(slicer):
-        """Return full slice `slicer` enforcing positive step size
-        `slicer` assumed full in the sense of :func:`fill_slicer`
-        """
-        start, stop, step = slicer.start, slicer.stop, slicer.step
-        if step > 0:
-            return slicer
-        if stop is None:
-            stop = -1
-        gap = stop - start
-        n = gap / step
-        n = int(n) - 1 if int(n) == n else int(n)
-        end = start + n * step
-        return slice(end, start + 1, -step)
 
 
 # ----------------------------------------------------------------------
