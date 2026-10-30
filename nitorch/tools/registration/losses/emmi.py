@@ -32,7 +32,7 @@ General idea
   distribution q over x, we can maximize the expected log-likelihood instead:
       𝓛 = 𝔼_q[ln p(𝒙)] = ∑ₙᵢ q(𝑥ₙ = 𝑖) ln ∑ⱼ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ
 """
-from nitorch.core import utils, linalg, math
+from nitorch.core import utils, linalg
 from nitorch import spatial
 from .base import OptimizationLoss
 import torch
@@ -166,7 +166,7 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         ll = z.sum(-2, keepdim=True)
         ll = add_tiny_(ll, Nb)
         z /= ll
-        ll = ll.log_().mul_(weights).sum([-1, -2], dtype=torch.double)
+        ll = ll.log_().mul_(weights).sum(dtype=torch.double)
 
         z *= weights
 
@@ -193,36 +193,36 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         if ll - ll_prev < 1e-5 * Nm:
             break
 
-    # compute mutual information (times number of observations)
-    # > prior contains p(x,y)/(p(x) p(y))
-    # > prior0 contains N * p(x,y)
-    # >> 1/N \sum_{j,k} prior0[j,k] * log(prior[j,k])
-    #    = \sum_{x,y} p(x,y) * (log p(x,y) - log p(x) - log p(y)
-    #    = \sum_{x,y} p(x,y) * log p(x,y)
-    #       - \sum_{xy} p(x,y) log p(x)
-    #       - \sum_{xy} p(x,y) log p(y)
-    #    = \sum_{x,y} p(x,y) * log p(x,y)
-    #       - \sum_{x} p(x) log p(x)
-    #       - \sum_{y} p(y) log p(y)
-    #    = -H[x,y] + H[x] + H[y]
-    #    = MI[x, y]
-    ll = -(prior0 * add_tiny_(prior, Nb).log()).sum() / Nm
+    # ------------------------------------------------------------------
+    #           OBJECTIVE
+    # ------------------------------------------------------------------
+    # The objective is the (negative, averaged) marginal log-likelihood
+    # evaluated at the final prior H = p(x,y) / (p(x) p(y)):
+    #   𝓛 = -1/N Σₙ ln Σₖ H[x[n], k] μ[n, k]
+    # This is the function whose gradient and Hessian are returned below.
+    # When μ is a hard (one-hot) map, 𝓛 = -MI[x, y].
+    #
+    # The previous implementation returned -Σ_{jk} p(j,k) log H[j,k],
+    # the MI of the expected joint histogram, which is a different
+    # function of μ: its finite differences did not match the gradient
+    # (not even in sign), and Gauss-Newton stopped early.
+    g = sample_prior(prior, fixed)                  # H[x[n], k]
+    norm = (g * moving).sum(-2, keepdim=True)       # Σₖ H[x[n], k] μ[n, k]
+    norm = add_tiny_(norm, Nb)
+    ll = -(norm.log() * weights).sum(dtype=torch.double) / Nm
     out = [ll]
 
     # ------------------------------------------------------------------
     #           GRADIENTS
     # ------------------------------------------------------------------
-    # compute gradients
-    # Keeping only terms that depend on y, the mutual information is H[y]-H[x,y]
-    # The objective function is \sum_n E[y_n]
-    # > ll = \sum_n log p(x[n] == j[n], h)
-    #      = \sum_n log \sum_k p(x[n] == j[n] | z[n] == k, h) p(z[n] == k)
+    # The prior H is kept fixed (it maximises 𝓛 w.r.t. H, so its own
+    # variation does not contribute to the first-order derivative).
+    # With aₙₖ = H[x[n], k] / Σⱼ H[x[n], j] μ[n, j]:
+    #   ∂𝓛/∂μ[n, k] = -aₙₖ / N
+    #   ∂²𝓛/∂μ[n, k]∂μ[n, l] = aₙₖ aₙₗ / N    (exact, positive semi-definite)
     if grad or hess:
 
-        g = sample_prior(prior, fixed)
-        norm = linalg.dot(g.transpose(-1, -2), moving.transpose(-1, -2))
-        norm = add_tiny_(norm, Nb).unsqueeze(-2).reciprocal_()
-        g *= norm
+        g /= norm
         if hess:
             h = sym_outer(g, -2)
 
@@ -246,6 +246,12 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
 
 def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
               weights=None, grad=True, hess=True, return_prior=False):
+    # The fixed image is a (fixed) separable distribution q over x, and
+    # the objective is the expected marginal log-likelihood
+    #   𝓛 = -1/N Σₙ Σⱼ q[n, j] ln Σₖ H[j, k] μ[n, k]
+    # H is estimated by EM (a weighted mixture: each pair (n, j) is an
+    # observation with weight q[n, j]), so that the gradient and Hessian
+    # with respect to μ (with H fixed) are those of the returned value.
     # ------------------------------------------------------------------
     #           PREPARATION
     # ------------------------------------------------------------------
@@ -256,33 +262,27 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
 
     *batch, J, K = prior.shape
     Nb = len(batch)
-    N = moving.shape[-1]
     Nm = weights.sum()
+    fixed = fixed * weights                         # [*batch, J, N]
+
+    def marginal(prior):
+        # Σₖ H[j, k] μ[n, k]  -> [*batch, J, N]
+        return add_tiny_(torch.matmul(prior, moving), Nb)
 
     # ------------------------------------------------------------------
     #           EM LOOP
     # ------------------------------------------------------------------
     ll = -float('inf')
-    z = moving.new_empty([*batch, K, N])
-    prior0 = torch.empty_like(prior)
     for n_iter in range(max_iter):
         ll_prev = ll
-        # --------------------------------------------------------------
-        # E-step
-        # --------------------------------------------------------------
-        z = sample_prior(prior.log(), fixed, z)
-        z += moving.log()
-        z, ll = math.softmax_lse(z, -2, lse=True, weights=weights)
-
-        # --------------------------------------------------------------
-        # M-step
-        # ------
-        # estimate joint prior by maximizing Q = E_{Z;H,mu}[ln p(X, Z; H)]
-        # => H_jk = p(x == j, z == k) ∝ Σ_n p(z[n] == k | x[n] == j) 𝛿(x[n] == j)
-        # --------------------------------------------------------------
-        z *= weights
-        prior0 = scatter_prior(prior0, fixed, z)
-        prior.copy_(prior0).add_(tiny)
+        # E-step: responsibilities r[n, j, k] ∝ H[j, k] μ[n, k]
+        # (only their weighted sums over n are needed)
+        norm = marginal(prior)
+        ll = (fixed * norm.log()).sum(dtype=torch.double)
+        resp = fixed / norm                         # q[n, j] / Σₖ H μ
+        # M-step: N p(j, k) = Σₙ q[n, j] r[n, j, k]
+        prior0 = prior * torch.matmul(resp, moving.transpose(-1, -2))
+        prior = prior0.add_(tiny)
         # make it a joint distribution
         prior /= add_tiny_(prior.sum(dim=[-1, -2], keepdim=True), Nb)
         if fwhm:
@@ -291,60 +291,40 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
             prior = spatial.smooth(prior, dim=1, basis=0, fwhm=fwhm, bound='replicate')
             prior = prior.transpose(-1, -2)
         # MI-like normalization
-        prior /= prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True)
+        prior /= add_tiny_(prior.sum(dim=-1, keepdim=True) * prior.sum(dim=-2, keepdim=True), Nb)
         if ll - ll_prev < 1e-5 * Nm:
             break
 
-    # compute mutual information (times number of observations)
-    # > prior contains p(x,y)/(p(x) p(y))
-    # > prior0 contains N * p(x,y)
-    # >> 1/N Σ_{j,k} prior0[j,k] * log(prior[j,k])
-    #    = Σ_{x,y} p(x,y) * (log p(x,y) - log p(x) - log p(y)
-    #    = Σ_{x,y} p(x,y) * log p(x,y)
-    #       - Σ_{xy} p(x,y) log p(x)
-    #       - Σ_{xy} p(x,y) log p(y)
-    #    = Σ_{x,y} p(x,y) * log p(x,y)
-    #       - Σ_{x} p(x) log p(x)
-    #       - Σ_{y} p(y) log p(y)
-    #    = -H[x,y] + H[x] + H[y]
-    #    = MI[x, y]
-    ll = -(prior0 * prior.log()).sum() / Nm
+    # ------------------------------------------------------------------
+    #           OBJECTIVE
+    # ------------------------------------------------------------------
+    norm = marginal(prior)
+    ll = -(fixed * norm.log()).sum(dtype=torch.double) / Nm
     out = [ll]
 
     # ------------------------------------------------------------------
     #           GRADIENTS
     # ------------------------------------------------------------------
-    # compute gradients
-    # Keeping only terms that depend on y, the mutual information is H[y]-H[x,y]
-    # The objective function is \sum_n E[y_n]
-    # > ll = Σ_n log p(x[n] == j[n], h)
-    #      = Σ_nj \sum_j q(x[n] == j) log \sum_k p(x[n] == j | z[n] == k, h) p(z[n] == k)
+    #   ∂𝓛/∂μ[n, k] = -1/N Σⱼ q[n, j] H[j, k] / Σₗ H[j, l] μ[n, l]
+    #   ∂²𝓛/∂μ[n, k]∂μ[n, l] = 1/N Σⱼ q[n, j] H[j, k] H[j, l] / (Σ H μ)²
     if grad or hess:
-
-        norm = linalg.dot(prior.transpose(-1, -2).unsqueeze(-1),
-                          moving.transpose(-1, -2).unsqueeze(-3))
-        norm = norm.add_(tiny).reciprocal_()
-        g = sample_prior(prior, fixed * norm)
-
-        if hess:
-            norm = norm.square_().mul_(fixed).unsqueeze(-1)
-            h = moving.new_zeros([*g.shape[:-2], K*(K+1)//2, N])
-            for j in range(J):
-                h[..., :K, :] += prior[..., j, :K, None].square() * norm
-                c = K
-                for k in range(K):
-                    for kk in range(k + 1, K):
-                        h[..., c, :] += (prior[..., j, k, None] *
-                                         prior[..., j, kk, None] * norm)
-                        c += 1
-
+        resp = fixed / norm                         # [*batch, J, N]
         if grad:
-            g *= weights
-            g.neg_()
+            g = torch.matmul(prior.transpose(-1, -2), resp)
+            g /= -Nm
             g = g.reshape([*g.shape[:-1], *shape])
             out.append(g)
         if hess:
-            h *= weights
+            resp = resp / norm
+            h = moving.new_zeros([*batch, K*(K+1)//2, resp.shape[-1]])
+            h[..., :K, :] = torch.matmul(prior.square().transpose(-1, -2), resp)
+            c = K
+            for k in range(K):
+                for kk in range(k + 1, K):
+                    pp = prior[..., :, k] * prior[..., :, kk]   # [*batch, J]
+                    h[..., c, :] = torch.matmul(pp.unsqueeze(-2), resp).squeeze(-2)
+                    c += 1
+            h /= Nm
             h = h.reshape([*h.shape[:-1], *shape])
             out.append(h)
 
@@ -464,7 +444,8 @@ def make_finite_(x):
 
 def add_tiny_(x, n=0, eps=1e-12):
     if n:
-        tiny = x.abs().max(range(n), keepdim=True)
+        # one value per batch element
+        tiny = x.abs().amax(dim=list(range(n, x.dim())), keepdim=True)
     else:
         tiny = x.abs().max()
     x.add_(tiny, alpha=eps)
