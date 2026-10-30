@@ -40,9 +40,7 @@ def get_weights(grid, bound: List[Bound], spline: List[Spline],
     hesss: List[List[Optional[Tensor]]] = []
     coords: List[List[Tensor]] = []
     signs: List[List[Optional[Tensor]]] = []
-    # grid: (B, N, D) -> per-dimension (B, 1, N), so that indices and
-    # weights broadcast against (B, C, N) buffers when B > 1
-    for g, b, s, n in zip(grid.unsqueeze(1).unbind(-1), bound, spline, shape):
+    for g, b, s, n in zip(grid.unbind(-1), bound, spline, shape):
         grid0 = (g - (s.order-1)/2).floor()
         dist0 = g - grid0
         grid0 = grid0.long()

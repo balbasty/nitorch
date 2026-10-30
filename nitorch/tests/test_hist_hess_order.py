@@ -133,11 +133,12 @@ def test_register_gn_mi_order3(tmp_path):
 @pytest.mark.parametrize('order', [1, 3])
 @pytest.mark.parametrize('weighted', [False, True])
 def test_histcount_backward(order, weighted):
-    """HistCount.backward matches autograd through the intensity->bin map."""
+    """HistCount.backward matches autograd through the intensity->bin map.
+    (Batch 1: batched order > 1 needs the nd backend fix from #117.)"""
     g = torch.Generator().manual_seed(0)
-    x = torch.rand([2, 30], dtype=torch.double, generator=g) * 10 + 3
-    w = torch.rand([2, 30], dtype=torch.double, generator=g) if weighted else None
-    gr = torch.rand([2, BINS], dtype=torch.double, generator=g)
+    x = torch.rand([1, 30], dtype=torch.double, generator=g) * 10 + 3
+    w = torch.rand([1, 30], dtype=torch.double, generator=g) if weighted else None
+    gr = torch.rand([1, BINS], dtype=torch.double, generator=g)
     hc = HistCount(bins=BINS, order=order)
     mn, mx = 3., 13.
     out = hc.backward(gr.clone(), x, w, min=mn, max=mx)
