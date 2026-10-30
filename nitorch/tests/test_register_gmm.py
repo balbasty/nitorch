@@ -2,7 +2,7 @@
 `nitorch register` (`nitorch.tools.registration.losses.gmm`)."""
 import math
 import torch
-from nitorch.tools.registration.losses.gmm import gmmh, GMMH
+from nitorch.tools.registration.losses.gmm import gmmh, GMMH, lgmmh
 
 
 def make_data(shape, seed=0):
@@ -85,3 +85,40 @@ def test_gmm_class_loss_matches_function():
     ll2, g, h = loss.loss_grad_hess(mov, fix)
     assert math.isclose(ll.item(), ll2.item(), rel_tol=1e-6)
     assert ll.abs() > 0.1  # not divided twice by the voxel count
+
+
+# --- local GMM -------------------------------------------------------------
+
+
+def test_lgmm_scaling_consistent():
+    """Duplicating voxels 2x2 (and doubling the patch size so that local
+    statistics are preserved) leaves the value unchanged and divides the
+    voxel-wise gradient and Hessian by 4: everything is normalised by the
+    voxel count exactly once."""
+    mov, fix = make_data([10, 10])
+    ll1, g1, h1 = lgmmh(mov, fix, dim=2, bins=3, patch=5)
+    ll2, g2, h2 = lgmmh(repeat2(mov), repeat2(fix), dim=2, bins=3, patch=10)
+    assert math.isclose(ll1.item(), ll2.item(), rel_tol=1e-2), (ll1, ll2)
+    assert math.isclose(g1.abs().sum().item(), g2.abs().sum().item(),
+                        rel_tol=2e-2)
+    assert math.isclose(h1.sum().item(), h2.sum().item(), rel_tol=2e-2)
+
+
+def test_lgmm_grad_hess_fd():
+    """The gradient ignores the dependence of the local parameters on the
+    moving image, so it is only approximate; check direction and scale."""
+    mov, fix = make_data([10, 10])
+    kw = dict(dim=2, bins=3, patch=5)
+    ll, g, h = lgmmh(mov, fix, **kw)
+    assert ll.abs() > 0.1  # per-voxel average, not divided twice
+
+    fd = _fd(lambda m, i: lgmmh(m, fix, **kw, grad=False, hess=False), mov)
+    cos = (fd * g).sum() / (fd.norm() * g.norm())
+    ratio = fd.norm() / g.norm()
+    assert cos > 0.95, cos
+    assert 0.8 < ratio < 1.25, ratio
+
+    hfd = _fd(lambda m, i: lgmmh(m, fix, **kw, hess=False)[1].view(-1)[i],
+              mov)
+    hratio = hfd.sum() / h.sum()
+    assert 0.4 < hratio < 2.5, hratio
