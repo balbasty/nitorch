@@ -164,7 +164,8 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           BUILD OPTIM
     # ------------------------------------------------------------------
-    order = min(loss.loss.order for loss in losses[0])
+    first_level = losses if options.pyramid.concurrent else losses[0]
+    order = min(loss.order for loss in first_level.losses())
     interleaved = options.optim.name[0] == 'i'
 
     affine_optim = None
@@ -367,8 +368,9 @@ def build_losses(options, pyramids, device):
         nb_losses = len(owners)
         for i in range(nb_levels):
             for j in range(nb_losses):
+                ii = min(i, len(options.loss[owners[j]].factor) - 1)
                 rel_factor = (
-                    options.loss[owners[j]].factor[i] /
+                    options.loss[owners[j]].factor[ii] /
                     options.loss[owners[j]].factor[-1]
                 )
                 new_list.append(loss_list[i*nb_losses+j] * rel_factor)
