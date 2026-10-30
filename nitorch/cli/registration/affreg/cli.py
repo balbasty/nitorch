@@ -4,9 +4,6 @@ from .parser import parser, help
 from ..register.cli import cli as cli_register
 import sys
 
-# default step of `optim.Powell` (its initial search directions)
-POWELL_LR = 0.02
-
 
 def cli(args=None):
     f"""Command-line interface for `affreg`
@@ -72,12 +69,6 @@ def _cli(args):
              '-n', options.max_iter,
              '-t', options.tolerance,
              '-s', options.search]
-    if options.optimizer.startswith('pow'):
-        # Powell's initial directions have length `lr`. Register's
-        # default (`-l 1`) is meant for Gauss-Newton: a first trial
-        # rotation of 1 rad lets the line searches jump into the basin
-        # of a ~180 deg flip. Use Powell's own default step instead.
-        args += ['-l', str(POWELL_LR)]
     args += ['@pyramid', '--levels']
     for level in options.pyramid:
         if isinstance(level, range):

@@ -20,8 +20,8 @@ def run(
     interleaved=True,
     progressive=True,
     affine_then_nonlin=True,
-    max_iter=10,
-    tolerance=1e-5,
+    max_iter=None,
+    tolerance=None,
     verbose=True,
     framerate=1,
     figure=None
@@ -48,10 +48,13 @@ def run(
         Initialize the affine transform by progressively freeing DoF.
     affine_then_nonlin : bool
         Fit the affine from coarse to fine, then fit everything from coarse to fine.
-    max_iter : int, default=10
-        Maximum number of outer iterations in the interleaved case
-    tolerance : float, default=1e-5
-        Tolerance for early stopping the in the interleaved case
+    max_iter : int, default=10 if interleaved else 1
+        Maximum number of outer iterations of the joint affine+nonlin fit.
+        Interleaved: one iteration = one affine step + one nonlin step.
+        Sequential: one iteration = a full affine fit then a full
+        nonlin fit (each run until its own optimiser stops).
+    tolerance : float, default=1e-5 if interleaved else 0
+        Tolerance for early stopping of these outer iterations
     verbose : bool or int
         Verbosity level
     framerate : float
@@ -318,15 +321,17 @@ def run_pyramid(
 def build_joint_optim(
     affine_optim,
     nonlin_optim,
-    max_iter=10,
-    tolerance=1e-5,
+    max_iter=None,
+    tolerance=None,
     crit='diff',
     sequential=True
 ):
+    if max_iter is None:
+        max_iter = 1 if sequential else 10
+    if tolerance is None:
+        tolerance = 0 if sequential else 1e-5
     if nonlin_optim:
         if affine_optim:
-            if sequential:
-                max_iter, tolerance = 1, 0
             joptim = InterleavedOptimIterator([affine_optim, nonlin_optim],
                                               max_iter=max_iter, tol=tolerance,
                                               stop=crit)

@@ -485,7 +485,8 @@ class Image(SpatialTensor):
     def get_center(self):
         """Compute the RAS coordinate of the center of the field of view."""
         ndim = self.ndim
-        backend = dict(dtype=self.dtype, device=self.device)
+        dtype = self.dtype if self.dtype.is_floating_point else torch.get_default_dtype()
+        backend = dict(dtype=dtype, device=self.device)
         affine = self.affine.to(**backend)
         shape = torch.as_tensor(self.shape, **backend)
         center = affine[:ndim, :ndim].matmul((shape[:, None] - 1)*0.5)
