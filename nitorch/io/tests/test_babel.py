@@ -15,7 +15,7 @@ test_data = {
 
 # from nitest-balls1
 # LICENSE: Public Domain Dedication and License v1.0
-root = 'https://github.com/yarikoptic/nitest-balls1/raw/2cd07d86e2cc2d3c612d5d4d659daccd7a58f126/'
+root = 'https://raw.githubusercontent.com/yarikoptic/nitest-balls1/2cd07d86e2cc2d3c612d5d4d659daccd7a58f126/'
 test_data['nifti'] += [
     os.path.join(root, 'NIFTI/T1.nii.gz'),
     os.path.join(root, 'NIFTI/T2-interleaved.nii.gz'),
@@ -38,7 +38,7 @@ test_data['parrec'] += [
 # from nitest-minc2
 # LICENSE: Copyright (C) 1993-2004 Louis Collins, McConnell Brain
 #          Permission to use, copy, modify, and distribute
-root = 'https://github.com/matthew-brett/nitest-minc2/raw/c835bd43f40069d542f75386551ed0fd2377462a'
+root = 'https://raw.githubusercontent.com/matthew-brett/nitest-minc2/c835bd43f40069d542f75386551ed0fd2377462a'
 test_data['minc'] += [
     os.path.join(root, 'mincex_EPI-frame.mnc'),
     os.path.join(root, 'mincex_diff-B0.mnc'),
@@ -51,30 +51,15 @@ test_data['minc'] += [
 
 # from nipy-ecattest
 # LICENSE: CC0-1.0
-root = 'https://github.com/effigies/nipy-ecattest/raw/9a0a592057bc16894c20c77b03ea1ebb5f8ca8f9'
+root = 'https://raw.githubusercontent.com/effigies/nipy-ecattest/9a0a592057bc16894c20c77b03ea1ebb5f8ca8f9'
 test_data['ecat'] += [
     os.path.join(root, 'ECAT7_testcase_multiframe.v'),
     os.path.join(root, 'ECAT7_testcaste_neg_values.v'),
 ]
 
-# from nitest-freesurfer
-# LICENSE: Freesurfer license
-root = 'https://bitbucket.org/nipy/nitest-freesurfer/raw/0d307865704df71c3b2248139714806aad47139d'
-test_data['mgh'] += [
-    os.path.join(root, 'fsaverage/mri/T1.mgz'),
-    os.path.join(root, 'fsaverage/mri/aparc+aseg.mgz'),
-    os.path.join(root, 'fsaverage/mri/aparc.a2005s+aseg.mgz'),
-    os.path.join(root, 'fsaverage/mri/aparc.a2009s+aseg.mgz'),
-    os.path.join(root, 'fsaverage/mri/aseg.mgz'),
-    os.path.join(root, 'fsaverage/mri/brain.mgz'),
-    os.path.join(root, 'fsaverage/mri/brainmask.mgz'),
-    os.path.join(root, 'fsaverage/mri/lh.ribbon.mgz'),
-    os.path.join(root, 'fsaverage/mri/mni305.cor.mgz'),
-    os.path.join(root, 'fsaverage/mri/orig.mgz'),
-    os.path.join(root, 'fsaverage/mri/p.aseg.mgz'),
-    os.path.join(root, 'fsaverage/mri/rh.ribbon.mgz'),
-    os.path.join(root, 'fsaverage/mri/ribbon.mgz'),
-]
+# The FreeSurfer test data (nitest-freesurfer) used to be hosted on
+# Bitbucket, which removed all Mercurial repositories in 2020.
+# MGH files are now generated locally (see `make_mgh`).
 
 
 class TempFilename:
@@ -222,12 +207,25 @@ def test_nifti():
         _test_full_save(fname)
 
 
+def make_mgh(fname, dtype=np.int16):
+    """Write a MGH volume with a non-trivial orientation matrix"""
+    shape = [40, 48, 36]
+    dat = np.random.randint(0, 3000, shape).astype(dtype)
+    affine = np.array([[-1., 0., 0., 20.],
+                       [0., 0., 1.2, -30.],
+                       [0., -0.9, 0., 25.],
+                       [0., 0., 0., 1.]])
+    nibabel.save(nibabel.MGHImage(dat, affine), fname)
+
+
 def test_mgh():
-    url = test_data['mgh'][0]
-    with DownloadedFile(url) as fname:
-        _test_full_load(fname)
-        _test_partial_load(fname)
-        _test_partial_save(fname)
+    for suffix in ('.mgz', '.mgh'):
+        with TempFilename(suffix=suffix) as fname:
+            make_mgh(fname)
+            _test_full_load(fname)
+            _test_partial_load(fname)
+            _test_partial_load_more(fname)
+            _test_partial_save(fname)
     with TempFilename(suffix='.mgz') as fname:
         _test_full_save(fname)
 

@@ -1,10 +1,37 @@
 """Additional utilities for nibabel."""
+import operator
+from functools import reduce
+
 import numpy as np
 
-from nibabel.fileslice import (
-    _NullLock, threshold_heuristic, is_fancy, fill_slicer,
-    _positive_slice, canonical_slicers, reduce, operator, read_segments,
-    predict_shape, slicers2segments)
+from ._compat import (
+    threshold_heuristic, is_fancy, fill_slicer, canonical_slicers,
+    read_segments, predict_shape, slicers2segments)
+
+
+class _NullLock:
+    """No-op object that can be used in place of a ``threading.Lock``"""
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False
+
+
+def _positive_slice(slicer):
+    """Return full slice `slicer` enforcing positive step size
+    `slicer` assumed full in the sense of :func:`fill_slicer`
+    """
+    start, stop, step = slicer.start, slicer.stop, slicer.step
+    if step > 0:
+        return slicer
+    if stop is None:
+        stop = -1
+    gap = stop - start
+    n = gap / step
+    n = int(n) - 1 if int(n) == n else int(n)
+    end = start + n * step
+    return slice(end, start + 1, -step)
 
 
 def full_heuristic(*args, **kwargs):
@@ -130,10 +157,12 @@ def writeslice(dat, fileobj, sliceobj, shape, dtype, offset=0, order='C',
         # and write it back to disk than writing lots of small chunks
         n_bytes = reduce(operator.mul, sub_shape, 1) * itemsize
         bytes = read_segments(fileobj, segments, n_bytes, lock)
-        block = np.ndarray(sub_shape, dtype, buffer=bytes, order=order)
+        # (copy into a bytearray: `read_segments` may return immutable bytes)
+        block = np.ndarray(sub_shape, dtype, buffer=bytearray(bytes),
+                           order=order)
         block[sub_slicers] = dat
         dat = block
-    dat = dat.tobytes(order='C')
+    dat = dat.tobytes(order=order)
     write_segments(fileobj, segments, dat, lock)
     return
 
