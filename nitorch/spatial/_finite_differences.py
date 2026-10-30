@@ -631,7 +631,7 @@ def mind(x, radius=0, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     # compute variance in first-ring neighborhood
     var = mnd[:2*dim].mean(0)
     if robust:
-        meanvar = var.mean(list(range(-3, 0)), keepdim=True)
+        meanvar = var.mean(list(range(-dim, 0)), keepdim=True)
         mn = 10 ** (-robust) * meanvar
         mx = 10 ** robust * meanvar
         var = torch.min(torch.max(var, mn), mx)
@@ -698,6 +698,10 @@ def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     indices = filter(lambda x: 0 < sqnorm(x) <= radius*radius, indices)
 
     nb_feat = len(sqdist)
+    if nb_feat < 2:
+        # the first ring is only used to normalize the other ones
+        raise ValueError(f'rmind requires at least two rings of neighbours '
+                         f'(radius >= sqrt(2)) but got radius={radius}')
     mnd = x.new_zeros([nb_feat, *x.shape])
 
     # compute differences
@@ -716,7 +720,7 @@ def rmind(x, radius=2, fwhm=1, dim=None, bound='dct2', robust=3, norm='max'):
     # compute variance in first-ring neighborhood
     var = mnd[0]
     if robust:
-        meanvar = var.mean(list(range(-3, 0)), keepdim=True)
+        meanvar = var.mean(list(range(-dim, 0)), keepdim=True)
         mn = 10 ** (-robust) * meanvar
         mx = 10 ** robust * meanvar
         var = torch.min(torch.max(var, mn), mx)
