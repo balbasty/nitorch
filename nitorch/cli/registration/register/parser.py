@@ -112,6 +112,7 @@ usage:
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
             -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
+                                            (gauss: FWHM; square: full width)
                 --stride *VAL               Stride between patches [1]
             -k, --kernel VAL                Kernel type: [gauss]/square
         gmm                             Gaussian Mixture likelihood
@@ -121,6 +122,7 @@ usage:
             -b, --bins                      Number of clusters in the mixture [6]
             -n, --max-iter VAL              Number of EM iterations [128]
             -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
+                                            (gauss: FWHM; square: full width)
             -k, --kernel VAL                Kernel type: [gauss]/square
                 --stride *VAL               Stride between patches [1]
         emmi                            EM-based Mutual Information
