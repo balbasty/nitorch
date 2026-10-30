@@ -144,7 +144,7 @@ if COMPILED_BACKEND == 'C':
     def c_relax(gradient, weight=None, hessian=None, dim=None,
                 absolute=0, membrane=0, bending=0, factor=1,
                 voxel_size=1, bound='dct2', nb_iter=2, output=None):
-        """Solve a regularised linear system by relaxation (Gauss-Seidel)
+        r"""Solve a regularised linear system by relaxation (Gauss-Seidel)
                 solution = (hessian + regulariser) \ gradient
 
         Parameters
@@ -203,7 +203,7 @@ if COMPILED_BACKEND == 'C':
     def c_relax_grid(gradient, weight=None, hessian=None,
                      absolute=0, membrane=0, bending=0, lame=0, factor=1,
                      voxel_size=1, bound='dft', nb_iter=2, output=None):
-        """Solve a regularised linear system by relaxation (Gauss-Seidel)
+        r"""Solve a regularised linear system by relaxation (Gauss-Seidel)
                 solution = (hessian + regulariser) \ gradient
 
         Parameters
@@ -266,7 +266,7 @@ if COMPILED_BACKEND == 'C':
     def c_precond(gradient, weight=None, hessian=None, dim=None,
                   absolute=0, membrane=0, bending=0, factor=1,
                   voxel_size=1, bound='dct2', output=None):
-        """Solve a regularised linear system by relaxation (Gauss-Seidel)
+        r"""Solve a regularised linear system by relaxation (Gauss-Seidel)
                 solution = (hessian + regulariser) \ gradient
 
         Parameters
@@ -324,7 +324,7 @@ if COMPILED_BACKEND == 'C':
     def c_precond_grid(gradient, weight=None, hessian=None,
                        absolute=0, membrane=0, bending=0, lame=0, factor=1,
                        voxel_size=1, bound='dft', output=None):
-        """Solve a regularised linear system by relaxation (Gauss-Seidel)
+        r"""Solve a regularised linear system by relaxation (Gauss-Seidel)
                 solution = (hessian + regulariser) \ gradient
 
         Parameters
@@ -386,7 +386,7 @@ if COMPILED_BACKEND == 'C':
     def c_pcg(gradient, weight=None, hessian=None, dim=None,
               absolute=0, membrane=0, bending=0, factor=1,
               voxel_size=1, bound='dct2', nb_iter=16, tol=1e-4, output=None):
-        """Solve a regularised linear system by conjugate gradient
+        r"""Solve a regularised linear system by conjugate gradient
                 solution = (hessian + regulariser) \ gradient
 
         Parameters
@@ -445,7 +445,7 @@ if COMPILED_BACKEND == 'C':
     def c_pcg_grid(gradient, weight=None, hessian=None,
                    absolute=0, membrane=0, bending=0, lame=0, factor=1,
                    voxel_size=1, bound='dft', nb_iter=16, tol=1e-4, output=None):
-        """Solve a regularised linear system by conjugate gradient
+        r"""Solve a regularised linear system by conjugate gradient
                 solution = (hessian + regulariser) \ gradient
 
         Parameters
@@ -511,7 +511,7 @@ if COMPILED_BACKEND == 'C':
               voxel_size=1, bound='dct2',
               nb_cycles=2, nb_iter=2, max_levels=16,
               solver='cg', output=None):
-        """Solve a regularised linear system by full multi-grid
+        r"""Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
 
         Parameters
@@ -576,7 +576,7 @@ if COMPILED_BACKEND == 'C':
                    voxel_size=1, bound='dft',
                    nb_cycles=2, nb_iter=2, max_levels=16,
                    solver='cg', output=None):
-        """Solve a regularised linear system by full multi-grid
+        r"""Solve a regularised linear system by full multi-grid
                 solution = (hessian + regulariser) \ gradient
 
         Parameters
