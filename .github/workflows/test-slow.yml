@@ -22,6 +22,7 @@ jobs:
   test:
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: ${{ github.event.inputs.fail-fast == 'true' }}
       matrix:
@@ -87,5 +88,5 @@ jobs:
 
     - name: Tests
       run: |
-        pip install pytest
-        pytest --runslow --durations=20 --ignore nitorch/tests/test_gradcheck_spatial.py
+        pip install pytest pytest-timeout
+        pytest --runslow --timeout=1800 --durations=20 --ignore nitorch/tests/test_gradcheck_spatial.py
