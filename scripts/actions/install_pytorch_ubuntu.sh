@@ -115,7 +115,16 @@ fi
 [ "$TORCH_SHORT" == "14" ] && pip install numpy
 
 # install pytorch
-if [ -z "${CUDA_SHORT}" ]; then
+TORCH_GE_113=0
+[ "$TORCH_MAJOR" -ge 2 ] && TORCH_GE_113=1
+[ "$TORCH_MAJOR" -eq 1 ] && [ "$TORCH_MINOR" -ge 13 ] && TORCH_GE_113=1
+if [ "${CUDA_SHORT}" == "+cpu" ] && [ "$TORCH_GE_113" == "1" ]; then
+  # recent versions: use the dedicated cpu index
+  # (explicit "+cpu" so that the cuda build from pypi is never selected)
+  pip install "torch==${TORCH_VERSION_MAJOR_MINOR}+cpu" \
+    --index-url "https://download.pytorch.org/whl/cpu" \
+    --extra-index-url "https://pypi.org/simple"
+elif [ -z "${CUDA_SHORT}" ]; then
   pip install "torch==${TORCH_VERSION_MAJOR_MINOR}"
 else
   pip install "torch==${TORCH_VERSION_MAJOR_MINOR}${CUDA_SHORT}" -f "${TORCH_REPO}"

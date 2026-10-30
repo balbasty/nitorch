@@ -6,19 +6,19 @@ on:
       os:
         description: 'Operating system'
         required: false
-        default: 'ubuntu-18.04'
+        default: 'ubuntu-24.04'
       python-version:
         description: 'Version of python'
         required: false
-        default: '3.6'
+        default: '3.12'
       pytorch-version:
         description: 'Version of pytorch'
         required: false
-        default: '1.6'
+        default: '2.5.1'
       cuda-version:
         description: 'Version of cuda'
         required: false
-        default: '10.1'
+        default: 'cpu'
       compiled-backend:
         description: 'Compiled backend'
         required: false
@@ -31,9 +31,9 @@ jobs:
     runs-on: ${{ github.event.inputs.os }}
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
 
-    - if: runner.os == 'Windows' && github.event.inputs.compiled-backend == 'C'
+    - if: runner.os == 'Windows' && github.event.inputs.compiled-backend == 'C' && github.event.inputs.cuda-version != 'cpu'
       # Windows -> powershell
       name: Install CUDA ${{ github.event.inputs.cuda-version }} (Windows)
       env:
@@ -50,7 +50,7 @@ jobs:
           echo "$env:CUDA_PATH/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
         }
 
-    - if: runner.os != 'Windows' && github.event.inputs.compiled-backend == 'C'
+    - if: runner.os != 'Windows' && github.event.inputs.compiled-backend == 'C' && github.event.inputs.cuda-version != 'cpu'
       # Unix -> bash
       name: Install CUDA ${{ github.event.inputs.cuda-version }} (Unix)
       env:
@@ -75,13 +75,13 @@ jobs:
         fi
 
     - name: Set up Python ${{ github.event.inputs.python-version }} on ${{ github.event.inputs.os }}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ github.event.inputs.python-version }}
 
     - name: Install pip
       run: |
-        python -m pip install --upgrade pip
+        python -m pip install --upgrade pip setuptools wheel
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
     - name: Install PyTorch ${{ github.event.inputs.pytorch-version }}
@@ -109,4 +109,4 @@ jobs:
         pip install scipy
         NI_COMPILED_BACKEND=${{ github.event.inputs.compiled-backend }} \
           TORCH_CUDA_ARCH_LIST="3.5" \
-          python setup.py install
+          pip install --no-build-isolation .
