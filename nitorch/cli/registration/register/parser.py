@@ -345,7 +345,7 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
                   default=1., help='Framerate of plotting function, in Hz')
 
 # Loss group
-loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
+loss_aliases = {'nmi': 'mi', 'l1': 'mad', 'l2': 'mse', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
                 'entropy': 'ent', 'sqz': 'squeezed'}
 loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emmi', 'prod', 'dot', 'ndot', 'extra']

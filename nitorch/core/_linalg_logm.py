@@ -58,6 +58,20 @@ def matrix_chain_rule(A, G, f):
     return f(M)[..., :n, n:]
 
 
+def _scipy_logm_nowarn(x):
+    """scipy.linalg.logm without accuracy warnings (old and new SciPy)."""
+    import warnings
+    from scipy.linalg import logm
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        try:
+            out = logm(x, disp=False)
+        except TypeError:
+            # SciPy >= 1.16 removed `disp` and returns only the matrix
+            return logm(x)
+    return out[0] if isinstance(out, tuple) else out
+
+
 class _LogM(torch.autograd.Function):
     """Autograd implementation of th ematrix logarithm.
 
@@ -67,8 +81,7 @@ class _LogM(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, mat):
-        from scipy.linalg import logm
-        logm_nowarn = lambda x: logm(x, disp=False)[0]
+        logm_nowarn = _scipy_logm_nowarn
         if mat.requires_grad:
             ctx.save_for_backward(mat)
         device = mat.device
@@ -82,8 +95,7 @@ class _LogM(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, output_grad):
-        from scipy.linalg import logm
-        logm_nowarn = lambda x: logm(x, disp=False)[0]
+        logm_nowarn = _scipy_logm_nowarn
         mat, = ctx.saved_tensors
         device = output_grad.device
         input_complex = output_grad.is_complex()

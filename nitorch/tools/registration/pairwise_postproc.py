@@ -261,7 +261,8 @@ def warp_one_image(image, target, shape=None, affine=None, nonlin=None,
     else:
         # no nonlin: single affine even if position == 'symmetric'
         if reslice:
-            if affine.position[0].lower():
+            if affine.position[0].lower() == 's':
+                # symmetric: `exp` returns the square root of the transform
                 aff = aff.matmul(aff)
             aff = spatial.affine_matmul(aff, aff_right)
             aff = spatial.affine_matmul(aff_left, aff)
