@@ -3,20 +3,20 @@ This loss has the same behaviour as `spm_maff8`
 
 General idea
 ------------
-. Let 𝒙 ∈ ⟦1,K⟧ᴺ be an *observed* label map.
-  Typically, an image is discretized into K bins, and 𝑥ₙ indexes
+. Let 𝒙 ∈ ⟦1,J⟧ᴺ be an *observed* label map.
+  Typically, an image is discretized into J bins, and 𝑥ₙ indexes
   the bin in which voxel n falls. But it could also be any segmentation.
-. Let 𝒚 ∈ ⟦1,J⟧ᴺ be a *hidden* label map (with a potentially different
-  labelling scheme: J != K), such that p(𝑥ₙ = 𝑖 | 𝑦ₙ = 𝑗) = p(𝑥 = 𝑖) 𝐻ᵢⱼ
+. Let 𝒚 ∈ ⟦1,K⟧ᴺ be a *hidden* label map (with a potentially different
+  labelling scheme: J != K), such that p(𝑥ₙ = 𝑗 | 𝑦ₙ = 𝑘) = p(𝑥 = 𝑗) 𝐻ⱼₖ
   (see below for the normalization of 𝑯).
-. Let 𝜇 ∈ ℝᴺᴶ be a (deformable) prior probability to see
-  label j in voxel n, and 𝜙 ∈ ℝᴺᴰ be the corresponding
-  deformation field, such that: p(𝑦ₙ = 𝑗) = (𝜇 ∘ 𝜙)ₙⱼ
+. Let 𝜇 ∈ ℝᴺᴷ be a (deformable) prior probability to see
+  label k in voxel n, and 𝜙 ∈ ℝᴺᴰ be the corresponding
+  deformation field, such that: p(𝑦ₙ = 𝑘) = (𝜇 ∘ 𝜙)ₙₖ
   Here, 𝜇 is a tissue probability map (TPM), 𝜙 is affine, and
   𝜇 ∘ 𝜙 is the softmax of the interpolated log-TPM.
 . We want to find the parameters {𝐻, 𝜙} that maximize the marginal
   likelihood:
-      p(𝒙; 𝑯, 𝜇, 𝜙) = ∏ₙ ∑ⱼ p(𝑥ₙ | 𝑦ₙ = 𝑗; 𝑯) p(𝑦ₙ = 𝑗; 𝜇, 𝜙)
+      p(𝒙; 𝑯, 𝜇, 𝜙) = ∏ₙ ∑ₖ p(𝑥ₙ | 𝑦ₙ = 𝑘; 𝑯) p(𝑦ₙ = 𝑘; 𝜇, 𝜙)
   where we use ";" to separate random variables from parameters.
 . Note that 𝜇 is assumed constant in this problem: only 𝑯 and 𝜙 are
   optimized. There is no prior on the parameters of 𝜙: this is a
@@ -24,51 +24,49 @@ General idea
 . In order to maximize 𝑯, we use an EM algorithm (warm-started from the
   previous 𝑯). We introduce an approximate parameter 𝑯 and compute the
   approximate posterior distribution:
-      q(𝑦ₙ = 𝑗 | 𝑥ₙ = 𝑖) ∝ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ                   (E-step)
+      q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗) ∝ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ                   (E-step)
   We then compute the expected value of the joint log-likelihood with respect
   to q, and maximize it with respect to 𝑯:
-      p(𝑥 = 𝑖, 𝑦 = 𝑗) ∝ ∑ₙ 𝛿(𝑥ₙ = 𝑖) q(𝑦ₙ = 𝑗)              (M-step)
-      𝐻ᵢⱼ = p(𝑥 = 𝑖, 𝑦 = 𝑗) / (p(𝑥 = 𝑖) p(𝑦 = 𝑗))
+      p(𝑥 = 𝑗, 𝑦 = 𝑘) ∝ ∑ₙ 𝛿(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘)              (M-step)
+      𝐻ⱼₖ = p(𝑥 = 𝑗, 𝑦 = 𝑘) / (p(𝑥 = 𝑗) p(𝑦 = 𝑘))
 . 𝑯 is therefore the "normalized" joint histogram p(x,y) / (p(x) p(y))
-  = p(x|y) / p(x), not the conditional p(x|y). The factor 1/p(𝑥 = 𝑖)
-  does not depend on j, so it cancels in the E-step. In 𝓛 (below) it
-  only adds the constant -∑ₙ ln p(𝑥ₙ), which depends on the image
+  = p(x|y) / p(x), not the conditional p(x|y). The factor 1/p(𝑥 = 𝑗)
+  does not depend on k, so it cancels in the E-step. In 𝓛 (below) it
+  only adds the constant -∑ₙ ln p(𝑥 = 𝑥ₙ), which depends on the image
   histogram only. With this normalization, when 𝜇 ∘ 𝜙 is one-hot (and
   the histogram is not smoothed), 𝓛/N is the mutual information
   between 𝒙 and 𝒚.
-. The joint histogram is smoothed along the image-bin axis (i) after
+. The joint histogram is smoothed along the image-bin axis (j) after
   each M-step (`fwhm`). The M-step is then not an exact maximizer of 𝓛,
   and EM is not guaranteed to be monotonic.
 . With 𝑯 fixed, in order to maximize 𝜙, we go back to the
   marginal log-likelihood:
-      𝓛 = ln p(𝒙) = ∑ₙ ln ∑ⱼ 𝐻{[𝑥ₙ],𝑗} (𝜇 ∘ 𝜙)ₙⱼ
+      𝓛 = ln p(𝒙) = ∑ₙ ln ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ
   which we differentiate with respect to (the parameters of) 𝜙, taking
-  Gauss-Newton steps on -𝓛. If 𝑯 were the exact maximizer 𝑯*(𝜙), the
-  gradient with 𝑯 fixed would be the gradient of the profile
-  log-likelihood 𝓛(𝑯*(𝜙), 𝜙) (envelope theorem). Because the histogram
-  is smoothed and EM is stopped early, this is only approximate.
+  Gauss-Newton steps on -𝓛. If 𝑯 were the exact maximizer of 𝓛 for
+  the current 𝜙, the gradient with 𝑯 fixed would be the gradient of the
+  profile log-likelihood max_𝑯 𝓛 (envelope theorem). Because the
+  histogram is smoothed and EM is stopped early, this is only
+  approximate.
 . The value used by the line search and the stopping criteria is 𝓛/N,
   evaluated at the 𝑯 re-estimated by EM at each trial 𝜙. (The mutual
-  information of the expected joint histogram, ∑ᵢⱼ p(𝑥 = 𝑖, 𝑦 = 𝑗) ln 𝐻ᵢⱼ,
+  information of the expected joint histogram, ∑ⱼₖ p(𝑥 = 𝑗, 𝑦 = 𝑘) ln 𝐻ⱼₖ,
   is, up to the change of 𝑯 in the last M-step, 𝓛/N plus the mean
   KL(q ‖ 𝜇 ∘ 𝜙): it is not the function whose gradient is used, and it
   is nearly flat around the optimum.)
 . If we do not have an observed hard segmentation, but a (fixed) separable
   distribution q over 𝒙, we can maximize the expected log-likelihood instead:
-      𝓛 = 𝔼_q[ln p(𝒙)] = ∑ₙᵢ q(𝑥ₙ = 𝑖) ln ∑ⱼ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ
-  EM then treats each pair (n, i) as an observation with weight
-  q(𝑥ₙ = 𝑖):
-      rₙᵢⱼ ∝ 𝐻ᵢⱼ (𝜇 ∘ 𝜙)ₙⱼ                                 (E-step)
-      p(𝑥 = 𝑖, 𝑦 = 𝑗) ∝ ∑ₙ q(𝑥ₙ = 𝑖) rₙᵢⱼ                    (M-step)
+      𝓛 = 𝔼_q[ln p(𝒙)] = ∑ₙⱼ q(𝑥ₙ = 𝑗) ln ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ
+  EM then treats each pair (n, j) as an observation with weight
+  q(𝑥ₙ = 𝑗): the E-step computes q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗) as above, for all j,
+  and the M-step becomes
+      p(𝑥 = 𝑗, 𝑦 = 𝑘) ∝ ∑ₙ q(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗)       (M-step)
 
 Mapping to the code
 -------------------
-. `prior[..., i, j]` is 𝐻ᵢⱼ. Its shape is (B, J, K) where, in the code,
-  J is the number of image bins and K the number of TPM classes
-  (i.e., the K and J of this docstring, swapped). Shapes in the
-  function docstrings below use the code's J and K.
-. `fixed` holds 𝒙 (or q), `moving[:, j]` holds (𝜇 ∘ 𝜙)ₙⱼ, and `prm`
-  holds the Lie parameters of the affine 𝜙.
+. `prior[..., j, k]` is 𝐻ⱼₖ, of shape (B, J, K); `fixed` holds 𝒙
+  (or q); `moving[:, k]` holds (𝜇 ∘ 𝜙)ₙₖ; `prm` holds the Lie
+  parameters of the affine 𝜙.
 """
 import torch
 from nitorch.core import linalg, utils, py, math
@@ -312,9 +310,6 @@ def fit_affine_tpm(dat, tpm, affine=None, affine_tpm=None, weights=None,
                    max_iter_gn=100, max_iter_em=32, max_line_search=6,
                    progressive=False, verbose=1):
     """Fit an affine transform between a log-TPM and an image
-
-    Shapes use the code's sizes: J image bins and K TPM classes
-    (the K and J of the module docstring, respectively).
 
     Parameters
     ----------
@@ -562,33 +557,28 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
              max_iter=32, tolerance=1e-5, verbose=0):
     """Estimate the normalized joint histogram H by Expectation Maximization
 
-    `H[i, j] = p(x == i, y == j) / (p(x == i) p(y == j))`, where x is
-    the image bin and y the TPM class (module docstring notation:
-    i ∈ ⟦1,K⟧ indexes image bins, j ∈ ⟦1,J⟧ indexes TPM classes, and
-    μ[n, j] denotes the deformed TPM (𝜇 ∘ 𝜙)ₙⱼ).
+    𝐻ⱼₖ = p(𝑥 = 𝑗, 𝑦 = 𝑘) / (p(𝑥 = 𝑗) p(𝑦 = 𝑘)), where 𝒙 is the
+    discretized image and 𝒚 the TPM classes (see the module docstring).
 
     The objective function is the marginal log-likelihood
-        𝓛 = Σ_n ln Σ_j H[x[n], j] μ[n, j]                (hard labels)
+        𝓛 = ∑ₙ ln ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ                    (hard labels)
     or, if `fixed` is a soft (float) distribution q over bins,
-        𝓛 = Σ_n Σ_i q[n, i] ln Σ_j H[i, j] μ[n, j]       (soft labels)
-
-    Shapes below use the code's sizes: J image bins and K TPM classes
-    (the K and J of the module docstring, respectively).
+        𝓛 = ∑ₙⱼ q(𝑥ₙ = 𝑗) ln ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ               (soft labels)
 
     Parameters
     ----------
     moving : (1|B, K, *spatial) tensor
-        Deformed TPM μ (probabilities).
+        Deformed TPM 𝜇 ∘ 𝜙 (probabilities).
     fixed : (B, 1|J, *spatial) tensor
-        Discretized image (integer, one channel), or
-        soft distribution over J bins (float, J channels).
+        Discretized image 𝒙 (integer, one channel), or
+        soft distribution q over J bins (float, J channels).
     prior : (B, J, K) tensor, optional
-        Initial H (warm start). Default: uniform.
+        Initial 𝑯 (warm start). Default: uniform.
     weights : (B, 1, *spatial) tensor, optional
         Voxel weights.
     fwhm : float, default=J/64
         Width of the smoothing of the joint histogram along the
-        image-bin axis (i), applied after each M-step.
+        image-bin axis (j), applied after each M-step.
     max_iter : int, default=32
         Maximum number of EM iterations.
         If 0, only evaluate 𝓛 at `prior`.
@@ -602,11 +592,11 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
     -------
     ll : (B,) tensor[double]
         Weighted marginal log-likelihood 𝓛 (summed over voxels),
-        evaluated at the returned H.
+        evaluated at the returned 𝑯.
     N : (B,) tensor
         Total observation weight
     prior : (B, J, K) tensor
-        Regularized normalized joint histogram H = P[X,Y] / (P[X]*P[Y])
+        Regularized normalized joint histogram 𝑯 = p(x,y) / (p(x) p(y))
 
     """
     # ------------------------------------------------------------------
@@ -629,13 +619,14 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
 
     # ------------------------------------------------------------------
     # Initialize normalized histogram
-    #   `prior[i, j]` contains the "normalized" joint histogram
-    #       H[i, j] = p[x=i, y=j] / (p[x=i] p[y=j]) = p[x=i|y=j] / p[x=i]
-    #   In the E-step, it is used in place of the conditional p[x|y]:
-    #   the factor 1/p[x=i] does not depend on j and therefore disappears
-    #   when the responsibilities are normalized. In the log-likelihood
-    #   it adds the constant -Σ_n ln p[x=x[n]], which only depends on the
-    #   (smoothed) histogram of the fixed image.
+    #   `prior[j, k]` contains the "normalized" joint histogram
+    #       𝐻ⱼₖ = p(𝑥 = 𝑗, 𝑦 = 𝑘) / (p(𝑥 = 𝑗) p(𝑦 = 𝑘))
+    #           = p(𝑥 = 𝑗 | 𝑦 = 𝑘) / p(𝑥 = 𝑗)
+    #   In the E-step, it is used in place of the conditional p(x|y):
+    #   the factor 1/p(𝑥 = 𝑗) does not depend on k and therefore
+    #   disappears when the responsibilities are normalized. In the
+    #   log-likelihood it adds the constant -∑ₙ ln p(𝑥 = 𝑥ₙ), which only
+    #   depends on the (smoothed) histogram of the fixed image.
     # ------------------------------------------------------------------
     if prior is None:
         prior = moving.new_ones([B, J, K])
@@ -648,12 +639,13 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
         z = moving.new_zeros([B, K, N])
         hist = torch.empty_like(prior)
     else:
-        # each pair (n, i) is an observation with weight w[n] q[n, i]
+        # each pair (n, j) is an observation with weight q(𝑥ₙ = 𝑗)
+        # (times the voxel weight)
         fixed = fixed * weights
 
     def loglikelihood(prior):
-        # Hard: returns (𝓛, z[n, j] = H[x[n], j] μ[n, j] / Σ_l (...))
-        # Soft: returns (𝓛, q[n, i] / Σ_j H[i, j] μ[n, j])
+        # Hard: returns (𝓛, `z` = q(𝑦ₙ = 𝑘 | 𝑥ₙ))
+        # Soft: returns (𝓛, q(𝑥ₙ = 𝑗) / ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ)
         if hard:
             sample_prior(prior, fixed, z)
             z.mul_(moving)
@@ -676,14 +668,14 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
         # ------
         # Hard: estimate responsibilities of each TPM class for each
         # image voxel using Bayes' rule:
-        #   q(y[n] == j | x[n]) ∝ p(x[n] | y[n] == j) p(y[n] == j)
-        #                       ∝ H[x[n], j] μ[n, j]
-        # Soft: same thing, for each pair (n, i):
-        #   r[n, i, j] ∝ H[i, j] μ[n, j]
+        #   q(𝑦ₙ = 𝑘 | 𝑥ₙ) ∝ p(𝑥ₙ | 𝑦ₙ = 𝑘) p(𝑦ₙ = 𝑘)
+        #                  ∝ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ
+        # Soft: same thing, for each pair (n, j):
+        #   q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗) ∝ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ
         #
-        # The normalization term is the marginal likelihood
-        #   𝓛 = Σ_n ln Σ_j H[x[n], j] μ[n, j]
-        # evaluated at the current H.
+        # The normalization term gives the marginal log-likelihood
+        #   𝓛 = ∑ₙ ln ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ
+        # evaluated at the current 𝑯.
         # --------------------------------------------------------------
         ll, z = loglikelihood(prior)
 
@@ -691,9 +683,9 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
         # M-step
         # ------
         # estimate the joint histogram by maximizing
-        # Q = E_q[ln p(x, y; H)]:
-        #   Hard: p(x == i, y == j) ∝ Σ_n δ(x[n] == i) q(y[n] == j | x[n])
-        #   Soft: p(x == i, y == j) ∝ Σ_n q[n, i] r[n, i, j]
+        # 𝔼_q[ln p(𝒙, 𝒚; 𝑯)]:
+        #   Hard: p(𝑥 = 𝑗, 𝑦 = 𝑘) ∝ ∑ₙ 𝛿(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘 | 𝑥ₙ)
+        #   Soft: p(𝑥 = 𝑗, 𝑦 = 𝑘) ∝ ∑ₙ q(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗)
         # --------------------------------------------------------------
         if hard:
             z *= weights
@@ -705,12 +697,12 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
         prior /= prior.sum(dim=[-1, -2], keepdim=True) + tiny
 
         if fwhm:
-            # smooth the joint histogram along the image-bin axis (i)
+            # smooth the joint histogram along the image-bin axis (j)
             prior = prior.transpose(-1, -2)
             prior = spatial.smooth(prior, dim=1, basis=0, fwhm=fwhm, bound='replicate')
             prior = prior.transpose(-1, -2)
 
-        # normalize: H[i, j] = p(x=i, y=j) / (p(x=i) p(y=j))
+        # normalize: 𝐻ⱼₖ = p(𝑥 = 𝑗, 𝑦 = 𝑘) / (p(𝑥 = 𝑗) p(𝑦 = 𝑘))
         prior /= prior.sum(dim=-2, keepdim=True) * prior.sum(dim=-1, keepdim=True) + tiny
 
         # --------------------------------------------------------------
@@ -732,14 +724,14 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
         ll_prev = ll
 
     # ------------------------------------------------------------------
-    # Objective: marginal log-likelihood 𝓛 evaluated at the final H.
+    # Objective: marginal log-likelihood 𝓛 evaluated at the final 𝑯.
     # `derivatives_intensity` returns the gradient of -𝓛 with respect
-    # to μ (with H fixed).
+    # to 𝜇 ∘ 𝜙 (with 𝑯 fixed).
     #
-    # NOTE: An earlier version returned N Σ_ij p(x=i, y=j) ln H[i, j]
+    # NOTE: An earlier version returned N ∑ⱼₖ p(𝑥 = 𝑗, 𝑦 = 𝑘) ln 𝐻ⱼₖ
     # (the mutual information of the expected joint histogram), which
-    # is about 𝓛 + Σ_n KL(q[n] ‖ μ[n]) and is therefore not the function
-    # whose gradient is used.
+    # is about 𝓛 + ∑ₙ KL(q(𝑦ₙ | 𝑥ₙ) ‖ (𝜇 ∘ 𝜙)ₙ) and is therefore not the
+    # function whose gradient is used.
     # ------------------------------------------------------------------
     ll, _ = loglikelihood(prior)
 
@@ -747,26 +739,23 @@ def em_prior(moving, fixed, prior=None, weights=None, fwhm=None,
 
 
 def derivatives_intensity(moving, fixed, prior, weights=None):
-    """Derivatives of the negative log-likelihood with respect to μ
+    """Derivatives of the negative log-likelihood with respect to 𝜇 ∘ 𝜙
 
     Computes the gradient and Hessian of -𝓛 with respect to the
-    deformed TPM μ[n, j] = (𝜇 ∘ 𝜙)ₙⱼ, with H fixed, where
-        𝓛 = Σ_n ln Σ_j H[x[n], j] μ[n, j]                (hard labels)
-        𝓛 = Σ_n Σ_i q[n, i] ln Σ_j H[i, j] μ[n, j]       (soft labels)
-    (module docstring notation: i indexes image bins, j TPM classes).
-    The Hessian with respect to μ is exact (and positive semi-definite).
-
-    Shapes below use the code's sizes: J image bins and K TPM classes
-    (the K and J of the module docstring, respectively).
+    deformed TPM (𝜇 ∘ 𝜙)ₙₖ, with 𝑯 fixed, where
+        𝓛 = ∑ₙ ln ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ                    (hard labels)
+        𝓛 = ∑ₙⱼ q(𝑥ₙ = 𝑗) ln ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ               (soft labels)
+    The Hessian with respect to 𝜇 ∘ 𝜙 is exact (and positive
+    semi-definite).
 
     Parameters
     ----------
     moving : (1|B, K, *spatial) tensor
-        Deformed TPM μ (probabilities).
+        Deformed TPM 𝜇 ∘ 𝜙 (probabilities).
     fixed : (B, 1|J, *spatial) tensor
-        Discretized (integer) or soft (float) image.
+        Discretized image 𝒙 (integer) or soft image q (float).
     prior : (B, J, K) tensor
-        Normalized joint histogram H.
+        Normalized joint histogram 𝑯.
     weights : (B, 1, *spatial) tensor, optional
 
     Returns
@@ -775,8 +764,8 @@ def derivatives_intensity(moving, fixed, prior, weights=None):
         Gradient of -𝓛
     hess : (B, K*(K+1)//2, *spatial) tensor
         Hessian of -𝓛, in packed symmetric form: the K diagonal
-        elements (j, j) first, then the off-diagonal elements (j, l),
-        j < l, in row-major order.
+        elements (k, k) first, then the off-diagonal elements (k, kk),
+        k < kk, in row-major order.
 
     """
     # ------------------------------------------------------------------
@@ -793,13 +782,14 @@ def derivatives_intensity(moving, fixed, prior, weights=None):
 
     # ------------------------------------------------------------------
     # We compute the derivatives of
-    #   -𝓛 = -Σ_n ln Σ_j H[x[n], j] μ[n, j]
-    # With a[n, j] = H[x[n], j] / Σ_l H[x[n], l] μ[n, l]:
-    #   g[n, j]    = -a[n, j]
-    #   h[n, j, l] = a[n, j] a[n, l]
-    # In the soft case, with m[n, i] = Σ_l H[i, l] μ[n, l]:
-    #   g[n, j]    = -Σ_i q[n, i] H[i, j] / m[n, i]
-    #   h[n, j, l] =  Σ_i q[n, i] H[i, j] H[i, l] / m[n, i]²
+    #   -𝓛 = -∑ₙ ln ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ
+    # Writing (𝑯(𝜇 ∘ 𝜙))ₙⱼ = ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ, the gradient `g` and
+    # Hessian `h` with respect to (𝜇 ∘ 𝜙)ₙₖ, (𝜇 ∘ 𝜙)ₙ,ₖₖ are:
+    #   g[n, k]     = -𝐻{[𝑥ₙ],𝑘} / (𝑯(𝜇 ∘ 𝜙))ₙ,[𝑥ₙ]
+    #   h[n, k, kk] =  𝐻{[𝑥ₙ],𝑘} 𝐻{[𝑥ₙ],𝑘𝑘} / (𝑯(𝜇 ∘ 𝜙))ₙ,[𝑥ₙ]²
+    # In the soft case:
+    #   g[n, k]     = -∑ⱼ q(𝑥ₙ = 𝑗) 𝐻ⱼₖ / (𝑯(𝜇 ∘ 𝜙))ₙⱼ
+    #   h[n, k, kk] =  ∑ⱼ q(𝑥ₙ = 𝑗) 𝐻ⱼₖ 𝐻ⱼ,ₖₖ / (𝑯(𝜇 ∘ 𝜙))ₙⱼ²
     # ------------------------------------------------------------------
     K2 = K * (K + 1) // 2
     g = moving.new_zeros([B, K, N])
