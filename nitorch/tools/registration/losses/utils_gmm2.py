@@ -263,7 +263,7 @@ def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, prior,
     # print('')
     nmsk = sum_weights(x, y, mask, ndim)
 
-    nll, z = e_step(x, y, xmean, ymean, xvar, yvar, cov, prior)
+    nll, z = e_step(x, y, xmean, ymean, xvar, yvar, cov, prior, mask=mask)
     nll /= nmsk
     nll_max = nll_prev = nll
     for nit in range(max_iter):
@@ -468,9 +468,20 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, max_iter: int,
         # E-step
         nll, z = e_step_local(bwd, x, y, xmean, ymean, xvar, yvar, cov, pi)
 
-        gain = (nll - nll_prev).abs() / (nll_max - nll).abs()
+        # Same guarded criterion as `em_loop`. When EM starts from
+        # responsibilities, nll_max is +inf: inf/inf = NaN at the first
+        # iteration and finite/inf = 0 at the second (spurious stop), so
+        # skip the check until a finite reference exists.
+        delta = (nll - nll_prev).abs()
+        if not bool(torch.isfinite(nll_max)):
+            nll_prev = nll
+            nll_max = nll
+            continue
+        denom = _maximum((nll_max - nll).abs(), 1e-12 * (1 + nll.abs()))
+        gain = delta / denom
         # print('lgmm', nit, nll.item(), gain.item())
-        if gain < 1e-6:
+        if (gain < 1e-6 or delta < 1e-9 * (1 + nll.abs())
+                or not bool(torch.isfinite(gain))):
             break
         nll_prev = nll
         nll_max = _maximum(nll_max, nll)

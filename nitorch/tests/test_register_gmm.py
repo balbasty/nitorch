@@ -134,8 +134,9 @@ def test_lgmm_scaling_consistent():
     voxel-wise gradient and Hessian by 4: everything is normalised by the
     voxel count exactly once."""
     mov, fix = make_data([10, 10])
-    ll1, g1, h1 = lgmmh(mov, fix, dim=2, bins=3, patch=5)
-    ll2, g2, h2 = lgmmh(repeat2(mov), repeat2(fix), dim=2, bins=3, patch=10)
+    ll1, g1, h1 = lgmmh(mov, fix, dim=2, bins=3, patch=5, max_iter=8)
+    ll2, g2, h2 = lgmmh(repeat2(mov), repeat2(fix), dim=2, bins=3, patch=10,
+                         max_iter=8)
     assert math.isclose(ll1.item(), ll2.item(), rel_tol=1e-2), (ll1, ll2)
     assert math.isclose(g1.abs().sum().item(), g2.abs().sum().item(),
                         rel_tol=2e-2)
@@ -150,7 +151,8 @@ def test_lgmm_grad_hess_fd():
     directions v: <g, v> vs (L(m + eps v) - L(m - eps v)) / 2 eps, and the
     curvature <v, h v> against the FD of <g, v>."""
     mov, fix = make_data([8, 8])
-    _, theta = lgmmh(mov, fix, dim=2, bins=3, patch=4, grad=False,
+    _, theta = lgmmh(mov, fix, dim=2, bins=3, patch=4, max_iter=8,
+                     grad=False,
                      hess=False, return_theta=True)
     theta = {k: theta[k] for k in
              ('xmean', 'ymean', 'xvar', 'yvar', 'corr', 'prior')}
