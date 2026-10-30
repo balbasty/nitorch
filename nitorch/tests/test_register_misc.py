@@ -34,6 +34,48 @@ def test_optim_sequential(tmp_path):
     assert os.path.exists(out)
 
 
+def test_optim_sequential_parse():
+    base = ['@loss', 'mse', '@@fix', 'a.nii', '@@mov', 'b.nii', '@affine']
+    opts = parser.parser.parse(base + ['@optim', 'sequential'])
+    assert opts.optim.max_iter == 1 and opts.optim.tolerance == 0
+    opts = parser.parser.parse(base + ['@optim', 'sequential',
+                                       '-n', '3', '-t', '1e-3'])
+    assert opts.optim.max_iter == 3 and opts.optim.tolerance == 1e-3
+
+
+def test_optim_sequential_reaches_run(tmp_path, monkeypatch):
+    from nitorch.cli.registration.register import cli as regcli
+    seen = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_run(*a, **kw):
+        seen.update(kw)
+        raise Stop
+    monkeypatch.setattr(regcli, 'run', fake_run)
+    fix = _save(str(tmp_path / 'fix.nii'), [8, 8, 8])
+    mov = _save(str(tmp_path / 'mov.nii'), [8, 8, 8], seed=1)
+    with pytest.raises(Stop):
+        _cli(['-o', str(tmp_path), '@loss', 'mse', '@@fix', fix,
+              '@@mov', mov, '@affine', 'translation', '@@optim', 'gn',
+              '@optim', 'sequential', '-n', '3', '-t', '1e-3',
+              '@pyramid', '--levels', '1'])
+    assert seen['interleaved'] is False
+    assert seen['max_iter'] == 3 and seen['tolerance'] == 1e-3
+
+
+def test_build_joint_optim_sequential_passes():
+    from nitorch.tools.registration.pairwise_run import build_joint_optim
+    j = build_joint_optim(opt.GaussNewton(), opt.GaussNewton(), sequential=True)
+    assert j.max_iter == 1
+    j = build_joint_optim(opt.GaussNewton(), opt.GaussNewton(), max_iter=3,
+                          sequential=True)
+    assert j.max_iter == 3
+    j = build_joint_optim(opt.GaussNewton(), opt.GaussNewton(), sequential=False)
+    assert j.max_iter == 10
+
+
 def test_lr_default_unset():
     opts = parser.parser.parse(['@loss', 'mse', '@@fix', 'a.nii', '@@mov', 'b.nii',
                          '@affine', '@@optim', 'gd'])

@@ -493,19 +493,49 @@ class Image(SpatialTensor):
         center += affine[:ndim, -1:]
         return center.squeeze(-1)
 
-    def get_center_of_mass(self, masked=True, **backend):
-        """Compute the RAS coordinate of the center of mass."""
-        backend = dict(dtype=self.dtype, device=self.device)
-        grid = spatial.identity_grid(self.shape, **backend)
-        dat = self.dat
+    def get_center_of_mass(self, masked=True):
+        """Compute the RAS coordinate of the center of mass.
+
+        Intensities (of the preview image, i.e., before MIND features
+        or discretization) are made non-negative by subtracting their
+        per-channel minimum (within the mask), and each channel is
+        normalized to unit mass, so that the result does not depend on
+        the intensity offset or scale. Non-finite values are ignored.
+        Falls back to the center of the field of view if the image is
+        constant.
+        """
+        ndim = self.ndim
+        dat = self.preview
+        dtype = dat.dtype if dat.dtype.is_floating_point else torch.float32
+        dat = dat.to(dtype).reshape([-1, *self.shape])
+        valid = torch.isfinite(dat)
+        msk = None
         if masked and self.masked:
-            msk = self.mask.to(**backend)
-            dat = dat * msk
-            den = msk.sum()
-            if len(msk) == 1:
-                den *= len(dat)
-        num = (dat[..., None] * grid).sum(list(range(dat.ndim)))
-        return num / den
+            msk = self.mask.to(dat)
+            valid = valid & (msk > 0)
+        spatial_dims = list(range(1, ndim + 1))
+        mn = dat.masked_fill(~valid, float('inf'))
+        mn = mn.reshape([len(dat), -1]).min(-1).values
+        mn = mn.reshape([-1] + [1] * ndim)
+        wgt = (dat - mn).masked_fill(~valid, 0)
+        if msk is not None:
+            wgt = wgt * msk
+        mass = wgt.sum(spatial_dims, keepdim=True)
+        ok = (mass > 0) & torch.isfinite(mass)
+        if not ok.any():
+            return self.get_center()
+        wgt = (wgt / mass.masked_fill(~ok, 1)) * ok
+        wgt = wgt.sum(0) / ok.sum()
+        com = []
+        for d in range(ndim):
+            others = [i for i in range(ndim) if i != d]
+            marginal = wgt.sum(others) if others else wgt
+            index = torch.arange(len(marginal), dtype=marginal.dtype,
+                                 device=marginal.device)
+            com.append((marginal * index).sum())
+        com = torch.stack(com)
+        affine = self.affine.to(com)
+        return affine[:ndim, :ndim].matmul(com) + affine[:ndim, -1]
 
     def _prm_as_str(self):
         s = []
@@ -939,6 +969,8 @@ class LogAffine(AffineTransform):
         if optim == "rot":
             if basis == "tra":
                 raise ValueError("Cannot optimize rotation in a translation basis")
+            if basis == "rot":
+                return grad
             return grad[..., D:D+D2, :, :]
         if optim == "rig":
             if basis in ("tra", "rot"):
@@ -1769,8 +1801,9 @@ class SVFModel(NonLinModel):
             if cache_result:
                 self._cache = grid
                 self._icache = igrid
-            grid = self.add_identity(grid)
-            igrid = self.add_identity(igrid)
+            if add_identity:
+                grid = self.add_identity(grid)
+                igrid = self.add_identity(igrid)
             return grid, igrid
 
     def propagate_grad(self, g, h, moving, phi, left=None, right=None, inv=False):
@@ -2048,6 +2081,12 @@ class AffineModel(TransformationModel):
             if self.optim not in (None, self.basis):
                 value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
             return value
+
+        def __len__(self):
+            # number of optimized parameters (= length of a step)
+            if self.optim not in (None, self.basis):
+                return spatial.affine_basis_size(self.optim, self.model._truedim)
+            return len(self.dat)
 
         def add_(self, value, **kwargs):
             self.dat.add_(self._switch(value), **kwargs)

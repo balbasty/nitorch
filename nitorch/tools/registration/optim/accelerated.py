@@ -149,7 +149,7 @@ class OGM(AcceleratedFirstOrder):
     Note that we must store the last gradient on top of the previous Δ.
     """
 
-    def __init__(self, momentum=0, relaxation=0,
+    def __init__(self, *args, momentum=0, relaxation=0,
                  auto_restart=True, damping=0.5, **kwargs):
         """
 
@@ -171,7 +171,7 @@ class OGM(AcceleratedFirstOrder):
         lr : float, default=1
             Learning rate.
         """
-        super().__init__(**kwargs)
+        super().__init__(*args, **kwargs)
         self.auto_restart = auto_restart
         self.damping = damping
         self._damping = 1

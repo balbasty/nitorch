@@ -190,9 +190,11 @@ usage:
 @optim options:
     NAME can take values:
        [i, interleaved]                 Interleaved optimization of affine and nonlin
-            -n, --max-iter                  Maximum number of iterations
-            -t, --tolerance                 Tolerance for early stopping
+            -n, --max-iter                  Maximum number of iterations [5]
+            -t, --tolerance                 Tolerance for early stopping [1e-5]
         s, sequential                   Sequential optimization of affine, then nonlin
+            -n, --max-iter                  Number of (full affine, then full nonlin) passes [1]
+            -t, --tolerance                 Tolerance for early stopping between passes [0]
 
 @@optim options:
     The default solver is chosen based on the loss.
@@ -331,7 +333,7 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
                   default=1., help='Framerate of plotting function, in Hz')
 
 # Loss group
-loss_aliases = {'nmi': 'mi', 'l1': 'mse', 'l2': 'mad', 'tukey': 'tuk',
+loss_aliases = {'nmi': 'mi', 'l1': 'mad', 'l2': 'mse', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
                 'entropy': 'ent', 'sqz': 'squeezed'}
 loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emmi', 'prod', 'dot', 'ndot', 'extra']
@@ -607,6 +609,12 @@ joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
                      default=5, convert=int, help='Maximum number of iterations')
 joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
                      convert=float, default=1e-5, help='Tolerance for early stopping')
+joptim.add_suboption('sequential', 'max_iter', ('-n', '--max-iter'), nargs=1,
+                     default=1, convert=int,
+                     help='Number of (full affine, then full nonlin) passes')
+joptim.add_suboption('sequential', 'tolerance', ('-t', '--tolerance'), nargs=1,
+                     convert=float, default=0,
+                     help='Tolerance for early stopping between passes')
 
 # pyramid group
 pyr_aliases = {'g': 'gaussian',
