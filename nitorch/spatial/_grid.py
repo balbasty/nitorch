@@ -191,7 +191,7 @@ def grid_pull(input, grid, interpolation='linear', bound='zero',
         for label in input.unique():
             soft = (input == label).to(grid.dtype)
             if prefilter:
-                input = spline_coeff_nd(soft, interpolation=interpolation,
+                soft = spline_coeff_nd(soft, interpolation=interpolation,
                                         bound=bound, dim=dim, inplace=True)
             soft = GridPull.apply(soft, grid, interpolation, bound, extrapolate)
             out[soft > pmax] = label
