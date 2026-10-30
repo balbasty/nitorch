@@ -192,9 +192,11 @@ usage:
 @optim options:
     NAME can take values:
        [i, interleaved]                 Interleaved optimization of affine and nonlin
-            -n, --max-iter                  Maximum number of iterations
-            -t, --tolerance                 Tolerance for early stopping
+            -n, --max-iter                  Maximum number of iterations [5]
+            -t, --tolerance                 Tolerance for early stopping [1e-5]
         s, sequential                   Sequential optimization of affine, then nonlin
+            -n, --max-iter                  Number of (full affine, then full nonlin) passes [1]
+            -t, --tolerance                 Tolerance for early stopping between passes [0]
 
 @@optim options:
     The default solver is chosen based on the loss.
@@ -225,7 +227,7 @@ usage:
             -h, --history                   History size [100]
         none                            Do not optimize
     Common options:
-        -l, --lr                        Learning rate [1]
+        -l, --lr                        Learning rate [2nd order: 1, 1st order: 1e-3]
         -s, --line-search               Number of backtracking line search [wolfe]
         -t, --tolerance                 Tolerance for early stopping [1e-4]
         -c, --crit                      Stopping criterion: [diff], gain
@@ -472,7 +474,7 @@ optim_choices = cli.Positional('name', nargs='?', default='unset',
                                convert=lambda x: optim_aliases.get(x, x),
                                help='Name of the optimizer')
 optim = cli.NamedGroup('optim', optim_choices, '@@optim', n='?')
-optim.add_option('lr', ('-l', '--lr'), nargs=1, default=1, convert=float,
+optim.add_option('lr', ('-l', '--lr'), nargs=1, default=None, convert=float,
                  help='Learning rate')
 optim.add_option('max_iter', ('-n', '--max-iter'), nargs=1, default=None,
                  convert=int, help='Maximum number of iterations')
@@ -609,6 +611,12 @@ joptim.add_suboption('interleaved', 'max_iter', ('-n', '--max-iter'), nargs=1,
                      default=5, convert=int, help='Maximum number of iterations')
 joptim.add_suboption('interleaved', 'tolerance', ('-t', '--tolerance'), nargs=1,
                      convert=float, default=1e-5, help='Tolerance for early stopping')
+joptim.add_suboption('sequential', 'max_iter', ('-n', '--max-iter'), nargs=1,
+                     default=1, convert=int,
+                     help='Number of (full affine, then full nonlin) passes')
+joptim.add_suboption('sequential', 'tolerance', ('-t', '--tolerance'), nargs=1,
+                     convert=float, default=0,
+                     help='Tolerance for early stopping between passes')
 
 # pyramid group
 pyr_aliases = {'g': 'gaussian',

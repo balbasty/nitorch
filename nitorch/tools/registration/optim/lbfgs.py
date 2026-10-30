@@ -7,17 +7,17 @@ import torch
 class LBFGS(FirstOrder):
     """Limited memory BFGS"""
 
-    def __init__(self, max_iter=20, history=100, lr=1, wolfe=None, **kwargs):
+    def __init__(self, lr=1, max_iter=20, history=100, wolfe=None, **kwargs):
         """
 
         Parameters
         ----------
+        lr : float, default=1
+            Learning rate
         max_iter : int, default=20
             Maximum number of iterations
         history : int, default=5
             Number of past gradients stored in memory
-        lr : float, default=1
-            Learning rate
         wolfe : dict(c1=1e-4, c2=0.9, max_iter=25, tol=1e-9)
             Options for the Wolfe line search
         """
