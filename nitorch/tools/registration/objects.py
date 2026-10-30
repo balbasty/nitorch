@@ -968,6 +968,8 @@ class LogAffine(AffineTransform):
         if optim == "rot":
             if basis == "tra":
                 raise ValueError("Cannot optimize rotation in a translation basis")
+            if basis == "rot":
+                return grad
             return grad[..., D:D+D2, :, :]
         if optim == "rig":
             if basis in ("tra", "rot"):
@@ -2077,6 +2079,12 @@ class AffineModel(TransformationModel):
             if self.optim not in (None, self.basis):
                 value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
             return value
+
+        def __len__(self):
+            # number of optimized parameters (= length of a step)
+            if self.optim not in (None, self.basis):
+                return spatial.affine_basis_size(self.optim, self.model._truedim)
+            return len(self.dat)
 
         def add_(self, value, **kwargs):
             self.dat.add_(self._switch(value), **kwargs)
