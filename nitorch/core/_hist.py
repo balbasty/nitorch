@@ -826,8 +826,142 @@ def _jhistc_backward(g, x, w=None, order=0, bound='replicate',
     # return out[0] if len(out) == 1 else tuple(out)
 
 
+def _smooth_matrix(bins, fwhm, bound, dtype=None, device=None):
+    """Dense matrix `K` of the 1D histogram smoothing: `smooth(h) = K @ h`.
+
+    `K[c, a]` is the response in bin `c` to a unit count in bin `a`.
+    With a 'replicate' bound, `K` is neither symmetric nor
+    mass-preserving near the edges, so its adjoint is `K.T`, not `K`.
+    """
+    eye = torch.eye(bins, dtype=dtype, device=device)
+    if not fwhm:
+        return eye
+    return smooth(eye, fwhm=fwhm, bound=bound, dim=1).transpose(0, 1)
+
+
+def _corner_columns(k, bound):
+    """Columns of `k` at the lower/upper corners of each linear cell.
+
+    Cell `i` (i = -1, ..., n-1) spans [i, i+1]. Returns `(k0, k1)`, each
+    (n, n+1), with `k0[:, i+1] = sign * k[:, index(i)]` and
+    `k1[:, i+1] = sign * k[:, index(i+1)]`, using the same index/sign
+    mapping as the order-1 push/pull kernels.
+    """
+    n = k.shape[-1]
+    i = torch.arange(-1, n, device=k.device)
+    cols = []
+    for j in (i, i + 1):
+        sign = bound.transform(j, n)
+        col = k[:, bound.index(j, n)]
+        if sign is not None:
+            col = col * sign.to(col.dtype)
+        cols.append(col)
+    return tuple(cols)
+
+
+def _jhistc_backward2_diag_x(h, u, v, kx, ky, hx, hy, bx, by):
+    """x-component of the exact per-sample GN diagonal (order 1).
+
+    For a sample at bin coordinates (u, v), the derivative of the
+    (smoothed) joint histogram with respect to u is the separable
+    vector `dp[c, d] = phi'[c] * phi[d]`, with
+        phi'[c] = kx[c, a1] - kx[c, a0]
+        phi[d]  = (1 - t) * ky[d, b0] + t * ky[d, b1]
+    ((a0, a1), (b0, b1) the cell corners, t = v - floor(v)). This
+    returns, for each sample,
+        sum_cd h[c, d] dp[c, d]^2
+      + sum_c hx[c] (sum_d dp[c, d])^2
+      + sum_d hy[d] (sum_c dp[c, d])^2
+    i.e. `dp^T M dp` for the histogram-space matrix
+    `M = diag(h) + (hx 1^T)-blocks + (1 hy^T)-blocks`, without
+    approximating `M` (or its smoothing) by its diagonal.
+    """
+    kx0, kx1 = _corner_columns(kx, bx)
+    ky0, ky1 = _corner_columns(ky, by)
+    nx, ny = kx.shape[-1], ky.shape[-1]
+    dk2 = (kx1 - kx0).square()                       # (nx, nx+1)
+    i = u.floor().long().clamp_(-1, nx - 1) + 1      # (b, n) in [0, nx]
+    j = v.floor().long().clamp_(-1, ny - 1) + 1      # (b, n) in [0, ny]
+    t1 = (v - v.floor())
+    t0 = 1 - t1
+    w00, w01, w11 = t0 * t0, 2 * t0 * t1, t1 * t1
+    flat = i * (ny + 1) + j
+
+    def gather2(tab):
+        return tab.reshape([tab.shape[0], -1]).gather(-1, flat)
+
+    out = 0
+    if h is not None:
+        t00 = torch.einsum('ci,bcd,dj->bij', dk2, h, ky0 * ky0)
+        t01 = torch.einsum('ci,bcd,dj->bij', dk2, h, ky0 * ky1)
+        t11 = torch.einsum('ci,bcd,dj->bij', dk2, h, ky1 * ky1)
+        out = w00 * gather2(t00) + w01 * gather2(t01) + w11 * gather2(t11)
+    if hx is not None:
+        # (sum_d phi[d])^2 = 1 in the interior; computed exactly anyway
+        s0, s1 = ky0.sum(0)[j], ky1.sum(0)[j]
+        mx = torch.einsum('ci,bc->bi', dk2, hx).gather(-1, i)
+        out = out + mx * (t0 * s0 + t1 * s1).square()
+    if hy is not None:
+        # sum_c phi'[c] = 0 when smoothing preserves mass, so this term
+        # (the fixed marginal) only survives near the histogram edges.
+        ex = (kx1 - kx0).sum(0).square()[i]
+        y00 = (hy @ (ky0 * ky0)).gather(-1, j)
+        y01 = (hy @ (ky0 * ky1)).gather(-1, j)
+        y11 = (hy @ (ky1 * ky1)).gather(-1, j)
+        out = out + ex * (w00 * y00 + w01 * y01 + w11 * y11)
+    return out
+
+
+def _jhistc_backward2_diag(h, x, kx=None, ky=None, hx=None, hy=None,
+                           bound='replicate', extrapolate=True):
+    """Exact per-sample diagonal of `J^T M J` for an order-1 joint histogram.
+
+    Parameters
+    ----------
+    h : (b, nx, ny) tensor or None
+        Bin-diagonal part of the histogram-space matrix `M`.
+    x : (b, n, 2) tensor
+        Bin coordinates.
+    kx, ky : (nx, nx), (ny, ny) tensor, optional
+        Smoothing matrices (the histogram is `kx @ hist @ ky.T`).
+    hx : (b, nx) tensor, optional
+        Coefficients of the x-marginal term `sum_c hx[c] (sum_d dp[c,d])^2`
+    hy : (b, ny) tensor, optional
+        Coefficients of the y-marginal term `sum_d hy[d] (sum_c dp[c,d])^2`
+
+    Returns
+    -------
+    out : (b, n, 2) tensor
+
+    """
+    ref = h if h is not None else (hx if hx is not None else hy)
+    backend = dict(dtype=x.dtype, device=x.device)
+    if h is not None:
+        nx, ny = h.shape[-2:]
+    else:
+        nx = kx.shape[-1] if kx is not None else hx.shape[-1]
+        ny = ky.shape[-1] if ky is not None else hy.shape[-1]
+    kx = torch.eye(nx, **backend) if kx is None else kx.to(**backend)
+    ky = torch.eye(ny, **backend) if ky is None else ky.to(**backend)
+    bx, by = make_bound([bound_to_nitorch(bound, 'int')]*2)
+    extrapolate = 1 if extrapolate else 2
+    batch = max(x.shape[0], ref.shape[0])
+    x = x.expand([batch, *x.shape[1:]])
+    u, v = x.unbind(-1)
+    exp = lambda t: None if t is None else t.expand([batch, *t.shape[1:]])
+    h, hx, hy = exp(h), exp(hx), exp(hy)
+    out_x = _jhistc_backward2_diag_x(h, u, v, kx, ky, hx, hy, bx, by)
+    hT = None if h is None else h.transpose(-1, -2)
+    out_y = _jhistc_backward2_diag_x(hT, v, u, ky, kx, hy, hx, by, bx)
+    out = torch.stack([out_x, out_y], -1)
+    mask = ts_utils.inbounds_mask_2d(extrapolate, u, v, nx, ny)
+    if mask is not None:
+        out = out * mask.unsqueeze(-1)
+    return out
+
+
 def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
-                      extrapolate=True):
+                      extrapolate=True, kx=None, ky=None, hx=None, hy=None):
     """Compute (Fisher's) second derivative of the joint histogram.
 
     The input must already be a soft mapping to bins indices.
@@ -840,6 +974,11 @@ def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
     order : int, default=0
     bound : {'zero', 'nearest'}, default='nearest'
     extrapolate : bool, default=True
+    kx, ky : (bins, bins) tensor, optional
+        Smoothing matrices (diagonal case only), see `_smooth_matrix`.
+    hx, hy : (b, bins) tensor, optional
+        Marginal terms of the histogram-space matrix (diagonal case only),
+        see `_jhistc_backward2_diag`.
 
     Returns
     -------
@@ -847,6 +986,10 @@ def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
 
     Notes
     -----
+    In the diagonal case (`h` is (b, bins, bins)), the per-sample
+    diagonal of `J^T M J` is exact for order 1, including the
+    smoothing and the histogram edges (where the histogram does not
+    depend on the sample and the result is zero).
     Only an order-1 Hessian kernel is implemented. For order != 1, the
     order-1 result is rescaled (per component) so that its expectation
     over the sub-bin position matches the expected Gauss-Newton curvature
@@ -856,26 +999,30 @@ def _jhistc_backward2(h, x, w=None, order=0, bound='replicate',
     """
     order = py.make_list(order, 2)
     order = [inter_to_nitorch(o, 'int') for o in order]
-    bound = make_bound([bound_to_nitorch(bound, 'int')]*2)
-    extrapolate = 1 if extrapolate else 2
 
-    is_diag = h.dim() == 3
+    is_diag = h is None or h.dim() == 3
 
-    args = (h.unsqueeze(1), x.unsqueeze(1), bound, extrapolate)
     if any(o == 0 for o in order):
         raise NotImplementedError(_ORDER0_MSG)
     if is_diag:
-        gx = iso1_grad2_diag_2d(*args)
+        gx = _jhistc_backward2_diag(h, x, kx, ky, hx, hy, bound, extrapolate)
     else:
+        bound = make_bound([bound_to_nitorch(bound, 'int')]*2)
+        extrapolate = 1 if extrapolate else 2
+        args = (h.unsqueeze(1), x.unsqueeze(1), bound, extrapolate)
         gx = iso1_grad2_2d(*args)
+        gx = gx.squeeze(1).squeeze(1)
     if any(o != 1 for o in order):
         sx, sy = _hess_order_scale(order)
         scl = torch.as_tensor([sx, sy], dtype=gx.dtype, device=gx.device)
         gx = gx * scl
-    gx = gx.squeeze(1).squeeze(1)
     if w is not None:
         w = w.unsqueeze(-1)
-        gx *= w if is_diag else w.unsqueeze(-1)
+        if is_diag:
+            # the histogram is linear in w, so the GN term scales with w^2
+            gx = gx * w.square()
+        else:
+            gx *= w.unsqueeze(-1)
 
     return gx
 
@@ -1332,6 +1479,12 @@ class JointHistCount:
         self.extrapolate = extrapolate
         self.fwhm = py.make_list(fwhm, 2)
 
+    def smoothing_matrices(self, dtype=None, device=None):
+        """Dense matrices (kx, ky) of the histogram smoothing, such that
+        the smoothed histogram is `kx @ h @ ky.T`."""
+        return tuple(_smooth_matrix(b, f, self.bound, dtype, device)
+                     for b, f in zip(self.bins, self.fwhm))
+
     def forward(self, x, w=None, min=None, max=None, return_minmax=False):
         """
 
@@ -1430,9 +1583,11 @@ class JointHistCount:
 
         g = g.reshape([-1, *self.bins])
 
-        # smooth backward
+        # smooth backward (adjoint of the forward smoothing: kx.T @ g @ ky,
+        # which differs from smoothing `g` again near the edges)
         if any(self.fwhm):
-            g = smooth(g, fwhm=self.fwhm, bound=self.bound, dim=2)
+            kx, ky = self.smoothing_matrices(**backend)
+            g = kx.transpose(0, 1).matmul(g).matmul(ky)
 
         # push data into the histogram
         g = _jhistc_backward(g, x, w, self.order, self.bound, self.extrapolate)
@@ -1442,20 +1597,38 @@ class JointHistCount:
         g = g.reshape([*batch, n, 2])
         return g
 
-    def backward2(self, h, x, w=None, min=None, max=None):
-        """
+    def backward2(self, h, x, w=None, min=None, max=None, hx=None, hy=None):
+        """Per-sample diagonal of the Gauss-Newton term `J^T M J`.
+
+        `J` is the Jacobian of the (smoothed) histogram with respect to
+        the sample values and `M` is a histogram-space matrix.
 
         Parameters
         ----------
         h : (..., *bins, [*bins]) tensor
+            Bin-diagonal part of `M` (or the full `M`).
         x : (..., n, 2) tensor
         w : (..., n) tensor, optional
         min : (...) tensor_like, optional
         max : (...) tensor_like, optional
+        hx : (..., bins[0]) tensor, optional
+            Marginal part of `M` along the first axis:
+            `M[(a, b), (c, d)] += delta(a, c) * hx[a]`
+            (only when `h` is bin-diagonal).
+        hy : (..., bins[1]) tensor, optional
+            Marginal part of `M` along the second axis:
+            `M[(a, b), (c, d)] += delta(b, d) * hy[b]`
+            (only when `h` is bin-diagonal).
 
         Returns
         -------
         h : (..., n, 2) tensor
+
+        Notes
+        -----
+        When `h` is bin-diagonal, the result is the exact diagonal of
+        `J^T M J` for spline order 1, smoothing included (the marginal
+        terms are not approximated by their bin-diagonal).
 
         """
         backend = dict(dtype=x.dtype, device=x.device)
@@ -1494,23 +1667,34 @@ class JointHistCount:
 
         if is_diag:
             h = h.reshape([-1, *self.bins])
+            if hx is not None:
+                hx = hx.reshape([-1, self.bins[0]])
+            if hy is not None:
+                hy = hy.reshape([-1, self.bins[1]])
         else:
+            if hx is not None or hy is not None:
+                raise ValueError('hx/hy are only supported with a '
+                                 'bin-diagonal h')
             h = h.reshape([-1, *self.bins, *self.bins])
 
-        # smooth backward
-        if any(self.fwhm):
-            ker = kernels.smooth(fwhm=self.fwhm)
-            if is_diag:
-                ker = [k.square_() for k in ker]
-                h = smooth(h, kernel=ker, bound=self.bound, dim=2)
-            else:
-                h = smooth(h, kernel=ker, bound=self.bound, dim=2)
-                h = h.transpose(-4, -2).transpose(-3, -1)
-                h = smooth(h, kernel=ker, bound=self.bound, dim=2)
-                h = h.transpose(-4, -2).transpose(-3, -1)
-
-        # push data into the histogram
-        h = _jhistc_backward2(h, x, w, self.order, self.bound, self.extrapolate)
+        if is_diag:
+            # The smoothing is handled exactly inside the kernel: the
+            # diagonal of K^T M K is *not* enough, since each sample
+            # touches several (signed) bins at once.
+            kx = ky = None
+            if any(self.fwhm):
+                kx, ky = self.smoothing_matrices(**backend)
+            h = _jhistc_backward2(h, x, w, self.order, self.bound,
+                                  self.extrapolate, kx=kx, ky=ky,
+                                  hx=hx, hy=hy)
+        else:
+            # full histogram-space Hessian: K^T H K
+            if any(self.fwhm):
+                kx, ky = self.smoothing_matrices(**backend)
+                h = torch.einsum('ca,db,ncdef,eg,fh->nabgh',
+                                 kx, ky, h, kx, ky)
+            h = _jhistc_backward2(h, x, w, self.order, self.bound,
+                                  self.extrapolate)
         h = h.mul_((bins / (max - min)).square_())
 
         # reshape

@@ -188,16 +188,30 @@ def mi(moving, fixed, dim=None, bins=64, order=1, fwhm=2, norm='studholme',
         out.append(g)
 
     if hess:
+        # Gauss-Newton (Fisher) form: minus the histogram-space Hessian
+        # of the loss, without the rank-2 terms from the normalisation:
+        #   M = diag(cxy / pxy) + [a == c] * cx / px + [b == d] * cy / py
+        # The marginal terms are passed separately so that backward2
+        # computes the per-voxel diagonal of J^T M J exactly (taking only
+        # their bin-diagonal would be wrong and can make it negative).
+        # Since moving the moving image leaves py unchanged, the cy term
+        # contributes (almost) nothing to the moving-image Hessian.
         if norm == 'studholme':
-            H = (nmi / pxy - 1 / px + 1 / py) / hxy
+            Hxy, Hx, Hy = nmi / pxy, -1 / px, -1 / py
+            scl = hxy
         elif norm == 'arithmetic':
-            H = (1 / pxy + nmi * (1 / px + 1 / py)) / (hx + hy)
+            Hxy, Hx, Hy = 1 / pxy, nmi / px, nmi / py
+            scl = hx + hy
         elif norm == 'geometric':
-            H = (1 / pxy - ax / px - ay / py) / hxhy
+            Hxy, Hx, Hy = 1 / pxy, -ax / px, -ay / py
+            scl = hxhy
         else:
-            H = 1 / pxy - 1 / px - 1 / py
-        H = H.div_(nvox**2)
-        H = hist.backward2(H, idx, w=mask)[..., 0]
+            Hxy, Hx, Hy = 1 / pxy, -1 / px, -1 / py
+            scl = 1
+        scl = scl * nvox ** 2
+        Hxy, Hx, Hy = Hxy / scl, Hx / scl, Hy / scl
+        H = hist.backward2(Hxy, idx, w=mask,
+                           hx=Hx.squeeze(-1), hy=Hy.squeeze(-2))[..., 0]
         H = H.reshape(shape)
         out.append(H)
 
