@@ -1,8 +1,8 @@
 """Utilities to fit 2D Gaussian Mixture Models for registration.
 
 The main entry points are:
-- fit_gmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20, ...)
-- fit_lgmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20,
+- fit_gmm2(x: Tensor, y: Tensor, bins: int = 6, max_iter: int = 20, ...)
+- fit_lgmm2(x: Tensor, y: Tensor, bins: int = 6, max_iter: int = 20,
             patch: int|List[int] = 20,  stride: int|List[int] = 1,
             mode: str = 'g', ...)
 """
@@ -58,7 +58,7 @@ def init_gmm2(x, y, bins=6, dim=None, mask=None):
         Moving image (first dimension)
     y : (..., *spatial) tensor
         Fixed image (first dimension)
-    bins : int, default=3
+    bins : int, default=6
         Number of clusters
     dim : int, default=`fixed.dim()-1`
         Number of spatial dimensions
@@ -106,7 +106,7 @@ def init_gmm2(x, y, bins=6, dim=None, mask=None):
     return dict(xmean=xmean, ymean=ymean, xvar=xvar, yvar=yvar, corr=corr, prior=prior)
 
 
-def fit_gmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20,
+def fit_gmm2(x: Tensor, y: Tensor, bins: int = 6, max_iter: int = 20,
              dim: Optional[int] = None, z: Optional[Tensor] = None,
              theta: Optional[Dict[str, Tensor]] = None,
              update: str = 'em', mask: Optional[Tensor] = None):
@@ -118,7 +118,7 @@ def fit_gmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20,
         Moving image (first dimension)
     y : (..., *spatial) tensor
         Fixed image (first dimension)
-    bins : int, default=3
+    bins : int, default=6
         Number of clusters
     max_iter : int, default=20
         Maximum number of iterations (only if 'em')
@@ -150,10 +150,10 @@ def fit_gmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20,
             Correlation coefficient
         prior : (..., *1, bins) tensor
             Proportion of each class
-        idet : (..., *1, bins) tensor
-            Pre-computed log-determinant of the inverse covariance
-        resp_entropy : (..., *1, 1) tensor
-            Pre-computed entropy of the responsibilites: sum(z*log(z))
+        nll : () tensor
+            Negative log-likelihood, averaged across voxels
+        nvox : () tensor
+            Number of (masked) voxels used to average the nll
     """
     if z is None and not theta:
         theta = init_gmm2(x, y, bins, dim, mask)
@@ -365,6 +365,7 @@ def _fit_gmm2(x: Tensor, y: Tensor, max_iter: int = 20,
     output: Dict[str, Tensor] = {
         'resp': z, 'prior': prior, 'xmean': xmean, 'ymean': ymean,
         'nll': nll, 'xvar': xvar, 'yvar': yvar, 'corr': corr,
+        'nvox': torch.tensor(nmsk, dtype=nll.dtype, device=nll.device),
     }
     return output
 

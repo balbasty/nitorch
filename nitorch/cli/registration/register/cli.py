@@ -292,7 +292,7 @@ def build_losses(options, pyramids, device):
 
     losskeys = ('kernel', 'patch', 'bins', 'norm', 'fwhm', 'order',
                 'spline', 'weight', 'weighted', 'max_iter', 'slicewise',
-                'joint', 'stride')
+                'joint', 'stride', 'measure')
     loadkeys = ('label', 'missing', 'world', 'affine', 'rescale',
                 'pad', 'bound', 'fwhm', 'mask', 'channels')
     imagekeys = ('pyramid', 'pyramid_method', 'discretize',

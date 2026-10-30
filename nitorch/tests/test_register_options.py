@@ -157,6 +157,15 @@ def test_local_stride_passed_to_loss(images, name):
     assert list(loss.stride) == [2]
 
 
+@pytest.mark.parametrize('name', ['gmm', 'lgmm'])
+@pytest.mark.parametrize('args, measure', [
+    ([], 'cond'), (['-m', 'mi'], 'mi'), (['-m', 'joint'], 'joint')])
+def test_gmm_measure_passed_to_loss(images, name, args, measure):
+    _, loss = built_loss(images, name, *args)
+    assert loss.measure == measure
+    assert loss.bins == 6  # documented default
+
+
 # ----------------------------------------------------------------------
 #   Interpolation order of the warped outputs
 # ----------------------------------------------------------------------

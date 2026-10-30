@@ -535,7 +535,7 @@ def make_loss(loss, slicewise=False, **kwargs):
         - tuk[ey]:       Tukey's biweight
         - ncc:           Normalized Cross Correlation
         - lncc:          Local Normalized Cross Correlation
-        - gmm:           Joint Gaussian Mixture
+        - gmm:           Entropy of a Gaussian Mixture
         - lgmm:          Entropy of a Local Gaussian Mixture
         - cat[egorical]: Categorical cross-entropy
         - dice:          Dice
@@ -557,6 +557,8 @@ def make_loss(loss, slicewise=False, **kwargs):
     stride, if 'lcc' or 'lgmm' : [list of] int
     kernel, if 'lcc' or 'lgmm' : {'gaussian', 'hat'}
     max_iter, if 'gmm', 'lgmm' : int
+    bins, if 'gmm', 'lgmm' : int
+    measure, if 'gmm', 'lgmm' : {'cond', 'mi', 'joint'}
     weighted, if 'dice' : list[float]
 
     Returns
