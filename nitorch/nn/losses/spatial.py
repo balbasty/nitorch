@@ -79,7 +79,8 @@ class GridLoss(Loss):
 
         prm = dict(voxel_size=voxel_size, bound=bound)
 
-        loss = 0
+        # (a tensor, in case all penalties are disabled)
+        loss = x.new_zeros(x.shape[:-1])
         if absolute:
             loss += absolute * spatial.absolute_grid(x, voxel_size).mul(x).sum(-1)
         if membrane:
