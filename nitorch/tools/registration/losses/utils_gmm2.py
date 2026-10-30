@@ -271,9 +271,19 @@ def em_loop(max_iter: int, x, y, xmean, ymean, xvar, yvar, cov, prior,
         nll, z = e_step(x, y, xmean, ymean, xvar, yvar, cov, prior, mask=mask)
         nll /= nmsk
 
-        gain = ((nll_prev - nll) / (nll_max - nll)).abs()
-        # print('gmm', nit, nll.item(), gain.item())
-        if gain < 1e-5:
+        # Convergence: relative gain w.r.t. the total improvement so far.
+        # - The denominator is guarded: a warm start at a fixed point
+        #   (nll == nll_max) used to give 0/0 = NaN, which never satisfies
+        #   `gain < tol`, so EM ran all `max_iter` iterations.
+        # - Also stop when the absolute change is negligible: on a warm
+        #   start the total improvement is itself tiny, so the relative
+        #   criterion alone keeps iterating on ~1e-10 changes.
+        delta = (nll_prev - nll).abs()
+        denom = _maximum((nll_max - nll).abs(), 1e-12 * (1 + nll.abs()))
+        gain = delta / denom
+        # print("gmm", nit, nll.item(), gain.item())
+        if (gain < 1e-5 or delta < 1e-9 * (1 + nll.abs())
+                or not bool(torch.isfinite(gain))):
             break
         nll_prev = nll
         nll_max = _maximum(nll_max, nll)

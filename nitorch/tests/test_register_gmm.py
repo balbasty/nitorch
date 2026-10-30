@@ -99,3 +99,27 @@ def test_gmm_class_loss_matches_function():
     ll2, g, h = loss.loss_grad_hess(mov, fix)
     assert math.isclose(ll.item(), ll2.item(), rel_tol=1e-6)
     assert ll.abs() > 0.1  # not divided twice by the voxel count
+
+
+def test_gmm_em_stops_at_fixed_point():
+    """Warm-starting EM at its own fixed point must stop immediately.
+
+    With one class the M-step is closed-form, so re-fitting from the fitted
+    parameters gives exactly the same nll; the convergence ratio used to be
+    0/0 = NaN, which never satisfied `gain < tol`, so EM ran all `max_iter`
+    iterations (~11 s for 500 iterations on an 8x8 image)."""
+    import time
+    mov, fix = make_data([8, 8])
+    kw = dict(dim=2, bins=1, grad=False, hess=False)
+    _, theta = gmmh(mov, fix, **kw, return_theta=True)
+    theta = {k: theta[k] for k in
+             ('xmean', 'ymean', 'xvar', 'yvar', 'corr', 'prior')}
+    gmmh(mov, fix, **kw, theta=dict(theta), max_iter=1)  # warm-up
+    tic = time.time()
+    ll1 = gmmh(mov, fix, **kw, theta=dict(theta), max_iter=1)
+    t1 = time.time() - tic
+    tic = time.time()
+    ll500 = gmmh(mov, fix, **kw, theta=dict(theta), max_iter=500)
+    t500 = time.time() - tic
+    assert torch.allclose(ll1, ll500)
+    assert t500 < 10 * t1 + 1, (t1, t500)
