@@ -320,11 +320,12 @@ def _fit_gmm2(x: Tensor, y: Tensor, max_iter: int = 20,
         nll, z, xmean, ymean, xvar, yvar, cov, prior = \
             em_loop(max_iter, x, y, xmean, ymean, xvar, yvar, cov, prior,
                     dim, mask=mask)
-        nll /= nmsk
+        # em_loop already returns the per-voxel (normalised) nll
     elif z is None:
         raise ValueError('update == "m" requires z')
     else:
         nll, _ = e_step(x, y, xmean, ymean, xvar, yvar, cov, prior, mask=mask)
+        nll /= nmsk
 
     # negative log-likelihood (upper bound)
     corr = cov / (xvar*yvar).sqrt()

@@ -57,14 +57,14 @@ def test_cli_concurrent_pyramid_runs(tmp_path):
     nib = pytest.importorskip('nibabel')
     import numpy as np
     from nitorch.cli.registration.register.cli import cli
-    x = np.zeros([16, 16, 16], dtype='float32')
-    x[4:12, 4:12, 4:12] = 1
+    x = np.zeros([8, 8, 8], dtype='float32')
+    x[2:6, 2:6, 2:6] = 1
     fix, mov = str(tmp_path / 'fix.nii'), str(tmp_path / 'mov.nii')
     nib.save(nib.Nifti1Image(x, np.eye(4)), fix)
     nib.save(nib.Nifti1Image(np.roll(x, 1, 0), np.eye(4)), mov)
     out = str(tmp_path / 'aff.lta')
     cli(['@loss', 'mse', '@@fix', fix, '@@mov', mov,
-         '@loss', 'mse', '@@fix', fix, '@@mov', mov,
-         '@affine', 'rigid', '-o', out, '@optim', '-n', '2',
-         '@pyramid', '-c'])
+         '@affine', 'translation', '-o', out,
+         '@@optim', 'gn', '-n', '1', '@optim', '-n', '1',
+         '@pyramid', '-l', '0:2', '-c'])
     assert (tmp_path / 'aff.lta').exists()

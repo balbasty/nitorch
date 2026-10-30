@@ -23,6 +23,7 @@ import torch
 import sys
 import os
 import json
+import copy
 import warnings
 
 
@@ -298,7 +299,8 @@ def build_losses(options, pyramids, device):
 
     image_dict = {}
     sumloss = 0
-    for loss, pyramid in zip(options.loss, pyramids):
+    owners = []  # index (into options.loss) of each similarity term
+    for n, (loss, pyramid) in enumerate(zip(options.loss, pyramids)):
         lossobj = make_loss(loss.name, **include(loss, losskeys))
         if not lossobj:
             # not a proper loss
@@ -330,18 +332,27 @@ def build_losses(options, pyramids, device):
         loss.factor = py.ensure_list(loss.factor, len(pyramid))[::-1]
         factor = loss.factor[-1] / (2 if loss.symmetric else 1)
         sumloss = sumloss + factor * objects.Similarity(lossobj, mov, fix)
+        owners.append(n)
 
-        # Backward loss
+        # Backward loss: the fixed image is warped to the moving image
+        # with the inverse transform (the images swap roles)
         if loss.symmetric:
             lossobj = make_loss(loss.name, **include(loss, losskeys))
+            bwd_fix, bwd_mov = mov, fix
             if loss.name == 'emmi':
-                loss.fix, loss.mov = loss.mov, loss.fix
-                loss.mov.rescale = (0, 0)
-                loss.fix.discretize = loss.fix.discretize or 256
-                loss.mov.soft_quantize = loss.mov.discretize or 16
-                fix = make_image(*load_image(loss.fix.files, **loss.fix, dim=dim, device=device), **loss.fix)
-                mov = make_image(*load_image(loss.mov.files, **loss.mov, dim=dim, device=device), **loss.mov)
-            sumloss = sumloss + factor * objects.Similarity(lossobj, mov, fix, backward=True)
+                # emmi preprocesses fixed and moving differently:
+                # reload both images with their roles swapped
+                optfix, optmov = copy.deepcopy(loss.mov), copy.deepcopy(loss.fix)
+                for key in ('rescale', 'missing', 'discretize'):
+                    setattr(optfix, key, getattr(loss.fix, key))
+                    setattr(optmov, key, getattr(loss.mov, key))
+                optmov.soft_quantize = loss.mov.soft_quantize
+                bwd_fix = make_image(*preproc_image(optfix.files, **include(optfix, loadkeys), dim=dim, device=device),
+                                     **include(optfix, imagekeys))
+                bwd_mov = make_image(*preproc_image(optmov.files, **include(optmov, loadkeys), dim=dim, device=device),
+                                     **include(optmov, imagekeys))
+            sumloss = sumloss + factor * objects.Similarity(lossobj, bwd_mov, bwd_fix, backward=True)
+            owners.append(n)
 
     pyramid_fn = (concurrent_pyramid if options.pyramid.concurrent else
                   sequential_pyramid)
@@ -352,14 +363,14 @@ def build_losses(options, pyramids, device):
             loss_list = objects.SumSimilarity([loss_list])
         loss_list = list(loss_list)
         new_list = []
-        nb_levels = len(loss_list) // len(options.loss)
-        nb_losses = len(options.loss)
+        nb_levels = len(loss_list) // len(owners)
+        nb_losses = len(owners)
         for i in range(nb_levels):
             for j in range(nb_losses):
-                ii = min(i, len(options.loss[j].factor) - 1)
+                ii = min(i, len(options.loss[owners[j]].factor) - 1)
                 rel_factor = (
-                    options.loss[j].factor[ii] /
-                    options.loss[j].factor[-1]
+                    options.loss[owners[j]].factor[ii] /
+                    options.loss[owners[j]].factor[-1]
                 )
                 new_list.append(loss_list[i*nb_losses+j] * rel_factor)
         loss_list = objects.SumSimilarity.sum(new_list)
@@ -371,11 +382,9 @@ def build_losses(options, pyramids, device):
             level = list(level)
             new_level = []
             for j, loss_elem in enumerate(level):
-                i = min(i, len(options.loss[j].factor) - 1)
-                rel_factor = (
-                    options.loss[j].factor[i] /
-                    options.loss[j].factor[-1]
-                )
+                factors = options.loss[owners[j]].factor
+                k = min(i, len(factors) - 1)
+                rel_factor = factors[k] / factors[-1]
                 new_level.append(loss_elem * rel_factor)
             new_level = objects.SumSimilarity.sum(new_level)
             new_list.append(new_level)

@@ -214,6 +214,16 @@ def _almost_identity(aff):
     return torch.allclose(aff, torch.eye(*aff.shape, **utils.backend(aff)))
 
 
+def _backward_position(pos):
+    """Side of the affine in the inverse transform.
+
+    (A o phi)^-1 = phi^-1 o A^-1: an affine applied on the moving side of
+    the forward transform is applied on the fixed side of its inverse
+    (and vice versa). A symmetric affine stays on both sides.
+    """
+    return {'m': 'f', 'f': 'm'}.get(pos, pos)
+
+
 class PairwiseRegisterStep:
     """Forward pass of Diffeo+Affine registration, with derivatives"""
     # We use a class so that we can have a state to keep track of
@@ -620,6 +630,7 @@ class PairwiseRegisterStep:
                 phi00, aff00, vel00 = iphi0, iaff0, ivel0
             else:
                 phi00, aff00, vel00 = phi0, aff0, vel0
+            pos = _backward_position(aff_pos) if loss.backward else aff_pos
 
             # ----------------------------------------------------------
             # build left and right affine
@@ -627,11 +638,11 @@ class PairwiseRegisterStep:
             aff_mov = moving.affine.to(aff00)
             aff_nonlin = self.nonlin.affine.to(aff00)
             aff_right = fixed.affine.to(aff00)
-            if aff_pos in 'fs':  # affine position: fixed or symmetric
+            if pos in 'fs':  # affine position: fixed or symmetric
                 aff_right = aff00 @ aff_right
             aff_right = linalg.lmdiv(aff_nonlin, aff_right)
             aff_left = aff_nonlin
-            if aff_pos in 'ms':  # affine position: moving or symmetric
+            if pos in 'ms':  # affine position: moving or symmetric
                 aff_left = aff00 @ aff_left
             aff_left = linalg.lmdiv(aff_mov, aff_left)
 
@@ -803,6 +814,7 @@ class PairwiseRegisterStep:
                 phi00, aff00, gaff00 = iphi0, iaff0, igaff0
             else:
                 phi00, aff00, gaff00 = phi0, aff0, gaff0
+            pos = _backward_position(aff_pos) if loss.backward else aff_pos
 
             # ----------------------------------------------------------
             # build left and right affine matrices
@@ -811,13 +823,13 @@ class PairwiseRegisterStep:
             aff_mov = moving.affine.to(aff00)
             aff_fix = fixed.affine.to(aff00)
             aff_right, gaff_right = aff_fix, None
-            if aff_pos in 'fs':
+            if pos in 'fs':
                 gaff_right = gaff00 @ aff_right
                 gaff_right = linalg.lmdiv(aff_nonlin, gaff_right)
                 aff_right = aff00 @ aff_right
             aff_right = linalg.lmdiv(aff_nonlin, aff_right)
             aff_left, gaff_left = aff_nonlin, None
-            if aff_pos in 'ms':
+            if pos in 'ms':
                 gaff_left = gaff00 @ aff_left
                 gaff_left = linalg.lmdiv(aff_mov, gaff_left)
                 aff_left = aff00 @ aff_left
@@ -927,16 +939,16 @@ class PairwiseRegisterStep:
             if grad or hess:
                 g0, g = g, None
                 h0, h = h, None
-                if aff_pos in 'ms':
+                if pos in 'ms':
                     g_left = regutils.smart_push(g0, phi_right, shape=self.nonlin.shape)
                     h_left = regutils.smart_push(h0, phi_right, shape=self.nonlin.shape)
                     mugrad = moving.pull_grad(left, rotate=False)
                     g_left, h_left = compose_grad(g_left, h_left, mugrad, gaff_left)
                     g, h = g_left, h_left
-                if aff_pos in 'fs':
+                if pos in 'fs':
                     g_right, h_right = g0, h0
                     mugrad = moving.pull_grad(phi, rotate=False)
-                    jac = spatial.grid_jacobian(phi0, right, type='disp', extrapolate=False)
+                    jac = spatial.grid_jacobian(phi00, right, type='disp', extrapolate=False)
                     jac = torch.matmul(aff_left[:-1, :-1], jac)
                     mugrad = linalg.matvec(jac.transpose(-1, -2), mugrad)
                     g_right, h_right = compose_grad(g_right, h_right, mugrad, gaff_right)
