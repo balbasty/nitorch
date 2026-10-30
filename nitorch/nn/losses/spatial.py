@@ -87,9 +87,9 @@ class GridLoss(Loss):
         if bending:
             loss += bending * spatial.bending_grid(x, **prm).mul(x).sum(-1)
         if lame1:
-            loss += membrane * spatial.lame_div(x, **prm).mul(x).sum(-1)
+            loss += lame1 * spatial.lame_div(x, **prm).mul(x).sum(-1)
         if lame2:
-            loss += membrane * spatial.lame_shear(x, **prm).mul(x).sum(-1)
+            loss += lame2 * spatial.lame_shear(x, **prm).mul(x).sum(-1)
         loss = super().forward(loss) * factor
         return loss
 
