@@ -13,7 +13,7 @@ def inbounds_mask(extrapolate: int, grid, shape: List[int])\
     mask: Optional[Tensor] = None
     if extrapolate in (0, 2):  # no / hist
         grid = grid.unsqueeze(1)
-        tiny = 1e-5
+        tiny = 5e-2  # same as the compiled backend
         threshold = tiny
         if extrapolate == 2:
             threshold = 0.5 + tiny
@@ -106,7 +106,8 @@ def pull(inp, grid, bound: List[Bound], spline: List[Spline],
                    for n in [s.order + 1 for s in spline]]
     all_nodes = cartesian_prod(range_nodes)
     if dim == 1:
-        all_nodes = all_nodes.unsqueeze(0)
+        # cartesian_prod returns a 1D tensor when given a single tensor
+        all_nodes = all_nodes.unsqueeze(-1)
     for nodes in all_nodes:
 
         # gather
@@ -173,7 +174,8 @@ def push(inp, grid, shape: Optional[List[int]], bound: List[Bound],
                    for n in [s.order + 1 for s in spline]]
     all_nodes = cartesian_prod(range_nodes)
     if dim == 1:
-        all_nodes = all_nodes.unsqueeze(0)
+        # cartesian_prod returns a 1D tensor when given a single tensor
+        all_nodes = all_nodes.unsqueeze(-1)
     for nodes in all_nodes:
 
         # gather
@@ -238,7 +240,8 @@ def grad(inp, grid, bound: List[Bound], spline: List[Spline],
                    for n in [s.order + 1 for s in spline]]
     all_nodes = cartesian_prod(range_nodes)
     if dim == 1:
-        all_nodes = all_nodes.unsqueeze(0)
+        # cartesian_prod returns a 1D tensor when given a single tensor
+        all_nodes = all_nodes.unsqueeze(-1)
     for nodes in all_nodes:
 
         # gather
@@ -311,7 +314,8 @@ def pushgrad(inp, grid, shape: Optional[List[int]], bound: List[Bound],
                    for n in [s.order + 1 for s in spline]]
     all_nodes = cartesian_prod(range_nodes)
     if dim == 1:
-        all_nodes = all_nodes.unsqueeze(0)
+        # cartesian_prod returns a 1D tensor when given a single tensor
+        all_nodes = all_nodes.unsqueeze(-1)
     for nodes in all_nodes:
 
         # gather
@@ -383,7 +387,8 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
                    for n in [s.order + 1 for s in spline]]
     all_nodes = cartesian_prod(range_nodes)
     if dim == 1:
-        all_nodes = all_nodes.unsqueeze(0)
+        # cartesian_prod returns a 1D tensor when given a single tensor
+        all_nodes = all_nodes.unsqueeze(-1)
     for nodes in all_nodes:
 
         # gather
