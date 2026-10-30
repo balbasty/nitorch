@@ -61,19 +61,33 @@ def _fd(fn, mov, eps=1e-5):
 
 
 def test_gmm_grad_hess_fd():
-    mov, fix = make_data([10, 10])
-    kw = dict(dim=2, bins=3)
-    _, g, h = gmmh(mov, fix, **kw)
+    """FD check at fixed (fitted) GMM parameters.
 
-    fd = _fd(lambda m, i: gmmh(m, fix, **kw, grad=False, hess=False), mov)
+    The GMM is fitted once; each FD evaluation then reuses those parameters
+    with `max_iter=0` (single E-step), instead of re-running up to 128 EM
+    iterations ~4*N times, which took minutes. With fixed parameters the
+    analytical gradient matches FD much more tightly than with a refit."""
+    mov, fix = make_data([8, 8])
+    kw = dict(dim=2, bins=3, max_iter=0)
+    _, theta = gmmh(mov, fix, dim=2, bins=3, grad=False, hess=False,
+                    return_theta=True)
+    theta = {k: theta[k] for k in
+             ('xmean', 'ymean', 'xvar', 'yvar', 'corr', 'prior')}
+
+    def fn(m, **k):
+        # `theta` is consumed (popped) by the fit: pass a copy
+        return gmmh(m, fix, theta=dict(theta), **kw, **k)
+
+    _, g, h = fn(mov)
+    fd = _fd(lambda m, i: fn(m, grad=False, hess=False), mov)
     cos = (fd * g).sum() / (fd.norm() * g.norm())
     ratio = fd.norm() / g.norm()
-    assert cos > 0.999, cos
-    assert abs(ratio - 1) < 0.02, ratio
+    assert cos > 0.99999, cos
+    assert abs(ratio - 1) < 0.01, ratio
 
     # The Hessian is a Fisher-scoring approximation of the diagonal:
     # check that it has the right magnitude.
-    hfd = _fd(lambda m, i: gmmh(m, fix, **kw, hess=False)[1].view(-1)[i], mov)
+    hfd = _fd(lambda m, i: fn(m, hess=False)[1].view(-1)[i], mov)
     hratio = hfd.sum() / h.sum()
     assert 0.5 < hratio < 2, hratio
 
