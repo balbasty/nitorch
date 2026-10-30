@@ -19,7 +19,7 @@ else:
 
 
 def meanm(mats, max_iter=1024, tol=1e-20):
-    """Compute the exponential barycentre of a set of matrices.
+    r"""Compute the exponential barycentre of a set of matrices.
 
     Parameters
     ----------
@@ -428,7 +428,7 @@ def is_orthonormal(basis, return_matrix=False):
 
 def trapprox(matvec, shape=None, moments=None, samples=10,
              method='rademacher', hutchpp=False, **backend):
-    """Stochastic trace approximation (Hutchinson's estimator)
+    r"""Stochastic trace approximation (Hutchinson's estimator)
 
     Parameters
     ----------

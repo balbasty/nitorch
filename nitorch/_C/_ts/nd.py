@@ -92,13 +92,17 @@ def pull(inp, grid, bound: List[Bound], spline: List[Spline],
 
     grid = grid.reshape([grid.shape[0], -1, grid.shape[-1]])
     inp = inp.reshape([inp.shape[0], inp.shape[1], -1])
+    inp = inp.expand([batch, channel, inp.shape[-1]])
     mask = inbounds_mask(extrapolate, grid, shape)
 
     # precompute weights along each dimension
+    # [B, 1, N]: add a channel dimension so that weights and indices
+    # broadcast against (B, C, N) tensors when B > 1
+    grid = grid.unsqueeze(1)
     weights, _, _, coords, signs = get_weights(grid, bound, spline, shape)
 
     # initialize
-    out = torch.zeros([batch, channel, grid.shape[1]],
+    out = torch.zeros([batch, channel, grid.shape[-2]],
                       dtype=inp.dtype, device=inp.device)
 
     # iterate across nodes/corners
@@ -163,6 +167,9 @@ def push(inp, grid, shape: Optional[List[int]], bound: List[Bound],
     mask = inbounds_mask(extrapolate, grid, shape)
 
     # precompute weights along each dimension
+    # [B, 1, N]: add a channel dimension so that weights and indices
+    # broadcast against (B, C, N) tensors when B > 1
+    grid = grid.unsqueeze(1)
     weights, _, _, coords, signs = get_weights(grid, bound, spline, shape)
 
     # initialize
@@ -182,7 +189,7 @@ def push(inp, grid, shape: Optional[List[int]], bound: List[Bound],
         idx = [c[n] for c, n in zip(coords, nodes)]
         idx = sub2ind_list(idx, shape)
         idx = idx.expand([batch, channel, idx.shape[-1]])
-        out1 = inp.clone()
+        out1 = inp.expand([batch, channel, inp.shape[-1]]).clone()
 
         # apply sign
         sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
@@ -225,14 +232,18 @@ def grad(inp, grid, bound: List[Bound], spline: List[Spline],
 
     grid = grid.reshape([grid.shape[0], -1, grid.shape[-1]])
     inp = inp.reshape([inp.shape[0], inp.shape[1], -1])
+    inp = inp.expand([batch, channel, inp.shape[-1]])
     mask = inbounds_mask(extrapolate, grid, shape)
 
     # precompute weights along each dimension
+    # [B, 1, N]: add a channel dimension so that weights and indices
+    # broadcast against (B, C, N) tensors when B > 1
+    grid = grid.unsqueeze(1)
     weights, grads, _, coords, signs = get_weights(grid, bound, spline, shape,
                                                    grad=True)
 
     # initialize
-    out = torch.zeros([batch, channel, grid.shape[1], dim],
+    out = torch.zeros([batch, channel, grid.shape[-2], dim],
                       dtype=inp.dtype, device=inp.device)
 
     # iterate across nodes/corners
@@ -303,6 +314,9 @@ def pushgrad(inp, grid, shape: Optional[List[int]], bound: List[Bound],
     mask = inbounds_mask(extrapolate, grid, shape)
 
     # precompute weights along each dimension
+    # [B, 1, N]: add a channel dimension so that weights and indices
+    # broadcast against (B, C, N) tensors when B > 1
+    grid = grid.unsqueeze(1)
     weights, grads, _, coords, signs = get_weights(grid, bound, spline, shape, grad=True)
 
     # initialize
@@ -322,7 +336,7 @@ def pushgrad(inp, grid, shape: Optional[List[int]], bound: List[Bound],
         idx = [c[n] for c, n in zip(coords, nodes)]
         idx = sub2ind_list(idx, shape)
         idx = idx.expand([batch, channel, idx.shape[-1]])
-        out0 = inp.clone()
+        out0 = inp.expand([batch, channel, inp.shape[-2], dim]).clone()
 
         # apply sign
         sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
@@ -372,14 +386,18 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
 
     grid = grid.reshape([grid.shape[0], -1, grid.shape[-1]])
     inp = inp.reshape([inp.shape[0], inp.shape[1], -1])
+    inp = inp.expand([batch, channel, inp.shape[-1]])
     mask = inbounds_mask(extrapolate, grid, shape)
 
     # precompute weights along each dimension
+    # [B, 1, N]: add a channel dimension so that weights and indices
+    # broadcast against (B, C, N) tensors when B > 1
+    grid = grid.unsqueeze(1)
     weights, grads, hesss, coords, signs = get_weights(grid, bound, spline, shape,
                                                        grad=True, hess=True)
 
     # initialize
-    out = torch.zeros([batch, channel, grid.shape[1], dim, dim],
+    out = torch.zeros([batch, channel, grid.shape[-2], dim, dim],
                       dtype=inp.dtype, device=inp.device)
 
     # iterate across nodes/corners
@@ -395,16 +413,17 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
         idx = [c[n] for c, n in zip(coords, nodes)]
         idx = sub2ind_list(idx, shape)
         idx = idx.expand([batch, channel, idx.shape[-1]])
-        out1 = inp.gather(-1, idx)
+        out0 = inp.gather(-1, idx)
 
         # apply sign
         sign0: List[Optional[Tensor]] = [sgn[n] for sgn, n in zip(signs, nodes)]
         sign1: Optional[Tensor] = make_sign(sign0)
         if sign1 is not None:
-            out1 *= sign1
+            out0 *= sign1
 
         for d in range(dim):
             # -- diagonal --
+            out1 = out0.clone()
 
             # apply weights
             for dd, (weight, hess1, n) \
@@ -421,6 +440,7 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
 
             # -- off diagonal --
             for d2 in range(d+1, dim):
+                out1 = out0.clone()
 
                 # apply weights
                 for dd, (weight, grad1, hess1, n) \
@@ -437,7 +457,7 @@ def hess(inp, grid, bound: List[Bound], spline: List[Spline],
 
     # out-of-bounds mask
     if mask is not None:
-        out *= mask.unsqueeze(-1)
+        out *= mask.unsqueeze(-1).unsqueeze(-1)
 
     # fill lower triangle
     for d in range(dim):
