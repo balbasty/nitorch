@@ -6,6 +6,7 @@ import os.path as op
 import sys
 import subprocess
 import glob
+import inspect
 import re
 import shlex
 from copy import copy
@@ -371,7 +372,7 @@ class build_ext(build_ext_base.build_ext):
         # Select appropriate compiler for the extensions's language
         compiler0 = self.compiler
         self.compiler = make_compiler(language=ext.language,
-                                      dry_run=self.dry_run,
+                                      dry_run=getattr(self, 'dry_run', 0),
                                       force=self.force)
         customize_compiler(self.compiler)
         fix_compiler_rpath(self.compiler)
@@ -432,6 +433,16 @@ class build_ext(build_ext_base.build_ext):
             ext.depends = depends
 
 
+def _init_compiler(klass, self, verbose=0, dry_run=0, force=0):
+    # `dry_run` was removed from the compiler constructors of recent
+    # versions of setuptools' distutils
+    params = inspect.signature(klass.__init__).parameters
+    if 'dry_run' in params:
+        klass.__init__(self, verbose, dry_run, force)
+    else:
+        klass.__init__(self, verbose, force=force)
+
+
 class NVCCompiler(unixccompiler.UnixCCompiler):
     # Define a cuda compiler
     # Main difference is it uses `nvcc` instead of `$CC` and
@@ -440,7 +451,8 @@ class NVCCompiler(unixccompiler.UnixCCompiler):
 
     def __init__(self, verbose=0, dry_run=0, force=0):
 
-        unixccompiler.UnixCCompiler.__init__(self, verbose, dry_run, force)
+        _init_compiler(unixccompiler.UnixCCompiler, self,
+                       verbose, dry_run, force)
 
         home = cuda_home()
         nvcc = op.join(home, 'bin', 'nvcc')
@@ -523,7 +535,8 @@ def make_compiler(plat=None, compiler=None, language=None,
             f"in module '{module_name}'"
         )
 
-    compiler_object = klass(None, dry_run, force)
+    compiler_object = klass.__new__(klass)
+    _init_compiler(klass, compiler_object, None, dry_run, force)
     fix_compile_parallel(compiler_object)
 
     return compiler_object
