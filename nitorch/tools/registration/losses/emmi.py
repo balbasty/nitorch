@@ -206,7 +206,9 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     #           EM LOOP
     # ------------------------------------------------------------------
     ll = torch.as_tensor(-float('inf'), dtype=torch.double)
+    # buffers reused across EM iterations and by the final objective
     z = moving.new_empty([*batch, K, N])
+    norm = moving.new_empty([*batch, 1, N])
     prior0 = torch.empty_like(prior)
     for n_iter in range(max_iter):
         ll_prev = ll
@@ -230,10 +232,9 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         #    = Σ_n log Σ_k p(x[n] == j[n] | z[n] == k)  p(z[n] == k)
         #    = Σ_n log Σ_k p(z[n] == k | x[n] == j) + constant{\z}
         # --------------------------------------------------------------
-        ll = z.sum(-2, keepdim=True)
-        ll = add_tiny_(ll, Nb)
-        z /= ll
-        ll = ll.log_().mul_(weights).sum(dtype=torch.double)
+        norm = add_tiny_(torch.sum(z, -2, keepdim=True, out=norm), Nb)
+        z /= norm
+        ll = sum_double(norm.log_().mul_(weights))
 
         z *= weights
 
@@ -274,11 +275,11 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     # the MI of the expected joint histogram, which is a different
     # function of 𝜇 ∘ 𝜙: its finite differences did not match the
     # gradient (not even in sign), and Gauss-Newton stopped early.
-    g = sample_prior(prior, fixed)                  # 𝐻{[𝑥ₙ],𝑘}
-    norm = (g * moving).sum(-2, keepdim=True)       # ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ
-    norm = add_tiny_(norm, Nb)
-    ll = -(norm.log() * weights).sum(dtype=torch.double) / Nm
-    out = [ll]
+    # norm = ∑ₖ 𝐻{[𝑥ₙ],𝑘} (𝜇 ∘ 𝜙)ₙₖ, as in the E-step and in the same
+    # buffers (the log is taken at the end, once the gradient is done)
+    z = sample_prior(prior, fixed, z)
+    z *= moving
+    norm = add_tiny_(torch.sum(z, -2, keepdim=True, out=norm), Nb)
 
     # ------------------------------------------------------------------
     #           GRADIENTS
@@ -289,23 +290,28 @@ def emmi_hard(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     # gradient and Hessian of -𝓛/N with respect to (𝜇 ∘ 𝜙)ₙₖ are
     #   g[n, k]     = -𝐻{[𝑥ₙ],𝑘} / (𝑯(𝜇 ∘ 𝜙))ₙ,[𝑥ₙ] / N
     #   h[n, k, kk] =  g[n, k] g[n, kk] N    (exact, positive semi-definite)
+    g = h = None
     if grad or hess:
-
+        # z is free again: gather 𝐻{[𝑥ₙ],𝑘} into it
+        g = sample_prior(prior, fixed, z)
         g /= norm
         if hess:
             h = sym_outer(g, -2)
-
-        if grad:
-            g *= weights
-            g /= -Nm
-            # g.neg_()
-            g = g.reshape([*g.shape[:-1], *shape])
-            out.append(g)
-        if hess:
             h *= weights
             h /= Nm
             h = h.reshape([*h.shape[:-1], *shape])
-            out.append(h)
+        if grad:
+            g *= weights
+            g /= -Nm
+            g = g.reshape([*g.shape[:-1], *shape])
+
+    # norm is not needed anymore: take its log in place
+    ll = -sum_double(norm.log_().mul_(weights)) / Nm
+    out = [ll]
+    if grad:
+        out.append(g)
+    if hess:
+        out.append(h)
 
     if return_prior:
         out.append(prior)
@@ -336,9 +342,13 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     Nm = weights.sum()
     fixed = fixed * weights                         # [*batch, J, N]
 
-    def marginal(prior):
+    # [*batch, J, N] buffers, reused across EM iterations and by the
+    # final objective and derivatives
+    norm = resp = None
+
+    def marginal(prior, out=None):
         # (𝑯(𝜇 ∘ 𝜙))ₙⱼ = ∑ₖ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ  -> [*batch, J, N]
-        return add_tiny_(torch.matmul(prior, moving), Nb)
+        return add_tiny_(torch.matmul(prior, moving, out=out), Nb)
 
     # ------------------------------------------------------------------
     #           EM LOOP
@@ -348,9 +358,11 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
         ll_prev = ll
         # E-step: responsibilities q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗) ∝ 𝐻ⱼₖ (𝜇 ∘ 𝜙)ₙₖ
         # (only their weighted sums over n are needed)
-        norm = marginal(prior)
-        ll = (fixed * norm.log()).sum(dtype=torch.double)
-        resp = fixed / norm                         # q(𝑥ₙ = 𝑗) / (𝑯(𝜇 ∘ 𝜙))ₙⱼ
+        norm = marginal(prior, out=norm)
+        # q(𝑥ₙ = 𝑗) / (𝑯(𝜇 ∘ 𝜙))ₙⱼ
+        resp = torch.div(fixed, norm, out=resp)
+        # norm is recomputed at the next iteration: take its log in place
+        ll = sum_double(norm.log_().mul_(fixed))
         # M-step: N p(𝑥 = 𝑗, 𝑦 = 𝑘) = ∑ₙ q(𝑥ₙ = 𝑗) q(𝑦ₙ = 𝑘 | 𝑥ₙ = 𝑗)
         prior0 = prior * torch.matmul(resp, moving.transpose(-1, -2))
         prior = prior0.add_(tiny)
@@ -369,9 +381,7 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     # ------------------------------------------------------------------
     #           OBJECTIVE
     # ------------------------------------------------------------------
-    norm = marginal(prior)
-    ll = -(fixed * norm.log()).sum(dtype=torch.double) / Nm
-    out = [ll]
+    norm = marginal(prior, out=norm)
 
     # ------------------------------------------------------------------
     #           GRADIENTS
@@ -379,26 +389,30 @@ def emmi_soft(moving, fixed, dim=None, prior=None, fwhm=None, max_iter=32,
     # With respect to (𝜇 ∘ 𝜙)ₙₖ:
     #   g[n, k]     = -1/N ∑ⱼ q(𝑥ₙ = 𝑗) 𝐻ⱼₖ / (𝑯(𝜇 ∘ 𝜙))ₙⱼ
     #   h[n, k, kk] =  1/N ∑ⱼ q(𝑥ₙ = 𝑗) 𝐻ⱼₖ 𝐻ⱼ,ₖₖ / (𝑯(𝜇 ∘ 𝜙))ₙⱼ²
+    # Both are contractions over j, computed with one matmul each
+    # (no [*batch, J, K, N] intermediate).
+    g = h = None
     if grad or hess:
-        resp = fixed / norm                         # [*batch, J, N]
+        resp = torch.div(fixed, norm, out=resp)     # [*batch, J, N]
         if grad:
             g = torch.matmul(prior.transpose(-1, -2), resp)
             g /= -Nm
             g = g.reshape([*g.shape[:-1], *shape])
-            out.append(g)
         if hess:
-            resp = resp / norm
-            h = moving.new_zeros([*batch, K*(K+1)//2, resp.shape[-1]])
-            h[..., :K, :] = torch.matmul(prior.square().transpose(-1, -2), resp)
-            c = K
-            for k in range(K):
-                for kk in range(k + 1, K):
-                    pp = prior[..., :, k] * prior[..., :, kk]   # [*batch, J]
-                    h[..., c, :] = torch.matmul(pp.unsqueeze(-2), resp).squeeze(-2)
-                    c += 1
+            resp /= norm
+            # [*batch, J, K*(K+1)//2] products 𝐻ⱼₖ 𝐻ⱼ,ₖₖ, in the packed order
+            h = sym_outer(prior, -1)
+            h = torch.matmul(h.transpose(-1, -2), resp)
             h /= Nm
             h = h.reshape([*h.shape[:-1], *shape])
-            out.append(h)
+
+    # norm is not needed anymore: take its log in place
+    ll = -sum_double(norm.log_().mul_(fixed)) / Nm
+    out = [ll]
+    if grad:
+        out.append(g)
+    if hess:
+        out.append(h)
 
     if return_prior:
         out.append(prior)
@@ -515,13 +529,28 @@ def make_finite_(x):
 
 
 def add_tiny_(x, n=0, eps=1e-12):
+    # max |x| = max(max x, -min x), without the |x| temporary
     if n:
         # one value per batch element
-        tiny = x.abs().amax(dim=list(range(n, x.dim())), keepdim=True)
+        dims = list(range(n, x.dim()))
+        tiny = torch.maximum(x.amax(dim=dims, keepdim=True),
+                             x.amin(dim=dims, keepdim=True).neg_())
     else:
-        tiny = x.abs().max()
+        tiny = torch.maximum(x.max(), x.min().neg_())
     x.add_(tiny, alpha=eps)
     return x
+
+
+def sum_double(x, chunk=2**20):
+    """Same as `x.sum(dtype=torch.double)`, but without a double copy
+    of the whole tensor when `x` is not double (it is summed in chunks)"""
+    if x.dtype == torch.double or x.numel() <= chunk:
+        return x.sum(dtype=torch.double)
+    x = x.reshape(-1)
+    out = x[:chunk].sum(dtype=torch.double)
+    for c in x[chunk:].split(chunk):
+        out += c.sum(dtype=torch.double)
+    return out
 
 
 class EMMI(OptimizationLoss):

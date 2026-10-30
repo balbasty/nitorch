@@ -28,9 +28,22 @@ def mul_(x, mask):
 
 
 def mask_inf_(x):
-    mask = x.isfinite().bitwise_not_()
-    x = x.masked_fill_(mask, 0)
-    return x
+    # same as x[~isfinite(x)] = 0, without the boolean mask
+    return torch.nan_to_num_(x, nan=0., posinf=0., neginf=0.)
+
+
+def laplace_weights_(s2, eps=1e-5):
+    """IRLS weights for l1 from squared standardized residuals (in place)"""
+    return s2.sqrt_().clamp_min_(eps).reciprocal_()
+
+
+def tukey_weights_(s2, c=4.685):
+    """IRLS weights for Tukey from squared standardized residuals (in place)
+
+    (1 - s²/c²)² if s² <= c² else 0. Clamping 1 - s²/c² at zero before
+    squaring gives the same values as masking, without a boolean mask.
+    """
+    return s2.div_(-c * c).add_(1).clamp_min_(0).square_()
 
 
 def irls_laplace_reweight(moving, fixed, lam=1, joint=False, eps=1e-5,
@@ -141,7 +154,12 @@ class RobustLoss(OptimizationLoss):
         self.cache = cache
 
     @staticmethod
-    def dual(weights, **prm):
+    def weights_(s2, **prm):
+        """IRLS weights w(s²) = argmin_w ½ w s² + φ(w), in place in s²"""
+        raise NotImplementedError
+
+    @staticmethod
+    def dual(weights, out=None, **prm):
         """Half-quadratic dual term φ(w), such that
         ρ(s) = min_w ½ w s² + φ(w), with s² = lam * r²"""
         raise NotImplementedError
@@ -185,50 +203,83 @@ class RobustLoss(OptimizationLoss):
             mask = 1
             nvox = py.prod(fixed.shape[-dim:])
 
-        def reweight(lam):
-            return self.reweight(moving, fixed, lam=lam, joint=joint,
-                                 dim=dim, mask=mask, **kwargs)
-
-        def dual(weights):
-            llw = mask_inf_(self.dual(weights, **kwargs))
-            return llw.mul_(mask).div_(nvox).sum()
+        def dual(weights, out=None):
+            llw = mask_inf_(self.dual(weights, out=out, **kwargs))
+            if torch.is_tensor(mask):
+                llw = llw.mul_(mask)
+            return llw.div_(nvox).sum()
 
         compute_lam = lam is None or self.compute_lam
         # --- Fixed lam -> no reweighting ------------------------------
         lll = 0
         if not compute_lam:
-            weights = reweight(lam)
+            weights = self.reweight(moving, fixed, lam=lam, joint=joint,
+                                    dim=dim, mask=mask, **kwargs)
             llw = dual(weights)
             lam = preproc_lam(lam, dim)
+            # (weights may be needed by autograd: no in-place here)
             lam = lam * weights
             return lll, llw, lam
 
         # --- Estimated lam -> IRLS loop -------------------------------
-        if lam is None:
-            lam = weighted_precision(moving, fixed, dim=dim,
-                                     weights=mask if torch.is_tensor(mask) else None)
-        lam = preproc_lam(lam, dim)
+        # The squared residuals r² do not depend on (lam, w): compute
+        # them once, and reweight in place from s² = lam * r².
+        # Buffers (allocated at the first iteration, then reused):
+        #   weights : s², then w, shape of `self.reweight`'s output
+        #   tmp     : lam * r² (joint) or w * r², shape of r²
         kappa = self.kappa(**kwargs)
         fixed_, moving_ = utils.to_max_backend(fixed, moving)
         res2 = (moving_ - fixed_).square_()
         res2 = mul_(res2, mask if torch.is_tensor(mask) else None)
+        del fixed_, moving_
         spatial = list(range(-dim, 0))
+        zero = (mask == 0) if torch.is_tensor(mask) else None
+        weights = tmp = None
+
+        if lam is None:
+            # = weighted_precision(moving, fixed, mask), from r²
+            if torch.is_tensor(mask):
+                lam = res2.sum(spatial, keepdim=True).div_(nvox)
+            else:
+                lam = res2.mean(spatial, keepdim=True)
+            lam = lam.reciprocal_()
+        lam = preproc_lam(lam, dim)
+
+        def reweight(lam):
+            # same as `self.reweight(moving, fixed, lam, mask=mask)`
+            nonlocal weights, tmp
+            if joint:
+                tmp = torch.mul(res2, lam, out=tmp)
+                weights = torch.sum(tmp, dim=-dim-1, keepdim=True, out=weights)
+            else:
+                weights = torch.mul(res2, lam, out=weights)
+            weights = self.weights_(weights, **kwargs)
+            if zero is not None:
+                weights = weights.masked_fill_(zero, 0)
+            return weights
+
         for n_iter in range(64):
             lam_prev = lam
             weights = reweight(lam)
-            lam = (weights * res2).sum(spatial, keepdim=True)
+            tmp = torch.mul(weights, res2, out=tmp)
+            lam = tmp.sum(spatial, keepdim=True)
             lam = lam.reciprocal_().mul_(nvox).mul_(kappa)
             if (lam / lam_prev).log().abs().max() < 1e-6:
                 break
         # final weights: optimal for the final precision, so that the
         # value, the weights and the precision are consistent
         weights = reweight(lam)
+        del res2
         lll = -0.5 * kappa * lam.log().sum()
-        llw = dual(weights)
+        llw = dual(weights, out=tmp if tmp.shape == weights.shape else None)
         if self.cache:
             self.lam = lam
 
-        lam = lam * weights
+        # weighted precision lam * w, in a buffer that is free by now
+        shape = torch.broadcast_shapes(lam.shape, weights.shape)
+        out = (weights if shape == weights.shape else
+               tmp if shape == tmp.shape else None)
+        lam = torch.mul(weights, lam, out=out)
         return lll, llw, lam
 
     def loss(self, moving, fixed, **kwargs):
@@ -350,11 +401,12 @@ class MAD(RobustLoss):
     """Median absolute deviation (using IRLS)"""
 
     reweight = staticmethod(irls_laplace_reweight)
+    weights_ = staticmethod(laplace_weights_)
 
     @staticmethod
-    def dual(weights, **prm):
+    def dual(weights, out=None, **prm):
         # ρ(s) = |s| = min_w ½ w s² + 1 / (2 w)
-        return weights.reciprocal().mul_(0.5)
+        return torch.reciprocal(weights, out=out).mul_(0.5)
 
     @staticmethod
     def kappa(**prm):
@@ -377,13 +429,16 @@ class Tukey(RobustLoss):
     """Tukey's biweight loss (using IRLS)"""
 
     reweight = staticmethod(irls_tukey_reweight)
+    weights_ = staticmethod(tukey_weights_)
     reweight_param = ['c']
 
     @staticmethod
-    def dual(weights, c=4.685, **prm):
+    def dual(weights, out=None, c=4.685, **prm):
         # ρ(s) = c²/6 (1 - (1 - s²/c²)³) if |s| < c else c²/6
         #      = min_w ½ w s² + c²/6 (1 - 3w + 2 w^(3/2))
-        return (1 - 3 * weights + 2 * weights.pow(1.5)).mul_(c * c / 6)
+        # (1 - 3w) is built in `out`; only w^(3/2) needs a temporary
+        out = torch.mul(weights, -3, out=out).add_(1)
+        return out.add_(weights.pow(1.5), alpha=2).mul_(c * c / 6)
 
     @staticmethod
     def kappa(c=4.685, **prm):
