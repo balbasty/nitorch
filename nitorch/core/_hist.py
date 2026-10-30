@@ -526,7 +526,7 @@ def _histc_backward(g, x, w=None, order=0, bound='replicate',
     out = []
 
     if gradx:
-        args = (g.unsqueeze(-1), x.unsqueeze(-1), bound, extrapolate)
+        args = (g.unsqueeze(1), x.unsqueeze(-1), bound, extrapolate)
         if order == 0:
             gx = iso0.grad(*args)
         elif order == 1:
@@ -540,7 +540,7 @@ def _histc_backward(g, x, w=None, order=0, bound='replicate',
         out.append(gx)
 
     if gradw:
-        args = (g.unsqueeze(-1), x.unsqueeze(-1), bound, extrapolate)
+        args = (g.unsqueeze(1), x.unsqueeze(-1), bound, extrapolate)
         if order == 0:
             gw = iso0.pull1d(*args)
         elif order == 1:
@@ -1244,11 +1244,11 @@ class HistCount:
         g = g.reshape([-1, self.bins])
 
         if min is None:
-            min = x.min(-1).values
+            min = x.min(-1, keepdim=True).values
         else:
             min = torch.as_tensor(min, **backend).expand(xbatch).reshape([-1, 1])
         if max is None:
-            max = x.max(-1).values
+            max = x.max(-1, keepdim=True).values
         else:
             max = torch.as_tensor(max, **backend).expand(xbatch).reshape([-1, 1])
 
@@ -1257,12 +1257,10 @@ class HistCount:
 
         # push data into the histogram
         g = _histc_backward(g, x, w, self.order, self.bound, self.extrapolate)
-        if w is not None:
-            g, _ = g
-        g = g.mul_(self.bins / (max - min)).add_(self.bins / (1 - max / min)).sub_(0.5)
+        g = g.mul_(self.bins / (max - min))
 
         # reshape
-        g = g.reshape(g, [*batch, n])
+        g = g.reshape([*batch, n])
         return g
 
     def backward2(self, h, x, w=None, min=None, max=None):

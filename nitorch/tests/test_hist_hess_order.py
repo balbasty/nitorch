@@ -128,3 +128,26 @@ def test_register_gn_mi_order3(tmp_path):
               '@@mov', f['mov'], '-o', 'false',
               '@affine', 'translation', '-o', f['out'], '@@optim', 'gn'])
     check_affine(f['out'], expected, atol_lin=1e-5, atol_shift=0.15)
+
+
+@pytest.mark.parametrize('order', [1, 3])
+@pytest.mark.parametrize('weighted', [False, True])
+def test_histcount_backward(order, weighted):
+    """HistCount.backward matches autograd through the intensity->bin map."""
+    g = torch.Generator().manual_seed(0)
+    x = torch.rand([2, 30], dtype=torch.double, generator=g) * 10 + 3
+    w = torch.rand([2, 30], dtype=torch.double, generator=g) if weighted else None
+    gr = torch.rand([2, BINS], dtype=torch.double, generator=g)
+    hc = HistCount(bins=BINS, order=order)
+    mn, mx = 3., 13.
+    out = hc.backward(gr.clone(), x, w, min=mn, max=mx)
+
+    xg = x.clone().requires_grad_()
+    idx = xg * (BINS / (mx - mn)) + BINS / (1 - mx / mn) - 0.5
+    hist = _histc_forward(idx, BINS, w, order=order, bound=hc.bound,
+                          extrapolate=hc.extrapolate)
+    ref, = torch.autograd.grad((hist * gr).sum(), xg)
+    assert out.shape == x.shape
+    assert torch.allclose(out, ref)
+    # default min/max
+    assert hc.backward(gr.clone(), x, w).shape == x.shape
