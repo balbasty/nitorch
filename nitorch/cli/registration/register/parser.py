@@ -223,7 +223,7 @@ usage:
             -h, --history                   History size [100]
         none                            Do not optimize
     Common options:
-        -l, --lr                        Learning rate [1]
+        -l, --lr                        Learning rate [2nd order: 1, 1st order: 1e-3]
         -s, --line-search               Number of backtracking line search [wolfe]
         -t, --tolerance                 Tolerance for early stopping [1e-4]
         -c, --crit                      Stopping criterion: [diff], gain
@@ -470,7 +470,7 @@ optim_choices = cli.Positional('name', nargs='?', default='unset',
                                convert=lambda x: optim_aliases.get(x, x),
                                help='Name of the optimizer')
 optim = cli.NamedGroup('optim', optim_choices, '@@optim', n='?')
-optim.add_option('lr', ('-l', '--lr'), nargs=1, default=1, convert=float,
+optim.add_option('lr', ('-l', '--lr'), nargs=1, default=None, convert=float,
                  help='Learning rate')
 optim.add_option('max_iter', ('-n', '--max-iter'), nargs=1, default=None,
                  convert=int, help='Maximum number of iterations')

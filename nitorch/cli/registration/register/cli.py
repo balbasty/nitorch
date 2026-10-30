@@ -113,8 +113,8 @@ def _main(options):
                         fix = getattr(loss.fixed, get_center)()
                         mov = getattr(loss.moving, get_center)()
                         wgt = 0.5 * (
-                            torch.Size(fix.shape[1:]).numel() +
-                            torch.Size(mov.shape[1:]).numel()
+                            torch.Size(loss.fixed.shape).numel() +
+                            torch.Size(loss.moving.shape).numel()
                         )
                         num += (mov - fix) * wgt
                         den += wgt
@@ -204,8 +204,8 @@ def _main(options):
         pyramid=not options.pyramid.concurrent,
         interleaved=options.optim.name != 'sequential',
         progressive=getattr(options.affine, 'progressive', False),
-        max_iter=options.optim.max_iter,
-        tolerance=options.optim.tolerance,
+        max_iter=getattr(options.optim, 'max_iter', 10),
+        tolerance=getattr(options.optim, 'tolerance', 1e-5),
         verbose=options.verbose,
         framerate=options.framerate,
     )
