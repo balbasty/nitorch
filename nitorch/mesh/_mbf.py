@@ -207,11 +207,11 @@ def read_markers(fname, vx=1e-3, split_groups=False):
             i += 1
             line = line.rstrip()
             print(f'{i} | {line}', end='\r')
-            match = re.search(f'(?P<group>{patterns[int]})\s+'
-                              f'(?P<x>{patterns[float]})\s+'
-                              f'(?P<y>{patterns[float]})\s+'
-                              f'(?P<z>{patterns[float]})\s+'
-                              f'(?P<file>{patterns[float]})\s*', line)
+            match = re.search(rf'(?P<group>{patterns[int]})\s+'
+                              rf'(?P<x>{patterns[float]})\s+'
+                              rf'(?P<y>{patterns[float]})\s+'
+                              rf'(?P<z>{patterns[float]})\s+'
+                              rf'(?P<file>{patterns[float]})\s*', line)
             if not match:
                 continue
             groups.append(int(match.group('group')))
@@ -377,10 +377,10 @@ def read_contours_asc(fname, vx=1):
         return line, closed
 
     def parse_section(line):
-        p = f'(?P<key>{patterns[str]})\s+"(?P<name>[^"]*)"\s' \
-            f'+(?P<z>{patterns[float]})\s+' \
-            f'(?P<y>{patterns[float]})\s+' \
-            f'(?P<x>{patterns[float]})\s*'
+        p = rf'(?P<key>{patterns[str]})\s+"(?P<name>[^"]*)"\s' \
+            rf'+(?P<z>{patterns[float]})\s+' \
+            rf'(?P<y>{patterns[float]})\s+' \
+            rf'(?P<x>{patterns[float]})\s*'
         match = re.match(p, line)
         if match:
             key = match.group('key')
@@ -393,11 +393,11 @@ def read_contours_asc(fname, vx=1):
             return None, None
 
     def parse_point(line):
-        p = f'(?P<x>{patterns[float]})\s+' \
-            f'(?P<y>{patterns[float]})\s+' \
-            f'(?P<z>{patterns[float]})\s+' \
-            f'(?P<unknown>{patterns[float]})\s+' \
-            f'(?P<section>{patterns[str]})\s*'
+        p = rf'(?P<x>{patterns[float]})\s+' \
+            rf'(?P<y>{patterns[float]})\s+' \
+            rf'(?P<z>{patterns[float]})\s+' \
+            rf'(?P<unknown>{patterns[float]})\s+' \
+            rf'(?P<section>{patterns[str]})\s*'
         match = re.match(p, line)
         if match:
             val = dict(

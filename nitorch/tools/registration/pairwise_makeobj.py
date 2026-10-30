@@ -388,6 +388,7 @@ def make_affine_optim(optim=None, order=None, line_search='wolfe', lr=None,
     else:
         raise ValueError(optim)
 
+    _rename_optim_kwargs(kwargs)
     if not lr and issubclass(affine_optim, opt.Powell):
         affine_optim = affine_optim(**kwargs)  # Powell's own default step
     else:
@@ -482,7 +483,7 @@ def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
     elif optim == 'ogm':
         nonlin_optim = opt.OGM
     elif optim == 'gn' or optim.startswith('gauss') or optim.startswith('newt'):
-        fmg = kwargs.pop('fmg', True)
+        fmg = kwargs['fmg'] = kwargs.pop('fmg', 2)
         kwargs['max_iter'] = kwargs.pop('sub_iter', None) or (2 if fmg else 16)
         solver = kwargs.pop('solver', 'cg')
         kwargs['penalty'] = penalty
@@ -497,6 +498,7 @@ def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
         raise ValueError(optim)
 
     lr = lr or (1 if issubclass(nonlin_optim, opt.SecondOrder) else 1e-3)
+    _rename_optim_kwargs(kwargs)
     nonlin_optim = nonlin_optim(lr, **kwargs)
 
     if preconditioner and isinstance(nonlin_optim, opt.FirstOrder):
@@ -507,6 +509,15 @@ def make_nonlin_optim(optim=None, order=None, line_search='wolfe', lr=None,
 
     nonlin_optim.iter = opt.OptimIterator(max_iter=max_iter, tol=tolerance, stop=crit)
     return nonlin_optim
+
+
+def _rename_optim_kwargs(kwargs):
+    """Map command-line option names to optimizer arguments (in-place)"""
+    if 'restart' in kwargs:
+        kwargs['auto_restart'] = kwargs.pop('restart')
+    if 'relax' in kwargs:
+        kwargs['relaxation'] = kwargs.pop('relax')
+    return kwargs
 
 
 def make_loss(loss, slicewise=False, **kwargs):
@@ -539,8 +550,9 @@ def make_loss(loss, slicewise=False, **kwargs):
     bins, if 'mi' or 'ent' : int
     norm, if 'nmi': {'studholme', 'arithmetic', 'geometric'}
     fwhm, if 'mi', 'ent' or 'emmi' : float
-    spline, if 'mi' or 'ent' : {0..7}
+    spline (or order), if 'mi' or 'ent' : {0..7}
     weight, if 'mse', 'mad' or 'tuk' : float or None
+    joint, if 'mad' or 'tuk' : bool
     patch, if 'lcc' or 'lgmm' : [list of] float
     stride, if 'lcc' or 'lgmm' : [list of] int
     kernel, if 'lcc' or 'lgmm' : {'gaussian', 'hat'}
@@ -553,6 +565,9 @@ def make_loss(loss, slicewise=False, **kwargs):
 
     """
     loss = loss.lower()
+    if loss in ('mi', 'nmi', 'ent') and 'order' in kwargs:
+        # the command line calls the histogram spline order `order`
+        kwargs['spline'] = kwargs.pop('order')
     mi_keys = ('dim', 'bins', 'spline', 'fwhm', 'norm')
     if loss == 'mi':
         kwargs.setdefault('norm', None)

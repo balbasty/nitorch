@@ -79,6 +79,7 @@ def test_slicewise_patch_per_level(axis, patch, unit, levels):
         assert s.loss.base_loss.patch == pytest.approx(full), lvl
 
 
+@pytest.mark.slow
 def test_slicewise_loss_matches_inplane_vox():
     """Slicewise lcc (mm patch, anisotropic voxels) == slicewise lcc with
     the in-plane patch converted by hand to voxels."""

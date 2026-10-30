@@ -45,7 +45,8 @@ def test_order1_unchanged():
     ref = iso1_grad2_diag_2d(h.unsqueeze(1), x.unsqueeze(1),
                              make_bound([_hist.bound_to_nitorch('replicate', 'int')] * 2),
                              1).squeeze(1).squeeze(1)
-    assert torch.equal(out, ref)
+    # interior points, no smoothing: same as the bin-diagonal kernel
+    assert torch.allclose(out, ref, rtol=1e-12, atol=0)
 
 
 def test_order0_raises():
@@ -120,6 +121,7 @@ def test_histcount_backward2():
     assert hc.backward2(h, x).shape == x.shape
 
 
+@pytest.mark.slow
 def test_register_gn_mi_order3(tmp_path):
     from nitorch.tests.test_register_optim import make_pair, check_affine
     from nitorch.cli.registration.register.cli import cli as register

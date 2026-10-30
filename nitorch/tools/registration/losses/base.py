@@ -126,6 +126,7 @@ class SliceWiseLoss(OptimizationLoss):
 
     def slice_to_batch(self, moving, fixed, **overload):
         dim = overload.get('dim', None) or getattr(self.base_loss, 'dim', None)
+        dim = dim or (fixed.dim() - 1)
         axis = (self.axis - dim) if self.axis >= 0 else self.axis
         moving = utils.movedim(moving, axis, 0)
         fixed = utils.movedim(fixed, axis, 0)

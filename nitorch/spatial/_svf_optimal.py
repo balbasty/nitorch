@@ -156,7 +156,10 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
             w[p, labels.index(i)] = +1
             w[p, labels.index(j)] = -1
         x = torch.stack(list(svf.values()), -1)
-        z = lmdiv(w.to(x),  x.unsqueeze(-1)).squeeze(-1)
+        # least-squares solution of the (overdetermined) pairwise system
+        # (rcond: w has a null space -- adding a constant to all z)
+        z = lmdiv(w.to(x), x.unsqueeze(-1), method='pinv', rcond=1e-5)
+        z = z.squeeze(-1)
         z -= torch.mean(z, dim=-1, keepdim=True)  # zero-center
         z = torch.movedim(z, -1, 0)
         w = w.abs().sum(0)
@@ -204,7 +207,14 @@ def optimal_svf(svf, weights=None, squared=True, **prm):
             else:
                 z[n] *= w[n]
 
-            foo = solve_grid_fmg(w[n], z[n], **prm)
+            if weights:
+                hess = w[n]
+            else:
+                # uniform weight -> constant diagonal hessian, in the
+                # symmetric format expected by the solver (diagonal first)
+                hess = z[n].new_zeros([*z[n].shape[:-1], (D*(D+1))//2])
+                hess[..., :D] = w[n]
+            foo = solve_grid_fmg(hess, z[n], **prm)
             z[n] = foo
         z -= torch.mean(z, dim=0)  # zero-center again
 
