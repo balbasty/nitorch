@@ -290,8 +290,9 @@ def get_spaces(fnames):
 def build_losses(options, pyramids, device):
     dim = 3
 
-    losskeys = ('kernel', 'patch', 'bins', 'norm', 'fwhm',
-                'spline', 'weight', 'weighted', 'max_iter', 'slicewise')
+    losskeys = ('kernel', 'patch', 'bins', 'norm', 'fwhm', 'order',
+                'spline', 'weight', 'weighted', 'max_iter', 'slicewise',
+                'joint', 'stride')
     loadkeys = ('label', 'missing', 'world', 'affine', 'rescale',
                 'pad', 'bound', 'fwhm', 'mask', 'channels')
     imagekeys = ('pyramid', 'pyramid_method', 'discretize',

@@ -156,6 +156,7 @@ def test_register_init_center(tmp_path, init):
         (lta[:3, -1], shift)
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize('position', ['sym', 'mov', 'fix'])
 def test_register_com_resliced(tmp_path, position):
     """`-i com` + `-r`: resliced images match the true transform"""
@@ -177,6 +178,7 @@ def test_register_com_resliced(tmp_path, position):
 #   warp_images: -r with a rigid transform, for all positions
 # ----------------------------------------------------------------------
 
+@pytest.mark.slow
 @pytest.mark.parametrize('position', ['symmetric', 'moving', 'fixed'])
 def test_warp_images_resliced(tmp_path, position):
     aff_f, aff_m = make_affines()

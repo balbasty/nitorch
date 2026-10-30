@@ -133,6 +133,23 @@ You must therefore be careful about what packages are present in your
 environment.
 
 
+## Running tests
+
+```shell
+# fast suite (what runs on pull requests); tests marked `slow` are skipped
+pytest --ignore nitorch/tests/test_gradcheck_spatial.py
+# full suite, including slow end-to-end registration tests
+pytest --runslow --ignore nitorch/tests/test_gradcheck_spatial.py
+# only the slow tests
+pytest --runslow -m slow
+# push/pull gradient checks (TorchScript or compiled backend)
+pytest nitorch/tests/test_gradcheck_spatial.py
+```
+
+Mark new tests that take more than a few seconds with `@pytest.mark.slow`.
+The slow suite runs on CI on push to master, weekly, and on demand
+(`nitorch-test-slow` workflow).
+
 ## Troubleshooting
 
 ### CUDA

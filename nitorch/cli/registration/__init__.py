@@ -4,6 +4,7 @@ from . import autoreg
 from . import compose
 from . import orient
 from . import meanspace
+from . import optinorm
 from . import register
 from . import reorient
 from . import reslice

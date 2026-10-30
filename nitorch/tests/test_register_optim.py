@@ -48,6 +48,7 @@ def check_affine(fname, expected, atol_lin=0.01, atol_shift=0.05):
     assert torch.allclose(aff[:3, -1], expected[:3, -1], atol=atol_shift), (aff, expected)
 
 
+@pytest.mark.slow
 def test_affreg_default(tmp_path):
     """`nitorch affreg` with its default NMI loss and Powell optimiser.
     (A single 2 mm pyramid level keeps Powell fast enough for a test.)"""
@@ -57,6 +58,7 @@ def test_affreg_default(tmp_path):
     check_affine(f['out'], expected, atol_lin=0.03, atol_shift=0.15)
 
 
+@pytest.mark.slow
 def test_register_affine_powell(tmp_path):
     f, expected = make_pair(tmp_path, shift=SHIFT, rot=ROT)
     register(['@loss', 'mse', '@@fix', f['fix'], '-o', 'false',
@@ -66,6 +68,7 @@ def test_register_affine_powell(tmp_path):
     check_affine(f['out'], expected, atol_lin=0.03, atol_shift=0.15)
 
 
+@pytest.mark.slow
 def test_register_affine_ogm(tmp_path):
     f, expected = make_pair(tmp_path, shift=SHIFT, rot=ROT)
     register(['@loss', 'mse', '@@fix', f['fix'], '-o', 'false',
@@ -74,6 +77,7 @@ def test_register_affine_ogm(tmp_path):
     check_affine(f['out'], expected)
 
 
+@pytest.mark.slow
 def test_register_affine_rotation(tmp_path):
     f, expected = make_pair(tmp_path, rot=(0.03, -0.02, 0.08))
     register(['@loss', 'mse', '@@fix', f['fix'], '-o', 'false',
