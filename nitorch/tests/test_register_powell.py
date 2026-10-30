@@ -6,6 +6,7 @@ import pytest
 from nitorch.cli.registration.register.cli import cli as register
 from nitorch.cli.registration.affreg.cli import cli as affreg
 from nitorch.tools.registration import optim
+from nitorch.tools.registration.pairwise_impl import PairwiseRegisterStep
 from nitorch.tests.test_register_optim import (
     make_pair, check_affine, SHIFT, ROT)
 
@@ -62,7 +63,49 @@ def test_register_nonlin_powell_error(tmp_path):
                   '@pyramid', '--levels', '1'])
 
 
-def test_powell_verbose_newlines(tmp_path, capsys):
+class FakeStep:
+    """Mimics a registration step: its closure prints with
+    `PairwiseRegisterStep.print` (the shared verbosity convention)"""
+    def __init__(self, verbose):
+        self.verbose = verbose
+        self.lla = self.llv = 0
+        self.n_iter = 0
+        self.ll_prev = None
+        self.ll_max = -float('inf')
+        self.all_ll = []
+
+    def closure(self, x, in_line_search=False, **kwargs):
+        ll = (x - 0.5).square().sum()
+        return PairwiseRegisterStep.print(
+            self, 'affine_only', ll, in_line_search=in_line_search)
+
+
+def powell_output(verbose, capsys):
+    step = FakeStep(verbose)
+    opt = optim.Powell(lr=0.1)
+    opt.iter = optim.OptimIterator(max_iter=4, tol=1e-6)
+    capsys.readouterr()
+    opt.iter(torch.zeros(3, dtype=torch.double), step.closure)
+    return capsys.readouterr().out
+
+
+@pytest.mark.parametrize('verbose', [1, 2])
+def test_powell_verbose_in_place(verbose, capsys):
+    out = powell_output(verbose, capsys)
+    assert '(affine)' in out and '\n' not in out, repr(out)
+
+
+@pytest.mark.parametrize('verbose', [3])
+def test_powell_verbose_newlines(verbose, capsys):
+    out = powell_output(verbose, capsys)
+    lines = out.split('\n')
+    # one line per (non-search) iteration, searches overwritten in place
+    iters = [l.split('\r')[-1] for l in lines if l]
+    assert len(iters) >= 2, repr(out)
+    assert all(l.startswith('(affine)') for l in iters), repr(out)
+
+
+def test_register_powell_verbose1_in_place(tmp_path, capsys):
     f, _ = make_pair(tmp_path, shift=SHIFT, rot=ROT)
     register(['-v', '1', '@loss', 'mse', '@@fix', f['fix'], '-o', 'false',
               '@@mov', f['mov'], '-o', 'false',
@@ -70,8 +113,8 @@ def test_powell_verbose_newlines(tmp_path, capsys):
               '@pyramid', '--levels', '1'])
     out = capsys.readouterr().out
     lines = [line for line in out.split('\n') if '(affine) |' in line]
-    # one line per outer iteration (not everything on one line)
-    assert len(lines) > 2, out
+    # all iterations rewrite the same line
+    assert len(lines) == 1 and lines[0].count('\r') > 1, out
 
 
 def test_affreg_default_recovers_rigid(tmp_path):

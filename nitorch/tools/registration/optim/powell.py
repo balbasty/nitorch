@@ -44,11 +44,6 @@ class Powell(ZerothOrder):
             tol = self.brent.tol
         return math.sqrt(max(tol, 0)) or 1e-9
 
-    @staticmethod
-    def _get_verbose(closure):
-        owner = getattr(closure, '__self__', None)
-        return getattr(owner, 'verbose', 0) or 0
-
     def reset_state(self):
         self.delta = None
 
@@ -105,14 +100,11 @@ class Powell(ZerothOrder):
                 dx.add_(delta1, alpha=a)
                 self.delta[i_largest_step].copy_(delta1).mul_(a)
         x.add_(dx)
-        # for verbosity only
+        # for verbosity only: inner Brent evaluations go through
+        # `closure_ls` (`in_line_search=True`, printed in place), and this
+        # call prints the iteration (in place below verbose 3, with a
+        # newline at verbose >= 3, as for the other optimisers)
         closure(x)
-        verbose = self._get_verbose(closure)
-        if 0 < verbose < 3:
-            # the registration objects print iterations with a carriage
-            # return at low verbosity; end Powell's (expensive) outer
-            # iterations with a newline so that each one stays visible.
-            print('')
 
         f = torch.as_tensor(f, **utils.backend(x))
         return x, f
