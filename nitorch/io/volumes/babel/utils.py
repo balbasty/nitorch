@@ -133,10 +133,12 @@ def writeslice(dat, fileobj, sliceobj, shape, dtype, offset=0, order='C',
         # and write it back to disk than writing lots of small chunks
         n_bytes = reduce(operator.mul, sub_shape, 1) * itemsize
         bytes = read_segments(fileobj, segments, n_bytes, lock)
-        block = np.ndarray(sub_shape, dtype, buffer=bytes, order=order)
+        # (copy into a bytearray: `read_segments` may return immutable bytes)
+        block = np.ndarray(sub_shape, dtype, buffer=bytearray(bytes),
+                           order=order)
         block[sub_slicers] = dat
         dat = block
-    dat = dat.tobytes(order='C')
+    dat = dat.tobytes(order=order)
     write_segments(fileobj, segments, dat, lock)
     return
 
