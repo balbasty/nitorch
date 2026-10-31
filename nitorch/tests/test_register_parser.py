@@ -15,3 +15,18 @@ BASE = ['@loss', 'mse', '@@fix', 'fix.nii', '@@mov', 'mov.nii', '@nonlin', 'svf'
 def test_register_nonlin_hessian_option(args, expected):
     options = parser.parse(BASE + args)
     assert options.nonlin.hessian == expected
+
+
+IMAGES = ['@@fix', 'fix.nii', '@@mov', 'mov.nii']
+
+
+@pytest.mark.parametrize('name', ['lcc', 'lgmm'])
+def test_register_loss_patch_option(name):
+    options = parser.parse(['@loss', name, '-p', '5'] + IMAGES)
+    assert options.loss[0].patch == [5.0]
+
+
+def test_register_mi_rejects_patch_option():
+    # MI has no patch: -p is not offered (it used to be silently dropped)
+    with pytest.raises(Exception):
+        parser.parse(['@loss', 'mi', '-p', '5'] + IMAGES)
