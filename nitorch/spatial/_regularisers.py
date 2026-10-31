@@ -452,7 +452,11 @@ def _lame_shear_l2(grid, voxel_size=1, bound='dft'):
                         opt_ji = dict(dim=dims[i], side=side_j, bound=bound[i],
                                       voxel_size=voxel_size[i])
                         diff_ji = diff1d(x_j, **opt_ji, out=buf2).mul_(voxel_size[j])
-                        diff_ji.add_(diff_ij, alpha=0.5)
+                        # symmetric strain: (d_i x_j + d_j x_i) / 2
+                        # (this used to be d_i x_j + d_j x_i / 2, which is
+                        # not the weighted implementation, and not
+                        # self-adjoint)
+                        diff_ji.add_(diff_ij).mul_(0.5)
                         mom[..., j].add_(div1d(diff_ji, **opt_ji, out=buf3), alpha=0.25)
                         mom[..., i].add_(div1d(diff_ji, **opt_ij, out=buf3), alpha=0.25)
                     del x_j
@@ -907,8 +911,11 @@ def lame_div_kernel(dim, voxel_size=1, dtype=None, device=None):
         index[2 + d] = 2
         indices.append(index)
         for dd in range(d+1, dim):  # output channel
-            for d1 in range(dim):   # interation 1
-                for d2 in range(d + 1, dim):  # interation 2
+            # mixed derivative d/dx_d d/dx_dd
+            # (this used to loop over other pairs of axes, which cancel
+            # out in 2D but not in 3D)
+            for d1 in (d,):
+                for d2 in (dd,):
                     kernel += [-0.25] * 4
                     index = [d, dd, *center_index]
                     index[2 + d1] = 0

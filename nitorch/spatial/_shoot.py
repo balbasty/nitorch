@@ -30,8 +30,8 @@ def _inv2(A):
     F = torch.empty_like(A)
     F[0, 0] = A[1, 1]
     F[1, 1] = A[0, 0]
-    F[0, 1] = -A[1, 0]
-    F[1, 0] = -A[0, 1]
+    F[0, 1] = -A[0, 1]
+    F[1, 0] = -A[1, 0]
     dt = _det2(A)
     Aabs = A.reshape((-1,) + A.shape[2:]).abs()
     rnge = Aabs.max(dim=0).values - Aabs.min(dim=0).values
@@ -132,23 +132,21 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
     else:
         kernel = torch.zeros([*shape, 1, 1], **backend)
 
-    # only use center to generate kernel
-    if bending:
-        subkernel = kernel[tuple(slice(s//2-2, s//2+3) for s in shape)]
-        subsize = 5
-    else:
-        subkernel = kernel[tuple(slice(s//2-1, s//2+2) for s in shape)]
-        subsize = 3
-
-    # generate kernel
+    # generate kernel: impulse response of the regulariser, computed
+    # on a patch around the center (the stencil's support) along
+    # dimensions that are at least as large as the stencil, and on the
+    # full extent along smaller dimensions, which wrap around.
+    subsize = 5 if bending else 3
+    patch = tuple(slice(s//2 - subsize//2, s//2 + subsize//2 + 1)
+                  if s >= subsize else slice(None) for s in shape)
+    subkernel = kernel[patch]
+    center = tuple(subsize//2 if s >= subsize else s//2 for s in shape)
     if lame1 or lame2:
         for d in range(dim):
-            center = (subsize//2,)*dim + (d, d)
-            subkernel[center] = 1
+            subkernel[center + (d, d)] = 1
             subkernel[..., :, d] = regulariser_grid(subkernel[..., :, d], **prm)
     else:
-        center = (subsize//2,)*dim
-        subkernel[center] = 1
+        subkernel[center + (0, 0)] = 1
         subkernel[..., 0, 0] = regulariser(subkernel[None, ..., 0, 0], **prm, dim=dim)[0]
 
     kernel = fft.ifftshift(kernel, dim=range(dim))
