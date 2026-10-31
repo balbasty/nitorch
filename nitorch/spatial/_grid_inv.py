@@ -77,7 +77,11 @@ def grid_inv(grid, type='grid', bound='dft',
     count = utils.movedim(count, 1, -1)
 
     # Fill missing values using regularised least squares
-    disp = solve_grid_fmg(count, disp, bound=bound, **prm)
+    # (the multigrid solver expects a symmetric Hessian with D*(D+1)//2
+    # channels: diagonal = counts, off-diagonal = 0)
+    hess = count.new_zeros([*count.shape[:-1], dim * (dim + 1) // 2])
+    hess[..., :dim] = count
+    disp = solve_grid_fmg(hess, disp, bound=bound, **prm)
     disp = disp.reshape([*batch, *shape, dim])
 
     if type == 'grid':

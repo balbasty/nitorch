@@ -90,3 +90,37 @@ def test_fmg_relax_stable_on_anisotropic_coarse_grids(shape):
     xc = solve_grid_fmg(hess, grad, optim='cg', **prm)
     assert torch.isfinite(x).all()
     assert x.abs().max() < 10 * xc.abs().max()
+
+
+@pytest.mark.parametrize('shape', [(32, 32, 1), (8, 8, 2), (5, 1), (3, 4)])
+def test_greens_small_and_singleton_dims(shape):
+    """`greens` (used by geodesic shooting and as a preconditioner) used
+    to fail on dimensions smaller than its 5^D stencil patch."""
+    from nitorch.spatial import greens
+    k = greens(shape, absolute=1e-4, membrane=1e-3, bending=0.2,
+               lame=(0.05, 0.2), dtype=torch.double)
+    assert k.shape == tuple(shape) + (len(shape), len(shape))
+    assert torch.isfinite(k).all()
+
+
+@pytest.mark.parametrize('shape', [(16, 16, 16), (24, 24), (32, 32, 1)])
+def test_grid_inv_runs_and_inverts(shape):
+    """`grid_inv` (used to write the outputs of `smalldef` registrations)
+    passed a single-channel Hessian to the multigrid solver, which failed."""
+    from nitorch.spatial import grid_inv, identity_grid, grid_pull
+    g = torch.Generator().manual_seed(0)
+    dim = len(shape)
+    d = torch.randn([1, dim, *[max(s // 4, 1) for s in shape]],
+                    dtype=torch.double, generator=g)
+    mode = 'trilinear' if dim == 3 else 'bilinear'
+    d = torch.nn.functional.interpolate(d, size=shape, mode=mode,
+                                        align_corners=True)[0]
+    d = d.movedim(0, -1) * 0.5
+    d[..., [i for i, s in enumerate(shape) if s == 1]] = 0
+    inv = grid_inv(d, type='disp')
+    assert inv.shape == d.shape and torch.isfinite(inv).all()
+    grid = identity_grid(shape, dtype=d.dtype) + d
+    comp = d + grid_pull(inv.movedim(-1, 0)[None], grid[None], bound='dft',
+                         extrapolate=True)[0].movedim(0, -1)
+    inner = tuple(slice(3, -3) if s > 6 else slice(None) for s in shape)
+    assert comp[inner].abs().mean() < 0.1 * d[inner].abs().mean()

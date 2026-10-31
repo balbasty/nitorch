@@ -132,24 +132,18 @@ def greens(shape, absolute=_default_absolute, membrane=_default_membrane,
     else:
         kernel = torch.zeros([*shape, 1, 1], **backend)
 
-    # only use center to generate kernel
-    if bending:
-        subkernel = kernel[tuple(slice(s//2-2, s//2+3) for s in shape)]
-        subsize = 5
-    else:
-        subkernel = kernel[tuple(slice(s//2-1, s//2+2) for s in shape)]
-        subsize = 3
-
-    # generate kernel
+    # generate kernel: impulse response of the regulariser.
+    # It is computed on the full lattice (rather than on a 3^D or 5^D
+    # patch around the center) so that small or singleton dimensions,
+    # which wrap around, are handled correctly.
+    center = tuple(s//2 for s in shape)
     if lame1 or lame2:
         for d in range(dim):
-            center = (subsize//2,)*dim + (d, d)
-            subkernel[center] = 1
-            subkernel[..., :, d] = regulariser_grid(subkernel[..., :, d], **prm)
+            kernel[center + (d, d)] = 1
+            kernel[..., :, d] = regulariser_grid(kernel[..., :, d], **prm)
     else:
-        center = (subsize//2,)*dim
-        subkernel[center] = 1
-        subkernel[..., 0, 0] = regulariser(subkernel[None, ..., 0, 0], **prm, dim=dim)[0]
+        kernel[center + (0, 0)] = 1
+        kernel[..., 0, 0] = regulariser(kernel[None, ..., 0, 0], **prm, dim=dim)[0]
 
     kernel = fft.ifftshift(kernel, dim=range(dim))
 
