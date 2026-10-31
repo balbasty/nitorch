@@ -121,6 +121,7 @@ def _plot_gmm(moving, fixed, prm, bins=64):
 
 
 _measures = ('mi', 'joint')
+_theta_keys = ('xmean', 'ymean', 'xvar', 'yvar', 'corr', 'prior')
 
 
 def _check_measure(measure):
@@ -186,10 +187,12 @@ def lgmmh(moving, fixed, dim=None, bins=6, patch=20, stride=1,
         stride = [stride]
     stride = [s or 0 for s in stride]
 
-    bwd = Bwd(patch, stride, dim, kernel, shape)
+    cache = {}  # normalization map, shared by all local means
+    bwd = Bwd(patch, stride, dim, kernel, shape, cache)
 
     gmmfit = fit_lgmm2(moving, fixed, bins, max_iter, dim,
-                       patch=patch, stride=stride, mode=kernel, theta=theta)
+                       patch=patch, stride=stride, mode=kernel, theta=theta,
+                       cache=cache)
 
     # drop unused variables
     get = gmmfit.get if return_theta else gmmfit.pop
@@ -209,48 +212,56 @@ def lgmmh(moving, fixed, dim=None, bins=6, patch=20, stride=1,
     moving = moving.unsqueeze(-dim-1)
     fixed = fixed.unsqueeze(-dim-1)
 
-    # Value: the responsibilities of a voxel combine (geometric average)
-    # the Gaussians of all patches it belongs to, i.e., quantities that
+    # The responsibilities of a voxel combine (geometric average) the
+    # Gaussians of all patches it belongs to, i.e., quantities that
     # depend on the Gaussian parameters are "pushed" (adjoint of the
-    # local mean) from patches to voxels.
+    # local mean) from patches to voxels. All the quantities needed for
+    # the value, gradient and Hessian are pushed in a single call.
+    stats = []
     if measure != 'joint':
+        # moving marginal
         ixvar = xvar.reciprocal()
-        stats = torch.stack([ixvar, xmean * ixvar,
-                             xmean * xmean * ixvar + xvar.log()
-                             - 2 * prior.log()])
-        ixvar, ixmean, cst = bwd(stats, None, None).unbind(0)
-        lx = moving * moving * ixvar - 2 * moving * ixmean + cst
-        lx *= -0.5
+        stats += [ixvar, xmean * ixvar,
+                  xmean * xmean * ixvar + xvar.log() - 2 * prior.log()]
+    if grad:
+        # joint precision
+        cov = corr * (xvar * yvar).sqrt()
+        idet = (xvar * yvar - cov * cov).reciprocal()
+        xprec = yvar * idet
+        icov = -cov * idet
+        stats += [xprec, icov, xprec * xmean + icov * ymean]
+        if hess and measure != 'joint':
+            # Gauss-Newton: precision of each Gaussian, combined by the
+            # responsibilities. The marginal term removes the part of
+            # the precision that does not depend on the fixed image:
+            #   [Sigma^{-1}]_xx - 1/xvar = corr^2 / (xvar * (1 - corr^2))
+            stats += [cov * cov * idet / xvar]
+    if stats:
+        stats = list(bwd(torch.stack(stats), None, None).unbind(0))
+
+    if measure != 'joint':
+        ixvar, ixmean, lx = stats[:3]
+        stats = stats[3:]
+        lx.addcmul_(ixvar, moving * moving).addcmul_(ixmean, moving, value=-2)
+        lx.mul_(-0.5)
         ll = ll + torch.logsumexp(lx, -dim-1).mean()
     out = [ll]
 
     if grad:
         # gradient of the joint negative log-likelihood (at fixed parameters)
-        cov = corr * (xvar * yvar).sqrt()
-        idet = (xvar * yvar - cov * cov).reciprocal()
-        xprec = yvar * idet
-        icov = -cov * idet
-        stats = torch.stack([xprec, icov, xprec * xmean + icov * ymean])
-        xprec, icov, xmeanprec = bwd(stats, None, None).unbind(0)
-        g = moving * xprec + fixed * icov - xmeanprec
-        g = (z * g).sum(-dim-1)
+        xprec, icov, g = stats[:3]
+        g = g.neg_().addcmul_(xprec, moving).addcmul_(icov, fixed)
+        g = g.mul_(z).sum(-dim-1)
         if measure != 'joint':
             # minus the gradient of the marginal negative log-likelihood
             w = torch.softmax(lx, -dim-1)
-            g -= (w * (moving * ixvar - ixmean)).sum(-dim-1)
+            g -= w.mul_(ixmean.neg_().addcmul_(ixvar, moving)).sum(-dim-1)
         g /= nvox
         out.append(g)
 
         if hess:
-            # Gauss-Newton: precision of each Gaussian, combined by the
-            # responsibilities. The marginal term removes the part of the
-            # precision that does not depend on the fixed image:
-            #   [Sigma^{-1}]_xx - 1/xvar = corr^2 / (xvar * (1 - corr^2))
-            if measure == 'joint':
-                h = xprec
-            else:
-                h = bwd(cov * cov * idet / xvar, None, None)
-            h = (z * h).sum(-dim-1)
+            h = xprec if measure == 'joint' else stats[3]
+            h = h.mul_(z).sum(-dim-1)
             h /= nvox
             out.append(h)
 
@@ -365,16 +376,16 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
         #   = (moving - corr * fixed) / (moving_std * (1 - corr^2)),
         # with normalized values (v - mu) / std
         moving_std = moving_var.sqrt()
-        nmoving = (moving - moving_mean) / moving_std
-        nfixed = (fixed - fixed_mean) / fixed_var.sqrt()
-        g = (nmoving - corr * nfixed) / (moving_std * (1 - corr * corr))
-        g = (z * g).sum(-1)
+        nmoving = (moving - moving_mean).div_(moving_std)
+        scl = (moving_std * (1 - corr * corr)).reciprocal_()
+        g = (fixed - fixed_mean).mul_(-corr * scl / fixed_var.sqrt())
+        g = g.addcmul_(nmoving, scl).mul_(z).sum(-1)
         if measure != 'joint':
             # minus the gradient of the marginal negative log-likelihood
             w = torch.softmax(lx, -1)
             if mask is not None:
-                w = w * mask
-            g -= (w * nmoving / moving_std).sum(-1)
+                w = w.mul_(mask)
+            g -= w.mul_(nmoving.div_(moving_std)).sum(-1)
         g /= nvox
         out.append(g)
 
@@ -386,7 +397,8 @@ def gmmh(moving, fixed, dim=None, bins=6, max_iter=128, mask=None,
             corr2 = corr * corr
             h = (1 - corr2) * moving_var
             h = (corr2 if measure != 'joint' else 1) / h
-            h = (z * h).sum(-1)
+            # (..., *1, K) -> (..., *1[:-1], K, 1): matrix-vector product
+            h = torch.matmul(z, h.squeeze(-2).unsqueeze(-1)).squeeze(-1)
             h /= nvox
             out.append(h)
 
@@ -432,7 +444,10 @@ class GMMH(OptimizationLoss):
         kwargs.setdefault('bins', self.bins)
         kwargs.setdefault('max_iter', self.max_iter)
         kwargs.setdefault('measure', self.measure)
-        kwargs.setdefault('theta', self.theta)
+        if self.theta is not None:
+            # pass a copy: the fit consumes (pops) the parameters, and
+            # `get_state` may hold a reference to the cached dict
+            kwargs.setdefault('theta', {k: self.theta[k] for k in _theta_keys})
         kwargs['return_theta'] = self.cache
         out = gmmh(moving, fixed, **kwargs, grad=grad, hess=hess)
         if self.cache:
@@ -537,7 +552,7 @@ class LGMMH(OptimizationLoss):
             Negative mutual information (without the constant fixed
             entropy), or joint entropy H[moving, fixed]. See `gmmh`.
         cache : bool, default=True
-            Keep the parameters of the last fit
+            Warm-start EM with the parameters of the previous call
         """
         super().__init__()
         self.dim = dim
@@ -549,6 +564,7 @@ class LGMMH(OptimizationLoss):
         self.measure = _check_measure(measure)
         self.cache = cache
         self.theta = None
+        self._theta_key = None
 
     def _call(self, moving, fixed, grad, hess, **kwargs):
         kwargs.setdefault('dim', self.dim)
@@ -560,9 +576,18 @@ class LGMMH(OptimizationLoss):
         kwargs.setdefault('measure', self.measure)
         kwargs['return_theta'] = self.cache
         kwargs.pop('mask', None)  # TODO: masked local fit
+        # Warm-start EM from the previous fit. Local parameters live on
+        # the grid of patches, so they can only be reused if the images
+        # and patches have not changed.
+        key = (tuple(moving.shape), tuple(fixed.shape), moving.dtype,
+               moving.device, str(kwargs['patch']), str(kwargs['stride']),
+               kwargs['kernel'], kwargs['bins'])
+        if self.theta is not None and key == self._theta_key:
+            kwargs.setdefault('theta', {k: self.theta[k] for k in _theta_keys})
         out = lgmmh(moving, fixed, **kwargs, grad=grad, hess=hess)
         if self.cache:
             *out, self.theta = out
+            self._theta_key = key
             out = out[0] if len(out) == 1 else tuple(out)
         return out
 
@@ -628,9 +653,11 @@ class LGMMH(OptimizationLoss):
 
     def clear_state(self):
         self.theta = None
+        self._theta_key = None
 
     def get_state(self):
-        return dict(theta=self.theta)
+        return dict(theta=self.theta, theta_key=self._theta_key)
 
     def set_state(self, state):
         self.theta = state.get('theta', None)
+        self._theta_key = state.get('theta_key', None)

@@ -307,3 +307,65 @@ def test_gmm_hessian_mi_one_class():
     r2, vx = theta['corr'] ** 2, theta['xvar']
     expected = (r2 / (vx * (1 - r2))).squeeze() / mov.numel()
     assert torch.allclose(h, expected.expand_as(h))
+
+
+# --- performance helpers ---------------------------------------------------
+
+
+@pytest.mark.parametrize('shape, fwhm, stride, mode', [
+    ([20, 17, 9], [5., 3., 2.], [1], 'g'),   # stride 1: conv path
+    ([20, 17], [4.], [1], 'g'),
+    ([20, 17, 9], [5.], [2, 1, 1], 'g'),      # mixed: conv + conv_transpose
+    ([31], [6.], [1], 'g'),
+    pytest.param([12, 10], [4.], [2], 'c', marks=pytest.mark.xfail(
+        reason='square-kernel backward: output buffer lacks batch dims and '
+               'overlapping patches are copied instead of accumulated',
+        strict=True)),
+])
+def test_local_mean_backward_is_adjoint(shape, fwhm, stride, mode):
+    from nitorch.tools.registration.losses.utils_local import local_mean
+    g = torch.Generator().manual_seed(0)
+    d = len(shape)
+    a = torch.randn([2, 3, *shape], dtype=torch.double, generator=g)
+    fa = local_mean(a, fwhm, stride, mode, d)
+    b = torch.randn(fa.shape, dtype=torch.double, generator=g)
+    bb = local_mean(b, fwhm, stride, mode, d, backward=True, shape=shape)
+    assert torch.allclose((fa * b).sum(), (a * bb).sum(), rtol=1e-10)
+
+
+def test_sum_outer_matches_direct():
+    from nitorch.tools.registration.losses.utils_gmm2 import sum_outer
+    g = torch.Generator().manual_seed(0)
+    f = torch.randn([2, 1000, 6], generator=g)
+    z = torch.rand([2, 1000, 4], generator=g)
+    ref = f.double().transpose(-1, -2) @ z.double()
+    out = sum_outer(f, z, chunk=64)  # 1000 = 15 * 64 + 40
+    assert out.dtype == torch.double
+    assert torch.allclose(out, ref, rtol=1e-5, atol=1e-4)
+
+
+def test_gmm_class_state_restore_keeps_warm_start():
+    """The registration loop restores the state saved before line-search
+    evaluations. The fit used to consume (pop) the parameters of the saved
+    state, so that EM was cold-started after each line search."""
+    mov, fix = make_data([12, 12])
+    loss = GMMH(dim=2, bins=3)
+    loss.loss_grad_hess(mov, fix)
+    state = loss.get_state()
+    loss.loss(mov + 0.01, fix)
+    loss.set_state(state)
+    assert set(loss.theta) >= {'xmean', 'ymean', 'xvar', 'yvar', 'corr',
+                               'prior'}
+
+
+def test_lgmm_class_warm_start():
+    """LGMMH warm-starts EM when shapes are unchanged, and cold-starts
+    (rather than failing) when they change."""
+    mov, fix = make_data([10, 10])
+    loss = LGMMH(dim=2, bins=3, patch=4, max_iter=16)
+    ll1 = loss.loss(mov, fix)
+    ll2 = loss.loss(mov, fix)          # warm start: (nearly) same fit
+    assert math.isclose(ll1.item(), ll2.item(), rel_tol=1e-3, abs_tol=1e-3)
+    mov2, fix2 = make_data([12, 8])
+    ll3, g3, h3 = loss.loss_grad_hess(mov2, fix2)  # new shape: cold start
+    assert g3.shape == mov2.shape and torch.isfinite(ll3)
