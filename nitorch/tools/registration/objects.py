@@ -1380,8 +1380,14 @@ def _push_grad_fixed(g, h, moving, disp, left, right, shape, psi=None):
     Its exact gradient wrt the nodes of D is
         push_Right( g * Left' (∇mu o psi) ),
     so the image gradients are sampled at the fixed voxels, and the
-    (vector) gradient is pushed afterwards. The (symmetric) Gauss-Newton
-    Hessian is pushed the same way, which approximates it as before.
+    (vector) gradient is pushed afterwards. The per-fixed-voxel
+    Gauss-Newton blocks are pushed with the linear weights, i.e. the
+    block row-sums of P' diag(H) P (P: linear interpolation at `Right`).
+    This majorises the full Gauss-Newton Hessian (inter-node cross terms
+    are dropped) and inflates its diagonal (about 3-4x for a 2x coarser
+    field), so steps are conservative but the fixed point is unchanged.
+    The left-affine rotation is applied to the (*fixed, D) gradient after
+    the chain rule; the Hessian still uses the rotated image gradients.
 
     g : (K, *fixed) tensor              Gradient wrt warped image
     h : (K|K*(K+1)//2, *fixed) tensor   Hessian wrt warped image, optional
@@ -1405,11 +1411,13 @@ def _push_grad_fixed(g, h, moving, disp, left, right, shape, psi=None):
             psi = spatial.affine_matvec(left, psi)
     mugrad = moving.pull_grad(psi, rotate=False)
     del psi
-    mugrad = _rotate_grad(mugrad, left)
 
     # same boundary as when sampling the displacement in the forward pass
     kwargs = dict(shape=shape, bound='zero', extrapolate=True)
-    g = regutils.jg(mugrad, g)
+    # rotation commutes with the channel sum: rotate the (*fixed, D) result
+    g = _rotate_grad(regutils.jg(mugrad, g), left)
+    if h is not None:
+        mugrad = _rotate_grad(mugrad, left)
     g = regutils.smart_push(utils.fast_movedim(g, -1, 0), right, **kwargs)
     h = regutils.jhj(mugrad, h)
     del mugrad
@@ -1712,6 +1720,8 @@ class ShootModel(NonLinModel):
                        psi=None):
         """Convert derivatives wrt warped image in loss space to
         to derivatives wrt parameters
+        (does not use `_push_grad_fixed`: lattice mismatch is handled
+        as before.)
         parameters:
             g (tensor) : gradient wrt warped image
             h (tensor) : hessian wrt warped image

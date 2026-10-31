@@ -168,3 +168,88 @@ def test_hess_lattice(model):
     assert h.shape == (*nonlin.shape, 6)
     assert torch.isfinite(h).all()
     assert (h[..., :3] >= 0).all()
+
+
+def _push_grad_fixed_master(g, h, moving, disp, left, right, shape):
+    """Reference: the formula of `_push_grad_fixed` before the left
+    rotation was moved after the chain rule (rotate all K channels)."""
+    dim = disp.shape[-1]
+    right = objects._right_grid(right, g.shape[-dim:])
+    psi = regutils.smart_pull_grid(disp, right, bound='zero') + right
+    if left is not None:
+        psi = spatial.affine_matvec(left, psi)
+    mugrad = objects._rotate_grad(moving.pull_grad(psi, rotate=False), left)
+    kwargs = dict(shape=shape, bound='zero', extrapolate=True)
+    g = regutils.jg(mugrad, g)
+    g = regutils.smart_push(g.movedim(-1, 0), right, **kwargs)
+    h = regutils.jhj(mugrad, h)
+    h = regutils.smart_push(h.movedim(-1, 0), right, **kwargs)
+    return g, h
+
+
+def _push_inputs(lattice, nchannels=1, seed=0):
+    gen = torch.Generator().manual_seed(seed)
+    mov = smooth(torch.rand([nchannels, *SHAPE], dtype=dt, generator=gen), 2)
+    mov = objects.Image(mov, affine=image_affine())
+    shape, nl2fix = nonlin_lattice(lattice)
+    disp = smooth(torch.randn([3, *shape], dtype=dt, generator=gen), 3)
+    disp = disp.movedim(0, -1)
+    right = torch.linalg.inv(nl2fix)  # fixed voxels -> nonlinear voxels
+    return mov, disp, right, list(shape), gen
+
+
+@pytest.mark.parametrize('lattice', ['coarse', 'rotated', 'subvoxel'])
+def test_push_grad_fixed_left_affine(lattice):
+    """Rotating after the chain rule matches rotating the image gradients"""
+    mov, disp, right, shape, gen = _push_inputs(lattice, nchannels=2)
+    left = translation([0.2, -0.3, 0.1]) @ rotation_z(12)
+    left[:3, :3] *= 1.1
+    g = torch.randn([2, *SHAPE], dtype=dt, generator=gen)
+    h = torch.rand([3, *SHAPE], dtype=dt, generator=gen)
+    gn, hn = objects._push_grad_fixed(g, h, mov, disp, left, right, shape)
+    gr, hr = _push_grad_fixed_master(g, h, mov, disp, left, right, shape)
+    assert (gn - gr).abs().max() <= 1e-12 * gr.abs().max()
+    assert (hn - hr).abs().max() <= 1e-12 * hr.abs().max()
+
+
+def _exact_gn(mov, disp, right):
+    """Exact Gauss-Newton Hessian J'J of the warped image wrt the
+    displacement nodes (unit weights), and pushed blocks as (N, 3, 3)"""
+    rgrid = spatial.affine_grid(right, SHAPE)
+
+    def warp(d):
+        psi = regutils.smart_pull_grid(d, rgrid, bound='zero') + rgrid
+        return mov.pull(psi).reshape(-1)
+
+    J = torch.autograd.functional.jacobian(warp, disp).reshape(
+        -1, disp.numel())
+    H = J.T @ J
+    g = torch.zeros([1, *SHAPE], dtype=dt)
+    h = torch.ones([1, *SHAPE], dtype=dt)
+    _, hp = objects._push_grad_fixed(g, h, mov, disp, None, right,
+                                     list(disp.shape[:-1]))
+    hp = hp.reshape(6, -1).T
+    blocks = torch.zeros([hp.shape[0], 3, 3], dtype=dt)
+    for k, (i, j) in enumerate([(0, 0), (1, 1), (2, 2), (0, 1), (0, 2), (1, 2)]):
+        blocks[:, i, j] = blocks[:, j, i] = hp[:, k]
+    return H, blocks
+
+
+@pytest.mark.slow
+def test_hess_exact_shift():
+    """Integer shift: the pushed blocks are the exact GN diagonal blocks"""
+    mov, disp, right, _, _ = _push_inputs('shift')
+    H, blocks = _exact_gn(mov, disp, right)
+    n = blocks.shape[0]
+    exact = H.reshape(n, 3, n, 3).diagonal(dim1=0, dim2=2).permute(2, 0, 1)
+    assert (blocks - exact).abs().max() <= 1e-10 * exact.abs().max()
+
+
+@pytest.mark.slow
+def test_hess_exact_coarse_majorises():
+    """2x coarser field: blockdiag(pushed) - J'J is PSD"""
+    mov, disp, right, _, _ = _push_inputs('coarse')
+    H, blocks = _exact_gn(mov, disp, right)
+    diff = torch.block_diag(*blocks) - H
+    lmax = torch.linalg.eigvalsh(H).max()
+    assert torch.linalg.eigvalsh(diff).min() >= -1e-12 * lmax
