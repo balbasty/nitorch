@@ -1167,7 +1167,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
     optim : {'cg', 'relax'}, default='cg'
     max_iter : int, default=16
     tolerance : float, default=1e-5
-    stop : {'e', 'a'}, default='e'
+    stop : {'diff', 'gain', 'max_gain'}, default='max_gain'
     precond : callable, optional
     verbose : int, default=0
 
@@ -1319,7 +1319,7 @@ def solve_field(hessian, gradient, weights=None, dim=None,
 
 def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
                lame=0, factor=1, voxel_size=1, bound='dft', weights=None,
-               optim='cg', max_iter=16, tolerance=1e-5, stop='e',
+               optim='cg', max_iter=16, tolerance=1e-5, stop='max_gain',
                verbose=False):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
@@ -1475,7 +1475,7 @@ def solve_grid(hessian, gradient, absolute=0, membrane=0, bending=0,
 
 def solve_grid_kernel(hessian, gradient, absolute=0, membrane=0, bending=0,
                       lame=0, factor=1, voxel_size=1, bound='dft',
-                      optim='relax', max_iter=16, tolerance=1e-5, stop='e',
+                      optim='relax', max_iter=16, tolerance=1e-5, stop='max_gain',
                       verbose=False):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
@@ -1601,7 +1601,7 @@ def solve_grid_kernel(hessian, gradient, absolute=0, membrane=0, bending=0,
 def solve_field_kernel(hessian, gradient, dim=None,
                        absolute=0, membrane=0, bending=0, factor=1,
                        voxel_size=1, bound='dct2',
-                       optim='relax', max_iter=16, tolerance=1e-5, stop='e',
+                       optim='relax', max_iter=16, tolerance=1e-5, stop='max_gain',
                        verbose=False):
     """Solve a positive-definite linear system of the form (H + L)v = g
 
@@ -1632,7 +1632,7 @@ def solve_field_kernel(hessian, gradient, dim=None,
     optim : {'cg', 'relax'}, default='cg'
     max_iter : int, default=16
     tolerance : float, default=1e-5
-    stop : {'e', 'a'}, default='e'
+    stop : {'diff', 'gain', 'max_gain'}, default='max_gain'
     verbose : int, default=0
 
     Returns

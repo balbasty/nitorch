@@ -285,6 +285,11 @@ def relax_slicers(shape, scheme='checkerboard'):
                                  (int(-l) or None) if q else None,  # stop
                                  bandwidth)                         # stride
                            for o, s, l, q in zip(offset, shape, size_last, quadrant))
+            if any(len(range(*sl.indices(s))) == 0
+                   for sl, s in zip(slicer, shape)):
+                # empty subvolume (e.g., a dimension is shorter than the
+                # bandwidth, so the first quadrant is empty)
+                continue
             slicers.append(slicer)
     # add vector dimension
     slicers = [(*slicer, slice(None)) for slicer in slicers]
