@@ -121,7 +121,7 @@ usage:
             -m, --measure NAME              Entropy: [mi] mutual information,
                                             joint H(mov,fix) (can be degenerate)
         lgmm                            Local Gaussian Mixture entropy
-            -b, --bins                      Number of clusters in the mixture [6]
+            -b, --bins                      Number of clusters in the mixture [3]
             -n, --max-iter VAL              Number of EM iterations [128]
             -m, --measure NAME              Entropy: [mi] mutual information,
                                             joint H(mov,fix) (can be degenerate)
@@ -383,6 +383,8 @@ stride_option = cli.Option('stride', ('-s', '--stride'), nargs='1*', default=1,
                            convert=int, help='Strides between patches.')
 cluster_option = cli.Option('bins', ('-b', '--bins'), nargs=1, default=6,
                             convert=int, help='Number of bins in the mixture')
+local_cluster_option = cli.Option('bins', ('-b', '--bins'), nargs=1, default=3,
+                                  convert=int, help='Number of bins in the mixture')
 kernel_option = cli.Option('kernel', ('-k', '--kernel'), nargs=1, default='g',
                            help='Kernel type: [gauss], square')
 iter_option = cli.Option('max_iter', ('-n', '--max-iter'), nargs=1, default=128,
@@ -422,7 +424,7 @@ loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=Fals
 loss.add_suboption('gmm', cluster_option)
 loss.add_suboption('gmm', iter_option)
 loss.add_suboption('gmm', measure_option)
-loss.add_suboption('lgmm', cluster_option)
+loss.add_suboption('lgmm', local_cluster_option)
 loss.add_suboption('lgmm', patch_option)
 loss.add_suboption('lgmm', stride_option)
 loss.add_suboption('lgmm', kernel_option)

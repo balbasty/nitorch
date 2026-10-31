@@ -2,7 +2,7 @@
 
 The main entry points are:
 - fit_gmm2(x: Tensor, y: Tensor, bins: int = 6, max_iter: int = 20, ...)
-- fit_lgmm2(x: Tensor, y: Tensor, bins: int = 6, max_iter: int = 20,
+- fit_lgmm2(x: Tensor, y: Tensor, bins: int = 3, max_iter: int = 20,
             patch: int|List[int] = 20,  stride: int|List[int] = 1,
             mode: str = 'g', ...)
 """
@@ -653,7 +653,7 @@ def em_loop_local(fwd: Fwd, bwd: Bwd, moments: Tensor, max_iter: int,
     return output
 
 
-def fit_lgmm2(x, y, bins=6, max_iter=20, dim=None,
+def fit_lgmm2(x, y, bins=3, max_iter=20, dim=None,
               patch=None, stride=None, mode='g', theta=None, cache=None):
 
     dim = dim or (x.dim() - 1)

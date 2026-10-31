@@ -132,7 +132,7 @@ def _check_measure(measure):
     return measure
 
 
-def lgmmh(moving, fixed, dim=None, bins=6, patch=20, stride=1,
+def lgmmh(moving, fixed, dim=None, bins=3, patch=20, stride=1,
           grad=True, hess=True, kernel='g', max_iter=128, measure='mi',
           theta=None, return_theta=False):
     """Entropy estimated by a Local Gaussian Mixture Model
@@ -149,8 +149,8 @@ def lgmmh(moving, fixed, dim=None, bins=6, patch=20, stride=1,
         Fixed image
     dim : int, default=`fixed.dim() - 1`
         Number of spatial dimensions
-    bins : int, default=6
-        Number of clusters in the mixture
+    bins : int, default=3
+        Number of clusters in the mixture (in each patch)
     patch : [list of] float, default=20
         Patch size (FWHM if gaussian, full width if square), in voxels
     stride : [list of] int, default=1
@@ -530,7 +530,7 @@ class LGMMH(OptimizationLoss):
 
     order = 2
 
-    def __init__(self, dim=None, bins=6, patch=20, stride=1, kernel='g',
+    def __init__(self, dim=None, bins=3, patch=20, stride=1, kernel='g',
                  max_iter=128, measure='mi', cache=True):
         """
 
@@ -538,8 +538,8 @@ class LGMMH(OptimizationLoss):
         ----------
         dim : int, default=`fixed.dim() - 1`
             Number of spatial dimensions
-        bins : int, default=6
-            Number of clusters in the mixture
+        bins : int, default=3
+            Number of clusters in the mixture (in each patch)
         patch : [list of] float, default=20
             Patch size, in voxels
         stride : [list of] int, default=1
