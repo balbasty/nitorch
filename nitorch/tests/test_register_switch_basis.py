@@ -16,6 +16,7 @@ import itertools
 import pytest
 import torch
 from nitorch import spatial
+from nitorch.tools.registration import objects
 from nitorch.tools.registration.objects import LogAffine, LogAffine2d
 
 BASES = ['translation', 'rotation', 'rigid', 'similitude', 'affine']
@@ -107,3 +108,61 @@ def test_switch_basis_similitude_keeps_matrix():
     sim = LogAffine(torch.randn(7, dtype=torch.double) * 0.3, 'similitude')
     aff = sim.switch_basis('affine')
     assert torch.allclose(aff.exp(), sim.exp(), atol=1e-10, rtol=0)
+
+
+# --- 2D bases and affine model parameters ----------------------------
+
+
+def _embed_2d(basis2d, plane):
+    """Embed (F, 3, 3) 2D generators in the 3D plane orthogonal to `plane`"""
+    axes = [d for d in range(3) if d != plane] + [3]
+    out = basis2d.new_zeros([len(basis2d), 4, 4])
+    for a, i in enumerate(axes):
+        for b, j in enumerate(axes):
+            out[:, i, j] = basis2d[:, a, b]
+    return out
+
+
+@pytest.mark.parametrize('plane', [0, 1, 2])
+@pytest.mark.parametrize('name', BASES)
+def test_logaffine2d_basis(name, plane):
+    """`LogAffine2d` generators are the 2D generators embedded in the plane
+    (except the similitude scale, which is diag(1, 1, 0)/sqrt(3))"""
+    basis = LogAffine2d(name, plane=plane, dtype=torch.double).basis
+    expected = _embed_2d(spatial.affine_basis(name, 2, dtype=torch.double),
+                         plane)
+    assert basis.shape == expected.shape
+    if name == 'similitude':
+        scale = torch.zeros([4, 4], dtype=torch.double)
+        scale.diagonal()[:3] = 3 ** -0.5
+        scale[plane, plane] = 0
+        assert torch.allclose(basis[-1], scale)
+        basis, expected = basis[:-1], expected[:-1]
+    assert torch.allclose(basis, expected)
+
+
+def test_affine2d_model_dat():
+    """`Affine2dModel(..., dat=x)` keeps `x` (it used to land in `optim`)"""
+    x = torch.as_tensor([1., -2., 0.3], dtype=torch.double)
+    model = objects.Affine2dModel('rigid', plane=2,
+                                  ref_affine=torch.eye(4, dtype=torch.double),
+                                  dat=x)
+    assert model.optim is None
+    assert model.dat is not None and torch.equal(model.dat.dat, x)
+    assert model.plane == 2
+
+
+@pytest.mark.parametrize('value', [2., [2., 3., 4.]])
+def test_affine_parameters_mul(value):
+    """With a parameter subset, `mul`/`mul_` scale the optimised parameters
+    and leave the others unchanged"""
+    x = torch.as_tensor([1., -2., 0.5, 0.1, -0.2, 0.3], dtype=torch.double)
+    model = objects.AffineModel('rigid', optim='translation')
+    model.set_dat(x.clone(), dim=3)
+    expected = x.clone()
+    expected[:3] *= torch.as_tensor(value, dtype=torch.double)
+    params = model.parameters()
+    assert torch.allclose(params.mul(value), expected)
+    assert torch.equal(model.dat.dat, x)
+    params.mul_(value)
+    assert torch.allclose(model.dat.dat, expected)
