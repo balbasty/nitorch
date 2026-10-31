@@ -125,3 +125,54 @@ def test_grid_count_batched(order):
     for b in range(3):
         ref = grid_count(grid[b:b+1], [5, 5], interpolation=order)
         assert torch.allclose(count[b:b+1], ref)
+
+
+@pytest.mark.parametrize('norm', ['studholme', 'arithmetic', 'geometric', None])
+@pytest.mark.parametrize('cval', [0., 3.])
+def test_mi_constant_image(norm, cval):
+    # constant moving image: degenerate [min, max] range (incl. min == 0)
+    _, fix = make_data([8, 8, 3], seed=3)
+    mov = torch.full_like(fix, cval)
+    ll, g, h = mi(mov, fix, dim=3, bins=8, order=3, fwhm=0, norm=norm,
+                  grad=True, hess=True)
+    assert torch.isfinite(ll).all()
+    assert torch.isfinite(g).all() and torch.isfinite(h).all()
+
+
+@pytest.mark.parametrize('norm', ['studholme', 'arithmetic', 'geometric', None])
+@pytest.mark.parametrize('masked', [False, True])
+def test_mi_slicewise_constant_slice(norm, masked):
+    mov, fix = make_data([8, 8, 3], seed=4)
+    mov[..., 0] = 0  # slice warped fully out of the field of view
+    mask = None
+    if masked:
+        mask = torch.ones_like(fix)
+        mask[:, :2] = 0
+    loss = SliceWiseLoss(MI(dim=3, bins=8, spline=3, fwhm=0, norm=norm), -1)
+    ll, g, h = loss.loss_grad_hess(mov, fix, mask=mask)
+    assert torch.isfinite(ll)
+    assert torch.isfinite(g).all() and torch.isfinite(h).all()
+    # normal slices are unaffected by the constant one
+    for z in (1, 2):
+        sub = (lambda t: None if t is None else t[..., z:z+1])
+        llz, gz, hz = loss.loss_grad_hess(sub(mov), sub(fix), mask=sub(mask))
+        assert torch.allclose(gz, g[..., z:z+1], rtol=1e-12, atol=0)
+        assert torch.allclose(hz, h[..., z:z+1], rtol=1e-12, atol=0)
+
+
+def test_hist_constant_minmax():
+    from nitorch.core._hist import JointHistCount, HistCount
+    x = torch.zeros([2, 50, 2], dtype=torch.double)
+    x[1] = torch.rand([50, 2], dtype=torch.double)
+    jh = JointHistCount(bins=8, order=3)
+    h = jh.forward(x)
+    assert torch.isfinite(h).all()
+    assert torch.allclose(h[0].sum(), torch.tensor(50.).double())
+    g = jh.backward(torch.rand_like(h), x)
+    assert torch.isfinite(g).all()
+    h1 = HistCount(bins=8, order=3)
+    xx = torch.full([2, 50], 5., dtype=torch.double)
+    hh = h1.forward(xx, min=5., max=5.)
+    assert torch.isfinite(hh).all()
+    assert torch.isfinite(h1.backward(torch.rand_like(hh), xx)).all()
+    assert torch.isfinite(h1.backward2(torch.rand_like(hh), xx)).all()

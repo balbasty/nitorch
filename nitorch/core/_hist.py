@@ -1144,6 +1144,36 @@ def _postproc_grad(g, batch, inshape, dim):
     return g
 
 
+def _guard_range(min, max):
+    """Widen degenerate intensity ranges (max - min <= eps * scale).
+
+    When `max - min` is (numerically) zero -- e.g., a constant image or a
+    constant slice -- the intensity-to-bin mapping divides by zero.
+    In that case the range is widened symmetrically around its center
+    `c` by `delta = max(|c|, 1) / 2`, so that all the mass falls at the
+    center of the histogram and the gradient/Hessian w.r.t. intensities
+    are finite (scaled by `bins / (max - min)`). Non-degenerate ranges
+    are returned untouched (bitwise). Applied per batch element and
+    per channel, to both data-driven and user-supplied limits.
+    """
+    min = torch.as_tensor(min)
+    max = torch.as_tensor(max)
+    if not min.dtype.is_floating_point:
+        min = min.to(max.dtype if max.dtype.is_floating_point
+                     else torch.get_default_dtype())
+    if not max.dtype.is_floating_point:
+        max = max.to(min.dtype)
+    min, max = torch.broadcast_tensors(min, max)
+    scale = torch.maximum(min.abs(), max.abs()).clamp_min(1)
+    bad = (max - min) <= 4 * torch.finfo(min.dtype).eps * scale
+    if bad.any():
+        center = (min + max) / 2
+        delta = center.abs().clamp_min(1) / 2
+        min = torch.where(bad, center - delta, min)
+        max = torch.where(bad, center + delta, max)
+    return min, max
+
+
 def _intensity_to_bin(x, min, max, batch, n):
     # compute limits
     if min is None:
@@ -1163,6 +1193,7 @@ def _intensity_to_bin(x, min, max, batch, n):
         ftype = torch.get_default_dtype()
         x = x.to(ftype)
     x = x.clone()
+    min, max = _guard_range(min.to(x.dtype), max.to(x.dtype))
     x = x.mul_(n / (max - min)).add_(n / (1 - max / min)).sub_(0.5)
 
     return x, min, max
@@ -1280,7 +1311,7 @@ def histc_backward(g, x, min=None, max=None, dim=None, weights=None,
         g, weights = g
 
     # backward pass of linear transform
-    g = g.mul_(n / (max - min)).add_(n / (1 - max / min)).sub_(0.5)
+    g = g.mul_(n / (max - min))
 
     # reshape
     g = _postproc_grad(g, batch, inshape, dim)
@@ -1417,6 +1448,7 @@ class HistCount:
             max = torch.as_tensor(max, **backend).expand(xbatch).reshape([-1, 1])
 
         x = x.clone()
+        min, max = _guard_range(min, max)
         x = x.mul_(self.bins / (max - min)).add_(self.bins / (1 - max / min)).sub_(0.5)
         min = min.reshape(xbatch)
         max = max.reshape(xbatch)
@@ -1425,7 +1457,7 @@ class HistCount:
         h = _histc_forward(x, self.bins, w, self.order, self.bound, self.extrapolate)
 
         # reshape
-        h = h.reshape(h, [*batch, self.bins])
+        h = h.reshape([*batch, self.bins])
         return (h, min, max) if return_minmax else h
 
     def backward(self, g, x, w=None, min=None, max=None):
@@ -1467,6 +1499,7 @@ class HistCount:
             max = torch.as_tensor(max, **backend).expand(xbatch).reshape([-1, 1])
 
         x = x.clone()
+        min, max = _guard_range(min, max)
         x = x.mul_(self.bins / (max - min)).add_(self.bins / (1 - max / min)).sub_(0.5)
 
         # push data into the histogram
@@ -1521,6 +1554,7 @@ class HistCount:
             max = torch.as_tensor(max, **backend).expand(xbatch).reshape([-1, 1])
 
         x = x.clone()
+        min, max = _guard_range(min, max)
         x = x.mul_(self.bins / (max - min)).add_(self.bins / (1 - max / min)).sub_(0.5)
 
         # push data into the histogram
@@ -1590,6 +1624,7 @@ class JointHistCount:
 
         x = x.clone()
         bins = torch.as_tensor(self.bins, **backend)
+        min, max = _guard_range(min, max)
         x = x.mul_(bins / (max - min)).add_(bins / (1 - max / min)).sub_(0.5)
         min = min.reshape([*batch, 2])
         max = max.reshape([*batch, 2])
@@ -1644,7 +1679,9 @@ class JointHistCount:
 
         x = x.clone()
         bins = torch.as_tensor(self.bins, **backend)
+        min, max = _guard_range(min, max)
         x = x.mul_(bins / (max - min)).add_(bins / (1 - max / min)).sub_(0.5)
+        scl = bins / (max - min)  # (B, 1, 2)
         min = min.reshape([*xbatch, 2])
         max = max.reshape([*xbatch, 2])
 
@@ -1658,7 +1695,7 @@ class JointHistCount:
 
         # push data into the histogram
         g = _jhistc_backward(g, x, w, self.order, self.bound, self.extrapolate)
-        g = g.mul_(bins / (max - min))
+        g = g.mul_(scl)
 
         # reshape
         g = g.reshape([*batch, n, 2])
@@ -1709,6 +1746,7 @@ class JointHistCount:
 
         x = x.clone()
         bins = torch.as_tensor(self.bins, **backend)
+        min, max = _guard_range(min, max)
         x = x.mul_(bins / (max - min)).add_(bins / (1 - max / min)).sub_(0.5)
 
         g = g.reshape([-1, *self.bins])
@@ -1790,6 +1828,7 @@ class JointHistCount:
 
         x = x.clone()
         bins = torch.as_tensor(self.bins, **backend)
+        min, max = _guard_range(min, max)
         x = x.mul_(bins / (max - min)).add_(bins / (1 - max / min)).sub_(0.5)
         min = min.reshape([*xbatch, 2])
         max = max.reshape([*xbatch, 2])
