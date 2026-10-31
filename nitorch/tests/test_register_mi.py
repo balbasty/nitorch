@@ -176,3 +176,39 @@ def test_hist_constant_minmax():
     assert torch.isfinite(hh).all()
     assert torch.isfinite(h1.backward(torch.rand_like(hh), xx)).all()
     assert torch.isfinite(h1.backward2(torch.rand_like(hh), xx)).all()
+
+
+WORST = {'studholme': 1., 'arithmetic': 1., 'geometric': 1., None: 0.}
+
+
+@pytest.mark.parametrize('norm', list(WORST))
+@pytest.mark.parametrize('case', ['empty_mask', 'const_moving', 'const_fixed',
+                                  'const_in_mask'])
+def test_mi_no_information_is_worst(norm, case):
+    """Batch elements without information (empty mask, constant image)
+    have zero mutual information, i.e. the worst loss value, and zero
+    gradient/Hessian. The histogram range guard used to make them finite
+    but spuriously *good*: `nitorch affreg` (Powell) then pushed the
+    moving image out of the field of view."""
+    mov, fix = make_data([8, 8, 3], seed=5)
+    mov2, fix2 = make_data([8, 8, 3], seed=6)
+    mov, fix = torch.cat([mov, mov2]), torch.cat([fix, fix2])  # 2 channels
+    mask = None
+    if case == 'empty_mask':
+        mask = torch.ones_like(fix)
+        mask[1] = 0
+    elif case == 'const_moving':
+        mov[1] = 0.3
+    elif case == 'const_fixed':
+        fix[1] = 7.
+    elif case == 'const_in_mask':
+        mask = torch.ones_like(fix)
+        mask[1, :, :4] = 0
+        mov[1, :, 4:] = 0.3
+    kw = dict(dim=3, bins=8, order=3, fwhm=0, norm=norm)
+    ll, g, h = mi(mov, fix, **kw, mask=mask)
+    ll0, g0, h0 = mi(mov[:1], fix[:1], **kw,
+                     mask=None if mask is None else mask[:1])
+    assert torch.allclose(ll, ll0 + WORST[norm])
+    assert (g[1] == 0).all() and (h[1] == 0).all()
+    assert torch.allclose(g[:1], g0) and torch.allclose(h[:1], h0)
