@@ -149,7 +149,13 @@ usage:
         --name NAME                 A name to use with `@nonlin --fov`
     -x, --missing *VAL              Values that should be considered missing [0]
         --no-missing                No value should be considered missing
+<<<<<<< Updated upstream
         --mind  [FWHM=1 [RADIUS=0]] Compute MIND features
+=======
+        --mind  [FWHM=1 [RADIUS=2]] Compute MIND features
+        --anatomix [PATH]           Compute anatomix features (path to local weights;
+                                    bare flag opts into automatic download) [False]
+>>>>>>> Stashed changes
     -c, --channels *C               Channels to load. Can be a range start:stop:step [:]
 
 @affine options:
@@ -185,6 +191,7 @@ usage:
         -v, --voxel-size VAL [UNIT]     Voxel size and unit [100 %]
         -f, --fov *NAMES                Name of inputs used to compute mean space [all]
         -p, --pad VAL [UNIT]            Pad field of view by some amount [0 %]
+        -u, --bound BOUND               Boundary condition [dft]
         -2d [AXIS=2]                    Force transform to be 2d about AXIS
 
 @optim options:
@@ -302,6 +309,9 @@ def convert_device(device):
     return _convert
 
 
+BOUNDS = ['dft', 'dct2', 'dct1', 'dst2', 'dst1', 'zero', 'replicate']
+
+
 parser = cli.CommandParser('register', help=help1, add_help=False)
 parser.add_option('verbose', ('-v', '--verbose'),
                   nargs='?', default=0, convert=int,
@@ -417,7 +427,7 @@ file.add_option('pad', ('-z', '--pad'), nargs='0*',
                 default=[0], convert=number_or_str(float),
                 help='Pad the image. A unit can be provided (default: vox)')
 file.add_option('bound', ('-b', '--bound'), nargs=1, default='dct2',
-                validation=cli.Validations.choice(['dct2', 'dct1', 'dft', 'dst2', 'dst1', 'zero', 'replicate']),
+                validation=cli.Validations.choice(BOUNDS),
                 help='Boundary condition')
 file.add_option('order', ('-n', '--order'), nargs=1, default=1,
                 convert=int, help='Interpolation order')
@@ -574,6 +584,9 @@ nonlin.add_option('voxel_size', ('-v', '--voxel-size'), nargs='1*', default=[100
                   convert=number_or_str(float), help='Voxel size and unit')
 nonlin.add_option('pad', ('-p', '--pad'), nargs='1*', default=[0, '%'],
                   convert=number_or_str(float), help='Pad field of view by some amount')
+nonlin.add_option('bound', ('-u', '--bound'), nargs=1, default='dft',
+                  validation=cli.Validations.choice(BOUNDS),
+                  help='Boundary condition')
 nonlin.add_option('fov', ('-f', '--fov'), nargs='1*',
                   help='Name of inputs used to compute mean space')
 nonlin.add_option('init', ('-i', '--input', '--init'), nargs=1,

@@ -1,46 +1,58 @@
+<<<<<<< Updated upstream
+=======
+import json
+import os
+import sys
+import warnings
+from functools import partial
+
+import torch
+
+from nitorch import io, spatial
+>>>>>>> Stashed changes
 from nitorch.cli.cli import commands
+from nitorch.core import py
 from nitorch.core.cli import ParseError
-from .parser import parser, help
 from nitorch.tools.registration import objects
-from nitorch.tools.registration.pairwise_preproc import (
-    map_image, load_image, preproc_image
+from nitorch.tools.registration.pairwise_makeobj import (
+    make_affine,
+    make_affine_2d,
+    make_affine_optim,
+    make_image,
+    make_loss,
+    make_nonlin,
+    make_nonlin_2d,
+    make_nonlin_optim,
 )
-from nitorch.tools.registration.pairwise_postproc import (
-    warp_images
+from nitorch.tools.registration.pairwise_postproc import warp_images
+from nitorch.tools.registration.pairwise_preproc import (
+    load_image,
+    map_image,
+    preproc_image,
 )
 from nitorch.tools.registration.pairwise_pyramid import (
-    pyramid_levels, concurrent_pyramid, sequential_pyramid
-)
-from nitorch.tools.registration.pairwise_makeobj import (
-    make_image, make_loss,
-    make_affine, make_affine_2d, make_affine_optim,
-    make_nonlin, make_nonlin_2d, make_nonlin_optim
+    concurrent_pyramid,
+    pyramid_levels,
+    sequential_pyramid,
 )
 from nitorch.tools.registration.pairwise_run import run
-from nitorch import io, spatial
-from nitorch.core import py
-import torch
-import sys
-import os
-import json
-import warnings
+
+from .parser import help, parser
 
 
 def cli(args=None):
-    f"""Command-line interface for `register`
-
-    {help[1]}
-
-    """
 
     # Exceptions are dealt with here
     try:
         _cli(args)
     except ParseError as e:
         print(help[1])
-        print(f'[ERROR] {str(e)}', file=sys.stderr)
+        print(f'[ERROR] {e!s}', file=sys.stderr)
     # except Exception as e:
     #     print(f'[ERROR] {str(e)}', file=sys.stderr)
+
+
+cli.__doc__ = help[1]
 
 
 commands['register'] = cli
@@ -60,7 +72,7 @@ def _cli(args):
 
     if options.verbose > 3:
         print(options)
-        print('')
+        print()
 
     _main(options)
 
@@ -100,27 +112,29 @@ def _main(options):
 
         # initialization
         affine_init = options.affine.init
-        if isinstance(affine_init, str):
-            if affine_init.lower() in ('fov', 'com'):
-                if affine_init.lower() == 'fov':
-                    get_center = 'get_center'
-                else:
-                    get_center = 'get_center_of_mass'
-                loss_list = losses if isinstance(losses, list) else [losses]
-                num = den = 0
-                for loss_sum in loss_list:
-                    for loss in loss_sum:
-                        fix = getattr(loss.fixed, get_center)()
-                        mov = getattr(loss.moving, get_center)()
-                        wgt = 0.5 * (
-                            torch.Size(fix.shape[1:]).numel() +
-                            torch.Size(mov.shape[1:]).numel()
-                        )
-                        num += (mov - fix) * wgt
-                        den += wgt
-                shift = num / den
-                affine_init = torch.eye(4)
-                affine_init[:-1, -1] = shift
+        if (
+            isinstance(affine_init, str) and
+            affine_init.lower() in ('fov', 'com')
+        ):
+            if affine_init.lower() == 'fov':
+                get_center = 'get_center'
+            else:
+                get_center = 'get_center_of_mass'
+            loss_list = losses if isinstance(losses, list) else [losses]
+            num = den = 0
+            for loss_sum in loss_list:
+                for loss in loss_sum:
+                    fix = getattr(loss.fixed, get_center)()
+                    mov = getattr(loss.moving, get_center)()
+                    wgt = 0.5 * (
+                        torch.Size(fix.shape[1:]).numel() +
+                        torch.Size(mov.shape[1:]).numel()
+                    )
+                    num += (mov - fix) * wgt
+                    den += wgt
+            shift = num / den
+            affine_init = torch.eye(4)
+            affine_init[:-1, -1] = shift
 
         # build affine object
         if options.affine.is2d is not False:
@@ -141,12 +155,12 @@ def _main(options):
     images = [image_dict[key] for key in (getattr(options.nonlin, 'fov', None) or image_dict)]
     nonlin = None
     if options.nonlin:
-        options.nonlin.penalty = dict(
-            absolute=options.nonlin.absolute,
-            membrane=options.nonlin.membrane,
-            bending=options.nonlin.bending,
-            lame=options.nonlin.lame,
-        )
+        options.nonlin.penalty = {
+            "absolute": options.nonlin.absolute,
+            "membrane": options.nonlin.membrane,
+            "bending": options.nonlin.bending,
+            "lame": options.nonlin.lame,
+        }
         if options.nonlin.is2d is not False:
             if isinstance(losses[0], objects.SumSimilarity):
                 affine0 = losses[0][0].fixed.affine

@@ -76,12 +76,34 @@ def make_image(dat, mask=None, affine=None,
     if mind:
         fwhm, radius = make_list(mind, 2, default=2)
         for level in image:
+<<<<<<< Updated upstream
             level.preview = level.dat
             level.dat = spatial.rmind(level.dat, dim=dim,
                                      radius=int(radius), fwhm=fwhm,
                                      bound=level.bound)
             level.dat = utils.movedim(level.dat, -1, 0)
             level.dat = level.dat.reshape([-1, *level.shape])
+=======
+            raw = level.dat
+            level.preview = raw
+            feats = []
+            if mind:
+                fwhm, radius = make_list(mind, 2, default=2)
+                mind_feat = spatial.mind(raw, dim=dim,
+                                          radius=int(radius), fwhm=fwhm,
+                                          bound=level.bound)
+                mind_feat = utils.movedim(mind_feat, -1, 0)
+                mind_feat = mind_feat.reshape([-1, *level.shape])
+                feats.append(mind_feat)
+            if anatomix is not None:
+                if raw.shape[0] != 1:
+                    raise ValueError(
+                        f"anatomix expects a single-channel image, got "
+                        f"{raw.shape[0]} channels"
+                    )
+                feats.append(extractor(raw[None])[0])
+            level.dat = feats[0] if len(feats) == 1 else torch.cat(feats, dim=0)
+>>>>>>> Stashed changes
 
     if discretize:
         if soft:
@@ -183,7 +205,8 @@ def make_affine_2d(plane, affine_ref, basis='rigid', position='symmetric',
 
 
 def make_nonlin(shape_or_init=None, model='svf', affine=None, voxel_size=None,
-                pad=None, factor=1, penalty=None, device=None, **kwargs):
+                pad=None, factor=1, penalty=None, device=None, bound="dft",
+                **kwargs):
     """Build an NonlinModel object
 
     Parameters
@@ -200,6 +223,7 @@ def make_nonlin(shape_or_init=None, model='svf', affine=None, voxel_size=None,
     pad : [list of] int or float, optional
     penalty : dict, optional
     device : torch.device, optional
+    bound : str, optional
 
     Returns
     -------
@@ -268,13 +292,14 @@ def make_nonlin(shape_or_init=None, model='svf', affine=None, voxel_size=None,
             space = objects.Space(shape, affine, voxel_size)
 
         # allocate data
-        vel = objects.Displacement(space.shape, affine=space.affine, device=device)
+        vel = objects.Displacement(
+            space.shape, affine=space.affine, device=device, bound=bound)
 
     # build model
     Model = objects.NonLinModel.subclass(model)
     if isinstance(factor, (list, tuple)):
         factor = factor[0]
-    nonlin = Model(dat=vel, factor=factor, penalty=penalty, **kwargs)
+    nonlin = Model(dat=vel, factor=factor, penalty=penalty, bound=bound, **kwargs)
     return nonlin
 
 

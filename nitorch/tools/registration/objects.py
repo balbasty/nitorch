@@ -776,7 +776,7 @@ class Displacement(SpatialTensor, DenseTransform):
     Data + Metadata (affine) of a displacement or velocity field (in voxels)
     """
 
-    def __init__(self, dat, affine=None, **backend):
+    def __init__(self, dat, affine=None, bound='dft', **backend):
         """
         Parameters
         ----------
@@ -790,23 +790,23 @@ class Displacement(SpatialTensor, DenseTransform):
             dim = len(shape)
             dat = torch.zeros([*shape, dim], **backend)
         super().__init__(dat, affine)
+        self.bound = bound
 
     @property
     def shape(self):
         return self.dat.shape[-self.dim-1:-1]
 
-    _upkwargs = dict(
-        interpolation=3,
-        bound='dft',
-        anchor='e',
-        extrapolate=True,
-        type='displacement',
-    )
+    _upkwargs = {
+        'interpolation': 3,
+        'anchor': 'e',
+        'extrapolate': True,
+        'type': 'displacement',
+    }
 
     def downsample_(self, factor=2, **kwargs):
         new_shape = [int(math.ceil(s/factor)) for s in self.shape]
         kwargs.setdefault('shape', new_shape)
-        upkwargs = dict(self._upkwargs)
+        upkwargs = dict(self._upkwargs, bound=self.bound)
         upkwargs.update(kwargs)
         self.dat, self.affine = spatial.resize_grid(
             self.dat, affine=self.affine, **upkwargs)
@@ -815,7 +815,7 @@ class Displacement(SpatialTensor, DenseTransform):
     def downsample(self, factor=2, **kwargs):
         new_shape = [int(math.ceil(s/factor)) for s in self.shape]
         kwargs.setdefault('shape', new_shape)
-        upkwargs = dict(self._upkwargs)
+        upkwargs = dict(self._upkwargs, bound=self.bound)
         upkwargs.update(kwargs)
         dat, aff = spatial.resize_grid(
             self.dat, affine=self.affine, **upkwargs)
@@ -824,7 +824,7 @@ class Displacement(SpatialTensor, DenseTransform):
     def upsample_(self, factor=2, **kwargs):
         new_shape = [int(math.floor(s*factor)) for s in self.shape]
         kwargs.setdefault('shape', new_shape)
-        upkwargs = dict(self._upkwargs)
+        upkwargs = dict(self._upkwargs, bound=self.bound)
         upkwargs.update(kwargs)
         self.dat, self.affine = spatial.resize_grid(
             self.dat, affine=self.affine, **upkwargs)
@@ -833,7 +833,7 @@ class Displacement(SpatialTensor, DenseTransform):
     def upsample(self, factor=2, **kwargs):
         new_shape = [int(math.floor(s*factor)) for s in self.shape]
         kwargs.setdefault('shape', new_shape)
-        upkwargs = dict(self._upkwargs)
+        upkwargs = dict(self._upkwargs, bound=self.bound)
         upkwargs.update(kwargs)
         dat, aff = spatial.resize_grid(
             self.dat, affine=self.affine, **upkwargs)
@@ -1386,7 +1386,7 @@ class NonLinModel(TransformationModel):
             return obj
 
     def __init__(self, dat=None, factor=1, penalty=None,
-                 steps=8, kernel=None, **backend):
+                 steps=8, kernel=None, bound="dft", **backend):
         """
 
         Parameters
@@ -1402,10 +1402,13 @@ class NonLinModel(TransformationModel):
             Number of integration steps.
         kernel : tensor, optional
             Pre-computed Greens kernel.
+        bound : str, default="dft"
+            Boundary conditions.
         **backend
         """
         super().__init__()
         self.factor = factor
+        self.bound = bound
         self.penalty = dict(penalty or regutils.defaults_velocity())
         if factor is not None:
             self.penalty['factor'] = factor
@@ -1488,9 +1491,16 @@ class NonLinModel(TransformationModel):
         factor = penalty.pop('factor')
         return spatial.regulariser_grid(v, **penalty,
                                         factor=factor / py.prod(self.shape),
-                                        voxel_size=self.voxel_size)
+                                        voxel_size=self.voxel_size,
+                                        bound=self.bound)
 
     def greens_apply(self, m):
+        if self.bound not in ("dft", "wrap", "circulat"):
+            raise ValueError(
+                f"When the Greens kernel is applied (shoot model, "
+                f"Hilbert preconditioner), the boundary condition must "
+                f"be 'dft' (or 'wrap'), not '{self.bound}'."
+            )
         return spatial.greens_apply(m, self.kernel, self.factor, self.voxel_size)
 
     def downsample_(self, factor=2, **kwargs):
@@ -1535,6 +1545,14 @@ class ShootModel(NonLinModel):
     """Initial velocity exponentiated by geodesic shooting"""
 
     model = 'shoot'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.bound not in ("dft", "wrap", "circulat"):
+            raise ValueError(
+                f"When the shoot model is used,  the boundary condition "
+                f"must be 'dft' (or 'wrap'), not '{self.bound}'."
+            )
 
     def set_dat(self, dat, affine=None, **backend):
         super().set_dat(dat, affine, **backend)
@@ -1699,6 +1717,7 @@ class SVFModel(NonLinModel):
         if recompute or self._cache is None:
             grid = spatial.exp_forward(v, steps=self.steps,
                                        jacobian=jacobian,
+                                       bound=self.bound,
                                        displacement=True)
         else:
             grid = self._cache
@@ -1721,6 +1740,7 @@ class SVFModel(NonLinModel):
         if recompute or self._icache is None:
             igrid = spatial.exp_forward(v, steps=self.steps,
                                         jacobian=jacobian, inverse=True,
+                                        bound=self.bound,
                                         displacement=True)
         else:
             igrid = self._icache
@@ -1741,9 +1761,11 @@ class SVFModel(NonLinModel):
         if jacobian:
             grid, jac = spatial.exp_forward(v, steps=self.steps,
                                             jacobian=True,
+                                            bound=self.bound,
                                             displacement=True)
             igrid, ijac = spatial.exp_forward(v, steps=self.steps,
                                               jacobian=True, inverse=True,
+                                              bound=self.bound,
                                               displacement=True)
             if cache_result:
                 self._cache = grid
@@ -1755,6 +1777,7 @@ class SVFModel(NonLinModel):
         else:
             if recompute or self._cache is None:
                 grid = spatial.exp_forward(v, steps=self.steps,
+                                           bound=self.bound,
                                            jacobian=False,
                                            displacement=True)
             else:
@@ -1762,6 +1785,7 @@ class SVFModel(NonLinModel):
             if recompute or self._icache is None:
                 igrid = spatial.exp_forward(v, steps=self.steps,
                                             jacobian=False, inverse=True,
+                                            bound=self.bound,
                                             displacement=True)
             else:
                 igrid = self._icache
@@ -1790,7 +1814,7 @@ class SVFModel(NonLinModel):
         """
         if inv:
             g = g.neg_()
-        kwargs = dict(bound='dft', extrapolate=True)
+        kwargs = dict(bound=self.bound, extrapolate=True)
 
         # build bits of warp
         dim = phi.shape[-1]
@@ -1830,7 +1854,7 @@ class SmallDefModel(NonLinModel):
             v = self.dat.dat
         grid = v
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement', bound=self.bound)
         if add_identity:
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
@@ -1841,13 +1865,13 @@ class SmallDefModel(NonLinModel):
         if v is None:
             v = self.dat.dat
         if recompute or self._icache is None:
-            grid = spatial.grid_inv(v, type='disp', **self.penalty)
+            grid = spatial.grid_inv(v, type='disp', **self.penalty, bound=self.bound)
         else:
             grid = self._icache
         if cache_result:
             self._icache = grid
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement', bound=self.bound)
         if add_identity:
             grid = self.add_identity(grid)
         return (grid, jac) if jacobian else grid
@@ -1859,14 +1883,14 @@ class SmallDefModel(NonLinModel):
             v = self.dat.dat
         grid = v
         if recompute or self._icache is None:
-            igrid = spatial.grid_inv(v, type='disp', **self.penalty)
+            igrid = spatial.grid_inv(v, type='disp', **self.penalty, bound=self.bound)
         else:
             igrid = self._icache
         if cache_result:
             self._icache = igrid
         if jacobian:
-            jac = spatial.grid_jacobian(grid, type='displacement')
-            ijac = spatial.grid_jacobian(igrid, type='displacement')
+            jac = spatial.grid_jacobian(grid, type='displacement', bound=self.bound)
+            ijac = spatial.grid_jacobian(igrid, type='displacement', bound=self.bound)
         if add_identity:
             grid = self.add_identity(grid)
             igrid = self.add_identity(igrid)
@@ -1899,8 +1923,8 @@ class SmallDefModel(NonLinModel):
         # (If `inv`, we assume that inv(Id + D) = Id - D)
         if right is not None:
             right = spatial.affine_grid(right, fixed_shape)
-        g = regutils.smart_push(g, right, shape=self.shape)
-        h = regutils.smart_push(h, right, shape=self.shape)
+        g = regutils.smart_push(g, right, shape=self.shape, bound=self.bound)
+        h = regutils.smart_push(h, right, shape=self.shape, bound=self.bound)
         del right
 
         phi_left = spatial.identity_grid(self.shape, **utils.backend(phi))

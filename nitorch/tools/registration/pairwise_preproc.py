@@ -127,7 +127,7 @@ def preproc_image(input, mask=None, label=False, missing=0,
             unit = 'vox'
         pad = make_list(pad, dim)
         if unit == 'mm':
-            voxel_size = spatial.voxel_size(affine)
+            voxel_size = spatial.voxel_size(affine0)
             pad = torch.as_tensor(pad, **utils.backend(voxel_size))
             pad = pad / voxel_size
             pad = pad.floor().int().tolist()
@@ -150,7 +150,7 @@ def preproc_image(input, mask=None, label=False, missing=0,
         else:
             unit = 'vox'
         if unit == 'mm':
-            voxel_size = spatial.voxel_size(affine)
+            voxel_size = spatial.voxel_size(affine0)
             fwhm = torch.as_tensor(fwhm, **utils.backend(voxel_size))
             fwhm = fwhm / voxel_size
         dat = spatial.smooth(dat, dim=dim, fwhm=fwhm, bound=bound)
