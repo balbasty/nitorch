@@ -535,8 +535,8 @@ def make_loss(loss, slicewise=False, **kwargs):
         - tuk[ey]:       Tukey's biweight
         - ncc:           Normalized Cross Correlation
         - lncc:          Local Normalized Cross Correlation
-        - gmm:           Entropy of a Gaussian Mixture
-        - lgmm:          Entropy of a Local Gaussian Mixture
+        - gmmi or gmm:   Gaussian Mixture Mutual Information
+        - lgmmi or lgmm: Local Gaussian Mixture Mutual Information
         - cat[egorical]: Categorical cross-entropy
         - dice:          Dice
         - dot:           Dot product
@@ -553,12 +553,12 @@ def make_loss(loss, slicewise=False, **kwargs):
     spline (or order), if 'mi' or 'ent' : {0..7}
     weight, if 'mse', 'mad' or 'tuk' : float or None
     joint, if 'mad' or 'tuk' : bool
-    patch, if 'lcc' or 'lgmm' : [list of] float
-    stride, if 'lcc' or 'lgmm' : [list of] int
-    kernel, if 'lcc' or 'lgmm' : {'gaussian', 'hat'}
-    max_iter, if 'gmm', 'lgmm' : int
-    bins, if 'gmm', 'lgmm' : int
-    measure, if 'gmm', 'lgmm' : {'mi', 'joint'}
+    patch, if 'lcc' or 'lgmmi' : [list of] float
+    stride, if 'lcc' or 'lgmmi' : [list of] int
+    kernel, if 'lcc' or 'lgmmi' : {'gaussian', 'hat'}
+    max_iter, if 'gmmi', 'lgmmi' : int
+    bins, if 'gmmi', 'lgmmi' : int
+    measure, if 'gmmi', 'lgmmi' : {'mi', 'joint'}, default='mi'
     weighted, if 'dice' : list[float]
 
     Returns
@@ -594,9 +594,9 @@ def make_loss(loss, slicewise=False, **kwargs):
         lossobj = losses.CC()
     elif loss in ('lcc', 'lncc'):
         lossobj = losses.LCC(**kwargs)
-    elif loss == 'gmm':
+    elif loss in ('gmmi', 'gmm'):
         lossobj = losses.GMMH(**kwargs)
-    elif loss == 'lgmm':
+    elif loss in ('lgmmi', 'lgmm'):
         lossobj = losses.LGMMH(**kwargs)
     elif loss == 'cat':
         lossobj = losses.Cat(log=False)

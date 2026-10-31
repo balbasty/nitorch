@@ -36,8 +36,8 @@ usage:
         tuk, tukey                      Tukey's biweight function (can be weighted)
         cc, ncc                         Correlation coefficient (= Normalized cross correlation)
         lcc, lncc                       Local correlation coefficient
-        gmm                             Gaussian Mixture entropy
-        lgmm                            Local Gaussian Mixture entropy
+        gmmi, gmm                       Gaussian Mixture Mutual Information
+        lgmmi, lgmm                     Local Gaussian Mixture Mutual Information
         emmi                            EM-based Mutual Information
         cat, cce                        Categorical cross-entropy
         dice, f1                        Dice coefficient
@@ -115,16 +115,12 @@ usage:
                                             (gauss: FWHM; square: full width)
                 --stride *VAL               Stride between patches [1]
             -k, --kernel VAL                Kernel type: [gauss]/square
-        gmm                             Gaussian Mixture entropy
+        gmmi, gmm                       Gaussian Mixture Mutual Information
             -b, --bins                      Number of clusters in the mixture [6]
             -n, --max-iter VAL              Number of EM iterations [128]
-            -m, --measure NAME              Entropy: [mi] mutual information,
-                                            joint H(mov,fix) (can be degenerate)
-        lgmm                            Local Gaussian Mixture entropy
+        lgmmi, lgmm                     Local Gaussian Mixture Mutual Information
             -b, --bins                      Number of clusters in the mixture [3]
             -n, --max-iter VAL              Number of EM iterations [128]
-            -m, --measure NAME              Entropy: [mi] mutual information,
-                                            joint H(mov,fix) (can be degenerate)
             -p, --patch *VAL [UNIT]         Patch size [10] and unit: vox, mm, [pct]
                                             (gauss: FWHM; square: full width)
             -k, --kernel VAL                Kernel type: [gauss]/square
@@ -355,8 +351,9 @@ parser.add_option('framerate', ('-r', '--framerate'), nargs=1, convert=float,
 # Loss group
 loss_aliases = {'nmi': 'mi', 'l1': 'mad', 'l2': 'mse', 'tukey': 'tuk',
                 'ncc': 'cc', 'lncc': 'lcc', 'cce': 'cat', 'f1': 'dice',
-                'entropy': 'ent', 'sqz': 'squeezed'}
-loss_choices = list(loss_aliases.values()) + ['gmm', 'lgmm', 'emmi', 'prod', 'dot', 'ndot', 'extra']
+                'entropy': 'ent', 'sqz': 'squeezed',
+                'gmm': 'gmmi', 'lgmm': 'lgmmi'}
+loss_choices = list(loss_aliases.values()) + ['emmi', 'prod', 'dot', 'ndot', 'extra']
 loss_choices = cli.Positional('name', nargs='?', default='mi',
                               validation=cli.Validations.choice(loss_choices),
                               convert=lambda x: loss_aliases.get(x, x),
@@ -389,9 +386,6 @@ kernel_option = cli.Option('kernel', ('-k', '--kernel'), nargs=1, default='g',
                            help='Kernel type: [gauss], square')
 iter_option = cli.Option('max_iter', ('-n', '--max-iter'), nargs=1, default=128,
                          convert=int, help='Maximum number of EM iterations')
-measure_option = cli.Option('measure', ('-m', '--measure'), nargs=1, default='mi',
-                            validation=cli.Validations.choice(['mi', 'joint']),
-                            help='Entropy measure: [mi], joint')
 loss.add_suboption('mi', 'norm', ('-m', '--norm'),
                    validation=cli.Validations.choice(['studholme', 'arithmetic', 'geometric', 'no']),
                    nargs='1', default='studholme',
@@ -420,15 +414,13 @@ loss.add_suboption('tuk', joint_option)
 loss.add_suboption('dice', 'weight', ('-w', '--weight'), nargs='*', default=False,
                    convert=float, action=cli.Actions.store_true,
                    help='Weight of each class')
-loss.add_suboption('gmm', cluster_option)
-loss.add_suboption('gmm', iter_option)
-loss.add_suboption('gmm', measure_option)
-loss.add_suboption('lgmm', local_cluster_option)
-loss.add_suboption('lgmm', patch_option)
-loss.add_suboption('lgmm', stride_option)
-loss.add_suboption('lgmm', kernel_option)
-loss.add_suboption('lgmm', iter_option)
-loss.add_suboption('lgmm', measure_option)
+loss.add_suboption('gmmi', cluster_option)
+loss.add_suboption('gmmi', iter_option)
+loss.add_suboption('lgmmi', local_cluster_option)
+loss.add_suboption('lgmmi', patch_option)
+loss.add_suboption('lgmmi', stride_option)
+loss.add_suboption('lgmmi', kernel_option)
+loss.add_suboption('lgmmi', iter_option)
 # fix/mov subgroups
 file = cli.Group('file', n=1, help='Volume to register')
 file.add_positional('files', nargs='1*', help='File names')
