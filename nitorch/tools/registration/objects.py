@@ -338,13 +338,19 @@ class SpatialTensor:
     dtype = property(lambda self: self.dat.dtype)
     device = property(lambda self: self.dat.device)
 
+    @property
+    def _float_dtype(self):
+        """Floating point dtype to use for computations on this image"""
+        dtype = self.dtype
+        return dtype if dtype.is_floating_point else torch.get_default_dtype()
+
     def _prm_as_str(self):
         s = [f'shape={list(self.shape)}']
         v = [f'{vx:.2g}' for vx in self.voxel_size.tolist()]
         v = ', '.join(v)
         s += [f'voxel_size=[{v}]']
         if self.dtype != torch.float32:
-            s += [f'dtype={str(torch.int32).split(".")[-1]}']
+            s += [f'dtype={str(self.dtype).split(".")[-1]}']
         if self.device.type != 'cpu':
             s += [f'device={self.device.type}']
         return s
@@ -423,21 +429,25 @@ class Image(SpatialTensor):
 
         """
         out = []
+        # Interpolation must happen in floating point, even if the
+        # image is not (e.g., discretized images are integers).
+        dtype = self._float_dtype
         if dat or (preview and not self.previewed):
-            img = regutils.smart_pull(self.dat, grid, bound=self.bound,
+            img = regutils.smart_pull(self.dat.to(dtype), grid,
+                                      bound=self.bound,
                                       extrapolate=self.extrapolate)
             if dat:
                 out += [img]
         if mask:
             msk = None
             if self.masked:
-                msk = self.mask.to(self.dtype)
+                msk = self.mask.to(dtype)
                 msk = regutils.smart_pull(msk, grid, bound=self.bound,
                                           extrapolate=self.extrapolate)
             out += [msk]
         if preview:
             if self.previewed:
-                prv = self.preview.to(self.dtype)
+                prv = self.preview.to(dtype)
                 prv = regutils.smart_pull(prv, grid, bound=self.bound,
                                           extrapolate=self.extrapolate)
             else:
@@ -462,7 +472,8 @@ class Image(SpatialTensor):
         """
         if grid is None:
             return self.grad()
-        grad = spatial.grid_grad(self.dat, grid, bound=self.bound,
+        dat = self.dat.to(self._float_dtype)
+        grad = spatial.grid_grad(dat, grid, bound=self.bound,
                                  extrapolate=self.extrapolate)
         if rotate:
             jac = spatial.grid_jacobian(grid)
@@ -479,13 +490,14 @@ class Image(SpatialTensor):
         grad : (C, *spatial, dim) tensor
 
         """
-        return spatial.diff(self.dat, dim=list(range(-self.dim, 0)),
+        dat = self.dat.to(self._float_dtype)
+        return spatial.diff(dat, dim=list(range(-self.dim, 0)),
                             bound=self.bound)
 
     def get_center(self):
         """Compute the RAS coordinate of the center of the field of view."""
         ndim = self.ndim
-        dtype = self.dtype if self.dtype.is_floating_point else torch.get_default_dtype()
+        dtype = self._float_dtype
         backend = dict(dtype=dtype, device=self.device)
         affine = self.affine.to(**backend)
         shape = torch.as_tensor(self.shape, **backend)
