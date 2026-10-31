@@ -252,7 +252,7 @@ usage:
             --min-vx                    Minimum voxel size along a dimension
         -l, --levels *LVL               Pyramid levels. Can be a range start:stop:step [:3]
         -c, --concurrent                Register pyramid levels concurrently [false]
-        -e, --eps EPS                   Scale the nonlin regularisation across levels [1]:
+        -e, --eps EPS                   Scale the nonlin regularisation across levels [2]:
                                         reg[n] = reg[0] * (vx[n] / vx[0]) ** EPS
                                         (0 = same regularisation at all levels)
 
@@ -656,7 +656,7 @@ pyr.add_option('max_vx', '--max-vx', nargs=1, convert=float)
 pyr.add_option('levels', ('-l', '--levels'), nargs='1*', convert=parse_range, default=[range(3)])
 pyr.add_option('concurrent', ('-c', '--concurrent'), nargs='?', convert=bool_or_str,
                default=False, action=cli.Actions.store_true)
-pyr.add_option('reg_eps', ('-e', '--eps'), nargs=1, convert=float, default=1.,
+pyr.add_option('reg_eps', ('-e', '--eps'), nargs=1, convert=float, default=2.,
                help='Scaling exponent of the nonlinear regularisation across '
                     'pyramid levels: reg[n] = reg[0] * (vx[n]/vx[0]) ** EPS')
 
