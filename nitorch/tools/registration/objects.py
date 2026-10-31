@@ -2068,8 +2068,10 @@ class AffineModel(TransformationModel):
 
         def __init__(self, model: "AffineModel"):
             self.model = model
+            self._dat = None  # own storage (set by `clone`)
 
-        dat = property(lambda self: self.model.dat.dat)
+        dat = property(lambda self: (self.model.dat.dat if self._dat is None
+                                     else self._dat))
         shape = property(lambda self: self.dat.shape)
         dtype = property(lambda self: self.dat.dtype)
         device = property(lambda self: self.dat.device)
@@ -2089,6 +2091,19 @@ class AffineModel(TransformationModel):
             if self.optim not in (None, self.basis):
                 return spatial.affine_basis_size(self.optim, self.model._truedim)
             return len(self.dat)
+
+        def clone(self):
+            """Copy of the parameters, detached from the model's storage"""
+            new = type(self)(self.model)
+            new._dat = self.dat.clone()
+            return new
+
+        def copy_(self, other):
+            """Copy values (Parameters or tensor in the full basis)"""
+            if isinstance(other, AffineModel.Parameters):
+                other = other.dat
+            self.dat.copy_(other)
+            return self
 
         def add_(self, value, **kwargs):
             self.dat.add_(self._switch(value), **kwargs)

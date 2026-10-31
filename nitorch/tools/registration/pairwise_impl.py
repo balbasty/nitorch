@@ -40,6 +40,21 @@ from .objects import SVFModel, ShootModel, MeanSpace, Nonlin2dModel, SumSimilari
 #      too large, it would allow us to use Gauss-Newton directly.
 
 
+
+def _new_figure():
+    """New matplotlib figure, or None (with a warning) if unavailable"""
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+    try:
+        return plt.figure()
+    except Exception as e:  # e.g. broken interactive backend
+        import warnings
+        warnings.warn(f'Cannot create a figure ({e}): live plotting is '
+                      f'disabled.')
+        return None
+
 class PairwiseRegister:
     """A class that registers pairs of images"""
 
@@ -257,12 +272,13 @@ class PairwiseRegisterStep:
         self.figure = figure
         self._last_plot = 0
         self._plot_lock = Lock()
+        self._plot_pending = None
         if self.verbose > 2 and not self.figure:
-            import matplotlib.pyplot as plt
-            self.figure = plt.figure()
-            self._plot_pending = None
+            self.figure = _new_figure()
 
     def mov2fix(self, *args, **kwargs):
+        if not self.figure:  # matplotlib unavailable: no live plot
+            return
         thread = Thread(target=(lambda: self._mov2fix(*args, **kwargs)))
         if self._plot_lock.locked():
             self._plot_pending = thread

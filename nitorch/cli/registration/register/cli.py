@@ -189,9 +189,17 @@ def _main(options):
     # ------------------------------------------------------------------
     #                           BACKEND STUFF
     # ------------------------------------------------------------------
-    if options.verbose > 1:
-        import matplotlib
-        matplotlib.use('TkAgg')
+    # Plotting (-v >= 3) uses matplotlib's default backend selection, which
+    # honours MPLBACKEND / matplotlibrc and falls back to a non-interactive
+    # backend (Agg) when no display is available. Without matplotlib, the
+    # registration runs without live plots.
+    if options.verbose > 2:
+        try:
+            import matplotlib  # noqa: F401
+        except ImportError:
+            import warnings
+            warnings.warn('matplotlib is not installed: live plotting is '
+                          'disabled.')
 
     # local losses may benefit from selecting the best conv
     if hasattr(torch.backends, 'cudnn'):
