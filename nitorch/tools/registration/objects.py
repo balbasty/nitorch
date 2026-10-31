@@ -4,6 +4,7 @@ from nitorch.core import py, utils, linalg
 import torch
 from . import losses, utils as regutils
 import copy
+import functools
 import math
 
 
@@ -871,6 +872,116 @@ class Displacement(SpatialTensor, DenseTransform):
         return type(self)(dat, aff, dim=self.dim)
 
 
+# --- Affine Lie bases ------------------------------------------------
+#
+# All the affine bases used by the registration are orthonormal for the
+# Frobenius inner product <A, B> = trace(A^T B) of homogeneous
+# (D+1, D+1) matrices: translations E_{i,D}, rotations
+# (E_ij - E_ji)/sqrt(2), zooms E_ii, shears (E_ij + E_ji)/sqrt(2) and the
+# similitude scale I_D/sqrt(D) (zero in the homogeneous corner).
+# The bases of `LogAffine2d` are the 2D bases embedded in a plane of
+# the 3D space, so they are orthonormal too.
+#
+# Let B_X be the (F_X, (D+1)**2) matrix whose rows are the flattened
+# generators of basis X, so that x in X encodes the log-matrix x^T B_X.
+# Its orthogonal projection onto span(B_Y) has coordinates
+#       y = M x,    with M = B_Y B_X^T    (Gram matrix, [F_Y, F_X]).
+# If span(B_X) is contained in span(B_Y), the log-matrix (hence the
+# matrix) is kept, and M^T M = I.
+# If the model lives in Y but only the parameters of X are optimised,
+# a step d is applied as M d, so the chain rule gives the gradient
+# M^T g, and <M^T g, d> = <g, M d> holds by construction.
+
+_AFFINE_PREFIXES = {'tr': 'T', 'ro': 'SO', 'ri': 'SE', 'si': 'CSO', 'af': 'Aff+'}
+
+
+def _affine_group(name):
+    """Canonical `spatial.affine_basis` group of an affine basis name.
+
+    Accepts the registration names ('rigid', ...) and their prefixes
+    ('rig', ...), as well as the `spatial.affine_basis` groups and aliases.
+    """
+    group = _AFFINE_PREFIXES.get(str(name)[:2].lower(), None)
+    if group is not None:
+        return group
+    if name in spatial.affine_basis_choices:
+        return name
+    for group, aliases in spatial.affine_basis_aliases.items():
+        if name in aliases:
+            return group
+    raise ValueError(f'Unknown affine basis: {name}')
+
+
+def _affine_generators(name, dim=3, plane=None, **backend):
+    """Lie generators of an affine basis, as a (F, dim+1, dim+1) tensor.
+
+    If `plane` is not None, these are the generators of the
+    (dim-1)-dimensional basis, embedded in the hyperplane orthogonal
+    to axis `plane` (as used by `LogAffine2d`).
+    """
+    group = _affine_group(name)
+    if plane is None:
+        return spatial.affine_basis(group, dim, **backend)
+    basis = spatial.affine_basis(group, dim - 1, **backend)
+    axes = [d for d in range(dim) if d != plane] + [dim]
+    axes = torch.as_tensor(axes, device=basis.device)
+    out = basis.new_zeros([len(basis), dim + 1, dim + 1])
+    out[:, axes[:, None], axes[None, :]] = basis
+    return out
+
+
+@functools.lru_cache(maxsize=None)
+def _affine_gram_double(src, dst, dim, plane):
+    """Gram matrix B_dst B_src^T (CPU, double) and whether dst contains src"""
+    bsrc = _affine_generators(src, dim, plane, dtype=torch.double)
+    bdst = _affine_generators(dst, dim, plane, dtype=torch.double)
+    gram = bdst.reshape([len(bdst), -1]).matmul(bsrc.reshape([len(bsrc), -1]).T)
+    # Shared generators give entries that are integers up to rounding
+    # (e.g. 2 * (1/sqrt(2))**2): snap them so that they are copied exactly.
+    rgram = gram.round()
+    gram = torch.where((gram - rgram).abs() < 1e-12, rgram, gram)
+    eye = torch.eye(len(bsrc), dtype=torch.double)
+    contains = torch.allclose(gram.T.matmul(gram), eye, atol=1e-12, rtol=0)
+    return gram, contains
+
+
+@functools.lru_cache(maxsize=None)
+def _affine_gram_cached(src, dst, dim, plane, dtype, device):
+    return _affine_gram_double(src, dst, dim, plane)[0].to(dtype=dtype, device=device)
+
+
+def _affine_gram(src, dst, dim=3, plane=None, dtype=None, device=None):
+    """Map from Lie parameters in basis `src` to Lie parameters in basis `dst`.
+
+    Returns the Gram matrix M = B_dst B_src^T, of shape [F_dst, F_src]
+    (see the comment above). It is cached and shared: do not modify it.
+    """
+    src, dst = _affine_group(src), _affine_group(dst)
+    plane = None if plane is None else int(plane)
+    dtype = dtype or torch.get_default_dtype()
+    device = torch.device(device or 'cpu')
+    return _affine_gram_cached(src, dst, dim, plane, dtype, device)
+
+
+def _affine_contains(dst, src, dim=3, plane=None):
+    """True if span(basis `dst`) contains span(basis `src`)"""
+    plane = None if plane is None else int(plane)
+    src, dst = _affine_group(src), _affine_group(dst)
+    return _affine_gram_double(src, dst, dim, plane)[1]
+
+
+def _affine_switch(dat, src, dst, dim=3, plane=None):
+    """Map Lie parameters `dat` (..., F_src) from basis `src` to basis `dst`.
+
+    Exact if `dst` contains `src`, orthogonal projection of the
+    log-matrix onto `dst` otherwise.
+    """
+    if _affine_group(src) == _affine_group(dst):
+        return dat.clone()
+    gram = _affine_gram(src, dst, dim, plane, dat.dtype, dat.device)
+    return dat.matmul(gram.T)
+
+
 class LogAffine(AffineTransform):
     """Data + Metadata (basis) of a "Lie" affine matrix"""
     def __init__(self, dat=None, basis=None, *, optim=None, dim=3, **backend):
@@ -932,20 +1043,14 @@ class LogAffine(AffineTransform):
     def cpu_(self):
         return self.to_('cpu')
 
+    _plane = None  # `LogAffine2d`: normal axis of the plane of the 2D basis
+
     @property
     def basis(self):
         if self._basis is None:
-            # begin_rot = self.dim
-            # begin_scl = begin_rot + (self.dim*(self.dim-1))//2
-            # if self._basis_name == 'affine':
-            #     end_scl = begin_scl + self.dim
-            # else:
-            #     end_scl = begin_scl + 1
-            self._basis = spatial.affine_basis(self._basis_name, self.dim,
-                                               **utils.backend(self.dat))
-            # self._basis[begin_rot:begin_scl] /= 40  # rotations ~ 1 deg
-            # self._basis[begin_scl:end_scl] /= 40    # scalings  ~ 1 pct
-            # self._basis[end_scl:] /= 40             # shears
+            self._basis = _affine_generators(self._basis_name, self.dim,
+                                             self._plane,
+                                             **utils.backend(self.dat))
         return self._basis
 
     @basis.setter
@@ -957,106 +1062,39 @@ class LogAffine(AffineTransform):
         """
         Transform gradients wrt to all parameters into gradients wrt
         optimized parameters.
+
+        grad : (..., F_basis, D+1, D+1) -> (..., F_optim, D+1, D+1)
         """
-        optim = (self.optim or self._basis_name)[:3].lower()
-        basis = self._basis_name[:3].lower()
-        D = self.dim
-        D2 = (D*(D-1)) // 2
-        if optim == "tra":
-            if basis == "rot":
-                raise ValueError("Cannot optimize translation in a rotation basis")
-            return grad[..., :D, :, :]
-        if optim == "rot":
-            if basis == "tra":
-                raise ValueError("Cannot optimize rotation in a translation basis")
-            if basis == "rot":
-                return grad
-            return grad[..., D:D+D2, :, :]
-        if optim == "rig":
-            if basis in ("tra", "rot"):
-                raise ValueError("Cannot optimize rigid in a rotation or translation basis")
-            return grad[..., :D+D2, :, :]
-        if optim == "sim":
-            if basis in ("tra", "rot", "rig"):
-                raise ValueError("Cannot optimize similitude in a rigid basis")
-            if basis == "sim":
-                return grad
-            else:
-                grig = grad[..., :D+D2, :, :]
-                gscl = grad[..., D+D2:2*D+D2, :, :]
-                gscl = gscl.sum(-3, keepdim=True)
-                return torch.cat([grig, gscl], dim=-3)
-        if optim == "aff":
-            if basis != "aff":
-                raise ValueError("Cannot optimize affine in a rigid or similitude basis")
+        if self.optim is None:
             return grad
-        assert False, f"Unknown (optim, basis): ({optim}, {basis})"
+        optim, basis = _affine_group(self.optim), _affine_group(self._basis_name)
+        if optim == basis:
+            return grad
+        if not _affine_contains(basis, optim, self.dim, self._plane):
+            raise ValueError(f"Cannot optimize {self.optim} in a "
+                             f"{self._basis_name} basis")
+        # Steps are applied as `M @ step` (`_switch_basis`), so the
+        # gradient wrt the optimised parameters is `M.T @ grad`.
+        gram = _affine_gram(optim, basis, self.dim, self._plane,
+                            grad.dtype, grad.device)
+        return torch.einsum('...kij,kl->...lij', grad, gram)
 
     @classmethod
     def _switch_basis(cls, dat, src, dst, dim=3):
-        # Map Lie parameters from basis `src` to basis `dst`.
-        # Components that `dst` shares with `src` are copied, the others
-        # are zero (so a step in `src` is embedded exactly in a larger
-        # `dst`) or dropped (projection onto a smaller `dst`).
-        # The similitude scale `s` stands for zooms `(s, ..., s)`, so
-        # affine -> similitude takes the mean zoom. This matches
-        # `_optim_grad` (which sums the zoom gradients), but not the
-        # similitude basis itself, whose scale generator is
-        # `I/sqrt(dim)` (3D): `switch_basis` between similitude and
-        # affine does not keep the matrix.
-        src_dat = dat
-        dst_dat = None
-        dst = dst[:2].lower()
-        src = src[:2].lower()
-        if dst[0] == 't':
-            if src == 'ro':
-                dst_dat = src_dat.new_zeros([dim])
-            else:
-                dst_dat = src_dat[:dim].clone()
-        elif dst == 'ro':
-            nb_prm = dim*(dim-1)//2
-            if src == 'ro':
-                dst_dat = src_dat.clone()
-            elif len(src_dat) >= dim + nb_prm:
-                dst_dat = src_dat[dim:dim+nb_prm].clone()
-            else:
-                dst_dat = src_dat.new_zeros([nb_prm])
-                dat1 = src_dat[dim:dim+nb_prm]
-                dst_dat[:len(dat1)] = dat1
-        elif dst[0] == 'r':
-            nb_prm = dim + dim*(dim-1)//2
-            if src == 'ro':
-                dst_dat = src_dat.new_zeros([nb_prm])
-                dst_dat[dim:] = src_dat
-            elif len(src_dat) >= nb_prm:
-                dst_dat = src_dat[:nb_prm].clone()
-            else:
-                dst_dat = src_dat.new_zeros([nb_prm])
-                dst_dat[:len(src_dat)] = src_dat
-        elif dst[0] == 's':
-            nb_prm = dim + dim*(dim-1)//2 + 1
-            dst_dat = src_dat.new_zeros([nb_prm])
-            if src == 'ro':
-                dst_dat[dim:-1] = src_dat
-            elif src[0] == 'a':
-                dst_dat[:nb_prm-1] = src_dat[:nb_prm-1]
-                dst_dat[-1] = src_dat[nb_prm-1:nb_prm-1+dim].mean()
-            else:
-                dst_dat[:len(src_dat)] = src_dat
-        else:
-            nb_prm = dim*(dim+1)
-            dst_dat = src_dat.new_zeros([nb_prm])
-            if src == 'ro':
-                dst_dat[dim:dim+dim*(dim-1)//2] = src_dat
-            elif src[0] == 's':
-                dst_dat[:len(src_dat)-1] = src_dat[:-1]
-                dst_dat[len(src_dat)-1:len(src_dat)+dim-1] = src_dat[-1]
-            else:
-                dst_dat[:len(src_dat)] = src_dat
-        return dst_dat
+        """Map Lie parameters from basis `src` to basis `dst`.
+
+        `dst` = M `src`, with M = B_dst B_src^T the Gram matrix of the
+        (orthonormal) generators. If `dst` contains `src`, the log-matrix
+        (hence the matrix) is kept; otherwise this is its orthogonal
+        projection onto the `dst` generators.
+        """
+        return _affine_switch(dat, src, dst, dim)
 
     def switch_basis(self, basis):
-        """Return a transform with the same log-parameters but a different basis
+        """Return the same transform, encoded in a different basis
+
+        If the new basis cannot represent the transform exactly, its
+        log-matrix is projected (orthogonally) onto the new basis.
 
         Parameters
         ----------
@@ -1170,129 +1208,19 @@ class LogAffine2d(LogAffine):
             plane = (0 if plane in 'RL' else 1 if plane in 'AP' else 2)
         self.plane = plane
 
-    def _make_basis_2d(self):
-        if self._basis is not None:
-            if self._basis_name[0].lower() == 't':
-                if self.plane == 0:
-                    idx = [1, 2]
-                elif self.plane == 1:
-                    idx = [0, 2]
-                else:
-                    idx = [0, 1]
-            elif self._basis_name[:2].lower() == 'ro':
-                if self.plane == 0:
-                    idx = [2]
-                elif self.plane == 1:
-                    idx = [1]
-                else:
-                    idx = [0]
-            elif self._basis_name[0].lower() in 'rs':
-                if self.plane == 0:
-                    idx = [1, 2, 5]
-                elif self.plane == 1:
-                    idx = [0, 2, 4]
-                else:
-                    idx = [0, 1, 3]
-                if self._basis_name[0].lower() == 's':
-                    idx += [6]
-            else:
-                if self.plane == 0:
-                    idx = [1, 2, 5, 7, 8, 11]
-                elif self.plane == 1:
-                    idx = [0, 2, 4, 6, 8, 10]
-                else:
-                    idx = [0, 1, 3, 6, 7, 9]
-
-            self._basis = self._basis[idx]
-            if self._basis_name[0].lower() == 's':
-                if self.plane == 0:
-                    idx = 0
-                elif self.plane == 1:
-                    idx = 1
-                else:
-                    idx = 2
-                self._basis[3][idx, idx] = 0
-
-    @property
-    def basis(self):
-        make_basis_2d = self._basis is None
-        _ = super().basis
-        if make_basis_2d:
-            self._make_basis_2d()
-        return self._basis
-
-    @basis.setter
-    def basis(self, x):
-        self._basis_name = x
-        self._basis = None
-
-    def _optim_grad(self, grad):
-        """
-        Transform gradients wrt to all parameters into gradients wrt
-        optimized parameters.
-        """
-        dim = self.dim
-        self.dim = 2
-        grad = super()._optim_grad(grad)
-        self.dim = dim
-        return grad
+    _plane = property(lambda self: self.plane)
 
     @classmethod
-    def _switch_basis(cls, dat, src, dst):
-        dim = 2
-        src_dat = dat
-        dst_dat = None
-        dst = dst[:2].lower()
-        src = src[:2].lower()
-        if dst[0] == 't':
-            if src == 'ro':
-                dst_dat = src_dat.new_zeros([dim])
-            else:
-                dst_dat = src_dat[:dim].clone()
-        elif dst == 'ro':
-            nb_prm = dim*(dim-1)//2
-            if src == 'ro':
-                dst_dat = src_dat.clone()
-            elif len(src_dat) >= dim + nb_prm:
-                dst_dat = src_dat[dim:dim+nb_prm].clone()
-            else:
-                dst_dat = src_dat.new_zeros([nb_prm])
-                dat1 = src_dat[dim:dim+nb_prm]
-                dst_dat[:len(dat1)] = dat1
-        elif dst[0] == 'r':
-            nb_prm = dim + dim*(dim-1)//2
-            if src == 'ro':
-                dst_dat = src_dat.new_zeros([nb_prm])
-                dst_dat[dim:] = src_dat
-            elif len(src_dat) >= nb_prm:
-                dst_dat = src_dat[:nb_prm].clone()
-            else:
-                dst_dat = src_dat.new_zeros([nb_prm])
-                dst_dat[:len(src_dat)] = src_dat
-        elif dst[0] == 's':
-            nb_prm = dim + dim*(dim-1)//2 + 1
-            dst_dat = src_dat.new_zeros([nb_prm])
-            if src == 'ro':
-                dst_dat[dim:-1] = src_dat
-            elif src[0] == 'a':
-                dst_dat[:nb_prm-1] = src_dat[:nb_prm-1]
-                dst_dat[-1] = src_dat[nb_prm-1:nb_prm-1+dim].mean()
-            else:
-                dst_dat[:len(src_dat)] = src_dat
-        else:
-            nb_prm = dim*(dim+1)
-            dst_dat = src_dat.new_zeros([nb_prm])
-            if src == 'ro':
-                dst_dat[dim:dim+dim*(dim-1)//2] = src_dat
-            elif src[0] == 's':
-                dst_dat[:len(src_dat)-1] = src_dat[:-1]
-                dst_dat[len(src_dat)-1:len(src_dat)+dim-1] = src_dat[-1]
-            else:
-                dst_dat[:len(src_dat)] = src_dat
-        return dst_dat
+    def _switch_basis(cls, dat, src, dst, plane=0, dim=3):
+        """Map Lie parameters from 2D basis `src` to 2D basis `dst`
+        (see `LogAffine._switch_basis`)."""
+        return _affine_switch(dat, src, dst, dim, plane)
 
     def switch_basis(self, basis):
-        """Return a transform with the same log-parameters but a different basis
+        """Return the same transform, encoded in a different basis
+
+        If the new basis cannot represent the transform exactly, its
+        log-matrix is projected (orthogonally) onto the new basis.
 
         Parameters
         ----------
@@ -1307,7 +1235,8 @@ class LogAffine2d(LogAffine):
         """
         dat = None
         if self._basis_name is not None and self.dat is not None:
-            dat = self._switch_basis(self.dat, self._basis_name, basis)
+            dat = self._switch_basis(self.dat, self._basis_name, basis,
+                                     self.plane, self.dim)
         return LogAffine2d(dat, basis, dim=self.dim, optim=self.optim,
                            plane=self.plane, rotation=self.rotation)
 
@@ -2185,9 +2114,17 @@ class AffineModel(TransformationModel):
         optim = property(lambda self: self.model.optim)
         basis = property(lambda self: self.model.basis_name)
 
+        def _gram(self, value):
+            # map from the optimised parameters to the model parameters
+            dat = self.model.dat
+            return _affine_gram(self.optim, self.basis, dat.dim, dat._plane,
+                                value.dtype, value.device)
+
         def _switch(self, value):
             if self.optim not in (None, self.basis):
-                value = LogAffine._switch_basis(value, self.optim, self.basis, self.model.dat.dim)
+                value = torch.as_tensor(value, dtype=self.dtype,
+                                        device=self.device)
+                value = value.matmul(self._gram(value).T)
             return value
 
         def __len__(self):
@@ -2217,11 +2154,15 @@ class AffineModel(TransformationModel):
             return self.dat.add(self._switch(value), **kwargs)
 
         def _switch_mul(self, value):
-            # factor for the optimised parameters; one for the others
+            # Factor for the optimised parameters; one for the others.
+            # A model parameter takes the factor of the optimised
+            # parameter it is made of (e.g., all zooms take the factor of
+            # the similitude scale), hence the support of the Gram matrix.
             if self.optim not in (None, self.basis):
                 value = torch.as_tensor(value, dtype=self.dtype,
                                         device=self.device)
-                value = self._switch(value.expand([len(self)]) - 1) + 1
+                value = value.expand([len(self)]) - 1
+                value = value.matmul((self._gram(value) != 0).to(value).T) + 1
             return value
 
         def mul_(self, value, **kwargs):
@@ -2425,13 +2366,6 @@ class AffineModel(TransformationModel):
 
 class Affine2dModel(AffineModel):
     """A 2D affine in a 3D world"""
-
-    class Parameters(AffineModel.Parameters):
-
-        def _switch(self, value):
-            if self.optim not in (None, self.basis):
-                value = LogAffine2d._switch_basis(value, self.optim, self.basis)
-            return value
 
     def __init__(self, basis, plane, ref_affine=None, factor=1, penalty=None,
                  dat=None, position='symmetric'):

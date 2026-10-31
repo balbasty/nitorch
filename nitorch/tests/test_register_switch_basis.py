@@ -1,16 +1,15 @@
-"""Tests for `LogAffine._switch_basis` / `LogAffine2d._switch_basis`.
+"""Tests for the affine Lie bases of the registration objects and for
+`LogAffine._switch_basis` / `LogAffine2d._switch_basis` / `_optim_grad`.
 
-`_switch_basis(x, src, dst)` maps Lie parameters from one affine basis
-to another. Its parameter layout is `spatial.affine_basis(name, dim)`
-(translations, rotations, zooms, shears), except that the similitude
-scale `s` stands for zooms `(s, ..., s)`: its generator is the sum of
-the affine zoom generators, which is what `LogAffine._optim_grad`
-assumes when it sums the zoom gradients.
-
-With that generator set:
+Every basis is orthonormal for the Frobenius inner product of the
+homogeneous matrices (3D, 2D, and 2D embedded in each plane of the 3D
+space). `_switch_basis(x, src, dst)` is `M x` with the Gram matrix
+`M = B_dst B_src^T` of the generators, so:
 - if `dst` contains `src`, the log-matrix (hence the matrix) is kept;
 - otherwise the result is the orthogonal (Frobenius) projection of the
   log-matrix onto the span of the `dst` generators.
+When only a sub-basis is optimised, `_optim_grad` applies `M^T`, so
+that `<optim_grad(g), d> == <g, switch(d)>`.
 """
 import itertools
 import pytest
@@ -27,90 +26,9 @@ CONTAINS = {  # dst -> set of src it can represent exactly
     'similitude': {'translation', 'rotation', 'rigid', 'similitude'},
     'affine': set(BASES),
 }
-
-
-def _generators(name, dim):
-    basis = spatial.affine_basis(name, dim, dtype=torch.double)
-    if name == 'similitude':
-        scale = torch.zeros([dim + 1, dim + 1], dtype=torch.double)
-        scale.diagonal()[:dim] = 1
-        basis = torch.cat([basis[:-1], scale[None]])
-    return basis
-
-
-def _switch(x, src, dst, dim):
-    if dim == 2:
-        return LogAffine2d._switch_basis(x, src, dst)
-    return LogAffine._switch_basis(x, src, dst, dim)
-
-
-def _logm(x, basis):
-    return (x[:, None, None] * basis).sum(0)
-
-
-@pytest.mark.parametrize('dim', [2, 3])
-@pytest.mark.parametrize('src,dst', list(itertools.product(BASES, BASES)))
-def test_switch_basis(src, dst, dim):
-    torch.manual_seed(1234)
-    bsrc, bdst = _generators(src, dim), _generators(dst, dim)
-    x = torch.randn(len(bsrc), dtype=torch.double) * 0.3
-    y = _switch(x, src, dst, dim)
-    assert y.shape == (len(bdst),)
-    log_src = _logm(x, bsrc)
-    log_dst = _logm(y, bdst)
-    if src in CONTAINS[dst]:
-        assert torch.allclose(torch.matrix_exp(log_dst),
-                              torch.matrix_exp(log_src), atol=1e-10, rtol=0)
-    else:
-        mat = bdst.reshape(len(bdst), -1).T
-        proj = torch.linalg.lstsq(mat, log_src.reshape(-1, 1)).solution[:, 0]
-        assert torch.allclose(y, proj, atol=1e-10, rtol=0)
-
-
-@pytest.mark.parametrize('src,dst', list(itertools.product(BASES, BASES)))
-def test_switch_basis_2d_copy(src, dst):
-    """The 2D copy matches the generic one called with dim=2"""
-    torch.manual_seed(1234)
-    x = torch.randn(spatial.affine_basis_size(src, 2), dtype=torch.double)
-    assert torch.equal(LogAffine2d._switch_basis(x, src, dst),
-                       LogAffine._switch_basis(x, src, dst, 2))
-
-
-OPTIM_PAIRS = [(o, b) for b in BASES for o in BASES
-               if o != b and o in CONTAINS[b]]
-
-
-@pytest.mark.parametrize('dim', [2, 3])
-@pytest.mark.parametrize('optim,basis', OPTIM_PAIRS)
-def test_switch_basis_matches_optim_grad(optim, basis, dim):
-    """`AffineModel.Parameters` applies steps with `_switch_basis(step,
-    optim, basis)` while gradients come from `_optim_grad`: the two must
-    be transposes of each other, <optim_grad(g), d> = <g, switch(d)>."""
-    torch.manual_seed(1234)
-    if dim == 2:
-        aff = LogAffine2d(basis, optim=optim, dtype=torch.double)
-    else:
-        aff = LogAffine(basis, optim=optim, dim=dim, dtype=torch.double)
-    g = torch.randn(spatial.affine_basis_size(basis, dim), dtype=torch.double)
-    d = torch.randn(spatial.affine_basis_size(optim, dim), dtype=torch.double)
-    gopt = aff._optim_grad(g[:, None, None])[:, 0, 0]
-    assert gopt.shape == d.shape
-    lhs = gopt.dot(d)
-    rhs = g.dot(_switch(d, optim, basis, dim))
-    assert torch.allclose(lhs, rhs, atol=1e-10, rtol=0)
-
-
-@pytest.mark.xfail(strict=True, reason='similitude basis scale generator is '
-                   'I/sqrt(dim), but _switch_basis treats s as zooms '
-                   '(s, s, s); see module docstring')
-def test_switch_basis_similitude_keeps_matrix():
-    torch.manual_seed(1234)
-    sim = LogAffine(torch.randn(7, dtype=torch.double) * 0.3, 'similitude')
-    aff = sim.switch_basis('affine')
-    assert torch.allclose(aff.exp(), sim.exp(), atol=1e-10, rtol=0)
-
-
-# --- 2D bases and affine model parameters ----------------------------
+# (dim, plane): 3D, 2D, and 2D embedded in the plane orthogonal to `plane`
+SPACES = [(3, None), (2, None), (3, 0), (3, 1), (3, 2)]
+SPACE_IDS = ['3d', '2d', 'plane0', 'plane1', 'plane2']
 
 
 def _embed_2d(basis2d, plane):
@@ -123,22 +41,177 @@ def _embed_2d(basis2d, plane):
     return out
 
 
+def _generators(name, dim, plane):
+    """Reference generators (built independently of `objects`)"""
+    if plane is None:
+        return spatial.affine_basis(name, dim, dtype=torch.double)
+    return _embed_2d(spatial.affine_basis(name, 2, dtype=torch.double), plane)
+
+
+def _logaffine(name, dim, plane, dat=None, optim=None):
+    if plane is None:
+        return LogAffine(dat, name, dim=dim, optim=optim, dtype=torch.double)
+    return LogAffine2d(dat, name, plane=plane, optim=optim, dtype=torch.double)
+
+
+def _switch(x, src, dst, dim, plane):
+    if plane is None:
+        return LogAffine._switch_basis(x, src, dst, dim)
+    return LogAffine2d._switch_basis(x, src, dst, plane)
+
+
+def _logm(x, basis):
+    return (x[:, None, None] * basis).sum(0)
+
+
+def _nb_prm(name, dim, plane):
+    return spatial.affine_basis_size(name, dim if plane is None else 2)
+
+
+@pytest.mark.parametrize('dim,plane', SPACES, ids=SPACE_IDS)
+@pytest.mark.parametrize('name', BASES)
+def test_basis_orthonormal(name, dim, plane):
+    """B B^T = I (Frobenius inner product of the homogeneous matrices),
+    for the bases the registration uses and for the reference ones"""
+    basis = _logaffine(name, dim, plane).basis
+    assert basis.shape == (_nb_prm(name, dim, plane), dim + 1, dim + 1)
+    for b in (basis, _generators(name, dim, plane)):
+        b = b.reshape([len(b), -1])
+        eye = torch.eye(len(b), dtype=torch.double)
+        assert torch.allclose(b @ b.T, eye, atol=1e-12, rtol=0)
+
+
 @pytest.mark.parametrize('plane', [0, 1, 2])
 @pytest.mark.parametrize('name', BASES)
 def test_logaffine2d_basis(name, plane):
     """`LogAffine2d` generators are the 2D generators embedded in the plane
-    (except the similitude scale, which is diag(1, 1, 0)/sqrt(3))"""
+    (including the similitude scale, which is diag(1, 1, 0)/sqrt(2))"""
     basis = LogAffine2d(name, plane=plane, dtype=torch.double).basis
-    expected = _embed_2d(spatial.affine_basis(name, 2, dtype=torch.double),
-                         plane)
+    expected = _generators(name, 3, plane)
     assert basis.shape == expected.shape
+    assert torch.allclose(basis, expected, atol=1e-15, rtol=0)
     if name == 'similitude':
         scale = torch.zeros([4, 4], dtype=torch.double)
-        scale.diagonal()[:3] = 3 ** -0.5
+        scale.diagonal()[:3] = 2 ** -0.5
         scale[plane, plane] = 0
-        assert torch.allclose(basis[-1], scale)
-        basis, expected = basis[:-1], expected[:-1]
-    assert torch.allclose(basis, expected)
+        assert torch.allclose(basis[-1], scale, atol=1e-15, rtol=0)
+
+
+@pytest.mark.parametrize('dim,plane', SPACES, ids=SPACE_IDS)
+@pytest.mark.parametrize('src,dst', list(itertools.product(BASES, BASES)))
+def test_switch_basis(src, dst, dim, plane):
+    torch.manual_seed(1234)
+    bsrc, bdst = _generators(src, dim, plane), _generators(dst, dim, plane)
+    x = torch.randn(len(bsrc), dtype=torch.double) * 0.3
+    y = _switch(x, src, dst, dim, plane)
+    assert y.shape == (len(bdst),)
+    log_src = _logm(x, bsrc)
+    log_dst = _logm(y, bdst)
+    if src in CONTAINS[dst]:
+        assert torch.allclose(log_dst, log_src, atol=1e-12, rtol=0)
+        assert torch.allclose(torch.matrix_exp(log_dst),
+                              torch.matrix_exp(log_src), atol=1e-12, rtol=0)
+    else:
+        mat = bdst.reshape(len(bdst), -1).T
+        proj = torch.linalg.lstsq(mat, log_src.reshape(-1, 1)).solution[:, 0]
+        assert torch.allclose(y, proj, atol=1e-12, rtol=0)
+
+
+@pytest.mark.parametrize('dim,plane', SPACES, ids=SPACE_IDS)
+@pytest.mark.parametrize('name', BASES)
+def test_switch_basis_same(name, dim, plane):
+    """Switching to the same basis copies the parameters exactly"""
+    x = torch.randn(_nb_prm(name, dim, plane), dtype=torch.double)
+    y = _switch(x, name, name, dim, plane)
+    assert torch.equal(y, x) and y.data_ptr() != x.data_ptr()
+
+
+@pytest.mark.parametrize('plane', [0, 1, 2])
+@pytest.mark.parametrize('src,dst', list(itertools.product(BASES, BASES)))
+def test_switch_basis_2d_copy(src, dst, plane):
+    """The embedded 2D switch matches the generic one called with dim=2"""
+    torch.manual_seed(1234)
+    x = torch.randn(spatial.affine_basis_size(src, 2), dtype=torch.double)
+    assert torch.allclose(LogAffine2d._switch_basis(x, src, dst, plane),
+                          LogAffine._switch_basis(x, src, dst, 2),
+                          atol=1e-15, rtol=0)
+
+
+OPTIM_PAIRS = [(o, b) for b in BASES for o in BASES
+               if o != b and o in CONTAINS[b]]
+
+
+@pytest.mark.parametrize('dim,plane', SPACES, ids=SPACE_IDS)
+@pytest.mark.parametrize('optim,basis', OPTIM_PAIRS)
+def test_switch_basis_matches_optim_grad(optim, basis, dim, plane):
+    """`AffineModel.Parameters` applies steps with `_switch_basis(step,
+    optim, basis)` while gradients come from `_optim_grad`: the two must
+    be adjoint, <optim_grad(g), d> = <g, switch(d)> (for matrix-valued
+    gradients g)."""
+    torch.manual_seed(1234)
+    aff = _logaffine(basis, dim, plane, optim=optim)
+    g = torch.randn([_nb_prm(basis, dim, plane), dim + 1, dim + 1],
+                    dtype=torch.double)
+    d = torch.randn(_nb_prm(optim, dim, plane), dtype=torch.double)
+    gopt = aff._optim_grad(g)
+    assert gopt.shape == (len(d), dim + 1, dim + 1)
+    lhs = torch.einsum('kij,k->ij', gopt, d)
+    rhs = torch.einsum('kij,k->ij', g, _switch(d, optim, basis, dim, plane))
+    assert torch.allclose(lhs, rhs, atol=1e-12, rtol=0)
+
+
+@pytest.mark.parametrize('dim,plane', [(3, None), (3, 1)], ids=['3d', 'plane1'])
+@pytest.mark.parametrize('optim,basis', OPTIM_PAIRS)
+def test_optim_grad_chain_rule(optim, basis, dim, plane):
+    """`exp(grad=True)` with a sub-basis returns the derivative of the
+    matrix wrt the optimised parameters p, where q = switch(p)"""
+    torch.manual_seed(1234)
+    p = torch.randn(_nb_prm(optim, dim, plane), dtype=torch.double) * 0.3
+    q = _switch(p, optim, basis, dim, plane)
+    aff = _logaffine(basis, dim, plane, dat=q.clone(), optim=optim)
+    _, grad = aff.exp(grad=True)
+    bas = _generators(basis, dim, plane)
+    jac = torch.autograd.functional.jacobian(
+        lambda p: torch.matrix_exp(_logm(_switch(p, optim, basis, dim, plane), bas)), p)
+    assert torch.allclose(grad, jac.movedim(-1, 0), atol=1e-10, rtol=0)
+
+
+@pytest.mark.parametrize('optim,basis', [('rigid', 'translation'),
+                                         ('similitude', 'rigid'),
+                                         ('affine', 'similitude')])
+def test_optim_grad_not_contained(optim, basis):
+    aff = LogAffine(basis, optim=optim, dtype=torch.double)
+    g = torch.zeros([spatial.affine_basis_size(basis), 4, 4], dtype=torch.double)
+    with pytest.raises(ValueError):
+        aff._optim_grad(g)
+
+
+@pytest.mark.parametrize('dim,plane', SPACES, ids=SPACE_IDS)
+def test_switch_basis_similitude_keeps_matrix(dim, plane):
+    """similitude -> affine keeps the matrix, and back is a round-trip"""
+    torch.manual_seed(1234)
+    x = torch.randn(_nb_prm('similitude', dim, plane), dtype=torch.double) * 0.3
+    sim = _logaffine('similitude', dim, plane, dat=x)
+    aff = sim.switch_basis('affine')
+    assert type(aff) is type(sim) and aff.dat.shape == (_nb_prm('affine', dim, plane),)
+    assert torch.allclose(aff.exp(), sim.exp(), atol=1e-12, rtol=0)
+    back = aff.switch_basis('similitude')
+    assert torch.allclose(back.dat, x, atol=1e-12, rtol=0)
+    assert torch.allclose(back.exp(), sim.exp(), atol=1e-12, rtol=0)
+
+
+def test_affine_model_switch_basis():
+    """`AffineModel.switch_basis` keeps the transform when the new basis
+    contains the old one"""
+    torch.manual_seed(1234)
+    x = torch.randn(7, dtype=torch.double) * 0.3
+    model = objects.AffineModel('similitude', dat=x.clone())
+    new = model.switch_basis('affine')
+    assert new.basis_name == 'affine' and len(new.dat.dat) == 12
+    assert torch.allclose(new.exp(), model.exp(), atol=1e-12, rtol=0)
+
+
+# --- affine model parameters -----------------------------------------
 
 
 def test_affine2d_model_dat():
@@ -166,3 +239,34 @@ def test_affine_parameters_mul(value):
     assert torch.equal(model.dat.dat, x)
     params.mul_(value)
     assert torch.allclose(model.dat.dat, expected)
+
+
+def test_affine_parameters_mul_similitude():
+    """A factor on the similitude scale applies to every zoom"""
+    torch.manual_seed(1234)
+    x = torch.randn(12, dtype=torch.double)
+    model = objects.AffineModel('affine', optim='similitude')
+    model.set_dat(x.clone(), dim=3)
+    factor = torch.arange(1., 8., dtype=torch.double)
+    expected = x.clone()
+    expected[:6] *= factor[:6]
+    expected[6:9] *= factor[6]
+    assert torch.allclose(model.parameters().mul(factor), expected)
+
+
+@pytest.mark.parametrize('plane', [0, 1, 2])
+def test_affine2d_parameters_add(plane):
+    """`Affine2dModel` parameters apply sub-basis steps with the 2D switch"""
+    torch.manual_seed(1234)
+    model = objects.Affine2dModel('affine', plane=plane,
+                                  ref_affine=torch.eye(4, dtype=torch.double))
+    model.set_dat(dtype=torch.double)
+    model.optim = 'similitude'
+    params = model.parameters()
+    assert len(params) == 4
+    step = torch.randn(4, dtype=torch.double)
+    params.add_(step)
+    expected = LogAffine2d._switch_basis(step, 'similitude', 'affine', plane)
+    assert torch.allclose(model.dat.dat, expected, atol=1e-15, rtol=0)
+    sim = LogAffine2d(step, 'similitude', plane=plane)
+    assert torch.allclose(model.dat.exp(), sim.exp(), atol=1e-12, rtol=0)
