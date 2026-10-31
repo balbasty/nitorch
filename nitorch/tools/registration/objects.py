@@ -994,12 +994,25 @@ class LogAffine(AffineTransform):
 
     @classmethod
     def _switch_basis(cls, dat, src, dst, dim=3):
+        # Map Lie parameters from basis `src` to basis `dst`.
+        # Components that `dst` shares with `src` are copied, the others
+        # are zero (so a step in `src` is embedded exactly in a larger
+        # `dst`) or dropped (projection onto a smaller `dst`).
+        # The similitude scale `s` stands for zooms `(s, ..., s)`, so
+        # affine -> similitude takes the mean zoom. This matches
+        # `_optim_grad` (which sums the zoom gradients), but not the
+        # similitude basis itself, whose scale generator is
+        # `I/sqrt(dim)` (3D): `switch_basis` between similitude and
+        # affine does not keep the matrix.
         src_dat = dat
         dst_dat = None
         dst = dst[:2].lower()
         src = src[:2].lower()
         if dst[0] == 't':
-            dst_dat = src_dat[:dim].clone()
+            if src == 'ro':
+                dst_dat = src_dat.new_zeros([dim])
+            else:
+                dst_dat = src_dat[:dim].clone()
         elif dst == 'ro':
             nb_prm = dim*(dim-1)//2
             if src == 'ro':
@@ -1015,7 +1028,7 @@ class LogAffine(AffineTransform):
             if src == 'ro':
                 dst_dat = src_dat.new_zeros([nb_prm])
                 dst_dat[dim:] = src_dat
-            elif len(src_dat) >= dim + nb_prm:
+            elif len(src_dat) >= nb_prm:
                 dst_dat = src_dat[:nb_prm].clone()
             else:
                 dst_dat = src_dat.new_zeros([nb_prm])
@@ -1025,10 +1038,9 @@ class LogAffine(AffineTransform):
             dst_dat = src_dat.new_zeros([nb_prm])
             if src == 'ro':
                 dst_dat[dim:-1] = src_dat
-            elif len(src_dat) >= dim + nb_prm:
-                # old_basis is full affine
+            elif src[0] == 'a':
                 dst_dat[:nb_prm-1] = src_dat[:nb_prm-1]
-                dst_dat[-1] = src_dat[nb_prm-1:nb_prm+2].mean()
+                dst_dat[-1] = src_dat[nb_prm-1:nb_prm-1+dim].mean()
             else:
                 dst_dat[:len(src_dat)] = src_dat
         else:
@@ -1226,7 +1238,10 @@ class LogAffine2d(LogAffine):
         dst = dst[:2].lower()
         src = src[:2].lower()
         if dst[0] == 't':
-            dst_dat = src_dat[:dim].clone()
+            if src == 'ro':
+                dst_dat = src_dat.new_zeros([dim])
+            else:
+                dst_dat = src_dat[:dim].clone()
         elif dst == 'ro':
             nb_prm = dim*(dim-1)//2
             if src == 'ro':
@@ -1252,10 +1267,9 @@ class LogAffine2d(LogAffine):
             dst_dat = src_dat.new_zeros([nb_prm])
             if src == 'ro':
                 dst_dat[dim:-1] = src_dat
-            elif len(src_dat) >= nb_prm:
-                # old_basis is full affine
+            elif src[0] == 'a':
                 dst_dat[:nb_prm-1] = src_dat[:nb_prm-1]
-                dst_dat[-1] = src_dat[nb_prm-1:nb_prm+2].mean()
+                dst_dat[-1] = src_dat[nb_prm-1:nb_prm-1+dim].mean()
             else:
                 dst_dat[:len(src_dat)] = src_dat
         else:
@@ -1265,7 +1279,7 @@ class LogAffine2d(LogAffine):
                 dst_dat[dim:dim+dim*(dim-1)//2] = src_dat
             elif src[0] == 's':
                 dst_dat[:len(src_dat)-1] = src_dat[:-1]
-                dst_dat[len(src_dat)-1:] = src_dat[-1]
+                dst_dat[len(src_dat)-1:len(src_dat)+dim-1] = src_dat[-1]
             else:
                 dst_dat[:len(src_dat)] = src_dat
         return dst_dat
